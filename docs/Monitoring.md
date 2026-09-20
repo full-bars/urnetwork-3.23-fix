@@ -95,9 +95,58 @@ Add any of these to `.env`, then run `docker compose up -d`:
 - **Fleet:** nodes up and down, billable throughput, active clients, and proxies up or failing. A table lists each node's version, uptime, clients, proxies, memory, and resource pressure.
 - **Traffic:** billable and total bytes per second, clients per node, and the top 15 proxies by billable traffic.
 - **Proxies:** pool status, grades, recoveries and losses, and contract outcomes.
-- **Node health:** errors by category, resource pressure, memory, goroutines, sessions, and DNS-over-HTTPS failures.
+- **Node health:** errors by category, resource pressure, memory, goroutines, sessions, and DNS-over-HTTPS failures. Two panels plot memory and file descriptors against their limits (the limit is a dashed line).
+- **Lifecycle:** restarts by reason, uptime per node, HotSwap outcomes per hour, and version skew (each version in the fleet and how many nodes run it).
 
 Use the **Node** selector at the top to narrow the view to specific providers.
+
+The memory, descriptor and restart-reason panels need a provider that exports `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds`, `urnet_fd_limit` and `urnet_restart_reason`. On older providers those panels stay empty and the rest of the dashboard works as before. Descriptor metrics are Linux only.
+
+## Alerts
+
+The bundle ships alert rules in `monitoring/prometheus/rules/urnetwork.yml`. Prometheus loads them at startup, and `docker compose up -d` mounts the `rules` directory for you. Firing alerts show at `http://127.0.0.1:9090/alerts`.
+
+> [!NOTE]
+> The bundle has no Alertmanager. Alerts are visible in Prometheus and as the `ALERTS` series, but nothing is emailed or posted until you add an Alertmanager and point Prometheus at it.
+
+### Enabled by default
+
+| Alert | Fires when | Does not detect |
+|---|---|---|
+| `UrnetworkNodeDown` | A node's `/metrics` endpoint has not answered for 5 minutes (`up == 0`). | A stopped provider looks the same as metrics switched off, a blocked port or a Tailscale outage. A node removed from `targets/providers.yml` never fires. It says nothing about whether a reachable node is earning. |
+| `UrnetworkRestartLoop` | More than 3 restarts of one node in an hour. | A restart that hides between two scrapes, and the cause of a restart. Check `urnet_restart_reason` and the node's logs. |
+
+`UrnetworkRestartLoop` counts drops of `urnet_uptime_seconds` with `resets()`. It does not use `urnet_startup_restarted`, because that gauge keeps one fixed value for the life of a process, so it cannot be counted with `increase()`.
+
+### Optional rules
+
+These are in the same file, commented out, because they need thresholds that suit your fleet.
+
+| Alert | Fires when | Does not detect |
+|---|---|---|
+| `UrnetworkOldVersion` | A node runs a different version from most of the fleet for 7 days. | Which version is newer. During a slow rollout it can flag the early upgraders. It does not fire on a fleet that is uniformly out of date. |
+| `UrnetworkMemoryNearLimit` | `urnet_mem_sys_bytes` is above 90% of `urnet_mem_limit_bytes` for 15 minutes. | Resident memory, other processes on the machine, and a container limit lower than the Go limit. Nodes with no limit set are skipped. |
+| `UrnetworkFileDescriptorsNearLimit` | `urnet_open_fds` is above 85% of `urnet_fd_limit` for 10 minutes. | Which kind of descriptor leaks, and a spike between two scrapes. |
+| `UrnetworkNoBillableTraffic` | A node is up, has been up for over 30 minutes, and billed no traffic for 30 minutes. | A broken node versus a quiet one with no demand. It can be noisy on idle nodes. |
+
+To enable one, open `monitoring/prometheus/rules/urnetwork.yml`, read the note above the rule, adjust the threshold, and remove the leading `# ` from every line of that block (the block ends at the next blank line). Then reload Prometheus:
+
+```bash
+curl -X POST http://127.0.0.1:9090/-/reload
+```
+
+Nodes whose provider does not export a metric never match its rule, so a fleet with mixed versions is safe.
+
+### Checking your changes
+
+If you have `promtool` (it ships with Prometheus), run these from the `monitoring/` directory after editing the rules:
+
+```bash
+promtool check rules prometheus/rules/urnetwork.yml
+promtool test rules prometheus/rules/urnetwork.test.yml
+```
+
+The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.yml` by name, so the test file is never loaded as rules.
 
 ## Troubleshooting
 
@@ -151,6 +200,11 @@ Use the **Node** selector at the top to narrow the view to specific providers.
 | `urnet_pressure_score` | gauge | | Resource pressure, 0 (fine) to 1 (emergency) |
 | `urnet_mem_heap_bytes` | gauge | | Go heap in use |
 | `urnet_mem_sys_bytes` | gauge | | Memory obtained from the OS |
+| `urnet_mem_limit_bytes` | gauge | | The Go memory limit in effect |
+| `urnet_rss_bytes` | gauge | | Resident set size (Linux) |
+| `urnet_open_fds` | gauge | | Open file descriptors (Linux) |
+| `urnet_fd_limit` | gauge | | File descriptor limit (Linux) |
+| `urnet_restart_reason` | gauge | `reason` | Value 1 for the reason the current process started; absent for other reasons |
 | `urnet_gc_cycles_total` | counter | | Garbage collection cycles |
 | `urnet_goroutines` | gauge | | Goroutines |
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
