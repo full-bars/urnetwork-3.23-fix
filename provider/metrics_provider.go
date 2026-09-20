@@ -485,5 +485,42 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "urnet_url_proxy_ungraded %d\n", urlUngraded)
 	}
 
+	// --- Restart reason and process resources ---
+	startupDiag.mu.Lock()
+	reason := startupDiag.restartReason
+	startupDiag.mu.Unlock()
+	writeNodeGauges(&b, reason, collectResources())
+
 	return b.String()
+}
+
+// writeNodeGauges emits the restart-reason and resource gauges. Resource
+// figures the platform cannot supply (zero) are left out rather than exported
+// as 0, so a missing series means unknown.
+func writeNodeGauges(b *strings.Builder, reason string, res SnapshotResources) {
+	if reason != "" {
+		fmt.Fprintf(b, "# HELP urnet_restart_reason Why the provider last started: 1 for the current reason only.\n")
+		fmt.Fprintf(b, "# TYPE urnet_restart_reason gauge\n")
+		fmt.Fprintf(b, "urnet_restart_reason{reason=%s} 1\n", connect.PrometheusLabelValue(reason))
+	}
+	if res.MemLimitBytes > 0 {
+		fmt.Fprintf(b, "# HELP urnet_mem_limit_bytes Go memory limit in effect, absent when none is set.\n")
+		fmt.Fprintf(b, "# TYPE urnet_mem_limit_bytes gauge\n")
+		fmt.Fprintf(b, "urnet_mem_limit_bytes %d\n", res.MemLimitBytes)
+	}
+	if res.RSSBytes > 0 {
+		fmt.Fprintf(b, "# HELP urnet_rss_bytes Resident set size of the provider process (Linux).\n")
+		fmt.Fprintf(b, "# TYPE urnet_rss_bytes gauge\n")
+		fmt.Fprintf(b, "urnet_rss_bytes %d\n", res.RSSBytes)
+	}
+	if res.OpenFDs > 0 {
+		fmt.Fprintf(b, "# HELP urnet_open_fds Open file descriptors of the provider process (Linux).\n")
+		fmt.Fprintf(b, "# TYPE urnet_open_fds gauge\n")
+		fmt.Fprintf(b, "urnet_open_fds %d\n", res.OpenFDs)
+	}
+	if res.FDLimit > 0 {
+		fmt.Fprintf(b, "# HELP urnet_fd_limit Soft file descriptor limit of the provider process (Linux).\n")
+		fmt.Fprintf(b, "# TYPE urnet_fd_limit gauge\n")
+		fmt.Fprintf(b, "urnet_fd_limit %d\n", res.FDLimit)
+	}
 }

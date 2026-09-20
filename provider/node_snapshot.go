@@ -482,7 +482,14 @@ func productionSnapshotSources() snapshotSources {
 			return int64(pq.ActivePQE), int64(pq.ActiveClas)
 		},
 		pressure: currentPressure,
-		version:  RequireVersion,
+		version: func() string {
+			// A build without -ldflags has no version; say "dev" as the
+			// control socket "version" command does.
+			if v := RequireVersion(); v != "" {
+				return v
+			}
+			return "dev"
+		},
 		prevVer: func() string {
 			startupDiag.mu.Lock()
 			defer startupDiag.mu.Unlock()
