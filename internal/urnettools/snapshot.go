@@ -1,9 +1,15 @@
 package urnettools
 
 import (
+	"bytes"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"os"
 	"path/filepath"
+	"sync"
+
+	"golang.org/x/term"
 )
 
 // NodeSnapshot is the client-side mirror of the provider's live status
@@ -76,20 +82,94 @@ var errSnapshotUnavailable = errors.New("live status unavailable")
 // socket. Every failure to obtain one wraps errSnapshotUnavailable so a
 // caller can skip the live block with a single errors.Is check.
 func fetchSnapshot(p Provider) (*NodeSnapshot, error) {
+	snap, _, err := fetchSnapshotRaw(p)
+	return snap, err
+}
+
+// fetchSnapshotRaw is fetchSnapshot that also returns the snapshot object
+// exactly as the provider sent it, so --json can print fields this build of
+// the tool does not know about.
+func fetchSnapshotRaw(p Provider) (*NodeSnapshot, json.RawMessage, error) {
 	if p.StateDir == "" {
-		return nil, fmt.Errorf("%w: provider has no state dir", errSnapshotUnavailable)
+		return nil, nil, fmt.Errorf("%w: provider has no state dir", errSnapshotUnavailable)
 	}
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
 	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "snapshot"})
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
 	}
 	if !resp.OK || resp.Snapshot == nil {
 		reason := resp.Error
 		if reason == "" {
 			reason = "provider returned no snapshot"
 		}
-		return nil, fmt.Errorf("%w: %s", errSnapshotUnavailable, reason)
+		return nil, nil, fmt.Errorf("%w: %s", errSnapshotUnavailable, reason)
 	}
-	return resp.Snapshot, nil
+	var raw struct {
+		Snapshot json.RawMessage `json:"snapshot"`
+	}
+	if err := json.Unmarshal(resp.Raw, &raw); err != nil {
+		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+	}
+	return resp.Snapshot, raw.Snapshot, nil
+}
+
+// printSnapshotJSON prints the provider's raw snapshot for scripts. When no
+// snapshot is available it says why and returns an error (non-zero exit).
+func printSnapshotJSON(p Provider) error {
+	_, raw, err := fetchSnapshotFn(p)
+	if err != nil {
+		return fmt.Errorf("no live status from %s: %w (is the provider running and new enough to answer \"snapshot\"?)", providerLabel(p), err)
+	}
+	var out bytes.Buffer
+	if err := json.Indent(&out, raw, "", "  "); err != nil {
+		return fmt.Errorf("live status from %s is not valid JSON: %w", providerLabel(p), err)
+	}
+	out.WriteByte('\n')
+	_, err = os.Stdout.Write(out.Bytes())
+	return err
+}
+
+// statusLiveOpts reads the drawing options for stdout.
+func statusLiveOpts() liveOpts {
+	fd := int(os.Stdout.Fd())
+	isTTY := term.IsTerminal(fd)
+	width := 0
+	if isTTY {
+		if w, _, err := term.GetSize(fd); err == nil {
+			width = w
+		}
+	}
+	return liveOptsFromEnv(isTTY, width)
+}
+
+// printLiveBlock appends the live section under the classic status output
+// when the provider answers, and prints nothing at all when it does not.
+func printLiveBlock(p Provider) {
+	snap, _, err := fetchSnapshotFn(p)
+	if err != nil {
+		return
+	}
+	fmt.Println()
+	fmt.Print(renderLiveBlock(snap, statusLiveOpts()))
+}
+
+// printProviderSummary prints one compact row per provider, fetching the
+// snapshots concurrently so one slow socket does not stall the rest.
+func printProviderSummary(providers []Provider) {
+	rows := make([]providerRow, len(providers))
+	var wg sync.WaitGroup
+	for i, p := range providers {
+		rows[i] = providerRow{Name: providerLabel(p), Running: p.Running, Version: p.Version}
+		wg.Add(1)
+		go func(i int, p Provider) {
+			defer wg.Done()
+			if snap, _, err := fetchSnapshotFn(p); err == nil {
+				rows[i].Snap = snap
+			}
+		}(i, p)
+	}
+	wg.Wait()
+	fmt.Printf("%d providers found; use a target (--unit / --user / --network / --network-id / --state-dir) for detail:\n\n", len(providers))
+	fmt.Print(renderProviderTable(rows, statusLiveOpts()))
 }
