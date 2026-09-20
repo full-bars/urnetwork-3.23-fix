@@ -352,15 +352,12 @@ func validColonForm(s string) bool {
 }
 
 func proxyPaste(opts docopt.Opts) {
-	// Reject paste for file-backed providers: when the provider runs with
-	// --proxy_file=/PROXY_FILE=<X> (Workflow A), it loads proxies from that
-	// external file on start, so a pasted entry written to the internal
-	// proxyConfig.Servers would be lost on the next reload. Pasting is only
-	// meaningful for the internal-config (Workflow B) model.
-	if state, err := readProxyState(); err == nil && state.Source != "" {
-		fmt.Fprintf(os.Stderr, "this provider is file-backed (--proxy_file=%s); paste writes the internal config and would be lost on reload — add the entries to that file instead (or use 'proxy add --proxy_file=...'), or re-run the provider without a file source to paste.\n", state.Source)
-		os.Exit(1)
-	}
+	// File-backed providers (Workflow A: --proxy_file=<X>) re-read their
+	// source file on every reload, so pasted entries must land in THAT file,
+	// not the internal config (which a reload discards). Paste hands the
+	// normalized lines to `proxy add --proxy_file=<tmp> -f` below, and proxyAdd
+	// now routes to the source file when the provider is file-backed — no
+	// refusal here.
 
 	// Determine input source
 	var rawLines []string

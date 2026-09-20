@@ -54,6 +54,41 @@ func TestSelectTargetsExcludeSubtracts(t *testing.T) {
 	}
 }
 
+// TestSelectTargetsSoleProviderAutoPicksEvenInteractive: with exactly ONE
+// candidate, selection must never prompt — the picker is noise. Regression
+// for a 2026-09-20 fleet report: on a single-provider box, `proxy paste` /
+// `update` / `clear` popped "Select providers [1] urnetwork.service" because
+// the interactive case ran before the len(providers)==1 case. The sole
+// provider must short-circuit ahead of any interactive read.
+func TestSelectTargetsSoleProviderAutoPicksEvenInteractive(t *testing.T) {
+	ps := []Provider{
+		{User: "user", Unit: "urnetwork.service", Network: "mesocyclone", StateDir: "/home/user/.urnetwork"},
+	}
+	got, err := selectTargets(ps, Target{}, nil, nil, true)
+	if err != nil {
+		t.Fatalf("sole provider + interactive should auto-pick, got error: %v", err)
+	}
+	if len(got) != 1 || got[0].Unit != "urnetwork.service" {
+		t.Fatalf("want the sole provider auto-picked, got %+v", got)
+	}
+}
+
+// TestSelectTargetsSoleProviderAutoPicksNonInteractive: same short-circuit
+// with interactive=false (the non-TTY case that already worked — kept as a
+// guard so the ordering fix can't regress either direction).
+func TestSelectTargetsSoleProviderAutoPicksNonInteractive(t *testing.T) {
+	ps := []Provider{
+		{User: "user", Unit: "urnetwork.service", Network: "mesocyclone", StateDir: "/home/user/.urnetwork"},
+	}
+	got, err := selectTargets(ps, Target{}, nil, nil, false)
+	if err != nil {
+		t.Fatalf("sole provider should auto-pick, got error: %v", err)
+	}
+	if len(got) != 1 || got[0].Unit != "urnetwork.service" {
+		t.Fatalf("want the sole provider auto-picked, got %+v", got)
+	}
+}
+
 // TestSelectTargetsAmbiguousRefuses: multiple providers (none running for the
 // current user), no criteria, not interactive -> refuse with inventory.
 func TestSelectTargetsAmbiguousRefuses(t *testing.T) {

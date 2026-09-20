@@ -269,6 +269,25 @@ func TestIsProviderArgExcludesKnownSiblings(t *testing.T) {
 	}
 }
 
+// TestIsProviderArgExcludesTrackerSibling: provider_tracker (the
+// provider-dashboard-rs companion process that records provider health,
+// /home/user/provider_tracking/provider_tracker) is not a provider. Live
+// fleet false-positive (2026-09-20): boxes running it showed a phantom
+// duplicate user@mesocyclone provider, which made default/update/paste
+// ambiguous and blocked narrowToAccessible's auto-pick. The deny-list entry
+// is checked as the segment after the known binary, same as -dashboard-rs.
+func TestIsProviderArgExcludesTrackerSibling(t *testing.T) {
+	for _, arg := range []string{
+		"provider_tracker",
+		"/home/user/provider_tracking/provider_tracker",
+		"provider-tracker",
+	} {
+		if isProviderArg(arg) {
+			t.Errorf("isProviderArg(%q) = true, want false — provider_tracker is not a provider", arg)
+		}
+	}
+}
+
 // TestStateDirFor verifies HOME-based state resolution (no hardcoded path).
 func TestStateDirFor(t *testing.T) {
 	// stateDirFor joins with filepath.Join, so the expected path is
