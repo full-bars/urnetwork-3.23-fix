@@ -46,6 +46,7 @@ type startupDiagnostics struct {
 	loaded           bool
 	previousVersion  string
 	cleanShutdown    bool   // was the previous shutdown clean?
+	restartReason    string // why this process started; see classifyRestart
 	previousVersion_ string // stored on disk
 }
 
@@ -94,6 +95,11 @@ func detectStartup() {
 	}
 	// Write current version
 	os.WriteFile(versionPath, []byte(RequireVersion()), 0600)
+
+	// The restart marker is consumed the same way: read, then deleted, so it
+	// only ever describes the restart that just happened.
+	marker := consumeRestartMarker(stateDir, time.Now())
+	startupDiag.restartReason = classifyRestart(marker, startupDiag.cleanShutdown, startupDiag.previousVersion)
 }
 
 // mustStateDir returns ~/.urnetwork or "" on error.
