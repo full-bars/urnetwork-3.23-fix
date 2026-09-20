@@ -1,0 +1,210 @@
+package tui
+
+import (
+	"math"
+	"strings"
+	"testing"
+)
+
+func TestNiceCeil(t *testing.T) {
+	cases := []struct {
+		in     float64
+		binary bool
+		want   float64
+	}{
+		{0, false, 0}, {-3, false, 0}, {math.NaN(), false, 0}, {math.Inf(1), false, 0},
+		{1, false, 1}, {0.7, false, 0.8}, {41.3, false, 50}, {100, false, 100}, {101, false, 120},
+		{1000, false, 1000}, {999.99, false, 1000}, {7, false, 8}, {9.1, false, 10},
+		{0.013, false, 0.015},
+		{500 * 1024, true, 500 * 1024}, {488.3 * 1024, true, 500 * 1024},
+		{1.1 * 1024 * 1024, true, 1.2 * 1024 * 1024}, {1023 * 1024, true, 1024 * 1024},
+	}
+	for _, c := range cases {
+		got := niceCeil(c.in, c.binary)
+		if math.Abs(got-c.want) > c.want*1e-9 {
+			t.Errorf("niceCeil(%v, %v) = %v, want %v", c.in, c.binary, got, c.want)
+		}
+		if c.in > 0 && !math.IsInf(c.in, 0) && got < c.in*(1-1e-9) {
+			t.Errorf("niceCeil(%v) = %v is below its input", c.in, got)
+		}
+	}
+}
+
+func drawG(w, h int, g Graph, ascii bool) (string, float64) {
+	b := New(w, h)
+	top := DrawGraph(b, g, ascii)
+	return b.String(), top
+}
+
+func TestGraphRampBraille(t *testing.T) {
+	// One row is 4 dots tall. Samples 1..8 against a top of 8 give 1,1,2,2,3,3,4,4
+	// dots (half rounds up), two per cell, so the plot climbs one dot row per cell.
+	got, top := drawG(6, 1, Graph{Samples: []float64{1, 2, 3, 4, 5, 6, 7, 8}, Max: 8}, false)
+	if top != 8 {
+		t.Fatalf("top = %v", top)
+	}
+	// A one-row graph has only its top label; the newest sample is the rightmost cell.
+	if want := "8┤⣀⣤⣶⣿"; got != want {
+		t.Fatalf("got %q want %q", got, want)
+	}
+}
+
+func TestGraphGolden(t *testing.T) {
+	samples := []float64{0, 10, 20, 30, 40, 50, 60, 70, 80, 90, 100, 100, 50, 0}
+	got, top := drawG(12, 4, Graph{Samples: samples}, false)
+	if top != 100 {
+		t.Fatalf("auto top = %v, want 100", top)
+	}
+	// 14 samples right-aligned into 16 columns: two blank columns on the left, a
+	// baseline dot for the zero at each end, and the peak reaching the top row.
+	want := strings.Join([]string{
+		"100┤     ⣠⣿",
+		"   │    ⣴⣿⣿",
+		"   │  ⢀⣼⣿⣿⣿⡇",
+		"  0┤ ⣠⣾⣿⣿⣿⣿⣇",
+	}, "\n")
+	if got != want {
+		t.Fatalf("got\n%s\nwant\n%s", got, want)
+	}
+}
+
+func TestGraphExactBraille(t *testing.T) {
+	// A 2-sample series in a 1-row graph: heights of 4 and 2 dots against a
+	// fixed max of 4 (top of axis).
+	b := New(3, 1)
+	DrawGraph(b, Graph{Samples: []float64{4, 2}, Max: 4}, false)
+	// Axis: "4┤" is 2 cells, plot is 1 cell = 2 columns. Left column 4 dots,
+	// right column 2 dots: left 0x40|0x04|0x02|0x01 = 0x47, right 0x80|0x20 = 0xA0.
+	if got := b.Cell(2, 0).Rune; got != 0x2800+0x47+0xA0 {
+		t.Fatalf("cell = %U, want %U", got, 0x2800+0x47+0xA0)
+	}
+}
+
+func TestGraphNewestIsRightAligned(t *testing.T) {
+	b := New(7, 2)
+	DrawGraph(b, Graph{Samples: []float64{5}, Max: 5}, false)
+	// One sample: it is the rightmost column of the rightmost cell, so the
+	// cell holds only right-hand dots and every other plot cell is empty.
+	last := b.Cell(6, 1).Rune
+	if last&0x2800 != 0x2800 || (last-0x2800)&0x47 != 0 {
+		t.Fatalf("newest sample not in the right half of the last cell: %U", last)
+	}
+	for x := 2; x < 6; x++ {
+		for y := 0; y < 2; y++ {
+			if b.Cell(x, y).Rune != ' ' {
+				t.Fatalf("cell (%d,%d) drawn before any sample: %q", x, y, b.Cell(x, y).Rune)
+			}
+		}
+	}
+}
+
+func TestGraphEmptyAndAllZero(t *testing.T) {
+	got, top := drawG(8, 3, Graph{}, false)
+	if top != 0 {
+		t.Fatalf("empty top = %v", top)
+	}
+	if strings.ContainsAny(got, "⠀⣀⣿") {
+		t.Fatalf("empty series drew data:\n%s", got)
+	}
+	if !strings.Contains(got, "0┤") || strings.Count(got, "┤") != 1 {
+		t.Fatalf("empty series should label only zero:\n%s", got)
+	}
+
+	got, top = drawG(8, 2, Graph{Samples: []float64{0, 0, 0, 0}}, false)
+	if top != 0 {
+		t.Fatalf("all-zero top = %v", top)
+	}
+	lines := strings.Split(got, "\n")
+	// The baseline is present on the bottom row and nothing above it.
+	if strings.TrimSpace(strings.TrimLeft(lines[0], " │")) != "" {
+		t.Fatalf("all-zero graph drew above the baseline:\n%s", got)
+	}
+	if !strings.ContainsRune(lines[1], '⣀') {
+		t.Fatalf("all-zero graph should draw a baseline:\n%s", got)
+	}
+}
+
+func TestGraphAveragesLongSeries(t *testing.T) {
+	long := make([]float64, 600)
+	for i := range long {
+		long[i] = float64(i % 10)
+	}
+	b := New(30, 5)
+	DrawGraph(b, Graph{Samples: long}, false)
+	// The whole window shows: the leftmost plot column is drawn, not blank.
+	if b.Cell(3, 4).Rune == ' ' {
+		t.Fatal("leftmost plot cell is blank: the long series was cut instead of averaged down")
+	}
+	cols := plotColumns([]float64{0, 0, 10, 10}, 2)
+	if cols[0] != 0 || cols[1] != 10 {
+		t.Fatalf("bucket average: %v", cols)
+	}
+	cols = plotColumns([]float64{1, 2}, 4)
+	if !math.IsNaN(cols[0]) || !math.IsNaN(cols[1]) || cols[2] != 1 || cols[3] != 2 {
+		t.Fatalf("right alignment: %v", cols)
+	}
+}
+
+func TestGraphSanitizesSamples(t *testing.T) {
+	b := New(10, 2)
+	top := DrawGraph(b, Graph{Samples: []float64{math.NaN(), math.Inf(1), -5, 3}}, false)
+	if top != 3 {
+		t.Fatalf("top = %v, non-finite and negative samples must count as zero", top)
+	}
+}
+
+func TestGraphMiddleTickOnlyWhenTall(t *testing.T) {
+	got, _ := drawG(10, 5, Graph{Samples: []float64{100}, Max: 100}, false)
+	if strings.Count(got, "┤") != 3 || !strings.Contains(got, "50┤") {
+		t.Fatalf("5-row graph should label top, middle and bottom:\n%s", got)
+	}
+	got, _ = drawG(10, 4, Graph{Samples: []float64{100}, Max: 100}, false)
+	if strings.Count(got, "┤") != 2 {
+		t.Fatalf("4-row graph should label only top and bottom:\n%s", got)
+	}
+}
+
+func TestGraphFormatAndBinary(t *testing.T) {
+	g := Graph{Samples: []float64{300 * 1024}, Binary: true, Format: RateShort}
+	got, top := drawG(20, 3, g, false)
+	if top != 300*1024 {
+		t.Fatalf("top = %v", top)
+	}
+	if !strings.Contains(got, "300 KiB/s┤") || !strings.Contains(got, "0 B/s┤") {
+		t.Fatalf("labels:\n%s", got)
+	}
+}
+
+func TestGraphASCII(t *testing.T) {
+	got, _ := drawG(9, 2, Graph{Samples: []float64{0, 0, 4, 4, 8, 8, 8, 8}, Max: 8, Format: func(v float64) string { return "" }}, true)
+	if strings.ContainsAny(got, "⣀⣿┤│") {
+		t.Fatalf("ascii graph contains unicode:\n%s", got)
+	}
+	for _, r := range got {
+		if r > 0x7E {
+			t.Fatalf("non-ascii %q in\n%s", r, got)
+		}
+	}
+	lines := strings.Split(got, "\n")
+	// Newest column is full height: '#' in both rows. Oldest is the baseline.
+	if !strings.HasSuffix(lines[0], "#") || !strings.HasSuffix(lines[1], "#") {
+		t.Fatalf("full-height newest column expected:\n%s", got)
+	}
+	if !strings.Contains(lines[1], "_") {
+		t.Fatalf("zero sample should draw a baseline glyph:\n%s", got)
+	}
+}
+
+func TestGraphTinyRegions(t *testing.T) {
+	for _, dim := range [][2]int{{0, 0}, {1, 1}, {2, 1}, {3, 1}, {1, 5}, {5, 1}} {
+		b := New(dim[0], dim[1])
+		DrawGraph(b, Graph{Samples: []float64{1, 5, 3, 9, 2}}, false)
+		DrawGraph(b, Graph{Samples: []float64{1, 5, 3, 9, 2}}, true)
+	}
+	// With no room for a plot beside the axis, the axis is dropped and data is drawn.
+	b := New(2, 1)
+	DrawGraph(b, Graph{Samples: []float64{9, 9}, Format: func(float64) string { return "9999" }}, false)
+	if b.Cell(1, 0).Rune < 0x2800 {
+		t.Fatalf("plot should win over the axis in a tiny region: %q", b.String())
+	}
+}
