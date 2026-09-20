@@ -1,0 +1,60 @@
+# Unit tests for the enabled rules in urnetwork.yml.
+# Run from the monitoring/ directory:
+#   promtool test rules prometheus/rules/urnetwork.test.yml
+#
+# This file is not loaded by Prometheus: prometheus.yml lists urnetwork.yml
+# by name, not by glob.
+
+rule_files:
+  - urnetwork.yml
+
+evaluation_interval: 1m
+
+tests:
+  - interval: 1m
+    input_series:
+      # n1 is scraped, then stops answering from minute 6.
+      - series: 'up{job="urnetwork", instance="n1"}'
+        values: '1x5 0x15'
+      # n2 stays up.
+      - series: 'up{job="urnetwork", instance="n2"}'
+        values: '1x20'
+    alert_rule_test:
+      # Down for 3 minutes: pending, not yet firing.
+      - eval_time: 8m
+        alertname: UrnetworkNodeDown
+        exp_alerts: []
+      # Down for more than 5 minutes: only n1 fires, n2 stays quiet.
+      - eval_time: 15m
+        alertname: UrnetworkNodeDown
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              job: urnetwork
+              instance: n1
+            exp_annotations:
+              summary: "URnetwork node n1 is down"
+              description: "Prometheus could not scrape n1 for 5 minutes. This does NOT tell a stopped provider apart from a provider with metrics switched off, a blocked port or a Tailscale outage, and it does not fire for a node that was removed from targets/providers.yml or never scraped. It says nothing about whether a reachable node is earning."
+
+  - interval: 1m
+    input_series:
+      # n1 restarts 4 times (uptime drops 4 times).
+      - series: 'urnet_uptime_seconds{job="urnetwork", instance="n1"}'
+        values: '100 200 300 10 110 210 5 105 205 3 103 203 2 102'
+      # n2 restarts 3 times: not more than 3, so no alert.
+      - series: 'urnet_uptime_seconds{job="urnetwork", instance="n2"}'
+        values: '100 200 10 110 210 5 105 205 3 103 203 303 403 503'
+      # n3 restarted once, then ran steadily.
+      - series: 'urnet_uptime_seconds{job="urnetwork", instance="n3"}'
+        values: '900 960 1020 30 90 150 210 270 330 390 450 510 570 630'
+    alert_rule_test:
+      - eval_time: 13m
+        alertname: UrnetworkRestartLoop
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              job: urnetwork
+              instance: n1
+            exp_annotations:
+              summary: "URnetwork node n1 restarted more than 3 times in the last hour"
+              description: "The uptime of n1 dropped more than 3 times in an hour. This does NOT catch a restart that hides between two scrapes (the node stayed down longer than it had been up, so uptime is higher again on the next scrape), and it does not say why the node restarted. Look at urnet_restart_reason for the reason, and at the node's logs for the cause."
