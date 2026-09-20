@@ -1,0 +1,52 @@
+{
+  "v": 1,
+  "version": "v3.23.0-fix.32.1",
+  "started_at": "2026-09-16T12:00:00Z",
+  "now": "2026-09-19T16:04:31Z",
+  "uptime_seconds": 273871.0,
+  "state": "idle",
+  "busy": false,
+  "restart_pending": false,
+  "rate": {
+    "now_bps": 0,
+    "avg_1m_bps": 0,
+    "avg_5m_bps": 120,
+    "history_interval_seconds": 1,
+    "history_bps": [
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0,
+      0
+    ]
+  },
+  "clients": 0,
+  "sessions": {
+    "pqe": 200,
+    "classical": 12
+  },
+  "proxies": {
+    "up": 0,
+    "degraded": 0,
+    "connecting": 12,
+    "dead": 46
+  },
+  "pressure": 0.21,
+  "restart": {
+    "reason": "unclean",
+    "clean_shutdown": false
+  },
+  "resources": {
+    "heap_inuse_bytes": 1932735283,
+    "mem_limit_bytes": 4294967296,
+    "goroutines": 1204
+  },
+  "idle_hint": "all 58 proxies dead or connecting"
+}

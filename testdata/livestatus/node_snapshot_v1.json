@@ -1,0 +1,55 @@
+{
+  "v": 1,
+  "version": "v3.23.0-fix.32.1",
+  "previous_version": "v3.23.0-fix.32.0",
+  "started_at": "2026-09-16T12:00:00Z",
+  "now": "2026-09-19T16:04:31Z",
+  "uptime_seconds": 273871.0,
+  "state": "flowing",
+  "busy": true,
+  "restart_pending": false,
+  "rate": {
+    "now_bps": 40058201,
+    "avg_1m_bps": 43012770,
+    "avg_5m_bps": 37400115,
+    "history_interval_seconds": 1,
+    "history_bps": [
+      33500000,
+      33507919,
+      33515838,
+      33523757,
+      33531676,
+      33539595,
+      33547514,
+      33555433,
+      33563352,
+      33571271,
+      33579190,
+      33587109
+    ]
+  },
+  "clients": 212,
+  "sessions": {
+    "pqe": 200,
+    "classical": 12
+  },
+  "proxies": {
+    "up": 58,
+    "degraded": 2,
+    "connecting": 0,
+    "dead": 0
+  },
+  "pressure": 0.21,
+  "restart": {
+    "reason": "update",
+    "clean_shutdown": true
+  },
+  "resources": {
+    "heap_inuse_bytes": 1932735283,
+    "mem_limit_bytes": 4294967296,
+    "rss_bytes": 2254857830,
+    "goroutines": 1204,
+    "open_fds": 310,
+    "fd_limit": 65536
+  }
+}
