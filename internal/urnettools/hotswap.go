@@ -232,6 +232,8 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	if !ok {
 		return nil // dry-run or declined
 	}
+	// Leave the reason for the provider's next start (best effort).
+	recordRestartReason(p, restartReasonHotswap)
 	if err := triggerHotSwap(p); err != nil {
 		return fmt.Errorf("hotswap %s: %w", providerLabel(p), err)
 	}

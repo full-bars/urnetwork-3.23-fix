@@ -21,7 +21,7 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", or "history"
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", or "snapshot"
 	Key    string `json:"key,omitempty"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`
@@ -69,7 +69,10 @@ type controlResponse struct {
 	// answered by "status". Empty when metrics is off or the provider
 	// predates the field.
 	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
-	Raw          []byte   `json:"-"`
+	// Snapshot is the live node snapshot, answered by "snapshot". Absent
+	// from providers that predate the command.
+	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
+	Raw      []byte        `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.

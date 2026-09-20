@@ -1,0 +1,5 @@
+PROVIDER             STATE    RATE        CLIENTS  UPTIME  VERSION
+urnetwork-a.service  FLOWING  38.2 MiB/s  212      3d 4h   v3.23.0-fix.32.1
+urnetwork-b.service  IDLE     0 B/s       0        3d 4h   v3.23.0-fix.32.1
+urnetwork-c.service  RUNNING  -           -        -       v3.22.0
+urnetwork-d.service  STOPPED  -           -        -       -
