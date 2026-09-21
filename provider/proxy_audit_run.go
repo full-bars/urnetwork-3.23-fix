@@ -105,6 +105,12 @@ type proxyAuditor struct {
 	st  *proxyAuditState
 	env proxyAuditEnv
 
+	// mu serializes runOnce with control-socket audit actions (on, off,
+	// release). The ticker loop is the scheduled caller, but the control
+	// actions mutate the same state (parks, announced, paused), so they
+	// must not run concurrently with a tick.
+	mu sync.Mutex
+
 	// announced is the set of proxies already logged as would-park, so observe
 	// mode says it once per newly eligible proxy rather than every tick.
 	announced map[string]bool
@@ -119,8 +125,15 @@ func newProxyAuditor(cfg proxyAuditConfig, env proxyAuditEnv) *proxyAuditor {
 	return &proxyAuditor{cfg: cfg, st: newProxyAuditState(), env: env, announced: map[string]bool{}}
 }
 
-// runOnce performs one audit tick.
+// runOnce performs one audit tick, serialized against control actions.
 func (g *proxyAuditor) runOnce() {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	g.runOnceLocked()
+}
+
+// runOnceLocked is the tick body; callers must hold g.mu.
+func (g *proxyAuditor) runOnceLocked() {
 	now := g.env.now()
 	entries, creds, ok := g.env.readPaid()
 	act := g.env.act()

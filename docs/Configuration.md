@@ -67,7 +67,7 @@ Quick jump:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default: with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on`, `urnet-tools self-heal off`, or `urnet-tools self-heal status` (no restart required; the monitor starts sensing within ~30s). |
-| `URNETWORK_PROXY_AUDIT` | `0` (off) | Set to `1` to enable automated [proxy audit](#proxy-audit) and quality enforcement: parks paid and file proxies that grade as proven junk. Off by default (observe mode). Toggle at runtime with `urnet-tools proxy audit on|off|status|release` without restarting or dropping sessions. |
+| `URNETWORK_PROXY_AUDIT` | `0` (off) | Set to `1` to enable automated [proxy audit](#proxy-audit) and quality enforcement: parks paid and file proxies that grade as proven junk. Off by default (observe mode). Toggle at runtime with `urnet-tools proxy audit on\|off\|status\|release` without restarting or dropping sessions. |
 | `URNETWORK_ADAPTIVE_GC` | on | Consolidated adaptive GC governor in the pressure monitor. On by default for every profile. It tightens GOGC below the profile baseline under memory pressure: the tighter of process heap fraction and host available RAM wins. Set to `0`, `false`, `off`, or `no` to disable it. If the operator sets `GOGC` directly, the governor backs off entirely and never touches the knob. |
 
 ### 📊 Monitoring & Telemetry

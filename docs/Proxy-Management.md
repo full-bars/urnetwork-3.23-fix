@@ -166,7 +166,7 @@ urnet-tools self-heal off      # Disable pressure monitoring
 
 ## 🔍 Automated Proxy Audit & Quality Enforcement
 
-`URNETWORK_PROXY_AUDIT=1` (or `urnet-tools proxy audit on` at runtime) activates automated background proxy auditing. The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (scores <= 0.4 on two consecutive probe passes).
+`URNETWORK_PROXY_AUDIT=1` (or `urnet-tools proxy audit on` at runtime) activates automated background proxy auditing. The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (scores <= 0.4 on two consecutive probe passes). Active parking also requires hot restart (`urnet-tools hot-restart on`); with hot restart off, the audit runs in observe mode and logs `would-park` instead of parking.
 
 ```sh
 urnet-tools proxy audit on                  # Enable automated proxy audit & parking

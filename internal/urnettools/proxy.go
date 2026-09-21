@@ -706,7 +706,10 @@ func cmdProxyAuditTarget(p Provider, positionals []string, dryRun bool) error {
 			if resp2, err2 := sendSocketRequest(sockPath, controlRequest{Cmd: "status"}); err2 == nil && resp2.OK {
 				resp = resp2
 			} else {
-				return fmt.Errorf("connect to provider on %s: %w", sockPath, err)
+				if err != nil {
+					return fmt.Errorf("connect to provider on %s: %w", sockPath, err)
+				}
+				return fmt.Errorf("provider rejected audit status on %s: %s", sockPath, resp.Error)
 			}
 		}
 		as := resp.ProxyAudit

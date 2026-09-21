@@ -1047,3 +1047,44 @@ func TestProxyAuditRunOnce_ShippedPolicyOnARealisticFleet(t *testing.T) {
 		t.Fatalf("a parked proxy should be backed off")
 	}
 }
+
+// Control-socket audit actions (on/off/release) mutate the same park state
+// and published status as the ticker's runOnce, so they must serialize with
+// it. -race is the detector: this test stays green with the auditor's
+// serialization mutex and reports a data race without it.
+func TestProxyAuditRunOnceConcurrentWithControlActions(t *testing.T) {
+	h := newAuditHarness("audit-concurrent-a:1", "audit-concurrent-b:1")
+	h.act = true
+	h.fileOK = true
+
+	var wg sync.WaitGroup
+	for i := 0; i < 6; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 40; j++ {
+				h.g.runOnce()
+			}
+		}()
+		go func() {
+			defer wg.Done()
+			for j := 0; j < 40; j++ {
+				// Mirror the control-socket release path: mutate park
+				// state and publish under the auditor lock.
+				h.g.mu.Lock()
+				h.g.st.releaseAll()
+				if h.g.st.isParked("audit-concurrent-a:1") {
+					h.g.st.release("audit-concurrent-a:1")
+				}
+				h.g.publish(h.g.env.now(), h.g.env.act(), proxyAuditResult{})
+				h.g.mu.Unlock()
+			}
+		}()
+	}
+	wg.Wait()
+	// A tick after the storm must still complete without panic and publish.
+	h.g.runOnce()
+	if proxyAuditStatusSnapshot() == nil {
+		t.Fatal("no status published after concurrent tick/control storm")
+	}
+}

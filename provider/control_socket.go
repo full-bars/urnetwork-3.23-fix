@@ -638,12 +638,16 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			if a == nil {
 				return controlResponse{OK: false, Error: "proxy auditor not active"}
 			}
+			// Serialize with the ticker: release mutates the same park and
+			// backoff state a running tick is reading and rewriting.
+			a.mu.Lock()
 			if req.Address == "" || req.Address == "--all" {
 				released := a.st.releaseAll()
 				for _, addr := range released {
 					a.releaseBackoff(addr)
 				}
 				a.publish(a.env.now(), a.env.act(), proxyAuditResult{})
+				a.mu.Unlock()
 				tlog("✓ [proxy][audit] released all %d parked proxies via control socket\n", len(released))
 				return controlResponse{OK: true, Value: fmt.Sprintf("released %d proxies", len(released))}
 			}
@@ -657,6 +661,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 				globalProxyFailureHistory.Reset(addr)
 			}
 			a.publish(a.env.now(), a.env.act(), proxyAuditResult{})
+			a.mu.Unlock()
 			if wasParked {
 				tlog("✓ [proxy][audit] released parked proxy %s via control socket\n", addr)
 				return controlResponse{OK: true, Value: fmt.Sprintf("released proxy %s", addr)}
