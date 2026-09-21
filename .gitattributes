@@ -1,0 +1,4 @@
+# Golden files are compared byte for byte. Keep them LF on every checkout:
+# GitHub's Windows runners default to core.autocrlf, which rewrites text files
+# to CRLF and made every golden test fail there.
+*.golden text eol=lf

@@ -25,9 +25,16 @@ func assertGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("read golden (run with -update to create): %v", err)
 	}
-	if got != string(want) {
+	if !sameGolden(got, want) {
 		t.Fatalf("%s mismatch\n--- got ---\n%s\n--- want ---\n%s", name, got, want)
 	}
+}
+
+// sameGolden compares rendered output with a golden file. CRLF pairs in the
+// file are treated as LF: a Windows checkout with core.autocrlf rewrites the
+// file, and that is not a difference in what the program renders.
+func sameGolden(got string, want []byte) bool {
+	return got == strings.ReplaceAll(string(want), "\r\n", "\n")
 }
 
 func TestRenderLiveBlockFlowing(t *testing.T) {
@@ -195,4 +202,27 @@ func TestRenderProviderTable(t *testing.T) {
 		{Name: "urnetwork-d.service"},
 	}, liveOpts{})
 	assertGolden(t, "live_provider_table", out)
+}
+
+// Golden files are compared byte for byte, and a Windows checkout with
+// core.autocrlf (the default on GitHub's Windows runners) rewrites them with
+// CRLF while the program renders LF. The comparison must not care.
+func TestSameGoldenIgnoresLineEndingConversion(t *testing.T) {
+	const lf = "line one\nline two\n"
+	if !sameGolden(lf, []byte(lf)) {
+		t.Fatal("identical text must match")
+	}
+	if !sameGolden(lf, []byte("line one\r\nline two\r\n")) {
+		t.Fatal("a golden file checked out with CRLF must still match LF output")
+	}
+	if sameGolden(lf, []byte("line one\nline TWO\n")) {
+		t.Fatal("a real difference must still fail")
+	}
+	if sameGolden(lf, []byte("line one\nline two")) {
+		t.Fatal("a missing trailing newline is a real difference")
+	}
+	// A lone CR inside a line is content, not a line ending.
+	if sameGolden("a\rb\n", []byte("a\nb\n")) {
+		t.Fatal("only CRLF pairs are normalized")
+	}
 }
