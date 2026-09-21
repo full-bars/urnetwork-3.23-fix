@@ -1049,10 +1049,12 @@ func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
 	getpidFunc = func() int { return 1 }
 
 	var order []string
+	var gotEnv []string
 	done := make(chan struct{}, 1)
 	restoreStdioBeforeExecFunc = func() { order = append(order, "restore") }
 	execInPlaceFunc = func(exe string, args []string, env []string) error {
 		order = append(order, "exec")
+		gotEnv = env
 		done <- struct{}{}
 		return nil
 	}
@@ -1077,5 +1079,48 @@ func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
 	}
 	if fmt.Sprint(order) != fmt.Sprint([]string{"restore", "exec"}) {
 		t.Fatalf("order = %v, want stdio restored before exec", order)
+	}
+	hasSuccessor := false
+	hasHotSwap := false
+	for _, e := range gotEnv {
+		if e == EnvHotSwapExec+"=1" {
+			hasSuccessor = true
+		}
+		if e == EnvHotSwap+"=1" {
+			hasHotSwap = true
+		}
+	}
+	if !hasSuccessor {
+		t.Errorf("exec env missing successor marker %s", EnvHotSwapExec)
+	}
+	if hasHotSwap {
+		t.Errorf("exec env must not contain %s", EnvHotSwap)
+	}
+}
+
+// An aborted handoff must not leave a phantom "hotswap" audit entry: the
+// event is recorded only at each branch's commit point, after every abort
+// check (spawn, pre-flight, takeover) has passed.
+func TestHotSwapAbortedHandoffRecordsNoEntry(t *testing.T) {
+	origSpawn := spawnCandidateFunc
+	defer func() { spawnCandidateFunc = origSpawn }()
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return nil, fmt.Errorf("spawn failed")
+	}
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err == nil {
+		t.Fatal("expected handoff to abort on spawn failure")
+	}
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			t.Fatalf("aborted handoff recorded a hotswap entry: %+v", e)
+		}
 	}
 }

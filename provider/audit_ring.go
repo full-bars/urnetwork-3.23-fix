@@ -57,13 +57,23 @@ func initAuditRing() {
 	}
 
 	globalAuditRing = ring
+
+	// A fresh process must not persist immediately: its first
+	// recordAndPersist would write the ring snapshot from before a HotSwap
+	// parent's final flush, clobbering the entries the parent just
+	// persisted. Starting the 30s gate now leaves the parent's flush as
+	// the authoritative on-disk state until the candidate's takeover merge.
+	auditPersistMu.Lock()
+	lastAuditPersist = time.Now()
+	auditPersistMu.Unlock()
 }
 
 // recordProcessStart appends this process's startup to the audit ring so
 // `urnet-tools history` shows lifecycle events (an update landing, a
 // crash-restart), not just control-socket config changes. Called right
-// after initAuditRing; the caller passes the hot-swap-candidate flag
-// (local to cmdProvide) so a handoff successor is labelled as such.
+// after initAuditRing; the caller passes a flag that is true for a
+// HotSwap successor (candidate process, or a Docker in-place execve
+// successor via URNETWORK_HOTSWAP_EXEC) so it is labelled as such.
 func recordProcessStart(candidate bool) {
 	src := "boot"
 	if candidate {
@@ -77,6 +87,64 @@ func recordProcessStart(candidate bool) {
 		Source:    src,
 		OK:        true,
 	})
+}
+
+// mergeAuditRingFromDisk reloads audit.json and appends entries the live
+// ring does not already have. A HotSwap candidate calls this after the
+// takeover handshake completes: its own ring was loaded from disk at
+// spawn time, which precedes the parent's final flush, so entries the
+// parent recorded in its last moments (the "hotswap" event, the final
+// control-socket commands) exist only on disk until this merge pulls them
+// into the successor's live ring. The parent flushes before the takeover
+// message, so by the time this runs those entries are on disk.
+func mergeAuditRingFromDisk() {
+	if globalAuditRing == nil || globalAuditRing.path == "" {
+		return
+	}
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	ok, err := loadJSONWithRecovery(globalAuditRing.path, &saved)
+	if err != nil || !ok {
+		return
+	}
+	globalAuditRing.mu.Lock()
+	var added int
+	for _, e := range saved.Entries {
+		if globalAuditRing.hasLocked(e) {
+			continue
+		}
+		globalAuditRing.entries[globalAuditRing.head] = e
+		globalAuditRing.head = (globalAuditRing.head + 1) % len(globalAuditRing.entries)
+		if globalAuditRing.size < len(globalAuditRing.entries) {
+			globalAuditRing.size++
+		}
+		added++
+	}
+	globalAuditRing.mu.Unlock() // persist() takes r.mu itself; never call it under the lock
+	if added == 0 {
+		return
+	}
+	if err := globalAuditRing.persist(); err != nil {
+		tlog("[audit] merge persist failed: %v\n", err)
+	}
+}
+
+// hasLocked reports whether an identical entry (all six fields) is already
+// in the ring. Caller must hold r.mu.
+func (r *AuditRing) hasLocked(want CommandAudit) bool {
+	for i := 0; i < r.size; i++ {
+		var e CommandAudit
+		if r.size < len(r.entries) {
+			e = r.entries[i] // buffer not full: entries start at index 0
+		} else {
+			e = r.entries[(r.head+i)%len(r.entries)]
+		}
+		if e == want {
+			return true
+		}
+	}
+	return false
 }
 
 // Append adds an entry to the ring buffer (non-blocking, fast).
@@ -180,8 +248,13 @@ func (r *AuditRing) persist() error {
 
 // recordAndPersist appends an entry and persists periodically (not every
 // write — the 1000-entry ring means at most ~50KB, cheap to persist
-// every 30 seconds).
-var lastAuditPersist time.Time
+// every 30 seconds). The persist gate is mutex-guarded: recordAndPersist
+// runs from concurrent control-socket goroutines while forceAuditPersist
+// can fire from the hotswap drain.
+var (
+	auditPersistMu   sync.Mutex
+	lastAuditPersist time.Time
+)
 
 func recordAndPersist(entry CommandAudit) {
 	if globalAuditRing == nil {
@@ -190,20 +263,29 @@ func recordAndPersist(entry CommandAudit) {
 	globalAuditRing.Append(entry)
 
 	// Persist at most every 30 seconds (not every command)
-	if time.Since(lastAuditPersist) > 30*time.Second {
+	auditPersistMu.Lock()
+	due := time.Since(lastAuditPersist) > 30*time.Second
+	if due {
 		lastAuditPersist = time.Now()
-		if err := globalAuditRing.persist(); err != nil {
-			tlog("[audit] persist failed: %v\n", err)
-		}
+	}
+	auditPersistMu.Unlock()
+	if !due {
+		return
+	}
+	if err := globalAuditRing.persist(); err != nil {
+		tlog("[audit] persist failed: %v\n", err)
 	}
 }
 
-// forceAuditPersist persists immediately (called on shutdown).
+// forceAuditPersist persists immediately (called on shutdown and on the
+// hotswap parent exit paths).
 func forceAuditPersist() {
 	if globalAuditRing == nil {
 		return
 	}
+	auditPersistMu.Lock()
 	lastAuditPersist = time.Now()
+	auditPersistMu.Unlock()
 	if err := globalAuditRing.persist(); err != nil {
 		tlog("[audit] shutdown persist failed: %v\n", err)
 	}

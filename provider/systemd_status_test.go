@@ -115,6 +115,7 @@ func TestSystemdStatusLine(t *testing.T) {
 		{"49% live is critical", 100, 49, "critical: 49/100 proxies authenticated (49%), retrying"},
 		{"25% live is critical", 100, 25, "critical: 25/100 proxies authenticated (25%), retrying"},
 		{"10% live is critical", 100, 10, "critical: 10/100 proxies authenticated (10%), retrying"},
+		{"live exceeds configured clamps at 100", 2, 3, "active: 3/2 proxies authenticated (100%)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {

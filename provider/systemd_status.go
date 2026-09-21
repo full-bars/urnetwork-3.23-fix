@@ -132,6 +132,12 @@ func systemdStatusLine() string {
 		return fmt.Sprintf("critical: 0/%d proxies authenticated, retrying", total)
 	default:
 		pct := int(math.Round(float64(live) * 100 / float64(total)))
+		if pct > 100 {
+			// live > configured happens transiently when a reload shrinks
+			// the desired set; a >100% figure would be nonsense in
+			// systemctl status.
+			pct = 100
+		}
 		word := "critical"
 		switch {
 		case pct >= statusActiveBand:

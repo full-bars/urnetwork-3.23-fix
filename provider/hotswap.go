@@ -54,6 +54,10 @@ const (
 	// EnvHotSwap is set to "1" in candidate child processes to indicate hot-swap mode.
 	EnvHotSwap = "URNETWORK_HOTSWAP"
 
+	// EnvHotSwapExec survives the in-place execve env strip so a Docker
+	// successor still labels its start audit entry as a handoff.
+	EnvHotSwapExec = "URNETWORK_HOTSWAP_EXEC"
+
 	// HotSwapPreflightTimeout is the max duration the parent waits for the candidate's READY signal.
 	HotSwapPreflightTimeout = 20 * time.Second
 
@@ -253,8 +257,9 @@ func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session 
 
 		flushRetentionEvents()
 		// Parent exits via os.Exit here, which skips main()'s graceful
-		// shutdown persist: push unsaved audit entries (last <=30s) to disk
-		// so the candidate inherits them.
+		// shutdown persist: push any entries recorded during the drain
+		// window to disk. The successor merges audit.json after takeover,
+		// so this is what carries the parent's final entries forward.
 		forceAuditPersist()
 		lifetimeStore.Flush()
 		isHotSwapDraining.Store(false)
@@ -561,6 +566,23 @@ func runHotSwapChildAck(ipcConn io.Writer) error {
 
 // runHotSwapParentHandoff coordinates spawning the candidate, validating its readiness,
 // yielding the coordinator session, and entering graceful stream drain (or in-place execve for PID 1).
+// recordHotSwapAndFlush records the handoff in the audit ring and flushes
+// immediately. The flush must happen before the takeover message is sent:
+// the successor merges audit.json after takeover, and execve replaces the
+// parent's in-memory ring entirely, so this is the write that carries the
+// handoff event to the next process.
+func recordHotSwapAndFlush() {
+	recordAndPersist(CommandAudit{
+		Timestamp: time.Now(),
+		Cmd:       "hotswap",
+		Key:       "version",
+		Value:     RequireVersion(),
+		Source:    "trigger",
+		OK:        true,
+	})
+	forceAuditPersist()
+}
+
 func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opts docopt.Opts) error {
 	if !hotSwapLock.TryLock() {
 		tlog("⚠️ [hotswap] Hot-swap already in progress; ignoring duplicate trigger\n")
@@ -611,17 +633,6 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		}
 		childPID = res.msg.PID
 		tlog("⚡ [hotswap] Candidate PID %d reported READY (version=%s)\n", childPID, res.msg.Version)
-		// Candidate passed pre-flight and the handoff will proceed: record
-		// it before the swap so `urnet-tools history` shows the update
-		// event on this (soon-to-be-retired) process.
-		recordAndPersist(CommandAudit{
-			Timestamp: time.Now(),
-			Cmd:       "hotswap",
-			Key:       "version",
-			Value:     RequireVersion(),
-			Source:    "trigger",
-			OK:        true,
-		})
 	case <-time.After(HotSwapPreflightTimeout):
 		tlog("❌ [hotswap] Candidate timed out during pre-flight (>%s). Aborting handoff; live provider retained.\n", HotSwapPreflightTimeout)
 		session.Kill()
@@ -641,6 +652,10 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 			return err
 		}
+		// Takeover accepted: the handoff is committed, record it. A failed
+		// or aborted takeover above leaves no audit trail of a swap that
+		// never happened.
+		recordHotSwapAndFlush()
 		yieldCoordinatorSession()
 		handoffDrainParent(ctx, cancel, session, parentPID)
 		return nil
@@ -675,11 +690,12 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		}
 		session.Close()
 
-		// 2. Yield live coordinator session and flush metrics immediately before execve
+		// 2. Commit the handoff: record+flush before execve — execve
+		// replaces the process image, so the in-memory audit ring vanishes
+		// with it, and the new image's start label reads
+		// URNETWORK_HOTSWAP_EXEC to mark the successor as such.
+		recordHotSwapAndFlush()
 		yieldCoordinatorSession()
-		// execve replaces the process image, so the in-memory audit ring
-		// disappears with it: persist unsaved entries before the swap.
-		forceAuditPersist()
 		flushRetentionEvents()
 		lifetimeStore.Flush()
 
@@ -692,6 +708,10 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 				cleanEnv = append(cleanEnv, e)
 			}
 		}
+		// The execve'd successor is not a candidate (no IPC descriptor), but it
+		// IS a handoff successor: keep a marker so its audited start is
+		// labelled hotswap, not boot.
+		cleanEnv = append(cleanEnv, EnvHotSwapExec+"=1")
 
 		// The canary was spawned with sanitizeCandidateArgs, and the in-place
 		// image must be too. A container first started as
