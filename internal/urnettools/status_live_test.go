@@ -66,10 +66,10 @@ func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, statusStateDirLabel()) || !strings.Contains(out, "Live (provider v3.23.0-fix.32.1)") {
+	if !strings.Contains(out, "user:") || !strings.Contains(out, "Live (provider v3.23.0-fix.32.1)") {
 		t.Fatalf("want classic output then live block:\n%s", out)
 	}
-	if strings.Index(out, statusStateDirLabel()) > strings.Index(out, "Live (provider") {
+	if strings.Index(out, "user:") > strings.Index(out, "Live (provider") {
 		t.Fatalf("live block must come after the existing output:\n%s", out)
 	}
 }
@@ -82,7 +82,7 @@ func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if strings.Contains(out, "Live (provider") || !strings.Contains(out, statusStateDirLabel()) {
+	if strings.Contains(out, "Live (provider") || !strings.Contains(out, "user:") {
 		t.Fatalf("existing output must stand alone:\n%s", out)
 	}
 }
@@ -104,7 +104,7 @@ func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
 	if got["version"] != want["version"] || got["state"] != "flowing" {
 		t.Fatalf("got %v", got)
 	}
-	if strings.Contains(out, statusStateDirLabel()) {
+	if strings.Contains(out, "user:") {
 		t.Fatalf("--json must not print the classic output:\n%s", out)
 	}
 }
@@ -138,7 +138,7 @@ func TestStatusManyProvidersNoTargetPrintsSummary(t *testing.T) {
 			t.Errorf("summary missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, statusStateDirLabel()) {
+	if strings.Contains(out, "user:") {
 		t.Errorf("summary must not print the detail view:\n%s", out)
 	}
 }

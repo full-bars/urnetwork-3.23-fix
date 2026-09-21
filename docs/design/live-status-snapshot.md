@@ -1,7 +1,7 @@
 # Live status snapshot (design proposal)
 
 > [!NOTE]
-> **Status: proposal.** Nothing here is implemented. Numbers marked "initial default" are starting points to tune against real fleet data, not measured values. Companion proposal: [`urnet-tools top`](urnet-tools-top.md), which builds on this snapshot.
+> **Status: Implemented.** The typed snapshot contract, provider collector, `urnet-tools status` live block/`--json`, Prometheus metrics, alert rules, and Grafana dashboard panels are implemented. Initial default tuning values remain open for ongoing refinement against fleet telemetry. Companion feature: [`urnet-tools top`](urnet-tools-top.md).
 
 ## Problem
 

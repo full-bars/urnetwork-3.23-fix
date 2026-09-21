@@ -36,11 +36,12 @@ func Spark(values []uint64, width int, ascii bool) string {
 			if hi <= lo {
 				hi = lo + 1
 			}
-			var sum uint64
+			var avg float64
+			count := float64(hi - lo)
 			for _, v := range values[lo:hi] {
-				sum += v
+				avg += float64(v) / count
 			}
-			cells[i] = sum / uint64(hi-lo)
+			cells[i] = uint64(avg)
 		}
 	}
 	var max uint64
@@ -54,7 +55,13 @@ func Spark(values []uint64, width int, ascii bool) string {
 	for _, v := range cells {
 		idx := 0
 		if max > 0 {
-			idx = int(v * uint64(len(glyphs)-1) / max)
+			if v > max {
+				v = max
+			}
+			idx = int((float64(v) / float64(max)) * float64(len(glyphs)-1))
+			if idx >= len(glyphs) {
+				idx = len(glyphs) - 1
+			}
 		}
 		b.WriteRune(glyphs[idx])
 	}

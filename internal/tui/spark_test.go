@@ -19,6 +19,7 @@ func TestSparkWidthAndScaling(t *testing.T) {
 		{"ramp uses the full range", []uint64{0, 1, 2, 3, 4, 5, 6, 7}, 8, false, "▁▂▃▄▅▆▇█"},
 		{"fewer values right-align", []uint64{0, 7}, 4, false, "  ▁█"},
 		{"more values average into buckets", []uint64{0, 0, 8, 8}, 2, false, "▁█"},
+		{"large values do not overflow", []uint64{0, ^uint64(0)}, 2, false, "▁█"},
 		{"ascii fallback", []uint64{0, 7}, 2, true, "_#"},
 	}
 	for _, c := range cases {
