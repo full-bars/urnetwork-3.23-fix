@@ -31,7 +31,10 @@ urnetwork-3.23-fix/
 │   ├── dup_linux_generic.go      # Generic Linux fd dup shim
 │   ├── hotswap_windows.go        # Windows HotSwap via named pipes
 │   ├── hotswap_unix.go           # Linux HotSwap via Unix sockets
+│   ├── hotswap.go                # HotSwap handoff coordination (spawn, takeover, drain)
 │   ├── control_socket.go         # Control socket server (hotswap, shutdown, status commands)
+│   ├── audit_ring.go             # 1000-entry command audit ring, persisted to audit.json
+│   ├── systemd_status.go         # Proxy-liveness counters and sliding STATUS= severity
 │   ├── control_state.go          # Persistent provider state management
 │   ├── restrict_socket_windows.go # Windows DACL socket permission hardening
 │   ├── metrics_listen.go         # Prometheus /metrics HTTP listener

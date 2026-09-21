@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.0
+**Current Version**: v3.23.0-fix.32.2
 
 ---
 
@@ -3457,3 +3457,22 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Docker shakedown checks aligned with the current release state (v32.0, PR #644)**: W5 reads proxy state from `proxy.state` (with `proxy_url.json` fallback) and parses the proxies dictionary; W6 eco/lowmem checks read `/dev/shm` ramlogs since those profiles redirect stdout to memory; Y5 (compose down/up on a named volume) handles ramlog client_id capture with adaptive deadline polling and one retry on initial timeout.
 
 **Status**: ✅ Ships in v3.23.0-fix.32.0.
+
+---
+
+## 167. v32.1: HotSwap Usability, Ghost Hardening Round 2, Credential Rotation (PR #653, #655, #657, #659, #661)
+
+- **HotSwap unit migration fixed (v32.1, PR #659)**: the installer writes a unit with no `Type=` line, and `update` previously rewrote only an explicit `Type=simple`. A unit with no `Type=` now receives `Type=notify` and `NotifyAccess=all`, so installer-created nodes reach a hotswap. HotSwap also declines before SIGUSR2 when the running provider has no notify socket (`needs_restart` label), a candidate retries the pprof diagnostics bind until the parent releases the port, and `urnet-tools`/`urnetwork` are linked into `~/.local/bin` and `/usr/local/bin` with PATH blocks in bashrc, profile, and zshrc (the installer and `urnet-tools update` both repair old installs).
+- **HotSwap wording corrected (v32.1)**: hotswap replaces the 2 to 3 second window with no provider process, but proxy connections still ramp back over about 30 s. Docs and release notes now say exactly that; see `docs/HotSwap.md`.
+- **Container-discovery ghost hardening, round 2 (v32.1, PR #653)**: containerized providers no longer appear as host providers when the mount namespace is unreadable (cgroup classification fallback); provider state is read and written through descriptor-pinned handles that walk from the kernel-attributed owner home without following symlinks; state-dir arguments are validated against the owner captured in the same process scan; `docker cp` output is decoded from the tar stream and size-capped; Docker commands have deadlines and the exec fallback rejects option injection; session load/save, the pending-overrides lock, self-heal, hotswap counters, the direct toggle, the reload trigger, and the unit backup/replace paths no longer re-resolve a user-controlled pathname as root; a recovered provider binary is chmod/chown'd on the open file descriptor.
+- **Proxy credential rotation on re-paste (v32.1, PR #655)**: pasting an address with different credentials rotates the running proxy instead of silently keeping the old credentials, and every duplicate entry for an address is scanned before an add is skipped.
+- **Message-pool leak attribution (v32.1, PR #655)**: per-call-site leak tags are on by default, name the acquiring call site, and are race-detector safe.
+- **Security blocklist sync (v32.1, PR #657)**: refreshed the content filtering blocklist.
+- **Design proposal (v32.1, PR #661)**: `docs/design/hotswap-make-before-break.md` plans a per-client make-before-break handover. Proposal only; no code.
+
+## 168. v32.2: Audit Ring Survives Hotswap, Lifecycle Audit Trail, Sliding Status (PR #668)
+
+- **Audit ring persists across hotswap (v32.2, PR #668)**: the old process flushes its audit ring at the handoff commit point, before the takeover message, on every handover path (systemd, Windows, Docker). The successor merges `audit.json` into its live ring after takeover with timezone-safe deduplication (timestamps compared semantically, not by `time.Time` pointer equality). The parent quiesces its control socket at the commit point, so a command accepted after the flush falls back to the pending-overrides queue instead of vanishing in the parent's memory. The merge persist is serialized with the periodic persist gate.
+- **Lifecycle events audited (v32.2, PR #668)**: `urnet-tools history` now records process start (version + boot/hotswap source), the hotswap handoff, and control-socket shutdown, in addition to `set`/`clear`. After an update the sequence reads `hotswap` on the retired process, then `start` with the new version.
+- **Sliding severity scale for provider status (v32.2, PR #668)**: `active` >= 90%, `partial` 70-89%, `degraded` 50-69%, `critical` < 50% (including zero), exact percentage always rendered and clamped at 100. Healthy nodes with a small dead-tail of proxies no longer read as `partial` forever.
+- **Start entries persist immediately on normal boots (v32.2, PR #668)**: only a spawned hotswap successor defers its start entry until the takeover merge; the Docker execve successor (whose ring loads after the parent's pre-exec flush) and normal boots write to disk at once.
