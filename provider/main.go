@@ -2902,6 +2902,10 @@ func provide(opts docopt.Opts) {
 		if err != nil {
 			tlog("[control] failed to start control socket, urnet-tools will fall back to file-based overrides: %s\n", err)
 		} else {
+			// The hotswap commit point quiesces this socket so no command
+			// accepted after the audit flush can be lost in the parent's
+			// memory mid-handoff.
+			controlSocketQuiesceForHotSwap = cleanupControlSocket
 			defer func() {
 				if cleanupControlSocket != nil {
 					cleanupControlSocket()
@@ -3550,6 +3554,7 @@ func provide(opts docopt.Opts) {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
 				} else {
 					cleanupControlSocket = cleanup
+					controlSocketQuiesceForHotSwap = cleanupControlSocket
 					unregSocketCloser = RegisterCoordinatorCloser(func() {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()

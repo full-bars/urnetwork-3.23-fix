@@ -282,6 +282,41 @@ func TestMergeAuditRingFromDisk(t *testing.T) {
 	}
 }
 
+// Dedupe must survive a JSON round-trip with a non-UTC timezone: == on
+// time.Time compares the location POINTER, and every fresh parse rebuilds
+// one, so two entries for the same instant would never dedupe. This fails
+// with the old e == want comparison and passes with Timestamp.Equal.
+func TestMergeAuditRingFromDiskDedupesAcrossTimezoneRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	ts := time.Date(2026, 9, 21, 3, 24, 44, 0, time.FixedZone("PST", -7*3600))
+
+	// Parent: writes the entry with an in-memory location, flushes to disk.
+	parent := &AuditRing{path: path}
+	globalAuditRing = parent
+	lastAuditPersist = time.Time{}
+	recordAndPersist(CommandAudit{Timestamp: ts, Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	forceAuditPersist()
+
+	// Candidate: replayed the streamed-ring copy it loaded at spawn (same
+	// instant, but its time.Time carries the in-memory location pointer,
+	// which differs from the freshly-parsed location the merge reloads).
+	cand := &AuditRing{path: path}
+	globalAuditRing = cand
+	cand.Append(CommandAudit{Timestamp: ts, Cmd: "set", Key: "metrics", Value: "on", OK: true})
+
+	mergeAuditRingFromDisk()
+
+	entries, _ := cand.Entries(10, "")
+	if len(entries) != 1 {
+		t.Fatalf("duplicate not deduped across timezone round-trip: %d entries %+v", len(entries), entries)
+	}
+}
+
 // Merge on a missing/corrupt file must be a silent no-op, not a crash.
 func TestMergeAuditRingFromDiskNoFile(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.json")
@@ -341,6 +376,13 @@ func TestRecordHotSwapAndFlushWritesImmediately(t *testing.T) {
 	defer func() { lastAuditPersist = prevPersist }()
 	lastAuditPersist = time.Now() // gate closed: only forceAuditPersist can write
 
+	// The commit point must quiesce the control socket BEFORE the flush,
+	// so no command accepted after the flush can be lost in the parent's
+	// memory mid-handoff.
+	quiesced := false
+	controlSocketQuiesceForHotSwap = func() { quiesced = true }
+	defer func() { controlSocketQuiesceForHotSwap = nil }()
+
 	recordHotSwapAndFlush()
 
 	var saved struct {
@@ -352,6 +394,9 @@ func TestRecordHotSwapAndFlushWritesImmediately(t *testing.T) {
 	}
 	if len(saved.Entries) != 1 || saved.Entries[0].Cmd != "hotswap" {
 		t.Fatalf("expected exactly the hotswap entry on disk, got %+v", saved.Entries)
+	}
+	if !quiesced {
+		t.Error("recordHotSwapAndFlush did not quiesce the control socket before the flush")
 	}
 }
 

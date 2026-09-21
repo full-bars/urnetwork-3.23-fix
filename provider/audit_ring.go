@@ -129,13 +129,22 @@ func mergeAuditRingFromDisk() {
 	if added == 0 {
 		return
 	}
-	if err := globalAuditRing.persist(); err != nil {
+	// Serialize the merge persist with recordAndPersist/forceAuditPersist:
+	// two concurrent persist() writers can finish out of order and leave a
+	// stale snapshot on disk.
+	auditPersistMu.Lock()
+	err = globalAuditRing.persist()
+	auditPersistMu.Unlock()
+	if err != nil {
 		tlog("[audit] merge persist failed: %v\n", err)
 	}
 }
 
-// hasLocked reports whether an identical entry (all six fields) is already
-// in the ring. Caller must hold r.mu.
+// hasLocked reports whether an equivalent entry is already in the ring.
+// Caller must hold r.mu. Timestamps are compared with time.Time.Equal, NOT
+// ==: entries loaded from disk carry freshly-parsed fixed-offset locations,
+// and == compares the location pointer, so two entries for the same instant
+// would never dedupe after a JSON round-trip.
 func (r *AuditRing) hasLocked(want CommandAudit) bool {
 	for i := 0; i < r.size; i++ {
 		var e CommandAudit
@@ -144,7 +153,9 @@ func (r *AuditRing) hasLocked(want CommandAudit) bool {
 		} else {
 			e = r.entries[(r.head+i)%len(r.entries)]
 		}
-		if e == want {
+		if e.Cmd == want.Cmd && e.Key == want.Key && e.Value == want.Value &&
+			e.Source == want.Source && e.OK == want.OK && e.Error == want.Error &&
+			e.Timestamp.Equal(want.Timestamp) {
 			return true
 		}
 	}
