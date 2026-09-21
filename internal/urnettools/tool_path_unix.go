@@ -11,8 +11,18 @@ import (
 	"time"
 )
 
-// toolLinkNames are the binaries linked next to each other in the install dir.
-var toolLinkNames = []string{"urnet-tools", "urnetwork"}
+// toolLink is one name the tools answer to and the binary in the install dir
+// that name points at.
+type toolLink struct{ name, target string }
+
+// toolLinks are the names linked from PATH directories into the install dir.
+// urtop is not a binary of its own: it is a link to urnet-tools, which reads
+// the name it was started under and behaves as `top` (see cmd/urnet-tools).
+var toolLinks = []toolLink{
+	{"urnet-tools", "urnet-tools"},
+	{"urnetwork", "urnetwork"},
+	{"urtop", "urnet-tools"},
+}
 
 // linkToolsIntoDir symlinks each tool that exists in srcDir into dir, creating
 // dir. A real file that is not a symlink is left alone (it is not ours); a
@@ -25,8 +35,9 @@ func linkToolsIntoDir(dir, srcDir string) (changed []string, err error) {
 	if err := os.MkdirAll(dir, 0o755); err != nil {
 		return nil, err
 	}
-	for _, name := range toolLinkNames {
-		src := filepath.Join(srcDir, name)
+	for _, l := range toolLinks {
+		name := l.name
+		src := filepath.Join(srcDir, l.target)
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}
@@ -61,8 +72,9 @@ func sudoLinkTools(dir, srcDir string) []string {
 		return nil
 	}
 	var changed []string
-	for _, name := range toolLinkNames {
-		src := filepath.Join(srcDir, name)
+	for _, l := range toolLinks {
+		name := l.name
+		src := filepath.Join(srcDir, l.target)
 		if _, err := os.Stat(src); err != nil {
 			continue
 		}

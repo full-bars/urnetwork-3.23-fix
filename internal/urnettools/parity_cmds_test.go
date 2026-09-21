@@ -14,7 +14,7 @@ func TestDockerDirectUsageCommandBuilders(t *testing.T) {
 	for _, c := range root.Commands() {
 		cmds[c.Name()] = true
 	}
-	for _, expected := range []string{"direct", "usage", "proxy"} {
+	for _, expected := range []string{"direct", "usage", "proxy", "top"} {
 		if !cmds[expected] {
 			t.Errorf("buildDockerRootCmd missing %q command", expected)
 		}

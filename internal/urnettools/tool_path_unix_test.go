@@ -22,12 +22,14 @@ func mkInstall(t *testing.T) string {
 func TestLinkToolsIntoDirCreatesAndIsIdempotent(t *testing.T) {
 	src, dir := mkInstall(t), filepath.Join(t.TempDir(), "bin")
 	changed, err := linkToolsIntoDir(dir, src)
-	if err != nil || len(changed) != 2 {
+	if err != nil || len(changed) != 3 {
 		t.Fatalf("first run: changed=%v err=%v", changed, err)
 	}
-	for _, n := range []string{"urnet-tools", "urnetwork"} {
-		if got, _ := os.Readlink(filepath.Join(dir, n)); got != filepath.Join(src, n) {
-			t.Fatalf("%s -> %q", n, got)
+	// urtop is not a binary of its own: it is a name urnet-tools answers to, so
+	// it points at the urnet-tools binary.
+	for link, target := range map[string]string{"urnet-tools": "urnet-tools", "urnetwork": "urnetwork", "urtop": "urnet-tools"} {
+		if got, _ := os.Readlink(filepath.Join(dir, link)); got != filepath.Join(src, target) {
+			t.Fatalf("%s -> %q, want %q", link, got, filepath.Join(src, target))
 		}
 	}
 	if changed, err := linkToolsIntoDir(dir, src); err != nil || len(changed) != 0 {
@@ -53,8 +55,45 @@ func TestLinkToolsIntoDirNeverClobbersAndRepointsStale(t *testing.T) {
 	if got, _ := os.Readlink(filepath.Join(dir, "urnetwork")); got != filepath.Join(src, "urnetwork") {
 		t.Fatalf("stale link not repointed: %q", got)
 	}
-	if len(changed) != 1 || changed[0] != "urnetwork" {
-		t.Fatalf("changed = %v, want only urnetwork", changed)
+	if len(changed) != 2 || changed[0] != "urnetwork" || changed[1] != "urtop" {
+		t.Fatalf("changed = %v, want urnetwork (repointed) and urtop (new); urnet-tools is not ours", changed)
+	}
+}
+
+// An install that predates urtop has the two old links and no third. Running
+// the link step again (which `urnet-tools update` does) adds only urtop, and a
+// stale or foreign urtop is treated like any other link.
+func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
+	src, dir := mkInstall(t), t.TempDir()
+	for _, n := range []string{"urnet-tools", "urnetwork"} {
+		if err := os.Symlink(filepath.Join(src, n), filepath.Join(dir, n)); err != nil {
+			t.Skipf("symlinks unsupported: %v", err)
+		}
+	}
+	changed, err := linkToolsIntoDir(dir, src)
+	if err != nil || len(changed) != 1 || changed[0] != "urtop" {
+		t.Fatalf("an older install should gain only urtop: changed=%v err=%v", changed, err)
+	}
+
+	// A urtop left pointing at an old install path is repointed at urnet-tools.
+	if err := os.Remove(filepath.Join(dir, "urtop")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("/nonexistent/urnet-tools", filepath.Join(dir, "urtop")); err != nil {
+		t.Fatal(err)
+	}
+	if changed, err := linkToolsIntoDir(dir, src); err != nil || len(changed) != 1 || changed[0] != "urtop" {
+		t.Fatalf("stale urtop should be repointed: changed=%v err=%v", changed, err)
+	}
+
+	// Someone else's real urtop is never overwritten.
+	os.Remove(filepath.Join(dir, "urtop"))
+	if err := os.WriteFile(filepath.Join(dir, "urtop"), []byte("theirs"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	linkToolsIntoDir(dir, src)
+	if b, _ := os.ReadFile(filepath.Join(dir, "urtop")); string(b) != "theirs" {
+		t.Fatalf("a real urtop file was overwritten: %q", b)
 	}
 }
 
