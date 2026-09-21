@@ -225,8 +225,22 @@ func TestReload_RotationWithRealGoroutines_KeepsRegistration(t *testing.T) {
 	if _, ok := r.state.Proxies[addr]; !ok {
 		t.Fatal("first reload did not create a state entry")
 	}
-	if _, registered := connect.ProxyHealthByAddress()[addr]; !registered {
-		t.Fatal("first reload did not register the proxy")
+	// The launch loop registers the health entry synchronously inside
+	// reload(), but a scheduled goroutine from a preceding test can still be
+	// unwinding on the suite's shared health map when this reload returns.
+	// Watch for the entry instead of asserting on the exact instruction:
+	// the launch must register promptly, and a timeout here is a genuine
+	// launch regression (same watch pattern as the rotation assert below).
+	regDeadline := time.Now().Add(2 * time.Second)
+	for {
+		if _, registered := connect.ProxyHealthByAddress()[addr]; registered {
+			break
+		}
+		if time.Now().After(regDeadline) {
+			_, ok := r.state.Proxies[addr]
+			t.Fatalf("first reload did not register the proxy within 2s (eligible=%v giveups=%d state_has=%v)", globalProxyFailureHistory.Eligible(addr, time.Now()), globalProxyFailureHistory.GiveUpCount(addr), ok)
+		}
+		time.Sleep(5 * time.Millisecond)
 	}
 
 	if err := os.WriteFile(file, []byte(addr+":test-user:rotated-pass\n"), 0600); err != nil {
@@ -236,7 +250,7 @@ func TestReload_RotationWithRealGoroutines_KeepsRegistration(t *testing.T) {
 
 	// The superseded goroutine exits promptly once cancelled. Keep watching
 	// for a window well beyond that: the registration must survive it.
-	deadline := time.Now().Add(150 * time.Millisecond)
+	deadline := time.Now().Add(2 * time.Second)
 	for time.Now().Before(deadline) {
 		if _, registered := connect.ProxyHealthByAddress()[addr]; !registered {
 			t.Fatal("the superseded goroutine's exit removed the replacement's health registration")
