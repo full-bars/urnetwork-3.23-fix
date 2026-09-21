@@ -4,6 +4,20 @@ All notable changes to this project are documented here.
 
 ---
 
+## [v3.23.0-fix.32.2]
+
+### Added
+
+- **Audit ring now records lifecycle events** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): `urnet-tools history` previously showed only `set` and `clear` config changes. It now also records process start (with the version), the hotswap handoff, and control-socket shutdown. After an update the sequence reads `hotswap` on the retired process, then `start` with the new version on the successor.
+- **Audit entries survive hotswap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): the parent flushes the audit ring at the handoff commit point, before the takeover message, on every handover path (systemd, Windows, Docker). The successor merges the ring from disk after takeover, with timezone-safe deduplication, so the last control-socket commands before an update are not lost. The parent quiesces its control socket at the same commit point, so a command accepted after the flush cannot vanish in the parent's memory; it falls back to the pending-overrides queue, which the successor merges.
+
+### Changed
+
+- **Provider status uses a sliding severity scale** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): `active` at 90% or more of configured proxies live, `partial` at 70-89%, `degraded` at 50-69%, `critical` below 50% (including zero), with the exact percentage always rendered and clamped at 100. A healthy node with a small dead tail of proxies no longer reads as `partial` forever.
+- **Start entries persist immediately on normal boots** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): only a hotswap successor defers its start entry until the takeover merge; a regular boot keeps writing to disk at once.
+
+---
+
 ## [v3.23.0-fix.32.1]
 
 ### Added

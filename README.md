@@ -201,7 +201,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
 | `urnet-tools hotswap` | Swap to an updated binary without a gap where no process is running (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Proxy connections still ramp back over about 30 s. Procedure and measured costs: [docs/HotSwap.md](docs/HotSwap.md) |
 | `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |
-| `urnet-tools history [limit]` | Read the provider's command audit trail |
+| `urnet-tools history [limit]` | Read the provider's command audit trail, now including lifecycle events (start, hotswap, shutdown) alongside `set`/`clear` changes |
 | `urnet-tools dashboard` | Terminal status panel: state, active settings, proxy sources, restart warnings |
 | `urnet-tools metrics on/off` | Toggle the Prometheus `/metrics` endpoint live, no restart |
 | `urnet-tools profile [name]` | Show or set the memory and GC tuning profile |
