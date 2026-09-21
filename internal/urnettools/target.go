@@ -14,11 +14,14 @@ type Target struct {
 	Network   string // JWT network_name, e.g. "tacogonzalez3000" (NOT unique per box — see matchKey)
 	NetworkID string // JWT network_id — the TRUE unique account identity
 	StateDir  string // explicit state directory path
+	PID       int    // running process pid — the most specific selector (disambiguates identical user/net/state-dir rows)
 }
 
 // String renders the target in a human-readable form for confirm prompts.
 func (t Target) String() string {
 	switch {
+	case t.PID > 0:
+		return fmt.Sprintf("pid %d", t.PID)
 	case t.Unit != "":
 		return fmt.Sprintf("unit %s", t.Unit)
 	case t.User != "":
@@ -36,6 +39,9 @@ func (t Target) String() string {
 
 // matchProvider reports whether p satisfies the target.
 func (t Target) matchProvider(p Provider) bool {
+	if t.PID > 0 {
+		return p.PID == t.PID
+	}
 	if t.Unit != "" {
 		return p.Unit == t.Unit
 	}
@@ -108,7 +114,7 @@ func defaultProvider(providers []Provider) (Provider, error) {
 //     providers exist the operation is REFUSED with the inventory listed —
 //     the operator must say which one (the incident-class guard).
 func selectTarget(providers []Provider, t Target) (Provider, error) {
-	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
+	if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" || t.PID > 0 {
 		var matches []Provider
 		for _, p := range providers {
 			if t.matchProvider(p) {

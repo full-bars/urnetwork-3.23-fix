@@ -307,8 +307,8 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 			*field = value
 			return nil
 		}
-		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" {
-			return fmt.Errorf("%s=%s conflicts with already-set target selector; specify exactly one of --unit/--user/--network/--network-id/--state-dir", flag, value)
+		if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" || t.PID > 0 {
+			return fmt.Errorf("%s=%s conflicts with already-set target selector; specify exactly one of --unit/--user/--network/--network-id/--state-dir/--pid", flag, value)
 		}
 		*field = value
 		return nil
@@ -323,7 +323,7 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 	expanded := make([]string, 0, len(args))
 	for _, a := range args {
 		matched := false
-		for _, f := range []string{"--unit", "--user", "--network", "--network-id", "--state-dir"} {
+		for _, f := range []string{"--unit", "--user", "--network", "--network-id", "--state-dir", "--pid"} {
 			if v, ok := strings.CutPrefix(a, f+"="); ok {
 				if v == "" {
 					return t, nil, fmt.Errorf("%s requires a value", f)
@@ -379,6 +379,19 @@ func parseTargetFlagsInner(args []string, strict bool) (Target, []string, error)
 			if err := setField("--state-dir", args[i+1], &t.StateDir); err != nil {
 				return t, nil, err
 			}
+			i++
+		case "--pid":
+			if i+1 >= len(args) {
+				return t, nil, fmt.Errorf("--pid requires a value")
+			}
+			pid, err := strconv.Atoi(args[i+1])
+			if err != nil || pid <= 0 {
+				return t, nil, fmt.Errorf("--pid requires a positive integer (got %q)", args[i+1])
+			}
+			if t.Unit != "" || t.User != "" || t.Network != "" || t.NetworkID != "" || t.StateDir != "" || t.PID > 0 {
+				return t, nil, fmt.Errorf("--pid=%d conflicts with already-set target selector; specify exactly one of --unit/--user/--network/--network-id/--state-dir/--pid", pid)
+			}
+			t.PID = pid
 			i++
 		default:
 			// Reject unknown flags instead of silently dropping them — a
@@ -472,7 +485,52 @@ func cmdProviders(args []string) error {
 		fmt.Fprintf(w, "%s	%s	%s	%s	%s	%s	%s	%s\n",
 			pid, p.User, p.Unit, network, netID, p.StateDir, p.Binary, ver)
 	}
-	return w.Flush()
+	if err := w.Flush(); err != nil {
+		return err
+	}
+	for _, n := range providerOperationalNotes(providers) {
+		fmt.Println(n)
+	}
+	return nil
+}
+
+// providerOperationalNotes returns human-readable warnings for running
+// providers whose deployment makes them hard to operate: no systemd unit
+// (manual/disowned launch), output discarded to /dev/null (no log stream
+// exists anywhere), or an unreachable control socket (possibly not really a
+// provider). The notes surface the difference between "a provider I can
+// fully manage" and "a process that merely looks like one".
+func providerOperationalNotes(providers []Provider) []string {
+	var notes []string
+	for _, p := range providers {
+		if !p.Running {
+			continue
+		}
+		if p.Unit == "" {
+			notes = append(notes, fmt.Sprintf("* %s (pid %d) runs outside systemd — stop/logs use process signals; manage it under a unit for full lifecycle control", providerLabel(p), p.PID))
+			if stdoutDiscarded(p.PID) {
+				notes = append(notes, fmt.Sprintf("* %s discards its output (/dev/null) — there is no log stream to show; restart it under a unit or with a RAMLOGS profile to capture logs", providerLabel(p)))
+			}
+		}
+		if !controlSocketReachable(p) {
+			notes = append(notes, fmt.Sprintf("* %s control socket unreachable — the process may not be a provider, or it is still starting up", providerLabel(p)))
+		}
+	}
+	return notes
+}
+
+// stdoutDiscarded reports whether a running process's stdout points at
+// /dev/null (the classic `&>/dev/null & disown` launch has no log stream at
+// all, so operators should be told rather than left staring at journalctl).
+func stdoutDiscarded(pid int) bool {
+	if pid <= 0 {
+		return false
+	}
+	dest, err := os.Readlink(fmt.Sprintf("/proc/%d/fd/1", pid))
+	if err != nil {
+		return false
+	}
+	return dest == "/dev/null" || strings.HasPrefix(dest, "/dev/null ")
 }
 
 // shortID renders a UUID-ish id as its first 8 chars for table display.
