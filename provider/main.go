@@ -5147,6 +5147,13 @@ func proxyAddCollectAddresses(opts docopt.Opts) []string {
 // to proxyAddSource — URL sources are additive and work alongside a file
 // source.
 func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
+	release, err := acquireProxyLockWithRetry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy add: could not acquire proxy lock: %v\n", err)
+		return
+	}
+	defer release()
+
 	allKeyAddress := proxyAddCollectAddresses(opts)
 
 	// Read existing file content, preserving comments/blank lines, and track
@@ -5154,13 +5161,19 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	existing := map[string]bool{}
 	var out []string
 	if b, err := os.ReadFile(sourcePath); err == nil {
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
+		s := strings.TrimSuffix(string(b), "\n")
+		s = strings.TrimSuffix(s, "\r")
+		if len(s) > 0 {
+			for _, line := range strings.Split(s, "\n") {
+				line = strings.TrimSuffix(line, "\r")
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					out = append(out, line)
+					continue
+				}
+				existing[trimmed] = true
+				out = append(out, line)
 			}
-			existing[line] = true
-			out = append(out, line)
 		}
 	} else if !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "proxy add: could not read %s: %v\n", sourcePath, err)
@@ -5174,13 +5187,14 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 		if i := strings.Index(keyAddress, "@"); 0 <= i {
 			proxyAddress = keyAddress[i+1:]
 		}
-		if existing[proxyAddress] {
-			fmt.Printf("server %s already present in %s\n", proxyAddress, sourcePath)
+		trimmed := strings.TrimSpace(proxyAddress)
+		if existing[trimmed] {
+			fmt.Printf("server %s already present in %s\n", trimmed, sourcePath)
 			continue
 		}
-		existing[proxyAddress] = true
-		out = append(out, proxyAddress)
-		address, user, password := parseProxyAddress(proxyAddress)
+		existing[trimmed] = true
+		out = append(out, trimmed)
+		address, user, password := parseProxyAddress(trimmed)
 		fmt.Printf("added server %s (%s/%s)\n", address, obfuscateUser(user), obfuscatePassword(password))
 		added++
 	}
@@ -5200,10 +5214,11 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	// Apply immediately without restarting: file-backed reloads re-read the
 	// source file, so a reload trigger is all that's needed (paste does the
 	// same).
-	if reloadPath, err := proxyReloadPath(); err == nil {
-		if err := writeReloadTrigger(reloadPath); err != nil {
-			fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
-		}
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+	} else if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
 	}
 }
 
