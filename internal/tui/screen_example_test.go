@@ -212,9 +212,16 @@ func checkGolden(t *testing.T, name, got string) {
 	if err != nil {
 		t.Fatalf("%v (run with -update to create it)", err)
 	}
-	if string(want) != got {
+	if !sameGolden(got, want) {
 		t.Fatalf("%s differs from the golden file (run with -update to accept):\n--- got ---\n%s--- want ---\n%s", name, got, want)
 	}
+}
+
+// sameGolden compares rendered output with a golden file, treating CRLF pairs
+// in the file as LF: a Windows checkout with core.autocrlf rewrites it, and
+// that is not a difference in what is rendered.
+func sameGolden(got string, want []byte) bool {
+	return got == strings.ReplaceAll(string(want), "\r\n", "\n")
 }
 
 func TestExampleScreenGolden(t *testing.T) {
@@ -296,5 +303,17 @@ func TestExampleScreenAnySize(t *testing.T) {
 				}
 			}
 		}
+	}
+}
+
+// Same rule as the urnettools golden helper: a checkout that converts line
+// endings (Windows runners default to core.autocrlf) must not fail the compare.
+func TestSameGoldenIgnoresLineEndingConversion(t *testing.T) {
+	const lf = "row one\nrow two\n"
+	if !sameGolden(lf, []byte("row one\r\nrow two\r\n")) {
+		t.Fatal("a golden file checked out with CRLF must still match LF output")
+	}
+	if sameGolden(lf, []byte("row one\nrow TWO\n")) {
+		t.Fatal("a real difference must still fail")
 	}
 }
