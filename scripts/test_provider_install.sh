@@ -316,6 +316,29 @@ test_link_tools_idempotent_and_never_clobbers_a_real_file() {
 }
 test_link_tools_idempotent_and_never_clobbers_a_real_file
 
+test_link_tools_adds_urtop_as_a_name_for_urnet_tools() {
+    path_test_env
+    mkdir -p "$PT_HOME/bin2"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    # urtop is not a binary of its own: it is a second name for urnet-tools,
+    # which behaves as `top` when started under that name.
+    assert_eq "$PT_INSTALL/bin/urnet-tools" "$(readlink "$PT_HOME/bin2/urtop")" "urtop points at the urnet-tools binary"
+    local out
+    out="$(env -i HOME="$PT_HOME" PATH="/usr/bin:/bin:$PT_HOME/bin2" bash -c 'urtop' 2>&1)"
+    assert_eq "urnet-tools-ok" "$out" "urtop runs the urnet-tools binary"
+    # A stale link from an older install path is repointed.
+    ln -sfn /nonexistent/urnet-tools "$PT_HOME/bin2/urtop"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "$PT_INSTALL/bin/urnet-tools" "$(readlink "$PT_HOME/bin2/urtop")" "a stale urtop link is repointed at urnet-tools"
+    # Someone else's real urtop is never overwritten.
+    rm -f "$PT_HOME/bin2/urtop"
+    printf 'theirs\n' > "$PT_HOME/bin2/urtop"
+    link_tools_into_dir "$PT_HOME/bin2" "$PT_INSTALL/bin"
+    assert_eq "theirs" "$(cat "$PT_HOME/bin2/urtop")" "a real urtop file that is not a symlink is left alone"
+    rm -rf "$PT_HOME"
+}
+test_link_tools_adds_urtop_as_a_name_for_urnet_tools
+
 test_root_style_link_dir_reachable_without_the_users_path() {
     # /usr/local/bin for root is modelled by any dir on a PATH that has none of
     # the installing user's entries.

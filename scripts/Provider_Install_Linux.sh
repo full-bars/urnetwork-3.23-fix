@@ -647,20 +647,24 @@ sanitize_restart_dropins ()
 # that exists.
 
 # link_tools_into_dir DIR SRC_BIN [RUNNER...]
-# Symlink urnet-tools and urnetwork from SRC_BIN into DIR, creating DIR.
+# Symlink urnet-tools, urnetwork and urtop from SRC_BIN into DIR, creating DIR.
+# urtop is not a binary of its own: it is a second name for urnet-tools, which
+# behaves as `top` when started under that name. Each entry is NAME:TARGET.
 # RUNNER (for example "sudo -n") prefixes the commands that need privilege.
 # A real file that is not a symlink is left alone: it is not ours.
 link_tools_into_dir ()
 {
-    local dir="$1" src="$2" name
+    local dir="$1" src="$2" entry name target
     shift 2
     "$@" mkdir -p "$dir" 2>/dev/null || return 1
-    for name in urnet-tools urnetwork; do
-        [ -e "$src/$name" ] || continue
+    for entry in urnet-tools:urnet-tools urnetwork:urnetwork urtop:urnet-tools; do
+        name="${entry%%:*}"
+        target="${entry#*:}"
+        [ -e "$src/$target" ] || continue
         if [ -e "$dir/$name" ] && [ ! -L "$dir/$name" ]; then
             continue
         fi
-        "$@" ln -sfn "$src/$name" "$dir/$name" 2>/dev/null || return 1
+        "$@" ln -sfn "$src/$target" "$dir/$name" 2>/dev/null || return 1
     done
     return 0
 }
@@ -673,7 +677,7 @@ ensure_tools_on_path ()
     # Non-interactive and login shells: ~/.local/bin is on the default PATH of
     # most distributions and of every systemd user session.
     if link_tools_into_dir "$HOME/.local/bin" "$src"; then
-        pr_info "Linked urnet-tools and urnetwork into %s" "$HOME/.local/bin"
+        pr_info "Linked urnet-tools, urnetwork and urtop into %s" "$HOME/.local/bin"
     else
         pr_err "warning: could not link the tools into %s" "$HOME/.local/bin"
     fi
@@ -686,7 +690,7 @@ ensure_tools_on_path ()
         link_tools_into_dir /usr/local/bin "$src" || pr_err "warning: could not link the tools into /usr/local/bin"
     elif command -v sudo > /dev/null 2>&1 && sudo -n true 2> /dev/null; then
         if link_tools_into_dir /usr/local/bin "$src" sudo -n; then
-            pr_info "Linked urnet-tools and urnetwork into /usr/local/bin (works for root)"
+            pr_info "Linked urnet-tools, urnetwork and urtop into /usr/local/bin (works for root)"
         else
             pr_err "warning: could not link the tools into /usr/local/bin"
         fi
