@@ -81,6 +81,25 @@ func (h *proxyFailureHistory) SetBackoffUntil(address string, until time.Time) {
 	h.backoffUntil[address] = until
 }
 
+// ExtendBackoffUntil is SetBackoffUntil that can only lengthen a window. It
+// records until only when address has no backoff, or until is later than the
+// current one, and reports whether it did. Callers that must not shorten a
+// backoff someone else set (proxy audit's long park versus trim shed's
+// short one, which each pick addresses from their own snapshot) use this
+// instead of the overwriting SetBackoffUntil.
+func (h *proxyFailureHistory) ExtendBackoffUntil(address string, until time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	if h.backoffUntil == nil {
+		h.backoffUntil = map[string]time.Time{}
+	}
+	if cur, ok := h.backoffUntil[address]; ok && !until.After(cur) {
+		return false
+	}
+	h.backoffUntil[address] = until
+	return true
+}
+
 // Eligible reports whether address may be (re)launched as of now: true if it
 // has no recorded backoff window, or that window has elapsed. An address with
 // no entry (never gave up, or freshly reset/pruned) is always eligible.
@@ -107,6 +126,22 @@ func (h *proxyFailureHistory) Reset(address string) {
 	delete(h.giveUps, address)
 	delete(h.backoffUntil, address)
 	h.mu.Unlock()
+}
+
+// ReleaseBackoff clears address's backoff only if it is exactly until, the
+// window the caller set, and reports whether it did. A longer backoff placed by
+// someone else (trim shed, URL give-up) survives, and failure counts are left
+// alone. Proxy audit releases a park with this instead of Reset, which
+// wipes everything recorded for the address.
+func (h *proxyFailureHistory) ReleaseBackoff(address string, until time.Time) bool {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	cur, ok := h.backoffUntil[address]
+	if !ok || !cur.Equal(until) {
+		return false
+	}
+	delete(h.backoffUntil, address)
+	return true
 }
 
 // AddressesInBackoff returns addresses still mid-backoff as of now, for

@@ -402,3 +402,56 @@ func TestGCGovernor_SubtickDoesNotClobberReleaseStreak(t *testing.T) {
 		t.Fatalf("expected full sweep to accumulate calm after host recovered, count=%d", st.consecutiveCalmCount)
 	}
 }
+
+// Both shed paths (pool shed and trim shed) go through applyShedBackoff, so one
+// test pins the rule for both: a shed only ever lengthens a backoff.
+func TestApplyShedBackoffNeverShortensAndSetsOneWhenNone(t *testing.T) {
+	hist := &proxyFailureHistory{failures: map[string]int{}}
+	saved := globalProxyFailureHistory
+	globalProxyFailureHistory = hist
+	t.Cleanup(func() { globalProxyFailureHistory = saved })
+	now := auditEpoch
+
+	applyShedBackoff("fresh:1", now)
+	if hist.Eligible("fresh:1", now.Add(shedBackoff-time.Second)) || !hist.Eligible("fresh:1", now.Add(shedBackoff+time.Second)) {
+		t.Fatalf("with no backoff a shed sets exactly shedBackoff")
+	}
+
+	hist.SetBackoffUntil("parked:1", now.Add(24*time.Hour))
+	applyShedBackoff("parked:1", now)
+	if hist.Eligible("parked:1", now.Add(23*time.Hour)) {
+		t.Fatalf("a shed must not shorten a longer backoff")
+	}
+
+	hist.SetBackoffUntil("short:1", now.Add(10*time.Minute))
+	applyShedBackoff("short:1", now)
+	if hist.Eligible("short:1", now.Add(shedBackoff-time.Second)) {
+		t.Fatalf("a shed lengthens a shorter backoff up to shedBackoff")
+	}
+}
+
+// Pool shed and proxy audit's park each pick addresses from their own
+// snapshot. When both land on the same address the shed's short backoff must
+// not overwrite the park's long one.
+func TestShedPoolToTarget_DoesNotShortenALongerBackoff(t *testing.T) {
+	withTempHome(t)
+	hist := &proxyFailureHistory{failures: map[string]int{}}
+	saved := globalProxyFailureHistory
+	globalProxyFailureHistory = hist
+	t.Cleanup(func() { globalProxyFailureHistory = saved })
+
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{
+		"2.2.2.2:1080": {ID: 2, Health: "dead", Source: "url"}, // shed first
+		"1.1.1.1:1080": {ID: 1, Health: "up", Source: "url"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	long := time.Now().Add(24 * time.Hour)
+	hist.SetBackoffUntil("2.2.2.2:1080", long)
+
+	shedPoolToTarget(1)
+
+	if hist.Eligible("2.2.2.2:1080", long.Add(-time.Minute)) {
+		t.Fatalf("a shed must not shorten a longer backoff already on the address")
+	}
+}

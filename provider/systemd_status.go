@@ -20,6 +20,13 @@ import (
 var (
 	proxiesConfigured    atomic.Int64
 	proxiesAuthenticated atomic.Int64
+
+	// proxiesParked is how many configured proxies the proxy audit engine is
+	// deliberately holding out, and proxyAuditPaused is whether it is unable to
+	// act. Parked proxies are configured but not authenticated on purpose, so
+	// they must not read as an outage in the line.
+	proxiesParked    atomic.Int64
+	proxyAuditPaused atomic.Bool
 )
 
 // proxyResolutionStatus tracks whether proxy resolution has been attempted
@@ -88,6 +95,22 @@ func setConfiguredProxyCount(n int) {
 	reportProxyStatusToSystemd()
 }
 
+// setProxyAuditSystemdState records the proxy audit's parked count and
+// whether it is paused, and refreshes STATUS= only when either changed (the
+// proxy audit calls this every tick).
+func setProxyAuditSystemdState(parked int, paused bool) {
+	if parked < 0 {
+		parked = 0
+	}
+	changed := proxiesParked.Swap(int64(parked)) != int64(parked)
+	if proxyAuditPaused.Swap(paused) != paused {
+		changed = true
+	}
+	if changed {
+		reportProxyStatusToSystemd()
+	}
+}
+
 // proxyBecameLive/proxyWentDown bracket a proxy's live transport. Both report
 // immediately so `systemctl status` tracks reality rather than lagging until
 // the next event.
@@ -152,6 +175,23 @@ func systemdStatusLine() string {
 		}
 		return fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
 	}
+	// Proxies the proxy audit engine is holding out are expected to be down.
+	parked := proxiesParked.Load()
+	if parked > total {
+		parked = total
+	}
+	head := "active"
+	if live < total-parked {
+		head = "partial"
+	}
+	line := fmt.Sprintf("%s: %d/%d proxies authenticated", head, live, total)
+	if parked > 0 {
+		line += fmt.Sprintf(", %d parked by proxy audit", parked)
+	}
+	if proxyAuditPaused.Load() {
+		line += "; proxy audit paused (paid proxy list unreadable)"
+	}
+	return line
 }
 
 // reportProxyStatusToSystemd pushes the current line to systemd. Errors are

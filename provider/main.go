@@ -3038,6 +3038,9 @@ func provide(opts docopt.Opts) {
 	// Self-heal defaults OFF: the pressure-based load shedding system is opt-in
 	// via URNETWORK_SELF_HEAL=1 or `urnet-tools self-heal on`.
 	selfHealEnabled := os.Getenv("URNETWORK_SELF_HEAL") == "1"
+	// Proxy audit defaults OFF (observe mode): enabled via URNETWORK_PROXY_AUDIT=1
+	// or `urnet-tools proxy audit on` at runtime without restarting.
+	proxyAuditEnabled := resolveProxyAuditEnabled(os.Getenv("URNETWORK_PROXY_AUDIT") == "1")
 
 	// Extract API host:port for the reachability probe (from the chosen
 	// network's API URL, already resolved above via resolveApiUrl).
@@ -3978,6 +3981,13 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runPressureMonitor(ctx, selfHealEnabled) })
 	go connect.HandleError(func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) })
 	go connect.HandleError(func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) })
+	// Proxy audit: parks proven-junk paid/file proxies when proxy audit is on
+	// (`urnet-tools proxy audit on`), and only logs would-park otherwise. Also
+	// started in a HotSwap candidate on purpose: its memory begins at its own
+	// start and its earn tracker must warm up first, so it cannot act during the
+	// short overlap with the parent, and skipping it would leave a swapped node
+	// without an auditor until the next full restart.
+	go connect.HandleError(func() { runProxyAudit(ctx, proxyCancelMap, &proxyCancelMu, proxyAuditEnabled) })
 	go connect.HandleError(func() { runReloadReconciler(ctx) })
 
 	if profileAddr := os.Getenv("URNETWORK_PPROF"); profileAddr != "" {
@@ -6348,7 +6358,11 @@ func collectRemoveDeadCandidates(state *ProxyState, o removeDeadOptions, uptime 
 		// removeDeadProxies de-dupes by source bucket and each per-source
 		// removal is idempotent, so the overlap has no removal-correctness
 		// impact (it only double-prints in the confirmation prompt).
-		if o.authFailMin > 0 && e.Health != "up" {
+		// A parked proxy is resting, not failing: proxy audit stopped it,
+		// and its cumulative AuthFailures can be high from before. It is not
+		// "up", so without this it would be collected here (and --degraded turns
+		// this check on by default) and removed from the operator's proxy file.
+		if o.authFailMin > 0 && e.Health != "up" && e.Health != proxyHealthParked {
 			days := int64(max(1, int(uptime.Hours())/24))
 			if e.AuthFailures >= o.authFailMin*days {
 				authFailing = append(authFailing, removedProxy{addr: addr, entry: e})

@@ -74,6 +74,11 @@ func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
 		t.Errorf("LastGraded %v not advanced", e.LastGraded)
 	}
+	// A decidable pass advances the verdict clock together with the attempt
+	// clock, so a consumer can tell this grade is new.
+	if e.LastDecided.IsZero() || !e.LastDecided.Equal(e.LastGraded) {
+		t.Errorf("a decidable pass must stamp LastDecided == LastGraded, got decided=%v graded=%v", e.LastDecided, e.LastGraded)
+	}
 	// Lifecycle fields untouched: the sweep is read-only w.r.t. the proxy.
 	if e.ID != 7 || e.Health != "up" || e.Source != "file" || e.AuthFailures != 3 {
 		t.Errorf("lifecycle fields clobbered: %+v", e)
@@ -477,4 +482,40 @@ func seedProbeDNSFailForAddress(t *testing.T, address string, passes ...uint64) 
 			delete(probeDNSCache.fail, h)
 		}
 	})
+}
+
+// A completed pass that reaches NO verdict (here: the proxy is unreachable, so
+// stage 0 fails and the pass has Total == 0) advances the attempt clock
+// LastGraded but must leave the old grade AND the verdict clock LastDecided
+// alone. Otherwise a consumer keyed on LastGraded reads the stale score as a
+// brand-new grade.
+func TestPaidGrader_NoVerdictPassAdvancesAttemptClockNotVerdictClock(t *testing.T) {
+	home := withTempHome(t)
+	writePaidGradeProbeOverride(t, true)
+
+	const addr = "127.0.0.1:1" // nothing listens: stage-0 liveness fails
+	src := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(src, []byte(addr+":u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	decided := time.Now().Add(-24 * time.Hour)
+	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
+		addr: {ID: 1, Health: "up", Source: "file", Score: 0.1, Graded: true, LastGraded: decided, LastDecided: decided},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
+
+	state, _ := readProxyState()
+	e := state.Proxies[addr]
+	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
+		t.Fatalf("setup: the attempt clock should have advanced, got %v", e.LastGraded)
+	}
+	if !e.LastDecided.Equal(decided) {
+		t.Fatalf("a pass with no verdict must not move LastDecided: was %v, now %v", decided, e.LastDecided)
+	}
+	if e.Score != 0.1 || !e.Graded || e.Pending {
+		t.Fatalf("the old grade must be left as it was: %+v", e)
+	}
 }

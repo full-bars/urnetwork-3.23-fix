@@ -114,6 +114,7 @@ Proxy Management [target]:
   proxy traffic             real-time bandwidth & client session load
   proxy remove-dead         prune dead/degraded proxies
   proxy trim <N>            hold running proxies at N, shed worst first (F -> A)
+  proxy audit [action]      manage automated proxy audit engine (status|on|off|release)
   proxy exclude [<pattern>] exclude proxies matching pattern
 
 Performance & Tuning [target]:
@@ -956,7 +957,7 @@ func cmdDockerSession(args []string) error {
 // in-container urnet-tools proxy invocation.
 func cmdDockerProxy(args []string) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | remove-dead | trim <N> | exclude")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | remove-dead | trim <N> | exclude | audit")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -1113,6 +1114,9 @@ func cmdDockerProxy(args []string) error {
 			return fmt.Errorf("proxy trim requires a count (e.g. 'urnet-docker proxy trim 500')")
 		}
 		inner := append([]string{"urnet-tools", "proxy", "trim"}, rest2...)
+		return containerExecByName(container, inner...)
+	case "audit":
+		inner := append([]string{"urnet-tools", "proxy", "audit"}, rest2...)
 		return containerExecByName(container, inner...)
 	case "exclude":
 		inner := append([]string{"urnet-tools", "proxy", "exclude"}, rest2...)

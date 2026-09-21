@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
 
 func TestProxyFailureHistory_TracksPerAddress(t *testing.T) {
 	h := &proxyFailureHistory{failures: map[string]int{}}
@@ -110,5 +113,97 @@ func TestProxyFailureHistory_ResetClearsCount(t *testing.T) {
 
 	if got := h.FailureCount("1.2.3.4:1080"); got != 0 {
 		t.Fatalf("expected failure count to be cleared after Reset, got %d", got)
+	}
+}
+
+func TestProxyFailureHistory_ExtendBackoffUntil_SetsWhenNoBackoff(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := time.Now()
+
+	if !h.ExtendBackoffUntil("1.2.3.4:1080", now.Add(6*time.Hour)) {
+		t.Fatalf("expected a first backoff to be recorded")
+	}
+	if h.Eligible("1.2.3.4:1080", now.Add(5*time.Hour)) {
+		t.Fatalf("expected address to be ineligible inside the window")
+	}
+	if !h.Eligible("1.2.3.4:1080", now.Add(6*time.Hour)) {
+		t.Fatalf("expected address to be eligible once the window elapses")
+	}
+}
+
+func TestProxyFailureHistory_ExtendBackoffUntil_LongerWindowReplacesShorter(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := time.Now()
+	h.SetBackoffUntil("1.2.3.4:1080", now.Add(time.Hour))
+
+	if !h.ExtendBackoffUntil("1.2.3.4:1080", now.Add(24*time.Hour)) {
+		t.Fatalf("expected a longer window to extend the backoff")
+	}
+	if h.Eligible("1.2.3.4:1080", now.Add(23*time.Hour)) {
+		t.Fatalf("expected the extended window to hold at 23h")
+	}
+}
+
+// A proxy audit park (long) must survive a later trim-shed pass (1h) that picked
+// the same address from a stale snapshot. SetBackoffUntil overwrites; the
+// extend-only variant must not shorten.
+func TestProxyFailureHistory_ExtendBackoffUntil_NeverShortensExisting(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := time.Now()
+	h.SetBackoffUntil("1.2.3.4:1080", now.Add(24*time.Hour))
+
+	if h.ExtendBackoffUntil("1.2.3.4:1080", now.Add(time.Hour)) {
+		t.Fatalf("expected a shorter window to be refused")
+	}
+	if h.Eligible("1.2.3.4:1080", now.Add(23*time.Hour)) {
+		t.Fatalf("expected the original 24h backoff to be intact")
+	}
+}
+
+func TestProxyFailureHistory_ExtendBackoffUntil_ReplacesElapsedWindow(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := time.Now()
+	h.SetBackoffUntil("1.2.3.4:1080", now.Add(-time.Hour)) // already elapsed
+
+	if !h.ExtendBackoffUntil("1.2.3.4:1080", now.Add(time.Hour)) {
+		t.Fatalf("expected a future window to replace an elapsed one")
+	}
+	if h.Eligible("1.2.3.4:1080", now) {
+		t.Fatalf("expected address to be ineligible under the new window")
+	}
+}
+
+// Proxy audit releases a park by clearing ONLY the backoff it set. A
+// longer one placed by someone else (trim shed, URL give-up) must survive,
+// and so must the failure counts, which are not audit's to wipe.
+func TestReleaseBackoffOnlyClearsTheBackoffItSet(t *testing.T) {
+	h := &proxyFailureHistory{failures: map[string]int{}}
+	now := auditEpoch
+	ours := now.Add(6 * time.Hour)
+
+	h.ExtendBackoffUntil("a:1", ours)
+	h.RecordFailure("a:1")
+	if !h.ReleaseBackoff("a:1", ours) {
+		t.Fatalf("a backoff equal to the one we set must be released")
+	}
+	if !h.Eligible("a:1", now) {
+		t.Fatalf("the address must be eligible once its own backoff is released")
+	}
+	if h.FailureCount("a:1") != 1 {
+		t.Fatalf("release must not wipe failure counts, got %d", h.FailureCount("a:1"))
+	}
+
+	// Someone else's longer backoff is left alone.
+	h.SetBackoffUntil("b:1", now.Add(24*time.Hour))
+	if h.ReleaseBackoff("b:1", ours) {
+		t.Fatalf("a backoff we did not set must not be released")
+	}
+	if h.Eligible("b:1", now.Add(7*time.Hour)) {
+		t.Fatalf("the longer backoff must still hold")
+	}
+
+	// Nothing recorded: nothing to release, and not an error.
+	if h.ReleaseBackoff("c:1", ours) {
+		t.Fatalf("releasing an address with no backoff reports false")
 	}
 }

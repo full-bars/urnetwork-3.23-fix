@@ -19,6 +19,24 @@ D
 ---
 origin/feat/ls-top
 
+## [Unreleased]
+
+### Added
+
+- **Proxy audit**: automated proxy quality auditing and parking (`urnet-tools proxy audit` / `urnet-docker proxy audit`). The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (two bad decidable grades at 0.4 or lower, idle, not earning) with a 6h to 7d backoff ladder, and restores them on a healthy regrade. With proxy audit off it operates in observe-only mode. Guarded by a per-pass cap, a 24h budget, a running floor of `max(10, half)`, a thin-pass check, and a mass-failure breaker. Controllable on the fly via control socket (`urnet-tools proxy audit on|off|status|release`) with affirmative CLI feedback (`✓ ...`). `urnet_proxy_audit_*` gauges export telemetry (with legacy aliases). See `docs/Configuration.md` and `docs/Proxy-Management.md`.
+
+### Fixed
+
+- **Paid grading sampled the same hosts every sweep** on a box with no URL sources: the probe rotation only advanced during URL fetches, so a second grade was not independent of the first. It now rotates once per paid pass.
+
+### Changed
+
+- **Runtime decoupling**: `proxy audit` is an independent runtime feature with its own control socket actions (`audit on|off|status|release`) and does not depend on `self-heal`. `self-heal` remains dedicated to resource-pressure actuators.
+- The systemd status line (`urnet-tools status` on Linux) counts proxies held by proxy audit as intentional: `active: 47/50 proxies authenticated, 3 parked by proxy audit` instead of `partial`, and notes when audit is paused.
+- The paid-grade header comments no longer claim grades are never consulted by anything that changes a proxy: trim shed ranking and proxy audit read them.
+
+---
+
 ## [v3.23.0-fix.32.1]
 
 ### Added

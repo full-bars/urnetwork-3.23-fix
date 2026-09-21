@@ -67,6 +67,7 @@ Quick jump:
 | Variable | Default | Description |
 | :--- | :--- | :--- |
 | `URNETWORK_SELF_HEAL` | `0` (off) | Set to `1` to enable the pressure-based self-heal system: proportional URL-fetch pacing, probe concurrency scaling, pressure-scaled cleanup/reaper cadence, and AIMD proxy-pool sizing. Off by default: with self-heal off, every actuator behaves exactly as it did before this system existed. Toggle at runtime with `urnet-tools self-heal on`, `urnet-tools self-heal off`, or `urnet-tools self-heal status` (no restart required; the monitor starts sensing within ~30s). |
+| `URNETWORK_PROXY_AUDIT` | `0` (off) | Set to `1` to enable automated [proxy audit](#proxy-audit) and quality enforcement: parks paid and file proxies that grade as proven junk. Off by default (observe mode). Toggle at runtime with `urnet-tools proxy audit on\|off\|status\|release` without restarting or dropping sessions. |
 | `URNETWORK_ADAPTIVE_GC` | on | Consolidated adaptive GC governor in the pressure monitor. On by default for every profile. It tightens GOGC below the profile baseline under memory pressure: the tighter of process heap fraction and host available RAM wins. Set to `0`, `false`, `off`, or `no` to disable it. If the operator sets `GOGC` directly, the governor backs off entirely and never touches the knob. |
 
 ### 📊 Monitoring & Telemetry
@@ -207,7 +208,34 @@ These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicte
 - The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
 - An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
 
-Check current state with `urnet-tools self-heal status`, which prints the on/off toggle plus the live score, per-component breakdown, and target pool size from `~/.urnetwork/pressure_status`. The status file also reports `gc_state` and `heap_frac`, the adaptive GC governor's current level and live heap fraction.
+### Proxy audit
+
+The paid and file proxies you supply are graded A to F by a probe from this box. With proxy audit **on**, the audit engine uses that grade to rest proxies that are proven junk, so their slots are not wasted. With proxy audit **off** it only watches and logs what it would have done, so you can see its judgement before you let it act. It also stays in observe mode when hot restart is off, because every relaunch would then mint a new client identity.
+
+A proxy is **parked** (stopped, and not relaunched until its backoff ends) only when all of these hold:
+
+- Its last two grades, from separate probe passes taken after the provider started, both scored 0.4 or lower. Tier F is anything under 0.6, but only 0.4 or lower counts as proven junk, and any grade above 0.4 in between resets the count.
+- It is running, has no active clients, and has not earned recently. **Idle alone never parks a proxy.** A well-graded idle proxy is simply not being assigned traffic and is left alone; idle and earnings can only protect a proxy, never condemn it.
+- The pass can be trusted: at least half of your proxies could be graded from this box, and there was no sudden mass failure (more than 40% of fresh grades bad at once, or twice the recent norm), which points at the box or its network rather than at the proxies.
+
+Limits: at most 3 parks per 5-minute pass, at most 15% of your paid set per 24 hours (rounded up, so always at least 1), and proxy audit never parks a box down to fewer than `max(10, half)` running paid proxies. **A box with 10 or fewer running paid proxies therefore never parks anything.**
+
+Backoff grows each time the same proxy is parked again: 6h, 12h, 24h, 48h, then 7 days, each varied by up to 25% so a batch does not return at once. A parked proxy returns early when it regrades to 0.6 or better after at least an hour. Turning proxy audit off returns everything it parked: it is released within one 5-minute pass, and the proxy is relaunched by the next reload, within about an hour (a reload is forced hourly). A regrade-based restore has the same lag. Parks are held in memory, so a provider restart returns them all and the evidence starts again.
+
+A parked proxy is marked `parked` in `proxy.state`. It stays in your proxy file. Dead-proxy cleanup and `proxy remove-dead` never collect it in any category (dead, inactive, degraded or auth-failing, including the auth-failure check that `--degraded` turns on by default).
+
+`urnet-tools proxy audit status` shows whether audit is observing or acting (and, when observing, whether proxy audit or hot restart is the switch that is off), what is parked and for how long, and why a pass parked nothing. On Linux, `urnet-tools status` shows the count in the unit's status line (`3 parked by proxy audit`); parked proxies do not make it read `partial`.
+
+Proxy audit **pauses** when your paid proxy list cannot be read or is empty, since that list is what proves a proxy is yours to park. That is usually one skipped 5-minute pass while the file is being edited, but a missing or unreadable file keeps it paused until fixed. It logs `[proxy][audit] paused` and `resumed`, shows `proxy audit: PAUSED` in `proxy audit status`, and adds `proxy audit paused` to the unit's status line. Turning proxy audit off still releases parks while paused. The same is exported as `urnet_proxy_audit_*` gauges (see [Monitoring](Monitoring.md)). Log lines start with `[proxy][audit]`.
+
+Toggle or inspect at runtime:
+```sh
+urnet-tools proxy audit on
+urnet-tools proxy audit off
+urnet-tools proxy audit status
+urnet-tools proxy audit release <addr>
+urnet-tools proxy audit release --all
+```
 
 > [!NOTE]
 > The ramp anchors (PSI 10%/60%, MemAvailable 25%/5%, load 1.0/3.0 per core, etc.) are properties of what each metric means — e.g. "a box stalled on memory 60% of the time is exhausted" holds regardless of core count or RAM size. They are not per-server capacity tuning knobs.

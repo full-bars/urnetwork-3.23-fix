@@ -179,6 +179,12 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_proxy_auth_failures` | gauge | | Auth failures summed over current proxies |
 | `urnet_url_proxy_grades` | gauge | `tier` | URL-sourced proxies by grade |
 | `urnet_url_proxy_ungraded` | gauge | | URL-sourced proxies not yet graded |
+| `urnet_proxy_audit_acting` | gauge | | 1 when proxy audit parks proxies, 0 when it only observes (legacy alias: `urnet_governor_acting`) |
+| `urnet_proxy_audit_parked` | gauge | | Proxies proxy audit is currently holding out (legacy alias: `urnet_governor_parked`) |
+| `urnet_proxy_audit_would_park` | gauge | | Proxies proxy audit would park now in observe mode (legacy alias: `urnet_governor_would_park`) |
+| `urnet_proxy_audit_distrusted` | gauge | | 1 when the last pass tripped the mass-failure breaker (legacy alias: `urnet_governor_distrusted`) |
+| `urnet_proxy_audit_thin_pass` | gauge | | 1 when too few proxies could be graded to trust the last pass (legacy alias: `urnet_governor_thin_pass`) |
+| `urnet_proxy_audit_parks_24h` | gauge | | Parks counted against the rolling 24h budget (legacy alias: `urnet_governor_parks_24h`) |
 | `urnet_contracts_total` | counter | `result` | Contract outcomes since start |
 | `urnet_errors_total` | counter | `category` | Errors since start |
 | `urnet_doh_failures_total` | counter | | DNS-over-HTTPS failures |

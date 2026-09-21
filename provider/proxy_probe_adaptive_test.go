@@ -230,6 +230,9 @@ func TestPaidGrader_SetsPendingOnReachableUndecidable(t *testing.T) {
 	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
 		t.Errorf("LastGraded must advance even on a pending pass: %+v", e)
 	}
+	if !e.LastDecided.IsZero() {
+		t.Errorf("an undecidable pass must not stamp LastDecided: %+v", e)
+	}
 }
 
 // TestPaidGrader_ClearsPendingOnDecidable: once a later pass IS decidable, the

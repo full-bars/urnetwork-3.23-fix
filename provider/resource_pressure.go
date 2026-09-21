@@ -805,6 +805,15 @@ const (
 	paidStaleHot  = 3 * time.Hour
 )
 
+// applyShedBackoff keeps a shed proxy down for at least shedBackoff from now.
+// It only ever lengthens: a shed picks addresses from its own snapshot, so the
+// address may already be held by something longer (proxy audit's park,
+// a URL give-up), and overwriting that with a short window would relaunch it
+// early. Pool shed and trim shed both come through here.
+func applyShedBackoff(addr string, now time.Time) {
+	globalProxyFailureHistory.ExtendBackoffUntil(addr, now.Add(shedBackoff))
+}
+
 // cleanupIntervalScale shrinks the cleanup interval as pressure rises —
 // cleanup sheds load, so overload is when it should run MORE often, not
 // less (this inverts the original gate-everything design).
@@ -1021,7 +1030,7 @@ func shedPoolToTarget(target int) {
 		if state.Proxies[addr].Health == "up" {
 			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", addr)
 		}
-		globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(shedBackoff))
+		applyShedBackoff(addr, time.Now())
 	}
 	if err := removeDeadProxies(state, map[string][]string{"url": shed}); err != nil {
 		tlog("[proxy][pressure] warn: shed failed: %v\n", err)

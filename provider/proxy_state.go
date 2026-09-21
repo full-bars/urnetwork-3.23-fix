@@ -24,10 +24,17 @@ type ProxyState struct {
 	Proxies   map[string]ProxyEntry `json:"proxies"`    // address -> entry
 }
 
+// proxyHealthParked is the Health of a proxy proxy audit is holding out.
+// It is distinct from "inactive" on purpose: "inactive" means unseen for 7+ days
+// and is collected for removal by dead-proxy cleanup and `proxy remove-dead`,
+// which edit the operator's proxy file. A parked proxy is resting and comes
+// back on its own, so nothing that removes proxies may treat it as dead.
+const proxyHealthParked = "parked"
+
 // ProxyEntry records the stable ID and last-known health for one proxy.
 type ProxyEntry struct {
 	ID           int    `json:"id"`
-	Health       string `json:"health"`                  // "up", "dead", "recently_offline", "offline", "long_offline", "inactive"
+	Health       string `json:"health"`                  // "up", "dead", "recently_offline", "offline", "long_offline", "inactive", "parked"
 	DownSince    string `json:"down_since,omitempty"`    // RFC3339, set when not up
 	Source       string `json:"source,omitempty"`        // "file", "internal", or "url" — where this address was first added from
 	AuthFailures int64  `json:"auth_failures,omitempty"` // cumulutive auth errors this run
@@ -37,7 +44,8 @@ type ProxyEntry struct {
 	// store's ProxyURLEntry fields so fleet grading consumes both stores
 	// uniformly. Written ONLY by the paid/file-proxy grading sweep. The
 	// admission and eviction paths never read or write these fields; the
-	// operator proxy-trim shed ranking DOES read them (see proxy_trim.go).
+	// operator proxy-trim shed ranking and proxy audit DO read them (see
+	// proxy_trim.go and proxy_audit.go), and neither writes them.
 	Score float64 `json:"score,omitempty"`
 	// Graded is true once a stage-1 table probe has recorded a DECIDABLE
 	// result for this proxy. Distinct from Score: a decidable 0.0 is a
@@ -51,6 +59,13 @@ type ProxyEntry struct {
 	// threshold (1-3h), so a DNS-gutted pass does not trigger a
 	// re-probe-every-tick herd.
 	LastGraded time.Time `json:"last_graded,omitempty"`
+	// LastDecided is when the last DECIDABLE stage-1 pass landed, i.e. when
+	// Score/Graded/Failed were last actually written. Unlike LastGraded it does
+	// NOT move on a pass that completed without a verdict (stage-0 liveness
+	// failed, or every host was unresolved or denied), so a consumer can tell a
+	// new grade from an old one that merely had its attempt clock advanced.
+	// Zero on entries graded before this field existed.
+	LastDecided time.Time `json:"last_decided,omitempty"`
 
 	// Pending is true when the last stage-1 pass REACHED the proxy but could
 	// not produce a DECIDABLE verdict (fewer than half the intended sample

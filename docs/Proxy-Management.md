@@ -75,6 +75,8 @@ docker exec -it urfix urnet-tools proxy remove-dead
 > 1. 💀 **Dead Proxies:** Proxies that have *never* successfully authenticated (likely bad credentials or unreachable IPs).
 > 2. 💤 **Inactive/Degraded Proxies:** Proxies that were previously working but have been offline for an extended period.
 > 
+> Proxies that proxy audit has parked (health `parked`) are resting, not failing, and are never listed here. See [Configuration](Configuration.md#proxy-audit).
+> 
 > The tool will prompt you separately for each category, allowing you to selectively remove dead proxies while keeping inactive ones (in case they are just suffering a temporary network blip), or wipe all failing proxies at once.
 > 
 > [!TIP]
@@ -159,6 +161,24 @@ urnet-tools self-heal off      # Disable pressure monitoring
 - **Probe Concurrency Scaling:** Reduces concurrent stage-1 dial workers down to a single worker under high load.
 - **Load-Adaptive Pruning:** Accelerates dead-proxy cleanup and stale-entry re-probing during high pressure to shed unneeded memory.
 - **AIMD Pool Sizing:** Adjusts `TargetPoolSize` dynamically (+25 when calm, ×0.7 under pressure), evicting dead and lowest-grade proxies.
+
+---
+
+## 🔍 Automated Proxy Audit & Quality Enforcement
+
+`URNETWORK_PROXY_AUDIT=1` (or `urnet-tools proxy audit on` at runtime) activates automated background proxy auditing. The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (scores <= 0.4 on two consecutive probe passes). Active parking also requires hot restart (`urnet-tools hot-restart on`); with hot restart off, the audit runs in observe mode and logs `would-park` instead of parking.
+
+```sh
+urnet-tools proxy audit on                  # Enable automated proxy audit & parking
+urnet-tools proxy audit status              # Inspect audit state, parked proxies, and remaining backoffs
+urnet-tools proxy audit off                 # Switch to observe-only mode (releases all parks)
+urnet-tools proxy audit release <addr>      # Release a specific parked proxy immediately
+urnet-tools proxy audit release --all       # Release all currently parked proxies immediately
+```
+
+- **Zero Downtime:** Toggle on/off or release proxies on the fly via the Unix control socket without restarting the provider or dropping connections.
+- **Progressive Backoff:** Repeatedly parked proxies receive an escalating backoff ladder (6h → 12h → 24h → 48h → 7d) with ±25% jitter.
+- **Safety Rails:** Distrusts passes during mass-failure events (>40% bad grades at once) or thin-grading conditions, and enforces a rolling 24h park budget.
 
 ---
 

@@ -337,6 +337,12 @@ func newDockerProxyCmd() *cobra.Command {
 		dockerProxySub("trim", "trim <N|off> [target]", "hold running proxies at N, shed worst first", "Hold running proxies at N for the provider inside the targeted container, shedding the worst-graded (F to A) first, or pass \"off\" to clear the cap.",
 			"  urnet-docker proxy trim 50 --unit mynetwork-provider\n"+
 				"  urnet-docker proxy trim off --unit mynetwork-provider"),
+		dockerProxySub("audit", "audit [action] [target]", "manage automated proxy audit engine", "Manage the automated proxy quality audit engine inside the targeted container. Evaluates proxies every 5m and parks proven junk. Toggle on/off on the fly, view live status, or release parked proxies.",
+			"  urnet-docker proxy audit status --unit mynetwork-provider\n"+
+				"  urnet-docker proxy audit on --unit mynetwork-provider\n"+
+				"  urnet-docker proxy audit off --unit mynetwork-provider\n"+
+				"  urnet-docker proxy audit release 1.2.3.4:1080 --unit mynetwork-provider\n"+
+				"  urnet-docker proxy audit release --all --unit mynetwork-provider"),
 		dockerProxySub("exclude", "exclude [<pattern>] [target]", "exclude proxies matching a pattern", "Exclude proxies matching a pattern for the provider inside the targeted container, or show current exclusions with no pattern.", "  urnet-docker proxy exclude 1.2.3.4 --unit mynetwork-provider\n"+
 			"  urnet-docker proxy exclude --unit mynetwork-provider"),
 	)

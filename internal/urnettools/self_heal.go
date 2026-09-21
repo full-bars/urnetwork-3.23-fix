@@ -153,9 +153,9 @@ func writeSelfHeal(state string, targetArgs []string) error {
 	// discovery) the file stays owned by the caller — that's the pre-H6
 	// behavior.
 	if state == "on" {
-		fmt.Println("self-heal enabled (load gate + auto cleanup active)")
+		fmt.Println("self-heal enabled (pressure actuators active; see 'urnet-tools self-heal status')")
 	} else {
-		fmt.Println("self-heal disabled (load gate + auto cleanup turned off)")
+		fmt.Println("self-heal disabled (pressure actuators turned off)")
 	}
 	return nil
 }
@@ -166,18 +166,18 @@ func showSelfHeal(targetArgs []string) error {
 		return err
 	}
 	b, err := os.ReadFile(markerPath)
-	if err != nil {
-		if os.IsNotExist(err) {
-			fmt.Println("self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)")
-			return nil
+	switch {
+	case err == nil:
+		switch strings.TrimSpace(string(b)) {
+		case "on":
+			fmt.Println("self-heal: on")
+		default:
+			fmt.Println("self-heal: off")
 		}
-		return err
-	}
-	switch strings.TrimSpace(string(b)) {
-	case "on":
-		fmt.Println("self-heal: on")
+	case os.IsNotExist(err):
+		fmt.Println("self-heal: off (default; enable with 'urnet-tools self-heal on' or URNETWORK_SELF_HEAL=1)")
 	default:
-		fmt.Println("self-heal: off")
+		return err
 	}
 	return nil
 }

@@ -315,6 +315,58 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "urnet_control_commands_total{cmd=\"clear\"} %d\n", controlCmdsClear.Load())
 	fmt.Fprintf(&b, "urnet_control_commands_total{cmd=\"any\"} %d\n", controlCmdsAcked.Load())
 
+	// --- Proxy audit ---
+	// Counts only; proxy addresses stay on the control socket. Emitted at zero
+	// before the first tick so panels and alerts have a stable series.
+	audit := proxyAuditStatusSnapshot()
+	if audit == nil {
+		audit = &proxyAuditStatus{}
+	}
+	b2i := func(v bool) int {
+		if v {
+			return 1
+		}
+		return 0
+	}
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_acting 1 when proxy audit executes parks, 0 when it only observes.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_acting gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_acting %d\n", b2i(audit.Acting))
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_parked Proxies the proxy audit engine is currently holding out.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_parked gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_parked %d\n", len(audit.Parked))
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_would_park Proxies proxy audit would park now (observe mode).\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_would_park gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_would_park %d\n", audit.WouldPark)
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_distrusted 1 when the last pass tripped the correlated-failure breaker.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_distrusted gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_distrusted %d\n", b2i(audit.Distrusted))
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_thin_pass 1 when too few proxies could be graded to trust the last pass.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_thin_pass gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_thin_pass %d\n", b2i(audit.Thin))
+	fmt.Fprintf(&b, "# HELP urnet_proxy_audit_parks_24h Parks counted against the rolling 24h budget.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_parks_24h gauge\n")
+	fmt.Fprintf(&b, "urnet_proxy_audit_parks_24h %d\n", audit.Parks24h)
+
+	// Backward-compatibility aliases for legacy dashboards
+	fmt.Fprintf(&b, "# HELP urnet_governor_acting Legacy alias for urnet_proxy_audit_acting.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_acting gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_acting %d\n", b2i(audit.Acting))
+	fmt.Fprintf(&b, "# HELP urnet_governor_parked Legacy alias for urnet_proxy_audit_parked.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_parked gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_parked %d\n", len(audit.Parked))
+	fmt.Fprintf(&b, "# HELP urnet_governor_would_park Legacy alias for urnet_proxy_audit_would_park.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_would_park gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_would_park %d\n", audit.WouldPark)
+	fmt.Fprintf(&b, "# HELP urnet_governor_distrusted Legacy alias for urnet_proxy_audit_distrusted.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_distrusted gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_distrusted %d\n", b2i(audit.Distrusted))
+	fmt.Fprintf(&b, "# HELP urnet_governor_thin_pass Legacy alias for urnet_proxy_audit_thin_pass.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_thin_pass gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_thin_pass %d\n", b2i(audit.Thin))
+	fmt.Fprintf(&b, "# HELP urnet_governor_parks_24h Legacy alias for urnet_proxy_audit_parks_24h.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_governor_parks_24h gauge\n")
+	fmt.Fprintf(&b, "urnet_governor_parks_24h %d\n", audit.Parks24h)
+
 	// --- Lifetime persisted metrics ---
 	if lm := lifetimeStore; lm != nil {
 		pqe, clas, up, deny, recov, lost, bill := lm.Snapshot()

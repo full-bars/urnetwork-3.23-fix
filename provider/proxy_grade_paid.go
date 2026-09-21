@@ -21,12 +21,18 @@ import (
 // grade is available for resource prioritization (roadmap #2) and
 // dashboard surfacing (roadmap #3).
 //
-// SAFETY: this is READ-ONLY with respect to the proxy lifecycle. Grades
-// live in proxy.state ProxyEntry (Score/Graded/Failed/LastGraded) and are
-// never consulted by admission, eviction, give-up, or cleanup — the "never
-// reject" property is structural: paid/file proxies already bypass the
-// stage-1 gate, and the sweep only ever writes grade fields. A graded F
-// keeps serving exactly as it did before it was graded.
+// SAFETY: the SWEEP is read-only with respect to the proxy lifecycle. Grades
+// live in proxy.state ProxyEntry (Score/Graded/Failed/LastGraded) and the
+// sweep only ever writes those grade fields. Admission, give-up and cleanup
+// never consult them: paid/file proxies already bypass the stage-1 gate, so
+// the "never reject" property is structural.
+//
+// Two readers DO act on grades. Operator proxy-trim shed ranking reads them
+// (proxy_trim.go). And proxy audit (proxy_audit.go) may PARK a
+// proven-junk idle proxy, but only when proxy audit is on, only after two bad
+// decidable grades, and never a proxy that is carrying sessions or earning.
+// With proxy audit off a graded F keeps serving exactly as it did before it
+// was graded, and audit only logs what it would have done.
 //
 // Cadence: one pass every proxyReaperInterval tick, re-probing only
 // entries whose LastGraded is older than the reaper stale threshold
@@ -87,6 +93,17 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// probes off because the probes themselves are the problem.
 		return
 	}
+
+	// Rotate the sampled host block once per paid tick. Without this the
+	// counter only moved inside the URL fetch cycle, so a box with no URL
+	// sources re-dialed the same block every sweep and consecutive grades were
+	// not independent evidence. Advanced AFTER the pass (deferred), so this
+	// tick dials the block for the counter value it started with and the NEXT
+	// tick dials the next disjoint one; advancing first would shift the very
+	// first pass off the block callers and tests derive from the counter.
+	// Placed after the kill switch so a disabled grader stays a full skip.
+	// Harmless to URL admission: the counter is only a rotation seed.
+	defer tableProbePassCounter.Add(1)
 
 	var targets []gradeTarget
 
@@ -370,6 +387,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				entry.Score = r.table.Score
 				entry.Graded = true
 				entry.Failed = capFailedList(r.table.Failed)
+				entry.LastDecided = probeDone
 				graded++
 				if oldTier != newTier {
 					tierChanges++

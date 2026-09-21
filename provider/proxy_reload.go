@@ -589,11 +589,11 @@ func (r *ProxyReloader) reload() {
 		}
 		// Enforce the URL give-up backoff at launch time: an address whose
 		// next-eligible time has not yet arrived is skipped, not relaunched.
-		// Only URL-sourced proxies ever carry a backoff window, so file and
-		// internal proxies (which never call SetBackoffUntil) are always
-		// eligible here. Without this, the escalating backoff was defeated
-		// because any reload would relaunch every desired-but-not-running
-		// proxy immediately.
+		// URL-sourced proxies carry a give-up backoff, and proxy audit
+		// puts one on a paid or file proxy it parks. Other file and internal
+		// proxies never get one and are always eligible here. Without this,
+		// the backoff was defeated because any reload would relaunch every
+		// desired-but-not-running proxy immediately.
 		if !globalProxyFailureHistory.Eligible(addr, now) {
 			deferredBackoff++
 			continue
@@ -661,7 +661,7 @@ func (r *ProxyReloader) reload() {
 					// set erases grade/health history. Mark a short
 					// give-up backoff instead so the launch gate keeps it down and
 					// it does not relaunch next cycle.
-					globalProxyFailureHistory.SetBackoffUntil(addr, time.Now().Add(shedBackoff))
+					applyShedBackoff(addr, time.Now())
 				}
 			}
 		}
