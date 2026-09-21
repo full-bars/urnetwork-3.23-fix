@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"sync"
 	"testing"
 	"time"
 )
@@ -177,3 +178,265 @@ func TestAuditRing_NilSafe(t *testing.T) {
 		t.Error("nil ring should return empty")
 	}
 }
+
+// The hotswap parent exits via os.Exit without reaching main()'s graceful
+// shutdown persist, so forceAuditPersist must flush entries even inside
+// the 30s persist window or the last commands before an update are lost.
+func TestForceAuditPersistWritesWithinPersistWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	ring := &AuditRing{path: path}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	lastAuditPersist = time.Now() // fresh persist: recordAndPersist alone skips disk
+	recordProcessStart(false, false)
+	recordAndPersist(CommandAudit{
+		Timestamp: time.Now(),
+		Cmd:       "hotswap",
+		Key:       "version",
+		Value:     RequireVersion(),
+		Source:    "trigger",
+		OK:        true,
+	})
+
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	if ok, _ := loadJSONWithRecovery(path, &saved); ok {
+		t.Fatal("recordAndPersist wrote inside the 30s window — test premise broken")
+	}
+
+	forceAuditPersist()
+	if ok, err := loadJSONWithRecovery(path, &saved); err != nil {
+		t.Fatalf("reload after forceAuditPersist: %v", err)
+	} else if !ok {
+		t.Fatal("audit.json missing after forceAuditPersist")
+	}
+	if len(saved.Entries) != 2 {
+		t.Fatalf("expected both unsaved entries on disk, got %d", len(saved.Entries))
+	}
+	if saved.Entries[0].Cmd != "start" || saved.Entries[0].Source != "boot" {
+		t.Errorf("first entry: %+v, want start/boot", saved.Entries[0])
+	}
+	if saved.Entries[1].Cmd != "hotswap" {
+		t.Errorf("second entry: %+v, want hotswap", saved.Entries[1])
+	}
+}
+
+// A HotSwap candidate loads audit.json at spawn time, before the parent's
+// final flush. mergeAuditRingFromDisk must pull the parent's post-spawn
+// entries into the successor's live ring exactly once (dedupe), while
+// leaving entries the candidate already has untouched.
+func TestMergeAuditRingFromDisk(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	parent := &AuditRing{path: path}
+	globalAuditRing = parent
+	lastAuditPersist = time.Time{}
+	recordAndPersist(CommandAudit{Timestamp: t0(), Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	recordAndPersist(CommandAudit{Timestamp: t1(), Cmd: "hotswap", Key: "version", Value: "v3.23.0", Source: "trigger", OK: true})
+	forceAuditPersist()
+
+	// Candidate: spawn-time snapshot (replays what it loaded) plus its own
+	// start entry; the 30s gate keeps it from persisting over the parent.
+	cand := &AuditRing{path: path}
+	globalAuditRing = cand
+	cand.Append(CommandAudit{Timestamp: t0(), Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	lastAuditPersist = time.Now()
+	recordProcessStart(false, false)
+
+	// Parent records one more entry during the drain window and flushes.
+	globalAuditRing = parent
+	recordAndPersist(CommandAudit{Timestamp: t2(), Cmd: "set", Key: "node_name", Value: "nyc-1", OK: true})
+	forceAuditPersist()
+
+	// Takeover: the successor merges what the parent flushed.
+	globalAuditRing = cand
+	mergeAuditRingFromDisk()
+
+	entries, _ := cand.Entries(10, "")
+	seen := map[string]int{}
+	for _, e := range entries {
+		seen[e.Cmd+"|"+e.Key]++
+	}
+	want := map[string]int{
+		"set|metrics":     1,
+		"hotswap|version": 1,
+		"set|node_name":   1,
+		"start|version":   1,
+	}
+	for k, n := range want {
+		if seen[k] != n {
+			t.Errorf("entry %q count = %d, want %d (entries %+v)", k, seen[k], n, entries)
+		}
+	}
+	if len(entries) != len(want) {
+		t.Errorf("total entries = %d, want %d", len(entries), len(want))
+	}
+}
+
+// Dedupe must survive a JSON round-trip with a non-UTC timezone: == on
+// time.Time compares the location POINTER, and every fresh parse rebuilds
+// one, so two entries for the same instant would never dedupe. This fails
+// with the old e == want comparison and passes with Timestamp.Equal.
+func TestMergeAuditRingFromDiskDedupesAcrossTimezoneRoundTrip(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	ts := time.Date(2026, 9, 21, 3, 24, 44, 0, time.FixedZone("PST", -7*3600))
+
+	// Parent: writes the entry with an in-memory location, flushes to disk.
+	parent := &AuditRing{path: path}
+	globalAuditRing = parent
+	lastAuditPersist = time.Time{}
+	recordAndPersist(CommandAudit{Timestamp: ts, Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	forceAuditPersist()
+
+	// Candidate: replayed the streamed-ring copy it loaded at spawn (same
+	// instant, but its time.Time carries the in-memory location pointer,
+	// which differs from the freshly-parsed location the merge reloads).
+	cand := &AuditRing{path: path}
+	globalAuditRing = cand
+	cand.Append(CommandAudit{Timestamp: ts, Cmd: "set", Key: "metrics", Value: "on", OK: true})
+
+	mergeAuditRingFromDisk()
+
+	entries, _ := cand.Entries(10, "")
+	if len(entries) != 1 {
+		t.Fatalf("duplicate not deduped across timezone round-trip: %d entries %+v", len(entries), entries)
+	}
+}
+
+// Merge on a missing/corrupt file must be a silent no-op, not a crash.
+func TestMergeAuditRingFromDiskNoFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	globalAuditRing = &AuditRing{path: path}
+	defer func() { globalAuditRing = prevRing }()
+
+	mergeAuditRingFromDisk() // must not panic
+	if got := globalAuditRing.size; got != 0 {
+		t.Errorf("ring size = %d, want 0", got)
+	}
+}
+
+// recordAndPersist runs from concurrent control-socket goroutines while a
+// hotswap drain can call forceAuditPersist; the persist gate must be
+// race-free (caught by -race) and every entry must land. The gate is armed
+// OPEN (zero time) so the goroutines genuinely race to WRITE the gate, not
+// just read it.
+func TestRecordAndPersistConcurrentRaceGuard(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	ring := &AuditRing{path: path}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+	lastAuditPersist = time.Time{} // gate open: first due write persists
+
+	var wg sync.WaitGroup
+	for g := 0; g < 8; g++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for i := 0; i < 50; i++ {
+				recordAndPersist(CommandAudit{Timestamp: time.Now(), Cmd: "set", Key: "k", OK: true})
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := ring.size; got != 8*50 {
+		t.Fatalf("ring size = %d, want %d", got, 8*50)
+	}
+}
+
+// The handoff record must reach disk immediately (not wait on the 30s
+// gate): the successor's takeover merge reads audit.json, so a gated
+// write would lose the event. Removing the forceAuditPersist inside
+// recordHotSwapAndFlush makes this test fail.
+func TestRecordHotSwapAndFlushWritesImmediately(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	ring := &AuditRing{path: path}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+	lastAuditPersist = time.Now() // gate closed: only forceAuditPersist can write
+
+	// The commit point must quiesce the control socket BEFORE the flush,
+	// so no command accepted after the flush can be lost in the parent's
+	// memory mid-handoff.
+	quiesced := false
+	controlSocketQuiesceForHotSwap = func() { quiesced = true }
+	defer func() { controlSocketQuiesceForHotSwap = nil }()
+
+	recordHotSwapAndFlush()
+
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	ok, err := loadJSONWithRecovery(path, &saved)
+	if err != nil || !ok {
+		t.Fatalf("hotswap event not flushed to disk (ok=%v err=%v)", ok, err)
+	}
+	if len(saved.Entries) != 1 || saved.Entries[0].Cmd != "hotswap" {
+		t.Fatalf("expected exactly the hotswap entry on disk, got %+v", saved.Entries)
+	}
+	if !quiesced {
+		t.Error("recordHotSwapAndFlush did not quiesce the control socket before the flush")
+	}
+}
+
+// recordProcessStart must arm the persist gate only for a SPAWNED
+// candidate: the Docker execve successor's ring loaded after the parent's
+// pre-exec flush, so its start entry can (and should) hit disk right away.
+func TestRecordProcessStartDefersOnlyForSpawnedCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	// Spawned candidate: gate armed before the start entry, nothing on disk.
+	ring := &AuditRing{path: path}
+	globalAuditRing = ring
+	lastAuditPersist = time.Now()
+	recordProcessStart(true, true)
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	if ok, _ := loadJSONWithRecovery(path, &saved); ok {
+		t.Fatal("spawned candidate start entry persisted immediately; gate was not armed")
+	}
+
+	// Docker execve successor: hotswap label, NO deferral — persisted at once.
+	globalAuditRing = &AuditRing{path: path}
+	lastAuditPersist = time.Time{}
+	recordProcessStart(true, false)
+	ok, err := loadJSONWithRecovery(path, &saved)
+	if err != nil || !ok {
+		t.Fatalf("docker successor start entry missing (ok=%v err=%v)", ok, err)
+	}
+	if len(saved.Entries) != 1 || saved.Entries[0].Source != "hotswap" {
+		t.Fatalf("expected hotswap-labelled start on disk, got %+v", saved.Entries)
+	}
+}
+
+var auditT0 = time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
+
+func t0() time.Time { return auditT0 }
+func t1() time.Time { return auditT0.Add(1 * time.Second) }
+func t2() time.Time { return auditT0.Add(2 * time.Second) }

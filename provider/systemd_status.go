@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"math"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -37,6 +38,16 @@ const (
 	proxyResolutionFailed  int32 = 1 // attempted, source unreachable
 	proxyResolutionEmpty   int32 = 2 // succeeded but zero usable proxies
 	proxyResolutionOK      int32 = 3 // resolved with at least one proxy
+)
+
+// Status severity bands for the live/configured proxy ratio. The exact
+// percentage always renders alongside the word so the scale reads
+// continuously; a node with 40% live and one with 9% live are both
+// "critical", and the number says how bad it is.
+const (
+	statusActiveBand   = 90 // >= this percent of configured proxies live: healthy steady state
+	statusPartialBand  = 70 // 70-89%: first real attention
+	statusDegradedBand = 50 // 50-69%: significant loss; below 50% is critical
 )
 
 // setProxyResolutionStatus records the outcome of a proxy resolution attempt
@@ -118,11 +129,28 @@ func systemdStatusLine() string {
 			return "starting: resolving proxies"
 		}
 	case live == 0:
-		return fmt.Sprintf("degraded: 0/%d proxies authenticated, retrying", total)
-	case live < total:
-		return fmt.Sprintf("partial: %d/%d proxies authenticated", live, total)
+		return fmt.Sprintf("critical: 0/%d proxies authenticated, retrying", total)
 	default:
-		return fmt.Sprintf("active: %d/%d proxies authenticated", live, total)
+		pct := int(math.Round(float64(live) * 100 / float64(total)))
+		if pct > 100 {
+			// live > configured happens transiently when a reload shrinks
+			// the desired set; a >100% figure would be nonsense in
+			// systemctl status.
+			pct = 100
+		}
+		word := "critical"
+		switch {
+		case pct >= statusActiveBand:
+			word = "active"
+		case pct >= statusPartialBand:
+			word = "partial"
+		case pct >= statusDegradedBand:
+			word = "degraded"
+		}
+		if word == "degraded" || word == "critical" {
+			return fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%), retrying", word, live, total, pct)
+		}
+		return fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
 	}
 }
 

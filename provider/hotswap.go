@@ -54,6 +54,10 @@ const (
 	// EnvHotSwap is set to "1" in candidate child processes to indicate hot-swap mode.
 	EnvHotSwap = "URNETWORK_HOTSWAP"
 
+	// EnvHotSwapExec survives the in-place execve env strip so a Docker
+	// successor still labels its start audit entry as a handoff.
+	EnvHotSwapExec = "URNETWORK_HOTSWAP_EXEC"
+
 	// HotSwapPreflightTimeout is the max duration the parent waits for the candidate's READY signal.
 	HotSwapPreflightTimeout = 20 * time.Second
 
@@ -252,6 +256,11 @@ func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session 
 		}
 
 		flushRetentionEvents()
+		// Parent exits via os.Exit here, which skips main()'s graceful
+		// shutdown persist: push any entries recorded during the drain
+		// window to disk. The successor merges audit.json after takeover,
+		// so this is what carries the parent's final entries forward.
+		forceAuditPersist()
 		lifetimeStore.Flush()
 		isHotSwapDraining.Store(false)
 		cancel()
@@ -557,6 +566,35 @@ func runHotSwapChildAck(ipcConn io.Writer) error {
 
 // runHotSwapParentHandoff coordinates spawning the candidate, validating its readiness,
 // yielding the coordinator session, and entering graceful stream drain (or in-place execve for PID 1).
+// controlSocketQuiesceForHotSwap closes the running process's control
+// socket without exiting. Set by cmdProvide once the socket is bound, and
+// used by recordHotSwapAndFlush so no control-socket command can be
+// accepted after the audit commit-point flush: a set/clear landing in the
+// handoff window then fails and falls back to pending_overrides.json,
+// which the successor merges on takeover. Idempotent; safe when nil.
+var controlSocketQuiesceForHotSwap func()
+
+// recordHotSwapAndFlush records the handoff in the audit ring and flushes
+// immediately. The flush must happen before the takeover message is sent:
+// the successor merges audit.json after takeover, and execve replaces the
+// parent's in-memory ring entirely, so this is the write that carries the
+// handoff event to the next process. The control socket is quiesced first
+// so nothing accepted after this point can vanish in the parent's memory.
+func recordHotSwapAndFlush() {
+	if controlSocketQuiesceForHotSwap != nil {
+		controlSocketQuiesceForHotSwap()
+	}
+	recordAndPersist(CommandAudit{
+		Timestamp: time.Now(),
+		Cmd:       "hotswap",
+		Key:       "version",
+		Value:     RequireVersion(),
+		Source:    "trigger",
+		OK:        true,
+	})
+	forceAuditPersist()
+}
+
 func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opts docopt.Opts) error {
 	if !hotSwapLock.TryLock() {
 		tlog("⚠️ [hotswap] Hot-swap already in progress; ignoring duplicate trigger\n")
@@ -623,6 +661,12 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	if runtime.GOOS == "windows" {
 		tlog("⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff\n")
 
+		// Commit the handoff (record + flush) BEFORE sending takeover, so
+		// the candidate's post-ACK merge reads a disk that already holds
+		// the event. A rare phantom entry on takeover failure is the
+		// accepted tradeoff for an airtight flush-before-merge ordering.
+		recordHotSwapAndFlush()
+
 		if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 			return err
 		}
@@ -660,7 +704,11 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		}
 		session.Close()
 
-		// 2. Yield live coordinator session and flush metrics immediately before execve
+		// 2. Commit the handoff: record+flush before execve — execve
+		// replaces the process image, so the in-memory audit ring vanishes
+		// with it, and the new image's start label reads
+		// URNETWORK_HOTSWAP_EXEC to mark the successor as such.
+		recordHotSwapAndFlush()
 		yieldCoordinatorSession()
 		flushRetentionEvents()
 		lifetimeStore.Flush()
@@ -670,10 +718,15 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		// 3. In-place execve: replaces process memory image without altering PID or closing stdout/stderr
 		var cleanEnv []string
 		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, EnvHotSwap+"=") {
+			if !strings.HasPrefix(e, EnvHotSwap+"=") && !strings.HasPrefix(e, EnvHotSwapExec+"=") {
 				cleanEnv = append(cleanEnv, e)
 			}
 		}
+		// The execve'd successor is not a candidate (no IPC descriptor), but it
+		// IS a handoff successor: keep a marker so its audited start is
+		// labelled hotswap, not boot. Re-appended so a second in-place hotswap
+		// of the same successor does not accumulate duplicates.
+		cleanEnv = append(cleanEnv, EnvHotSwapExec+"=1")
 
 		// The canary was spawned with sanitizeCandidateArgs, and the in-place
 		// image must be too. A container first started as
@@ -709,6 +762,11 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		session.Kill()
 		return fmt.Errorf("%s: %w", msg, ErrNoNotifySocket)
 	}
+
+	// Every abort check has passed: commit the handoff — record it and
+	// flush BEFORE the takeover message so the successor's post-ACK merge
+	// reads a disk that already contains this event.
+	recordHotSwapAndFlush()
 
 	if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 		return err
