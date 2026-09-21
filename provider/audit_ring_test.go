@@ -297,7 +297,9 @@ func TestMergeAuditRingFromDiskNoFile(t *testing.T) {
 
 // recordAndPersist runs from concurrent control-socket goroutines while a
 // hotswap drain can call forceAuditPersist; the persist gate must be
-// race-free (caught by -race) and every entry must land.
+// race-free (caught by -race) and every entry must land. The gate is armed
+// OPEN (zero time) so the goroutines genuinely race to WRITE the gate, not
+// just read it.
 func TestRecordAndPersistConcurrentRaceGuard(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "audit.json")
 	ring := &AuditRing{path: path}
@@ -306,7 +308,7 @@ func TestRecordAndPersistConcurrentRaceGuard(t *testing.T) {
 	defer func() { globalAuditRing = prevRing }()
 	prevPersist := lastAuditPersist
 	defer func() { lastAuditPersist = prevPersist }()
-	lastAuditPersist = time.Now() // gate closed: exercises Append only
+	lastAuditPersist = time.Time{} // gate open: first due write persists
 
 	var wg sync.WaitGroup
 	for g := 0; g < 8; g++ {

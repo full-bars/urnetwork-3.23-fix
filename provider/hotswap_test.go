@@ -349,6 +349,11 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 		return nil
 	}
 
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
 	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
 		return &HotswapParentSession{
 			childCmd: nil,
@@ -394,6 +399,7 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 	if !coordinatorYielded {
 		t.Errorf("expected coordinator session to be yielded before execve")
 	}
+	assertHotSwapEntryRecorded(t, ring, "docker execve branch")
 }
 
 func TestHotSwapParentPID1PreflightFailurePreservesProcess(t *testing.T) {
@@ -1096,6 +1102,105 @@ func TestHotSwapParentPID1RestoresStdioBeforeExec(t *testing.T) {
 	if hasHotSwap {
 		t.Errorf("exec env must not contain %s", EnvHotSwap)
 	}
+}
+
+// assertHotSwapEntryRecorded verifies the commit-point audit entry landed
+// in the live ring after a handoff ran. A branch that omits
+// recordHotSwapAndFlush (or records only on failure paths) fails here.
+func assertHotSwapEntryRecorded(t *testing.T, ring *AuditRing, label string) {
+	t.Helper()
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			return
+		}
+	}
+	t.Fatalf("%s: handoff ran but no hotswap audit entry recorded (entries %+v)", label, entries)
+}
+
+// The systemd/Unix branch must record the handoff before sending the
+// takeover message: this exercises the branch end-to-end (READY ->
+// TAKEOVER -> ACK -> drain) and asserts the commit-point entry exists.
+func TestHotSwapSystemdBranchRecordsEntry(t *testing.T) {
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origGetpid, origSpawn, origExit := getpidFunc, spawnCandidateFunc, exitFunc
+	defer func() {
+		getpidFunc, spawnCandidateFunc, exitFunc = origGetpid, origSpawn, origExit
+	}()
+
+	getpidFunc = func() int { return 9999 } // not docker, not PID 1 -> systemd branch
+	parentExited := make(chan int, 1)
+	exitFunc = func(code int) { parentExited <- code }
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
+	ClearCoordinatorClosers()
+	unreg := RegisterCoordinatorCloser(func() {})
+	defer unreg()
+
+	childErr := make(chan error, 1)
+	go func() {
+		r := bufio.NewReader(childFile)
+		if err := writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgReady, PID: 10000, Version: "v3.23.0-fix.31.0"}); err != nil {
+			childErr <- err
+			return
+		}
+		msg, err := readHotswapMessage(r)
+		if err != nil {
+			childErr <- err
+			return
+		}
+		if msg.Type != HotswapMsgTakeover {
+			childErr <- fmt.Errorf("child expected TAKEOVER, got %s", msg.Type)
+			return
+		}
+		childErr <- writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgAck, PID: 10000})
+	}()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	if err := runHotSwapParentHandoff(ctx, cancel, docopt.Opts{}); err != nil {
+		t.Fatalf("runHotSwapParentHandoff returned error: %v", err)
+	}
+	select {
+	case err := <-childErr:
+		if err != nil {
+			t.Fatalf("child simulation error: %v", err)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for child simulation")
+	}
+
+	cancel()
+	select {
+	case code := <-parentExited:
+		if code != 0 {
+			t.Fatalf("parent exited with code %d, want 0", code)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("timed out waiting for parent exit on drain")
+	}
+
+	assertHotSwapEntryRecorded(t, ring, "systemd branch")
 }
 
 // An aborted handoff must not leave a phantom "hotswap" audit entry: the

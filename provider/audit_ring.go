@@ -57,15 +57,6 @@ func initAuditRing() {
 	}
 
 	globalAuditRing = ring
-
-	// A fresh process must not persist immediately: its first
-	// recordAndPersist would write the ring snapshot from before a HotSwap
-	// parent's final flush, clobbering the entries the parent just
-	// persisted. Starting the 30s gate now leaves the parent's flush as
-	// the authoritative on-disk state until the candidate's takeover merge.
-	auditPersistMu.Lock()
-	lastAuditPersist = time.Now()
-	auditPersistMu.Unlock()
 }
 
 // recordProcessStart appends this process's startup to the audit ring so
@@ -78,6 +69,14 @@ func recordProcessStart(candidate bool) {
 	src := "boot"
 	if candidate {
 		src = "hotswap"
+		// A handoff successor must not persist its spawn-time snapshot:
+		// its ring predates the parent's final flush, so writing it would
+		// clobber the authoritative on-disk state. Arm the 30s gate now —
+		// the start entry stays in memory until the takeover merge pulls
+		// the parent's entries in. Normal boots persist immediately.
+		auditPersistMu.Lock()
+		lastAuditPersist = time.Now()
+		auditPersistMu.Unlock()
 	}
 	recordAndPersist(CommandAudit{
 		Timestamp: time.Now(),

@@ -649,13 +649,15 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 	if runtime.GOOS == "windows" {
 		tlog("⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff\n")
 
+		// Commit the handoff (record + flush) BEFORE sending takeover, so
+		// the candidate's post-ACK merge reads a disk that already holds
+		// the event. A rare phantom entry on takeover failure is the
+		// accepted tradeoff for an airtight flush-before-merge ordering.
+		recordHotSwapAndFlush()
+
 		if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 			return err
 		}
-		// Takeover accepted: the handoff is committed, record it. A failed
-		// or aborted takeover above leaves no audit trail of a swap that
-		// never happened.
-		recordHotSwapAndFlush()
 		yieldCoordinatorSession()
 		handoffDrainParent(ctx, cancel, session, parentPID)
 		return nil
@@ -704,13 +706,14 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		// 3. In-place execve: replaces process memory image without altering PID or closing stdout/stderr
 		var cleanEnv []string
 		for _, e := range os.Environ() {
-			if !strings.HasPrefix(e, EnvHotSwap+"=") {
+			if !strings.HasPrefix(e, EnvHotSwap+"=") && !strings.HasPrefix(e, EnvHotSwapExec+"=") {
 				cleanEnv = append(cleanEnv, e)
 			}
 		}
 		// The execve'd successor is not a candidate (no IPC descriptor), but it
 		// IS a handoff successor: keep a marker so its audited start is
-		// labelled hotswap, not boot.
+		// labelled hotswap, not boot. Re-appended so a second in-place hotswap
+		// of the same successor does not accumulate duplicates.
 		cleanEnv = append(cleanEnv, EnvHotSwapExec+"=1")
 
 		// The canary was spawned with sanitizeCandidateArgs, and the in-place
@@ -747,6 +750,11 @@ func runHotSwapParentHandoff(ctx context.Context, cancel context.CancelFunc, opt
 		session.Kill()
 		return fmt.Errorf("%s: %w", msg, ErrNoNotifySocket)
 	}
+
+	// Every abort check has passed: commit the handoff — record it and
+	// flush BEFORE the takeover message so the successor's post-ACK merge
+	// reads a disk that already contains this event.
+	recordHotSwapAndFlush()
 
 	if err := handoffBatonSendTakeover(session, parentPID, childPID); err != nil {
 		return err
