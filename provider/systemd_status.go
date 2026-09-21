@@ -170,28 +170,25 @@ func systemdStatusLine() string {
 		case pct >= statusDegradedBand:
 			word = "degraded"
 		}
-		if word == "degraded" || word == "critical" {
-			return fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%), retrying", word, live, total, pct)
+		line := fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
+		// Proxies the proxy audit engine is holding out are expected to be
+		// down; say so instead of reading their absence as a live outage.
+		// The percentage still reflects the configured set.
+		parked := proxiesParked.Load()
+		if parked > total {
+			parked = total
 		}
-		return fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
+		if parked > 0 {
+			line += fmt.Sprintf(", %d parked by proxy audit", parked)
+		}
+		if proxyAuditPaused.Load() {
+			line += "; proxy audit paused (paid proxy list unreadable)"
+		}
+		if word == "degraded" || word == "critical" {
+			return line + ", retrying"
+		}
+		return line
 	}
-	// Proxies the proxy audit engine is holding out are expected to be down.
-	parked := proxiesParked.Load()
-	if parked > total {
-		parked = total
-	}
-	head := "active"
-	if live < total-parked {
-		head = "partial"
-	}
-	line := fmt.Sprintf("%s: %d/%d proxies authenticated", head, live, total)
-	if parked > 0 {
-		line += fmt.Sprintf(", %d parked by proxy audit", parked)
-	}
-	if proxyAuditPaused.Load() {
-		line += "; proxy audit paused (paid proxy list unreadable)"
-	}
-	return line
 }
 
 // reportProxyStatusToSystemd pushes the current line to systemd. Errors are

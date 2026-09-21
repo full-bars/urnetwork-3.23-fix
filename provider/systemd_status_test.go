@@ -238,15 +238,15 @@ func TestSystemdStatusLineCountsProxyAuditParksAsIntentional(t *testing.T) {
 		paused              bool
 		want                string
 	}{
-		{"parked and everything else up", 50, 47, 3, false, "active: 47/50 proxies authenticated, 3 parked by proxy audit"},
-		{"a real outage on top of parks", 50, 44, 3, false, "partial: 44/50 proxies authenticated, 3 parked by proxy audit"},
-		{"none parked is unchanged", 50, 50, 0, false, "active: 50/50 proxies authenticated"},
-		{"paused says so", 50, 50, 0, true, "active: 50/50 proxies authenticated; proxy audit paused (paid proxy list unreadable)"},
-		{"parks and paused", 50, 47, 3, true, "active: 47/50 proxies authenticated, 3 parked by proxy audit; proxy audit paused (paid proxy list unreadable)"},
-		{"parks never hide a full outage", 50, 0, 3, false, "degraded: 0/50 proxies authenticated, retrying"},
+		{"parked and everything else up", 50, 47, 3, false, "active: 47/50 proxies authenticated (94%), 3 parked by proxy audit"},
+		{"a real outage on top of parks", 50, 44, 3, false, "partial: 44/50 proxies authenticated (88%), 3 parked by proxy audit"},
+		{"none parked is unchanged", 50, 50, 0, false, "active: 50/50 proxies authenticated (100%)"},
+		{"paused says so", 50, 50, 0, true, "active: 50/50 proxies authenticated (100%); proxy audit paused (paid proxy list unreadable)"},
+		{"parks and paused", 50, 47, 3, true, "active: 47/50 proxies authenticated (94%), 3 parked by proxy audit; proxy audit paused (paid proxy list unreadable)"},
+		{"parks never hide a full outage", 50, 0, 3, false, "critical: 0/50 proxies authenticated, retrying"},
 		// A stale count larger than the configured total must not read as more
 		// parked than configured, or push live below a negative expectation.
-		{"parked is clamped to the total", 3, 3, 9, false, "active: 3/3 proxies authenticated, 3 parked by proxy audit"},
+		{"parked is clamped to the total", 3, 3, 9, false, "active: 3/3 proxies authenticated (100%), 3 parked by proxy audit"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
