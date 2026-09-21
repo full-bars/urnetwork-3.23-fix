@@ -62,18 +62,23 @@ func initAuditRing() {
 // recordProcessStart appends this process's startup to the audit ring so
 // `urnet-tools history` shows lifecycle events (an update landing, a
 // crash-restart), not just control-socket config changes. Called right
-// after initAuditRing; the caller passes a flag that is true for a
-// HotSwap successor (candidate process, or a Docker in-place execve
-// successor via URNETWORK_HOTSWAP_EXEC) so it is labelled as such.
-func recordProcessStart(candidate bool) {
+// after initAuditRing. candidate marks a HotSwap successor (spawned
+// candidate, or Docker execve successor via URNETWORK_HOTSWAP_EXEC) for
+// the source label; deferPersist is true only for a SPAWNED candidate,
+// whose ring was loaded before the parent's final flush and must not
+// clobber it until the takeover merge.
+func recordProcessStart(candidate, deferPersist bool) {
 	src := "boot"
 	if candidate {
 		src = "hotswap"
-		// A handoff successor must not persist its spawn-time snapshot:
-		// its ring predates the parent's final flush, so writing it would
-		// clobber the authoritative on-disk state. Arm the 30s gate now —
-		// the start entry stays in memory until the takeover merge pulls
-		// the parent's entries in. Normal boots persist immediately.
+	}
+	if deferPersist {
+		// A spawned candidate's ring predates the parent's final flush,
+		// so writing it would clobber the authoritative on-disk state.
+		// Arm the 30s gate now — the start entry stays in memory until
+		// the takeover merge pulls the parent's entries in. Normal boots
+		// and Docker execve successors (ring loaded after the parent's
+		// flush) persist immediately.
 		auditPersistMu.Lock()
 		lastAuditPersist = time.Now()
 		auditPersistMu.Unlock()

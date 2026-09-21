@@ -2888,8 +2888,10 @@ func provide(opts docopt.Opts) {
 	initAuditRing()
 	// A Docker in-place execve successor is not a candidate process (no
 	// IPC descriptor) but the env marker survives the exec, so both kinds
-	// of handoff successor get labelled hotswap.
-	recordProcessStart(isHotSwapCandidate || os.Getenv(EnvHotSwapExec) == "1")
+	// of handoff successor get labelled hotswap. The persist gate is armed
+	// only for spawned candidates: the Docker successor's ring loaded
+	// after the parent's pre-exec flush, so it persists immediately.
+	recordProcessStart(isHotSwapCandidate || os.Getenv(EnvHotSwapExec) == "1", isHotSwapCandidate)
 	// The cancel function is captured by the control socket's "shutdown"
 	// command so a client can request graceful shutdown remotely.
 	globalControlState.shutdownFn = cancel

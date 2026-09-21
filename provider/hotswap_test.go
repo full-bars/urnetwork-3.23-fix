@@ -353,6 +353,8 @@ func TestHotSwapParentPID1ExecveSuccess(t *testing.T) {
 	prevRing := globalAuditRing
 	globalAuditRing = ring
 	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
 
 	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
 		return &HotswapParentSession{
@@ -1151,6 +1153,8 @@ func TestHotSwapSystemdBranchRecordsEntry(t *testing.T) {
 	prevRing := globalAuditRing
 	globalAuditRing = ring
 	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
 
 	ClearCoordinatorClosers()
 	unreg := RegisterCoordinatorCloser(func() {})

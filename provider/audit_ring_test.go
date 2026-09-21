@@ -192,7 +192,7 @@ func TestForceAuditPersistWritesWithinPersistWindow(t *testing.T) {
 	defer func() { lastAuditPersist = prevPersist }()
 
 	lastAuditPersist = time.Now() // fresh persist: recordAndPersist alone skips disk
-	recordProcessStart(false)
+	recordProcessStart(false, false)
 	recordAndPersist(CommandAudit{
 		Timestamp: time.Now(),
 		Cmd:       "hotswap",
@@ -250,7 +250,7 @@ func TestMergeAuditRingFromDisk(t *testing.T) {
 	globalAuditRing = cand
 	cand.Append(CommandAudit{Timestamp: t0(), Cmd: "set", Key: "metrics", Value: "on", OK: true})
 	lastAuditPersist = time.Now()
-	recordProcessStart(false)
+	recordProcessStart(false, false)
 
 	// Parent records one more entry during the drain window and flushes.
 	globalAuditRing = parent
@@ -352,6 +352,41 @@ func TestRecordHotSwapAndFlushWritesImmediately(t *testing.T) {
 	}
 	if len(saved.Entries) != 1 || saved.Entries[0].Cmd != "hotswap" {
 		t.Fatalf("expected exactly the hotswap entry on disk, got %+v", saved.Entries)
+	}
+}
+
+// recordProcessStart must arm the persist gate only for a SPAWNED
+// candidate: the Docker execve successor's ring loaded after the parent's
+// pre-exec flush, so its start entry can (and should) hit disk right away.
+func TestRecordProcessStartDefersOnlyForSpawnedCandidate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	// Spawned candidate: gate armed before the start entry, nothing on disk.
+	ring := &AuditRing{path: path}
+	globalAuditRing = ring
+	lastAuditPersist = time.Now()
+	recordProcessStart(true, true)
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	if ok, _ := loadJSONWithRecovery(path, &saved); ok {
+		t.Fatal("spawned candidate start entry persisted immediately; gate was not armed")
+	}
+
+	// Docker execve successor: hotswap label, NO deferral — persisted at once.
+	globalAuditRing = &AuditRing{path: path}
+	lastAuditPersist = time.Time{}
+	recordProcessStart(true, false)
+	ok, err := loadJSONWithRecovery(path, &saved)
+	if err != nil || !ok {
+		t.Fatalf("docker successor start entry missing (ok=%v err=%v)", ok, err)
+	}
+	if len(saved.Entries) != 1 || saved.Entries[0].Source != "hotswap" {
+		t.Fatalf("expected hotswap-labelled start on disk, got %+v", saved.Entries)
 	}
 }
 
