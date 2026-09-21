@@ -94,6 +94,7 @@ Usage: urnet-docker <command> [flags]
 Core Commands:
   providers               list all provider containers (identified by in-container JWT)
   status [target]         detailed status of one container
+  top [target]            live full-screen status dashboard inside container
   start|stop|restart [target]   control container lifecycle (docker start/stop/restart)
   logs [target] [N]       follow container logs (RAMLOGS-aware /dev/shm fallback)
   auth [<code>] [target]  authenticate provider inside container
@@ -255,6 +256,23 @@ func cmdDockerStatus(args []string) error {
 		fmt.Fprintf(w, "jwt-expires:\t%s\n", p.JWTExpires.Format("2006-01-02 15:04:05"))
 	}
 	return w.Flush()
+}
+
+// cmdDockerTop opens the live full-screen status dashboard inside the targeted container.
+func cmdDockerTop(args []string) error {
+	providers := DiscoverDocker()
+	t, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		return err
+	}
+	t, rest = consumeDockerBareTarget(providers, t, rest)
+	t, rest = consumeDockerTrailingTarget(providers, t, rest, 1)
+	p, err := selectTargetInteractive(providers, t)
+	if err != nil {
+		return err
+	}
+	inner := append([]string{"urnet-tools", "top"}, rest...)
+	return containerInteractiveExecByName(p.Unit, inner...)
 }
 
 // cmdDockerExec runs a command inside the targeted container — the

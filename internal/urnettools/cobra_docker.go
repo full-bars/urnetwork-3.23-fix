@@ -34,6 +34,7 @@ Core Commands:
   restart                   Restart container
   update                    Update host binary or provider in place (no recreate)
   status                    Detailed status of one container
+  top                       Live full-screen status dashboard inside container
   sn-status                 Subnet 25 node rank, coldkey & miner status
   logs                      Follow container logs
   exec <cmd>                Run arbitrary command inside the container
@@ -109,6 +110,7 @@ func buildDockerRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newDockerProvidersCmd(),
 		newDockerStatusCmd(),
+		newDockerTopCmd(),
 		newDockerSnStatusCmd(),
 		newDockerStartCmd(),
 		newDockerStopCmd(),
@@ -149,6 +151,12 @@ func newDockerStatusCmd() *cobra.Command {
 	return withHelp(newCobraCmd("status [target]", "detailed status of one container", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerStatus(args)
 	}), "Show detailed status for one provider container: image, running state, in-container state dir, network identity, and JWT expiry. Target it with --unit (the container name), --network, --network-id, --state-dir, or a bare container name.", "  urnet-docker status\n  urnet-docker status mynetwork-provider\n  urnet-docker status --network tacogonzalez3000")
+}
+
+func newDockerTopCmd() *cobra.Command {
+	return withHelp(newCobraCmd("top [target]", "live full-screen view of a container", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDockerTop(args)
+	}), "Live full-screen status dashboard for a provider container. Shows throughput graph, proxy pool state, client sessions, and node resources inside the container. Refreshes every 250ms–2s; press +/- to adjust rate, ? for help, q to quit.", "  urnet-docker top\n  urnet-docker top mynetwork-provider\n  urnet-docker top --unit mynetwork-provider")
 }
 
 func newDockerSnStatusCmd() *cobra.Command {
