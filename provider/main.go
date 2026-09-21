@@ -4979,63 +4979,18 @@ func expandPath(p string) string {
 }
 
 func proxyAdd(opts docopt.Opts) {
+	// File-backed providers (Workflow A: --proxy_file=<X>) load their proxies
+	// from that external file on every reload; writes to the internal config
+	// are discarded. So additions must be appended to the source file itself
+	// (then reloaded), not the internal config. Delegate and return.
+	if state, err := readProxyState(); err == nil && state.Source != "" {
+		proxyAddFileBacked(state.Source, opts)
+		return
+	}
+
 	proxyConfig := readProxyConfig()
 
-	allKeyAddress := []string{}
-	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
-		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
-	}
-
-	url, _ := opts.String("--url")
-	if url == "" {
-		url, _ = opts.String("--URL")
-	}
-	if url != "" {
-		proxyAddSource(docopt.Opts{"<url>": url})
-	}
-
-	proxyPath, _ := opts.String("--proxy_file")
-	if proxyPath == "" {
-		proxyPath, _ = opts.String("--file")
-	}
-
-	var remainingKeyAddress []string
-	for _, item := range allKeyAddress {
-		if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
-			proxyAddSource(docopt.Opts{"<url>": item})
-			continue
-		}
-		candidate := expandPath(item)
-		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
-			b, err := os.ReadFile(candidate)
-			if err != nil {
-				panic(err)
-			}
-			for _, line := range strings.Split(string(b), "\n") {
-				line = strings.TrimSpace(line)
-				if line != "" && line[0] != '#' {
-					remainingKeyAddress = append(remainingKeyAddress, line)
-				}
-			}
-			continue
-		}
-		remainingKeyAddress = append(remainingKeyAddress, item)
-	}
-	allKeyAddress = remainingKeyAddress
-
-	if proxyPath != "" {
-		proxyPath = expandPath(proxyPath)
-		b, err := os.ReadFile(proxyPath)
-		if err != nil {
-			panic(err)
-		}
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line != "" && line[0] != '#' {
-				allKeyAddress = append(allKeyAddress, line)
-			}
-		}
-	}
+	allKeyAddress := proxyAddCollectAddresses(opts)
 
 	if proxyConfig.Servers == nil {
 		proxyConfig.Servers = map[string]string{}
@@ -5139,6 +5094,155 @@ keyAddressLoop:
 	}
 
 	writeProxyConfig(proxyConfig)
+}
+
+// proxyAddCollectAddresses gathers the addresses to add from opts, resolving
+// --url/positional-URL sources through proxyAddSource and expanding file
+// arguments inline (a path positional or --proxy_file/--file whose contents
+// are read line-by-line). Shared by the internal-config add path and the
+// file-backed add path so both accept the same inputs.
+func proxyAddCollectAddresses(opts docopt.Opts) []string {
+	allKeyAddress := []string{}
+	if allKeyAddressAny, ok := opts["<key_address>"]; ok {
+		allKeyAddress = append(allKeyAddress, allKeyAddressAny.([]string)...)
+	}
+
+	url, _ := opts.String("--url")
+	if url == "" {
+		url, _ = opts.String("--URL")
+	}
+	if url != "" {
+		proxyAddSource(docopt.Opts{"<url>": url})
+	}
+
+	proxyPath, _ := opts.String("--proxy_file")
+	if proxyPath == "" {
+		proxyPath, _ = opts.String("--file")
+	}
+
+	var remainingKeyAddress []string
+	for _, item := range allKeyAddress {
+		if strings.HasPrefix(item, "http://") || strings.HasPrefix(item, "https://") {
+			proxyAddSource(docopt.Opts{"<url>": item})
+			continue
+		}
+		candidate := expandPath(item)
+		if fi, err := os.Stat(candidate); err == nil && !fi.IsDir() {
+			b, err := os.ReadFile(candidate)
+			if err != nil {
+				panic(err)
+			}
+			for _, line := range strings.Split(string(b), "\n") {
+				line = strings.TrimSpace(line)
+				if line != "" && line[0] != '#' {
+					remainingKeyAddress = append(remainingKeyAddress, line)
+				}
+			}
+			continue
+		}
+		remainingKeyAddress = append(remainingKeyAddress, item)
+	}
+	allKeyAddress = remainingKeyAddress
+
+	if proxyPath != "" {
+		proxyPath = expandPath(proxyPath)
+		b, err := os.ReadFile(proxyPath)
+		if err != nil {
+			panic(err)
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line != "" && line[0] != '#' {
+				allKeyAddress = append(allKeyAddress, line)
+			}
+		}
+	}
+
+	return allKeyAddress
+}
+
+// proxyAddFileBacked appends new proxy addresses to a Workflow A source file
+// (the --proxy_file=... the running provider reads on every reload) instead
+// of the internal config, which a file-backed reload discards. Lines already
+// present in the file are skipped (dedup by full line, matching add-time
+// semantics); the file is written atomically and a reload trigger is fired so
+// the additions take effect without a restart. URL sources are still routed
+// to proxyAddSource — URL sources are additive and work alongside a file
+// source.
+func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
+	release, err := acquireProxyLockWithRetry()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy add: could not acquire proxy lock: %v\n", err)
+		return
+	}
+	defer release()
+
+	allKeyAddress := proxyAddCollectAddresses(opts)
+
+	// Read existing file content, preserving comments/blank lines, and track
+	// which normalized proxy lines are already present.
+	existing := map[string]bool{}
+	var out []string
+	if b, err := os.ReadFile(sourcePath); err == nil {
+		s := strings.TrimSuffix(string(b), "\n")
+		s = strings.TrimSuffix(s, "\r")
+		if len(s) > 0 {
+			for _, line := range strings.Split(s, "\n") {
+				line = strings.TrimSuffix(line, "\r")
+				trimmed := strings.TrimSpace(line)
+				if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+					out = append(out, line)
+					continue
+				}
+				existing[trimmed] = true
+				out = append(out, line)
+			}
+		}
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "proxy add: could not read %s: %v\n", sourcePath, err)
+		return
+	}
+
+	added := 0
+	for _, keyAddress := range allKeyAddress {
+		// Strip a key@ prefix; the source file stores bare host:port:user:pass.
+		proxyAddress := keyAddress
+		if i := strings.Index(keyAddress, "@"); 0 <= i {
+			proxyAddress = keyAddress[i+1:]
+		}
+		trimmed := strings.TrimSpace(proxyAddress)
+		if existing[trimmed] {
+			fmt.Printf("server %s already present in %s\n", trimmed, sourcePath)
+			continue
+		}
+		existing[trimmed] = true
+		out = append(out, trimmed)
+		address, user, password := parseProxyAddress(trimmed)
+		fmt.Printf("added server %s (%s/%s)\n", address, obfuscateUser(user), obfuscatePassword(password))
+		added++
+	}
+
+	if added == 0 {
+		fmt.Println("no new proxies to add")
+		return
+	}
+
+	content := strings.Join(out, "\n") + "\n"
+	if err := atomicWriteFile(sourcePath, []byte(content), 0644); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy add: could not write %s: %v\n", sourcePath, err)
+		return
+	}
+	fmt.Printf("appended %d proxy(ies) to %s\n", added, sourcePath)
+
+	// Apply immediately without restarting: file-backed reloads re-read the
+	// source file, so a reload trigger is all that's needed (paste does the
+	// same).
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+	} else if err := writeReloadTrigger(reloadPath); err != nil {
+		fmt.Fprintf(os.Stderr, "proxy refresh failed: %v\n", err)
+	}
 }
 
 func proxyRemove(opts docopt.Opts) {

@@ -185,15 +185,19 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 		if err != nil {
 			return nil, err
 		}
+	case len(providers) == 1:
+		// The sole provider auto-picks even on a TTY — prompting when there is
+		// exactly one candidate is noise. (Was previously reached only when the
+		// interactive case above did not fire, so update/paste/clear on a
+		// single-provider box popped a pointless picker; reported 2026-09-20.)
+		chosen = providers
+	case len(providers) == 0:
+		return nil, fmt.Errorf("no providers found on this box")
 	case interactive:
 		chosen, err = interactivePick(providers)
 		if err != nil {
 			return nil, err
 		}
-	case len(providers) == 1:
-		chosen = providers
-	case len(providers) == 0:
-		return nil, fmt.Errorf("no providers found on this box")
 	default:
 		// An explicitly persisted default provider (default set) resolves the
 		// no-target case with multiple providers, before any other heuristic.

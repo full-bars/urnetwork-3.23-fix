@@ -193,7 +193,11 @@ func Discover() []Provider {
 // provider-dashboard{,-py,-rs}.service (unrelated monitoring services, not
 // providers) had them swept into discovery, flooding the same-user
 // candidate list and permanently blocking narrowToAccessible's auto-pick.
-var nonProviderSiblingSuffixes = []string{"hub", "update", "sentinel", "dashboard"}
+// tracker: live fleet false-positive (2026-09-20) — a box running
+// provider_tracker (the provider-dashboard-rs companion process) showed up
+// as a duplicate user@mesocyclone provider, confusing default/update/paste
+// and blocking narrowToAccessible's auto-pick.
+var nonProviderSiblingSuffixes = []string{"hub", "update", "sentinel", "dashboard", "tracker"}
 
 // isProviderArg reports whether an executable path/name is a known provider
 // binary. Matches on basename to be resilient to custom install paths, and
