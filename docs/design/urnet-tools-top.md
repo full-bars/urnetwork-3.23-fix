@@ -1,7 +1,7 @@
 # `urnet-tools top`: a live terminal view of a provider (design proposal)
 
 > [!NOTE]
-> **Status: proposal.** Nothing here is implemented. It depends on the [live status snapshot](live-status-snapshot.md) and is built after it. The library choice is the main decision and is called out for review.
+> **Status: implemented, not yet released.** Built on branch `feat/ls-top` on top of the [live status snapshot](live-status-snapshot.md). The design below is kept as written, with the differences from what was built listed under [Implementation notes](#implementation-notes).
 
 ## Problem
 
@@ -67,11 +67,13 @@ If the provider stops answering, the screen stays up, shows `DISCONNECTED` with 
 
 Recommendation: the internal renderer, as `internal/tui`, with the widgets `top` needs (box, sparkline, bar, braille graph, table) and nothing more. The same widgets can later back the `status` sparkline so there is one implementation.
 
+**As built:** the widgets, cell buffer, frame diffing and layout are the internal `internal/tui`, as recommended. The one difference is terminal I/O: `internal/tui/tcellui` uses `tcell` for raw mode, the alternate screen, key decoding and resize instead of `x/term`. That adds one dependency (`tcell`, Apache-2.0) and three small indirect ones (`gdamore/encoding` Apache-2.0, `go-colorful` MIT, `uniseg` MIT), all permissive.
+
 ## Design notes
 
 - **Rendering:** an off-screen cell buffer, diffed against the previous frame so only changed cells are written. Synchronised-update sequences are used where the terminal supports them, to avoid tearing.
 - **Terminal handling:** raw mode through `x/term`, alternate screen, and cursor restored on every exit path including panic and `SIGTERM`. A terminal left in raw mode is the classic TUI failure, so restore is tested explicitly.
-- **Colour:** truecolor where advertised, then 256, then 16, then none. `NO_COLOR` and `TERM=dumb` give a plain layout with no graphs.
+- **Colour:** truecolor where advertised, then 256, then 16, then none. `NO_COLOR` and `TERM=dumb` give a plain layout that draws the graph and bars in ASCII characters instead of braille and colour.
 - **Too small:** below a minimum size, a single-panel compact view instead of a broken layout.
 - **`urtop`:** a third symlink beside the existing `urnet-tools` and `urnetwork` links (`link_tools_into_dir` in the installer); the tool checks its own executable name and behaves as `top`. `urnet-tools update` repairs the link on older installs, as it already does for the PATH links.
 - **Multiple providers and containers:** `tab` cycles through what `Discover()` finds. Container providers reuse the same path `urnet-docker` already uses to reach a container's socket.
@@ -93,3 +95,16 @@ After the snapshot work lands in `urnetwork-3.23-fix`, then ported to `meso-mine
 - **Windows.** The Windows console needs virtual-terminal processing enabled explicitly. `x/sys` is already a dependency so it is possible, but the first version is Linux and macOS; Windows keeps `status` and `dashboard`.
 - **Read-only or actions.** Whether a later version should offer actions (trim proxies, refresh) from inside `top`. First version: no.
 - **`proxy traffic`.** Whether it becomes a `top` view and is retired, or stays as a scriptable command. Leaning: stays, and `top` links to the same data.
+
+## Implementation notes
+
+What was built differs from the proposal in these ways:
+
+- **Terminal I/O** goes through `tcell`, not `x/term` (see [The library decision](#the-library-decision)).
+- **Keys:** `q`, `Esc` and `Ctrl-C` quit; `Tab` and `Shift-Tab` switch provider; `+` and `-` change the refresh rate; `?` shows help. The proposed `p` (proxy detail) is **not** in the first version.
+- **States:** a snapshot state of `starting`, or any state the view does not know, is shown in capitals in a neutral colour rather than as an error.
+- **`--demo`:** a hidden flag that draws synthetic snapshots, computed purely from the clock, so the screen can be seen or captured (for example in `tmux`) on a box with no provider. It skips provider discovery and never touches real state. It is deliberately not in the help text.
+- **`urtop`:** a link to the `urnet-tools` binary, created by the installer and by `urnet-tools update`; the binary behaves as `top` when started under that name.
+- **Not a terminal:** with no interactive terminal on stdout it refuses before doing anything else and points at `urnet-tools status` and `--json`.
+- **Windows** is still not a first-version target; it builds, but is untested there.
+
