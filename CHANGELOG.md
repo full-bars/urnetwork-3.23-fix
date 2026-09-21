@@ -4,6 +4,15 @@ All notable changes to this project are documented here.
 
 ---
 
+## [Unreleased]
+
+### Added
+
+- **Live node snapshot and a live block in `urnet-tools status`**: the provider keeps a snapshot of the node, cached for about a second, and serves it over the control socket as `snapshot`. It carries the billable rate now and as 1 and 5 minute averages with a 10 minute history, active clients and sessions, the proxy pool by status, pressure, memory, descriptors and goroutines, the restart reason, and a flowing, idle, degraded or starting verdict with a hint when idle. `urnet-tools status` shows it as a live block, `urnet-tools status --json` prints it for scripts, and a host with several providers gets a one-line summary of each. A provider that predates the command is handled: the block is skipped, and only `--json` reports it as unavailable.
+- **Restart reason**: `urnet-tools update`, `hotswap` and `restart` record why the provider is about to restart, and the provider reports it after it starts (`update`, `hotswap`, `manual`, `clean`, `unclean` or `first-start`) in the snapshot and as `urnet_restart_reason`.
+- **Resource metrics**: `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds` and `urnet_fd_limit` (the last three on Linux).
+- **Prometheus alert rules in the Monitoring bundle**: `UrnetworkNodeDown` and `UrnetworkRestartLoop` are on by default, and four more (old version, memory near limit, descriptors near limit, no billable traffic) are commented out because their thresholds depend on your fleet. The dashboard gains lifecycle and limit panels. See `docs/Monitoring.md`.
+
 ## [v3.23.0-fix.32.1]
 
 ### Added
