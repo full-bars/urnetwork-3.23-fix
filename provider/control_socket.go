@@ -614,6 +614,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Entries: entries, NextCursor: nextCursor}
 
 	case "shutdown":
+		// Record the operator's remote stop in the audit ring.
+		recordAndPersist(CommandAudit{
+			Timestamp: time.Now(),
+			Cmd:       "shutdown",
+			Source:    "control-socket",
+			OK:        true,
+		})
 		// Trigger the same graceful shutdown path as SIGTERM: cancel
 		// the main context so all goroutines drain, then the deferred
 		// flushRetentionEvents / cleanupControlSocket run.

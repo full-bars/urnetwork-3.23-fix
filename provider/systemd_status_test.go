@@ -104,9 +104,17 @@ func TestSystemdStatusLine(t *testing.T) {
 		want        string
 	}{
 		{"before proxies resolve", 0, 0, "starting: resolving proxies"},
-		{"none authenticated", 3, 0, "degraded: 0/3 proxies authenticated, retrying"},
-		{"some authenticated", 3, 2, "partial: 2/3 proxies authenticated"},
-		{"all authenticated", 3, 3, "active: 3/3 proxies authenticated"},
+		{"none authenticated", 3, 0, "critical: 0/3 proxies authenticated, retrying"},
+		{"two of three live", 3, 2, "degraded: 2/3 proxies authenticated (67%), retrying"},
+		{"all authenticated", 3, 3, "active: 3/3 proxies authenticated (100%)"},
+		{"90% live is active", 10, 9, "active: 9/10 proxies authenticated (90%)"},
+		{"89% live is partial", 100, 89, "partial: 89/100 proxies authenticated (89%)"},
+		{"70% live is partial", 10, 7, "partial: 7/10 proxies authenticated (70%)"},
+		{"69% live is degraded", 100, 69, "degraded: 69/100 proxies authenticated (69%), retrying"},
+		{"50% live is degraded", 10, 5, "degraded: 5/10 proxies authenticated (50%), retrying"},
+		{"49% live is critical", 100, 49, "critical: 49/100 proxies authenticated (49%), retrying"},
+		{"25% live is critical", 100, 25, "critical: 25/100 proxies authenticated (25%), retrying"},
+		{"10% live is critical", 100, 10, "critical: 10/100 proxies authenticated (10%), retrying"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -177,7 +185,7 @@ func TestSystemdStatusLineReloadUpdatesTotal(t *testing.T) {
 
 	setConfiguredProxyCount(5)
 	proxiesAuthenticated.Store(3)
-	if got, want := systemdStatusLine(), "partial: 3/5 proxies authenticated"; got != want {
+	if got, want := systemdStatusLine(), "degraded: 3/5 proxies authenticated (60%), retrying"; got != want {
 		t.Errorf("after setConfiguredProxyCount(5): got %q, want %q", got, want)
 	}
 
@@ -202,7 +210,7 @@ func TestProxyWentDownClampsAtZero(t *testing.T) {
 		t.Errorf("authenticated count after unbalanced down = %d, want 0", got)
 	}
 	proxyBecameLive()
-	if got := systemdStatusLine(); got != "partial: 1/2 proxies authenticated" {
+	if got := systemdStatusLine(); got != "degraded: 1/2 proxies authenticated (50%), retrying" {
 		t.Errorf("after clamp then live, got %q", got)
 	}
 }

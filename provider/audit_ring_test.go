@@ -177,3 +177,50 @@ func TestAuditRing_NilSafe(t *testing.T) {
 		t.Error("nil ring should return empty")
 	}
 }
+
+// The hotswap parent exits via os.Exit without reaching main()'s graceful
+// shutdown persist, so forceAuditPersist must flush entries even inside
+// the 30s persist window or the last commands before an update are lost.
+func TestForceAuditPersistWritesWithinPersistWindow(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	ring := &AuditRing{path: path}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	lastAuditPersist = time.Now() // fresh persist: recordAndPersist alone skips disk
+	recordProcessStart(false)
+	recordAndPersist(CommandAudit{
+		Timestamp: time.Now(),
+		Cmd:       "hotswap",
+		Key:       "version",
+		Value:     RequireVersion(),
+		Source:    "trigger",
+		OK:        true,
+	})
+
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	if ok, _ := loadJSONWithRecovery(path, &saved); ok {
+		t.Fatal("recordAndPersist wrote inside the 30s window — test premise broken")
+	}
+
+	forceAuditPersist()
+	if ok, err := loadJSONWithRecovery(path, &saved); err != nil {
+		t.Fatalf("reload after forceAuditPersist: %v", err)
+	} else if !ok {
+		t.Fatal("audit.json missing after forceAuditPersist")
+	}
+	if len(saved.Entries) != 2 {
+		t.Fatalf("expected both unsaved entries on disk, got %d", len(saved.Entries))
+	}
+	if saved.Entries[0].Cmd != "start" || saved.Entries[0].Source != "boot" {
+		t.Errorf("first entry: %+v, want start/boot", saved.Entries[0])
+	}
+	if saved.Entries[1].Cmd != "hotswap" {
+		t.Errorf("second entry: %+v, want hotswap", saved.Entries[1])
+	}
+}

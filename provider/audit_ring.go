@@ -59,6 +59,26 @@ func initAuditRing() {
 	globalAuditRing = ring
 }
 
+// recordProcessStart appends this process's startup to the audit ring so
+// `urnet-tools history` shows lifecycle events (an update landing, a
+// crash-restart), not just control-socket config changes. Called right
+// after initAuditRing; the caller passes the hot-swap-candidate flag
+// (local to cmdProvide) so a handoff successor is labelled as such.
+func recordProcessStart(candidate bool) {
+	src := "boot"
+	if candidate {
+		src = "hotswap"
+	}
+	recordAndPersist(CommandAudit{
+		Timestamp: time.Now(),
+		Cmd:       "start",
+		Key:       "version",
+		Value:     RequireVersion(),
+		Source:    src,
+		OK:        true,
+	})
+}
+
 // Append adds an entry to the ring buffer (non-blocking, fast).
 func (r *AuditRing) Append(entry CommandAudit) {
 	if r == nil {
