@@ -43,6 +43,7 @@ Performance & Tuning:
   ramlogs <on|off>        RAM LOGS zero disk I/O logging
   optimize                Apply Golden Fleet OS/kernel limits
   set [<k> [<v>|off]]     Show or change runtime tuning overrides
+  get [key] [target]      Show the current value of a runtime override (alias: show)
   fast-auth [on|off]      Bypass auth rate limiter without restart
   config [--json]         Show all provider settings with source and age
   profile [<name>]        Show or set the memory/GC tuning profile
@@ -174,6 +175,7 @@ func buildRootCmd() *cobra.Command {
 		newDoRestartCmd(), // HIDDEN internal entry point for the updater's escalated restart
 		newIPDetectCmd(),
 		newRenameCmd(),
+		newGetCmd(),
 		newHistoryCmd(),
 		newMetricsCmd(),
 		newProfileCmd(),
@@ -452,6 +454,41 @@ func newFastAuthCmd() *cobra.Command {
 			})
 		},
 	}
+}
+
+func newGetCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:                "get [key] [target]",
+		Short:              "show the current value of a runtime override",
+		Long:               "Show the current value of one runtime override applied to the targeted provider. With no key it lists every active override. This is the read-only face of `set`: pass a single key only, never a value — use `set <key> <value>` to change anything. Run 'get help' to list the available keys.",
+		Example:            "  urnet-tools get gomemlimit\n  urnet-tools get --unit urnetwork-native.service\n  urnet-tools show gomemlimit",
+		Aliases:            []string{"show"},
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				printSetHelp()
+				return nil
+			}
+			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				return cmdGet(rest)
+			})
+		},
+	}
+}
+
+// cmdGet implements `urnet-tools get [key] [target]` — a strictly read-only
+// view of the provider's runtime overrides. It reuses the set machinery's
+// read forms (no key = list, one key = value) but rejects any value form so
+// a stray `get gomemlimit 1G` can never silently write.
+func cmdGet(args []string) error {
+	_, rest, err := parseTargetFlags(args)
+	if err != nil {
+		return err
+	}
+	if len(rest) > 1 {
+		return fmt.Errorf("get is read-only: pass a single key (e.g. `urnet-tools get gomemlimit`); to change a value use `urnet-tools set <key> <value>`")
+	}
+	return cmdSet(args, false, false)
 }
 
 func newSetCmd() *cobra.Command {

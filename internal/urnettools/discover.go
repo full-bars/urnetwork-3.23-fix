@@ -166,6 +166,7 @@ func Discover() []Provider {
 	// stopped provider units; on macOS/Windows it is a no-op (those
 	// platforms have no systemd units to enumerate).
 	all = append(all, discoverStoppedFn(all)...)
+	all = dedupRunningProviders(all)
 	sort.SliceStable(all, func(i, j int) bool {
 		if all[i].User != all[j].User {
 			return all[i].User < all[j].User
@@ -179,6 +180,64 @@ func Discover() []Provider {
 		return all[i].PID < all[j].PID
 	})
 	return all
+}
+
+// dedupRunningProviders collapses RUNNING rows that share one
+// (User, StateDir) into a single row. One state dir is owned by at most one
+// live provider — the provider's own state lock makes a second process on
+// the same state dir impossible — so a duplicate RUNNING row is either the
+// same provider discovered through two sources (process + attached unit) or
+// a same-prefix non-provider process that borrowed the default state-dir
+// attribution (live case: `provider_tracker` next to the real provider shows
+// an identical user/net/state-dir row and jams every selection path with
+// false ambiguity). Survivor preference, strongest evidence first:
+//  1. unit-backed row (systemd is the management contract, so the survivor
+//     must keep the unit name for logs/stop routing)
+//  2. exact known provider binary
+//  3. control socket reachable (only a real provider listens there)
+//  4. first row wins on a tie (stable)
+//
+// STOPPED rows are never collapsed: a stopped unit alongside a running
+// manual process legitimately shares the state dir and both must stay
+// visible.
+func dedupRunningProviders(providers []Provider) []Provider {
+	type key struct{ user, stateDir string }
+	out := make([]Provider, 0, len(providers))
+	byKey := map[key]int{}
+	for _, p := range providers {
+		if !p.Running || p.StateDir == "" || p.User == "" {
+			out = append(out, p)
+			continue
+		}
+		k := key{p.User, p.StateDir}
+		if j, ok := byKey[k]; ok {
+			// A better-evidenced challenger replaces the survivor.
+			if runningProviderRank(out[j]) < runningProviderRank(p) {
+				out[j] = p
+			}
+			continue
+		}
+		byKey[k] = len(out)
+		out = append(out, p)
+	}
+	return out
+}
+
+// runningProviderRank orders the survival evidence for
+// dedupRunningProviders; higher wins. A unit-backed row is the strongest
+// (systemd owns lifecycle and logs), then an exact known binary name, then
+// a reachable control socket.
+func runningProviderRank(p Provider) int {
+	if p.Unit != "" {
+		return 30
+	}
+	if isExactProviderBinary(p.Binary) {
+		return 20
+	}
+	if controlSocketReachable(p) {
+		return 10
+	}
+	return 0
 }
 
 // nonProviderSiblingSuffixes are "-<suffix>" segments that follow a known
