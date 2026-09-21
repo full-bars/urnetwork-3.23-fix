@@ -3552,6 +3552,9 @@ func provide(opts docopt.Opts) {
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
+					// Do not carry the parent's socket closer into the hotswap
+					// commit point: this process never bound that socket.
+					controlSocketQuiesceForHotSwap = nil
 				} else {
 					cleanupControlSocket = cleanup
 					controlSocketQuiesceForHotSwap = cleanupControlSocket
@@ -3559,6 +3562,7 @@ func provide(opts docopt.Opts) {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()
 							cleanupControlSocket = nil
+							controlSocketQuiesceForHotSwap = nil
 						}
 					})
 				}

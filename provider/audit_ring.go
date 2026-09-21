@@ -153,6 +153,9 @@ func (r *AuditRing) hasLocked(want CommandAudit) bool {
 		} else {
 			e = r.entries[(r.head+i)%len(r.entries)]
 		}
+		// hasLocked treats same-instant identical commands as one (idempotent
+		// config sets ARE one state change), trading a false dedupe for the
+		// timezone-correct dedupe that == cannot provide.
 		if e.Cmd == want.Cmd && e.Key == want.Key && e.Value == want.Value &&
 			e.Source == want.Source && e.OK == want.OK && e.Error == want.Error &&
 			e.Timestamp.Equal(want.Timestamp) {
