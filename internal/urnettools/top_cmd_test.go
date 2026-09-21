@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
@@ -72,5 +73,84 @@ func TestCmdTopReportsAScreenThatCannotOpen(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error %q should mention %q", err, want)
 		}
+	}
+}
+
+// --demo feeds synthetic snapshots so the screen can be looked at (and
+// captured in tmux) without a provider. It must not discover providers: it is
+// for a box that has none, and it must never read or write real state.
+func TestCmdTopDemoSkipsDiscoveryAndNeedsNoProvider(t *testing.T) {
+	discovered, opened := stubTopCmd(t, true, nil, errors.New("stop before drawing"))
+
+	err := cmdTop([]string{"--demo"})
+	if err == nil || !strings.Contains(err.Error(), "stop before drawing") {
+		t.Fatalf("--demo with no providers should reach the screen, got %v", err)
+	}
+	if *discovered != 0 {
+		t.Fatalf("--demo must not discover providers, discovery ran %d times", *discovered)
+	}
+	if *opened != 1 {
+		t.Fatalf("the screen should be opened once, got %d", *opened)
+	}
+}
+
+func TestStripDemoFlag(t *testing.T) {
+	cases := []struct {
+		in       []string
+		demo     bool
+		wantRest []string
+	}{
+		{nil, false, nil},
+		{[]string{"--demo"}, true, nil},
+		{[]string{"--interval", "2s", "--demo", "--unit", "x"}, true, []string{"--interval", "2s", "--unit", "x"}},
+		{[]string{"--unit", "x"}, false, []string{"--unit", "x"}},
+	}
+	for _, c := range cases {
+		demo, rest := stripDemoFlag(c.in)
+		if demo != c.demo || strings.Join(rest, " ") != strings.Join(c.wantRest, " ") {
+			t.Errorf("stripDemoFlag(%v) = %v, %v; want %v, %v", c.in, demo, rest, c.demo, c.wantRest)
+		}
+	}
+}
+
+func TestDemoSourceProducesValidSnapshotsThatMove(t *testing.T) {
+	t0 := time.Date(2026, 9, 21, 12, 0, 0, 0, time.UTC)
+	now := t0
+	src := newDemoTopSource(func() time.Time { return now })
+
+	first, err := src.Fetch(Provider{})
+	if err != nil || first == nil {
+		t.Fatalf("demo fetch: %v %v", first, err)
+	}
+	if got := len(first.Rate.HistoryBps); got != 600 {
+		t.Fatalf("history should be a full 10 minute ring of 600, got %d", got)
+	}
+	for i, v := range first.Rate.HistoryBps {
+		if v < 0 {
+			t.Fatalf("history[%d] = %v is negative", i, v)
+		}
+	}
+	switch first.State {
+	case "starting", "degraded", "idle", "flowing":
+	default:
+		t.Fatalf("state %q is not one the real snapshot uses", first.State)
+	}
+	if first.Proxies.Up+first.Proxies.Degraded+first.Proxies.Connecting+first.Proxies.Dead == 0 {
+		t.Fatal("demo needs proxies to draw the pool panel")
+	}
+
+	now = t0.Add(37 * time.Second)
+	later, _ := src.Fetch(Provider{})
+	if later.UptimeSeconds <= first.UptimeSeconds {
+		t.Fatal("uptime must advance with the clock")
+	}
+	if later.Rate.NowBps == first.Rate.NowBps && later.Rate.HistoryBps[599] == first.Rate.HistoryBps[599] {
+		t.Fatal("the demo rate must move over time or the graph shows nothing")
+	}
+	// Deterministic: the same instant gives the same picture (goldens and
+	// screen captures depend on it).
+	again, _ := src.Fetch(Provider{})
+	if again.Rate.NowBps != later.Rate.NowBps {
+		t.Fatal("demo output must be a pure function of the clock")
 	}
 }

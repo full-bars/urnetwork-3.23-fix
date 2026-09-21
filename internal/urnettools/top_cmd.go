@@ -29,6 +29,9 @@ var (
 // auto-narrowing to the one provider an unprivileged caller can reach, and the
 // same cross-user re-exec under sudo.
 func cmdTop(args []string) error {
+	// --demo is hidden: it draws synthetic snapshots so the screen can be seen
+	// on a box with no provider. It is peeled off before the real parsers.
+	demo, args := stripDemoFlag(args)
 	interval, targetArgs, err := parseTopFlags(args)
 	if err != nil {
 		return err
@@ -38,28 +41,30 @@ func cmdTop(args []string) error {
 	if !topStdoutIsTerminal() {
 		return errors.New("top needs an interactive terminal (stdout is not one); use `urnet-tools status` for one-shot or scripted output, add --json for machine-readable output")
 	}
-	t, _, err := parseTargetFlags(targetArgs)
-	if err != nil {
-		return err
-	}
-	providers := discoverStatusFn()
-	p, _, err := selectTargetOrSoleAccessible(providers, t, false)
-	if err != nil {
-		// Several providers and no target: status summarizes them, top starts
-		// on the first and lets Tab move between them.
-		if hasExplicitTarget(t) || len(providers) < 2 {
+	providers, cur := []Provider{demoProvider()}, 0
+	if !demo {
+		t, _, err := parseTargetFlags(targetArgs)
+		if err != nil {
 			return err
 		}
-		p = providers[0]
-	}
-	if elevated, err := maybeElevateForCrossUser("top", p, args, false, false); elevated {
-		return err
-	}
-	cur := 0
-	for i, q := range providers {
-		if matchKey(q) == matchKey(p) {
-			cur = i
-			break
+		providers = discoverStatusFn()
+		p, _, err := selectTargetOrSoleAccessible(providers, t, false)
+		if err != nil {
+			// Several providers and no target: status summarizes them, top starts
+			// on the first and lets Tab move between them.
+			if hasExplicitTarget(t) || len(providers) < 2 {
+				return err
+			}
+			p = providers[0]
+		}
+		if elevated, err := maybeElevateForCrossUser("top", p, args, false, false); elevated {
+			return err
+		}
+		for i, q := range providers {
+			if matchKey(q) == matchKey(p) {
+				cur = i
+				break
+			}
 		}
 	}
 
@@ -74,7 +79,11 @@ func cmdTop(args []string) error {
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
 	m := newTopModel(providers, cur, interval, tui.ThemeFromEnv(os.Getenv), time.Now)
-	return runTop(ctx, scr, m, topSourceFn(), topTick)
+	src := topSourceFn()
+	if demo {
+		src = newDemoTopSource(time.Now)
+	}
+	return runTop(ctx, scr, m, src, topTick)
 }
 
 // parseTopFlags pulls --interval out of args, leaving the target flags for the
