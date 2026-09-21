@@ -288,6 +288,10 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 	switch {
 	case total == 0:
 		return "no proxies configured"
+	case proxies.Up == 0 && total == 1:
+		// A node with no proxies still runs its native direct connection as
+		// proxy[0], so a lone entry is that connection, not a proxy.
+		return "the only connection is dead or connecting"
 	case proxies.Up == 0:
 		return fmt.Sprintf("all %d proxies dead or connecting", total)
 	}
