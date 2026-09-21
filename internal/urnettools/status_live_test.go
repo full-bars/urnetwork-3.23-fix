@@ -5,6 +5,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -46,6 +47,17 @@ func fixtureRaw(t *testing.T, name string) json.RawMessage {
 	return b
 }
 
+// statusStateDirLabel is the state directory row label of this platform's
+// existing status output (see the test below for why it differs).
+func statusStateDirLabel() string { return statusStateDirLabelFor(runtime.GOOS) }
+
+func statusStateDirLabelFor(goos string) string {
+	if goos == "windows" || goos == "darwin" {
+		return "state dir:"
+	}
+	return "state-dir:"
+}
+
 func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
@@ -54,10 +66,10 @@ func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, "state-dir:") || !strings.Contains(out, "Live (provider v3.23.0-fix.32.1)") {
+	if !strings.Contains(out, statusStateDirLabel()) || !strings.Contains(out, "Live (provider v3.23.0-fix.32.1)") {
 		t.Fatalf("want classic output then live block:\n%s", out)
 	}
-	if strings.Index(out, "state-dir:") > strings.Index(out, "Live (provider") {
+	if strings.Index(out, statusStateDirLabel()) > strings.Index(out, "Live (provider") {
 		t.Fatalf("live block must come after the existing output:\n%s", out)
 	}
 }
@@ -70,7 +82,7 @@ func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if strings.Contains(out, "Live (provider") || !strings.Contains(out, "state-dir:") {
+	if strings.Contains(out, "Live (provider") || !strings.Contains(out, statusStateDirLabel()) {
 		t.Fatalf("existing output must stand alone:\n%s", out)
 	}
 }
@@ -92,7 +104,7 @@ func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
 	if got["version"] != want["version"] || got["state"] != "flowing" {
 		t.Fatalf("got %v", got)
 	}
-	if strings.Contains(out, "state-dir:") {
+	if strings.Contains(out, statusStateDirLabel()) {
 		t.Fatalf("--json must not print the classic output:\n%s", out)
 	}
 }
@@ -126,7 +138,7 @@ func TestStatusManyProvidersNoTargetPrintsSummary(t *testing.T) {
 			t.Errorf("summary missing %q:\n%s", want, out)
 		}
 	}
-	if strings.Contains(out, "state-dir:") {
+	if strings.Contains(out, statusStateDirLabel()) {
 		t.Errorf("summary must not print the detail view:\n%s", out)
 	}
 }
@@ -178,5 +190,24 @@ func TestStatusJSONSurvivesCrossUserElevation(t *testing.T) {
 	}
 	if strings.Join(got, " ") != "status --json" {
 		t.Fatalf("elevated argv = %v", got)
+	}
+}
+
+// The existing status output differs by platform: Linux prints a table with a
+// "state-dir:" row, while Windows and macOS print a styled panel whose row is
+// "state dir:". The live-block tests look for that row to tell "the existing
+// output" from the live block, so they must ask which label this platform uses.
+func TestStatusStateDirLabelMatchesWhatEachPlatformPrints(t *testing.T) {
+	for goos, want := range map[string]string{"linux": "state-dir:", "windows": "state dir:", "darwin": "state dir:"} {
+		if got := statusStateDirLabelFor(goos); got != want {
+			t.Errorf("statusStateDirLabelFor(%q) = %q, want %q", goos, got, want)
+		}
+	}
+	// The label promised for Windows and macOS must really be in the panel they render.
+	panel := captureStdout(t, func() {
+		renderStatusPanel(Provider{User: "u", StateDir: t.TempDir(), Running: true})
+	})
+	if !strings.Contains(panel, statusStateDirLabelFor("windows")) {
+		t.Fatalf("the styled panel used on Windows and macOS has no %q row:\n%s", statusStateDirLabelFor("windows"), panel)
 	}
 }
