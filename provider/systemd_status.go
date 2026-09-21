@@ -24,7 +24,7 @@ var (
 	// deliberately holding out, and proxyAuditPaused is whether it is unable to
 	// act. Parked proxies are configured but not authenticated on purpose, so
 	// they must not read as an outage in the line.
-	proxiesParked  atomic.Int64
+	proxiesParked    atomic.Int64
 	proxyAuditPaused atomic.Bool
 )
 
