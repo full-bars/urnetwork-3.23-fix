@@ -9,6 +9,7 @@ package tcellui
 
 import (
 	"sync"
+	"sync/atomic"
 
 	"github.com/gdamore/tcell/v2"
 	"github.com/urnetwork/connect/internal/tui"
@@ -71,6 +72,10 @@ type screen struct {
 	events chan Event
 	done   chan struct{}
 	once   sync.Once
+	// resized is set by the input goroutine and consumed by Draw, so the
+	// repaint that tcell wants after a resize happens on the drawing goroutine
+	// rather than racing it.
+	resized atomic.Bool
 }
 
 // Open takes over the controlling terminal with the alternate screen and raw
@@ -110,6 +115,9 @@ func (self *screen) Close() {
 // Draw copies the buffer cell by cell. tcell keeps its own back buffer and
 // sends only what changed, so there is no need to diff here.
 func (self *screen) Draw(b *tui.Buffer) {
+	if self.resized.Swap(false) {
+		self.s.Sync()
+	}
 	self.s.Clear()
 	w, h := self.s.Size()
 	for y := 0; y < min(b.Height(), h); y++ {
@@ -161,9 +169,9 @@ func (self *screen) send(ev Event) bool {
 func (self *screen) translate(ev tcell.Event) (Event, bool) {
 	switch ev := ev.(type) {
 	case *tcell.EventResize:
-		// The terminal changed under tcell's back buffer; resync so the next
-		// Draw repaints everything at the new size.
-		self.s.Sync()
+		// The terminal changed under tcell's back buffer; the next Draw resyncs
+		// it and repaints everything at the new size.
+		self.resized.Store(true)
 		w, h := self.s.Size()
 		return Event{Kind: EventResize, W: w, H: h}, true
 	case *tcell.EventKey:

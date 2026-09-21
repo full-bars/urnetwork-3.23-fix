@@ -31,6 +31,7 @@ Core Commands:
   hotswap                 Swap provider process with no gap; proxies rebuild ~30s
   self-update             Update this tool binary itself
   status                  Show provider service status
+  top [--interval D]      Live full-screen view of a provider (also: urtop)
   logs [target] [N]       Show recent logs, then follow (N lines, default 250)
   dashboard               Status panel: state, settings, sources, warnings
   history [limit]         Show the provider's command audit trail
@@ -139,6 +140,7 @@ func buildRootCmd() *cobra.Command {
 	rootCmd.AddCommand(
 		newProvidersCmd(),
 		newStatusCmd(),
+		newTopCmd(),
 		newSnStatusCmd(),
 		newStartCmd(),
 		newStopCmd(),
@@ -235,6 +237,14 @@ func newStatusCmd() *cobra.Command {
 			return cmdStatus(rest)
 		})
 	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
+}
+
+func newTopCmd() *cobra.Command {
+	return withHelp(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+			return cmdTop(rest)
+		})
+	}), "Open a live, full-screen view of one provider: throughput graph for the last 10 minutes, current and average rate, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; + and - change the refresh rate; ? shows help. When the provider stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 250ms).", "  urnet-tools top\n  urnet-tools top --network tacogonzalez3000\n  urnet-tools top --interval 500ms\n  urtop")
 }
 
 func newSnStatusCmd() *cobra.Command {
