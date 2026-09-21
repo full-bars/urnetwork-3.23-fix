@@ -3028,6 +3028,7 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runLifetimeCollector(ctx) })
 	go connect.HandleError(func() { runProfitHeartbeat(ctx) })
 	go connect.HandleError(func() { runBillableRateWriter(ctx) })
+	go connect.HandleError(func() { runNodeSnapshotSampler(ctx) })
 
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)

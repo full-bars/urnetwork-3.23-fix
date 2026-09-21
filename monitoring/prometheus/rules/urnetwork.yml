@@ -1,0 +1,162 @@
+# Alert rules for URnetwork providers. Loaded by prometheus.yml (rule_files).
+#
+# Two rules are enabled: UrnetworkNodeDown and UrnetworkRestartLoop.
+# The rules under "Optional rules" further down are commented out. Read the
+# note above each one, adjust the threshold to your fleet, then remove the
+# leading "# " to enable it. See docs/Monitoring.md.
+#
+# These rules only make alerts visible in Prometheus (http://127.0.0.1:9090/alerts)
+# and in the "ALERTS" series. Nothing is sent anywhere until you add an
+# Alertmanager and point Prometheus at it.
+#
+# After editing, validate and test with:
+#   promtool check rules prometheus/rules/urnetwork.yml
+#   promtool test rules prometheus/rules/urnetwork.test.yml
+# then reload with:  curl -X POST http://127.0.0.1:9090/-/reload
+
+groups:
+  - name: urnetwork
+    rules:
+      # A node whose /metrics endpoint has not answered for 5 minutes.
+      - alert: UrnetworkNodeDown
+        expr: up{job="urnetwork"} == 0
+        for: 5m
+        labels:
+          severity: critical
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} is down"
+          description: >-
+            Prometheus could not scrape {{ $labels.instance }} for 5 minutes.
+            This does NOT tell a stopped provider apart from a provider with
+            metrics switched off, a blocked port or a Tailscale outage, and it
+            does not fire for a node that was removed from targets/providers.yml
+            or never scraped. It says nothing about whether a reachable node is
+            earning.
+
+      # More than 3 restarts of one node within an hour.
+      #
+      # Why resets() on urnet_uptime_seconds and not urnet_startup_restarted:
+      # urnet_uptime_seconds counts up from process start, so every restart
+      # makes it drop, and resets() counts those drops. urnet_startup_restarted
+      # is a gauge that holds one fixed value for the whole life of a process
+      # (1 after an unclean shutdown, 0 otherwise). It never changes during a
+      # run, so increase() over it does not count restarts, and a clean
+      # restart or a systemd restart loop that exits cleanly reads 0 anyway.
+      - alert: UrnetworkRestartLoop
+        expr: resets(urnet_uptime_seconds{job="urnetwork"}[1h]) > 3
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} restarted more than 3 times in the last hour"
+          description: >-
+            The uptime of {{ $labels.instance }} dropped more than 3 times in an
+            hour. This does NOT catch a restart that hides between two scrapes
+            (the node stayed down longer than it had been up, so uptime is
+            higher again on the next scrape), and it does not say why the
+            node restarted. Look at urnet_restart_reason for the reason, and
+            at the node's logs for the cause.
+
+      # ---------------------------------------------------------------------
+      # Optional rules. Commented out on purpose: they need thresholds that fit
+      # your fleet, and a few use metrics only new providers export
+      # (urnet_mem_limit_bytes, urnet_open_fds, urnet_fd_limit). Providers
+      # that do not export a metric never match its rule, so a mixed fleet
+      # is safe. Remove the leading "# " of a block to enable it.
+      # ---------------------------------------------------------------------
+
+      # Optional: a node running a different version from most of the fleet
+      # for more than 7 days.
+      #
+      # Versions are text, so PromQL cannot order them or tell which is newer.
+      # This rule compares each node with the version most nodes run right
+      # now (topk(1, count by (version))) and flags the others. It works while
+      # the majority is on the new version. During a slow rollout, when most
+      # nodes still run the old one, it flags the early upgraders instead. To
+      # pin a version by hand, replace the right-hand side with a literal:
+      #   urnet_info{job="urnetwork", version!="<the version you want>"}
+      # With a tie in the count, topk picks one of the tied versions.
+      # The pending timer is kept in Prometheus memory and restored after a
+      # restart from stored history, so a long outage of Prometheus itself
+      # can restart the 7 days.
+      #
+      # - alert: UrnetworkOldVersion
+      #   expr: >-
+      #     urnet_info{job="urnetwork"}
+      #     unless on (version)
+      #     topk(1, count by (version) (urnet_info{job="urnetwork"}))
+      #   for: 7d
+      #   labels:
+      #     severity: info
+      #   annotations:
+      #     summary: "URnetwork node {{ $labels.instance }} runs {{ $labels.version }}, not the fleet's most common version"
+      #     description: >-
+      #       {{ $labels.instance }} has run a different version from most of
+      #       the fleet for 7 days. This does NOT know which version is newer,
+      #       so it can flag the newest node during a rollout, and it does not
+      #       fire on a fleet that is uniformly out of date.
+
+      # Optional: Go runtime memory close to the memory limit.
+      #
+      # urnet_mem_sys_bytes is what the Go runtime holds from the OS, the
+      # number the Go memory limit is enforced against. The guards skip
+      # nodes with no limit (a limit of 0, or the very large value the Go
+      # runtime reports when none is set).
+      #
+      # - alert: UrnetworkMemoryNearLimit
+      #   expr: >-
+      #     urnet_mem_sys_bytes{job="urnetwork"} / urnet_mem_limit_bytes{job="urnetwork"} > 0.9
+      #     and urnet_mem_limit_bytes{job="urnetwork"} > 0
+      #     and urnet_mem_limit_bytes{job="urnetwork"} < 1e15
+      #   for: 15m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "URnetwork node {{ $labels.instance }} memory is above 90% of its limit"
+      #     description: >-
+      #       Memory obtained from the OS by {{ $labels.instance }} has been
+      #       above 90% of urnet_mem_limit_bytes for 15 minutes. This does NOT
+      #       measure resident memory (see urnet_rss_bytes), memory used by
+      #       other processes on the machine, or a container limit that is
+      #       lower than the Go limit.
+
+      # Optional: open file descriptors close to the limit.
+      #
+      # Linux only. Nodes on other systems do not export these metrics and
+      # never match.
+      #
+      # - alert: UrnetworkFileDescriptorsNearLimit
+      #   expr: >-
+      #     urnet_open_fds{job="urnetwork"} / urnet_fd_limit{job="urnetwork"} > 0.85
+      #     and urnet_fd_limit{job="urnetwork"} > 0
+      #   for: 10m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "URnetwork node {{ $labels.instance }} uses more than 85% of its file descriptors"
+      #     description: >-
+      #       {{ $labels.instance }} has had more than 85% of its descriptor
+      #       limit open for 10 minutes. This does NOT show which kind of
+      #       descriptor is leaking, and it cannot warn about a spike that
+      #       fills the limit between two scrapes.
+
+      # Optional: a node that is up but has billed no traffic for 30 minutes.
+      #
+      # An idle node with no clients is normal, so this can be noisy. Enable
+      # it if your nodes usually have steady demand. The uptime guard keeps
+      # a node that just restarted from firing before it had time to bill.
+      #
+      # - alert: UrnetworkNoBillableTraffic
+      #   expr: >-
+      #     sum by (job, instance) (rate(urnet_billable_bytes_total{job="urnetwork"}[30m])) == 0
+      #     and on (instance) up{job="urnetwork"} == 1
+      #     and on (instance) urnet_uptime_seconds{job="urnetwork"} > 1800
+      #   for: 10m
+      #   labels:
+      #     severity: warning
+      #   annotations:
+      #     summary: "URnetwork node {{ $labels.instance }} is up but billed no traffic for 30 minutes"
+      #     description: >-
+      #       {{ $labels.instance }} answered scrapes but billable bytes did not
+      #       grow for 30 minutes. This does NOT distinguish a broken node
+      #       from a quiet one with no demand, and it does not fire if the
+      #       billable counter is missing altogether.

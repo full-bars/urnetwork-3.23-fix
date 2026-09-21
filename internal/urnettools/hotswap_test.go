@@ -40,7 +40,9 @@ func TestHotswapCobraCommandRegistered(t *testing.T) {
 	for _, c := range cmd.Commands() {
 		if c.Name() == "hotswap" {
 			found = true
-			if !strings.Contains(c.Short, "zero-downtime") {
+			// The line must not promise zero downtime: proxy connections
+			// still rebuild over about 30 s after the swap.
+			if !strings.Contains(c.Short, "no service gap") || !strings.Contains(c.Short, "~30s") || strings.Contains(strings.ToLower(c.Short), "zero-downtime") {
 				t.Errorf("unexpected short description: %s", c.Short)
 			}
 			break

@@ -28,7 +28,7 @@ Core Commands:
   stop                    Stop the provider
   restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)
   update                  Upgrade to the latest version
-  hotswap                 Zero-downtime in-process binary reload
+  hotswap                 Swap provider process with no gap; proxies rebuild ~30s
   self-update             Update this tool binary itself
   status                  Show provider service status
   logs [target] [N]       Show recent logs, then follow (N lines, default 250)
@@ -236,7 +236,7 @@ func newStatusCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service")
+	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network tacogonzalez3000\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
 }
 
 func newSnStatusCmd() *cobra.Command {
@@ -429,11 +429,11 @@ func newOptimizeCmd() *cobra.Command {
 }
 
 func newHotswapCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hotswap", "zero-downtime in-process binary reload", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hotswap", "swap the provider process with no service gap (proxies rebuild ~30s)", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotswap(rest, force, dryRun)
 		})
-	}), "Trigger an in-process zero-downtime HotSwap on a running provider without cycling the unit.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
+	}), "Trigger an in-process HotSwap on a running provider without cycling the unit. The provider process is swapped without a gap in service, but proxy connections still rebuild over about 30 s.", "  urnet-tools hotswap --unit urnetwork-native.service\n  urnet-tools hotswap --force")
 }
 
 func newFastAuthCmd() *cobra.Command {

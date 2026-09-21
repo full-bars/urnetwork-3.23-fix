@@ -5,6 +5,12 @@ global:
   scrape_timeout: 20s
   evaluation_interval: 30s
 
+# Alert rules. Listed by name, not by glob, so the promtool test file next to
+# it is never loaded as rules. Edit the file and reload with:
+#   curl -X POST http://127.0.0.1:9090/-/reload
+rule_files:
+  - /etc/prometheus/rules/urnetwork.yml
+
 scrape_configs:
   - job_name: urnetwork
     metrics_path: /metrics

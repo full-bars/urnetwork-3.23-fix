@@ -36,7 +36,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", or "shutdown"
+	Cmd    string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", or "shutdown"
 	Key    string `json:"key"`
 	Value  string `json:"value,omitempty"`
 	Limit  int    `json:"limit,omitempty"`  // for "history" command
@@ -75,6 +75,9 @@ type controlResponse struct {
 	// MetricsAddrs are the addresses /metrics is listening on, answered by
 	// "status". Empty when metrics is off.
 	MetricsAddrs []string `json:"metrics_addrs,omitempty"`
+	// Snapshot is the live node picture, answered by "snapshot". An older
+	// provider replies "unknown command" instead.
+	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -459,6 +462,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			v = "dev"
 		}
 		return controlResponse{OK: true, BuildVersion: v}
+
+	case "snapshot":
+		return controlResponse{OK: true, Snapshot: nodeSnapshots.Get()}
 
 	case "get":
 		if req.Key == "" {
