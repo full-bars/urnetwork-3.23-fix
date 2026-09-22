@@ -564,15 +564,37 @@ func runHotSwapChildAck(ipcConn io.Writer) error {
 	})
 }
 
-// runHotSwapParentHandoff coordinates spawning the candidate, validating its readiness,
-// yielding the coordinator session, and entering graceful stream drain (or in-place execve for PID 1).
-// controlSocketQuiesceForHotSwap closes the running process's control
-// socket without exiting. Set by cmdProvide once the socket is bound, and
-// used by recordHotSwapAndFlush so no control-socket command can be
-// accepted after the audit commit-point flush: a set/clear landing in the
-// handoff window then fails and falls back to pending_overrides.json,
-// which the successor merges on takeover. Idempotent; safe when nil.
+// runHotSwapParentHandoff coordinates spawning the candidate, validating its
+// readiness, yielding the coordinator session, and entering graceful stream
+// drain (or in-place execve for PID 1).
+//
+// controlSocketQuiesceForHotSwap closes the running process's control socket
+// without exiting. Set by cmdProvide once the socket is bound, and used by
+// recordHotSwapAndFlush so no control-socket command can be accepted after
+// the audit commit-point flush: a set/clear landing in the handoff window
+// then fails and falls back to pending_overrides.json, which the successor
+// merges on takeover. Idempotent; safe when nil.
+var quiesceMu sync.Mutex
 var controlSocketQuiesceForHotSwap func()
+
+// setQuiesceHook installs or clears the quiesce hook. The trigger, the
+// takeover continuation and the shutdown closers all touch the same slot
+// from different goroutines, so every write/read goes through the mutex.
+func setQuiesceHook(f func()) {
+	quiesceMu.Lock()
+	controlSocketQuiesceForHotSwap = f
+	quiesceMu.Unlock()
+}
+
+// quiesceControlSocket runs the installed hook, if any.
+func quiesceControlSocket() {
+	quiesceMu.Lock()
+	f := controlSocketQuiesceForHotSwap
+	quiesceMu.Unlock()
+	if f != nil {
+		f()
+	}
+}
 
 // recordHotSwapAndFlush records the handoff in the audit ring and flushes
 // immediately. The flush must happen before the takeover message is sent:
@@ -581,9 +603,7 @@ var controlSocketQuiesceForHotSwap func()
 // handoff event to the next process. The control socket is quiesced first
 // so nothing accepted after this point can vanish in the parent's memory.
 func recordHotSwapAndFlush() {
-	if controlSocketQuiesceForHotSwap != nil {
-		controlSocketQuiesceForHotSwap()
-	}
+	quiesceControlSocket()
 	recordAndPersist(CommandAudit{
 		Timestamp: time.Now(),
 		Cmd:       "hotswap",

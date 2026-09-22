@@ -82,7 +82,7 @@ type proxyAuditEnv struct {
 	earningsScore  func(addr string, now time.Time) float64
 	earnedRecently func(addr string) bool
 	trackerWarm    func() bool
-	// act is true when parks should be executed (self-heal on and hot restart
+	// act is true when parks should be executed (proxy audit on AND hot restart
 	// on). False means observe: log would-park, touch nothing, and give back
 	// anything already parked.
 	act func() bool

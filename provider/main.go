@@ -2922,12 +2922,12 @@ func provide(opts docopt.Opts) {
 			// memory mid-handoff. The wrapper nils the closure on the way
 			// out so a later graceful exit cannot clean up again and delete
 			// the successor's freshly bound socket.
-			controlSocketQuiesceForHotSwap = func() {
+			setQuiesceHook(func() {
 				if cleanupControlSocket != nil {
 					cleanupControlSocket()
 					cleanupControlSocket = nil
 				}
-			}
+			})
 			defer func() {
 				if cleanupControlSocket != nil {
 					cleanupControlSocket()
@@ -3577,22 +3577,22 @@ func provide(opts docopt.Opts) {
 					tlog("[control] candidate failed to start control socket on takeover: %s\n", err)
 					// Do not carry the parent's socket closer into the hotswap
 					// commit point: this process never bound that socket.
-					controlSocketQuiesceForHotSwap = nil
+					setQuiesceHook(nil)
 				} else {
 					cleanupControlSocket = cleanup
 					// Same nil-out wrapper as the parent path: quiesce once,
 					// then this process's socket is no longer ours to remove.
-					controlSocketQuiesceForHotSwap = func() {
+					setQuiesceHook(func() {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()
 							cleanupControlSocket = nil
 						}
-					}
+					})
 					unregSocketCloser = RegisterCoordinatorCloser(func() {
 						if cleanupControlSocket != nil {
 							cleanupControlSocket()
 							cleanupControlSocket = nil
-							controlSocketQuiesceForHotSwap = nil
+							setQuiesceHook(nil)
 						}
 					})
 				}

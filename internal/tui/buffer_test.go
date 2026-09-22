@@ -253,6 +253,16 @@ func TestClone(t *testing.T) {
 	if c.String() != "ell" {
 		t.Fatal("clone shares storage with its source")
 	}
+
+	// A view that clips a wide rune leaves its right half outside: the
+	// clone must not carry a widowed left half at its edge.
+	wide := New(7, 1)
+	wide.Put("漢", 5, 0, Style{})
+	edge := wide.Sub(Rect{X: 4, Y: 0, W: 2, H: 1}).Clone()
+	edgeCell := edge.Cell(1, 0)
+	if edgeCell.Continuation() || edgeCell.Rune == '漢' {
+		t.Fatalf("clipped wide rune must blank the edge half, got %+v", edgeCell)
+	}
 }
 
 func TestStringTrimsTrailingSpacesAndSkipsContinuations(t *testing.T) {

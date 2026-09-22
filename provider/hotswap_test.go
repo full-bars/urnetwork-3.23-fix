@@ -1241,6 +1241,60 @@ func TestHotSwapSystemdBranchRecordsEntry(t *testing.T) {
 // An aborted handoff must not leave a phantom "hotswap" audit entry: the
 // event is recorded only at each branch's commit point, after every abort
 // check (spawn, pre-flight, takeover) has passed.
+// A handoff that fails AFTER the child connects (the child reports a
+// pre-flight error instead of READY) must abort before the commit point, so
+// the audit ring holds no hotswap entry. The spawn-failure abort is covered
+// above; this is the READY-stage abort, which runs past the socket pair.
+func TestHotSwapAbortedAfterConnectRecordsNoEntry(t *testing.T) {
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
+	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
+	if err != nil {
+		t.Fatalf("socketpair: %v", err)
+	}
+	parentFile := os.NewFile(uintptr(fds[0]), "parent")
+	childFile := os.NewFile(uintptr(fds[1]), "child")
+	defer parentFile.Close()
+	defer childFile.Close()
+
+	origSpawn, origExit := spawnCandidateFunc, exitFunc
+	defer func() { spawnCandidateFunc, exitFunc = origSpawn, origExit }()
+
+	getpidFunc = func() int { return 9999 }
+	exitFunc = func(code int) {}
+	spawnCandidateFunc = func(exe string, args []string) (*HotswapParentSession, error) {
+		return &HotswapParentSession{
+			parentFd: parentFile,
+			Reader:   bufio.NewReader(parentFile),
+			Writer:   parentFile,
+		}, nil
+	}
+
+	ring := &AuditRing{path: t.TempDir() + "/audit.json"}
+	prevRing := globalAuditRing
+	globalAuditRing = ring
+	defer func() { globalAuditRing = prevRing }()
+
+	childErr := make(chan error, 1)
+	go func() {
+		childErr <- writeHotswapMessage(childFile, HotswapMessage{Type: HotswapMsgError, Error: "pre-flight failed"})
+	}()
+
+	if err := runHotSwapParentHandoff(context.Background(), func() {}, docopt.Opts{}); err == nil {
+		t.Fatal("expected handoff to abort on the child's pre-flight error")
+	}
+	entries, _ := ring.Entries(10, "")
+	for _, e := range entries {
+		if e.Cmd == "hotswap" {
+			t.Fatalf("aborted-after-connect handoff recorded a hotswap entry: %+v", e)
+		}
+	}
+	if err := <-childErr; err != nil {
+		t.Fatalf("child write: %v", err)
+	}
+}
+
 func TestHotSwapAbortedHandoffRecordsNoEntry(t *testing.T) {
 	origSpawn := spawnCandidateFunc
 	defer func() { spawnCandidateFunc = origSpawn }()

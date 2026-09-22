@@ -7,7 +7,7 @@ import (
 	"testing"
 )
 
-// F1 regression: proxy_audit must be a full control key so that
+// Regression guard: proxy_audit must be a full control key so that
 // `urnet-tools proxy audit on|off` persists through the set transaction
 // instead of reverting to observe mode on the next restart. The key was
 // missing from controlKeys, making the store reject the set silently and
@@ -24,11 +24,11 @@ func TestControlState_ProxyAuditKeyLive(t *testing.T) {
 	}
 }
 
-// TestControlKeys_LiveInvariants is the class-level guard for the F1 bug:
+// TestControlKeys_LiveInvariants is the class-level guard: every key
 // every key blessed for live side effects or a live default must be a real
 // control key, or set/clear reject it and the live wiring is unreachable.
-// proxy_audit was in liveEffectKeys and validateControlValue but missing
-// from controlKeys, and nothing caught it; this loop fails on exactly that.
+// blessed for live effects or a default must be a control key. A key in
+// one map but missing from controlKeys fails set/clear silently.
 func TestControlKeys_LiveInvariants(t *testing.T) {
 	for k := range liveEffectKeys {
 		if !controlKeys[k] {
@@ -69,7 +69,7 @@ func TestControlState_ProxyAuditValidateAndRoundtrip(t *testing.T) {
 	}
 }
 
-// F2 regression: the parent's control-socket cleanup is idempotent. The
+// Regression guard: the parent's control-socket cleanup is idempotent. The
 // quiesce at the hotswap commit point removes the socket; a second call on
 // the graceful-exit path must not delete the SUCCESSOR's socket, which it
 // has since bound at the same path. This test reproduces exactly that
@@ -109,5 +109,46 @@ func TestControlSocketCleanup_IdempotentAcrossSuccessor(t *testing.T) {
 	}
 	if _, err := os.Stat(path); err != nil {
 		t.Fatalf("parent's second cleanup deleted the successor's socket at %s: %v", path, err)
+	}
+}
+
+// The audit control actions must persist through the REAL handler, not a
+// hand-copied lock sequence: on/off go through the set transaction and the
+// release gate refuses an empty address server-side.
+func TestControlSocketAuditActionsPersist(t *testing.T) {
+	oldHome := os.Getenv("HOME")
+	os.Setenv("HOME", t.TempDir())
+	t.Cleanup(func() { os.Setenv("HOME", oldHome) })
+
+	h := newAuditHarness("audit-driver:1")
+	currentProxyAuditor.Store(h.g)
+	t.Cleanup(func() {
+		currentProxyAuditor.Store(nil)
+		// The toggle path leaves a runtime override behind; clear it so a
+		// later test in the same process is not forced into the last state.
+		proxyAuditOverride.Store(nil)
+	})
+
+	state := newControlState()
+
+	resp := handleControlRequest(state, controlRequest{Cmd: "audit", Action: "on"})
+	if !resp.OK {
+		t.Fatalf("audit on rejected: %v", resp.Error)
+	}
+	if v, ok := state.get("proxy_audit"); !ok || v != "on" {
+		t.Fatalf("audit on did not persist: %q %v", v, ok)
+	}
+
+	resp = handleControlRequest(state, controlRequest{Cmd: "audit", Action: "off"})
+	if !resp.OK {
+		t.Fatalf("audit off rejected: %v", resp.Error)
+	}
+	if v, ok := state.get("proxy_audit"); !ok || v != "off" {
+		t.Fatalf("audit off did not persist: %q %v", v, ok)
+	}
+
+	resp = handleControlRequest(state, controlRequest{Cmd: "audit", Action: "release"})
+	if resp.OK || !strings.Contains(resp.Error, "requires an address") {
+		t.Fatalf("empty release: OK=%v err=%q, want refused", resp.OK, resp.Error)
 	}
 }
