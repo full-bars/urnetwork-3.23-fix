@@ -2103,6 +2103,7 @@ func (self *TcpSequence) Run() {
 	)
 	if err != nil {
 		self.log.V(1).Infof("[init]tcp connect error = %s\n", err)
+		MessagePoolReturn(packet)
 		return
 	}
 	self.UpdateLastActivityTime()
