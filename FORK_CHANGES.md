@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.2
+**Current Version**: v3.23.0-fix.32.3
 
 ---
 
@@ -3506,3 +3506,11 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 ## 174. v32.2: Security Blocklist Sync (PR #667)
 
 - CFAA content-filtering blocklist refreshed.
+
+## 175. v32.3: Message-Pool Dial-Failure Buffer Fix (PR #677)
+
+Rebalances the fork with the upstream connect fix, which shipped upstream but never made it into the fork.
+
+**Files Modified**: `ip.go`, `ip_synack_leak_test.go`.
+
+- **Pooled-buffer leak on upstream connect failure**: in the TCP sequence's syn-plus-ack path, when the probe connection to the upstream peer failed, the pooled packet was released without returning its byte buffer to the message pool. On a node where many dials fail, the pool grows without bound. The dial-failure branch now returns the buffer exactly once, covered by a regression test locked to the ownership contract. Applying the fix to an existing node stops new leaks on its next connection; a restart reclaims the memory the old process pinned.
