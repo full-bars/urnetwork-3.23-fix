@@ -45,7 +45,7 @@ jobs:
         run: |
           set -euo pipefail
           hits=""
-          hits+=$(git grep -nE '^(<<<<<<<|>>>>>>>)' -- . || true)
+          hits+=$(git grep -nE '^(<<<<<<<|\|{7}|>>>>>>>)' -- . || true)
           # "=======" alone is a legit setext underline in Markdown, so only
           # flag it in code/shell files.
           hits+=$(git grep -nE '^=======$' -- '*.go' '*.sh' || true)

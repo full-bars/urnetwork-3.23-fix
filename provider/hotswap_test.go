@@ -1146,6 +1146,15 @@ func assertHotSwapEntryRecorded(t *testing.T, ring *AuditRing, label string) {
 // takeover message: this exercises the branch end-to-end (READY ->
 // TAKEOVER -> ACK -> drain) and asserts the commit-point entry exists.
 func TestHotSwapSystemdBranchRecordsEntry(t *testing.T) {
+	// Run this regardless of the ambient environment: the pre-flight gate
+	// fires when INVOCATION_ID is set but NOTIFY_SOCKET is empty, and either
+	// var can leak into the test process depending on test order (a leaked
+	// INVOCATION_ID made this flaky under -shuffle on CI). Pin both to empty
+	// so the systemd branch selection below is what drives the flow, and no
+	// sdNotify dial leaks through.
+	t.Setenv("INVOCATION_ID", "")
+	t.Setenv("NOTIFY_SOCKET", "")
+
 	fds, err := syscall.Socketpair(syscall.AF_UNIX, syscall.SOCK_STREAM, 0)
 	if err != nil {
 		t.Fatalf("socketpair: %v", err)
