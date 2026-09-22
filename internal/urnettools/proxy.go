@@ -716,9 +716,6 @@ func cmdProxyAuditTarget(p Provider, positionals []string, dryRun bool) error {
 		if as == nil {
 			as = resp.Audit
 		}
-		if as == nil {
-			as = resp.Governor
-		}
 		lines := formatProxyAuditStatus(as, time.Now())
 		if len(lines) == 0 {
 			fmt.Println("proxy audit: observing only, nothing to report yet")

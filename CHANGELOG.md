@@ -1,46 +1,26 @@
-D
-- **Audit ring now records lifecycle events** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): `urnet-tools history` previously showed only `set` and `clear` config changes. It now also records process start (with the version), the hotswap handoff, and control-socket shutdown. After an update the sequence reads `hotswap` on the retired process, then `start` with the new version on the successor.
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- **Audit ring now records lifecycle events** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): `urnet-tools history` previously showed only `set` and `clear` config changes. It now also records process start (with the version), the hotswap handoff, and control-socket shutdown. After an update the sequence reads `hotswap` on the retired process, and the successor's ring shows `start` plus the merged `hotswap` (`start` then `hotswap` on spawned candidates, `hotswap` then `start` on the Docker execve path).
 - **Audit entries survive hotswap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): the parent flushes the audit ring at the handoff commit point, before the takeover message, on every handover path (systemd, Windows, Docker). The successor merges the ring from disk after takeover, with timezone-safe deduplication, so the last control-socket commands before an update are not lost. The parent quiesces its control socket at the same commit point, so a command accepted after the flush cannot vanish in the parent's memory; it falls back to the pending-overrides queue, which the successor merges.
 - **Live node snapshot and a live block in `urnet-tools status`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/664>): the provider keeps a snapshot of the node, cached for about a second, and serves it over the control socket as `snapshot`. It carries the billable rate now and as 1 and 5 minute averages with a 10 minute history, active clients and sessions, the proxy pool by status, pressure, memory, descriptors and goroutines, the restart reason, and a flowing, idle, degraded or starting verdict with a hint when idle. `urnet-tools status` shows it as a live block, `urnet-tools status --json` prints it for scripts, and a host with several providers gets a one-line summary of each.
 - **Restart reason** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/664>): `urnet-tools update`, `hotswap` and `restart` record why the provider is about to restart, and the provider reports it after it starts (`update`, `hotswap`, `manual`, `clean`, `unclean` or `first-start`) in the snapshot and as `urnet_restart_reason`.
 - **Resource metrics and alert rules** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/664>): `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds` and `urnet_fd_limit` (the last three on Linux); `UrnetworkNodeDown` and `UrnetworkRestartLoop` Prometheus alerts on by default in the Monitoring bundle, plus four commented-out fleet-specific ones. See `docs/Monitoring.md`.
+- **`urnet-tools top`, a full-screen live provider view** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/665>).
+- **Automated proxy audit and quality enforcement** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/666>): `urnet-tools proxy audit on|off|status|release`, parking proxies that grade as junk; status reports parked and paused honestly.
+- **Control unitless providers** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/669>): lifecycle and settings commands work against bare or containerized providers without a systemd unit, state-dir rows are deduplicated, and `urnet-tools get` reads one setting.
+- **File-backed proxy add and paste fixed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/663>): comments and blank lines survive, lock-guarded deduplication, keyed credentials preserved.
+- **Security blocklist sync** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/667>): refreshed the content-filtering blocklist from upstream — a net reduction of about 6,400 IPv4 ranges and 32 IPv6 prefixes after upstream pruning. The shipped file is the sync-time upstream snapshot; upstream has since moved.
 
 ### Changed
 
 - **Provider status uses a sliding severity scale** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): `active` at 90% or more of configured proxies live, `partial` at 70-89%, `degraded` at 50-69%, `critical` below 50% (including zero), with the exact percentage always rendered and clamped at 100. A healthy node with a small dead tail of proxies no longer reads as `partial` forever.
 - **Start entries persist immediately on normal boots** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/668>): only a hotswap successor defers its start entry until the takeover merge; a regular boot keeps writing to disk at once.
 
-- **Live node snapshot, restart reason, resource metrics and alert rules** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/664>): `urnet-tools status` gains a live block and `--json` snapshot output, `urnet-tools update/hotswap/restart` record the restart reason, and the monitoring bundle gains two default alert rules.
-- **`urnet-tools top`, a full-screen live provider view** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/665>).
-- **Automated proxy audit and quality enforcement** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/666>): `urnet-tools proxy audit on|off|status|release`, parking proxies that grade as junk; status reports parked and paused honestly.
-- **Control unitless providers** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/669>): lifecycle and settings commands work against bare or containerized providers without a systemd unit, state-dir rows are deduplicated, and `urnet-tools get` reads one setting.
-- **File-backed proxy add and paste fixed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/663>): comments and blank lines survive, lock-guarded deduplication, keyed credentials preserved.
-- **Security blocklist sync** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/667>).
-
 ---
-- **Live node snapshot and a live block in `urnet-tools status`**: the provider keeps a snapshot of the node, cached for about a second, and serves it over the control socket as `snapshot`. It carries the billable rate now and as 1 and 5 minute averages with a 10 minute history, active clients and sessions, the proxy pool by status, pressure, memory, descriptors and goroutines, the restart reason, and a flowing, idle, degraded or starting verdict with a hint when idle. `urnet-tools status` shows it as a live block, `urnet-tools status --json` prints it for scripts, and a host with several providers gets a one-line summary of each. A provider that predates the command is handled: the block is skipped, and only `--json` reports it as unavailable.
-- **Restart reason**: `urnet-tools update`, `hotswap` and `restart` record why the provider is about to restart, and the provider reports it after it starts (`update`, `hotswap`, `manual`, `clean`, `unclean` or `first-start`) in the snapshot and as `urnet_restart_reason`.
-- **Resource metrics**: `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds` and `urnet_fd_limit` (the last three on Linux).
-- **Prometheus alert rules in the Monitoring bundle**: `UrnetworkNodeDown` and `UrnetworkRestartLoop` are on by default, and four more (old version, memory near limit, descriptors near limit, no billable traffic) are commented out because their thresholds depend on your fleet. The dashboard gains lifecycle and limit panels. See `docs/Monitoring.md`.
-- **`urnet-tools top`, a live full-screen view of a provider**: the last 10 minutes of throughput as a graph, current and average rate, clients, the proxy pool, memory and descriptors, and recent events such as restarts and state changes. It reads only the provider's control socket (the live snapshot above) and changes nothing. Also available as `urtop`, a link the installer and `urnet-tools update` now create. Keys: `q`, `Esc` or `Ctrl-C` quit; `Tab` and `Shift-Tab` switch provider; `+` and `-` change the refresh rate; `?` shows help. When the provider does not answer (stopped, or an older build) the screen stays up, shows `DISCONNECTED` with the reason and a countdown, and resumes by itself. It needs an interactive terminal; use `status` for scripts.
----
-origin/feat/ls-top
-
-## [Unreleased]
-
-### Added
-
-- **Proxy audit**: automated proxy quality auditing and parking (`urnet-tools proxy audit` / `urnet-docker proxy audit`). The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (two bad decidable grades at 0.4 or lower, idle, not earning) with a 6h to 7d backoff ladder, and restores them on a healthy regrade. With proxy audit off it operates in observe-only mode. Guarded by a per-pass cap, a 24h budget, a running floor of `max(10, half)`, a thin-pass check, and a mass-failure breaker. Controllable on the fly via control socket (`urnet-tools proxy audit on|off|status|release`) with affirmative CLI feedback (`✓ ...`). `urnet_proxy_audit_*` gauges export telemetry (with legacy aliases). See `docs/Configuration.md` and `docs/Proxy-Management.md`.
-
-### Fixed
-
-- **Paid grading sampled the same hosts every sweep** on a box with no URL sources: the probe rotation only advanced during URL fetches, so a second grade was not independent of the first. It now rotates once per paid pass.
-
-### Changed
-
-- **Runtime decoupling**: `proxy audit` is an independent runtime feature with its own control socket actions (`audit on|off|status|release`) and does not depend on `self-heal`. `self-heal` remains dedicated to resource-pressure actuators.
-- The systemd status line (`urnet-tools status` on Linux) counts proxies held by proxy audit as intentional: `active: 47/50 proxies authenticated, 3 parked by proxy audit` instead of `partial`, and notes when audit is paused.
-- The paid-grade header comments no longer claim grades are never consulted by anything that changes a proxy: trim shed ranking and proxy audit read them.
 
 ---
 

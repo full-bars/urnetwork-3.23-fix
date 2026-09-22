@@ -380,8 +380,8 @@ func TestRecordHotSwapAndFlushWritesImmediately(t *testing.T) {
 	// so no command accepted after the flush can be lost in the parent's
 	// memory mid-handoff.
 	quiesced := false
-	controlSocketQuiesceForHotSwap = func() { quiesced = true }
-	defer func() { controlSocketQuiesceForHotSwap = nil }()
+	setQuiesceHook(func() { quiesced = true })
+	defer setQuiesceHook(nil)
 
 	recordHotSwapAndFlush()
 

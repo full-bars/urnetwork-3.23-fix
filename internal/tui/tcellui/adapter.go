@@ -72,6 +72,11 @@ type screen struct {
 	events chan Event
 	done   chan struct{}
 	once   sync.Once
+	// mu serializes Draw and Close. tcell's screen state is not
+	// goroutine-safe: a Close (Fini) racing an in-flight Draw (Show/resize)
+	// is a data race (caught on TestTopLoopEndsWhenTheScreenGoesAway), so the
+	// drawing loop and the teardown must never touch tcell concurrently.
+	mu sync.Mutex
 	// resized is set by the input goroutine and consumed by Draw, so the
 	// repaint that tcell wants after a resize happens on the drawing goroutine
 	// rather than racing it.
@@ -107,6 +112,8 @@ func (self *screen) Events() <-chan Event { return self.events }
 // which ends the pump.
 func (self *screen) Close() {
 	self.once.Do(func() {
+		self.mu.Lock()
+		defer self.mu.Unlock()
 		close(self.done)
 		self.s.Fini()
 	})
@@ -115,6 +122,8 @@ func (self *screen) Close() {
 // Draw copies the buffer cell by cell. tcell keeps its own back buffer and
 // sends only what changed, so there is no need to diff here.
 func (self *screen) Draw(b *tui.Buffer) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
 	if self.resized.Swap(false) {
 		self.s.Sync()
 	}
