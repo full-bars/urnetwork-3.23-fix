@@ -1,6 +1,19 @@
 # Changelog
 
-## [Unreleased]
+## [v3.23.0-fix.32.3]
+
+### Fixed
+
+- **Message-pool buffer leak on connect failure** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/677>): the dial-failure branch released the pooled packet without returning its buffer to the pool. It now returns the buffer exactly once, with a regression test. Restart a provider to reclaim memory the leak already took.
+
+### Maintenance
+
+- **Deterministic test suite** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/675>).
+- **Security blocklist sync** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/676>).
+
+---
+
+## [v3.23.0-fix.32.2]
 
 ### Added
 
