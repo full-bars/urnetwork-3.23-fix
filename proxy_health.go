@@ -615,3 +615,19 @@ func DegradedProxies() []DegradedProxyEntry {
 
 	return result
 }
+
+// ResetProxyHealthForTesting clears the process-wide health registry so one
+// unit test cannot observe registrations left behind by a shuffled predecessor.
+// The registry is a package global shared by every proxy test; a proxy that
+// resamples or relaunches keeps its health entry across tests unless the next
+// test clears it, which makes assertions that watch the shared map order
+// dependent. Test-only.
+func ResetProxyHealthForTesting() {
+	proxyHealthMu.Lock()
+	proxyHealthByIndex = map[int]*proxyHealth{}
+	proxyHealthByAddr = map[string]*proxyHealth{}
+	proxyLifetimeRecovered = 0
+	proxyLifetimeLost = 0
+	proxyBaselineSet = false
+	proxyHealthMu.Unlock()
+}
