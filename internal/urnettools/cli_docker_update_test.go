@@ -37,6 +37,22 @@ func TestUpdateTargetFromArgs_NoTargetNoArgs(t *testing.T) {
 	}
 }
 
+// A typo'd or unsupported flag must be refused, not silently dropped: the
+// fall-through auto-targets the lone container and would otherwise run the
+// update anyway.
+func TestUpdateTargetFromArgs_UnknownFlagRejected(t *testing.T) {
+	providers := []Provider{{User: "docker:ps", Unit: "ps"}}
+	for _, flag := range []string{"--bogus", "--dry-runn"} {
+		tt, _, err := updateTargetFromArgs([]string{flag}, providers)
+		if err == nil {
+			t.Fatalf("%s: expected an error, got target %+v", flag, tt)
+		}
+		if !strings.Contains(err.Error(), "unrecognized option") && !strings.Contains(err.Error(), "for self-update") {
+			t.Fatalf("%s: error %q, want unrecognized-option", flag, err)
+		}
+	}
+}
+
 // Host self-update pinning options (--tag/--digest/--url) must NEVER resolve
 // to a container, even a lone one (regression: `update
 // --tag vX` on a single-container box auto-selected the container and

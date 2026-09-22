@@ -151,10 +151,26 @@ func systemdStatusLine() string {
 		default: // proxyResolutionPending or stale OK
 			return "starting: resolving proxies"
 		}
-	case live == 0:
-		return fmt.Sprintf("critical: 0/%d proxies authenticated, retrying", total)
 	default:
-		pct := int(math.Round(float64(live) * 100 / float64(total)))
+		// Parks and pauses are deliberate, not outages: the word is chosen
+		// against the proxies that SHOULD be live (configured minus parked),
+		// while the rendered percentage still reflects the configured set.
+		// The band compares on the true ratio, not the rounded percentage, so
+		// an 89.5% node reads partial, not an accidental active.
+		parked := proxiesParked.Load()
+		if parked > total {
+			parked = total
+		}
+		eff := total - parked
+		ratio := 0.0
+		if total > 0 {
+			ratio = float64(live) / float64(total)
+		}
+		effRatio := ratio
+		if eff > 0 {
+			effRatio = float64(live) / float64(eff)
+		}
+		pct := int(math.Round(ratio * 100))
 		if pct > 100 {
 			// live > configured happens transiently when a reload shrinks
 			// the desired set; a >100% figure would be nonsense in
@@ -163,21 +179,16 @@ func systemdStatusLine() string {
 		}
 		word := "critical"
 		switch {
-		case pct >= statusActiveBand:
+		case effRatio*100 >= statusActiveBand:
 			word = "active"
-		case pct >= statusPartialBand:
+		case effRatio*100 >= statusPartialBand:
 			word = "partial"
-		case pct >= statusDegradedBand:
+		case effRatio*100 >= statusDegradedBand:
 			word = "degraded"
 		}
 		line := fmt.Sprintf("%s: %d/%d proxies authenticated (%d%%)", word, live, total, pct)
-		// Proxies the proxy audit engine is holding out are expected to be
-		// down; say so instead of reading their absence as a live outage.
-		// The percentage still reflects the configured set.
-		parked := proxiesParked.Load()
-		if parked > total {
-			parked = total
-		}
+		// The percentage and the park/pause notes always render, even at
+		// zero live: an operator with every proxy parked still sees why.
 		if parked > 0 {
 			line += fmt.Sprintf(", %d parked by proxy audit", parked)
 		}
