@@ -14,6 +14,7 @@ import (
 	"runtime/debug"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"syscall"
 	"time"
@@ -161,9 +162,16 @@ func startControlSocket(ctx context.Context, state *controlState) (func(), error
 		}
 	}()
 
+	// cleanup is idempotent: the hotswap commit point quiesces this socket
+	// and a later graceful-exit path may call it again. A second call must
+	// not os.Remove(path) — by then the successor may have bound its own
+	// socket at the same path (F2).
+	var cleanupOnce sync.Once
 	cleanup := func() {
-		ln.Close()
-		os.Remove(path)
+		cleanupOnce.Do(func() {
+			ln.Close()
+			os.Remove(path)
+		})
 	}
 	return cleanup, nil
 }
@@ -438,6 +446,9 @@ var liveDefaults = map[string]string{
 	// Clearing an explicit address goes back to auto, rebinding a running
 	// listener on loopback plus Tailscale.
 	"metrics_listen": "auto",
+	// Clearing audit reapplies the runtime default (off = observe mode),
+	// releasing the live override so the persisted value rules.
+	"proxy_audit": "off",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -621,23 +632,48 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			snap := proxyAuditStatusSnapshot()
 			return controlResponse{OK: true, ProxyAudit: snap, Audit: snap, Governor: snap}
 
-		case "on":
-			_ = state.set("proxy_audit", "on")
-			setProxyAuditOverride(true)
-			tlog("✓ [proxy][audit] proxy audit enabled via control socket\n")
-			if a := currentProxyAuditor.Load(); a != nil {
-				go a.runOnce()
+		case "on", "off":
+			val := "off"
+			if req.Action == "on" {
+				val = "on"
 			}
-			return controlResponse{OK: true, Value: "enabled"}
-
-		case "off":
-			_ = state.set("proxy_audit", "off")
-			setProxyAuditOverride(false)
-			tlog("✓ [proxy][audit] proxy audit disabled via control socket\n")
-			if a := currentProxyAuditor.Load(); a != nil {
-				go a.runOnce()
+			// Same persist-then-commit transaction as "set": apply, persist,
+			// roll back memory on failure so disk and memory never disagree
+			// about whether audit is on. The in-memory override alone made
+			// `proxy audit on` revert to observe mode on every restart.
+			state.txMu.Lock()
+			defer state.txMu.Unlock()
+			oldValue, oldMeta, hadOld := state.getWithMeta("proxy_audit")
+			if err := state.set("proxy_audit", val); err != nil {
+				tlog("❌ [control] audit %s rejected: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: err.Error()}
 			}
-			return controlResponse{OK: true, Value: "disabled"}
+			if err := state.persist(); err != nil {
+				state.mu.Lock()
+				if hadOld {
+					state.values["proxy_audit"] = oldValue
+					state.meta["proxy_audit"] = oldMeta
+				} else {
+					delete(state.values, "proxy_audit")
+					delete(state.meta, "proxy_audit")
+				}
+				state.mu.Unlock()
+				tlog("❌ [control] audit %s failed to persist, rolled back: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: "audit applied in memory but failed to persist: " + err.Error()}
+			}
+			if err := applyLiveSideEffect("proxy_audit", val); err != nil {
+				tlog("⚠️ [control] audit %s persisted but live apply failed: %s\n", req.Action, err)
+				return controlResponse{OK: false, Error: "persisted, but failed to apply live: " + err.Error()}
+			}
+			tlog("✓ [proxy][audit] proxy audit %s via control socket (was %s)\n", req.Action, formerValue(oldValue, hadOld))
+			recordAndPersist(CommandAudit{
+				Timestamp: time.Now(),
+				Cmd:       "audit",
+				Key:       "proxy_audit",
+				Value:     val,
+				OK:        true,
+			})
+			return controlResponse{OK: true, Value: val}
 
 		case "release":
 			a := currentProxyAuditor.Load()

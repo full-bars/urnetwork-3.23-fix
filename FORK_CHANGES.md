@@ -3406,7 +3406,6 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 **Impact**: v31.x brings full Windows parity, production-grade observability, resilient update verification, and tighter security boundaries — all while preserving zero-downtime upgrades on Linux.
 
-<<<<<<< HEAD
 ## 164. v31.3–v31.4: Buffer-Leak Fixes and Flow-Honesty (PR #633, #640, #641, #637, #639, #635, #636)
 
 **Purpose**: Upstream-verified fixes for the message pool, the unreliable-flight window, and the receive hold, plus a refreshed content-filtering blocklist and forward-looking release documentation.

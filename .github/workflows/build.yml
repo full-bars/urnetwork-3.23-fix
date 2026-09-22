@@ -29,6 +29,33 @@ env:
   DOCKER_IMAGE_NAME: 3cape/urnetwork-3.23-fix
 
 jobs:
+  # Merge-quality gate: conflict markers must never reach main. Previously a
+  # stray "<<<<<<< HEAD" and a corrupted CHANGELOG head both merged because no
+  # CI job looked for them. This job always runs (ignores paths-ignore) and is
+  # a static scan — deterministic, seconds, no deps.
+  merge-quality:
+    name: merge-quality marker sweep
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+      - name: Sweep tracked files for conflict markers
+        run: |
+          set -euo pipefail
+          hits=""
+          hits+=$(git grep -nE '^(<<<<<<<|>>>>>>>)' -- . || true)
+          # "=======" alone is a legit setext underline in Markdown, so only
+          # flag it in code/shell files.
+          hits+=$(git grep -nE '^=======$' -- '*.go' '*.sh' || true)
+          if [ -n "$hits" ]; then
+            echo "::error::merge conflict markers in tracked files:"
+            echo "$hits"
+            exit 1
+          fi
+          echo "tracked files clean of merge conflict markers"
+
   test:
     name: test (shard ${{ matrix.shard }})
     runs-on: ubuntu-latest
