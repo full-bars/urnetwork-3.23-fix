@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // withTempHome redirects os.UserHomeDir() (and therefore every
@@ -25,6 +27,20 @@ func withTempHome(t *testing.T) string {
 	lastReloadTriggerTime.ts = time.Time{}
 	lastReloadTriggerTime.pending = false // drop any trailing AfterFunc window
 	lastReloadTriggerTime.Unlock()
+	// Pin the trigger debounce to zero for this test. The debounce global is
+	// process-wide and tests that set it to 100ms/500ms restore it to the
+	// 30s default on cleanup, so an order-dependent run can regress its value
+	// and make writeReloadTrigger defer the seq write via time.AfterFunc, which
+	// turns a synchronous seq assertion (want == N right after the trigger) into a timing flake. Pin it here so the write is always
+	// synchronous regardless of what a shuffled predecessor left behind.
+	writeReloadTriggerDebounce = 0
+	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
+	// Isolate the process-wide connect health registry too. A proxy that
+	// resamples or relaunches keeps its health entry across tests; without a
+	// per-test reset, assertions that watch ProxyHealthByAddress() become
+	// order dependent when a shuffled predecessor registers the same address.
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
 	// The probe-config and admission-state TTL caches are process-global and
 	// hold snapshots keyed to the previous HOME; a HOME change invalidates
 	// them, otherwise a config/state read in one test leaks into the next.
