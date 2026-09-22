@@ -3476,3 +3476,34 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Lifecycle events audited (v32.2, PR #668)**: `urnet-tools history` now records process start (version + boot/hotswap source), the hotswap handoff, and control-socket shutdown, in addition to `set`/`clear`. After an update the sequence reads `hotswap` on the retired process, then `start` with the new version.
 - **Sliding severity scale for provider status (v32.2, PR #668)**: `active` >= 90%, `partial` 70-89%, `degraded` 50-69%, `critical` < 50% (including zero), exact percentage always rendered and clamped at 100. Healthy nodes with a small dead-tail of proxies no longer read as `partial` forever.
 - **Start entries persist immediately on normal boots (v32.2, PR #668)**: only a spawned hotswap successor defers its start entry until the takeover merge; the Docker execve successor (whose ring loads after the parent's pre-exec flush) and normal boots write to disk at once.
+
+
+---
+
+## 169. Live Node Snapshot, Restart Reason, Monitoring Alerts (PR #664)
+
+- The provider keeps a cached node snapshot (billable rate with history, clients, sessions, proxy pool by status, pressure, memory, descriptors, restart reason, verdict) served over the control socket as `snapshot`. `urnet-tools status` renders it as a live block; `--json` prints it for scripts.
+- `update`, `hotswap` and `restart` record the restart reason; the provider reports it after start (`update`, `hotswap`, `manual`, `clean`, `unclean`, `first-start`) in the snapshot and as `urnet_restart_reason`.
+- Resource metrics `urnet_mem_limit_bytes`, `urnet_rss_bytes`, `urnet_open_fds`, `urnet_fd_limit`; `UrnetworkNodeDown` and `UrnetworkRestartLoop` alert rules in the monitoring bundle.
+
+## 170. `urnet-tools top` Live Full-Screen View (PR #665)
+
+- A full-screen live provider view built on the snapshot contract; runs on snapshot-capable nodes.
+
+## 171. Automated Proxy Audit & Quality Enforcement Governor (PR #666)
+
+- Automated background grading every 5 minutes; proxies that grade as proven junk are parked with escalating backoff (6h..7d), released on regrade or when the audit is turned off.
+- `urnet-tools proxy audit on|off|status|release` (control socket, persisted, serialized with the ticker); `URNETWORK_PROXY_AUDIT=1` at boot; observe mode logs `would-park`.
+- Status line reports parked counts and pause (unreadable paid list); Prometheus gauges incl. `urnet_proxy_audit_paused`.
+
+## 172. Unitless Provider Control (PR #669)
+
+- Providers without a systemd unit (bare process, container) are targetable and controllable: status, config, set/clear/get, logs, lifecycle via the control socket; state-dir rows deduplicated; `urnet-tools get` reads a single setting.
+
+## 173. File-Backed Proxy Add/Paste (PR #663)
+
+- `proxy add`/`paste` preserve comments, blank lines and indentation; read-modify-write serialized under the shared proxy lock; `key@host:port` credential form preserved.
+
+## 174. v32.2: Security Blocklist Sync (PR #667)
+
+- CFAA content-filtering blocklist refreshed.
