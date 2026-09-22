@@ -71,9 +71,6 @@ type ProxyAuditParked struct {
 	Until time.Time `json:"until"`
 }
 
-type GovernorStatus = ProxyAuditStatus
-type GovernorParked = ProxyAuditParked
-
 // controlResponse is one line response from the control socket.
 type controlResponse struct {
 	OK           bool                   `json:"ok"`
@@ -102,10 +99,7 @@ type controlResponse struct {
 	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`
-	// Governor is the provider's legacy grade governor status, answered by "status".
-	// Nil before its first tick or from a provider that predates it.
-	Governor *ProxyAuditStatus `json:"governor,omitempty"`
-	Raw      []byte            `json:"-"`
+	Raw        []byte            `json:"-"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.

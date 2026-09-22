@@ -85,8 +85,6 @@ type controlResponse struct {
 	// "status" and "audit". Nil before its first tick or on a provider that predates it.
 	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *proxyAuditStatus `json:"audit,omitempty"`
-	// Governor is retained as a backward-compatibility alias for older tools.
-	Governor *proxyAuditStatus `json:"governor,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -624,13 +622,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			settings[k] = si
 		}
 		snap := proxyAuditStatusSnapshot()
-		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues(), MetricsAddrs: metricsServedAddrs(), ProxyAudit: snap, Audit: snap, Governor: snap}
+		return controlResponse{OK: true, Settings: settings, StartupValues: startupValues(), MetricsAddrs: metricsServedAddrs(), ProxyAudit: snap, Audit: snap}
 
 	case "audit":
 		switch req.Action {
 		case "status", "":
 			snap := proxyAuditStatusSnapshot()
-			return controlResponse{OK: true, ProxyAudit: snap, Audit: snap, Governor: snap}
+			return controlResponse{OK: true, ProxyAudit: snap, Audit: snap}
 
 		case "on", "off":
 			val := "off"
@@ -683,7 +681,11 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			// Serialize with the ticker: release mutates the same park and
 			// backoff state a running tick is reading and rewriting.
 			a.mu.Lock()
-			if req.Address == "" || req.Address == "--all" {
+			if req.Address == "" {
+				a.mu.Unlock()
+				return controlResponse{OK: false, Error: "proxy audit release requires an address or --all"}
+			}
+			if req.Address == "--all" {
 				released := a.st.releaseAll()
 				for _, addr := range released {
 					a.releaseBackoff(addr)
@@ -871,7 +873,7 @@ func applyLiveSideEffect(key, value string) error {
 			tlog("✓ [proxy][audit] proxy audit disabled via control socket\n")
 		}
 		if a := currentProxyAuditor.Load(); a != nil {
-			go a.runOnce()
+			spawnRunOnce(a)
 		}
 		return nil
 	case "metrics":

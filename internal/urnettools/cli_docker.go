@@ -636,8 +636,14 @@ func updateTargetFromArgs(args []string, providers []Provider) (Target, []string
 		sort.Strings(names)
 		return Target{}, nil, fmt.Errorf("no provider container named %q — available: %s (use `self-update` for the host tool)", args[first], strings.Join(names, ", "))
 	}
-	// No bare container target: fall through to the host self-update and let it
-	// interpret the args (remaining flags or a typo).
+	// No bare container target: fall through to the host self-update.
+	// Any remaining flag-like argument is a typo or an unsupported option —
+	// refuse instead of silently dropping it and proceeding with the update.
+	for _, a := range args {
+		if strings.HasPrefix(a, "-") {
+			return Target{}, nil, fmt.Errorf("unrecognized option %q for self-update (supported: --tag, --digest, --url)", a)
+		}
+	}
 	return Target{}, nil, nil
 }
 

@@ -111,11 +111,12 @@ func TestSystemdStatusLine(t *testing.T) {
 		want        string
 	}{
 		{"before proxies resolve", 0, 0, "starting: resolving proxies"},
-		{"none authenticated", 3, 0, "critical: 0/3 proxies authenticated, retrying"},
+		{"none authenticated", 3, 0, "critical: 0/3 proxies authenticated (0%), retrying"},
 		{"two of three live", 3, 2, "degraded: 2/3 proxies authenticated (67%), retrying"},
 		{"all authenticated", 3, 3, "active: 3/3 proxies authenticated (100%)"},
 		{"90% live is active", 10, 9, "active: 9/10 proxies authenticated (90%)"},
 		{"89% live is partial", 100, 89, "partial: 89/100 proxies authenticated (89%)"},
+		{"89.5% live is partial at the true ratio", 200, 179, "partial: 179/200 proxies authenticated (90%)"},
 		{"70% live is partial", 10, 7, "partial: 7/10 proxies authenticated (70%)"},
 		{"69% live is degraded", 100, 69, "degraded: 69/100 proxies authenticated (69%), retrying"},
 		{"50% live is degraded", 10, 5, "degraded: 5/10 proxies authenticated (50%), retrying"},
@@ -239,11 +240,17 @@ func TestSystemdStatusLineCountsProxyAuditParksAsIntentional(t *testing.T) {
 		want                string
 	}{
 		{"parked and everything else up", 50, 47, 3, false, "active: 47/50 proxies authenticated (94%), 3 parked by proxy audit"},
-		{"a real outage on top of parks", 50, 44, 3, false, "partial: 44/50 proxies authenticated (88%), 3 parked by proxy audit"},
+		{"a real outage on top of parks", 50, 44, 3, false, "active: 44/50 proxies authenticated (88%), 3 parked by proxy audit"},
 		{"none parked is unchanged", 50, 50, 0, false, "active: 50/50 proxies authenticated (100%)"},
 		{"paused says so", 50, 50, 0, true, "active: 50/50 proxies authenticated (100%); proxy audit paused (paid proxy list unreadable)"},
 		{"parks and paused", 50, 47, 3, true, "active: 47/50 proxies authenticated (94%), 3 parked by proxy audit; proxy audit paused (paid proxy list unreadable)"},
-		{"parks never hide a full outage", 50, 0, 3, false, "critical: 0/50 proxies authenticated, retrying"},
+		// Parks are deliberate: 85 of 100 live with 15 parked is 85/85 effective,
+		// so the word must stay active even though the rendered
+		// percentage is 85.
+		{"parks above ten percent do not drag the word", 100, 85, 15, false, "active: 85/100 proxies authenticated (85%), 15 parked by proxy audit"},
+		{"parks never hide a full outage", 50, 0, 3, false, "critical: 0/50 proxies authenticated (0%), 3 parked by proxy audit, retrying"},
+		{"all parked still says why", 10, 0, 10, false, "critical: 0/10 proxies authenticated (0%), 10 parked by proxy audit, retrying"},
+		{"all parked and paused still says why", 10, 0, 10, true, "critical: 0/10 proxies authenticated (0%), 10 parked by proxy audit; proxy audit paused (paid proxy list unreadable), retrying"},
 		// A stale count larger than the configured total must not read as more
 		// parked than configured, or push live below a negative expectation.
 		{"parked is clamped to the total", 3, 3, 9, false, "active: 3/3 proxies authenticated (100%), 3 parked by proxy audit"},

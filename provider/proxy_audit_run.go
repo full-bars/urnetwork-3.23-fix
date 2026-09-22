@@ -500,6 +500,25 @@ func runProxyAudit(ctx context.Context, cancelMap map[string]context.CancelFunc,
 var currentProxyAuditor atomic.Pointer[proxyAuditor]
 var proxyAuditOverride atomic.Pointer[bool]
 
+// runOnceGate bounds the immediate tick spawned after a control toggle: the
+// ticker is the only steady-state caller of runOnce, and the toggle path
+// must not be able to pile up unbounded goroutines on a busy node.
+var runOnceGate = make(chan struct{}, 1)
+
+// spawnRunOnce runs one immediate tick after a control-socket toggle, but
+// only if no such tick is already in flight. The next ticker pass picks up
+// anything skipped, so dropping a redundant spawn is safe.
+func spawnRunOnce(a *proxyAuditor) {
+	select {
+	case runOnceGate <- struct{}{}:
+		go func() {
+			defer func() { <-runOnceGate }()
+			a.runOnce()
+		}()
+	default:
+	}
+}
+
 // setProxyAuditOverride sets an in-memory runtime override for whether proxy audit is enabled.
 func setProxyAuditOverride(enabled bool) {
 	proxyAuditOverride.Store(&enabled)
