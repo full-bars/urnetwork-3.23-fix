@@ -5535,6 +5535,34 @@ type ProxyAuth struct {
 	Password string `json:"password"`
 }
 
+// internalServerSettings resolves one internal-config server entry
+// (Servers[proxyAddress] = authKey) to its ProxySettings: credentials embedded
+// in the address form first, then overridden by the Auths entry named by
+// authKey. Shared by the reader and the removal path so both derive the same
+// identity (ProxySettings.Key()) for an entry.
+func internalServerSettings(proxyConfig *ProxyConfig, proxyAddress, authKey string) *connect.ProxySettings {
+	address, user, password := parseProxyAddress(proxyAddress)
+	proxySettings := &connect.ProxySettings{
+		Network: "tcp",
+		Address: address,
+	}
+	if user != "" || password != "" {
+		proxySettings.Auth = &proxy.Auth{
+			User:     user,
+			Password: password,
+		}
+	}
+	if proxyConfig.Auths != nil {
+		if proxyAuth, ok := proxyConfig.Auths[authKey]; ok {
+			proxySettings.Auth = &proxy.Auth{
+				User:     proxyAuth.User,
+				Password: proxyAuth.Password,
+			}
+		}
+	}
+	return proxySettings
+}
+
 func readProxySettings() []*connect.ProxySettings {
 	proxyConfig := readProxyConfig()
 
@@ -5544,27 +5572,7 @@ func readProxySettings() []*connect.ProxySettings {
 
 	var allProxySettings []*connect.ProxySettings
 	for proxyAddress, key := range proxyConfig.Servers {
-		address, user, password := parseProxyAddress(proxyAddress)
-		proxySettings := &connect.ProxySettings{
-			Network: "tcp",
-			Address: address,
-		}
-		if user != "" || password != "" {
-			proxySettings.Auth = &proxy.Auth{
-				User:     user,
-				Password: password,
-			}
-		}
-		if proxyConfig.Auths != nil {
-			proxyAuth, ok := proxyConfig.Auths[key]
-			if ok {
-				proxySettings.Auth = &proxy.Auth{
-					User:     proxyAuth.User,
-					Password: proxyAuth.Password,
-				}
-			}
-		}
-		allProxySettings = append(allProxySettings, proxySettings)
+		allProxySettings = append(allProxySettings, internalServerSettings(proxyConfig, proxyAddress, key))
 	}
 
 	return allProxySettings
@@ -6351,10 +6359,28 @@ func proxySummary() {
 }
 
 // removedProxy is one proxy the remove-dead command selected as a removal
-// candidate, carrying its address and state entry.
+// candidate, carrying its proxy.state identity key (field name kept: addr) and
+// state entry.
 type removedProxy struct {
 	addr  string
 	entry ProxyEntry
+}
+
+// formatRemovedProxyLine renders one remove-dead candidate for the operator.
+// rp.addr is a proxy.state identity KEY, so it goes through proxyKeyDisplay:
+// the raw key embeds a \x1f separator that must never reach the terminal.
+func formatRemovedProxyLine(rp removedProxy) string {
+	ts := ""
+	if rp.entry.DownSince != "" {
+		if t, err := time.Parse(time.RFC3339, rp.entry.DownSince); err == nil {
+			ts = fmt.Sprintf(" down_since=%s", formatDuration(time.Since(t).Truncate(time.Second)))
+		}
+	}
+	af := ""
+	if rp.entry.AuthFailures > 0 {
+		af = fmt.Sprintf(" auth_errors=%d", rp.entry.AuthFailures)
+	}
+	return fmt.Sprintf("proxy[%d]  %s%s%s", rp.entry.ID, proxyKeyDisplay(rp.addr), ts, af)
 }
 
 // removeDeadOptions captures the parsed remove-dead flags that drive which
@@ -6506,17 +6532,7 @@ func proxyRemoveDead(opts docopt.Opts) {
 		}
 		fmt.Printf("  %d %s%s:\n", len(items), label, sourceStr)
 		for _, rp := range items {
-			ts := ""
-			if rp.entry.DownSince != "" {
-				if t, err := time.Parse(time.RFC3339, rp.entry.DownSince); err == nil {
-					ts = fmt.Sprintf(" down_since=%s", formatDuration(time.Since(t).Truncate(time.Second)))
-				}
-			}
-			af := ""
-			if rp.entry.AuthFailures > 0 {
-				af = fmt.Sprintf(" auth_errors=%d", rp.entry.AuthFailures)
-			}
-			fmt.Printf("    proxy[%d]  %s%s%s\n", rp.entry.ID, rp.addr, ts, af)
+			fmt.Printf("    %s\n", formatRemovedProxyLine(rp))
 		}
 		fmt.Println()
 	}
@@ -6589,20 +6605,25 @@ func proxyRemoveDead(opts docopt.Opts) {
 	fmt.Printf("Removed %d proxies. Reload triggered.\n", len(toRemove))
 }
 
-func removeAddressesFromFile(path string, addresses []string) error {
+// removeKeysFromFile deletes the lines of a --proxy_file source whose proxy
+// identity (ProxySettings.Key(): address, or address+user) is in keys. Matching
+// on identity, not address, is what keeps two accounts at one shared gateway
+// apart: removing one must never remove the other.
+func removeKeysFromFile(path string, keys []string) error {
 	b, err := os.ReadFile(path)
 	if err != nil {
 		return err
 	}
 	removeSet := map[string]bool{}
-	for _, a := range addresses {
-		removeSet[a] = true
+	for _, k := range keys {
+		removeSet[k] = true
 	}
 	var kept []string
 	for _, line := range strings.Split(string(b), "\n") {
 		trimmed := strings.TrimSpace(line)
-		addr, _, _ := parseProxyAddress(trimmed)
-		if !removeSet[addr] {
+		addr, user, _ := parseProxyAddress(trimmed)
+		lineKey := (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: user}}).Key()
+		if !removeSet[lineKey] {
 			kept = append(kept, line)
 		}
 	}

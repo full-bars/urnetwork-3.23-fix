@@ -212,13 +212,13 @@ func TestRemoveDeadCommandChainsToSources(t *testing.T) {
 		Source:    proxyFilePath,
 		StartedAt: time.Now().Add(-80 * time.Minute), // a settled provider past the 65-min gate
 		Proxies: map[string]ProxyEntry{
-			"1.1.1.1:1080": {Health: "dead", Source: "file"},
-			"2.2.2.2:1080": {Health: "up", Source: "file"},
+			identityKey("1.1.1.1:1080", "u"): {Health: "dead", Source: "file"},
+			identityKey("2.2.2.2:1080", "u"): {Health: "up", Source: "file"},
 		},
 	}
 
 	dead, _, _, _ := collectRemoveDeadCandidates(state, removeDeadOptions{}, 80*time.Minute)
-	assertCandidatesEqual(t, dead, "1.1.1.1:1080")
+	assertCandidatesEqual(t, dead, identityKey("1.1.1.1:1080", "u"))
 
 	// Same bucketing logic the command uses (proxyRemoveDead).
 	addrsBySource := map[string][]string{}
