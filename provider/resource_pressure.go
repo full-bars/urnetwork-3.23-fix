@@ -1017,13 +1017,9 @@ func shedPoolToTarget(target int) {
 		return
 	}
 
-	// Per-proxy traffic for last-resort ranking, keyed by address.
-	traffic := map[string]uint64{}
-	_, _, _, bandwidth, _ := connect.ProxyHealthSnapshot()
-	for key, bw := range bandwidth {
-		_, ip := parseProxyString(key)
-		traffic[ip] += bw.TotalRx.Load() + bw.TotalTx.Load()
-	}
+	// Per-proxy traffic for last-resort ranking, keyed by proxy identity to
+	// match state.Proxies.
+	traffic := runningProxyTraffic()
 
 	shed := selectURLProxiesToShed(state, traffic, excess)
 	for _, addr := range shed {
