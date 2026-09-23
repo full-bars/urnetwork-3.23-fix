@@ -255,11 +255,11 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap: map[string]context.CancelFunc{
-			proxyAddr: oldCancel,
+			oldSettings.Key(): oldCancel,
 		},
 		cancelMapMu: cancelMapMu,
 		runningAuth: map[string]*connect.ProxySettings{
-			proxyAddr: oldSettings,
+			oldSettings.Key(): oldSettings,
 		},
 		state:           &ProxyState{Proxies: make(map[string]ProxyEntry)},
 		sourcePath:      "",
@@ -294,10 +294,15 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 		t.Fatal("timed out waiting for spawnProxy callback on credential rotation")
 	}
 
-	// 3. Verify runningAuth was updated to new credentials
-	auth, ok := reloader.runningAuthFor(proxyAddr)
+	// 3. Verify runningAuth was updated to new credentials. The re-paste
+	// changed the USER (olduser -> newuser), not just the password, so
+	// under the identity model this is a different identity, not a
+	// same-identity rotation: the old identity's entry is removed (not
+	// updated in place) and the new identity gets its own fresh entry.
+	newKey := (&connect.ProxySettings{Address: proxyAddr, Auth: &proxy.Auth{User: "newuser"}}).Key()
+	auth, ok := reloader.runningAuthFor(newKey)
 	if !ok {
-		t.Fatalf("runningAuth missing entry for %s after rotation", proxyAddr)
+		t.Fatalf("runningAuth missing entry for new identity %s after rotation", newKey)
 	}
 	if auth.Auth == nil || auth.Auth.User != "newuser" || auth.Auth.Password != "newpass" {
 		t.Fatalf("expected runningAuth updated to newuser/newpass, got %v", auth.Auth)
@@ -337,10 +342,10 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap: map[string]context.CancelFunc{
-			seededSetting.Address: cancelFunc,
+			seededSetting.Key(): cancelFunc,
 		},
 		cancelMapMu:     cancelMapMu,
-		runningAuth:     map[string]*connect.ProxySettings{seededSetting.Address: seededSetting},
+		runningAuth:     map[string]*connect.ProxySettings{seededSetting.Key(): seededSetting},
 		state:           &ProxyState{Proxies: make(map[string]ProxyEntry)},
 		sourcePath:      "",
 		parentCtx:       parentCtx,
@@ -354,13 +359,13 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 
 	// Verify the proxy remains in cancelMap and runningAuth
 	cancelMapMu.Lock()
-	_, stillRunning := reloader.cancelMap[seededSetting.Address]
+	_, stillRunning := reloader.cancelMap[seededSetting.Key()]
 	cancelMapMu.Unlock()
 	if !stillRunning {
 		t.Fatal("proxy was unexpectedly removed from cancelMap")
 	}
 
-	auth, ok := reloader.runningAuthFor(seededSetting.Address)
+	auth, ok := reloader.runningAuthFor(seededSetting.Key())
 	if !ok || !sameAuth(auth, seededSetting) {
 		t.Fatal("runningAuth entry altered or missing after reload")
 	}

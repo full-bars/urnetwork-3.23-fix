@@ -43,7 +43,7 @@ func registerTestProxies(t *testing.T) {
 		900003: "tab\there:1080",
 	}
 	for idx, addr := range addrs {
-		RegisterProxy(idx, addr)
+		RegisterProxy(idx, addr, addr)
 		bw := RegisterProxyBandwidth(idx)
 		bw.TotalRx.Add(100)
 		bw.BillableTx.Add(7)

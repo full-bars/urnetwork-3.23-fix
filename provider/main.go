@@ -1649,16 +1649,26 @@ func runEarningWindows(ctx context.Context) {
 
 		_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 
-		// Feed the per-address earn tracker so the paid grader's earn-skip
-		// sees the same liveness signal the [earn] log reports in aggregate,
-		// but keyed by proxy address (delta-based, never cumulative).
-		globalPerProxyEarnTracker.Update(bw)
+		// Feed the per-proxy earn tracker so the paid grader's earn-skip and
+		// proxy audit's park decisions see the same liveness signal the
+		// [earn] log reports in aggregate, keyed by proxy IDENTITY
+		// (ProxySettings.Key()) — both consumers look up by identity key,
+		// and a tracker keyed by bare address would read every credentialed
+		// proxy at a shared gateway as never-earning (delta-based, never
+		// cumulative).
+		globalPerProxyEarnTracker.Update(connect.ProxyBandwidthSnapshotByKey())
 
-		// Fold the same snapshot into the persistent earnings history.
+		// Fold the same counters into the persistent earnings history, but
+		// keyed by proxy IDENTITY (ProxySettings.Key()), never by bare
+		// address: two accounts sharing one gateway address are different
+		// identities and must not collide in — or be re-migrated out of —
+		// the identity-keyed store. Crediting the bare address would
+		// recreate legacy keys that adoptLegacy then re-adopts, clobbering
+		// the identity entry's accumulated score on every reload.
 		// Unlike the liveness tracker above, this one never prunes an
 		// address that leaves the snapshot: an offline proxy still has an
 		// earnings record, and that record is the whole point of the store.
-		globalProxyEarningsStore.Observe(bw, time.Now())
+		globalProxyEarningsStore.Observe(connect.ProxyBandwidthSnapshotByKey(), time.Now())
 		globalProxyEarningsStore.MaybeSave(time.Now())
 
 		var cum uint64
@@ -2245,9 +2255,14 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		// currently-registered health entries.
 		keepAddrs, pruneErr := desiredAddressesForHistoryPruning()
 		if pruneErr != nil {
-			tlog("[proxy] warning: could not determine desired proxy addresses for history pruning: %v\n", pruneErr)
-			keepAddrs = make(map[string]bool, len(report.Bandwidth))
-			for k := range report.Bandwidth {
+			tlog("[proxy] warning: could not determine desired proxy identities for history pruning: %v\n", pruneErr)
+			// Fallback to the live registry's IDENTITY keys, not this
+			// report's display-formatted keys: the pruned stores are
+			// identity-keyed, and "proxy[N] (addr)" formatting matches
+			// nothing in them — pruning against it would wipe every
+			// credentialed proxy's history on a transient read error.
+			keepAddrs = make(map[string]bool)
+			for k := range connect.ProxyBandwidthSnapshotByKey() {
 				keepAddrs[k] = true
 			}
 		}
@@ -2281,7 +2296,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if state.StartedAt.IsZero() {
 				state.StartedAt = startTime
 			}
-			liveHealth := connect.ProxyHealthByAddress()
+			liveHealth := connect.ProxyHealthByKey()
 			for addr, entry := range state.Proxies {
 				if h, ok := liveHealth[addr]; ok {
 					entry.Health = h.Health
@@ -2666,6 +2681,19 @@ func selectProxiesToReap(scored []scoredDegradedProxy, keep int, minDownTime tim
 	return toReap
 }
 
+// degradedEntryKey returns the identity key a DegradedProxyEntry was
+// registered under: its Key when set (DegradedProxies always sets it), or
+// the bare Address for entries constructed by hand — an unauthenticated
+// proxy's Key() IS its address, so the fallback is exact, not approximate.
+// The cancel map and the health registry are identity-keyed; looking up a
+// credentialed proxy by bare address would silently never match.
+func degradedEntryKey(e connect.DegradedProxyEntry) string {
+	if e.Key != "" {
+		return e.Key
+	}
+	return e.Address
+}
+
 // onlyCancellableProxies filters degraded proxies down to those the reaper
 // can actually act on — i.e. present in proxyCancelMap. Native/"direct" mode
 // is registered in the same health tracking as any proxy (so it can appear
@@ -2679,7 +2707,7 @@ func onlyCancellableProxies(degraded []connect.DegradedProxyEntry, proxyCancelMa
 	defer proxyCancelMu.Unlock()
 	var out []connect.DegradedProxyEntry
 	for _, d := range degraded {
-		if _, ok := proxyCancelMap[d.Address]; ok {
+		if _, ok := proxyCancelMap[degradedEntryKey(d)]; ok {
 			out = append(out, d)
 		}
 	}
@@ -2711,14 +2739,14 @@ func reapProxies(toReap []connect.DegradedProxyEntry, proxyCancelMap map[string]
 	var reaped int64
 	for _, p := range toReap {
 		proxyCancelMu.Lock()
-		if !isStillDegraded(p.Address) {
+		if !isStillDegraded(degradedEntryKey(p)) {
 			proxyCancelMu.Unlock()
 			continue
 		}
-		cancel, ok := proxyCancelMap[p.Address]
+		cancel, ok := proxyCancelMap[degradedEntryKey(p)]
 		if ok {
 			cancel()
-			delete(proxyCancelMap, p.Address)
+			delete(proxyCancelMap, degradedEntryKey(p))
 			reaped++
 		}
 		proxyCancelMu.Unlock()
@@ -3147,7 +3175,7 @@ func provide(opts docopt.Opts) {
 			const provenMaxAuthFailures = 10
 			const unprovenMaxAuthFailures = 3
 			maxAuthFailures := provenMaxAuthFailures
-			if proxySettings != nil && !globalProvenProxies.HasSucceeded(proxySettings.Address) {
+			if proxySettings != nil && !globalProvenProxies.HasSucceeded(proxySettings.Key()) {
 				maxAuthFailures = unprovenMaxAuthFailures
 			}
 			authFailures := 0
@@ -3158,7 +3186,7 @@ func provide(opts docopt.Opts) {
 			// would each run 10 fast auth attempts on restart — 3,560
 			// unthrottled calls before any slow-retry code runs.
 			if proxySettings != nil && !isURLSourced {
-				if globalProxySlowRetryState.WasDropped(proxySettings.Address) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address) > 0 {
+				if globalProxySlowRetryState.WasDropped(proxySettings.Key()) || globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Key()) > 0 {
 					authFailures = maxAuthFailures
 				}
 			}
@@ -3214,7 +3242,7 @@ func provide(opts docopt.Opts) {
 					// "untried" priority every time it comes back.
 					admitFailureCount := authFailures
 					if proxySettings != nil {
-						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Address)
+						admitFailureCount = globalProxyFailureHistory.FailureCount(proxySettings.Key())
 					}
 					// Acquire slow-retry semaphore before admission gate so
 					// at most slowRetryMaxConcurrent slow-retry proxies can
@@ -3251,14 +3279,14 @@ func provide(opts docopt.Opts) {
 					}
 					if proxySettings != nil {
 						if err == nil {
-							globalProvenProxies.MarkSucceeded(proxySettings.Address)
-							globalProxyFailureHistory.Reset(proxySettings.Address)
+							globalProvenProxies.MarkSucceeded(proxySettings.Key())
+							globalProxyFailureHistory.Reset(proxySettings.Key())
 							// Clear any slow-retry state for a proxy that
 							// just recovered — prevents stale "previously
 							// dropped" log messages on next restart.
-							globalProxySlowRetryState.ClearDropped(proxySettings.Address)
+							globalProxySlowRetryState.ClearDropped(proxySettings.Key())
 						}
-						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Address))
+						globalAuthRateLimiter.ReportResultForProxy(err, globalProvenProxies.HasSucceeded(proxySettings.Key()))
 					} else {
 						globalAuthRateLimiter.ReportResult(err)
 					}
@@ -3290,7 +3318,7 @@ func provide(opts docopt.Opts) {
 
 				authFailures++
 				if proxySettings != nil {
-					globalProxyFailureHistory.RecordFailure(proxySettings.Address)
+					globalProxyFailureHistory.RecordFailure(proxySettings.Key())
 				}
 				if authFailures >= maxAuthFailures {
 					cause := classifyAuthFailureCause(err)
@@ -3310,16 +3338,16 @@ func provide(opts docopt.Opts) {
 					// Persist slow-retry start time (survives reboots) and
 					// check if this proxy has exceeded the 14-day drop window.
 					if proxySettings != nil {
-						startedAt := globalProxySlowRetryState.RecordSlowRetryStart(proxySettings.Address)
-						if globalProxySlowRetryState.ShouldDrop(proxySettings.Address) {
-							globalProxySlowRetryState.MarkDropped(proxySettings.Address)
+						startedAt := globalProxySlowRetryState.RecordSlowRetryStart(proxySettings.Key())
+						if globalProxySlowRetryState.ShouldDrop(proxySettings.Key()) {
+							globalProxySlowRetryState.MarkDropped(proxySettings.Key())
 							dropAge := time.Since(startedAt)
 							tlog("[proxy][slow-retry] proxy[%d] (%s) dropped after %s of continuous failure (%d total attempts); removed from active pool\n",
 								proxySettings.Index, proxySettings.Address, formatDuration(dropAge), authFailures)
 							// Clean up proxyCancelMap so the reloader can
 							// relaunch this proxy if the operator refreshes
 							// the proxy list.
-							deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
+							deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Key())
 							return "", connect.Id{}, false, fmt.Errorf("proxy dropped after %s of continuous failure — %s", formatDuration(dropAge), cause)
 						}
 						// The 24h daily gate only applies after the first 3
@@ -3327,10 +3355,10 @@ func provide(opts docopt.Opts) {
 						// proxyAuthSlowRetryDelay). Before that, fall through
 						// to the ramp delay directly.
 						slowRetryAttempt := authFailures - maxAuthFailures + 1
-						if slowRetryAttempt > slowRetryRampAttempts && !globalProxySlowRetryState.RecordSlowRetryAttempt(proxySettings.Address) {
+						if slowRetryAttempt > slowRetryRampAttempts && !globalProxySlowRetryState.RecordSlowRetryAttempt(proxySettings.Key()) {
 							// Not time yet — sleep precisely until the
 							// daily interval elapses from the last attempt.
-							waitTime := globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Address)
+							waitTime := globalProxySlowRetryState.TimeUntilNextAttempt(proxySettings.Key())
 							tlog("[proxy][slow-retry] proxy[%d] (%s) auth still failing after %d attempts (%s); already attempted recently, next check in %s\n",
 								proxySettings.Index, proxySettings.Address, authFailures, cause, formatDuration(waitTime))
 							dailyTimer := time.NewTimer(waitTime)
@@ -3382,7 +3410,7 @@ func provide(opts docopt.Opts) {
 		if err != nil {
 			if proxySettings != nil {
 				if isURLSourced {
-					deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Address)
+					deleteProxyCancelIfCurrent(&proxyCancelMu, proxyCancelMap, proxyCtx, proxySettings.Key())
 
 					if errors.Is(err, errProxyURLBelowBar) {
 						// Quality rejection: the proxy was filtered
@@ -3400,13 +3428,13 @@ func provide(opts docopt.Opts) {
 						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %v\n",
 							proxySettings.Index, proxySettings.Address, err)
 					} else {
-						giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Address)
+						giveUpCount := globalProxyFailureHistory.RecordGiveUp(proxySettings.Key())
 						if giveUpCount >= proxyURLGiveUpEvictAfterCycles {
 							if evictErr := evictProxyURLAddress(proxySettings.Address); evictErr != nil {
 								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) could not evict after %d give-ups: %v\n",
 									proxySettings.Index, proxySettings.Address, giveUpCount, evictErr)
 								delay := proxyURLGiveUpRetryDelay(giveUpCount)
-								globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
+								globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
 							} else {
 								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
 									proxySettings.Index, proxySettings.Address, err, giveUpCount)
@@ -3419,7 +3447,7 @@ func provide(opts docopt.Opts) {
 							// path skips it until the window elapses. Otherwise any
 							// other reload (another proxy's give-up, a URL refresh)
 							// would relaunch it immediately and defeat the backoff.
-							globalProxyFailureHistory.SetBackoffUntil(proxySettings.Address, time.Now().Add(delay))
+							globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
 							if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
 								time.AfterFunc(delay, func() {
 									if err := writeReloadTrigger(reloadPath); err != nil {
@@ -3761,11 +3789,15 @@ func provide(opts docopt.Opts) {
 	if proxyFile != "" {
 		primarySource = "file"
 	}
+	// proxyDesiredSet is keyed by proxy IDENTITY (ProxySettings.Key()), not
+	// bare address — see proxy_reload.go's reload() for the full rationale
+	// (two accounts sharing one gateway address, e.g. Decodo, must never
+	// collide). Every map below built from it stays keyed the same way.
 	proxyDesiredSet := make(map[string]*connect.ProxySettings, len(allProxySettings))
 	proxySourceOf := make(map[string]string, len(allProxySettings))
 	for _, s := range allProxySettings {
-		proxyDesiredSet[s.Address] = s
-		proxySourceOf[s.Address] = primarySource
+		proxyDesiredSet[s.Key()] = s
+		proxySourceOf[s.Key()] = primarySource
 	}
 	if urlState, err := readProxyURLState(); err != nil {
 		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
@@ -3776,6 +3808,17 @@ func provide(opts docopt.Opts) {
 	for _, s := range proxyDesiredSet {
 		allProxySettings = append(allProxySettings, s)
 	}
+	// Migrate any legacy (pre-identity) entries in proxyState before
+	// anything below reads or writes it by key — mirrors reload()'s
+	// adoption call, and is equally required here: this is the FIRST
+	// touch of proxyState after a binary upgrade on a fresh boot, and
+	// without this a legacy entry would look unclaimed under the new
+	// identity-keyed set and get a fresh ID/zero history instead of being
+	// adopted. Idempotent: harmless if reload() already ran this boot.
+	// The earnings-store and slow-retry-state adoption calls are made
+	// further below, right after each is loaded from disk — calling them
+	// here would be a silent no-op against their still-empty zero values.
+	adoptLegacyProxyState(proxyState, allProxySettings)
 	// Load the per-proxy earnings history. It is loaded here rather than at
 	// package init so a test never picks up the real home directory's
 	// history (the failure mode fixed in #589). The launch scheduler
@@ -3784,6 +3827,7 @@ func provide(opts docopt.Opts) {
 	if err := globalProxyEarningsStore.Load(); err != nil {
 		tlog("⚠️ [earn] could not read proxy earnings history: %v\n", err)
 	}
+	globalProxyEarningsStore.adoptLegacy(allProxySettings)
 
 	// Prioritize proxies by warmth (cached client JWTs) and source provenance.
 	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
@@ -3843,7 +3887,7 @@ func provide(opts docopt.Opts) {
 			defer connect.UnregisterProxy(0)
 
 			// Register it early so it shows up in health reports immediately as [direct]
-			connect.RegisterProxy(0, "direct")
+			connect.RegisterProxy(0, "direct", "direct")
 			provideWithProxy(nativeCtx, nil, true, false)
 		})
 	} else {
@@ -3866,6 +3910,7 @@ func provide(opts docopt.Opts) {
 	// Load persisted slow-retry state so that a restart does not reset
 	// the 14-day drop clock for proxies that were already failing.
 	globalProxySlowRetryState = LoadProxySlowRetryState()
+	globalProxySlowRetryState.adoptLegacy(allProxySettings)
 
 	// Publish the denominator for systemd STATUS= now that the proxy list is
 	// final (post prune/rebuild above).
@@ -3876,10 +3921,11 @@ func provide(opts docopt.Opts) {
 		finishProxy(fmt.Sprintf("%d servers", len(allProxySettings)))
 
 		for _, proxySettings := range allProxySettings {
-			stableID := resolveProxyID(proxyState, proxySettings.Address)
+			key := proxySettings.Key()
+			stableID := resolveProxyID(proxyState, key)
 			proxySettings.Index = stableID
-			tagProxySourceIfUnset(proxyState, proxySettings.Address, proxySourceOf[proxySettings.Address])
-			connect.RegisterProxy(stableID, proxySettings.Address)
+			tagProxySourceIfUnset(proxyState, key, proxySourceOf[key])
+			connect.RegisterProxy(stableID, proxySettings.Address, key)
 			var user string
 			var password string
 			if proxySettings.Auth != nil {
@@ -3896,21 +3942,22 @@ func provide(opts docopt.Opts) {
 
 		for _, sched := range proxySchedules {
 			proxySettings := sched.Settings
+			key := proxySettings.Key()
 			proxyCtx, proxyCancel := context.WithCancel(ctx)
 			proxyCancelMu.Lock()
-			proxyCancelMap[proxySettings.Address] = proxyCancel
-			launchGen := beginProxyLaunch(proxySettings.Address)
+			proxyCancelMap[key] = proxyCancel
+			launchGen := beginProxyLaunch(key)
 			proxyCtx = withProxyLaunchGen(proxyCtx, launchGen)
 			proxyCancelMu.Unlock()
 
 			stableID := proxySettings.Index
-			isURLSourced := proxySourceOf[proxySettings.Address] == "url"
+			isURLSourced := proxySourceOf[key] == "url"
 			baseDelay := sched.Delay
 			staggerDuration := sched.Stagger
 			wg.Add(1)
 			go connect.HandleError(func() {
 				defer wg.Done()
-				defer unregisterProxyIfCurrent(proxySettings.Address, launchGen, stableID)
+				defer unregisterProxyIfCurrent(key, launchGen, stableID)
 				defer proxyCancel()
 
 				if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {
@@ -3920,8 +3967,8 @@ func provide(opts docopt.Opts) {
 				// operator gets visibility into persistent failures.
 				// The continuous drop clock means this proxy will likely
 				// be re-dropped on the first slow auth attempt.
-				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(proxySettings.Address) {
-					dropAge := time.Since(globalProxySlowRetryState.DropTime(proxySettings.Address))
+				if !isURLSourced && proxySettings != nil && globalProxySlowRetryState.WasDropped(key) {
+					dropAge := time.Since(globalProxySlowRetryState.DropTime(key))
 					tlog("[proxy][slow-retry] proxy[%d] (%s) previously dropped %s ago; re-entering slow retry (will likely re-drop)\n",
 						proxySettings.Index, proxySettings.Address, formatDuration(dropAge))
 				}

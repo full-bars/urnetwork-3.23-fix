@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // earnTrackerTestSeq supplies a distinct health index per seedEarnTracker
@@ -17,19 +17,20 @@ import (
 // (previously a hardcoded 9999).
 var earnTrackerTestSeq atomic.Uint64
 
-// seedEarnTracker marks addr as having earned "now" in the per-address
-// tracker (delta-based), which is what the paid grader's earn-skip reads.
-// It feeds the tracker the SAME formatted key shape production uses —
-// connect.ProxyHealthSnapshot keys its bandwidth map with
-// "proxy[N] (addr)" (formatProxyEntry) — so these tests exercise the real
-// key format and would catch a regression to raw-address seeding (the
-// snapshot-key CRITICAL that made earn-skip dead in production).
+// seedEarnTracker marks addr's proxy as having earned "now" in the
+// per-identity earn tracker (delta-based), which is what the paid grader's
+// earn-skip reads. Production feeds the tracker ProxyBandwidthSnapshotByKey
+// (identity-keyed: address, or address+user for a credentialed proxy);
+// this helper feeds the same identity key the grader will look up for the
+// credentialed "addr:u:p" config used throughout this file. Seeding the
+// bare address instead would silently disable earn-skip for credentialed
+// proxies — the identity-keying pitfall this file now models.
 func seedEarnTracker(t *testing.T, addr string) {
 	t.Helper()
 	idx := int(earnTrackerTestSeq.Add(1))
 	bw := connect.RegisterProxyBandwidth(idx)
 	t.Cleanup(func() { connect.UnregisterProxy(idx) })
-	key := fmt.Sprintf("proxy[%d] (%s)", idx, addr)
+	key := (&connect.ProxySettings{Network: "tcp", Address: addr, Auth: &proxy.Auth{User: "u"}}).Key()
 	// First Update establishes the baseline (prevCum = 0, no delta yet).
 	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{key: bw})
 	// Second Update advances the counter: a positive delta is now recorded.

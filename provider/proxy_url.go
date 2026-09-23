@@ -436,9 +436,22 @@ func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf m
 	// off must bring previously-graded below-bar proxies BACK into the
 	// desired set — that is exactly the mis-grading scenario the operator
 	// is escaping from (finding NEW-2).
+	// An address already claimed by the primary (--proxy_file / internal)
+	// source always wins over a URL-sourced entry at that SAME address,
+	// regardless of account — primary sources are operator-curated and
+	// intentional, URL sources are auto-discovered. This is address-level
+	// precedence, distinct from desiredSet's own key (identity) space:
+	// two primary-source accounts at one address must both survive (see
+	// reload()), but a URL-sourced account never displaces or duplicates
+	// a primary-source address it merely happens to share.
+	primaryAddrs := make(map[string]bool, len(desiredSet))
+	for _, s := range desiredSet {
+		primaryAddrs[s.Address] = true
+	}
+
 	cfg := resolveProxyTableProbeConfig()
 	for addr, entry := range urlState.Cache {
-		if _, exists := desiredSet[addr]; exists {
+		if primaryAddrs[addr] {
 			continue
 		}
 		if cfg.Enabled && entry.Graded && entry.Score < cfg.PassBar {
@@ -448,7 +461,10 @@ func mergeProxyURLCache(desiredSet map[string]*connect.ProxySettings, sourceOf m
 		if entry.User != "" || entry.Password != "" {
 			settings.Auth = &proxy.Auth{User: entry.User, Password: entry.Password}
 		}
-		desiredSet[addr] = settings
-		sourceOf[addr] = "url"
+		// desiredSet is keyed by identity (ProxySettings.Key()), not bare
+		// address — see proxy_reload.go's reload().
+		key := settings.Key()
+		desiredSet[key] = settings
+		sourceOf[key] = "url"
 	}
 }

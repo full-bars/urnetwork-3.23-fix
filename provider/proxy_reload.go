@@ -323,7 +323,7 @@ func (r *ProxyReloader) seedRunningAuth(settings []*connect.ProxySettings) {
 		// and reload() must compare against the baseline as CONFIGURED,
 		// not as dialed. Sharing the pointer made every credentialed
 		// proxy look perpetually rotated.
-		r.runningAuth[s.Address] = cloneProxySettings(s)
+		r.runningAuth[s.Key()] = cloneProxySettings(s)
 	}
 }
 
@@ -484,6 +484,17 @@ func (r *ProxyReloader) reload() {
 		desired = readProxySettings()
 	}
 
+	// desiredSet is keyed by proxy IDENTITY (ProxySettings.Key(): address,
+	// or address+user for a shared-gateway proxy where the same host:port
+	// serves multiple accounts — Decodo's model), not bare address. Keying
+	// by address alone let two different accounts at the same gateway
+	// address collide: Go's randomized map iteration order over the raw
+	// config picked a different "winner" on every reload, which looked
+	// like a credential change and triggered a perpetual rotate-forever
+	// loop against the real backend (incident 2026-09-23). Every map and
+	// set derived from desiredSet below (running, cancelMap, runningAuth,
+	// drainingProxies, rotatedSet, removedSet, the launch-generation
+	// tracker) must stay keyed the same way for the same reason.
 	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
 	sourceOf := make(map[string]string, len(desired))
 	primarySource := "internal"
@@ -491,8 +502,8 @@ func (r *ProxyReloader) reload() {
 		primarySource = "file"
 	}
 	for _, s := range desired {
-		desiredSet[s.Address] = s
-		sourceOf[s.Address] = primarySource
+		desiredSet[s.Key()] = s
+		sourceOf[s.Key()] = primarySource
 	}
 
 	urlCacheLoaded := true
@@ -502,6 +513,24 @@ func (r *ProxyReloader) reload() {
 	} else {
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
+
+	// Migrate any legacy (pre-identity, bare-address-keyed) entries in the
+	// persisted stores to their new identity key, for every identity the
+	// current desired set actually claims. MUST run before anything below
+	// reads or prunes r.state.Proxies against desiredSet (the final prune
+	// pass, and resolveProxyID/tagProxySourceIfUnset in the add loop) —
+	// otherwise a not-yet-adopted legacy entry looks like "no longer
+	// desired" under the new identity-keyed desiredSet and gets silently
+	// deleted instead of adopted. Idempotent: safe every cycle.
+	desiredValues := make([]*connect.ProxySettings, 0, len(desiredSet))
+	for _, s := range desiredSet {
+		desiredValues = append(desiredValues, s)
+	}
+	adoptLegacyProxyState(r.state, desiredValues)
+	if globalProxyEarningsStore != nil {
+		globalProxyEarningsStore.adoptLegacy(desiredValues)
+	}
+	globalProxySlowRetryState.adoptLegacy(desiredValues)
 
 	// Lock ordering: r.mu (held by caller) is always acquired before r.cancelMapMu.
 	// provide()'s initial startup loop writes the cancel map before StartWatcher is called,
@@ -566,7 +595,7 @@ func (r *ProxyReloader) reload() {
 				r.cancelMapMu.Unlock()
 			}()
 			defer connect.UnregisterProxy(0)
-			connect.RegisterProxy(0, "direct")
+			connect.RegisterProxy(0, "direct", "direct")
 			r.spawnProxy(directCtx, nil, true, false)
 		})
 		tlog("[direct] native [direct] transport started (enable)\n")
@@ -603,7 +632,7 @@ func (r *ProxyReloader) reload() {
 				// with the new auth — one reload, minimal gap.
 				rotated = append(rotated, addr)
 				added = append(added, cloneProxySettings(s))
-				tlog("[proxy] rotating credentials for %s\n", addr)
+				tlog("[proxy] rotating credentials for %s\n", proxyKeyDisplay(addr))
 				continue
 			}
 			continue
@@ -694,7 +723,7 @@ func (r *ProxyReloader) reload() {
 		if len(added) > budget {
 			alist := make([]string, 0, len(added))
 			for _, s := range added {
-				alist = append(alist, s.Address)
+				alist = append(alist, s.Key())
 			}
 			drop := selectWorstRunningProxies(r.state.Proxies, gradeFor, traffic, alist, len(added)-budget)
 			dropSet := make(map[string]bool, len(drop))
@@ -703,7 +732,7 @@ func (r *ProxyReloader) reload() {
 			}
 			kept := added[:0]
 			for _, s := range added {
-				if dropSet[s.Address] {
+				if dropSet[s.Key()] {
 					// Deferred, not undesired: leave it in desiredSet so the
 					// prune pass keeps this proxy's grade/health history.
 					// It re-enters the budget next cycle.
@@ -745,7 +774,7 @@ func (r *ProxyReloader) reload() {
 		delete(r.runningAuth, addr)
 		r.cancelMapMu.Unlock()
 
-		bw := connect.ProxyBandwidthByAddress(addr)
+		bw := connect.ProxyBandwidthByKey(addr)
 		// A rotated proxy is never drained: its old credentials are being
 		// replaced (usually because they are dead or revoked), the launch pass
 		// skips addresses that are still draining, and the drain loop has no
@@ -760,7 +789,7 @@ func (r *ProxyReloader) reload() {
 		r.drainingProxies[addr] = cancel
 		r.drainMu.Unlock()
 
-		tlog("[proxy] draining %s (%d active clients)\n", addr, bw.Clients.Load())
+		tlog("[proxy] draining %s (%d active clients)\n", proxyKeyDisplay(addr), bw.Clients.Load())
 
 		go func(cancelFn context.CancelFunc, proxyAddr string) {
 			defer func() {
@@ -769,7 +798,7 @@ func (r *ProxyReloader) reload() {
 				r.drainMu.Unlock()
 			}()
 			for {
-				bw := connect.ProxyBandwidthByAddress(proxyAddr)
+				bw := connect.ProxyBandwidthByKey(proxyAddr)
 				if bw == nil || bw.Clients.Load() == 0 {
 					break
 				}
@@ -779,14 +808,14 @@ func (r *ProxyReloader) reload() {
 				case <-time.After(5 * time.Second):
 				}
 			}
-			tlog("[proxy] drain complete: %s\n", proxyAddr)
+			tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(proxyAddr))
 			cancelFn()
 
-			desired, err := currentDesiredProxyAddresses()
+			desired, err := currentDesiredProxyIdentities()
 			if err == nil && desired[proxyAddr] {
 				if reloadPath, err := proxyReloadPath(); err == nil {
 					if err := writeReloadTrigger(reloadPath); err == nil {
-						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyAddr)
+						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(proxyAddr))
 					}
 				}
 			}
@@ -816,26 +845,31 @@ func (r *ProxyReloader) reload() {
 	warmupDeferred := 0
 	for _, sched := range addedSchedules {
 		settings := sched.Settings
-		if r.isDraining(settings.Address) {
-			tlog("[proxy] skip add %s: still draining\n", settings.Address)
+		// key is this proxy's identity (address, or address+user for a
+		// shared-gateway proxy) — every per-proxy map below is keyed by
+		// this, never by settings.Address alone. See reload()'s desiredSet
+		// comment for why.
+		key := settings.Key()
+		if r.isDraining(key) {
+			tlog("[proxy] skip add %s: still draining\n", proxyKeyDisplay(key))
 			continue
 		}
 		// Defer unproven URL-sourced proxy launches until file-proxy warmup
 		// completes, so operator-curated proxies get an uncontested ramp.
 		// Promoted URL proxies (earnings >= 64 MiB) are known earners and
 		// should launch with the file list rather than be deferred.
-		isPromoted := proxyEarningsScore(settings.Address, time.Now()) >= earningsPromotionBytes
-		if sourceOf[settings.Address] == "url" && !isPromoted && !proxyWarmupDone.Load() {
+		isPromoted := proxyEarningsScore(key, time.Now()) >= earningsPromotionBytes
+		if sourceOf[key] == "url" && !isPromoted && !proxyWarmupDone.Load() {
 			warmupDeferred++
 			continue
 		}
-		stableID := resolveProxyID(r.state, settings.Address)
+		stableID := resolveProxyID(r.state, key)
 		settings.Index = stableID
-		tagProxySourceIfUnset(r.state, settings.Address, sourceOf[settings.Address])
+		tagProxySourceIfUnset(r.state, key, sourceOf[key])
 		proxyCtx, proxyCancel := context.WithCancel(r.parentCtx)
 		r.cancelMapMu.Lock()
-		r.cancelMap[settings.Address] = proxyCancel
-		launchGen := beginProxyLaunch(settings.Address)
+		r.cancelMap[key] = proxyCancel
+		launchGen := beginProxyLaunch(key)
 		proxyCtx = withProxyLaunchGen(proxyCtx, launchGen)
 		// Record the settings this proxy launched with, so a later reload can
 		// see when its credentials changed and rotate it (see the rotation
@@ -843,23 +877,25 @@ func (r *ProxyReloader) reload() {
 		if r.runningAuth == nil {
 			r.runningAuth = make(map[string]*connect.ProxySettings)
 		}
-		r.runningAuth[settings.Address] = cloneProxySettings(settings)
+		r.runningAuth[key] = cloneProxySettings(settings)
 		r.cancelMapMu.Unlock()
 		// Register AFTER the generation bump: a superseded goroutine that is
 		// still unwinding sees it is no longer current and leaves this
 		// registration alone. Registering first left a window in which the
 		// old goroutine still looked current and unregistered the entry we
-		// had just created.
-		connect.RegisterProxy(stableID, settings.Address)
+		// had just created. address stays the literal dial target for
+		// operator display; key is the real identity two accounts sharing
+		// a gateway address must never share.
+		connect.RegisterProxy(stableID, settings.Address, key)
 
 		settingsCopy := settings
-		isURLSourced := sourceOf[settings.Address] == "url"
+		isURLSourced := sourceOf[key] == "url"
 		baseDelay := sched.Delay
 		staggerDuration := sched.Stagger
 		r.wg.Add(1)
 		go connect.HandleError(func() {
 			defer r.wg.Done()
-			defer unregisterProxyIfCurrent(settingsCopy.Address, launchGen, stableID)
+			defer unregisterProxyIfCurrent(key, launchGen, stableID)
 			defer proxyCancel()
 
 			if !backoffPacerWithDelay(baseDelay, staggerDuration, proxyCtx) {

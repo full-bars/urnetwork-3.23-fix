@@ -13,6 +13,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // TestReload_URLOnlySource_NoEarlyExit is a regression test for a bug found
@@ -253,9 +254,14 @@ func TestReload_PrunesGhostStateEntries_NotRunningNotDesired(t *testing.T) {
 	if err := os.WriteFile(tmpFile, []byte("1.1.1.1:1080:alice:secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// The desired proxy's state entry is seeded at its LEGACY bare-address
+	// key on purpose: reload() must adopt it to the new identity key
+	// (address+user) before the prune pass runs, or this entry would look
+	// unclaimed under the new key and get wrongly pruned instead of kept.
+	desiredKey := (&connect.ProxySettings{Address: "1.1.1.1:1080", Auth: &proxy.Auth{User: "alice"}}).Key()
 
 	state := &ProxyState{Proxies: map[string]ProxyEntry{
-		"1.1.1.1:1080": {ID: 1, Health: "up"},               // still desired — must survive
+		"1.1.1.1:1080": {ID: 1, Health: "up"},               // legacy key, still desired — must be adopted, not pruned
 		"9.8.7.6:1080": {ID: 2, Health: "recently_offline"}, // removed from source, never running — must be pruned
 	}}
 	if err := writeProxyState(state); err != nil {
@@ -288,9 +294,12 @@ func TestReload_PrunesGhostStateEntries_NotRunningNotDesired(t *testing.T) {
 	if _, ok := after.Proxies["9.8.7.6:1080"]; ok {
 		t.Fatal("ghost entry (not running, not desired) should have been pruned from proxy.state")
 	}
-	kept, ok := after.Proxies["1.1.1.1:1080"]
+	if _, stillLegacy := after.Proxies["1.1.1.1:1080"]; stillLegacy {
+		t.Fatal("desired proxy's legacy key should have been adopted to its identity key, not left behind")
+	}
+	kept, ok := after.Proxies[desiredKey]
 	if !ok {
-		t.Fatal("still-desired proxy's state entry must survive reload")
+		t.Fatal("still-desired proxy's state entry must survive reload (adopted to its identity key)")
 	}
 	if kept.ID != 1 {
 		t.Fatalf("expected still-desired proxy to keep its original ID 1, got %d", kept.ID)

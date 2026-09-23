@@ -1088,3 +1088,50 @@ func TestProxyAuditRunOnceConcurrentWithControlActions(t *testing.T) {
 		t.Fatal("no status published after concurrent tick/control storm")
 	}
 }
+
+// TestEarningCredentialedProxyNotParkEligible pins the identity-keyed earn
+// tracker: proxy audit's park veto (stillEligible) asks whether THIS
+// IDENTITY earned recently, and an earning credentialed proxy (identity =
+// address+user) must not be park-eligible. With the tracker keyed by bare
+// address, the identity lookup missed and a live earning proxy read as
+// never-earning — parked out of the paid pool. Deterministic: fixed keys,
+// no timing dependence (hearing window is checked at the moment of the
+// test).
+func TestEarningCredentialedProxyNotParkEligible(t *testing.T) {
+	t.Cleanup(func() { globalPerProxyEarnTracker.Update(nil) })
+	globalPerProxyEarnTracker.Update(nil)
+
+	const addr = "gw.example.com:1080"
+	const identityKey = addr + "\x1falice" // ProxySettings.Key() shape
+
+	env := proxyAuditEnv{
+		health: func() map[string]connect.ProxyHealthStatus {
+			return map[string]connect.ProxyHealthStatus{identityKey: {Health: "up"}}
+		},
+		clients:        func(string) (int64, bool) { return 0, true },
+		earnedRecently: func(a string) bool { return globalPerProxyEarnTracker.EarnedSince(a, paidEarnWindow) },
+	}
+	g := &proxyAuditor{env: env}
+
+	// Quiet proxy: park-eligible (up, idle, never earned).
+	if !g.stillEligible(identityKey) {
+		t.Fatal("quiet credentialed proxy should be park-eligible")
+	}
+
+	// Now it earns: the identity-keyed tracker entry must veto the park.
+	idx := int(earnTrackerTestSeq.Add(1))
+	bw := connect.RegisterProxyBandwidth(idx)
+	t.Cleanup(func() { connect.UnregisterProxy(idx) })
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{identityKey: bw})
+	bw.BillableRx.Store(1 << 20)
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{identityKey: bw})
+
+	if g.stillEligible(identityKey) {
+		t.Fatal("earning credentialed proxy must not be park-eligible — a bare-address tracker reads it as never-earning")
+	}
+	// The bare-address lookup must NOT see the earnings either: the
+	// identity split is exactly what this guards.
+	if globalPerProxyEarnTracker.EarnedSince(addr, paidEarnWindow) {
+		t.Fatal("bare-address lookup must not match an identity-keyed earning record")
+	}
+}

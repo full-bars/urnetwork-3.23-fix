@@ -216,7 +216,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// proxy (LastGraded zero) is always force-probed: earn-skip
 			// must never prevent the FIRST grade, or an earning proxy with
 			// no grade stays ungraded forever.
-			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Address, paidEarnWindow)
+			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Key(), paidEarnWindow)
 			forceProbeDue := entry.LastGraded.IsZero() || now.Sub(entry.LastGraded) >= paidForceProbeCeiling
 			if earnedRecently && !forceProbeDue {
 				continue // earning and not past the ceiling — save the bandwidth

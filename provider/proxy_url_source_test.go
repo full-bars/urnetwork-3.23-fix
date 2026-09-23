@@ -37,7 +37,7 @@ func withTempHome(t *testing.T) string {
 	t.Cleanup(func() { writeReloadTriggerDebounce = 30 * time.Second })
 	// Isolate the process-wide connect health registry too. A proxy that
 	// resamples or relaunches keeps its health entry across tests; without a
-	// per-test reset, assertions that watch ProxyHealthByAddress() become
+	// per-test reset, assertions that watch ProxyHealthByKey() become
 	// order dependent when a shuffled predecessor registers the same address.
 	connect.ResetProxyHealthForTesting()
 	t.Cleanup(connect.ResetProxyHealthForTesting)
