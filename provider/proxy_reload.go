@@ -318,8 +318,29 @@ func (r *ProxyReloader) seedRunningAuth(settings []*connect.ProxySettings) {
 		r.runningAuth = make(map[string]*connect.ProxySettings, len(settings))
 	}
 	for _, s := range settings {
-		r.runningAuth[s.Address] = s
+		// Record a COPY, never the pointer handed to the goroutine: the
+		// proxy runtime mutates the launched settings (auth write-back),
+		// and reload() must compare against the baseline as CONFIGURED,
+		// not as dialed. Sharing the pointer made every credentialed
+		// proxy look perpetually rotated.
+		r.runningAuth[s.Address] = cloneProxySettings(s)
 	}
+}
+
+// cloneProxySettings returns a deep copy of s. The rotation baseline
+// (runningAuth) and the launched goroutine must never share the same
+// pointer: the runtime mutates the launched settings, which would poison
+// the comparison on the next reload.
+func cloneProxySettings(s *connect.ProxySettings) *connect.ProxySettings {
+	if s == nil {
+		return nil
+	}
+	c := *s
+	if s.Auth != nil {
+		a := *s.Auth
+		c.Auth = &a
+	}
+	return &c
 }
 
 // sameAuth reports whether two proxy settings carry identical credentials
@@ -581,7 +602,7 @@ func (r *ProxyReloader) reload() {
 				// goroutine (old credentials) and the add pass relaunches it
 				// with the new auth — one reload, minimal gap.
 				rotated = append(rotated, addr)
-				added = append(added, s)
+				added = append(added, cloneProxySettings(s))
 				tlog("[proxy] rotating credentials for %s\n", addr)
 				continue
 			}
@@ -822,7 +843,7 @@ func (r *ProxyReloader) reload() {
 		if r.runningAuth == nil {
 			r.runningAuth = make(map[string]*connect.ProxySettings)
 		}
-		r.runningAuth[settings.Address] = settings
+		r.runningAuth[settings.Address] = cloneProxySettings(settings)
 		r.cancelMapMu.Unlock()
 		// Register AFTER the generation bump: a superseded goroutine that is
 		// still unwinding sees it is no longer current and leaves this
