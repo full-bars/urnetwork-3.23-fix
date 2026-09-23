@@ -5108,42 +5108,7 @@ keyAddressLoop:
 			}
 		}
 
-		// Credential rotation: purge any existing entry for the same
-		// host:port whose credentials differ, so adding the same address
-		// with new credentials is a ROTATION, not a duplicate. The
-		// reloader diffs by address only (desiredSet[s.Address]), so two
-		// keys for one host:port with different user:pass made re-paste a
-		// no-op — the same address was already "desired", the new creds
-		// were silently dropped, and the running proxy kept the old auth
-		// (LA7 incident 2026-09-18: 100 proxies pasted with new creds,
-		// "added 100" printed, daemon kept dialing the old user).
-		// Scan EVERY entry for this address before deciding anything. Stopping
-		// at the first entry with identical credentials (the old behavior)
-		// left any stale duplicate not yet visited in place, and Go's random
-		// map order made whether it was purged nondeterministic.
-		keepExisting := false
-		var stale []string
-		for existing, existingKey := range proxyConfig.Servers {
-			existingAddress, existingUser, existingPassword := parseProxyAddress(existing)
-			if existingAddress != address || existing == proxyAddress {
-				continue
-			}
-			// Compare EFFECTIVE credentials: a stored key can carry its
-			// credentials in the Auths table instead of in the server string,
-			// and an alternate representation of the same credentials is not
-			// a rotation.
-			if proxyConfig.Auths != nil {
-				if existingAuth, ok := proxyConfig.Auths[existingKey]; ok {
-					existingUser = existingAuth.User
-					existingPassword = existingAuth.Password
-				}
-			}
-			if existingUser == user && existingPassword == password {
-				keepExisting = true
-				continue
-			}
-			stale = append(stale, existing)
-		}
+		keepExisting, stale := planInternalAdd(proxyConfig, proxyAddress, address, user, password)
 		for _, existing := range stale {
 			delete(proxyConfig.Servers, existing)
 			if keepExisting {
@@ -5167,6 +5132,45 @@ keyAddressLoop:
 	}
 
 	writeProxyConfig(proxyConfig)
+}
+
+// planInternalAdd decides what adding proxyAddress (parsed as address/user/
+// password) means for the existing internal-config entries at the same host:port.
+//
+// A proxy's identity is address+user (ProxySettings.Key(); the password is not
+// part of it), so:
+//   - same user, same password: already present (keepExisting), and any other
+//     entry of the SAME identity is a stale duplicate to purge;
+//   - same user, different password: a credential ROTATION of that identity,
+//     the old entry is purged so the new credentials take effect (LA7 incident
+//     2026-09-18: a re-paste with new creds was a silent no-op);
+//   - different user: a DIFFERENT account at a shared gateway. It is left
+//     alone, purging it would delete a live proxy the operator still wants.
+//
+// Purged entries come back sorted so the output is stable despite map order.
+func planInternalAdd(proxyConfig *ProxyConfig, proxyAddress, address, user, password string) (keepExisting bool, stale []string) {
+	for existing, existingKey := range proxyConfig.Servers {
+		existingAddress, existingUser, existingPassword := parseProxyAddress(existing)
+		if existingAddress != address || existing == proxyAddress {
+			continue
+		}
+		if proxyConfig.Auths != nil {
+			if existingAuth, ok := proxyConfig.Auths[existingKey]; ok {
+				existingUser = existingAuth.User
+				existingPassword = existingAuth.Password
+			}
+		}
+		if existingUser != user {
+			continue // another account at this gateway: not ours to touch
+		}
+		if existingPassword == password {
+			keepExisting = true
+			continue
+		}
+		stale = append(stale, existing)
+	}
+	sort.Strings(stale)
+	return keepExisting, stale
 }
 
 // proxyAddCollectAddresses gathers the addresses to add from opts, resolving
