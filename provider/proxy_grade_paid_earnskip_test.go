@@ -60,7 +60,7 @@ func TestPaidProxyGrader_SkipsEarningProxy(t *testing.T) {
 			// Stale (past the 6h paid window) but WITHIN the 24h
 			// force-probe ceiling, so the earn-skip is the deciding
 			// factor: earning must suppress the probe here.
-			addr: {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -72,7 +72,7 @@ func TestPaidProxyGrader_SkipsEarningProxy(t *testing.T) {
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
 	state, _ := readProxyState()
-	e := state.Proxies[addr]
+	e := state.Proxies[identityKey(addr, "u")]
 	// Grade must be untouched (no re-probe happened).
 	if !e.Graded || e.Score != 0.9 {
 		t.Errorf("earning proxy must not be re-graded, got graded=%v score=%v", e.Graded, e.Score)
@@ -107,7 +107,7 @@ func TestPaidProxyGrader_ProbesQuietProxy(t *testing.T) {
 		Proxies: map[string]ProxyEntry{
 			// Stale (past 6h) but within the 24h ceiling: the only reason
 			// to probe is that the proxy is QUIET (never earned).
-			addr: {ID: 2, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 2, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -143,7 +143,7 @@ func TestPaidProxyGrader_ForceProbeCeiling(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 3, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling - time.Hour)},
+			identityKey(addr, "u"): {ID: 3, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling - time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -189,7 +189,7 @@ func TestPaidProxyGrader_EarnedTooLongAgoIsProbed(t *testing.T) {
 		Source: src,
 		Proxies: map[string]ProxyEntry{
 			// Stale (past 6h) but within the 24h ceiling.
-			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -234,7 +234,7 @@ func TestPaidProxyGrader_JustUnderForceProbeCeilingStillSkipped(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 6, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling + time.Hour)},
+			identityKey(addr, "u"): {ID: 6, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling + time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -272,7 +272,7 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 		Proxies: map[string]ProxyEntry{
 			// NEVER graded (LastGraded zero), but actively earning:
 			// earn-skip must not suppress the first probe.
-			addr: {ID: 4, Health: "up", Source: "file"},
+			identityKey(addr, "u"): {ID: 4, Health: "up", Source: "file"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -289,7 +289,7 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 	}
 	// And it must now carry a grade.
 	state, _ := readProxyState()
-	if e, ok := state.Proxies[addr]; !ok || !e.Graded {
+	if e, ok := state.Proxies[identityKey(addr, "u")]; !ok || !e.Graded {
 		t.Fatalf("never-graded proxy must receive a grade after its first probe, got %+v", e)
 	}
 }
@@ -317,7 +317,7 @@ func TestPaidProxyGrader_ProbesAfterEmptyHealthSet(t *testing.T) {
 			// Stale but within the 24h ceiling — earn-skip would be the
 			// only reason to skip; the cleared tracker must not provide
 			// that reason.
-			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)

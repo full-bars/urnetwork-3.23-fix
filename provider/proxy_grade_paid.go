@@ -46,6 +46,7 @@ import (
 // collected under (so the apply phase can detect a concurrent refresh). Shared
 // between the collector, the per-tick budget sorter, and the probe fan-out.
 type gradeTarget struct {
+	key              string // proxy.state identity key (ProxySettings.Key()); addr is only the dial target
 	addr             string
 	user             string
 	password         string
@@ -134,9 +135,16 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// graded (the dial may succeed without auth).
 		credsByAddr, desiredSetTrusted := paidDesiredSet(state)
 
-		var desired []*connect.ProxySettings
+		type paidCandidate struct {
+			key string
+			ps  *connect.ProxySettings
+		}
+		var desired []paidCandidate
 		if len(state.Proxies) > 0 {
-			for addr, entry := range state.Proxies {
+			// state.Proxies is keyed by proxy identity (address, or
+			// address+user for a shared-gateway credentialed proxy), so the
+			// loop variable is a KEY; the dial address is its address part.
+			for key, entry := range state.Proxies {
 				// Collect predicate MUST mirror the apply predicate (membership
 				// in this same union), or a tracked-but-not-desired entry is
 				// dialed every tick and discarded at apply before LastGraded
@@ -150,30 +158,36 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				// (collect-fix behavior; ReadErrorStillProbesTracked) and only
 				// drop explicitly URL-tagged ones. "File wins" still applies:
 				// an address in the union is graded regardless of its tag.
-				inDesired := credsByAddr[addr] != nil
+				inDesired := credsByAddr[key] != nil
 				if !inDesired && desiredSetTrusted {
 					continue
 				}
 				if !inDesired && !desiredSetTrusted && entry.Source == "url" {
 					continue
 				}
+				addr, _ := connect.SplitProxyKey(key)
 				ps := &connect.ProxySettings{Network: "tcp", Address: addr}
 				// Creds may be unresolvable here (unreadable file / not in the
 				// union): the proxy is still graded, the dial may succeed
 				// without auth (collect-fix invariant).
-				if creds := credsByAddr[addr]; creds != nil && creds.Auth != nil {
+				if creds := credsByAddr[key]; creds != nil && creds.Auth != nil {
 					ps.Auth = creds.Auth
 				}
-				desired = append(desired, ps)
+				desired = append(desired, paidCandidate{key: key, ps: ps})
 			}
 		} else if state.Source != "" {
-			desired, err = readProxySettingsFromFile(state.Source)
-			if err != nil {
-				tlog("[proxy][grade] warning: %v\n", err)
+			fromFile, ferr := readProxySettingsFromFile(state.Source)
+			if ferr != nil {
+				tlog("[proxy][grade] warning: %v\n", ferr)
 				return
 			}
+			for _, ps := range fromFile {
+				desired = append(desired, paidCandidate{key: ps.Key(), ps: ps})
+			}
 		} else {
-			desired = readProxySettings()
+			for _, ps := range readProxySettings() {
+				desired = append(desired, paidCandidate{key: ps.Key(), ps: ps})
+			}
 		}
 
 		// PAID window, not the URL window: paid proxies are stable and the
@@ -181,7 +195,8 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// less often (6h calm / 3h hot vs the URL 3h/1h).
 		paidStaleAfter := paidStaleThreshold(currentPressure())
 		now := time.Now()
-		for _, s := range desired {
+		for _, c := range desired {
+			s, key := c.ps, c.key
 			// Only proxies the box actually tracks (has a ProxyEntry) are
 			// graded: the reload path creates the entry when the proxy
 			// launches, so a later sweep grades it. Requiring an entry
@@ -189,7 +204,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// removed between collect and apply (a concurrent reload or
 			// operator delete) — the URL reaper applies the same rule
 			// ("removed by a concurrent writer").
-			entry, ok := state.Proxies[s.Address]
+			entry, ok := state.Proxies[key]
 			if !ok {
 				continue
 			}
@@ -216,12 +231,12 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			// proxy (LastGraded zero) is always force-probed: earn-skip
 			// must never prevent the FIRST grade, or an earning proxy with
 			// no grade stays ungraded forever.
-			earnedRecently := globalPerProxyEarnTracker.EarnedSince(s.Key(), paidEarnWindow)
+			earnedRecently := globalPerProxyEarnTracker.EarnedSince(key, paidEarnWindow)
 			forceProbeDue := entry.LastGraded.IsZero() || now.Sub(entry.LastGraded) >= paidForceProbeCeiling
 			if earnedRecently && !forceProbeDue {
 				continue // earning and not past the ceiling — save the bandwidth
 			}
-			t := gradeTarget{addr: s.Address, snapshotGradedAt: entry.LastGraded}
+			t := gradeTarget{key: key, addr: s.Address, snapshotGradedAt: entry.LastGraded}
 			if s.Auth != nil {
 				t.user = s.Auth.User
 				t.password = s.Auth.Password
@@ -249,6 +264,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// uses; each individual table pass is sequential through its proxy.
 	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
 	type gradeResult struct {
+		key              string
 		addr             string
 		snapshotGradedAt time.Time
 		user             string
@@ -264,6 +280,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = gradeResult{
+				key:              t.key,
 				addr:             t.addr,
 				snapshotGradedAt: t.snapshotGradedAt,
 				user:             t.user,
@@ -325,22 +342,22 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 		// paid-budget sort keeping its never-graded flag first forever.
 		current := map[string]connect.ProxySettings{}
 		desiredSet, fileOK := paidDesiredSet(state)
-		for addr, s := range desiredSet {
-			current[addr] = *s
+		for key, s := range desiredSet {
+			current[key] = *s
 		}
 		changed := false
 		graded := 0
 		pending := 0
 		tierChanges := 0
 		for _, r := range results {
-			entry, ok := state.Proxies[r.addr]
+			entry, ok := state.Proxies[r.key]
 			if !ok {
 				continue // removed by a concurrent writer; do not resurrect
 			}
 			if entry.LastGraded.After(r.snapshotGradedAt) {
 				continue // refreshed by a concurrent pass; do not clobber
 			}
-			s, ok := current[r.addr]
+			s, ok := current[r.key]
 			if !ok {
 				// Mirror the collect-side fallback so apply cannot discard what
 				// collect dialed. When fileOK is false the source-file leg of the
@@ -413,7 +430,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 				// a pending proxy is never labelled with a wrong tier.
 				pending++
 			}
-			state.Proxies[r.addr] = entry
+			state.Proxies[r.key] = entry
 			changed = true
 		}
 		if graded > 0 || pending > 0 {
@@ -464,13 +481,13 @@ func paidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bool)
 			fileOK = false
 		default:
 			for _, s := range cf {
-				out[s.Address] = s
+				out[s.Key()] = s
 			}
 		}
 	}
 	for _, s := range readProxySettings() {
-		if _, ok := out[s.Address]; !ok {
-			out[s.Address] = s
+		if _, ok := out[s.Key()]; !ok {
+			out[s.Key()] = s
 		}
 	}
 	return out, fileOK
@@ -506,9 +523,9 @@ func applyPaidProbeBudget(targets []gradeTarget, budget int) []gradeTarget {
 		// intentionally randomized in Go. Without this, equal-staleness targets
 		// keep a random stable order and the budget cut below picks an arbitrary
 		// subset each tick -- a deferred proxy could starve indefinitely.
-		// Addresses are unique, so `<` is a total order.
+		// Identity keys are unique, so `<` is a total order.
 		if targets[i].snapshotGradedAt.Equal(targets[j].snapshotGradedAt) {
-			return targets[i].addr < targets[j].addr
+			return targets[i].key < targets[j].key
 		}
 		return targets[i].snapshotGradedAt.Before(targets[j].snapshotGradedAt)
 	})

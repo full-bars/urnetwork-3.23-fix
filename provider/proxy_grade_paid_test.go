@@ -45,7 +45,7 @@ func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 7, Health: "up", Source: "file", AuthFailures: 3},
+			identityKey(addr, "u"): {ID: 7, Health: "up", Source: "file", AuthFailures: 3},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -64,7 +64,7 @@ func TestPaidProxyGrader_GradesFileProxy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	e, ok := state.Proxies[addr]
+	e, ok := state.Proxies[identityKey(addr, "u")]
 	if !ok {
 		t.Fatal("entry must remain in proxy.state")
 	}
@@ -135,7 +135,7 @@ func TestPaidProxyGrader_KillSwitchSkips(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 1, Health: "up", Source: "file"},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -147,7 +147,7 @@ func TestPaidProxyGrader_KillSwitchSkips(t *testing.T) {
 		t.Fatalf("kill switch off must skip the probe entirely: %d CONNECTs", n)
 	}
 	state, _ := readProxyState()
-	if e := state.Proxies[addr]; e.Graded || !e.LastGraded.IsZero() {
+	if e := state.Proxies[identityKey(addr, "u")]; e.Graded || !e.LastGraded.IsZero() {
 		t.Errorf("kill switch off must not write grades: %+v", e)
 	}
 }
@@ -168,7 +168,7 @@ func TestPaidProxyGrader_SkipsFreshGrade(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-time.Minute)},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-time.Minute)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -204,7 +204,7 @@ func TestPaidProxyGrader_GradesFileProxyWithStaleURLTag(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 1, Health: "up", Source: "url", LastGraded: time.Time{}},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "url", LastGraded: time.Time{}},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -216,7 +216,7 @@ func TestPaidProxyGrader_GradesFileProxyWithStaleURLTag(t *testing.T) {
 		t.Fatalf("file-desired proxy with stale url tag must be graded: %d CONNECTs, want 5 (4 table + 1 stage-0)", n)
 	}
 	state, _ := readProxyState()
-	e := state.Proxies[addr]
+	e := state.Proxies[identityKey(addr, "u")]
 	if !e.Graded || e.Score != 1.0 {
 		t.Errorf("expected grade persisted despite stale url tag: %+v", e)
 	}
@@ -250,7 +250,7 @@ func TestPaidProxyGrader_SkipsMissingEntry(t *testing.T) {
 		t.Fatalf("missing entry must not be probed: %d CONNECTs", n)
 	}
 	state, _ := readProxyState()
-	if _, ok := state.Proxies[addr]; ok {
+	if _, ok := state.Proxies[identityKey(addr, "u")]; ok {
 		t.Error("must not create a ghost ProxyEntry for an untracked address")
 	}
 }
@@ -375,7 +375,7 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-24 * time.Hour)},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-24 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -384,7 +384,7 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
 	state, _ := readProxyState()
-	e := state.Proxies[addr]
+	e := state.Proxies[identityKey(addr, "u")]
 	if !e.Graded || e.Score != 0.9 {
 		t.Errorf("undecidable pass must keep prior grade, got graded=%v score=%v", e.Graded, e.Score)
 	}
@@ -500,7 +500,7 @@ func TestPaidGrader_NoVerdictPassAdvancesAttemptClockNotVerdictClock(t *testing.
 	}
 	decided := time.Now().Add(-24 * time.Hour)
 	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
-		addr: {ID: 1, Health: "up", Source: "file", Score: 0.1, Graded: true, LastGraded: decided, LastDecided: decided},
+		identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file", Score: 0.1, Graded: true, LastGraded: decided, LastDecided: decided},
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -508,7 +508,7 @@ func TestPaidGrader_NoVerdictPassAdvancesAttemptClockNotVerdictClock(t *testing.
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
 	state, _ := readProxyState()
-	e := state.Proxies[addr]
+	e := state.Proxies[identityKey(addr, "u")]
 	if !e.LastGraded.After(time.Now().Add(-time.Minute)) {
 		t.Fatalf("setup: the attempt clock should have advanced, got %v", e.LastGraded)
 	}
