@@ -488,9 +488,9 @@ func TestLiveReadPaid_FingerprintsFollowTheAddressNotTheHost(t *testing.T) {
 		os.WriteFile(src, []byte(lines), 0600)
 	}
 	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
-		"9.9.9.9:1080": {ID: 1, Health: "up", Source: "file"},
-		"9.9.9.9:1081": {ID: 2, Health: "up", Source: "file"}, // same host, next port
-		"9.9.9.8:1080": {ID: 3, Health: "up", Source: "file"}, // next host, same port
+		identityKey("9.9.9.9:1080", "alice"): {ID: 1, Health: "up", Source: "file"},
+		identityKey("9.9.9.9:1081", "alice"): {ID: 2, Health: "up", Source: "file"}, // same host, next port
+		identityKey("9.9.9.8:1080", "alice"): {ID: 3, Health: "up", Source: "file"}, // next host, same port
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -502,10 +502,11 @@ func TestLiveReadPaid_FingerprintsFollowTheAddressNotTheHost(t *testing.T) {
 
 	write("9.9.9.9:1080:alice:pw2\n9.9.9.9:1081:alice:pw1\n9.9.9.8:1080:alice:pw1\n")
 	_, after, _ := liveReadPaid()
-	if after["9.9.9.9:1080"] == before["9.9.9.9:1080"] {
+	k1080, k1081, k8 := identityKey("9.9.9.9:1080", "alice"), identityKey("9.9.9.9:1081", "alice"), identityKey("9.9.9.8:1080", "alice")
+	if after[k1080] == before[k1080] {
 		t.Fatalf("re-pasting an address with new credentials must change its fingerprint")
 	}
-	if after["9.9.9.9:1081"] != before["9.9.9.9:1081"] || after["9.9.9.8:1080"] != before["9.9.9.8:1080"] {
+	if after[k1081] != before[k1081] || after[k8] != before[k8] {
 		t.Fatalf("near-identical endpoints must not be disturbed by another address's rotation")
 	}
 }
@@ -662,8 +663,8 @@ func TestLiveReadPaid_ReturnsTrackedPaidProxiesOnly(t *testing.T) {
 	src := filepath.Join(home, "paid.txt")
 	os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n3.3.3.3:1080:u:p\n"), 0600)
 	err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
-		"1.1.1.1:1080": {ID: 1, Health: "up", Source: "file"},
-		"2.2.2.2:1080": {ID: 2, Health: "up", Source: "url"}, // URL-sourced: not paid
+		identityKey("1.1.1.1:1080", "u"): {ID: 1, Health: "up", Source: "file"},
+		"2.2.2.2:1080":                   {ID: 2, Health: "up", Source: "url"}, // URL-sourced: not paid
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -673,8 +674,33 @@ func TestLiveReadPaid_ReturnsTrackedPaidProxiesOnly(t *testing.T) {
 	if !ok {
 		t.Fatalf("a readable source file is a trustworthy paid set")
 	}
-	if len(got) != 1 || got["1.1.1.1:1080"].ID != 1 {
+	if len(got) != 1 || got[identityKey("1.1.1.1:1080", "u")].ID != 1 {
 		t.Fatalf("expected only the tracked file proxy, got %v", got)
+	}
+}
+
+// A credentialed file proxy plus an unauthenticated internal-config proxy,
+// tracked under the keys reload writes (identity for the credentialed one, bare
+// address for the other), must both surface. Before the paid set was
+// identity-keyed the credentialed proxy was invisible to the audit.
+func TestLiveReadPaid_MixedCredentialedAndBareTracked(t *testing.T) {
+	home := withTempHome(t)
+	src := filepath.Join(home, "paid.txt")
+	os.WriteFile(src, []byte("10.0.0.1:1080:u:p\n"), 0600)
+	writeProxyConfig(&ProxyConfig{Servers: map[string]string{"10.0.0.2:1080": ""}})
+	credKey := identityKey("10.0.0.1:1080", "u")
+	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
+		credKey:         {ID: 1, Health: "up", Source: "file"},
+		"10.0.0.2:1080": {ID: 2, Health: "up", Source: "file"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got, creds, ok := liveReadPaid()
+	if !ok || len(got) != 2 {
+		t.Fatalf("expected both tracked file proxies, ok=%v got %v", ok, got)
+	}
+	if creds[credKey] == "" || creds["10.0.0.2:1080"] != "" {
+		t.Fatalf("only the credentialed proxy has a fingerprint, got %v", creds)
 	}
 }
 

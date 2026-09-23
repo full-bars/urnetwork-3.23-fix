@@ -379,10 +379,12 @@ func liveReadPaid() (map[string]ProxyEntry, map[string]string, bool) {
 	}
 	out := make(map[string]ProxyEntry, len(paid))
 	creds := make(map[string]string, len(paid))
-	for addr, entry := range state.Proxies {
-		if s, ok := paid[addr]; ok {
-			out[addr] = entry
-			creds[addr] = proxyAuditCredFingerprint(s.Auth)
+	// state.Proxies and paid are both keyed by proxy identity (address, or
+	// address+user for a credentialed proxy), so the maps line up as-is.
+	for key, entry := range state.Proxies {
+		if s, ok := paid[key]; ok {
+			out[key] = entry
+			creds[key] = proxyAuditCredFingerprint(s.Auth)
 		}
 	}
 	return out, creds, true
@@ -390,11 +392,12 @@ func liveReadPaid() (map[string]ProxyEntry, map[string]string, bool) {
 
 // proxyAuditCredFingerprint is an opaque, stable stand-in for a proxy's
 // credentials, taken from the same desired set the grader validates its
-// results against. An address is a proxy's identity, so re-pasting the same
-// host:port with new credentials (the LA7 incident, 2026-09-18) is a rotation
-// proxy audit must notice: what it learned about the old credentials says
-// nothing about the new ones. Near-identical endpoints (same host, another
-// port, or another credential) are different addresses and never share state.
+// results against. A proxy's identity is its address plus user, so re-pasting
+// the same host:port and user with a new password (the LA7 incident,
+// 2026-09-18) is a rotation proxy audit must notice: what it learned about
+// the old credentials says nothing about the new ones. Near-identical
+// endpoints (same host, another port, or another user) are different
+// identities and never share state.
 //
 // Length-prefixing keeps ("ab","c") and ("a","bc") apart, and the hash keeps
 // the secret out of every log line and status output. No credentials, or
