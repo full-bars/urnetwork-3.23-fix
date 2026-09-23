@@ -1,5 +1,13 @@
 # Changelog
 
+## [v3.23.0-fix.32.5]
+
+### Fixed
+
+- **HotSwap silently stranded by a re-run installer** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/682>): `update` only reconciled a unit's systemd `Type=` after installing a new binary, so a unit clobbered by a re-run of the installer (`urnet-tools reinstall`, or the documented `curl -fsSL https://install.fullbars.xyz | sh` one-liner — which always writes `Type=simple`, unaware of any prior HotSwap migration) stayed clobbered until a new release shipped. `update`'s "already on `<tag>`" no-op path now also reconciles the unit against the binary on disk, restarting the provider exactly when a migration to `Type=notify` needs the running process to pick up `NOTIFY_SOCKET`. No installer changes, no new CLI surface — every `update`, including the unattended weekly timer, is now sufficient on its own to converge a stranded unit.
+
+---
+
 ## [v3.23.0-fix.32.4]
 
 ### Fixed
