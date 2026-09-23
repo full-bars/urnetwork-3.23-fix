@@ -563,3 +563,30 @@ func resolveProxyAuditEnabled(startupEnabled bool) bool {
 	}
 	return startupEnabled
 }
+
+// resolveAuditReleaseKeys maps what an operator typed for `proxy audit release`
+// to the keys audit state is stored under. Parks, backoffs and failure counts
+// are keyed by proxy identity (address, or address+user for a credentialed
+// proxy), and the \x1f separator makes an identity key impossible to type. So
+// an address names EVERY known identity at it (release only gives proxies back,
+// which is safe to do in bulk), and an exact key names just itself. When nothing
+// known matches, the input is kept so a stray backoff or failure count recorded
+// under exactly that string is still cleared. Result is sorted and unique.
+func resolveAuditReleaseKeys(input string, known []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range known {
+		if seen[k] {
+			continue
+		}
+		if address, _ := connect.SplitProxyKey(k); k == input || address == input {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return []string{input}
+	}
+	sort.Strings(out)
+	return out
+}
