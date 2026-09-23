@@ -340,7 +340,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			}
 		}
 		if skip {
-			fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
+			reportAlreadyCurrent(p, cfg)
 			continue
 		}
 		if err := updateProviderWithRestart(p, cfg, stagedTool); err != nil {
@@ -1726,6 +1726,90 @@ func reconcileUnitTypeForBinary(p Provider, binaryVersion string) (bool, error) 
 		return false, err
 	}
 	return false, nil
+}
+
+// reportAlreadyCurrent is cmdUpdate's skip-branch body for a provider
+// already on the target version. Split out (rather than inlined in
+// cmdUpdate's loop) so the self-heal wiring itself — not just
+// reconcileUnitTypeAndRestart in isolation — is under test: a future edit
+// that drops this call from the skip branch without touching
+// reconcileUnitTypeAndRestart would otherwise pass every existing test
+// while silently reintroducing the "no-op update never checks the unit"
+// gap this exists to close.
+func reportAlreadyCurrent(p Provider, cfg updateConfig) {
+	migrated, rerr := reconcileUnitTypeAndRestart(p)
+	switch {
+	case rerr != nil:
+		fmt.Fprintf(os.Stderr, "update %s: systemd unit reconcile failed: %v\n", providerLabel(p), rerr)
+	case migrated:
+		fmt.Printf("provider %s already on %s (systemd unit reconciled for HotSwap)\n", providerLabel(p), cfg.Tag)
+	default:
+		fmt.Printf("provider %s already on %s\n", providerLabel(p), cfg.Tag)
+	}
+}
+
+// reconcileUnitTypeAndRestart brings a provider's systemd unit Type= into
+// agreement with the currently-installed binary (see
+// reconcileUnitTypeForBinary) even when no new release is being installed.
+// updateProvider already reconciles after every binary swap; this covers
+// the other case — cmdUpdate's skip branch, where the provider is already
+// on the target version — so a unit clobbered by a re-run of the installer
+// (which always writes Type=simple, unaware of any prior HotSwap
+// migration) self-heals on the very next `update` instead of staying
+// broken until a new release ships.
+//
+// A migration to Type=notify needs a restart to actually take effect: the
+// already-running process was exec'd before the migration and lacks
+// NOTIFY_SOCKET (systemd only sets it for a process started under
+// Type=notify). Without this restart, the unit would read as notify on the
+// NEXT update, which would then attempt a real HotSwap (SIGUSR2) against a
+// process that still cannot send sd_notify — the exact scenario the
+// migratedUnit gate in updateProvider exists to prevent, just deferred by
+// one cycle instead of avoided. A demotion to Type=simple needs no
+// restart: it only protects a future start from hanging and does not
+// affect the process already running.
+//
+// Returns whether the unit was migrated (never true for a demotion — see
+// reconcileUnitTypeForBinary) and any error from the migration or restart.
+func reconcileUnitTypeAndRestart(p Provider) (bool, error) {
+	migrated, err := reconcileUnitTypeForBinary(p, verifyProviderVersionFn(p.Binary))
+	if err != nil || !migrated {
+		return migrated, err
+	}
+	if !p.Running || p.PID <= 0 {
+		// Nothing running to restart; the migrated unit picks up
+		// NOTIFY_SOCKET on its own next normal start.
+		return true, nil
+	}
+	fmt.Printf("unit migrated to Type=notify; restarting %s so the running process picks up NOTIFY_SOCKET\n", providerLabel(p))
+	if err := restartForUpdate(p); err != nil {
+		return true, fmt.Errorf("restart after unit migration: %w", err)
+	}
+	if err := verifyPlainRestart(p); err != nil {
+		return true, fmt.Errorf("restart after unit migration did not take effect: %w", err)
+	}
+	fmt.Printf("verified %s restarted under the migrated unit\n", providerLabel(p))
+	return true, nil
+}
+
+// verifyPlainRestart waits for a provider's PID to change after a restart
+// that does not change the binary version. reconcileUnitTypeAndRestart's
+// restart exists purely to hand the process NOTIFY_SOCKET, so there is no
+// version to poll for — only "a new process came up in this state dir."
+// Package-level verify*Fn vars (shared with verifyRestartLoop) keep this
+// testable without real sleeps or process discovery.
+func verifyPlainRestart(p Provider) error {
+	oldPID := p.PID
+	verifySleepFn(3 * time.Second)
+	for i := 0; i < 15; i++ { // ~45s
+		for _, rp := range verifyDiscoverFn() {
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && rp.PID != oldPID && !rp.BinaryDeleted {
+				return nil
+			}
+		}
+		verifySleepFn(2 * time.Second)
+	}
+	return fmt.Errorf("provider did not come back up with a new PID within 45s")
 }
 
 // demoteUnitToSimple rewrites a Type=notify unit back to Type=simple and
