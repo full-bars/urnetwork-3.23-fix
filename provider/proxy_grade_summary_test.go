@@ -246,7 +246,7 @@ func TestCollectProxyGradeSummary_FileOwnershipOverridesURLTag(t *testing.T) {
 	state := &ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			"9.9.9.9:1080": {Health: "up", Source: "url", Graded: true, Score: 0.8, LastGraded: time.Now().Add(-4 * time.Hour)},
+			identityKey("9.9.9.9:1080", "u"): {Health: "up", Source: "url", Graded: true, Score: 0.8, LastGraded: time.Now().Add(-4 * time.Hour)},
 		},
 	}
 	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
@@ -704,5 +704,35 @@ func TestCollectProxyGradeSummary_PendingWinsOverStaleTier(t *testing.T) {
 	// 8.8.8.8 still in A.
 	if s.tiers["A"] != 1 {
 		t.Errorf("A bucket = %d, want 1 (%+v)", s.tiers["A"], s.tiers)
+	}
+}
+
+// A credentialed URL proxy is tracked in proxy.state under its identity key but
+// graded in the address-keyed URL cache: the summary must find the grade via
+// the key's address part instead of reporting the proxy as ungraded.
+func TestCollectProxyGradeSummary_CredentialedURLProxyGradeFromAddressKeyedCache(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	urlState := &ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"1.1.1.1:1080": {ProbeOK: true, Score: 0.95, Graded: true, LastProbe: time.Now()},
+	}}
+	if err := writeProxyURLStateTo(filepath.Join(dir, "proxy_url.json"), urlState); err != nil {
+		t.Fatal(err)
+	}
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		identityKey("1.1.1.1:1080", "u"): {Health: "up", Source: "url"},
+	}}
+	if err := writeProxyStateTo(filepath.Join(dir, "proxy.state"), state); err != nil {
+		t.Fatal(err)
+	}
+	s, ok := collectProxyGradeSummary()
+	if !ok {
+		t.Fatal("collectProxyGradeSummary returned ok=false")
+	}
+	if s.tiers["A"] != 1 || s.tiers["ungraded"] != 0 {
+		t.Fatalf("credentialed URL proxy must bucket by its cached grade, got %+v", s.tiers)
 	}
 }

@@ -96,13 +96,13 @@ type trimRank struct {
 	traffic uint64
 }
 
-// buildTrimGradeResolver returns a per-address A-F grade resolver backed by the
+// buildTrimGradeResolver returns a per-identity-key A-F grade resolver backed by the
 // existing proxyGradeFor unifier, which reads the grade from the correct store
 // for each proxy (paid/file ProxyEntry wins, else the URL cache ProxyURLEntry)
 // nil urlState degrades to the paid store only.
-func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState) func(addr string) (float64, bool) {
-	return func(addr string) (float64, bool) {
-		g, ok := proxyGradeFor(addr, state, urlState)
+func buildTrimGradeResolver(state *ProxyState, urlState *ProxyURLState) func(key string) (float64, bool) {
+	return func(key string) (float64, bool) {
+		g, ok := proxyGradeFor(key, state, urlState)
 		if !ok {
 			return 0, false
 		}

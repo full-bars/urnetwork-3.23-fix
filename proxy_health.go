@@ -254,6 +254,18 @@ func markProxyUp(index int) {
 	}
 }
 
+// ProxyKeyByIndex returns the identity key (ProxySettings.Key()) registered for
+// a registry index, or "" when the index is unknown. For consumers that only
+// hold the "proxy[N] (addr)" display string and need the proxy.state key.
+func ProxyKeyByIndex(index int) string {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	if h, ok := proxyHealthByIndex[index]; ok {
+		return h.key
+	}
+	return ""
+}
+
 // ProxyBandwidthByKey returns the ProxyBandwidth for a given identity key, or nil.
 func ProxyBandwidthByKey(key string) *ProxyBandwidth {
 	proxyHealthMu.Lock()
