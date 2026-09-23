@@ -1,5 +1,13 @@
 # Changelog
 
+## [v3.23.0-fix.32.4]
+
+### Fixed
+
+- **Perpetual credential rotation on paid proxies** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/680>): the reload cycle recorded a running proxy's auth baseline as the same pointer handed to its own goroutine, which the proxy runtime mutates during its auth flow. The baseline drifted within milliseconds of launch, so every ~30s reload saw a phantom credential change and rotated — relaunching (and re-mutating) the proxy, forever. Only credentialed (paid, file-sourced) proxies were affected; nil-auth proxies always compared equal. The baseline is now a deep copy, isolated from the object the runtime mutates. A genuine credential change (re-paste) still rotates exactly once.
+
+---
+
 ## [v3.23.0-fix.32.3]
 
 ### Fixed
