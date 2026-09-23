@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"sort"
 
 	"fmt"
 	"github.com/docopt/docopt-go"
@@ -214,27 +215,39 @@ func runningProxyTraffic() map[string]uint64 {
 	return traffic
 }
 
-// runningProxyAddresses returns the currently RUNNING addresses from the health
-// surface (bandwidth + connecting), so --preview reports the running pool rather
-// than the larger desired set in proxy.state).
+// runningProxyAddresses returns the currently RUNNING proxies as identity keys
+// (ProxySettings.Key(): address, or address+user for a credentialed proxy) from
+// the health surface (bandwidth + connecting), so --preview reports the running
+// pool rather than the larger desired set in proxy.state. The keys must match
+// the ones proxy.state and runningProxyTraffic use, or the preview ranks a
+// credentialed proxy as unknown and idle. The health snapshot lists proxies as
+// "proxy[N] (addr)" display strings, so each one is resolved to its identity via
+// the registry index, falling back to the parsed address when it is not registered.
 func runningProxyAddresses() []string {
 	_, _, _, bandwidth, connecting := connect.ProxyHealthSnapshot()
 	seen := map[string]bool{}
 	var out []string
-	add := func(a string) {
-		if a == "" || seen[a] {
+	add := func(display string) {
+		key := ""
+		if idx := parseProxyIndex(display); idx >= 0 {
+			key = connect.ProxyKeyByIndex(idx)
+		}
+		if key == "" {
+			_, key = parseProxyString(display)
+		}
+		if key == "" || seen[key] {
 			return
 		}
-		seen[a] = true
-		out = append(out, a)
+		seen[key] = true
+		out = append(out, key)
 	}
-	for key := range bandwidth {
-		_, hp := parseProxyString(key)
-		add(hp)
+	for display := range bandwidth {
+		add(display)
 	}
 	for _, c := range connecting {
 		add(c)
 	}
+	sort.Strings(out)
 	return out
 }
 
@@ -303,8 +316,8 @@ func proxyTrim(opts docopt.Opts) {
 		if len(running) > count {
 			shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
 			fmt.Printf("preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
-			for _, addr := range shed {
-				fmt.Printf("  %s\n", addr)
+			for _, key := range shed {
+				fmt.Printf("  %s\n", proxyKeyDisplay(key))
 			}
 		} else {
 			fmt.Printf("preview: running=%d <= %d, nothing to shed\n", len(running), count)

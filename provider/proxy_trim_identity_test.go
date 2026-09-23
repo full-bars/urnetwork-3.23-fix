@@ -54,3 +54,42 @@ func TestSelectWorstRunningProxies_KeepsCredentialedEarner(t *testing.T) {
 		t.Fatalf("shed %q, want the idle proxy %q; the earner must be kept", shed, idleKey)
 	}
 }
+
+// The trim preview ranks the running pool with the same identity-keyed state and
+// traffic the live trim uses, so the running list must be identity keys too. It
+// used to be parsed display addresses: a credentialed proxy then missed both
+// lookups and read as unknown and idle.
+func TestRunningProxyAddresses_ReturnsIdentityKeys(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+
+	credKey := identityKey("10.0.0.1:1080", "u")
+	registerBandwidthProxy(1, "10.0.0.1:1080", credKey, 10<<30)
+	registerBandwidthProxy(2, "10.0.0.2:1080", "10.0.0.2:1080", 0)
+
+	got := map[string]bool{}
+	for _, k := range runningProxyAddresses() {
+		got[k] = true
+	}
+	if !got[credKey] || !got["10.0.0.2:1080"] || len(got) != 2 {
+		t.Fatalf("running list must be identity keys, got %v", got)
+	}
+}
+
+// End to end for the preview: with running, state and traffic all identity
+// keyed, trimming to one proxy keeps the credentialed earner.
+func TestTrimPreviewSelection_KeepsCredentialedEarner(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+
+	earnerKey := identityKey("10.0.0.1:1080", "u")
+	idleKey := "10.0.0.2:1080"
+	registerBandwidthProxy(1, "10.0.0.1:1080", earnerKey, 10<<30)
+	registerBandwidthProxy(2, "10.0.0.2:1080", idleKey, 0)
+	state := map[string]ProxyEntry{earnerKey: {Health: "up"}, idleKey: {Health: "up"}}
+
+	shed := selectWorstRunningProxies(state, nil, runningProxyTraffic(), runningProxyAddresses(), 1)
+	if len(shed) != 1 || shed[0] != idleKey {
+		t.Fatalf("shed %q, want the idle proxy %q", shed, idleKey)
+	}
+}
