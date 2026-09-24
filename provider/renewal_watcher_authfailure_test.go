@@ -43,7 +43,7 @@ func TestRunProxyJWTWatcherRenewsOnTransportAuthFailures(t *testing.T) {
 	// A high, test-local proxy index to avoid colliding with any other
 	// concurrently-run test's registration.
 	const proxyIndex = 918273
-	connect.RegisterProxy(proxyIndex, "test-proxy-authfail-addr")
+	connect.RegisterProxy(proxyIndex, "test-proxy-authfail-addr", "test-proxy-authfail-addr")
 	defer connect.UnregisterProxy(proxyIndex)
 
 	ctx, cancel := context.WithCancel(context.Background())
@@ -125,7 +125,7 @@ func TestRunProxyJWTWatcherDoesNotRenewOnStaleAuthFailures(t *testing.T) {
 	defer func() { globalClientJWTStore = oldStore }()
 
 	const proxyIndex = 918274
-	connect.RegisterProxy(proxyIndex, "test-proxy-stale-authfail-addr")
+	connect.RegisterProxy(proxyIndex, "test-proxy-stale-authfail-addr", "test-proxy-stale-authfail-addr")
 	defer connect.UnregisterProxy(proxyIndex)
 
 	// Failures recorded BEFORE the watcher starts become part of its

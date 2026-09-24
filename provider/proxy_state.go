@@ -6,8 +6,11 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // proxyStateMu serializes all proxy.state read-modify-write cycles.
@@ -15,13 +18,24 @@ import (
 // Not needed for startup writes (heartbeat not yet running).
 var proxyStateMu sync.Mutex
 
+// proxyStateVersion is bumped whenever ProxyState.Proxies' map key changes
+// format. 2 = keyed by proxy identity (ProxySettings.Key(): address, or
+// address+user for a shared-gateway proxy like Decodo). Absent or 1 = the
+// legacy format, keyed by bare address alone. writeProxyState always stamps
+// the current version; a file with no "version" field (or 0/1) unmarshals
+// with Version==0, which adoptLegacyProxyState and every reader treat as
+// "may contain legacy bare-address keys, never rewrite or drop them
+// blindly" — see adoptLegacyProxyState.
+const proxyStateVersion = 2
+
 // ProxyState is the on-disk record of what the provider is currently running.
 // Written atomically at startup and after each reload.
 type ProxyState struct {
+	Version   int                   `json:"version,omitempty"`
 	Source    string                `json:"source"`     // live source file path ("" = internal config)
 	StartedAt time.Time             `json:"started_at"` // provider process start time
 	NextID    int                   `json:"next_id"`    // snapshot of counter for display
-	Proxies   map[string]ProxyEntry `json:"proxies"`    // address -> entry
+	Proxies   map[string]ProxyEntry `json:"proxies"`    // identity key -> entry (see proxyStateVersion)
 }
 
 // proxyHealthParked is the Health of a proxy proxy audit is holding out.
@@ -125,6 +139,15 @@ func writeProxyState(s *ProxyState) error {
 }
 
 func writeProxyStateTo(path string, s *ProxyState) error {
+	// Every write moves the file forward to the current key format, even if
+	// it was read as legacy (Version 0/1). adoptLegacyProxyState is what
+	// actually migrates entries; this just records that a write in the
+	// current format happened, so a reader downstream (or an operator
+	// inspecting the file) knows the map keys are identity keys, not bare
+	// addresses, from this point on. It is not a claim that every entry HAS
+	// been migrated — a legacy entry with no current claimant is left alone
+	// and can still be present after this bump (see adoptLegacyProxyState).
+	s.Version = proxyStateVersion
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -147,6 +170,93 @@ func writeProxyStateTo(path string, s *ProxyState) error {
 		return err
 	}
 	return os.Rename(tmp, path)
+}
+
+// adoptLegacyProxyState migrates legacy (bare-address-keyed) entries in
+// state.Proxies to the new identity-keyed format (ProxySettings.Key()) for
+// every address the given desired settings actually claim right now,
+// leaving every other entry untouched — already-migrated, or a legacy
+// address with no current claimant (left alone for a later release to age
+// out normally, per proxyStateVersion's doc comment).
+//
+// Idempotent and safe to call on every reload, not just "the first" one
+// that sees a given address: an already-migrated address has no legacy
+// entry left at its bare-address key, so a repeat call is a no-op for it.
+//
+// An address claimed by exactly one identity carries its legacy entry over
+// intact — same ID, same health/grading history. An address claimed by two
+// or more identities (the Decodo shared-gateway case: same host:port, two
+// different accounts) adopts the legacy entry to the identity with the
+// lexicographically smallest Key() — deterministic and stable across
+// restarts, not "whichever the config happened to list first" — and every
+// other identity at that address starts fresh via the normal
+// resolveProxyID/tagProxySourceIfUnset path (new ID, zero history). This
+// never fabricates history for an identity nothing could actually
+// distinguish under the old model; it only ever preserves what already
+// existed, and only for one winner.
+//
+// MUST run before any prune pass in the same reload (proxy_failure_history,
+// proxy_auth_history, proxy_earnings_store all wipe an entry the moment
+// they are handed a keep-set that no longer contains its old key) — see
+// proxyStateVersion and the reload-engine phase that wires this in.
+func adoptLegacyProxyState(state *ProxyState, desired []*connect.ProxySettings) (adopted, split int) {
+	byAddress := make(map[string][]*connect.ProxySettings, len(desired))
+	for _, s := range desired {
+		if s == nil || s.Address == "" {
+			continue
+		}
+		byAddress[s.Address] = append(byAddress[s.Address], s)
+	}
+
+	for address, settingsAtAddress := range byAddress {
+		legacy, hasLegacy := state.Proxies[address]
+		if !hasLegacy {
+			continue
+		}
+
+		seen := map[string]bool{}
+		var keys []string
+		for _, s := range settingsAtAddress {
+			k := s.Key()
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		winner := keys[0]
+
+		if winner == address {
+			// The winning (and, if len(keys)==1, only) identity carries no
+			// distinguishing user: its Key() IS the bare address, so the
+			// legacy entry is already correctly keyed. Nothing to adopt.
+			continue
+		}
+
+		delete(state.Proxies, address)
+		state.Proxies[winner] = legacy
+		adopted++
+
+		if len(keys) > 1 {
+			split++
+			tlog("[proxy][identity] %s split into %d identities on adoption; %s kept id=%d and history, the rest start fresh\n",
+				address, len(keys), proxyKeyDisplay(winner), legacy.ID)
+		}
+	}
+	return adopted, split
+}
+
+// proxyKeyDisplay renders a proxy identity key for operator-facing output
+// ("addr" for no auth, "addr (user ab***yz)" for a shared-gateway
+// identity), never the raw key — Key()'s \x1f separator must never reach a
+// log line or terminal verbatim, and the password is never in the key to
+// begin with (see ProxySettings.Key()).
+func proxyKeyDisplay(key string) string {
+	address, user := connect.SplitProxyKey(key)
+	if user == "" {
+		return address
+	}
+	return fmt.Sprintf("%s (user %s)", address, obfuscateUser(user))
 }
 
 // resolveProxyID returns the stable ID for an address.

@@ -488,9 +488,9 @@ func TestLiveReadPaid_FingerprintsFollowTheAddressNotTheHost(t *testing.T) {
 		os.WriteFile(src, []byte(lines), 0600)
 	}
 	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
-		"9.9.9.9:1080": {ID: 1, Health: "up", Source: "file"},
-		"9.9.9.9:1081": {ID: 2, Health: "up", Source: "file"}, // same host, next port
-		"9.9.9.8:1080": {ID: 3, Health: "up", Source: "file"}, // next host, same port
+		identityKey("9.9.9.9:1080", "alice"): {ID: 1, Health: "up", Source: "file"},
+		identityKey("9.9.9.9:1081", "alice"): {ID: 2, Health: "up", Source: "file"}, // same host, next port
+		identityKey("9.9.9.8:1080", "alice"): {ID: 3, Health: "up", Source: "file"}, // next host, same port
 	}}); err != nil {
 		t.Fatal(err)
 	}
@@ -502,10 +502,11 @@ func TestLiveReadPaid_FingerprintsFollowTheAddressNotTheHost(t *testing.T) {
 
 	write("9.9.9.9:1080:alice:pw2\n9.9.9.9:1081:alice:pw1\n9.9.9.8:1080:alice:pw1\n")
 	_, after, _ := liveReadPaid()
-	if after["9.9.9.9:1080"] == before["9.9.9.9:1080"] {
+	k1080, k1081, k8 := identityKey("9.9.9.9:1080", "alice"), identityKey("9.9.9.9:1081", "alice"), identityKey("9.9.9.8:1080", "alice")
+	if after[k1080] == before[k1080] {
 		t.Fatalf("re-pasting an address with new credentials must change its fingerprint")
 	}
-	if after["9.9.9.9:1081"] != before["9.9.9.9:1081"] || after["9.9.9.8:1080"] != before["9.9.9.8:1080"] {
+	if after[k1081] != before[k1081] || after[k8] != before[k8] {
 		t.Fatalf("near-identical endpoints must not be disturbed by another address's rotation")
 	}
 }
@@ -662,8 +663,8 @@ func TestLiveReadPaid_ReturnsTrackedPaidProxiesOnly(t *testing.T) {
 	src := filepath.Join(home, "paid.txt")
 	os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n3.3.3.3:1080:u:p\n"), 0600)
 	err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
-		"1.1.1.1:1080": {ID: 1, Health: "up", Source: "file"},
-		"2.2.2.2:1080": {ID: 2, Health: "up", Source: "url"}, // URL-sourced: not paid
+		identityKey("1.1.1.1:1080", "u"): {ID: 1, Health: "up", Source: "file"},
+		"2.2.2.2:1080":                   {ID: 2, Health: "up", Source: "url"}, // URL-sourced: not paid
 	}})
 	if err != nil {
 		t.Fatal(err)
@@ -673,8 +674,33 @@ func TestLiveReadPaid_ReturnsTrackedPaidProxiesOnly(t *testing.T) {
 	if !ok {
 		t.Fatalf("a readable source file is a trustworthy paid set")
 	}
-	if len(got) != 1 || got["1.1.1.1:1080"].ID != 1 {
+	if len(got) != 1 || got[identityKey("1.1.1.1:1080", "u")].ID != 1 {
 		t.Fatalf("expected only the tracked file proxy, got %v", got)
+	}
+}
+
+// A credentialed file proxy plus an unauthenticated internal-config proxy,
+// tracked under the keys reload writes (identity for the credentialed one, bare
+// address for the other), must both surface. Before the paid set was
+// identity-keyed the credentialed proxy was invisible to the audit.
+func TestLiveReadPaid_MixedCredentialedAndBareTracked(t *testing.T) {
+	home := withTempHome(t)
+	src := filepath.Join(home, "paid.txt")
+	os.WriteFile(src, []byte("10.0.0.1:1080:u:p\n"), 0600)
+	writeProxyConfig(&ProxyConfig{Servers: map[string]string{"10.0.0.2:1080": ""}})
+	credKey := identityKey("10.0.0.1:1080", "u")
+	if err := writeProxyState(&ProxyState{Source: src, Proxies: map[string]ProxyEntry{
+		credKey:         {ID: 1, Health: "up", Source: "file"},
+		"10.0.0.2:1080": {ID: 2, Health: "up", Source: "file"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+	got, creds, ok := liveReadPaid()
+	if !ok || len(got) != 2 {
+		t.Fatalf("expected both tracked file proxies, ok=%v got %v", ok, got)
+	}
+	if creds[credKey] == "" || creds["10.0.0.2:1080"] != "" {
+		t.Fatalf("only the credentialed proxy has a fingerprint, got %v", creds)
 	}
 }
 
@@ -926,25 +952,31 @@ func TestRunProxyAudit_PublishesAStatusBeforeTheFirstTick(t *testing.T) {
 func TestParkedProxyIsNeverRemovedFromTheProxyFileByCleanup(t *testing.T) {
 	home := withTempHome(t)
 	src := filepath.Join(home, "paid.txt")
-	if err := os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n"), 0600); err != nil {
+	if err := os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n3.3.3.3:1080:u:p\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// State is keyed by proxy identity, the way reload writes it for a
+	// credentialed proxy. 3.3.3.3 is the control: genuinely inactive, so cleanup
+	// CAN remove it, which proves the parked proxy survives because it is
+	// parked and not because the removal never matches an identity-keyed line.
+	parkedKey := identityKey("2.2.2.2:1080", "u")
 	err := writeProxyState(&ProxyState{Source: src, StartedAt: auditEpoch.Add(-48 * time.Hour), Proxies: map[string]ProxyEntry{
-		"1.1.1.1:1080": {ID: 1, Health: "up", Source: "file"},
-		"2.2.2.2:1080": {ID: 2, Health: "up", Source: "file"},
+		identityKey("1.1.1.1:1080", "u"): {ID: 1, Health: "up", Source: "file"},
+		parkedKey:                        {ID: 2, Health: "up", Source: "file"},
+		identityKey("3.3.3.3:1080", "u"): {ID: 3, Health: "inactive", Source: "file"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	markProxiesParked([]string{"2.2.2.2:1080"})
+	markProxiesParked([]string{parkedKey})
 
-	if removed := runProxyURLCleanupOnce("all"); removed != 0 {
-		t.Fatalf("scope=all cleanup removed %d proxies; a parked proxy is resting, not dead", removed)
+	if removed := runProxyURLCleanupOnce("all"); removed != 1 {
+		t.Fatalf("scope=all cleanup removed %d proxies, want exactly the inactive control", removed)
 	}
 	b, _ := os.ReadFile(src)
-	if !strings.Contains(string(b), "2.2.2.2:1080") {
-		t.Fatalf("the operator's proxy file lost the parked proxy: %q", b)
+	if got, want := string(b), "1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n"; got != want {
+		t.Fatalf("proxy file = %q, want %q: the inactive control goes, the parked proxy stays", got, want)
 	}
 }
 
@@ -1086,5 +1118,52 @@ func TestProxyAuditRunOnceConcurrentWithControlActions(t *testing.T) {
 	h.g.runOnce()
 	if proxyAuditStatusSnapshot() == nil {
 		t.Fatal("no status published after concurrent tick/control storm")
+	}
+}
+
+// TestEarningCredentialedProxyNotParkEligible pins the identity-keyed earn
+// tracker: proxy audit's park veto (stillEligible) asks whether THIS
+// IDENTITY earned recently, and an earning credentialed proxy (identity =
+// address+user) must not be park-eligible. With the tracker keyed by bare
+// address, the identity lookup missed and a live earning proxy read as
+// never-earning — parked out of the paid pool. Deterministic: fixed keys,
+// no timing dependence (hearing window is checked at the moment of the
+// test).
+func TestEarningCredentialedProxyNotParkEligible(t *testing.T) {
+	t.Cleanup(func() { globalPerProxyEarnTracker.Update(nil) })
+	globalPerProxyEarnTracker.Update(nil)
+
+	const addr = "gw.example.com:1080"
+	const identityKey = addr + "\x1falice" // ProxySettings.Key() shape
+
+	env := proxyAuditEnv{
+		health: func() map[string]connect.ProxyHealthStatus {
+			return map[string]connect.ProxyHealthStatus{identityKey: {Health: "up"}}
+		},
+		clients:        func(string) (int64, bool) { return 0, true },
+		earnedRecently: func(a string) bool { return globalPerProxyEarnTracker.EarnedSince(a, paidEarnWindow) },
+	}
+	g := &proxyAuditor{env: env}
+
+	// Quiet proxy: park-eligible (up, idle, never earned).
+	if !g.stillEligible(identityKey) {
+		t.Fatal("quiet credentialed proxy should be park-eligible")
+	}
+
+	// Now it earns: the identity-keyed tracker entry must veto the park.
+	idx := int(earnTrackerTestSeq.Add(1))
+	bw := connect.RegisterProxyBandwidth(idx)
+	t.Cleanup(func() { connect.UnregisterProxy(idx) })
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{identityKey: bw})
+	bw.BillableRx.Store(1 << 20)
+	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{identityKey: bw})
+
+	if g.stillEligible(identityKey) {
+		t.Fatal("earning credentialed proxy must not be park-eligible — a bare-address tracker reads it as never-earning")
+	}
+	// The bare-address lookup must NOT see the earnings either: the
+	// identity split is exactly what this guards.
+	if globalPerProxyEarnTracker.EarnedSince(addr, paidEarnWindow) {
+		t.Fatal("bare-address lookup must not match an identity-keyed earning record")
 	}
 }

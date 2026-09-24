@@ -395,7 +395,16 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 			ContractsAcquired: cAcquired,
 			ContractsDenied:   cDenied,
 		}
-		if g, ok := proxyGradeFor(ip, paidState, urlState); ok {
+		// Grades are stored under the proxy identity key, which the display
+		// string does not carry: resolve it from the registry index, falling
+		// back to the bare address for an unauthenticated proxy.
+		gradeKey := ip
+		if idx := parseProxyIndex(key); idx >= 0 {
+			if k := connect.ProxyKeyByIndex(idx); k != "" {
+				gradeKey = k
+			}
+		}
+		if g, ok := proxyGradeFor(gradeKey, paidState, urlState); ok {
 			pr.Score = g.Score
 			pr.Graded = true
 			pr.Failed = g.Failed

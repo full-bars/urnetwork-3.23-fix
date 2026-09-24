@@ -3,9 +3,18 @@ package main
 import (
 	"encoding/json"
 	"os"
+	"sort"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
+
+// proxySlowRetryStateVersion mirrors proxyStateVersion (proxy_state.go):
+// 2 = Proxies is keyed by proxy identity (ProxySettings.Key()), not bare
+// address. Absent or 1 = legacy. persistProxySlowRetryState always stamps
+// the current version; adoptLegacy is what actually migrates entries.
+const proxySlowRetryStateVersion = 2
 
 // proxySlowRetryState tracks operator-curated proxies that have entered
 // the slow-retry phase (post-maxAuthFailures). Persists to disk so
@@ -14,6 +23,7 @@ import (
 // 14-day window.
 type proxySlowRetryState struct {
 	mu      sync.Mutex
+	Version int                             `json:"version,omitempty"`
 	Proxies map[string]*proxySlowRetryEntry `json:"proxies"`
 }
 
@@ -200,6 +210,62 @@ func (s *proxySlowRetryState) ClearDropped(address string) {
 	persistProxySlowRetryState(s)
 }
 
+// adoptLegacy migrates a legacy (bare-address-keyed) slow-retry entry to
+// its new identity key (ProxySettings.Key()) for every address the given
+// desired settings actually claim. Mirrors adoptLegacyProxyState's rules
+// exactly (see its doc comment): single claimant carries the entry over
+// intact (StartedAt/LastAttemptAt/DroppedAt all preserved, so the 14-day
+// drop clock stays continuous); multiple claimants (the Decodo case) give
+// the entry to the lexicographically smallest Key(), deterministic and
+// stable, and every other identity starts fresh (not in slow retry at
+// all, which is the correct fresh-start state, not a fabricated one).
+func (s *proxySlowRetryState) adoptLegacy(desired []*connect.ProxySettings) (adopted, split int) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+
+	byAddress := make(map[string][]*connect.ProxySettings, len(desired))
+	for _, settings := range desired {
+		if settings == nil || settings.Address == "" {
+			continue
+		}
+		byAddress[settings.Address] = append(byAddress[settings.Address], settings)
+	}
+
+	for address, settingsAtAddress := range byAddress {
+		legacy, hasLegacy := s.Proxies[address]
+		if !hasLegacy {
+			continue
+		}
+
+		seen := map[string]bool{}
+		var keys []string
+		for _, settings := range settingsAtAddress {
+			k := settings.Key()
+			if !seen[k] {
+				seen[k] = true
+				keys = append(keys, k)
+			}
+		}
+		sort.Strings(keys)
+		winner := keys[0]
+
+		if winner == address {
+			continue
+		}
+
+		delete(s.Proxies, address)
+		s.Proxies[winner] = legacy
+		adopted++
+
+		if len(keys) > 1 {
+			split++
+			tlog("[proxy][identity] slow-retry state for %s split into %d identities on adoption; %s kept its clock, the rest start fresh\n",
+				address, len(keys), proxyKeyDisplay(winner))
+		}
+	}
+	return adopted, split
+}
+
 // LoadProxySlowRetryState loads persisted slow-retry state from disk,
 // prunes stale entries (>30d), and returns the live state. If the file
 // is missing or corrupt, returns a fresh empty state — this is purely
@@ -249,6 +315,7 @@ func LoadProxySlowRetryState() *proxySlowRetryState {
 // persistProxySlowRetryState writes the current state to disk using
 // atomic write (temp + rename) so a crash mid-write never corrupts the file.
 func persistProxySlowRetryState(s *proxySlowRetryState) {
+	s.Version = proxySlowRetryStateVersion
 	data, err := json.Marshal(s)
 	if err != nil {
 		return

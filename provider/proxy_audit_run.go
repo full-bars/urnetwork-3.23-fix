@@ -197,9 +197,9 @@ func (g *proxyAuditor) runOnceLocked() {
 	for _, addr := range res.Release {
 		g.releaseBackoff(addr)
 		if _, listed := entries[addr]; listed {
-			g.env.log("[proxy][audit] restored %s\n", addr)
+			g.env.log("[proxy][audit] restored %s\n", proxyKeyDisplay(addr))
 		} else {
-			g.env.log("[proxy][audit] released %s (no longer in the paid proxy list)\n", addr)
+			g.env.log("[proxy][audit] released %s (no longer in the paid proxy list)\n", proxyKeyDisplay(addr))
 		}
 	}
 
@@ -239,7 +239,7 @@ func (g *proxyAuditor) observe(res proxyAuditResult, proxies []proxyAuditProxy) 
 	for _, p := range res.Park {
 		current[p.Addr] = true
 		if !g.announced[p.Addr] {
-			g.env.log("[proxy][audit] would-park %s score=%.2f\n", p.Addr, score[p.Addr])
+			g.env.log("[proxy][audit] would-park %s score=%.2f\n", proxyKeyDisplay(p.Addr), score[p.Addr])
 		}
 	}
 	g.announced = current
@@ -264,7 +264,7 @@ func (g *proxyAuditor) park(now time.Time, res proxyAuditResult, proxies []proxy
 		until[addr] = u
 	})
 	for _, addr := range parked {
-		g.env.log("[proxy][audit] parked %s score=%.2f until=%s\n", addr, score[addr], until[addr].Format(time.RFC3339))
+		g.env.log("[proxy][audit] parked %s score=%.2f until=%s\n", proxyKeyDisplay(addr), score[addr], until[addr].Format(time.RFC3339))
 	}
 	if len(parked) > 0 {
 		g.env.markParked(parked)
@@ -379,10 +379,12 @@ func liveReadPaid() (map[string]ProxyEntry, map[string]string, bool) {
 	}
 	out := make(map[string]ProxyEntry, len(paid))
 	creds := make(map[string]string, len(paid))
-	for addr, entry := range state.Proxies {
-		if s, ok := paid[addr]; ok {
-			out[addr] = entry
-			creds[addr] = proxyAuditCredFingerprint(s.Auth)
+	// state.Proxies and paid are both keyed by proxy identity (address, or
+	// address+user for a credentialed proxy), so the maps line up as-is.
+	for key, entry := range state.Proxies {
+		if s, ok := paid[key]; ok {
+			out[key] = entry
+			creds[key] = proxyAuditCredFingerprint(s.Auth)
 		}
 	}
 	return out, creds, true
@@ -390,11 +392,12 @@ func liveReadPaid() (map[string]ProxyEntry, map[string]string, bool) {
 
 // proxyAuditCredFingerprint is an opaque, stable stand-in for a proxy's
 // credentials, taken from the same desired set the grader validates its
-// results against. An address is a proxy's identity, so re-pasting the same
-// host:port with new credentials (the LA7 incident, 2026-09-18) is a rotation
-// proxy audit must notice: what it learned about the old credentials says
-// nothing about the new ones. Near-identical endpoints (same host, another
-// port, or another credential) are different addresses and never share state.
+// results against. A proxy's identity is its address plus user, so re-pasting
+// the same host:port and user with a new password (the LA7 incident,
+// 2026-09-18) is a rotation proxy audit must notice: what it learned about
+// the old credentials says nothing about the new ones. Near-identical
+// endpoints (same host, another port, or another user) are different
+// identities and never share state.
 //
 // Length-prefixing keeps ("ab","c") and ("a","bc") apart, and the hash keeps
 // the secret out of every log line and status output. No credentials, or
@@ -451,9 +454,9 @@ func newLiveProxyAuditor(cancelMap map[string]context.CancelFunc, cancelMu *sync
 	g := newProxyAuditor(defaultProxyAuditConfig(), proxyAuditEnv{
 		now:      time.Now,
 		readPaid: liveReadPaid,
-		health:   connect.ProxyHealthByAddress,
+		health:   connect.ProxyHealthByKey,
 		clients: func(addr string) (int64, bool) {
-			bw := connect.ProxyBandwidthByAddress(addr)
+			bw := connect.ProxyBandwidthByKey(addr)
 			if bw == nil {
 				return 0, false
 			}
@@ -559,4 +562,31 @@ func resolveProxyAuditEnabled(startupEnabled bool) bool {
 		}
 	}
 	return startupEnabled
+}
+
+// resolveAuditReleaseKeys maps what an operator typed for `proxy audit release`
+// to the keys audit state is stored under. Parks, backoffs and failure counts
+// are keyed by proxy identity (address, or address+user for a credentialed
+// proxy), and the \x1f separator makes an identity key impossible to type. So
+// an address names EVERY known identity at it (release only gives proxies back,
+// which is safe to do in bulk), and an exact key names just itself. When nothing
+// known matches, the input is kept so a stray backoff or failure count recorded
+// under exactly that string is still cleared. Result is sorted and unique.
+func resolveAuditReleaseKeys(input string, known []string) []string {
+	seen := map[string]bool{}
+	var out []string
+	for _, k := range known {
+		if seen[k] {
+			continue
+		}
+		if address, _ := connect.SplitProxyKey(k); k == input || address == input {
+			seen[k] = true
+			out = append(out, k)
+		}
+	}
+	if len(out) == 0 {
+		return []string{input}
+	}
+	sort.Strings(out)
+	return out
 }

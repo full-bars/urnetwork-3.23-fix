@@ -5,6 +5,8 @@ import (
 	"net"
 	"sort"
 	"strings"
+
+	"github.com/urnetwork/connect"
 )
 
 // hostOfAddress returns the host portion of a "host:port" address.
@@ -65,22 +67,24 @@ func removeExcludePattern(state *ProxyURLState, pattern string) bool {
 	return false
 }
 
-// collectMatchingProxies scans the three proxy stores for addresses whose
-// host matches pattern and groups them by the source keys that
-// removeDeadProxies consumes ("internal", "file", "url").
+// collectMatchingProxies scans the three proxy stores for proxies whose host
+// matches pattern and groups their proxy.state identity keys (address, or
+// address+user; see ProxySettings.Key()) by the source keys that
+// removeDeadProxies consumes ("internal", "file", "url"). URL-cache entries
+// are keyed by bare address, so for "url" the key is the address.
 //
-// servers is proxy.json Servers (keys may be the credentialed
-// "host:port:user:pass" form); stateProxies is proxy.state Proxies (empty
+// cfg is proxy.json (Servers keys may be the credentialed "host:port:user:pass"
+// form, or carry credentials in Auths); stateProxies is proxy.state Proxies (empty
 // or nil when the provider has never run); stateSource is proxy.state
 // Source (the --proxy_file path, "" if none); urlCache is proxy_url.json
 // Cache. URL-cache entries not yet present in state (fetched but never
 // launched) are still collected so the removal is complete.
 //
-// display is a sorted, deduplicated human-readable list ("host:port (source)")
-// for preview/confirm output.
+// display is a sorted, deduplicated human-readable list ("host:port (source)",
+// never the raw identity key) for preview/confirm output.
 func collectMatchingProxies(
 	pattern string,
-	servers map[string]string,
+	cfg *ProxyConfig,
 	stateProxies map[string]ProxyEntry,
 	stateSource string,
 	urlCache map[string]ProxyURLEntry,
@@ -88,24 +92,32 @@ func collectMatchingProxies(
 	addrsBySource = map[string][]string{}
 	seen := map[string]bool{} // "source|addr" dedupe
 
-	add := func(source, addr string) {
-		key := source + "|" + addr
-		if seen[key] {
+	// key is a proxy identity key (ProxySettings.Key()), what removeDeadProxies
+	// matches on, so two accounts at one gateway are removed independently and
+	// a config entry and its proxy.state entry collapse into one proxy.
+	add := func(source, key string) {
+		seenKey := source + "|" + key
+		if seen[seenKey] {
 			return
 		}
-		seen[key] = true
-		addrsBySource[source] = append(addrsBySource[source], addr)
-		display = append(display, fmt.Sprintf("%s (%s)", addr, source))
+		seen[seenKey] = true
+		addrsBySource[source] = append(addrsBySource[source], key)
+		display = append(display, fmt.Sprintf("%s (%s)", proxyKeyDisplay(key), source))
 	}
 
-	for proxyAddress := range servers {
-		if matchProxyHost(pattern, proxyAddress) {
-			addr, _, _ := parseProxyAddress(proxyAddress)
-			add("internal", addr)
+	var servers map[string]string
+	if cfg != nil {
+		servers = cfg.Servers
+	}
+	for proxyAddress, authKey := range servers {
+		s := internalServerSettings(cfg, proxyAddress, authKey)
+		if matchProxyHost(pattern, s.Address) {
+			add("internal", s.Key())
 		}
 	}
 
-	for addr, entry := range stateProxies {
+	for key, entry := range stateProxies {
+		addr, _ := connect.SplitProxyKey(key)
 		if !matchProxyHost(pattern, addr) {
 			continue
 		}
@@ -117,7 +129,7 @@ func collectMatchingProxies(
 				source = "internal"
 			}
 		}
-		add(source, addr)
+		add(source, key)
 	}
 
 	for addr := range urlCache {

@@ -2,7 +2,6 @@ package main
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"sync/atomic"
@@ -10,6 +9,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // earnTrackerTestSeq supplies a distinct health index per seedEarnTracker
@@ -17,19 +17,20 @@ import (
 // (previously a hardcoded 9999).
 var earnTrackerTestSeq atomic.Uint64
 
-// seedEarnTracker marks addr as having earned "now" in the per-address
-// tracker (delta-based), which is what the paid grader's earn-skip reads.
-// It feeds the tracker the SAME formatted key shape production uses —
-// connect.ProxyHealthSnapshot keys its bandwidth map with
-// "proxy[N] (addr)" (formatProxyEntry) — so these tests exercise the real
-// key format and would catch a regression to raw-address seeding (the
-// snapshot-key CRITICAL that made earn-skip dead in production).
+// seedEarnTracker marks addr's proxy as having earned "now" in the
+// per-identity earn tracker (delta-based), which is what the paid grader's
+// earn-skip reads. Production feeds the tracker ProxyBandwidthSnapshotByKey
+// (identity-keyed: address, or address+user for a credentialed proxy);
+// this helper feeds the same identity key the grader will look up for the
+// credentialed "addr:u:p" config used throughout this file. Seeding the
+// bare address instead would silently disable earn-skip for credentialed
+// proxies — the identity-keying pitfall this file now models.
 func seedEarnTracker(t *testing.T, addr string) {
 	t.Helper()
 	idx := int(earnTrackerTestSeq.Add(1))
 	bw := connect.RegisterProxyBandwidth(idx)
 	t.Cleanup(func() { connect.UnregisterProxy(idx) })
-	key := fmt.Sprintf("proxy[%d] (%s)", idx, addr)
+	key := (&connect.ProxySettings{Network: "tcp", Address: addr, Auth: &proxy.Auth{User: "u"}}).Key()
 	// First Update establishes the baseline (prevCum = 0, no delta yet).
 	globalPerProxyEarnTracker.Update(map[string]*connect.ProxyBandwidth{key: bw})
 	// Second Update advances the counter: a positive delta is now recorded.
@@ -59,7 +60,7 @@ func TestPaidProxyGrader_SkipsEarningProxy(t *testing.T) {
 			// Stale (past the 6h paid window) but WITHIN the 24h
 			// force-probe ceiling, so the earn-skip is the deciding
 			// factor: earning must suppress the probe here.
-			addr: {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 1, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -71,7 +72,7 @@ func TestPaidProxyGrader_SkipsEarningProxy(t *testing.T) {
 	runPaidProxyGradeOnce(context.Background(), "1.2.3.4", 443)
 
 	state, _ := readProxyState()
-	e := state.Proxies[addr]
+	e := state.Proxies[identityKey(addr, "u")]
 	// Grade must be untouched (no re-probe happened).
 	if !e.Graded || e.Score != 0.9 {
 		t.Errorf("earning proxy must not be re-graded, got graded=%v score=%v", e.Graded, e.Score)
@@ -106,7 +107,7 @@ func TestPaidProxyGrader_ProbesQuietProxy(t *testing.T) {
 		Proxies: map[string]ProxyEntry{
 			// Stale (past 6h) but within the 24h ceiling: the only reason
 			// to probe is that the proxy is QUIET (never earned).
-			addr: {ID: 2, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 2, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -142,7 +143,7 @@ func TestPaidProxyGrader_ForceProbeCeiling(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 3, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling - time.Hour)},
+			identityKey(addr, "u"): {ID: 3, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling - time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -188,7 +189,7 @@ func TestPaidProxyGrader_EarnedTooLongAgoIsProbed(t *testing.T) {
 		Source: src,
 		Proxies: map[string]ProxyEntry{
 			// Stale (past 6h) but within the 24h ceiling.
-			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -196,12 +197,16 @@ func TestPaidProxyGrader_EarnedTooLongAgoIsProbed(t *testing.T) {
 
 	// The proxy earned once, but well outside paidEarnWindow (15m) — it
 	// must no longer be treated as "actively earning".
+	// Seed the IDENTITY key the grader reads (EarnedSince(key, ...)). Seeding the
+	// bare address would leave the record unconsulted, and the test would pass
+	// whether or not the recency cutoff works.
+	earnKey := identityKey(addr, "u")
 	globalPerProxyEarnTracker.mu.Lock()
-	globalPerProxyEarnTracker.lastEarned[addr] = time.Now().Add(-paidEarnWindow - time.Hour)
+	globalPerProxyEarnTracker.lastEarned[earnKey] = time.Now().Add(-paidEarnWindow - time.Hour)
 	globalPerProxyEarnTracker.mu.Unlock()
 	t.Cleanup(func() {
 		globalPerProxyEarnTracker.mu.Lock()
-		delete(globalPerProxyEarnTracker.lastEarned, addr)
+		delete(globalPerProxyEarnTracker.lastEarned, earnKey)
 		globalPerProxyEarnTracker.mu.Unlock()
 	})
 
@@ -233,7 +238,7 @@ func TestPaidProxyGrader_JustUnderForceProbeCeilingStillSkipped(t *testing.T) {
 	if err := writeProxyState(&ProxyState{
 		Source: src,
 		Proxies: map[string]ProxyEntry{
-			addr: {ID: 6, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling + time.Hour)},
+			identityKey(addr, "u"): {ID: 6, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-paidForceProbeCeiling + time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -271,7 +276,7 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 		Proxies: map[string]ProxyEntry{
 			// NEVER graded (LastGraded zero), but actively earning:
 			// earn-skip must not suppress the first probe.
-			addr: {ID: 4, Health: "up", Source: "file"},
+			identityKey(addr, "u"): {ID: 4, Health: "up", Source: "file"},
 		},
 	}); err != nil {
 		t.Fatal(err)
@@ -288,7 +293,7 @@ func TestPaidProxyGrader_ProbesNeverGradedEarningProxy(t *testing.T) {
 	}
 	// And it must now carry a grade.
 	state, _ := readProxyState()
-	if e, ok := state.Proxies[addr]; !ok || !e.Graded {
+	if e, ok := state.Proxies[identityKey(addr, "u")]; !ok || !e.Graded {
 		t.Fatalf("never-graded proxy must receive a grade after its first probe, got %+v", e)
 	}
 }
@@ -316,7 +321,7 @@ func TestPaidProxyGrader_ProbesAfterEmptyHealthSet(t *testing.T) {
 			// Stale but within the 24h ceiling — earn-skip would be the
 			// only reason to skip; the cleared tracker must not provide
 			// that reason.
-			addr: {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
+			identityKey(addr, "u"): {ID: 5, Health: "up", Source: "file", Graded: true, Score: 0.9, LastGraded: time.Now().Add(-12 * time.Hour)},
 		},
 	}); err != nil {
 		t.Fatal(err)

@@ -695,23 +695,37 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 				tlog("✓ [proxy][audit] released all %d parked proxies via control socket\n", len(released))
 				return controlResponse{OK: true, Value: fmt.Sprintf("released %d proxies", len(released))}
 			}
-			addr := req.Address
-			wasParked := a.st.isParked(addr)
-			if wasParked {
-				a.st.release(addr)
-			}
-			a.releaseBackoff(addr)
+			known := a.st.parkedAddrs()
 			if globalProxyFailureHistory != nil {
-				globalProxyFailureHistory.Reset(addr)
+				known = append(known, globalProxyFailureHistory.Keys()...)
+			}
+			keys := resolveAuditReleaseKeys(req.Address, known)
+			wasParked := false
+			for _, key := range keys {
+				if a.st.isParked(key) {
+					wasParked = true
+					a.st.release(key)
+				}
+				a.releaseBackoff(key)
+				if globalProxyFailureHistory != nil {
+					globalProxyFailureHistory.Reset(key)
+				}
 			}
 			a.publish(a.env.now(), a.env.act(), proxyAuditResult{})
 			a.mu.Unlock()
-			if wasParked {
-				tlog("✓ [proxy][audit] released parked proxy %s via control socket\n", addr)
-				return controlResponse{OK: true, Value: fmt.Sprintf("released proxy %s", addr)}
+			// Name what was released by address (never the raw identity key, whose
+			// \x1f separator must not reach a log line); several accounts at one
+			// gateway are reported as a count.
+			label := proxyKeyDisplay(keys[0])
+			if len(keys) > 1 {
+				label = fmt.Sprintf("%s (%d accounts)", req.Address, len(keys))
 			}
-			tlog("✓ [proxy][audit] cleared backoff for proxy %s via control socket (was not parked)\n", addr)
-			return controlResponse{OK: true, Value: fmt.Sprintf("cleared backoff for proxy %s", addr)}
+			if wasParked {
+				tlog("✓ [proxy][audit] released parked proxy %s via control socket\n", label)
+				return controlResponse{OK: true, Value: fmt.Sprintf("released proxy %s", label)}
+			}
+			tlog("✓ [proxy][audit] cleared backoff for proxy %s via control socket (was not parked)\n", label)
+			return controlResponse{OK: true, Value: fmt.Sprintf("cleared backoff for proxy %s", label)}
 
 		default:
 			return controlResponse{OK: false, Error: fmt.Sprintf("unknown audit action %q (status|on|off|release)", req.Action)}

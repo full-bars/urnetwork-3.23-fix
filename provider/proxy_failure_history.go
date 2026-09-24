@@ -1,6 +1,7 @@
 package main
 
 import (
+	"sort"
 	"sync"
 	"time"
 )
@@ -111,6 +112,31 @@ func (h *proxyFailureHistory) Eligible(address string, now time.Time) bool {
 		return true
 	}
 	return !now.Before(until)
+}
+
+// Keys lists every key the history holds any record for (failure count,
+// give-up count or backoff), sorted. Keys are proxy identity keys, so callers
+// that only have an operator-typed address use this to find the identities
+// recorded under it.
+func (h *proxyFailureHistory) Keys() []string {
+	h.mu.Lock()
+	defer h.mu.Unlock()
+	seen := map[string]bool{}
+	for k := range h.failures {
+		seen[k] = true
+	}
+	for k := range h.giveUps {
+		seen[k] = true
+	}
+	for k := range h.backoffUntil {
+		seen[k] = true
+	}
+	out := make([]string, 0, len(seen))
+	for k := range seen {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }
 
 // Reset clears address's failure and give-up counts, called when it

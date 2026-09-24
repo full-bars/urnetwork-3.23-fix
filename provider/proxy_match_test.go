@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 func TestHostOfAddress(t *testing.T) {
 	cases := []struct{ in, want string }{
@@ -53,10 +56,10 @@ func TestCollectMatchingProxies(t *testing.T) {
 		"dc.decodo.com:9999": {}, // cached but not in state (not yet launched)
 	}
 
-	addrsBySource, display := collectMatchingProxies("dc.decodo.com", servers, stateProxies, "/etc/proxies.txt", urlCache)
+	addrsBySource, display := collectMatchingProxies("dc.decodo.com", &ProxyConfig{Servers: servers}, stateProxies, "/etc/proxies.txt", urlCache)
 
-	if got := addrsBySource["internal"]; len(got) != 1 || got[0] != "dc.decodo.com:8001" {
-		t.Errorf("internal = %v, want [dc.decodo.com:8001]", got)
+	if got := addrsBySource["internal"]; len(got) != 1 || got[0] != identityKey("dc.decodo.com:8001", "alice") {
+		t.Errorf("internal = %q, want the credentialed identity key", got)
 	}
 	if got := addrsBySource["file"]; len(got) != 1 || got[0] != "dc.decodo.com:8002" {
 		t.Errorf("file = %v, want [dc.decodo.com:8002]", got)
@@ -79,7 +82,7 @@ func TestCollectMatchingProxiesNoState(t *testing.T) {
 	servers := map[string]string{"dc.decodo.com:8001": ""}
 	urlCache := map[string]ProxyURLEntry{"dc.decodo.com:8002": {}}
 
-	addrsBySource, display := collectMatchingProxies("decodo", servers, nil, "", urlCache)
+	addrsBySource, display := collectMatchingProxies("decodo", &ProxyConfig{Servers: servers}, nil, "", urlCache)
 
 	if len(addrsBySource["internal"]) != 1 || len(addrsBySource["url"]) != 1 {
 		t.Errorf("addrsBySource = %v, want 1 internal + 1 url", addrsBySource)
@@ -99,5 +102,53 @@ func TestRemoveExcludePattern(t *testing.T) {
 	}
 	if len(state.ExcludePatterns) != 1 || state.ExcludePatterns[0] != "191.3." {
 		t.Fatalf("ExcludePatterns = %v, want [191.3.]", state.ExcludePatterns)
+	}
+}
+
+// `proxy remove --match` hands its "internal" bucket to removeDeadProxies, which
+// matches proxy IDENTITY keys. A credentialed internal entry must therefore be
+// collected by identity, or the removal silently deletes nothing while the
+// command still prints "Removed N".
+func TestCollectMatchingProxies_CredentialedInternalIsRemovedByIdentity(t *testing.T) {
+	withTempHome(t)
+	writeProxyConfig(&ProxyConfig{
+		Servers: map[string]string{
+			"dc.decodo.com:8001:alice:secret": "",
+			"dc.decodo.com:8001:bob:hunter2":  "",
+			"dc.decodo.com:8002":              "ref",
+		},
+		Auths: map[string]*ProxyAuth{"ref": {User: "carol", Password: "pw"}},
+	})
+	cfg := readProxyConfig()
+
+	addrsBySource, display := collectMatchingProxies("decodo", cfg, nil, "", nil)
+	if err := removeDeadProxies(&ProxyState{}, addrsBySource); err != nil {
+		t.Fatal(err)
+	}
+	if left := readProxyConfig().Servers; len(left) != 0 {
+		t.Fatalf("every matching credentialed internal proxy must be removed, %d left: %v", len(left), left)
+	}
+	if len(display) != 3 {
+		t.Fatalf("display = %q, want one line per proxy", display)
+	}
+	for _, d := range display {
+		if strings.Contains(d, "\x1f") {
+			t.Fatalf("display leaks the raw identity key separator: %q", d)
+		}
+	}
+}
+
+// With proxy.state present, the same credentialed proxy shows up in both the
+// config and the state. It must be listed and counted once, not twice.
+func TestCollectMatchingProxies_ConfigAndStateAreOneProxy(t *testing.T) {
+	cfg := &ProxyConfig{Servers: map[string]string{"dc.decodo.com:8001:alice:secret": ""}}
+	state := map[string]ProxyEntry{identityKey("dc.decodo.com:8001", "alice"): {Source: "internal"}}
+
+	addrsBySource, display := collectMatchingProxies("decodo", cfg, state, "", nil)
+	if len(display) != 1 || len(addrsBySource["internal"]) != 1 {
+		t.Fatalf("one proxy must be one entry: display=%q internal=%q", display, addrsBySource["internal"])
+	}
+	if strings.Contains(display[0], "\x1f") || !strings.Contains(display[0], "dc.decodo.com:8001") {
+		t.Fatalf("display must name the address without the raw separator: %q", display[0])
 	}
 }

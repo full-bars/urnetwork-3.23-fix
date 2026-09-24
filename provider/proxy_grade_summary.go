@@ -32,6 +32,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 const (
@@ -295,11 +297,13 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 	// grader so the reader cannot drift from the writer.
 	desired := map[string]struct{}{}
 	paidOwned, _ := paidDesiredSet(state)
-	for addr := range paidOwned {
-		desired[addr] = struct{}{}
+	for key := range paidOwned {
+		desired[key] = struct{}{}
 	}
 
-	for addr, entry := range state.Proxies {
+	// state.Proxies is keyed by proxy identity (address, or address+user); the
+	// URL cache is keyed by bare address, so its lookup uses the key's address.
+	for key, entry := range state.Proxies {
 		s.tracked++
 		if entry.Health != "up" {
 			continue
@@ -310,12 +314,13 @@ func collectProxyGradeSummary() (gradeSummary, bool) {
 		var graded bool
 		var lastProbe time.Time
 		src := entry.Source
-		if _, ok := desired[addr]; ok {
+		if _, ok := desired[key]; ok {
 			// Paid/file ownership overrides a stale URL provenance tag.
 			src = "file"
 		}
 		if src == "url" {
-			if ue, ok := urlState.Cache[addr]; ok {
+			urlAddr, _ := connect.SplitProxyKey(key)
+			if ue, ok := urlState.Cache[urlAddr]; ok {
 				score, graded = ue.Score, ue.Graded
 				lastProbe = ue.LastProbe
 			}

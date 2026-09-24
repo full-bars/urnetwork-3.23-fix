@@ -33,9 +33,9 @@ func TestRunningAuthBaselineSurvivesLaunchMutation(t *testing.T) {
 		Address: "dc.decodo.com:10001",
 		Auth:    &proxy.Auth{User: "user1", Password: "pass1"},
 	}
-	rec, ok := r.runningAuthFor("dc.decodo.com:10001")
+	rec, ok := r.runningAuthFor(config.Key())
 	if !ok {
-		t.Fatalf("expected recorded baseline for address")
+		t.Fatalf("expected recorded baseline for identity key %q", config.Key())
 	}
 	if rec.Auth == config.Auth {
 		t.Fatal("baseline shares the Auth pointer with the launched settings")

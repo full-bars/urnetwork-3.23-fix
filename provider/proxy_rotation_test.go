@@ -121,22 +121,21 @@ func writeProxyConfigForTest(t *testing.T, dir string, servers map[string]string
 	writeProxyConfig(cfg)
 }
 
-// TestProxyAddRotatesCredentials verifies proxyAdd removes an existing
-// same-address entry with different credentials when a new one is added, so a
-// re-paste becomes a rotation instead of a silent duplicate that the
-// address-keyed reload diff ignores (LA7 incident).
+// TestProxyAddRotatesCredentials verifies proxyAdd removes an existing entry of
+// the SAME identity (address+user) whose password differs, so a re-paste becomes
+// a rotation instead of a silent duplicate (LA7 incident).
 func TestProxyAddRotatesCredentials(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	resetReloadTriggerForTest(t)
 
 	writeProxyConfigForTest(t, filepath.Join(dir, ".urnetwork"), map[string]string{
-		"192.0.2.4:1080:olduser:oldpass": "",
-		"192.0.2.9:1080":                 "",
+		"192.0.2.4:1080:user:oldpass": "",
+		"192.0.2.9:1080":              "",
 	})
 
 	opts := docopt.Opts{
-		"<key_address>": []string{"192.0.2.4:1080:newuser:newpass"},
+		"<key_address>": []string{"192.0.2.4:1080:user:newpass"},
 		"-f":            true,
 	}
 	proxyAdd(opts)
@@ -145,14 +144,40 @@ func TestProxyAddRotatesCredentials(t *testing.T) {
 	if len(got.Servers) != 2 {
 		t.Fatalf("want 2 servers after rotation (replaced 1, kept 1), got %d: %v", len(got.Servers), got.Servers)
 	}
-	if _, ok := got.Servers["192.0.2.4:1080:newuser:newpass"]; !ok {
+	if _, ok := got.Servers["192.0.2.4:1080:user:newpass"]; !ok {
 		t.Fatalf("new credential entry missing: %v", got.Servers)
 	}
-	if _, ok := got.Servers["192.0.2.4:1080:olduser:oldpass"]; ok {
+	if _, ok := got.Servers["192.0.2.4:1080:user:oldpass"]; ok {
 		t.Fatalf("old credential entry was not rotated away: %v", got.Servers)
 	}
 	if _, ok := got.Servers["192.0.2.9:1080"]; !ok {
 		t.Fatalf("unrelated proxy must survive: %v", got.Servers)
+	}
+}
+
+// Adding a second account at a shared gateway must keep the first: identity is
+// address+user, so a different user is a new proxy, not a rotation.
+func TestProxyAddKeepsOtherAccountAtSharedGateway(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	resetReloadTriggerForTest(t)
+
+	writeProxyConfigForTest(t, filepath.Join(dir, ".urnetwork"), map[string]string{
+		"192.0.2.4:1080:alice:pw1": "",
+	})
+	proxyAdd(docopt.Opts{
+		"<key_address>": []string{"192.0.2.4:1080:bob:pw2"},
+		"-f":            true,
+	})
+
+	got := readProxyConfig()
+	if len(got.Servers) != 2 {
+		t.Fatalf("both accounts must be present, got %v", got.Servers)
+	}
+	for _, want := range []string{"192.0.2.4:1080:alice:pw1", "192.0.2.4:1080:bob:pw2"} {
+		if _, ok := got.Servers[want]; !ok {
+			t.Fatalf("missing %q: %v", want, got.Servers)
+		}
 	}
 }
 
@@ -255,11 +280,11 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap: map[string]context.CancelFunc{
-			proxyAddr: oldCancel,
+			oldSettings.Key(): oldCancel,
 		},
 		cancelMapMu: cancelMapMu,
 		runningAuth: map[string]*connect.ProxySettings{
-			proxyAddr: oldSettings,
+			oldSettings.Key(): oldSettings,
 		},
 		state:           &ProxyState{Proxies: make(map[string]ProxyEntry)},
 		sourcePath:      "",
@@ -294,10 +319,15 @@ func TestProxyReloader_ReloadRotationExecution(t *testing.T) {
 		t.Fatal("timed out waiting for spawnProxy callback on credential rotation")
 	}
 
-	// 3. Verify runningAuth was updated to new credentials
-	auth, ok := reloader.runningAuthFor(proxyAddr)
+	// 3. Verify runningAuth was updated to new credentials. The re-paste
+	// changed the USER (olduser -> newuser), not just the password, so
+	// under the identity model this is a different identity, not a
+	// same-identity rotation: the old identity's entry is removed (not
+	// updated in place) and the new identity gets its own fresh entry.
+	newKey := (&connect.ProxySettings{Address: proxyAddr, Auth: &proxy.Auth{User: "newuser"}}).Key()
+	auth, ok := reloader.runningAuthFor(newKey)
 	if !ok {
-		t.Fatalf("runningAuth missing entry for %s after rotation", proxyAddr)
+		t.Fatalf("runningAuth missing entry for new identity %s after rotation", newKey)
 	}
 	if auth.Auth == nil || auth.Auth.User != "newuser" || auth.Auth.Password != "newpass" {
 		t.Fatalf("expected runningAuth updated to newuser/newpass, got %v", auth.Auth)
@@ -337,10 +367,10 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
 		cancelMap: map[string]context.CancelFunc{
-			seededSetting.Address: cancelFunc,
+			seededSetting.Key(): cancelFunc,
 		},
 		cancelMapMu:     cancelMapMu,
-		runningAuth:     map[string]*connect.ProxySettings{seededSetting.Address: seededSetting},
+		runningAuth:     map[string]*connect.ProxySettings{seededSetting.Key(): seededSetting},
 		state:           &ProxyState{Proxies: make(map[string]ProxyEntry)},
 		sourcePath:      "",
 		parentCtx:       parentCtx,
@@ -354,13 +384,13 @@ func TestStartupRunningAuthSeeding(t *testing.T) {
 
 	// Verify the proxy remains in cancelMap and runningAuth
 	cancelMapMu.Lock()
-	_, stillRunning := reloader.cancelMap[seededSetting.Address]
+	_, stillRunning := reloader.cancelMap[seededSetting.Key()]
 	cancelMapMu.Unlock()
 	if !stillRunning {
 		t.Fatal("proxy was unexpectedly removed from cancelMap")
 	}
 
-	auth, ok := reloader.runningAuthFor(seededSetting.Address)
+	auth, ok := reloader.runningAuthFor(seededSetting.Key())
 	if !ok || !sameAuth(auth, seededSetting) {
 		t.Fatal("runningAuth entry altered or missing after reload")
 	}
@@ -534,10 +564,11 @@ func TestProxyAddPurgesStaleDuplicatesWhenSameCredentialsExist(t *testing.T) {
 	for i := 0; i < 40; i++ {
 		cfg := readProxyConfig()
 		cfg.Servers = map[string]string{
-			"192.0.2.4:1080":              "k1",
-			"192.0.2.4:1080:bob:oldpass":  "",
-			"192.0.2.4:1080:carol:oldpas": "",
-			"192.0.2.9:1080":              "",
+			"192.0.2.4:1080":               "k1",
+			"192.0.2.4:1080:alice:oldpass": "", // same identity as k1, stale duplicate
+			"192.0.2.4:1080:alice:oldpas":  "", // same identity as k1, stale duplicate
+			"192.0.2.4:1080:bob:otherpass": "", // a different account: must survive
+			"192.0.2.9:1080":               "",
 		}
 		cfg.Auths = map[string]*ProxyAuth{"k1": {User: "alice", Password: "secret"}}
 		writeProxyConfig(cfg)
@@ -551,7 +582,7 @@ func TestProxyAddPurgesStaleDuplicatesWhenSameCredentialsExist(t *testing.T) {
 		if _, ok := got.Servers["192.0.2.4:1080"]; !ok {
 			t.Fatalf("iteration %d: entry with the same effective credentials was lost: %v", i, got.Servers)
 		}
-		for _, stale := range []string{"192.0.2.4:1080:bob:oldpass", "192.0.2.4:1080:carol:oldpas"} {
+		for _, stale := range []string{"192.0.2.4:1080:alice:oldpass", "192.0.2.4:1080:alice:oldpas"} {
 			if _, ok := got.Servers[stale]; ok {
 				t.Fatalf("iteration %d: stale duplicate %q survived: %v", i, stale, got.Servers)
 			}
@@ -559,8 +590,11 @@ func TestProxyAddPurgesStaleDuplicatesWhenSameCredentialsExist(t *testing.T) {
 		if _, ok := got.Servers["192.0.2.9:1080"]; !ok {
 			t.Fatalf("iteration %d: unrelated proxy was removed: %v", i, got.Servers)
 		}
-		if len(got.Servers) != 2 {
-			t.Fatalf("iteration %d: want exactly the kept entry plus the unrelated one, got %v", i, got.Servers)
+		if _, ok := got.Servers["192.0.2.4:1080:bob:otherpass"]; !ok {
+			t.Fatalf("iteration %d: another account at the gateway was purged: %v", i, got.Servers)
+		}
+		if len(got.Servers) != 3 {
+			t.Fatalf("iteration %d: want the kept entry, the other account and the unrelated one, got %v", i, got.Servers)
 		}
 	}
 }

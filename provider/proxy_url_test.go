@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 func init() {
@@ -225,10 +226,11 @@ func TestMergeProxyURLCache_PrimarySourceWins(t *testing.T) {
 	if sourceOf["1.2.3.4:1080"] != "file" {
 		t.Errorf("existing entry's source was overwritten: got %q", sourceOf["1.2.3.4:1080"])
 	}
-	if sourceOf["5.6.7.8:1080"] != "url" {
-		t.Errorf("new entry not tagged url: got %q", sourceOf["5.6.7.8:1080"])
+	newKey := (&connect.ProxySettings{Address: "5.6.7.8:1080", Auth: &proxy.Auth{User: "u"}}).Key()
+	if sourceOf[newKey] != "url" {
+		t.Errorf("new entry not tagged url: got %q", sourceOf[newKey])
 	}
-	settings, ok := desiredSet["5.6.7.8:1080"]
+	settings, ok := desiredSet[newKey]
 	if !ok {
 		t.Fatal("expected new address merged into desiredSet")
 	}

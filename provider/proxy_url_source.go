@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // proxyURLMaxOverridePath returns ~/.urnetwork/proxy_url_max, a file an
@@ -223,11 +224,15 @@ func resolveSelfHealEnabled(startupEnabled bool) bool {
 const defaultAPIHost = "api.bringyour.com"
 const defaultAPIPort = 443
 
-// removeDeadProxies removes the given addresses from whichever source they
+// removeDeadProxies removes the given proxies from whichever source they
 // came from — a --proxy_file source, the internal config, or the URL
-// cache — and triggers a hot-reload. addrsBySource groups addresses by their
-// proxy.state Source tag ("file", "internal", or "url"); unrecognized keys
-// are ignored. Used by both the interactive `proxy remove-dead` command and
+// cache — and triggers a hot-reload. addrsBySource groups proxy.state
+// identity KEYS (address, or address+user for a credentialed proxy; see
+// ProxySettings.Key()) by their Source tag ("file", "internal", or "url");
+// unrecognized tags are ignored. File and internal removal match on the full
+// identity so one account at a shared gateway is removed without the others;
+// the URL cache is keyed by bare address, so it is cleared by the key's
+// address part. Used by both the interactive `proxy remove-dead` command and
 // the automatic scoped cleanup job, so removal logic only lives in one place.
 func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) error {
 	release, err := acquireProxyLock()
@@ -239,7 +244,7 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 	if fileAddrs := addrsBySource["file"]; len(fileAddrs) > 0 {
 		if state.Source == "" {
 			tlog("[proxy] warning: %d proxies tagged source=file but no file source is configured; skipping\n", len(fileAddrs))
-		} else if err := removeAddressesFromFile(state.Source, fileAddrs); err != nil {
+		} else if err := removeKeysFromFile(state.Source, fileAddrs); err != nil {
 			return fmt.Errorf("could not update proxy file: %w", err)
 		}
 	}
@@ -250,9 +255,8 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		for _, a := range internalAddrs {
 			removeSet[a] = true
 		}
-		for proxyAddress := range proxyConfig.Servers {
-			addr, _, _ := parseProxyAddress(proxyAddress)
-			if removeSet[addr] {
+		for proxyAddress, authKey := range proxyConfig.Servers {
+			if removeSet[internalServerSettings(proxyConfig, proxyAddress, authKey).Key()] {
 				delete(proxyConfig.Servers, proxyAddress)
 			}
 		}
@@ -264,8 +268,10 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		if err != nil {
 			return fmt.Errorf("could not read proxy_url.json: %w", err)
 		}
-		for _, a := range urlAddrs {
-			delete(urlState.Cache, a)
+		// The URL cache is keyed by bare address; the names are identity keys.
+		for _, k := range urlAddrs {
+			addr, _ := connect.SplitProxyKey(k)
+			delete(urlState.Cache, addr)
 		}
 		if err := writeProxyURLState(urlState); err != nil {
 			return fmt.Errorf("could not write proxy_url.json: %w", err)
@@ -360,19 +366,66 @@ func currentDesiredProxyAddresses() (map[string]bool, error) {
 	return addrs, nil
 }
 
-// desiredAddressesForHistoryPruning extends currentDesiredProxyAddresses
-// with in-backoff addresses: a self-heal shed deletes the address from the
+// currentDesiredProxyIdentities is currentDesiredProxyAddresses' identity-
+// keyed counterpart (ProxySettings.Key(): address, or address+user for a
+// shared-gateway proxy). Used where a caller must distinguish between two
+// accounts sharing one address — e.g. "was THIS SPECIFIC identity re-added
+// while draining", where address-only precision would re-trigger a reload
+// for the wrong identity's re-add. URL cache entries are included using
+// their own address+credentials the same way mergeProxyURLCache builds them.
+func currentDesiredProxyIdentities() (map[string]bool, error) {
+	state, err := readProxyState()
+	if err != nil {
+		return nil, fmt.Errorf("could not read proxy.state: %w", err)
+	}
+
+	var desired []*connect.ProxySettings
+	if state.Source != "" {
+		desired, err = readProxySettingsFromFile(state.Source)
+		if err != nil {
+			return nil, fmt.Errorf("could not read proxy file %s: %w", state.Source, err)
+		}
+	} else {
+		desired = readProxySettings()
+	}
+
+	keys := make(map[string]bool, len(desired))
+	for _, s := range desired {
+		keys[s.Key()] = true
+	}
+
+	urlState, err := readProxyURLState()
+	if err != nil {
+		return nil, fmt.Errorf("could not read proxy_url.json: %w", err)
+	}
+	for addr, entry := range urlState.Cache {
+		settings := &connect.ProxySettings{Network: "tcp", Address: addr}
+		if entry.User != "" || entry.Password != "" {
+			settings.Auth = &proxy.Auth{User: entry.User, Password: entry.Password}
+		}
+		keys[settings.Key()] = true
+	}
+
+	return keys, nil
+}
+
+// desiredAddressesForHistoryPruning extends currentDesiredProxyIdentities
+// with in-backoff identities: a self-heal shed deletes the address from the
 // URL cache (unlike a give-up, which leaves it in place), so without this a
 // shed proxy's history would get pruned before its backoff even elapses.
+// The keep-set MUST be identity keys (ProxySettings.Key()): the failure
+// history and proven-proxy stores this feeds are identity-keyed, and an
+// address-only keep-set would drop every credentialed proxy's history on
+// every prune.
 func desiredAddressesForHistoryPruning() (map[string]bool, error) {
-	addrs, err := currentDesiredProxyAddresses()
+	keys, err := currentDesiredProxyIdentities()
 	if err != nil {
 		return nil, err
 	}
-	for addr := range globalProxyFailureHistory.AddressesInBackoff(time.Now()) {
-		addrs[addr] = true
+	for k := range globalProxyFailureHistory.AddressesInBackoff(time.Now()) {
+		keys[k] = true
 	}
-	return addrs, nil
+	return keys, nil
 }
 
 var fetchMu sync.Mutex
@@ -971,9 +1024,18 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 
 			entry.LastProbe = time.Now()
 
-			liveHealth := connect.ProxyHealthByAddress()
+			liveHealth := connect.ProxyHealthByKey()
+			// liveHealth is keyed by proxy IDENTITY (address+user for a
+			// credentialed entry), while r.addr is the URL cache's bare
+			// address. Look the entry up under its real identity key or a
+			// live credentialed proxy reads as dead and accrues ProbeFails
+			// until it is wrongly blacklisted.
+			liveKey := r.addr
+			if entry.User != "" {
+				liveKey = (&connect.ProxySettings{Network: "tcp", Address: r.addr, Auth: &proxy.Auth{User: entry.User}}).Key()
+			}
 			isLive := false
-			if h, ok := liveHealth[r.addr]; ok && h.Health == "up" {
+			if h, ok := liveHealth[liveKey]; ok && h.Health == "up" {
 				isLive = true
 			}
 

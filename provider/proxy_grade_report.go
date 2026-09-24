@@ -1,5 +1,7 @@
 package main
 
+import "github.com/urnetwork/connect"
+
 // proxyGradeInfo is the grade payload attached to a proxy report row. The
 // hub mirrors these fields so a dashboard can render the provider's A-F
 // tier. Only populated when a proxy has been graded (Graded=true); an
@@ -13,15 +15,17 @@ type proxyGradeInfo struct {
 	LastGraded int64    `json:"last_graded,omitempty"` // unix ts, 0 = never
 }
 
-// proxyGradeFor resolves the A-F grade for an address from BOTH grade
-// stores. Precedence: the paid/file store (proxy.state, ProxyEntry) wins
+// proxyGradeFor resolves the A-F grade for a proxy identity key (address, or
+// address+user for a credentialed proxy) from BOTH grade stores. The paid store
+// (proxy.state) is keyed by identity; the URL cache is keyed by bare address, so
+// its lookup uses the key's address part. Precedence: the paid/file store (proxy.state, ProxyEntry) wins
 // over the URL store (proxy_url.json, ProxyURLEntry) when both are graded —
 // a paid proxy that also appears in a free URL list is owned, so the
 // deliberate config grade is the meaningful one. ok=false when neither
 // store has a graded entry for the address.
-func proxyGradeFor(addr string, paid *ProxyState, url *ProxyURLState) (proxyGradeInfo, bool) {
+func proxyGradeFor(key string, paid *ProxyState, url *ProxyURLState) (proxyGradeInfo, bool) {
 	if paid != nil {
-		if entry, ok := paid.Proxies[addr]; ok && entry.Graded {
+		if entry, ok := paid.Proxies[key]; ok && entry.Graded {
 			info := proxyGradeInfo{
 				Score:  entry.Score,
 				Graded: true,
@@ -35,6 +39,7 @@ func proxyGradeFor(addr string, paid *ProxyState, url *ProxyURLState) (proxyGrad
 		}
 	}
 	if url != nil {
+		addr, _ := connect.SplitProxyKey(key)
 		if entry, ok := url.Cache[addr]; ok && entry.Graded {
 			info := proxyGradeInfo{
 				Score:  entry.Score,

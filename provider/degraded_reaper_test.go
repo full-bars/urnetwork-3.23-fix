@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 func TestDegradedReaperKeepCount(t *testing.T) {
@@ -467,5 +468,58 @@ func TestReapProxies_CancelsAndDeletesWhenStillDegraded(t *testing.T) {
 	}
 	if _, ok := cancelMap["stuck:1"]; ok {
 		t.Fatal("expected cancel map entry to be deleted after reaping")
+	}
+}
+
+// TestDegradedReaper_CredentialedProxyReapedByIdentityKey is the regression
+// guard for the proxy-identity migration: the reaper's cancel-map and
+// health-registry lookups must use the proxy's identity key (address+user),
+// not the bare address. A credentialed proxy looked up by address alone
+// never matches the identity-keyed maps and would silently escape reaping.
+func TestDegradedReaper_CredentialedProxyReapedByIdentityKey(t *testing.T) {
+	credSettings := &connect.ProxySettings{
+		Network: "tcp",
+		Address: "gw.example.com:1080",
+		Auth:    &proxy.Auth{User: "alice", Password: "pw"},
+	}
+	identityKey := credSettings.Key()
+
+	// The credentialed entry carries its identity key; the second entry is
+	// unauthenticated, so its key equals its address.
+	entries := []connect.DegradedProxyEntry{
+		{Index: 0, Address: "gw.example.com:1080", Key: identityKey, DownFor: degradedReaperMinDownTime, TotalRxBytes: 10},
+		{Index: 1, Address: "plain.example.com:1080", Key: "plain.example.com:1080", DownFor: degradedReaperMinDownTime, TotalRxBytes: 100},
+	}
+
+	cancelled := map[string]bool{}
+	cancelMap := map[string]context.CancelFunc{
+		// Deliberately keyed by identity, like production: the bare address
+		// "gw.example.com:1080" must NOT be present, so a lookup by address
+		// would miss and the credentialed proxy would escape reaping.
+		identityKey:              func() { cancelled[identityKey] = true },
+		"plain.example.com:1080": func() { cancelled["plain.example.com:1080"] = true },
+	}
+	var cancelMu sync.Mutex
+
+	cancellable := onlyCancellableProxies(entries, cancelMap, &cancelMu)
+	if len(cancellable) != 2 {
+		t.Fatalf("expected both degraded proxies to be cancellable, got %d", len(cancellable))
+	}
+
+	scored := scoreDegradedProxies(cancellable, nil)
+	toReap := selectProxiesToReap(scored, 0, degradedReaperMinDownTime)
+	if len(toReap) != 2 {
+		t.Fatalf("expected 2 reap candidates, got %d", len(toReap))
+	}
+
+	reaped := reapProxies(toReap, cancelMap, &cancelMu, alwaysDegraded)
+	if reaped != 2 {
+		t.Fatalf("expected 2 reaped, got %d", reaped)
+	}
+	if !cancelled[identityKey] {
+		t.Fatal("credentialed proxy was not cancelled: identity-key lookup failed")
+	}
+	if _, ok := cancelMap[identityKey]; ok {
+		t.Fatal("expected credentialed proxy's cancel-map entry to be deleted after reaping")
 	}
 }

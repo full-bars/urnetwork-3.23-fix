@@ -680,7 +680,11 @@ func formatProxyAuditStatus(as *ProxyAuditStatus, now time.Time) []string {
 		if remaining < 0 {
 			remaining = 0
 		}
-		lines = append(lines, fmt.Sprintf("  parked %s for another %s", p.Addr, shortDuration(remaining)))
+		who := p.Addr
+		if p.User != "" {
+			who = fmt.Sprintf("%s (user %s)", p.Addr, p.User)
+		}
+		lines = append(lines, fmt.Sprintf("  parked %s for another %s", who, shortDuration(remaining)))
 	}
 	if as.Distrusted {
 		lines = append(lines, "  last pass distrusted: a large share of grades went bad at once, so nothing was parked")

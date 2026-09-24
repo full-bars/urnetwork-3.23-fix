@@ -21,7 +21,7 @@ func TestEarnTracker_SnapshotKeyFormatMatchesProduction(t *testing.T) {
 	defer connect.UnregisterProxy(idx)
 
 	bw := connect.RegisterProxyBandwidth(idx)
-	connect.RegisterProxy(idx, addr)
+	connect.RegisterProxy(idx, addr, addr)
 
 	// First snapshot establishes the per-address baseline (no delta).
 	_, _, _, snap1, _ := connect.ProxyHealthSnapshot()
