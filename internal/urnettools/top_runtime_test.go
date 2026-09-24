@@ -198,7 +198,7 @@ func TestTopZoomRestartsWhenItsTimeBaseWouldBreak(t *testing.T) {
 	}
 	t.Run("rate change", func(t *testing.T) {
 		m, _ := setup()
-		pressKey(m, '-')
+		pressKey(m, '+') // slower: 100ms is already the fastest step
 		if len(m.zoom.billable) != 0 {
 			t.Fatal("columns of another poll period must not share one axis")
 		}
@@ -336,13 +336,32 @@ func TestTopInternalsPollCadence(t *testing.T) {
 		t.Fatal("a read is in flight: no second one")
 	}
 	m.applyInternals(gen, fakeInternals(1, 100, 1, 1), nil)
-	clock.Advance(500 * time.Millisecond)
+	clock.Advance(50 * time.Millisecond)
 	if _, _, ok := m.wantInternals(clock.Now()); ok {
-		t.Fatal("internals are read at most once a second even at a 100ms poll")
+		t.Fatal("asked again before the interval passed")
 	}
-	clock.Advance(600 * time.Millisecond)
-	if _, _, ok := m.wantInternals(clock.Now()); !ok {
-		t.Fatal("a second passed: read again")
+	// At the poll rate, not at the snapshot's once a second: at 100ms the runtime
+	// figures move ten times a second.
+	for i := 0; i < 10; i++ {
+		clock.Advance(100 * time.Millisecond)
+		g, _, ok := m.wantInternals(clock.Now())
+		if !ok {
+			t.Fatalf("read %d not requested at a 100ms interval", i)
+		}
+		m.applyInternals(g, fakeInternals(int64(2+i), 100, 1, 1), nil)
+	}
+
+	// A slower setting slows the reads with it.
+	m2, clock2 := liveModel(t, 2*time.Second)
+	g, _, _ := m2.wantInternals(clock2.Now())
+	m2.applyInternals(g, fakeInternals(1, 100, 1, 1), nil)
+	clock2.Advance(time.Second)
+	if _, _, ok := m2.wantInternals(clock2.Now()); ok {
+		t.Fatal("a 2s interval must not read every second")
+	}
+	clock2.Advance(1100 * time.Millisecond)
+	if _, _, ok := m2.wantInternals(clock2.Now()); !ok {
+		t.Fatal("not read after the 2s interval")
 	}
 }
 
@@ -592,5 +611,47 @@ func TestTopInternalsNeverOverflowsAnySize(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+// At a 100ms poll the goroutine trend still takes one point a second, so it keeps
+// its two minutes; a trend of 100ms points would cover twelve seconds.
+func TestTopInternalsTrendIsOnePointPerSecondAtAnyPollRate(t *testing.T) {
+	m, _ := liveModel(t, 100*time.Millisecond)
+	for i := 0; i < 100; i++ { // ten seconds of 100ms readings
+		m.applyInternals(m.gen, &NodeInternals{AtUnixNano: int64(i) * int64(100*time.Millisecond), Goroutines: uint64(1000 + i)}, nil)
+	}
+	if n := len(m.rt.gor); n != 10 {
+		t.Fatalf("ten seconds of readings gave %d trend points, want 10", n)
+	}
+}
+
+// Rates are over about a second, so a counter that ticks a few times a second
+// reads steady instead of flickering between zero and a spike.
+func TestTopInternalsRatesAreOverASecondNotBetweenAdjacentReadings(t *testing.T) {
+	m, _ := liveModel(t, 100*time.Millisecond)
+	const mib = 1 << 20
+	var cycles uint64
+	for i := 0; i < 30; i++ {
+		if i%5 == 4 {
+			cycles++ // a GC cycle every 500ms: 2 per second
+		}
+		m.applyInternals(m.gen, &NodeInternals{
+			AtUnixNano: int64(i) * int64(100*time.Millisecond), GCCycles: cycles, AllocBytes: uint64(i) * mib,
+		}, nil)
+		if i < 12 { // under a second of readings the rate uses the span it has
+			continue
+		}
+		gc, ok := m.rt.internalsRate(func(n *NodeInternals) uint64 { return n.GCCycles })
+		if !ok || gc < 1.5 || gc > 2.5 {
+			t.Fatalf("reading %d: gc rate %v %v, want steady ~2/s, not a flicker", i, gc, ok)
+		}
+		alloc, _ := m.rt.internalsRate(func(n *NodeInternals) uint64 { return n.AllocBytes })
+		if alloc < 9*mib || alloc > 11*mib {
+			t.Fatalf("reading %d: alloc rate %v, want ~10 MiB/s", i, alloc)
+		}
+	}
+	if len(m.rt.recent) > 25 {
+		t.Fatalf("holding %d readings; the rate window needs about a second's worth", len(m.rt.recent))
 	}
 }

@@ -147,7 +147,7 @@ func (m *topModel) drawFooter(f *tui.Buffer) {
 	if m.rt.ok && m.rt.gOK && m.hasInternals() {
 		keys += "   g goroutines"
 	}
-	keys += "   +/- rate " + topIntervalText(m.interval)
+	keys += "   - " + topIntervalText(m.interval) + " +"
 	f.Put(tui.Truncate(keys, f.Width(), m.theme.ASCII), 0, 0, m.theme.Dim)
 }
 
@@ -523,7 +523,7 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
-	"+  -             refresh faster or slower, down to 100ms",
+	"+  -             update slower or faster, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"m                menu: color theme and graph style",
 	"g                list where goroutines are parked",

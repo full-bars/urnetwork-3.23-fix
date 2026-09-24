@@ -8,16 +8,16 @@
 │   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ 5m avg   71.3 MiB/s        │
 ╰────────────────────────────────────────────────────────────────────╯│billed    45.0 GiB          │
 ╭ Total traffic, 10m ────────────────────────────────────────────────╮│moved     90.0 GiB          │
-│60 MiB/s┤          ╭ Keys ────────────────────────────────────────────────────╮ 212               │
-│        │          │ q, Esc, Ctrl-C   quit                                    │ 200 pqe / 12 cl   │
-│30 MiB/s┤      ⣀⣤⣶⣿│ Tab, Shift-Tab   next or previous provider               │ ██▊░░░░░░░░░░ 0.21│
-│        │  ⢀⣠⣴⣿⣿⣿⣿⣿│ +  -             refresh faster or slower, down to 100ms │                   │
-│        │⣴⣶⣿⣿⣿⣿⣿⣿⣿⣿│ w                zoom the graphs to the last 15 seconds  │                   │
-│   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ m                menu: color theme and graph style       │                   │
-╰───────────────────│ g                list where goroutines are parked        │───────────────────╯
-╭ Proxies ──────────│ billed, moved    billable and total bytes this session   │s ─────────────────╮
-│up         ████████│ ?                show or hide this help                  │█▌░░░░░ 1.8/4.0 GiB│
-│degraded   █▉░░░░░░╰──────────────────────────────────────────────────────────╯░░░░░░░░░ 310/65536│
+│60 MiB/s┤          ╭ Keys ───────────────────────────────────────────────────╮  212               │
+│        │          │ q, Esc, Ctrl-C   quit                                   │  200 pqe / 12 cl   │
+│30 MiB/s┤      ⣀⣤⣶⣿│ Tab, Shift-Tab   next or previous provider              │  ██▊░░░░░░░░░░ 0.21│
+│        │  ⢀⣠⣴⣿⣿⣿⣿⣿│ +  -             update slower or faster, down to 100ms │                    │
+│        │⣴⣶⣿⣿⣿⣿⣿⣿⣿⣿│ w                zoom the graphs to the last 15 seconds │                    │
+│   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ m                menu: color theme and graph style      │                    │
+╰───────────────────│ g                list where goroutines are parked       │────────────────────╯
+╭ Proxies ──────────│ billed, moved    billable and total bytes this session  │es ─────────────────╮
+│up         ████████│ ?                show or hide this help                 │██▌░░░░░ 1.8/4.0 GiB│
+│degraded   █▉░░░░░░╰─────────────────────────────────────────────────────────╯░░░░░░░░░░ 310/65536│
 │connecting ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0││rss   2.1 GiB               │
 │dead       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0││gor   1204                  │
 ╰────────────────────────────────────────────────────────────────────╯│                            │
@@ -27,4 +27,4 @@
 │                                                                    ││                            │
 │                                                                    ││                            │
 ╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
- q quit   ? help   m menu   w zoom   +/- rate 1s
+ q quit   ? help   m menu   w zoom   - 1s +

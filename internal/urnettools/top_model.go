@@ -558,10 +558,11 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.help = !m.help
 		case 'm', 'M':
 			m.menu, m.help, m.menuNote = true, false, ""
+		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
-			m.stepInterval(-1)
-		case '-', '_':
 			m.stepInterval(1)
+		case '-', '_':
+			m.stepInterval(-1)
 		case 'w', 'W':
 			m.zoomOn = !m.zoomOn
 		case 'g', 'G':

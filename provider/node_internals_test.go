@@ -170,3 +170,37 @@ func TestGoroutineCollectorRealAndRateLimited(t *testing.T) {
 		t.Error("the profile must be retaken past the TTL")
 	}
 }
+
+// A viewer polling at 100ms must see the counters move on every read, while the
+// windowed figures (quantiles, cpu share) only change when a window completes.
+func TestInternalsCollectorCountersAreLiveWindowsAreNot(t *testing.T) {
+	c := &internalsCollector{}
+	now := time.Now()
+	first := c.Get(now)
+	if first.IntervalSeconds != 0 {
+		t.Fatalf("no window has completed yet, got interval %v", first.IntervalSeconds)
+	}
+	sink := make([][]byte, 0, 64)
+	var lastAlloc = first.AllocBytes
+	for i := 1; i <= 9; i++ {
+		sink = append(sink, make([]byte, 1<<16)) // real allocation between reads
+		got := c.Get(now.Add(time.Duration(i) * internalsCacheTTL))
+		if got.AllocBytes <= lastAlloc {
+			t.Fatalf("read %d at +%dms: alloc counter %d did not advance from %d", i, i*100, got.AllocBytes, lastAlloc)
+		}
+		lastAlloc = got.AllocBytes
+		if got.IntervalSeconds != 0 {
+			t.Fatalf("window reported after only %dms", i*100)
+		}
+	}
+	_ = sink
+	// The window completes a second after it began, and is then held.
+	done := c.Get(now.Add(internalsQuantileEvery))
+	if done.IntervalSeconds != 1 {
+		t.Fatalf("completed window = %vs, want 1", done.IntervalSeconds)
+	}
+	held := c.Get(now.Add(internalsQuantileEvery + 2*internalsCacheTTL))
+	if held.IntervalSeconds != 1 {
+		t.Fatalf("the finished window must be served until the next completes, got %v", held.IntervalSeconds)
+	}
+}

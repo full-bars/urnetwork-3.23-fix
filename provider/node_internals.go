@@ -17,14 +17,22 @@ import (
 // provider process itself. Two commands serve it.
 //
 //   "internals"  a cheap read of runtime/metrics (18us at 95k goroutines),
-//                cached for a second so any number of viewers cost one read.
+//                cached for 100ms so any number of viewers cost one read and
+//                a viewer polling at 100ms sees every figure move.
 //   "goroutines" the goroutine profile grouped by function. This one stops the
 //                world briefly (about 80ms of CPU and a ~9ms worst scheduler
 //                stall measured at 95k goroutines), so it is cached and never
 //                rebuilt more often than goroutineGroupsTTL.
 
 const (
-	internalsCacheTTL = time.Second
+	// internalsCacheTTL is how long a read is reused. It matches urnet-tools
+	// top's fastest poll, so counters (goroutines, allocations, GC cycles) are
+	// live at that rate.
+	internalsCacheTTL = 100 * time.Millisecond
+	// internalsQuantileEvery is the window the pause and latency quantiles and
+	// the GC cpu share are computed over. A histogram delta over 100ms holds a
+	// handful of events, so a p99 of it is noise; over a second it is a figure.
+	internalsQuantileEvery = time.Second
 	// goroutineGroupsTTL bounds how often the goroutine profile is taken, no
 	// matter how many viewers ask or how fast.
 	goroutineGroupsTTL = 5 * time.Second
@@ -32,10 +40,10 @@ const (
 	goroutineGroupsMax = 12
 )
 
-// NodeInternals is the reply to "internals". Counters are cumulative; the
-// pause and latency quantiles and the GC cpu share cover the interval since the
-// previous build (at least a second), so they describe now, not the process
-// lifetime.
+// NodeInternals is the reply to "internals". Counters are cumulative and fresh
+// to the cache TTL; the pause and latency quantiles and the GC cpu share cover
+// the last completed window of at least internalsQuantileEvery, so they describe
+// now, not the process lifetime.
 type NodeInternals struct {
 	AtUnixNano int64 `json:"at_unix_nano"`
 
@@ -88,7 +96,10 @@ type internalsCollector struct {
 	mu       sync.Mutex
 	cached   *NodeInternals
 	cachedAt time.Time
-	prev     *internalsRaw
+	// base is the read the current quantile window started at, and window the
+	// figures of the last completed one, served until the next completes.
+	base   *internalsRaw
+	window NodeInternals
 }
 
 // internalsRaw is what one read leaves behind for the next one to diff against.
@@ -109,8 +120,20 @@ func (c *internalsCollector) Get(now time.Time) *NodeInternals {
 	if c.cached != nil && now.Sub(c.cachedAt) < internalsCacheTTL {
 		return c.cached
 	}
-	c.cached, c.prev = readInternals(now, c.prev)
-	c.cachedAt = now
+	out, raw := readInternals(now, nil)
+	switch {
+	case c.base == nil:
+		c.base = raw
+	case now.Sub(c.base.at) >= internalsQuantileEvery:
+		var w NodeInternals
+		applyInternalsDeltas(&w, c.base, raw)
+		c.window, c.base = w, raw
+	}
+	out.IntervalSeconds = c.window.IntervalSeconds
+	out.GCPauseP99Ms = c.window.GCPauseP99Ms
+	out.SchedLatP99Ms = c.window.SchedLatP99Ms
+	out.GCCPUFraction = c.window.GCCPUFraction
+	c.cached, c.cachedAt = out, now
 	return c.cached
 }
 
@@ -149,15 +172,22 @@ func readInternals(now time.Time, prev *internalsRaw) (*NodeInternals, *internal
 		AllocBytes:       u(6),
 	}
 	raw := &internalsRaw{at: now, pauses: hist(7), sched: hist(8), gcCPU: f(9), totalCPU: f(10)}
-	if prev != nil && now.After(prev.at) {
-		out.IntervalSeconds = now.Sub(prev.at).Seconds()
-		out.GCPauseP99Ms = histDeltaQuantile(prev.pauses, raw.pauses, 0.99) * 1000
-		out.SchedLatP99Ms = histDeltaQuantile(prev.sched, raw.sched, 0.99) * 1000
-		if dt := raw.totalCPU - prev.totalCPU; dt > 0 {
-			out.GCCPUFraction = math.Min(math.Max((raw.gcCPU-prev.gcCPU)/dt, 0), 1)
-		}
-	}
+	applyInternalsDeltas(out, prev, raw)
 	return out, raw
+}
+
+// applyInternalsDeltas fills the over-a-window figures of out from two reads.
+// With no previous read they stay zero.
+func applyInternalsDeltas(out *NodeInternals, prev, cur *internalsRaw) {
+	if prev == nil || !cur.at.After(prev.at) {
+		return
+	}
+	out.IntervalSeconds = cur.at.Sub(prev.at).Seconds()
+	out.GCPauseP99Ms = histDeltaQuantile(prev.pauses, cur.pauses, 0.99) * 1000
+	out.SchedLatP99Ms = histDeltaQuantile(prev.sched, cur.sched, 0.99) * 1000
+	if dt := cur.totalCPU - prev.totalCPU; dt > 0 {
+		out.GCCPUFraction = math.Min(math.Max((cur.gcCPU-prev.gcCPU)/dt, 0), 1)
+	}
 }
 
 // histDeltaQuantile is the q-quantile of what was recorded between two reads of

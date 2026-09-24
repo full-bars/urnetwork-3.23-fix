@@ -32,8 +32,15 @@ const (
 	topScaleHold    = 30 * time.Second
 	topScaleLowFrac = 0.6
 
-	// topRuntimeHistory is how many internals readings the goroutine trend keeps.
+	// topRuntimeHistory is how many goroutine counts the trend keeps, one per
+	// second however fast the poll is.
 	topRuntimeHistory = 120
+	// topRateSpan is the window a counter's rate is taken over. At a 100ms poll,
+	// two adjacent readings would show a GC counter as 0, 0, 10/s, 0: a rate
+	// means events over a stretch long enough to have some.
+	topRateSpan = time.Second
+	// topRecentKeep bounds the readings held for those rates.
+	topRecentKeep = 2 * topRateSpan
 	// topGroupsEvery is how often the goroutine profile is asked for while shown.
 	// The provider rate-limits itself to the same period; asking faster gains
 	// nothing.
@@ -119,8 +126,9 @@ type topRuntime struct {
 	busy    bool
 	last    time.Time
 	cur     *NodeInternals
-	prev    *NodeInternals // the reading before cur, for rates from counters
-	gor     []float64      // goroutine count per reading, oldest first
+	recent  []*NodeInternals // readings of the last topRecentKeep, for rates
+	gor     []float64        // goroutine count per second, oldest first
+	gorAt   int64            // provider clock of the newest gor point
 	groups  *GoroutineGroups
 	showing bool // the goroutine list replaces the runtime rows
 	gOK     bool
@@ -130,14 +138,14 @@ type topRuntime struct {
 
 func (r *topRuntime) reset() { *r = topRuntime{ok: true, gOK: true} }
 
-// wantInternals is wantTraffic for the runtime read: once per snapshot period
-// however fast the poll is set, since the provider caches it for a second.
+// wantInternals is wantTraffic for the runtime read: every poll interval. The
+// provider caches it for 100ms, so the counters move at the poll rate.
 func (m *topModel) wantInternals(now time.Time) (gen int, p Provider, ok bool) {
 	r := &m.rt
 	if r.busy || !r.ok || m.conn != topConnected || len(m.providers) == 0 {
 		return 0, Provider{}, false
 	}
-	if !r.last.IsZero() && now.Sub(r.last) < max(m.interval, topSnapshotEvery) {
+	if !r.last.IsZero() && now.Sub(r.last) < m.interval {
 		return 0, Provider{}, false
 	}
 	r.busy, r.last = true, now
@@ -158,13 +166,24 @@ func (m *topModel) applyInternals(gen int, in *NodeInternals, err error) {
 	switch {
 	case errors.Is(err, errRuntimeViewUnsupported):
 		r.ok, r.gOK, r.showing = false, false, false
-		r.cur, r.prev, r.groups, r.gor = nil, nil, nil, nil
+		r.cur, r.recent, r.groups, r.gor = nil, nil, nil, nil
 	case err != nil || in == nil:
 	default:
-		r.prev, r.cur = r.cur, in
-		r.gor = append(r.gor, float64(in.Goroutines))
-		if n := len(r.gor) - topRuntimeHistory; n > 0 {
-			r.gor = r.gor[n:]
+		r.cur = in
+		r.recent = append(r.recent, in)
+		// Drop readings older than the rate window needs, and never fewer than
+		// two so a slow poll still has a span.
+		for len(r.recent) > 2 && time.Duration(in.AtUnixNano-r.recent[1].AtUnixNano) >= topRecentKeep {
+			r.recent = r.recent[1:]
+		}
+		// One trend point a second: at a 100ms poll the trend would otherwise
+		// cover 12 seconds, not two minutes.
+		if len(r.gor) == 0 || time.Duration(in.AtUnixNano-r.gorAt) >= time.Second {
+			r.gor = append(r.gor, float64(in.Goroutines))
+			r.gorAt = in.AtUnixNano
+			if n := len(r.gor) - topRuntimeHistory; n > 0 {
+				r.gor = r.gor[n:]
+			}
 		}
 	}
 }
@@ -203,17 +222,27 @@ func (m *topModel) applyGroups(gen int, g *GoroutineGroups, err error) {
 // hasInternals reports whether there is a runtime reading to draw.
 func (m *topModel) hasInternals() bool { return m.rt.ok && m.rt.cur != nil }
 
-// internalsRate is a counter's rate between the last two readings, per second.
+// internalsRate is a counter's rate over the newest stretch of at least
+// topRateSpan, per second; a younger series uses what it has once that is at
+// least a quarter second. ok is false with no usable span, or when the counter
+// went backwards (the provider restarted between readings).
 func (r *topRuntime) internalsRate(get func(*NodeInternals) uint64) (float64, bool) {
-	if r.cur == nil || r.prev == nil {
+	if r.cur == nil || len(r.recent) < 2 {
 		return 0, false
 	}
-	dt := float64(r.cur.AtUnixNano-r.prev.AtUnixNano) / 1e9
-	a, b := get(r.prev), get(r.cur)
-	if dt <= 0 || b < a {
+	ref := r.recent[0]
+	for i := len(r.recent) - 2; i >= 0; i-- {
+		if time.Duration(r.cur.AtUnixNano-r.recent[i].AtUnixNano) >= topRateSpan {
+			ref = r.recent[i]
+			break
+		}
+	}
+	span := time.Duration(r.cur.AtUnixNano - ref.AtUnixNano)
+	a, b := get(ref), get(r.cur)
+	if span < topZoomSpan || b < a {
 		return 0, false
 	}
-	return float64(b-a) / dt, true
+	return float64(b-a) / span.Seconds(), true
 }
 
 // shortFunc trims a profile function name to what fits a narrow column: the
