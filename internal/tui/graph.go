@@ -166,13 +166,24 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	plotW := w - x0
 	var cols []float64
 	if g.HasTail && plotW >= 1 {
-		// History fills every column but the newest; the tail takes that one.
-		cols = plotColumnsAnchored(samples, 2*plotW-1, g.Anchor, g.Capacity)
+		// History fills every column but the newest; the tail takes that one. In
+		// the ASCII graph a cell is a pair of columns drawn as their average, so
+		// the tail must own the whole rightmost cell (both halves): sharing one
+		// with the newest history sample would show a live spike blended down.
+		histCols, tailCols := 2*plotW-1, 1
+		if ascii {
+			histCols, tailCols = 2*plotW-2, 2
+		}
+		if histCols > 0 {
+			cols = plotColumnsAnchored(samples, histCols, g.Anchor, g.Capacity)
+		}
 		tail := g.Tail
 		if math.IsNaN(tail) || math.IsInf(tail, 0) || tail < 0 {
 			tail = 0
 		}
-		cols = append(cols, math.Min(tail, top))
+		for i := 0; i < tailCols; i++ {
+			cols = append(cols, math.Min(tail, top))
+		}
 	} else {
 		cols = plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
 	}

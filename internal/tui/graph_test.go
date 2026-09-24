@@ -404,3 +404,28 @@ func TestGraphTailIgnoresBadValues(t *testing.T) {
 		DrawGraph(b, Graph{Samples: []float64{1, 2, 3}, Tail: v, HasTail: true}, false)
 	}
 }
+
+// In the ASCII graph one cell holds a pair of samples and is drawn as their
+// average. The live tail must own its whole cell: sharing one with the newest
+// history sample showed a live spike at a blended, lower rate.
+func TestGraphASCIITailOwnsItsCell(t *testing.T) {
+	b := New(12, 2)
+	DrawGraph(b, Graph{
+		Samples: []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, Max: 10,
+		Tail: 10, HasTail: true,
+	}, true)
+	last := b.Width() - 1
+	// A tail at the axis top fills its cell on both rows. Averaged with a zero
+	// history sample it would fill half of it.
+	for row := 0; row < 2; row++ {
+		if got := b.Cell(last, row).Rune; got != '#' {
+			t.Fatalf("row %d of the rightmost cell = %q, want a full '#' (tail blended with history?):\n%s", row, got, b.String())
+		}
+	}
+	// The cell before it is history and unaffected by the tail.
+	for row := 0; row < 2; row++ {
+		if got := b.Cell(last-1, row).Rune; got == '#' {
+			t.Fatalf("the tail leaked into the previous cell at row %d:\n%s", row, b.String())
+		}
+	}
+}
