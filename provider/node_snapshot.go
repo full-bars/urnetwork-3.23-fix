@@ -576,6 +576,7 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 	histSeq, histBps := c.rate.seq(), c.rate.history()
 	traffic := c.trafficSnapshot()
 	c.sampleMu.Unlock()
+	c.withLifetime(traffic)
 
 	proxies, clients := c.src.pool()
 	pqe, classical := c.src.sessions()
@@ -633,12 +634,20 @@ func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
 		TotalAvg5mBps:   avg5m,
 		TotalHistoryBps: c.traffic.history(),
 	}
-	if c.src.lifetimeBillable != nil {
-		if v, ok := c.src.lifetimeBillable(); ok {
-			tr.LifetimeBillableBytes = &v
-		}
-	}
 	return tr
+}
+
+// withLifetime adds the persisted lifetime total to tr. It is read separately,
+// after the sampling lock is released: the lifetime store holds its own lock
+// across a file write, and reading it under the sampling lock would let a flush
+// stall the per-second sampler.
+func (c *nodeSnapshotCollector) withLifetime(tr *SnapshotTraffic) {
+	if c.src.lifetimeBillable == nil {
+		return
+	}
+	if v, ok := c.src.lifetimeBillable(); ok {
+		tr.LifetimeBillableBytes = &v
+	}
 }
 
 // restartPendingFor reports whether any restart-required control key now

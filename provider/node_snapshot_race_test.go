@@ -66,3 +66,42 @@ func TestSnapshotHistorySeqMatchesItsHistoryUnderConcurrentTicks(t *testing.T) {
 		}
 	}
 }
+
+// The sampling lock must be held only for the samplers' own short reads and
+// writes. Reading the lifetime total takes another lock that is held during a
+// file write; doing that under the sampling lock let a snapshot build stall the
+// per-second sampler for as long as a flush took.
+func TestSnapshotBuildDoesNotHoldTheSamplingLockWhileReadingLifetime(t *testing.T) {
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}}
+	src := env.sources()
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var once sync.Once
+	src.lifetimeBillable = func() (uint64, bool) {
+		once.Do(func() { close(entered) })
+		<-release // stands in for a flush holding the lifetime lock during a write
+		return 1, true
+	}
+	c := newNodeSnapshotCollector(src)
+	c.tick()
+
+	buildDone := make(chan struct{})
+	go func() { c.build(snapT0.Add(time.Hour)); close(buildDone) }()
+	select {
+	case <-entered:
+	case <-time.After(3 * time.Second):
+		t.Fatal("build never asked for the lifetime total")
+	}
+
+	tickDone := make(chan struct{})
+	go func() { c.tick(); close(tickDone) }()
+	select {
+	case <-tickDone:
+	case <-time.After(500 * time.Millisecond):
+		close(release)
+		<-buildDone
+		t.Fatal("the sampler was blocked behind a snapshot build reading the lifetime total")
+	}
+	close(release)
+	<-buildDone
+}
