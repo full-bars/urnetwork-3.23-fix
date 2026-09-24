@@ -281,12 +281,20 @@ func isSocketUnavailable(err error) bool {
 // sendSocketRequest transmits a single JSON line to the socket and reads back
 // the JSON response.
 func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, error) {
-	conn, err := net.DialTimeout("unix", sockPath, 2*time.Second)
+	return sendSocketRequestTimeout(sockPath, req, 5*time.Second)
+}
+
+// sendSocketRequestTimeout is sendSocketRequest with the whole exchange bounded
+// by timeout, and the dial by the smaller of that and two seconds. The cheap
+// polling commands use a short one so a struggling provider is not also left
+// holding their sockets and goroutines.
+func sendSocketRequestTimeout(sockPath string, req controlRequest, timeout time.Duration) (controlResponse, error) {
+	conn, err := net.DialTimeout("unix", sockPath, min(timeout, 2*time.Second))
 	if err != nil {
 		return controlResponse{}, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(5 * time.Second))
+	_ = conn.SetDeadline(time.Now().Add(timeout))
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return controlResponse{}, err

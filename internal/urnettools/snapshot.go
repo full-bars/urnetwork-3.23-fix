@@ -74,9 +74,9 @@ func fetchLiveTraffic(p Provider) (*LiveTraffic, error) {
 	if p.StateDir == "" {
 		return nil, fmt.Errorf("%w: provider has no state dir", errSnapshotUnavailable)
 	}
-	resp, err := sendSocketRequest(filepath.Join(p.StateDir, "provider.sock"), controlRequest{Cmd: "traffic"})
+	resp, err := sendSocketRequestTimeout(filepath.Join(p.StateDir, "provider.sock"), controlRequest{Cmd: "traffic"}, topLightTimeout)
 	if err != nil {
-		return nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	if !resp.OK {
 		if strings.HasPrefix(resp.Error, "unknown command") {
@@ -170,7 +170,7 @@ func fetchSnapshotRaw(p Provider) (*NodeSnapshot, json.RawMessage, error) {
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
 	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "snapshot"})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	if !resp.OK || resp.Snapshot == nil {
 		reason := resp.Error
@@ -183,7 +183,7 @@ func fetchSnapshotRaw(p Provider) (*NodeSnapshot, json.RawMessage, error) {
 		Snapshot json.RawMessage `json:"snapshot"`
 	}
 	if err := json.Unmarshal(resp.Raw, &raw); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	return resp.Snapshot, raw.Snapshot, nil
 }

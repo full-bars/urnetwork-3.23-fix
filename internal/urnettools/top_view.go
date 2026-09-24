@@ -90,6 +90,12 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 	if m.conn == topConnected && m.snap.RestartPending {
 		flag = "  RESTART PENDING"
 	}
+	if m.isSlow() {
+		flag += "  SLOW"
+		if m.failStreak > 0 {
+			flag += " no answer " + tui.Duration(m.now().Sub(m.lastAnswer))
+		}
+	}
 	clock := m.now().Format("15:04:05")
 	right := verdict + flag + "    " + clock + " "
 	rx := h.Width() - tui.StringWidth(right)

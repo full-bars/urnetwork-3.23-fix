@@ -3,6 +3,8 @@ package urnettools
 import (
 	"errors"
 	"fmt"
+	"net"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -33,6 +35,23 @@ const (
 	topRetryDelay = 3 * time.Second
 	// topMaxEvents bounds the session event list.
 	topMaxEvents = 64
+
+	// A provider on a starved box answers slowly; it is not gone. A provider that
+	// has answered stays "connected but slow" through misses until it has been
+	// silent for topLossGrace.
+	topLossGrace = 20 * time.Second
+	// topSlowReply is how long a reply may take before it counts as the provider
+	// struggling: the polls after it are spaced by how long it took.
+	topSlowReply = 1500 * time.Millisecond
+	// topMinBackoff and topMaxBackoff bound the extra spacing added to the heavy
+	// poll while the provider struggles. It starts at the minimum, doubles per
+	// miss, and stops at the maximum.
+	topMinBackoff = 2 * time.Second
+	topMaxBackoff = 10 * time.Second
+	// topLightTimeout is the read deadline of the cheap commands (traffic,
+	// internals). If they cannot be answered this fast the reading is skipped
+	// rather than left holding a socket and a goroutine on a struggling box.
+	topLightTimeout = 1500 * time.Millisecond
 
 	// topMinWidth and topMinHeight are the smallest terminal the full layout is
 	// designed for (the same size the widget layer's example screen uses).
@@ -126,6 +145,15 @@ type topModel struct {
 	fetching  bool
 	lastFetch time.Time
 
+	// The provider's health as seen by the polls. lastAnswer is the last reply of
+	// any kind; failStreak counts snapshot requests missed in a row; backoff is the
+	// extra spacing added to the heavy poll (zero when healthy); slowReported says
+	// the Events panel already carries this episode, so it is not repeated.
+	lastAnswer   time.Time
+	failStreak   int
+	backoff      time.Duration
+	slowReported bool
+
 	// live is the sliding-window rate built from the light traffic polls.
 	// trafficOK goes false once a provider says it does not know the command,
 	// and trafficBusy marks a traffic poll in flight.
@@ -173,7 +201,7 @@ func (m *topModel) wantFetch(now time.Time) (gen int, p Provider, ok bool) {
 			return 0, Provider{}, false
 		}
 	default:
-		if now.Sub(m.lastFetch) < max(m.interval, topSnapshotEvery) {
+		if now.Sub(m.lastFetch) < max(m.interval, topSnapshotEvery)+m.backoff {
 			return 0, Provider{}, false
 		}
 	}
@@ -189,6 +217,9 @@ func (m *topModel) wantFetch(now time.Time) (gen int, p Provider, ok bool) {
 func (m *topModel) wantTraffic(now time.Time) (gen int, p Provider, ok bool) {
 	if m.trafficBusy || !m.trafficOK || m.conn != topConnected || len(m.providers) == 0 {
 		return 0, Provider{}, false
+	}
+	if m.failStreak >= 2 {
+		return 0, Provider{}, false // two misses in a row: add no load at all
 	}
 	if !m.lastTraffic.IsZero() && now.Sub(m.lastTraffic) < m.interval {
 		return 0, Provider{}, false
@@ -220,6 +251,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 		m.live.reset()
 	case err != nil || lt == nil:
 	default:
+		m.markAnswered(m.now())
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
 	}
 }
@@ -233,9 +265,20 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	m.fetching = false
 	now := m.now()
 	if err != nil || snap == nil {
+		if isTimeoutErr(err) && m.snap != nil && m.conn == topConnected && now.Sub(m.lastAnswer) < topLossGrace {
+			m.missed(now, err)
+			return
+		}
 		m.lost(now, err)
 		return
 	}
+	// How long the request took, when it is known: a result applied with no
+	// recorded start has no latency to judge.
+	var took time.Duration
+	if !m.lastFetch.IsZero() && now.After(m.lastFetch) {
+		took = now.Sub(m.lastFetch)
+	}
+	m.answered(now, took)
 	prev := m.snap
 	if m.conn == topDisconnected && prev != nil {
 		m.addEvent(now, fmt.Sprintf("reconnected after %s", tui.Duration(now.Sub(m.downSince))), topGood)
@@ -272,6 +315,71 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
 	m.live.reset() // a rate from before the outage would read as current
+	m.failStreak, m.backoff, m.slowReported = 0, 0, false
+}
+
+// isTimeoutErr reports a request that got no answer in time, which on a starved
+// box means slow. A refused connection or a missing socket is the opposite: the
+// provider is not there (an update or a restart looks exactly like that), and
+// that is still "lost" at once. The cause's type survives the wrapping in
+// fetchSnapshot; the text check covers a source that flattened it.
+func isTimeoutErr(err error) bool {
+	if err == nil {
+		return false
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && ne.Timeout() {
+		return true
+	}
+	return errors.Is(err, os.ErrDeadlineExceeded) || strings.Contains(err.Error(), "i/o timeout")
+}
+
+// markAnswered records proof of life: any reply, however small.
+func (m *topModel) markAnswered(now time.Time) { m.lastAnswer = now }
+
+// isSlow reports a provider that is connected but struggling: it has missed its
+// last poll, or its last reply took long enough that polls are being spaced out.
+func (m *topModel) isSlow() bool {
+	return m.conn == topConnected && (m.failStreak > 0 || m.backoff > 0)
+}
+
+// missed folds in a snapshot request that got no answer from a provider that has
+// answered recently. The last good data stays on screen. The heavy poll backs
+// off (doubling per miss, capped), and one Events line marks the episode once it
+// is more than a blip.
+func (m *topModel) missed(now time.Time, err error) {
+	m.failStreak++
+	switch {
+	case m.backoff == 0:
+		m.backoff = topMinBackoff
+	default:
+		m.backoff = min(m.backoff*2, topMaxBackoff)
+	}
+	if err != nil {
+		m.lastErr = strings.TrimPrefix(err.Error(), errSnapshotUnavailable.Error()+": ")
+	}
+	if m.failStreak >= 2 && !m.slowReported {
+		m.slowReported = true
+		m.addEvent(now, fmt.Sprintf("provider slow: no answer for %s", tui.Duration(now.Sub(m.lastAnswer))), topWarn)
+	}
+}
+
+// answered folds in a snapshot that arrived after took. A prompt one ends any
+// slow episode; one that took seconds keeps the provider marked slow, with the
+// polls spaced by how long it took, so the next request does not land on a
+// provider still busy with this one.
+func (m *topModel) answered(now time.Time, took time.Duration) {
+	m.lastAnswer = now
+	m.failStreak = 0
+	if took >= topSlowReply {
+		m.backoff = min(max(took, topMinBackoff), topMaxBackoff)
+		return
+	}
+	m.backoff = 0
+	if m.slowReported {
+		m.slowReported = false
+		m.addEvent(now, "provider responsive again", topGood)
+	}
 }
 
 // noteChange records what differs between two consecutive good snapshots that
@@ -400,6 +508,7 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
+	m.lastAnswer, m.failStreak, m.backoff, m.slowReported = time.Time{}, 0, 0, false
 	return topRefetch
 }
 
