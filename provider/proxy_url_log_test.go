@@ -521,3 +521,27 @@ func TestURLLabelRedactsDottedTokensButKeepsFilenames(t *testing.T) {
 		}
 	}
 }
+
+// url.Parse accepts scheme:/path with an empty host, so a single-slash typo
+// (https:/h.example/token/SECRET/list) reached the fallback, which found no "://"
+// and returned the path, token and all. A scheme prefix of any slash count is
+// stripped, and a string with no scheme is cut at its first slash too.
+func TestURLLabelHostlessAndSchemelessURLsNeverLeakTheirPath(t *testing.T) {
+	cases := []struct{ raw, want string }{
+		{"https:/h.example/token/SECRET/list", "h.example"},
+		{"https:///h.example/token/SECRET/list", "h.example"},
+		{"h.example/token/SECRET/list", "h.example"},
+		{"user:pw@h.example/token/SECRET/list", "h.example"},
+		{"user:pa/ss@h.example/token/SECRET", "[unparseable source]"},
+		{"not a url at all", "not a url at all"},
+	}
+	for _, tc := range cases {
+		got := urlSourceLabels([]string{tc.raw})[0]
+		if got != tc.want {
+			t.Errorf("label(%q) = %q, want %q", tc.raw, got, tc.want)
+		}
+		if strings.Contains(got, "SECRET") || strings.Contains(got, "pw@") {
+			t.Errorf("label(%q) = %q leaks", tc.raw, got)
+		}
+	}
+}

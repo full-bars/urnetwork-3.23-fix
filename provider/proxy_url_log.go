@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"net/url"
+	"regexp"
 	"sort"
 	"strings"
 
@@ -251,25 +252,32 @@ func redactSourcePath(path string) string {
 // (a stray % in a token, for one). It cannot be trusted to have a safe path, so
 // only the host survives: scheme, credentials and path are dropped.
 func unparseableSourceLabel(label string) string {
-	if i := strings.Index(label, "://"); i >= 0 {
-		rest := label[i+3:]
-		authority, tail := rest, ""
-		if j := strings.IndexByte(rest, '/'); j >= 0 {
-			authority, tail = rest[:j], rest[j:]
-		}
-		// An '@' after the first slash with none before it: the userinfo may hold
-		// an unescaped slash (user:pa/ss@host), so the authority cannot be trusted
-		// to be a host at all.
-		if !strings.Contains(authority, "@") && strings.Contains(tail, "@") {
-			return urlLabelUnparseable
-		}
-		label = authority
+	// Any scheme prefix goes, whatever its slash count: url.Parse accepts
+	// scheme:/path with an empty host, and a label with no scheme at all is still
+	// cut at its first slash, so a path never survives into the label.
+	rest := urlSchemePrefix.ReplaceAllString(label, "")
+	authority, tail := rest, ""
+	if j := strings.IndexByte(rest, '/'); j >= 0 {
+		authority, tail = rest[:j], rest[j:]
 	}
-	if at := strings.LastIndex(label, "@"); at >= 0 {
-		label = label[at+1:]
+	// An '@' after the first slash with none before it: the userinfo may hold an
+	// unescaped slash (user:pa/ss@host), so the authority cannot be trusted to be
+	// a host at all.
+	if !strings.Contains(authority, "@") && strings.Contains(tail, "@") {
+		return urlLabelUnparseable
 	}
-	return label
+	if at := strings.LastIndex(authority, "@"); at >= 0 {
+		authority = authority[at+1:]
+	}
+	if authority == "" {
+		return urlLabelUnparseable
+	}
+	return authority
 }
+
+// urlSchemePrefix matches "https://", "https:/" and "https:///": a scheme and
+// the slashes after it.
+var urlSchemePrefix = regexp.MustCompile(`^[A-Za-z][A-Za-z0-9+.\-]*:/+`)
 
 // urlLabelUnparseable stands in for a source URL that cannot be safely shown.
 const urlLabelUnparseable = "[unparseable source]"
