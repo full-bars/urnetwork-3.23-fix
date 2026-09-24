@@ -60,3 +60,49 @@ func TestAdoptLegacy_OneFlushForManyLogins(t *testing.T) {
 		t.Fatalf("second adoption moved %d logins and flushed %d times total, want 0 and still 1", a, s.flushes)
 	}
 }
+
+// Startup at fleet scale: a node with ~12,800 saved logins (a ~13 MB store)
+// must finish adoption in well under a second of work, not minutes. This is the
+// size that stalled a production provider with zero proxies up. The bound is
+// generous so a slow CI disk cannot flake it, and far below the per-login-flush
+// cost (about 2s each), which would take hours here.
+func TestAdoptLegacy_FleetScaleStoreStartsFast(t *testing.T) {
+	s := newJWTStoreForTest(t)
+	const n = 12800
+	jwt := make([]byte, 900) // a realistic JWT is ~1 KB, so the file is ~13 MB
+	for i := range jwt {
+		jwt[i] = 'a' + byte(i%26)
+	}
+
+	var desired []*connect.ProxySettings
+	seed := map[string]clientJWTEntry{}
+	for i := 0; i < n; i++ {
+		addr := "10." + strconv.Itoa(i/65025) + "." + strconv.Itoa((i/255)%255) + "." + strconv.Itoa(i%255) + ":1080"
+		e := entryWithClient("c" + strconv.Itoa(i))
+		e.ByClientJWT = string(jwt)
+		seed[addr] = e
+		desired = append(desired, credSettings(addr, "user"))
+	}
+	s.mu.Lock()
+	s.loadLocked()
+	if err := s.flushBatchLocked(seed, nil); err != nil {
+		t.Fatal(err)
+	}
+	s.flushes = 0
+	s.mu.Unlock()
+
+	start := time.Now()
+	adopted, _ := s.AdoptLegacy(desired)
+	elapsed := time.Since(start)
+	t.Logf("adopted %d logins from a %d-entry store in %v", adopted, n, elapsed)
+
+	if adopted != n {
+		t.Fatalf("adopted %d of %d logins", adopted, n)
+	}
+	if s.flushes != 1 {
+		t.Fatalf("adoption flushed the store %d times, want 1", s.flushes)
+	}
+	if elapsed > 15*time.Second {
+		t.Fatalf("adopting %d logins took %v; startup must not stall proxy launch", n, elapsed)
+	}
+}
