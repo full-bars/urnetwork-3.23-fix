@@ -7,6 +7,8 @@
 - **Two accounts at one gateway address collapsed into one proxy** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/684>): proxy state, health, earnings, grading, audit, trim, removal and refresh were keyed by bare address, so two credentialed accounts behind one host:port shared a single entry and the winning account flipped on each reload, rotating the proxy in a loop. A proxy is now identified by address plus username, and existing state and earnings history migrate on start. Unauthenticated proxies are unchanged.
 - **Saved client logins keyed by identity** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/685>): the hot-restart login store had the same bare-address keying, so accounts sharing a gateway shared one saved login. It is now keyed by identity and existing entries are adopted on start and on reload. When accounts share an address, one inherits the saved login and the rest mint fresh once. The migration is one way but idempotent.
 
+- **Startup no longer stalls on a large saved-login store** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/687>): adoption rewrote the whole login store once per login, holding every proxy back for minutes to hours on a node with thousands of saved logins. It now moves every login with a single write.
+
 ### Maintenance
 
 - **Flaky reload test** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/686>): test-only, no behavior change.
