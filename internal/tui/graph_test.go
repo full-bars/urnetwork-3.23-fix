@@ -208,3 +208,72 @@ func TestGraphTinyRegions(t *testing.T) {
 		t.Fatalf("plot should win over the axis in a tiny region: %q", b.String())
 	}
 }
+
+// series returns the n samples ending at absolute time end, where the sample at
+// time a has a fixed value regardless of when it is read. That is what a rate
+// history is: a new second adds one sample and the oldest falls off, and no
+// existing sample changes.
+func series(end int64, n int) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		a := end - int64(n-1-i)
+		out[i] = float64((a*7919 + a%13*104729) % 1000)
+	}
+	return out
+}
+
+// The graph used to bucket from the oldest sample, so once the ring was full
+// every second shifted every bucket boundary and the whole graph re-averaged
+// (shimmered). Buckets aligned to absolute time must never change once
+// complete: only the newest, still-filling bucket may differ between frames.
+func TestGraphCompletedBucketsNeverChange(t *testing.T) {
+	const n, ring = 60, 600
+	seen := map[int64]float64{}
+	for end := int64(1_000_000); end < 1_000_000+400; end++ {
+		ids, vals := bucketColumns(series(end, ring), n, end)
+		if len(ids) == 0 || len(ids) > n {
+			t.Fatalf("end=%d: %d columns for %d slots", end, len(ids), n)
+		}
+		for i := 0; i < len(ids)-1; i++ { // every bucket but the newest is complete
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("end=%d: completed bucket %d changed from %v to %v (the graph shimmered)", end, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+func TestGraphAnchoredScrollsOneColumnAtATime(t *testing.T) {
+	const n, ring = 60, 600
+	bucket := (ring + n - 2) / (n - 1) // the bucket size bucketColumns picks
+	var prevIDs []int64
+	shifts, holds := 0, 0
+	for end := int64(2_000_000); end < 2_000_000+int64(bucket)*4; end++ {
+		ids, _ := bucketColumns(series(end, ring), n, end)
+		if prevIDs != nil {
+			switch d := ids[len(ids)-1] - prevIDs[len(prevIDs)-1]; d {
+			case 0:
+				holds++
+			case 1:
+				shifts++
+			default:
+				t.Fatalf("end=%d: newest bucket id jumped by %d", end, d)
+			}
+		}
+		prevIDs = ids
+	}
+	// Roughly one shift per bucket-size seconds and holds in between: a slow,
+	// steady scroll, not a redraw every second.
+	if shifts < 3 || shifts > 4 || holds < shifts*(bucket-2) {
+		t.Fatalf("shifts=%d holds=%d for bucket size %d", shifts, holds, bucket)
+	}
+}
+
+func TestGraphAnchorZeroKeepsTheOldLayout(t *testing.T) {
+	// Callers with no time base (and the existing tests) get the same layout as
+	// before: an unanchored series is bucketed from the oldest sample.
+	cols := plotColumnsAnchored([]float64{0, 0, 10, 10}, 2, 0)
+	if cols[0] != 0 || cols[1] != 10 {
+		t.Fatalf("unanchored bucket average: %v", cols)
+	}
+}

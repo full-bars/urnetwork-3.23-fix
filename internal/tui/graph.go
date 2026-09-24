@@ -66,6 +66,13 @@ type Graph struct {
 	Format    func(float64) string
 	Style     Style
 	AxisStyle Style
+	// Anchor is the absolute time index (for example unix seconds) of the
+	// newest sample. With it, a series longer than the plot is averaged into
+	// buckets aligned to absolute time, so a completed column never changes and
+	// the graph scrolls one column at a time. Zero (no time base) buckets from
+	// the oldest sample instead, which re-averages every column whenever the
+	// series shifts.
+	Anchor int64
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -144,7 +151,7 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	}
 
 	plotW := w - x0
-	cols := plotColumns(samples, 2*plotW)
+	cols := plotColumnsAnchored(samples, 2*plotW, g.Anchor)
 	if ascii {
 		drawGraphASCII(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, top, g.Style)
 		return shown
@@ -199,6 +206,61 @@ func plotColumns(samples []float64, n int) []float64 {
 		cols[i] = sum / float64(hi-lo)
 	}
 	return cols
+}
+
+// plotColumnsAnchored is plotColumns with buckets aligned to absolute time when
+// there is a time base (anchor is the absolute index of the newest sample) and
+// more samples than columns. Otherwise it is plotColumns.
+func plotColumnsAnchored(samples []float64, n int, anchor int64) []float64 {
+	if anchor == 0 || n < 2 || len(samples) <= n {
+		return plotColumns(samples, n)
+	}
+	_, vals := bucketColumns(samples, n, anchor)
+	cols := make([]float64, n)
+	for i := range cols {
+		cols[i] = math.NaN()
+	}
+	copy(cols[n-len(vals):], vals)
+	return cols
+}
+
+// bucketColumns averages samples into buckets of a fixed size aligned to
+// absolute time: sample i sits at time anchor-(len-1-i) and belongs to bucket
+// floor(time/size). Once the newest sample has passed a bucket its average never
+// changes, so as the series slides only the newest, still-filling bucket moves
+// and the rest scroll left a whole column at a time. The oldest bucket is
+// dropped when it is partial, since it would otherwise shimmer as samples fall
+// off the left edge. ids are bucket numbers, oldest first; vals are the
+// averages. The size is chosen so the buckets always fit in n columns.
+func bucketColumns(samples []float64, n int, anchor int64) (ids []int64, vals []float64) {
+	size := int64((len(samples) + n - 2) / (n - 1))
+	if size < 1 {
+		size = 1
+	}
+	first := anchor - int64(len(samples)-1)
+	for i := 0; i < len(samples); {
+		id := floorDiv(first+int64(i), size)
+		j, sum := i, 0.0
+		for j < len(samples) && floorDiv(first+int64(j), size) == id {
+			sum += samples[j]
+			j++
+		}
+		partialOldest := i == 0 && first != id*size
+		if !partialOldest {
+			ids = append(ids, id)
+			vals = append(vals, sum/float64(j-i))
+		}
+		i = j
+	}
+	return ids, vals
+}
+
+func floorDiv(a, b int64) int64 {
+	q := a / b
+	if a%b != 0 && (a < 0) != (b < 0) {
+		q--
+	}
+	return q
 }
 
 // drawGraphASCII is the fallback for terminals without braille: one glyph per
