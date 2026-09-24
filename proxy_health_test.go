@@ -918,3 +918,78 @@ func TestConnectingActiveTrueWhenNeverStamped(t *testing.T) {
 		t.Fatal("expected connectingActive true when connectingSince has never been stamped")
 	}
 }
+
+// ProxyBandwidthTotals feeds live throughput at 100ms, so it must sum the
+// counters without the sorting and string formatting ProxyHealthSnapshot does.
+func TestProxyBandwidthTotals(t *testing.T) {
+	resetProxyHealthForTest()
+	if b, tot := ProxyBandwidthTotals(); b != 0 || tot != 0 {
+		t.Fatalf("empty registry = %d/%d, want 0/0", b, tot)
+	}
+
+	a := RegisterProxyBandwidth(1)
+	a.BillableRx.Store(100)
+	a.BillableTx.Store(50)
+	a.TotalRx.Store(400)
+	a.TotalTx.Store(200)
+	b := RegisterProxyBandwidth(2)
+	b.BillableRx.Store(1)
+	b.TotalTx.Store(9)
+	RegisterProxy(3, "10.0.0.3:1080", "10.0.0.3:1080") // registered with no bandwidth yet
+
+	billable, total := ProxyBandwidthTotals()
+	if billable != 151 || total != 609 {
+		t.Fatalf("totals = %d billable / %d total, want 151 / 609", billable, total)
+	}
+
+	// Billable traffic is a subset of total: the two counters stay separate.
+	if billable > total {
+		t.Fatalf("billable %d exceeds total %d", billable, total)
+	}
+}
+
+// A big node has thousands of proxies. Live throughput polls the totals ten
+// times a second, so its cost has to stay far below the snapshot build it
+// replaces.
+func benchmarkRegistry(n int) {
+	resetProxyHealthForTest()
+	for i := 1; i <= n; i++ {
+		addr := "10.0." + itoa(i/250) + "." + itoa(i%250) + ":1080"
+		RegisterProxy(i, addr, addr)
+		bw := RegisterProxyBandwidth(i)
+		bw.BillableRx.Store(uint64(i))
+		bw.TotalRx.Store(uint64(i) * 2)
+	}
+}
+
+func itoa(i int) string {
+	if i == 0 {
+		return "0"
+	}
+	var b [12]byte
+	p := len(b)
+	for i > 0 {
+		p--
+		b[p] = byte('0' + i%10)
+		i /= 10
+	}
+	return string(b[p:])
+}
+
+func BenchmarkProxyBandwidthTotals5000(b *testing.B) {
+	benchmarkRegistry(5000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ProxyBandwidthTotals()
+	}
+}
+
+func BenchmarkProxyHealthSnapshot5000(b *testing.B) {
+	benchmarkRegistry(5000)
+	b.ReportAllocs()
+	b.ResetTimer()
+	for i := 0; i < b.N; i++ {
+		ProxyHealthSnapshot()
+	}
+}

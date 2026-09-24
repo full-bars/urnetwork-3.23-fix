@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -54,6 +56,73 @@ func writeProxyFile(t *testing.T, line string) string {
 		t.Fatal(err)
 	}
 	return f
+}
+
+// TestReloader builds a minimal reloader with no boot proxy, for cases where
+// reload() should find an empty desired set. Cancellation is a no-op counter.
+func emptyReloader(t *testing.T, sourcePath string) *ProxyReloader {
+	t.Helper()
+	withTempHome(t)
+	proxyWarmupDone.Store(true)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+
+	parent, cancelParent := context.WithCancel(context.Background())
+	r := &ProxyReloader{
+		cancelMap:       map[string]context.CancelFunc{},
+		cancelMapMu:     &sync.Mutex{},
+		runningAuth:     make(map[string]*connect.ProxySettings),
+		state:           &ProxyState{Proxies: map[string]ProxyEntry{}},
+		sourcePath:      sourcePath,
+		parentCtx:       parent,
+		wg:              &sync.WaitGroup{},
+		spawnProxy:      func(context.Context, *connect.ProxySettings, bool, bool) { <-parent.Done() },
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+	t.Cleanup(func() { cancelParent(); r.wg.Wait() })
+	return r
+}
+
+// A direct-only node (no proxy source configured) reads a VALID, settled
+// zero-proxy state, not "empty" degraded. This is the fix for the direct-only
+// node staying degraded forever: a deliberate direct-only config is not a
+// source that was queried and came back empty.
+func TestReload_DirectOnlyNode_SettlesZeroValid(t *testing.T) {
+	resetProxyCounters(t)
+
+	// sourcePath "" = no --proxy_file source; no proxy_url.json in the temp
+	// home = no URL sources. So anySourceConfigured is false and the reload
+	// records the valid-zero (direct-only) state.
+	r := emptyReloader(t, "")
+	r.reload()
+
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionZeroValid {
+		t.Fatalf("direct-only reload: resolution=%d, want proxyResolutionZeroValid(%d)", got, proxyResolutionZeroValid)
+	}
+	if phase := proxyStartupPhase(); phase != "" {
+		t.Fatalf("direct-only node must settle (empty startup phase), got %q", phase)
+	}
+	if line := systemdStatusLine(); !strings.HasPrefix(line, "active:") {
+		t.Fatalf("direct-only node must read active, got %q", line)
+	}
+}
+
+// A proxy source that WAS configured but yielded zero proxies still reads
+// degraded (empty), even though the node may run direct alongside it — it is
+// not a deliberate direct-only config.
+func TestReload_EmptySource_StillReadsEmpty(t *testing.T) {
+	resetProxyCounters(t)
+
+	// A configured source with only blank lines = a source that returned zero
+	// proxies (configured, so not direct-only).
+	r := emptyReloader(t, writeProxyFile(t, "# empty"))
+	r.reload()
+
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionEmpty {
+		t.Fatalf("empty-source reload: resolution=%d, want proxyResolutionEmpty(%d)", got, proxyResolutionEmpty)
+	}
+	if phase := proxyStartupPhase(); phase != startupSourceEmpty {
+		t.Fatalf("empty-source node must read empty/degraded, got %q", phase)
+	}
 }
 
 // A seeded, boot-launched proxy whose credentials are unchanged must survive
@@ -367,5 +436,35 @@ func TestReload_SameAddressDifferentUser_BothRunStably(t *testing.T) {
 	gotB, okB = r.runningAuthFor(keyB)
 	if !okB || gotB.Auth.Password != "pw2" {
 		t.Fatalf("identity B was disturbed by identity A's unrelated rotation: %+v ok=%v", gotB, okB)
+	}
+}
+
+// proxy_url.json that exists but cannot be read leaves the URL sources unknown.
+// A URL-only node must not read that as a settled, valid direct-only config: it
+// is a source that could not be resolved. (A MISSING file is a different thing:
+// no URL sources, direct-only, settled; the test above pins that.)
+func TestReload_UnreadableURLState_IsNotDirectOnly(t *testing.T) {
+	resetProxyCounters(t)
+	r := emptyReloader(t, "")
+	path, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionFailed {
+		t.Fatalf("unreadable URL state: resolution=%d, want proxyResolutionFailed(%d), not the settled direct-only state", got, proxyResolutionFailed)
+	}
+	if phase := proxyStartupPhase(); phase != startupSourceUnreachable {
+		t.Fatalf("startup phase = %q, want %q", phase, startupSourceUnreachable)
+	}
+	if line := systemdStatusLine(); strings.HasPrefix(line, "active:") {
+		t.Fatalf("a node whose URL sources cannot be read must not read active, got %q", line)
 	}
 }

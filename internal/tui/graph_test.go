@@ -208,3 +208,224 @@ func TestGraphTinyRegions(t *testing.T) {
 		t.Fatalf("plot should win over the axis in a tiny region: %q", b.String())
 	}
 }
+
+// series returns the n samples ending at absolute time end, where the sample at
+// time a has a fixed value regardless of when it is read. That is what a rate
+// history is: a new second adds one sample and the oldest falls off, and no
+// existing sample changes.
+func series(end int64, n int) []float64 {
+	out := make([]float64, n)
+	for i := range out {
+		a := end - int64(n-1-i)
+		out[i] = float64((a*7919 + a%13*104729) % 1000)
+	}
+	return out
+}
+
+// The graph used to bucket from the oldest sample, so once the ring was full
+// every second shifted every bucket boundary and the whole graph re-averaged
+// (shimmered). Buckets aligned to absolute time must never change once
+// complete: only the newest, still-filling bucket may differ between frames.
+func TestGraphCompletedBucketsNeverChange(t *testing.T) {
+	const n, ring = 60, 600
+	seen := map[int64]float64{}
+	for end := int64(1_000_000); end < 1_000_000+400; end++ {
+		ids, vals := bucketColumns(series(end, ring), n, end, ring)
+		if len(ids) == 0 || len(ids) > n {
+			t.Fatalf("end=%d: %d columns for %d slots", end, len(ids), n)
+		}
+		for i := 0; i < len(ids)-1; i++ { // every bucket but the newest is complete
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("end=%d: completed bucket %d changed from %v to %v (the graph shimmered)", end, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+func TestGraphAnchoredScrollsOneColumnAtATime(t *testing.T) {
+	const n, ring, seconds = 60, 600, 400
+	var prevIDs []int64
+	shifts, holds := 0, 0
+	for end := int64(2_000_000); end < 2_000_000+seconds; end++ {
+		ids, _ := bucketColumns(series(end, ring), n, end, ring)
+		if prevIDs != nil {
+			switch d := ids[len(ids)-1] - prevIDs[len(prevIDs)-1]; d {
+			case 0:
+				holds++
+			case 1:
+				shifts++
+			default:
+				t.Fatalf("end=%d: newest bucket id jumped by %d", end, d)
+			}
+		}
+		prevIDs = ids
+	}
+	// 600 samples over 60 columns is 10 seconds a column: one scroll every ten
+	// seconds and holds in between, a slow steady scroll, not a redraw a second.
+	if shifts < seconds/10-2 || shifts > seconds/10+2 || holds < seconds-shifts-2 {
+		t.Fatalf("shifts=%d holds=%d over %d seconds", shifts, holds, seconds)
+	}
+}
+
+func TestGraphAnchorZeroKeepsTheOldLayout(t *testing.T) {
+	// Callers with no time base (and the existing tests) get the same layout as
+	// before: an unanchored series is bucketed from the oldest sample.
+	cols := plotColumnsAnchored([]float64{0, 0, 10, 10}, 2, 0, 0)
+	if cols[0] != 0 || cols[1] != 10 {
+		t.Fatalf("unanchored bucket average: %v", cols)
+	}
+}
+
+// A graph must fill its width. Integer bucket sizes cannot always match the
+// column count, so a wide plot must show the newest columns that fit rather than
+// leave a third of the graph blank.
+func TestGraphAnchoredFillsWideAndNarrowPlots(t *testing.T) {
+	for _, n := range []int{20, 60, 100, 124, 162, 200, 299, 400} {
+		ids, vals := bucketColumns(series(5_000_000, 600), n, 5_000_000, 600)
+		if len(ids) > n {
+			t.Fatalf("n=%d: %d columns overflow the plot", n, len(ids))
+		}
+		if len(ids) < n-1 {
+			t.Fatalf("n=%d: only %d columns drawn, the graph would show a blank stretch", n, len(ids))
+		}
+		if len(ids) != len(vals) {
+			t.Fatalf("n=%d: %d ids for %d values", n, len(ids), len(vals))
+		}
+	}
+}
+
+func TestGraphAnchoredWideStaysStableWhileScrolling(t *testing.T) {
+	const n, ring = 299, 600
+	seen := map[int64]float64{}
+	for end := int64(7_000_000); end < 7_000_000+300; end++ {
+		ids, vals := bucketColumns(series(end, ring), n, end, ring)
+		for i := 0; i < len(ids)-1; i++ {
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("end=%d: completed bucket %d changed from %v to %v", end, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+// A young series (a provider that only just started) must not re-bucket as it
+// fills: the width is fixed by the capacity, so completed columns hold still
+// from the very first minute and the graph grows in from the right.
+func TestGraphAnchoredIsStableWhileTheSeriesFills(t *testing.T) {
+	const n, capacity = 120, 600
+	seen := map[int64]float64{}
+	for length := 3; length <= capacity+40; length++ {
+		end := int64(9_000_000) + int64(length) // one new sample a second
+		ids, vals := bucketColumns(series(end, min(length, capacity)), n, end, capacity)
+		for i := 0; i < len(ids)-1; i++ {
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("length=%d: completed bucket %d changed from %v to %v while filling", length, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+func TestGraphAnchoredYoungSeriesGrowsInFromTheRight(t *testing.T) {
+	// 30 seconds of history on a plot sized for 600: a few columns at the right
+	// edge, the rest empty (NaN), not the 30 samples stretched across the plot.
+	cols := plotColumnsAnchored(series(4_000_000, 30), 120, 4_000_000, 600)
+	drawn := 0
+	for _, v := range cols {
+		if !math.IsNaN(v) {
+			drawn++
+		}
+	}
+	if drawn == 0 || drawn > 10 || math.IsNaN(cols[len(cols)-1]) {
+		t.Fatalf("%d of %d columns drawn for 30s of history, newest at the right edge: %v", drawn, len(cols), math.IsNaN(cols[len(cols)-1]))
+	}
+}
+
+// The live rate is drawn as its own newest column. It is not part of the bucketed
+// series, so it cannot change any column before it, and it never sets the scale:
+// a burst in the live column must not rescale the whole chart 10 times a second.
+func TestGraphTailIsTheNewestColumnAndNeverChangesTheRest(t *testing.T) {
+	const w, h = 40, 6
+	samples := series(6_000_000, 600)
+	draw := func(tail float64) (string, float64) {
+		b := New(w, h)
+		top := DrawGraph(b, Graph{Samples: samples, Anchor: 6_000_000, Capacity: 600, Tail: tail, HasTail: true}, false)
+		return b.String(), top
+	}
+	// Buffer.String trims trailing blanks, so pad each row to the full width
+	// before cutting off the rightmost cell.
+	dropRight := func(s string) []string {
+		var rows []string
+		for _, l := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+			r := []rune(l)
+			for len(r) < w {
+				r = append(r, ' ')
+			}
+			rows = append(rows, string(r[:w-1]))
+		}
+		return rows
+	}
+
+	// With a tail always present, moving it (the live rate changes every 100ms)
+	// changes only the rightmost cell; every column before it holds still.
+	lowOut, lowTop := draw(1)
+	midOut, midTop := draw(5 * 1024 * 1024)
+	if lowOut == midOut {
+		t.Fatal("the tail was not drawn")
+	}
+	a, b := dropRight(lowOut), dropRight(midOut)
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("row %d changed outside the rightmost cell when only the tail moved:\n%q\n%q", i, a[i], b[i])
+		}
+	}
+
+	// A huge tail does not rescale the chart: the scale is unchanged and the tail
+	// is clamped to the plot instead of overflowing it.
+	hugeOut, hugeTop := draw(1e12)
+	if lowTop != midTop || midTop != hugeTop {
+		t.Fatalf("the tail changed the scale: %v %v %v", lowTop, midTop, hugeTop)
+	}
+	if got := len([]rune(strings.Split(hugeOut, "\n")[0])); got != w {
+		t.Fatalf("a huge tail changed the plot width to %d", got)
+	}
+	c := dropRight(hugeOut)
+	for i := range a {
+		if a[i] != c[i] {
+			t.Fatalf("row %d changed outside the rightmost cell for a huge tail", i)
+		}
+	}
+}
+
+func TestGraphTailIgnoresBadValues(t *testing.T) {
+	for _, v := range []float64{math.NaN(), math.Inf(1), -5} {
+		b := New(20, 4)
+		DrawGraph(b, Graph{Samples: []float64{1, 2, 3}, Tail: v, HasTail: true}, false)
+	}
+}
+
+// In the ASCII graph one cell holds a pair of samples and is drawn as their
+// average. The live tail must own its whole cell: sharing one with the newest
+// history sample showed a live spike at a blended, lower rate.
+func TestGraphASCIITailOwnsItsCell(t *testing.T) {
+	b := New(12, 2)
+	DrawGraph(b, Graph{
+		Samples: []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, Max: 10,
+		Tail: 10, HasTail: true,
+	}, true)
+	last := b.Width() - 1
+	// A tail at the axis top fills its cell on both rows. Averaged with a zero
+	// history sample it would fill half of it.
+	for row := 0; row < 2; row++ {
+		if got := b.Cell(last, row).Rune; got != '#' {
+			t.Fatalf("row %d of the rightmost cell = %q, want a full '#' (tail blended with history?):\n%s", row, got, b.String())
+		}
+	}
+	// The cell before it is history and unaffected by the tail.
+	for row := 0; row < 2; row++ {
+		if got := b.Cell(last-1, row).Rune; got == '#' {
+			t.Fatalf("the tail leaked into the previous cell at row %d:\n%s", row, b.String())
+		}
+	}
+}

@@ -207,6 +207,14 @@ func TestDeriveIdleHint(t *testing.T) {
 	steady := failing(1, 10) // 6 failures in the last minute on a 100 pool: 6%
 	wave := failing(5, 10)   // 30 in the last minute on a 100 pool: 30%
 	quiet := failing(0, 10)
+	// Failures that stopped four minutes ago: history, not "happening".
+	oldFailures := func() []cumulativeSample {
+		ss := []cumulativeSample{{auth: 0, contracts: 10}, {auth: 40, contracts: 10}}
+		for i := 0; i < 24; i++ {
+			ss = append(ss, cumulativeSample{auth: 40, contracts: 10})
+		}
+		return histAt(now, ss...)
+	}()
 	contractsUp := histAt(now, cumulativeSample{auth: 1000, contracts: 10}, cumulativeSample{auth: 1000, contracts: 11})
 
 	cases := []struct {
@@ -229,6 +237,8 @@ func TestDeriveIdleHint(t *testing.T) {
 		{"majority unconnected with failures is auth failing", SnapshotProxies{Up: 30, Connecting: 70}, steady,
 			"auth failing: only 30 of 100 proxies authenticated"},
 		{"majority unconnected without failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, quiet,
+			"only 30 of 100 proxies connected"},
+		{"majority unconnected with only OLD failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, oldFailures,
 			"only 30 of 100 proxies connected"},
 		{"exactly half up is not a majority down", SnapshotProxies{Up: 50, Connecting: 50}, quiet,
 			"no contracts acquired in the last 10 min (50/100 proxies up)"},
@@ -334,16 +344,19 @@ func TestRestartPendingFor(t *testing.T) {
 // --- collector ---
 
 type fakeSnapshotEnv struct {
-	now       time.Time
-	billable  map[string]uint64
-	proxies   SnapshotProxies
-	clients   int64
-	auth      int64
-	contracts int64
-	pressure  float64
-	pending   bool
-	startup   string
-	reads     int
+	now         time.Time
+	billable    map[string]uint64
+	proxies     SnapshotProxies
+	clients     int64
+	auth        int64
+	contracts   int64
+	pressure    float64
+	pending     bool
+	startup     string
+	traffic     map[string]uint64
+	lifetime    uint64
+	hasLifetime bool
+	reads       int
 }
 
 func (f *fakeSnapshotEnv) sources() snapshotSources {
@@ -355,15 +368,17 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 			f.reads++
 			return f.proxies, f.clients
 		},
-		cumulative:     func() (int64, int64) { return f.auth, f.contracts },
-		sessions:       func() (int64, int64) { return 7, 3 },
-		pressure:       func() float64 { return f.pressure },
-		version:        func() string { return "v9" },
-		prevVer:        func() string { return "v8" },
-		restart:        func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
-		resources:      func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
-		restartPending: func() bool { return f.pending },
-		startup:        func() string { return f.startup },
+		cumulative:       func() (int64, int64) { return f.auth, f.contracts },
+		sessions:         func() (int64, int64) { return 7, 3 },
+		pressure:         func() float64 { return f.pressure },
+		version:          func() string { return "v9" },
+		prevVer:          func() string { return "v8" },
+		restart:          func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
+		resources:        func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
+		restartPending:   func() bool { return f.pending },
+		startup:          func() string { return f.startup },
+		traffic:          func() map[string]uint64 { return f.traffic },
+		lifetimeBillable: func() (uint64, bool) { return f.lifetime, f.hasLifetime },
 	}
 }
 

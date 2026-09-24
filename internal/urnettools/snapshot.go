@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync"
 
 	"golang.org/x/term"
@@ -36,6 +37,57 @@ type NodeSnapshot struct {
 	Resources       SnapshotResources `json:"resources"`
 	IdleHint        *string           `json:"idle_hint,omitempty"`
 	StateReason     *string           `json:"state_reason,omitempty"`
+	// Traffic is billable versus total bytes. Nil from a provider that
+	// predates it.
+	Traffic *SnapshotTraffic `json:"traffic,omitempty"`
+}
+
+// SnapshotTraffic mirrors the provider's traffic block: session byte totals
+// and the total-traffic rate that sits beside the billable Rate.
+type SnapshotTraffic struct {
+	BillableBytes         uint64    `json:"billable_bytes"`
+	TotalBytes            uint64    `json:"total_bytes"`
+	LifetimeBillableBytes *uint64   `json:"lifetime_billable_bytes,omitempty"`
+	TotalNowBps           float64   `json:"total_now_bps"`
+	TotalAvg1mBps         float64   `json:"total_avg_1m_bps"`
+	TotalAvg5mBps         float64   `json:"total_avg_5m_bps"`
+	TotalHistoryBps       []float64 `json:"total_history_bps"` // oldest first, newest last
+}
+
+// LiveTraffic is the light reply to the "traffic" command: live counter sums
+// and the provider's clock when they were read. top polls it at up to 100ms and
+// derives rates from the deltas. The sums drop when a proxy is removed or
+// respawns, so a decrease is skipped, not read as negative traffic.
+type LiveTraffic struct {
+	AtUnixNano    int64  `json:"at_unix_nano"`
+	BillableBytes uint64 `json:"billable_bytes"`
+	TotalBytes    uint64 `json:"total_bytes"`
+}
+
+// errTrafficUnsupported means the provider predates the "traffic" command. top
+// then falls back to the snapshot's own once-a-second rates.
+var errTrafficUnsupported = errors.New("provider does not answer the traffic command")
+
+// fetchLiveTraffic asks the provider for its live counters over the control
+// socket.
+func fetchLiveTraffic(p Provider) (*LiveTraffic, error) {
+	if p.StateDir == "" {
+		return nil, fmt.Errorf("%w: provider has no state dir", errSnapshotUnavailable)
+	}
+	resp, err := sendSocketRequestTimeout(filepath.Join(p.StateDir, "provider.sock"), controlRequest{Cmd: "traffic"}, topLightTimeout)
+	if err != nil {
+		return nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
+	}
+	if !resp.OK {
+		if strings.HasPrefix(resp.Error, "unknown command") {
+			return nil, errTrafficUnsupported
+		}
+		return nil, fmt.Errorf("%w: %s", errSnapshotUnavailable, resp.Error)
+	}
+	if resp.Traffic == nil {
+		return nil, fmt.Errorf("%w: provider returned no traffic", errSnapshotUnavailable)
+	}
+	return resp.Traffic, nil
 }
 
 // whyRow returns the label and text of the "why" line for the node's current
@@ -58,11 +110,15 @@ func (s *NodeSnapshot) whyRow() (label, text string, ok bool) {
 // SnapshotRate carries bytes per second. Floats decode integers too, so a
 // provider that later reports fractional rates does not break the reader.
 type SnapshotRate struct {
-	NowBps                 float64   `json:"now_bps"`
-	Avg1mBps               float64   `json:"avg_1m_bps"`
-	Avg5mBps               float64   `json:"avg_5m_bps"`
-	HistoryIntervalSeconds float64   `json:"history_interval_seconds"`
-	HistoryBps             []float64 `json:"history_bps"` // oldest first, newest last
+	NowBps                 float64 `json:"now_bps"`
+	Avg1mBps               float64 `json:"avg_1m_bps"`
+	Avg5mBps               float64 `json:"avg_5m_bps"`
+	HistoryIntervalSeconds float64 `json:"history_interval_seconds"`
+	// HistorySeq is the absolute index of the newest history sample (the count
+	// of samples the provider has ever recorded). Zero from a provider that
+	// predates it, in which case the graph falls back to the snapshot's clock.
+	HistorySeq uint64    `json:"history_seq,omitempty"`
+	HistoryBps []float64 `json:"history_bps"` // oldest first, newest last
 }
 
 type SnapshotSessions struct {
@@ -114,7 +170,7 @@ func fetchSnapshotRaw(p Provider) (*NodeSnapshot, json.RawMessage, error) {
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
 	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "snapshot"})
 	if err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	if !resp.OK || resp.Snapshot == nil {
 		reason := resp.Error
@@ -127,7 +183,7 @@ func fetchSnapshotRaw(p Provider) (*NodeSnapshot, json.RawMessage, error) {
 		Snapshot json.RawMessage `json:"snapshot"`
 	}
 	if err := json.Unmarshal(resp.Raw, &raw); err != nil {
-		return nil, nil, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return nil, nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	return resp.Snapshot, raw.Snapshot, nil
 }

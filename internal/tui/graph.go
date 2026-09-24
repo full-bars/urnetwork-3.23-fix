@@ -66,6 +66,26 @@ type Graph struct {
 	Format    func(float64) string
 	Style     Style
 	AxisStyle Style
+	// Anchor is the absolute time index (for example unix seconds) of the
+	// newest sample. With it, a series longer than the plot is averaged into
+	// buckets aligned to absolute time, so a completed column never changes and
+	// the graph scrolls one column at a time. Zero (no time base) buckets from
+	// the oldest sample instead, which re-averages every column whenever the
+	// series shifts.
+	Anchor int64
+	// Capacity is how many samples a full series holds (the provider's ring).
+	// With an Anchor it fixes the bucket width at Capacity/columns, so the
+	// width does not change while a young series is still filling: it grows in
+	// from the right instead of re-bucketing every few seconds. Zero uses the
+	// length of the series.
+	Capacity int
+	// Tail, when HasTail is set, is drawn as its own newest column: the live
+	// value, updated far faster than the series. It is not part of the
+	// bucketed series, so it cannot change any column before it, and it does not
+	// set the scale: a burst in the tail must not rescale the whole chart, so it
+	// is clamped to the plot instead.
+	Tail    float64
+	HasTail bool
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -144,7 +164,29 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	}
 
 	plotW := w - x0
-	cols := plotColumns(samples, 2*plotW)
+	var cols []float64
+	if g.HasTail && plotW >= 1 {
+		// History fills every column but the newest; the tail takes that one. In
+		// the ASCII graph a cell is a pair of columns drawn as their average, so
+		// the tail must own the whole rightmost cell (both halves): sharing one
+		// with the newest history sample would show a live spike blended down.
+		histCols, tailCols := 2*plotW-1, 1
+		if ascii {
+			histCols, tailCols = 2*plotW-2, 2
+		}
+		if histCols > 0 {
+			cols = plotColumnsAnchored(samples, histCols, g.Anchor, g.Capacity)
+		}
+		tail := g.Tail
+		if math.IsNaN(tail) || math.IsInf(tail, 0) || tail < 0 {
+			tail = 0
+		}
+		for i := 0; i < tailCols; i++ {
+			cols = append(cols, math.Min(tail, top))
+		}
+	} else {
+		cols = plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
+	}
 	if ascii {
 		drawGraphASCII(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, top, g.Style)
 		return shown
@@ -201,6 +243,66 @@ func plotColumns(samples []float64, n int) []float64 {
 	return cols
 }
 
+// plotColumnsAnchored is plotColumns with buckets aligned to absolute time when
+// there is a time base (anchor is the absolute index of the newest sample) and
+// the samples are wider than a column. Otherwise it is plotColumns.
+func plotColumnsAnchored(samples []float64, n int, anchor int64, capacity int) []float64 {
+	if anchor == 0 || n < 2 || bucketWidth(len(samples), n, capacity) <= 1 {
+		return plotColumns(samples, n)
+	}
+	_, vals := bucketColumns(samples, n, anchor, capacity)
+	cols := make([]float64, n)
+	for i := range cols {
+		cols[i] = math.NaN()
+	}
+	copy(cols[n-len(vals):], vals)
+	return cols
+}
+
+// bucketWidth is how many samples one column covers: capacity (or the series
+// length when that is larger or unknown) over the columns.
+func bucketWidth(length, n, capacity int) float64 {
+	return float64(max(capacity, length)) / float64(n)
+}
+
+// bucketColumns averages samples into buckets aligned to absolute time: sample
+// i sits at time anchor-(len-1-i) and belongs to bucket floor(time/width), where
+// width is a constant number of samples per column. A sample's bucket depends
+// only on its own time and the width, so a bucket the newest sample has passed
+// never changes: as the series slides only the newest, still-filling bucket
+// moves and the rest scroll left a column at a time. The width is
+// capacity/columns, so it stays put while the series fills, and the buckets
+// fill the plot to within a column (they are a little uneven: 4 and 5 samples
+// for a width of 4.85). The oldest bucket is dropped when partial, since it
+// would otherwise shimmer as samples fall off the left edge. ids are bucket
+// numbers, oldest first; vals are the averages. At most n buckets are returned.
+func bucketColumns(samples []float64, n int, anchor int64, capacity int) (ids []int64, vals []float64) {
+	width := bucketWidth(len(samples), n, capacity)
+	if width < 1 {
+		width = 1
+	}
+	bucketOf := func(a int64) int64 { return int64(math.Floor(float64(a) / width)) }
+	first := anchor - int64(len(samples)-1)
+	for i := 0; i < len(samples); {
+		id := bucketOf(first + int64(i))
+		j, sum := i, 0.0
+		for j < len(samples) && bucketOf(first+int64(j)) == id {
+			sum += samples[j]
+			j++
+		}
+		partialOldest := i == 0 && bucketOf(first-1) == id
+		if !partialOldest {
+			ids = append(ids, id)
+			vals = append(vals, sum/float64(j-i))
+		}
+		i = j
+	}
+	if len(ids) > n {
+		ids, vals = ids[len(ids)-n:], vals[len(vals)-n:]
+	}
+	return ids, vals
+}
+
 // drawGraphASCII is the fallback for terminals without braille: one glyph per
 // pair of sample columns, stacked '#' rows with the top row graded by the
 // sparkline ramp, and a baseline glyph so a zero still shows.
@@ -224,4 +326,10 @@ func drawGraphASCII(b *Buffer, cols []float64, top float64, st Style) {
 			rem -= take
 		}
 	}
+}
+
+// GraphBuckets exposes the bucketing DrawGraph uses, so a caller can check the
+// stability of what it feeds the graph without rendering it. See bucketColumns.
+func GraphBuckets(samples []float64, n int, anchor int64, capacity int) (ids []int64, vals []float64) {
+	return bucketColumns(samples, n, anchor, capacity)
 }

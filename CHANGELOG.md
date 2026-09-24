@@ -1,5 +1,22 @@
 # Changelog
 
+## [v3.23.0-fix.32.7]
+
+### Fixed
+
+- **"why idle: auth failing" fired on normal noise** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the idle hint blamed auth if the failure counter rose at all in 10 minutes, which a large paid pool always does. Auth is now blamed only for a failure wave or a mostly-down pool, and the hint shows the numbers behind it.
+- **A node stuck in startup read IDLE** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the state now follows the real startup phase, reads `degraded` if it stalls, and a new `state_reason` says why a node is starting or degraded.
+- **The `top` graph shimmered instead of scrolling** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): buckets counted from the oldest sample re-averaged every column each second. They are now aligned to absolute time.
+- **`top` called a slow provider lost** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a provider that answers late stays connected with a `SLOW` marker and is called lost only after 20 seconds of silence; a refused connection is still reported at once. `top` also backs off while a provider struggles instead of adding load.
+
+### Added
+
+- **Live rates at up to 100ms in `top`, and billable and total traffic** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a light `traffic` control command feeds btop-style live rates, and the snapshot, `status` and `top` show billable and total rates and bytes moved.
+- **Clear logs when URL-sourced proxies are added** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): every URL fetch cycle ends with one headline saying what happened to the pool (new, already known, rejected, pool size), including when nothing changed. Reloads announce URL-sourced launches and attribute additions to their source.
+- **A summary line after every message pool dump** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/689>): judges the trend of outstanding buffers, so a plateau is not mistaken for a leak.
+
+---
+
 ## [v3.23.0-fix.32.6]
 
 ### Fixed

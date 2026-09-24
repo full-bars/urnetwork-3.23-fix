@@ -16,12 +16,24 @@ import (
 // Panel geometry. The right column is fixed so the numbers in it do not jump
 // as the window is resized; the left column takes the rest.
 const (
-	topSideWidth    = 30
-	topProxiesRows  = 6 // frame plus four bars
-	topEventsRows   = 6 // frame plus four events
-	topNowRows      = 11
-	topKeyColumn    = 10
-	topHelpMinWidth = 40
+	topSideWidth   = 30
+	topProxiesRows = 6 // frame plus four bars
+	topEventsRows  = 6 // frame plus four events
+	topNowRows     = 11
+	// topNowRowsTraffic is the Now panel when the provider reports traffic
+	// totals: billable and total rates with their averages, the session bytes
+	// of each, then the usual rows. 16 so the two interior rows needed to
+	// render the state reason fit inside the box.
+	topNowRowsTraffic = 16
+	// topTwoGraphsMinRows is how tall the throughput area must be to stack a
+	// billable graph and a total-traffic graph; shorter shows billable only.
+	topTwoGraphsMinRows = 14
+	topKeyColumn        = 10
+	topHelpMinWidth     = 40
+	// topGraphCapacity is the most samples a graph holds: the provider's ten
+	// minute ring of per-second samples plus the live column. A fixed capacity
+	// keeps the graph's column width still while a young series fills.
+	topGraphCapacity = 601
 )
 
 // render draws the whole screen into b.
@@ -44,12 +56,27 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 
 	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(topSideWidth))
 	left := tui.SplitRows(cols[0], tui.Flex(1), tui.Fixed(topProxiesRows), tui.Fixed(topEventsRows))
-	side := tui.SplitRows(cols[1], tui.Fixed(topNowRows), tui.Flex(1))
+	nowRows := topNowRows
+	if m.hasTraffic() {
+		nowRows = topNowRowsTraffic
+	}
+	side := tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Flex(1))
 	box := func(r tui.Rect, title string) *tui.Buffer {
 		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
 	}
 
-	m.drawThroughput(box(left[0], m.throughputTitle()))
+	sr := m.series()
+	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
+		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
+		m.drawGraph(box(graphs[0], m.throughputTitle("Billable")), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic")), sr.total, sr.anchor, sr.live, sr.tailTotal, th.Accent)
+	} else {
+		title := "Throughput"
+		if sr.total != nil {
+			title = "Billable"
+		}
+		m.drawGraph(box(left[0], m.throughputTitle(title)), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
+	}
 	m.drawProxies(box(left[1], "Proxies"))
 	m.drawEvents(box(left[2], "Events"))
 	m.drawNow(box(side[0], "Now"))
@@ -62,6 +89,12 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 	flag := ""
 	if m.conn == topConnected && m.snap.RestartPending {
 		flag = "  RESTART PENDING"
+	}
+	if m.isSlow() {
+		flag += "  SLOW"
+		if m.failStreak > 0 {
+			flag += " no answer " + tui.Duration(m.now().Sub(m.lastAnswer))
+		}
 	}
 	clock := m.now().Format("15:04:05")
 	right := verdict + flag + "    " + clock + " "
@@ -92,7 +125,7 @@ func (m *topModel) drawFooter(f *tui.Buffer) {
 	f.Put(tui.Truncate(keys, f.Width(), m.theme.ASCII), 0, 0, m.theme.Dim)
 }
 
-// topIntervalText is 250ms, 500ms, 1s, 2s.
+// topIntervalText is 100ms, 250ms, 500ms, 1s, 2s.
 func topIntervalText(d time.Duration) string {
 	if d%time.Second == 0 {
 		return strconv.Itoa(int(d/time.Second)) + "s"
@@ -103,26 +136,28 @@ func topIntervalText(d time.Duration) string {
 // throughputTitle says how much history the graph is showing. It shows what
 // the snapshot carried, not a fixed ten minutes, so a provider that only just
 // started does not claim a window it does not have.
-func (m *topModel) throughputTitle() string {
+func (m *topModel) throughputTitle(name string) string {
 	h := m.history()
 	if len(h) == 0 {
-		return "Throughput"
+		return name
 	}
 	step := 1.0
 	if m.snap.Rate.HistoryIntervalSeconds > 0 {
 		step = m.snap.Rate.HistoryIntervalSeconds
 	}
-	title := "Throughput, " + tui.Duration(time.Duration(float64(len(h))*step*float64(time.Second)))
+	title := name + ", " + tui.Duration(time.Duration(float64(len(h))*step*float64(time.Second)))
 	if m.conn == topDisconnected {
 		title += " (stale)"
 	}
 	return title
 }
 
-func (m *topModel) drawThroughput(b *tui.Buffer) {
+// drawGraph draws one rate series. anchor is the absolute index of the newest
+// history sample (zero when unknown), which keeps completed columns still while
+// the graph scrolls; the live rate is the tail, its own newest column.
+func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, hasTail bool, tail float64, live tui.Style) {
 	th := m.theme
-	h := m.history()
-	if len(h) == 0 {
+	if len(samples) == 0 {
 		msg := "waiting for the provider"
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
@@ -130,13 +165,19 @@ func (m *topModel) drawThroughput(b *tui.Buffer) {
 		b.Put(tui.Truncate(msg, b.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
-	style := th.Graph
+	style := live
 	if m.conn == topDisconnected {
 		style = th.Dim
 	}
 	tui.DrawGraph(b, tui.Graph{
-		Samples: h, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
+		Samples: samples, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
+		Anchor: anchor, Capacity: topGraphCapacity, Tail: tail, HasTail: hasTail,
 	}, th.ASCII)
+}
+
+// hasTraffic reports whether the provider sends billable-versus-total figures.
+func (m *topModel) hasTraffic() bool {
+	return m.snap != nil && m.snap.Traffic != nil
 }
 
 func (m *topModel) drawProxies(b *tui.Buffer) {
@@ -209,26 +250,49 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 		return
 	}
 	stale := m.conn == topDisconnected
-	current := th.OK
-	if stale || s.Rate.NowBps <= 0 {
-		current = th.Dim
+	rates := m.rates()
+	rateStyle := func(v float64) tui.Style {
+		if stale || v <= 0 {
+			return th.Dim
+		}
+		return th.OK
 	}
-	m.kv(b, 0, "current", tui.Rate(s.Rate.NowBps), current)
-	m.kv(b, 1, "1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
-	m.kv(b, 2, "5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
-	m.kv(b, 3, "clients", strconv.Itoa(s.Clients), tui.Style{})
-	m.kv(b, 4, "sessions", fmt.Sprintf("%d pqe / %d cl", s.Sessions.PQE, s.Sessions.Classical), tui.Style{})
-	tui.DrawBar(b.Sub(tui.Rect{Y: 5, W: b.Width(), H: 1}), tui.Bar{
+	y := 0
+	row := func(key, value string, style tui.Style) {
+		m.kv(b, y, key, value, style)
+		y++
+	}
+	if tr := s.Traffic; tr != nil {
+		// Billable is what earns; total is everything moved. Session bytes count
+		// from provider start.
+		row("billable", tui.Rate(rates.billable), rateStyle(rates.billable))
+		row(" 1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
+		row(" 5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
+		row("total", tui.Rate(rates.total), rateStyle(rates.total))
+		row(" 1m avg", tui.Rate(tr.TotalAvg1mBps), tui.Style{})
+		row(" 5m avg", tui.Rate(tr.TotalAvg5mBps), tui.Style{})
+		row("billed", tui.Bytes(float64(tr.BillableBytes)), tui.Style{})
+		row("moved", tui.Bytes(float64(tr.TotalBytes)), tui.Style{})
+	} else {
+		row("current", tui.Rate(rates.billable), rateStyle(rates.billable))
+		row("1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
+		row("5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
+	}
+	row("clients", strconv.Itoa(s.Clients), tui.Style{})
+	row("sessions", fmt.Sprintf("%d pqe / %d cl", s.Sessions.PQE, s.Sessions.Classical), tui.Style{})
+	tui.DrawBar(b.Sub(tui.Rect{Y: y, W: b.Width(), H: 1}), tui.Bar{
 		Label: "pressure", LabelWidth: topKeyColumn - 1, Value: fmt.Sprintf("%.2f", s.Pressure), Frac: s.Pressure,
 		LabelStyle: th.Dim, Fill: th.Level(s.Pressure, 0.7, 0.9), Empty: th.Dim,
 	}, th.ASCII)
+	y++
 	if s.RestartPending {
-		b.Put("RESTART PENDING", 0, 6, th.Warn)
+		b.Put("RESTART PENDING", 0, y, th.Warn)
 	}
+	y++ // the row stays reserved so the reason below does not jump when it appears
 	// The reason can be a whole sentence; wrap it onto the rows left.
 	if _, text, ok := s.whyRow(); ok {
 		for i, ln := range wrapText(text, b.Width(), 2, th.ASCII) {
-			b.Put(ln, 0, 7+i, th.Warn)
+			b.Put(ln, 0, y+i, th.Warn)
 		}
 	}
 }
@@ -296,7 +360,7 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 	verdict, lvl := m.verdict()
 	x := in.Put(tui.Truncate(verdict, in.Width(), th.ASCII), 0, 0, m.style(lvl))
 	if m.snap != nil && in.Height() > 1 {
-		in.Put(" "+tui.Rate(m.snap.Rate.NowBps), x, 0, tui.Style{})
+		in.Put(" "+tui.Rate(m.rates().billable), x, 0, tui.Style{})
 		p := m.snap.Proxies
 		in.Put(tui.Truncate(fmt.Sprintf("clients %d  up %d/%d", m.snap.Clients, p.Up, p.Up+p.Degraded+p.Connecting+p.Dead), in.Width(), th.ASCII), 0, 1, th.Dim)
 		if in.Height() > 2 {
@@ -316,7 +380,8 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
-	"+  -             refresh faster or slower",
+	"+  -             refresh faster or slower, down to 100ms",
+	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",
 }
 

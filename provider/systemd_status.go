@@ -18,11 +18,7 @@ import (
 // promptly while still telling an operator, honestly and continuously,
 // whether any traffic can actually flow.
 var (
-	proxiesConfigured atomic.Int64
-	// proxiesConfiguredSet flips once startup has published the configured
-	// count, even when it is zero. It is how the rest of the provider tells a
-	// node still resolving its proxies from a direct-only node that has none.
-	proxiesConfiguredSet atomic.Bool
+	proxiesConfigured    atomic.Int64
 	proxiesAuthenticated atomic.Int64
 
 	// proxiesParked is how many configured proxies the proxy audit engine is
@@ -45,10 +41,11 @@ var (
 // Resolution status constants. The value matters only inside
 // systemdStatusLine's total==0 branch; no control-flow reads these.
 const (
-	proxyResolutionPending int32 = 0 // no resolution attempted yet
-	proxyResolutionFailed  int32 = 1 // attempted, source unreachable
-	proxyResolutionEmpty   int32 = 2 // succeeded but zero usable proxies
-	proxyResolutionOK      int32 = 3 // resolved with at least one proxy
+	proxyResolutionPending   int32 = 0 // no resolution attempted yet
+	proxyResolutionFailed    int32 = 1 // attempted, source unreachable
+	proxyResolutionEmpty     int32 = 2 // a proxy source was configured but yielded zero usable proxies
+	proxyResolutionOK        int32 = 3 // resolved with at least one proxy
+	proxyResolutionZeroValid int32 = 4 // no proxy source configured; direct-only is a valid zero config
 )
 
 // Status severity bands for the live/configured proxy ratio. The exact
@@ -96,7 +93,6 @@ const maxStatusReasonLen = 60
 // known once the proxy list is resolved.
 func setConfiguredProxyCount(n int) {
 	proxiesConfigured.Store(int64(n))
-	proxiesConfiguredSet.Store(true)
 	reportProxyStatusToSystemd()
 }
 
@@ -153,6 +149,11 @@ func systemdStatusLine() string {
 			return fmt.Sprintf("degraded: proxy source unreachable (%s), retrying", reason)
 		case proxyResolutionEmpty:
 			return "degraded: proxy source returned no usable proxies, retrying"
+		case proxyResolutionZeroValid:
+			// Direct-only: no proxy source configured, and this is a valid,
+			// completed zero-proxy config. The provider is serving via the
+			// native direct transport, so it is not degraded.
+			return "active: providing on direct/local IP (no proxy source configured)"
 		default: // proxyResolutionPending or stale OK
 			return "starting: resolving proxies"
 		}
@@ -266,24 +267,28 @@ const (
 )
 
 // proxyStartupPhase reports what proxy startup is still waiting on, or "" once it
-// has settled. It reads the same signals as the systemd STATUS= line, so the
-// two never disagree: a node that systemd calls "starting: resolving proxies"
-// is not IDLE in `urnet-tools status`.
+// has settled. It is the zero-proxy branch of systemdStatusLine, read the same
+// way from the same inputs, so the two never disagree: a node systemd calls
+// "starting: resolving proxies" is not IDLE in `urnet-tools status`.
 //
-// Source failures count only while no proxies are configured, matching
-// systemdStatusLine: a refresh that fails while proxies are running is not a
-// startup problem.
+// With proxies configured startup has settled. With none, the resolution status
+// says what it is waiting on. The first reload after launch always resolves that
+// status (empty, failed or ok), so a node with no proxies leaves "resolving"
+// within moments and reads degraded, exactly as the systemd line does.
 func proxyStartupPhase() string {
-	if proxiesConfigured.Load() == 0 {
-		switch proxyResolutionStatus.Load() {
-		case proxyResolutionFailed:
-			return startupSourceUnreachable
-		case proxyResolutionEmpty:
-			return startupSourceEmpty
-		}
+	if proxiesConfigured.Load() != 0 {
+		return ""
 	}
-	if !proxiesConfiguredSet.Load() {
+	switch proxyResolutionStatus.Load() {
+	case proxyResolutionFailed:
+		return startupSourceUnreachable
+	case proxyResolutionEmpty:
+		return startupSourceEmpty
+	case proxyResolutionZeroValid:
+		// Direct-only: no proxy source configured, so zero proxies is a valid,
+		// completed config. Startup has settled.
+		return ""
+	default: // proxyResolutionPending, or a stale OK with no proxies
 		return startupResolving
 	}
-	return ""
 }

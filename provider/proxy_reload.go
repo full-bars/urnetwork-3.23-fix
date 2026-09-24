@@ -507,10 +507,14 @@ func (r *ProxyReloader) reload() {
 	}
 
 	urlCacheLoaded := true
+	anySourceConfigured := r.sourcePath != ""
 	if urlState, err := readProxyURLState(); err != nil {
 		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
 		urlCacheLoaded = false
 	} else {
+		if len(urlState.Sources) > 0 {
+			anySourceConfigured = true
+		}
 		mergeProxyURLCache(desiredSet, sourceOf, urlState)
 	}
 
@@ -608,8 +612,24 @@ func (r *ProxyReloader) reload() {
 	// (no --proxy_file, no internal proxies) has desired == 0 but a
 	// non-empty desiredSet, and must not be treated as a source-read error.
 	if len(desiredSet) == 0 {
-		tlog("[proxy] reload skipped: 0 proxies found in source\n")
-		setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
+		// A node that deliberately provides via the direct transport with no
+		// proxy source configured is a valid, completed zero-proxy config — it
+		// settles, it is not degraded. Only reserve "empty" for the case where
+		// a proxy source WAS configured but returned no usable proxies.
+		if anySourceConfigured {
+			tlog("[proxy] reload skipped: 0 proxies found in source\n")
+			setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
+		} else if !urlCacheLoaded {
+			// proxy_url.json exists but could not be read (a missing file reads as
+			// empty, not as an error), so whether URL sources are configured is
+			// unknown. Settling as direct-only would report a healthy node whose
+			// sources were never resolved.
+			tlog("[proxy] reload skipped: proxy_url.json unreadable, URL sources unknown\n")
+			setProxyResolutionStatus(proxyResolutionFailed, "could not read proxy_url.json")
+		} else {
+			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
+			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")
+		}
 		return
 	}
 
@@ -846,6 +866,11 @@ func (r *ProxyReloader) reload() {
 	// at 25ms intervals while cold proxies use standard backoff.
 	addedSchedules, _, _, _ := prioritizeAndScheduleProxies(added, sourceOf, r.networkID)
 	warmupDeferred := 0
+	// Count URL-sourced proxies that will actually be launched, inside the
+	// loop so a draining proxy (skipped before launch) is not counted as
+	// scheduled. urlLaunchLine subtracts warmupDeferred, so warmup-deferred
+	// entries stay in the total.
+	urlAdded := 0
 	for _, sched := range addedSchedules {
 		settings := sched.Settings
 		// key is this proxy's identity (address, or address+user for a
@@ -856,6 +881,9 @@ func (r *ProxyReloader) reload() {
 		if r.isDraining(key) {
 			tlog("[proxy] skip add %s: still draining\n", proxyKeyDisplay(key))
 			continue
+		}
+		if sourceOf[key] == "url" {
+			urlAdded++
 		}
 		// Defer unproven URL-sourced proxy launches until file-proxy warmup
 		// completes, so operator-curated proxies get an uncontested ramp.
@@ -964,14 +992,21 @@ func (r *ProxyReloader) reload() {
 
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
+	// Say where the additions came from, and announce URL-sourced launches on
+	// their own line: a bare "+N added" said neither. The summary keeps its
+	// "reloaded: +N added" prefix for anything that matches on it.
+	fromSources := reloadSourceBreakdown(added, sourceOf)
+	if line := urlLaunchLine(urlAdded, warmupDeferred); line != "" {
+		importantLogf("%s\n", line)
+	}
 	if pruned > 0 {
 		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)
 	}
 	if deferredTotal > 0 {
-		tlog("🔄 [proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
-			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
+		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
+			len(added), fromSources, len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
 	} else {
-		tlog("🔄 [proxy] reloaded: +%d added, -%d removed [%s]\n",
-			len(added), len(removed), reloadDur)
+		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed [%s]\n",
+			len(added), fromSources, len(removed), reloadDur)
 	}
 }

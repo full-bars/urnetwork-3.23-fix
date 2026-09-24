@@ -156,7 +156,7 @@ func newDockerStatusCmd() *cobra.Command {
 func newDockerTopCmd() *cobra.Command {
 	return withHelp(newCobraCmd("top [target]", "live full-screen view of a container", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerTop(args)
-	}), "Live full-screen status dashboard for a provider container. Shows throughput graph, proxy pool state, client sessions, and node resources inside the container. Refreshes every 250ms–2s; press +/- to adjust rate, ? for help, q to quit.", "  urnet-docker top\n  urnet-docker top mynetwork-provider\n  urnet-docker top --unit mynetwork-provider")
+	}), "Live full-screen status dashboard for a provider container. Shows billable and total throughput graphs, proxy pool state, client sessions, and node resources inside the container. Refreshes every 100ms–2s; press +/- to adjust rate, ? for help, q to quit.", "  urnet-docker top\n  urnet-docker top mynetwork-provider\n  urnet-docker top --unit mynetwork-provider")
 }
 
 func newDockerSnStatusCmd() *cobra.Command {

@@ -6,6 +6,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect"
 	"github.com/urnetwork/connect/internal/promtext"
@@ -119,5 +120,42 @@ func TestProviderMetricsIncludeNodeGaugesAndKeepExisting(t *testing.T) {
 	}
 	for _, e := range promtext.Lint(body) {
 		t.Error(e)
+	}
+}
+
+// "traffic" is the light reply urnet-tools top polls at 100ms. It must carry
+// live counters and the provider's clock, and never a snapshot (building one is
+// the expensive part it exists to avoid).
+func TestControlSocketTrafficCommand(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+	bw := connect.RegisterProxyBandwidth(1)
+	bw.BillableRx.Store(300)
+	bw.TotalRx.Store(900)
+
+	before := time.Now().UnixNano()
+	resp := handleControlRequest(globalControlState, controlRequest{Cmd: "traffic"})
+	if !resp.OK || resp.Traffic == nil || resp.Snapshot != nil {
+		t.Fatalf("traffic response: %+v", resp)
+	}
+	if resp.Traffic.BillableBytes != 300 || resp.Traffic.TotalBytes != 900 {
+		t.Fatalf("counters = %d / %d, want 300 / 900", resp.Traffic.BillableBytes, resp.Traffic.TotalBytes)
+	}
+	if resp.Traffic.AtUnixNano < before || resp.Traffic.AtUnixNano > time.Now().UnixNano() {
+		t.Fatalf("timestamp %d is not the provider's clock at the read", resp.Traffic.AtUnixNano)
+	}
+}
+
+// Existing commands must not start carrying live traffic either.
+func TestControlResponseTrafficOnlyOnTrafficCommand(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+	for _, cmd := range []string{"version", "status", "snapshot"} {
+		resp := handleControlRequest(globalControlState, controlRequest{Cmd: cmd})
+		if resp.Traffic != nil {
+			t.Errorf("%s response carries live traffic", cmd)
+		}
 	}
 }

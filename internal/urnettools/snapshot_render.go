@@ -163,31 +163,50 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
 		}
 	}
 
-	// throughput: now, 1m and 5m averages, and a sparkline of the history.
-	rate := liveRow{label: "throughput", segs: []string{
-		snapshotRate(s.Rate.NowBps),
-		"1m " + snapshotRate(s.Rate.Avg1mBps),
-		"5m " + snapshotRate(s.Rate.Avg5mBps),
-	}}
-	if n := len(s.Rate.HistoryBps); n > 0 {
-		w := n
-		if w > liveSparkMax {
-			w = liveSparkMax
-		}
-		if o.Width > 0 && w > o.Width-liveIndent {
-			w = o.Width - liveIndent
-		}
-		vals := make([]uint64, n)
-		for i, v := range s.Rate.HistoryBps {
-			if v > 0 {
-				vals[i] = uint64(v)
+	// A rate row: now, 1m and 5m averages, and a sparkline of the history.
+	rateRow := func(label string, now, avg1m, avg5m float64, history []float64) liveRow {
+		row := liveRow{label: label, segs: []string{
+			snapshotRate(now),
+			"1m " + snapshotRate(avg1m),
+			"5m " + snapshotRate(avg5m),
+		}}
+		if n := len(history); n > 0 {
+			w := n
+			if w > liveSparkMax {
+				w = liveSparkMax
+			}
+			if o.Width > 0 && w > o.Width-liveIndent {
+				w = o.Width - liveIndent
+			}
+			vals := make([]uint64, n)
+			for i, v := range history {
+				if v > 0 {
+					vals[i] = uint64(v)
+				}
+			}
+			if w > 0 {
+				row.segs = append(row.segs, tui.Spark(vals, w, o.ASCII))
 			}
 		}
-		if w > 0 {
-			rate.segs = append(rate.segs, tui.Spark(vals, w, o.ASCII))
-		}
+		return row
 	}
-	emit(rate)
+
+	// Billable is what earns; total is everything moved. A provider that predates
+	// the traffic block shows the one row it always did, labeled as before.
+	if tr := s.Traffic; tr != nil {
+		emit(rateRow("billable", s.Rate.NowBps, s.Rate.Avg1mBps, s.Rate.Avg5mBps, s.Rate.HistoryBps))
+		emit(rateRow("total", tr.TotalNowBps, tr.TotalAvg1mBps, tr.TotalAvg5mBps, tr.TotalHistoryBps))
+		moved := []string{
+			formatBytes(float64(tr.BillableBytes)) + " billable",
+			formatBytes(float64(tr.TotalBytes)) + " total (this run)",
+		}
+		if tr.LifetimeBillableBytes != nil {
+			moved = append(moved, formatBytes(float64(*tr.LifetimeBillableBytes))+" billable lifetime")
+		}
+		emit(liveRow{label: "moved", sep: ", ", segs: moved})
+	} else {
+		emit(rateRow("throughput", s.Rate.NowBps, s.Rate.Avg1mBps, s.Rate.Avg5mBps, s.Rate.HistoryBps))
+	}
 
 	emit(liveRow{label: "clients", segs: []string{
 		fmt.Sprintf("%d (sessions: %d pqe, %d classical)", s.Clients, s.Sessions.PQE, s.Sessions.Classical),
