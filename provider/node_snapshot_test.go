@@ -207,6 +207,14 @@ func TestDeriveIdleHint(t *testing.T) {
 	steady := failing(1, 10) // 6 failures in the last minute on a 100 pool: 6%
 	wave := failing(5, 10)   // 30 in the last minute on a 100 pool: 30%
 	quiet := failing(0, 10)
+	// Failures that stopped four minutes ago: history, not "happening".
+	oldFailures := func() []cumulativeSample {
+		ss := []cumulativeSample{{auth: 0, contracts: 10}, {auth: 40, contracts: 10}}
+		for i := 0; i < 24; i++ {
+			ss = append(ss, cumulativeSample{auth: 40, contracts: 10})
+		}
+		return histAt(now, ss...)
+	}()
 	contractsUp := histAt(now, cumulativeSample{auth: 1000, contracts: 10}, cumulativeSample{auth: 1000, contracts: 11})
 
 	cases := []struct {
@@ -229,6 +237,8 @@ func TestDeriveIdleHint(t *testing.T) {
 		{"majority unconnected with failures is auth failing", SnapshotProxies{Up: 30, Connecting: 70}, steady,
 			"auth failing: only 30 of 100 proxies authenticated"},
 		{"majority unconnected without failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, quiet,
+			"only 30 of 100 proxies connected"},
+		{"majority unconnected with only OLD failures is not blamed on auth", SnapshotProxies{Up: 30, Connecting: 70}, oldFailures,
 			"only 30 of 100 proxies connected"},
 		{"exactly half up is not a majority down", SnapshotProxies{Up: 50, Connecting: 50}, quiet,
 			"no contracts acquired in the last 10 min (50/100 proxies up)"},

@@ -343,11 +343,17 @@ func (p SnapshotProxies) total() int {
 // the warmup window, and reads degraded once that has taken too long or the
 // proxy source failed, so the status agrees with the systemd STATUS= line.
 func deriveSnapshotState(in stateInputs) string {
+	// A proxy source that failed or came back empty is degraded at once, like
+	// the systemd line, even inside the warmup window: warmup covers a pool still
+	// connecting, not a source that has already given its answer.
+	if in.startup == startupSourceUnreachable || in.startup == startupSourceEmpty {
+		return "degraded"
+	}
 	if in.uptime < snapshotStartingWindow {
 		return "starting"
 	}
 	if in.startup != "" {
-		if in.startup == startupResolving && in.uptime < snapshotStartupStuckAfter {
+		if in.uptime < snapshotStartupStuckAfter {
 			return "starting"
 		}
 		return "degraded"
@@ -420,7 +426,7 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 		return fmt.Sprintf("auth failing: %d failures in the last minute across %d proxies", recent, total)
 	}
 	if 2*proxies.Up < total {
-		if authFailuresSince(hist, time.Time{}) > 0 {
+		if authFailuresSince(hist, now.Add(-snapshotAuthWaveWindow)) > 0 {
 			return fmt.Sprintf("auth failing: only %d of %d proxies authenticated", proxies.Up, total)
 		}
 		return fmt.Sprintf("only %d of %d proxies connected", proxies.Up, total)

@@ -1,6 +1,8 @@
 package main
 
 import (
+	"fmt"
+	"strings"
 	"testing"
 	"time"
 )
@@ -63,37 +65,70 @@ func TestCollectorReportsStartupStuckAndRecovery(t *testing.T) {
 	}
 }
 
-// A direct-only node has no proxies by design. Once the provider publishes its
-// (zero) configured count, startup is settled and it must not read "starting".
-func TestStartupPhaseSettlesForADirectOnlyNode(t *testing.T) {
-	resetProxyResolutionStatus()
-	proxiesConfiguredSet.Store(false)
-	t.Cleanup(func() { proxiesConfiguredSet.Store(false); resetProxyResolutionStatus() })
-
-	if got := proxyStartupPhase(); got != startupResolving {
-		t.Fatalf("before the configured count is published: phase = %q, want %q", got, startupResolving)
-	}
-	setConfiguredProxyCount(0)
-	if got := proxyStartupPhase(); got != "" {
-		t.Fatalf("after publishing a zero count (direct-only): phase = %q, want settled", got)
+// The snapshot's startup phase and the systemd STATUS= line must never
+// disagree. The phase is defined from the same three inputs the line's
+// zero-proxy branch reads, so every combination is checked against the line.
+func TestStartupPhaseNeverDisagreesWithTheSystemdLine(t *testing.T) {
+	t.Cleanup(func() { proxiesConfigured.Store(0); resetProxyResolutionStatus() })
+	statuses := map[string]int32{"pending": proxyResolutionPending, "failed": proxyResolutionFailed, "empty": proxyResolutionEmpty, "ok": proxyResolutionOK}
+	for _, count := range []int{0, 1, 5} {
+		for name, status := range statuses {
+			t.Run(fmt.Sprintf("count=%d/%s", count, name), func(t *testing.T) {
+				proxiesConfigured.Store(int64(count))
+				proxyResolutionStatus.Store(status)
+				phase, line := proxyStartupPhase(), systemdStatusLine()
+				switch {
+				case count > 0:
+					if phase != "" {
+						t.Fatalf("proxies are configured but the phase is %q (line %q)", phase, line)
+					}
+				case phase == startupResolving && !strings.HasPrefix(line, "starting:"):
+					t.Fatalf("phase %q but the line says %q", phase, line)
+				case (phase == startupSourceUnreachable || phase == startupSourceEmpty) && !strings.HasPrefix(line, "degraded:"):
+					t.Fatalf("phase %q but the line says %q", phase, line)
+				case phase == "" && (strings.HasPrefix(line, "starting:") || strings.Contains(line, "source")):
+					t.Fatalf("no phase but the line still says %q", line)
+				}
+			})
+		}
 	}
 }
 
-func TestStartupPhaseReportsSourceFailureOnlyWithNoProxies(t *testing.T) {
-	t.Cleanup(func() { proxiesConfiguredSet.Store(false); proxiesConfigured.Store(0); resetProxyResolutionStatus() })
-
-	setConfiguredProxyCount(0)
-	setProxyResolutionStatus(proxyResolutionFailed, "boom")
-	if got := proxyStartupPhase(); got != startupSourceUnreachable {
-		t.Fatalf("no proxies + failed source: phase = %q", got)
+// The first reload always resolves the status (empty, failed or ok), so a
+// zero-proxy node leaves "resolving" within moments and then reads degraded, the
+// same as systemd, rather than sitting in "starting".
+func TestStartupPhaseAfterTheFirstReloadResolves(t *testing.T) {
+	t.Cleanup(func() { proxiesConfigured.Store(0); resetProxyResolutionStatus() })
+	resetProxyResolutionStatus()
+	proxiesConfigured.Store(0)
+	if got := proxyStartupPhase(); got != startupResolving {
+		t.Fatalf("before the first reload: %q, want %q", got, startupResolving)
 	}
-	setProxyResolutionStatus(proxyResolutionEmpty, "")
+	setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
 	if got := proxyStartupPhase(); got != startupSourceEmpty {
-		t.Fatalf("no proxies + empty source: phase = %q", got)
+		t.Fatalf("a zero-proxy node after its first reload: %q, want %q", got, startupSourceEmpty)
 	}
-	// With proxies running, a failed refresh is not a startup problem.
 	setConfiguredProxyCount(50)
+	setProxyResolutionOK()
 	if got := proxyStartupPhase(); got != "" {
-		t.Fatalf("proxies configured: phase = %q, want settled", got)
+		t.Fatalf("resolved with proxies: %q, want settled", got)
+	}
+}
+
+// A proxy source that fails during the first two minutes is degraded at once,
+// like the systemd line, not "starting" with no reason until warmup ends.
+func TestSourceFailureIsDegradedEvenDuringWarmup(t *testing.T) {
+	for _, phase := range []string{startupSourceUnreachable, startupSourceEmpty} {
+		in := stateInputs{uptime: 30 * time.Second, startup: phase}
+		if got := deriveSnapshotState(in); got != "degraded" {
+			t.Fatalf("%q at 30s: state %q, want degraded", phase, got)
+		}
+		if got := deriveStateReason(in); got != phase+", retrying" {
+			t.Fatalf("%q at 30s: reason %q", phase, got)
+		}
+	}
+	// Still resolving during warmup is ordinary startup.
+	if got := deriveSnapshotState(stateInputs{uptime: 30 * time.Second, startup: startupResolving}); got != "starting" {
+		t.Fatalf("resolving at 30s: state %q, want starting", got)
 	}
 }

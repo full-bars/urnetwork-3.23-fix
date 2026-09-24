@@ -99,8 +99,8 @@ When the state is `IDLE`, a hint line is chosen by the first rule that matches:
 
 1. no proxies are configured;
 2. every proxy is dead or still connecting;
-3. an auth failure wave: in the last minute, failures reached a quarter of the pool (with a floor of 3), reported as `auth failing: N failures in the last minute across M proxies`;
-4. most of the pool is not up: `auth failing: only X of N proxies authenticated` when failures are happening in the window, otherwise `only X of N proxies connected`;
+3. an auth failure wave: auth failure events in the last minute reach a quarter of the pool's size (with a floor of 3), reported as `auth failing: N failures in the last minute across M proxies`. These are events, not distinct proxies: one proxy retrying repeatedly counts each time;
+4. most of the pool is not up: `auth failing: only X of N proxies authenticated` when auth failures are also happening in the last minute, otherwise `only X of N proxies connected`;
 5. proxies are up but no contracts were acquired in the last 10 minutes;
 6. otherwise, "no traffic offered".
 
