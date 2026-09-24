@@ -44,6 +44,10 @@ type clientJWTStore struct {
 	path    string
 	loaded  bool
 	entries map[string]clientJWTEntry
+	// flushes counts durable rewrites of the store file. Each one reads,
+	// re-encodes and fsyncs the whole file, so callers that change many
+	// entries at once must batch them into a single flush.
+	flushes int
 }
 
 func newClientJWTStore(path string) *clientJWTStore {
@@ -255,10 +259,23 @@ func (s *clientJWTStore) Delete(key string) error {
 // of merging: both Put calls would report success, but only the last
 // process's snapshot survives on disk (F-9).
 func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted bool) error {
+	if deleted {
+		return s.flushBatchLocked(nil, []string{key})
+	}
+	return s.flushBatchLocked(map[string]clientJWTEntry{key: entry}, nil)
+}
+
+// flushBatchLocked applies a set of upserts and deletes to the durable store
+// with ONE read-merge-write-fsync cycle. The cost of a flush scales with the
+// whole store, not with the change, so changing N entries must cost one flush,
+// never N: a node with thousands of saved logins spent minutes at startup
+// rewriting a multi-megabyte file once per adopted entry.
+func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
 	}
+	s.flushes++
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -284,9 +301,10 @@ func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted b
 		// entries (merged stays s.entries) rather than failing the flush —
 		// loadLocked already snapshotted the corrupt bytes for recovery.
 	}
-	if deleted {
+	for _, key := range deletes {
 		delete(merged, key)
-	} else {
+	}
+	for key, entry := range upserts {
 		merged[key] = entry
 	}
 	s.entries = merged
@@ -362,6 +380,8 @@ func (s *clientJWTStore) AdoptLegacy(desired []*connect.ProxySettings) (adopted,
 		addresses = append(addresses, address)
 	}
 	sort.Strings(addresses)
+	upserts := map[string]clientJWTEntry{}
+	var deletes []string
 	for _, address := range addresses {
 		keys := keysByAddress[address]
 		legacy, ok := s.entries[address]
@@ -381,15 +401,17 @@ func (s *clientJWTStore) AdoptLegacy(desired []*connect.ProxySettings) (adopted,
 		winner := keys[0]
 		if _, has := s.entries[winner]; !has {
 			s.entries[winner] = legacy
-			if err := s.flushLocked(winner, legacy, false); err != nil {
-				tlog("⚠️ [jwt-store] failed to persist adopted login for %s: %v\n", proxyKeyDisplay(winner), err)
-			}
+			upserts[winner] = legacy
 			adopted++
 			split += len(keys) - 1
 		}
 		delete(s.entries, address)
-		if err := s.flushLocked(address, clientJWTEntry{}, true); err != nil {
-			tlog("⚠️ [jwt-store] failed to drop legacy login slot for %s: %v\n", address, err)
+		deletes = append(deletes, address)
+	}
+	// One flush for the whole adoption, however many logins moved.
+	if len(upserts) > 0 || len(deletes) > 0 {
+		if err := s.flushBatchLocked(upserts, deletes); err != nil {
+			tlog("⚠️ [jwt-store] failed to persist %d adopted logins (%d legacy slots dropped): %v\n", len(upserts), len(deletes), err)
 		}
 	}
 	return adopted, split
