@@ -1024,7 +1024,7 @@ func shedPoolToTarget(target int) {
 	shed := selectURLProxiesToShed(state, traffic, excess)
 	for _, addr := range shed {
 		if state.Proxies[addr].Health == "up" {
-			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", addr)
+			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
 		}
 		applyShedBackoff(addr, time.Now())
 	}

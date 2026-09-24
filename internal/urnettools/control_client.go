@@ -68,6 +68,7 @@ type ProxyAuditStatus struct {
 // backoff probation ends.
 type ProxyAuditParked struct {
 	Addr  string    `json:"addr"`
+	User  string    `json:"user,omitempty"` // obfuscated; tells accounts at one gateway apart
 	Until time.Time `json:"until"`
 }
 

@@ -59,3 +59,13 @@ func TestPlanProxyRefresh_BareAddressAndHealthClassification(t *testing.T) {
 		t.Fatalf("removed=%+v, want the bare-address proxy classified starting", removed)
 	}
 }
+
+// A source that lists one identity twice (a file re-pasted with the same user
+// and a new password appends a second line) must add it once.
+func TestPlanProxyRefresh_RepeatedIdentityIsAddedOnce(t *testing.T) {
+	desired := []*connect.ProxySettings{authSettingsFor("gw.example:1080", "u1"), authSettingsFor("gw.example:1080", "u1")}
+	added, _ := planProxyRefresh(desired, map[string]ProxyEntry{})
+	if want := []string{identityKey("gw.example:1080", "u1")}; !reflect.DeepEqual(added, want) {
+		t.Fatalf("added=%q, want %q", added, want)
+	}
+}

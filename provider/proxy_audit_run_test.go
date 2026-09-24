@@ -952,25 +952,31 @@ func TestRunProxyAudit_PublishesAStatusBeforeTheFirstTick(t *testing.T) {
 func TestParkedProxyIsNeverRemovedFromTheProxyFileByCleanup(t *testing.T) {
 	home := withTempHome(t)
 	src := filepath.Join(home, "paid.txt")
-	if err := os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n"), 0600); err != nil {
+	if err := os.WriteFile(src, []byte("1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n3.3.3.3:1080:u:p\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
+	// State is keyed by proxy identity, the way reload writes it for a
+	// credentialed proxy. 3.3.3.3 is the control: genuinely inactive, so cleanup
+	// CAN remove it, which proves the parked proxy survives because it is
+	// parked and not because the removal never matches an identity-keyed line.
+	parkedKey := identityKey("2.2.2.2:1080", "u")
 	err := writeProxyState(&ProxyState{Source: src, StartedAt: auditEpoch.Add(-48 * time.Hour), Proxies: map[string]ProxyEntry{
-		"1.1.1.1:1080": {ID: 1, Health: "up", Source: "file"},
-		"2.2.2.2:1080": {ID: 2, Health: "up", Source: "file"},
+		identityKey("1.1.1.1:1080", "u"): {ID: 1, Health: "up", Source: "file"},
+		parkedKey:                        {ID: 2, Health: "up", Source: "file"},
+		identityKey("3.3.3.3:1080", "u"): {ID: 3, Health: "inactive", Source: "file"},
 	}})
 	if err != nil {
 		t.Fatal(err)
 	}
 
-	markProxiesParked([]string{"2.2.2.2:1080"})
+	markProxiesParked([]string{parkedKey})
 
-	if removed := runProxyURLCleanupOnce("all"); removed != 0 {
-		t.Fatalf("scope=all cleanup removed %d proxies; a parked proxy is resting, not dead", removed)
+	if removed := runProxyURLCleanupOnce("all"); removed != 1 {
+		t.Fatalf("scope=all cleanup removed %d proxies, want exactly the inactive control", removed)
 	}
 	b, _ := os.ReadFile(src)
-	if !strings.Contains(string(b), "2.2.2.2:1080") {
-		t.Fatalf("the operator's proxy file lost the parked proxy: %q", b)
+	if got, want := string(b), "1.1.1.1:1080:u:p\n2.2.2.2:1080:u:p\n"; got != want {
+		t.Fatalf("proxy file = %q, want %q: the inactive control goes, the parked proxy stays", got, want)
 	}
 }
 

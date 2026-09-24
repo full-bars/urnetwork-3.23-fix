@@ -197,9 +197,9 @@ func (g *proxyAuditor) runOnceLocked() {
 	for _, addr := range res.Release {
 		g.releaseBackoff(addr)
 		if _, listed := entries[addr]; listed {
-			g.env.log("[proxy][audit] restored %s\n", addr)
+			g.env.log("[proxy][audit] restored %s\n", proxyKeyDisplay(addr))
 		} else {
-			g.env.log("[proxy][audit] released %s (no longer in the paid proxy list)\n", addr)
+			g.env.log("[proxy][audit] released %s (no longer in the paid proxy list)\n", proxyKeyDisplay(addr))
 		}
 	}
 
@@ -239,7 +239,7 @@ func (g *proxyAuditor) observe(res proxyAuditResult, proxies []proxyAuditProxy) 
 	for _, p := range res.Park {
 		current[p.Addr] = true
 		if !g.announced[p.Addr] {
-			g.env.log("[proxy][audit] would-park %s score=%.2f\n", p.Addr, score[p.Addr])
+			g.env.log("[proxy][audit] would-park %s score=%.2f\n", proxyKeyDisplay(p.Addr), score[p.Addr])
 		}
 	}
 	g.announced = current
@@ -264,7 +264,7 @@ func (g *proxyAuditor) park(now time.Time, res proxyAuditResult, proxies []proxy
 		until[addr] = u
 	})
 	for _, addr := range parked {
-		g.env.log("[proxy][audit] parked %s score=%.2f until=%s\n", addr, score[addr], until[addr].Format(time.RFC3339))
+		g.env.log("[proxy][audit] parked %s score=%.2f until=%s\n", proxyKeyDisplay(addr), score[addr], until[addr].Format(time.RFC3339))
 	}
 	if len(parked) > 0 {
 		g.env.markParked(parked)

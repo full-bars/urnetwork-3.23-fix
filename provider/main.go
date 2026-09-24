@@ -5823,8 +5823,10 @@ func planProxyRefresh(desired []*connect.ProxySettings, current map[string]Proxy
 	for _, s := range desired {
 		desiredSet[s.Key()] = true
 	}
+	addedSet := map[string]bool{}
 	for _, s := range desired {
-		if _, ok := current[s.Key()]; !ok {
+		if _, ok := current[s.Key()]; !ok && !addedSet[s.Key()] {
+			addedSet[s.Key()] = true
 			added = append(added, s.Key())
 		}
 	}

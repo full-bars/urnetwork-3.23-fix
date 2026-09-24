@@ -63,6 +63,20 @@ func TestFormatProxyAuditStatus(t *testing.T) {
 			},
 		},
 		{
+			"accounts at one gateway are told apart by user",
+			&ProxyAuditStatus{
+				Acting:   true,
+				Parks24h: 1,
+				Parked: []ProxyAuditParked{
+					{Addr: "10.0.0.1:1080", User: "al***01", Until: now.Add(2 * time.Hour)},
+				},
+			},
+			[]string{
+				"proxy audit: acting, 1 parked, 1 parks in the last 24h",
+				"  parked 10.0.0.1:1080 (user al***01) for another 2h0m",
+			},
+		},
+		{
 			"acting with none parked",
 			&ProxyAuditStatus{Acting: true},
 			[]string{"proxy audit: acting, none parked, 0 parks in the last 24h"},

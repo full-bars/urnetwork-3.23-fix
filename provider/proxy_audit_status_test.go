@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -117,5 +118,33 @@ func TestProviderMetrics_ExportAuditGauges(t *testing.T) {
 	// Addresses are operator data; only counts leave through /metrics.
 	if strings.Contains(out, "a:1") {
 		t.Fatalf("audit metrics must not carry proxy addresses")
+	}
+}
+
+// Parks are keyed by proxy identity. The published status is operator-facing
+// JSON: it must carry the ADDRESS (what `proxy audit release` takes) and an
+// obfuscated user to tell accounts at one gateway apart, never the raw key with
+// its \x1f separator.
+func TestProxyAuditStatus_ParkedIdentityKeyPublishedAsAddressAndUser(t *testing.T) {
+	resetProxyAuditStatus(t)
+	key := identityKey("gw.example:1080", "alice-01")
+	h := newGovHarness(key)
+	h.act = true
+	h.twoBadTicks(key)
+
+	st := proxyAuditStatusSnapshot()
+	if st == nil || len(st.Parked) != 1 {
+		t.Fatalf("expected one parked proxy, got %+v", st)
+	}
+	p := st.Parked[0]
+	if p.Addr != "gw.example:1080" || p.User != "al***01" {
+		t.Fatalf("parked = %+v, want addr gw.example:1080 and obfuscated user al***01", p)
+	}
+	b, err := json.Marshal(st)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), `\u001f`) || strings.Contains(string(b), "alice-01") {
+		t.Fatalf("status JSON leaks the raw identity key or the full user: %s", b)
 	}
 }

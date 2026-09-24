@@ -4,6 +4,8 @@ import (
 	"sort"
 	"sync/atomic"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // proxyAuditStatus is the proxy audit engine's last completed tick, published for
@@ -39,6 +41,7 @@ type proxyAuditStatus struct {
 
 type proxyAuditParkedStatus struct {
 	Addr  string    `json:"addr"`
+	User  string    `json:"user,omitempty"` // obfuscated; tells accounts at one gateway apart
 	Until time.Time `json:"until"`
 }
 
@@ -68,10 +71,22 @@ func (g *proxyAuditor) publish(now time.Time, act bool, res proxyAuditResult) {
 			st.NotActingReason = g.env.notActingReason()
 		}
 	}
-	for addr, rec := range g.st.parks {
-		st.Parked = append(st.Parked, proxyAuditParkedStatus{Addr: addr, Until: rec.until})
+	// Parks are keyed by proxy identity; publish the address (what `proxy audit
+	// release` takes) plus an obfuscated user, never the raw key.
+	for key, rec := range g.st.parks {
+		addr, user := connect.SplitProxyKey(key)
+		p := proxyAuditParkedStatus{Addr: addr, Until: rec.until}
+		if user != "" {
+			p.User = obfuscateUser(user)
+		}
+		st.Parked = append(st.Parked, p)
 	}
-	sort.Slice(st.Parked, func(i, j int) bool { return st.Parked[i].Addr < st.Parked[j].Addr })
+	sort.Slice(st.Parked, func(i, j int) bool {
+		if st.Parked[i].Addr != st.Parked[j].Addr {
+			return st.Parked[i].Addr < st.Parked[j].Addr
+		}
+		return st.Parked[i].User < st.Parked[j].User
+	})
 	currentProxyAuditStatus.Store(st)
 	setProxyAuditSystemdState(len(st.Parked), st.Paused)
 }
