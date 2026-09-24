@@ -81,6 +81,14 @@ type topTrafficSource interface {
 	FetchTraffic(p Provider) (*LiveTraffic, error)
 }
 
+// topInternalsSource is the optional third half of a source: the runtime views
+// of the Internals panel. A source that lacks it, or a provider that predates
+// the commands, leaves the panel out.
+type topInternalsSource interface {
+	FetchInternals(p Provider) (*NodeInternals, error)
+	FetchGoroutines(p Provider) (*GoroutineGroups, error)
+}
+
 // topSourceFunc adapts a function to topSource.
 type topSourceFunc func(Provider) (*NodeSnapshot, error)
 
@@ -97,6 +105,14 @@ func (socketTopSource) Fetch(p Provider) (*NodeSnapshot, error) {
 
 func (socketTopSource) FetchTraffic(p Provider) (*LiveTraffic, error) {
 	return fetchLiveTraffic(p)
+}
+
+func (socketTopSource) FetchInternals(p Provider) (*NodeInternals, error) {
+	return fetchInternals(p)
+}
+
+func (socketTopSource) FetchGoroutines(p Provider) (*GoroutineGroups, error) {
+	return fetchGoroutines(p)
 }
 
 type topConn int
@@ -163,6 +179,18 @@ type topModel struct {
 	trafficBusy bool
 	lastTraffic time.Time
 
+	// zoomOn shows the last topZoomWindow at the poll rate instead of the
+	// provider's ten minutes. zoom is its ring, filled from the traffic polls.
+	zoomOn bool
+	zoom   topZoom
+
+	// The steady axis of each graph: the ten minute pair and the zoom pair.
+	scaleB, scaleT         topScale
+	zoomScaleB, zoomScaleT topScale
+
+	// rt is the runtime (Internals) panel's state.
+	rt topRuntime
+
 	help bool
 	quit bool
 }
@@ -177,7 +205,9 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	return &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true}
+	m.rt.reset()
+	return m
 }
 
 func (m *topModel) provider() Provider {
@@ -261,7 +291,20 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 	case err != nil || lt == nil:
 	default:
 		m.markAnswered(m.now())
+		last := int64(0)
+		if n := len(m.live.samples); n > 0 {
+			last = m.live.samples[n-1].at
+		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		// One zoom column per reading the window accepted; a stalled clock adds
+		// none, and a restarted window has no span yet, so `recent` says not ok.
+		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
+			if b, t, ok := m.live.recent(topZoomSpan); ok {
+				m.zoom.push(b, t, m.zoomCapacity())
+				m.zoomScaleB.update(seriesPeak(m.zoom.billable), m.now(), true)
+				m.zoomScaleT.update(seriesPeak(m.zoom.total), m.now(), true)
+			}
+		}
 	}
 }
 
@@ -305,6 +348,10 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	m.conn = topConnected
 	m.snap = snap
 	m.lastErr = ""
+	m.scaleB.update(seriesPeak(snap.Rate.HistoryBps), now, true)
+	if snap.Traffic != nil {
+		m.scaleT.update(seriesPeak(snap.Traffic.TotalHistoryBps), now, true)
+	}
 }
 
 // lost records that the provider stopped answering (or never did).
@@ -325,6 +372,7 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
 	m.live.reset() // a rate from before the outage would read as current
+	m.zoom.reset()
 	m.failStreak, m.backoff, m.slowReported = 0, 0, false
 }
 
@@ -499,6 +547,15 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(-1)
 		case '-', '_':
 			m.stepInterval(1)
+		case 'w', 'W':
+			m.zoomOn = !m.zoomOn
+		case 'g', 'G':
+			// Only where the provider can answer; the list is fetched on the
+			// next loop turn.
+			if m.rt.gOK && m.rt.ok {
+				m.rt.showing = !m.rt.showing
+				m.rt.gLast = time.Time{}
+			}
 		}
 	}
 	return topNone
@@ -519,6 +576,14 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
+	m.zoom.reset()
+	m.scaleB.reset()
+	m.scaleT.reset()
+	m.zoomScaleB.reset()
+	m.zoomScaleT.reset()
+	showing := m.rt.showing
+	m.rt.reset()
+	m.rt.showing = showing // the view choice is the user's, not the provider's
 	return topRefetch
 }
 
@@ -526,6 +591,16 @@ func (m *topModel) selectProvider(delta int) topEffect {
 // (dir > 0) along topIntervalSteps, starting from wherever a custom
 // --interval sits between them.
 func (m *topModel) stepInterval(dir int) {
+	before := m.interval
+	defer func() {
+		if m.interval != before {
+			// Columns of a different poll period would sit side by side on one
+			// time axis; start the zoom window over.
+			m.zoom.reset()
+			m.zoomScaleB.reset()
+			m.zoomScaleT.reset()
+		}
+	}()
 	steps := topIntervalSteps
 	if dir < 0 {
 		for i := len(steps) - 1; i >= 0; i-- {
@@ -589,6 +664,11 @@ type topSeries struct {
 	// that was already complete.
 	tailBillable, tailTotal float64
 	live                    bool
+	// capacity is the most columns the graph holds, and scaleB and scaleT the
+	// steady axis of each graph. zoom marks the fifteen second window.
+	capacity       int
+	scaleB, scaleT *topScale
+	zoom           bool
 }
 
 // series builds what the graphs draw from the last snapshot and the live rate.
@@ -597,6 +677,22 @@ func (m *topModel) series() topSeries {
 	if m.snap == nil {
 		return out
 	}
+	if m.zoomOn && m.trafficOK && m.conn == topConnected {
+		// The client-side ring at the poll rate. It has no tail: every column is
+		// already a live reading.
+		out.zoom, out.capacity = true, m.zoomCapacity()
+		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
+		out.anchor = m.zoom.seq
+		out.billable = m.zoom.billable
+		if m.snap.Traffic != nil {
+			// Non-nil even while the ring is empty: nil would read as "this
+			// provider has no total graph" and drop the second panel.
+			out.total = append([]float64{}, m.zoom.total...)
+		}
+		return out
+	}
+	out.capacity = topGraphCapacity
+	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
 	switch {
 	case m.snap.Rate.HistorySeq > 0:
 		out.anchor = int64(m.snap.Rate.HistorySeq)

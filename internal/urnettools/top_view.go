@@ -60,7 +60,16 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	if m.hasTraffic() {
 		nowRows = topNowRowsTraffic
 	}
-	side := tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Flex(1))
+	// The side column is Now over Resources; when the provider reports runtime
+	// internals and the column is tall enough, Resources shrinks to its three
+	// rows and Internals takes the rest.
+	withInternals := m.hasInternals() && cols[1].H >= nowRows+topResourcesRows+topInternalsRows
+	var side []tui.Rect
+	if withInternals {
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(topResourcesRows), tui.Flex(1))
+	} else {
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Flex(1))
+	}
 	box := func(r tui.Rect, title string) *tui.Buffer {
 		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
 	}
@@ -68,19 +77,26 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	sr := m.series()
 	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
 		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], m.throughputTitle("Billable")), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
-		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic")), sr.total, sr.anchor, sr.live, sr.tailTotal, th.Accent)
+		m.drawGraph(box(graphs[0], m.throughputTitle("Billable", sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic", sr)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
 	} else {
 		title := "Throughput"
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], m.throughputTitle(title)), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
+		m.drawGraph(box(left[0], m.throughputTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 	}
 	m.drawProxies(box(left[1], "Proxies"))
 	m.drawEvents(box(left[2], "Events"))
 	m.drawNow(box(side[0], "Now"))
 	m.drawResources(box(side[1], "Resources"))
+	if withInternals {
+		title := "Internals"
+		if m.rt.showing {
+			title = "Goroutines"
+		}
+		m.drawInternals(box(side[2], title))
+	}
 }
 
 func (m *topModel) drawHeader(h *tui.Buffer) {
@@ -121,7 +137,11 @@ func (m *topModel) drawFooter(f *tui.Buffer) {
 	if len(m.providers) > 1 {
 		keys += "   tab provider"
 	}
-	keys += "   ? help   +/- rate " + topIntervalText(m.interval)
+	keys += "   ? help   w zoom"
+	if m.rt.ok && m.rt.gOK && m.hasInternals() {
+		keys += "   g goroutines"
+	}
+	keys += "   +/- rate " + topIntervalText(m.interval)
 	f.Put(tui.Truncate(keys, f.Width(), m.theme.ASCII), 0, 0, m.theme.Dim)
 }
 
@@ -136,7 +156,14 @@ func topIntervalText(d time.Duration) string {
 // throughputTitle says how much history the graph is showing. It shows what
 // the snapshot carried, not a fixed ten minutes, so a provider that only just
 // started does not claim a window it does not have.
-func (m *topModel) throughputTitle(name string) string {
+func (m *topModel) throughputTitle(name string, sr topSeries) string {
+	if sr.zoom {
+		title := name + ", last " + tui.Duration(topZoomWindow)
+		if len(sr.billable) == 0 {
+			title += " (collecting)"
+		}
+		return title
+	}
 	h := m.history()
 	if len(h) == 0 {
 		return name
@@ -152,13 +179,18 @@ func (m *topModel) throughputTitle(name string) string {
 	return title
 }
 
-// drawGraph draws one rate series. anchor is the absolute index of the newest
-// history sample (zero when unknown), which keeps completed columns still while
-// the graph scrolls; the live rate is the tail, its own newest column.
-func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, hasTail bool, tail float64, live tui.Style) {
+// drawGraph draws one rate series. sr.anchor is the absolute index of the newest
+// sample (zero when unknown), which keeps completed columns still while the
+// graph scrolls; the live rate is the tail, its own newest column. scale holds
+// the axis steady: it never sits below what the series needs, and only comes
+// down after the peak has stayed low for a while.
+func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, scale *topScale, tail float64, live tui.Style) {
 	th := m.theme
 	if len(samples) == 0 {
 		msg := "waiting for the provider"
+		if sr.zoom {
+			msg = "collecting live readings"
+		}
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
 		}
@@ -169,9 +201,18 @@ func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, has
 	if m.conn == topDisconnected {
 		style = th.Dim
 	}
+	top := 0.0
+	if scale != nil {
+		top = scale.top
+	}
+	// A series that outgrew the held axis (nothing has folded it in yet) still
+	// fits: the axis never sits below what is drawn.
+	if p := tui.NiceCeil(seriesPeak(samples), true); p > top {
+		top = p
+	}
 	tui.DrawGraph(b, tui.Graph{
 		Samples: samples, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
-		Anchor: anchor, Capacity: topGraphCapacity, Tail: tail, HasTail: hasTail,
+		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top,
 	}, th.ASCII)
 }
 
@@ -335,8 +376,104 @@ func (m *topModel) drawResources(b *tui.Buffer) {
 		m.kvAt(b, col, y, "rss", tui.Bytes(float64(*r.RSSBytes)), tui.Style{})
 		y++
 	}
-	if r.Goroutines > 0 {
+	if r.Goroutines > 0 && !m.hasInternals() {
 		m.kvAt(b, col, y, "gor", strconv.Itoa(r.Goroutines), tui.Style{})
+	}
+}
+
+// drawInternals is the runtime panel: what the Go runtime says about the
+// provider process. Goroutines lead, with their trend; the rest is heap, GC and
+// scheduler figures. With g pressed it lists where the goroutines are parked.
+func (m *topModel) drawInternals(b *tui.Buffer) {
+	th := m.theme
+	r := &m.rt
+	if r.showing {
+		m.drawGoroutineGroups(b)
+		return
+	}
+	in := r.cur
+	if in == nil {
+		b.Put("no data", 0, 0, th.Dim)
+		return
+	}
+	const col = 8
+	y := 0
+	row := func(key, value string, style tui.Style) {
+		m.kvAt(b, col, y, key, value, style)
+		y++
+	}
+	// The trend fits what is left of the row after the count.
+	gor := strconv.FormatUint(in.Goroutines, 10)
+	m.kvAt(b, col, y, "gor", gor, tui.Style{})
+	if room := b.Width() - col - len(gor) - 1; room >= 4 && len(r.gor) > 1 {
+		// Scaled from the window's own minimum: a count that moves between 1000
+		// and 1170 would otherwise read as a flat line at the top.
+		lo := r.gor[0]
+		for _, v := range r.gor {
+			lo = min(lo, v)
+		}
+		vals := make([]uint64, len(r.gor))
+		for i, v := range r.gor {
+			vals[i] = uint64(max(v-lo, 0))
+		}
+		b.Put(tui.Spark(vals, min(room, 12), th.ASCII), col+len(gor)+1, y, th.Graph)
+	}
+	y++
+	row("objects", tui.Bytes(float64(in.HeapObjectsBytes)), tui.Style{})
+	row("stacks", tui.Bytes(float64(in.HeapStacksBytes)), tui.Style{})
+	if in.HeapGoalBytes > 0 {
+		row("goal", tui.Bytes(float64(in.HeapGoalBytes)), th.Dim)
+	}
+	if v, ok := r.internalsRate(func(n *NodeInternals) uint64 { return n.AllocBytes }); ok {
+		row("alloc", tui.Rate(v), tui.Style{})
+	}
+	if v, ok := r.internalsRate(func(n *NodeInternals) uint64 { return n.GCCycles }); ok {
+		row("gc", fmt.Sprintf("%.0f/min p99 %s", v*60, topMillis(in.GCPauseP99Ms)), tui.Style{})
+	}
+	row("gc cpu", fmt.Sprintf("%.1f%%", in.GCCPUFraction*100), m.style(topLevelFor(in.GCCPUFraction, 0.10, 0.25)))
+	row("sched", "p99 "+topMillis(in.SchedLatP99Ms), m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
+}
+
+// topLevelFor is topWarn past warn and topBad past bad, else no color.
+func topLevelFor(v, warn, bad float64) topLevel {
+	switch {
+	case v >= bad:
+		return topBad
+	case v >= warn:
+		return topWarn
+	}
+	return topInfo
+}
+
+// topMillis is "0.4ms", "12ms" or "1.2s".
+func topMillis(ms float64) string {
+	switch {
+	case ms >= 1000:
+		return fmt.Sprintf("%.1fs", ms/1000)
+	case ms >= 10:
+		return fmt.Sprintf("%.0fms", ms)
+	}
+	return fmt.Sprintf("%.1fms", ms)
+}
+
+// drawGoroutineGroups lists where the goroutines are parked, largest first.
+func (m *topModel) drawGoroutineGroups(b *tui.Buffer) {
+	th := m.theme
+	g := m.rt.groups
+	if g == nil {
+		b.Put("collecting the goroutine profile", 0, 0, th.Dim)
+		return
+	}
+	b.Put(tui.Truncate(fmt.Sprintf("%d total", g.Total), b.Width(), th.ASCII), 0, 0, th.Dim)
+	const countW = 7
+	for i, grp := range g.Groups {
+		y := i + 1
+		if y >= b.Height() {
+			break
+		}
+		cnt := strconv.Itoa(grp.Count)
+		b.Put(cnt, max(countW-len(cnt), 0), y, tui.Style{})
+		b.Put(tui.Truncate(shortFunc(grp.Func), b.Width()-countW-1, th.ASCII), countW+1, y, th.Dim)
 	}
 }
 
@@ -381,6 +518,8 @@ var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
 	"+  -             refresh faster or slower, down to 100ms",
+	"w                zoom the graphs to the last 15 seconds",
+	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",
 }

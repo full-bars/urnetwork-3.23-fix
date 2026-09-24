@@ -50,6 +50,10 @@ func niceCeil(v float64, binary bool) float64 {
 	return math.Min(niceCeilDecimal(v/unit), 1024) * unit
 }
 
+// NiceCeil is niceCeil for callers that hold an axis steady across frames and so
+// need to pick the top themselves (see Graph.Max).
+func NiceCeil(v float64, binary bool) float64 { return niceCeil(v, binary) }
+
 // Graph is a time series drawn as a filled braille area chart with a value
 // axis down the left edge.
 type Graph struct {

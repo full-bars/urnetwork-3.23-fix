@@ -21,7 +21,7 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", "traffic", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", "traffic", "internals", "goroutines", or "audit"
 	Key     string `json:"key,omitempty"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
@@ -99,6 +99,10 @@ type controlResponse struct {
 	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
 	// Traffic is the light live-counter reply, answered by "traffic".
 	Traffic *LiveTraffic `json:"traffic,omitempty"`
+	// Internals and Goroutines are the runtime views, answered by "internals"
+	// and "goroutines".
+	Internals  *NodeInternals   `json:"internals,omitempty"`
+	Goroutines *GoroutineGroups `json:"goroutines,omitempty"`
 	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`
