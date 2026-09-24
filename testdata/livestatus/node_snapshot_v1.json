@@ -51,5 +51,27 @@
     "goroutines": 1204,
     "open_fds": 310,
     "fd_limit": 65536
+  },
+  "traffic": {
+    "billable_bytes": 48318382080,
+    "total_bytes": 96636764160,
+    "lifetime_billable_bytes": 281474976710656,
+    "total_now_bps": 67174218,
+    "total_avg_1m_bps": 86025540,
+    "total_avg_5m_bps": 74800230,
+    "total_history_bps": [
+      67000000,
+      67015838,
+      67031676,
+      67047514,
+      67063352,
+      67079190,
+      67095028,
+      67110866,
+      67126704,
+      67142542,
+      67158380,
+      67174218
+    ]
   }
 }

@@ -334,16 +334,19 @@ func TestRestartPendingFor(t *testing.T) {
 // --- collector ---
 
 type fakeSnapshotEnv struct {
-	now       time.Time
-	billable  map[string]uint64
-	proxies   SnapshotProxies
-	clients   int64
-	auth      int64
-	contracts int64
-	pressure  float64
-	pending   bool
-	startup   string
-	reads     int
+	now         time.Time
+	billable    map[string]uint64
+	proxies     SnapshotProxies
+	clients     int64
+	auth        int64
+	contracts   int64
+	pressure    float64
+	pending     bool
+	startup     string
+	traffic     map[string]uint64
+	lifetime    uint64
+	hasLifetime bool
+	reads       int
 }
 
 func (f *fakeSnapshotEnv) sources() snapshotSources {
@@ -355,15 +358,17 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 			f.reads++
 			return f.proxies, f.clients
 		},
-		cumulative:     func() (int64, int64) { return f.auth, f.contracts },
-		sessions:       func() (int64, int64) { return 7, 3 },
-		pressure:       func() float64 { return f.pressure },
-		version:        func() string { return "v9" },
-		prevVer:        func() string { return "v8" },
-		restart:        func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
-		resources:      func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
-		restartPending: func() bool { return f.pending },
-		startup:        func() string { return f.startup },
+		cumulative:       func() (int64, int64) { return f.auth, f.contracts },
+		sessions:         func() (int64, int64) { return 7, 3 },
+		pressure:         func() float64 { return f.pressure },
+		version:          func() string { return "v9" },
+		prevVer:          func() string { return "v8" },
+		restart:          func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
+		resources:        func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
+		restartPending:   func() bool { return f.pending },
+		startup:          func() string { return f.startup },
+		traffic:          func() map[string]uint64 { return f.traffic },
+		lifetimeBillable: func() (uint64, bool) { return f.lifetime, f.hasLifetime },
 	}
 }
 
