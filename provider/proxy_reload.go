@@ -527,6 +527,9 @@ func (r *ProxyReloader) reload() {
 		desiredValues = append(desiredValues, s)
 	}
 	adoptLegacyProxyState(r.state, desiredValues)
+	if globalClientJWTStore != nil {
+		globalClientJWTStore.AdoptLegacy(desiredValues)
+	}
 	if globalProxyEarningsStore != nil {
 		globalProxyEarningsStore.adoptLegacy(desiredValues)
 	}

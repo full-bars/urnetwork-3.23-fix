@@ -9,6 +9,8 @@ import (
 	"sort"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // clientJWTStaleAfter prunes entries for proxies that haven't reconnected in
@@ -322,4 +324,73 @@ func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted b
 	}
 
 	return os.Rename(tmpPath, s.path)
+}
+
+// jwtStoreKey is the client JWT store key for a proxy: its identity
+// (ProxySettings.Key(): the address, or address+user for a credentialed proxy),
+// or the "direct" sentinel when there is no proxy. Keying by bare address made
+// two accounts at one gateway share a single saved login, so one account's
+// revocation eviction deleted the other's and both read as warm from one slot.
+func jwtStoreKey(s *connect.ProxySettings) string {
+	if s == nil {
+		return "direct"
+	}
+	return s.Key()
+}
+
+// AdoptLegacy moves login entries stored under the legacy bare-address key to
+// the identity keys of the proxies now at that address. Same rule as the other
+// identity stores: when several accounts share an address, exactly one (the
+// lexicographically smallest key) inherits the legacy login and the rest mint
+// fresh, so no account is handed an identity it did not earn. The legacy slot is
+// then removed even if the winner already had a newer entry, so a login that was
+// later evicted as revoked can never be resurrected from it. An unauthenticated
+// proxy at the address legitimately owns the bare slot, so that address is left
+// alone. Idempotent. adopted counts logins moved; split counts accounts that had
+// to mint fresh because the address was shared.
+func (s *clientJWTStore) AdoptLegacy(desired []*connect.ProxySettings) (adopted, split int) {
+	keysByAddress := map[string][]string{}
+	for _, d := range desired {
+		keysByAddress[d.Address] = append(keysByAddress[d.Address], d.Key())
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	addresses := make([]string, 0, len(keysByAddress))
+	for address := range keysByAddress {
+		addresses = append(addresses, address)
+	}
+	sort.Strings(addresses)
+	for _, address := range addresses {
+		keys := keysByAddress[address]
+		legacy, ok := s.entries[address]
+		if !ok {
+			continue
+		}
+		ownedByUnauthenticated := false
+		for _, k := range keys {
+			if k == address {
+				ownedByUnauthenticated = true
+			}
+		}
+		if ownedByUnauthenticated {
+			continue
+		}
+		sort.Strings(keys)
+		winner := keys[0]
+		if _, has := s.entries[winner]; !has {
+			s.entries[winner] = legacy
+			if err := s.flushLocked(winner, legacy, false); err != nil {
+				tlog("⚠️ [jwt-store] failed to persist adopted login for %s: %v\n", proxyKeyDisplay(winner), err)
+			}
+			adopted++
+			split += len(keys) - 1
+		}
+		delete(s.entries, address)
+		if err := s.flushLocked(address, clientJWTEntry{}, true); err != nil {
+			tlog("⚠️ [jwt-store] failed to drop legacy login slot for %s: %v\n", address, err)
+		}
+	}
+	return adopted, split
 }
