@@ -2,6 +2,7 @@ package main
 
 import (
 	"path/filepath"
+	"strconv"
 	"testing"
 	"time"
 
@@ -155,5 +156,50 @@ func TestPrioritizeAndScheduleProxies_WarmthIsPerIdentity(t *testing.T) {
 	_, warmN, renewN, coldN := prioritizeAndScheduleProxies([]*connect.ProxySettings{warm, cold}, map[string]string{}, "net-main")
 	if warmN != 1 || renewN != 0 || coldN != 1 {
 		t.Fatalf("warm=%d renewable=%d cold=%d, want 1 warm (u1) and 1 cold (u2)", warmN, renewN, coldN)
+	}
+}
+
+// The blast radius of the migration, pinned. Across a realistic mix every proxy
+// that owns its address keeps its saved login (still warm, so hot-restart reuse
+// is unaffected); the ONLY proxy that starts without one is the second account
+// at a shared gateway address, which previously could not run at all and now
+// needs an identity of its own.
+func TestJWTStoreAdoptLegacy_OnlySharedGatewayLosersStartFresh(t *testing.T) {
+	t.Setenv("URNETWORK_HOT_RESTART", "1")
+	restore := withGlobalStore(t, filepath.Join(t.TempDir(), ".client_jwts.json"))
+	defer restore()
+	validJWT := createFakeJWTWithClaims(map[string]interface{}{
+		"client_id":  testClientId,
+		"exp":        float64(time.Now().Add(time.Hour).Unix()),
+		"network_id": "net-main",
+	})
+	legacy := clientJWTEntry{ByClientJWT: validJWT, ClientID: testClientId, NetworkID: "net-main", MintedAt: time.Now()}
+
+	var desired []*connect.ProxySettings
+	// 50 credentialed proxies, each alone at its own address (the common case).
+	for i := 0; i < 50; i++ {
+		s := credSettings("10.0.1."+strconv.Itoa(i)+":1080", "user")
+		desired = append(desired, s)
+		_ = globalClientJWTStore.Put(s.Address, legacy)
+	}
+	// 10 unauthenticated proxies (internal config / free URL lists).
+	for i := 0; i < 10; i++ {
+		s := &connect.ProxySettings{Network: "tcp", Address: "10.0.2." + strconv.Itoa(i) + ":1080"}
+		desired = append(desired, s)
+		_ = globalClientJWTStore.Put(s.Address, legacy)
+	}
+	// One shared gateway with two accounts.
+	shared1, shared2 := credSettings("gw.example:1080", "u1"), credSettings("gw.example:1080", "u2")
+	desired = append(desired, shared1, shared2)
+	_ = globalClientJWTStore.Put("gw.example:1080", legacy)
+
+	globalClientJWTStore.AdoptLegacy(desired)
+
+	_, warm, renewable, cold := prioritizeAndScheduleProxies(desired, map[string]string{}, "net-main")
+	if cold != 1 {
+		t.Fatalf("exactly one proxy (the second shared-gateway account) may start without a saved login, got warm=%d renewable=%d cold=%d", warm, renewable, cold)
+	}
+	if warm != len(desired)-1 {
+		t.Fatalf("every other proxy must keep its saved login, got warm=%d of %d", warm, len(desired))
 	}
 }
