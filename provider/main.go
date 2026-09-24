@@ -3262,10 +3262,7 @@ func provide(opts docopt.Opts) {
 						}
 						return "", connect.Id{}, false, waitErr
 					}
-					identityKey := "direct"
-					if proxySettings != nil {
-						identityKey = proxySettings.Address
-					}
+					identityKey := jwtStoreKey(proxySettings)
 					byClientJwt, clientId, reused, err = provideAuth(proxyCtx, clientStrategy, apiUrl, opts, nodeName, identityKey)
 					release()
 					// Limit concurrent slow-retry auth attempts to avoid
@@ -3471,10 +3468,9 @@ func provide(opts docopt.Opts) {
 			return
 		}
 
-		identityKey := "direct"
+		identityKey := jwtStoreKey(proxySettings)
 		proxyIndex := 0
 		if proxySettings != nil {
-			identityKey = proxySettings.Address
 			proxyIndex = proxySettings.Index
 		}
 
@@ -3819,6 +3815,11 @@ func provide(opts docopt.Opts) {
 	// further below, right after each is loaded from disk — calling them
 	// here would be a silent no-op against their still-empty zero values.
 	adoptLegacyProxyState(proxyState, allProxySettings)
+	// The saved client logins (hot-restart reuse) move to identity keys too, and
+	// before the warmth evaluation below reads them.
+	if globalClientJWTStore != nil {
+		globalClientJWTStore.AdoptLegacy(allProxySettings)
+	}
 	// Load the per-proxy earnings history. It is loaded here rather than at
 	// package init so a test never picks up the real home directory's
 	// history (the failure mode fixed in #589). The launch scheduler

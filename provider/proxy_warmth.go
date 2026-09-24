@@ -86,8 +86,9 @@ func proxyLaunchStagger(tier ProxyWarmthTier, isURLSourced bool) time.Duration {
 	}
 }
 
-// evaluateProxyWarmth checks whether a proxy address has a warm client JWT stored on disk.
-func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTier {
+// evaluateProxyWarmth checks whether a proxy (by client JWT store key, see
+// jwtStoreKey) has a warm client JWT stored on disk.
+func evaluateProxyWarmth(storeKey string, currentNetworkID string) ProxyWarmthTier {
 	if !hotRestartEnabled() {
 		return WarmthCold
 	}
@@ -97,7 +98,7 @@ func evaluateProxyWarmth(address string, currentNetworkID string) ProxyWarmthTie
 	if currentNetworkID == "" {
 		currentNetworkID = currentProviderNetworkID()
 	}
-	entry, ok := globalClientJWTStore.Get(address)
+	entry, ok := globalClientJWTStore.Get(storeKey)
 	if !ok || entry.ByClientJWT == "" || entry.ClientID == "" {
 		return WarmthCold
 	}
@@ -156,15 +157,12 @@ func prioritizeAndScheduleProxies(
 		// warmthMap/earningsMap are keyed by identity (ProxySettings.Key()),
 		// not bare address, so two accounts sharing a gateway address get
 		// independent tier/earnings records instead of colliding in these
-		// maps. evaluateProxyWarmth itself still probes the client-JWT
-		// cache by bare address (a known, low-stakes approximation: two
-		// identities at the same address currently share one warm-restart
-		// JWT slot, so at most one of them benefits from hot-restart at a
-		// time — a startup latency cost, not a correctness or money issue).
-		// proxyEarningsScore is looked up by the real key: the earnings
-		// store itself is already identity-keyed (see proxy_earnings_store.go).
+		// maps. The client-JWT store is identity-keyed as well (jwtStoreKey), so
+		// each account has its own hot-restart slot. proxyEarningsScore is
+		// looked up by the real key: the earnings store is identity-keyed too
+		// (see proxy_earnings_store.go).
 		key := s.Key()
-		tier := evaluateProxyWarmth(s.Address, currentNetworkID)
+		tier := evaluateProxyWarmth(key, currentNetworkID)
 		warmthMap[key] = tier
 		earningsMap[key] = proxyEarningsScore(key, now)
 		switch tier {
