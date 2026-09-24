@@ -504,6 +504,14 @@ type nodeSnapshotCollector struct {
 	mu       sync.Mutex
 	cached   *NodeSnapshot
 	cachedAt time.Time
+
+	// sampleMu makes one tick's samples, and one snapshot's capture of them,
+	// atomic against each other. The graph anchors both series on HistorySeq; a
+	// tick landing between reading it and reading the history it labels made the
+	// anchor one sample stale and shifted every completed column. It is separate
+	// from mu on purpose: a slow snapshot build must not stall the sampler, and
+	// this lock is held only for the samplers' own short reads and writes.
+	sampleMu sync.Mutex
 }
 
 func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
@@ -513,10 +521,18 @@ func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
 // tick takes one rate sample and, when due, one counter sample.
 func (c *nodeSnapshotCollector) tick() {
 	now := c.src.now()
-	c.rate.sample(c.src.billable(), now)
+	// The counter reads walk the proxy pool; do them before taking the lock.
+	billable := c.src.billable()
+	var total map[string]uint64
 	if c.src.traffic != nil {
-		c.traffic.sample(c.src.traffic(), now)
+		total = c.src.traffic()
 	}
+	c.sampleMu.Lock()
+	c.rate.sample(billable, now)
+	if c.src.traffic != nil {
+		c.traffic.sample(total, now)
+	}
+	c.sampleMu.Unlock()
 	if c.hist.due(now) {
 		auth, contracts := c.src.cumulative()
 		c.hist.add(cumulativeSample{at: now, auth: auth, contracts: contracts})
@@ -553,7 +569,14 @@ func (c *nodeSnapshotCollector) Get() *NodeSnapshot {
 }
 
 func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
+	// Everything read from the samplers is captured together, so the anchor, the
+	// billable history and the total history all describe the same sample.
+	c.sampleMu.Lock()
 	nowBps, avg1m, avg5m := c.rate.rates()
+	histSeq, histBps := c.rate.seq(), c.rate.history()
+	traffic := c.trafficSnapshot()
+	c.sampleMu.Unlock()
+
 	proxies, clients := c.src.pool()
 	pqe, classical := c.src.sessions()
 	uptime := now.Sub(c.src.startedAt)
@@ -576,8 +599,8 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 			Avg1mBps:        avg1m,
 			Avg5mBps:        avg5m,
 			HistoryInterval: 1,
-			HistorySeq:      c.rate.seq(),
-			HistoryBps:      c.rate.history(),
+			HistorySeq:      histSeq,
+			HistoryBps:      histBps,
 		},
 		Clients:   clients,
 		Sessions:  SnapshotSessions{PQE: pqe, Classical: classical},
@@ -590,7 +613,7 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 	if c.src.startup != nil {
 		in.startup = c.src.startup()
 	}
-	snap.Traffic = c.trafficSnapshot()
+	snap.Traffic = traffic
 	snap.State = deriveSnapshotState(in)
 	snap.StateReason = deriveStateReason(in)
 	if snap.State == "idle" {
