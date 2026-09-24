@@ -48,7 +48,7 @@ Panels:
 - **Resources:** heap against the memory limit, descriptors against their limit, goroutines.
 - **Events:** recent restarts (with reason) and proxy recoveries and losses, from data the provider already keeps.
 
-Keys: `q` quit, `tab` next provider on the host, `p` proxy detail, `?` help, `+`/`-` refresh rate. Resize is handled live.
+Keys: `q` quit, `tab` next provider on the host, `p` proxy detail, `?` help, `-`/`+` faster or slower refresh (as in btop), `w` zoom, `g` goroutine list, `m` menu. Resize is handled live.
 
 ## Data flow
 
@@ -101,7 +101,7 @@ After the snapshot work lands in `urnetwork-3.23-fix`, then ported to `meso-mine
 What was built differs from the proposal in these ways:
 
 - **Terminal I/O** goes through `tcell`, not `x/term` (see [The library decision](#the-library-decision)).
-- **Keys:** `q`, `Esc` and `Ctrl-C` quit; `Tab` and `Shift-Tab` switch provider; `+` and `-` change the refresh rate; `?` shows help. The proposed `p` (proxy detail) is **not** in the first version.
+- **Keys:** `q`, `Esc` and `Ctrl-C` quit; `Tab` and `Shift-Tab` switch provider; `-` and `+` shorten and lengthen the refresh interval, like btop; `w` zooms the graphs to the last 15 seconds; `g` lists where goroutines are parked; `m` opens the theme and graph style menu; `?` shows help. The proposed `p` (proxy detail) is **not** in the first version.
 - **States:** a snapshot state of `starting`, or any state the view does not know, is shown in capitals in a neutral colour rather than as an error.
 - **`--demo`:** a hidden flag that draws synthetic snapshots, computed purely from the clock, so the screen can be seen or captured (for example in `tmux`) on a box with no provider. It skips provider discovery and never touches real state. It is deliberately not in the help text.
 - **`urtop`:** a link to the `urnet-tools` binary, created by the installer and by `urnet-tools update`; the binary behaves as `top` when started under that name.
