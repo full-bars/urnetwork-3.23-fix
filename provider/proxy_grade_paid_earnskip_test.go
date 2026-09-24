@@ -197,12 +197,16 @@ func TestPaidProxyGrader_EarnedTooLongAgoIsProbed(t *testing.T) {
 
 	// The proxy earned once, but well outside paidEarnWindow (15m) — it
 	// must no longer be treated as "actively earning".
+	// Seed the IDENTITY key the grader reads (EarnedSince(key, ...)). Seeding the
+	// bare address would leave the record unconsulted, and the test would pass
+	// whether or not the recency cutoff works.
+	earnKey := identityKey(addr, "u")
 	globalPerProxyEarnTracker.mu.Lock()
-	globalPerProxyEarnTracker.lastEarned[addr] = time.Now().Add(-paidEarnWindow - time.Hour)
+	globalPerProxyEarnTracker.lastEarned[earnKey] = time.Now().Add(-paidEarnWindow - time.Hour)
 	globalPerProxyEarnTracker.mu.Unlock()
 	t.Cleanup(func() {
 		globalPerProxyEarnTracker.mu.Lock()
-		delete(globalPerProxyEarnTracker.lastEarned, addr)
+		delete(globalPerProxyEarnTracker.lastEarned, earnKey)
 		globalPerProxyEarnTracker.mu.Unlock()
 	})
 
