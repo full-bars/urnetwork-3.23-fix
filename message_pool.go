@@ -459,7 +459,9 @@ var orderedMessagePools = sync.OnceValue(func() []*messagePool {
 })
 
 func poolStats(pools []*messagePool) {
+	watch := newPoolWatch()
 	for {
+		var stats []poolTagStat
 		for _, pool := range pools {
 			for tag := range 256 {
 				var taken uint64
@@ -481,11 +483,20 @@ func poolStats(pools []*messagePool) {
 					func() {
 						debugStateLock.Lock()
 						defer debugStateLock.Unlock()
-						caller = strings.Join(maps.Keys(tagCallers[uint8(tag)]), "/")
+						caller = poolCallerLabel(tagCallers[uint8(tag)])
 					}()
 					DefaultLogger().Infof("pool[%d] tag=%d [%s] r=%d/t=%d/c=%d = %.2f%% return / %.2f%% reuse\n", pool.size, tag, caller, returned, taken, created, 100*ratio, 100*reuse)
+					stats = append(stats, poolTagStat{PoolSize: pool.size, Tag: tag, Caller: caller, Taken: taken, Returned: returned, Created: created})
 				}
 			}
+		}
+
+		// One line at the end of the dump says whether any of the above is a
+		// problem, so nobody has to read the wall of counters to find out.
+		if summary := watch.observe(stats); summary.Healthy() {
+			DefaultLogger().Infof("%s\n", summary)
+		} else {
+			DefaultLogger().Warningf("%s\n", summary)
 		}
 
 		select {
