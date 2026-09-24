@@ -402,7 +402,7 @@ func TestFetchCyclePrintsOneLinePerSourceWithItsOwnCounts(t *testing.T) {
 	}
 	for i, want := range []string{
 		"/a.txt: +1 new of 2 listed (0 already known, 1 rejected, 0 dead, 1 held for re-probe)", // goodA qualifies; the bare socks5 is held for re-probe
-		"/b.txt: +1 new of 2 listed (1 already known, 0 rejected, 0 dead)", // goodA was A's; goodB is new
+		"/b.txt: +1 new of 2 listed (1 already known, 0 rejected, 0 dead)",                      // goodA was A's; goodB is new
 		"/c.txt: fetch failed",
 	} {
 		if !strings.Contains(sources[i], want) {
