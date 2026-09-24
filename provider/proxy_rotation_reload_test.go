@@ -197,6 +197,11 @@ func TestReload_RotationWithRealGoroutines_KeepsRegistration(t *testing.T) {
 	const addr = "192.0.2.40:1080"
 	key := (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: "test-user"}}).Key()
 	withTempHome(t)
+	// Production seeds the ID counter at startup so ID 0 stays reserved for
+	// [direct]. Without it, run in isolation the first proxy is handed ID 0
+	// and races the direct goroutine's RegisterProxy(0, "direct"), which
+	// overwrites this proxy's health entry.
+	initProxyIDCounter(0)
 	proxyWarmupDone.Store(true)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
 
