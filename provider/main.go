@@ -5421,7 +5421,7 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 	}
 
 	addrsBySource, display := collectMatchingProxies(
-		pattern, proxyConfig.Servers, stateProxies, stateSource, urlState.Cache)
+		pattern, proxyConfig, stateProxies, stateSource, urlState.Cache)
 
 	if len(display) == 0 {
 		fmt.Printf("no proxies matched %q — nothing to do\n", pattern)
