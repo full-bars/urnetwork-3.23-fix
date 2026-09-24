@@ -193,21 +193,30 @@ It judges the **trend of outstanding buffers** (`t - r`) over the last 10 dumps,
 
 ## 🌐 URL-Sourced Proxies (`[proxy][url]`)
 
-A URL fetch cycle prints per-source detail lines, then **one headline** that says what happened to the pool. It is always printed, including when nothing changed, and it is kept in the important buffer.
+A URL fetch cycle prints detail lines, then **one line per source** saying what that source contributed, then **one headline** for the whole cycle. They are always printed, including when nothing changed, and are kept in the important buffer.
 
 ```
-➕ [proxy][url] cycle: +12 new to the pool from 2 sources (48 already known, 9 rejected, 3 held for re-probe); pool now 340 qualified of 371 cached
+📥 [proxy][url] source lists.example.com/proxies/http.txt: +8 new of 42 listed (30 already known, 2 rejected, 2 dead)
+📥 [proxy][url] source other.example.org/raw: nothing new of 60 listed (60 already known, 0 rejected, 0 dead)
+📥 [proxy][url] source broken.example.net/list: fetch failed
+➕ [proxy][url] cycle: +8 new to the pool from 2 of 3 sources, 1 failed (90 already known, 4 rejected, 2 held for re-probe); pool now 340 qualified of 371 cached
 ✔️ [proxy][url] cycle: nothing new from 2 sources (60 already known, 0 rejected); pool 340 qualified of 371 cached
 ⚠️ [proxy][url] cycle: every source failed (2 of 2); pool unchanged at 340 qualified of 371 cached
 ```
 
+A source is labeled by host and path only. The query string and any credentials in the URL are never logged in these lines, since source URLs often carry an API token. Two sources that would share a label are numbered (`#2`).
+
 | Field | Meaning |
 |---|---|
-| `+N new to the pool` | New proxies that qualified this cycle and were admitted. |
-| `already known` | Addresses skipped because the cache already had them (grade refresh is the reaper's job). |
-| `rejected` | New addresses that probed below the bar or as socks5-only. |
+| `+N new` | New proxies from this source that qualified and were admitted to the pool. |
+| `of N listed` | Parseable proxy lines the source returned. |
+| `already known` | Addresses the cache already had, or that another source listed earlier in the same cycle (a proxy listed by two sources is credited to the first). |
+| `rejected` | New addresses that were not admitted: probed below the bar, or socks5-only. |
+| `dead` | New addresses that failed the probe outright and were dropped. |
 | `held for re-probe` | Rejected entries cached anyway, so the reaper can retry them. |
 | `pool ... qualified of ... cached` | The URL pool after the cycle: qualified proxies, and all cached entries. |
+
+The headline is the sum of the sources (its `rejected` includes their dead).
 
 When a reload actually starts URL-sourced proxies it says so on its own line, and the routine summary attributes each addition to its source:
 

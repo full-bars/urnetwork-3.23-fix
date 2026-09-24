@@ -30,6 +30,7 @@ var importantLogMarkers = []string{
 	// The per-cycle headline (what a URL fetch did to the pool) and the launch
 	// line (URL proxies actually starting) are rare and high-value.
 	"[proxy][url] cycle:",
+	"[proxy][url] source ",
 	"[proxy][url] launching",
 	"[proxy][url] reaper: refreshed grade",
 	// Grade summary + per-address delta lines (design 2026-08-09): the

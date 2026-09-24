@@ -250,3 +250,126 @@ func TestReloadWithNoURLProxiesPrintsNoLaunchLine(t *testing.T) {
 		t.Fatalf("the file addition should be attributed to the file source:\n%s", out)
 	}
 }
+
+// Each source gets its own line saying how many of ITS proxies were added, so
+// the operator can tell which source produces and which is dead weight. The
+// label is host and path only: source URLs often carry tokens in the query.
+func TestURLSourceLabelDropsSecretsAndDisambiguates(t *testing.T) {
+	urls := []string{
+		"https://lists.example.com/proxies/http.txt?token=SECRET&x=1",
+		"https://user:hunter2@other.example.org/raw#frag",
+		"https://lists.example.com/proxies/http.txt?token=OTHER",
+		"not a url at all?key=SECRET",
+	}
+	got := urlSourceLabels(urls)
+	want := []string{
+		"lists.example.com/proxies/http.txt",
+		"other.example.org/raw",
+		"lists.example.com/proxies/http.txt #2",
+		"not a url at all",
+	}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Errorf("label[%d] = %q, want %q", i, got[i], want[i])
+		}
+		if strings.Contains(got[i], "SECRET") || strings.Contains(got[i], "hunter2") || strings.Contains(got[i], "OTHER") {
+			t.Errorf("label[%d] leaks a secret: %q", i, got[i])
+		}
+	}
+	long := urlSourceLabels([]string{"https://example.com/" + strings.Repeat("a", 200)})[0]
+	if len(long) > 64 {
+		t.Errorf("a very long label is not capped: %d chars", len(long))
+	}
+}
+
+func TestURLSourceStatsLine(t *testing.T) {
+	cases := []struct {
+		name string
+		in   urlSourceStats
+		want string
+	}{
+		{"added", urlSourceStats{Label: "a.example/list.txt", Lines: 42, Known: 30, Dead: 2, Rejected: 2, Added: 8},
+			"📥 [proxy][url] source a.example/list.txt: +8 new of 42 listed (30 already known, 2 rejected, 2 dead)"},
+		{"nothing new", urlSourceStats{Label: "b.example/x", Lines: 60, Known: 60},
+			"📥 [proxy][url] source b.example/x: nothing new of 60 listed (60 already known, 0 rejected, 0 dead)"},
+		{"failed", urlSourceStats{Label: "c.example/x", Failed: true},
+			"📥 [proxy][url] source c.example/x: fetch failed"},
+		{"empty list", urlSourceStats{Label: "d.example/x"},
+			"📥 [proxy][url] source d.example/x: nothing new of 0 listed (0 already known, 0 rejected, 0 dead)"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.in.String(); got != tc.want {
+				t.Fatalf("\n got: %s\nwant: %s", got, tc.want)
+			}
+			if !isImportantLogLine(tc.in.String()) {
+				t.Fatalf("the per-source line must survive the important-log filter")
+			}
+		})
+	}
+}
+
+// Two sources, one of them repeating the first one's proxy: the per-source lines
+// attribute each new proxy to the first source that listed it, and the headline
+// is the sum.
+func TestFetchCyclePrintsOneLinePerSourceWithItsOwnCounts(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	ca := newTestCA(t)
+	leaf := issueLeafForHost(t, ca, "127.0.0.1")
+	withProbeTLSRoot(t, ca)
+	goodA, cleanA := listenSocks5ApiOKTLS(t, &leaf)
+	defer cleanA()
+	goodB, cleanB := listenSocks5ApiOKTLS(t, &leaf)
+	defer cleanB()
+	bad, cleanBad := listenSocks5Once(t)
+	defer cleanBad()
+
+	srvA := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(goodA + ":user:pass\n" + bad + "\n"))
+	}))
+	defer srvA.Close()
+	srvB := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Write([]byte(goodA + ":user:pass\n" + goodB + ":user:pass\n"))
+	}))
+	defer srvB.Close()
+	srvDead := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, "boom", http.StatusInternalServerError)
+	}))
+	defer srvDead.Close()
+
+	out := captureTlog(t, func() {
+		fetchAndMergeProxyURLs(context.Background(), []string{srvA.URL + "/a.txt?token=SECRET", srvB.URL + "/b.txt", srvDead.URL + "/c.txt"}, 0, "127.0.0.1", 1)
+	})
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "[proxy][url] source ") || strings.Contains(l, "[proxy][url] cycle:") {
+			t.Log(l) // the operator's view of one cycle
+		}
+	}
+	var sources []string
+	for _, l := range strings.Split(out, "\n") {
+		if strings.Contains(l, "[proxy][url] source ") {
+			sources = append(sources, l)
+		}
+	}
+	if len(sources) != 3 {
+		t.Fatalf("want one line per source (3), got %d:\n%s", len(sources), out)
+	}
+	for i, want := range []string{
+		"/a.txt: +1 new of 2 listed (0 already known, 1 rejected, 0 dead)", // goodA qualifies; the bare socks5 does not
+		"/b.txt: +1 new of 2 listed (1 already known, 0 rejected, 0 dead)", // goodA was A's; goodB is new
+		"/c.txt: fetch failed",
+	} {
+		if !strings.Contains(sources[i], want) {
+			t.Errorf("source line %d = %q, want it to contain %q", i, sources[i], want)
+		}
+		if strings.Contains(sources[i], "SECRET") {
+			t.Errorf("source line %d leaks the URL's token: %q", i, sources[i])
+		}
+	}
+	lines := cycleLines(out)
+	if len(lines) != 1 || !strings.Contains(lines[0], "+2 new to the pool from 2 of 3 sources, 1 failed") {
+		t.Fatalf("headline should be the sum of the sources: %v", lines)
+	}
+}

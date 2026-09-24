@@ -274,14 +274,6 @@ func bucketColumns(samples []float64, n int, anchor int64, capacity int) (ids []
 	return ids, vals
 }
 
-func floorDiv(a, b int64) int64 {
-	q := a / b
-	if a%b != 0 && (a < 0) != (b < 0) {
-		q--
-	}
-	return q
-}
-
 // drawGraphASCII is the fallback for terminals without braille: one glyph per
 // pair of sample columns, stacked '#' rows with the top row graded by the
 // sparkline ramp, and a baseline glyph so a zero still shows.

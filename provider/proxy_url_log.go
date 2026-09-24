@@ -2,6 +2,7 @@ package main
 
 import (
 	"fmt"
+	"net/url"
 	"sort"
 	"strings"
 
@@ -104,4 +105,63 @@ func reloadSourceBreakdown(added []*connect.ProxySettings, sourceOf map[string]s
 		parts = append(parts, fmt.Sprintf("other %d", n))
 	}
 	return " (" + strings.Join(parts, ", ") + ")"
+}
+
+// urlSourceStats is what one URL source did in a fetch cycle. A source's "already
+// known" count includes addresses another source probed earlier in the same
+// cycle, so a proxy listed by two sources is attributed to the first.
+type urlSourceStats struct {
+	Label    string
+	Failed   bool // the fetch failed
+	Lines    int  // parseable proxy lines the source listed
+	Known    int  // already in the cache, or probed earlier this cycle
+	Dead     int  // new, but failed the probe outright and were dropped
+	Rejected int  // new, probed below the bar or as socks5-only
+	Added    int  // new and admitted to the pool
+	Held     int  // new and cached below the bar, for the reaper to re-probe
+}
+
+// String is the per-source line.
+func (s urlSourceStats) String() string {
+	const prefix = "📥 [proxy][url] source "
+	if s.Failed {
+		return fmt.Sprintf("%s%s: fetch failed", prefix, s.Label)
+	}
+	verdict := "nothing new"
+	if s.Added > 0 {
+		verdict = fmt.Sprintf("+%d new", s.Added)
+	}
+	return fmt.Sprintf("%s%s: %s of %d listed (%d already known, %d rejected, %d dead)", prefix, s.Label, verdict, s.Lines, s.Known, s.Rejected, s.Dead)
+}
+
+// urlSourceLabelMax caps a source label so one very long URL cannot swamp a line.
+const urlSourceLabelMax = 64
+
+// urlSourceLabels names each source by host and path only. Source URLs often
+// carry an API token in the query string or credentials in the userinfo, and a
+// label lands in the important log buffer, so neither is ever included. Sources
+// that would share a label are numbered.
+func urlSourceLabels(urls []string) []string {
+	labels := make([]string, len(urls))
+	seen := map[string]int{}
+	for i, raw := range urls {
+		label := raw
+		if cut := strings.IndexAny(label, "?#"); cut >= 0 {
+			label = label[:cut]
+		}
+		if u, err := url.Parse(label); err == nil && u.Host != "" {
+			label = u.Host + strings.TrimSuffix(u.Path, "/")
+		} else if at := strings.LastIndex(label, "@"); at >= 0 {
+			label = label[at+1:]
+		}
+		if len(label) > urlSourceLabelMax {
+			label = label[:urlSourceLabelMax-3] + "..."
+		}
+		seen[label]++
+		if n := seen[label]; n > 1 {
+			label = fmt.Sprintf("%s #%d", label, n)
+		}
+		labels[i] = label
+	}
+	return labels
 }
