@@ -93,3 +93,26 @@ func TestTrimPreviewSelection_KeepsCredentialedEarner(t *testing.T) {
 		t.Fatalf("shed %q, want the idle proxy %q", shed, idleKey)
 	}
 }
+
+// Two accounts at one shared gateway address are two running proxies. The trim
+// preview must count and rank them separately: collapsing them to one bare
+// address halves the count and shed the wrong account.
+func TestTrimPreview_AccountsSharingAnAddressAreSeparateProxies(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+
+	const gw = "gw.example:1080"
+	earnerKey, idleKey := identityKey(gw, "u1"), identityKey(gw, "u2")
+	registerBandwidthProxy(1, gw, earnerKey, 10<<30)
+	registerBandwidthProxy(2, gw, idleKey, 0)
+
+	running := runningProxyAddresses()
+	if len(running) != 2 {
+		t.Fatalf("two accounts at one address must be two running proxies, got %q", running)
+	}
+	state := map[string]ProxyEntry{earnerKey: {Health: "up"}, idleKey: {Health: "up"}}
+	shed := selectWorstRunningProxies(state, nil, runningProxyTraffic(), running, 1)
+	if len(shed) != 1 || shed[0] != idleKey {
+		t.Fatalf("shed %q, want the idle account %q and never the earner", shed, idleKey)
+	}
+}
