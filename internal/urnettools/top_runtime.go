@@ -49,9 +49,6 @@ const (
 	// Internals panel geometry: frame plus eight rows, and the goroutine list
 	// fits the same box.
 	topInternalsRows = 10
-	// topResourcesRows is the Resources box when it shares the column: frame plus
-	// heap, fds and rss.
-	topResourcesRows = 5
 )
 
 // topScale holds one graph's axis top steady. The top rises at once when the

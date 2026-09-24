@@ -18,8 +18,16 @@ import (
 const (
 	topSideWidth   = 30
 	topProxiesRows = 6 // frame plus four bars
-	topEventsRows  = 6 // frame plus four events
-	topNowRows     = 11
+	// topProxiesCompactRows is the Proxies panel for a small pool: frame plus one
+	// line. Four bars for one proxy is a lot of box for one number.
+	topProxiesCompactRows = 3
+	// topProxiesCompactMax is the largest pool drawn as one line.
+	topProxiesCompactMax = 3
+	// topEventsMin and topEventsMax bound the Events panel's content rows: it
+	// takes what the events need, so a quiet node does not reserve blank rows.
+	topEventsMin = 1
+	topEventsMax = 4
+	topNowRows   = 11
 	// topNowRowsTraffic is the Now panel when the provider reports traffic
 	// totals: billable and total rates with their averages, the session bytes
 	// of each, then the usual rows. 16 so the two interior rows needed to
@@ -58,7 +66,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	m.drawFooter(b.Sub(rows[2]))
 
 	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(topSideWidth))
-	left := tui.SplitRows(cols[0], tui.Flex(1), tui.Fixed(topProxiesRows), tui.Fixed(topEventsRows))
+	left := tui.SplitRows(cols[0], tui.Flex(1), tui.Fixed(m.proxiesRows()), tui.Fixed(m.eventsRows()))
 	nowRows := topNowRows
 	if m.hasTraffic() {
 		nowRows = topNowRowsTraffic
@@ -66,12 +74,15 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	// The side column is Now over Resources; when the provider reports runtime
 	// internals and the column is tall enough, Resources shrinks to its three
 	// rows and Internals takes the rest.
-	withInternals := m.hasInternals() && cols[1].H >= nowRows+topResourcesRows+topInternalsRows
+	resRows := m.resourceRows() + 2
+	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+topInternalsRows
 	var side []tui.Rect
 	if withInternals {
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(topResourcesRows), tui.Flex(1))
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Flex(1))
 	} else {
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Flex(1))
+		// Resources takes its content, not the rest of the column: a box of blank
+		// rows says nothing. What is left stays empty.
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(min(resRows, max(cols[1].H-nowRows, 0))), tui.Flex(1))
 	}
 	box := func(r tui.Rect, title string) *tui.Buffer {
 		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
@@ -227,10 +238,59 @@ func (m *topModel) hasTraffic() bool {
 	return m.snap != nil && m.snap.Traffic != nil
 }
 
+// proxiesRows is the height of the Proxies panel: one line for a small pool
+// (a direct-only node has none or one), four bars for a real one. The rows this
+// gives back go to the graphs.
+func (m *topModel) proxiesRows() int {
+	if m.snap != nil {
+		p := m.snap.Proxies
+		if p.Up+p.Degraded+p.Connecting+p.Dead <= topProxiesCompactMax {
+			return topProxiesCompactRows
+		}
+	}
+	return topProxiesRows
+}
+
+// eventsRows is the height of the Events panel: its content, at least one row
+// (which says there are none) and at most topEventsMax.
+func (m *topModel) eventsRows() int {
+	return 2 + min(max(len(m.events), topEventsMin), topEventsMax)
+}
+
+// drawProxiesCompact is the one-line pool summary: every state with its count,
+// a zero dimmed so the states that matter stand out.
+func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
+	th := m.theme
+	p := m.snap.Proxies
+	if p.Up+p.Degraded+p.Connecting+p.Dead == 0 {
+		b.Put("no proxies: direct only", 0, 0, th.Dim)
+		return
+	}
+	x := 0
+	for i, st := range []struct {
+		label string
+		n     int
+		on    tui.Style
+	}{{"up", p.Up, th.OK}, {"degraded", p.Degraded, th.Warn}, {"connecting", p.Connecting, tui.Style{}}, {"dead", p.Dead, th.Bad}} {
+		style := st.on
+		if st.n == 0 {
+			style = th.Dim
+		}
+		if i > 0 {
+			x = b.Put("   ", x, 0, tui.Style{})
+		}
+		x = b.Put(strconv.Itoa(st.n)+" "+st.label, x, 0, style)
+	}
+}
+
 func (m *topModel) drawProxies(b *tui.Buffer) {
 	th := m.theme
 	if m.snap == nil {
 		b.Put("no data", 0, 0, th.Dim)
+		return
+	}
+	if b.Height() < topProxiesRows-2 {
+		m.drawProxiesCompact(b)
 		return
 	}
 	p := m.snap.Proxies
@@ -258,6 +318,10 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 func (m *topModel) drawEvents(b *tui.Buffer) {
 	th := m.theme
 	now := m.now()
+	if len(m.events) == 0 {
+		b.Put("no events yet", 0, 0, th.Dim)
+		return
+	}
 	for i, e := range m.sortedEvents() {
 		if i >= b.Height() {
 			break
@@ -342,6 +406,29 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 			b.Put(ln, 0, y+i, th.Warn)
 		}
 	}
+}
+
+// resourceRows is how many rows drawResources fills, so its box can fit them.
+// It mirrors drawResources's conditions, one row per figure the platform gave.
+func (m *topModel) resourceRows() int {
+	if m.snap == nil {
+		return 1 // "no data"
+	}
+	r := m.snap.Resources
+	n := 0
+	if (r.MemLimitBytes != nil && *r.MemLimitBytes > 0) || r.HeapInuseBytes > 0 {
+		n++
+	}
+	if r.OpenFDs != nil {
+		n++
+	}
+	if r.RSSBytes != nil {
+		n++
+	}
+	if r.Goroutines > 0 && !m.hasInternals() {
+		n++
+	}
+	return max(n, 1)
 }
 
 func (m *topModel) drawResources(b *tui.Buffer) {
