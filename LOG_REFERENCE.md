@@ -169,8 +169,18 @@ Fires every 60 seconds. This is the provider's internal memory health check.
 | `return %` | `r / t` — what fraction of taken buffers came back. Should be ~100%. A leak shows here. |
 | `reuse %` | `(t - c) / t` — what fraction of checkouts found an existing buffer ready in the pool. High is good. |
 
+Every dump ends with one **summary line** that says whether any of the above is a problem:
+
+```
+pool summary: 28 tags checked, all clear, holding 31.2 MiB in 8412 buffers
+pool summary: 28 tags checked, 1 possible leak: pool[4096] tag=9 [ip.go:100/ip.go:200] outstanding 1000 -> 1900 over 10 dumps and still rising, holding 31.2 MiB in 8412 buffers
+```
+
+It judges the **trend of outstanding buffers** (`t - r`) over the last 10 dumps, not the return percentage. Buffers in flight when the dump runs count as taken but not yet returned, so a healthy tag can read 34% right after a restart and climb toward 100% by itself; a bounded set held in a queue is a flat outstanding count, not a leak. A possible leak is outstanding growing steadily and not levelling off. A plateau, a ramp that flattens, and jitter are not flagged. It also flags `low reuse` (under 50% reuse with at least 10,000 takes). Until 10 dumps exist the line says `trend needs 10 dumps (have N)` instead of judging. Problems log as a warning naming the pool, tag and call site.
+
 **What to watch for:**
-- `return %` dropping below 99% — buffers are being leaked somewhere
+- The `pool summary` line saying `possible leak` — outstanding buffers growing steadily for 10 dumps
+- `return %` on its own is not a leak signal: read the outstanding count (`t - r`) over several dumps
 - `reuse %` below 95% — the pool is undersized for the load; GC pressure is higher than ideal
 - `c=` growing rapidly between checks — pool is being depleted under load
 
@@ -178,6 +188,35 @@ Fires every 60 seconds. This is the provider's internal memory health check.
 - Detroit test server (1000 proxies, early): `c=320`, `99.99% reuse` — pool nearly perfectly sized
 - Production server (long-running): `c=20087`, `98.76% reuse` — higher allocation pressure, still healthy
 - Another production server: `c=7195`, `99.28% reuse` — moderate, normal for busy deployments
+
+---
+
+## 🌐 URL-Sourced Proxies (`[proxy][url]`)
+
+A URL fetch cycle prints per-source detail lines, then **one headline** that says what happened to the pool. It is always printed, including when nothing changed, and it is kept in the important buffer.
+
+```
+➕ [proxy][url] cycle: +12 new to the pool from 2 sources (48 already known, 9 rejected, 3 held for re-probe); pool now 340 qualified of 371 cached
+✔️ [proxy][url] cycle: nothing new from 2 sources (60 already known, 0 rejected); pool 340 qualified of 371 cached
+⚠️ [proxy][url] cycle: every source failed (2 of 2); pool unchanged at 340 qualified of 371 cached
+```
+
+| Field | Meaning |
+|---|---|
+| `+N new to the pool` | New proxies that qualified this cycle and were admitted. |
+| `already known` | Addresses skipped because the cache already had them (grade refresh is the reaper's job). |
+| `rejected` | New addresses that probed below the bar or as socks5-only. |
+| `held for re-probe` | Rejected entries cached anyway, so the reaper can retry them. |
+| `pool ... qualified of ... cached` | The URL pool after the cycle: qualified proxies, and all cached entries. |
+
+When a reload actually starts URL-sourced proxies it says so on its own line, and the routine summary attributes each addition to its source:
+
+```
+🚀 [proxy][url] launching 7 of 12 new URL-sourced proxies (5 held until the file proxies finish warming up)
+🔄 [proxy] reloaded: +14 added (url 12, file 2), -0 removed [3s]
+```
+
+Unproven URL proxies wait until the file proxies finish warming up, so `launching 7 of 12` means 5 are still queued, not lost.
 
 ---
 

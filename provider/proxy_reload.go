@@ -964,14 +964,27 @@ func (r *ProxyReloader) reload() {
 
 	deferredTotal := deferredBackoff + warmupDeferred
 	reloadDur := time.Since(reloadStart).Round(time.Millisecond)
+	// Say where the additions came from, and announce URL-sourced launches on
+	// their own line: a bare "+N added" said neither. The summary keeps its
+	// "reloaded: +N added" prefix for anything that matches on it.
+	fromSources := reloadSourceBreakdown(added, sourceOf)
+	urlAdded := 0
+	for _, s := range added {
+		if sourceOf[s.Key()] == "url" {
+			urlAdded++
+		}
+	}
+	if line := urlLaunchLine(urlAdded, warmupDeferred); line != "" {
+		importantLogf("%s\n", line)
+	}
 	if pruned > 0 {
 		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)
 	}
 	if deferredTotal > 0 {
-		tlog("🔄 [proxy] reloaded: +%d added, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
-			len(added), len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
+		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
+			len(added), fromSources, len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
 	} else {
-		tlog("🔄 [proxy] reloaded: +%d added, -%d removed [%s]\n",
-			len(added), len(removed), reloadDur)
+		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed [%s]\n",
+			len(added), fromSources, len(removed), reloadDur)
 	}
 }

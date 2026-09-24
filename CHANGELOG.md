@@ -11,6 +11,7 @@
 ### Added
 
 - **Live rates at up to 100ms in `top`, and billable and total traffic** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a light `traffic` control command feeds btop-style live rates, and the snapshot, `status` and `top` show billable and total rates and bytes moved.
+- **Clear logs when URL-sourced proxies are added** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): every URL fetch cycle ends with one headline saying what happened to the pool (new, already known, rejected, pool size), including when nothing changed. Reloads announce URL-sourced launches and attribute additions to their source.
 - **A summary line after every message pool dump** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/689>): judges the trend of outstanding buffers, so a plateau is not mistaken for a leak.
 
 ---

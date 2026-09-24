@@ -487,9 +487,12 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// every later source skips it, and its grade comes from that one pass.
 	probed := map[string]bool{}
 	skippedCached := 0
+	failedSources := 0 // sources whose fetch failed, for the cycle headline
+	rejectedTotal := 0 // new addresses that probed below the bar or as socks5-only
 	for i, url := range urls {
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
+			failedSources++
 			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", url, err)
 			setProxyResolutionStatus(proxyResolutionFailed, fmt.Sprintf("%s: %v", url, err))
 			warnProxySourceFailure(url, err.Error())
@@ -582,6 +585,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		}
 		tlog("[proxy][url] probed %s: %d/%d new qualified (%d cached, skipped), %d below-bar, %d socks5-only\n",
 			url, len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
+		rejectedTotal += len(belowBar) + len(socks5Only)
 	}
 	if skippedCached > 0 {
 		// Cached-skip is the main efficiency change of this PR; the
@@ -713,6 +717,33 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 	if markedSocks5 > 0 || markedAPI > 0 {
 		tlog("[proxy][url] %d qualified entries saved, %d below-bar/socks5-only entries marked for reaper\n", markedAPI, markedSocks5)
+	}
+
+	// The cycle headline. It is printed before the early return below so a
+	// cycle where every address was already known, or every source failed, says
+	// so too: those are the cycles the detail lines used to bury.
+	admittedTotal := 0
+	for _, n := range admittedByTier {
+		admittedTotal += n
+	}
+	cycle := urlCycleStats{
+		Sources:      len(urls),
+		Failed:       failedSources,
+		Admitted:     admittedTotal,
+		Held:         max(added-admittedTotal, 0),
+		AlreadyKnown: skippedCached,
+		Rejected:     rejectedTotal,
+		PoolCached:   len(state.Cache),
+	}
+	for _, entry := range state.Cache {
+		if entry.ProbeOK {
+			cycle.PoolQualified++
+		}
+	}
+	if failedSources >= len(urls) {
+		tlog("%s\n", cycle)
+	} else {
+		importantLogf("%s\n", cycle)
 	}
 
 	// Grade breakdown is printed every cycle that produced any grade, even
