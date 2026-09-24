@@ -417,3 +417,58 @@ func TestFetchCyclePrintsOneLinePerSourceWithItsOwnCounts(t *testing.T) {
 		t.Fatalf("headline should be the sum of the sources: %v", lines)
 	}
 }
+
+// A percent-encoded slash inside a segment is part of that segment. Splitting
+// the already decoded path turned /token/abc%2FSECRET/list into four segments,
+// masked only "abc", and let SECRET into the important log.
+func TestURLLabelRedactsEncodedSlashTokens(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"encoded slash after a keyword",
+			"https://lists.example.com/token/abc%2FSECRET/list",
+			"lists.example.com/token/[redacted]/list"},
+		{"encoded slash in a long opaque segment",
+			"https://h.example/api/" + strings.Repeat("A", 20) + "%2F" + strings.Repeat("B", 20) + "/x",
+			"h.example/api/[redacted]/x"},
+		{"percent-encoded keyword",
+			"https://h.example/%74oken/SECRET123/list",
+			"h.example/%74oken/[redacted]/list"},
+		{"lowercase encoded slash",
+			"https://h.example/key/abc%2fSECRET/list",
+			"h.example/key/[redacted]/list"},
+		{"ordinary encoded segment is kept",
+			"https://h.example/my%20list/all",
+			"h.example/my%20list/all"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := urlSourceLabels([]string{tc.url})[0]
+			if got != tc.want {
+				t.Errorf("label(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+			if strings.Contains(got, "SECRET") || strings.Contains(got, "AAAA") || strings.Contains(got, "BBBB") {
+				t.Errorf("secret leaked into %q", got)
+			}
+		})
+	}
+}
+
+// A URL that does not parse used to fall back to its raw text, path and token
+// included. Only the host may survive.
+func TestURLLabelUnparseableURLNeverLeaksItsPath(t *testing.T) {
+	for _, raw := range []string{
+		"https://h.example/token/SEC%RET/list",
+		"https://user:pw@h.example/token/SEC%RET/list?x=1",
+	} {
+		got := urlSourceLabels([]string{raw})[0]
+		if strings.Contains(got, "SEC") || strings.Contains(got, "pw@") || strings.Contains(got, "token") {
+			t.Errorf("label(%q) = %q leaks the path or credentials", raw, got)
+		}
+		if !strings.Contains(got, "h.example") {
+			t.Errorf("label(%q) = %q lost the host", raw, got)
+		}
+	}
+}

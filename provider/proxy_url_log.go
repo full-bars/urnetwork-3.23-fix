@@ -172,8 +172,12 @@ func urlLabelSegmentIsSecret(segment string, prevWasKeyword bool) bool {
 	for _, r := range segment {
 		switch {
 		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		case r == '/':
+			// Only reachable from a percent-encoded slash inside one segment
+			// (the caller splits on literal slashes). It is part of the blob, not
+			// a sign the segment is an ordinary path piece.
 		default:
-			return false // a normal path char (/, %, ~, .) means it is not a bare token
+			return false // a normal path char (%, ~, .) means it is not a bare token
 		}
 	}
 	return true
@@ -184,6 +188,12 @@ func urlLabelSegmentIsSecret(segment string, prevWasKeyword bool) bool {
 // source from another. Query strings and userinfo never reach here (the caller
 // strips them), but a token can also sit in the path itself
 // (…/token/SECRET/list), which this covers.
+//
+// path must be the ESCAPED path (URL.EscapedPath). Splitting the decoded one
+// turns an encoded slash inside a token (/token/abc%2FSECRET/list) into two
+// segments and masks only the first. Each segment is decoded for judging it, so
+// an encoded keyword (%74oken) still counts, and kept as written when it is not
+// redacted.
 func redactSourcePath(path string) string {
 	if path == "" {
 		return ""
@@ -191,14 +201,34 @@ func redactSourcePath(path string) string {
 	segments := strings.Split(path, "/")
 	prevWasKeyword := false
 	for i, seg := range segments {
-		if urlLabelSegmentIsSecret(seg, prevWasKeyword && i > 0) {
+		decoded, err := url.PathUnescape(seg)
+		if err != nil {
+			decoded = seg
+		}
+		if urlLabelSegmentIsSecret(decoded, prevWasKeyword && i > 0) {
 			segments[i] = urlLabelSecretSegment
 			prevWasKeyword = false
 			continue
 		}
-		prevWasKeyword = urlCredentialPathKeywords[strings.ToLower(seg)]
+		prevWasKeyword = urlCredentialPathKeywords[strings.ToLower(decoded)]
 	}
 	return strings.Join(segments, "/")
+}
+
+// unparseableSourceLabel is the label for a source URL that url.Parse rejects
+// (a stray % in a token, for one). It cannot be trusted to have a safe path, so
+// only the host survives: scheme, credentials and path are dropped.
+func unparseableSourceLabel(label string) string {
+	if i := strings.Index(label, "://"); i >= 0 {
+		label = label[i+3:]
+		if j := strings.IndexByte(label, '/'); j >= 0 {
+			label = label[:j]
+		}
+	}
+	if at := strings.LastIndex(label, "@"); at >= 0 {
+		label = label[at+1:]
+	}
+	return label
 }
 
 // urlSourceLabels names each source by host and path only. Source URLs often
@@ -215,9 +245,9 @@ func urlSourceLabels(urls []string) []string {
 			label = label[:cut]
 		}
 		if u, err := url.Parse(label); err == nil && u.Host != "" {
-			label = u.Host + redactSourcePath(strings.TrimSuffix(u.Path, "/"))
-		} else if at := strings.LastIndex(label, "@"); at >= 0 {
-			label = label[at+1:]
+			label = u.Host + redactSourcePath(strings.TrimSuffix(u.EscapedPath(), "/"))
+		} else {
+			label = unparseableSourceLabel(label)
 		}
 		if len(label) > urlSourceLabelMax {
 			label = label[:urlSourceLabelMax-3] + "..."
