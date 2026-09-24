@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -84,6 +84,10 @@ type controlResponse struct {
 	// Traffic is the light live-counter reply, answered by "traffic". It is
 	// what urnet-tools top polls at 100ms instead of a full snapshot.
 	Traffic *LiveTraffic `json:"traffic,omitempty"`
+	// Internals and Goroutines are the runtime views urnet-tools top draws,
+	// answered by "internals" and "goroutines".
+	Internals  *NodeInternals   `json:"internals,omitempty"`
+	Goroutines *GoroutineGroups `json:"goroutines,omitempty"`
 	// ProxyAudit is the proxy audit engine's last completed tick, answered by
 	// "status" and "audit". Nil before its first tick or on a provider that predates it.
 	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
@@ -489,6 +493,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "traffic":
 		return controlResponse{OK: true, Traffic: liveTrafficSample(time.Now(), connect.ProxyBandwidthTotals)}
+
+	case "internals":
+		return controlResponse{OK: true, Internals: nodeInternals.Get(time.Now())}
+
+	case "goroutines":
+		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
 
 	case "get":
 		if req.Key == "" {
