@@ -191,6 +191,16 @@ type topModel struct {
 	// rt is the runtime (Internals) panel's state.
 	rt topRuntime
 
+	// graph is the graph glyph style. themeLocked is set when the environment
+	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
+	// override. settingsPath is where the menu saves; empty means nowhere.
+	graph        tui.GraphSymbols
+	themeLocked  bool
+	settingsPath string
+	menu         bool
+	menuSel      int
+	menuNote     string
+
 	help bool
 	quit bool
 }
@@ -513,6 +523,9 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if m.menu && m.menuHandle(ev) {
+		return topNone
+	}
 	switch ev.Kind {
 	case tcellui.EventQuit:
 		m.quit = true
@@ -543,6 +556,8 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return topQuit
 		case '?':
 			m.help = !m.help
+		case 'm', 'M':
+			m.menu, m.help, m.menuNote = true, false, ""
 		case '+', '=':
 			m.stepInterval(-1)
 		case '-', '_':

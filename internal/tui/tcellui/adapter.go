@@ -41,6 +41,10 @@ const (
 	KeyBacktab
 	KeyEnter
 	KeyCtrlC
+	KeyUp
+	KeyDown
+	KeyLeft
+	KeyRight
 )
 
 // Event is the terminal input the screens understand.
@@ -201,6 +205,14 @@ func translateKey(ev *tcell.EventKey) Event {
 		return Event{Kind: EventKey, Key: KeyTab}
 	case tcell.KeyBacktab:
 		return Event{Kind: EventKey, Key: KeyBacktab}
+	case tcell.KeyUp:
+		return Event{Kind: EventKey, Key: KeyUp}
+	case tcell.KeyDown:
+		return Event{Kind: EventKey, Key: KeyDown}
+	case tcell.KeyLeft:
+		return Event{Kind: EventKey, Key: KeyLeft}
+	case tcell.KeyRight:
+		return Event{Kind: EventKey, Key: KeyRight}
 	case tcell.KeyEnter:
 		return Event{Kind: EventKey, Key: KeyEnter}
 	case tcell.KeyCtrlC:

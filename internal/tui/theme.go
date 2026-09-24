@@ -81,3 +81,100 @@ func (self Theme) Level(frac, warnAt, badAt float64) Style {
 	}
 	return self.OK
 }
+
+// hex parses "#rrggbb" into a truecolor. It is only fed the literals below, so
+// a malformed one is a programming error and panics at start-up, in the test.
+func hex(s string) Color {
+	if len(s) != 7 || s[0] != '#' {
+		panic("tui: bad color literal " + s)
+	}
+	var v uint32
+	for _, c := range s[1:] {
+		v <<= 4
+		switch {
+		case c >= '0' && c <= '9':
+			v |= uint32(c - '0')
+		case c >= 'a' && c <= 'f':
+			v |= uint32(c-'a') + 10
+		case c >= 'A' && c <= 'F':
+			v |= uint32(c-'A') + 10
+		default:
+			panic("tui: bad color literal " + s)
+		}
+	}
+	return Color{Kind: ColorRGB, Value: v}
+}
+
+// paletteTheme builds a truecolor theme from one color per role. The terminal
+// backend downgrades to 256 or 16 colors where truecolor is not available.
+func paletteTheme(name, ok, warn, bad, dim, accent, graph, border string) Theme {
+	return Theme{
+		Name:   name,
+		OK:     Style{FG: hex(ok)},
+		Warn:   Style{FG: hex(warn)},
+		Bad:    Style{FG: hex(bad)}.With(AttrBold),
+		Dim:    Style{FG: hex(dim)},
+		Accent: Style{FG: hex(accent)}.With(AttrBold),
+		Graph:  Style{FG: hex(graph)},
+		Border: Style{FG: hex(border)},
+		Frame:  BorderRounded,
+	}
+}
+
+// themeBuilders are the built-in themes in menu order. default follows the
+// terminal's own palette; mono carries no color at all.
+var themeBuilders = []struct {
+	name  string
+	build func() Theme
+}{
+	{"default", DefaultTheme},
+	{"nord", func() Theme {
+		return paletteTheme("nord", "#a3be8c", "#ebcb8b", "#bf616a", "#616e88", "#88c0d0", "#81a1c1", "#4c566a")
+	}},
+	{"gruvbox", func() Theme {
+		return paletteTheme("gruvbox", "#b8bb26", "#fabd2f", "#fb4934", "#928374", "#8ec07c", "#83a598", "#665c54")
+	}},
+	{"dracula", func() Theme {
+		return paletteTheme("dracula", "#50fa7b", "#f1fa8c", "#ff5555", "#6272a4", "#bd93f9", "#8be9fd", "#44475a")
+	}},
+	{"solarized-dark", func() Theme {
+		return paletteTheme("solarized-dark", "#859900", "#b58900", "#dc322f", "#586e75", "#2aa198", "#268bd2", "#586e75")
+	}},
+	{"tokyo-night", func() Theme {
+		return paletteTheme("tokyo-night", "#9ece6a", "#e0af68", "#f7768e", "#565f89", "#7dcfff", "#7aa2f7", "#414868")
+	}},
+	{"high-contrast", func() Theme {
+		return Theme{
+			Name:   "high-contrast",
+			OK:     Style{FG: Ansi(10)},
+			Warn:   Style{FG: Ansi(11)},
+			Bad:    Style{FG: Ansi(9)}.With(AttrBold),
+			Dim:    Style{FG: Ansi(7)},
+			Accent: Style{FG: Ansi(14)}.With(AttrBold),
+			Graph:  Style{FG: Ansi(12)},
+			Border: Style{FG: Ansi(15)},
+			Frame:  BorderSingle,
+		}
+	}},
+	{"mono", MonoTheme},
+}
+
+// ThemeNames lists the built-in themes in the order the menu cycles them.
+func ThemeNames() []string {
+	out := make([]string, len(themeBuilders))
+	for i, t := range themeBuilders {
+		out[i] = t.name
+	}
+	return out
+}
+
+// ThemeByName returns the built-in theme called name; ok is false for an
+// unknown name.
+func ThemeByName(name string) (Theme, bool) {
+	for _, t := range themeBuilders {
+		if t.name == name {
+			return t.build(), true
+		}
+	}
+	return Theme{}, false
+}

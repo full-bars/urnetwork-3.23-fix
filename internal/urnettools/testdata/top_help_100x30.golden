@@ -13,11 +13,11 @@
 │30 MiB/s┤      ⣀⣤⣶⣿│ Tab, Shift-Tab   next or previous provider               │ ██▊░░░░░░░░░░ 0.21│
 │        │  ⢀⣠⣴⣿⣿⣿⣿⣿│ +  -             refresh faster or slower, down to 100ms │                   │
 │        │⣴⣶⣿⣿⣿⣿⣿⣿⣿⣿│ w                zoom the graphs to the last 15 seconds  │                   │
-│   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ g                list where goroutines are parked        │                   │
-╰───────────────────│ billed, moved    billable and total bytes this session   │───────────────────╯
-╭ Proxies ──────────│ ?                show or hide this help                  │s ─────────────────╮
-│up         ████████╰──────────────────────────────────────────────────────────╯█▌░░░░░ 1.8/4.0 GiB│
-│degraded   █▉░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2││fds   ░░░░░░░░░░░░ 310/65536│
+│   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ m                menu: color theme and graph style       │                   │
+╰───────────────────│ g                list where goroutines are parked        │───────────────────╯
+╭ Proxies ──────────│ billed, moved    billable and total bytes this session   │s ─────────────────╮
+│up         ████████│ ?                show or hide this help                  │█▌░░░░░ 1.8/4.0 GiB│
+│degraded   █▉░░░░░░╰──────────────────────────────────────────────────────────╯░░░░░░░░░ 310/65536│
 │connecting ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0││rss   2.1 GiB               │
 │dead       ░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 0││gor   1204                  │
 ╰────────────────────────────────────────────────────────────────────╯│                            │
@@ -27,4 +27,4 @@
 │                                                                    ││                            │
 │                                                                    ││                            │
 ╰────────────────────────────────────────────────────────────────────╯╰────────────────────────────╯
- q quit   ? help   w zoom   +/- rate 1s
+ q quit   ? help   m menu   w zoom   +/- rate 1s

@@ -54,6 +54,41 @@ func niceCeil(v float64, binary bool) float64 {
 // need to pick the top themselves (see Graph.Max).
 func NiceCeil(v float64, binary bool) float64 { return niceCeil(v, binary) }
 
+// GraphSymbols picks the glyphs a graph is drawn with, like btop's graph
+// styles. The zero value is braille.
+type GraphSymbols uint8
+
+const (
+	// GraphBraille packs 2 samples by 4 levels into each cell: the most
+	// resolution, the finest look, and it needs a font with braille glyphs.
+	GraphBraille GraphSymbols = iota
+	// GraphBlock uses one sample per cell and eight levels (the lower-block
+	// glyphs), which stays sharp on fonts whose braille is thin or misaligned.
+	GraphBlock
+	// GraphTTY is plain ASCII, for terminals that cannot draw either.
+	GraphTTY
+)
+
+// GraphSymbolNames are the names the settings and the menu use, in cycle order.
+var GraphSymbolNames = []string{"braille", "block", "tty"}
+
+func (s GraphSymbols) String() string {
+	if int(s) < len(GraphSymbolNames) {
+		return GraphSymbolNames[s]
+	}
+	return GraphSymbolNames[0]
+}
+
+// GraphSymbolsByName is the inverse of String; ok is false for an unknown name.
+func GraphSymbolsByName(name string) (GraphSymbols, bool) {
+	for i, n := range GraphSymbolNames {
+		if n == name {
+			return GraphSymbols(i), true
+		}
+	}
+	return GraphBraille, false
+}
+
 // Graph is a time series drawn as a filled braille area chart with a value
 // axis down the left edge.
 type Graph struct {
@@ -90,6 +125,9 @@ type Graph struct {
 	// is clamped to the plot instead.
 	Tail    float64
 	HasTail bool
+	// Symbols is the glyph style. A DrawGraph call with ascii set draws GraphTTY
+	// whatever this says: the terminal cannot show anything else.
+	Symbols GraphSymbols
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -168,14 +206,21 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	}
 
 	plotW := w - x0
+	// Braille and TTY hold two samples per cell, block holds one.
+	perCell := 2
+	if g.Symbols == GraphBlock && !ascii {
+		perCell = 1
+	}
 	var cols []float64
 	if g.HasTail && plotW >= 1 {
-		// History fills every column but the newest; the tail takes that one. In
-		// the ASCII graph a cell is a pair of columns drawn as their average, so
-		// the tail must own the whole rightmost cell (both halves): sharing one
-		// with the newest history sample would show a live spike blended down.
-		histCols, tailCols := 2*plotW-1, 1
-		if ascii {
+		// History fills every column but the newest; the tail takes that one. The
+		// TTY style (and any ASCII terminal) draws a cell as the average of a pair
+		// of columns, so there the tail must own the whole rightmost cell, both
+		// halves: sharing one with the newest history sample would show a live
+		// spike blended down. Braille halves are independent and block is one
+		// column per cell, so neither has that problem.
+		histCols, tailCols := perCell*plotW-1, 1
+		if ascii || g.Symbols == GraphTTY {
 			histCols, tailCols = 2*plotW-2, 2
 		}
 		if histCols > 0 {
@@ -189,10 +234,14 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 			cols = append(cols, math.Min(tail, top))
 		}
 	} else {
-		cols = plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
+		cols = plotColumnsAnchored(samples, perCell*plotW, g.Anchor, g.Capacity)
 	}
-	if ascii {
-		drawGraphASCII(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, top, g.Style)
+	if ascii || g.Symbols == GraphTTY {
+		drawGraphCells(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, 2, top, g.Style, sparkASCII)
+		return shown
+	}
+	if g.Symbols == GraphBlock {
+		drawGraphCells(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, 1, top, g.Style, sparkBlocks)
 		return shown
 	}
 	dots := 4 * h
@@ -307,14 +356,16 @@ func bucketColumns(samples []float64, n int, anchor int64, capacity int) (ids []
 	return ids, vals
 }
 
-// drawGraphASCII is the fallback for terminals without braille: one glyph per
-// pair of sample columns, stacked '#' rows with the top row graded by the
-// sparkline ramp, and a baseline glyph so a zero still shows.
-func drawGraphASCII(b *Buffer, cols []float64, top float64, st Style) {
+// drawGraphCells draws a graph one cell wide per perCell samples, eight levels
+// a cell: full cells stacked from the baseline and the top one graded by the
+// glyph ramp. A cell holding several samples shows their average. A sample of
+// zero still draws the ramp's lowest glyph so "measured zero" reads apart from
+// "no sample yet". Used for both the block style and the ASCII fallback.
+func drawGraphCells(b *Buffer, cols []float64, perCell int, top float64, st Style, ramp []rune) {
 	h := b.Height()
 	for cx := 0; cx < b.Width(); cx++ {
 		sum, n := 0.0, 0
-		for _, v := range cols[2*cx : 2*cx+2] {
+		for _, v := range cols[perCell*cx : perCell*cx+perCell] {
 			if !math.IsNaN(v) {
 				sum += v
 				n++
@@ -326,7 +377,7 @@ func drawGraphASCII(b *Buffer, cols []float64, top float64, st Style) {
 		rem := min(max(int(math.Round(sum/float64(n)/top*float64(h*8))), 1), h*8)
 		for row := h - 1; row >= 0 && rem > 0; row-- {
 			take := min(rem, 8)
-			b.Set(cx, row, Cell{Rune: sparkASCII[take-1], Style: st})
+			b.Set(cx, row, Cell{Rune: ramp[take-1], Style: st})
 			rem -= take
 		}
 	}

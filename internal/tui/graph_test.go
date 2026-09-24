@@ -429,3 +429,108 @@ func TestGraphASCIITailOwnsItsCell(t *testing.T) {
 		}
 	}
 }
+
+// The three styles draw the same data with different glyphs; each has its own
+// resolution, and the fallbacks are what they say.
+func TestGraphSymbolStyles(t *testing.T) {
+	samples := []float64{0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 10, 10, 5, 0, 0}
+	draw := func(sym GraphSymbols, ascii bool) string {
+		b := New(20, 4)
+		DrawGraph(b, Graph{Samples: samples, Max: 10, Symbols: sym}, ascii)
+		return b.String()
+	}
+	braille, block, tty := draw(GraphBraille, false), draw(GraphBlock, false), draw(GraphTTY, false)
+	if !strings.ContainsAny(braille, "⣀⣿⣠⣴") || strings.ContainsAny(braille, "█▁") {
+		t.Errorf("braille style:\n%s", braille)
+	}
+	if !strings.Contains(block, "█") || !strings.ContainsAny(block, "▁▂▃▄▅▆▇") || strings.ContainsAny(block, "⣀⣿") {
+		t.Errorf("block style:\n%s", block)
+	}
+	if strings.ContainsAny(tty, "⣀⣿█▁") || !strings.Contains(tty, "#") {
+		t.Errorf("tty style:\n%s", tty)
+	}
+	// A terminal that cannot draw non-ASCII overrides whatever was asked for.
+	// The axis ticks differ (+ and | against ┤ and │), so only the plot, which
+	// starts after the 2 wide labels and the tick, is compared.
+	plot := func(s string) string {
+		var out []string
+		for _, l := range strings.Split(s, "\n") {
+			if r := []rune(l); len(r) > 3 {
+				l = string(r[3:])
+			}
+			out = append(out, l)
+		}
+		return strings.Join(out, "\n")
+	}
+	if got := draw(GraphBraille, true); plot(got) != plot(tty) {
+		t.Errorf("ascii must force the tty style:\n%s\nvs\n%s", got, tty)
+	}
+	// Block gives each sample its own cell, so it shows more distinct columns
+	// than the two-samples-per-cell styles for the same width.
+	if strings.Count(block, "█")+strings.Count(block, "▁") == 0 {
+		t.Error("block drew nothing")
+	}
+}
+
+func TestGraphSymbolNames(t *testing.T) {
+	for i, n := range GraphSymbolNames {
+		got, ok := GraphSymbolsByName(n)
+		if !ok || int(got) != i || got.String() != n {
+			t.Errorf("%q round trip = %v %v", n, got, ok)
+		}
+	}
+	if _, ok := GraphSymbolsByName("sparkles"); ok {
+		t.Error("unknown style resolved")
+	}
+	if GraphSymbols(99).String() != "braille" {
+		t.Error("an out-of-range style must read as the default")
+	}
+}
+
+// Block with a tail: history takes every cell but the newest and the tail the
+// last, exactly as braille does.
+func TestGraphBlockTakesTheTailInItsLastCell(t *testing.T) {
+	b := New(14, 3)
+	DrawGraph(b, Graph{Samples: []float64{1, 1, 1, 1, 1}, Max: 10, Symbols: GraphBlock, Tail: 10, HasTail: true}, false)
+	lines := strings.Split(strings.TrimRight(b.String(), "\n"), "\n")
+	last := []rune(lines[0])
+	if got := last[len(last)-1]; got != '█' {
+		t.Fatalf("tail at the axis top should fill the last column, top row = %q", lines[0])
+	}
+}
+
+// The rule is about pair-averaged cells, not about a flag: the TTY style on a
+// terminal that can draw anything must give the tail its own cell too, while
+// braille and block need nothing special.
+func TestGraphTailOwnsItsCellInEveryStyle(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		sym   GraphSymbols
+		ascii bool
+		full  rune
+	}{
+		{"tty style", GraphTTY, false, '#'},
+		{"ascii terminal", GraphBraille, true, '#'},
+		{"block", GraphBlock, false, '█'},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b := New(12, 2)
+			DrawGraph(b, Graph{
+				Samples: []float64{0, 0, 0, 0, 0, 0, 0, 0, 0, 0}, Max: 10,
+				Tail: 10, HasTail: true, Symbols: tc.sym,
+			}, tc.ascii)
+			last := b.Width() - 1
+			for row := 0; row < 2; row++ {
+				if got := b.Cell(last, row).Rune; got != tc.full {
+					t.Fatalf("row %d of the rightmost cell = %q, want %q:\n%s", row, got, tc.full, b.String())
+				}
+			}
+		})
+	}
+	// Braille: the tail is one dot column; the neighbouring dot column is history.
+	b := New(12, 2)
+	DrawGraph(b, Graph{Samples: []float64{0, 0, 0, 0, 0, 0}, Max: 10, Tail: 10, HasTail: true}, false)
+	if got := b.Cell(b.Width()-1, 0).Rune; got == ' ' {
+		t.Fatalf("braille tail not drawn:\n%s", b.String())
+	}
+}

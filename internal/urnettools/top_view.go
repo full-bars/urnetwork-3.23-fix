@@ -46,6 +46,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	if m.help {
 		m.drawHelp(b)
 	}
+	if m.menu {
+		m.drawMenu(b)
+	}
 }
 
 func (m *topModel) drawFull(b *tui.Buffer) {
@@ -137,7 +140,10 @@ func (m *topModel) drawFooter(f *tui.Buffer) {
 	if len(m.providers) > 1 {
 		keys += "   tab provider"
 	}
-	keys += "   ? help   w zoom"
+	keys += "   ? help   m menu"
+	if m.trafficOK {
+		keys += "   w zoom" // the zoom window is built from the live counters
+	}
 	if m.rt.ok && m.rt.gOK && m.hasInternals() {
 		keys += "   g goroutines"
 	}
@@ -212,7 +218,7 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	}
 	tui.DrawGraph(b, tui.Graph{
 		Samples: samples, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
-		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top,
+		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top, Symbols: m.graph,
 	}, th.ASCII)
 }
 
@@ -519,6 +525,7 @@ var helpLines = []string{
 	"Tab, Shift-Tab   next or previous provider",
 	"+  -             refresh faster or slower, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
+	"m                menu: color theme and graph style",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",
