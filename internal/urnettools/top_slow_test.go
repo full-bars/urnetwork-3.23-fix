@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"net"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -360,5 +361,39 @@ func TestTopHealthyCadenceIsUnchangedByTheCompletionRule(t *testing.T) {
 	clock.Advance(topSnapshotEvery - 200*time.Millisecond) // 1s after the START of that request: due
 	if _, _, ok := m.wantFetch(clock.Now()); !ok {
 		t.Fatal("a healthy provider must be polled every interval measured from the start of the last request")
+	}
+}
+
+// One deadline covers the whole exchange. The dial may use up to two seconds of
+// it, and the request and reply get only what is left; setting the deadline after
+// the dial gave them a second full budget.
+func TestSocketRequestDeadlineIsFixedBeforeDialing(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "p.sock")
+	ln, err := net.Listen("unix", path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer ln.Close()
+	go func() { // accepts, reads, never answers
+		for {
+			c, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func() { buf := make([]byte, 512); c.Read(buf); time.Sleep(3 * time.Second); c.Close() }()
+		}
+	}()
+	start := time.Now()
+	_, err = sendSocketRequestTimeout(path, controlRequest{Cmd: "traffic"}, 400*time.Millisecond)
+	took := time.Since(start)
+	if err == nil {
+		t.Fatal("a silent server must time out")
+	}
+	if took > 700*time.Millisecond {
+		t.Fatalf("a 400ms budget took %v", took)
+	}
+	if got := socketDeadline(start, 400*time.Millisecond); !got.Equal(start.Add(400 * time.Millisecond)) {
+		t.Fatalf("deadline = %v, want start+timeout", got)
 	}
 }

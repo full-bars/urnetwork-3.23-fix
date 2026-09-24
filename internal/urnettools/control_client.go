@@ -284,17 +284,23 @@ func sendSocketRequest(sockPath string, req controlRequest) (controlResponse, er
 	return sendSocketRequestTimeout(sockPath, req, 5*time.Second)
 }
 
+// socketDeadline is when an exchange begun at start must be over.
+func socketDeadline(start time.Time, timeout time.Duration) time.Time { return start.Add(timeout) }
+
 // sendSocketRequestTimeout is sendSocketRequest with the whole exchange bounded
 // by timeout, and the dial by the smaller of that and two seconds. The cheap
 // polling commands use a short one so a struggling provider is not also left
 // holding their sockets and goroutines.
 func sendSocketRequestTimeout(sockPath string, req controlRequest, timeout time.Duration) (controlResponse, error) {
+	// One deadline for the whole exchange, fixed before dialing: what the dial
+	// uses comes out of the request's budget, it is not added to it.
+	deadline := socketDeadline(time.Now(), timeout)
 	conn, err := net.DialTimeout("unix", sockPath, min(timeout, 2*time.Second))
 	if err != nil {
 		return controlResponse{}, err
 	}
 	defer conn.Close()
-	_ = conn.SetDeadline(time.Now().Add(timeout))
+	_ = conn.SetDeadline(deadline)
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return controlResponse{}, err
