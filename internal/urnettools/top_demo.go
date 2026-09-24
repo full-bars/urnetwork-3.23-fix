@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"math"
+	"sync"
 	"time"
 )
 
@@ -53,10 +54,59 @@ func demoRateAt(t time.Time) float64 {
 	return math.Round(r)
 }
 
-// demoTopSource serves synthetic snapshots computed from now().
-type demoTopSource struct{ now func() time.Time }
+// demoRateAtF is demoRateAt at a fractional instant, so the live counters move
+// smoothly between whole seconds. It agrees with demoRateAt on whole seconds.
+func demoRateAtF(t time.Time) float64 {
+	s := float64(t.UnixNano()) / 1e9
+	if m := int64(s) % 900; m >= 780 && m < 840 {
+		return 0
+	}
+	return 22*demoMiB + 14*demoMiB*math.Sin(2*math.Pi*s/180) + 5*demoMiB*math.Sin(2*math.Pi*s/37)
+}
 
-func newDemoTopSource(now func() time.Time) topSource { return demoTopSource{now: now} }
+// demoTotalFactor is how much more total traffic there is than billable in the
+// demo: everything moved is billable plus 60%.
+const demoTotalFactor = 1.6
+
+// demoLive integrates the demo rate into cumulative counters for the light
+// traffic poll, the way a real provider's byte counters grow.
+type demoLive struct {
+	mu       sync.Mutex
+	last     time.Time
+	billable float64
+}
+
+// demoTopSource serves synthetic snapshots computed from now(), and live
+// counters that grow with it.
+type demoTopSource struct {
+	now  func() time.Time
+	live *demoLive
+}
+
+func newDemoTopSource(now func() time.Time) topSource {
+	return demoTopSource{now: now, live: &demoLive{}}
+}
+
+// FetchTraffic advances the counters to now in 100ms steps and reports them.
+func (d demoTopSource) FetchTraffic(Provider) (*LiveTraffic, error) {
+	now := d.now()
+	d.live.mu.Lock()
+	defer d.live.mu.Unlock()
+	if d.live.last.IsZero() {
+		d.live.last = now
+	}
+	for t := d.live.last; t.Before(now); {
+		step := min(100*time.Millisecond, now.Sub(t))
+		d.live.billable += demoRateAtF(t.Add(step/2)) * step.Seconds()
+		t = t.Add(step)
+	}
+	d.live.last = now
+	return &LiveTraffic{
+		AtUnixNano:    now.UnixNano(),
+		BillableBytes: uint64(d.live.billable),
+		TotalBytes:    uint64(d.live.billable * demoTotalFactor),
+	}, nil
+}
 
 func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 	now := d.now().UTC().Truncate(time.Second)
@@ -87,6 +137,22 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 	rss := uint64(2300 * demoMiB)
 	fds, fdLimit := 310+int(20*math.Sin(s/50)), 65536
 
+	totalHist := make([]float64, len(hist))
+	for i, v := range hist {
+		totalHist[i] = math.Round(v * demoTotalFactor)
+	}
+	uptime := now.Sub(demoAnchor).Seconds()
+	lifetime := uint64(281 * 1024 * 1024 * 1024 * 1024)
+	traffic := &SnapshotTraffic{
+		BillableBytes:         uint64(22 * demoMiB * uptime),
+		TotalBytes:            uint64(22 * demoMiB * uptime * demoTotalFactor),
+		LifetimeBillableBytes: &lifetime,
+		TotalNowBps:           math.Round(nowBps * demoTotalFactor),
+		TotalAvg1mBps:         math.Round(sum1 / 60 * demoTotalFactor),
+		TotalAvg5mBps:         math.Round(sum5 / 300 * demoTotalFactor),
+		TotalHistoryBps:       totalHist,
+	}
+
 	return &NodeSnapshot{
 		V:               1,
 		Version:         "v3.23.0-fix.demo",
@@ -116,5 +182,6 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 			FDLimit:        &fdLimit,
 		},
 		IdleHint: hint,
+		Traffic:  traffic,
 	}, nil
 }

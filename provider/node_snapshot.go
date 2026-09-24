@@ -629,20 +629,59 @@ func snapshotTruthy(v string) bool {
 
 var nodeSnapshots = newNodeSnapshotCollector(productionSnapshotSources())
 
+// bandwidthShare hands the billable and the total per-proxy counters from one
+// read, and reuses that read for ttl. Building the proxy snapshot is the costly
+// part (about 2ms and 35k allocations at 5000 proxies), and the billable and
+// total samplers tick together, so without this every tick would build it twice.
+// The maps are only read by the samplers, which copy what they keep.
+type bandwidthShare struct {
+	mu      sync.Mutex
+	now     func() time.Time
+	ttl     time.Duration
+	read    func() (billable, total map[string]uint64)
+	at      time.Time
+	billed  map[string]uint64
+	moved   map[string]uint64
+	fetched bool
+}
+
+func newBandwidthShare(now func() time.Time, ttl time.Duration, read func() (map[string]uint64, map[string]uint64)) *bandwidthShare {
+	return &bandwidthShare{now: now, ttl: ttl, read: read}
+}
+
+func (s *bandwidthShare) get() (billable, total map[string]uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if at := s.now(); !s.fetched || at.Sub(s.at) >= s.ttl {
+		s.billed, s.moved = s.read()
+		s.at, s.fetched = at, true
+	}
+	return s.billed, s.moved
+}
+
+// readProxyBandwidth reads both per-proxy counters from one proxy snapshot.
+func readProxyBandwidth() (billable, total map[string]uint64) {
+	if connect.ProxyHealthCount() == 0 {
+		return map[string]uint64{}, map[string]uint64{}
+	}
+	_, _, _, bw, _ := connect.ProxyHealthSnapshot()
+	billable = make(map[string]uint64, len(bw))
+	total = make(map[string]uint64, len(bw))
+	for k, p := range bw {
+		billable[k] = p.BillableRx.Load() + p.BillableTx.Load()
+		total[k] = p.TotalRx.Load() + p.TotalTx.Load()
+	}
+	return billable, total
+}
+
 func productionSnapshotSources() snapshotSources {
+	bandwidth := newBandwidthShare(time.Now, 500*time.Millisecond, readProxyBandwidth)
 	return snapshotSources{
 		now:       time.Now,
 		startedAt: providerStartTime,
 		billable: func() map[string]uint64 {
-			if connect.ProxyHealthCount() == 0 {
-				return map[string]uint64{}
-			}
-			_, _, _, bw, _ := connect.ProxyHealthSnapshot()
-			out := make(map[string]uint64, len(bw))
-			for k, p := range bw {
-				out[k] = p.BillableRx.Load() + p.BillableTx.Load()
-			}
-			return out
+			b, _ := bandwidth.get()
+			return b
 		},
 		pool: func() (SnapshotProxies, int64) {
 			up, dead, degraded, bw, connecting := connect.ProxyHealthSnapshot()
@@ -685,15 +724,8 @@ func productionSnapshotSources() snapshotSources {
 		},
 		startup: proxyStartupPhase,
 		traffic: func() map[string]uint64 {
-			if connect.ProxyHealthCount() == 0 {
-				return map[string]uint64{}
-			}
-			_, _, _, bw, _ := connect.ProxyHealthSnapshot()
-			out := make(map[string]uint64, len(bw))
-			for k, p := range bw {
-				out[k] = p.TotalRx.Load() + p.TotalTx.Load()
-			}
-			return out
+			_, t := bandwidth.get()
+			return t
 		},
 		lifetimeBillable: func() (uint64, bool) {
 			if lifetimeStore == nil {

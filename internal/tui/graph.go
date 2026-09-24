@@ -73,6 +73,12 @@ type Graph struct {
 	// the oldest sample instead, which re-averages every column whenever the
 	// series shifts.
 	Anchor int64
+	// Capacity is how many samples a full series holds (the provider's ring).
+	// With an Anchor it fixes the bucket width at Capacity/columns, so the
+	// width does not change while a young series is still filling: it grows in
+	// from the right instead of re-bucketing every few seconds. Zero uses the
+	// length of the series.
+	Capacity int
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -151,7 +157,7 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	}
 
 	plotW := w - x0
-	cols := plotColumnsAnchored(samples, 2*plotW, g.Anchor)
+	cols := plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
 	if ascii {
 		drawGraphASCII(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, top, g.Style)
 		return shown
@@ -210,12 +216,12 @@ func plotColumns(samples []float64, n int) []float64 {
 
 // plotColumnsAnchored is plotColumns with buckets aligned to absolute time when
 // there is a time base (anchor is the absolute index of the newest sample) and
-// more samples than columns. Otherwise it is plotColumns.
-func plotColumnsAnchored(samples []float64, n int, anchor int64) []float64 {
-	if anchor == 0 || n < 2 || len(samples) <= n {
+// the samples are wider than a column. Otherwise it is plotColumns.
+func plotColumnsAnchored(samples []float64, n int, anchor int64, capacity int) []float64 {
+	if anchor == 0 || n < 2 || bucketWidth(len(samples), n, capacity) <= 1 {
 		return plotColumns(samples, n)
 	}
-	_, vals := bucketColumns(samples, n, anchor)
+	_, vals := bucketColumns(samples, n, anchor, capacity)
 	cols := make([]float64, n)
 	for i := range cols {
 		cols[i] = math.NaN()
@@ -224,33 +230,46 @@ func plotColumnsAnchored(samples []float64, n int, anchor int64) []float64 {
 	return cols
 }
 
-// bucketColumns averages samples into buckets of a fixed size aligned to
-// absolute time: sample i sits at time anchor-(len-1-i) and belongs to bucket
-// floor(time/size). Once the newest sample has passed a bucket its average never
-// changes, so as the series slides only the newest, still-filling bucket moves
-// and the rest scroll left a whole column at a time. The oldest bucket is
-// dropped when it is partial, since it would otherwise shimmer as samples fall
-// off the left edge. ids are bucket numbers, oldest first; vals are the
-// averages. The size is chosen so the buckets always fit in n columns.
-func bucketColumns(samples []float64, n int, anchor int64) (ids []int64, vals []float64) {
-	size := int64((len(samples) + n - 2) / (n - 1))
-	if size < 1 {
-		size = 1
+// bucketWidth is how many samples one column covers: capacity (or the series
+// length when that is larger or unknown) over the columns.
+func bucketWidth(length, n, capacity int) float64 {
+	return float64(max(capacity, length)) / float64(n)
+}
+
+// bucketColumns averages samples into buckets aligned to absolute time: sample
+// i sits at time anchor-(len-1-i) and belongs to bucket floor(time/width), where
+// width is a constant number of samples per column. A sample's bucket depends
+// only on its own time and the width, so a bucket the newest sample has passed
+// never changes: as the series slides only the newest, still-filling bucket
+// moves and the rest scroll left a column at a time. The width is
+// capacity/columns, so it stays put while the series fills, and the buckets
+// fill the plot to within a column (they are a little uneven: 4 and 5 samples
+// for a width of 4.85). The oldest bucket is dropped when partial, since it
+// would otherwise shimmer as samples fall off the left edge. ids are bucket
+// numbers, oldest first; vals are the averages. At most n buckets are returned.
+func bucketColumns(samples []float64, n int, anchor int64, capacity int) (ids []int64, vals []float64) {
+	width := bucketWidth(len(samples), n, capacity)
+	if width < 1 {
+		width = 1
 	}
+	bucketOf := func(a int64) int64 { return int64(math.Floor(float64(a) / width)) }
 	first := anchor - int64(len(samples)-1)
 	for i := 0; i < len(samples); {
-		id := floorDiv(first+int64(i), size)
+		id := bucketOf(first + int64(i))
 		j, sum := i, 0.0
-		for j < len(samples) && floorDiv(first+int64(j), size) == id {
+		for j < len(samples) && bucketOf(first+int64(j)) == id {
 			sum += samples[j]
 			j++
 		}
-		partialOldest := i == 0 && first != id*size
+		partialOldest := i == 0 && bucketOf(first-1) == id
 		if !partialOldest {
 			ids = append(ids, id)
 			vals = append(vals, sum/float64(j-i))
 		}
 		i = j
+	}
+	if len(ids) > n {
+		ids, vals = ids[len(ids)-n:], vals[len(vals)-n:]
 	}
 	return ids, vals
 }

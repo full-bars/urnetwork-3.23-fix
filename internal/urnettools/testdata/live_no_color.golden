@@ -1,5 +1,7 @@
 Live (provider v3.23.0-fix.32.1)   FLOWING
-  throughput  38.2 MiB/s   1m 41.0 MiB/s   5m 35.7 MiB/s   ▇▇▇▇▇▇▇▇▇▇▇█
+  billable    38.2 MiB/s   1m 41.0 MiB/s   5m 35.7 MiB/s   ▇▇▇▇▇▇▇▇▇▇▇█
+  total       64.1 MiB/s   1m 82.0 MiB/s   5m 71.3 MiB/s   ▇▇▇▇▇▇▇▇▇▇▇█
+  moved       45.0 GiB billable, 90.0 GiB total (this run), 256.0 TiB billable lifetime
   clients     212 (sessions: 200 pqe, 12 classical)
   proxies     58 up, 2 degraded, 0 connecting, 0 dead
   uptime      3d 4h   last restart: update (v3.23.0-fix.32.0 to v3.23.0-fix.32.1)

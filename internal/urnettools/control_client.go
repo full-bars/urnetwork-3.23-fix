@@ -21,7 +21,7 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", "traffic", or "audit"
 	Key     string `json:"key,omitempty"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
@@ -97,6 +97,8 @@ type controlResponse struct {
 	// Snapshot is the live node snapshot, answered by "snapshot". Absent
 	// from providers that predate the command.
 	Snapshot *NodeSnapshot `json:"snapshot,omitempty"`
+	// Traffic is the light live-counter reply, answered by "traffic".
+	Traffic *LiveTraffic `json:"traffic,omitempty"`
 	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`

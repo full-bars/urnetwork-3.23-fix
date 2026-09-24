@@ -75,3 +75,27 @@ func TestLiveTrafficSample(t *testing.T) {
 		t.Fatalf("sample = %+v", got)
 	}
 }
+
+// The billable and total samplers read the same per-proxy counters. Building the
+// proxy snapshot is the expensive part (about 2ms and 35k allocations at 5000
+// proxies), so a tick that samples both must build it once, not twice.
+func TestBandwidthShareBuildsOncePerTick(t *testing.T) {
+	now := snapT0
+	reads := 0
+	share := newBandwidthShare(func() time.Time { return now }, 500*time.Millisecond, func() (map[string]uint64, map[string]uint64) {
+		reads++
+		return map[string]uint64{"p": uint64(reads)}, map[string]uint64{"p": uint64(reads) * 10}
+	})
+
+	b1, _ := share.get()
+	_, t1 := share.get() // the second sampler in the same tick
+	if reads != 1 || b1["p"] != 1 || t1["p"] != 10 {
+		t.Fatalf("reads=%d billable=%v total=%v, want one read serving both", reads, b1, t1)
+	}
+
+	now = now.Add(time.Second) // the next tick
+	b2, t2 := share.get()
+	if reads != 2 || b2["p"] != 2 || t2["p"] != 20 {
+		t.Fatalf("next tick: reads=%d billable=%v total=%v, want a fresh read", reads, b2, t2)
+	}
+}

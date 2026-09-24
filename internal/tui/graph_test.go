@@ -230,7 +230,7 @@ func TestGraphCompletedBucketsNeverChange(t *testing.T) {
 	const n, ring = 60, 600
 	seen := map[int64]float64{}
 	for end := int64(1_000_000); end < 1_000_000+400; end++ {
-		ids, vals := bucketColumns(series(end, ring), n, end)
+		ids, vals := bucketColumns(series(end, ring), n, end, ring)
 		if len(ids) == 0 || len(ids) > n {
 			t.Fatalf("end=%d: %d columns for %d slots", end, len(ids), n)
 		}
@@ -244,12 +244,11 @@ func TestGraphCompletedBucketsNeverChange(t *testing.T) {
 }
 
 func TestGraphAnchoredScrollsOneColumnAtATime(t *testing.T) {
-	const n, ring = 60, 600
-	bucket := (ring + n - 2) / (n - 1) // the bucket size bucketColumns picks
+	const n, ring, seconds = 60, 600, 400
 	var prevIDs []int64
 	shifts, holds := 0, 0
-	for end := int64(2_000_000); end < 2_000_000+int64(bucket)*4; end++ {
-		ids, _ := bucketColumns(series(end, ring), n, end)
+	for end := int64(2_000_000); end < 2_000_000+seconds; end++ {
+		ids, _ := bucketColumns(series(end, ring), n, end, ring)
 		if prevIDs != nil {
 			switch d := ids[len(ids)-1] - prevIDs[len(prevIDs)-1]; d {
 			case 0:
@@ -262,18 +261,83 @@ func TestGraphAnchoredScrollsOneColumnAtATime(t *testing.T) {
 		}
 		prevIDs = ids
 	}
-	// Roughly one shift per bucket-size seconds and holds in between: a slow,
-	// steady scroll, not a redraw every second.
-	if shifts < 3 || shifts > 4 || holds < shifts*(bucket-2) {
-		t.Fatalf("shifts=%d holds=%d for bucket size %d", shifts, holds, bucket)
+	// 600 samples over 60 columns is 10 seconds a column: one scroll every ten
+	// seconds and holds in between, a slow steady scroll, not a redraw a second.
+	if shifts < seconds/10-2 || shifts > seconds/10+2 || holds < seconds-shifts-2 {
+		t.Fatalf("shifts=%d holds=%d over %d seconds", shifts, holds, seconds)
 	}
 }
 
 func TestGraphAnchorZeroKeepsTheOldLayout(t *testing.T) {
 	// Callers with no time base (and the existing tests) get the same layout as
 	// before: an unanchored series is bucketed from the oldest sample.
-	cols := plotColumnsAnchored([]float64{0, 0, 10, 10}, 2, 0)
+	cols := plotColumnsAnchored([]float64{0, 0, 10, 10}, 2, 0, 0)
 	if cols[0] != 0 || cols[1] != 10 {
 		t.Fatalf("unanchored bucket average: %v", cols)
+	}
+}
+
+// A graph must fill its width. Integer bucket sizes cannot always match the
+// column count, so a wide plot must show the newest columns that fit rather than
+// leave a third of the graph blank.
+func TestGraphAnchoredFillsWideAndNarrowPlots(t *testing.T) {
+	for _, n := range []int{20, 60, 100, 124, 162, 200, 299, 400} {
+		ids, vals := bucketColumns(series(5_000_000, 600), n, 5_000_000, 600)
+		if len(ids) > n {
+			t.Fatalf("n=%d: %d columns overflow the plot", n, len(ids))
+		}
+		if len(ids) < n-1 {
+			t.Fatalf("n=%d: only %d columns drawn, the graph would show a blank stretch", n, len(ids))
+		}
+		if len(ids) != len(vals) {
+			t.Fatalf("n=%d: %d ids for %d values", n, len(ids), len(vals))
+		}
+	}
+}
+
+func TestGraphAnchoredWideStaysStableWhileScrolling(t *testing.T) {
+	const n, ring = 299, 600
+	seen := map[int64]float64{}
+	for end := int64(7_000_000); end < 7_000_000+300; end++ {
+		ids, vals := bucketColumns(series(end, ring), n, end, ring)
+		for i := 0; i < len(ids)-1; i++ {
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("end=%d: completed bucket %d changed from %v to %v", end, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+// A young series (a provider that only just started) must not re-bucket as it
+// fills: the width is fixed by the capacity, so completed columns hold still
+// from the very first minute and the graph grows in from the right.
+func TestGraphAnchoredIsStableWhileTheSeriesFills(t *testing.T) {
+	const n, capacity = 120, 600
+	seen := map[int64]float64{}
+	for length := 3; length <= capacity+40; length++ {
+		end := int64(9_000_000) + int64(length) // one new sample a second
+		ids, vals := bucketColumns(series(end, min(length, capacity)), n, end, capacity)
+		for i := 0; i < len(ids)-1; i++ {
+			if prev, ok := seen[ids[i]]; ok && prev != vals[i] {
+				t.Fatalf("length=%d: completed bucket %d changed from %v to %v while filling", length, ids[i], prev, vals[i])
+			}
+			seen[ids[i]] = vals[i]
+		}
+	}
+}
+
+func TestGraphAnchoredYoungSeriesGrowsInFromTheRight(t *testing.T) {
+	// 30 seconds of history on a plot sized for 600: a few columns at the right
+	// edge, the rest empty (NaN), not the 30 samples stretched across the plot.
+	cols := plotColumnsAnchored(series(4_000_000, 30), 120, 4_000_000, 600)
+	drawn := 0
+	for _, v := range cols {
+		if !math.IsNaN(v) {
+			drawn++
+		}
+	}
+	if drawn == 0 || drawn > 10 || math.IsNaN(cols[len(cols)-1]) {
+		t.Fatalf("%d of %d columns drawn for 30s of history, newest at the right edge: %v", drawn, len(cols), math.IsNaN(cols[len(cols)-1]))
 	}
 }

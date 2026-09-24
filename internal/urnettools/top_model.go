@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
@@ -16,12 +17,17 @@ import (
 // directly, and lets the run loop (top_run.go) stay a thin plumbing layer.
 
 const (
-	// topDefaultInterval is the poll period. The provider caches its snapshot
-	// for about a second, so polling faster than that costs nothing extra but
-	// shows nothing new either; the floor exists to stop --interval 1ms from
-	// hammering the control socket.
+	// topDefaultInterval is the poll period.
 	topDefaultInterval = time.Second
-	topMinInterval     = 250 * time.Millisecond
+	// topMinInterval is the fastest poll, like btop's 100ms. What is polled at
+	// that rate is the light traffic counters; the full snapshot is fetched at
+	// most once every topSnapshotEvery however fast the rate is set.
+	topMinInterval = 100 * time.Millisecond
+	// topSnapshotEvery is the slowest-changing half of the picture (proxies,
+	// state, resources, per-second history). The provider caches its snapshot
+	// for a second and building one is the costly part, so asking more often
+	// gains nothing.
+	topSnapshotEvery = time.Second
 	// topRetryDelay is how long a silent provider is left alone between
 	// attempts, and the number the DISCONNECTED countdown counts down from.
 	topRetryDelay = 3 * time.Second
@@ -39,7 +45,7 @@ var topMin = tui.MinSize{W: topMinWidth, H: topMinHeight}
 
 // topIntervalSteps are the refresh rates + and - move between.
 var topIntervalSteps = []time.Duration{
-	250 * time.Millisecond, 500 * time.Millisecond, time.Second,
+	100 * time.Millisecond, 250 * time.Millisecond, 500 * time.Millisecond, time.Second,
 	2 * time.Second, 5 * time.Second, 10 * time.Second,
 }
 
@@ -47,6 +53,13 @@ var topIntervalSteps = []time.Duration{
 // control socket; tests supply a fake.
 type topSource interface {
 	Fetch(p Provider) (*NodeSnapshot, error)
+}
+
+// topTrafficSource is the optional second half of a source: the light live
+// counters. A source that lacks it (or a provider that predates the command)
+// leaves top on the snapshot's own once-a-second rates.
+type topTrafficSource interface {
+	FetchTraffic(p Provider) (*LiveTraffic, error)
 }
 
 // topSourceFunc adapts a function to topSource.
@@ -61,6 +74,10 @@ type socketTopSource struct{}
 func (socketTopSource) Fetch(p Provider) (*NodeSnapshot, error) {
 	snap, _, err := fetchSnapshotFn(p)
 	return snap, err
+}
+
+func (socketTopSource) FetchTraffic(p Provider) (*LiveTraffic, error) {
+	return fetchLiveTraffic(p)
 }
 
 type topConn int
@@ -109,6 +126,14 @@ type topModel struct {
 	fetching  bool
 	lastFetch time.Time
 
+	// live is the sliding-window rate built from the light traffic polls.
+	// trafficOK goes false once a provider says it does not know the command,
+	// and trafficBusy marks a traffic poll in flight.
+	live        topLive
+	trafficOK   bool
+	trafficBusy bool
+	lastTraffic time.Time
+
 	help bool
 	quit bool
 }
@@ -123,7 +148,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	return &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now}
+	return &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true}
 }
 
 func (m *topModel) provider() Provider {
@@ -134,8 +159,9 @@ func (m *topModel) provider() Provider {
 }
 
 // wantFetch reports whether a snapshot should be requested now and, if so,
-// marks one in flight. A connected provider is polled every interval; a silent
-// one is retried on the countdown, not every tick.
+// marks one in flight. A connected provider is polled every interval, though
+// never faster than topSnapshotEvery; a silent one is retried on the
+// countdown, not every tick.
 func (m *topModel) wantFetch(now time.Time) (gen int, p Provider, ok bool) {
 	if m.fetching || len(m.providers) == 0 {
 		return 0, Provider{}, false
@@ -147,13 +173,48 @@ func (m *topModel) wantFetch(now time.Time) (gen int, p Provider, ok bool) {
 			return 0, Provider{}, false
 		}
 	default:
-		if now.Sub(m.lastFetch) < m.interval {
+		if now.Sub(m.lastFetch) < max(m.interval, topSnapshotEvery) {
 			return 0, Provider{}, false
 		}
 	}
 	m.fetching = true
 	m.lastFetch = now
 	return m.gen, m.provider(), true
+}
+
+// wantTraffic reports whether the light traffic counters should be read now
+// and, if so, marks one in flight. They are read every interval once the
+// provider is connected, and never for a provider that has said it does not
+// know the command.
+func (m *topModel) wantTraffic(now time.Time) (gen int, p Provider, ok bool) {
+	if m.trafficBusy || !m.trafficOK || m.conn != topConnected || len(m.providers) == 0 {
+		return 0, Provider{}, false
+	}
+	if !m.lastTraffic.IsZero() && now.Sub(m.lastTraffic) < m.interval {
+		return 0, Provider{}, false
+	}
+	m.trafficBusy = true
+	m.lastTraffic = now
+	return m.gen, m.provider(), true
+}
+
+// applyTraffic folds one traffic reading into the live rate. A missed reading
+// only skips a sample: losing the provider is the snapshot path's call, so a
+// slow counter read never flips the screen to DISCONNECTED. A provider that does
+// not know the command is left on the snapshot's own rates.
+func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
+	if gen != m.gen {
+		return
+	}
+	m.trafficBusy = false
+	switch {
+	case errors.Is(err, errTrafficUnsupported):
+		m.trafficOK = false
+		m.live.reset()
+	case err != nil || lt == nil:
+	default:
+		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+	}
 }
 
 // apply folds the outcome of a fetch into the model. Results for a provider
@@ -203,6 +264,7 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.conn = topDisconnected
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
+	m.live.reset() // a rate from before the outage would read as current
 }
 
 // noteChange records what differs between two consecutive good snapshots that
@@ -329,6 +391,8 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.conn, m.snap, m.events = topConnecting, nil, nil
 	m.downSince, m.nextRetry, m.lastErr = time.Time{}, time.Time{}, ""
 	m.fetching, m.lastFetch = false, time.Time{}
+	m.live.reset()
+	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	return topRefetch
 }
 
@@ -355,6 +419,69 @@ func (m *topModel) stepInterval(dir int) {
 }
 
 // history returns the throughput samples for the graph, oldest first.
+// topRates is the current billable and total throughput. totalOK is false when
+// there is no total figure at all (a provider that predates the traffic block).
+type topRates struct {
+	billable float64
+	total    float64
+	totalOK  bool
+}
+
+// rates is the live rate when top has one, otherwise the snapshot's own.
+func (m *topModel) rates() topRates {
+	var r topRates
+	if m.snap == nil {
+		return r
+	}
+	r.billable = m.snap.Rate.NowBps
+	if m.snap.Traffic != nil {
+		r.total, r.totalOK = m.snap.Traffic.TotalNowBps, true
+	}
+	if m.conn == topConnected {
+		if b, t, ok := m.live.rates(); ok {
+			r.billable, r.total, r.totalOK = b, t, true
+		}
+	}
+	return r
+}
+
+// series is what the two graphs draw: the provider's per-second history with the
+// live rate appended as the newest column, so the right edge moves with every
+// poll. anchor is the provider-clock second of the newest column (zero with no
+// usable time), which lets the graph bucket by absolute time and stay still
+// between scrolls. total is nil when the provider has no total-traffic history.
+func (m *topModel) series() (billable, total []float64, anchor int64) {
+	if m.snap == nil {
+		return nil, nil, 0
+	}
+	if t, err := time.Parse(time.RFC3339, m.snap.Now); err == nil {
+		anchor = t.Unix()
+	}
+	liveB, liveT, live := 0.0, 0.0, false
+	if m.conn == topConnected {
+		liveB, liveT, live = m.live.rates()
+	}
+	billable = withNewest(m.snap.Rate.HistoryBps, liveB, live)
+	if m.snap.Traffic != nil {
+		total = withNewest(m.snap.Traffic.TotalHistoryBps, liveT, live)
+	}
+	if live && anchor != 0 {
+		anchor++
+	}
+	return billable, total, anchor
+}
+
+// withNewest returns a copy of hist with v appended when add is set. It never
+// changes hist, which belongs to the snapshot.
+func withNewest(hist []float64, v float64, add bool) []float64 {
+	out := make([]float64, len(hist), len(hist)+1)
+	copy(out, hist)
+	if add {
+		out = append(out, v)
+	}
+	return out
+}
+
 func (m *topModel) history() []float64 {
 	if m.snap == nil {
 		return nil
