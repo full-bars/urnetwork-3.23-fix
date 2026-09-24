@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -435,5 +436,35 @@ func TestReload_SameAddressDifferentUser_BothRunStably(t *testing.T) {
 	gotB, okB = r.runningAuthFor(keyB)
 	if !okB || gotB.Auth.Password != "pw2" {
 		t.Fatalf("identity B was disturbed by identity A's unrelated rotation: %+v ok=%v", gotB, okB)
+	}
+}
+
+// proxy_url.json that exists but cannot be read leaves the URL sources unknown.
+// A URL-only node must not read that as a settled, valid direct-only config: it
+// is a source that could not be resolved. (A MISSING file is a different thing:
+// no URL sources, direct-only, settled; the test above pins that.)
+func TestReload_UnreadableURLState_IsNotDirectOnly(t *testing.T) {
+	resetProxyCounters(t)
+	r := emptyReloader(t, "")
+	path, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{ this is not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionFailed {
+		t.Fatalf("unreadable URL state: resolution=%d, want proxyResolutionFailed(%d), not the settled direct-only state", got, proxyResolutionFailed)
+	}
+	if phase := proxyStartupPhase(); phase != startupSourceUnreachable {
+		t.Fatalf("startup phase = %q, want %q", phase, startupSourceUnreachable)
+	}
+	if line := systemdStatusLine(); strings.HasPrefix(line, "active:") {
+		t.Fatalf("a node whose URL sources cannot be read must not read active, got %q", line)
 	}
 }

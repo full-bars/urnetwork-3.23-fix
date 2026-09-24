@@ -619,6 +619,13 @@ func (r *ProxyReloader) reload() {
 		if anySourceConfigured {
 			tlog("[proxy] reload skipped: 0 proxies found in source\n")
 			setProxyResolutionStatus(proxyResolutionEmpty, "source returned no usable proxies")
+		} else if !urlCacheLoaded {
+			// proxy_url.json exists but could not be read (a missing file reads as
+			// empty, not as an error), so whether URL sources are configured is
+			// unknown. Settling as direct-only would report a healthy node whose
+			// sources were never resolved.
+			tlog("[proxy] reload skipped: proxy_url.json unreadable, URL sources unknown\n")
+			setProxyResolutionStatus(proxyResolutionFailed, "could not read proxy_url.json")
 		} else {
 			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
 			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")
