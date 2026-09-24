@@ -301,3 +301,64 @@ func TestIsTimeoutErr(t *testing.T) {
 		}
 	}
 }
+
+// The spacing has to be measured from when a request FINISHED. From its start, a
+// miss that took 5 seconds (the socket deadline) had already used up a 2 second
+// backoff and the next request went out at once, which is the pile-on the backoff
+// exists to stop.
+func TestTopBackoffIsMeasuredFromCompletionNotStart(t *testing.T) {
+	m, clock := slowModel(t)
+	clock.Advance(2 * time.Second)
+	gen, _, ok := m.wantFetch(clock.Now())
+	if !ok {
+		t.Fatal("no fetch")
+	}
+	clock.Advance(5 * time.Second) // a full socket deadline
+	m.apply(gen, nil, errSlow)
+	if m.backoff == 0 {
+		t.Fatal("no backoff after a miss")
+	}
+	// Right after the miss, and for interval+backoff after it, nothing is asked.
+	if _, _, ok := m.wantFetch(clock.Now()); ok {
+		t.Fatal("asked again the moment the 5s miss finished; the backoff spaced nothing")
+	}
+	clock.Advance(topSnapshotEvery + m.backoff - 100*time.Millisecond)
+	if _, _, ok := m.wantFetch(clock.Now()); ok {
+		t.Fatal("asked before interval+backoff had passed since the miss finished")
+	}
+	clock.Advance(200 * time.Millisecond)
+	if _, _, ok := m.wantFetch(clock.Now()); !ok {
+		t.Fatal("not asked once interval+backoff had passed")
+	}
+}
+
+// A slow reply of T seconds spaces the next request by T after it arrived.
+func TestTopSlowReplySpacesTheNextRequestFromItsArrival(t *testing.T) {
+	m, clock := slowModel(t)
+	clock.Advance(2 * time.Second)
+	gen, _, _ := m.wantFetch(clock.Now())
+	clock.Advance(4 * time.Second)
+	m.apply(gen, topFlowing(t), nil)
+	// 4s reply => backoff 4s. The next request is due interval+4s after arrival.
+	clock.Advance(topSnapshotEvery + 3*time.Second)
+	if _, _, ok := m.wantFetch(clock.Now()); ok {
+		t.Fatal("re-polled while the provider was still digesting a 4s reply")
+	}
+	clock.Advance(2 * time.Second)
+	if _, _, ok := m.wantFetch(clock.Now()); !ok {
+		t.Fatal("never re-polled")
+	}
+}
+
+// A healthy provider keeps its exact cadence: measured from the start, as before.
+func TestTopHealthyCadenceIsUnchangedByTheCompletionRule(t *testing.T) {
+	m, clock := slowModel(t)
+	clock.Advance(2 * time.Second)
+	gen, _, _ := m.wantFetch(clock.Now())
+	clock.Advance(200 * time.Millisecond) // prompt reply
+	m.apply(gen, topFlowing(t), nil)
+	clock.Advance(topSnapshotEvery - 200*time.Millisecond) // 1s after the START of that request: due
+	if _, _, ok := m.wantFetch(clock.Now()); !ok {
+		t.Fatal("a healthy provider must be polled every interval measured from the start of the last request")
+	}
+}

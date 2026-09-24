@@ -150,6 +150,7 @@ type topModel struct {
 	// extra spacing added to the heavy poll (zero when healthy); slowReported says
 	// the Events panel already carries this episode, so it is not repeated.
 	lastAnswer   time.Time
+	lastDone     time.Time // when the last snapshot request finished, answered or not
 	failStreak   int
 	backoff      time.Duration
 	slowReported bool
@@ -201,7 +202,15 @@ func (m *topModel) wantFetch(now time.Time) (gen int, p Provider, ok bool) {
 			return 0, Provider{}, false
 		}
 	default:
-		if now.Sub(m.lastFetch) < max(m.interval, topSnapshotEvery)+m.backoff {
+		// A healthy provider is polled on a steady cadence measured from the start
+		// of the last request. While it struggles the spacing is measured from
+		// when that request FINISHED: from its start, a 5 second miss would already
+		// have used up a 2 second backoff and the next request would go out at once.
+		since := now.Sub(m.lastFetch)
+		if m.backoff > 0 && m.lastDone.After(m.lastFetch) {
+			since = now.Sub(m.lastDone)
+		}
+		if since < max(m.interval, topSnapshotEvery)+m.backoff {
 			return 0, Provider{}, false
 		}
 	}
@@ -264,6 +273,7 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.fetching = false
 	now := m.now()
+	m.lastDone = now
 	if err != nil || snap == nil {
 		if isTimeoutErr(err) && m.snap != nil && m.conn == topConnected && now.Sub(m.lastAnswer) < topLossGrace {
 			m.missed(now, err)
@@ -508,7 +518,7 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
-	m.lastAnswer, m.failStreak, m.backoff, m.slowReported = time.Time{}, 0, 0, false
+	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
 	return topRefetch
 }
 
