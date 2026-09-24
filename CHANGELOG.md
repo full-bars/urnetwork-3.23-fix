@@ -7,6 +7,7 @@
 - **"why idle: auth failing" fired on normal noise** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the idle hint blamed auth if the failure counter rose at all in 10 minutes, which a large paid pool always does. Auth is now blamed only for a failure wave or a mostly-down pool, and the hint shows the numbers behind it.
 - **A node stuck in startup read IDLE** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the state now follows the real startup phase, reads `degraded` if it stalls, and a new `state_reason` says why a node is starting or degraded.
 - **The `top` graph shimmered instead of scrolling** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): buckets counted from the oldest sample re-averaged every column each second. They are now aligned to absolute time.
+- **Total traffic read zero on a node that makes only direct connections**: direct sockets are now counted as total traffic over TCP and UDP, as proxy connections already were, so the total rate, total graph, bytes moved and the Prometheus total byte series carry real values on a direct-only node. Needs the provider updated.
 - **`top` called a slow provider lost** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a provider that answers late stays connected with a `SLOW` marker and is called lost only after 20 seconds of silence; a refused connection is still reported at once. `top` also backs off while a provider struggles instead of adding load.
 
 ### Added
