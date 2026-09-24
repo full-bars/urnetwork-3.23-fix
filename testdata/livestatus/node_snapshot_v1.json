@@ -13,6 +13,7 @@
     "avg_1m_bps": 43012770,
     "avg_5m_bps": 37400115,
     "history_interval_seconds": 1,
+    "history_seq": 1234567,
     "history_bps": [
       33500000,
       33507919,

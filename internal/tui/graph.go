@@ -79,6 +79,13 @@ type Graph struct {
 	// from the right instead of re-bucketing every few seconds. Zero uses the
 	// length of the series.
 	Capacity int
+	// Tail, when HasTail is set, is drawn as its own newest column: the live
+	// value, updated far faster than the series. It is not part of the
+	// bucketed series, so it cannot change any column before it, and it does not
+	// set the scale: a burst in the tail must not rescale the whole chart, so it
+	// is clamped to the plot instead.
+	Tail    float64
+	HasTail bool
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -157,7 +164,18 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	}
 
 	plotW := w - x0
-	cols := plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
+	var cols []float64
+	if g.HasTail && plotW >= 1 {
+		// History fills every column but the newest; the tail takes that one.
+		cols = plotColumnsAnchored(samples, 2*plotW-1, g.Anchor, g.Capacity)
+		tail := g.Tail
+		if math.IsNaN(tail) || math.IsInf(tail, 0) || tail < 0 {
+			tail = 0
+		}
+		cols = append(cols, math.Min(tail, top))
+	} else {
+		cols = plotColumnsAnchored(samples, 2*plotW, g.Anchor, g.Capacity)
+	}
 	if ascii {
 		drawGraphASCII(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, top, g.Style)
 		return shown
@@ -297,4 +315,10 @@ func drawGraphASCII(b *Buffer, cols []float64, top float64, st Style) {
 			rem -= take
 		}
 	}
+}
+
+// GraphBuckets exposes the bucketing DrawGraph uses, so a caller can check the
+// stability of what it feeds the graph without rendering it. See bucketColumns.
+func GraphBuckets(samples []float64, n int, anchor int64, capacity int) (ids []int64, vals []float64) {
+	return bucketColumns(samples, n, anchor, capacity)
 }

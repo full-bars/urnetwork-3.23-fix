@@ -207,6 +207,13 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 		return
 	}
 	m.trafficBusy = false
+	// A reading that started before a disconnect is not current: `lost`
+	// resets the live window without bumping the generation, so without this
+	// check a stale reading could become the first sample in the reset window
+	// and distort post-reconnect rates.
+	if m.conn != topConnected {
+		return
+	}
 	switch {
 	case errors.Is(err, errTrafficUnsupported):
 		m.trafficOK = false
@@ -445,39 +452,46 @@ func (m *topModel) rates() topRates {
 	return r
 }
 
-// series is what the two graphs draw: the provider's per-second history with the
-// live rate appended as the newest column, so the right edge moves with every
-// poll. anchor is the provider-clock second of the newest column (zero with no
-// usable time), which lets the graph bucket by absolute time and stay still
-// between scrolls. total is nil when the provider has no total-traffic history.
-func (m *topModel) series() (billable, total []float64, anchor int64) {
-	if m.snap == nil {
-		return nil, nil, 0
-	}
-	if t, err := time.Parse(time.RFC3339, m.snap.Now); err == nil {
-		anchor = t.Unix()
-	}
-	liveB, liveT, live := 0.0, 0.0, false
-	if m.conn == topConnected {
-		liveB, liveT, live = m.live.rates()
-	}
-	billable = withNewest(m.snap.Rate.HistoryBps, liveB, live)
-	if m.snap.Traffic != nil {
-		total = withNewest(m.snap.Traffic.TotalHistoryBps, liveT, live)
-	}
-	if live && anchor != 0 {
-		anchor++
-	}
-	return billable, total, anchor
+// topSeries is what the two graphs draw: the provider's per-second history, the
+// time base to bucket it against, and the live rate as a separate tail.
+type topSeries struct {
+	billable []float64
+	// total is nil when the provider has no total-traffic history.
+	total []float64
+	// anchor is the absolute index of the newest history sample. It is the
+	// provider's own sample count when it sends one: that identifies each sample
+	// exactly, however the poll and the provider's tick line up. From a provider
+	// that predates it, the snapshot's clock second stands in, and zero means no
+	// usable time base at all.
+	anchor int64
+	// The live rate, drawn as its own newest column rather than as a sample in
+	// the series. Appended to the series it would sit at a guessed index and be
+	// replaced by the provider's real sample a second later, changing a column
+	// that was already complete.
+	tailBillable, tailTotal float64
+	live                    bool
 }
 
-// withNewest returns a copy of hist with v appended when add is set. It never
-// changes hist, which belongs to the snapshot.
-func withNewest(hist []float64, v float64, add bool) []float64 {
-	out := make([]float64, len(hist), len(hist)+1)
-	copy(out, hist)
-	if add {
-		out = append(out, v)
+// series builds what the graphs draw from the last snapshot and the live rate.
+func (m *topModel) series() topSeries {
+	var out topSeries
+	if m.snap == nil {
+		return out
+	}
+	switch {
+	case m.snap.Rate.HistorySeq > 0:
+		out.anchor = int64(m.snap.Rate.HistorySeq)
+	default:
+		if t, err := time.Parse(time.RFC3339, m.snap.Now); err == nil {
+			out.anchor = t.Unix()
+		}
+	}
+	out.billable = m.snap.Rate.HistoryBps
+	if m.snap.Traffic != nil {
+		out.total = m.snap.Traffic.TotalHistoryBps
+	}
+	if m.conn == topConnected {
+		out.tailBillable, out.tailTotal, out.live = m.live.rates()
 	}
 	return out
 }

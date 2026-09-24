@@ -110,11 +110,15 @@ func (s *NodeSnapshot) whyRow() (label, text string, ok bool) {
 // SnapshotRate carries bytes per second. Floats decode integers too, so a
 // provider that later reports fractional rates does not break the reader.
 type SnapshotRate struct {
-	NowBps                 float64   `json:"now_bps"`
-	Avg1mBps               float64   `json:"avg_1m_bps"`
-	Avg5mBps               float64   `json:"avg_5m_bps"`
-	HistoryIntervalSeconds float64   `json:"history_interval_seconds"`
-	HistoryBps             []float64 `json:"history_bps"` // oldest first, newest last
+	NowBps                 float64 `json:"now_bps"`
+	Avg1mBps               float64 `json:"avg_1m_bps"`
+	Avg5mBps               float64 `json:"avg_5m_bps"`
+	HistoryIntervalSeconds float64 `json:"history_interval_seconds"`
+	// HistorySeq is the absolute index of the newest history sample (the count
+	// of samples the provider has ever recorded). Zero from a provider that
+	// predates it, in which case the graph falls back to the snapshot's clock.
+	HistorySeq uint64    `json:"history_seq,omitempty"`
+	HistoryBps []float64 `json:"history_bps"` // oldest first, newest last
 }
 
 type SnapshotSessions struct {

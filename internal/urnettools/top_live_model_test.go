@@ -127,20 +127,21 @@ func TestTopLiveRatesReplaceTheSnapshotRateWhenAvailable(t *testing.T) {
 	}
 }
 
-// The graph is the provider's per-second history with the live rate as its
-// newest column, so the right edge moves with every poll. It is anchored to the
-// provider's clock so completed columns never change.
-func TestTopSeriesAppendsTheLiveColumnAndAnchorsToProviderTime(t *testing.T) {
+// The graph is the provider's per-second history, bucketed against the provider's
+// own sample count, with the live rate as a separate tail column. The tail is not
+// appended to the series: a sample at a guessed index would be replaced by the
+// provider's real one a second later, changing a column that was already complete.
+func TestTopSeriesKeepsTheLiveRateAsASeparateTail(t *testing.T) {
 	m, clock := liveModel(t, 100*time.Millisecond)
+	m.snap.Rate.HistorySeq = 4242
 	base := len(m.snap.Rate.HistoryBps)
-	snapAt, _ := time.Parse(time.RFC3339, m.snap.Now)
 
-	bill, total, anchor := m.series()
-	if len(bill) != base || anchor != snapAt.Unix() {
-		t.Fatalf("no live rate yet: %d samples (want %d), anchor %d (want %d)", len(bill), base, anchor, snapAt.Unix())
+	sr := m.series()
+	if sr.live || len(sr.billable) != base || sr.anchor != 4242 {
+		t.Fatalf("no live rate yet: live=%v %d samples (want %d), anchor %d (want the provider's sample count 4242)", sr.live, len(sr.billable), base, sr.anchor)
 	}
-	if len(total) != len(m.snap.Traffic.TotalHistoryBps) {
-		t.Fatalf("total series has %d samples, want %d", len(total), len(m.snap.Traffic.TotalHistoryBps))
+	if len(sr.total) != len(m.snap.Traffic.TotalHistoryBps) {
+		t.Fatalf("total series has %d samples, want %d", len(sr.total), len(m.snap.Traffic.TotalHistoryBps))
 	}
 
 	for i := 0; i < 12; i++ {
@@ -148,36 +149,39 @@ func TestTopSeriesAppendsTheLiveColumnAndAnchorsToProviderTime(t *testing.T) {
 		gen, _, _ := m.wantTraffic(clock.Now())
 		m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 3000}, nil)
 	}
-	bill, total, anchor = m.series()
-	if len(bill) != base+1 || anchor != snapAt.Unix()+1 {
-		t.Fatalf("live column missing: %d samples (want %d), anchor %d (want %d)", len(bill), base+1, anchor, snapAt.Unix()+1)
+	sr = m.series()
+	if !sr.live || len(sr.billable) != base || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps) {
+		t.Fatalf("the live rate must not be appended to the series: live=%v %d samples (want %d)", sr.live, len(sr.billable), base)
 	}
-	if last := bill[len(bill)-1]; last < 9_900 || last > 10_100 {
-		t.Fatalf("newest billable column = %.0f, want the live 10000", last)
+	if sr.anchor != 4242 {
+		t.Fatalf("the live rate moved the anchor to %d", sr.anchor)
 	}
-	if last := total[len(total)-1]; last < 29_700 || last > 30_300 {
-		t.Fatalf("newest total column = %.0f, want the live 30000", last)
-	}
-	// The snapshot's own history must not be modified by appending to a copy.
-	if len(m.snap.Rate.HistoryBps) != base {
-		t.Fatalf("the snapshot's history grew to %d", len(m.snap.Rate.HistoryBps))
+	if sr.tailBillable < 9_900 || sr.tailBillable > 10_100 || sr.tailTotal < 29_700 || sr.tailTotal > 30_300 {
+		t.Fatalf("tail = %.0f / %.0f, want the live 10000 / 30000", sr.tailBillable, sr.tailTotal)
 	}
 }
 
-func TestTopSeriesWithoutATimeBaseIsUnanchored(t *testing.T) {
+// A provider that predates history_seq has only the snapshot's clock to bucket
+// against, and a snapshot with no time at all has nothing.
+func TestTopSeriesAnchorFallsBackToTheSnapshotClock(t *testing.T) {
 	m, _ := liveModel(t, 100*time.Millisecond)
+	m.snap.Rate.HistorySeq = 0
+	snapAt, _ := time.Parse(time.RFC3339, m.snap.Now)
+	if sr := m.series(); sr.anchor != snapAt.Unix() {
+		t.Fatalf("anchor = %d, want the snapshot's clock second %d", sr.anchor, snapAt.Unix())
+	}
 	m.snap.Now = ""
-	if _, _, anchor := m.series(); anchor != 0 {
-		t.Fatalf("anchor = %d with no provider time, want 0", anchor)
+	if sr := m.series(); sr.anchor != 0 {
+		t.Fatalf("anchor = %d with no time base at all, want 0", sr.anchor)
 	}
 }
 
 func TestTopSeriesForAnOldProviderHasNoTotalGraph(t *testing.T) {
 	m, _ := liveModel(t, 100*time.Millisecond)
 	m.snap.Traffic = nil
-	bill, total, _ := m.series()
-	if len(bill) == 0 || total != nil {
-		t.Fatalf("old provider: billable %d samples, total %v; want billable only", len(bill), total)
+	sr := m.series()
+	if len(sr.billable) == 0 || sr.total != nil {
+		t.Fatalf("old provider: billable %d samples, total %v; want billable only", len(sr.billable), sr.total)
 	}
 	if r := m.rates(); r.totalOK {
 		t.Fatal("total rate claimed with no traffic block")

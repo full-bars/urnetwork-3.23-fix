@@ -22,8 +22,9 @@ const (
 	topNowRows     = 11
 	// topNowRowsTraffic is the Now panel when the provider reports traffic
 	// totals: billable and total rates with their averages, the session bytes
-	// of each, then the usual rows.
-	topNowRowsTraffic = 14
+	// of each, then the usual rows. 16 so the two interior rows needed to
+	// render the state reason fit inside the box.
+	topNowRowsTraffic = 16
 	// topTwoGraphsMinRows is how tall the throughput area must be to stack a
 	// billable graph and a total-traffic graph; shorter shows billable only.
 	topTwoGraphsMinRows = 14
@@ -64,17 +65,17 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
 	}
 
-	billable, total, anchor := m.series()
-	if total != nil && left[0].H >= topTwoGraphsMinRows {
+	sr := m.series()
+	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
 		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], m.throughputTitle("Billable")), billable, anchor, th.Graph)
-		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic")), total, anchor, th.Accent)
+		m.drawGraph(box(graphs[0], m.throughputTitle("Billable")), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic")), sr.total, sr.anchor, sr.live, sr.tailTotal, th.Accent)
 	} else {
 		title := "Throughput"
-		if total != nil {
+		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], m.throughputTitle(title)), billable, anchor, th.Graph)
+		m.drawGraph(box(left[0], m.throughputTitle(title)), sr.billable, sr.anchor, sr.live, sr.tailBillable, th.Graph)
 	}
 	m.drawProxies(box(left[1], "Proxies"))
 	m.drawEvents(box(left[2], "Events"))
@@ -145,10 +146,10 @@ func (m *topModel) throughputTitle(name string) string {
 	return title
 }
 
-// drawGraph draws one rate series. anchor is the provider-clock second of the
-// newest column (zero when unknown), which keeps completed columns still while
-// the graph scrolls.
-func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, live tui.Style) {
+// drawGraph draws one rate series. anchor is the absolute index of the newest
+// history sample (zero when unknown), which keeps completed columns still while
+// the graph scrolls; the live rate is the tail, its own newest column.
+func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, hasTail bool, tail float64, live tui.Style) {
 	th := m.theme
 	if len(samples) == 0 {
 		msg := "waiting for the provider"
@@ -164,7 +165,7 @@ func (m *topModel) drawGraph(b *tui.Buffer, samples []float64, anchor int64, liv
 	}
 	tui.DrawGraph(b, tui.Graph{
 		Samples: samples, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
-		Anchor: anchor, Capacity: topGraphCapacity,
+		Anchor: anchor, Capacity: topGraphCapacity, Tail: tail, HasTail: hasTail,
 	}, th.ASCII)
 }
 

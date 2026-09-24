@@ -131,16 +131,81 @@ func (s urlSourceStats) String() string {
 	if s.Added > 0 {
 		verdict = fmt.Sprintf("+%d new", s.Added)
 	}
-	return fmt.Sprintf("%s%s: %s of %d listed (%d already known, %d rejected, %d dead)", prefix, s.Label, verdict, s.Lines, s.Known, s.Rejected, s.Dead)
+	held := ""
+	if s.Held > 0 {
+		held = fmt.Sprintf(", %d held for re-probe", s.Held)
+	}
+	return fmt.Sprintf("%s%s: %s of %d listed (%d already known, %d rejected, %d dead%s)", prefix, s.Label, verdict, s.Lines, s.Known, s.Rejected, s.Dead, held)
 }
 
 // urlSourceLabelMax caps a source label so one very long URL cannot swamp a line.
 const urlSourceLabelMax = 64
 
+// urlLabelSecretSegment is what a redacted credential-bearing path segment
+// becomes. Fixed-width so a label cannot leak the original length either.
+const urlLabelSecretSegment = "[redacted]"
+
+// urlCredentialPathKeywords are path segments that signal the NEXT segment is a
+// credential (the common /token/<secret>/... and /key/<key> shapes). Lowercase.
+var urlCredentialPathKeywords = map[string]bool{
+	"token": true, "tokens": true, "access_token": true, "access-token": true,
+	"key": true, "keys": true, "apikey": true, "api_key": true, "api-key": true,
+	"secret": true, "secrets": true, "auth": true, "authorization": true,
+	"password": true, "passwd": true, "pwd": true, "sig": true, "signature": true,
+	"credential": true, "credentials": true, "bearer": true,
+}
+
+// urlLabelSegmentIsSecret reports whether a single path segment should be
+// redacted: a long opaque blob (a token/key), or the segment right after a
+// credential keyword. Filenames (which carry a dot) and short identifiers are
+// left intact so non-sensitive path disambiguation still works.
+func urlLabelSegmentIsSecret(segment string, prevWasKeyword bool) bool {
+	if segment == "" {
+		return false
+	}
+	if prevWasKeyword {
+		return true
+	}
+	if len(segment) < 32 || strings.Contains(segment, ".") {
+		return false
+	}
+	for _, r := range segment {
+		switch {
+		case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+		default:
+			return false // a normal path char (/, %, ~, .) means it is not a bare token
+		}
+	}
+	return true
+}
+
+// redactSourcePath replaces credential-bearing segments of a URL path with a
+// fixed placeholder, keeping the non-sensitive segments that disambiguate one
+// source from another. Query strings and userinfo never reach here (the caller
+// strips them), but a token can also sit in the path itself
+// (…/token/SECRET/list), which this covers.
+func redactSourcePath(path string) string {
+	if path == "" {
+		return ""
+	}
+	segments := strings.Split(path, "/")
+	prevWasKeyword := false
+	for i, seg := range segments {
+		if urlLabelSegmentIsSecret(seg, prevWasKeyword && i > 0) {
+			segments[i] = urlLabelSecretSegment
+			prevWasKeyword = false
+			continue
+		}
+		prevWasKeyword = urlCredentialPathKeywords[strings.ToLower(seg)]
+	}
+	return strings.Join(segments, "/")
+}
+
 // urlSourceLabels names each source by host and path only. Source URLs often
 // carry an API token in the query string or credentials in the userinfo, and a
-// label lands in the important log buffer, so neither is ever included. Sources
-// that would share a label are numbered.
+// label lands in the important log buffer, so neither is ever included.
+// Credential-bearing path segments are redacted too. Sources that would share a
+// label are numbered.
 func urlSourceLabels(urls []string) []string {
 	labels := make([]string, len(urls))
 	seen := map[string]int{}
@@ -150,7 +215,7 @@ func urlSourceLabels(urls []string) []string {
 			label = label[:cut]
 		}
 		if u, err := url.Parse(label); err == nil && u.Host != "" {
-			label = u.Host + strings.TrimSuffix(u.Path, "/")
+			label = u.Host + redactSourcePath(strings.TrimSuffix(u.Path, "/"))
 		} else if at := strings.LastIndex(label, "@"); at >= 0 {
 			label = label[at+1:]
 		}

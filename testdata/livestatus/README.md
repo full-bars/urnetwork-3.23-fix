@@ -14,5 +14,6 @@ are omitted when unknown, never zeroed. Readers must ignore unknown fields.
 - `state_reason`: why the node is `starting` or `degraded` (an unfinished proxy startup phase, dead proxies, resource pressure). Omitted for `idle` and `flowing`, and for an ordinary warmup.
 - `restart.reason`: `update`, `hotswap`, `manual`, `clean`, `unclean`, `first-start`.
 - `rate.history_bps`: per-second samples, oldest first, newest last, at most 600.
+- `rate.history_seq`: the absolute index of the newest history sample (the count of samples ever recorded); it grows by one per sample and keeps growing after the ring wraps. Readers that draw the history against it, not a clock, keep each sample in place from one snapshot to the next. Omitted by a provider that predates it.
 - Restart marker file (`<state dir>/.restart-reason`): one line, `<reason> <RFC3339 UTC time>`.
   The provider consumes and deletes it at start and ignores one older than 10 minutes.

@@ -282,6 +282,46 @@ func TestURLSourceLabelDropsSecretsAndDisambiguates(t *testing.T) {
 	}
 }
 
+// A credential can sit in the PATH itself, not just the query or userinfo
+// (e.g. /token/SECRET/list). Those segments must be redacted too, while
+// non-sensitive path identifiers that disambiguate sources stay intact.
+func TestURLLabelRedactsCredentialPathSegments(t *testing.T) {
+	cases := []struct {
+		name string
+		url  string
+		want string
+	}{
+		{"token in path",
+			"https://lists.example.com/token/abcd1234ABCD/lists/http.txt",
+			"lists.example.com/token/[redacted]/lists/http.txt"},
+		{"key path segment",
+			"https://api.example.org/key/0123456789abcdef0123456789abcdef/data.json",
+			"api.example.org/key/[redacted]/data.json"},
+		{"long opaque literal segment",
+			"https://example.com/v2/ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz/list",
+			"example.com/v2/[redacted]/list"},
+		{"keep normal disambiguating path",
+			"https://example.com/proxies/us-east/list.txt",
+			"example.com/proxies/us-east/list.txt"},
+		{"filename with dot is kept",
+			"https://example.com/us-east/http.txt",
+			"example.com/us-east/http.txt"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			got := urlSourceLabels([]string{tc.url})[0]
+			if got != tc.want {
+				t.Errorf("label(%q) = %q, want %q", tc.url, got, tc.want)
+			}
+		})
+	}
+	// The redaction must never leak the credential content.
+	leaky := urlSourceLabels([]string{"https://lists.example.com/token/SUPERSECRET!!!/list"})[0]
+	if strings.Contains(leaky, "SUPERSECRET") {
+		t.Errorf("token leaked through path redaction: %q", leaky)
+	}
+}
+
 func TestURLSourceStatsLine(t *testing.T) {
 	cases := []struct {
 		name string
@@ -296,6 +336,10 @@ func TestURLSourceStatsLine(t *testing.T) {
 			"📥 [proxy][url] source c.example/x: fetch failed"},
 		{"empty list", urlSourceStats{Label: "d.example/x"},
 			"📥 [proxy][url] source d.example/x: nothing new of 0 listed (0 already known, 0 rejected, 0 dead)"},
+		{"held for re-probe", urlSourceStats{Label: "e.example/x", Lines: 10, Known: 6, Held: 4},
+			"📥 [proxy][url] source e.example/x: nothing new of 10 listed (6 already known, 0 rejected, 0 dead, 4 held for re-probe)"},
+		{"added with held", urlSourceStats{Label: "f.example/x", Lines: 12, Known: 5, Added: 3, Held: 2},
+			"📥 [proxy][url] source f.example/x: +3 new of 12 listed (5 already known, 0 rejected, 0 dead, 2 held for re-probe)"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -357,7 +401,7 @@ func TestFetchCyclePrintsOneLinePerSourceWithItsOwnCounts(t *testing.T) {
 		t.Fatalf("want one line per source (3), got %d:\n%s", len(sources), out)
 	}
 	for i, want := range []string{
-		"/a.txt: +1 new of 2 listed (0 already known, 1 rejected, 0 dead)", // goodA qualifies; the bare socks5 does not
+		"/a.txt: +1 new of 2 listed (0 already known, 1 rejected, 0 dead, 1 held for re-probe)", // goodA qualifies; the bare socks5 is held for re-probe
 		"/b.txt: +1 new of 2 listed (1 already known, 0 rejected, 0 dead)", // goodA was A's; goodB is new
 		"/c.txt: fetch failed",
 	} {

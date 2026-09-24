@@ -99,3 +99,48 @@ func TestBandwidthShareBuildsOncePerTick(t *testing.T) {
 		t.Fatalf("next tick: reads=%d billable=%v total=%v, want a fresh read", reads, b2, t2)
 	}
 }
+
+// The graph buckets history against the absolute index of its newest sample, so
+// that index must only ever grow by one per recorded sample, and must keep
+// growing after the 600 slot ring wraps.
+func TestRateSamplerSeqCountsEverySampleAndSurvivesTheRingWrapping(t *testing.T) {
+	s := newRateSampler()
+	if s.seq() != 0 {
+		t.Fatalf("seq = %d before any sample", s.seq())
+	}
+	at := snapT0
+	s.sample(map[string]uint64{"a": 0}, at) // the baseline records nothing
+	if s.seq() != 0 {
+		t.Fatalf("the baseline sample was counted: seq = %d", s.seq())
+	}
+	for i := 1; i <= snapshotRingSize+250; i++ {
+		at = at.Add(time.Second)
+		s.sample(map[string]uint64{"a": uint64(i)}, at)
+		if got := s.seq(); got != uint64(i) {
+			t.Fatalf("after %d samples seq = %d", i, got)
+		}
+	}
+	if len(s.history()) != snapshotRingSize {
+		t.Fatalf("history holds %d samples, want the ring's %d", len(s.history()), snapshotRingSize)
+	}
+}
+
+func TestSnapshotCarriesTheHistorySeqOfItsNewestSample(t *testing.T) {
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, billable: map[string]uint64{"p": 0}, traffic: map[string]uint64{"p": 0}}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+	for i := 1; i <= 5; i++ {
+		env.now = env.now.Add(time.Second)
+		env.billable = map[string]uint64{"p": uint64(i) * 100}
+		env.traffic = map[string]uint64{"p": uint64(i) * 250}
+		c.tick()
+	}
+	snap := c.Get()
+	if snap.Rate.HistorySeq != 5 || len(snap.Rate.HistoryBps) != 5 {
+		t.Fatalf("history_seq = %d with %d samples, want 5 and 5", snap.Rate.HistorySeq, len(snap.Rate.HistoryBps))
+	}
+	// The billable and total samplers tick together, so one index serves both.
+	if len(snap.Traffic.TotalHistoryBps) != 5 {
+		t.Fatalf("total history has %d samples, want 5 to match the shared index", len(snap.Traffic.TotalHistoryBps))
+	}
+}

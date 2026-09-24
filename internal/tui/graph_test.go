@@ -341,3 +341,66 @@ func TestGraphAnchoredYoungSeriesGrowsInFromTheRight(t *testing.T) {
 		t.Fatalf("%d of %d columns drawn for 30s of history, newest at the right edge: %v", drawn, len(cols), math.IsNaN(cols[len(cols)-1]))
 	}
 }
+
+// The live rate is drawn as its own newest column. It is not part of the bucketed
+// series, so it cannot change any column before it, and it never sets the scale:
+// a burst in the live column must not rescale the whole chart 10 times a second.
+func TestGraphTailIsTheNewestColumnAndNeverChangesTheRest(t *testing.T) {
+	const w, h = 40, 6
+	samples := series(6_000_000, 600)
+	draw := func(tail float64) (string, float64) {
+		b := New(w, h)
+		top := DrawGraph(b, Graph{Samples: samples, Anchor: 6_000_000, Capacity: 600, Tail: tail, HasTail: true}, false)
+		return b.String(), top
+	}
+	// Buffer.String trims trailing blanks, so pad each row to the full width
+	// before cutting off the rightmost cell.
+	dropRight := func(s string) []string {
+		var rows []string
+		for _, l := range strings.Split(strings.TrimRight(s, "\n"), "\n") {
+			r := []rune(l)
+			for len(r) < w {
+				r = append(r, ' ')
+			}
+			rows = append(rows, string(r[:w-1]))
+		}
+		return rows
+	}
+
+	// With a tail always present, moving it (the live rate changes every 100ms)
+	// changes only the rightmost cell; every column before it holds still.
+	lowOut, lowTop := draw(1)
+	midOut, midTop := draw(5 * 1024 * 1024)
+	if lowOut == midOut {
+		t.Fatal("the tail was not drawn")
+	}
+	a, b := dropRight(lowOut), dropRight(midOut)
+	for i := range a {
+		if a[i] != b[i] {
+			t.Fatalf("row %d changed outside the rightmost cell when only the tail moved:\n%q\n%q", i, a[i], b[i])
+		}
+	}
+
+	// A huge tail does not rescale the chart: the scale is unchanged and the tail
+	// is clamped to the plot instead of overflowing it.
+	hugeOut, hugeTop := draw(1e12)
+	if lowTop != midTop || midTop != hugeTop {
+		t.Fatalf("the tail changed the scale: %v %v %v", lowTop, midTop, hugeTop)
+	}
+	if got := len([]rune(strings.Split(hugeOut, "\n")[0])); got != w {
+		t.Fatalf("a huge tail changed the plot width to %d", got)
+	}
+	c := dropRight(hugeOut)
+	for i := range a {
+		if a[i] != c[i] {
+			t.Fatalf("row %d changed outside the rightmost cell for a huge tail", i)
+		}
+	}
+}
+
+func TestGraphTailIgnoresBadValues(t *testing.T) {
+	for _, v := range []float64{math.NaN(), math.Inf(1), -5} {
+		b := New(20, 4)
+		DrawGraph(b, Graph{Samples: []float64{1, 2, 3}, Tail: v, HasTail: true}, false)
+	}
+}

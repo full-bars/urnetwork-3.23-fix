@@ -88,11 +88,16 @@ func liveTrafficSample(now time.Time, totals func() (billable, total uint64)) *L
 // SnapshotRate is billable throughput in bytes per second. HistoryBps holds
 // per-second samples, oldest first, at most snapshotRingSize of them.
 type SnapshotRate struct {
-	NowBps          int64   `json:"now_bps"`
-	Avg1mBps        int64   `json:"avg_1m_bps"`
-	Avg5mBps        int64   `json:"avg_5m_bps"`
-	HistoryInterval int     `json:"history_interval_seconds"`
-	HistoryBps      []int64 `json:"history_bps"`
+	NowBps          int64 `json:"now_bps"`
+	Avg1mBps        int64 `json:"avg_1m_bps"`
+	Avg5mBps        int64 `json:"avg_5m_bps"`
+	HistoryInterval int   `json:"history_interval_seconds"`
+	// HistorySeq is the absolute index of the newest sample in HistoryBps: the
+	// number of samples ever recorded. A reader that draws the history against
+	// this, not against a clock, sees each sample keep its place from one
+	// snapshot to the next however the poll and the sampler tick line up.
+	HistorySeq uint64  `json:"history_seq,omitempty"`
+	HistoryBps []int64 `json:"history_bps"`
 }
 
 type SnapshotSessions struct {
@@ -176,6 +181,9 @@ type rateSampler struct {
 	// sessionBytes is every delta counted so far, so the total since the
 	// provider started survives proxies being removed and respawned.
 	sessionBytes uint64
+	// recorded counts every sample ever written to the ring, so the newest
+	// sample has an absolute index that never depends on a clock.
+	recorded uint64
 }
 
 func newRateSampler() *rateSampler {
@@ -210,10 +218,19 @@ func (s *rateSampler) sample(cur map[string]uint64, now time.Time) {
 		elapsed = 1
 	}
 	s.ring[s.next] = int64(float64(delta) / elapsed)
+	s.recorded++
 	s.next = (s.next + 1) % snapshotRingSize
 	if s.count < snapshotRingSize {
 		s.count++
 	}
+}
+
+// seq returns how many samples have ever been recorded: the absolute index of
+// the newest sample in history().
+func (s *rateSampler) seq() uint64 {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.recorded
 }
 
 // session returns the bytes counted since the provider started.
@@ -559,6 +576,7 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 			Avg1mBps:        avg1m,
 			Avg5mBps:        avg5m,
 			HistoryInterval: 1,
+			HistorySeq:      c.rate.seq(),
 			HistoryBps:      c.rate.history(),
 		},
 		Clients:   clients,

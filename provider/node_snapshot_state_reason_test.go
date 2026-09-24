@@ -70,7 +70,7 @@ func TestCollectorReportsStartupStuckAndRecovery(t *testing.T) {
 // zero-proxy branch reads, so every combination is checked against the line.
 func TestStartupPhaseNeverDisagreesWithTheSystemdLine(t *testing.T) {
 	t.Cleanup(func() { proxiesConfigured.Store(0); resetProxyResolutionStatus() })
-	statuses := map[string]int32{"pending": proxyResolutionPending, "failed": proxyResolutionFailed, "empty": proxyResolutionEmpty, "ok": proxyResolutionOK}
+	statuses := map[string]int32{"pending": proxyResolutionPending, "failed": proxyResolutionFailed, "empty": proxyResolutionEmpty, "ok": proxyResolutionOK, "zero-valid": proxyResolutionZeroValid}
 	for _, count := range []int{0, 1, 5} {
 		for name, status := range statuses {
 			t.Run(fmt.Sprintf("count=%d/%s", count, name), func(t *testing.T) {
@@ -86,7 +86,7 @@ func TestStartupPhaseNeverDisagreesWithTheSystemdLine(t *testing.T) {
 					t.Fatalf("phase %q but the line says %q", phase, line)
 				case (phase == startupSourceUnreachable || phase == startupSourceEmpty) && !strings.HasPrefix(line, "degraded:"):
 					t.Fatalf("phase %q but the line says %q", phase, line)
-				case phase == "" && (strings.HasPrefix(line, "starting:") || strings.Contains(line, "source")):
+				case phase == "" && (strings.HasPrefix(line, "starting:") || (strings.Contains(line, "source") && !strings.Contains(line, "direct/local"))):
 					t.Fatalf("no phase but the line still says %q", line)
 				}
 			})

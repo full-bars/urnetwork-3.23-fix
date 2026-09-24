@@ -168,6 +168,11 @@ func TestSystemdStatusLineResolutionStates(t *testing.T) {
 			proxyResolutionEmpty, "",
 			"degraded: proxy source returned no usable proxies, retrying",
 		},
+		{
+			"direct-only zero-valid",
+			proxyResolutionZeroValid, "",
+			"active: providing on direct/local IP (no proxy source configured)",
+		},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
