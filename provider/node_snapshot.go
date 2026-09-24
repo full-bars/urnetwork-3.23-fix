@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +23,11 @@ type NodeSnapshot struct {
 	UptimeSeconds   float64   `json:"uptime_seconds"`
 
 	// State is one of starting, degraded, idle, flowing.
-	State          string `json:"state"`
+	State string `json:"state"`
+	// StateReason says why the node is starting or degraded (a startup phase
+	// that has not finished, dead proxies, pressure). Empty for idle and
+	// flowing, and for an ordinary warmup.
+	StateReason    string `json:"state_reason,omitempty"`
 	Busy           bool   `json:"busy"`
 	RestartPending bool   `json:"restart_pending"`
 
@@ -105,6 +110,11 @@ const (
 	// failure at all" read as an outage on a healthy node. A wave is at least
 	// 1/snapshotAuthWaveDivisor of the pool failing within
 	// snapshotAuthWaveWindow, with a floor so a tiny pool is not a hair trigger.
+	// snapshotStartupStuckAfter is how long a node may stay "starting" because
+	// proxy startup has not finished before it reads degraded instead. A big
+	// pool legitimately takes a couple of minutes; this is a stall.
+	snapshotStartupStuckAfter = 5 * time.Minute
+
 	snapshotAuthWaveWindow  = time.Minute
 	snapshotAuthWaveDivisor = 4
 	snapshotAuthWaveFloor   = 3
@@ -268,6 +278,8 @@ type stateInputs struct {
 	proxies  SnapshotProxies
 	pressure float64
 	avg1m    int64
+	// startup is the proxy startup phase still pending, or "" once settled.
+	startup string
 }
 
 func (p SnapshotProxies) total() int {
@@ -275,10 +287,18 @@ func (p SnapshotProxies) total() int {
 }
 
 // deriveSnapshotState returns starting, degraded, idle or flowing, checked in
-// that order.
+// that order. A node whose proxy startup has not finished stays "starting" past
+// the warmup window, and reads degraded once that has taken too long or the
+// proxy source failed, so the status agrees with the systemd STATUS= line.
 func deriveSnapshotState(in stateInputs) string {
 	if in.uptime < snapshotStartingWindow {
 		return "starting"
+	}
+	if in.startup != "" {
+		if in.startup == startupResolving && in.uptime < snapshotStartupStuckAfter {
+			return "starting"
+		}
+		return "degraded"
 	}
 	total := in.proxies.total()
 	if total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
@@ -291,6 +311,35 @@ func deriveSnapshotState(in stateInputs) string {
 		return "idle"
 	}
 	return "flowing"
+}
+
+// deriveStateReason says why the state is starting or degraded, or "" when
+// there is nothing informative to add (idle and flowing have their own hint, and
+// an ordinary warmup needs no explanation).
+func deriveStateReason(in stateInputs) string {
+	mins := int(in.uptime / time.Minute)
+	switch deriveSnapshotState(in) {
+	case "starting":
+		if in.startup == startupResolving {
+			return fmt.Sprintf("%s (%d min)", startupResolving, mins)
+		}
+	case "degraded":
+		if in.startup == startupResolving {
+			return fmt.Sprintf("startup stuck: %s for %d min", startupResolving, mins)
+		}
+		if in.startup != "" {
+			return in.startup + ", retrying"
+		}
+		var parts []string
+		if total := in.proxies.total(); total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
+			parts = append(parts, fmt.Sprintf("%d of %d proxies dead or degraded", in.proxies.Dead+in.proxies.Degraded, total))
+		}
+		if in.pressure >= 0.8 {
+			parts = append(parts, fmt.Sprintf("resource pressure %.2f", in.pressure))
+		}
+		return strings.Join(parts, "; ")
+	}
+	return ""
 }
 
 // deriveIdleHint picks the first matching reason a node is idle. It blames
@@ -357,6 +406,10 @@ type snapshotSources struct {
 	resources  func() SnapshotResources
 
 	restartPending func() bool
+
+	// startup reports the proxy startup phase still pending, or "" once it has
+	// settled. Nil means always settled.
+	startup func() string
 }
 
 // nodeSnapshotCollector samples the node once a second and builds snapshots.
@@ -446,7 +499,12 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 		Restart:   c.src.restart(),
 		Resources: c.src.resources(),
 	}
-	snap.State = deriveSnapshotState(stateInputs{uptime: uptime, proxies: proxies, pressure: pressure, avg1m: avg1m})
+	in := stateInputs{uptime: uptime, proxies: proxies, pressure: pressure, avg1m: avg1m}
+	if c.src.startup != nil {
+		in.startup = c.src.startup()
+	}
+	snap.State = deriveSnapshotState(in)
+	snap.StateReason = deriveStateReason(in)
 	if snap.State == "idle" {
 		snap.IdleHint = deriveIdleHint(proxies, c.hist.copy(), now)
 	}
@@ -542,6 +600,7 @@ func productionSnapshotSources() snapshotSources {
 		restartPending: func() bool {
 			return restartPendingFor(globalControlState.get, startupValues())
 		},
+		startup: proxyStartupPhase,
 	}
 }
 

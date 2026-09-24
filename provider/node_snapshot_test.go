@@ -342,6 +342,7 @@ type fakeSnapshotEnv struct {
 	contracts int64
 	pressure  float64
 	pending   bool
+	startup   string
 	reads     int
 }
 
@@ -362,6 +363,7 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 		restart:        func() SnapshotRestart { return SnapshotRestart{Reason: "update", CleanShutdown: true} },
 		resources:      func() SnapshotResources { return SnapshotResources{HeapInuseBytes: 5, Goroutines: 2} },
 		restartPending: func() bool { return f.pending },
+		startup:        func() string { return f.startup },
 	}
 }
 

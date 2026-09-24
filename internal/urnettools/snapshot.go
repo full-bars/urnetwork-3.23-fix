@@ -35,6 +35,24 @@ type NodeSnapshot struct {
 	Restart         SnapshotRestart   `json:"restart"`
 	Resources       SnapshotResources `json:"resources"`
 	IdleHint        *string           `json:"idle_hint,omitempty"`
+	StateReason     *string           `json:"state_reason,omitempty"`
+}
+
+// whyRow returns the label and text of the "why" line for the node's current
+// state: the idle hint when idle, the state reason when starting or degraded.
+// ok is false when there is nothing to say (flowing, or no text).
+func (s *NodeSnapshot) whyRow() (label, text string, ok bool) {
+	switch s.State {
+	case "idle":
+		if s.IdleHint != nil && *s.IdleHint != "" {
+			return "why idle", *s.IdleHint, true
+		}
+	case "starting", "degraded":
+		if s.StateReason != nil && *s.StateReason != "" {
+			return "why " + s.State, *s.StateReason, true
+		}
+	}
+	return "", "", false
 }
 
 // SnapshotRate carries bytes per second. Floats decode integers too, so a

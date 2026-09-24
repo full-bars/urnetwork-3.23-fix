@@ -18,7 +18,11 @@ import (
 // promptly while still telling an operator, honestly and continuously,
 // whether any traffic can actually flow.
 var (
-	proxiesConfigured    atomic.Int64
+	proxiesConfigured atomic.Int64
+	// proxiesConfiguredSet flips once startup has published the configured
+	// count, even when it is zero. It is how the rest of the provider tells a
+	// node still resolving its proxies from a direct-only node that has none.
+	proxiesConfiguredSet atomic.Bool
 	proxiesAuthenticated atomic.Int64
 
 	// proxiesParked is how many configured proxies the proxy audit engine is
@@ -92,6 +96,7 @@ const maxStatusReasonLen = 60
 // known once the proxy list is resolved.
 func setConfiguredProxyCount(n int) {
 	proxiesConfigured.Store(int64(n))
+	proxiesConfiguredSet.Store(true)
 	reportProxyStatusToSystemd()
 }
 
@@ -250,4 +255,35 @@ func truncateReason(s string, maxLen int) string {
 func resetProxyResolutionStatus() {
 	proxyResolutionStatus.Store(proxyResolutionPending)
 	proxyResolutionReason.Store("")
+}
+
+// Startup phases, as reported to the live status snapshot. An empty phase means
+// startup has settled.
+const (
+	startupResolving         = "resolving proxies"
+	startupSourceUnreachable = "proxy source unreachable"
+	startupSourceEmpty       = "proxy source returned no usable proxies"
+)
+
+// proxyStartupPhase reports what proxy startup is still waiting on, or "" once it
+// has settled. It reads the same signals as the systemd STATUS= line, so the
+// two never disagree: a node that systemd calls "starting: resolving proxies"
+// is not IDLE in `urnet-tools status`.
+//
+// Source failures count only while no proxies are configured, matching
+// systemdStatusLine: a refresh that fails while proxies are running is not a
+// startup problem.
+func proxyStartupPhase() string {
+	if proxiesConfigured.Load() == 0 {
+		switch proxyResolutionStatus.Load() {
+		case proxyResolutionFailed:
+			return startupSourceUnreachable
+		case proxyResolutionEmpty:
+			return startupSourceEmpty
+		}
+	}
+	if !proxiesConfiguredSet.Load() {
+		return startupResolving
+	}
+	return ""
 }
