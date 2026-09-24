@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"strings"
 	"sync"
 	"time"
 
@@ -22,7 +23,11 @@ type NodeSnapshot struct {
 	UptimeSeconds   float64   `json:"uptime_seconds"`
 
 	// State is one of starting, degraded, idle, flowing.
-	State          string `json:"state"`
+	State string `json:"state"`
+	// StateReason says why the node is starting or degraded (a startup phase
+	// that has not finished, dead proxies, pressure). Empty for idle and
+	// flowing, and for an ordinary warmup.
+	StateReason    string `json:"state_reason,omitempty"`
 	Busy           bool   `json:"busy"`
 	RestartPending bool   `json:"restart_pending"`
 
@@ -98,6 +103,21 @@ const (
 	// cumulative counter samples for the "in the last 10 min" idle hints.
 	snapshotHistoryInterval = 10 * time.Second
 	snapshotHistorySize     = 60
+
+	// The idle hint blames auth only when failures are a wave or the pool is
+	// mostly down, never for a trickle. A large paid pool always has a few
+	// percent of its proxies failing and retrying every minute, so "any
+	// failure at all" read as an outage on a healthy node. A wave is at least
+	// 1/snapshotAuthWaveDivisor of the pool failing within
+	// snapshotAuthWaveWindow, with a floor so a tiny pool is not a hair trigger.
+	// snapshotStartupStuckAfter is how long a node may stay "starting" because
+	// proxy startup has not finished before it reads degraded instead. A big
+	// pool legitimately takes a couple of minutes; this is a stall.
+	snapshotStartupStuckAfter = 5 * time.Minute
+
+	snapshotAuthWaveWindow  = time.Minute
+	snapshotAuthWaveDivisor = 4
+	snapshotAuthWaveFloor   = 3
 )
 
 // rateSampler turns cumulative per-proxy billable byte counters into a
@@ -228,16 +248,17 @@ func (h *cumulativeHistory) copy() []cumulativeSample {
 	return append([]cumulativeSample(nil), h.samples...)
 }
 
-// authFailingSince returns when auth failures were first seen to increase
-// inside the history window. A decrease (a proxy was removed) is not an
-// increase, so only consecutive pairs that went up count.
-func authFailingSince(hist []cumulativeSample) (time.Time, bool) {
+// authFailuresSince counts auth failures recorded after cutoff. A decrease (a
+// proxy was removed) is not a failure, so only consecutive pairs that went up
+// count. A zero cutoff counts the whole history window.
+func authFailuresSince(hist []cumulativeSample, cutoff time.Time) int64 {
+	var n int64
 	for i := 1; i < len(hist); i++ {
-		if hist[i].auth > hist[i-1].auth {
-			return hist[i].at, true
+		if hist[i].at.After(cutoff) && hist[i].auth > hist[i-1].auth {
+			n += hist[i].auth - hist[i-1].auth
 		}
 	}
-	return time.Time{}, false
+	return n
 }
 
 // contractsAcquiredInWindow reports whether any contract was acquired across
@@ -257,6 +278,8 @@ type stateInputs struct {
 	proxies  SnapshotProxies
 	pressure float64
 	avg1m    int64
+	// startup is the proxy startup phase still pending, or "" once settled.
+	startup string
 }
 
 func (p SnapshotProxies) total() int {
@@ -264,10 +287,18 @@ func (p SnapshotProxies) total() int {
 }
 
 // deriveSnapshotState returns starting, degraded, idle or flowing, checked in
-// that order.
+// that order. A node whose proxy startup has not finished stays "starting" past
+// the warmup window, and reads degraded once that has taken too long or the
+// proxy source failed, so the status agrees with the systemd STATUS= line.
 func deriveSnapshotState(in stateInputs) string {
 	if in.uptime < snapshotStartingWindow {
 		return "starting"
+	}
+	if in.startup != "" {
+		if in.startup == startupResolving && in.uptime < snapshotStartupStuckAfter {
+			return "starting"
+		}
+		return "degraded"
 	}
 	total := in.proxies.total()
 	if total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
@@ -282,7 +313,39 @@ func deriveSnapshotState(in stateInputs) string {
 	return "flowing"
 }
 
-// deriveIdleHint picks the first matching reason a node is idle.
+// deriveStateReason says why the state is starting or degraded, or "" when
+// there is nothing informative to add (idle and flowing have their own hint, and
+// an ordinary warmup needs no explanation).
+func deriveStateReason(in stateInputs) string {
+	mins := int(in.uptime / time.Minute)
+	switch deriveSnapshotState(in) {
+	case "starting":
+		if in.startup == startupResolving {
+			return fmt.Sprintf("%s (%d min)", startupResolving, mins)
+		}
+	case "degraded":
+		if in.startup == startupResolving {
+			return fmt.Sprintf("startup stuck: %s for %d min", startupResolving, mins)
+		}
+		if in.startup != "" {
+			return in.startup + ", retrying"
+		}
+		var parts []string
+		if total := in.proxies.total(); total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
+			parts = append(parts, fmt.Sprintf("%d of %d proxies dead or degraded", in.proxies.Dead+in.proxies.Degraded, total))
+		}
+		if in.pressure >= 0.8 {
+			parts = append(parts, fmt.Sprintf("resource pressure %.2f", in.pressure))
+		}
+		return strings.Join(parts, "; ")
+	}
+	return ""
+}
+
+// deriveIdleHint picks the first matching reason a node is idle. It blames
+// auth only when that plausibly explains the idleness (a failure wave, or most
+// of the pool not connected while failures are happening), and otherwise says
+// what is true and shows the numbers so the reader can judge it.
 func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.Time) string {
 	total := proxies.total()
 	switch {
@@ -295,17 +358,36 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 	case proxies.Up == 0:
 		return fmt.Sprintf("all %d proxies dead or connecting", total)
 	}
-	if since, ok := authFailingSince(hist); ok {
-		mins := int(now.Sub(since).Minutes())
-		if mins < 1 {
-			mins = 1
+
+	recent := authFailuresSince(hist, now.Add(-snapshotAuthWaveWindow))
+	waveAt := int64((total + snapshotAuthWaveDivisor - 1) / snapshotAuthWaveDivisor)
+	if waveAt < snapshotAuthWaveFloor {
+		waveAt = snapshotAuthWaveFloor
+	}
+	if recent >= waveAt {
+		return fmt.Sprintf("auth failing: %d failures in the last minute across %d proxies", recent, total)
+	}
+	if 2*proxies.Up < total {
+		if authFailuresSince(hist, time.Time{}) > 0 {
+			return fmt.Sprintf("auth failing: only %d of %d proxies authenticated", proxies.Up, total)
 		}
-		return fmt.Sprintf("auth failing for %d min", mins)
+		return fmt.Sprintf("only %d of %d proxies connected", proxies.Up, total)
 	}
+
+	evidence := idleEvidence(proxies, recent)
 	if !contractsAcquiredInWindow(hist) {
-		return "no contracts acquired in the last 10 min"
+		return "no contracts acquired in the last 10 min" + evidence
 	}
-	return "no traffic offered"
+	return "no traffic offered" + evidence
+}
+
+// idleEvidence is the parenthetical that backs up a hint with the numbers it
+// was derived from. The retry rate is left out when there are no retries.
+func idleEvidence(proxies SnapshotProxies, retriesPerMin int64) string {
+	if retriesPerMin > 0 {
+		return fmt.Sprintf(" (%d/%d proxies up, ~%d auth retries/min)", proxies.Up, proxies.total(), retriesPerMin)
+	}
+	return fmt.Sprintf(" (%d/%d proxies up)", proxies.Up, proxies.total())
 }
 
 // snapshotSources are the live inputs behind a snapshot, injectable so the
@@ -324,6 +406,10 @@ type snapshotSources struct {
 	resources  func() SnapshotResources
 
 	restartPending func() bool
+
+	// startup reports the proxy startup phase still pending, or "" once it has
+	// settled. Nil means always settled.
+	startup func() string
 }
 
 // nodeSnapshotCollector samples the node once a second and builds snapshots.
@@ -413,7 +499,12 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 		Restart:   c.src.restart(),
 		Resources: c.src.resources(),
 	}
-	snap.State = deriveSnapshotState(stateInputs{uptime: uptime, proxies: proxies, pressure: pressure, avg1m: avg1m})
+	in := stateInputs{uptime: uptime, proxies: proxies, pressure: pressure, avg1m: avg1m}
+	if c.src.startup != nil {
+		in.startup = c.src.startup()
+	}
+	snap.State = deriveSnapshotState(in)
+	snap.StateReason = deriveStateReason(in)
 	if snap.State == "idle" {
 		snap.IdleHint = deriveIdleHint(proxies, c.hist.copy(), now)
 	}
@@ -509,6 +600,7 @@ func productionSnapshotSources() snapshotSources {
 		restartPending: func() bool {
 			return restartPendingFor(globalControlState.get, startupValues())
 		},
+		startup: proxyStartupPhase,
 	}
 }
 

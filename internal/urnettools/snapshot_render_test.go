@@ -226,3 +226,32 @@ func TestSameGoldenIgnoresLineEndingConversion(t *testing.T) {
 		t.Fatal("only CRLF pairs are normalized")
 	}
 }
+
+func TestRenderLiveBlockStateReason(t *testing.T) {
+	s := loadSnapshotFixture(t, "node_snapshot_v1_idle_minimal.json")
+	reason := "startup stuck: resolving proxies for 6 min"
+
+	s.State, s.StateReason, s.IdleHint = "degraded", &reason, nil
+	out := renderLiveBlock(s, liveOpts{})
+	if !strings.Contains(out, "why degraded") || !strings.Contains(out, reason) {
+		t.Fatalf("degraded node lost its reason:\n%s", out)
+	}
+
+	starting := "resolving proxies (3 min)"
+	s.State, s.StateReason = "starting", &starting
+	if out := renderLiveBlock(s, liveOpts{}); !strings.Contains(out, "why starting") || !strings.Contains(out, starting) {
+		t.Fatalf("starting node lost its reason:\n%s", out)
+	}
+
+	// Flowing never shows a why row, even if a stale reason is present.
+	s.State = "flowing"
+	if out := renderLiveBlock(s, liveOpts{}); strings.Contains(out, "why ") {
+		t.Fatalf("flowing node shows a why row:\n%s", out)
+	}
+
+	// A provider that predates the field renders exactly as before.
+	s.State, s.StateReason = "degraded", nil
+	if out := renderLiveBlock(s, liveOpts{}); strings.Contains(out, "why ") {
+		t.Fatalf("degraded node with no reason shows a why row:\n%s", out)
+	}
+}

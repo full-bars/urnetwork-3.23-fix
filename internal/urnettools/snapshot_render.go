@@ -234,8 +234,8 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
 
 	emit(liveRow{label: "pressure", segs: []string{fmt.Sprintf("%.2f", s.Pressure)}})
 
-	if s.State == "idle" && s.IdleHint != nil && *s.IdleHint != "" {
-		emit(liveRow{label: "why idle", segs: []string{*s.IdleHint}})
+	if label, text, ok := s.whyRow(); ok {
+		emit(liveRow{label: label, segs: []string{text}})
 	}
 	return b.String()
 }

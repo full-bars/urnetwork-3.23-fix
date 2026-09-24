@@ -225,9 +225,9 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 	if s.RestartPending {
 		b.Put("RESTART PENDING", 0, 6, th.Warn)
 	}
-	// The idle hint can be a whole sentence; wrap it onto the rows left.
-	if s.State == "idle" && s.IdleHint != nil && *s.IdleHint != "" {
-		for i, ln := range wrapText(*s.IdleHint, b.Width(), 2, th.ASCII) {
+	// The reason can be a whole sentence; wrap it onto the rows left.
+	if _, text, ok := s.whyRow(); ok {
+		for i, ln := range wrapText(text, b.Width(), 2, th.ASCII) {
 			b.Put(ln, 0, 7+i, th.Warn)
 		}
 	}
