@@ -416,16 +416,34 @@ func TestCollectorIdleHintOnlyWhenIdle(t *testing.T) {
 }
 
 func TestCollectorAuthFailingHintUsesHistory(t *testing.T) {
+	// A wave: the failures land inside the last minute, so auth is blamed.
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 2}, billable: map[string]uint64{}}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+	env.now = env.now.Add(150 * time.Second)
+	c.tick()
+	env.now = env.now.Add(150 * time.Second) // 300s uptime, past starting
+	env.auth = 4
+	c.tick()
+	snap := c.Get()
+	if snap.State != "idle" || snap.IdleHint != "auth failing: 4 failures in the last minute across 2 proxies" {
+		t.Fatalf("state=%q hint=%q", snap.State, snap.IdleHint)
+	}
+}
+
+func TestCollectorOldAuthFailuresDoNotBlameAuth(t *testing.T) {
+	// The same failures 150s ago are history, not a wave: the hint falls through
+	// to what is actually true instead of reporting a stale outage.
 	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 2}, billable: map[string]uint64{}}
 	c := newNodeSnapshotCollector(env.sources())
 	c.tick()
 	env.now = env.now.Add(150 * time.Second)
 	env.auth = 4
 	c.tick()
-	env.now = env.now.Add(150 * time.Second) // 300s uptime, past starting
+	env.now = env.now.Add(150 * time.Second)
 	c.tick()
 	snap := c.Get()
-	if snap.State != "idle" || snap.IdleHint != "auth failing for 2 min" {
+	if snap.State != "idle" || snap.IdleHint != "no contracts acquired in the last 10 min (2/2 proxies up)" {
 		t.Fatalf("state=%q hint=%q", snap.State, snap.IdleHint)
 	}
 }
