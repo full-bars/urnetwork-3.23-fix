@@ -98,6 +98,16 @@ const (
 	// cumulative counter samples for the "in the last 10 min" idle hints.
 	snapshotHistoryInterval = 10 * time.Second
 	snapshotHistorySize     = 60
+
+	// The idle hint blames auth only when failures are a wave or the pool is
+	// mostly down, never for a trickle. A large paid pool always has a few
+	// percent of its proxies failing and retrying every minute, so "any
+	// failure at all" read as an outage on a healthy node. A wave is at least
+	// 1/snapshotAuthWaveDivisor of the pool failing within
+	// snapshotAuthWaveWindow, with a floor so a tiny pool is not a hair trigger.
+	snapshotAuthWaveWindow  = time.Minute
+	snapshotAuthWaveDivisor = 4
+	snapshotAuthWaveFloor   = 3
 )
 
 // rateSampler turns cumulative per-proxy billable byte counters into a
@@ -228,16 +238,17 @@ func (h *cumulativeHistory) copy() []cumulativeSample {
 	return append([]cumulativeSample(nil), h.samples...)
 }
 
-// authFailingSince returns when auth failures were first seen to increase
-// inside the history window. A decrease (a proxy was removed) is not an
-// increase, so only consecutive pairs that went up count.
-func authFailingSince(hist []cumulativeSample) (time.Time, bool) {
+// authFailuresSince counts auth failures recorded after cutoff. A decrease (a
+// proxy was removed) is not a failure, so only consecutive pairs that went up
+// count. A zero cutoff counts the whole history window.
+func authFailuresSince(hist []cumulativeSample, cutoff time.Time) int64 {
+	var n int64
 	for i := 1; i < len(hist); i++ {
-		if hist[i].auth > hist[i-1].auth {
-			return hist[i].at, true
+		if hist[i].at.After(cutoff) && hist[i].auth > hist[i-1].auth {
+			n += hist[i].auth - hist[i-1].auth
 		}
 	}
-	return time.Time{}, false
+	return n
 }
 
 // contractsAcquiredInWindow reports whether any contract was acquired across
@@ -282,7 +293,10 @@ func deriveSnapshotState(in stateInputs) string {
 	return "flowing"
 }
 
-// deriveIdleHint picks the first matching reason a node is idle.
+// deriveIdleHint picks the first matching reason a node is idle. It blames
+// auth only when that plausibly explains the idleness (a failure wave, or most
+// of the pool not connected while failures are happening), and otherwise says
+// what is true and shows the numbers so the reader can judge it.
 func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.Time) string {
 	total := proxies.total()
 	switch {
@@ -295,17 +309,36 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 	case proxies.Up == 0:
 		return fmt.Sprintf("all %d proxies dead or connecting", total)
 	}
-	if since, ok := authFailingSince(hist); ok {
-		mins := int(now.Sub(since).Minutes())
-		if mins < 1 {
-			mins = 1
+
+	recent := authFailuresSince(hist, now.Add(-snapshotAuthWaveWindow))
+	waveAt := int64((total + snapshotAuthWaveDivisor - 1) / snapshotAuthWaveDivisor)
+	if waveAt < snapshotAuthWaveFloor {
+		waveAt = snapshotAuthWaveFloor
+	}
+	if recent >= waveAt {
+		return fmt.Sprintf("auth failing: %d failures in the last minute across %d proxies", recent, total)
+	}
+	if 2*proxies.Up < total {
+		if authFailuresSince(hist, time.Time{}) > 0 {
+			return fmt.Sprintf("auth failing: only %d of %d proxies authenticated", proxies.Up, total)
 		}
-		return fmt.Sprintf("auth failing for %d min", mins)
+		return fmt.Sprintf("only %d of %d proxies connected", proxies.Up, total)
 	}
+
+	evidence := idleEvidence(proxies, recent)
 	if !contractsAcquiredInWindow(hist) {
-		return "no contracts acquired in the last 10 min"
+		return "no contracts acquired in the last 10 min" + evidence
 	}
-	return "no traffic offered"
+	return "no traffic offered" + evidence
+}
+
+// idleEvidence is the parenthetical that backs up a hint with the numbers it
+// was derived from. The retry rate is left out when there are no retries.
+func idleEvidence(proxies SnapshotProxies, retriesPerMin int64) string {
+	if retriesPerMin > 0 {
+		return fmt.Sprintf(" (%d/%d proxies up, ~%d auth retries/min)", proxies.Up, proxies.total(), retriesPerMin)
+	}
+	return fmt.Sprintf(" (%d/%d proxies up)", proxies.Up, proxies.total())
 }
 
 // snapshotSources are the live inputs behind a snapshot, injectable so the
