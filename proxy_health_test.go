@@ -918,3 +918,32 @@ func TestConnectingActiveTrueWhenNeverStamped(t *testing.T) {
 		t.Fatal("expected connectingActive true when connectingSince has never been stamped")
 	}
 }
+
+// ProxyBandwidthTotals feeds live throughput at 100ms, so it must sum the
+// counters without the sorting and string formatting ProxyHealthSnapshot does.
+func TestProxyBandwidthTotals(t *testing.T) {
+	resetProxyHealthForTest()
+	if b, tot := ProxyBandwidthTotals(); b != 0 || tot != 0 {
+		t.Fatalf("empty registry = %d/%d, want 0/0", b, tot)
+	}
+
+	a := RegisterProxyBandwidth(1)
+	a.BillableRx.Store(100)
+	a.BillableTx.Store(50)
+	a.TotalRx.Store(400)
+	a.TotalTx.Store(200)
+	b := RegisterProxyBandwidth(2)
+	b.BillableRx.Store(1)
+	b.TotalTx.Store(9)
+	RegisterProxy(3, "10.0.0.3:1080", "10.0.0.3:1080") // registered with no bandwidth yet
+
+	billable, total := ProxyBandwidthTotals()
+	if billable != 151 || total != 609 {
+		t.Fatalf("totals = %d billable / %d total, want 151 / 609", billable, total)
+	}
+
+	// Billable traffic is a subset of total: the two counters stay separate.
+	if billable > total {
+		t.Fatalf("billable %d exceeds total %d", billable, total)
+	}
+}

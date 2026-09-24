@@ -453,6 +453,25 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 	return up, dead, degraded, bandwidth, connecting
 }
 
+// ProxyBandwidthTotals sums the cumulative billable and total (rx plus tx) byte
+// counters across every registered proxy. Unlike ProxyHealthSnapshot it sorts
+// and formats nothing, so it is cheap enough to call many times a second for
+// live throughput. The sums drop when a proxy is removed or respawns (its
+// counters start over), so callers derive rates from deltas and skip a
+// decrease rather than treating it as negative traffic.
+func ProxyBandwidthTotals() (billable, total uint64) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		billable += h.bw.BillableRx.Load() + h.bw.BillableTx.Load()
+		total += h.bw.TotalRx.Load() + h.bw.TotalTx.Load()
+	}
+	return billable, total
+}
+
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
 // IDENTITY (ProxySettings.Key(): address, or address+user for a shared-
 // gateway proxy) instead of ProxyHealthSnapshot's display format
