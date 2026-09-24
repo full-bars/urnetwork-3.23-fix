@@ -472,3 +472,52 @@ func TestURLLabelUnparseableURLNeverLeaksItsPath(t *testing.T) {
 		}
 	}
 }
+
+// A slash inside userinfo makes the URL unparseable, and the authority then ends
+// at that slash: cutting there kept `user:pa` and dropped the '@' that would have
+// stripped it. When an '@' shows up after the first slash the userinfo may hold
+// an unescaped slash, so nothing of the authority can be trusted.
+func TestURLLabelUnparseableWithSlashInUserinfoLeaksNothing(t *testing.T) {
+	for _, raw := range []string{
+		"https://user:pa/ss@host.example/x",
+		"https://user:12345/ss@host.example/x",
+		"https://h.example/@SECRET/x%zz",
+	} {
+		got := urlSourceLabels([]string{raw})[0]
+		for _, leak := range []string{"user", "pa", "12345", "SECRET", "ss"} {
+			if strings.Contains(got, leak) && !strings.Contains(got, "unparseable") {
+				t.Errorf("label(%q) = %q leaks %q", raw, got, leak)
+			}
+		}
+		if got != "[unparseable source]" {
+			t.Errorf("label(%q) = %q, want the placeholder", raw, got)
+		}
+	}
+	// An unparseable URL with a normal authority still keeps its host.
+	if got := urlSourceLabels([]string{"https://user:pw@h.example/token/SEC%RET/list"})[0]; got != "h.example" {
+		t.Errorf("normal authority: label = %q, want h.example", got)
+	}
+}
+
+// A JWT-like token in a path segment carries dots, and any dotted segment was
+// exempted as a filename. Filenames have a short extension part; a token's parts
+// are all long.
+func TestURLLabelRedactsDottedTokensButKeepsFilenames(t *testing.T) {
+	jwt := "eyJhbGciOiJIUzI1NiJ9.eyJzdWIiOiIxMjM0NTY3ODkwIn0.dBjftJeZ4CVPmB92K27uhbUJU1p1r"
+	cases := []struct{ url, want string }{
+		{"https://h.example/api/" + jwt + "/list", "h.example/api/[redacted]/list"},
+		{"https://h.example/" + jwt, "h.example/[redacted]"},
+		{"https://h.example/proxies/http.txt", "h.example/proxies/http.txt"},
+		{"https://h.example/socks5-proxies-us-east-2026.09.24.list.txt", "h.example/socks5-proxies-us-east-2026.09.24.list.txt"},
+		{"https://h.example/v1.2.3/list.txt", "h.example/v1.2.3/list.txt"},
+	}
+	for _, tc := range cases {
+		got := urlSourceLabels([]string{tc.url})[0]
+		if got != tc.want {
+			t.Errorf("label(%q) = %q, want %q", tc.url, got, tc.want)
+		}
+		if strings.Contains(got, "eyJ") {
+			t.Errorf("token leaked into %q", got)
+		}
+	}
+}

@@ -166,7 +166,10 @@ func urlLabelSegmentIsSecret(segment string, prevWasKeyword bool) bool {
 	if prevWasKeyword {
 		return true
 	}
-	if len(segment) < 32 || strings.Contains(segment, ".") {
+	if strings.Contains(segment, ".") {
+		return looksLikeDottedToken(segment)
+	}
+	if len(segment) < 32 {
 		return false
 	}
 	for _, r := range segment {
@@ -178,6 +181,35 @@ func urlLabelSegmentIsSecret(segment string, prevWasKeyword bool) bool {
 			// a sign the segment is an ordinary path piece.
 		default:
 			return false // a normal path char (%, ~, .) means it is not a bare token
+		}
+	}
+	return true
+}
+
+// looksLikeDottedToken reports a dotted segment that is a token, not a filename:
+// a JWT is three base64url parts, the first two long. A filename has a short
+// extension part (http.txt, list.2026.09.24.txt), so it never qualifies.
+func looksLikeDottedToken(segment string) bool {
+	parts := strings.Split(segment, ".")
+	if len(parts) < 3 {
+		return false
+	}
+	base64url := func(s string) bool {
+		for _, r := range s {
+			switch {
+			case r >= 'a' && r <= 'z', r >= 'A' && r <= 'Z', r >= '0' && r <= '9', r == '_', r == '-':
+			default:
+				return false
+			}
+		}
+		return true
+	}
+	for i, p := range parts {
+		if i < 2 && (len(p) < 10 || !base64url(p)) {
+			return false
+		}
+		if i >= 2 && !base64url(p) {
+			return false // a signature may be empty (alg none) but is still base64url
 		}
 	}
 	return true
@@ -220,16 +252,27 @@ func redactSourcePath(path string) string {
 // only the host survives: scheme, credentials and path are dropped.
 func unparseableSourceLabel(label string) string {
 	if i := strings.Index(label, "://"); i >= 0 {
-		label = label[i+3:]
-		if j := strings.IndexByte(label, '/'); j >= 0 {
-			label = label[:j]
+		rest := label[i+3:]
+		authority, tail := rest, ""
+		if j := strings.IndexByte(rest, '/'); j >= 0 {
+			authority, tail = rest[:j], rest[j:]
 		}
+		// An '@' after the first slash with none before it: the userinfo may hold
+		// an unescaped slash (user:pa/ss@host), so the authority cannot be trusted
+		// to be a host at all.
+		if !strings.Contains(authority, "@") && strings.Contains(tail, "@") {
+			return urlLabelUnparseable
+		}
+		label = authority
 	}
 	if at := strings.LastIndex(label, "@"); at >= 0 {
 		label = label[at+1:]
 	}
 	return label
 }
+
+// urlLabelUnparseable stands in for a source URL that cannot be safely shown.
+const urlLabelUnparseable = "[unparseable source]"
 
 // urlSourceLabels names each source by host and path only. Source URLs often
 // carry an API token in the query string or credentials in the userinfo, and a
@@ -245,7 +288,14 @@ func urlSourceLabels(urls []string) []string {
 			label = label[:cut]
 		}
 		if u, err := url.Parse(label); err == nil && u.Host != "" {
-			label = u.Host + redactSourcePath(strings.TrimSuffix(u.EscapedPath(), "/"))
+			if u.User == nil && strings.Contains(u.EscapedPath(), "@") {
+				// No userinfo was parsed but the path holds an '@': a password with an
+				// unescaped slash (user:12345/ss@host) parses as a host and a path.
+				// The "host" may be the start of the credential, so show neither.
+				label = urlLabelUnparseable
+			} else {
+				label = u.Host + redactSourcePath(strings.TrimSuffix(u.EscapedPath(), "/"))
+			}
 		} else {
 			label = unparseableSourceLabel(label)
 		}
