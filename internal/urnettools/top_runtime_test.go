@@ -488,8 +488,8 @@ func TestTopGroupsSurviveProviderSwitchChoiceButNotData(t *testing.T) {
 
 func TestShortFunc(t *testing.T) {
 	cases := map[string]string{
-		"github.com/urnetwork/connect.(*Client).run": "(*Client).run",
-		"net/http.(*persistConn).readLoop":           "http.(*persistConn).readLoop",
+		"github.com/urnetwork/connect.(*Client).run": "Client.run",
+		"net/http.(*persistConn).readLoop":           "http.persistConn.readLoop",
 		"main.main":                                  "main.main",
 		"runtime.gopark":                             "runtime.gopark",
 	}

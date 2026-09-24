@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"errors"
+	"regexp"
 	"strings"
 	"time"
 
@@ -221,5 +222,10 @@ func shortFunc(fn string) string {
 	if i := strings.LastIndex(fn, "/"); i >= 0 {
 		fn = fn[i+1:]
 	}
-	return strings.TrimPrefix(fn, "connect.")
+	fn = strings.TrimPrefix(fn, "connect.")
+	// "(*Client).run" is "Client.run": four cells saved, which in a 28 wide
+	// panel is the difference between telling two long names apart or not.
+	return ptrRecv.ReplaceAllString(fn, "$1")
 }
+
+var ptrRecv = regexp.MustCompile(`\(\*([^)]+)\)`)
