@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"strings"
+	"time"
 )
 
 // The runtime views `urnet-tools top` draws in its Internals panel. They mirror
@@ -49,14 +50,24 @@ type GoroutineGroups struct {
 // top then leaves the Internals panel out.
 var errRuntimeViewUnsupported = errors.New("provider does not answer the runtime commands")
 
+// runtimeRequestTimeout is how long a runtime command may take. internals is a
+// cheap read and gets the light deadline; the goroutine profile stops the world
+// briefly on the provider and is allowed the full one.
+func runtimeRequestTimeout(cmd string) time.Duration {
+	if cmd == "internals" {
+		return topLightTimeout
+	}
+	return 5 * time.Second
+}
+
 // runtimeRequest sends one runtime-view command and returns the reply.
 func runtimeRequest(p Provider, cmd string) (controlResponse, error) {
 	if p.StateDir == "" {
 		return controlResponse{}, fmt.Errorf("%w: provider has no state dir", errSnapshotUnavailable)
 	}
-	resp, err := sendSocketRequest(filepath.Join(p.StateDir, "provider.sock"), controlRequest{Cmd: cmd})
+	resp, err := sendSocketRequestTimeout(filepath.Join(p.StateDir, "provider.sock"), controlRequest{Cmd: cmd}, runtimeRequestTimeout(cmd))
 	if err != nil {
-		return controlResponse{}, fmt.Errorf("%w: %v", errSnapshotUnavailable, err)
+		return controlResponse{}, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	if !resp.OK {
 		if strings.HasPrefix(resp.Error, "unknown command") {

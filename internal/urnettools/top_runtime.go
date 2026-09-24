@@ -142,6 +142,9 @@ func (m *topModel) wantInternals(now time.Time) (gen int, p Provider, ok bool) {
 	if r.busy || !r.ok || m.conn != topConnected || len(m.providers) == 0 {
 		return 0, Provider{}, false
 	}
+	if m.isSlow() {
+		return 0, Provider{}, false // optional: the first thing dropped when the provider struggles
+	}
 	if !r.last.IsZero() && now.Sub(r.last) < m.interval {
 		return 0, Provider{}, false
 	}
@@ -190,6 +193,9 @@ func (m *topModel) wantGroups(now time.Time) (gen int, p Provider, ok bool) {
 	r := &m.rt
 	if !r.showing || r.gBusy || !r.gOK || m.conn != topConnected || len(m.providers) == 0 {
 		return 0, Provider{}, false
+	}
+	if m.isSlow() {
+		return 0, Provider{}, false // the goroutine profile is the costliest thing top asks for
 	}
 	if !r.gLast.IsZero() && now.Sub(r.gLast) < topGroupsEvery {
 		return 0, Provider{}, false
