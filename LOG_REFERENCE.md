@@ -204,7 +204,7 @@ A URL fetch cycle prints detail lines, then **one line per source** saying what 
 ⚠️ [proxy][url] cycle: every source failed (2 of 2); pool unchanged at 340 qualified of 371 cached
 ```
 
-A source is labeled by host and path only. The query string and any credentials in the URL are never logged in these lines, since source URLs often carry an API token. A path segment that looks like a credential (the segment after `/token/` or `/key/`, a long opaque blob, or a JWT-like dotted token) is shown as `[redacted]`, including when the secret contains an encoded slash (`%2F`); a filename such as `http.txt` is kept. A URL that cannot be parsed is shown by its host alone, and a URL whose credentials may contain an unescaped slash is shown as `[unparseable source]`. Two sources that would share a label are numbered (`#2`).
+A source is labeled by host and path only. The query string and any userinfo (`user:password@`) are never logged in these lines, since source URLs often carry an API token there. A path segment that looks like a credential (the segment after `/token/` or `/key/`, a long opaque blob, or a JWT-like dotted token) is shown as `[redacted]`, including when the secret contains an encoded slash (`%2F`); a filename such as `http.txt` is kept. A short token in an ordinary path segment cannot be recognized and would be shown, so keep tokens in the query string where you can. A URL that cannot be parsed is shown by its host alone, and a URL whose credentials may contain an unescaped slash is shown as `[unparseable source]`. Two sources that would share a label are numbered (`#2`).
 
 | Field | Meaning |
 |---|---|
