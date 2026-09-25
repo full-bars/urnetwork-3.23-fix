@@ -148,5 +148,9 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 	if note != "" {
 		in.Put(tui.Truncate(" "+note, in.Width(), th.ASCII), 0, y+1, th.Warn)
 	}
-	in.Put(tui.Truncate(" ↑↓ select   ←→ change   Esc close", in.Width(), th.ASCII), 0, in.Height()-1, th.Dim)
+	keys := " ↑↓ select   ←→ change   Esc close"
+	if th.ASCII {
+		keys = " j/k select   h/l change   Esc close"
+	}
+	in.Put(tui.Truncate(keys, in.Width(), th.ASCII), 0, in.Height()-1, th.Dim)
 }
