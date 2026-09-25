@@ -977,6 +977,7 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			udp.destinationPort,
 			self.udpBufferSettings,
 		)
+		sequence.bw = self.bw
 		self.sequences[bufferId] = sequence
 		sourceEntries, ok := self.sourceSequences[source]
 		if !ok {
@@ -1042,6 +1043,8 @@ type UdpSequence struct {
 	log               Logger
 	receiveCallback   ReceivePacketFunction
 	udpBufferSettings *UdpBufferSettings
+	// bw, when set, is credited with the bytes of the socket this sequence dials.
+	bw *ProxyBandwidth
 
 	sendMutex sync.Mutex
 	sendItems chan *UdpSendItem
@@ -1201,6 +1204,9 @@ func (self *UdpSequence) Run() {
 		return
 	}
 	defer socket.Close()
+	// Count the bytes of a direct socket as total traffic; a proxied one is
+	// already counted by its dialer.
+	socket = trackDirect(socket, self.bw)
 	self.UpdateLastActivityTime()
 	self.log.V(2).Infof("[init]connect success\n")
 
@@ -1776,6 +1782,7 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 			tcp.destinationPort,
 			self.tcpBufferSettings,
 		)
+		sequence.bw = self.bw
 		self.sequences[bufferId] = sequence
 		sourceEntries, ok := self.sourceSequences[source]
 		if !ok {
@@ -1846,6 +1853,8 @@ type TcpSequence struct {
 	receiveCallback ReceivePacketFunction
 
 	tcpBufferSettings *TcpBufferSettings
+	// bw, when set, is credited with the bytes of the socket this sequence dials.
+	bw *ProxyBandwidth
 
 	sendMutex sync.Mutex
 	sendItems chan *TcpSendItem
@@ -2116,6 +2125,10 @@ func (self *TcpSequence) Run() {
 		// tcpConn.SetReadBuffer(int(self.tcpBufferSettings.MaxWindowSize))
 		// tcpConn.SetWriteBuffer(int(self.tcpBufferSettings.MaxWindowSize))
 	}
+	// Count the bytes of a direct socket as total traffic. This comes after the
+	// *net.TCPConn options above, which need the unwrapped socket; a proxied
+	// socket is already counted by its dialer.
+	socket = trackDirect(socket, self.bw)
 
 	self.log.V(2).Infof("[init]receive SYN+ACK\n")
 	receive(packet)

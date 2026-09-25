@@ -482,6 +482,20 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 	}
 }
 
+// trackDirect credits a socket's bytes to bw, the way the proxy dialers already
+// do for theirs. A conn that is already tracked (a proxy dial returns one) is
+// returned as is, so a byte is never counted twice, and a nil bw leaves the conn
+// alone.
+func trackDirect(conn net.Conn, bw *ProxyBandwidth) net.Conn {
+	if bw == nil {
+		return conn
+	}
+	if _, ok := conn.(*trackedConn); ok {
+		return conn
+	}
+	return &trackedConn{Conn: conn, bw: bw}
+}
+
 type trackedConn struct {
 	net.Conn
 	bw   *ProxyBandwidth
