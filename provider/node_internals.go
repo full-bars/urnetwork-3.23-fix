@@ -310,7 +310,7 @@ func frameFunc(line string) string {
 
 // runtimeFrame is a frame that says nothing about what a goroutine is for.
 func runtimeFrame(fn string) bool {
-	for _, p := range []string{"runtime.", "sync.", "internal/", "syscall.", "os.", "net.(*", "internal/poll."} {
+	for _, p := range []string{"runtime.", "sync.", "internal/", "syscall.", "os.", "io.", "bufio.", "crypto/tls.", "net.(*"} {
 		if strings.HasPrefix(fn, p) {
 			return true
 		}

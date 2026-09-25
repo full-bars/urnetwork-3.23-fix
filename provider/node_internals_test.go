@@ -69,6 +69,26 @@ func TestParseGoroutineProfileLabelsLineIsNotAFrame(t *testing.T) {
 	}
 }
 
+func TestParseGoroutineProfileGroupsUnderBlockedInIOFrame(t *testing.T) {
+	// A goroutine parked in io.ReadFull (via bufio or a TLS read) should
+	// group under the connect frame that called it, not under the runtime
+	// frame it happens to be blocked in.
+	g := parseGoroutineProfile(`goroutine profile: total 20
+20 @ 0x43a1b6 0x44b2c5 0x4a1000 0x468fa1 0x7a1b2b
+#	0x43a1b5	runtime.gopark+0x15	/go/src/runtime/proc.go:402
+#	0x44b2c4	runtime.netpollblock+0x1c4	/go/src/runtime/netpoll.go:520
+#	0x4a0fff	internal/poll.runtime_pollWait+0x9f	/go/src/internal/poll/fd_poll_runtime.go:122
+#	0x4a1fff	bufio.(*Reader).fill+0x4f	/usr/local/go/src/bufio/bufio.go:110
+#	0x7a1b2b	github.com/urnetwork/connect.(*Client).read+0x1b	/src/client.go:210
+`, 10)
+	if len(g.Groups) != 1 {
+		t.Fatalf("groups = %+v, want a single group", g.Groups)
+	}
+	if g.Groups[0].Func != "github.com/urnetwork/connect.(*Client).read" || g.Groups[0].Count != 20 {
+		t.Fatalf("group = %+v, want Client.read 20", g.Groups[0])
+	}
+}
+
 func TestParseGoroutineProfileLimit(t *testing.T) {
 	g := parseGoroutineProfile(goroutineFixture, 1)
 	if len(g.Groups) != 1 || g.Groups[0].Count != 91 {
