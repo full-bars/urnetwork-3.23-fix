@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.3
+**Current Version**: v3.23.0-fix.32.7
 
 ---
 
@@ -3514,3 +3514,42 @@ Rebalances the fork with the upstream connect fix, which shipped upstream but ne
 **Files Modified**: `ip.go`, `ip_synack_leak_test.go`.
 
 - **Pooled-buffer leak on upstream connect failure**: in the TCP sequence's syn-plus-ack path, when the probe connection to the upstream peer failed, the pooled packet was released without returning its byte buffer to the message pool. On a node where many dials fail, the pool grows without bound. The dial-failure branch now returns the buffer exactly once, covered by a regression test locked to the ownership contract. Applying the fix to an existing node stops new leaks on its next connection; a restart reclaims the memory the old process pinned.
+
+## 176. v32.4: Copy Proxy Auth Baseline (PR #680)
+
+Credentialed proxies (paid, file-sourced) were rotating every ~30s reload cycle forever instead of only on a real credential change.
+
+**Files Modified**: `provider/*` (proxy reload / auth seeding).
+
+- **Perpetual rotation stopped**: `seedRunningAuth` and both `reload()` launch-settings recorders now store a deep copy (`cloneProxySettings`) instead of the pointer handed to the running goroutine. Root cause: the recorded auth baseline shared a pointer with the live proxy settings object, which the runtime mutates during its own auth flow (write-back through the shared pointer). The baseline drifted within milliseconds of launch, so every reload compared a mutated baseline against a fresh config parse, saw a change, and rotated. Only credentialed proxies showed it (nil-auth always compares equal). A genuine credential change still differs from the frozen copy and still triggers exactly one rotation.
+
+## 177. v32.5: Self-Heal systemd Unit Type on Update (PR #682)
+
+HotSwap (zero-downtime update) stayed perpetually unavailable on nodes whose installer had been re-run after `update` migrated the unit to `Type=notify`.
+
+**Files Modified**: `Provider_Install_Linux.sh`, `provider/update.go`, `internal/urnettools/update.go`.
+
+- **Unit type reconciled on every update**: the problem was that `install_systemd_units()` unconditionally rewrites the unit with no `Type=` line (defaulting to `simple`) on every installer run, with no awareness of a prior HotSwap migration. `reconcileUnitTypeForBinary` (the migration logic) only ran after a binary swap inside `updateProvider`, so a no-op "already on the target" update never re-checked the unit, and a clobbered unit stayed `simple` until a new release shipped. `cmdUpdate`'s skip branch now reconciles the unit type too.
+
+## 178. v32.6: Proxy Identity is Address+User (PR #684, #685, #687, #686)
+
+A proxy provider sharing one gateway host:port across multiple accounts collided every account into a single map entry throughout the proxy-management subsystem, which treated bare address as the unique proxy identity. Two accounts sharing an address flipped which one won on every reload, looking like a perpetual credential change and rotating forever.
+
+**Files Modified**: `provider/*` (proxy registry, state/earnings/slow-retry stores, JWT login store), tests.
+
+- **Proxy identity keyed by address+user** (PR #684): `ProxySettings` gains a `Key()` method (address, or address+user for a shared-gateway proxy; password excluded so a credential rotation is the same identity). Every place that tracked a proxy by bare address now uses `Key()`: the core health/bandwidth registry, and the persisted `proxy.state`/earnings/slow-retry stores, with a migration path that adopts a legacy bare-address entry to its identity key.
+- **Client JWT store keyed by identity** (PR #685): the hot-restart client login store had the same bare-address keying, so two accounts at one gateway shared one saved login (one revoked login evicting the other, which minted a fresh identity on the next restart). The store key is now the proxy identity, with a one-time deterministic migration; when several accounts share an address the smallest key inherits the login and the rest mint fresh.
+- **Adopt saved logins with one store flush** (PR #687): `AdoptLegacy` (from #685) flushed the whole login store once per adopted login and once per dropped legacy slot, holding the store lock the whole time. A node with ~12,800 saved logins was still adopting minutes after start with no proxies up. Adoption now plans every move in memory and applies it with one read-merge-write-fsync cycle.
+- **Test-only** (PR #686): the rotation reload test now seeds the proxy ID counter so it does not hand proxy ID 0 to a real proxy when run in isolation; production never allocates ID 0 that way. No behavior change.
+
+## 179. v32.7: Status Says What is Wrong; `top` is Live (PR #688, #689, #690, #693, #694)
+
+This batch makes `urnet-tools status` and `top` report what is actually true.
+
+**Files Modified**: `provider/*`, `internal/urnettools/*` (top, status, control client), `internal/tui/*`, `docs/`, `releases/`.
+
+- **The idle hint and startup state say the real reason** (PR #688): "why idle: auth failing" no longer fires on normal background retries (a large paid pool always has a few percent failing and retrying). Auth is blamed only for a failure wave (a quarter of the pool failing in the last minute, with a floor) or a mostly-down pool. A stalled startup no longer reads IDLE from uptime alone; it follows the real startup phase from the systemd status, reads `starting` for up to 5 minutes, then `degraded` as a stall, and a new `state_reason` says why.
+- **The message pool dump ends with a verdict** (PR #689): the per-tag counters were a wall of lines where nothing said which was a problem, and a low return percentage is not a leak (buffers in flight count as taken, not yet returned). The dump now ends with one line judging the trend of outstanding buffers over the last 10 dumps and otherwise says all clear.
+- **`top` runs live** (PR #690): a new light `traffic` control command returns live counter sums without building a snapshot, so `top` poll rates drop to ~100ms and derive billable and total rates from deltas over a one second window. The snapshot gains billable and total byte totals, the lifetime billable total, and the total-traffic rate. The graph no longer shifts every bucket boundary each second (buckets align to the provider's own sample count, a new `history_seq` field), so completed columns never change. A slow provider is no longer called lost: it stays connected with a `SLOW` marker, keeps the last data on screen, is called lost only after 20 seconds of silence, and `top` asks for less while the provider struggles.
+- **Direct sockets count as total traffic** (PR #693): total bytes were counted only on proxy connections, so a direct-only node showed billable with total stuck at zero. The UDP and TCP sequences wrap their socket with `trackDirect` when a bandwidth record exists; an already-tracked conn (a proxy dial) is returned as is, so proxy mode is not counted twice. The TCP wrap comes after the raw-socket options.
+- **`top` zoom, Internals panel, menu, and quiet-node layout** (PR #694): `w` zooms both graphs to the last 15 seconds at the refresh rate. A runtime Internals panel shows the goroutine count and trend, heap, stacks, GC goal, allocation rate, GC cycles and pause p99, GC share of CPU and scheduler latency p99 (`internals` is a cheap cached `runtime/metrics` read; `g` swaps in a goroutine profile grouped by where each goroutine is parked, taken at most once every 5 seconds). `m` opens a menu of eight color themes and braille/block/tty graph styles saved to `top.conf` (`NO_COLOR` and a dumb terminal still force mono). A layout that fits a quiet node gives back rows a node with a small proxy pool does not use. `-` now refreshes faster and `+` slower, like btop.
