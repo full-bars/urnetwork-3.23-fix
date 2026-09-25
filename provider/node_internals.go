@@ -258,6 +258,12 @@ func parseGoroutineProfile(text string, limit int) GoroutineGroups {
 			want, first = true, ""
 			continue
 		}
+		if strings.HasPrefix(line, "# labels") {
+			// pprof debug=1 emits "# labels: {\"k\":\"v\"}" between the
+			// header and the frames; it is profile metadata, not a frame,
+			// and must not start (and end) a group.
+			continue
+		}
 		if !want || !strings.HasPrefix(line, "#") {
 			continue
 		}

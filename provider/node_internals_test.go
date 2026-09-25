@@ -49,6 +49,26 @@ func TestParseGoroutineProfileGroupsByFirstNonRuntimeFrame(t *testing.T) {
 	}
 }
 
+func TestParseGoroutineProfileLabelsLineIsNotAFrame(t *testing.T) {
+	// pprof debug=1 emits "# labels: {\"k\":\"v\"}" between a header and
+	// its frames (the labels come from pprof.Do / runtime.SetProfLabel).
+	// It must be skipped, not turned into a group name.
+	g := parseGoroutineProfile(`goroutine profile: total 91
+91 @ 0x43a1b6 0x4092ad
+# labels: {"region":"us-west","shard":"4"}
+#	0x7a1b2b	github.com/urnetwork/connect.(*Client).run+0x1b	/src/client.go:210
+`, 10)
+	if g.Total != 91 {
+		t.Fatalf("total = %d, want 91", g.Total)
+	}
+	if len(g.Groups) != 1 {
+		t.Fatalf("groups = %+v, want a single Client.run group", g.Groups)
+	}
+	if g.Groups[0].Func != "github.com/urnetwork/connect.(*Client).run" || g.Groups[0].Count != 91 {
+		t.Fatalf("group = %+v, want Client.run 91", g.Groups[0])
+	}
+}
+
 func TestParseGoroutineProfileLimit(t *testing.T) {
 	g := parseGoroutineProfile(goroutineFixture, 1)
 	if len(g.Groups) != 1 || g.Groups[0].Count != 91 {
