@@ -78,7 +78,13 @@ func cmdTop(args []string) error {
 	// is handled by the model.
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
 	defer stop()
-	m := newTopModel(providers, cur, interval, tui.ThemeFromEnv(os.Getenv), time.Now)
+	th := tui.ThemeFromEnv(os.Getenv)
+	m := newTopModel(providers, cur, interval, th, time.Now)
+	// The environment's own choice (NO_COLOR, a dumb terminal) outranks a saved
+	// theme; see applySettings.
+	m.themeLocked = th.ASCII
+	m.settingsPath = topSettingsPath()
+	m.applySettings(loadTopSettings(m.settingsPath))
 	src := topSourceFn()
 	if demo {
 		src = newDemoTopSource(time.Now)

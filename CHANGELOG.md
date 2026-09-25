@@ -15,6 +15,12 @@
 - **Live rates at up to 100ms in `top`, and billable and total traffic** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a light `traffic` control command feeds btop-style live rates, and the snapshot, `status` and `top` show billable and total rates and bytes moved.
 - **Clear logs when URL-sourced proxies are added** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): every URL fetch cycle ends with one headline saying what happened to the pool (new, already known, rejected, pool size), including when nothing changed. Reloads announce URL-sourced launches and attribute additions to their source.
 - **A summary line after every message pool dump** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/689>): judges the trend of outstanding buffers, so a plateau is not mistaken for a leak.
+- **Zoom, a runtime Internals panel and a goroutine list in `top`**: `w` zooms the graphs to the last 15 seconds at the refresh rate; a panel shows goroutines with a trend, heap, GC and scheduler figures live; `g` lists where goroutines are parked. Two new light provider control commands, `internals` and `goroutines`, feed them; both are dropped first when the provider struggles.
+- **A menu for color themes and graph styles in `top`**: `m` picks one of eight themes and braille, block or tty graphs, saved to `top.conf`. The y-axis now stays steady, and the layout stops reserving room a quiet or direct-only node does not use.
+
+### Changed
+
+- **`-` refreshes `top` faster and `+` slower**, like btop; they were the other way round.
 
 ---
 

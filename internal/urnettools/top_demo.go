@@ -185,3 +185,42 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 		Traffic:  traffic,
 	}, nil
 }
+
+// FetchInternals is a runtime reading that follows the clock: the goroutine
+// count agrees with the snapshot's, and the counters grow the way a busy
+// provider's do.
+func (d demoTopSource) FetchInternals(Provider) (*NodeInternals, error) {
+	now := d.now().UTC()
+	s := float64(now.Unix())
+	up := now.Sub(demoAnchor).Seconds()
+	return &NodeInternals{
+		AtUnixNano:       now.UnixNano(),
+		Goroutines:       uint64(1200 + int(40*math.Sin(s/45))),
+		HeapObjectsBytes: uint64(1500*demoMiB) + uint64(90*demoMiB*(1+math.Sin(s/60))/2),
+		HeapStacksBytes:  uint64(96 * demoMiB),
+		HeapGoalBytes:    uint64(2100 * demoMiB),
+		GOGC:             100,
+		GCCycles:         uint64(up / 6),
+		AllocBytes:       uint64(310 * demoMiB * up),
+		IntervalSeconds:  1,
+		GCPauseP99Ms:     0.4 + 0.3*(1+math.Sin(s/31))/2,
+		SchedLatP99Ms:    0.6 + 0.5*(1+math.Sin(s/23))/2,
+		GCCPUFraction:    0.03 + 0.02*(1+math.Sin(s/40))/2,
+	}, nil
+}
+
+func (d demoTopSource) FetchGoroutines(Provider) (*GoroutineGroups, error) {
+	in, _ := d.FetchInternals(Provider{})
+	total := int(in.Goroutines)
+	a, b, c := total*55/100, total*25/100, total*12/100
+	return &GoroutineGroups{
+		AtUnixNano: in.AtUnixNano,
+		Total:      total,
+		Groups: []GoroutineGroup{
+			{"github.com/urnetwork/connect.(*Client).run", a},
+			{"github.com/urnetwork/connect.(*Transfer).loop", b},
+			{"github.com/urnetwork/connect.(*ProxyConn).read", c},
+			{"net/http.(*persistConn).readLoop", total - a - b - c},
+		},
+	}, nil
+}

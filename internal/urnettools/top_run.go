@@ -23,6 +23,11 @@ type topResult struct {
 	err       error
 	isTraffic bool
 	traffic   *LiveTraffic
+	// The runtime views of the Internals panel.
+	isInternals bool
+	internals   *NodeInternals
+	isGroups    bool
+	groups      *GoroutineGroups
 }
 
 // runTop drives the model on a screen until the user quits, ctx is cancelled
@@ -79,6 +84,39 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 
+	// The runtime views are optional the same way.
+	rtSrc, hasRuntime := src.(topInternalsSource)
+	fetchInternalsFn := func(gen int, p Provider) {
+		go func() {
+			res := topResult{gen: gen, isInternals: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.internals, res.err = nil, fmt.Errorf("internals fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.internals, res.err = rtSrc.FetchInternals(p)
+		}()
+	}
+	fetchGroupsFn := func(gen int, p Provider) {
+		go func() {
+			res := topResult{gen: gen, isGroups: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.groups, res.err = nil, fmt.Errorf("goroutines fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.groups, res.err = rtSrc.FetchGoroutines(p)
+		}()
+	}
+
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
@@ -89,6 +127,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		if hasTraffic {
 			if gen, p, ok := m.wantTraffic(m.now()); ok {
 				fetchTraffic(gen, p)
+			}
+		}
+		if hasRuntime {
+			if gen, p, ok := m.wantInternals(m.now()); ok {
+				fetchInternalsFn(gen, p)
+			}
+			if gen, p, ok := m.wantGroups(m.now()); ok {
+				fetchGroupsFn(gen, p)
 			}
 		}
 		w, h := scr.Size()
@@ -108,9 +154,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				return nil
 			}
 		case r := <-results:
-			if r.isTraffic {
+			switch {
+			case r.isTraffic:
 				m.applyTraffic(r.gen, r.traffic, r.err)
-			} else {
+			case r.isInternals:
+				m.applyInternals(r.gen, r.internals, r.err)
+			case r.isGroups:
+				m.applyGroups(r.gen, r.groups, r.err)
+			default:
 				m.apply(r.gen, r.snap, r.err)
 			}
 		case <-ticker.C:

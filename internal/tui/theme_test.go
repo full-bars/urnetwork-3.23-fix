@@ -64,3 +64,74 @@ func TestLevel(t *testing.T) {
 		t.Fatal("Level thresholds")
 	}
 }
+
+func TestThemeRegistry(t *testing.T) {
+	names := ThemeNames()
+	if len(names) < 6 {
+		t.Fatalf("only %d built-in themes: %v", len(names), names)
+	}
+	seen := map[string]bool{}
+	for _, n := range names {
+		if seen[n] {
+			t.Errorf("theme %q listed twice", n)
+		}
+		seen[n] = true
+		th, ok := ThemeByName(n)
+		if !ok || th.Name != n {
+			t.Errorf("ThemeByName(%q) = %q, %v", n, th.Name, ok)
+		}
+	}
+	if _, ok := ThemeByName("no-such-theme"); ok {
+		t.Error("an unknown name must not resolve")
+	}
+	if !seen["default"] || !seen["mono"] {
+		t.Error("default and mono must stay available")
+	}
+}
+
+// A theme where OK, Warn and Bad look alike is a broken theme: the screen speaks
+// in those roles.
+func TestThemesKeepTheStatusRolesApart(t *testing.T) {
+	for _, n := range ThemeNames() {
+		th, _ := ThemeByName(n)
+		if th.ASCII {
+			continue // mono carries no color; that is its point
+		}
+		if th.OK == th.Warn || th.Warn == th.Bad || th.OK == th.Bad {
+			t.Errorf("%s: OK/Warn/Bad are not distinct: %+v %+v %+v", n, th.OK, th.Warn, th.Bad)
+		}
+		if th.Graph == (Style{}) || th.Accent == (Style{}) || th.Dim == (Style{}) || th.Border == (Style{}) {
+			t.Errorf("%s: a role is left unset", n)
+		}
+	}
+}
+
+func TestMonoThemeStaysColorless(t *testing.T) {
+	th, _ := ThemeByName("mono")
+	if !th.ASCII || th.OK != (Style{}) || th.Graph != (Style{}) || th.Frame != BorderASCII {
+		t.Fatalf("mono must be plain: %+v", th)
+	}
+}
+
+func TestPaletteThemesAreTruecolor(t *testing.T) {
+	th, _ := ThemeByName("nord")
+	if th.OK.FG.Kind != ColorRGB || th.Graph.FG.Kind != ColorRGB {
+		t.Fatalf("nord roles should be RGB: %+v", th)
+	}
+	if r, g, b := hex("#a3be8c").Components(); r != 0xa3 || g != 0xbe || b != 0x8c {
+		t.Fatalf("hex parsed to %x %x %x", r, g, b)
+	}
+}
+
+func TestHexRejectsBadLiterals(t *testing.T) {
+	for _, s := range []string{"", "a3be8c", "#a3be8", "#a3be8cc", "#gg0000"} {
+		func() {
+			defer func() {
+				if recover() == nil {
+					t.Errorf("hex(%q) must panic", s)
+				}
+			}()
+			hex(s)
+		}()
+	}
+}

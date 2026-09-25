@@ -438,26 +438,26 @@ func TestTopRefreshRateKeys(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
 	press := func(r rune) { m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: r}) }
 
-	press('+')
-	press('+')
-	press('+')
-	press('+') // clamps at the fastest step, 100ms like btop
+	press('-')
+	press('-')
+	press('-')
+	press('-') // clamps at the fastest step, 100ms like btop: - is faster
 	if m.interval != topMinInterval {
 		t.Fatalf("interval = %v, want the %v floor", m.interval, topMinInterval)
 	}
 	if topMinInterval != 100*time.Millisecond {
 		t.Fatalf("floor = %v, want 100ms like btop", topMinInterval)
 	}
-	press('-')
+	press('+')
 	if m.interval != 250*time.Millisecond {
 		t.Fatalf("interval = %v", m.interval)
 	}
-	press('-')
+	press('+')
 	if m.interval != 500*time.Millisecond {
 		t.Fatalf("interval = %v", m.interval)
 	}
 	for i := 0; i < 10; i++ {
-		press('-')
+		press('+')
 	}
 	if m.interval != 10*time.Second {
 		t.Fatalf("interval = %v, want the slowest step", m.interval)
@@ -465,12 +465,12 @@ func TestTopRefreshRateKeys(t *testing.T) {
 
 	// A custom --interval sits between steps and moves to the next one.
 	m.interval = 1500 * time.Millisecond
-	press('+')
+	press('-')
 	if m.interval != time.Second {
 		t.Fatalf("interval = %v", m.interval)
 	}
 	m.interval = 1500 * time.Millisecond
-	press('-')
+	press('+')
 	if m.interval != 2*time.Second {
 		t.Fatalf("interval = %v", m.interval)
 	}

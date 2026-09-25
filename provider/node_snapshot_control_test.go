@@ -159,3 +159,38 @@ func TestControlResponseTrafficOnlyOnTrafficCommand(t *testing.T) {
 		}
 	}
 }
+
+// "internals" and "goroutines" are the runtime views for top. Each answers only
+// its own field, and the provider's real runtime shows through.
+func TestControlSocketInternalsAndGoroutinesCommands(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+
+	resp := handleControlRequest(globalControlState, controlRequest{Cmd: "internals"})
+	if !resp.OK || resp.Internals == nil || resp.Goroutines != nil || resp.Snapshot != nil || resp.Traffic != nil {
+		t.Fatalf("internals response: %+v", resp)
+	}
+	if resp.Internals.Goroutines == 0 || resp.Internals.HeapObjectsBytes == 0 {
+		t.Fatalf("internals carry no runtime figures: %+v", resp.Internals)
+	}
+
+	resp = handleControlRequest(globalControlState, controlRequest{Cmd: "goroutines"})
+	if !resp.OK || resp.Goroutines == nil || resp.Internals != nil || resp.Snapshot != nil {
+		t.Fatalf("goroutines response: %+v", resp)
+	}
+	if resp.Goroutines.Total == 0 || len(resp.Goroutines.Groups) == 0 {
+		t.Fatalf("goroutines carry no groups: %+v", resp.Goroutines)
+	}
+}
+
+// Existing commands must not start carrying the runtime views.
+func TestControlResponseInternalsOnlyOnTheirCommands(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+	for _, cmd := range []string{"version", "status", "snapshot", "traffic"} {
+		resp := handleControlRequest(globalControlState, controlRequest{Cmd: cmd})
+		if resp.Internals != nil || resp.Goroutines != nil {
+			t.Errorf("%s response carries runtime views", cmd)
+		}
+	}
+}

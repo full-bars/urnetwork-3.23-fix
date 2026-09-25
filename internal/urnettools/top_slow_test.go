@@ -397,3 +397,68 @@ func TestSocketRequestDeadlineIsFixedBeforeDialing(t *testing.T) {
 		t.Fatalf("deadline = %v, want start+timeout", got)
 	}
 }
+
+// The runtime views (Internals panel, goroutine list) are the first things
+// dropped when the provider struggles: they are optional, and the goroutine
+// profile is the most expensive thing top can ask for.
+func TestTopShedsRuntimeViewsAtTheFirstSignOfStruggle(t *testing.T) {
+	m, clock := slowModel(t)
+	m.rt.showing = true // the goroutine list is on screen
+
+	clock.Advance(2 * time.Second)
+	if _, _, ok := m.wantInternals(clock.Now()); !ok {
+		t.Fatal("healthy: internals must be polled")
+	}
+	m.rt.busy = false
+	if _, _, ok := m.wantGroups(clock.Now()); !ok {
+		t.Fatal("healthy: the shown goroutine list must be polled")
+	}
+	m.rt.gBusy = false
+	m.rt.gLast = time.Time{}
+
+	failFetch(t, m, clock, time.Second) // one miss
+	clock.Advance(2 * time.Second)
+	if _, _, ok := m.wantInternals(clock.Now()); ok {
+		t.Fatal("one miss: internals must stop being polled")
+	}
+	if _, _, ok := m.wantGroups(clock.Now()); ok {
+		t.Fatal("one miss: the goroutine profile must stop being taken")
+	}
+	// The cheap traffic counters are still allowed after one miss.
+	if _, _, ok := m.wantTraffic(clock.Now()); !ok {
+		t.Fatal("one miss: the cheap traffic poll should still run")
+	}
+
+	// A prompt answer brings everything back.
+	clock.Advance(m.backoff + time.Second)
+	gen, _, _ := m.wantFetch(clock.Now())
+	clock.Advance(50 * time.Millisecond)
+	m.apply(gen, topFlowing(t), nil)
+	clock.Advance(2 * time.Second)
+	if _, _, ok := m.wantInternals(clock.Now()); !ok {
+		t.Fatal("recovered: internals must resume")
+	}
+}
+
+// A reply that arrives but is slow also sheds them: backoff > 0 is the same
+// signal as a miss.
+func TestTopShedsRuntimeViewsWhileRepliesAreSlow(t *testing.T) {
+	m, clock := slowModel(t)
+	clock.Advance(2 * time.Second)
+	gen, _, _ := m.wantFetch(clock.Now())
+	clock.Advance(3 * time.Second)
+	m.apply(gen, topFlowing(t), nil)
+	clock.Advance(3 * time.Second)
+	if _, _, ok := m.wantInternals(clock.Now()); ok {
+		t.Fatal("slow replies: internals must not be polled")
+	}
+}
+
+func TestTopRuntimeRequestDeadlines(t *testing.T) {
+	if got := runtimeRequestTimeout("internals"); got != topLightTimeout {
+		t.Errorf("internals deadline = %v, want the light %v", got, topLightTimeout)
+	}
+	if got := runtimeRequestTimeout("goroutines"); got <= topLightTimeout {
+		t.Errorf("the goroutine profile is heavy and needs more than %v, got %v", topLightTimeout, got)
+	}
+}

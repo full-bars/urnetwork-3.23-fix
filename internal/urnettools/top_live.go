@@ -66,3 +66,27 @@ func (l *topLive) rates() (billable, total float64, ok bool) {
 	secs := span.Seconds()
 	return float64(last.billable-first.billable) / secs, float64(last.total-first.total) / secs, true
 }
+
+// recent is rates over the newest span of at least minSpan, for the zoom graph:
+// short enough that it moves with each poll, long enough that a 100ms poll's
+// counter granularity does not turn it into noise. ok is false until the window
+// holds a span that long.
+func (l *topLive) recent(minSpan time.Duration) (billable, total float64, ok bool) {
+	if len(l.samples) < 2 {
+		return 0, 0, false
+	}
+	last := l.samples[len(l.samples)-1]
+	from := l.samples[0]
+	for i := len(l.samples) - 2; i >= 0; i-- {
+		if time.Duration(last.at-l.samples[i].at) >= minSpan {
+			from = l.samples[i]
+			break
+		}
+	}
+	span := time.Duration(last.at - from.at)
+	if span < topLiveMinSpan {
+		return 0, 0, false
+	}
+	secs := span.Seconds()
+	return float64(last.billable-from.billable) / secs, float64(last.total-from.total) / secs, true
+}
