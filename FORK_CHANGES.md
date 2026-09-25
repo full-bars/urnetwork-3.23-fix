@@ -3542,7 +3542,7 @@ A proxy provider sharing one gateway host:port across multiple accounts collided
 - **Adopt saved logins with one store flush** (PR #687): `AdoptLegacy` (from #685) flushed the whole login store once per adopted login and once per dropped legacy slot, holding the store lock the whole time. A node with ~12,800 saved logins was still adopting minutes after start with no proxies up. Adoption now plans every move in memory and applies it with one read-merge-write-fsync cycle.
 - **Test-only** (PR #686): the rotation reload test now seeds the proxy ID counter so it does not hand proxy ID 0 to a real proxy when run in isolation; production never allocates ID 0 that way. No behavior change.
 
-## 179. v32.7: Status Says What is Wrong; `top` is Live (PR #688, #689, #690, #693, #694)
+## 179. v32.7: Status Says What is Wrong; `top` is Live (PR #688, #689, #690, #692, #693, #694)
 
 This batch makes `urnet-tools status` and `top` report what is actually true.
 
