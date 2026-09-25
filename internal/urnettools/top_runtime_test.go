@@ -373,6 +373,53 @@ func TestTopInternalsNotAskedWhileDisconnected(t *testing.T) {
 	}
 }
 
+func TestTopLostClearsInternalsReadingButKeepsState(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := internalsModel(t, clock)
+	gen, _, _ := m.wantGroups(clock.Now())
+	m.applyGroups(gen, &GoroutineGroups{Total: 1168, Groups: []GoroutineGroup{
+		{"github.com/urnetwork/connect.(*Client).run", 640},
+	}}, nil)
+	m.rt.showing = true
+	okBefore, gOKBefore, busyBefore, gBusyBefore := m.rt.ok, m.rt.gOK, m.rt.busy, m.rt.gBusy
+	if !m.hasInternals() {
+		t.Fatal("reading not applied before the outage")
+	}
+	m.lost(clock.Now(), errors.New("gone"))
+	if m.hasInternals() {
+		t.Fatal("a reading from before the outage must not keep the panel up")
+	}
+	if m.rt.recent != nil || m.rt.cur != nil || m.rt.gor != nil || m.rt.groups != nil {
+		t.Fatalf("data fields must clear, got cur=%v recent=%v gor=%v groups=%v", m.rt.cur, m.rt.recent, m.rt.gor, m.rt.groups)
+	}
+	if !m.rt.showing {
+		t.Fatal("the user's view choice must survive a disconnect")
+	}
+	if m.rt.ok != okBefore || m.rt.gOK != gOKBefore {
+		t.Fatal("a disconnect must not change whether the provider knows the commands")
+	}
+	if m.rt.busy != busyBefore || m.rt.gBusy != gBusyBefore {
+		t.Fatal("a disconnect must not clear the in-flight fetch guards")
+	}
+}
+
+func TestTopLostKeepsProviderUnsupportedFlag(t *testing.T) {
+	m, clock := liveModel(t, time.Second)
+	gen, _, _ := m.wantInternals(clock.Now())
+	m.applyInternals(gen, nil, errRuntimeViewUnsupported)
+	if m.rt.ok {
+		t.Fatal("precondition: provider refused the runtime commands")
+	}
+	m.lost(clock.Now(), errors.New("gone"))
+	if m.rt.ok {
+		t.Fatal("a disconnect must not re-enable a provider that cannot answer")
+	}
+	clock.Advance(time.Hour)
+	if _, _, ok := m.wantInternals(clock.Now()); ok {
+		t.Fatal("must not re-ask a provider that refused the command")
+	}
+}
+
 func TestTopInternalsUnsupportedProviderDropsThePanel(t *testing.T) {
 	m, clock := liveModel(t, time.Second)
 	gen, _, _ := m.wantInternals(clock.Now())

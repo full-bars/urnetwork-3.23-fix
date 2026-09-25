@@ -384,6 +384,13 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.live.reset() // a rate from before the outage would read as current
 	m.zoom.reset()
 	m.failStreak, m.backoff, m.slowReported = 0, 0, false
+	// Clear only the Internals DATA, not its state. ok/gOK say whether the
+	// provider knows the command (its refusal survives the outage apparent,
+	// so we do not re-ask a provider that cannot answer); showing is the
+	// user's view choice; busy/gBusy guard an in-flight fetch whose result
+	// carries the same generation. A reading from before the outage would
+	// otherwise draw at full brightness while the panels around it dim.
+	m.rt.cur, m.rt.recent, m.rt.gor, m.rt.gorAt, m.rt.groups = nil, nil, nil, 0, nil
 }
 
 // isTimeoutErr reports a request that got no answer in time, which on a starved
