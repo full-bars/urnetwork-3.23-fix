@@ -237,6 +237,16 @@ func TestTcpSequenceDirectSocketCountsTotalBytes(t *testing.T) {
 	if bw.BillableRx.Load() != 0 || bw.BillableTx.Load() != 0 {
 		t.Fatalf("the socket layer must not touch billable: %d/%d", bw.BillableRx.Load(), bw.BillableTx.Load())
 	}
+
+	// The acknowledged handshake has advanced sendSeq to the SYN's +1; a data
+	// segment at that sequence is not a retransmit, so it is written to the
+	// destination socket and counted as total sent.
+	const outgoing = "request from the client"
+	seq.sendItems <- &TcpSendItem{tcp: &parsedTcp{syn: false, seq: 1, payload: []byte(outgoing)}, ipPacket: MessagePoolGet(2048)}
+	waitBytes(t, "TotalTx", bw.TotalTx.Load, uint64(len(outgoing)))
+	if bw.BillableRx.Load() != 0 || bw.BillableTx.Load() != 0 {
+		t.Fatalf("the socket layer must not touch billable: %d/%d", bw.BillableRx.Load(), bw.BillableTx.Load())
+	}
 	cancel()
 	select {
 	case <-done:
