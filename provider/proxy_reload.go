@@ -626,6 +626,13 @@ func (r *ProxyReloader) reload() {
 			// sources were never resolved.
 			tlog("[proxy] reload skipped: proxy_url.json unreadable, URL sources unknown\n")
 			setProxyResolutionStatus(proxyResolutionFailed, "could not read proxy_url.json")
+		} else if !directShouldRun {
+			// Direct transport is turned off and no proxy source is configured,
+			// so nothing is being provided. It is a valid config but not a
+			// completed zero-proxy setup that is actively serving, so it reads
+			// as degraded rather than as a healthy direct-only node.
+			tlog("[proxy] reload skipped: direct transport disabled and no proxy source\n")
+			setProxyResolutionStatus(proxyResolutionEmpty, "direct transport disabled and no proxy source configured")
 		} else {
 			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
 			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")

@@ -106,6 +106,27 @@ func TestReload_DirectOnlyNode_SettlesZeroValid(t *testing.T) {
 	}
 }
 
+// With the direct transport turned off and no proxy source configured,
+// nothing is served, so the node must not settle as a healthy direct-only
+// node: it reads degraded (empty), not active.
+func TestReload_DirectOffNoSource_StillReadsEmpty(t *testing.T) {
+	resetProxyCounters(t)
+
+	t.Setenv("DISABLE_DIRECT_IP", "1") // direct transport off
+	r := emptyReloader(t, "")
+	r.reload()
+
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionEmpty {
+		t.Fatalf("direct-off no-source reload: resolution=%d, want proxyResolutionEmpty(%d)", got, proxyResolutionEmpty)
+	}
+	if phase := proxyStartupPhase(); phase != startupSourceEmpty {
+		t.Fatalf("direct-off no-source node must read empty/degraded, got %q", phase)
+	}
+	if line := systemdStatusLine(); strings.HasPrefix(line, "active:") {
+		t.Fatalf("direct-off no-source node must NOT read active while serving nothing, got %q", line)
+	}
+}
+
 // A proxy source that WAS configured but yielded zero proxies still reads
 // degraded (empty), even though the node may run direct alongside it — it is
 // not a deliberate direct-only config.
