@@ -95,5 +95,13 @@ func saveTopSettings(path string, s topSettings) error {
 	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
 		return err
 	}
-	return os.Rename(tmp.Name(), path)
+	if err := os.Rename(tmp.Name(), path); err != nil {
+		return err
+	}
+	// Under sudo with HOME preserved, the config lands root-owned in the
+	// invoking user's config dir, so that user's next non-sudo save cannot
+	// overwrite it. When we are root, hand the file to the owner of its
+	// directory (usually the invoking user) instead of keeping root ownership.
+	chownConfigToDirOwner(path)
+	return nil
 }
