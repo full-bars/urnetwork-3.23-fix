@@ -134,7 +134,8 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 			style, lead = th.Accent, marker
 		}
 		x := in.Put(lead+r.label, 0, i, style)
-		in.Put(tui.Truncate(left+r.value+right, in.Width()-x, th.ASCII), max(x, 20), i, tui.Style{})
+		vx := max(x, 20)
+		in.Put(tui.Truncate(left+r.value+right, max(in.Width()-vx, 0), th.ASCII), vx, i, tui.Style{})
 	}
 	// The palette as the screen will use it: one word per role, in its own style.
 	y := topMenuRows + 1
