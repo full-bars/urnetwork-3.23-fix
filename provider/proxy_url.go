@@ -8,6 +8,7 @@ import (
 	"io"
 	"math"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -229,6 +230,14 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 	}
 	resp, err := proxyURLHTTPClient.Do(req)
 	if err != nil {
+		// http.Client.Do returns a *net/url.Error whose message embeds the full
+		// request URL, credentials included. That string lands in the log,
+		// the resolution reason and the operator warning, so surface the
+		// underlying cause (the URL-free URL field) instead.
+		var ue *neturl.Error
+		if errors.As(err, &ue) && ue.Err != nil {
+			err = ue.Err
+		}
 		return nil, fmt.Errorf("fetch: %w", err)
 	}
 	defer resp.Body.Close()

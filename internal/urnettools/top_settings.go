@@ -86,22 +86,25 @@ func saveTopSettings(path string, s topSettings) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	_, werr := fmt.Fprintf(tmp, "# urnet-tools top: chosen in the m menu\ntheme = %s\ngraph = %s\n", s.Theme, s.Graph)
+	if cerr := tmp.Chmod(0o644); werr == nil {
+		werr = cerr
+	}
+	if werr != nil {
+		tmp.Close()
+		return werr
+	}
+	// Under sudo with HOME preserved, the config would land root-owned in the
+	// invoking user's config dir, so that user's next non-sudo save cannot
+	// overwrite it. When we are root, hand the temporary file to the owner of
+	// its directory (usually the invoking user) while it is still an open fd,
+	// before the rename, so a switcheroo to a symlink cannot redirect the
+	// ownership change to some other root-owned file.
+	chownConfigFdToDirOwner(tmp, filepath.Dir(path))
 	if cerr := tmp.Close(); werr == nil {
 		werr = cerr
 	}
 	if werr != nil {
 		return werr
 	}
-	if err := os.Chmod(tmp.Name(), 0o644); err != nil {
-		return err
-	}
-	if err := os.Rename(tmp.Name(), path); err != nil {
-		return err
-	}
-	// Under sudo with HOME preserved, the config lands root-owned in the
-	// invoking user's config dir, so that user's next non-sudo save cannot
-	// overwrite it. When we are root, hand the file to the owner of its
-	// directory (usually the invoking user) instead of keeping root ownership.
-	chownConfigToDirOwner(path)
-	return nil
+	return os.Rename(tmp.Name(), path)
 }

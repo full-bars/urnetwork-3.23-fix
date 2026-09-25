@@ -632,7 +632,7 @@ func (r *ProxyReloader) reload() {
 			// completed zero-proxy setup that is actively serving, so it reads
 			// as degraded rather than as a healthy direct-only node.
 			tlog("[proxy] reload skipped: direct transport disabled and no proxy source\n")
-			setProxyResolutionStatus(proxyResolutionEmpty, "direct transport disabled and no proxy source configured")
+			setProxyResolutionStatus(proxyResolutionNoSource, "direct transport disabled and no proxy source configured")
 		} else {
 			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
 			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")

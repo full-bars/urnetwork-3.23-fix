@@ -116,14 +116,17 @@ func TestReload_DirectOffNoSource_StillReadsEmpty(t *testing.T) {
 	r := emptyReloader(t, "")
 	r.reload()
 
-	if got := proxyResolutionStatus.Load(); got != proxyResolutionEmpty {
-		t.Fatalf("direct-off no-source reload: resolution=%d, want proxyResolutionEmpty(%d)", got, proxyResolutionEmpty)
+	if got := proxyResolutionStatus.Load(); got != proxyResolutionNoSource {
+		t.Fatalf("direct-off no-source reload: resolution=%d, want proxyResolutionNoSource(%d)", got, proxyResolutionNoSource)
 	}
-	if phase := proxyStartupPhase(); phase != startupSourceEmpty {
-		t.Fatalf("direct-off no-source node must read empty/degraded, got %q", phase)
+	if phase := proxyStartupPhase(); phase != startupNoSource {
+		t.Fatalf("direct-off no-source node must read the no-source phase, got %q", phase)
 	}
-	if line := systemdStatusLine(); strings.HasPrefix(line, "active:") {
+	if line := systemdStatusLine(); !strings.Contains(line, "degraded") || strings.Contains(line, "active:") {
 		t.Fatalf("direct-off no-source node must NOT read active while serving nothing, got %q", line)
+	}
+	if line := systemdStatusLine(); !strings.Contains(line, "direct transport is off") {
+		t.Fatalf("direct-off no-source line must name the missing direct transport, got %q", line)
 	}
 }
 

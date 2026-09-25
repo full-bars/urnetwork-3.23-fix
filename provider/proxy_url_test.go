@@ -126,6 +126,29 @@ func TestFetchProxyURLLines_NonOKStatus(t *testing.T) {
 	}
 }
 
+func TestFetchProxyURLLines_ConnectionErrorDoesNotLeakTheURL(t *testing.T) {
+	// A *net/url.Error from http.Client.Do embeds the full request URL in its
+	// message, credentials included. The log, resolution reason and operator
+	// warning all surface the fetch error, so the URL must not survive into it.
+	const secret = "supersecretusertoken"
+	// A credentialed URL to an unrouteable port: the dial fails, and Go wraps
+	// that failure in a *url.Error whose message would name the URL.
+	url := "http://user:" + secret + "@127.0.0.1:1/list"
+	_, err := fetchProxyURLLines(context.Background(), url)
+	if err == nil {
+		t.Fatal("expected a connection error")
+	}
+	if strings.Contains(err.Error(), secret) || strings.Contains(err.Error(), "user:") {
+		t.Fatalf("fetch error leaked the credential-bearing URL: %q", err.Error())
+	}
+	if strings.Contains(err.Error(), "127.0.0.1:1/list") {
+		t.Fatalf("fetch error leaked the request URL: %q", err.Error())
+	}
+	if !strings.Contains(err.Error(), "fetch:") {
+		t.Fatalf("fetch error lost its context prefix: %q", err.Error())
+	}
+}
+
 func TestFetchProxyURLLines_EmptyBody(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {}))
 	defer srv.Close()
@@ -135,7 +158,6 @@ func TestFetchProxyURLLines_EmptyBody(t *testing.T) {
 		t.Fatal("expected error for empty body")
 	}
 }
-
 func TestFetchProxyURLLines_BodyTruncatedAtLimit(t *testing.T) {
 	huge := strings.Repeat("a", maxProxyURLFetchBytes+1024)
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
