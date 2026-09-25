@@ -1,7 +1,7 @@
 # `urnet-tools top`: a live terminal view of a provider (design proposal)
 
 > [!NOTE]
-> **Status: implemented, not yet released.** Built on branch `feat/ls-top` on top of the [live status snapshot](live-status-snapshot.md). The design below is kept as written, with the differences from what was built listed under [Implementation notes](#implementation-notes).
+> **Status: implemented, not yet released.** Built on top of the [live status snapshot](live-status-snapshot.md). The design below is kept as written, with the differences from what was built listed under [Implementation notes](#implementation-notes).
 
 ## Problem
 
