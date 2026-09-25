@@ -552,6 +552,45 @@ func TestTopGroupsSurviveProviderSwitchChoiceButNotData(t *testing.T) {
 	}
 }
 
+func TestTopInternalsPreWindowP99ShowsPlaceholder(t *testing.T) {
+	// A reading that has not yet completed a full quantile window reports
+	// IntervalSeconds 0 and 0.0 p99 figures, which would misread as a real
+	// zero. The p99 cells must show a placeholder until a window completes.
+	m, _ := liveModel(t, time.Second)
+	in := fakeInternals(100, 1150, 40, 1000<<20)
+	in.IntervalSeconds = 0 // the first window has not completed
+	in.GCPauseP99Ms = 0
+	in.SchedLatP99Ms = 0
+	m.applyInternals(0, in, nil)
+	got, _ := showOnSim(t, m, 120, 40)
+	if !strings.Contains(got, "p99 --") {
+		t.Fatalf("pre-window internals must show a placeholder, got:\n%s", panelText(got))
+	}
+	if strings.Contains(got, "p99 0.0ms") {
+		t.Fatalf("pre-window p99 must not read as a real zero:\n%s", panelText(got))
+	}
+}
+
+// panelText returns the internals panel slice of a full screen render, for a
+// readable failure message.
+func panelText(screen string) string {
+	lines := strings.Split(screen, "\n")
+	from, to := 0, len(lines)
+	for i, ln := range lines {
+		if strings.Contains(ln, "+ Internals") {
+			from = i
+		}
+		if from > 0 && strings.Contains(ln, "+ Proxies") {
+			to = i
+			break
+		}
+	}
+	if from >= to {
+		return screen
+	}
+	return strings.Join(lines[from:to], "\n")
+}
+
 func TestShortFunc(t *testing.T) {
 	cases := map[string]string{
 		"github.com/urnetwork/connect.(*Client).run": "Client.run",

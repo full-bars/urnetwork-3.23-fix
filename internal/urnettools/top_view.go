@@ -520,11 +520,23 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 	if v, ok := r.internalsRate(func(n *NodeInternals) uint64 { return n.AllocBytes }); ok {
 		row("alloc", tui.Rate(v), tui.Style{})
 	}
+	// The pause and latency quantiles are only figures once a full window
+	// completes; before that the provider reports IntervalSeconds 0 and p99
+	// 0.0, which would read as a real measurement. Show a placeholder instead.
+	ready := in.IntervalSeconds > 0
 	if v, ok := r.internalsRate(func(n *NodeInternals) uint64 { return n.GCCycles }); ok {
-		row("gc", fmt.Sprintf("%.0f/min p99 %s", v*60, topMillis(in.GCPauseP99Ms)), tui.Style{})
+		p99 := "--"
+		if ready {
+			p99 = topMillis(in.GCPauseP99Ms)
+		}
+		row("gc", fmt.Sprintf("%.0f/min p99 %s", v*60, p99), tui.Style{})
 	}
 	row("gc cpu", fmt.Sprintf("%.1f%%", in.GCCPUFraction*100), m.style(topLevelFor(in.GCCPUFraction, 0.10, 0.25)))
-	row("sched", "p99 "+topMillis(in.SchedLatP99Ms), m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
+	sched := "--"
+	if ready {
+		sched = topMillis(in.SchedLatP99Ms)
+	}
+	row("sched", "p99 "+sched, m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
 }
 
 // topLevelFor is topWarn past warn and topBad past bad, else no color.
