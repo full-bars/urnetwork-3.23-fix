@@ -70,7 +70,7 @@ func TestCollectorReportsStartupStuckAndRecovery(t *testing.T) {
 // zero-proxy branch reads, so every combination is checked against the line.
 func TestStartupPhaseNeverDisagreesWithTheSystemdLine(t *testing.T) {
 	t.Cleanup(func() { proxiesConfigured.Store(0); resetProxyResolutionStatus() })
-	statuses := map[string]int32{"pending": proxyResolutionPending, "failed": proxyResolutionFailed, "empty": proxyResolutionEmpty, "ok": proxyResolutionOK, "zero-valid": proxyResolutionZeroValid}
+	statuses := map[string]int32{"pending": proxyResolutionPending, "failed": proxyResolutionFailed, "empty": proxyResolutionEmpty, "ok": proxyResolutionOK, "zero-valid": proxyResolutionZeroValid, "no-source": proxyResolutionNoSource}
 	for _, count := range []int{0, 1, 5} {
 		for name, status := range statuses {
 			t.Run(fmt.Sprintf("count=%d/%s", count, name), func(t *testing.T) {

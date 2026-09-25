@@ -6,17 +6,18 @@
 
 - **"why idle: auth failing" fired on normal noise** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the idle hint blamed auth if the failure counter rose at all in 10 minutes, which a large paid pool always does. Auth is now blamed only for a failure wave or a mostly-down pool, and the hint shows the numbers behind it.
 - **A node stuck in startup read IDLE** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/688>): the state now follows the real startup phase, reads `degraded` if it stalls, and a new `state_reason` says why a node is starting or degraded.
-- **The `top` graph shimmered instead of scrolling** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): buckets counted from the oldest sample re-averaged every column each second. They are now aligned to absolute time.
+- **The `top` graph shimmered instead of scrolling** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): buckets counted from the oldest sample re-averaged every column each second. They are now aligned to the provider's own sample count (a new `history_seq` field), so a completed column never changes.
 - **Total traffic read zero on a node that makes only direct connections** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/693>): direct sockets are now counted as total traffic over TCP and UDP, as proxy connections already were, so the total rate, total graph, bytes moved and the Prometheus total byte series carry real values on a direct-only node. Needs the provider updated.
 - **`top` called a slow provider lost** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a provider that answers late stays connected with a `SLOW` marker and is called lost only after 20 seconds of silence; a refused connection is still reported at once. `top` also backs off while a provider struggles instead of adding load.
+- **Content-filtering blocklist refreshed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/692>): the blocked-destination table is refreshed from upstream.
 
 ### Added
 
 - **Live rates at up to 100ms in `top`, and billable and total traffic** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): a light `traffic` control command feeds btop-style live rates, and the snapshot, `status` and `top` show billable and total rates and bytes moved.
 - **Clear logs when URL-sourced proxies are added** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/690>): every URL fetch cycle ends with one headline saying what happened to the pool (new, already known, rejected, pool size), including when nothing changed. Reloads announce URL-sourced launches and attribute additions to their source.
 - **A summary line after every message pool dump** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/689>): judges the trend of outstanding buffers, so a plateau is not mistaken for a leak.
-- **Zoom, a runtime Internals panel and a goroutine list in `top`**: `w` zooms the graphs to the last 15 seconds at the refresh rate; a panel shows goroutines with a trend, heap, GC and scheduler figures live; `g` lists where goroutines are parked. Two new light provider control commands, `internals` and `goroutines`, feed them; both are dropped first when the provider struggles.
-- **A menu for color themes and graph styles in `top`**: `m` picks one of eight themes and braille, block or tty graphs, saved to `top.conf`. The y-axis now stays steady, and the layout stops reserving room a quiet or direct-only node does not use.
+- **Zoom, a runtime Internals panel and a goroutine list in `top`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/694>): `w` zooms the graphs to the last 15 seconds at the refresh rate; a panel shows goroutines with a trend, heap, GC and scheduler figures live; `g` lists where goroutines are parked. Two new light provider control commands, `internals` and `goroutines`, feed them; both are dropped first when the provider struggles.
+- **A menu for color themes and graph styles in `top`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/694>): `m` picks one of eight themes and braille, block or tty graphs, saved to `top.conf`. The y-axis now stays steady, and the layout stops reserving room a quiet or direct-only node does not use.
 
 ### Changed
 

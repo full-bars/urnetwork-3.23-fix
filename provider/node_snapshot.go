@@ -363,7 +363,7 @@ func deriveSnapshotState(in stateInputs) string {
 	// A proxy source that failed or came back empty is degraded at once, like
 	// the systemd line, even inside the warmup window: warmup covers a pool still
 	// connecting, not a source that has already given its answer.
-	if in.startup == startupSourceUnreachable || in.startup == startupSourceEmpty {
+	if in.startup == startupSourceUnreachable || in.startup == startupSourceEmpty || in.startup == startupNoSource {
 		return "degraded"
 	}
 	if in.uptime < snapshotStartingWindow {

@@ -293,6 +293,17 @@ func urlSourceLabels(urls []string) []string {
 	for i, raw := range urls {
 		label := raw
 		if cut := strings.IndexAny(label, "?#"); cut >= 0 {
+			// A "?#" inside the userinfo (before the '@') is part of a
+			// credential, not a query: cutting there would leak the credential
+			// start as a "host" (e.g. "user:pa?ss@host" -> "user:pa"). Many
+			// real sources carry a token in the query string after a normal
+			// userinfo, so only distrust a cut that precedes the '@'.
+			if at := strings.IndexByte(label, '@'); at >= 0 && cut < at {
+				label = urlLabelUnparseable
+				seen[label]++
+				labels[i] = label
+				continue
+			}
 			label = label[:cut]
 		}
 		if u, err := url.Parse(label); err == nil && u.Host != "" {

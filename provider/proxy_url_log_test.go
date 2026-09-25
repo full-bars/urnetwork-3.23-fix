@@ -533,6 +533,8 @@ func TestURLLabelHostlessAndSchemelessURLsNeverLeakTheirPath(t *testing.T) {
 		{"h.example/token/SECRET/list", "h.example"},
 		{"user:pw@h.example/token/SECRET/list", "h.example"},
 		{"user:pa/ss@h.example/token/SECRET", "[unparseable source]"},
+		{"https://user:pa?ss@h.example/token/SECRET", "[unparseable source]"},
+		{"user:pw@h.example/token/SECRET?x=y", "h.example"},
 		{"not a url at all", "not a url at all"},
 	}
 	for _, tc := range cases {
