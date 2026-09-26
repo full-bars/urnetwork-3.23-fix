@@ -66,4 +66,13 @@ func TestPackageHomeIsNotTheDevelopersRealHome(t *testing.T) {
 	if !strings.HasPrefix(globalClientJWTStore.path, home) {
 		t.Fatalf("the JWT store %q is outside the test home %q", globalClientJWTStore.path, home)
 	}
+	// The other package-init singletons must be pinned to the test home too.
+	for name, path := range map[string]string{
+		"lifetime metrics":      lifetimeStore.path,
+		"proxy earnings store":  globalProxyEarningsStore.path,
+	} {
+		if !strings.HasPrefix(path, home) {
+			t.Fatalf("the %s %q is outside the test home %q", name, path, home)
+		}
+	}
 }

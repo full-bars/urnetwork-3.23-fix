@@ -155,4 +155,18 @@ func TestCgroupV2MemoryHeadroom(t *testing.T) {
 			t.Fatalf("garbage must not produce a figure")
 		}
 	})
+
+	t.Run("an inner limited level without usage must not adopt ancestor room", func(t *testing.T) {
+		// The kernel enforces the child's 50M limit even though its usage
+		// file is unreadable here; the ancestor's 400M of room must not be
+		// reported as available to the process.
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "52428800") // 50M, no memory.current
+		parent := "/user.slice/user-1000.slice"
+		writeCgroupFile(t, root, parent, "memory.max", "524288000")    // 500M
+		writeCgroupFile(t, root, parent, "memory.current", "104857600") // 100M used -> 400M room
+		if got, ok := cgroupV2MemoryHeadroom(root, self); ok {
+			t.Fatalf("got %d MiB of headroom from the ancestor, want the chain indeterminate", got>>20)
+		}
+	})
 }

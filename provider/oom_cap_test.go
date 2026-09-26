@@ -12,6 +12,10 @@ var oomT0 = time.Unix(1_800_000_000, 0)
 
 func TestOOMKilledSinceMarker(t *testing.T) {
 	m := &oomMarker{BootID: "boot-A", OOMKills: 2}
+	// A marker from a start more than oomMarkerMaxAge ago is stale: the global
+	// oom_kill counter may have been bumped by ANY workload since, so it must
+	// not be blamed on this provider.
+	stale := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Add(-(oomMarkerMaxAge + time.Hour)).Unix()}
 	cases := []struct {
 		name  string
 		m     *oomMarker
@@ -25,9 +29,10 @@ func TestOOMKilledSinceMarker(t *testing.T) {
 		{"no previous marker", nil, "boot-A", 3, false},
 		{"unknown boot id", m, "", 3, false},
 		{"unreadable counter", m, "boot-A", -1, false},
+		{"a stale marker is never blamed even with a higher counter", stale, "boot-A", 9, false},
 	}
 	for _, c := range cases {
-		if got := oomKilledSinceMarker(c.m, c.boot, c.kills); got != c.want {
+		if got := oomKilledSinceMarker(c.m, c.boot, c.kills, oomT0.Add(time.Hour)); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -55,6 +60,12 @@ func TestOOMCapNeverGoesBelowTheFloor(t *testing.T) {
 	if d.Action != "none" {
 		t.Fatalf("at the floor a further OOM must not reduce, got %+v", d)
 	}
+	// The at-floor OOM still restarts the clean-day clock: the box just died,
+	// so a start more than 24h after the original reduction must not relax.
+	st, _ = oomCapOnOOM(oomCapState{Cap: 1000, SinceUnix: oomT0.Unix()}, 500, 4000, oomT0.Add(time.Hour))
+	if st.SinceUnix != oomT0.Add(time.Hour).Unix() {
+		t.Fatalf("an at-floor OOM must reset SinceUnix, got %d (want %d)", st.SinceUnix, oomT0.Add(time.Hour).Unix())
+	}
 	// Tiny list: the absolute floor of 50 applies.
 	_, d = oomCapOnOOM(oomCapState{}, 60, 100, oomT0)
 	if d.To != 50 {
@@ -76,6 +87,12 @@ func TestOOMCapFreezesAfterThreeReductionsInADay(t *testing.T) {
 	st, d = oomCapOnOOM(st, proxies, 4000, oomT0.Add(4*time.Hour))
 	if d.Action != "frozen" || st.Cap != d.From {
 		t.Fatalf("fourth OOM inside the window must freeze, got %+v", d)
+	}
+	// The frozen OOM just killed the box: it must restart the clean-day
+	// clock, so the cap cannot relax 24h after the LAST REDUCTION while only
+	// hours after this kill.
+	if st.SinceUnix != oomT0.Add(4*time.Hour).Unix() {
+		t.Fatalf("a frozen OOM must reset SinceUnix, got %d (want %d)", st.SinceUnix, oomT0.Add(4*time.Hour).Unix())
 	}
 	// Outside the 24h window the budget is available again.
 	_, d = oomCapOnOOM(st, proxies, 4000, oomT0.Add(30*time.Hour))

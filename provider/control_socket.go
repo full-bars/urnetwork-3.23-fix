@@ -959,6 +959,11 @@ func applyLiveSideEffect(key, value string) error {
 		// Read on every reload by effectiveTrimCap, so this is live; log an
 		// acknowledgement so the operator sees the command was received.
 		importantLogf("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
+		// The kill switch must act NOW: with no poke, a quiescent node could
+		// keep enforcing a stale cap until some other event triggers a reload
+		// (hours later). Reload drops or admits proxies per the new mode.
+		triggerProxyReload()
+		return nil
 	case "metrics":
 		return applyMetricsLive(value)
 	case "metrics_listen":

@@ -7,6 +7,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect"
 	"golang.org/x/net/proxy"
@@ -160,5 +161,58 @@ func TestReload_HeldProxiesStayHeldUntilTheCapRises(t *testing.T) {
 	r.reload()
 	if _, launched := r.cancelMap[addrs[2]]; !launched {
 		t.Fatalf("with the cap raised to 3 the held proxy %s must be admitted", addrs[2])
+	}
+}
+
+// A trim-shed proxy with active clients drains instead of being cancelled
+// outright. When its last client leaves, the drain completes and the proxy is
+// STILL in the desired set (the shed keeps its state on purpose) — but the
+// shed must not re-trigger a reload: the cap would only hold it again, and
+// each drained shed used to burn a reload cycle plus a false
+// "re-added while draining" log line.
+func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
+	r, addrs, _ := trimFixture(t)
+	if err := writeTrimTarget(2); err != nil {
+		t.Fatal(err)
+	}
+
+	// The worst-graded proxy (dead) is the one shed at cap 2; give it an
+	// active client so the shed enters the graceful drain path.
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+	const idx = 500
+	connect.RegisterProxy(idx, addrs[1], addrs[1])
+	bw := connect.RegisterProxyBandwidth(idx)
+	bw.Clients.Store(1)
+
+	path, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seqBefore, _ := readReloadSeq(path)
+	r.reload()
+	if _, draining := r.drainingProxies[addrs[1]]; !draining {
+		t.Fatalf("shed proxy with active clients must drain, not be cancelled outright")
+	}
+
+	// The client leaves; the drain goroutine notices and completes.
+	bw.Clients.Store(0)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		r.drainMu.Lock()
+		_, stillDraining := r.drainingProxies[addrs[1]]
+		r.drainMu.Unlock()
+		if !stillDraining {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("drain did not complete in time")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	seqAfter, _ := readReloadSeq(path)
+	if seqAfter != seqBefore {
+		t.Fatalf("a trim-shed drain re-triggered a reload: seq %d -> %d", seqBefore, seqAfter)
 	}
 }
