@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"math"
 	"runtime/debug"
 	"testing"
 )
@@ -94,6 +95,7 @@ func TestApplyAutoTuningSetsGCPercentOncePerProcess(t *testing.T) {
 	t.Setenv("URNETWORK_PROFILE", "auto")
 	t.Setenv("GOGC", "")
 	autoGCPercentApplied.Store(false)
+	restoreRuntimeTuning(t)
 	orig := debug.SetGCPercent(100)
 	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false) })
 
@@ -117,6 +119,7 @@ func TestApplyAutoTuningSkipsGCPercentWhenOperatorPinned(t *testing.T) {
 	t.Setenv("URNETWORK_PROFILE", "auto")
 	t.Setenv("GOGC", "")
 	autoGCPercentApplied.Store(false)
+	restoreRuntimeTuning(t)
 	orig := debug.SetGCPercent(80)
 	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false); AutoTuneOperatorPinned = nil })
 
@@ -133,4 +136,43 @@ func readGCPercent() int {
 	cur := debug.SetGCPercent(100)
 	debug.SetGCPercent(cur)
 	return cur
+}
+
+// applyTier1 and friends set PROCESS-wide runtime knobs (GOGC and, when none is
+// set, a soft memory limit of a fraction of RAM). A test that calls them must put
+// both back, or every later test in the binary runs under a different GC
+// configuration.
+func restoreRuntimeTuning(t *testing.T) {
+	t.Helper()
+	gogc := readGCPercent()
+	limit := debug.SetMemoryLimit(-1) // a negative input only reads the limit
+	t.Cleanup(func() {
+		debug.SetGCPercent(gogc)
+		debug.SetMemoryLimit(limit)
+	})
+}
+
+func TestAutoTuningTestsRestoreTheProcessWideRuntimeKnobs(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	t.Setenv("GOMEMLIMIT", "")
+	beforeLimit, beforeGC := debug.SetMemoryLimit(-1), readGCPercent()
+	autoGCPercentApplied.Store(false)
+
+	t.Run("a test that applies a tier", func(t *testing.T) {
+		restoreRuntimeTuning(t)
+		debug.SetMemoryLimit(math.MaxInt64) // "no finite limit", so applyTier1 sets one
+		applyTier1(DefaultClientSettings(), DefaultLocalUserNatSettings(), 1<<30)
+		if debug.SetMemoryLimit(-1) == math.MaxInt64 {
+			t.Fatal("the fixture did not exercise the memory limit path")
+		}
+	})
+
+	if got := debug.SetMemoryLimit(-1); got != beforeLimit {
+		t.Fatalf("the soft memory limit leaked out of the test: %d, was %d", got, beforeLimit)
+	}
+	if got := readGCPercent(); got != beforeGC {
+		t.Fatalf("GOGC leaked out of the test: %d, was %d", got, beforeGC)
+	}
+	autoGCPercentApplied.Store(false)
 }
