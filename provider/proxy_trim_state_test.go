@@ -23,13 +23,6 @@ func trimFixture(t *testing.T) (*ProxyReloader, []string, *atomic.Int32) {
 	proxyWarmupDone.Store(true)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
 
-	// globalClientJWTStore is built at package init from the REAL home, before
-	// withTempHome can redirect HOME, so reload would read the developer's
-	// stored identities and write snapshot files into their real state dir.
-	prevStore := globalClientJWTStore
-	globalClientJWTStore = newClientJWTStore(t.TempDir() + "/.client_jwts.json")
-	t.Cleanup(func() { globalClientJWTStore = prevStore })
-
 	// Credentialed proxies, so the state key is the identity key (addr+user).
 	addrs := make([]string, 3)
 	baseline := map[string]*connect.ProxySettings{}
