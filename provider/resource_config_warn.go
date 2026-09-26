@@ -19,6 +19,12 @@ const (
 	// resourceBytesPerProxy is calibrated to the high side of the measured
 	// fleet, which spans roughly 0.2-0.55 MiB of heap per proxy.
 	resourceBytesPerProxy = 256 << 10
+	// Connected clients are unknown at startup but drive memory (about 0.8 MiB
+	// heap each). A 2 GiB box reached ~540 clients on 2,001 proxies (0.27 per proxy) and
+	// its heap went 415 -> 791 MiB, so reserve a peak-load allowance of 0.15
+	// clients per proxy, which is what the estimate adds on top of the proxies.
+	resourceClientsPerProxy = 0.15
+	resourceBytesPerClient  = 800 << 10
 	// resourceRSSFactor scales a heap estimate to what a cgroup ceiling must
 	// hold, since RSS also carries stacks and runtime overhead.
 	resourceRSSFactor = 1.25
@@ -33,12 +39,14 @@ type resourceConfigInput struct {
 	AutoProfile   bool  // URNETWORK_PROFILE=auto
 }
 
-// estimatedPoolMemory is the heap a pool of n proxies is expected to need.
+// estimatedPoolMemory is the heap a pool of n proxies is expected to need at
+// peak client load.
 func estimatedPoolMemory(n int) int64 {
 	if n < 0 {
 		n = 0
 	}
-	return resourceBaseOverhead + int64(n)*resourceBytesPerProxy
+	perProxy := float64(resourceBytesPerProxy) + resourceClientsPerProxy*float64(resourceBytesPerClient)
+	return resourceBaseOverhead + int64(float64(n)*perProxy)
 }
 
 // resourceConfigWarnings returns one human-readable warning per problem, in a
