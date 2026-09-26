@@ -174,3 +174,66 @@ func TestControlLedgerReturnsTheTimeline(t *testing.T) {
 		t.Fatalf("empty ledger must answer [], got ok=%v %q", r.OK, r.Value)
 	}
 }
+
+// When the AUTOMATIC OOM cap is the binding cap, the receipt and the ledger must
+// say so: attributing a shed the auto cap drove to "operator" would make the
+// timeline lie about who acted.
+func TestReloadAttributesTheBindingCapToItsSource(t *testing.T) {
+	cases := []struct {
+		name       string
+		operator   int
+		auto       int
+		wantSource string
+		wantNote   bool
+	}{
+		{"only the operator cap", 1, 0, "operator", false},
+		{"only the automatic cap", 0, 1, "oomcap", true},
+		{"automatic is tighter", 2, 1, "oomcap", true},
+		{"operator is tighter", 1, 2, "operator", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			r, _, _ := trimFixture(t)
+			t.Setenv("URNETWORK_OOM_CAP", "on")
+			dir, _ := oomCapDir()
+			_ = os.MkdirAll(dir, 0o700)
+			if c.operator > 0 {
+				if err := writeTrimTarget(c.operator); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if c.auto > 0 {
+				if err := oomWriteJSON(filepath.Join(dir, "oom_cap.json"), oomCapState{Cap: c.auto}); err != nil {
+					t.Fatal(err)
+				}
+			}
+			out := captureTlog(t, func() { r.reload() })
+			if note := strings.Contains(out, "(automatic OOM cap)"); note != c.wantNote {
+				t.Fatalf("automatic-cap note present=%v, want %v:\n%s", note, c.wantNote, out)
+			}
+			got, _ := ledgerTail(filepath.Join(dir, ledgerFileName), 10)
+			if len(got) != 1 || got[0].Mode != c.wantSource {
+				t.Fatalf("ledger mode = %+v, want %q", got, c.wantSource)
+			}
+		})
+	}
+}
+
+// The direct transport is in the running map but is never trimmed, so the
+// receipt's and the ledger's running count must exclude it, like the cap does.
+func TestReloadTrimCountsExcludeTheDirectTransport(t *testing.T) {
+	r, _, _ := trimFixture(t)
+	r.cancelMap[directProxyKey] = func() {}
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+	out := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(out, "received: cap=1 (was none); 3 running, 3 desired") {
+		t.Fatalf("receipt must count 3 proxies, not 3 plus direct:\n%s", out)
+	}
+	dir, _ := oomCapDir()
+	got, _ := ledgerTail(filepath.Join(dir, ledgerFileName), 10)
+	if len(got) != 1 || got[0].From != 3 {
+		t.Fatalf("ledger from = %+v, want 3 (direct excluded)", got)
+	}
+}
