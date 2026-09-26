@@ -252,6 +252,14 @@ func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
 	if err := writeTrimTarget(2); err != nil {
 		t.Fatal(err)
 	}
+	// The drain goroutine re-reads the desired set through proxy.state's Source
+	// (currentDesiredProxyIdentities), not r.sourcePath. Without this the shed
+	// proxy never reads as still desired, the re-trigger branch is never
+	// reached, and the test passes whether or not the trim-shed guard exists.
+	r.state.Source = r.sourcePath
+	if err := writeProxyState(r.state); err != nil {
+		t.Fatal(err)
+	}
 
 	// The worst-graded proxy (dead) is the one shed at cap 2; give it an
 	// active client so the shed enters the graceful drain path.
