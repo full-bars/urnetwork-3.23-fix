@@ -82,7 +82,10 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 // (limit - memory.current) over every level that has a positive memory.max or
 // memory.high (memory.high counts because the kernel throttles at it). Usage
 // above the limit is zero, never negative. A level whose usage cannot be read is
-// skipped rather than guessed; ok is false when no level yields a figure.
+// skipped rather than guessed; a level whose limit cannot be paired with a
+// usage reading makes the whole chain indeterminate (ok=false), because the
+// kernel still enforces that level's limit even if we cannot read its usage,
+// and adopting an ancestor's room would overstate what the process can use.
 func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok bool) {
 	rel := ""
 	for _, line := range strings.Split(selfCgroup, "\n") {
@@ -113,14 +116,21 @@ func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok
 		}
 		if haveLimit {
 			// memory.current can legitimately be 0 only for an empty cgroup;
-			// treat an unreadable or non-numeric value as "unknown".
-			if data, err := os.ReadFile(filepath.Join(dir, "memory.current")); err == nil {
-				if cur, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && cur >= 0 {
-					room := max(0, limit-cur)
-					if !ok || room < headroom {
-						headroom, ok = room, true
-					}
-				}
+			// treat an unreadable or non-numeric value as "unknown". The
+			// kernel still enforces THIS level's limit, so an unknown usage
+			// here must not let a looser ancestor's room speak for the
+			// process: report the whole chain as indeterminate.
+			data, err := os.ReadFile(filepath.Join(dir, "memory.current"))
+			if err != nil {
+				return 0, false
+			}
+			cur, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+			if err != nil || cur < 0 {
+				return 0, false
+			}
+			room := max(0, limit-cur)
+			if !ok || room < headroom {
+				headroom, ok = room, true
 			}
 		}
 		if dir == mount || len(dir) <= len(mount) {
