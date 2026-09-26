@@ -282,3 +282,89 @@ func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
 		t.Fatalf("a trim-shed drain re-triggered a reload: seq %d -> %d", seqBefore, seqAfter)
 	}
 }
+
+// The drain-completion re-trigger guard must suppress ONLY trim-shed
+// addresses, not every drain while any cap happens to bind. A proxy removed
+// for an unrelated reason (a URL-source flap) and then re-added while it
+// drains is exactly the case the re-trigger exists for, and it must still fire
+// promptly even though the trim cap binds throughout.
+func TestReload_ReAddedNonShedProxyStillRetriggersUnderABindingCap(t *testing.T) {
+	r, addrs, cancelled := trimFixture(t)
+	// currentDesiredProxyIdentities() (used by the drain-completion goroutine)
+	// reads proxy.state's Source field, not r.sourcePath directly; the fixture
+	// leaves Source empty (internal config), so point it at the same file
+	// reload() itself reads, and persist it, so "desired" agrees with reload().
+	r.state.Source = r.sourcePath
+	if err := writeProxyState(r.state); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTrimTarget(2); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	if got := cancelled.Load(); got != 1 {
+		t.Fatalf("trim to 2 of 3 must shed exactly 1 (the dead one), cancelled %d", got)
+	}
+
+	// A source flap drops addrs[2] from the file (not the trim cap's doing).
+	// Give it an active client so it drains instead of being cancelled
+	// outright.
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+	const idx = 501
+	connect.RegisterProxy(idx, addrs[2], addrs[2])
+	bw := connect.RegisterProxyBandwidth(idx)
+	bw.Clients.Store(1)
+
+	if err := os.WriteFile(r.sourcePath, []byte(rewriteTrimFixtureFile(addrs[:2])), 0600); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	if _, draining := r.drainingProxies[addrs[2]]; !draining {
+		t.Fatalf("addrs[2] with an active client must drain when dropped from the source")
+	}
+	// The trim cap of 2 is still binding: addrs[0] and addrs[1] (held) fill it.
+
+	// The source flap reverses: addrs[2] is back in the file before its drain
+	// completes, so it is desired again -- but it was never trim-shed.
+	if err := os.WriteFile(r.sourcePath, []byte(rewriteTrimFixtureFile(addrs)), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	path, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seqBefore, _ := readReloadSeq(path)
+	bw.Clients.Store(0)
+	deadline := time.Now().Add(15 * time.Second)
+	for {
+		r.drainMu.Lock()
+		_, stillDraining := r.drainingProxies[addrs[2]]
+		r.drainMu.Unlock()
+		if !stillDraining {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("drain did not complete in time")
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+
+	seqAfter, _ := readReloadSeq(path)
+	if seqAfter == seqBefore {
+		t.Fatalf("a re-added NON-shed proxy's drain must still re-trigger a reload even under a binding cap: seq stayed at %d", seqBefore)
+	}
+}
+
+// rewriteTrimFixtureFile renders the given ProxySettings.Key() identities back
+// into the plain "host:port:user:password" lines trimFixture's source file
+// uses. trimFixture always uses user "u" password "p".
+func rewriteTrimFixtureFile(addrs []string) string {
+	out := ""
+	for _, a := range addrs {
+		host, _ := connect.SplitProxyKey(a)
+		out += host + ":u:p\n"
+	}
+	return out
+}

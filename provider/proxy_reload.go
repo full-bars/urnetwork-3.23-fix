@@ -228,7 +228,15 @@ type ProxyReloader struct {
 	directDone      chan struct{}                 // closed when direct goroutine exits; nil when not running
 	drainingProxies map[string]context.CancelFunc // proxies draining active sessions
 	drainMu         sync.Mutex
-	networkID       string
+	// trimShed records addresses currently held out of the running pool by the
+	// trim cap (operator or automatic OOM). It outlives a single reload() call
+	// so the drain-completion goroutine, which wakes up independently later,
+	// can tell "this address was shed by trim" from "some other proxy's drain
+	// completed while a cap happens to bind" -- only the former must skip the
+	// re-trigger. Guarded by drainMu. Cleared when the address is admitted or
+	// launched again.
+	trimShed  map[string]bool
+	networkID string
 }
 
 // proxyLaunches records, per proxy address, the launch generation that
@@ -368,6 +376,33 @@ func (r *ProxyReloader) isDraining(addr string) bool {
 	defer r.drainMu.Unlock()
 	_, ok := r.drainingProxies[addr]
 	return ok
+}
+
+// markTrimShed records addr as currently held out by the trim cap, so the
+// drain-completion goroutine can single it out later (see the trimShed field
+// doc).
+func (r *ProxyReloader) markTrimShed(addr string) {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	if r.trimShed == nil {
+		r.trimShed = map[string]bool{}
+	}
+	r.trimShed[addr] = true
+}
+
+// isTrimShed reports whether addr is currently held out by the trim cap.
+func (r *ProxyReloader) isTrimShed(addr string) bool {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	return r.trimShed[addr]
+}
+
+// clearTrimShed drops addr's trim-shed mark: it is being admitted or launched
+// again, so it is no longer held out.
+func (r *ProxyReloader) clearTrimShed(addr string) {
+	r.drainMu.Lock()
+	defer r.drainMu.Unlock()
+	delete(r.trimShed, addr)
 }
 
 // reconciliationReloadInterval is how often runReloadReconciler forces a
@@ -784,6 +819,7 @@ func (r *ProxyReloader) reload() {
 					removed = append(removed, addr)
 					removedSet[addr] = true
 					trimShedSet[addr] = true
+					r.markTrimShed(addr)
 					shedCount++
 					// Do NOT delete from desiredSet: pruning against a trim-mutated
 					// set erases grade/health history. Mark a short
@@ -896,14 +932,19 @@ func (r *ProxyReloader) reload() {
 			desired, err := currentDesiredProxyIdentities()
 			if err == nil && desired[proxyAddr] {
 				// A drained proxy that is still desired is normally re-added
-				// (credential rotation). But a TRIM-SHED proxy also stays in
-				// the desired set on purpose (to keep its grade/health state),
-				// so it must not re-trigger here: under a binding cap the next
-				// reload would only hold it again, and each shed proxy that
-				// finished draining would burn a reload cycle and log a false
-				// "re-added while draining" line. The next natural reload
-				// admits it when the cap allows.
-				if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(desired) > trimCap {
+				// (credential rotation, or a source flap that removed and
+				// re-added it while it drained). But a TRIM-SHED proxy also
+				// stays in the desired set on purpose (to keep its grade/health
+				// state), so IT must not re-trigger here: under a binding cap
+				// the next reload would only hold it again, and each shed
+				// proxy that finished draining would burn a reload cycle and
+				// log a false "re-added while draining" line. Checking THIS
+				// address's shed mark (not just "some cap happens to bind")
+				// matters: a non-shed proxy re-added while draining under a
+				// binding cap must still re-trigger promptly rather than wait
+				// for the reconciler's next tick. The next natural reload
+				// admits a shed proxy when the cap allows.
+				if r.isTrimShed(proxyAddr) {
 					tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(proxyAddr))
 				} else if reloadPath, err := proxyReloadPath(); err == nil {
 					if err := writeReloadTrigger(reloadPath); err == nil {
@@ -951,6 +992,11 @@ func (r *ProxyReloader) reload() {
 			tlog("[proxy] skip add %s: still draining\n", proxyKeyDisplay(key))
 			continue
 		}
+		// This address is being admitted or launched again (the cap raised
+		// enough to let it back in, or it was never trim-shed): it is no
+		// longer held out, so the next drain of it (if any) must re-trigger
+		// normally instead of being mistaken for a still-standing shed.
+		r.clearTrimShed(key)
 		if sourceOf[key] == "url" {
 			urlAdded++
 		}
