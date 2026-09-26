@@ -674,9 +674,10 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			}
 			continue
 		case <-fullTicker.C:
-			// Track the peak running count for the OOM-aware start cap. It runs
-			// whether or not self-heal is on: it is bookkeeping, not an actuator.
-			oomCapUpdatePeak(connect.ProxyHealthCount())
+			// Track the peak running count and heartbeat for the OOM-aware start
+			// cap. It runs whether or not self-heal is on: it is bookkeeping, not
+			// an actuator.
+			oomCapUpdatePeak(connect.ProxyHealthCount(), time.Now())
 			// Real free memory, independent of the pressure score and of
 			// self-heal: log when the box gets short and when it recovers.
 			avail := hostAvailMiB() // one reading, used for both the decision and the line

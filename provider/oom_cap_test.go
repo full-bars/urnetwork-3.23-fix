@@ -251,11 +251,44 @@ func TestOOMMarkerWithPeak(t *testing.T) {
 	}
 }
 
+// An OOM after 72h of uptime must still be blamed: the heartbeat, not the
+// frozen StartedUnix, is what oomKilledSinceMarker ages. Before the fix this
+// was silently dropped: a provider running 96h that got OOM-killed came back
+// to a "clean start" because the marker looked more than 72h old.
+func TestOOMCapBlamesAnOOMAfter72hOfUptime(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+
+	oomCapStartup(1000, 1000, "boot-A", 5, oomT0)
+	// The provider stays up and the pressure loop keeps the heartbeat fresh,
+	// well past the 72h mark that would make a heartbeat-less marker stale.
+	oomCapUpdatePeak(1000, oomT0.Add(95*time.Hour))
+
+	lines := oomCapStartup(1000, 800, "boot-A", 6, oomT0.Add(96*time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "OOM kill since the last start") {
+		t.Fatalf("an OOM after 96h of heartbeat-refreshed uptime must be blamed, got %q", lines)
+	}
+}
+
+// A marker with no heartbeat (written before this field existed, or a process
+// that died before its first hourly refresh) still falls back to StartedUnix,
+// so the pre-existing staleness behavior for old markers is unchanged.
+func TestOOMCapMarkerWithoutHeartbeatFallsBackToStartedUnix(t *testing.T) {
+	fresh := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Unix()}
+	if !oomKilledSinceMarker(fresh, "boot-A", 3, oomT0.Add(71*time.Hour)) {
+		t.Fatalf("within 71h of StartedUnix with no heartbeat must still be blamed")
+	}
+	stale := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Unix()}
+	if oomKilledSinceMarker(stale, "boot-A", 3, oomT0.Add(80*time.Hour)) {
+		t.Fatalf("80h past StartedUnix with no heartbeat must still be stale")
+	}
+}
+
 func TestOOMCapUpdatePeakPersists(t *testing.T) {
 	withTempHome(t)
 	oomCapRecordStart(2000, "boot-A", 0, oomT0)
-	oomCapUpdatePeak(3800)
-	oomCapUpdatePeak(1000) // lower: ignored
+	oomCapUpdatePeak(3800, oomT0)
+	oomCapUpdatePeak(1000, oomT0) // lower: ignored
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	// 80% of the 3800 peak, not of the 2000 launched.
 	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {

@@ -120,7 +120,21 @@ type oomMarker struct {
 	OOMKills    int64  `json:"oom_kills"` // /proc/vmstat oom_kill at that start
 	Proxies     int    `json:"proxies"`   // proxies launched at that start
 	StartedUnix int64  `json:"started_unix"`
+	// LastSeenUnix is a heartbeat refreshed by the periodic pressure-loop path
+	// (oomCapUpdatePeak) at most once per oomHeartbeatInterval, while this
+	// process is alive. StartedUnix alone freezes at process start, so a
+	// long-running provider's marker looked stale (see oomMarkerMaxAge) and any
+	// OOM kill after oomMarkerMaxAge of uptime was silently never blamed. Zero
+	// means an old marker written before this field existed; age-checks fall
+	// back to StartedUnix in that case.
+	LastSeenUnix int64 `json:"last_seen_unix,omitempty"`
 }
+
+// oomHeartbeatInterval bounds how often oomCapUpdatePeak refreshes
+// LastSeenUnix: often enough that oomMarkerMaxAge age-checks the process's
+// actual uptime, not so often that a routine 30s pressure tick becomes a disk
+// write.
+const oomHeartbeatInterval = time.Hour
 
 // oomKilledSinceMarker reports whether an OOM kill happened since the previous
 // start. A different boot id means a reboot (the counter reset), which is never
@@ -128,14 +142,22 @@ type oomMarker struct {
 // oomMarkerMaxAge is stale: the box may have been down for days (or running with
 // the cap off) while ANY other workload on the same boot bumped the global
 // oom_kill counter, and the marker's proxy count no longer describes this
-// process's load.
+// process's load. Staleness is judged against the heartbeat (how recently this
+// process was last seen running), not StartedUnix (when it started): a
+// long-running process refreshes the heartbeat and is never blamed for a kill
+// that happened while it was legitimately still up. A marker with no heartbeat
+// (written before this field existed) falls back to StartedUnix.
 const oomMarkerMaxAge = 72 * time.Hour
 
 func oomKilledSinceMarker(m *oomMarker, bootID string, oomKills int64, now time.Time) bool {
 	if m == nil || bootID == "" || m.BootID != bootID || oomKills < 0 || m.OOMKills < 0 {
 		return false
 	}
-	if m.StartedUnix > 0 && now.Sub(time.Unix(m.StartedUnix, 0)) > oomMarkerMaxAge {
+	lastSeen := m.LastSeenUnix
+	if lastSeen == 0 {
+		lastSeen = m.StartedUnix
+	}
+	if lastSeen > 0 && now.Sub(time.Unix(lastSeen, 0)) > oomMarkerMaxAge {
 		return false
 	}
 	return oomKills > m.OOMKills
@@ -328,9 +350,24 @@ func oomMarkerWithPeak(m oomMarker, running int) (oomMarker, bool) {
 	return m, true
 }
 
-// oomCapUpdatePeak records a higher running count in this start's marker. Cheap:
-// it only writes when the peak rises.
-func oomCapUpdatePeak(running int) {
+// oomMarkerWithHeartbeat refreshes the marker's LastSeenUnix to now when it has
+// never been set or oomHeartbeatInterval has passed since it was last
+// refreshed, and reports whether it changed. Bounding the rate keeps this off
+// the hot path of the 30s pressure tick that calls it.
+func oomMarkerWithHeartbeat(m oomMarker, now time.Time) (oomMarker, bool) {
+	if m.LastSeenUnix != 0 && now.Sub(time.Unix(m.LastSeenUnix, 0)) < oomHeartbeatInterval {
+		return m, false
+	}
+	m.LastSeenUnix = now.Unix()
+	return m, true
+}
+
+// oomCapUpdatePeak records a higher running count in this start's marker and
+// refreshes its heartbeat at a bounded rate, so a long-running provider's
+// marker is never judged stale by oomKilledSinceMarker just because it started
+// more than oomMarkerMaxAge ago. Cheap: it only writes when the peak rises or
+// the heartbeat is due.
+func oomCapUpdatePeak(running int, now time.Time) {
 	if oomCapMode() == oomCapOff {
 		return
 	}
@@ -343,7 +380,9 @@ func oomCapUpdatePeak(running int) {
 	if !oomReadJSON(path, &m) {
 		return
 	}
-	if next, changed := oomMarkerWithPeak(m, running); changed {
+	next, peakChanged := oomMarkerWithPeak(m, running)
+	next, heartbeatChanged := oomMarkerWithHeartbeat(next, now)
+	if peakChanged || heartbeatChanged {
 		_ = oomWriteJSON(path, next)
 	}
 }
