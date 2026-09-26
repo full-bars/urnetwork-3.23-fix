@@ -3,6 +3,7 @@ package urnettools
 import (
 	"errors"
 	"fmt"
+	"github.com/urnetwork/connect"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -136,12 +137,29 @@ func readHotSwapMemory(pid int) (availBytes, rssBytes int64, ok bool) {
 	if err != nil {
 		return 0, 0, false
 	}
-	availKiB, ok1 := parseKiBField(string(meminfo), "MemAvailable")
-	rssKiB, ok2 := parseKiBField(string(status), "VmRSS")
+	// The candidate runs in the PROVIDER's cgroup (not this tool's), so bound the
+	// host figure by that cgroup's own headroom.
+	headroom, hok := connect.CgroupMemoryHeadroomBytesForPID(pid)
+	return composeHotSwapMemory(string(meminfo), string(status), headroom, hok)
+}
+
+// composeHotSwapMemory turns /proc/meminfo and /proc/<pid>/status text plus the
+// provider's cgroup headroom into (available, RSS). Available is the smaller of
+// host MemAvailable and the cgroup headroom (when one exists): fleet units run
+// under MemoryMax/MemoryHigh, so host memory can be plentiful while the cgroup
+// the two providers would share has no room. ok is false when either /proc field
+// is missing.
+func composeHotSwapMemory(meminfo, status string, cgroupHeadroom int64, hasCgroupHeadroom bool) (availBytes, rssBytes int64, ok bool) {
+	availKiB, ok1 := parseKiBField(meminfo, "MemAvailable")
+	rssKiB, ok2 := parseKiBField(status, "VmRSS")
 	if !ok1 || !ok2 {
 		return 0, 0, false
 	}
-	return availKiB << 10, rssKiB << 10, true
+	availBytes = availKiB << 10
+	if hasCgroupHeadroom && cgroupHeadroom < availBytes {
+		availBytes = cgroupHeadroom
+	}
+	return availBytes, rssKiB << 10, true
 }
 
 // parseKiBField finds "<key>: <n> kB" in /proc/meminfo or /proc/<pid>/status

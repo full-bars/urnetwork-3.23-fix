@@ -3,6 +3,7 @@ package connect
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -127,6 +128,18 @@ func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok
 		}
 		dir = filepath.Dir(dir)
 	}
+}
+
+// CgroupMemoryHeadroomBytesForPID is CgroupMemoryHeadroomBytes for another
+// process (its cgroup comes from /proc/<pid>/cgroup): the free room before the
+// tightest cgroup v2 limit that process runs under. A hotswap candidate shares
+// the running provider's cgroup, not the updater's.
+func CgroupMemoryHeadroomBytesForPID(pid int) (int64, bool) {
+	self, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return 0, false
+	}
+	return cgroupV2MemoryHeadroom("/sys/fs/cgroup", string(self))
 }
 
 // CgroupMemoryHeadroomBytes reports the free room before this process's
