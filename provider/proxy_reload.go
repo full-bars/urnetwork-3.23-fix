@@ -708,7 +708,7 @@ func (r *ProxyReloader) reload() {
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
 	// budget so the pool cannot regrow above the cap until it is raised.
-	trimCapNow, trimErr := readTrimTarget()
+	trimCapNow, trimErr := effectiveTrimCap()
 	trimChanged := false
 	if trimErr == nil {
 		// Acknowledge a new or cleared operator cap once, so the log shows the

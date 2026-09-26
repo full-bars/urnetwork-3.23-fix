@@ -13,11 +13,10 @@ import (
 // since the previous start, the next start should run fewer proxies instead of
 // the same load that just died, and relax slowly once it has been stable.
 //
-// This file is SHADOW ONLY for now: it decides and logs what it would do
-// ("[oomcap] would ...") but nothing enforces the cap yet. Enforcement must be
-// wired through the effective cap (min of the operator trim and this) and gated
-// by URNETWORK_OOM_CAP=on once the shadow decisions have been reviewed on real
-// boxes. The decision logic below is pure so it can be tested without a kernel.
+// It defaults to SHADOW mode: it decides and logs what it would do, and only
+// URNETWORK_OOM_CAP=on enforces the cap, through effectiveTrimCap (the tightest
+// of the operator trim and this cap). The decision logic below is pure so it can
+// be tested without a kernel.
 
 const (
 	oomCapReduceFactor   = 0.8            // next cap = 80% of the proxies that were running at death
@@ -28,6 +27,48 @@ const (
 	oomCapRelaxNumerator = 11             // +10% per clean window
 	oomCapRelaxDenom     = 10
 )
+
+type oomCapModeKind int
+
+const (
+	oomCapShadow oomCapModeKind = iota // default: decide and log, enforce nothing
+	oomCapOff
+	oomCapOn
+)
+
+// oomCapMode reads URNETWORK_OOM_CAP (off|shadow|on). Anything else, including
+// unset, is shadow: the safe default is to log what would happen.
+func oomCapMode() oomCapModeKind {
+	switch strings.ToLower(strings.TrimSpace(os.Getenv("URNETWORK_OOM_CAP"))) {
+	case "off", "0", "false", "no":
+		return oomCapOff
+	case "on", "1", "true", "yes":
+		return oomCapOn
+	}
+	return oomCapShadow
+}
+
+// effectiveTrimCap is the cap the launch and reload paths enforce: the tightest
+// positive of the operator's trim file (never written by the auto logic) and the
+// automatic OOM cap, which counts only in "on" mode. 0 means no cap.
+func effectiveTrimCap() (int, error) {
+	operator, err := readTrimTarget()
+	if err != nil {
+		return 0, err
+	}
+	if oomCapMode() != oomCapOn {
+		return operator, nil
+	}
+	var st oomCapState
+	if dir, derr := oomCapDir(); derr == nil {
+		oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
+	}
+	switch {
+	case st.Cap > 0 && (operator == 0 || st.Cap < operator):
+		return st.Cap, nil
+	}
+	return operator, nil
+}
 
 // oomMarker is written at every start and read at the next one.
 type oomMarker struct {
@@ -167,19 +208,24 @@ func readBootID() string {
 	return strings.TrimSpace(string(b))
 }
 
-// oomCapStartup runs once per start (SHADOW ONLY): reads the previous marker,
-// decides what an OOM-aware cap would do, persists the state and this start's
-// marker, and returns the log lines. It never changes the proxies launched.
-func oomCapStartup(desired, launching int, bootID string, oomKills int64, now time.Time) []string {
+// oomCapDecide runs once per start BEFORE the launch selection: it reads the
+// previous marker, decides what an OOM-aware cap does, persists the cap state and
+// returns the log lines. In "on" mode the persisted cap is then enforced by
+// effectiveTrimCap for this very start; otherwise it is only reported.
+func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []string {
+	mode := oomCapMode()
+	if mode == oomCapOff {
+		return nil
+	}
 	dir, err := oomCapDir()
 	if err != nil {
 		return nil
 	}
 	_ = os.MkdirAll(dir, 0o700)
-	markerPath, statePath := filepath.Join(dir, "run.marker"), filepath.Join(dir, "oom_cap.json")
+	statePath := filepath.Join(dir, "oom_cap.json")
 
 	var prev oomMarker
-	havePrev := oomReadJSON(markerPath, &prev)
+	havePrev := oomReadJSON(filepath.Join(dir, "run.marker"), &prev)
 	var st oomCapState
 	oomReadJSON(statePath, &st)
 
@@ -193,11 +239,36 @@ func oomCapStartup(desired, launching int, bootID string, oomKills int64, now ti
 		msg = "no OOM since the last start"
 	}
 	_ = oomWriteJSON(statePath, st)
-	_ = oomWriteJSON(markerPath, oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix()})
 
 	if d.Action == "none" || d.Action == "" {
 		return nil
 	}
-	return []string{"[oomcap] shadow: " + msg + ": would " + d.Action + " the automatic start cap " +
-		strconv.Itoa(d.From) + " -> " + strconv.Itoa(d.To) + " (not enforced; running " + strconv.Itoa(launching) + " proxies)"}
+	verb, tail := "shadow: "+msg+": would ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
+	if mode == oomCapOn {
+		verb, tail = "applied: "+msg+": ", ""
+	}
+	return []string{"[oomcap] " + verb + d.Action + " the automatic start cap " +
+		strconv.Itoa(d.From) + " -> " + strconv.Itoa(d.To) + tail}
+}
+
+// oomCapRecordStart writes this start's marker (after the launch selection, so
+// it records what was actually launched).
+func oomCapRecordStart(launching int, bootID string, oomKills int64, now time.Time) {
+	if oomCapMode() == oomCapOff {
+		return
+	}
+	dir, err := oomCapDir()
+	if err != nil {
+		return
+	}
+	_ = os.MkdirAll(dir, 0o700)
+	_ = oomWriteJSON(filepath.Join(dir, "run.marker"), oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix()})
+}
+
+// oomCapStartup is decide + record in one call (tests, and callers that do not
+// need the decision to take effect before their own launch selection).
+func oomCapStartup(desired, launching int, bootID string, oomKills int64, now time.Time) []string {
+	lines := oomCapDecide(desired, bootID, oomKills, now)
+	oomCapRecordStart(launching, bootID, oomKills, now)
+	return lines
 }

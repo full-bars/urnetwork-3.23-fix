@@ -1047,7 +1047,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		// An operator trim cap overrides the AIMD operating point: never grow
 		// the URL pool target above the running-proxy cap (they fight otherwise,
 		// burning fetch/probe work on proxies that can never launch).
-		if tc, _ := readTrimTarget(); tc > 0 && next > tc {
+		if tc, _ := effectiveTrimCap(); tc > 0 && next > tc {
 			next = tc
 		}
 		if next != urlState.TargetPoolSize {
