@@ -76,6 +76,17 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 	}
 }
 
+// CgroupMemoryCeiling reports the tightest cgroup v2 memory.max/memory.high
+// limiting this process, and whether any limit exists (unlike
+// DetectEffectiveRAMLimitBytes it never falls back to MemTotal).
+func CgroupMemoryCeiling() (int64, bool) {
+	self, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return 0, false
+	}
+	return cgroupV2MemoryCeiling("/sys/fs/cgroup", string(self))
+}
+
 // DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func DetectEffectiveRAMLimitBytes() int64 {

@@ -3823,6 +3823,24 @@ func provide(opts docopt.Opts) {
 		tlog("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
 			trimCap, len(launchSettings), len(allProxySettings), len(held))
 	}
+	{
+		// Say once, at startup, when the limits this process runs under are short
+		// for the pool it is about to launch (see resource_config_warn.go).
+		in := resourceConfigInput{
+			Proxies:     len(launchSettings),
+			GOGCEnv:     os.Getenv("GOGC") != "",
+			AutoProfile: os.Getenv("URNETWORK_PROFILE") == "auto",
+		}
+		if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
+			in.GoMemLimit = limit
+		}
+		if ceiling, ok := connect.CgroupMemoryCeiling(); ok {
+			in.CgroupCeiling = ceiling
+		}
+		for _, w := range resourceConfigWarnings(in) {
+			tlog("[proxy][resources] warning: %s\n", w)
+		}
+	}
 	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(launchSettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
 		len(launchSettings), warmCount, renewableCount, coldCount)
