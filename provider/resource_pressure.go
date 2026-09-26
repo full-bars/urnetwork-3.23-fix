@@ -518,6 +518,34 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 	}
 }
 
+// logGCGovernorChange logs a governor GOGC change. Every writer path uses it,
+// so an operator can always tell why GOGC moved (the 10s subtick and the
+// self-heal-off tick used to change it silently).
+func logGCGovernorChange(prevGOGC int, state *gcGovernorState) {
+	if state.currentGOGC != prevGOGC {
+		tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
+			state.lastTightenAction, state.lastHeapFrac, state.currentGOGC)
+	}
+}
+
+// gcSubtickStep is the fast heap-only path: tighten on a raw live-heap spike.
+// It is host-blind (hostAvail -1) and never releases.
+func gcSubtickStep(heapFrac float64, state *gcGovernorState) {
+	prev := state.currentGOGC
+	gcGovernor(heapFrac, -1, 0, false, state)
+	logGCGovernorChange(prev, state)
+}
+
+// gcSelfHealOffTick runs on the full-sweep cadence when self-heal is off. The
+// governor is a memory-safety actuator independent of self-heal, so this tick
+// must still give it the host+heap view and the right to RELEASE; skipping it
+// left a tightened GOGC in place for the rest of the process's life.
+func gcSelfHealOffTick(heapFrac float64, hostAvail int64, state *gcGovernorState) {
+	prev := state.currentGOGC
+	gcGovernor(heapFrac, hostAvail, 0, true, state)
+	logGCGovernorChange(prev, state)
+}
+
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
 // the score, publishes it, and logs on regime changes. When self-heal is
 // off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
@@ -584,7 +612,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// hostAvail makes the host layer inert, and canRelease=false keeps it
 			// from touching the calm counter.
 			if gcAdaptiveEnabled() {
-				gcGovernor(liveHeapFrac(), -1, 0, false, &gcState)
+				gcSubtickStep(liveHeapFrac(), &gcState)
 			}
 			continue
 		case <-fullTicker.C:
@@ -597,6 +625,11 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// opened after self-healing is disabled don't keep the reduced
 			// buffers from an earlier pressure episode.
 			applyPressureMemoryBudget(0)
+			// The GC governor is independent of self-heal: keep giving it the
+			// full host+heap view so a tightened level can release.
+			if gcAdaptiveEnabled() {
+				gcSelfHealOffTick(liveHeapFrac(), hostAvailMiB(), &gcState)
+			}
 			continue
 		}
 		sample := collectPressureSample()
@@ -611,10 +644,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
 		prevGOGC := gcState.currentGOGC
 		gcGovernor(sample.HeapFrac, hostAvailMiB(), comps["psi_cpu"], true, &gcState)
-		if gcState.currentGOGC != prevGOGC {
-			tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
-				gcState.lastTightenAction, gcState.lastHeapFrac, gcState.currentGOGC)
-		}
+		logGCGovernorChange(prevGOGC, &gcState)
 
 		// MemoryBudget actuator (#6): scale the per-connection memory-dominant
 		// settings (queue caps, receive windows, socket buffers) down proportionally
