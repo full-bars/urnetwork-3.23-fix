@@ -3808,7 +3808,7 @@ func provide(opts docopt.Opts) {
 	// otherwise it is reported as a shadow decision; see oom_cap.go).
 	bootID, oomKills := readBootID(), readVmstatOOMKills()
 	for _, line := range oomCapDecide(len(allProxySettings), bootID, oomKills, time.Now()) {
-		tlog("%s\n", line)
+		importantLogf("%s\n", line)
 	}
 	launchSettings := allProxySettings
 	if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
@@ -3817,7 +3817,7 @@ func provide(opts docopt.Opts) {
 		var held []*connect.ProxySettings
 		launchSettings, held = startupTrimSelection(allProxySettings, trimCap, proxyState.Proxies, gradeFor,
 			func(key string) float64 { return proxyEarningsScore(key, time.Now()) })
-		tlog("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
+		importantLogf("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
 			trimCap, len(launchSettings), len(allProxySettings), len(held))
 	}
 	{
@@ -3835,7 +3835,7 @@ func provide(opts docopt.Opts) {
 			in.CgroupCeiling = ceiling
 		}
 		for _, w := range resourceConfigWarnings(in) {
-			tlog("[proxy][resources] warning: %s\n", w)
+			importantLogf("[proxy][resources] warning: %s\n", w)
 		}
 	}
 	// Record what this start actually launched, for the next start's decision.

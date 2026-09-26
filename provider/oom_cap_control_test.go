@@ -22,6 +22,9 @@ func TestOOMCapControlKeyIsRegistered(t *testing.T) {
 }
 
 func TestOOMCapControlValueIsValidated(t *testing.T) {
+	// A successful set logs an acknowledgement to the disk event log; keep that
+	// (and everything else the handler touches) in a temp home.
+	withTempHome(t)
 	state := newControlState()
 	for _, ok := range []string{"on", "off", "shadow", "ON", "Shadow"} {
 		resp := handleControlRequest(state, controlRequest{Cmd: "set", Key: "oom_cap", Value: ok})

@@ -720,9 +720,9 @@ func (r *ProxyReloader) reload() {
 				if prevCap > 0 {
 					prev = strconv.Itoa(prevCap)
 				}
-				tlog("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying\n", trimCapNow, prev, len(running), len(desiredSet))
+				importantLogf("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying\n", trimCapNow, prev, len(running), len(desiredSet))
 			} else {
-				tlog("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
+				importantLogf("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
 				ledgerRecord(ledgerEntry{Actor: "trim", Action: "cleared", From: prevCap, To: 0, Mode: "operator",
 					Reason: fmt.Sprintf("pool may regrow toward %d desired", len(desiredSet))})
 			}
@@ -801,7 +801,7 @@ func (r *ProxyReloader) reload() {
 			added = kept
 		}
 		if shedCount > 0 || dropped > 0 || trimChanged {
-			tlog("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+			importantLogf("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		}
 		if trimChanged {
 			ledgerRecord(ledgerEntry{Actor: "trim", Action: "applied", From: len(running), To: trimCap, Mode: "operator",
