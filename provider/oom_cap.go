@@ -74,26 +74,44 @@ func oomCapMode() oomCapModeKind {
 	return mode
 }
 
-// effectiveTrimCap is the cap the launch and reload paths enforce: the tightest
-// positive of the operator's trim file (never written by the auto logic) and the
-// automatic OOM cap, which counts only in "on" mode. 0 means no cap.
-func effectiveTrimCap() (int, error) {
+// trimCapOperator and trimCapOOM name the source of the binding cap.
+const (
+	trimCapOperator = "operator"
+	trimCapOOM      = "oomcap"
+)
+
+// effectiveTrimCapSource is the cap the launch and reload paths enforce and the
+// source that binds: the tightest positive of the operator's trim file (never
+// written by the auto logic) and the automatic OOM cap, which counts only in
+// "on" mode. cap 0 means no cap and the source is "". Logs and the action ledger
+// use the source so a shed driven by the automatic cap is not attributed to the
+// operator.
+func effectiveTrimCapSource() (int, string, error) {
 	operator, err := readTrimTarget()
 	if err != nil {
-		return 0, err
+		return 0, "", err
 	}
-	if oomCapMode() != oomCapOn {
-		return operator, nil
-	}
-	var st oomCapState
-	if dir, derr := oomCapDir(); derr == nil {
-		oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
+	auto := 0
+	if oomCapMode() == oomCapOn {
+		var st oomCapState
+		if dir, derr := oomCapDir(); derr == nil {
+			oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
+		}
+		auto = st.Cap
 	}
 	switch {
-	case st.Cap > 0 && (operator == 0 || st.Cap < operator):
-		return st.Cap, nil
+	case auto > 0 && (operator == 0 || auto < operator):
+		return auto, trimCapOOM, nil
+	case operator > 0:
+		return operator, trimCapOperator, nil
 	}
-	return operator, nil
+	return 0, "", nil
+}
+
+// effectiveTrimCap is effectiveTrimCapSource without the source.
+func effectiveTrimCap() (int, error) {
+	c, _, err := effectiveTrimCapSource()
+	return c, err
 }
 
 // oomMarker is written at every start and read at the next one.
