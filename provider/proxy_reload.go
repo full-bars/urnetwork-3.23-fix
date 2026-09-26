@@ -886,7 +886,17 @@ func (r *ProxyReloader) reload() {
 
 			desired, err := currentDesiredProxyIdentities()
 			if err == nil && desired[proxyAddr] {
-				if reloadPath, err := proxyReloadPath(); err == nil {
+				// A drained proxy that is still desired is normally re-added
+				// (credential rotation). But a TRIM-SHED proxy also stays in
+				// the desired set on purpose (to keep its grade/health state),
+				// so it must not re-trigger here: under a binding cap the next
+				// reload would only hold it again, and each shed proxy that
+				// finished draining would burn a reload cycle and log a false
+				// "re-added while draining" line. The next natural reload
+				// admits it when the cap allows.
+				if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(desired) > trimCap {
+					tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(proxyAddr))
+				} else if reloadPath, err := proxyReloadPath(); err == nil {
 					if err := writeReloadTrigger(reloadPath); err == nil {
 						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(proxyAddr))
 					}
