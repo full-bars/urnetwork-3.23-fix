@@ -363,6 +363,12 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	}
 }
 
+func init() {
+	// The auto-profile tiers must not override a persisted `urnet-tools set
+	// gogc`: precedence is env var > persisted control value > tier default.
+	connect.AutoTuneOperatorPinned = persistedRuntimeTuningActive
+}
+
 // applyTurboMemoryLimit sets GOMEMLIMIT to 80% of effective RAM for the
 // turbo profiles, unless an operator-explicit value already wins: the
 // GOMEMLIMIT env var, --max-memory, or a persisted control-socket

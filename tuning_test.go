@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"runtime/debug"
 	"testing"
 )
 
@@ -83,4 +84,53 @@ func TestSelectTierThresholds(t *testing.T) {
 			t.Errorf("%s: selectTier(%d) = %q, want %q", c.name, c.ram, got, c.want)
 		}
 	}
+}
+
+// ApplyAutoTuning runs once per proxy server. The per-proxy settings (buffers,
+// contract floor) are right to reapply, but GOGC is PROCESS-wide: resetting it
+// on every launch silently reverts whatever the GC governor (or an operator
+// `set gogc`) chose since the previous launch. Apply the tier's GOGC once.
+func TestApplyAutoTuningSetsGCPercentOncePerProcess(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	autoGCPercentApplied.Store(false)
+	orig := debug.SetGCPercent(100)
+	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false) })
+
+	cs, ns := DefaultClientSettings(), DefaultLocalUserNatSettings()
+	applyTier1(cs, ns, 1<<30)
+	if got := readGCPercent(); got != 50 {
+		t.Fatalf("first apply: GOGC=%d, want the tier value 50", got)
+	}
+
+	// A governor (or operator) tightens GC after the first launch.
+	debug.SetGCPercent(25)
+	applyTier1(cs, ns, 1<<30)
+	if got := readGCPercent(); got != 25 {
+		t.Fatalf("second launch reset GOGC to %d, want the governor's 25 left alone", got)
+	}
+}
+
+// A persisted operator/control gogc must win over the tier default even on the
+// first launch.
+func TestApplyAutoTuningSkipsGCPercentWhenOperatorPinned(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	autoGCPercentApplied.Store(false)
+	orig := debug.SetGCPercent(80)
+	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false); AutoTuneOperatorPinned = nil })
+
+	AutoTuneOperatorPinned = func(key string) bool { return key == "gogc" }
+	applyTier1(DefaultClientSettings(), DefaultLocalUserNatSettings(), 1<<30)
+	if got := readGCPercent(); got != 80 {
+		t.Fatalf("operator-pinned gogc was overridden to %d", got)
+	}
+}
+
+// readGCPercent reads the current GOGC without leaving it changed
+// (SetGCPercent returns the previous value).
+func readGCPercent() int {
+	cur := debug.SetGCPercent(100)
+	debug.SetGCPercent(cur)
+	return cur
 }
