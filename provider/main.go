@@ -471,21 +471,11 @@ func readMemAvailableMiB() int64 {
 func readCgroupAvailableMiB() int64 {
 	const oneTiB = int64(1) << 40
 
-	// cgroup v2
-	maxData, maxErr := os.ReadFile("/sys/fs/cgroup/memory.max")
-	currData, currErr := os.ReadFile("/sys/fs/cgroup/memory.current")
-	if maxErr == nil && currErr == nil {
-		maxStr := strings.TrimSpace(string(maxData))
-		if maxStr != "max" {
-			limit, err1 := strconv.ParseInt(maxStr, 10, 64)
-			curr, err2 := strconv.ParseInt(strings.TrimSpace(string(currData)), 10, 64)
-			if err1 == nil && err2 == nil && limit > 0 && limit < oneTiB {
-				if avail := (limit - curr) / 1024 / 1024; avail >= 0 {
-					return avail
-				}
-				return 0
-			}
-		}
+	// cgroup v2: the process's own cgroup and its ancestors (systemd MemoryMax=
+	// and MemoryHigh= live there, not at the mount root, which only a
+	// container's own cgroup makes meaningful).
+	if room, ok := connect.CgroupMemoryHeadroomBytes(); ok && room < oneTiB {
+		return room / 1024 / 1024
 	}
 
 	// cgroup v1
