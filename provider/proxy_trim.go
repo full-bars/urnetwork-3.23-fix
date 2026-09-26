@@ -70,6 +70,17 @@ func writeTrimTarget(n int) error {
 	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
 }
 
+// trimmedConfiguredCount is the number of proxies this provider will actually
+// run: the desired count, capped by the operator trim target. The status line
+// uses it as its denominator, so a healthy box trimmed to N reads N/N, not
+// N/desired (which reads "critical" and teaches operators to ignore it).
+func trimmedConfiguredCount(desired int) int {
+	if cap, err := readTrimTarget(); err == nil && cap > 0 && desired > cap {
+		return cap
+	}
+	return desired
+}
+
 // healthRank orders the shed priority by last-known health (lower = shed first),
 // mirroring the URL pool controller's ranking.
 func healthRank(health string) int {

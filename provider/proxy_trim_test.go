@@ -105,3 +105,33 @@ func TestReadWriteTrimTarget(t *testing.T) {
 	}
 	defer os.Remove(path)
 }
+
+// The status line's denominator is the number of proxies the provider will
+// actually run. Under an operator trim cap that is the cap, not the size of the
+// full desired list: "2001/4127 (48%) critical" on a healthy box trimmed to
+// 2000 taught operators to ignore the status word.
+func TestTrimmedConfiguredCount(t *testing.T) {
+	withTempHome(t)
+
+	if got := trimmedConfiguredCount(4127); got != 4127 {
+		t.Fatalf("no cap: got %d, want 4127", got)
+	}
+	if err := writeTrimTarget(2000); err != nil {
+		t.Fatal(err)
+	}
+	if got := trimmedConfiguredCount(4127); got != 2000 {
+		t.Fatalf("cap 2000 over 4127 desired: got %d, want 2000", got)
+	}
+	if got := trimmedConfiguredCount(1500); got != 1500 {
+		t.Fatalf("cap above desired must not inflate the count: got %d, want 1500", got)
+	}
+	if got := trimmedConfiguredCount(0); got != 0 {
+		t.Fatalf("empty desired: got %d, want 0", got)
+	}
+	if err := writeTrimTarget(0); err != nil {
+		t.Fatal(err)
+	}
+	if got := trimmedConfiguredCount(4127); got != 4127 {
+		t.Fatalf("cleared cap: got %d, want 4127", got)
+	}
+}
