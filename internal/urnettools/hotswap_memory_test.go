@@ -99,3 +99,40 @@ func TestHotSwapPreflightDeclinesWhenBothProvidersWouldNotFit(t *testing.T) {
 		t.Fatalf("no PID: hotSwapPreflight = %v, want nil", err)
 	}
 }
+
+// Fleet units run under MemoryMax/MemoryHigh, so host MemAvailable can be large
+// while the provider's own cgroup has almost no room left; the candidate runs in
+// that same cgroup. The available figure must be the smaller of the two, or the
+// gate passes exactly when both providers cannot fit.
+func TestReadHotSwapMemoryIsBoundedByTheProvidersCgroupHeadroom(t *testing.T) {
+	const mib = int64(1) << 20
+	meminfo := "MemTotal: 4000000 kB\nMemAvailable: 2048000 kB\n" // 2000 MiB
+	status := "Name:\turnetwork\nVmRSS:\t 819200 kB\n"               // 800 MiB
+
+	avail, rss, ok := composeHotSwapMemory(meminfo, status, 500*mib, true)
+	if !ok || avail != 500*mib || rss != 800*mib {
+		t.Fatalf("cgroup headroom 500 MiB must bound 2000 MiB of host memory: avail=%d rss=%d ok=%v", avail>>20, rss>>20, ok)
+	}
+	// And the gate then declines: 500 MiB cannot hold a second 800 MiB provider.
+	if err := hotSwapMemoryOK(avail, rss); err == nil {
+		t.Fatal("a provider whose cgroup has 500 MiB free must not hotswap at 800 MiB RSS")
+	}
+
+	// A cgroup with more room than the host does not raise the figure.
+	avail, _, _ = composeHotSwapMemory(meminfo, status, 9000*mib, true)
+	if avail != 2000*mib {
+		t.Fatalf("host memory must still bound a roomy cgroup: %d MiB", avail>>20)
+	}
+	// No cgroup limit (or unreadable): host memory alone, as before.
+	avail, _, ok = composeHotSwapMemory(meminfo, status, 0, false)
+	if !ok || avail != 2000*mib {
+		t.Fatalf("no cgroup limit must leave the host figure: %d MiB ok=%v", avail>>20, ok)
+	}
+	// Missing fields are still "unknown", never a guess.
+	if _, _, ok := composeHotSwapMemory("MemTotal: 1 kB\n", status, 500*mib, true); ok {
+		t.Fatal("no MemAvailable must report not ok")
+	}
+	if _, _, ok := composeHotSwapMemory(meminfo, "Name:\tx\n", 500*mib, true); ok {
+		t.Fatal("no VmRSS must report not ok")
+	}
+}

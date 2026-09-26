@@ -35,6 +35,7 @@ Core Commands:
   logs [target] [N]       Show recent logs, then follow (N lines, default 250)
   dashboard               Status panel: state, settings, sources, warnings
   history [limit]         Show the provider's command audit trail
+  autopilot log [limit]   Show the capacity decisions the provider made (OOM-aware cap, trim)
 
 Performance & Tuning:
   turbo <v4|v8|off>       RAISE throughput limits for RAM-rich boxes
@@ -179,6 +180,7 @@ func buildRootCmd() *cobra.Command {
 		newRenameCmd(),
 		newGetCmd(),
 		newHistoryCmd(),
+		newAutopilotCmd(),
 		newMetricsCmd(),
 		newProfileCmd(),
 		newDashboardCmd(),
