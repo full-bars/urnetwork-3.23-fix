@@ -3820,6 +3820,16 @@ func provide(opts docopt.Opts) {
 		importantLogf("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
 			trimCap, len(launchSettings), len(allProxySettings), len(held))
 	}
+	// Prime the reload loop's change-detector with the cap (and its source)
+	// this start already saw and applied above, whether or not it bound (a
+	// cap looser than the desired count still counts as "seen"). Without this
+	// the first reload after a capped startup reads the same cap fresh and
+	// treats it as new: a duplicate "[proxy][trim] received" line and a
+	// duplicate ledger "applied" entry whose From is a partial mid-ramp
+	// running count, even though startup already logged and applied it.
+	if startupCap, startupSource, serr := effectiveTrimCapSource(); serr == nil && startupCap > 0 {
+		primeTrimCapSeen(startupCap, startupSource)
+	}
 	{
 		// Say once, at startup, when the limits this process runs under are short
 		// for the pool it is about to launch (see resource_config_warn.go).

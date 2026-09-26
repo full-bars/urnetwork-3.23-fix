@@ -145,19 +145,19 @@ func TestNoteTrimCap(t *testing.T) {
 	resetTrimCapSeen()
 	t.Cleanup(resetTrimCapSeen)
 
-	if prev, changed := noteTrimCap(0); changed || prev != 0 {
+	if prev, _, changed := noteTrimCap(0, ""); changed || prev != 0 {
 		t.Fatalf("first observation of no-cap is not a change: prev=%d changed=%v", prev, changed)
 	}
-	if prev, changed := noteTrimCap(2000); !changed || prev != 0 {
+	if prev, _, changed := noteTrimCap(2000, trimCapOperator); !changed || prev != 0 {
 		t.Fatalf("0 -> 2000: prev=%d changed=%v, want 0/true", prev, changed)
 	}
-	if _, changed := noteTrimCap(2000); changed {
+	if _, _, changed := noteTrimCap(2000, trimCapOperator); changed {
 		t.Fatalf("repeat of the same cap must not re-acknowledge")
 	}
-	if prev, changed := noteTrimCap(1500); !changed || prev != 2000 {
+	if prev, _, changed := noteTrimCap(1500, trimCapOperator); !changed || prev != 2000 {
 		t.Fatalf("2000 -> 1500: prev=%d changed=%v, want 2000/true", prev, changed)
 	}
-	if prev, changed := noteTrimCap(0); !changed || prev != 1500 {
-		t.Fatalf("1500 -> cleared: prev=%d changed=%v, want 1500/true", prev, changed)
+	if prev, prevSource, changed := noteTrimCap(0, ""); !changed || prev != 1500 || prevSource != trimCapOperator {
+		t.Fatalf("1500 -> cleared: prev=%d prevSource=%q changed=%v, want 1500/operator/true", prev, prevSource, changed)
 	}
 }

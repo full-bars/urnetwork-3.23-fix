@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -75,6 +76,71 @@ func trimFixtureRunning(t *testing.T, running int) (*ProxyReloader, []string, *a
 		t.Fatal(err)
 	}
 	return r, addrs, &cancelled
+}
+
+// A capped startup already logged and applied the cap via startupTrimSelection
+// (main.go). If the reload loop's change-detector is not primed with that same
+// cap, the first reload sees it as new and duplicates both the "received" log
+// line and the ledger "applied" entry, whose From is a partial mid-ramp
+// running count. Priming as startup does must make the first reload silent.
+func TestReload_PrimedTrimCapDoesNotDuplicateOnFirstReload(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+	// Mirror what provide() does right after the startup trim block: prime the
+	// detector with the cap and source this start already saw and applied.
+	trimCap, source, err := effectiveTrimCapSource()
+	if err != nil || trimCap != 1 {
+		t.Fatalf("effectiveTrimCapSource() = %d, %q, %v; want 1", trimCap, source, err)
+	}
+	primeTrimCapSeen(trimCap, source)
+
+	out := captureTlog(t, func() { r.reload() })
+	if strings.Contains(out, "[proxy][trim] received") {
+		t.Fatalf("a primed cap must not be re-acknowledged on the first reload, got:\n%s", out)
+	}
+	dir, _ := oomCapDir()
+	got, _ := ledgerTail(filepath.Join(dir, ledgerFileName), 10)
+	if len(got) != 0 {
+		t.Fatalf("a primed cap must not write a duplicate ledger entry, got %+v", got)
+	}
+}
+
+// An OOM cap that relaxes to 0 (see oom_cap.go oomCapOnCleanStart) is an
+// automatic decision, not an operator command. The reload's "cleared" ledger
+// entry must attribute it to the source that actually bound, not a hard-coded
+// "operator".
+func TestReload_ClearedOOMCapIsAttributedToOOM(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+
+	dir, _ := oomCapDir()
+	_ = os.MkdirAll(dir, 0o700)
+	if err := oomWriteJSON(filepath.Join(dir, "oom_cap.json"), oomCapState{Cap: 1}); err != nil {
+		t.Fatal(err)
+	}
+	// First reload sees the auto cap bind at 1 and acknowledges it.
+	r.reload()
+
+	// The auto cap clears (relaxed to the desired size, or reset directly as
+	// here); the reload must log the clear as "oomcap", not "operator".
+	if err := oomWriteJSON(filepath.Join(dir, "oom_cap.json"), oomCapState{Cap: 0}); err != nil {
+		t.Fatal(err)
+	}
+	out := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(out, "[proxy][trim] received: cap cleared") {
+		t.Fatalf("missing cleared receipt, got:\n%s", out)
+	}
+	got, _ := ledgerTail(filepath.Join(dir, ledgerFileName), 10)
+	if len(got) == 0 || got[len(got)-1].Action != "cleared" || got[len(got)-1].Mode != trimCapOOM {
+		t.Fatalf("cleared ledger entry mode = %+v, want mode %q", got, trimCapOOM)
+	}
 }
 
 func TestReload_TrimShedKeepsStateEntries(t *testing.T) {

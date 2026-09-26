@@ -33,7 +33,8 @@ func withTempHome(t *testing.T) string {
 	globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
 	t.Cleanup(func() { globalProxyFailureHistory = prevHistory })
 	trimCapSeen.Store(0)
-	t.Cleanup(func() { trimCapSeen.Store(0) })
+	trimCapSourceSeen.Store("")
+	t.Cleanup(func() { trimCapSeen.Store(0); trimCapSourceSeen.Store("") })
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
 	// Must hold the lock: doWriteReloadTrigger (scheduled by a prior test's
 	// writeReloadTrigger via time.AfterFunc) writes lastReloadTriggerTime.ts under

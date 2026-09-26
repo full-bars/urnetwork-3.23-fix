@@ -726,7 +726,8 @@ func (r *ProxyReloader) reload() {
 		// Acknowledge a new or cleared operator cap once, so the log shows the
 		// command was received before (and regardless of) what it sheds.
 		var prevCap int
-		if prevCap, trimChanged = noteTrimCap(trimCapNow); trimChanged {
+		var prevSource string
+		if prevCap, prevSource, trimChanged = noteTrimCap(trimCapNow, trimSource); trimChanged {
 			if trimCapNow > 0 {
 				prev := "none"
 				if prevCap > 0 {
@@ -734,8 +735,16 @@ func (r *ProxyReloader) reload() {
 				}
 				importantLogf("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying%s\n", trimCapNow, prev, runningProxies, len(desiredSet), autoNote)
 			} else {
+				// The cap that just cleared may have been the automatic OOM cap
+				// relaxing to zero, not an operator command: attribute the
+				// ledger entry to whichever source actually bound before, so an
+				// OOM-driven clear is not mislabeled "operator".
+				clearedMode := prevSource
+				if clearedMode == "" {
+					clearedMode = trimCapOperator
+				}
 				importantLogf("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
-				ledgerRecord(ledgerEntry{Actor: "trim", Action: "cleared", From: prevCap, To: 0, Mode: "operator",
+				ledgerRecord(ledgerEntry{Actor: "trim", Action: "cleared", From: prevCap, To: 0, Mode: clearedMode,
 					Reason: fmt.Sprintf("pool may regrow toward %d desired", len(desiredSet))})
 			}
 		}
