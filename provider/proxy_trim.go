@@ -97,7 +97,16 @@ func livePreviewText(count int) (string, error) {
 		return "", err
 	}
 	urlState, _ := readProxyURLState()
-	return trimPreviewText(state, urlState, runningProxyAddresses(), runningProxyTraffic(), count), nil
+	// The direct transport registers itself in the health registry, but a live
+	// trim never counts or sheds it (reload skips directProxyKey and the cap
+	// applies to non-direct proxies only), so the preview must not either.
+	var running []string
+	for _, k := range runningProxyAddresses() {
+		if k != directProxyKey {
+			running = append(running, k)
+		}
+	}
+	return trimPreviewText(state, urlState, running, runningProxyTraffic(), count), nil
 }
 
 // previewViaControlSocket asks the running provider what a trim would shed.

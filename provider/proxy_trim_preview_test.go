@@ -57,3 +57,33 @@ func TestControlTrimPreview_ComputedInsideTheRunningProvider(t *testing.T) {
 		}
 	}
 }
+
+// The direct transport registers itself in the health registry as "direct", but
+// the live trim never counts or sheds it (reload skips directProxyKey, and the
+// cap applies to non-direct proxies only). The preview must agree: with two
+// proxies plus direct and a cap of 2, the real trim sheds nothing, so the
+// preview must not claim it would shed one.
+func TestTrimPreviewIgnoresTheDirectTransport(t *testing.T) {
+	withTempHome(t)
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+	connect.RegisterProxy(0, "direct", directProxyKey)
+	registerBandwidthProxy(1, "10.0.0.1:1080", "10.0.0.1:1080", 0)
+	registerBandwidthProxy(2, "10.0.0.2:1080", "10.0.0.2:1080", 0)
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{
+		"10.0.0.1:1080": {Health: "up"}, "10.0.0.2:1080": {Health: "up"},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	resp := handleControlRequest(newControlState(), controlRequest{Cmd: "trim_preview", Value: "2"})
+	if !resp.OK {
+		t.Fatalf("trim_preview failed: %s", resp.Error)
+	}
+	if !strings.Contains(resp.Value, "running=2 <= 2, nothing to shed") {
+		t.Fatalf("2 proxies plus direct under a cap of 2 sheds nothing; preview said:\n%s", resp.Value)
+	}
+	if strings.Contains(resp.Value, directProxyKey+"\n") {
+		t.Fatalf("the direct transport must never appear as a shed candidate:\n%s", resp.Value)
+	}
+}
