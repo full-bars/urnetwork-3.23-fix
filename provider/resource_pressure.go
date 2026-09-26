@@ -633,6 +633,8 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	}
 	gcState.currentGOGC = gcState.baselineGOGC
 
+	var headroom headroomTracker
+	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
 	var smoothed float64
 	lastRegime := 0
 	fullTicker := time.NewTicker(pressureSampleInterval)
@@ -659,6 +661,12 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// Track the peak running count for the OOM-aware start cap. It runs
 			// whether or not self-heal is on: it is bookkeeping, not an actuator.
 			oomCapUpdatePeak(connect.ProxyHealthCount())
+			// Real free memory, independent of the pressure score and of
+			// self-heal: log when the box gets short and when it recovers.
+			avail := hostAvailMiB() // one reading, used for both the decision and the line
+			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, connect.ProxyHealthCount(), runtime.NumGoroutine()); line != "" {
+				tlog("%s\n", line)
+			}
 		}
 
 		if !resolveSelfHealEnabled(selfHealEnabled) {
