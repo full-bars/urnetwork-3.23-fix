@@ -1,6 +1,7 @@
 package main
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -50,4 +51,19 @@ func TestWithTempHomeResetsSharedProxyState(t *testing.T) {
 			t.Fatalf("acknowledged trim cap %d leaked into this test", got)
 		}
 	})
+}
+
+// A test that forgets withTempHome must still not reach the developer's real
+// home: TestMain points HOME at a throwaway directory for the whole binary.
+func TestPackageHomeIsNotTheDevelopersRealHome(t *testing.T) {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(home, "urnetwork-provider-test-home-") {
+		t.Fatalf("HOME is %q: tests would read and write the developer's real ~/.urnetwork", home)
+	}
+	if !strings.HasPrefix(globalClientJWTStore.path, home) {
+		t.Fatalf("the JWT store %q is outside the test home %q", globalClientJWTStore.path, home)
+	}
 }
