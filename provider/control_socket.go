@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -508,6 +508,33 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "ledger":
+		// The capacity-decision timeline (~/.urnetwork/autopilot.jsonl): the
+		// newest Limit entries (default 20, at most 200) as a JSON array in Value.
+		n := req.Limit
+		if n <= 0 {
+			n = 20
+		}
+		if n > 200 {
+			n = 200
+		}
+		dir, err := oomCapDir()
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		entries, err := ledgerTail(filepath.Join(dir, ledgerFileName), n)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		if entries == nil {
+			entries = []ledgerEntry{}
+		}
+		b, err := json.Marshal(entries)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		return controlResponse{OK: true, Value: string(b)}
 
 	case "trim_preview":
 		// Value is the target count. Computed here, in the provider, because

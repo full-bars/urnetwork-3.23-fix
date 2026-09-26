@@ -1,6 +1,7 @@
 package main
 
 import (
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"strings"
@@ -130,5 +131,46 @@ func TestReloadLedgersTheTrimResult(t *testing.T) {
 	again, _ := ledgerTail(filepath.Join(dir, "autopilot.jsonl"), 10)
 	if len(again) != 1 {
 		t.Fatalf("an unchanged cap must not re-ledger, got %d entries", len(again))
+	}
+}
+
+// The timeline is readable through the control socket, so `urnet-tools` or a
+// dashboard needs no file access: newest N, chronological, limit bounded.
+func TestControlLedgerReturnsTheTimeline(t *testing.T) {
+	withTempHome(t)
+	dir, _ := oomCapDir()
+	path := filepath.Join(dir, ledgerFileName)
+	for i := 0; i < 5; i++ {
+		if err := ledgerAppend(path, ledgerEntry{Actor: "trim", Action: "applied", To: i}, ledgerT0.Add(time.Duration(i)*time.Second), 1<<20); err != nil {
+			t.Fatal(err)
+		}
+	}
+	state := newControlState()
+
+	resp := handleControlRequest(state, controlRequest{Cmd: "ledger", Limit: 3})
+	if !resp.OK {
+		t.Fatalf("ledger failed: %s", resp.Error)
+	}
+	var got []ledgerEntry
+	if err := json.Unmarshal([]byte(resp.Value), &got); err != nil {
+		t.Fatalf("value is not the JSON entry list: %v\n%s", err, resp.Value)
+	}
+	if len(got) != 3 || got[0].To != 2 || got[2].To != 4 {
+		t.Fatalf("want the newest 3 in order (2,3,4), got %+v", got)
+	}
+
+	// Default limit, and an absurd limit is bounded rather than rejected.
+	if r := handleControlRequest(state, controlRequest{Cmd: "ledger"}); !r.OK {
+		t.Fatalf("default limit failed: %s", r.Error)
+	}
+	if r := handleControlRequest(state, controlRequest{Cmd: "ledger", Limit: 1 << 30}); !r.OK {
+		t.Fatalf("huge limit must be clamped, got error %s", r.Error)
+	}
+
+	// No ledger yet: an empty list, not an error.
+	withTempHome(t)
+	r := handleControlRequest(newControlState(), controlRequest{Cmd: "ledger"})
+	if !r.OK || strings.TrimSpace(r.Value) != "[]" {
+		t.Fatalf("empty ledger must answer [], got ok=%v %q", r.OK, r.Value)
 	}
 }
