@@ -73,6 +73,22 @@ func TestOOMCapNeverGoesBelowTheFloor(t *testing.T) {
 	}
 }
 
+// On a small desired pool the floor (max(oomCapMinFloor, desired/4)) can sit
+// AT OR ABOVE what actually died: desired=63 gives floor=50, and a 20-proxy
+// death would otherwise get "reduce 0 -> 50", a cap larger than the pool that
+// just got OOM-killed. That must be reported as no-op ("none"), not a reduce
+// that grows the cap right after a kill.
+func TestOOMCapNoOpWhenTheFloorIsNotTighterThanWhatDied(t *testing.T) {
+	st, d := oomCapOnOOM(oomCapState{}, 20, 63, oomT0)
+	if d.Action != "none" || st.Cap != 0 {
+		t.Fatalf("floor (50) >= proxiesAtDeath (20): got %+v state %+v, want a no-op", d, st)
+	}
+	// The no-op OOM still restarts the clean-day clock.
+	if st.SinceUnix != oomT0.Unix() {
+		t.Fatalf("a no-op OOM must still reset SinceUnix, got %d want %d", st.SinceUnix, oomT0.Unix())
+	}
+}
+
 func TestOOMCapFreezesAfterThreeReductionsInADay(t *testing.T) {
 	st := oomCapState{}
 	var d oomCapDecision

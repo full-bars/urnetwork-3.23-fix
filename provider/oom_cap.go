@@ -48,6 +48,19 @@ func parseOOMCapMode(v string) (oomCapModeKind, bool) {
 	return oomCapShadow, false
 }
 
+// oomCapModeName is parseOOMCapMode's inverse for logging: the canonical name
+// of a mode value.
+func oomCapModeName(m oomCapModeKind) string {
+	switch m {
+	case oomCapOff:
+		return "off"
+	case oomCapOn:
+		return "on"
+	default:
+		return "shadow"
+	}
+}
+
 // oomCapMode combines the URNETWORK_OOM_CAP environment variable with the
 // persisted control value (`urnet-tools set oom-cap on|off|shadow`). ANY source
 // saying off wins, so the kill switch always works even against an env "on";
@@ -206,10 +219,14 @@ func oomCapOnOOM(st oomCapState, proxiesAtDeath, desired int, now time.Time) (oo
 		base = st.Cap // never reduce from a number larger than the standing cap
 	}
 	next := max(floor, int(float64(base)*oomCapReduceFactor))
-	if st.Cap > 0 && next >= st.Cap {
-		// Already at or below what this reduction would set (e.g. at the
-		// floor). Still an OOM kill: restart the clean-day clock so the cap
-		// does not relax immediately after the box died.
+	if next >= proxiesAtDeath || (st.Cap > 0 && next >= st.Cap) {
+		// Either already at or below what this reduction would set (e.g. at
+		// the floor), or the floor itself (max(oomCapMinFloor, desired/4)) is
+		// not tighter than what actually died -- a small pool (desired under
+		// roughly 4x the floor) would otherwise get a cap AT OR ABOVE its
+		// death size, an "applied: reduce" that changes nothing or grows the
+		// cap. Still an OOM kill: restart the clean-day clock so the cap does
+		// not relax immediately after the box died.
 		st.SinceUnix = now.Unix()
 		return st, oomCapDecision{Action: "none", From: st.Cap, To: st.Cap}
 	}

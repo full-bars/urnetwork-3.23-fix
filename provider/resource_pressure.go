@@ -684,11 +684,16 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// Track the peak running count and heartbeat for the OOM-aware start
 			// cap. It runs whether or not self-heal is on: it is bookkeeping, not
 			// an actuator.
-			oomCapUpdatePeak(connect.ProxyHealthCount(), time.Now())
+			// runningProxyCountForPressure excludes the native direct
+			// transport (a single fixed goroutine, not a pool member), so
+			// neither the OOM peak nor the headroom log's proxy count is
+			// off by one on a direct-only or direct+proxies node.
+			proxyCount := runningProxyCountForPressure()
+			oomCapUpdatePeak(proxyCount, time.Now())
 			// Real free memory, independent of the pressure score and of
 			// self-heal: log when the box gets short and when it recovers.
 			avail := hostAvailMiB() // one reading, used for both the decision and the line
-			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, connect.ProxyHealthCount(), runtime.NumGoroutine()); line != "" {
+			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, proxyCount, runtime.NumGoroutine()); line != "" {
 				importantLogf("%s\n", line)
 			}
 		}

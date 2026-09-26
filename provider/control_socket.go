@@ -957,8 +957,20 @@ func applyLiveSideEffect(key, value string) error {
 		return nil
 	case "oom_cap":
 		// Read on every reload by effectiveTrimCap, so this is live; log an
-		// acknowledgement so the operator sees the command was received.
-		importantLogf("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
+		// acknowledgement so the operator sees the command was received. The
+		// value just persisted may not be what actually governs: the
+		// URNETWORK_OOM_CAP env var takes precedence over the persisted
+		// control value (an env "on" always wins; see oomCapMode), so a
+		// control-socket "shadow" or "off" on a box with the env var set can
+		// silently keep enforcing. Log the EFFECTIVE mode, and call out the
+		// mismatch when the requested value did not actually take.
+		requested := strings.ToLower(value)
+		effective := oomCapModeName(oomCapMode())
+		if effective == requested {
+			importantLogf("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", requested)
+		} else {
+			importantLogf("✓ [oomcap] mode set to %s via control socket, but URNETWORK_OOM_CAP env overrides it: effective mode is %s (the automatic cap applies on the next reload)\n", requested, effective)
+		}
 		// The kill switch must act NOW: with no poke, a quiescent node could
 		// keep enforcing a stale cap until some other event triggers a reload
 		// (hours later). Reload drops or admits proxies per the new mode.
