@@ -216,3 +216,32 @@ func TestReload_EnforcesTheAutomaticCapInOnMode(t *testing.T) {
 		t.Fatalf("auto cap 1 of 3 must shed 2, cancelled %d", got)
 	}
 }
+
+// The cap after an OOM is 80% of what was RUNNING at death, so the marker must
+// carry the peak running count, not just what the start launched: a box that
+// launches 2,000 but later admits 3,800 died at 3,800.
+func TestOOMMarkerWithPeak(t *testing.T) {
+	m := oomMarker{BootID: "b", Proxies: 2000, StartedUnix: 5}
+	if got, changed := oomMarkerWithPeak(m, 1500); changed || got.Proxies != 2000 {
+		t.Fatalf("a lower reading must not shrink the peak: %+v changed=%v", got, changed)
+	}
+	if got, changed := oomMarkerWithPeak(m, 2000); changed || got.Proxies != 2000 {
+		t.Fatalf("an equal reading is not a change: %+v changed=%v", got, changed)
+	}
+	got, changed := oomMarkerWithPeak(m, 3800)
+	if !changed || got.Proxies != 3800 || got.BootID != "b" || got.StartedUnix != 5 {
+		t.Fatalf("a higher reading raises only the peak: %+v changed=%v", got, changed)
+	}
+}
+
+func TestOOMCapUpdatePeakPersists(t *testing.T) {
+	withTempHome(t)
+	oomCapRecordStart(2000, "boot-A", 0, oomT0)
+	oomCapUpdatePeak(3800)
+	oomCapUpdatePeak(1000) // lower: ignored
+	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
+	// 80% of the 3800 peak, not of the 2000 launched.
+	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") {
+		t.Fatalf("decision must use the peak running count, got %q", lines)
+	}
+}

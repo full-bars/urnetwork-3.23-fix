@@ -251,6 +251,37 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 		strconv.Itoa(d.From) + " -> " + strconv.Itoa(d.To) + tail}
 }
 
+// oomMarkerWithPeak raises the marker's proxy count to the observed running
+// count when that is higher (the peak within this start), and reports whether it
+// changed. The count only ever rises, so a partial ramp never lowers it.
+func oomMarkerWithPeak(m oomMarker, running int) (oomMarker, bool) {
+	if running <= m.Proxies {
+		return m, false
+	}
+	m.Proxies = running
+	return m, true
+}
+
+// oomCapUpdatePeak records a higher running count in this start's marker. Cheap:
+// it only writes when the peak rises.
+func oomCapUpdatePeak(running int) {
+	if oomCapMode() == oomCapOff {
+		return
+	}
+	dir, err := oomCapDir()
+	if err != nil {
+		return
+	}
+	path := filepath.Join(dir, "run.marker")
+	var m oomMarker
+	if !oomReadJSON(path, &m) {
+		return
+	}
+	if next, changed := oomMarkerWithPeak(m, running); changed {
+		_ = oomWriteJSON(path, next)
+	}
+}
+
 // oomCapRecordStart writes this start's marker (after the launch selection, so
 // it records what was actually launched).
 func oomCapRecordStart(launching int, bootID string, oomKills int64, now time.Time) {
