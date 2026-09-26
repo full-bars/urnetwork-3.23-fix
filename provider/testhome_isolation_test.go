@@ -4,6 +4,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // globalClientJWTStore is built at package init from the real HOME, so
@@ -27,4 +28,26 @@ func TestWithTempHomeIsolatesTheClientJWTStore(t *testing.T) {
 	if globalClientJWTStore != before {
 		t.Fatalf("withTempHome must restore the previous JWT store on cleanup")
 	}
+}
+
+// Process-wide proxy state that a test can dirty must not leak into the next
+// test. The trim tests shed proxies (which parks them in the global failure
+// history) and change the acknowledged trim cap; a later test reusing the same
+// proxy keys then saw them "still in backoff" or an already-acknowledged cap,
+// which made results depend on test order. withTempHome resets both.
+func TestWithTempHomeResetsSharedProxyState(t *testing.T) {
+	const key = "10.9.9.9:1080"
+	globalProxyFailureHistory.SetBackoffUntil(key, time.Now().Add(time.Hour))
+	trimCapSeen.Store(1234)
+	t.Cleanup(func() { globalProxyFailureHistory.SetBackoffUntil(key, time.Time{}); trimCapSeen.Store(0) })
+
+	t.Run("a fresh temp-home test starts clean", func(t *testing.T) {
+		withTempHome(t)
+		if !globalProxyFailureHistory.Eligible(key, time.Now()) {
+			t.Fatalf("a backoff set by an earlier test leaked into this one")
+		}
+		if got := trimCapSeen.Load(); got != 0 {
+			t.Fatalf("acknowledged trim cap %d leaked into this test", got)
+		}
+	})
 }
