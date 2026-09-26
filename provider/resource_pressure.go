@@ -54,8 +54,14 @@ const (
 	// pool above ~1,000 proxies at 1.00. The process-wide overhead (control
 	// socket, monitors, metrics, GC workers) is subtracted first so a small pool
 	// is not charged for it. The absolute ramp below still applies when nothing
-	// is running (direct-only node), where there is no proxy count to divide by.
+	// is running (direct-only node), where there is no proxy count to divide by,
+	// AND below goroutineMinPoolForPerProxy, where dividing by a small pool is
+	// not meaningful: several self-heal consumers of this pressure score (the
+	// AIMD URL pool controller, the reaper, probe concurrency) SHRINK the pool
+	// under pressure, which shrinks the denominator and raises per-proxy
+	// further -- a possible positive-feedback loop on a small URL-sourced pool.
 	goroutineFixedOverhead      = 1000
+	goroutineMinPoolForPerProxy = 50
 	goroutinePerProxyRampLo     = 60.0
 	goroutinePerProxyRampHi     = 150.0
 	emergencyGoroutinesPerProxy = 200.0
@@ -117,9 +123,10 @@ func normalizeRamp(v, lo, hi float64) float64 {
 }
 
 // goroutinesPerProxy is the per-proxy goroutine cost after removing the fixed
-// process overhead; ok is false when there are no running proxies to divide by.
+// process overhead; ok is false when there are no running proxies to divide by,
+// or too few for the division to be meaningful (see goroutineMinPoolForPerProxy).
 func goroutinesPerProxy(s pressureSample) (perProxy float64, ok bool) {
-	if s.RunningProxies <= 0 {
+	if s.RunningProxies < goroutineMinPoolForPerProxy {
 		return 0, false
 	}
 	return float64(max(0, s.Goroutines-goroutineFixedOverhead)) / float64(s.RunningProxies), true

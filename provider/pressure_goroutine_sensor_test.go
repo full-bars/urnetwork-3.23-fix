@@ -88,6 +88,30 @@ func TestGoroutineSensorDoesNotChargeProcessOverheadToASmallPool(t *testing.T) {
 	}
 }
 
+// Below goroutineMinPoolForPerProxy the per-proxy division is not meaningful:
+// consumers of the pressure score (the AIMD pool controller, the reaper, probe
+// concurrency) can shrink a small pool in response to pressure, shrinking the
+// per-proxy denominator and raising the score further, a possible
+// positive-feedback loop. Below the minimum the absolute ramp applies instead,
+// exactly as it does with zero running proxies.
+func TestGoroutineSensorUsesAbsoluteRampBelowMinPool(t *testing.T) {
+	// 5 proxies at 2000 goroutines: (2000-1000)/5 = 200/proxy, which is
+	// emergencyGoroutinesPerProxy -- would pin to 1.0 under raw per-proxy
+	// division. Below the minimum pool it must fall back to the absolute ramp
+	// instead, where 2000 goroutines is nowhere near the 5000..25000 ramp.
+	score, comps := computePressure(pressureSample{Goroutines: 2000, RunningProxies: 5})
+	if score != 0 || comps["goro"] != 0 {
+		t.Fatalf("small pool must not divide into an emergency pin: goro=%v score=%v", comps["goro"], score)
+	}
+	// A large pool at the same per-proxy ratio must still pin: the absolute
+	// ramp only covers pools too small for per-proxy division to mean anything.
+	const proxies = 2000
+	score, _ = computePressure(pressureSample{Goroutines: goroutineFixedOverhead + 400_000, RunningProxies: proxies})
+	if score != 1 {
+		t.Fatalf("a large pool at a runaway per-proxy ratio must still pin, got %v", score)
+	}
+}
+
 // The sensor's pool count must exclude the native direct transport: it is one
 // fixed goroutine, not a pool member, and counting it made a direct-only node
 // divide by 1 and judge its ~1,000-goroutine background as an emergency.
