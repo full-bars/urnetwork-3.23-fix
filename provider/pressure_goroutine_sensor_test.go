@@ -3,6 +3,8 @@ package main
 import (
 	"math"
 	"testing"
+
+	"github.com/urnetwork/connect"
 )
 
 // The goroutine sensor exists to catch a runaway (a leak that grows without
@@ -21,7 +23,12 @@ func TestGoroutineSensorJudgesPerProxyNotPoolSize(t *testing.T) {
 		{"2 GiB box before the trim", 85361, 4128},
 		{"24 GB box", 105006, 4353},
 		{"a 1300-proxy small box", 27525, 1303},
-		{"one proxy plus process overhead", 300, 1},
+		// Real counts, not ideals: a 1-proxy node runs ~1,000 goroutines of
+		// process overhead plus the proxy's ~20-27, and a direct-only node
+		// (direct excluded from the count) sits at roughly the fixed 1,000.
+		{"one proxy at the realistic overhead baseline", 1030, 1},
+		{"direct-only node at the background baseline", 1000, 0},
+		{"direct-only node slightly above the baseline", 1800, 0},
 		{"idle: no proxies, few goroutines", 900, 0},
 	}
 	for _, c := range healthy {
@@ -78,5 +85,36 @@ func TestGoroutineSensorDoesNotChargeProcessOverheadToASmallPool(t *testing.T) {
 	score, comps := computePressure(pressureSample{Goroutines: goroutineFixedOverhead - 1, RunningProxies: 3})
 	if comps["goro"] != 0 || score != 0 {
 		t.Fatalf("overhead-only process: goro=%v score=%v, want 0/0", comps["goro"], score)
+	}
+}
+
+// The sensor's pool count must exclude the native direct transport: it is one
+// fixed goroutine, not a pool member, and counting it made a direct-only node
+// divide by 1 and judge its ~1,000-goroutine background as an emergency.
+func TestRunningProxyCountForPressureExcludesDirect(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+
+	if got := runningProxyCountForPressure(); got != 0 {
+		t.Fatalf("empty registry: got %d, want 0", got)
+	}
+	// The direct transport is registered at index 0 under the key "direct"
+	// exactly as provider startup does.
+	connect.RegisterProxy(0, "direct", "direct")
+	connect.RegisterProxy(1, "10.0.0.1:1080", "10.0.0.1:1080")
+	connect.RegisterProxy(2, "10.0.0.2:1080", "10.0.0.2:1080")
+	if got := runningProxyCountForPressure(); got != 2 {
+		t.Fatalf("direct + 2 proxies: got %d, want 2 (direct excluded)", got)
+	}
+	// A direct-only node must read ZERO running proxies so the sensor falls
+	// back to the absolute ramp instead of dividing by one.
+	connect.UnregisterProxy(1)
+	connect.UnregisterProxy(2)
+	if got := runningProxyCountForPressure(); got != 0 {
+		t.Fatalf("direct-only node: got %d, want 0 (else per-proxy division by 1)", got)
+	}
+	connect.UnregisterProxy(0)
+	if got := runningProxyCountForPressure(); got != 0 {
+		t.Fatalf("nothing registered: got %d, want 0", got)
 	}
 }
