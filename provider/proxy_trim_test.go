@@ -135,3 +135,29 @@ func TestTrimmedConfiguredCount(t *testing.T) {
 		t.Fatalf("cleared cap: got %d, want 4127", got)
 	}
 }
+
+// Operator trim commands must leave a receipt in the log: a line when a NEW
+// cap is seen (received, and what it replaces) and again when it is cleared.
+// noteTrimCap reports whether the cap differs from the last one seen, so the
+// reload logs the acknowledgement once per change and stays quiet on the
+// periodic reloads that follow.
+func TestNoteTrimCap(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+
+	if prev, changed := noteTrimCap(0); changed || prev != 0 {
+		t.Fatalf("first observation of no-cap is not a change: prev=%d changed=%v", prev, changed)
+	}
+	if prev, changed := noteTrimCap(2000); !changed || prev != 0 {
+		t.Fatalf("0 -> 2000: prev=%d changed=%v, want 0/true", prev, changed)
+	}
+	if _, changed := noteTrimCap(2000); changed {
+		t.Fatalf("repeat of the same cap must not re-acknowledge")
+	}
+	if prev, changed := noteTrimCap(1500); !changed || prev != 2000 {
+		t.Fatalf("2000 -> 1500: prev=%d changed=%v, want 2000/true", prev, changed)
+	}
+	if prev, changed := noteTrimCap(0); !changed || prev != 1500 {
+		t.Fatalf("1500 -> cleared: prev=%d changed=%v, want 1500/true", prev, changed)
+	}
+}

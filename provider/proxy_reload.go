@@ -708,7 +708,25 @@ func (r *ProxyReloader) reload() {
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
 	// budget so the pool cannot regrow above the cap until it is raised.
-	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 {
+	trimCapNow, trimErr := readTrimTarget()
+	trimChanged := false
+	if trimErr == nil {
+		// Acknowledge a new or cleared operator cap once, so the log shows the
+		// command was received before (and regardless of) what it sheds.
+		var prevCap int
+		if prevCap, trimChanged = noteTrimCap(trimCapNow); trimChanged {
+			if trimCapNow > 0 {
+				prev := "none"
+				if prevCap > 0 {
+					prev = strconv.Itoa(prevCap)
+				}
+				tlog("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying\n", trimCapNow, prev, len(running), len(desiredSet))
+			} else {
+				tlog("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
+			}
+		}
+	}
+	if trimCap := trimCapNow; trimErr == nil && trimCap > 0 {
 		traffic := runningProxyTraffic()
 		// Read the URL cache here: the urlState read earlier is scoped to its own
 		// if/else and is not visible in this hook.
@@ -780,8 +798,8 @@ func (r *ProxyReloader) reload() {
 			}
 			added = kept
 		}
-		if shedCount > 0 || dropped > 0 {
-			tlog("[proxy][trim] cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+		if shedCount > 0 || dropped > 0 || trimChanged {
+			tlog("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		}
 	}
 

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"os"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
@@ -16,7 +17,8 @@ import (
 // must keep the state entry of a trim-shed proxy. Dropping it made the proxy
 // relaunch (once the cap was raised) under a brand new ID, ungraded, having
 // lost its health and downtime history.
-func TestReload_TrimShedKeepsStateEntries(t *testing.T) {
+func trimFixture(t *testing.T) (*ProxyReloader, []string, *atomic.Int32) {
+	t.Helper()
 	withTempHome(t)
 	proxyWarmupDone.Store(true)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
@@ -73,6 +75,11 @@ func TestReload_TrimShedKeepsStateEntries(t *testing.T) {
 	if err := writeProxyState(r.state); err != nil {
 		t.Fatal(err)
 	}
+	return r, addrs, &cancelled
+}
+
+func TestReload_TrimShedKeepsStateEntries(t *testing.T) {
+	r, addrs, cancelled := trimFixture(t)
 	if err := writeTrimTarget(1); err != nil {
 		t.Fatal(err)
 	}
@@ -92,5 +99,39 @@ func TestReload_TrimShedKeepsStateEntries(t *testing.T) {
 	}
 	if _, ok := r.state.Proxies[addrs[0]]; !ok {
 		t.Fatalf("surviving proxy %s lost its state entry", addrs[0])
+	}
+}
+
+// The operator must see the command was received and what it did: one
+// "received" line when the cap first appears and an "applied" line with the
+// result, then silence on the reloads that follow with an unchanged cap, and a
+// "received ... cleared" line when the cap is removed.
+func TestReload_TrimLogsReceiptAndResult(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+	first := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(first, "[proxy][trim] received: cap=1 (was none); 3 running, 3 desired, applying") {
+		t.Fatalf("missing receipt line, got:\n%s", first)
+	}
+	if !strings.Contains(first, "[proxy][trim] applied: cap=1: shed 2 worst-graded running") {
+		t.Fatalf("missing result line, got:\n%s", first)
+	}
+
+	second := captureTlog(t, func() { r.reload() })
+	if strings.Contains(second, "[proxy][trim] received") {
+		t.Fatalf("unchanged cap must not be re-acknowledged, got:\n%s", second)
+	}
+
+	if err := writeTrimTarget(0); err != nil {
+		t.Fatal(err)
+	}
+	cleared := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(cleared, "[proxy][trim] received: cap cleared (was 1)") {
+		t.Fatalf("missing cleared line, got:\n%s", cleared)
 	}
 }

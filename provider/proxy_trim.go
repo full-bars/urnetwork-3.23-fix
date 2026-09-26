@@ -11,6 +11,7 @@ import (
 	"github.com/urnetwork/connect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // proxy_trim.go implements the operator `proxy trim <N>` hard cap: hold the
@@ -69,6 +70,20 @@ func writeTrimTarget(n int) error {
 	}
 	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
 }
+
+// trimCapSeen is the last operator trim cap the reload loop acknowledged
+// (0 = none). It lets the reload log a receipt exactly once per change.
+var trimCapSeen atomic.Int64
+
+// noteTrimCap records the cap the reload just read and reports the previous
+// one and whether it differs, so a new or cleared cap is acknowledged in the
+// log once instead of on every periodic reload.
+func noteTrimCap(cur int) (prev int, changed bool) {
+	prev = int(trimCapSeen.Swap(int64(cur)))
+	return prev, prev != cur
+}
+
+func resetTrimCapSeen() { trimCapSeen.Store(0) }
 
 // trimmedConfiguredCount is the number of proxies this provider will actually
 // run: the desired count, capped by the operator trim target. The status line
