@@ -281,39 +281,7 @@ func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSe
 // detectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func detectEffectiveRAMLimitBytes() int64 {
-	// cgroup v2
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		s := strings.TrimSpace(string(data))
-		if s != "max" {
-			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
-				return v
-			}
-		}
-	}
-	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
-	const oneTiB = 1 << 40
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
-			return v
-		}
-	}
-	// /proc/meminfo MemTotal (kB)
-	if f, err := os.Open("/proc/meminfo"); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "MemTotal:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						return v * 1024
-					}
-				}
-			}
-		}
-	}
-	return 850 * 1024 * 1024
+	return connect.DetectEffectiveRAMLimitBytes()
 }
 
 func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
@@ -361,6 +329,12 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(200)
 	}
+}
+
+func init() {
+	// The auto-profile tiers must not override a persisted `urnet-tools set
+	// gogc`: precedence is env var > persisted control value > tier default.
+	connect.AutoTuneOperatorPinned = persistedRuntimeTuningActive
 }
 
 // applyTurboMemoryLimit sets GOMEMLIMIT to 80% of effective RAM for the
@@ -3915,7 +3889,7 @@ func provide(opts docopt.Opts) {
 
 	// Publish the denominator for systemd STATUS= now that the proxy list is
 	// final (post prune/rebuild above).
-	setConfiguredProxyCount(len(allProxySettings))
+	setConfiguredProxyCount(trimmedConfiguredCount(len(allProxySettings)))
 
 	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {

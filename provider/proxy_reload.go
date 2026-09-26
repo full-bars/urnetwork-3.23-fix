@@ -698,11 +698,35 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 
+	// Addresses shed by the trim cap below. Their state entry (ID, health,
+	// downtime, grade) must survive the removal loop: the shed is a capacity
+	// decision, not a verdict on the proxy, and dropping the entry would make a
+	// later relaunch allocate a new ID and rank the proxy as ungraded.
+	trimShedSet := map[string]bool{}
+
 	// Operator trim cap (provider proxy trim <N>): hold the running pool at N.
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
 	// budget so the pool cannot regrow above the cap until it is raised.
-	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 {
+	trimCapNow, trimErr := readTrimTarget()
+	trimChanged := false
+	if trimErr == nil {
+		// Acknowledge a new or cleared operator cap once, so the log shows the
+		// command was received before (and regardless of) what it sheds.
+		var prevCap int
+		if prevCap, trimChanged = noteTrimCap(trimCapNow); trimChanged {
+			if trimCapNow > 0 {
+				prev := "none"
+				if prevCap > 0 {
+					prev = strconv.Itoa(prevCap)
+				}
+				tlog("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying\n", trimCapNow, prev, len(running), len(desiredSet))
+			} else {
+				tlog("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
+			}
+		}
+	}
+	if trimCap := trimCapNow; trimErr == nil && trimCap > 0 {
 		traffic := runningProxyTraffic()
 		// Read the URL cache here: the urlState read earlier is scoped to its own
 		// if/else and is not visible in this hook.
@@ -736,6 +760,7 @@ func (r *ProxyReloader) reload() {
 				if _, ok := running[addr]; ok && !removedSet[addr] {
 					removed = append(removed, addr)
 					removedSet[addr] = true
+					trimShedSet[addr] = true
 					shedCount++
 					// Do NOT delete from desiredSet: pruning against a trim-mutated
 					// set erases grade/health history. Mark a short
@@ -773,8 +798,8 @@ func (r *ProxyReloader) reload() {
 			}
 			added = kept
 		}
-		if shedCount > 0 || dropped > 0 {
-			tlog("[proxy][trim] cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+		if shedCount > 0 || dropped > 0 || trimChanged {
+			tlog("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		}
 	}
 
@@ -795,7 +820,7 @@ func (r *ProxyReloader) reload() {
 		// Keep the state entry of a rotated proxy: it is relaunched in this same
 		// pass, and dropping it would make the relaunch allocate a new ID and
 		// lose its persisted health, downtime and grading history.
-		if !rotatedSet[addr] {
+		if !rotatedSet[addr] && !trimShedSet[addr] {
 			delete(r.state.Proxies, addr)
 		}
 		// The goroutine for this address has now been cancelled; drop its
@@ -994,7 +1019,7 @@ func (r *ProxyReloader) reload() {
 	// Update systemd status counters: the configured count reflects
 	// the full desired set (file/internal + URL cache), and resolution
 	// is OK since we found proxies. These are operator-facing only.
-	setConfiguredProxyCount(len(desiredSet))
+	setConfiguredProxyCount(trimmedConfiguredCount(len(desiredSet)))
 	setProxyResolutionOK()
 
 	deferredTotal := deferredBackoff + warmupDeferred

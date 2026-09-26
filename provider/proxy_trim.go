@@ -11,6 +11,7 @@ import (
 	"github.com/urnetwork/connect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // proxy_trim.go implements the operator `proxy trim <N>` hard cap: hold the
@@ -68,6 +69,81 @@ func writeTrimTarget(n int) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
+}
+
+// trimPreviewText renders what `proxy trim <count>` would do to the given
+// running set. It is pure so it can be tested and so the running provider (the
+// only process that knows its running set) can produce it for the CLI.
+func trimPreviewText(state *ProxyState, urlState *ProxyURLState, running []string, traffic map[string]uint64, count int) string {
+	if len(running) <= count {
+		return fmt.Sprintf("preview: running=%d <= %d, nothing to shed\n", len(running), count)
+	}
+	gradeFor := buildTrimGradeResolver(state, urlState)
+	shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
+	var b strings.Builder
+	fmt.Fprintf(&b, "preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
+	for _, key := range shed {
+		fmt.Fprintf(&b, "  %s\n", proxyKeyDisplay(key))
+	}
+	return b.String()
+}
+
+// livePreviewText builds the preview from THIS process's running set. It must
+// run inside the provider (via the control socket): a CLI process has an empty
+// health registry and would always report zero running proxies.
+func livePreviewText(count int) (string, error) {
+	state, err := readProxyState()
+	if err != nil {
+		return "", err
+	}
+	urlState, _ := readProxyURLState()
+	// The direct transport registers itself in the health registry, but a live
+	// trim never counts or sheds it (reload skips directProxyKey and the cap
+	// applies to non-direct proxies only), so the preview must not either.
+	var running []string
+	for _, k := range runningProxyAddresses() {
+		if k != directProxyKey {
+			running = append(running, k)
+		}
+	}
+	return trimPreviewText(state, urlState, running, runningProxyTraffic(), count), nil
+}
+
+// previewViaControlSocket asks the running provider what a trim would shed.
+func previewViaControlSocket(count int) (string, error) {
+	resp, err := dialControlSocket(controlRequest{Cmd: "trim_preview", Value: strconv.Itoa(count)})
+	if err != nil {
+		return "", err
+	}
+	if !resp.OK {
+		return "", fmt.Errorf("%s", resp.Error)
+	}
+	return resp.Value, nil
+}
+
+// trimCapSeen is the last operator trim cap the reload loop acknowledged
+// (0 = none). It lets the reload log a receipt exactly once per change.
+var trimCapSeen atomic.Int64
+
+// noteTrimCap records the cap the reload just read and reports the previous
+// one and whether it differs, so a new or cleared cap is acknowledged in the
+// log once instead of on every periodic reload.
+func noteTrimCap(cur int) (prev int, changed bool) {
+	prev = int(trimCapSeen.Swap(int64(cur)))
+	return prev, prev != cur
+}
+
+func resetTrimCapSeen() { trimCapSeen.Store(0) }
+
+// trimmedConfiguredCount is the number of proxies this provider will actually
+// run: the desired count, capped by the operator trim target. The status line
+// uses it as its denominator, so a healthy box trimmed to N reads N/N, not
+// N/desired (which reads "critical" and teaches operators to ignore it).
+func trimmedConfiguredCount(desired int) int {
+	if cap, err := readTrimTarget(); err == nil && cap > 0 && desired > cap {
+		return cap
+	}
+	return desired
 }
 
 // healthRank orders the shed priority by last-known health (lower = shed first),
@@ -307,21 +383,15 @@ func proxyTrim(opts docopt.Opts) {
 		shmLogFatal(70, "provider does not appear to be running")
 	}
 
-	running := runningProxyAddresses()
-	traffic := runningProxyTraffic()
-	urlState, _ := readProxyURLState()
-	gradeFor := buildTrimGradeResolver(state, urlState)
-
 	if preview {
-		if len(running) > count {
-			shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
-			fmt.Printf("preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
-			for _, key := range shed {
-				fmt.Printf("  %s\n", proxyKeyDisplay(key))
-			}
-		} else {
-			fmt.Printf("preview: running=%d <= %d, nothing to shed\n", len(running), count)
+		text, err := previewViaControlSocket(count)
+		if err != nil {
+			// Never fall back to a local computation: this process has no running
+			// proxies, so it would report "nothing to shed" and mislead.
+			fmt.Printf("preview unavailable: %v (the running provider computes the preview; it must be running and on a build with trim_preview)\n", err)
+			return
 		}
+		fmt.Print(text)
 		return
 	}
 

@@ -1,6 +1,8 @@
 package connect
 
 import (
+	"math"
+	"runtime/debug"
 	"testing"
 )
 
@@ -83,4 +85,94 @@ func TestSelectTierThresholds(t *testing.T) {
 			t.Errorf("%s: selectTier(%d) = %q, want %q", c.name, c.ram, got, c.want)
 		}
 	}
+}
+
+// ApplyAutoTuning runs once per proxy server. The per-proxy settings (buffers,
+// contract floor) are right to reapply, but GOGC is PROCESS-wide: resetting it
+// on every launch silently reverts whatever the GC governor (or an operator
+// `set gogc`) chose since the previous launch. Apply the tier's GOGC once.
+func TestApplyAutoTuningSetsGCPercentOncePerProcess(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	autoGCPercentApplied.Store(false)
+	restoreRuntimeTuning(t)
+	orig := debug.SetGCPercent(100)
+	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false) })
+
+	cs, ns := DefaultClientSettings(), DefaultLocalUserNatSettings()
+	applyTier1(cs, ns, 1<<30)
+	if got := readGCPercent(); got != 50 {
+		t.Fatalf("first apply: GOGC=%d, want the tier value 50", got)
+	}
+
+	// A governor (or operator) tightens GC after the first launch.
+	debug.SetGCPercent(25)
+	applyTier1(cs, ns, 1<<30)
+	if got := readGCPercent(); got != 25 {
+		t.Fatalf("second launch reset GOGC to %d, want the governor's 25 left alone", got)
+	}
+}
+
+// A persisted operator/control gogc must win over the tier default even on the
+// first launch.
+func TestApplyAutoTuningSkipsGCPercentWhenOperatorPinned(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	autoGCPercentApplied.Store(false)
+	restoreRuntimeTuning(t)
+	orig := debug.SetGCPercent(80)
+	t.Cleanup(func() { debug.SetGCPercent(orig); autoGCPercentApplied.Store(false); AutoTuneOperatorPinned = nil })
+
+	AutoTuneOperatorPinned = func(key string) bool { return key == "gogc" }
+	applyTier1(DefaultClientSettings(), DefaultLocalUserNatSettings(), 1<<30)
+	if got := readGCPercent(); got != 80 {
+		t.Fatalf("operator-pinned gogc was overridden to %d", got)
+	}
+}
+
+// readGCPercent reads the current GOGC without leaving it changed
+// (SetGCPercent returns the previous value).
+func readGCPercent() int {
+	cur := debug.SetGCPercent(100)
+	debug.SetGCPercent(cur)
+	return cur
+}
+
+// applyTier1 and friends set PROCESS-wide runtime knobs (GOGC and, when none is
+// set, a soft memory limit of a fraction of RAM). A test that calls them must put
+// both back, or every later test in the binary runs under a different GC
+// configuration.
+func restoreRuntimeTuning(t *testing.T) {
+	t.Helper()
+	gogc := readGCPercent()
+	limit := debug.SetMemoryLimit(-1) // a negative input only reads the limit
+	t.Cleanup(func() {
+		debug.SetGCPercent(gogc)
+		debug.SetMemoryLimit(limit)
+	})
+}
+
+func TestAutoTuningTestsRestoreTheProcessWideRuntimeKnobs(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	t.Setenv("GOMEMLIMIT", "")
+	beforeLimit, beforeGC := debug.SetMemoryLimit(-1), readGCPercent()
+	autoGCPercentApplied.Store(false)
+
+	t.Run("a test that applies a tier", func(t *testing.T) {
+		restoreRuntimeTuning(t)
+		debug.SetMemoryLimit(math.MaxInt64) // "no finite limit", so applyTier1 sets one
+		applyTier1(DefaultClientSettings(), DefaultLocalUserNatSettings(), 1<<30)
+		if debug.SetMemoryLimit(-1) == math.MaxInt64 {
+			t.Fatal("the fixture did not exercise the memory limit path")
+		}
+	})
+
+	if got := debug.SetMemoryLimit(-1); got != beforeLimit {
+		t.Fatalf("the soft memory limit leaked out of the test: %d, was %d", got, beforeLimit)
+	}
+	if got := readGCPercent(); got != beforeGC {
+		t.Fatalf("GOGC leaked out of the test: %d, was %d", got, beforeGC)
+	}
+	autoGCPercentApplied.Store(false)
 }
