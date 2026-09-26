@@ -3808,9 +3808,42 @@ func provide(opts docopt.Opts) {
 	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
 	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
 	currentNetworkId := currentProviderNetworkID()
-	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
+	// Honor the operator trim cap BEFORE launching. Applying it after launch
+	// meant a restart briefly opened every desired proxy (thousands of
+	// connections) and only then shed down to the cap, a burst on exactly the
+	// boxes short of memory. Held proxies stay desired; the reload budget admits
+	// them when the cap rises.
+	launchSettings := allProxySettings
+	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
+		startupURLState, _ := readProxyURLState()
+		gradeFor := buildTrimGradeResolver(proxyState, startupURLState)
+		var held []*connect.ProxySettings
+		launchSettings, held = startupTrimSelection(allProxySettings, trimCap, proxyState.Proxies, gradeFor,
+			func(key string) float64 { return proxyEarningsScore(key, time.Now()) })
+		tlog("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
+			trimCap, len(launchSettings), len(allProxySettings), len(held))
+	}
+	{
+		// Say once, at startup, when the limits this process runs under are short
+		// for the pool it is about to launch (see resource_config_warn.go).
+		in := resourceConfigInput{
+			Proxies:     len(launchSettings),
+			GOGCEnv:     os.Getenv("GOGC") != "",
+			AutoProfile: os.Getenv("URNETWORK_PROFILE") == "auto",
+		}
+		if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
+			in.GoMemLimit = limit
+		}
+		if ceiling, ok := connect.CgroupMemoryCeiling(); ok {
+			in.CgroupCeiling = ceiling
+		}
+		for _, w := range resourceConfigWarnings(in) {
+			tlog("[proxy][resources] warning: %s\n", w)
+		}
+	}
+	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(launchSettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
-		len(allProxySettings), warmCount, renewableCount, coldCount)
+		len(launchSettings), warmCount, renewableCount, coldCount)
 
 	// Report the earnings history so an operator can watch it fill in, and
 	// so the ranking that will consume it can be judged against real data.
@@ -3895,7 +3928,7 @@ func provide(opts docopt.Opts) {
 	if 0 < len(allProxySettings) {
 		finishProxy(fmt.Sprintf("%d servers", len(allProxySettings)))
 
-		for _, proxySettings := range allProxySettings {
+		for _, proxySettings := range launchSettings {
 			key := proxySettings.Key()
 			stableID := resolveProxyID(proxyState, key)
 			proxySettings.Index = stableID
@@ -3994,12 +4027,12 @@ func provide(opts docopt.Opts) {
 	// with new creds, "added 100" printed, daemon kept dialing the old
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
-	reloader.seedRunningAuth(allProxySettings)
+	reloader.seedRunningAuth(launchSettings)
 	reloader.StartWatcher(ctx)
-	// Enforce an operator trim cap immediately at startup. The initial launch
-	// loop spawns every entry in the source, so without this the first reload
-	// reconciler tick (up to an hour later) would be the first time the cap
-	// binds.
+	// Reconcile against the operator trim cap immediately at startup. The launch
+	// loop above already holds back the worst-graded proxies above the cap
+	// (startupTrimSelection); this reload confirms the cap, logs the result, and
+	// would still shed if the source changed between the two.
 	reloader.reload()
 
 	go connect.HandleError(func() {

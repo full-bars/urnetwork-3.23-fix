@@ -26,6 +26,14 @@ func withTempHome(t *testing.T) string {
 	prevJWTStore := globalClientJWTStore
 	globalClientJWTStore = newClientJWTStore(filepath.Join(dir, ".urnetwork", ".client_jwts.json"))
 	t.Cleanup(func() { globalClientJWTStore = prevJWTStore })
+	// Other process-wide state a reload/trim test dirties and the next test
+	// must not inherit: the give-up/shed backoff history and the last trim cap
+	// the reload acknowledged.
+	prevHistory := globalProxyFailureHistory
+	globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
+	t.Cleanup(func() { globalProxyFailureHistory = prevHistory })
+	trimCapSeen.Store(0)
+	t.Cleanup(func() { trimCapSeen.Store(0) })
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
 	// Must hold the lock: doWriteReloadTrigger (scheduled by a prior test's
 	// writeReloadTrigger via time.AfterFunc) writes lastReloadTriggerTime.ts under

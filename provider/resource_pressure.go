@@ -48,10 +48,21 @@ const (
 
 	// Self-signals: the provider's own runaway growth. LA1 melted down at
 	// ~31k goroutines on 1.6GB.
-	goroutineRampLo = 5000
-	goroutineRampHi = 25000
-	heapRampLo      = 0.60 // fraction of the max-memory soft limit
-	heapRampHi      = 0.90
+	//
+	// With running proxies the goroutine sensor is PER PROXY, not absolute: a
+	// healthy proxy costs 20-27 goroutines, so a fixed ceiling pinned any healthy
+	// pool above ~1,000 proxies at 1.00. The process-wide overhead (control
+	// socket, monitors, metrics, GC workers) is subtracted first so a small pool
+	// is not charged for it. The absolute ramp below still applies when nothing
+	// is running (direct-only node), where there is no proxy count to divide by.
+	goroutineFixedOverhead      = 1000
+	goroutinePerProxyRampLo     = 60.0
+	goroutinePerProxyRampHi     = 150.0
+	emergencyGoroutinesPerProxy = 200.0
+	goroutineRampLo             = 5000
+	goroutineRampHi             = 25000
+	heapRampLo                  = 0.60 // fraction of the max-memory soft limit
+	heapRampHi                  = 0.90
 
 	// Emergency pins: bypass EWMA smoothing entirely.
 	emergencyHeapFrac   = 0.90
@@ -81,9 +92,12 @@ type pressureSample struct {
 	MemAvailFrac float64 // MemAvailable/MemTotal; 0 = unknown
 	LoadPerCore  float64 // loadavg1 / NumCPU; 0 = unknown
 	Goroutines   int
-	HeapFrac     float64 // heap in use / max-memory soft limit; 0 = no limit set
-	FDFrac       float64 // open FDs / RLIMIT_NOFILE; 0 = unavailable
-	SensorErrs   map[string]error
+	// RunningProxies is how many proxies this provider runs; the goroutine
+	// sensor judges goroutines per proxy when it is > 0.
+	RunningProxies int
+	HeapFrac       float64 // heap in use / max-memory soft limit; 0 = no limit set
+	FDFrac         float64 // open FDs / RLIMIT_NOFILE; 0 = unavailable
+	SensorErrs     map[string]error
 }
 
 // normalizeRamp maps v onto [0,1] linearly between lo and hi. Works for
@@ -102,6 +116,32 @@ func normalizeRamp(v, lo, hi float64) float64 {
 	return t
 }
 
+// goroutinesPerProxy is the per-proxy goroutine cost after removing the fixed
+// process overhead; ok is false when there are no running proxies to divide by.
+func goroutinesPerProxy(s pressureSample) (perProxy float64, ok bool) {
+	if s.RunningProxies <= 0 {
+		return 0, false
+	}
+	return float64(max(0, s.Goroutines-goroutineFixedOverhead)) / float64(s.RunningProxies), true
+}
+
+// goroutineComponent scores runaway goroutine growth in [0,1].
+func goroutineComponent(s pressureSample) float64 {
+	if per, ok := goroutinesPerProxy(s); ok {
+		return normalizeRamp(per, goroutinePerProxyRampLo, goroutinePerProxyRampHi)
+	}
+	return normalizeRamp(float64(s.Goroutines), goroutineRampLo, goroutineRampHi)
+}
+
+// goroutineEmergency reports a self-inflicted goroutine blowout that bypasses
+// smoothing.
+func goroutineEmergency(s pressureSample) bool {
+	if per, ok := goroutinesPerProxy(s); ok {
+		return per >= emergencyGoroutinesPerProxy
+	}
+	return s.Goroutines >= emergencyGoroutines
+}
+
 // computePressure converts one sample into a score plus its per-component
 // breakdown. The worst component wins: averaging would dilute a memory
 // crisis with a healthy CPU reading.
@@ -111,7 +151,7 @@ func computePressure(s pressureSample) (float64, map[string]float64) {
 		"psi_cpu": normalizeRamp(s.PSICPU, psiRampLo, psiRampHi),
 		"psi_io":  normalizeRamp(s.PSIIO, ioRampLo, ioRampHi),
 		"load":    normalizeRamp(s.LoadPerCore, loadRampLo, loadRampHi),
-		"goro":    normalizeRamp(float64(s.Goroutines), goroutineRampLo, goroutineRampHi),
+		"goro":    goroutineComponent(s),
 	}
 	if s.FDFrac > 0 {
 		// FDFrac is the fraction of RLIMIT_NOFILE currently USED. Map it so
@@ -127,7 +167,7 @@ func computePressure(s pressureSample) (float64, map[string]float64) {
 	}
 
 	// Emergency pin: self-inflicted blowout bypasses smoothing.
-	if (s.HeapFrac >= emergencyHeapFrac && s.HeapFrac > 0) || s.Goroutines >= emergencyGoroutines {
+	if (s.HeapFrac >= emergencyHeapFrac && s.HeapFrac > 0) || goroutineEmergency(s) {
 		return 1.0, comps
 	}
 
@@ -221,7 +261,7 @@ func readMemAvailFrac() (float64, error) {
 // one missing source (PSI on old kernels, everything on Windows/macOS)
 // never blanks the others. Self-signals always work.
 func collectPressureSample() pressureSample {
-	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine()}
+	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: connect.ProxyHealthCount()}
 
 	if v, err := readPSI("memory"); err == nil {
 		s.PSIMem = v
