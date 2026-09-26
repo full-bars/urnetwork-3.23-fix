@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -499,6 +499,19 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "trim_preview":
+		// Value is the target count. Computed here, in the provider, because
+		// only this process knows which proxies are running.
+		n, err := strconv.Atoi(strings.TrimSpace(req.Value))
+		if err != nil || n <= 0 {
+			return controlResponse{OK: false, Error: fmt.Sprintf("trim_preview: invalid count %q (want a positive number)", req.Value)}
+		}
+		text, err := livePreviewText(n)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("trim_preview: %v", err)}
+		}
+		return controlResponse{OK: true, Value: text}
 
 	case "get":
 		if req.Key == "" {
