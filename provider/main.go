@@ -3841,6 +3841,12 @@ func provide(opts docopt.Opts) {
 			tlog("[proxy][resources] warning: %s\n", w)
 		}
 	}
+	// OOM-aware start cap, SHADOW ONLY: decides and logs what it would do after
+	// a kernel OOM kill since the previous start, but never changes what is
+	// launched (see oom_cap.go).
+	for _, line := range oomCapStartup(len(allProxySettings), len(launchSettings), readBootID(), readVmstatOOMKills(), time.Now()) {
+		tlog("%s\n", line)
+	}
 	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(launchSettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
 		len(launchSettings), warmCount, renewableCount, coldCount)
