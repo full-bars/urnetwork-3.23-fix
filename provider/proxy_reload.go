@@ -113,6 +113,12 @@ const proxyLockMaxAge = 1 * time.Hour
 // per debounce window instead of spawning overlapping reloads.
 var writeReloadTriggerDebounce = 30 * time.Second
 
+// drainPollInterval is how often the drain-completion goroutine rechecks a
+// draining proxy's client count. A package var (rather than a literal) so
+// tests can shrink it and finish in milliseconds instead of blocking on the
+// real interval.
+var drainPollInterval = 5 * time.Second
+
 var lastReloadTriggerTime struct {
 	sync.Mutex
 	ts      time.Time
@@ -923,7 +929,7 @@ func (r *ProxyReloader) reload() {
 				select {
 				case <-r.parentCtx.Done():
 					return
-				case <-time.After(5 * time.Second):
+				case <-time.After(drainPollInterval):
 				}
 			}
 			tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(proxyAddr))

@@ -14,6 +14,16 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+// withFastDrainPoll shrinks the drain-completion goroutine's poll interval so
+// tests that wait for a drain to finish take milliseconds instead of blocking
+// on the real 5s interval, and restores it on cleanup.
+func withFastDrainPoll(t *testing.T) {
+	t.Helper()
+	prev := drainPollInterval
+	drainPollInterval = time.Millisecond
+	t.Cleanup(func() { drainPollInterval = prev })
+}
+
 // A trim shed cancels the proxy but must NOT forget it: the trim code and the
 // prune pass both say "do not erase grade/health history", so the removal loop
 // must keep the state entry of a trim-shed proxy. Dropping it made the proxy
@@ -237,6 +247,7 @@ func TestReload_HeldProxiesStayHeldUntilTheCapRises(t *testing.T) {
 // each drained shed used to burn a reload cycle plus a false
 // "re-added while draining" log line.
 func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
+	withFastDrainPoll(t)
 	r, addrs, _ := trimFixture(t)
 	if err := writeTrimTarget(2); err != nil {
 		t.Fatal(err)
@@ -263,23 +274,32 @@ func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
 
 	// The client leaves; the drain goroutine notices and completes.
 	bw.Clients.Store(0)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		r.drainMu.Lock()
-		_, stillDraining := r.drainingProxies[addrs[1]]
-		r.drainMu.Unlock()
-		if !stillDraining {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("drain did not complete in time")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForDrainToFinish(t, r, addrs[1])
 
 	seqAfter, _ := readReloadSeq(path)
 	if seqAfter != seqBefore {
 		t.Fatalf("a trim-shed drain re-triggered a reload: seq %d -> %d", seqBefore, seqAfter)
+	}
+}
+
+// waitForDrainToFinish polls until addr is no longer in r.drainingProxies,
+// failing the test if it does not clear in time. Callers should shrink
+// drainPollInterval with withFastDrainPoll first so this is fast, not
+// wall-clock bound.
+func waitForDrainToFinish(t *testing.T, r *ProxyReloader, addr string) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for {
+		r.drainMu.Lock()
+		_, stillDraining := r.drainingProxies[addr]
+		r.drainMu.Unlock()
+		if !stillDraining {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("drain of %s did not complete in time", proxyKeyDisplay(addr))
+		}
+		time.Sleep(time.Millisecond)
 	}
 }
 
@@ -289,6 +309,7 @@ func TestReload_DrainedTrimShedProxyDoesNotRetriggerReload(t *testing.T) {
 // drains is exactly the case the re-trigger exists for, and it must still fire
 // promptly even though the trim cap binds throughout.
 func TestReload_ReAddedNonShedProxyStillRetriggersUnderABindingCap(t *testing.T) {
+	withFastDrainPoll(t)
 	r, addrs, cancelled := trimFixture(t)
 	// currentDesiredProxyIdentities() (used by the drain-completion goroutine)
 	// reads proxy.state's Source field, not r.sourcePath directly; the fixture
@@ -337,19 +358,7 @@ func TestReload_ReAddedNonShedProxyStillRetriggersUnderABindingCap(t *testing.T)
 	}
 	seqBefore, _ := readReloadSeq(path)
 	bw.Clients.Store(0)
-	deadline := time.Now().Add(15 * time.Second)
-	for {
-		r.drainMu.Lock()
-		_, stillDraining := r.drainingProxies[addrs[2]]
-		r.drainMu.Unlock()
-		if !stillDraining {
-			break
-		}
-		if time.Now().After(deadline) {
-			t.Fatal("drain did not complete in time")
-		}
-		time.Sleep(50 * time.Millisecond)
-	}
+	waitForDrainToFinish(t, r, addrs[2])
 
 	seqAfter, _ := readReloadSeq(path)
 	if seqAfter == seqBefore {
