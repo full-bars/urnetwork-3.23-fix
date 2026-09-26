@@ -124,9 +124,18 @@ type oomMarker struct {
 
 // oomKilledSinceMarker reports whether an OOM kill happened since the previous
 // start. A different boot id means a reboot (the counter reset), which is never
-// attributed to an OOM; an unknown reading never claims one.
-func oomKilledSinceMarker(m *oomMarker, bootID string, oomKills int64) bool {
+// attributed to an OOM; an unknown reading never claims one. A marker older than
+// oomMarkerMaxAge is stale: the box may have been down for days (or running with
+// the cap off) while ANY other workload on the same boot bumped the global
+// oom_kill counter, and the marker's proxy count no longer describes this
+// process's load.
+const oomMarkerMaxAge = 72 * time.Hour
+
+func oomKilledSinceMarker(m *oomMarker, bootID string, oomKills int64, now time.Time) bool {
 	if m == nil || bootID == "" || m.BootID != bootID || oomKills < 0 || m.OOMKills < 0 {
+		return false
+	}
+	if m.StartedUnix > 0 && now.Sub(time.Unix(m.StartedUnix, 0)) > oomMarkerMaxAge {
 		return false
 	}
 	return oomKills > m.OOMKills
@@ -162,6 +171,11 @@ func oomCapOnOOM(st oomCapState, proxiesAtDeath, desired int, now time.Time) (oo
 	recent := recentReductions(st.Reductions, now)
 	st.Reductions = recent
 	if len(recent) >= oomCapMaxReductions {
+		// Frozen: no more reductions today, but the box was OOM-killed NOW.
+		// The clean-day clock must restart from this OOM, or a start after
+		// the original window would relax (grow) the cap immediately after
+		// a fresh kill.
+		st.SinceUnix = now.Unix()
 		return st, oomCapDecision{Action: "frozen", From: st.Cap, To: st.Cap}
 	}
 	floor := max(oomCapMinFloor, desired/4)
@@ -171,7 +185,10 @@ func oomCapOnOOM(st oomCapState, proxiesAtDeath, desired int, now time.Time) (oo
 	}
 	next := max(floor, int(float64(base)*oomCapReduceFactor))
 	if st.Cap > 0 && next >= st.Cap {
-		// Already at or below what this reduction would set (e.g. at the floor).
+		// Already at or below what this reduction would set (e.g. at the
+		// floor). Still an OOM kill: restart the clean-day clock so the cap
+		// does not relax immediately after the box died.
+		st.SinceUnix = now.Unix()
 		return st, oomCapDecision{Action: "none", From: st.Cap, To: st.Cap}
 	}
 	d := oomCapDecision{Action: "reduce", From: st.Cap, To: next}
@@ -275,7 +292,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 
 	var d oomCapDecision
 	var msg string
-	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills) {
+	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills, now) {
 		st, d = oomCapOnOOM(st, prev.Proxies, desired, now)
 		msg = "OOM kill since the last start (peak running " + strconv.Itoa(prev.Proxies) + ")"
 	} else {
