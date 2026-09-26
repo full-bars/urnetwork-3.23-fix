@@ -269,6 +269,11 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	if d.Action == "none" || d.Action == "" {
 		return nil
 	}
+	modeName := "shadow"
+	if mode == oomCapOn {
+		modeName = "on"
+	}
+	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: d.Action, From: d.From, To: d.To, Mode: modeName, Reason: msg})
 	verb, tail := "shadow: "+msg+": would ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
 	if mode == oomCapOn {
 		verb, tail = "applied: "+msg+": ", ""
