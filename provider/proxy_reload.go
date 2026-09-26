@@ -708,7 +708,19 @@ func (r *ProxyReloader) reload() {
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
 	// budget so the pool cannot regrow above the cap until it is raised.
-	trimCapNow, trimErr := readTrimTarget()
+	trimCapNow, trimSource, trimErr := effectiveTrimCapSource()
+	// The direct transport is in the running map but is never trimmed, so the
+	// counts reported below exclude it, like the cap does.
+	runningProxies := 0
+	for a := range running {
+		if a != directProxyKey {
+			runningProxies++
+		}
+	}
+	autoNote := ""
+	if trimSource == trimCapOOM {
+		autoNote = " (automatic OOM cap)"
+	}
 	trimChanged := false
 	if trimErr == nil {
 		// Acknowledge a new or cleared operator cap once, so the log shows the
@@ -720,9 +732,11 @@ func (r *ProxyReloader) reload() {
 				if prevCap > 0 {
 					prev = strconv.Itoa(prevCap)
 				}
-				tlog("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying\n", trimCapNow, prev, len(running), len(desiredSet))
+				tlog("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying%s\n", trimCapNow, prev, runningProxies, len(desiredSet), autoNote)
 			} else {
 				tlog("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
+				ledgerRecord(ledgerEntry{Actor: "trim", Action: "cleared", From: prevCap, To: 0, Mode: "operator",
+					Reason: fmt.Sprintf("pool may regrow toward %d desired", len(desiredSet))})
 			}
 		}
 	}
@@ -800,6 +814,10 @@ func (r *ProxyReloader) reload() {
 		}
 		if shedCount > 0 || dropped > 0 || trimChanged {
 			tlog("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+		}
+		if trimChanged {
+			ledgerRecord(ledgerEntry{Actor: "trim", Action: "applied", From: runningProxies, To: trimCap, Mode: trimSource,
+				Reason: fmt.Sprintf("shed %d worst-graded running, held %d additions", shedCount, dropped)})
 		}
 	}
 

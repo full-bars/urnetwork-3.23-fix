@@ -65,10 +65,11 @@ func TestResourceConfigWarnings(t *testing.T) {
 	}
 }
 
-// The estimate is calibrated to the high side of the measured fleet (roughly
-// 0.2-0.55 MiB of heap per proxy, 0.25 used here plus a fixed 100 MiB), so a
-// warning means "this limit is very likely short for this pool". Pin its shape.
-func TestEstimatedPoolMemoryIsMonotonicAndBounded(t *testing.T) {
+// The estimate covers the proxies AND a peak-load allowance for connected
+// clients, which are not known at startup but drive memory (about 0.8 MiB each;
+// A 2 GiB box peaked at ~540 clients on 2,001 proxies, heap 415 -> 791 MiB). Pin its
+// shape against the two measured ends: an idle fresh process and that peak.
+func TestEstimatedPoolMemoryIsMonotonicAndCoversPeakClientLoad(t *testing.T) {
 	if estimatedPoolMemory(0) != resourceBaseOverhead {
 		t.Fatalf("an empty pool still costs the fixed overhead")
 	}
@@ -80,9 +81,33 @@ func TestEstimatedPoolMemoryIsMonotonicAndBounded(t *testing.T) {
 		}
 		prev = cur
 	}
-	// The incident box (2,001 proxies, heap ~410-470 MiB fresh): the estimate must
-	// not exceed what it really needed by a wide margin.
-	if got := estimatedPoolMemory(2001); got < 350*testMiB || got > 650*testMiB {
-		t.Fatalf("estimate for 2001 proxies = %d MiB, want within the 350-650 MiB band around the measured 410-470 MiB", got/testMiB)
+	// 2 GiB box: 415 MiB idle-fresh, 791 MiB at the observed client peak (2,001 proxies).
+	// The estimate must cover the peak but not overshoot it by much.
+	got := estimatedPoolMemory(2001)
+	if got < 791*testMiB {
+		t.Fatalf("estimate for 2001 proxies = %d MiB does not cover the measured 791 MiB peak-client heap", got/testMiB)
+	}
+	if got > 950*testMiB {
+		t.Fatalf("estimate for 2001 proxies = %d MiB overshoots the measured peak (791 MiB) by too much and would cry wolf", got/testMiB)
+	}
+}
+
+// The client allowance must not turn boxes that are known to run fine into
+// warnings: these were healthy on the day the estimate was calibrated.
+func TestResourceConfigDoesNotWarnOnKnownHealthyBoxes(t *testing.T) {
+	healthy := []struct {
+		name string
+		in   resourceConfigInput
+	}{
+		{"1 GB box after the fix: 1458 proxies, 818 MiB limit", resourceConfigInput{Proxies: 1458, GoMemLimit: 818 * testMiB}},
+		{"1 GB box after the fix: 1029 proxies, 818 MiB limit", resourceConfigInput{Proxies: 1029, GoMemLimit: 818 * testMiB}},
+		{"2 GiB box: 2001 proxies, 1400 MiB limit", resourceConfigInput{Proxies: 2001, GoMemLimit: 1400 * testMiB}},
+		{"2 GiB box: 1067 proxies, 1.7 GiB limit", resourceConfigInput{Proxies: 1067, GoMemLimit: 1700 * testMiB}},
+		{"1 GB box: 596 proxies, 818 MiB limit", resourceConfigInput{Proxies: 596, GoMemLimit: 818 * testMiB}},
+	}
+	for _, c := range healthy {
+		if got := resourceConfigWarnings(c.in); len(got) != 0 {
+			t.Errorf("%s: unexpected warnings %q", c.name, got)
+		}
 	}
 }

@@ -3813,8 +3813,15 @@ func provide(opts docopt.Opts) {
 	// connections) and only then shed down to the cap, a burst on exactly the
 	// boxes short of memory. Held proxies stay desired; the reload budget admits
 	// them when the cap rises.
+	// The OOM-aware cap decides FIRST so a cap set by an OOM kill since the last
+	// start applies to this very start (enforced only with URNETWORK_OOM_CAP=on;
+	// otherwise it is reported as a shadow decision; see oom_cap.go).
+	bootID, oomKills := readBootID(), readVmstatOOMKills()
+	for _, line := range oomCapDecide(len(allProxySettings), bootID, oomKills, time.Now()) {
+		tlog("%s\n", line)
+	}
 	launchSettings := allProxySettings
-	if trimCap, terr := readTrimTarget(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
+	if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
 		startupURLState, _ := readProxyURLState()
 		gradeFor := buildTrimGradeResolver(proxyState, startupURLState)
 		var held []*connect.ProxySettings
@@ -3841,6 +3848,8 @@ func provide(opts docopt.Opts) {
 			tlog("[proxy][resources] warning: %s\n", w)
 		}
 	}
+	// Record what this start actually launched, for the next start's decision.
+	oomCapRecordStart(len(launchSettings), bootID, oomKills, time.Now())
 	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(launchSettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
 		len(launchSettings), warmCount, renewableCount, coldCount)
