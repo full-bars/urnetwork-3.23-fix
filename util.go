@@ -77,15 +77,45 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 	}
 }
 
+// cgroupMemoryWorkingSet returns memory.current minus reclaimable file cache
+// (inactive_file, read from memory.stat in the same directory), floored at 0.
+// On cgroup v2, memory.current includes page cache the kernel is free to
+// reclaim on demand, so counting it as "used" makes a long-running unit that
+// sits near its limit on cache alone look exhausted when it has plenty of
+// real room. This is the kubelet/cAdvisor working-set convention. shmem is
+// deliberately not subtracted: it is not reclaimable without swap (e.g. the
+// RAMLOGS tmpfs). If memory.stat is missing or unparseable, cur is returned
+// unchanged (conservative: no room is invented from data we could not read).
+func cgroupMemoryWorkingSet(dir string, cur int64) int64 {
+	data, err := os.ReadFile(filepath.Join(dir, "memory.stat"))
+	if err != nil {
+		return cur
+	}
+	for _, line := range strings.Split(string(data), "\n") {
+		k, v, ok := strings.Cut(line, " ")
+		if !ok || k != "inactive_file" {
+			continue
+		}
+		inactive, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64)
+		if err != nil {
+			return cur
+		}
+		return max(0, cur-inactive)
+	}
+	return cur
+}
+
 // cgroupV2MemoryHeadroom returns the free room, in bytes, before the tightest
 // limit on the process's cgroup or any ancestor: the smallest
-// (limit - memory.current) over every level that has a positive memory.max or
-// memory.high (memory.high counts because the kernel throttles at it). Usage
-// above the limit is zero, never negative. A level whose usage cannot be read is
-// skipped rather than guessed; a level whose limit cannot be paired with a
-// usage reading makes the whole chain indeterminate (ok=false), because the
-// kernel still enforces that level's limit even if we cannot read its usage,
-// and adopting an ancestor's room would overstate what the process can use.
+// (limit - workingSet) over every level that has a positive memory.max or
+// memory.high (memory.high counts because the kernel throttles at it), where
+// workingSet is memory.current minus reclaimable page cache (see
+// cgroupMemoryWorkingSet). Usage above the limit is zero, never negative. A
+// level whose usage cannot be read is skipped rather than guessed; a level
+// whose limit cannot be paired with a usage reading makes the whole chain
+// indeterminate (ok=false), because the kernel still enforces that level's
+// limit even if we cannot read its usage, and adopting an ancestor's room
+// would overstate what the process can use.
 func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok bool) {
 	rel := ""
 	for _, line := range strings.Split(selfCgroup, "\n") {
@@ -128,7 +158,8 @@ func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok
 			if err != nil || cur < 0 {
 				return 0, false
 			}
-			room := max(0, limit-cur)
+			usage := cgroupMemoryWorkingSet(dir, cur)
+			room := max(0, limit-usage)
 			if !ok || room < headroom {
 				headroom, ok = room, true
 			}
