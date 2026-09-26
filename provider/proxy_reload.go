@@ -698,6 +698,12 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 
+	// Addresses shed by the trim cap below. Their state entry (ID, health,
+	// downtime, grade) must survive the removal loop: the shed is a capacity
+	// decision, not a verdict on the proxy, and dropping the entry would make a
+	// later relaunch allocate a new ID and rank the proxy as ungraded.
+	trimShedSet := map[string]bool{}
+
 	// Operator trim cap (provider proxy trim <N>): hold the running pool at N.
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
@@ -736,6 +742,7 @@ func (r *ProxyReloader) reload() {
 				if _, ok := running[addr]; ok && !removedSet[addr] {
 					removed = append(removed, addr)
 					removedSet[addr] = true
+					trimShedSet[addr] = true
 					shedCount++
 					// Do NOT delete from desiredSet: pruning against a trim-mutated
 					// set erases grade/health history. Mark a short
@@ -795,7 +802,7 @@ func (r *ProxyReloader) reload() {
 		// Keep the state entry of a rotated proxy: it is relaunched in this same
 		// pass, and dropping it would make the relaunch allocate a new ID and
 		// lose its persisted health, downtime and grading history.
-		if !rotatedSet[addr] {
+		if !rotatedSet[addr] && !trimShedSet[addr] {
 			delete(r.state.Proxies, addr)
 		}
 		// The goroutine for this address has now been cancelled; drop its
