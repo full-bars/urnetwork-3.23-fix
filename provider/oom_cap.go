@@ -233,7 +233,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	var msg string
 	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills) {
 		st, d = oomCapOnOOM(st, prev.Proxies, desired, now)
-		msg = "OOM kill since the last start"
+		msg = "OOM kill since the last start (peak running " + strconv.Itoa(prev.Proxies) + ")"
 	} else {
 		st, d = oomCapOnCleanStart(st, desired, now)
 		msg = "no OOM since the last start"

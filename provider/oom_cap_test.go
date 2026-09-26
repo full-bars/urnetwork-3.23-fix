@@ -241,7 +241,7 @@ func TestOOMCapUpdatePeakPersists(t *testing.T) {
 	oomCapUpdatePeak(1000) // lower: ignored
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	// 80% of the 3800 peak, not of the 2000 launched.
-	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") {
+	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {
 		t.Fatalf("decision must use the peak running count, got %q", lines)
 	}
 }
