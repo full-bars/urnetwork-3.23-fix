@@ -313,6 +313,7 @@ var liveEffectKeys = map[string]bool{
 	"fast_auth":                   true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
+	"oom_cap":                     true,
 	"report_url":                  true,
 	"report_interval":             true,
 	"proxy_url_refresh":           true,
@@ -368,6 +369,12 @@ func validateControlValue(key, value string) error {
 		case "on", "off":
 		default:
 			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
+	case "oom_cap":
+		switch valLower {
+		case "on", "off", "shadow":
+		default:
+			return fmt.Errorf("oom_cap: must be on, off, or shadow (got %q)", value)
 		}
 	case "hot_restart":
 		switch valLower {
@@ -454,6 +461,8 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit": "off",
+	// Clearing the OOM cap key returns to the safe default: decide and log only.
+	"oom_cap": "shadow",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -919,6 +928,10 @@ func applyLiveSideEffect(key, value string) error {
 			spawnRunOnce(a)
 		}
 		return nil
+	case "oom_cap":
+		// Read on every reload by effectiveTrimCap, so this is live; log an
+		// acknowledgement so the operator sees the command was received.
+		tlog("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
 	case "metrics":
 		return applyMetricsLive(value)
 	case "metrics_listen":

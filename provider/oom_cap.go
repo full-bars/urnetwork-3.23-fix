@@ -36,16 +36,42 @@ const (
 	oomCapOn
 )
 
-// oomCapMode reads URNETWORK_OOM_CAP (off|shadow|on). Anything else, including
-// unset, is shadow: the safe default is to log what would happen.
-func oomCapMode() oomCapModeKind {
-	switch strings.ToLower(strings.TrimSpace(os.Getenv("URNETWORK_OOM_CAP"))) {
+func parseOOMCapMode(v string) (oomCapModeKind, bool) {
+	switch strings.ToLower(strings.TrimSpace(v)) {
 	case "off", "0", "false", "no":
-		return oomCapOff
+		return oomCapOff, true
 	case "on", "1", "true", "yes":
-		return oomCapOn
+		return oomCapOn, true
+	case "shadow":
+		return oomCapShadow, true
 	}
-	return oomCapShadow
+	return oomCapShadow, false
+}
+
+// oomCapMode combines the URNETWORK_OOM_CAP environment variable with the
+// persisted control value (`urnet-tools set oom-cap on|off|shadow`). ANY source
+// saying off wins, so the kill switch always works even against an env "on";
+// otherwise any source saying on wins; otherwise shadow, the safe default of
+// deciding and logging without enforcing.
+func oomCapMode() oomCapModeKind {
+	sources := []string{os.Getenv("URNETWORK_OOM_CAP")}
+	if v, ok := globalControlState.get("oom_cap"); ok {
+		sources = append(sources, v)
+	}
+	mode := oomCapShadow
+	for _, v := range sources {
+		m, ok := parseOOMCapMode(v)
+		if !ok {
+			continue
+		}
+		if m == oomCapOff {
+			return oomCapOff
+		}
+		if m == oomCapOn {
+			mode = oomCapOn
+		}
+	}
+	return mode
 }
 
 // effectiveTrimCap is the cap the launch and reload paths enforce: the tightest
