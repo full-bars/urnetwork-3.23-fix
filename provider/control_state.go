@@ -114,6 +114,7 @@ var controlKeys = map[string]bool{
 	"metrics":                     true,
 	"metrics_listen":              true,
 	"proxy_audit":                 true,
+	"smart_dialer":                true,
 }
 
 // globalControlState is the single provider-wide instance. Set by

@@ -311,6 +311,7 @@ var liveEffectKeys = map[string]bool{
 	"gogc":       true,
 	// resolve* functions read globalControlState on every call — already live.
 	"fast_auth":                   true,
+	"smart_dialer":                true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
 	"report_url":                  true,
@@ -363,7 +364,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -454,6 +455,10 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit": "off",
+	// Clearing smart_dialer must restore the measured-cost preference to its
+	// off default; without the entry, clear reported success while the live
+	// dialer stayed enabled until restart.
+	"smart_dialer": "off",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -910,6 +915,17 @@ func applyLiveSideEffect(key, value string) error {
 		return applyMetricsLive(value)
 	case "metrics_listen":
 		return applyMetricsListenLive()
+	case "smart_dialer":
+		// Transport choice keeps measuring either way (the measurement always
+		// runs); this decides whether selection consults it. See
+		// connect.SetSmartDialer.
+		enabled := strings.EqualFold(value, "on")
+		previous := connect.SetSmartDialer(enabled)
+		was := "off"
+		if previous {
+			was = "on"
+		}
+		tlog("⚙️ [control] applied smart_dialer=%s (was %s)\n", value, was)
 	}
 	return nil
 }
@@ -1080,6 +1096,11 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	if v, ok := state.get("metrics"); ok && strings.EqualFold(v, "on") && os.Getenv("URNETWORK_METRICS") == "" && !metricsHandoffPending.Load() {
 		if err := applyMetricsLive("on"); err != nil {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
+		}
+	}
+	if v, ok := state.get("smart_dialer"); ok && strings.EqualFold(v, "on") {
+		if err := applyLiveSideEffect("smart_dialer", v); err != nil {
+			tlog("[control] failed to apply persisted smart_dialer=%s: %s\n", v, err)
 		}
 	}
 }
