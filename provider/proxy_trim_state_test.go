@@ -18,6 +18,12 @@ import (
 // relaunch (once the cap was raised) under a brand new ID, ungraded, having
 // lost its health and downtime history.
 func trimFixture(t *testing.T) (*ProxyReloader, []string, *atomic.Int32) {
+	return trimFixtureRunning(t, 3)
+}
+
+// trimFixtureRunning builds the same three-proxy source with only the first
+// `running` proxies launched (in cancelMap), as after a capped startup.
+func trimFixtureRunning(t *testing.T, running int) (*ProxyReloader, []string, *atomic.Int32) {
 	t.Helper()
 	withTempHome(t)
 	proxyWarmupDone.Store(true)
@@ -43,11 +49,7 @@ func trimFixture(t *testing.T) (*ProxyReloader, []string, *atomic.Int32) {
 	cancel := context.CancelFunc(func() { cancelled.Add(1) })
 	parent, cancelParent := context.WithCancel(context.Background())
 	r := &ProxyReloader{
-		cancelMap: map[string]context.CancelFunc{
-			addrs[0]: cancel,
-			addrs[1]: cancel,
-			addrs[2]: cancel,
-		},
+		cancelMap:   map[string]context.CancelFunc{},
 		cancelMapMu: &sync.Mutex{},
 		runningAuth: baseline,
 		state: &ProxyState{Proxies: map[string]ProxyEntry{
@@ -60,6 +62,9 @@ func trimFixture(t *testing.T) (*ProxyReloader, []string, *atomic.Int32) {
 		wg:              &sync.WaitGroup{},
 		spawnProxy:      func(context.Context, *connect.ProxySettings, bool, bool) { <-parent.Done() },
 		drainingProxies: map[string]context.CancelFunc{},
+	}
+	for _, a := range addrs[:running] {
+		r.cancelMap[a] = cancel
 	}
 	t.Cleanup(func() { cancelParent(); r.wg.Wait() })
 
@@ -126,5 +131,34 @@ func TestReload_TrimLogsReceiptAndResult(t *testing.T) {
 	cleared := captureTlog(t, func() { r.reload() })
 	if !strings.Contains(cleared, "[proxy][trim] received: cap cleared (was 1)") {
 		t.Fatalf("missing cleared line, got:\n%s", cleared)
+	}
+}
+
+// After a capped startup only `cap` proxies are running and the rest are held.
+// The startup reload must keep holding them (not launch them "as additions")
+// while the cap stands, and must launch one once the cap is raised.
+func TestReload_HeldProxiesStayHeldUntilTheCapRises(t *testing.T) {
+	r, addrs, cancelled := trimFixtureRunning(t, 2)
+	if err := writeTrimTarget(2); err != nil {
+		t.Fatal(err)
+	}
+
+	r.reload()
+	if _, launched := r.cancelMap[addrs[2]]; launched {
+		t.Fatalf("held proxy %s was launched while the cap of 2 is already met", addrs[2])
+	}
+	if got := cancelled.Load(); got != 0 {
+		t.Fatalf("cap already met: nothing may be shed, cancelled %d", got)
+	}
+	if _, ok := r.state.Proxies[addrs[2]]; !ok {
+		t.Fatalf("held proxy lost its state entry")
+	}
+
+	if err := writeTrimTarget(3); err != nil {
+		t.Fatal(err)
+	}
+	r.reload()
+	if _, launched := r.cancelMap[addrs[2]]; !launched {
+		t.Fatalf("with the cap raised to 3 the held proxy %s must be admitted", addrs[2])
 	}
 }

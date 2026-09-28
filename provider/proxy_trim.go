@@ -121,6 +121,42 @@ func previewViaControlSocket(count int) (string, error) {
 	return resp.Value, nil
 }
 
+// startupTrimSelection splits the desired list into the proxies to launch and
+// the proxies to hold back so a fresh provider never launches more than the
+// operator's trim cap. Nothing is running yet, so the "worst" are chosen from
+// persisted health, decayed earnings (a proven earner is protected) and grade,
+// with the same ranking a live trim uses. Launch order is preserved; held
+// proxies stay desired and are admitted by the reload budget when the cap
+// rises. A cap <= 0 or >= len(all) launches everything.
+func startupTrimSelection(all []*connect.ProxySettings, cap int, state map[string]ProxyEntry, gradeFor func(string) (float64, bool), earnings func(string) float64) (launch, held []*connect.ProxySettings) {
+	if cap <= 0 || len(all) <= cap {
+		return all, nil
+	}
+	keys := make([]string, 0, len(all))
+	traffic := make(map[string]uint64, len(all))
+	for _, p := range all {
+		k := p.Key()
+		keys = append(keys, k)
+		if e := earnings(k); e > 0 {
+			traffic[k] = uint64(e)
+		}
+	}
+	heldSet := make(map[string]bool, len(all)-cap)
+	for _, k := range selectWorstRunningProxies(state, gradeFor, traffic, keys, len(all)-cap) {
+		heldSet[k] = true
+	}
+	launch = make([]*connect.ProxySettings, 0, cap)
+	held = make([]*connect.ProxySettings, 0, len(all)-cap)
+	for _, p := range all {
+		if heldSet[p.Key()] {
+			held = append(held, p)
+		} else {
+			launch = append(launch, p)
+		}
+	}
+	return launch, held
+}
+
 // trimCapSeen is the last operator trim cap the reload loop acknowledged
 // (0 = none). It lets the reload log a receipt exactly once per change.
 var trimCapSeen atomic.Int64
