@@ -370,10 +370,10 @@ func TestClassifyAuthFailureCause(t *testing.T) {
 			want: "proxy tunnel stalled (TLS handshake timeout through the proxy, not the API)",
 		},
 		{
-			name: "a TLS handshake timeout on the DIRECT path is an API reachability error, not a proxy tunnel",
-			err:  errors.New("tls handshake timeout after 1m0s"),
+			name:   "a TLS handshake timeout on the DIRECT path is an API reachability error, not a proxy tunnel",
+			err:    errors.New("tls handshake timeout after 1m0s"),
 			direct: true,
-			want: "network error reaching API (check connectivity to api.bringyour.com)",
+			want:   "network error reaching API (check connectivity to api.bringyour.com)",
 		},
 		{
 			name: "a connection reset is the proxy path, not the API",
@@ -381,10 +381,10 @@ func TestClassifyAuthFailureCause(t *testing.T) {
 			want: "proxy tunnel reset the connection (the proxy path, not the API)",
 		},
 		{
-			name: "a connection reset on the DIRECT path is an API reachability error",
-			err:  errors.New("read tcp 10.0.0.1:1234->1.2.3.4:443: connection reset by peer"),
+			name:   "a connection reset on the DIRECT path is an API reachability error",
+			err:    errors.New("read tcp 10.0.0.1:1234->1.2.3.4:443: connection reset by peer"),
 			direct: true,
-			want: "network error reaching API (check connectivity to api.bringyour.com)",
+			want:   "network error reaching API (check connectivity to api.bringyour.com)",
 		},
 		{
 			name: "anything else is treated as a rejected token",
