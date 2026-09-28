@@ -665,7 +665,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// self-heal: log when the box gets short and when it recovers.
 			avail := hostAvailMiB() // one reading, used for both the decision and the line
 			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, connect.ProxyHealthCount(), runtime.NumGoroutine()); line != "" {
-				tlog("%s\n", line)
+				importantLogf("%s\n", line)
 			}
 		}
 

@@ -958,7 +958,7 @@ func applyLiveSideEffect(key, value string) error {
 	case "oom_cap":
 		// Read on every reload by effectiveTrimCap, so this is live; log an
 		// acknowledgement so the operator sees the command was received.
-		tlog("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
+		importantLogf("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
 	case "metrics":
 		return applyMetricsLive(value)
 	case "metrics_listen":

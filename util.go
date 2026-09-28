@@ -3,6 +3,7 @@ package connect
 import (
 	"bufio"
 	"context"
+	"fmt"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -74,6 +75,82 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 		}
 		dir = filepath.Dir(dir)
 	}
+}
+
+// cgroupV2MemoryHeadroom returns the free room, in bytes, before the tightest
+// limit on the process's cgroup or any ancestor: the smallest
+// (limit - memory.current) over every level that has a positive memory.max or
+// memory.high (memory.high counts because the kernel throttles at it). Usage
+// above the limit is zero, never negative. A level whose usage cannot be read is
+// skipped rather than guessed; ok is false when no level yields a figure.
+func cgroupV2MemoryHeadroom(mount string, selfCgroup string) (headroom int64, ok bool) {
+	rel := ""
+	for _, line := range strings.Split(selfCgroup, "\n") {
+		if strings.HasPrefix(line, "0::") {
+			rel = strings.TrimSpace(strings.TrimPrefix(line, "0::"))
+			break
+		}
+	}
+	if rel == "" {
+		return 0, false
+	}
+	readInt := func(dir, name string) (int64, bool) {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			return 0, false
+		}
+		v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+		return v, err == nil && v > 0
+	}
+	dir := filepath.Join(mount, rel)
+	mount = filepath.Clean(mount)
+	for {
+		limit, haveLimit := int64(0), false
+		for _, name := range []string{"memory.max", "memory.high"} {
+			if v, good := readInt(dir, name); good && (!haveLimit || v < limit) {
+				limit, haveLimit = v, true
+			}
+		}
+		if haveLimit {
+			// memory.current can legitimately be 0 only for an empty cgroup;
+			// treat an unreadable or non-numeric value as "unknown".
+			if data, err := os.ReadFile(filepath.Join(dir, "memory.current")); err == nil {
+				if cur, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && cur >= 0 {
+					room := max(0, limit-cur)
+					if !ok || room < headroom {
+						headroom, ok = room, true
+					}
+				}
+			}
+		}
+		if dir == mount || len(dir) <= len(mount) {
+			return headroom, ok
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+// CgroupMemoryHeadroomBytesForPID is CgroupMemoryHeadroomBytes for another
+// process (its cgroup comes from /proc/<pid>/cgroup): the free room before the
+// tightest cgroup v2 limit that process runs under. A hotswap candidate shares
+// the running provider's cgroup, not the updater's.
+func CgroupMemoryHeadroomBytesForPID(pid int) (int64, bool) {
+	self, err := os.ReadFile(fmt.Sprintf("/proc/%d/cgroup", pid))
+	if err != nil {
+		return 0, false
+	}
+	return cgroupV2MemoryHeadroom("/sys/fs/cgroup", string(self))
+}
+
+// CgroupMemoryHeadroomBytes reports the free room before this process's
+// tightest cgroup v2 memory limit, and whether any limit with a usage reading
+// exists.
+func CgroupMemoryHeadroomBytes() (int64, bool) {
+	self, err := os.ReadFile("/proc/self/cgroup")
+	if err != nil {
+		return 0, false
+	}
+	return cgroupV2MemoryHeadroom("/sys/fs/cgroup", string(self))
 }
 
 // CgroupMemoryCeiling reports the tightest cgroup v2 memory.max/memory.high
