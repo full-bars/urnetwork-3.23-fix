@@ -111,3 +111,15 @@ func TestResourceConfigDoesNotWarnOnKnownHealthyBoxes(t *testing.T) {
 		}
 	}
 }
+
+func TestRAMCeilingLogLine(t *testing.T) {
+	got := ramCeilingLogLine(1<<30, "cgroup v2 memory.max at /system.slice/urnetwork.service")
+	want := "[proxy][resources] effective RAM ceiling 1024 MiB (cgroup v2 memory.max at /system.slice/urnetwork.service)"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// It must reach events.log with the other capacity-control lines.
+	if !isImportantLogLine("0928 12:00:00 " + got) {
+		t.Fatal("the ceiling line must match an important-log marker")
+	}
+}

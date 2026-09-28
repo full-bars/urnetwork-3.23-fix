@@ -3844,6 +3844,8 @@ func provide(opts docopt.Opts) {
 		if ceiling, ok := connect.CgroupMemoryCeiling(); ok {
 			in.CgroupCeiling = ceiling
 		}
+		ceilingBytes, ceilingSource := connect.EffectiveRAMLimit()
+		importantLogf("%s\n", ramCeilingLogLine(ceilingBytes, ceilingSource))
 		for _, w := range resourceConfigWarnings(in) {
 			importantLogf("[proxy][resources] warning: %s\n", w)
 		}

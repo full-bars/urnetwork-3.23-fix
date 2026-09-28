@@ -72,3 +72,13 @@ func resourceConfigWarnings(in resourceConfigInput) []string {
 	}
 	return out
 }
+
+// ramCeilingLogLine is the one line, logged once at startup, that says what RAM
+// ceiling this process tunes itself against (tier selection, GOMEMLIMIT, the GC
+// governor, the headroom threshold, the hot-swap gate) and which limit set it.
+// The number is derived from the process's own cgroup and can differ from the
+// host's RAM by a lot, so without this line a box that suddenly tunes for a
+// smaller ceiling gives the operator nothing to explain why.
+func ramCeilingLogLine(ceilingBytes int64, source string) string {
+	return fmt.Sprintf("[proxy][resources] effective RAM ceiling %d MiB (%s)", ceilingBytes>>20, source)
+}

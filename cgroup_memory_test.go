@@ -218,3 +218,49 @@ func TestCgroupV2MemoryHeadroom(t *testing.T) {
 		}
 	})
 }
+
+// The startup log line names the file that set the ceiling, so an operator can
+// tell a soft memory.high from a hard memory.max and an own-unit limit from an
+// ancestor slice's.
+func TestCgroupV2MemoryCeilingSourceNamesTheBindingLimit(t *testing.T) {
+	const mib = int64(1) << 20
+	unit := "/system.slice/urnetwork.service"
+	self := "0::" + unit + "\n"
+
+	t.Run("memory.high on the unit", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "524288000")
+		writeCgroupFile(t, root, unit, "memory.high", "471859200")
+		got, src, ok := cgroupV2MemoryCeilingSource(root, self)
+		if !ok || got != 450*mib || src != "memory.high at "+unit {
+			t.Fatalf("got %d %q ok=%v", got, src, ok)
+		}
+	})
+
+	t.Run("memory.max on an ancestor slice", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, "/system.slice", "memory.max", "1073741824")
+		writeCgroupFile(t, root, unit, "memory.max", "max")
+		got, src, ok := cgroupV2MemoryCeilingSource(root, self)
+		if !ok || got != 1024*mib || src != "memory.max at /system.slice" {
+			t.Fatalf("got %d %q ok=%v", got, src, ok)
+		}
+	})
+
+	t.Run("container root", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, ".", "memory.max", "536870912")
+		_, src, ok := cgroupV2MemoryCeilingSource(root, "0::/\n")
+		if !ok || src != "memory.max at /" {
+			t.Fatalf("src %q ok=%v", src, ok)
+		}
+	})
+
+	t.Run("no limit reports no source", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "max")
+		if _, src, ok := cgroupV2MemoryCeilingSource(root, self); ok || src != "" {
+			t.Fatalf("src %q ok=%v, want none", src, ok)
+		}
+	})
+}

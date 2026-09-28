@@ -44,6 +44,14 @@ func resetOrCreateTimer(timer **time.Timer, timeout time.Duration) <-chan time.T
 // memory.max is higher. ok is false when nothing limits the process, or the
 // tree cannot be read (callers then fall back to cgroup v1 / MemTotal).
 func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok bool) {
+	ceiling, _, ok = cgroupV2MemoryCeilingSource(mount, selfCgroup)
+	return ceiling, ok
+}
+
+// cgroupV2MemoryCeilingSource is cgroupV2MemoryCeiling that also names the limit
+// that binds, as "memory.max at /system.slice/x.service", so an operator can see
+// which file set the number the provider tunes itself against.
+func cgroupV2MemoryCeilingSource(mount string, selfCgroup string) (ceiling int64, source string, ok bool) {
 	rel := ""
 	for _, line := range strings.Split(selfCgroup, "\n") {
 		if strings.HasPrefix(line, "0::") {
@@ -52,7 +60,7 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 		}
 	}
 	if rel == "" {
-		return 0, false
+		return 0, "", false
 	}
 	dir := filepath.Join(mount, rel)
 	mount = filepath.Clean(mount)
@@ -68,10 +76,15 @@ func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok b
 			}
 			if !ok || v < ceiling {
 				ceiling, ok = v, true
+				at := strings.TrimPrefix(dir, mount)
+				if at == "" {
+					at = "/"
+				}
+				source = name + " at " + at
 			}
 		}
 		if dir == mount || len(dir) <= len(mount) {
-			return ceiling, ok
+			return ceiling, source, ok
 		}
 		dir = filepath.Dir(dir)
 	}
@@ -208,18 +221,25 @@ func CgroupMemoryCeiling() (int64, bool) {
 // DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func DetectEffectiveRAMLimitBytes() int64 {
+	v, _ := EffectiveRAMLimit()
+	return v
+}
+
+// EffectiveRAMLimit is DetectEffectiveRAMLimitBytes plus a human-readable name
+// for where the number came from, for the startup log line.
+func EffectiveRAMLimit() (int64, string) {
 	// cgroup v2: the tightest memory.max/memory.high on this process's own
 	// cgroup or any ancestor (systemd MemoryMax=/MemoryHigh= live there).
 	if self, err := os.ReadFile("/proc/self/cgroup"); err == nil {
-		if v, ok := cgroupV2MemoryCeiling("/sys/fs/cgroup", string(self)); ok {
-			return v
+		if v, src, ok := cgroupV2MemoryCeilingSource("/sys/fs/cgroup", string(self)); ok {
+			return v, "cgroup v2 " + src
 		}
 	}
 	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
 	const oneTiB = 1 << 40
 	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
 		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
-			return v
+			return v, "cgroup v1 memory.limit_in_bytes"
 		}
 	}
 	// /proc/meminfo MemTotal (kB)
@@ -232,13 +252,13 @@ func DetectEffectiveRAMLimitBytes() int64 {
 				fields := strings.Fields(line)
 				if len(fields) >= 2 {
 					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						return v * 1024
+						return v * 1024, "host MemTotal, no cgroup limit found"
 					}
 				}
 			}
 		}
 	}
-	return 850 * 1024 * 1024
+	return 850 * 1024 * 1024, "fallback default, host memory unreadable"
 }
 
 var memoryShedders = NewCallbackList[func()]()
