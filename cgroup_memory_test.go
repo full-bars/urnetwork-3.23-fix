@@ -155,4 +155,112 @@ func TestCgroupV2MemoryHeadroom(t *testing.T) {
 			t.Fatalf("garbage must not produce a figure")
 		}
 	})
+
+	t.Run("reclaimable page cache is not counted as used", func(t *testing.T) {
+		// memory.current includes reclaimable file cache; the kernel fills a
+		// cgroup with cache up to its limit and reclaims it on demand, so a
+		// long-running unit near memory.current has plenty of real headroom.
+		// Working-set usage (the kubelet/cAdvisor convention) is
+		// memory.current - inactive_file from memory.stat, floored at 0.
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "1000")
+		writeCgroupFile(t, root, unit, "memory.current", "950")
+		writeCgroupFile(t, root, unit, "memory.stat", "inactive_file 600\nactive_file 50\nanon 300\n")
+		got, ok := cgroupV2MemoryHeadroom(root, self)
+		if !ok || got != 650 {
+			t.Fatalf("got %d ok=%v, want 650 (1000 - (950 - 600))", got, ok)
+		}
+	})
+
+	t.Run("a missing memory.stat falls back to memory.current unchanged", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "1000")
+		writeCgroupFile(t, root, unit, "memory.current", "950")
+		got, ok := cgroupV2MemoryHeadroom(root, self)
+		if !ok || got != 50 {
+			t.Fatalf("got %d ok=%v, want 50 (no memory.stat: usage unchanged)", got, ok)
+		}
+	})
+
+	t.Run("an unparseable memory.stat falls back to memory.current unchanged", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "1000")
+		writeCgroupFile(t, root, unit, "memory.current", "950")
+		writeCgroupFile(t, root, unit, "memory.stat", "garbage\n")
+		got, ok := cgroupV2MemoryHeadroom(root, self)
+		if !ok || got != 50 {
+			t.Fatalf("got %d ok=%v, want 50 (unparseable memory.stat: usage unchanged)", got, ok)
+		}
+	})
+
+	t.Run("working-set usage above the limit is zero headroom, never negative", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "1000")
+		writeCgroupFile(t, root, unit, "memory.current", "950")
+		writeCgroupFile(t, root, unit, "memory.stat", "inactive_file 0\n")
+		got, ok := cgroupV2MemoryHeadroom(root, self)
+		if !ok || got != 50 {
+			t.Fatalf("got %d ok=%v, want 50 (no reclaimable cache: same as memory.current)", got, ok)
+		}
+	})
+
+	t.Run("an inner limited level without usage must not adopt ancestor room", func(t *testing.T) {
+		// The kernel enforces the child's 50M limit even though its usage
+		// file is unreadable here; the ancestor's 400M of room must not be
+		// reported as available to the process.
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "52428800") // 50M, no memory.current
+		parent := "/user.slice/user-1000.slice"
+		writeCgroupFile(t, root, parent, "memory.max", "524288000")     // 500M
+		writeCgroupFile(t, root, parent, "memory.current", "104857600") // 100M used -> 400M room
+		if got, ok := cgroupV2MemoryHeadroom(root, self); ok {
+			t.Fatalf("got %d MiB of headroom from the ancestor, want the chain indeterminate", got>>20)
+		}
+	})
+}
+
+// The startup log line names the file that set the ceiling, so an operator can
+// tell a soft memory.high from a hard memory.max and an own-unit limit from an
+// ancestor slice's.
+func TestCgroupV2MemoryCeilingSourceNamesTheBindingLimit(t *testing.T) {
+	const mib = int64(1) << 20
+	unit := "/system.slice/urnetwork.service"
+	self := "0::" + unit + "\n"
+
+	t.Run("memory.high on the unit", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "524288000")
+		writeCgroupFile(t, root, unit, "memory.high", "471859200")
+		got, src, ok := cgroupV2MemoryCeilingSource(root, self)
+		if !ok || got != 450*mib || src != "memory.high at "+unit {
+			t.Fatalf("got %d %q ok=%v", got, src, ok)
+		}
+	})
+
+	t.Run("memory.max on an ancestor slice", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, "/system.slice", "memory.max", "1073741824")
+		writeCgroupFile(t, root, unit, "memory.max", "max")
+		got, src, ok := cgroupV2MemoryCeilingSource(root, self)
+		if !ok || got != 1024*mib || src != "memory.max at /system.slice" {
+			t.Fatalf("got %d %q ok=%v", got, src, ok)
+		}
+	})
+
+	t.Run("container root", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, ".", "memory.max", "536870912")
+		_, src, ok := cgroupV2MemoryCeilingSource(root, "0::/\n")
+		if !ok || src != "memory.max at /" {
+			t.Fatalf("src %q ok=%v", src, ok)
+		}
+	})
+
+	t.Run("no limit reports no source", func(t *testing.T) {
+		root := t.TempDir()
+		writeCgroupFile(t, root, unit, "memory.max", "max")
+		if _, src, ok := cgroupV2MemoryCeilingSource(root, self); ok || src != "" {
+			t.Fatalf("src %q ok=%v, want none", src, ok)
+		}
+	})
 }

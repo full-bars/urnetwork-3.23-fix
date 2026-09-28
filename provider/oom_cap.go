@@ -48,6 +48,19 @@ func parseOOMCapMode(v string) (oomCapModeKind, bool) {
 	return oomCapShadow, false
 }
 
+// oomCapModeName is parseOOMCapMode's inverse for logging: the canonical name
+// of a mode value.
+func oomCapModeName(m oomCapModeKind) string {
+	switch m {
+	case oomCapOff:
+		return "off"
+	case oomCapOn:
+		return "on"
+	default:
+		return "shadow"
+	}
+}
+
 // oomCapMode combines the URNETWORK_OOM_CAP environment variable with the
 // persisted control value (`urnet-tools set oom-cap on|off|shadow`). ANY source
 // saying off wins, so the kill switch always works even against an env "on";
@@ -120,13 +133,44 @@ type oomMarker struct {
 	OOMKills    int64  `json:"oom_kills"` // /proc/vmstat oom_kill at that start
 	Proxies     int    `json:"proxies"`   // proxies launched at that start
 	StartedUnix int64  `json:"started_unix"`
+	// LastSeenUnix is a heartbeat refreshed by the periodic pressure-loop path
+	// (oomCapUpdatePeak) at most once per oomHeartbeatInterval, while this
+	// process is alive. StartedUnix alone freezes at process start, so a
+	// long-running provider's marker looked stale (see oomMarkerMaxAge) and any
+	// OOM kill after oomMarkerMaxAge of uptime was silently never blamed. Zero
+	// means an old marker written before this field existed; age-checks fall
+	// back to StartedUnix in that case.
+	LastSeenUnix int64 `json:"last_seen_unix,omitempty"`
 }
+
+// oomHeartbeatInterval bounds how often oomCapUpdatePeak refreshes
+// LastSeenUnix: often enough that oomMarkerMaxAge age-checks the process's
+// actual uptime, not so often that a routine 30s pressure tick becomes a disk
+// write.
+const oomHeartbeatInterval = time.Hour
 
 // oomKilledSinceMarker reports whether an OOM kill happened since the previous
 // start. A different boot id means a reboot (the counter reset), which is never
-// attributed to an OOM; an unknown reading never claims one.
-func oomKilledSinceMarker(m *oomMarker, bootID string, oomKills int64) bool {
+// attributed to an OOM; an unknown reading never claims one. A marker older than
+// oomMarkerMaxAge is stale: the box may have been down for days (or running with
+// the cap off) while ANY other workload on the same boot bumped the global
+// oom_kill counter, and the marker's proxy count no longer describes this
+// process's load. Staleness is judged against the heartbeat (how recently this
+// process was last seen running), not StartedUnix (when it started): a
+// long-running process refreshes the heartbeat and is never blamed for a kill
+// that happened while it was legitimately still up. A marker with no heartbeat
+// (written before this field existed) falls back to StartedUnix.
+const oomMarkerMaxAge = 72 * time.Hour
+
+func oomKilledSinceMarker(m *oomMarker, bootID string, oomKills int64, now time.Time) bool {
 	if m == nil || bootID == "" || m.BootID != bootID || oomKills < 0 || m.OOMKills < 0 {
+		return false
+	}
+	lastSeen := m.LastSeenUnix
+	if lastSeen == 0 {
+		lastSeen = m.StartedUnix
+	}
+	if lastSeen > 0 && now.Sub(time.Unix(lastSeen, 0)) > oomMarkerMaxAge {
 		return false
 	}
 	return oomKills > m.OOMKills
@@ -162,6 +206,11 @@ func oomCapOnOOM(st oomCapState, proxiesAtDeath, desired int, now time.Time) (oo
 	recent := recentReductions(st.Reductions, now)
 	st.Reductions = recent
 	if len(recent) >= oomCapMaxReductions {
+		// Frozen: no more reductions today, but the box was OOM-killed NOW.
+		// The clean-day clock must restart from this OOM, or a start after
+		// the original window would relax (grow) the cap immediately after
+		// a fresh kill.
+		st.SinceUnix = now.Unix()
 		return st, oomCapDecision{Action: "frozen", From: st.Cap, To: st.Cap}
 	}
 	floor := max(oomCapMinFloor, desired/4)
@@ -170,8 +219,15 @@ func oomCapOnOOM(st oomCapState, proxiesAtDeath, desired int, now time.Time) (oo
 		base = st.Cap // never reduce from a number larger than the standing cap
 	}
 	next := max(floor, int(float64(base)*oomCapReduceFactor))
-	if st.Cap > 0 && next >= st.Cap {
-		// Already at or below what this reduction would set (e.g. at the floor).
+	if next >= proxiesAtDeath || (st.Cap > 0 && next >= st.Cap) {
+		// Either already at or below what this reduction would set (e.g. at
+		// the floor), or the floor itself (max(oomCapMinFloor, desired/4)) is
+		// not tighter than what actually died -- a small pool (desired under
+		// roughly 4x the floor) would otherwise get a cap AT OR ABOVE its
+		// death size, an "applied: reduce" that changes nothing or grows the
+		// cap. Still an OOM kill: restart the clean-day clock so the cap does
+		// not relax immediately after the box died.
+		st.SinceUnix = now.Unix()
 		return st, oomCapDecision{Action: "none", From: st.Cap, To: st.Cap}
 	}
 	d := oomCapDecision{Action: "reduce", From: st.Cap, To: next}
@@ -220,6 +276,14 @@ func oomWriteJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	// A HotSwap parent and candidate both write these files at start. Without
+	// the lock one can truncate the shared .tmp while the other renames it, and
+	// the state file ends up holding a partial write.
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
@@ -275,7 +339,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 
 	var d oomCapDecision
 	var msg string
-	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills) {
+	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills, now) {
 		st, d = oomCapOnOOM(st, prev.Proxies, desired, now)
 		msg = "OOM kill since the last start (peak running " + strconv.Itoa(prev.Proxies) + ")"
 	} else {
@@ -292,12 +356,36 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 		modeName = "on"
 	}
 	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: d.Action, From: d.From, To: d.To, Mode: modeName, Reason: msg})
-	verb, tail := "shadow: "+msg+": would ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
+	verb, tail := "shadow: "+msg+": ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
 	if mode == oomCapOn {
 		verb, tail = "applied: "+msg+": ", ""
 	}
-	return []string{"[oomcap] " + verb + d.Action + " the automatic start cap " +
-		strconv.Itoa(d.From) + " -> " + strconv.Itoa(d.To) + tail}
+	return []string{"[oomcap] " + verb + oomCapActionPhrase(d, mode == oomCapOn) + tail}
+}
+
+// oomCapActionPhrase words a decision for the log: "would reduce ..." in shadow,
+// "reduced ..." when enforced. A frozen decision changes nothing, so it reads as
+// holding the cap rather than as a move between two equal numbers.
+func oomCapActionPhrase(d oomCapDecision, applied bool) string {
+	from := "none"
+	if d.From > 0 {
+		from = strconv.Itoa(d.From)
+	}
+	verb := map[bool]map[string]string{
+		false: {"reduce": "would reduce", "relax": "would relax", "clear": "would clear", "frozen": "would hold"},
+		true:  {"reduce": "reduced", "relax": "relaxed", "clear": "cleared", "frozen": "held"},
+	}[applied][d.Action]
+	if verb == "" {
+		verb = d.Action
+	}
+	if d.Action == "frozen" {
+		return verb + " the automatic start cap at " + strconv.Itoa(d.To) + " (reduction limit reached)"
+	}
+	to := "none"
+	if d.To > 0 {
+		to = strconv.Itoa(d.To)
+	}
+	return verb + " the automatic start cap " + from + " -> " + to
 }
 
 // oomMarkerWithPeak raises the marker's proxy count to the observed running
@@ -311,9 +399,24 @@ func oomMarkerWithPeak(m oomMarker, running int) (oomMarker, bool) {
 	return m, true
 }
 
-// oomCapUpdatePeak records a higher running count in this start's marker. Cheap:
-// it only writes when the peak rises.
-func oomCapUpdatePeak(running int) {
+// oomMarkerWithHeartbeat refreshes the marker's LastSeenUnix to now when it has
+// never been set or oomHeartbeatInterval has passed since it was last
+// refreshed, and reports whether it changed. Bounding the rate keeps this off
+// the hot path of the 30s pressure tick that calls it.
+func oomMarkerWithHeartbeat(m oomMarker, now time.Time) (oomMarker, bool) {
+	if m.LastSeenUnix != 0 && now.Sub(time.Unix(m.LastSeenUnix, 0)) < oomHeartbeatInterval {
+		return m, false
+	}
+	m.LastSeenUnix = now.Unix()
+	return m, true
+}
+
+// oomCapUpdatePeak records a higher running count in this start's marker and
+// refreshes its heartbeat at a bounded rate, so a long-running provider's
+// marker is never judged stale by oomKilledSinceMarker just because it started
+// more than oomMarkerMaxAge ago. Cheap: it only writes when the peak rises or
+// the heartbeat is due.
+func oomCapUpdatePeak(running int, now time.Time) {
 	if oomCapMode() == oomCapOff {
 		return
 	}
@@ -326,7 +429,9 @@ func oomCapUpdatePeak(running int) {
 	if !oomReadJSON(path, &m) {
 		return
 	}
-	if next, changed := oomMarkerWithPeak(m, running); changed {
+	next, peakChanged := oomMarkerWithPeak(m, running)
+	next, heartbeatChanged := oomMarkerWithHeartbeat(next, now)
+	if peakChanged || heartbeatChanged {
 		_ = oomWriteJSON(path, next)
 	}
 }

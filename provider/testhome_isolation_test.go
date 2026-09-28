@@ -53,6 +53,38 @@ func TestWithTempHomeResetsSharedProxyState(t *testing.T) {
 	})
 }
 
+// lifetimeStore and globalProxyEarningsStore are package-init globals, like
+// globalClientJWTStore, but were left shared across every test in the
+// package: a test that credited earnings into one could leak into the next
+// test's expectations even though both used withTempHome. withTempHome must
+// swap in a fresh instance of each per test.
+func TestWithTempHomeIsolatesLifetimeAndEarningsStores(t *testing.T) {
+	prevLifetime := lifetimeStore
+	prevEarnings := globalProxyEarningsStore
+	var dir string
+	t.Run("inside a temp-home test", func(t *testing.T) {
+		dir = withTempHome(t)
+		if lifetimeStore == prevLifetime {
+			t.Fatalf("lifetimeStore was not replaced for this test")
+		}
+		if globalProxyEarningsStore == prevEarnings {
+			t.Fatalf("globalProxyEarningsStore was not replaced for this test")
+		}
+		globalProxyEarningsStore.mu.Lock()
+		globalProxyEarningsStore.creditLocked(dir+":1080", 1<<30, time.Now())
+		globalProxyEarningsStore.mu.Unlock()
+	})
+	if lifetimeStore != prevLifetime {
+		t.Fatalf("withTempHome must restore the previous lifetimeStore on cleanup")
+	}
+	if globalProxyEarningsStore != prevEarnings {
+		t.Fatalf("withTempHome must restore the previous globalProxyEarningsStore on cleanup")
+	}
+	if globalProxyEarningsStore.Score(dir+":1080", time.Now()) != 0 {
+		t.Fatalf("earnings credited inside one temp-home test leaked into the restored store")
+	}
+}
+
 // A test that forgets withTempHome must still not reach the developer's real
 // home: TestMain points HOME at a throwaway directory for the whole binary.
 func TestPackageHomeIsNotTheDevelopersRealHome(t *testing.T) {
@@ -65,5 +97,14 @@ func TestPackageHomeIsNotTheDevelopersRealHome(t *testing.T) {
 	}
 	if !strings.HasPrefix(globalClientJWTStore.path, home) {
 		t.Fatalf("the JWT store %q is outside the test home %q", globalClientJWTStore.path, home)
+	}
+	// The other package-init singletons must be pinned to the test home too.
+	for name, path := range map[string]string{
+		"lifetime metrics":     lifetimeStore.path,
+		"proxy earnings store": globalProxyEarningsStore.path,
+	} {
+		if !strings.HasPrefix(path, home) {
+			t.Fatalf("the %s %q is outside the test home %q", name, path, home)
+		}
 	}
 }

@@ -33,7 +33,21 @@ func withTempHome(t *testing.T) string {
 	globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
 	t.Cleanup(func() { globalProxyFailureHistory = prevHistory })
 	trimCapSeen.Store(0)
-	t.Cleanup(func() { trimCapSeen.Store(0) })
+	trimCapSourceSeen.Store("")
+	t.Cleanup(func() { trimCapSeen.Store(0); trimCapSourceSeen.Store("") })
+	// lifetimeStore and globalProxyEarningsStore are, like globalClientJWTStore
+	// above, built at package init from the real home and never repointed by
+	// the HOME redirect. TestMain moves them off the developer's real home for
+	// the whole binary, but leaves them SHARED across every test in the
+	// package: a test that credits earnings or lifetime counters can leak into
+	// the next one's expectations. Swap in a fresh instance per test, in this
+	// temp home's layout, and restore on cleanup.
+	prevLifetimeStore := lifetimeStore
+	lifetimeStore = loadLifetimeMetrics(lifetimeMetricsPath())
+	t.Cleanup(func() { lifetimeStore = prevLifetimeStore })
+	prevEarningsStore := globalProxyEarningsStore
+	globalProxyEarningsStore = newProxyEarningsStore(proxyEarningsPath())
+	t.Cleanup(func() { globalProxyEarningsStore = prevEarningsStore })
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
 	// Must hold the lock: doWriteReloadTrigger (scheduled by a prior test's
 	// writeReloadTrigger via time.AfterFunc) writes lastReloadTriggerTime.ts under

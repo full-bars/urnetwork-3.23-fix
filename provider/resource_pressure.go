@@ -54,8 +54,14 @@ const (
 	// pool above ~1,000 proxies at 1.00. The process-wide overhead (control
 	// socket, monitors, metrics, GC workers) is subtracted first so a small pool
 	// is not charged for it. The absolute ramp below still applies when nothing
-	// is running (direct-only node), where there is no proxy count to divide by.
+	// is running (direct-only node), where there is no proxy count to divide by,
+	// AND below goroutineMinPoolForPerProxy, where dividing by a small pool is
+	// not meaningful: several self-heal consumers of this pressure score (the
+	// AIMD URL pool controller, the reaper, probe concurrency) SHRINK the pool
+	// under pressure, which shrinks the denominator and raises per-proxy
+	// further -- a possible positive-feedback loop on a small URL-sourced pool.
 	goroutineFixedOverhead      = 1000
+	goroutineMinPoolForPerProxy = 50
 	goroutinePerProxyRampLo     = 60.0
 	goroutinePerProxyRampHi     = 150.0
 	emergencyGoroutinesPerProxy = 200.0
@@ -117,9 +123,10 @@ func normalizeRamp(v, lo, hi float64) float64 {
 }
 
 // goroutinesPerProxy is the per-proxy goroutine cost after removing the fixed
-// process overhead; ok is false when there are no running proxies to divide by.
+// process overhead; ok is false when there are no running proxies to divide by,
+// or too few for the division to be meaningful (see goroutineMinPoolForPerProxy).
 func goroutinesPerProxy(s pressureSample) (perProxy float64, ok bool) {
-	if s.RunningProxies <= 0 {
+	if s.RunningProxies < goroutineMinPoolForPerProxy {
 		return 0, false
 	}
 	return float64(max(0, s.Goroutines-goroutineFixedOverhead)) / float64(s.RunningProxies), true
@@ -257,11 +264,27 @@ func readMemAvailFrac() (float64, error) {
 	return max(0, availMiB) * 1024 * 1024 / float64(ram), nil
 }
 
+// runningProxyCountForPressure is the pool size the goroutine sensor divides
+// by: the health registry count minus the native direct transport, which is a
+// single fixed goroutine, not a pool member. The direct entry is registered at
+// index 0 by default, so WITHOUT this the sensor read 1 running proxy on a
+// direct-only node, divided by 1, and judged a ~1,000-goroutine background
+// (which is roughly the process's fixed overhead) as an emergency blowout.
+// With it excluded, a direct-only node has RunningProxies == 0 and falls back
+// to the absolute ramp, as the sensor documents.
+func runningProxyCountForPressure() int {
+	n := connect.ProxyHealthCount()
+	if connect.ProxyKeyByIndex(0) == directProxyKey {
+		n--
+	}
+	return n
+}
+
 // collectPressureSample reads every sensor, recording errors per-sensor so
 // one missing source (PSI on old kernels, everything on Windows/macOS)
 // never blanks the others. Self-signals always work.
 func collectPressureSample() pressureSample {
-	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: connect.ProxyHealthCount()}
+	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: runningProxyCountForPressure()}
 
 	if v, err := readPSI("memory"); err == nil {
 		s.PSIMem = v
@@ -658,13 +681,19 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			}
 			continue
 		case <-fullTicker.C:
-			// Track the peak running count for the OOM-aware start cap. It runs
-			// whether or not self-heal is on: it is bookkeeping, not an actuator.
-			oomCapUpdatePeak(connect.ProxyHealthCount())
+			// Track the peak running count and heartbeat for the OOM-aware start
+			// cap. It runs whether or not self-heal is on: it is bookkeeping, not
+			// an actuator.
+			// runningProxyCountForPressure excludes the native direct
+			// transport (a single fixed goroutine, not a pool member), so
+			// neither the OOM peak nor the headroom log's proxy count is
+			// off by one on a direct-only or direct+proxies node.
+			proxyCount := runningProxyCountForPressure()
+			oomCapUpdatePeak(proxyCount, time.Now())
 			// Real free memory, independent of the pressure score and of
 			// self-heal: log when the box gets short and when it recovers.
 			avail := hostAvailMiB() // one reading, used for both the decision and the line
-			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, connect.ProxyHealthCount(), runtime.NumGoroutine()); line != "" {
+			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, proxyCount, runtime.NumGoroutine()); line != "" {
 				importantLogf("%s\n", line)
 			}
 		}

@@ -22,9 +22,12 @@ func TestMain(m *testing.M) {
 	}
 	os.Setenv("HOME", dir)
 	os.Setenv("USERPROFILE", dir)
-	// globalClientJWTStore is built at package init from the real home, before
-	// TestMain runs; replace it.
+	// globalClientJWTStore, lifetimeStore and globalProxyEarningsStore are built
+	// at package init from the real home, before TestMain runs; replace them all
+	// so an un-isolated test can never read or write the developer's real state.
 	globalClientJWTStore = newClientJWTStore(filepath.Join(dir, ".urnetwork", ".client_jwts.json"))
+	lifetimeStore = loadLifetimeMetrics(filepath.Join(dir, ".urnetwork", "lifetime_metrics.json"))
+	globalProxyEarningsStore = newProxyEarningsStore(filepath.Join(dir, ".urnetwork", "proxy_earnings.json"))
 	code := m.Run()
 	os.RemoveAll(dir)
 	os.Exit(code)

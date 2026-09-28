@@ -107,7 +107,7 @@ func TestHotSwapPreflightDeclinesWhenBothProvidersWouldNotFit(t *testing.T) {
 func TestReadHotSwapMemoryIsBoundedByTheProvidersCgroupHeadroom(t *testing.T) {
 	const mib = int64(1) << 20
 	meminfo := "MemTotal: 4000000 kB\nMemAvailable: 2048000 kB\n" // 2000 MiB
-	status := "Name:\turnetwork\nVmRSS:\t 819200 kB\n"               // 800 MiB
+	status := "Name:\turnetwork\nVmRSS:\t 819200 kB\n"            // 800 MiB
 
 	avail, rss, ok := composeHotSwapMemory(meminfo, status, 500*mib, true)
 	if !ok || avail != 500*mib || rss != 800*mib {

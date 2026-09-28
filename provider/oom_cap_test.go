@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -12,6 +13,10 @@ var oomT0 = time.Unix(1_800_000_000, 0)
 
 func TestOOMKilledSinceMarker(t *testing.T) {
 	m := &oomMarker{BootID: "boot-A", OOMKills: 2}
+	// A marker from a start more than oomMarkerMaxAge ago is stale: the global
+	// oom_kill counter may have been bumped by ANY workload since, so it must
+	// not be blamed on this provider.
+	stale := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Add(-(oomMarkerMaxAge + time.Hour)).Unix()}
 	cases := []struct {
 		name  string
 		m     *oomMarker
@@ -25,9 +30,10 @@ func TestOOMKilledSinceMarker(t *testing.T) {
 		{"no previous marker", nil, "boot-A", 3, false},
 		{"unknown boot id", m, "", 3, false},
 		{"unreadable counter", m, "boot-A", -1, false},
+		{"a stale marker is never blamed even with a higher counter", stale, "boot-A", 9, false},
 	}
 	for _, c := range cases {
-		if got := oomKilledSinceMarker(c.m, c.boot, c.kills); got != c.want {
+		if got := oomKilledSinceMarker(c.m, c.boot, c.kills, oomT0.Add(time.Hour)); got != c.want {
 			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
 		}
 	}
@@ -55,10 +61,32 @@ func TestOOMCapNeverGoesBelowTheFloor(t *testing.T) {
 	if d.Action != "none" {
 		t.Fatalf("at the floor a further OOM must not reduce, got %+v", d)
 	}
+	// The at-floor OOM still restarts the clean-day clock: the box just died,
+	// so a start more than 24h after the original reduction must not relax.
+	st, _ = oomCapOnOOM(oomCapState{Cap: 1000, SinceUnix: oomT0.Unix()}, 500, 4000, oomT0.Add(time.Hour))
+	if st.SinceUnix != oomT0.Add(time.Hour).Unix() {
+		t.Fatalf("an at-floor OOM must reset SinceUnix, got %d (want %d)", st.SinceUnix, oomT0.Add(time.Hour).Unix())
+	}
 	// Tiny list: the absolute floor of 50 applies.
 	_, d = oomCapOnOOM(oomCapState{}, 60, 100, oomT0)
 	if d.To != 50 {
 		t.Fatalf("absolute floor: %+v, want 50", d)
+	}
+}
+
+// On a small desired pool the floor (max(oomCapMinFloor, desired/4)) can sit
+// AT OR ABOVE what actually died: desired=63 gives floor=50, and a 20-proxy
+// death would otherwise get "reduce 0 -> 50", a cap larger than the pool that
+// just got OOM-killed. That must be reported as no-op ("none"), not a reduce
+// that grows the cap right after a kill.
+func TestOOMCapNoOpWhenTheFloorIsNotTighterThanWhatDied(t *testing.T) {
+	st, d := oomCapOnOOM(oomCapState{}, 20, 63, oomT0)
+	if d.Action != "none" || st.Cap != 0 {
+		t.Fatalf("floor (50) >= proxiesAtDeath (20): got %+v state %+v, want a no-op", d, st)
+	}
+	// The no-op OOM still restarts the clean-day clock.
+	if st.SinceUnix != oomT0.Unix() {
+		t.Fatalf("a no-op OOM must still reset SinceUnix, got %d want %d", st.SinceUnix, oomT0.Unix())
 	}
 }
 
@@ -76,6 +104,12 @@ func TestOOMCapFreezesAfterThreeReductionsInADay(t *testing.T) {
 	st, d = oomCapOnOOM(st, proxies, 4000, oomT0.Add(4*time.Hour))
 	if d.Action != "frozen" || st.Cap != d.From {
 		t.Fatalf("fourth OOM inside the window must freeze, got %+v", d)
+	}
+	// The frozen OOM just killed the box: it must restart the clean-day
+	// clock, so the cap cannot relax 24h after the LAST REDUCTION while only
+	// hours after this kill.
+	if st.SinceUnix != oomT0.Add(4*time.Hour).Unix() {
+		t.Fatalf("a frozen OOM must reset SinceUnix, got %d (want %d)", st.SinceUnix, oomT0.Add(4*time.Hour).Unix())
 	}
 	// Outside the 24h window the budget is available again.
 	_, d = oomCapOnOOM(st, proxies, 4000, oomT0.Add(30*time.Hour))
@@ -118,7 +152,7 @@ func TestOOMCapStartupShadowFlow(t *testing.T) {
 	}
 	lines := oomCapStartup(4127, 4127, "boot-A", 1, oomT0.Add(time.Hour))
 	if len(lines) != 1 || !strings.Contains(lines[0], "[oomcap] shadow: OOM kill since the last start") ||
-		!strings.Contains(lines[0], "would reduce the automatic start cap 0 -> 3301") || !strings.Contains(lines[0], "not enforced") {
+		!strings.Contains(lines[0], "would reduce the automatic start cap none -> 3301") || !strings.Contains(lines[0], "not enforced") {
 		t.Fatalf("second start: %q", lines)
 	}
 	if lines := oomCapStartup(4127, 4127, "boot-A", 1, oomT0.Add(2*time.Hour)); lines != nil {
@@ -194,7 +228,7 @@ func TestOOMCapDecideAppliesInOnMode(t *testing.T) {
 	oomCapRecordStart(4127, "boot-A", 0, oomT0)
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	if len(lines) != 1 || !strings.Contains(lines[0], "[oomcap] applied: OOM kill since the last start") ||
-		!strings.Contains(lines[0], "automatic start cap 0 -> 3301") || strings.Contains(lines[0], "not enforced") {
+		!strings.Contains(lines[0], "automatic start cap none -> 3301") || strings.Contains(lines[0], "not enforced") {
 		t.Fatalf("on mode line: %q", lines)
 	}
 	if got, _ := effectiveTrimCap(); got != 3301 {
@@ -234,14 +268,99 @@ func TestOOMMarkerWithPeak(t *testing.T) {
 	}
 }
 
+// An OOM after 72h of uptime must still be blamed: the heartbeat, not the
+// frozen StartedUnix, is what oomKilledSinceMarker ages. Before the fix this
+// was silently dropped: a provider running 96h that got OOM-killed came back
+// to a "clean start" because the marker looked more than 72h old.
+func TestOOMCapBlamesAnOOMAfter72hOfUptime(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+
+	oomCapStartup(1000, 1000, "boot-A", 5, oomT0)
+	// The provider stays up and the pressure loop keeps the heartbeat fresh,
+	// well past the 72h mark that would make a heartbeat-less marker stale.
+	oomCapUpdatePeak(1000, oomT0.Add(95*time.Hour))
+
+	lines := oomCapStartup(1000, 800, "boot-A", 6, oomT0.Add(96*time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "OOM kill since the last start") {
+		t.Fatalf("an OOM after 96h of heartbeat-refreshed uptime must be blamed, got %q", lines)
+	}
+}
+
+// A marker with no heartbeat (written before this field existed, or a process
+// that died before its first hourly refresh) still falls back to StartedUnix,
+// so the pre-existing staleness behavior for old markers is unchanged.
+func TestOOMCapMarkerWithoutHeartbeatFallsBackToStartedUnix(t *testing.T) {
+	fresh := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Unix()}
+	if !oomKilledSinceMarker(fresh, "boot-A", 3, oomT0.Add(71*time.Hour)) {
+		t.Fatalf("within 71h of StartedUnix with no heartbeat must still be blamed")
+	}
+	stale := &oomMarker{BootID: "boot-A", OOMKills: 2, StartedUnix: oomT0.Unix()}
+	if oomKilledSinceMarker(stale, "boot-A", 3, oomT0.Add(80*time.Hour)) {
+		t.Fatalf("80h past StartedUnix with no heartbeat must still be stale")
+	}
+}
+
 func TestOOMCapUpdatePeakPersists(t *testing.T) {
 	withTempHome(t)
 	oomCapRecordStart(2000, "boot-A", 0, oomT0)
-	oomCapUpdatePeak(3800)
-	oomCapUpdatePeak(1000) // lower: ignored
+	oomCapUpdatePeak(3800, oomT0)
+	oomCapUpdatePeak(1000, oomT0) // lower: ignored
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	// 80% of the 3800 peak, not of the 2000 launched.
-	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {
+	if len(lines) != 1 || !strings.Contains(lines[0], "cap none -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {
 		t.Fatalf("decision must use the peak running count, got %q", lines)
+	}
+}
+
+// The headline [oomcap] line must read as a sentence for every action, in both
+// tenses, and a frozen decision must not read as a move between equal numbers.
+func TestOOMCapActionPhrase(t *testing.T) {
+	cases := []struct {
+		d       oomCapDecision
+		applied bool
+		want    string
+	}{
+		{oomCapDecision{Action: "reduce", From: 0, To: 3301}, false, "would reduce the automatic start cap none -> 3301"},
+		{oomCapDecision{Action: "reduce", From: 0, To: 3301}, true, "reduced the automatic start cap none -> 3301"},
+		{oomCapDecision{Action: "relax", From: 3301, To: 3631}, false, "would relax the automatic start cap 3301 -> 3631"},
+		{oomCapDecision{Action: "clear", From: 4300, To: 0}, true, "cleared the automatic start cap 4300 -> none"},
+		{oomCapDecision{Action: "frozen", From: 100, To: 100}, false, "would hold the automatic start cap at 100 (reduction limit reached)"},
+		{oomCapDecision{Action: "frozen", From: 100, To: 100}, true, "held the automatic start cap at 100 (reduction limit reached)"},
+	}
+	for _, c := range cases {
+		if got := oomCapActionPhrase(c.d, c.applied); got != c.want {
+			t.Errorf("oomCapActionPhrase(%+v, applied=%v) = %q, want %q", c.d, c.applied, got, c.want)
+		}
+	}
+}
+
+// A HotSwap parent and candidate both write oom_cap.json and run.marker at
+// start. Concurrent writers must not fail on the shared temp file or leave a
+// partial file behind.
+func TestOOMWriteJSONConcurrentWritersLeaveWholeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oom_cap.json")
+	const writers, each = 8, 40
+	errs := make(chan error, writers*each)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				if err := oomWriteJSON(path, oomCapState{Cap: w*1000 + i, SinceUnix: 1}); err != nil {
+					errs <- err
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent oomWriteJSON failed: %v", err)
+	}
+	var st oomCapState
+	if !oomReadJSON(path, &st) || st.SinceUnix != 1 {
+		t.Fatalf("state file torn or unreadable after concurrent writes: %+v", st)
 	}
 }

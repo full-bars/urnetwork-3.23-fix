@@ -53,8 +53,9 @@ var importantLogMarkers = []string{
 	// Capacity-control decisions (trim commands and results, the OOM-aware start
 	// cap and its kill switch, startup limit warnings, low memory headroom):
 	// rare and high-value, and the only record of why a box ran fewer proxies or
-	// got short of memory. Exact prefixes so the trim write-failure warning and
-	// other per-cycle lines cannot match.
+	// got short of memory. Exact substrings (matched with Contains) chosen so the trim
+	// write-failure warning and other per-cycle lines do not match; a new marker
+	// must be checked against those lines.
 	"[proxy][trim] received",
 	"[proxy][trim] applied",
 	"[proxy][trim] startup",

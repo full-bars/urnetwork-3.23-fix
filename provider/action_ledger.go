@@ -31,7 +31,10 @@ type ledgerEntry struct {
 
 // ledgerAppend adds one entry and, when the file would exceed maxBytes, rewrites
 // it keeping only the newest whole lines that fit in half the bound (so
-// rotation does not happen on every append).
+// rotation does not happen on every append). The whole append+rotate runs under
+// an inter-process lock (path+".lock"): during a HotSwap the parent and the
+// candidate both record decisions, and an unlocked rotation could clobber the
+// shared temp file or drop an entry appended after its snapshot.
 func ledgerAppend(path string, e ledgerEntry, now time.Time, maxBytes int64) error {
 	e.Time = now.UTC().Format(time.RFC3339)
 	line, err := json.Marshal(e)
@@ -42,6 +45,13 @@ func ledgerAppend(path string, e ledgerEntry, now time.Time, maxBytes int64) err
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
+	// Blocking flock, released when the holder dies, so there is no stale-lock
+	// case to handle and a contended append waits instead of being dropped.
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	f, err := os.OpenFile(path, os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 	if err != nil {
 		return err

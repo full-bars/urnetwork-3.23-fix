@@ -157,19 +157,44 @@ func startupTrimSelection(all []*connect.ProxySettings, cap int, state map[strin
 	return launch, held
 }
 
-// trimCapSeen is the last operator trim cap the reload loop acknowledged
+// trimCapSeen is the last effective trim cap the reload loop acknowledged
 // (0 = none). It lets the reload log a receipt exactly once per change.
-var trimCapSeen atomic.Int64
+// trimCapSourceSeen is the source (trimCapOperator/trimCapOOM) that cap came
+// from, so a later change away from it (in particular a clear) can attribute
+// the ledger entry correctly instead of guessing.
+var (
+	trimCapSeen       atomic.Int64
+	trimCapSourceSeen atomic.Value // string
+)
 
-// noteTrimCap records the cap the reload just read and reports the previous
-// one and whether it differs, so a new or cleared cap is acknowledged in the
-// log once instead of on every periodic reload.
-func noteTrimCap(cur int) (prev int, changed bool) {
-	prev = int(trimCapSeen.Swap(int64(cur)))
-	return prev, prev != cur
+// primeTrimCapSeen seeds trimCapSeen/trimCapSourceSeen with the cap this
+// process's startup already read and acted on (startupTrimSelection), without
+// logging anything. Without this, the first reload after a capped startup
+// reads the same cap fresh (prev==0) and treats it as new: a duplicate
+// "[proxy][trim] received" line and a duplicate ledger "applied" entry, whose
+// From is a partial mid-ramp running count even though startup already logged
+// and applied the cap.
+func primeTrimCapSeen(trimCap int, source string) {
+	trimCapSeen.Store(int64(trimCap))
+	trimCapSourceSeen.Store(source)
 }
 
-func resetTrimCapSeen() { trimCapSeen.Store(0) }
+// noteTrimCap records the cap and source the reload just read and reports the
+// previous cap and source and whether the cap differs, so a new or cleared cap
+// is acknowledged in the log once instead of on every periodic reload.
+func noteTrimCap(cur int, source string) (prev int, prevSource string, changed bool) {
+	prev = int(trimCapSeen.Swap(int64(cur)))
+	if v, ok := trimCapSourceSeen.Load().(string); ok {
+		prevSource = v
+	}
+	trimCapSourceSeen.Store(source)
+	return prev, prevSource, prev != cur
+}
+
+func resetTrimCapSeen() {
+	trimCapSeen.Store(0)
+	trimCapSourceSeen.Store("")
+}
 
 // trimmedConfiguredCount is the number of proxies this provider will actually
 // run: the desired count, capped by the operator trim target. The status line

@@ -40,6 +40,48 @@ func TestOOMCapControlValueIsValidated(t *testing.T) {
 	}
 }
 
+// The control-socket ack must report the mode that actually governs, not just
+// the value the operator typed: URNETWORK_OOM_CAP=on always beats a persisted
+// "shadow" or "off" (see oomCapMode's precedence), so an ack that echoed only
+// the requested value silently misled an operator into thinking a
+// control-socket "off" disabled enforcement when the env var kept it on.
+func TestOOMCapControlAckReportsEffectiveMode(t *testing.T) {
+	withTempHome(t)
+	prev := globalControlState
+	t.Cleanup(func() { globalControlState = prev })
+
+	t.Run("no env override: ack matches the request", func(t *testing.T) {
+		t.Setenv("URNETWORK_OOM_CAP", "")
+		globalControlState = newControlState()
+		out := captureTlog(t, func() {
+			resp := handleControlRequest(globalControlState, controlRequest{Cmd: "set", Key: "oom_cap", Value: "shadow"})
+			if !resp.OK {
+				t.Fatalf("set rejected: %s", resp.Error)
+			}
+		})
+		if !strings.Contains(out, "mode set to shadow via control socket (the automatic") {
+			t.Fatalf("expected a plain ack with no override note, got:\n%s", out)
+		}
+		if strings.Contains(out, "overrides it") {
+			t.Fatalf("no env is set: must not claim an override, got:\n%s", out)
+		}
+	})
+
+	t.Run("env on overrides a control-socket shadow", func(t *testing.T) {
+		t.Setenv("URNETWORK_OOM_CAP", "on")
+		globalControlState = newControlState()
+		out := captureTlog(t, func() {
+			resp := handleControlRequest(globalControlState, controlRequest{Cmd: "set", Key: "oom_cap", Value: "shadow"})
+			if !resp.OK {
+				t.Fatalf("set rejected: %s", resp.Error)
+			}
+		})
+		if !strings.Contains(out, "mode set to shadow via control socket, but URNETWORK_OOM_CAP env overrides it: effective mode is on") {
+			t.Fatalf("expected the ack to name the effective mode, got:\n%s", out)
+		}
+	})
+}
+
 // Precedence: ANY source saying off wins (a kill switch must always work, even
 // against an env var that says on); otherwise ANY on wins; otherwise shadow.
 func TestOOMCapModePrecedence(t *testing.T) {
