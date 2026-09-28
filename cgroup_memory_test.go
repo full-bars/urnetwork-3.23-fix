@@ -211,7 +211,7 @@ func TestCgroupV2MemoryHeadroom(t *testing.T) {
 		root := t.TempDir()
 		writeCgroupFile(t, root, unit, "memory.max", "52428800") // 50M, no memory.current
 		parent := "/user.slice/user-1000.slice"
-		writeCgroupFile(t, root, parent, "memory.max", "524288000")    // 500M
+		writeCgroupFile(t, root, parent, "memory.max", "524288000")     // 500M
 		writeCgroupFile(t, root, parent, "memory.current", "104857600") // 100M used -> 400M room
 		if got, ok := cgroupV2MemoryHeadroom(root, self); ok {
 			t.Fatalf("got %d MiB of headroom from the ancestor, want the chain indeterminate", got>>20)
