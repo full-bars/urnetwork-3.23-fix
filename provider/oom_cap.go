@@ -276,6 +276,14 @@ func oomWriteJSON(path string, v any) error {
 	if err != nil {
 		return err
 	}
+	// A HotSwap parent and candidate both write these files at start. Without
+	// the lock one can truncate the shared .tmp while the other renames it, and
+	// the state file ends up holding a partial write.
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return err
+	}
+	defer release()
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
@@ -348,12 +356,36 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 		modeName = "on"
 	}
 	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: d.Action, From: d.From, To: d.To, Mode: modeName, Reason: msg})
-	verb, tail := "shadow: "+msg+": would ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
+	verb, tail := "shadow: "+msg+": ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
 	if mode == oomCapOn {
 		verb, tail = "applied: "+msg+": ", ""
 	}
-	return []string{"[oomcap] " + verb + d.Action + " the automatic start cap " +
-		strconv.Itoa(d.From) + " -> " + strconv.Itoa(d.To) + tail}
+	return []string{"[oomcap] " + verb + oomCapActionPhrase(d, mode == oomCapOn) + tail}
+}
+
+// oomCapActionPhrase words a decision for the log: "would reduce ..." in shadow,
+// "reduced ..." when enforced. A frozen decision changes nothing, so it reads as
+// holding the cap rather than as a move between two equal numbers.
+func oomCapActionPhrase(d oomCapDecision, applied bool) string {
+	from := "none"
+	if d.From > 0 {
+		from = strconv.Itoa(d.From)
+	}
+	verb := map[bool]map[string]string{
+		false: {"reduce": "would reduce", "relax": "would relax", "clear": "would clear", "frozen": "would hold"},
+		true:  {"reduce": "reduced", "relax": "relaxed", "clear": "cleared", "frozen": "held"},
+	}[applied][d.Action]
+	if verb == "" {
+		verb = d.Action
+	}
+	if d.Action == "frozen" {
+		return verb + " the automatic start cap at " + strconv.Itoa(d.To) + " (reduction limit reached)"
+	}
+	to := "none"
+	if d.To > 0 {
+		to = strconv.Itoa(d.To)
+	}
+	return verb + " the automatic start cap " + from + " -> " + to
 }
 
 // oomMarkerWithPeak raises the marker's proxy count to the observed running

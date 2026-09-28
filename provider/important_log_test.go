@@ -18,7 +18,7 @@ func TestIsImportantLogLine(t *testing.T) {
 		"0926 01:02:03 [proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying",
 		"0926 01:02:03 [proxy][trim] applied: cap=2000: shed 2127 worst-graded running, held 0 additions (pool ~2000)",
 		"0926 01:02:03 [proxy][trim] startup: cap=2000, launching 2000 of 4127 desired, holding 2127 worst-graded until the cap is raised",
-		"0926 01:02:03 [oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap 0 -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)",
+		"0926 01:02:03 [oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap none -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)",
 		"0926 01:02:03 ✓ [oomcap] mode set to off via control socket (the automatic cap applies on the next reload)",
 		"0926 01:02:03 [proxy][resources] warning: GOMEMLIMIT=400 MiB is below the ~581 MiB this pool ...",
 		"0926 01:02:03 [proxy][resources] low memory headroom: 132 MiB available, below 193 MiB (2001 proxies, 77780 goroutines); ...",

@@ -959,11 +959,12 @@ func applyLiveSideEffect(key, value string) error {
 		// Read on every reload by effectiveTrimCap, so this is live; log an
 		// acknowledgement so the operator sees the command was received. The
 		// value just persisted may not be what actually governs: the
-		// URNETWORK_OOM_CAP env var takes precedence over the persisted
-		// control value (an env "on" always wins; see oomCapMode), so a
-		// control-socket "shadow" or "off" on a box with the env var set can
-		// silently keep enforcing. Log the EFFECTIVE mode, and call out the
-		// mismatch when the requested value did not actually take.
+		// mode combines the URNETWORK_OOM_CAP env var with the persisted control
+		// value ("off" from either source wins, then "on" from either source
+		// beats "shadow"; see oomCapMode), so a control-socket "shadow" on a box
+		// with the env var set to "on" can silently keep enforcing. Log the
+		// EFFECTIVE mode, and call out the mismatch when the requested value did
+		// not actually take.
 		requested := strings.ToLower(value)
 		effective := oomCapModeName(oomCapMode())
 		if effective == requested {

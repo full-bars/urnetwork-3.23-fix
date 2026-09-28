@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -151,7 +152,7 @@ func TestOOMCapStartupShadowFlow(t *testing.T) {
 	}
 	lines := oomCapStartup(4127, 4127, "boot-A", 1, oomT0.Add(time.Hour))
 	if len(lines) != 1 || !strings.Contains(lines[0], "[oomcap] shadow: OOM kill since the last start") ||
-		!strings.Contains(lines[0], "would reduce the automatic start cap 0 -> 3301") || !strings.Contains(lines[0], "not enforced") {
+		!strings.Contains(lines[0], "would reduce the automatic start cap none -> 3301") || !strings.Contains(lines[0], "not enforced") {
 		t.Fatalf("second start: %q", lines)
 	}
 	if lines := oomCapStartup(4127, 4127, "boot-A", 1, oomT0.Add(2*time.Hour)); lines != nil {
@@ -227,7 +228,7 @@ func TestOOMCapDecideAppliesInOnMode(t *testing.T) {
 	oomCapRecordStart(4127, "boot-A", 0, oomT0)
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	if len(lines) != 1 || !strings.Contains(lines[0], "[oomcap] applied: OOM kill since the last start") ||
-		!strings.Contains(lines[0], "automatic start cap 0 -> 3301") || strings.Contains(lines[0], "not enforced") {
+		!strings.Contains(lines[0], "automatic start cap none -> 3301") || strings.Contains(lines[0], "not enforced") {
 		t.Fatalf("on mode line: %q", lines)
 	}
 	if got, _ := effectiveTrimCap(); got != 3301 {
@@ -307,7 +308,59 @@ func TestOOMCapUpdatePeakPersists(t *testing.T) {
 	oomCapUpdatePeak(1000, oomT0) // lower: ignored
 	lines := oomCapDecide(4127, "boot-A", 1, oomT0.Add(time.Hour))
 	// 80% of the 3800 peak, not of the 2000 launched.
-	if len(lines) != 1 || !strings.Contains(lines[0], "cap 0 -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {
+	if len(lines) != 1 || !strings.Contains(lines[0], "cap none -> 3040") || !strings.Contains(lines[0], "(peak running 3800)") {
 		t.Fatalf("decision must use the peak running count, got %q", lines)
+	}
+}
+
+// The headline [oomcap] line must read as a sentence for every action, in both
+// tenses, and a frozen decision must not read as a move between equal numbers.
+func TestOOMCapActionPhrase(t *testing.T) {
+	cases := []struct {
+		d       oomCapDecision
+		applied bool
+		want    string
+	}{
+		{oomCapDecision{Action: "reduce", From: 0, To: 3301}, false, "would reduce the automatic start cap none -> 3301"},
+		{oomCapDecision{Action: "reduce", From: 0, To: 3301}, true, "reduced the automatic start cap none -> 3301"},
+		{oomCapDecision{Action: "relax", From: 3301, To: 3631}, false, "would relax the automatic start cap 3301 -> 3631"},
+		{oomCapDecision{Action: "clear", From: 4300, To: 0}, true, "cleared the automatic start cap 4300 -> none"},
+		{oomCapDecision{Action: "frozen", From: 100, To: 100}, false, "would hold the automatic start cap at 100 (reduction limit reached)"},
+		{oomCapDecision{Action: "frozen", From: 100, To: 100}, true, "held the automatic start cap at 100 (reduction limit reached)"},
+	}
+	for _, c := range cases {
+		if got := oomCapActionPhrase(c.d, c.applied); got != c.want {
+			t.Errorf("oomCapActionPhrase(%+v, applied=%v) = %q, want %q", c.d, c.applied, got, c.want)
+		}
+	}
+}
+
+// A HotSwap parent and candidate both write oom_cap.json and run.marker at
+// start. Concurrent writers must not fail on the shared temp file or leave a
+// partial file behind.
+func TestOOMWriteJSONConcurrentWritersLeaveWholeFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "oom_cap.json")
+	const writers, each = 8, 40
+	errs := make(chan error, writers*each)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				if err := oomWriteJSON(path, oomCapState{Cap: w*1000 + i, SinceUnix: 1}); err != nil {
+					errs <- err
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent oomWriteJSON failed: %v", err)
+	}
+	var st oomCapState
+	if !oomReadJSON(path, &st) || st.SinceUnix != 1 {
+		t.Fatalf("state file torn or unreadable after concurrent writes: %+v", st)
 	}
 }
