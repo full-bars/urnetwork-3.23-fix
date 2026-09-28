@@ -5,6 +5,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -67,6 +68,46 @@ func TestLedgerIsSizeBoundedAndKeepsTheNewest(t *testing.T) {
 	for i := 1; i < len(got); i++ {
 		if got[i].To != got[i-1].To+1 {
 			t.Fatalf("rotation left a gap or reorder at %d: %d then %d", i, got[i-1].To, got[i].To)
+		}
+	}
+}
+
+// A HotSwap parent and candidate both record decisions into the same file.
+// Concurrent appends that trigger rotation must neither fail on the shared
+// temp file nor tear a line. Each writer takes its own file descriptor, so this
+// exercises the inter-process flock, not just an in-process mutex.
+func TestLedgerConcurrentAppendsAndRotationStayWholeAndBounded(t *testing.T) {
+	path := ledgerFile(t)
+	const max = 4096
+	const writers, each = 8, 60
+	errs := make(chan error, writers*each)
+	var wg sync.WaitGroup
+	for w := 0; w < writers; w++ {
+		wg.Add(1)
+		go func(w int) {
+			defer wg.Done()
+			for i := 0; i < each; i++ {
+				e := ledgerEntry{Actor: "trim", Action: "applied", To: w*1000 + i, Reason: strings.Repeat("x", 40)}
+				if err := ledgerAppend(path, e, ledgerT0, max); err != nil {
+					errs <- err
+				}
+			}
+		}(w)
+	}
+	wg.Wait()
+	close(errs)
+	for err := range errs {
+		t.Fatalf("concurrent ledgerAppend failed: %v", err)
+	}
+	st, err := os.Stat(path)
+	if err != nil || st.Size() > max {
+		t.Fatalf("ledger grew past its bound: size %d err %v (max %d)", st.Size(), err, max)
+	}
+	b, _ := os.ReadFile(path)
+	for _, line := range strings.Split(strings.TrimSuffix(string(b), "\n"), "\n") {
+		var e ledgerEntry
+		if json.Unmarshal([]byte(line), &e) != nil || e.Actor == "" {
+			t.Fatalf("torn or corrupt ledger line %q", line)
 		}
 	}
 }
