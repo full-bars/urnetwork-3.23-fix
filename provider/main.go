@@ -281,39 +281,7 @@ func applyLowmodeSettings(clientSettings *connect.ClientSettings, localUserNatSe
 // detectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func detectEffectiveRAMLimitBytes() int64 {
-	// cgroup v2
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		s := strings.TrimSpace(string(data))
-		if s != "max" {
-			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
-				return v
-			}
-		}
-	}
-	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB
-	const oneTiB = 1 << 40
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory/memory.limit_in_bytes"); err == nil {
-		if v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64); err == nil && v > 0 && v < oneTiB {
-			return v
-		}
-	}
-	// /proc/meminfo MemTotal (kB)
-	if f, err := os.Open("/proc/meminfo"); err == nil {
-		defer f.Close()
-		scanner := bufio.NewScanner(f)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if strings.HasPrefix(line, "MemTotal:") {
-				fields := strings.Fields(line)
-				if len(fields) >= 2 {
-					if v, err := strconv.ParseInt(fields[1], 10, 64); err == nil {
-						return v * 1024
-					}
-				}
-			}
-		}
-	}
-	return 850 * 1024 * 1024
+	return connect.DetectEffectiveRAMLimitBytes()
 }
 
 func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
@@ -361,6 +329,12 @@ func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSett
 	if os.Getenv("GOGC") == "" && !persistedRuntimeTuningActive("gogc") {
 		debug.SetGCPercent(200)
 	}
+}
+
+func init() {
+	// The auto-profile tiers must not override a persisted `urnet-tools set
+	// gogc`: precedence is env var > persisted control value > tier default.
+	connect.AutoTuneOperatorPinned = persistedRuntimeTuningActive
 }
 
 // applyTurboMemoryLimit sets GOMEMLIMIT to 80% of effective RAM for the
@@ -497,21 +471,11 @@ func readMemAvailableMiB() int64 {
 func readCgroupAvailableMiB() int64 {
 	const oneTiB = int64(1) << 40
 
-	// cgroup v2
-	maxData, maxErr := os.ReadFile("/sys/fs/cgroup/memory.max")
-	currData, currErr := os.ReadFile("/sys/fs/cgroup/memory.current")
-	if maxErr == nil && currErr == nil {
-		maxStr := strings.TrimSpace(string(maxData))
-		if maxStr != "max" {
-			limit, err1 := strconv.ParseInt(maxStr, 10, 64)
-			curr, err2 := strconv.ParseInt(strings.TrimSpace(string(currData)), 10, 64)
-			if err1 == nil && err2 == nil && limit > 0 && limit < oneTiB {
-				if avail := (limit - curr) / 1024 / 1024; avail >= 0 {
-					return avail
-				}
-				return 0
-			}
-		}
+	// cgroup v2: the process's own cgroup and its ancestors (systemd MemoryMax=
+	// and MemoryHigh= live there, not at the mount root, which only a
+	// container's own cgroup makes meaningful).
+	if room, ok := connect.CgroupMemoryHeadroomBytes(); ok && room < oneTiB {
+		return room / 1024 / 1024
 	}
 
 	// cgroup v1
@@ -4049,9 +4013,63 @@ func provide(opts docopt.Opts) {
 	// Hot proxies with valid unexpired JWTs dial with a tight 25ms stagger,
 	// renewable proxies at 50ms, and cold proxies at 150ms (or 500ms for URL).
 	currentNetworkId := currentProviderNetworkID()
-	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(allProxySettings, proxySourceOf, currentNetworkId)
+	// Honor the operator trim cap BEFORE launching. Applying it after launch
+	// meant a restart briefly opened every desired proxy (thousands of
+	// connections) and only then shed down to the cap, a burst on exactly the
+	// boxes short of memory. Held proxies stay desired; the reload budget admits
+	// them when the cap rises.
+	// The OOM-aware cap decides FIRST so a cap set by an OOM kill since the last
+	// start applies to this very start (enforced only with URNETWORK_OOM_CAP=on;
+	// otherwise it is reported as a shadow decision; see oom_cap.go).
+	bootID, oomKills := readBootID(), readVmstatOOMKills()
+	for _, line := range oomCapDecide(len(allProxySettings), bootID, oomKills, time.Now()) {
+		importantLogf("%s\n", line)
+	}
+	launchSettings := allProxySettings
+	if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
+		startupURLState, _ := readProxyURLState()
+		gradeFor := buildTrimGradeResolver(proxyState, startupURLState)
+		var held []*connect.ProxySettings
+		launchSettings, held = startupTrimSelection(allProxySettings, trimCap, proxyState.Proxies, gradeFor,
+			func(key string) float64 { return proxyEarningsScore(key, time.Now()) })
+		importantLogf("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
+			trimCap, len(launchSettings), len(allProxySettings), len(held))
+	}
+	// Prime the reload loop's change-detector with the cap (and its source)
+	// this start already saw and applied above, whether or not it bound (a
+	// cap looser than the desired count still counts as "seen"). Without this
+	// the first reload after a capped startup reads the same cap fresh and
+	// treats it as new: a duplicate "[proxy][trim] received" line and a
+	// duplicate ledger "applied" entry whose From is a partial mid-ramp
+	// running count, even though startup already logged and applied it.
+	if startupCap, startupSource, serr := effectiveTrimCapSource(); serr == nil && startupCap > 0 {
+		primeTrimCapSeen(startupCap, startupSource)
+	}
+	{
+		// Say once, at startup, when the limits this process runs under are short
+		// for the pool it is about to launch (see resource_config_warn.go).
+		in := resourceConfigInput{
+			Proxies:     len(launchSettings),
+			GOGCEnv:     os.Getenv("GOGC") != "",
+			AutoProfile: os.Getenv("URNETWORK_PROFILE") == "auto",
+		}
+		if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
+			in.GoMemLimit = limit
+		}
+		if ceiling, ok := connect.CgroupMemoryCeiling(); ok {
+			in.CgroupCeiling = ceiling
+		}
+		ceilingBytes, ceilingSource := connect.EffectiveRAMLimit()
+		importantLogf("%s\n", ramCeilingLogLine(ceilingBytes, ceilingSource))
+		for _, w := range resourceConfigWarnings(in) {
+			importantLogf("[proxy][resources] warning: %s\n", w)
+		}
+	}
+	// Record what this start actually launched, for the next start's decision.
+	oomCapRecordStart(len(launchSettings), bootID, oomKills, time.Now())
+	proxySchedules, warmCount, renewableCount, coldCount := prioritizeAndScheduleProxies(launchSettings, proxySourceOf, currentNetworkId)
 	tlog("🔥 [startup] proxy prioritization: %d total (warm: %d, renewable: %d, cold: %d)\n",
-		len(allProxySettings), warmCount, renewableCount, coldCount)
+		len(launchSettings), warmCount, renewableCount, coldCount)
 
 	// Report the earnings history so an operator can watch it fill in, and
 	// so the ranking that will consume it can be judged against real data.
@@ -4130,13 +4148,13 @@ func provide(opts docopt.Opts) {
 
 	// Publish the denominator for systemd STATUS= now that the proxy list is
 	// final (post prune/rebuild above).
-	setConfiguredProxyCount(len(allProxySettings))
+	setConfiguredProxyCount(trimmedConfiguredCount(len(allProxySettings)))
 
 	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {
 		finishProxy(fmt.Sprintf("%d servers", len(allProxySettings)))
 
-		for _, proxySettings := range allProxySettings {
+		for _, proxySettings := range launchSettings {
 			key := proxySettings.Key()
 			stableID := resolveProxyID(proxyState, key)
 			proxySettings.Index = stableID
@@ -4235,12 +4253,12 @@ func provide(opts docopt.Opts) {
 	// with new creds, "added 100" printed, daemon kept dialing the old
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
-	reloader.seedRunningAuth(allProxySettings)
+	reloader.seedRunningAuth(launchSettings)
 	reloader.StartWatcher(ctx)
-	// Enforce an operator trim cap immediately at startup. The initial launch
-	// loop spawns every entry in the source, so without this the first reload
-	// reconciler tick (up to an hour later) would be the first time the cap
-	// binds.
+	// Reconcile against the operator trim cap immediately at startup. The launch
+	// loop above already holds back the worst-graded proxies above the cap
+	// (startupTrimSelection); this reload confirms the cap, logs the result, and
+	// would still shed if the source changed between the two.
 	reloader.reload()
 
 	go connect.HandleError(func() {

@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -314,6 +314,7 @@ var liveEffectKeys = map[string]bool{
 	"smart_dialer":                true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
+	"oom_cap":                     true,
 	"report_url":                  true,
 	"report_interval":             true,
 	"proxy_url_refresh":           true,
@@ -369,6 +370,12 @@ func validateControlValue(key, value string) error {
 		case "on", "off":
 		default:
 			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
+	case "oom_cap":
+		switch valLower {
+		case "on", "off", "shadow":
+		default:
+			return fmt.Errorf("oom_cap: must be on, off, or shadow (got %q)", value)
 		}
 	case "hot_restart":
 		switch valLower {
@@ -459,6 +466,8 @@ var liveDefaults = map[string]string{
 	// off default; without the entry, clear reported success while the live
 	// dialer stayed enabled until restart.
 	"smart_dialer": "off",
+	// Clearing the OOM cap key returns to the safe default: decide and log only.
+	"oom_cap": "shadow",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -504,6 +513,46 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "ledger":
+		// The capacity-decision timeline (~/.urnetwork/autopilot.jsonl): the
+		// newest Limit entries (default 20, at most 200) as a JSON array in Value.
+		n := req.Limit
+		if n <= 0 {
+			n = 20
+		}
+		if n > 200 {
+			n = 200
+		}
+		dir, err := oomCapDir()
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		entries, err := ledgerTail(filepath.Join(dir, ledgerFileName), n)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		if entries == nil {
+			entries = []ledgerEntry{}
+		}
+		b, err := json.Marshal(entries)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		return controlResponse{OK: true, Value: string(b)}
+
+	case "trim_preview":
+		// Value is the target count. Computed here, in the provider, because
+		// only this process knows which proxies are running.
+		n, err := strconv.Atoi(strings.TrimSpace(req.Value))
+		if err != nil || n <= 0 {
+			return controlResponse{OK: false, Error: fmt.Sprintf("trim_preview: invalid count %q (want a positive number)", req.Value)}
+		}
+		text, err := livePreviewText(n)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("trim_preview: %v", err)}
+		}
+		return controlResponse{OK: true, Value: text}
 
 	case "get":
 		if req.Key == "" {
@@ -910,6 +959,28 @@ func applyLiveSideEffect(key, value string) error {
 		if a := currentProxyAuditor.Load(); a != nil {
 			spawnRunOnce(a)
 		}
+		return nil
+	case "oom_cap":
+		// Read on every reload by effectiveTrimCap, so this is live; log an
+		// acknowledgement so the operator sees the command was received. The
+		// value just persisted may not be what actually governs: the
+		// mode combines the URNETWORK_OOM_CAP env var with the persisted control
+		// value ("off" from either source wins, then "on" from either source
+		// beats "shadow"; see oomCapMode), so a control-socket "shadow" on a box
+		// with the env var set to "on" can silently keep enforcing. Log the
+		// EFFECTIVE mode, and call out the mismatch when the requested value did
+		// not actually take.
+		requested := strings.ToLower(value)
+		effective := oomCapModeName(oomCapMode())
+		if effective == requested {
+			importantLogf("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", requested)
+		} else {
+			importantLogf("✓ [oomcap] mode set to %s via control socket, but URNETWORK_OOM_CAP env overrides it: effective mode is %s (the automatic cap applies on the next reload)\n", requested, effective)
+		}
+		// The kill switch must act NOW: with no poke, a quiescent node could
+		// keep enforcing a stale cap until some other event triggers a reload
+		// (hours later). Reload drops or admits proxies per the new mode.
+		triggerProxyReload()
 		return nil
 	case "metrics":
 		return applyMetricsLive(value)

@@ -3,6 +3,8 @@ package urnettools
 import (
 	"errors"
 	"fmt"
+	"github.com/urnetwork/connect"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -81,7 +83,104 @@ func hotSwapPreflight(p Provider) error {
 	if err := hotSwapUnitOK(p); err != nil {
 		return err
 	}
+	// Last: a resource gate, not a capability gate. Only meaningful for a
+	// running provider we can measure.
+	if p.PID > 0 {
+		if avail, rss, ok := hotSwapMemoryFunc(p.PID); ok {
+			if err := hotSwapMemoryOK(avail, rss); err != nil {
+				return err
+			}
+		}
+	}
 	return nil
+}
+
+// ErrHotSwapLowMemory is returned when the box does not have room to run the
+// old and the new provider at the same time. A hotswap starts the candidate
+// while the parent is still draining (up to HotSwapDrainTimeout), so both are
+// resident together; on a box near its limit that doubles usage and gets one of
+// them OOM-killed. Declining makes the update use a plain service restart, one
+// process at a time.
+var ErrHotSwapLowMemory = errors.New("zero-downtime hotswap skipped: not enough free memory to run the old and new provider side by side")
+
+// hotSwapMemoryHeadroom is how much free memory a hotswap needs, as a multiple
+// of the running provider's RSS (the candidate reaches roughly the parent's
+// steady-state size).
+const hotSwapMemoryHeadroom = 1.1
+
+// hotSwapMemoryOK returns nil when availBytes can hold a second provider of
+// about rssBytes, or ErrHotSwapLowMemory (wrapped with the numbers) when not.
+// An unknown reading (rss <= 0 or avail < 0) never blocks: we would rather keep
+// zero-downtime than decline on a guess.
+func hotSwapMemoryOK(availBytes, rssBytes int64) error {
+	if rssBytes <= 0 || availBytes < 0 {
+		return nil
+	}
+	need := int64(float64(rssBytes) * hotSwapMemoryHeadroom)
+	if availBytes >= need {
+		return nil
+	}
+	return fmt.Errorf("%w (%d MiB available, provider uses %d MiB, need about %d MiB). This update uses a service restart",
+		ErrHotSwapLowMemory, availBytes>>20, rssBytes>>20, need>>20)
+}
+
+// hotSwapMemoryFunc reads (MemAvailable, the provider's RSS) in bytes.
+// ok is false when either cannot be read. Overridable so tests need no /proc.
+var hotSwapMemoryFunc = readHotSwapMemory
+
+func readHotSwapMemory(pid int) (availBytes, rssBytes int64, ok bool) {
+	meminfo, err := os.ReadFile("/proc/meminfo")
+	if err != nil {
+		return 0, 0, false
+	}
+	status, err := os.ReadFile(fmt.Sprintf("/proc/%d/status", pid))
+	if err != nil {
+		return 0, 0, false
+	}
+	// The candidate runs in the PROVIDER's cgroup (not this tool's), so bound the
+	// host figure by that cgroup's own headroom.
+	headroom, hok := connect.CgroupMemoryHeadroomBytesForPID(pid)
+	return composeHotSwapMemory(string(meminfo), string(status), headroom, hok)
+}
+
+// composeHotSwapMemory turns /proc/meminfo and /proc/<pid>/status text plus the
+// provider's cgroup headroom into (available, RSS). Available is the smaller of
+// host MemAvailable and the cgroup headroom (when one exists): fleet units run
+// under MemoryMax/MemoryHigh, so host memory can be plentiful while the cgroup
+// the two providers would share has no room. ok is false when either /proc field
+// is missing.
+func composeHotSwapMemory(meminfo, status string, cgroupHeadroom int64, hasCgroupHeadroom bool) (availBytes, rssBytes int64, ok bool) {
+	availKiB, ok1 := parseKiBField(meminfo, "MemAvailable")
+	rssKiB, ok2 := parseKiBField(status, "VmRSS")
+	if !ok1 || !ok2 {
+		return 0, 0, false
+	}
+	availBytes = availKiB << 10
+	if hasCgroupHeadroom && cgroupHeadroom < availBytes {
+		availBytes = cgroupHeadroom
+	}
+	return availBytes, rssKiB << 10, true
+}
+
+// parseKiBField finds "<key>: <n> kB" in /proc/meminfo or /proc/<pid>/status
+// text and returns n. The key must match the whole field name.
+func parseKiBField(text, key string) (int64, bool) {
+	for _, line := range strings.Split(text, "\n") {
+		name, rest, found := strings.Cut(line, ":")
+		if !found || name != key {
+			continue
+		}
+		fields := strings.Fields(rest)
+		if len(fields) == 0 {
+			return 0, false
+		}
+		n, err := strconv.ParseInt(fields[0], 10, 64)
+		if err != nil {
+			return 0, false
+		}
+		return n, true
+	}
+	return 0, false
 }
 
 // hotSwapVersionOK reports whether the provider's running image or reported

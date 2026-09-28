@@ -11,6 +11,7 @@ import (
 	"github.com/urnetwork/connect"
 	"strconv"
 	"strings"
+	"sync/atomic"
 )
 
 // proxy_trim.go implements the operator `proxy trim <N>` hard cap: hold the
@@ -68,6 +69,142 @@ func writeTrimTarget(n int) error {
 		return err
 	}
 	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
+}
+
+// trimPreviewText renders what `proxy trim <count>` would do to the given
+// running set. It is pure so it can be tested and so the running provider (the
+// only process that knows its running set) can produce it for the CLI.
+func trimPreviewText(state *ProxyState, urlState *ProxyURLState, running []string, traffic map[string]uint64, count int) string {
+	if len(running) <= count {
+		return fmt.Sprintf("preview: running=%d <= %d, nothing to shed\n", len(running), count)
+	}
+	gradeFor := buildTrimGradeResolver(state, urlState)
+	shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
+	var b strings.Builder
+	fmt.Fprintf(&b, "preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
+	for _, key := range shed {
+		fmt.Fprintf(&b, "  %s\n", proxyKeyDisplay(key))
+	}
+	return b.String()
+}
+
+// livePreviewText builds the preview from THIS process's running set. It must
+// run inside the provider (via the control socket): a CLI process has an empty
+// health registry and would always report zero running proxies.
+func livePreviewText(count int) (string, error) {
+	state, err := readProxyState()
+	if err != nil {
+		return "", err
+	}
+	urlState, _ := readProxyURLState()
+	// The direct transport registers itself in the health registry, but a live
+	// trim never counts or sheds it (reload skips directProxyKey and the cap
+	// applies to non-direct proxies only), so the preview must not either.
+	var running []string
+	for _, k := range runningProxyAddresses() {
+		if k != directProxyKey {
+			running = append(running, k)
+		}
+	}
+	return trimPreviewText(state, urlState, running, runningProxyTraffic(), count), nil
+}
+
+// previewViaControlSocket asks the running provider what a trim would shed.
+func previewViaControlSocket(count int) (string, error) {
+	resp, err := dialControlSocket(controlRequest{Cmd: "trim_preview", Value: strconv.Itoa(count)})
+	if err != nil {
+		return "", err
+	}
+	if !resp.OK {
+		return "", fmt.Errorf("%s", resp.Error)
+	}
+	return resp.Value, nil
+}
+
+// startupTrimSelection splits the desired list into the proxies to launch and
+// the proxies to hold back so a fresh provider never launches more than the
+// operator's trim cap. Nothing is running yet, so the "worst" are chosen from
+// persisted health, decayed earnings (a proven earner is protected) and grade,
+// with the same ranking a live trim uses. Launch order is preserved; held
+// proxies stay desired and are admitted by the reload budget when the cap
+// rises. A cap <= 0 or >= len(all) launches everything.
+func startupTrimSelection(all []*connect.ProxySettings, cap int, state map[string]ProxyEntry, gradeFor func(string) (float64, bool), earnings func(string) float64) (launch, held []*connect.ProxySettings) {
+	if cap <= 0 || len(all) <= cap {
+		return all, nil
+	}
+	keys := make([]string, 0, len(all))
+	traffic := make(map[string]uint64, len(all))
+	for _, p := range all {
+		k := p.Key()
+		keys = append(keys, k)
+		if e := earnings(k); e > 0 {
+			traffic[k] = uint64(e)
+		}
+	}
+	heldSet := make(map[string]bool, len(all)-cap)
+	for _, k := range selectWorstRunningProxies(state, gradeFor, traffic, keys, len(all)-cap) {
+		heldSet[k] = true
+	}
+	launch = make([]*connect.ProxySettings, 0, cap)
+	held = make([]*connect.ProxySettings, 0, len(all)-cap)
+	for _, p := range all {
+		if heldSet[p.Key()] {
+			held = append(held, p)
+		} else {
+			launch = append(launch, p)
+		}
+	}
+	return launch, held
+}
+
+// trimCapSeen is the last effective trim cap the reload loop acknowledged
+// (0 = none). It lets the reload log a receipt exactly once per change.
+// trimCapSourceSeen is the source (trimCapOperator/trimCapOOM) that cap came
+// from, so a later change away from it (in particular a clear) can attribute
+// the ledger entry correctly instead of guessing.
+var (
+	trimCapSeen       atomic.Int64
+	trimCapSourceSeen atomic.Value // string
+)
+
+// primeTrimCapSeen seeds trimCapSeen/trimCapSourceSeen with the cap this
+// process's startup already read and acted on (startupTrimSelection), without
+// logging anything. Without this, the first reload after a capped startup
+// reads the same cap fresh (prev==0) and treats it as new: a duplicate
+// "[proxy][trim] received" line and a duplicate ledger "applied" entry, whose
+// From is a partial mid-ramp running count even though startup already logged
+// and applied the cap.
+func primeTrimCapSeen(trimCap int, source string) {
+	trimCapSeen.Store(int64(trimCap))
+	trimCapSourceSeen.Store(source)
+}
+
+// noteTrimCap records the cap and source the reload just read and reports the
+// previous cap and source and whether the cap differs, so a new or cleared cap
+// is acknowledged in the log once instead of on every periodic reload.
+func noteTrimCap(cur int, source string) (prev int, prevSource string, changed bool) {
+	prev = int(trimCapSeen.Swap(int64(cur)))
+	if v, ok := trimCapSourceSeen.Load().(string); ok {
+		prevSource = v
+	}
+	trimCapSourceSeen.Store(source)
+	return prev, prevSource, prev != cur
+}
+
+func resetTrimCapSeen() {
+	trimCapSeen.Store(0)
+	trimCapSourceSeen.Store("")
+}
+
+// trimmedConfiguredCount is the number of proxies this provider will actually
+// run: the desired count, capped by the operator trim target. The status line
+// uses it as its denominator, so a healthy box trimmed to N reads N/N, not
+// N/desired (which reads "critical" and teaches operators to ignore it).
+func trimmedConfiguredCount(desired int) int {
+	if cap, err := effectiveTrimCap(); err == nil && cap > 0 && desired > cap {
+		return cap
+	}
+	return desired
 }
 
 // healthRank orders the shed priority by last-known health (lower = shed first),
@@ -307,21 +444,15 @@ func proxyTrim(opts docopt.Opts) {
 		shmLogFatal(70, "provider does not appear to be running")
 	}
 
-	running := runningProxyAddresses()
-	traffic := runningProxyTraffic()
-	urlState, _ := readProxyURLState()
-	gradeFor := buildTrimGradeResolver(state, urlState)
-
 	if preview {
-		if len(running) > count {
-			shed := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, running, len(running)-count)
-			fmt.Printf("preview: %d running; would shed %d worst-graded to reach %d:\n", len(running), len(shed), count)
-			for _, key := range shed {
-				fmt.Printf("  %s\n", proxyKeyDisplay(key))
-			}
-		} else {
-			fmt.Printf("preview: running=%d <= %d, nothing to shed\n", len(running), count)
+		text, err := previewViaControlSocket(count)
+		if err != nil {
+			// Never fall back to a local computation: this process has no running
+			// proxies, so it would report "nothing to shed" and mislead.
+			fmt.Printf("preview unavailable: %v (the running provider computes the preview; it must be running and on a build with trim_preview)\n", err)
+			return
 		}
+		fmt.Print(text)
 		return
 	}
 

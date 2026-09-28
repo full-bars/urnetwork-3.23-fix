@@ -48,10 +48,27 @@ const (
 
 	// Self-signals: the provider's own runaway growth. LA1 melted down at
 	// ~31k goroutines on 1.6GB.
-	goroutineRampLo = 5000
-	goroutineRampHi = 25000
-	heapRampLo      = 0.60 // fraction of the max-memory soft limit
-	heapRampHi      = 0.90
+	//
+	// With running proxies the goroutine sensor is PER PROXY, not absolute: a
+	// healthy proxy costs 20-27 goroutines, so a fixed ceiling pinned any healthy
+	// pool above ~1,000 proxies at 1.00. The process-wide overhead (control
+	// socket, monitors, metrics, GC workers) is subtracted first so a small pool
+	// is not charged for it. The absolute ramp below still applies when nothing
+	// is running (direct-only node), where there is no proxy count to divide by,
+	// AND below goroutineMinPoolForPerProxy, where dividing by a small pool is
+	// not meaningful: several self-heal consumers of this pressure score (the
+	// AIMD URL pool controller, the reaper, probe concurrency) SHRINK the pool
+	// under pressure, which shrinks the denominator and raises per-proxy
+	// further -- a possible positive-feedback loop on a small URL-sourced pool.
+	goroutineFixedOverhead      = 1000
+	goroutineMinPoolForPerProxy = 50
+	goroutinePerProxyRampLo     = 60.0
+	goroutinePerProxyRampHi     = 150.0
+	emergencyGoroutinesPerProxy = 200.0
+	goroutineRampLo             = 5000
+	goroutineRampHi             = 25000
+	heapRampLo                  = 0.60 // fraction of the max-memory soft limit
+	heapRampHi                  = 0.90
 
 	// Emergency pins: bypass EWMA smoothing entirely.
 	emergencyHeapFrac   = 0.90
@@ -81,9 +98,12 @@ type pressureSample struct {
 	MemAvailFrac float64 // MemAvailable/MemTotal; 0 = unknown
 	LoadPerCore  float64 // loadavg1 / NumCPU; 0 = unknown
 	Goroutines   int
-	HeapFrac     float64 // heap in use / max-memory soft limit; 0 = no limit set
-	FDFrac       float64 // open FDs / RLIMIT_NOFILE; 0 = unavailable
-	SensorErrs   map[string]error
+	// RunningProxies is how many proxies this provider runs; the goroutine
+	// sensor judges goroutines per proxy when it is > 0.
+	RunningProxies int
+	HeapFrac       float64 // heap in use / max-memory soft limit; 0 = no limit set
+	FDFrac         float64 // open FDs / RLIMIT_NOFILE; 0 = unavailable
+	SensorErrs     map[string]error
 }
 
 // normalizeRamp maps v onto [0,1] linearly between lo and hi. Works for
@@ -102,6 +122,33 @@ func normalizeRamp(v, lo, hi float64) float64 {
 	return t
 }
 
+// goroutinesPerProxy is the per-proxy goroutine cost after removing the fixed
+// process overhead; ok is false when there are no running proxies to divide by,
+// or too few for the division to be meaningful (see goroutineMinPoolForPerProxy).
+func goroutinesPerProxy(s pressureSample) (perProxy float64, ok bool) {
+	if s.RunningProxies < goroutineMinPoolForPerProxy {
+		return 0, false
+	}
+	return float64(max(0, s.Goroutines-goroutineFixedOverhead)) / float64(s.RunningProxies), true
+}
+
+// goroutineComponent scores runaway goroutine growth in [0,1].
+func goroutineComponent(s pressureSample) float64 {
+	if per, ok := goroutinesPerProxy(s); ok {
+		return normalizeRamp(per, goroutinePerProxyRampLo, goroutinePerProxyRampHi)
+	}
+	return normalizeRamp(float64(s.Goroutines), goroutineRampLo, goroutineRampHi)
+}
+
+// goroutineEmergency reports a self-inflicted goroutine blowout that bypasses
+// smoothing.
+func goroutineEmergency(s pressureSample) bool {
+	if per, ok := goroutinesPerProxy(s); ok {
+		return per >= emergencyGoroutinesPerProxy
+	}
+	return s.Goroutines >= emergencyGoroutines
+}
+
 // computePressure converts one sample into a score plus its per-component
 // breakdown. The worst component wins: averaging would dilute a memory
 // crisis with a healthy CPU reading.
@@ -111,7 +158,7 @@ func computePressure(s pressureSample) (float64, map[string]float64) {
 		"psi_cpu": normalizeRamp(s.PSICPU, psiRampLo, psiRampHi),
 		"psi_io":  normalizeRamp(s.PSIIO, ioRampLo, ioRampHi),
 		"load":    normalizeRamp(s.LoadPerCore, loadRampLo, loadRampHi),
-		"goro":    normalizeRamp(float64(s.Goroutines), goroutineRampLo, goroutineRampHi),
+		"goro":    goroutineComponent(s),
 	}
 	if s.FDFrac > 0 {
 		// FDFrac is the fraction of RLIMIT_NOFILE currently USED. Map it so
@@ -127,7 +174,7 @@ func computePressure(s pressureSample) (float64, map[string]float64) {
 	}
 
 	// Emergency pin: self-inflicted blowout bypasses smoothing.
-	if (s.HeapFrac >= emergencyHeapFrac && s.HeapFrac > 0) || s.Goroutines >= emergencyGoroutines {
+	if (s.HeapFrac >= emergencyHeapFrac && s.HeapFrac > 0) || goroutineEmergency(s) {
 		return 1.0, comps
 	}
 
@@ -217,11 +264,27 @@ func readMemAvailFrac() (float64, error) {
 	return max(0, availMiB) * 1024 * 1024 / float64(ram), nil
 }
 
+// runningProxyCountForPressure is the pool size the goroutine sensor divides
+// by: the health registry count minus the native direct transport, which is a
+// single fixed goroutine, not a pool member. The direct entry is registered at
+// index 0 by default, so WITHOUT this the sensor read 1 running proxy on a
+// direct-only node, divided by 1, and judged a ~1,000-goroutine background
+// (which is roughly the process's fixed overhead) as an emergency blowout.
+// With it excluded, a direct-only node has RunningProxies == 0 and falls back
+// to the absolute ramp, as the sensor documents.
+func runningProxyCountForPressure() int {
+	n := connect.ProxyHealthCount()
+	if connect.ProxyKeyByIndex(0) == directProxyKey {
+		n--
+	}
+	return n
+}
+
 // collectPressureSample reads every sensor, recording errors per-sensor so
 // one missing source (PSI on old kernels, everything on Windows/macOS)
 // never blanks the others. Self-signals always work.
 func collectPressureSample() pressureSample {
-	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine()}
+	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: runningProxyCountForPressure()}
 
 	if v, err := readPSI("memory"); err == nil {
 		s.PSIMem = v
@@ -518,6 +581,34 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 	}
 }
 
+// logGCGovernorChange logs a governor GOGC change. Every writer path uses it,
+// so an operator can always tell why GOGC moved (the 10s subtick and the
+// self-heal-off tick used to change it silently).
+func logGCGovernorChange(prevGOGC int, state *gcGovernorState) {
+	if state.currentGOGC != prevGOGC {
+		tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
+			state.lastTightenAction, state.lastHeapFrac, state.currentGOGC)
+	}
+}
+
+// gcSubtickStep is the fast heap-only path: tighten on a raw live-heap spike.
+// It is host-blind (hostAvail -1) and never releases.
+func gcSubtickStep(heapFrac float64, state *gcGovernorState) {
+	prev := state.currentGOGC
+	gcGovernor(heapFrac, -1, 0, false, state)
+	logGCGovernorChange(prev, state)
+}
+
+// gcSelfHealOffTick runs on the full-sweep cadence when self-heal is off. The
+// governor is a memory-safety actuator independent of self-heal, so this tick
+// must still give it the host+heap view and the right to RELEASE; skipping it
+// left a tightened GOGC in place for the rest of the process's life.
+func gcSelfHealOffTick(heapFrac float64, hostAvail int64, state *gcGovernorState) {
+	prev := state.currentGOGC
+	gcGovernor(heapFrac, hostAvail, 0, true, state)
+	logGCGovernorChange(prev, state)
+}
+
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
 // the score, publishes it, and logs on regime changes. When self-heal is
 // off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
@@ -565,6 +656,8 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	}
 	gcState.currentGOGC = gcState.baselineGOGC
 
+	var headroom headroomTracker
+	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
 	var smoothed float64
 	lastRegime := 0
 	fullTicker := time.NewTicker(pressureSampleInterval)
@@ -584,10 +677,25 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// hostAvail makes the host layer inert, and canRelease=false keeps it
 			// from touching the calm counter.
 			if gcAdaptiveEnabled() {
-				gcGovernor(liveHeapFrac(), -1, 0, false, &gcState)
+				gcSubtickStep(liveHeapFrac(), &gcState)
 			}
 			continue
 		case <-fullTicker.C:
+			// Track the peak running count and heartbeat for the OOM-aware start
+			// cap. It runs whether or not self-heal is on: it is bookkeeping, not
+			// an actuator.
+			// runningProxyCountForPressure excludes the native direct
+			// transport (a single fixed goroutine, not a pool member), so
+			// neither the OOM peak nor the headroom log's proxy count is
+			// off by one on a direct-only or direct+proxies node.
+			proxyCount := runningProxyCountForPressure()
+			oomCapUpdatePeak(proxyCount, time.Now())
+			// Real free memory, independent of the pressure score and of
+			// self-heal: log when the box gets short and when it recovers.
+			avail := hostAvailMiB() // one reading, used for both the decision and the line
+			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, proxyCount, runtime.NumGoroutine()); line != "" {
+				importantLogf("%s\n", line)
+			}
 		}
 
 		if !resolveSelfHealEnabled(selfHealEnabled) {
@@ -597,6 +705,11 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// opened after self-healing is disabled don't keep the reduced
 			// buffers from an earlier pressure episode.
 			applyPressureMemoryBudget(0)
+			// The GC governor is independent of self-heal: keep giving it the
+			// full host+heap view so a tightened level can release.
+			if gcAdaptiveEnabled() {
+				gcSelfHealOffTick(liveHeapFrac(), hostAvailMiB(), &gcState)
+			}
 			continue
 		}
 		sample := collectPressureSample()
@@ -611,10 +724,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
 		prevGOGC := gcState.currentGOGC
 		gcGovernor(sample.HeapFrac, hostAvailMiB(), comps["psi_cpu"], true, &gcState)
-		if gcState.currentGOGC != prevGOGC {
-			tlog("[proxy][pressure] gcGovernor %s (heap=%.2f go=%d)\n",
-				gcState.lastTightenAction, gcState.lastHeapFrac, gcState.currentGOGC)
-		}
+		logGCGovernorChange(prevGOGC, &gcState)
 
 		// MemoryBudget actuator (#6): scale the per-connection memory-dominant
 		// settings (queue caps, receive windows, socket buffers) down proportionally
@@ -977,7 +1087,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		// An operator trim cap overrides the AIMD operating point: never grow
 		// the URL pool target above the running-proxy cap (they fight otherwise,
 		// burning fetch/probe work on proxies that can never launch).
-		if tc, _ := readTrimTarget(); tc > 0 && next > tc {
+		if tc, _ := effectiveTrimCap(); tc > 0 && next > tc {
 			next = tc
 		}
 		if next != urlState.TargetPoolSize {

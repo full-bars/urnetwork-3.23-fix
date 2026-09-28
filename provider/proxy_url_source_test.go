@@ -19,6 +19,35 @@ func withTempHome(t *testing.T) string {
 	dir := t.TempDir()
 	t.Setenv("HOME", dir)
 	t.Setenv("USERPROFILE", dir) // os.UserHomeDir() reads this on Windows
+	// globalClientJWTStore is built at package init from the REAL home, so the
+	// HOME redirect above does not reach it: a reload would read the developer's
+	// stored identities and write snapshot files into their real ~/.urnetwork.
+	// Point it into the temp home (same layout as production) and restore it.
+	prevJWTStore := globalClientJWTStore
+	globalClientJWTStore = newClientJWTStore(filepath.Join(dir, ".urnetwork", ".client_jwts.json"))
+	t.Cleanup(func() { globalClientJWTStore = prevJWTStore })
+	// Other process-wide state a reload/trim test dirties and the next test
+	// must not inherit: the give-up/shed backoff history and the last trim cap
+	// the reload acknowledged.
+	prevHistory := globalProxyFailureHistory
+	globalProxyFailureHistory = &proxyFailureHistory{failures: map[string]int{}}
+	t.Cleanup(func() { globalProxyFailureHistory = prevHistory })
+	trimCapSeen.Store(0)
+	trimCapSourceSeen.Store("")
+	t.Cleanup(func() { trimCapSeen.Store(0); trimCapSourceSeen.Store("") })
+	// lifetimeStore and globalProxyEarningsStore are, like globalClientJWTStore
+	// above, built at package init from the real home and never repointed by
+	// the HOME redirect. TestMain moves them off the developer's real home for
+	// the whole binary, but leaves them SHARED across every test in the
+	// package: a test that credits earnings or lifetime counters can leak into
+	// the next one's expectations. Swap in a fresh instance per test, in this
+	// temp home's layout, and restore on cleanup.
+	prevLifetimeStore := lifetimeStore
+	lifetimeStore = loadLifetimeMetrics(lifetimeMetricsPath())
+	t.Cleanup(func() { lifetimeStore = prevLifetimeStore })
+	prevEarningsStore := globalProxyEarningsStore
+	globalProxyEarningsStore = newProxyEarningsStore(proxyEarningsPath())
+	t.Cleanup(func() { globalProxyEarningsStore = prevEarningsStore })
 	// Disable reload trigger debounce for tests that write triggers back-to-back.
 	// Must hold the lock: doWriteReloadTrigger (scheduled by a prior test's
 	// writeReloadTrigger via time.AfterFunc) writes lastReloadTriggerTime.ts under
