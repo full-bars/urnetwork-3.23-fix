@@ -22,6 +22,33 @@ var (
 	autoTuneLogf   = func(format string, args ...any) { DefaultLogger().Infof(format, args...) }
 )
 
+// autoGCPercentApplied gates the tier's GOGC to one write per process. GOGC is
+// process-wide but ApplyAutoTuning runs once per proxy server, so an
+// unconditional SetGCPercent silently reverted whatever the GC governor or an
+// operator had set since the previous launch.
+var autoGCPercentApplied atomic.Bool
+
+// AutoTuneOperatorPinned lets the embedding program report that the operator
+// pinned a runtime knob (key "gogc") through its own persisted control state,
+// which the tier defaults must not override. It is nil for embedders with no
+// such state.
+var AutoTuneOperatorPinned func(key string) bool
+
+// applyAutoGCPercent sets the tier's GOGC once per process, unless the operator
+// pinned GOGC (env var or persisted control value).
+func applyAutoGCPercent(pct int) {
+	if os.Getenv("GOGC") != "" {
+		return
+	}
+	if AutoTuneOperatorPinned != nil && AutoTuneOperatorPinned("gogc") {
+		return
+	}
+	if !autoGCPercentApplied.CompareAndSwap(false, true) {
+		return
+	}
+	debug.SetGCPercent(pct)
+}
+
 // Tier Definitions
 const (
 	Tier1Low         = "lowmem"
@@ -95,9 +122,7 @@ func applyTier1(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = kib(512)
 
 	// GOGC: 50 (skip if operator set GOGC explicitly)
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(50)
-	}
+	applyAutoGCPercent(50)
 
 	// GOMEMLIMIT: 85% (skip if operator set GOMEMLIMIT or --max-memory - the
 	// latter already applied a finite limit, and an operator flag always wins).
@@ -126,9 +151,7 @@ func applyTier2(cs *ClientSettings, ns *LocalUserNatSettings, ramLimit int64) {
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(1)
 
 	// GOGC: 75 (skip if operator set GOGC explicitly)
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(75)
-	}
+	applyAutoGCPercent(75)
 
 	// GOMEMLIMIT: 90% (skip if operator set GOMEMLIMIT or --max-memory).
 	if os.Getenv("GOMEMLIMIT") == "" && !finiteLimitSet() {
@@ -151,9 +174,7 @@ func applyTier3(cs *ClientSettings, ns *LocalUserNatSettings) {
 	cs.ReceiveBufferSettings.ReceiveQueueMaxByteCount = mib(4)
 
 	// GOGC: 100 (Go default, made explicit for consistency; skip if set)
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(100)
-	}
+	applyAutoGCPercent(100)
 }
 
 func applyTier4(cs *ClientSettings, ns *LocalUserNatSettings) {
@@ -176,7 +197,5 @@ func applyTier4(cs *ClientSettings, ns *LocalUserNatSettings) {
 
 	cs.ContractManagerSettings.ContractTransferByteSeqScale = 3
 
-	if os.Getenv("GOGC") == "" {
-		debug.SetGCPercent(200)
-	}
+	applyAutoGCPercent(200)
 }

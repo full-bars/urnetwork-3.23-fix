@@ -5,6 +5,7 @@ import (
 	"context"
 	"os"
 	"os/signal"
+	"path/filepath"
 	"slices"
 	"strconv"
 	"strings"
@@ -34,16 +35,55 @@ func resetOrCreateTimer(timer **time.Timer, timeout time.Duration) <-chan time.T
 	return (*timer).C
 }
 
+// cgroupV2MemoryCeiling returns the tightest positive memory.max or memory.high
+// found on the process's own cgroup or any ancestor up to the mount root.
+// selfCgroup is the content of /proc/self/cgroup; only its cgroup v2 line
+// ("0::/path") is used. memory.high counts because the kernel throttles and
+// reclaims a cgroup that crosses it, so it is the practical ceiling even though
+// memory.max is higher. ok is false when nothing limits the process, or the
+// tree cannot be read (callers then fall back to cgroup v1 / MemTotal).
+func cgroupV2MemoryCeiling(mount string, selfCgroup string) (ceiling int64, ok bool) {
+	rel := ""
+	for _, line := range strings.Split(selfCgroup, "\n") {
+		if strings.HasPrefix(line, "0::") {
+			rel = strings.TrimSpace(strings.TrimPrefix(line, "0::"))
+			break
+		}
+	}
+	if rel == "" {
+		return 0, false
+	}
+	dir := filepath.Join(mount, rel)
+	mount = filepath.Clean(mount)
+	for {
+		for _, name := range []string{"memory.max", "memory.high"} {
+			data, err := os.ReadFile(filepath.Join(dir, name))
+			if err != nil {
+				continue
+			}
+			v, err := strconv.ParseInt(strings.TrimSpace(string(data)), 10, 64)
+			if err != nil || v <= 0 {
+				continue // "max", empty, or garbage: this file sets no limit
+			}
+			if !ok || v < ceiling {
+				ceiling, ok = v, true
+			}
+		}
+		if dir == mount || len(dir) <= len(mount) {
+			return ceiling, ok
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
 // DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func DetectEffectiveRAMLimitBytes() int64 {
-	// cgroup v2
-	if data, err := os.ReadFile("/sys/fs/cgroup/memory.max"); err == nil {
-		s := strings.TrimSpace(string(data))
-		if s != "max" {
-			if v, err := strconv.ParseInt(s, 10, 64); err == nil && v > 0 {
-				return v
-			}
+	// cgroup v2: the tightest memory.max/memory.high on this process's own
+	// cgroup or any ancestor (systemd MemoryMax=/MemoryHigh= live there).
+	if self, err := os.ReadFile("/proc/self/cgroup"); err == nil {
+		if v, ok := cgroupV2MemoryCeiling("/sys/fs/cgroup", string(self)); ok {
+			return v
 		}
 	}
 	// cgroup v1 — sentinel for "no limit" is near max int64; filter anything >= 1 TiB

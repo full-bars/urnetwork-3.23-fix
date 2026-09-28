@@ -22,6 +22,8 @@ func hotswapDeclineReason(err error) string {
 		return "version_old"
 	case errors.Is(err, ErrHotSwapUnitNotNotify):
 		return "unit_not_notify"
+	case errors.Is(err, ErrHotSwapLowMemory):
+		return "low_memory"
 	case errors.Is(err, ErrHotSwapNeedsRestart):
 		return "needs_restart"
 	case strings.Contains(err.Error(), "query systemd unit type"):
