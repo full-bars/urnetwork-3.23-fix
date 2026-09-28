@@ -633,6 +633,8 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	}
 	gcState.currentGOGC = gcState.baselineGOGC
 
+	var headroom headroomTracker
+	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
 	var smoothed float64
 	lastRegime := 0
 	fullTicker := time.NewTicker(pressureSampleInterval)
@@ -656,6 +658,15 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			}
 			continue
 		case <-fullTicker.C:
+			// Track the peak running count for the OOM-aware start cap. It runs
+			// whether or not self-heal is on: it is bookkeeping, not an actuator.
+			oomCapUpdatePeak(connect.ProxyHealthCount())
+			// Real free memory, independent of the pressure score and of
+			// self-heal: log when the box gets short and when it recovers.
+			avail := hostAvailMiB() // one reading, used for both the decision and the line
+			if line := headroomLogLine(headroom.Observe(avail, headroomLow), avail, headroomLow, connect.ProxyHealthCount(), runtime.NumGoroutine()); line != "" {
+				tlog("%s\n", line)
+			}
 		}
 
 		if !resolveSelfHealEnabled(selfHealEnabled) {
@@ -1047,7 +1058,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		// An operator trim cap overrides the AIMD operating point: never grow
 		// the URL pool target above the running-proxy cap (they fight otherwise,
 		// burning fetch/probe work on proxies that can never launch).
-		if tc, _ := readTrimTarget(); tc > 0 && next > tc {
+		if tc, _ := effectiveTrimCap(); tc > 0 && next > tc {
 			next = tc
 		}
 		if next != urlState.TargetPoolSize {

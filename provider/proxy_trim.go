@@ -176,7 +176,7 @@ func resetTrimCapSeen() { trimCapSeen.Store(0) }
 // uses it as its denominator, so a healthy box trimmed to N reads N/N, not
 // N/desired (which reads "critical" and teaches operators to ignore it).
 func trimmedConfiguredCount(desired int) int {
-	if cap, err := readTrimTarget(); err == nil && cap > 0 && desired > cap {
+	if cap, err := effectiveTrimCap(); err == nil && cap > 0 && desired > cap {
 		return cap
 	}
 	return desired

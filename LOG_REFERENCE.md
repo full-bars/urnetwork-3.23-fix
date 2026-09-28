@@ -151,6 +151,35 @@ The former `[eco]` memory monitor lines are retired. Their host available RAM si
 
 ---
 
+## 🎚️ Capacity Control: Trim, OOM Cap, Memory Headroom
+
+```text
+[proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying
+[proxy][trim] applied: cap=2000: shed 2127 worst-graded running, held 0 additions (pool ~2000)
+[proxy][trim] startup: cap=2000, launching 2000 of 4127 desired, holding 2127 worst-graded until the cap is raised
+[oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap 0 -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)
+[oomcap] applied: OOM kill since the last start (peak running 4127): reduce the automatic start cap 0 -> 3301
+[proxy][resources] warning: GOMEMLIMIT=400 MiB is below the ~581 MiB this pool of 1300 proxies is expected to need, ...
+[proxy][resources] low memory headroom: 132 MiB available, below 193 MiB (2001 proxies, 77780 goroutines); ...
+[proxy][resources] memory headroom recovered: 420 MiB available (2001 proxies, 41000 goroutines)
+```
+
+| Message | Meaning |
+|---|---|
+| `[proxy][trim] received` | An operator trim cap (or the automatic OOM cap) was seen for the first time or changed. Logged once per change with what it replaces and the running and desired counts. `received: cap cleared` is logged when the cap is removed. |
+| `[proxy][trim] applied` | The result of applying the cap: how many worst-graded running proxies were shed and how many additions were held back. Logged even when nothing needed shedding. Shed proxies keep their state (ID, health, grade) so they relaunch as themselves when the cap is raised. |
+| `[proxy][trim] startup` | The cap is applied before launching, so a restart never opens every desired proxy and then sheds down. Held proxies stay desired and are admitted by the next reload once the cap allows it. |
+| `[oomcap] shadow` / `applied` | The OOM-aware start cap. When the kernel OOM-killed the box since the previous start (same boot, higher `oom_kill` counter; a reboot is never blamed), the next start runs 80% of the peak running proxies, never below max(50, desired/4), at most 3 reductions per 24h, relaxing 10% per clean day. `shadow` (default) only logs what it would do. |
+| `[proxy][resources] warning` | At startup the limits the process runs under (soft memory limit, the tightest cgroup `memory.max`/`memory.high`, a pinned `GOGC` under `URNETWORK_PROFILE=auto`) are short for the pool. The provider never changes them; it says what to change. The estimate is 100 MiB plus about 0.37 MiB per proxy (0.25 MiB for the proxy and a peak allowance for connected clients). |
+| `low memory headroom` | Host or cgroup available memory stayed below max(150 MiB, 10% of RAM), at most 400 MiB, for two consecutive 30s samples. Connected clients drive memory (about 0.8 MiB each), so this can happen with no change in the proxy count. `recovered` is logged after four consecutive samples 25% above the line. Observation only. |
+
+Every automatic or operator capacity decision is also appended to `~/.urnetwork/autopilot.jsonl` (one JSON object per line: time, actor, action, from, to, mode, reason; capped at 256 KiB, newest lines kept). The control socket serves it as the `ledger` command.
+
+> [!NOTE]
+> The kill switch is `urnet-tools set oom-cap on|off|shadow`. Any source saying `off` wins, including an `off` set here against `URNETWORK_OOM_CAP=on` in the unit.
+
+---
+
 ## 🏊 Buffer Pool Health
 
 ```

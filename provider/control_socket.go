@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -313,6 +313,7 @@ var liveEffectKeys = map[string]bool{
 	"fast_auth":                   true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
+	"oom_cap":                     true,
 	"report_url":                  true,
 	"report_interval":             true,
 	"proxy_url_refresh":           true,
@@ -368,6 +369,12 @@ func validateControlValue(key, value string) error {
 		case "on", "off":
 		default:
 			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
+	case "oom_cap":
+		switch valLower {
+		case "on", "off", "shadow":
+		default:
+			return fmt.Errorf("oom_cap: must be on, off, or shadow (got %q)", value)
 		}
 	case "hot_restart":
 		switch valLower {
@@ -454,6 +461,8 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit": "off",
+	// Clearing the OOM cap key returns to the safe default: decide and log only.
+	"oom_cap": "shadow",
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
@@ -499,6 +508,33 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "ledger":
+		// The capacity-decision timeline (~/.urnetwork/autopilot.jsonl): the
+		// newest Limit entries (default 20, at most 200) as a JSON array in Value.
+		n := req.Limit
+		if n <= 0 {
+			n = 20
+		}
+		if n > 200 {
+			n = 200
+		}
+		dir, err := oomCapDir()
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		entries, err := ledgerTail(filepath.Join(dir, ledgerFileName), n)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		if entries == nil {
+			entries = []ledgerEntry{}
+		}
+		b, err := json.Marshal(entries)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		return controlResponse{OK: true, Value: string(b)}
 
 	case "trim_preview":
 		// Value is the target count. Computed here, in the provider, because
@@ -919,6 +955,10 @@ func applyLiveSideEffect(key, value string) error {
 			spawnRunOnce(a)
 		}
 		return nil
+	case "oom_cap":
+		// Read on every reload by effectiveTrimCap, so this is live; log an
+		// acknowledgement so the operator sees the command was received.
+		tlog("✓ [oomcap] mode set to %s via control socket (the automatic cap applies on the next reload)\n", strings.ToLower(value))
 	case "metrics":
 		return applyMetricsLive(value)
 	case "metrics_listen":
