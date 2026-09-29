@@ -385,3 +385,45 @@ func rewriteTrimFixtureFile(addrs []string) string {
 	}
 	return out
 }
+
+// events.log writes are an open+write+fsync. reload() must not do them while
+// holding r.mu, or a slow disk stalls every other reload-path caller. Asserted
+// from inside critLog's critical section (a test seam), so it is exact, and the
+// lines must still reach events.log once the reload returns.
+func TestReload_WritesEventsLogAfterReleasingTheReloaderLock(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls, heldDuring int
+	critLogInCriticalSection = func() {
+		calls++
+		// TryLock fails when reload still holds r.mu.
+		if r.mu.TryLock() {
+			r.mu.Unlock()
+			return
+		}
+		heldDuring++
+	}
+	t.Cleanup(func() { critLogInCriticalSection = nil })
+
+	r.reload()
+
+	if calls == 0 {
+		t.Fatal("the trim cap change wrote nothing to events.log")
+	}
+	if heldDuring != 0 {
+		t.Fatalf("%d of %d events.log writes ran while reload held r.mu", heldDuring, calls)
+	}
+	p, err := critLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || !strings.Contains(string(b), "[proxy][trim] received") {
+		t.Fatalf("events.log must still get the trim receipt: err=%v content=%q", err, string(b))
+	}
+}
