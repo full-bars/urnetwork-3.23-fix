@@ -48,9 +48,31 @@ func readTrimTarget() (int, error) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
-		return 0, nil // treat unparseable as no cap, never a false cap
+		// Treat unparseable as no cap, never a false cap, but say so once: a
+		// cap the operator believes is set has silently stopped applying.
+		if w := trimGarbageWarning(s); w != "" {
+			importantLogf("%s\n", w)
+		}
+		return 0, nil
 	}
 	return n, nil
+}
+
+// trimGarbageSeen is the last unparseable proxy_trim content already warned
+// about, so a bad file is reported once instead of on every reload.
+var trimGarbageSeen atomic.Value
+
+// trimGarbageWarning returns the warning line for unparseable proxy_trim
+// content the first time it is seen, and "" for a repeat of the same content.
+func trimGarbageWarning(content string) string {
+	if len(content) > 40 {
+		content = content[:40] + "..."
+	}
+	if prev, _ := trimGarbageSeen.Load().(string); prev == content {
+		return ""
+	}
+	trimGarbageSeen.Store(content)
+	return fmt.Sprintf("[proxy][trim] warn: proxy_trim holds %q, which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`", content)
 }
 
 // writeTrimTarget sets the operator cap. n <= 0 clears it.
@@ -68,7 +90,28 @@ func writeTrimTarget(n int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
+	// Write to a unique temp file and rename over the target. A plain WriteFile
+	// truncates first, so a reader (or a crash) between truncate and write sees
+	// an empty file, which reads as "no cap", and the cap silently lapses.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(strconv.Itoa(n)); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // trimPreviewText renders what `proxy trim <count>` would do to the given
