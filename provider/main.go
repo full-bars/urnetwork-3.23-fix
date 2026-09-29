@@ -4021,7 +4021,7 @@ func provide(opts docopt.Opts) {
 	// The OOM-aware cap decides FIRST so a cap set by an OOM kill since the last
 	// start applies to this very start (enforced only with URNETWORK_OOM_CAP=on;
 	// otherwise it is reported as a shadow decision; see oom_cap.go).
-	bootID, oomKills := readBootID(), readVmstatOOMKills()
+	bootID, oomKills := readOOMKillEpoch()
 	for _, line := range oomCapDecide(len(allProxySettings), bootID, oomKills, time.Now()) {
 		importantLogf("%s\n", line)
 	}

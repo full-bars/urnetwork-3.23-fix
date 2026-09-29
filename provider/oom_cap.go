@@ -129,8 +129,10 @@ func effectiveTrimCap() (int, error) {
 
 // oomMarker is written at every start and read at the next one.
 type oomMarker struct {
+	// BootID is the counter's epoch (see oomKillEpoch): the boot id, plus the
+	// cgroup scope when OOMKills was read from a cgroup's memory.events.
 	BootID      string `json:"boot_id"`
-	OOMKills    int64  `json:"oom_kills"` // /proc/vmstat oom_kill at that start
+	OOMKills    int64  `json:"oom_kills"` // the oom_kill counter at that start
 	Proxies     int    `json:"proxies"`   // proxies launched at that start
 	StartedUnix int64  `json:"started_unix"`
 	// LastSeenUnix is a heartbeat refreshed by the periodic pressure-loop path
@@ -153,9 +155,9 @@ const oomHeartbeatInterval = time.Hour
 // start. A different boot id means a reboot (the counter reset), which is never
 // attributed to an OOM; an unknown reading never claims one. A marker older than
 // oomMarkerMaxAge is stale: the box may have been down for days (or running with
-// the cap off) while ANY other workload on the same boot bumped the global
-// oom_kill counter, and the marker's proxy count no longer describes this
-// process's load. Staleness is judged against the heartbeat (how recently this
+// the cap off) while ANY other workload on the same boot bumped the counter
+// (the host-wide one where no cgroup counter is readable; see oomKillEpoch),
+// and the marker's proxy count no longer describes this process's load. Staleness is judged against the heartbeat (how recently this
 // process was last seen running), not StartedUnix (when it started): a
 // long-running process refreshes the heartbeat and is never blamed for a kill
 // that happened while it was legitimately still up. A marker with no heartbeat
@@ -329,6 +331,88 @@ func readBootID() string {
 		return ""
 	}
 	return strings.TrimSpace(string(b))
+}
+
+// parseCgroupOOMKills reads the oom_kill field out of a cgroup v2 memory.events
+// file. ok is false when the field is absent or unparseable.
+func parseCgroupOOMKills(events string) (int64, bool) {
+	for _, line := range strings.Split(events, "\n") {
+		if k, v, ok := strings.Cut(line, " "); ok && k == "oom_kill" {
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && n >= 0 {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// readCgroupOOMKills returns the OOM-kill counter of the cgroup subtree this
+// process runs in, and a scope label naming which cgroup it was read from.
+//
+// memory.events is hierarchical, so a cgroup's counter includes every kill in
+// its descendants. The process's own cgroup is not used: systemd removes a
+// service's cgroup when it stops and creates a new one on restart, so its
+// counter resets exactly when we need to compare across a restart. The parent
+// (or the nearest ancestor with a readable file) persists, and still counts only
+// kills inside that subtree, not the whole host's. When the process IS the mount
+// root (a container), its own file is the persistent one and is used.
+// ok is false when no memory.events can be read (cgroup v1, no cgroup).
+func readCgroupOOMKills(mount, selfCgroup string) (kills int64, scope string, ok bool) {
+	rel := ""
+	for _, line := range strings.Split(selfCgroup, "\n") {
+		if strings.HasPrefix(line, "0::") {
+			rel = strings.TrimSpace(strings.TrimPrefix(line, "0::"))
+			break
+		}
+	}
+	if rel == "" {
+		return 0, "", false
+	}
+	mount = filepath.Clean(mount)
+	dir := filepath.Join(mount, rel)
+	if dir != mount {
+		dir = filepath.Dir(dir) // start at the parent: it outlives our own cgroup
+	}
+	for {
+		if b, err := os.ReadFile(filepath.Join(dir, "memory.events")); err == nil {
+			if n, found := parseCgroupOOMKills(string(b)); found {
+				at := strings.TrimPrefix(dir, mount)
+				if at == "" {
+					at = "/"
+				}
+				return n, "cgroup:" + at, true
+			}
+		}
+		if dir == mount || len(dir) <= len(mount) {
+			return 0, "", false
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+// oomKillEpoch returns the (epoch, counter) pair the marker stores and compares.
+// The epoch is the boot id, plus the scope the counter covers when it comes from
+// a cgroup: a reading is only comparable to a marker taken from the same counter
+// on the same boot, and oomKilledSinceMarker already refuses to compare across
+// different epochs. With a readable cgroup file the counter is scoped to this
+// process's cgroup subtree, so another workload's OOM kill elsewhere on the host
+// is no longer blamed on this provider. Otherwise it is the host-wide
+// /proc/vmstat counter with the plain boot id, as before. The first start after
+// an upgrade has a plain-boot-id marker, so it is not compared (never a false
+// attribution).
+func oomKillEpoch(bootID, mount, selfCgroup string, vmstatKills int64) (string, int64) {
+	if bootID != "" {
+		if n, scope, ok := readCgroupOOMKills(mount, selfCgroup); ok {
+			return bootID + "|" + scope, n
+		}
+	}
+	return bootID, vmstatKills
+}
+
+// readOOMKillEpoch is oomKillEpoch for the running process.
+func readOOMKillEpoch() (string, int64) {
+	self, _ := os.ReadFile("/proc/self/cgroup")
+	return oomKillEpoch(readBootID(), "/sys/fs/cgroup", string(self), readVmstatOOMKills())
 }
 
 // oomCapDecide runs once per start BEFORE the launch selection: it reads the
