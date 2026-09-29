@@ -415,6 +415,40 @@ func readOOMKillEpoch() (string, int64) {
 	return oomKillEpoch(readBootID(), "/sys/fs/cgroup", string(self), readVmstatOOMKills())
 }
 
+// oomCapResetOnOff forgets the standing automatic cap. Turning the kill switch
+// off has to mean the automatic cap is GONE, not merely not enforced while off:
+// nothing ages the cap while off (the reduce and relax logic never runs), so a
+// cap set days ago is still there, still binding the moment the switch goes back
+// on, and it can shed proxies on the very start the operator turned the switch
+// back on to let the pool grow. The reduction history is kept: it is what stops
+// a flapping box from cutting the pool again on the very next OOM.
+//
+// Deliberately NOT an age check on SinceUnix. A long-running provider
+// legitimately holds the same cap for days (SinceUnix only moves at a reduction
+// or a relax, and a relax is evaluated at start), so dropping a cap merely
+// because it is old would shed proxies mid-run on a healthy box. "off" is the
+// operator saying stop, and stop means no standing cap.
+func oomCapResetOnOff() []string {
+	dir, err := oomCapDir()
+	if err != nil {
+		return nil
+	}
+	statePath := filepath.Join(dir, "oom_cap.json")
+	var st oomCapState
+	if !oomReadJSON(statePath, &st) || st.Cap <= 0 {
+		return nil
+	}
+	from := st.Cap
+	st.Cap = 0
+	if werr := oomWriteJSON(statePath, st); werr != nil {
+		importantLogf("[oomcap] warn: could not clear the automatic cap %d (%v); it stays in place and is not enforced while the mode is off\n", from, werr)
+		return nil
+	}
+	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: "clear", From: from, To: 0, Mode: oomCapModeName(oomCapOff),
+		Reason: "kill switch off"})
+	return []string{"[oomcap] cleared the automatic start cap " + strconv.Itoa(from) + " -> none (the kill switch forgets the standing cap)"}
+}
+
 // oomCapDecide runs once per start BEFORE the launch selection: it reads the
 // previous marker, decides what an OOM-aware cap does, persists the cap state and
 // returns the log lines. In "on" mode the persisted cap is then enforced by
@@ -422,7 +456,7 @@ func readOOMKillEpoch() (string, int64) {
 func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []string {
 	mode := oomCapMode()
 	if mode == oomCapOff {
-		return nil
+		return oomCapResetOnOff()
 	}
 	dir, err := oomCapDir()
 	if err != nil {
