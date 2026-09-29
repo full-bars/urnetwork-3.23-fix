@@ -247,6 +247,25 @@ var setKeyHelps = []string{
 	"  metrics             on|off        enable metrics endpoint",
 }
 
+// treatsOffAsClear reports whether `set <key> off` is turned into a generic
+// clear (drop the override, revert to the startup default) rather than being
+// sent to the provider as the value "off".
+//
+// For most keys the two are the same intent and the clear path is a fine
+// shortcut. The exceptions send "off" as a real value, because their off state
+// is not their default: hot_restart and ramlogs keep a concrete off behaviour,
+// proxy_self_heal and metrics would otherwise revert to a default that is not
+// off, and oom_cap would revert to the "shadow" default, which decides and logs
+// but enforces nothing, so the documented kill switch would never turn the
+// feature off.
+func treatsOffAsClear(canonicalKey string) bool {
+	switch canonicalKey {
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap":
+		return false
+	}
+	return true
+}
+
 func printSetHelp() {
 	fmt.Fprint(os.Stderr, `urnet-tools set — runtime tuning overrides
 
@@ -358,7 +377,7 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 
 	// EqualFold, matching validateControlValue: an exact match let "OFF"
 	// pass validation and reach the provider as a set rather than a clear.
-	if strings.EqualFold(value, "off") && canonicalKey != "hot_restart" && canonicalKey != "ramlogs" && canonicalKey != "proxy_self_heal" && canonicalKey != "metrics" {
+	if strings.EqualFold(value, "off") && treatsOffAsClear(canonicalKey) {
 		if dryRun {
 			fmt.Printf("[dry-run] would clear %s for %s and revert to startup default\n", key, providerLabel(p))
 			return nil

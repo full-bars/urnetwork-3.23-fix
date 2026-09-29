@@ -44,20 +44,28 @@ func TestClassifyRestart(t *testing.T) {
 		marker  string
 		clean   bool
 		prevVer string
+		curVer  string
 		want    string
 	}{
-		{"marker beats clean", "update", true, "v1", "update"},
-		{"marker beats unclean", "hotswap", false, "v1", "hotswap"},
-		{"marker beats first start", "manual", false, "", "manual"},
-		{"clean marker", "", true, "v1", "clean"},
-		{"clean marker without version", "", true, "", "clean"},
-		{"unclean", "", false, "v1", "unclean"},
-		{"first start", "", false, "", "first-start"},
+		{"marker beats clean", "update", true, "v1", "v2", "update"},
+		{"marker beats unclean", "hotswap", false, "v1", "v2", "hotswap"},
+		{"marker beats first start", "manual", false, "", "", "manual"},
+		{"clean marker", "", true, "v1", "v1", "clean"},
+		{"clean marker without version", "", true, "", "", "clean"},
+		// A version CHANGE is an upgrade, not a crash: the binary on disk is not
+		// the one that wrote .provider_version, so something deliberately
+		// replaced it. Reporting this as unclean is what made three upgraded
+		// boxes claim they had crashed for the life of the new version.
+		{"version change is an update", "", false, "v1", "v2", "update"},
+		// Same version, no marker, no clean exit: the only genuine unclean case.
+		{"same version with no marker is unclean", "", false, "v1", "v1", "unclean"},
+		{"first start", "", false, "", "", "first-start"},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := classifyRestart(tc.marker, tc.clean, tc.prevVer); got != tc.want {
-				t.Fatalf("classifyRestart(%q, %v, %q) = %q, want %q", tc.marker, tc.clean, tc.prevVer, got, tc.want)
+			if got := classifyRestart(tc.marker, tc.clean, tc.prevVer, tc.curVer); got != tc.want {
+				t.Fatalf("classifyRestart(%q, %v, %q, %q) = %q, want %q",
+					tc.marker, tc.clean, tc.prevVer, tc.curVer, got, tc.want)
 			}
 		})
 	}
@@ -66,11 +74,13 @@ func TestClassifyRestart(t *testing.T) {
 func TestConsumeRestartMarkerDeletesInEveryCase(t *testing.T) {
 	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
 	fresh := "update " + now.Format(time.RFC3339)
-	stale := "update " + now.Add(-time.Hour).Format(time.RFC3339)
+	stale := "update " + now.Add(-restartMarkerMaxAge-time.Minute).Format(time.RFC3339)
 	for name, tc := range map[string]struct{ content, want string }{
-		"fresh":   {fresh, "update"},
-		"stale":   {stale, ""},
-		"garbage": {"???", ""},
+		"fresh": {fresh, "update"},
+		// The window must cover a slow update, not just the restart itself.
+		"slow update": {"update " + now.Add(-45*time.Minute).Format(time.RFC3339), "update"},
+		"stale":       {stale, ""},
+		"garbage":     {"???", ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -95,25 +105,41 @@ func TestConsumeRestartMarkerDeletesInEveryCase(t *testing.T) {
 
 // detectStartup ties the markers and the version file together. Each case
 // starts from a fresh state dir and a fresh startupDiag.
+// restartReasonCase is one end-to-end startup: which files are present in the
+// state dir, and what detectStartup should conclude from them.
+type restartReasonCase struct {
+	name      string
+	marker    string // "" = no file
+	clean     bool
+	version   string // "" = no file
+	want      string
+	wantClean bool
+}
+
 func TestDetectStartupRestartReason(t *testing.T) {
 	fresh := "update " + time.Now().UTC().Format(time.RFC3339)
-	stale := "update " + time.Now().UTC().Add(-time.Hour).Format(time.RFC3339)
-	cases := []struct {
-		name      string
-		marker    string // "" = no file
-		clean     bool
-		version   string // "" = no file
-		want      string
-		wantClean bool
-	}{
-		{"fresh marker and clean", fresh, true, "v1", "update", true},
-		{"fresh marker, crash", fresh, false, "v1", "update", false},
-		{"stale marker, clean", stale, true, "v1", "clean", true},
-		{"stale marker, crash", stale, false, "v1", "unclean", false},
-		{"garbage marker, crash", "junk", false, "v1", "unclean", false},
+	// past the marker window, so it is still treated as abandoned
+	stale := "update " + time.Now().UTC().Add(-restartMarkerMaxAge-time.Minute).Format(time.RFC3339)
+
+	// A version CHANGE now means update, so the "same version" cases have to
+	// write exactly what the running process would write. RequireVersion() is
+	// empty in a test binary (no ldflags), and an empty previous version means
+	// first-start, so the same-version path cannot be expressed through the
+	// file at all here; TestClassifyRestart covers it by passing the versions
+	// in directly. These cases therefore all describe a version change.
+	prior := RequireVersion() + "-previous"
+	cases := []restartReasonCase{
+		{"fresh marker and clean", fresh, true, prior, "update", true},
+		{"fresh marker, crash", fresh, false, prior, "update", false},
+		{"stale marker, clean", stale, true, prior, "clean", true},
+		{"stale marker, version change", stale, false, prior, "update", false},
+		{"garbage marker, version change", "junk", false, prior, "update", false},
 		{"garbage marker, first start", "junk", false, "", "first-start", false},
-		{"clean only", "", true, "v1", "clean", true},
-		{"crash", "", false, "v1", "unclean", false},
+		{"clean only", "", true, prior, "clean", true},
+		// The bug this fixes: a version change is an upgrade, not a crash.
+		// Reporting it as unclean is what made three upgraded boxes claim they
+		// had restarted uncleanly for the life of the new version.
+		{"version change is an update, not a crash", "", false, prior, "update", false},
 		{"first start", "", false, "", "first-start", false},
 	}
 	for _, tc := range cases {
@@ -151,8 +177,17 @@ func TestDetectStartupRestartReason(t *testing.T) {
 			if startupDiag.cleanShutdown != tc.wantClean {
 				t.Fatalf("cleanShutdown = %v, want %v", startupDiag.cleanShutdown, tc.wantClean)
 			}
+			// The restart marker describes exactly one restart, so it is consumed.
 			if _, err := os.Stat(filepath.Join(dir, ".restart-reason")); !os.IsNotExist(err) {
 				t.Fatalf("restart marker survived detectStartup (stat err = %v)", err)
+			}
+			// The clean-shutdown marker is NOT consumed when it exists: it must
+			// survive until this process rewrites it on its own exit, otherwise
+			// a restarted box is indistinguishable from a crashed one.
+			if tc.clean {
+				if _, err := os.Stat(filepath.Join(dir, ".clean-shutdown")); err != nil {
+					t.Fatalf("clean-shutdown marker must survive detectStartup: %v", err)
+				}
 			}
 		})
 	}

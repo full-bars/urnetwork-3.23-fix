@@ -135,21 +135,50 @@ func TestSmartDialerOffKeepsExistingWeights(t *testing.T) {
 
 // TestSmartDialerOnScalesByMeasuredCost pins that with the setting on the
 // weights come from measured cost relative to the fastest working dialer.
+//
+// The FAST dialer cannot carry this assertion: weightWithoutLatency() is 1.0
+// for every dialer, so the fastest one lands on 1.0 whether or not the
+// measured-cost scaling runs at all. That is why the earlier version of this
+// test passed with the whole branch made unreachable. The SLOW dialer is the
+// real signal: its base weight is 0.3 and measured-cost scaling pulls it down
+// to the smartDialerLatencyFloor of 0.25, because it is 100x the fastest
+// measured average (200ms against 20s).
 func TestSmartDialerOnScalesByMeasuredCost(t *testing.T) {
 	SetSmartDialer(true)
 	t.Cleanup(func() { SetSmartDialer(false) })
 
 	fast := testDialer("fast", 0, 0.25, 10, 200*time.Millisecond, 0)
 	slow := testDialer("slow", 25, 0.25, 10, 20*time.Second, 0)
-
-	strategy := &ClientStrategy{dialers: map[*clientDialer]bool{fast: true, slow: true}}
-	weights := strategy.dialerWeights()
-
-	if weights[slow] >= weights[fast] {
-		t.Fatalf("on: slow weight %v did not fall below the faster one %v", weights[slow], weights[fast])
+	newStrategy := func() *ClientStrategy {
+		return &ClientStrategy{dialers: map[*clientDialer]bool{fast: true, slow: true}}
 	}
-	if weights[slow] < slow.minimumWeight {
-		t.Fatalf("on: slow weight %v dropped below the floor %v", weights[slow], slow.minimumWeight)
+
+	// Off first: the base weights, with no measured-cost scaling applied.
+	SetSmartDialer(false)
+	base := newStrategy().dialerWeights()
+	// On: the same pool, scaled by measured cost.
+	SetSmartDialer(true)
+	scaled := newStrategy().dialerWeights()
+
+	// The fixture must be able to tell the two modes apart at all, otherwise
+	// this test cannot detect the feature being unwired.
+	if base[slow] == smartDialerLatencyFloor {
+		t.Fatalf("the fixture is degenerate: the base weight for the slow dialer is already "+
+			"the floor %v, so on and off are indistinguishable", base[slow])
+	}
+	if base[slow] <= scaled[slow] {
+		t.Fatalf("with the setting off the slow dialer must keep its higher base weight: "+
+			"base %v, scaled %v", base[slow], scaled[slow])
+	}
+	// The floor is the whole point: a dialer 100x slower is damped to the floor
+	// rather than being starved out of the rotation entirely.
+	if scaled[slow] != smartDialerLatencyFloor {
+		t.Fatalf("on: the slow dialer must be damped to the floor %v, got %v",
+			smartDialerLatencyFloor, scaled[slow])
+	}
+	// The fastest dialer is the reference and keeps full weight.
+	if scaled[fast] != 1.0 {
+		t.Fatalf("on: the fastest dialer is the reference and must keep weight 1.0, got %v", scaled[fast])
 	}
 }
 

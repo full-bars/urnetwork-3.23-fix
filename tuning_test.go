@@ -12,41 +12,64 @@ import (
 // log on startup (e.g. ~3000 proxies -> ~3000 identical lines).
 func TestApplyAutoTuningLogsOncePerProcess(t *testing.T) {
 	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	t.Setenv("GOMEMLIMIT", "")
 
 	autoTuneLogged.Store(false)
+	// ApplyAutoTuning writes PROCESS-WIDE runtime knobs (debug.SetGCPercent and
+	// debug.SetMemoryLimit) through the tier it picks from this host's RAM.
+	// Without restoring them this test leaves GOGC=200 and a finite GOMEMLIMIT
+	// behind for every later test in the binary: on a big runner the tier is
+	// Tier4Extreme, on a small one 50/75/100. Runner-dependent, which is why it
+	// went unnoticed.
+	restoreRuntimeTuning(t)
 
-	logCount := 0
 	orig := autoTuneLogf
+	logCount := 0
 	autoTuneLogf = func(format string, args ...any) { logCount++ }
-	defer func() { autoTuneLogf = orig }()
+	t.Cleanup(func() { autoTuneLogf = orig })
 
 	const proxies = 5
-	var lastCs *ClientSettings
 	for i := 0; i < proxies; i++ {
-		cs := DefaultClientSettings()
-		ns := DefaultLocalUserNatSettings()
-		ApplyAutoTuning(cs, ns)
-		lastCs = cs
+		ApplyAutoTuning(DefaultClientSettings(), DefaultLocalUserNatSettings())
 	}
 
 	if logCount != 1 {
 		t.Fatalf("expected auto-profile to log exactly once across %d calls, got %d", proxies, logCount)
 	}
+}
 
-	// The once-guard must gate only the log, not the settings application.
-	// Verify the final call still applied tier settings (for the low/balanced
-	// tiers where there is an observable change).
-	switch tier := selectTier(DetectEffectiveRAMLimitBytes()); tier {
-	case Tier1Low:
-		if got := lastCs.ContractManagerSettings.InitialContractTransferByteCount; got != kib(128) {
-			t.Fatalf("tier1: settings not applied on later call; contract floor = %d, want %d", got, kib(128))
-		}
-	case Tier2Balanced:
-		if got := lastCs.ContractManagerSettings.InitialContractTransferByteCount; got != kib(256) {
-			t.Fatalf("tier2: settings not applied on later call; contract floor = %d, want %d", got, kib(256))
-		}
-	case Tier3Performance:
-		t.Logf("host is performance tier; tier settings are a no-op, log-once still verified")
+// The once-guard must gate only the log, not the settings application. Assert
+// against a specific tier rather than the host's real one: selectTier returns
+// Tier4Extreme on a large runner, which matched no case in the old switch, so
+// the assertion never ran and the test passed vacuously. applyTier1/2 take an
+// explicit ramLimit, which is the same seam the other tier tests use.
+func TestApplyAutoTuningOnceGuardDoesNotGateTierSettings(t *testing.T) {
+	t.Setenv("URNETWORK_PROFILE", "auto")
+	t.Setenv("GOGC", "")
+	t.Setenv("GOMEMLIMIT", "")
+
+	for _, c := range []struct {
+		name string
+		want int64
+		run  func(cs *ClientSettings, ns *LocalUserNatSettings)
+	}{
+		{"tier1 low", kib(128), func(cs *ClientSettings, ns *LocalUserNatSettings) {
+			applyTier1(cs, ns, 1<<30)
+		}},
+		{"tier2 balanced", kib(256), func(cs *ClientSettings, ns *LocalUserNatSettings) {
+			applyTier2(cs, ns, 1<<30)
+		}},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			restoreRuntimeTuning(t)
+			cs := DefaultClientSettings()
+			ns := DefaultLocalUserNatSettings()
+			c.run(cs, ns)
+			if got := cs.ContractManagerSettings.InitialContractTransferByteCount; got != c.want {
+				t.Fatalf("%s: contract floor = %d, want %d", c.name, got, c.want)
+			}
+		})
 	}
 }
 

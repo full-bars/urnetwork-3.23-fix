@@ -763,6 +763,16 @@ func (r *ProxyReloader) reload() {
 			continue // managed by the direct hot-toggle block above, not the proxy diff
 		}
 		if _, ok := desiredSet[addr]; !ok {
+			// When proxy_url.json could not be read, desiredSet never got the
+			// URL cache merged in (see the urlCacheLoaded gate above), so EVERY
+			// running URL proxy looks absent here and this loop cancels the
+			// entire live URL pool off one transient read error. The state
+			// prune further down is gated on urlCacheLoaded for exactly this
+			// reason; the cancel has to be too. A proxy is only "no longer
+			// desired" when we actually know what the desired set is.
+			if !urlCacheLoaded {
+				continue
+			}
 			removed = append(removed, addr)
 		}
 	}

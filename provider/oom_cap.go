@@ -614,10 +614,16 @@ func oomMarkerWithHeartbeat(m oomMarker, now time.Time) (oomMarker, bool) {
 // marker is never judged stale by oomKilledSinceMarker just because it started
 // more than oomMarkerMaxAge ago. Cheap: it only writes when the peak rises or
 // the heartbeat is due.
+//
+// The heartbeat runs even with the kill switch off, and only the peak update is
+// skipped. The heartbeat exists to prove "this process is still up", and
+// oomKilledSinceMarker ages the marker against oomMarkerMaxAge. Gating the
+// heartbeat on the mode meant a box left off for a maintenance weekend came
+// back with a frozen marker, and the first real OOM kill after re-enabling was
+// refused as stale: no reduction, no ledger entry, no log line. Refusing a kill
+// is the one failure this whole mechanism must never make.
 func oomCapUpdatePeak(running int, now time.Time) {
-	if oomCapMode() == oomCapOff {
-		return
-	}
+	off := oomCapMode() == oomCapOff
 	dir, err := oomCapDir()
 	if err != nil {
 		return
@@ -627,7 +633,11 @@ func oomCapUpdatePeak(running int, now time.Time) {
 	if !oomReadJSON(path, &m) {
 		return
 	}
-	next, peakChanged := oomMarkerWithPeak(m, running)
+	next := m
+	var peakChanged bool
+	if !off {
+		next, peakChanged = oomMarkerWithPeak(next, running)
+	}
 	next, heartbeatChanged := oomMarkerWithHeartbeat(next, now)
 	if peakChanged || heartbeatChanged {
 		_ = oomWriteJSON(path, next)

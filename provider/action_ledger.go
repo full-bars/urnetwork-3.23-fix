@@ -86,6 +86,15 @@ func ledgerTrim(path string, keepBytes int64) error {
 		}
 		lineLen := int64(i - j)
 		if size+lineLen > keepBytes {
+			// The newest line alone is bigger than what we are allowed to keep.
+			// Without this guard start stays len(b) and we would write an EMPTY
+			// ledger, silently destroying the whole audit trail of a
+			// self-managing agent (and ledgerRecord discards this error, so
+			// nothing would ever be logged). Keep the oversized newest line
+			// instead: over the bound for one entry beats losing all of them.
+			if size == 0 {
+				start = 0
+			}
 			break
 		}
 		size += lineLen
