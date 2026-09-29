@@ -12,6 +12,7 @@ import (
 	mathrand "math/rand"
 	"net"
 	"net/http"
+	"net/http/httptrace"
 	"net/netip"
 	"net/url"
 	"slices"
@@ -436,9 +437,19 @@ func (self *ClientStrategy) dialerWeights() map[*clientDialer]float32 {
 	weights := map[*clientDialer]float32{}
 
 	if len(self.extenderIpSecrets) == 0 {
-		for dialer, _ := range self.dialers {
-			w := dialer.Weight()
-			weights[dialer] = w
+		if SmartDialerEnabled() {
+			// Measured-cost preference: score each dialer without the
+			// fixed-baseline latency factor, then scale by its measured cost
+			// relative to the fastest dialer that works on this network.
+			for dialer, _ := range self.dialers {
+				weights[dialer] = dialer.weightWithoutLatency()
+			}
+			applySmartDialerWeights(weights)
+		} else {
+			for dialer, _ := range self.dialers {
+				w := dialer.Weight()
+				weights[dialer] = w
+			}
 		}
 	} else {
 		for dialer, _ := range self.dialers {
@@ -807,8 +818,8 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
-		response, err := httpClient.Do(request.WithContext(handleCtx))
-		dialDur := time.Since(startDial)
+		timing := &dialTiming{}
+		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
@@ -817,8 +828,18 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 			}
 		}
 
-		if dialer.Update(handleCtx, err, dialDur) {
+		// Only a genuine connection establishment is a dial-cost sample for
+		// the smart dialer: a reused keep-alive connection performed no dial,
+		// and folding its (fast) request time in would hide the connect-time
+		// cost this measurement exists to compare. The legacy full-duration
+		// EMA still folds every success (byte-identical smart_dialer-off
+		// behavior), so the connect-only sample goes to observeConnect.
+		freshConnect, establishTime := timing.sample()
+		if dialer.Update(handleCtx, err, time.Since(startDial)) {
 			self.probes.record(err == nil)
+		}
+		if err == nil && freshConnect {
+			dialer.observeConnect(establishTime)
 		}
 
 		return newEvalResultFromHttpResponse(response, err)
@@ -841,8 +862,8 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
-		response, err := httpClient.Do(request.WithContext(handleCtx))
-		dialDur := time.Since(startDial)
+		timing := &dialTiming{}
+		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
@@ -851,8 +872,12 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		if dialer.Update(handleCtx, err, dialDur) {
+		freshConnect, establishTime := timing.sample()
+		if dialer.Update(handleCtx, err, time.Since(startDial)) {
 			self.probes.record(err == nil)
+		}
+		if err == nil && freshConnect {
+			dialer.observeConnect(establishTime)
 		}
 
 		return newEvalResultFromHttpResponse(response, err)
@@ -860,8 +885,8 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 	helloEval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
-		response, err := httpClient.Do(helloRequest.WithContext(handleCtx))
-		dialDur := time.Since(startDial)
+		timing := &dialTiming{}
+		response, err := httpClient.Do(timing.trace(handleCtx, helloRequest, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
@@ -870,8 +895,12 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 			}
 		}
 
-		if dialer.Update(handleCtx, err, dialDur) {
+		freshConnect, establishTime := timing.sample()
+		if dialer.Update(handleCtx, err, time.Since(startDial)) {
 			self.probes.record(err == nil)
+		}
+		if err == nil && freshConnect {
+			dialer.observeConnect(establishTime)
 		}
 
 		return newEvalResultFromHttpResponse(response, err)
@@ -888,8 +917,8 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 	eval := func(handleCtx context.Context, dialer *clientDialer) *evalResult {
 		wsDialer := dialer.WsDialer(self.settings)
 		startDial := time.Now()
-		wsConn, response, err := wsDialer.DialContext(handleCtx, url, requestHeader)
-		dialDur := time.Since(startDial)
+		timing := &dialTiming{}
+		wsConn, response, err := wsDialer.DialContext(timing.traceCtx(handleCtx, startDial), url, requestHeader)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]ws dial %s = %s\n", url, err)
@@ -898,8 +927,21 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 			}
 		}
 
-		if dialer.Update(handleCtx, err, dialDur) {
+		// A WebSocket dial always establishes a fresh connection: gorilla
+		// has no connection pool, and it reports the establishment through
+		// GotConn right after the TCP+TLS dial (before the upgrade request),
+		// so the sample uses the same connect-only basis as the HTTP paths.
+		// If the trace did not fire, fall back to the full dial duration so
+		// the successful dial still counts.
+		freshConnect, establishTime := timing.sample()
+		if !freshConnect {
+			establishTime = time.Since(startDial)
+		}
+		if dialer.Update(handleCtx, err, time.Since(startDial)) {
 			self.probes.record(err == nil)
+		}
+		if err == nil {
+			dialer.observeConnect(establishTime)
 		}
 
 		return &evalResult{
@@ -1145,6 +1187,13 @@ type clientDialer struct {
 	// Composite scoring fields
 	consecutiveErrors int   // error streak (resets on success)
 	avgLatencyNanos   int64 // EMA of response latency in nanoseconds; 0 = no samples
+	latencySamples    int   // successful dials the EMA is built from
+	// connectLatencyNanos/connectSamples hold the connect-only EMA the smart
+	// dialer orders by. They are folded ONLY for genuine connection
+	// establishments (see observeConnect), so the legacy avgLatencyNanos above
+	// keeps its byte-identical semantics for the smart_dialer-off path.
+	connectLatencyNanos int64 // EMA of connection-establishment cost; 0 = no samples
+	connectSamples      int   // genuine connection establishments the EMA is built from
 
 	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
@@ -1199,6 +1248,16 @@ func sortDialersByHealth(dialers []*clientDialer) {
 	})
 	for i, r := range rs {
 		dialers[i] = r.dialer
+	}
+
+	// Measured-cost preference (opt-in): a transport whose cost has been
+	// measured on this network sorts ahead of the static health order, fastest
+	// first. Everything else keeps the order computed above, so no transport is
+	// skipped and a network where the preferred one is blocked simply falls
+	// over to the next.
+	if SmartDialerEnabled() {
+		ordered := orderDialersByMeasuredCost(dialers)
+		copy(dialers, ordered)
 	}
 }
 
@@ -1300,9 +1359,63 @@ func (self *clientDialer) Weight() float32 {
 	return w
 }
 
+// dialTiming observes one HTTP attempt's connection lifecycle. It reports
+// whether the attempt actually dialed (obtained a fresh connection) and, if
+// so, how long establishing that connection took. A request served from a
+// reused keep-alive connection performs no dial, so its (fast) round trip
+// must not enter the dial-cost average: folding it in would drift the
+// average toward request-only cost and stop reflecting the front-loaded
+// work a DPI-circumvention transport pays (fragmented or reordered TLS is
+// set up at connect, not on every request an open connection carries).
+type dialTiming struct {
+	mutex         sync.Mutex
+	fresh         bool
+	establishTime time.Duration
+}
+
+// trace attaches an httptrace to the request that records whether the
+// connection is fresh and how long its establishment took, measured from
+// start. Callbacks may fire on transport goroutines, so state is guarded.
+func (self *dialTiming) trace(ctx context.Context, request *http.Request, start time.Time) *http.Request {
+	return request.WithContext(self.traceCtx(ctx, start))
+}
+
+// traceCtx attaches an httptrace to a context that records whether the
+// connection established is fresh and how long its establishment took,
+// measured from start. Used by dialers that take a context directly (the
+// WebSocket path); gorilla's DialContext wires the context through to the
+// transport, which fires ClientTrace callbacks on it.
+func (self *dialTiming) traceCtx(ctx context.Context, start time.Time) context.Context {
+	trace := &httptrace.ClientTrace{
+		GotConn: func(info httptrace.GotConnInfo) {
+			if info.Reused {
+				return
+			}
+			self.mutex.Lock()
+			self.fresh = true
+			self.establishTime = time.Since(start)
+			self.mutex.Unlock()
+		},
+	}
+	return httptrace.WithClientTrace(ctx, trace)
+}
+
+// sample returns whether a fresh connection was established and, if so, how
+// long that establishment took.
+func (self *dialTiming) sample() (bool, time.Duration) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return self.fresh, self.establishTime
+}
+
 // Update records a dial outcome and reports whether it counted. An error
 // after the handle context was canceled is a race loser, not a failure, and
 // is not counted.
+//
+// The EMA of response latency folds every success (byte-identical legacy
+// behavior; this is the value the smart_dialer-off Weight() path reads). The
+// smart dialer's connect-only measurement has its own fold, observeConnect,
+// called only for genuine connection establishments.
 func (self *clientDialer) Update(handleCtx context.Context, err error, duration time.Duration) bool {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
@@ -1319,6 +1432,7 @@ func (self *clientDialer) Update(handleCtx context.Context, err error, duration 
 		} else {
 			self.avgLatencyNanos = int64(alpha*float64(nanos) + (1-alpha)*float64(self.avgLatencyNanos))
 		}
+		self.latencySamples += 1
 		return true
 	} else {
 		select {
@@ -1335,6 +1449,29 @@ func (self *clientDialer) Update(handleCtx context.Context, err error, duration 
 		}
 	}
 	return false
+}
+
+// observeConnect folds one connection-establishment cost into the average the
+// smart dialer orders by (α = 0.3). Call it only for a genuine dial: a request
+// served from a reused keep-alive connection performed no dial, and folding
+// its fast round trip in would drift the average toward request-only cost and
+// stop reflecting the front-loaded work a DPI-circumvention transport pays
+// (fragmented or reordered TLS is set up at connect, not on every request an
+// open connection carries). This is a separate EMA from Update's
+// avgLatencyNanos so the legacy smart_dialer-off path keeps its byte-identical
+// full-duration folding.
+func (self *clientDialer) observeConnect(duration time.Duration) {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	const latencyAlpha = 0.3
+	nanos := duration.Nanoseconds()
+	if self.connectSamples == 0 {
+		self.connectLatencyNanos = nanos
+	} else {
+		self.connectLatencyNanos = int64(latencyAlpha*float64(nanos) + (1-latencyAlpha)*float64(self.connectLatencyNanos))
+	}
+	self.connectSamples += 1
 }
 
 func (self *clientDialer) IsExtender() bool {
@@ -1360,6 +1497,9 @@ func (self *clientDialer) ResetHealth() {
 	self.lastErrorTime = time.Time{}
 	self.consecutiveErrors = 0
 	self.avgLatencyNanos = 0
+	self.latencySamples = 0
+	self.connectLatencyNanos = 0
+	self.connectSamples = 0
 }
 
 func (self *clientDialer) String() string {

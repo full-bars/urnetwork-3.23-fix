@@ -895,6 +895,13 @@ func resetAdmissionStateCache() {
 // failure or give-up and can never trigger eviction.
 var errProxyURLBelowBar = errors.New("proxy below stage-1 bar")
 
+// errProxyURLSlowCutShort is the sentinel for a URL-source proxy whose auth
+// ladder ended on deadline-cut-short attempts (slow, not broken) rather than
+// genuine failures. The give-up handler routes it to backoff + requeue
+// without give-up accounting, so latency cannot permanently evict a working
+// list entry.
+var errProxyURLSlowCutShort = errors.New("proxy auth slow (deadline-cut short)")
+
 // cachedProxyURLState returns a parsed snapshot of proxy_url.json, reusing
 // the previous parse within admissionStateTTL. On a read error with a
 // previously-cached snapshot, the STALE snapshot is returned (with a
