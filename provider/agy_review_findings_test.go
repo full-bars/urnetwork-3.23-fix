@@ -4,7 +4,9 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
+	"time"
 )
 
 // critLog appended its own newline, so a deferred line drained with a trailing
@@ -121,6 +123,99 @@ func TestUnreadableProxyTrimWritesEventsLogOutsideTheReloaderLock(t *testing.T) 
 	}
 	if heldDuring != 0 {
 		t.Fatalf("%d of %d events.log writes ran while reload held r.mu", heldDuring, calls)
+	}
+}
+
+// The post-unlock writes must stay in reload order. r.mu is released by
+// reload()'s own defer, which runs AFTER the drain defer, so a second reload
+// can start and finish its writes while the first is still going. Two
+// concurrent drains are therefore serialised; assert the batch that queued
+// first is the one written first even when it yields the CPU mid-write.
+func TestDeferredCritBatchesKeepTheirOrder(t *testing.T) {
+	withTempHome(t)
+	drainDeferredCrit()
+
+	var mu sync.Mutex
+	var written []string
+	record := func(lines []string) {
+		mu.Lock()
+		written = append(written, lines...)
+		mu.Unlock()
+	}
+
+	firstDone := make(chan struct{})
+	go func() {
+		deferCritWrite("first")
+		drainDeferredCritFn(func(lines []string) {
+			// Yield mid-write so a second drain would overtake if it could.
+			time.Sleep(20 * time.Millisecond)
+			record(lines)
+		})
+		close(firstDone)
+	}()
+
+	// Wait until the first batch is in flight, then queue and drain a second.
+	deadline := time.Now().Add(2 * time.Second)
+	for {
+		deferredCrit.Lock()
+		busy := deferredCrit.draining
+		deferredCrit.Unlock()
+		if busy {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("the first drain never started")
+		}
+		time.Sleep(time.Millisecond)
+	}
+	deferCritWrite("second")
+	drainDeferredCritFn(record)
+
+	<-firstDone
+	mu.Lock()
+	defer mu.Unlock()
+	if len(written) != 2 {
+		t.Fatalf("expected two lines written, got %q", written)
+	}
+	if written[0] != "first" || written[1] != "second" {
+		t.Fatalf("writes out of order: %q, want [first second]", written)
+	}
+}
+
+// A test that leaves a queued line behind would let it surface in a later
+// test's queue assertion, so the trim tests drain on cleanup.
+func TestTrimTestsDrainTheQueueOnCleanup(t *testing.T) {
+	if got := drainDeferredCrit(); len(got) != 0 {
+		t.Fatalf("the deferred queue must be empty at the start of a test, got %q", got)
+	}
+}
+
+// The immediate ramlog line and the deferred events.log copy must both carry
+// the text exactly once, with no blank line between them.
+func TestLogImportantDoesNotDoubleTheNewline(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+	ramlog := captureTlog(t, func() { r.reload() })
+	if !strings.Contains(ramlog, "[proxy][trim] received") {
+		t.Fatalf("the ramlog must still show the trim receipt, got %q", ramlog)
+	}
+	if strings.Contains(ramlog, "\n\n") {
+		t.Fatalf("the ramlog must not gain a blank line, got %q", ramlog)
+	}
+	p, err := critLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(b), "\n\n") {
+		t.Fatalf("events.log must not gain a blank line per message, got %q", string(b))
 	}
 }
 

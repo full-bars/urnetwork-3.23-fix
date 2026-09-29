@@ -498,19 +498,26 @@ func (r *ProxyReloader) reload() {
 	// after it. A slow or failing disk then stalls only this goroutine's log
 	// tail, not every other reload-path caller waiting on r.mu.
 	var pendingCrit []func()
+	// One serialised writer for the whole post-unlock batch: the queued
+	// warnings and the pending writes go out together, in reload order, so a
+	// second reload cannot slip its cap change in before this one's.
 	defer func() {
-		// Anything a callee queued while r.mu was held (the invalid-cap warning)
-		// drains here, after the lock is gone and in the order it was produced.
-		for _, line := range drainDeferredCrit() {
-			critLog("%s", line)
-		}
-		for _, write := range pendingCrit {
-			write()
-		}
+		writes := pendingCrit
+		drainDeferredCritFn(func(lines []string) {
+			for _, line := range lines {
+				critLog("%s", line)
+			}
+			for _, write := range writes {
+				write()
+			}
+		})
 	}()
+	// critLog appends its own newline, so the format must NOT carry one or every
+	// line leaves a blank line behind it in events.log. tlog needs its newline,
+	// so the immediate path adds it back.
 	logImportant := func(format string, args ...any) {
-		tlog(format, args...)
-		pendingCrit = append(pendingCrit, func() { critLog(format, args...) })
+		tlog(format+"\n", args...)
+		pendingCrit = append(pendingCrit, func() { critLog("%s", fmt.Sprintf(format, args...)) })
 	}
 
 	r.mu.Lock()
@@ -795,7 +802,7 @@ func (r *ProxyReloader) reload() {
 				if prevCap > 0 {
 					prev = strconv.Itoa(prevCap)
 				}
-				logImportant("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying%s\n", trimCapNow, prev, runningProxies, len(desiredSet), autoNote)
+				logImportant("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying%s", trimCapNow, prev, runningProxies, len(desiredSet), autoNote)
 			} else {
 				// The cap that just cleared may have been the automatic OOM cap
 				// relaxing to zero, not an operator command: attribute the
@@ -805,7 +812,7 @@ func (r *ProxyReloader) reload() {
 				if clearedMode == "" {
 					clearedMode = trimCapOperator
 				}
-				logImportant("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired\n", prevCap, len(desiredSet))
+				logImportant("[proxy][trim] received: cap cleared (was %d); pool may regrow toward %d desired", prevCap, len(desiredSet))
 				pendingCrit = append(pendingCrit, func() {
 					ledgerRecord(ledgerEntry{Actor: "trim", Action: "cleared", From: prevCap, To: 0, Mode: clearedMode,
 						Reason: fmt.Sprintf("pool may regrow toward %d desired", len(desiredSet))})
@@ -887,7 +894,7 @@ func (r *ProxyReloader) reload() {
 			added = kept
 		}
 		if shedCount > 0 || dropped > 0 || trimChanged {
-			logImportant("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)\n", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+			logImportant("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)", trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		}
 		if trimChanged {
 			pendingCrit = append(pendingCrit, func() {
@@ -1143,7 +1150,7 @@ func (r *ProxyReloader) reload() {
 	// "reloaded: +N added" prefix for anything that matches on it.
 	fromSources := reloadSourceBreakdown(added, sourceOf)
 	if line := urlLaunchLine(urlAdded, warmupDeferred); line != "" {
-		logImportant("%s\n", line)
+		logImportant("%s", line)
 	}
 	if pruned > 0 {
 		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)

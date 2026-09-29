@@ -69,7 +69,9 @@ func readTrimTarget() (int, error) {
 // it must not block on. Drained by drainDeferredCrit after the lock is gone.
 var deferredCrit struct {
 	sync.Mutex
-	lines []string
+	lines    []string
+	draining bool
+	cond     *sync.Cond
 }
 
 // deferCritWrite queues a line for the post-unlock critical-log write.
@@ -79,7 +81,44 @@ func deferCritWrite(line string) {
 	deferredCrit.lines = append(deferredCrit.lines, line)
 }
 
-// drainDeferredCrit returns and clears the queued lines.
+// drainDeferredCritFn hands the queued lines to fn, in the order the batches
+// were queued. Batches are serialised, so lines reach events.log in the order
+// the reloads that produced them ran, but the file I/O happens with no lock
+// held.
+//
+// The serialisation is needed because r.mu is released by reload()'s OWN defer,
+// which runs AFTER this drain defer: a second reload can otherwise start and
+// finish its drain while the first is still writing, and the trim ledger can
+// record a later cap change before an earlier one.
+func drainDeferredCritFn(fn func([]string)) {
+	deferredCrit.Lock()
+	if deferredCrit.cond == nil {
+		deferredCrit.cond = sync.NewCond(&deferredCrit.Mutex)
+	}
+	for deferredCrit.draining {
+		deferredCrit.cond.Wait()
+	}
+	deferredCrit.draining = true
+	batch := deferredCrit.lines
+	deferredCrit.lines = nil
+	deferredCrit.Unlock() // the writes themselves hold no lock
+
+	func() {
+		defer func() {
+			deferredCrit.Lock()
+			deferredCrit.draining = false
+			deferredCrit.cond.Broadcast()
+			deferredCrit.Unlock()
+		}()
+		fn(batch)
+	}()
+}
+
+// drainDeferredCrit returns and clears the queued lines without writing them.
+// Used where the caller wants the lines itself (tests, and the startup path
+// which writes them directly). It does NOT participate in batch ordering, so
+// only one such caller may run at a time; the startup path runs once per
+// process, before reloads exist.
 func drainDeferredCrit() []string {
 	deferredCrit.Lock()
 	defer deferredCrit.Unlock()
