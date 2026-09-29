@@ -1001,9 +1001,6 @@ func applyLiveSideEffect(key, value string) error {
 		// The kill switch must act NOW: with no poke, a quiescent node could
 		// keep enforcing a stale cap until some other event triggers a reload
 		// (hours later). Reload drops or admits proxies per the new mode.
-		// The kill switch must act NOW: with no poke, a quiescent node could
-		// keep enforcing a stale cap until some other event triggers a reload
-		// (hours later). Reload drops or admits proxies per the new mode.
 		triggerProxyReload()
 		return nil
 	case "metrics":

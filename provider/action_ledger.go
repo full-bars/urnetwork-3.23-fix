@@ -125,9 +125,19 @@ func ledgerTail(path string, n int) ([]ledgerEntry, error) {
 	return all, sc.Err()
 }
 
+// ledgerRecordHook, when set by a test, runs at the start of ledgerRecord, so a
+// test can see the lock state at the moment the ledger write happens instead of
+// guessing it. The events.log writes moved out from under the reloader lock for
+// exactly this reason (a blocking flock plus a 256 KiB rewrite is not something
+// to hold a pool-wide mutex for), and the ledger writes are on the same paths.
+var ledgerRecordHook func()
+
 // ledgerRecord appends to the default ledger, ignoring errors: auditing must
 // never block or fail the action it records.
 func ledgerRecord(e ledgerEntry) {
+	if ledgerRecordHook != nil {
+		ledgerRecordHook()
+	}
 	if dir, err := oomCapDir(); err == nil {
 		_ = ledgerAppend(filepath.Join(dir, ledgerFileName), e, time.Now(), ledgerMaxBytes)
 	}

@@ -101,6 +101,16 @@ const (
 // "on" mode. cap 0 means no cap and the source is "". Logs and the action ledger
 // use the source so a shed driven by the automatic cap is not attributed to the
 // operator.
+//
+// The automatic cap is evaluated FIRST and independently of the operator's file:
+// the two come from different places and one unreadable file must not silence
+// the other. A proxy_trim that cannot be read for any reason other than "not
+// there" (permissions, a directory where a file belongs, a broken disk) used to
+// return an error here, and both callers (the reload's trim block and the
+// startup selection) skip capping entirely on an error, so a single unreadable
+// file silently disabled the OOM protection on exactly the boxes short of
+// memory. Here the operator cap reads as 0, says so once, and the automatic cap
+// still applies.
 func effectiveTrimCapSource() (int, string, error) {
 	auto := 0
 	if oomCapMode() == oomCapOn {
@@ -380,6 +390,14 @@ func parseCgroupOOMKills(events string) (int64, bool) {
 // (or the nearest ancestor with a readable file) persists, and still counts only
 // kills inside that subtree, not the whole host's. When the process IS the mount
 // root (a container), its own file is the persistent one and is used.
+//
+// What the subtree covers, honestly: for a system unit that parent is
+// /system.slice, which also holds every OTHER service on the box, and with the
+// systemd Docker driver it holds the containers too. A beta provider container
+// running on the same host can therefore bump the counter this provider reads
+// and be blamed on it here. That is a deliberate trade for a counter that
+// survives a restart; the scope label travels with the reading so an operator
+// reading the ledger can see which subtree the number covered.
 // ok is false when no memory.events can be read (cgroup v1, no cgroup).
 func readCgroupOOMKills(mount, selfCgroup string) (kills int64, scope string, ok bool) {
 	rel := ""
@@ -418,12 +436,13 @@ func readCgroupOOMKills(mount, selfCgroup string) (kills int64, scope string, ok
 // The epoch is the boot id, plus the scope the counter covers when it comes from
 // a cgroup: a reading is only comparable to a marker taken from the same counter
 // on the same boot, and oomKilledSinceMarker already refuses to compare across
-// different epochs. With a readable cgroup file the counter is scoped to this
-// process's cgroup subtree, so another workload's OOM kill elsewhere on the host
-// is no longer blamed on this provider. Otherwise it is the host-wide
-// /proc/vmstat counter with the plain boot id, as before. The first start after
-// an upgrade has a plain-boot-id marker, so it is not compared (never a false
-// attribution).
+// different epochs. With a readable cgroup file the counter covers this
+// process's ANCESTOR cgroup's subtree (see readCgroupOOMKills on what that
+// subtree includes: for a system unit, /system.slice and everything under it),
+// so a kill anywhere in that subtree counts, and a kill elsewhere on the host
+// does not. Otherwise it is the host-wide /proc/vmstat counter with the plain
+// boot id, as before. The first start after an upgrade has a plain-boot-id
+// marker, so it is not compared (never a false attribution).
 func oomKillEpoch(bootID, mount, selfCgroup string, vmstatKills int64) (string, int64) {
 	if bootID != "" {
 		if n, scope, ok := readCgroupOOMKills(mount, selfCgroup); ok {
