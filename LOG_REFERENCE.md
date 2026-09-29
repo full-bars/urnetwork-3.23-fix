@@ -364,6 +364,43 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 
 ---
 
+## 🛡️ Capacity Control: Trim Cap, OOM Cap, Memory Limits
+
+Every line here is mirrored to `/dev/shm/urnetwork-important.log` and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
+
+```text
+[proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying
+[proxy][trim] received: cap cleared (was 2000); pool may regrow toward 4127 desired
+[proxy][trim] applied: cap=2000: shed 2127 worst-graded running, held 0 additions (pool ~2000)
+[proxy][trim] startup: cap=2000, launching 2000 of 4127 desired, holding 2127 worst-graded until the cap is raised
+[proxy][trim] warn: proxy_trim holds "abc", which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`
+[proxy][trim] warn: cannot read proxy_trim (read ...: permission denied); ignoring the operator cap, the automatic cap still applies
+[oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap none -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)
+[oomcap] applied: OOM kill since the last start (peak running 4127): reduced the automatic start cap none -> 3301
+[oomcap] cleared the automatic start cap 3301 -> none (the kill switch forgets the standing cap)
+[oomcap] mode on: enforcing cap 3301, this sheds about 826 of 4127 running proxies on the next reload
+[proxy][resources] effective RAM ceiling 1024 MiB (cgroup v2 memory.max at /system.slice/urnetwork.service)
+[proxy][resources] warning: GOMEMLIMIT=400 MiB is below the ~581 MiB of heap this pool of 1300 proxies is expected to need, ...
+[proxy][resources] warning: this pool of 2001 proxies is expected to need about 1894 MiB of memory but this box gives the provider about 1930 MiB (1630 MiB left after holding back 300 MiB for the OS and other tenants), ...
+[proxy][resources] low memory headroom: 132 MiB available, below 193 MiB (2001 proxies, 77780 goroutines); connected clients drive memory, so this can happen without any change in the proxy count. Consider `urnet-tools proxy trim` if it persists
+[proxy][resources] memory headroom recovered: 420 MiB available (2001 proxies, 41000 goroutines)
+```
+
+| Message | Meaning |
+|---|---|
+| `[proxy][trim] received` | A trim cap was seen for the first time or changed. The ` (automatic OOM cap)` suffix means the automatic OOM cap is binding, not your own cap. `cap cleared` is logged when the cap is removed. |
+| `[proxy][trim] applied` | What the cap did: how many worst-graded running proxies were shed and how many additions were held back. Shed proxies keep their state (ID, health, grade) so they relaunch as themselves when the cap rises. |
+| `[proxy][trim] startup` | The cap is applied BEFORE launching, so a restart never opens every desired proxy and then sheds down. Held proxies stay desired and are admitted by the next reload. |
+| `[proxy][trim] warn` | The operator cap file is unusable: either it holds something that is not a number (logged once per distinct value), or it could not be read at all (logged once per distinct error). An unreadable file does NOT disable the automatic OOM cap. |
+| `[oomcap] shadow` / `applied` | The OOM-aware start cap. When this provider's own cgroup subtree was OOM-killed since the previous start (same boot, higher `oom_kill` counter in the parent cgroup's `memory.events`, which is hierarchical and survives a service restart), the next start runs fewer proxies. `shadow` only logs what it would do; `applied` means it is enforced. Never below max(50, desired/4), at most 3 reductions per 24h, relaxing 10% per clean 24h. The counter covers the PARENT cgroup's subtree, which for a system unit is `/system.slice` and therefore includes other services and, with the systemd Docker driver, other containers. A marker not seen running in the last 72h is never blamed. |
+| `[oomcap] cleared the automatic start cap` | The kill switch went off, so the standing automatic cap is forgotten rather than merely left unenforced. Without this, a cap set days earlier rebinds the moment the switch goes back on. |
+| `[oomcap] mode on` | A live `urnet-tools set oom-cap on` says what it costs: the cap now in force and how many running proxies the next reload would drop. |
+| `[proxy][resources] effective RAM ceiling` | Once at startup: the RAM ceiling the provider tunes itself against (tier selection, soft memory limit, GC governor, headroom threshold, hot-swap gate) and which limit set it: the tightest cgroup `memory.max` or `memory.high` on the unit or an ancestor slice, a cgroup v1 limit, or the host's total RAM when nothing limits it. A unit that sets both reads the lower number. If a box tunes smaller than expected after an upgrade, this line says why. |
+| `[proxy][resources] warning` | Two independent checks, because the two numbers answer different questions. **Heap:** a finite `GOMEMLIMIT` is compared against the Go heap the pool needs (100 MiB plus about 0.65 MiB per proxy). **Box:** the whole-process footprint (100 MiB plus about 0.9 MiB per proxy) is compared against the RAM this box gives the provider, minus a reserve of the larger of 300 MiB and 10%. A pool can sit comfortably under its heap limit while already thrashing physical RAM. The heap warning never advises raising the limit above what the box has. |
+| `low memory headroom` | Host or cgroup available memory stayed below 10% of RAM, clamped to between 150 MiB and 400 MiB, for two consecutive 30s samples. Connected clients drive memory, so this can happen with no change in the proxy count. `recovered` is logged after four consecutive samples 25% above the line. Observation only. |
+
+Every capacity decision is also appended to `~/.urnetwork/autopilot.jsonl` (time, actor, action, from, to, mode, reason; capped at 256 KiB, newest lines kept). Read it with `urnet-tools autopilot log` or the control socket's `ledger` command. That file is the audit trail for a self-managing agent: if it is ever empty or zero bytes, the ledger was truncated rather than cleared, and that is a bug.
+
 ## 💓 Health Heartbeat
 
 ```
