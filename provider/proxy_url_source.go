@@ -439,6 +439,20 @@ var fetchMu sync.Mutex
 // Only one fetch cycle may run at a time — if an earlier cycle's probing
 // phase outlasts the refresh interval, the next tick's call returns
 // immediately rather than racing on the same file.
+// readURLStateForMerge reads the persisted URL state for a merge cycle, or
+// reports false when the file cannot be read. Callers must SKIP the cycle on
+// false rather than substitute an empty state: an unreadable file is not an
+// empty one, and merging against a fabricated empty state then writing it back
+// wipes the cache, every grade, and the permanent blacklist.
+func readURLStateForMerge() (*ProxyURLState, bool) {
+	state, err := readProxyURLState()
+	if err != nil {
+		tlog("[proxy][url] warning: could not read proxy_url.json, skipping this merge cycle to protect the cache: %v\n", err)
+		return nil, false
+	}
+	return state, true
+}
+
 func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
@@ -621,10 +635,17 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	}
 	defer release()
 
-	state, err := readProxyURLState()
-	if err != nil {
-		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
-		state = &ProxyURLState{Cache: map[string]ProxyURLEntry{}}
+	state, ok := readURLStateForMerge()
+	if !ok {
+		// Skipping the cycle is deliberate. Continuing with an empty state and
+		// writing it back would destroy every cached entry not re-listed this
+		// cycle, every persisted Score/Graded/LastProbe, and the entire
+		// Blacklist map, which a fetch never repopulates (it is add-only by
+		// design). That silently undoes permanent evictions and loses every
+		// grade earned so far, all because of one transient read error. A
+		// failed merge is recoverable; a wiped cache is not. Matches
+		// removeDeadProxies, which hard-returns the same way.
+		return
 	}
 
 	totalAdded := 0
