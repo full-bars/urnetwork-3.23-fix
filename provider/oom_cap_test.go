@@ -364,3 +364,41 @@ func TestOOMWriteJSONConcurrentWritersLeaveWholeFile(t *testing.T) {
 		t.Fatalf("state file torn or unreadable after concurrent writes: %+v", st)
 	}
 }
+
+// A cap or OOM attribution that sits in a torn, hand-edited or unreadable file
+// silently vanishes. A missing file is normal (first start) and stays silent;
+// a file that exists but cannot be read is reported.
+func TestOOMCapDecideWarnsWhenStateFilesAreUnreadable(t *testing.T) {
+	withTempHome(t)
+	dir, err := oomCapDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if lines := oomCapDecide(4127, "boot-A", 0, oomT0); lines != nil {
+		t.Fatalf("missing state files are normal and must be silent, got %q", lines)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "oom_cap.json"), []byte(`{"cap": 33`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines := oomCapDecide(4127, "boot-A", 0, oomT0.Add(time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "oom_cap.json exists but could not be read") {
+		t.Fatalf("a torn oom_cap.json must be reported once, got %q", lines)
+	}
+	// The decision rewrites the state file, so the next start is clean.
+	if lines := oomCapDecide(4127, "boot-A", 0, oomT0.Add(2*time.Hour)); lines != nil {
+		t.Fatalf("after the rewrite the warning must not repeat, got %q", lines)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "run.marker"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines = oomCapDecide(4127, "boot-A", 0, oomT0.Add(3*time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "run.marker exists but could not be read") {
+		t.Fatalf("an unreadable run.marker must be reported, got %q", lines)
+	}
+}

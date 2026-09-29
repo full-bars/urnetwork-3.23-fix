@@ -271,6 +271,21 @@ func oomReadJSON(path string, v any) bool {
 	return err == nil && json.Unmarshal(b, v) == nil
 }
 
+// oomReadJSONChecked is oomReadJSON that also says when the file EXISTS but
+// could not be read or parsed (torn, hand-edited, disk full). A missing file is
+// normal (first start) and returns no warning. The caller proceeds as if there
+// were no state, so without the warning a standing cap or an OOM attribution
+// would silently vanish.
+func oomReadJSONChecked(path string, v any) (ok bool, warning string) {
+	if oomReadJSON(path, v) {
+		return true, ""
+	}
+	if _, err := os.Stat(path); err != nil {
+		return false, ""
+	}
+	return false, "[oomcap] warn: " + filepath.Base(path) + " exists but could not be read, so it is treated as empty (a standing cap or an OOM kill recorded there is not applied)"
+}
+
 func oomWriteJSON(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -332,10 +347,16 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	_ = os.MkdirAll(dir, 0o700)
 	statePath := filepath.Join(dir, "oom_cap.json")
 
+	var warnings []string
 	var prev oomMarker
-	havePrev := oomReadJSON(filepath.Join(dir, "run.marker"), &prev)
+	havePrev, w := oomReadJSONChecked(filepath.Join(dir, "run.marker"), &prev)
+	if w != "" {
+		warnings = append(warnings, w)
+	}
 	var st oomCapState
-	oomReadJSON(statePath, &st)
+	if _, w := oomReadJSONChecked(statePath, &st); w != "" {
+		warnings = append(warnings, w)
+	}
 
 	var d oomCapDecision
 	var msg string
@@ -349,7 +370,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	_ = oomWriteJSON(statePath, st)
 
 	if d.Action == "none" || d.Action == "" {
-		return nil
+		return warnings
 	}
 	modeName := "shadow"
 	if mode == oomCapOn {
@@ -360,7 +381,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	if mode == oomCapOn {
 		verb, tail = "applied: "+msg+": ", ""
 	}
-	return []string{"[oomcap] " + verb + oomCapActionPhrase(d, mode == oomCapOn) + tail}
+	return append(warnings, "[oomcap] "+verb+oomCapActionPhrase(d, mode == oomCapOn)+tail)
 }
 
 // oomCapActionPhrase words a decision for the log: "would reduce ..." in shadow,
