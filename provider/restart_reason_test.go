@@ -181,13 +181,11 @@ func TestDetectStartupRestartReason(t *testing.T) {
 			if _, err := os.Stat(filepath.Join(dir, ".restart-reason")); !os.IsNotExist(err) {
 				t.Fatalf("restart marker survived detectStartup (stat err = %v)", err)
 			}
-			// The clean-shutdown marker is NOT consumed when it exists: it must
-			// survive until this process rewrites it on its own exit, otherwise
-			// a restarted box is indistinguishable from a crashed one.
-			if tc.clean {
-				if _, err := os.Stat(filepath.Join(dir, ".clean-shutdown")); err != nil {
-					t.Fatalf("clean-shutdown marker must survive detectStartup: %v", err)
-				}
+			// The clean-shutdown marker IS consumed: it describes exactly one
+			// restart, and leaving it behind is what made a crash look clean.
+			_, statErr := os.Stat(filepath.Join(dir, ".clean-shutdown"))
+			if tc.clean && !os.IsNotExist(statErr) {
+				t.Fatalf("clean-shutdown marker must be consumed by detectStartup, stat err = %v", statErr)
 			}
 		})
 	}

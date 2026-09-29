@@ -29,12 +29,67 @@ func TestUpdateMarkerSurvivesASlowUpdate(t *testing.T) {
 	}
 }
 
-// The .clean-shutdown marker used to be deleted the moment it was read, so the
-// only evidence of a clean exit existed between the exit and the next start. A
-// `systemctl restart` and an OOM kill both skip the clean-exit path, so both left
-// the file absent and both reported unclean: indistinguishable. The marker now
-// survives until the running process rewrites it on its own exit.
-func TestCleanShutdownMarkerSurvivesUntilRewritten(t *testing.T) {
+// A crash must never be reported as a clean exit. The .clean-shutdown marker is
+// consumed on read: it means "the process that just exited did so cleanly" and
+// is only true until the next start reads it. An earlier revision left it on
+// disk to distinguish a restart from a crash, but a crash never runs the
+// clean-exit path, so the stale marker survived and EVERY later crash was
+// reported as "clean". Caught in review and reproduced.
+//
+// The sequence that matters is three boots, not two:
+//
+//	boot 1 exits cleanly and leaves the marker
+//	boot 2 starts, consumes the marker, and IS a clean exit (correct)
+//	boot 3 is the OOM kill: boot 2 never got to write a clean-exit marker, so
+//	       there is nothing to consume and boot 3 must read unclean
+//
+// With the marker left on disk, boot 3 still finds boot 1's file and lies.
+func TestCrashAfterACleanShutdownIsNotReportedAsClean(t *testing.T) {
+	home := withTempHome(t)
+	dir, err := oomCapDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, ".clean-shutdown")
+
+	boot := func() string {
+		saved := startupDiag
+		startupDiag = &startupDiagnostics{}
+		detectStartup()
+		got := startupDiag.restartReason
+		startupDiag = saved
+		return got
+	}
+
+	// Boot 1: exits cleanly, leaving the marker behind.
+	markCleanShutdownIn(dir)
+	if _, err := os.Stat(marker); err != nil {
+		t.Fatal("a clean exit must leave the marker for the next start")
+	}
+
+	// Boot 2: consumes it. This start followed a clean exit, so "clean" is right.
+	if got := boot(); got != restartReasonClean {
+		t.Fatalf("boot 2 followed a clean exit and must read %q, got %q", restartReasonClean, got)
+	}
+	if _, err := os.Stat(marker); !os.IsNotExist(err) {
+		t.Fatalf("the marker must be consumed on read, stat err = %v", err)
+	}
+
+	// Boot 3: boot 2 was OOM-killed before it could write a clean-exit marker,
+	// so there is nothing on disk and this must NOT read clean.
+	if got := boot(); got == restartReasonClean {
+		t.Fatal("a crash after a clean shutdown was reported as clean: a stale marker was trusted")
+	}
+	_ = home
+}
+
+// The control case for the test above: with the marker genuinely present, a
+// clean exit is still reported as clean, so the test is not passing merely
+// because the marker is ignored.
+func TestCleanShutdownIsStillReportedWhenTheMarkerIsPresent(t *testing.T) {
 	withTempHome(t)
 	dir, err := oomCapDir()
 	if err != nil {
@@ -43,41 +98,15 @@ func TestCleanShutdownMarkerSurvivesUntilRewritten(t *testing.T) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	path := filepath.Join(dir, ".clean-shutdown")
 	markCleanShutdownIn(dir)
-	if _, err := os.Stat(path); err != nil {
-		t.Fatal(err)
-	}
 
-	// Drive the REAL startup path, which is where the marker used to be deleted.
-	startupDiag.mu.Lock()
-	startupDiag.loaded = false
-	startupDiag.cleanShutdown = false
-	startupDiag.mu.Unlock()
+	saved := startupDiag
+	startupDiag = &startupDiagnostics{}
 	detectStartup()
+	got := startupDiag.restartReason
+	startupDiag = saved
 
-	if _, err := os.Stat(path); err != nil {
-		t.Fatalf("detectStartup must not delete the clean-shutdown marker: %v", err)
-	}
-	startupDiag.mu.Lock()
-	clean := startupDiag.cleanShutdown
-	startupDiag.loaded = false
-	startupDiag.mu.Unlock()
-	if !clean {
-		t.Fatal("detectStartup must see an existing marker as a clean shutdown")
-	}
-
-	// A clean exit rewrites it, so the next start still sees one.
-	markCleanShutdownIn(dir)
-	startupDiag.mu.Lock()
-	startupDiag.loaded = false
-	startupDiag.mu.Unlock()
-	detectStartup()
-	startupDiag.mu.Lock()
-	clean2 := startupDiag.cleanShutdown
-	startupDiag.loaded = false
-	startupDiag.mu.Unlock()
-	if !clean2 {
-		t.Fatal("the marker must survive a restart, so a restarted box is not reported unclean")
+	if got != restartReasonClean {
+		t.Fatalf("a clean exit must still be reported as clean, got %q", got)
 	}
 }

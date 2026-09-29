@@ -96,18 +96,32 @@ func detectStartup() {
 		return
 	}
 
-	// Check for clean-shutdown marker.
+	// Check for clean-shutdown marker, then CONSUME it.
 	//
-	// The marker is NOT removed here. It records "the process that ran here
-	// before me shut down cleanly", and that stays true until this process
-	// writes its own on the way out. Deleting it on read meant the ONLY
-	// evidence of a clean exit existed between exit and the next start, so a
-	// `systemctl restart`, a `kill`, and an OOM kill all looked identical on the
-	// next boot: all three skip the clean-exit path, so none of them left the
-	// file. Rewriting it on exit keeps it meaningful across any number of
-	// restarts while still going stale on its own if the process is killed
-	// (the file is then simply absent, which is the crash case).
+	// The marker means "the process that just exited did so cleanly", and it is
+	// only true until the next start reads it. An earlier revision left it on
+	// disk to tell a plain restart from a crash, but that is unworkable: the
+	// marker survives a crash (an OOM kill or SIGKILL never runs the clean-exit
+	// path, so nothing rewrites or removes it), so once one clean shutdown had
+	// happened every later crash was reported as "clean". Caught in review and
+	// reproduced; see the TODO below.
+	//
+	// Cost of consuming it: `systemctl restart` and an OOM kill both skip the
+	// clean-exit path, so both leave the file absent and both read "unclean".
+	// That is a mislabelled restart, which is the right way round: a wrong label
+	// on a restart is a cosmetic inaccuracy, a missing crash is a blind spot.
 	startupDiag.cleanShutdown = readCleanShutdown(stateDir)
+	os.Remove(filepath.Join(stateDir, ".clean-shutdown"))
+
+	// TODO(owner): tell a plain `systemctl restart` from a crash without
+	// breaking crash detection. The inputs are already on disk and unused: the
+	// running process persists StartedAt in proxy.state, and the marker file
+	// carries an RFC3339 timestamp that readCleanShutdown discards today. If the
+	// marker's timestamp is NEWER than the previous StartedAt, the previous
+	// process genuinely started and then exited cleanly; older or absent means
+	// it did not. That needs no tuning window and cannot mask a crash at any
+	// uptime, which is why it was not done inline. Deferred by the operator
+	// 2026-09-29 pending time to review it properly.
 
 	// Check for version change (upgrade detection)
 	versionPath := filepath.Join(stateDir, ".provider_version")
