@@ -3,6 +3,9 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -159,5 +162,87 @@ func TestNoteTrimCap(t *testing.T) {
 	}
 	if prev, prevSource, changed := noteTrimCap(0, ""); !changed || prev != 1500 || prevSource != trimCapOperator {
 		t.Fatalf("1500 -> cleared: prev=%d prevSource=%q changed=%v, want 1500/operator/true", prev, prevSource, changed)
+	}
+}
+
+// The cap must never read as "no cap" because a writer was mid-flight: a plain
+// truncate-then-write shows readers an empty file. Concurrent writers and a
+// reader must only ever see a whole number, and no temp file may be left behind.
+func TestWriteTrimTargetIsAtomicUnderConcurrentReadWrite(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := writeTrimTarget(100); err != nil {
+		t.Fatal(err)
+	}
+	stop := make(chan struct{})
+	var wg sync.WaitGroup
+	var bad atomic.Int64
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-stop:
+				return
+			default:
+			}
+			if n, err := readTrimTarget(); err != nil || n < 100 {
+				bad.Add(1)
+			}
+		}
+	}()
+	var writers sync.WaitGroup
+	for w := 0; w < 4; w++ {
+		writers.Add(1)
+		go func(w int) {
+			defer writers.Done()
+			for i := 0; i < 200; i++ {
+				if err := writeTrimTarget(100 + w*1000 + i); err != nil {
+					t.Errorf("write: %v", err)
+					return
+				}
+			}
+		}(w)
+	}
+	writers.Wait()
+	close(stop)
+	wg.Wait()
+	if bad.Load() != 0 {
+		t.Fatalf("a reader saw an empty, partial or failed read %d times while writers ran", bad.Load())
+	}
+	entries, _ := os.ReadDir(filepath.Join(home, ".urnetwork"))
+	for _, e := range entries {
+		if strings.HasSuffix(e.Name(), ".tmp") {
+			t.Fatalf("temp file left behind: %s", e.Name())
+		}
+	}
+}
+
+// Garbage in the operator cap file still means no cap (never a false cap), but
+// it is reported once instead of silently doing nothing.
+func TestTrimGarbageIsReportedOnce(t *testing.T) {
+	trimGarbageReset()
+	first := trimGarbageWarning("five hundred")
+	if first == "" || !strings.Contains(first, "not a proxy count") || !strings.Contains(first, "five hundred") {
+		t.Fatalf("first sighting must warn, got %q", first)
+	}
+	if again := trimGarbageWarning("five hundred"); again != "" {
+		t.Fatalf("the same garbage must not warn again, got %q", again)
+	}
+	if other := trimGarbageWarning("-3"); other == "" {
+		t.Fatal("different garbage must warn")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	if err := os.MkdirAll(filepath.Join(home, ".urnetwork"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(home, ".urnetwork", "proxy_trim"), []byte("lots"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := readTrimTarget(); err != nil || n != 0 {
+		t.Fatalf("garbage must read as no cap, got %d,%v", n, err)
 	}
 }

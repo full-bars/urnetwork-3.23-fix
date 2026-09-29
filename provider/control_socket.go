@@ -977,6 +977,27 @@ func applyLiveSideEffect(key, value string) error {
 		} else {
 			importantLogf("✓ [oomcap] mode set to %s via control socket, but URNETWORK_OOM_CAP env overrides it: effective mode is %s (the automatic cap applies on the next reload)\n", requested, effective)
 		}
+		// Say what the new mode MEANS for this pool, not just that the value
+		// landed. A mode switch that silently starts shedding a third of the
+		// pool reads as a mystery a day later; this names the cap in force and
+		// how many running proxies it would drop right now, so the operator can
+		// see the consequence before it happens.
+		if effective == oomCapModeName(oomCapOff) {
+			// "off" has to forget the standing cap, not just stop enforcing it,
+			// or the next "on" resumes a cap set days ago (see oomCapResetOnOff).
+			for _, line := range oomCapResetOnOff() {
+				importantLogf("%s\n", line)
+			}
+		} else if oomCapMode() == oomCapOn {
+			if cap, source, err := effectiveTrimCapSource(); err == nil && source == trimCapOOM {
+				running := runningProxyCountForPressure()
+				shed := max(0, running-cap)
+				importantLogf("[oomcap] mode on: enforcing cap %d, this sheds about %d of %d running proxies on the next reload\n",
+					cap, shed, running)
+			} else {
+				importantLogf("[oomcap] mode on: no automatic cap is standing, so the pool is not trimmed by it until an OOM kill sets one\n")
+			}
+		}
 		// The kill switch must act NOW: with no poke, a quiescent node could
 		// keep enforcing a stale cap until some other event triggers a reload
 		// (hours later). Reload drops or admits proxies per the new mode.

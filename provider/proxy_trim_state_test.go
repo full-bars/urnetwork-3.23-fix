@@ -385,3 +385,85 @@ func rewriteTrimFixtureFile(addrs []string) string {
 	}
 	return out
 }
+
+// events.log writes are an open+write+fsync. reload() must not do them while
+// holding r.mu, or a slow disk stalls every other reload-path caller. Asserted
+// from inside critLog's critical section (a test seam), so it is exact, and the
+// lines must still reach events.log once the reload returns.
+func TestReload_WritesEventsLogAfterReleasingTheReloaderLock(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls, heldDuring int
+	critLogInCriticalSection = func() {
+		calls++
+		// TryLock fails when reload still holds r.mu.
+		if r.mu.TryLock() {
+			r.mu.Unlock()
+			return
+		}
+		heldDuring++
+	}
+	t.Cleanup(func() { critLogInCriticalSection = nil })
+
+	r.reload()
+
+	if calls == 0 {
+		t.Fatal("the trim cap change wrote nothing to events.log")
+	}
+	if heldDuring != 0 {
+		t.Fatalf("%d of %d events.log writes ran while reload held r.mu", heldDuring, calls)
+	}
+	p, err := critLogPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(p)
+	if err != nil || !strings.Contains(string(b), "[proxy][trim] received") {
+		t.Fatalf("events.log must still get the trim receipt: err=%v content=%q", err, string(b))
+	}
+}
+
+// The action ledger is a blocking flock plus a rewrite of a file that can reach
+// 256 KiB. reload() recorded its two trim entries while still holding r.mu, so a
+// contended or slow ledger write stalled every other reload-path caller, not
+// just this one. Asserted from inside ledgerRecord (a test seam), so it is
+// exact, and the entries must still land once the reload returns.
+func TestReload_WritesTheLedgerAfterReleasingTheReloaderLock(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixture(t)
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+
+	var calls, heldDuring int
+	ledgerRecordHook = func() {
+		calls++
+		// TryLock fails when reload still holds r.mu.
+		if r.mu.TryLock() {
+			r.mu.Unlock()
+			return
+		}
+		heldDuring++
+	}
+	t.Cleanup(func() { ledgerRecordHook = nil })
+
+	r.reload()
+
+	if calls == 0 {
+		t.Fatal("the trim cap change wrote nothing to the ledger")
+	}
+	if heldDuring != 0 {
+		t.Fatalf("%d of %d ledger writes ran while reload held r.mu", heldDuring, calls)
+	}
+	dir, _ := oomCapDir()
+	got, _ := ledgerTail(filepath.Join(dir, ledgerFileName), 10)
+	if len(got) == 0 || got[len(got)-1].Action != "applied" {
+		t.Fatalf("the ledger must still get the trim entry, got %+v", got)
+	}
+}

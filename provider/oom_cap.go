@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -99,11 +101,17 @@ const (
 // "on" mode. cap 0 means no cap and the source is "". Logs and the action ledger
 // use the source so a shed driven by the automatic cap is not attributed to the
 // operator.
+//
+// The automatic cap is evaluated FIRST and independently of the operator's file:
+// the two come from different places and one unreadable file must not silence
+// the other. A proxy_trim that cannot be read for any reason other than "not
+// there" (permissions, a directory where a file belongs, a broken disk) used to
+// return an error here, and both callers (the reload's trim block and the
+// startup selection) skip capping entirely on an error, so a single unreadable
+// file silently disabled the OOM protection on exactly the boxes short of
+// memory. Here the operator cap reads as 0, says so once, and the automatic cap
+// still applies.
 func effectiveTrimCapSource() (int, string, error) {
-	operator, err := readTrimTarget()
-	if err != nil {
-		return 0, "", err
-	}
 	auto := 0
 	if oomCapMode() == oomCapOn {
 		var st oomCapState
@@ -111,6 +119,21 @@ func effectiveTrimCapSource() (int, string, error) {
 			oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
 		}
 		auto = st.Cap
+	}
+	operator, err := readTrimTarget()
+	if err != nil {
+		// Same shape as the invalid-value warning in readTrimTarget: the ramlog
+		// line is immediate, the events.log write is queued for after whatever
+		// lock this caller holds, and a repeat of the same error says nothing
+		// at all (not even a blank line).
+		if w := trimUnreadableWarning(err); w != "" {
+			tlog("%s\n", w)
+			deferCritWrite(w)
+		}
+		if auto > 0 {
+			return auto, trimCapOOM, nil
+		}
+		return 0, "", nil
 	}
 	switch {
 	case auto > 0 && (operator == 0 || auto < operator):
@@ -121,6 +144,28 @@ func effectiveTrimCapSource() (int, string, error) {
 	return 0, "", nil
 }
 
+// trimUnreadableSeen is the proxy_trim read error already warned about, so a
+// file that stays unreadable is reported once instead of on every reload.
+var trimUnreadableSeen atomic.Value
+
+// trimUnreadableReset clears the warned-on error. Tests only: without it one
+// test's unreadable file silences the warning in every test after it.
+func trimUnreadableReset() { trimUnreadableSeen.Store("") }
+
+// trimUnreadableWarning returns the warning line for an unreadable proxy_trim
+// the first time that exact error is seen, and "" for a repeat.
+func trimUnreadableWarning(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if prev, _ := trimUnreadableSeen.Load().(string); prev == msg {
+		return ""
+	}
+	trimUnreadableSeen.Store(msg)
+	return fmt.Sprintf("[proxy][trim] warn: cannot read proxy_trim (%s); ignoring the operator cap, the automatic cap still applies", msg)
+}
+
 // effectiveTrimCap is effectiveTrimCapSource without the source.
 func effectiveTrimCap() (int, error) {
 	c, _, err := effectiveTrimCapSource()
@@ -129,8 +174,10 @@ func effectiveTrimCap() (int, error) {
 
 // oomMarker is written at every start and read at the next one.
 type oomMarker struct {
+	// BootID is the counter's epoch (see oomKillEpoch): the boot id, plus the
+	// cgroup scope when OOMKills was read from a cgroup's memory.events.
 	BootID      string `json:"boot_id"`
-	OOMKills    int64  `json:"oom_kills"` // /proc/vmstat oom_kill at that start
+	OOMKills    int64  `json:"oom_kills"` // the oom_kill counter at that start
 	Proxies     int    `json:"proxies"`   // proxies launched at that start
 	StartedUnix int64  `json:"started_unix"`
 	// LastSeenUnix is a heartbeat refreshed by the periodic pressure-loop path
@@ -153,9 +200,9 @@ const oomHeartbeatInterval = time.Hour
 // start. A different boot id means a reboot (the counter reset), which is never
 // attributed to an OOM; an unknown reading never claims one. A marker older than
 // oomMarkerMaxAge is stale: the box may have been down for days (or running with
-// the cap off) while ANY other workload on the same boot bumped the global
-// oom_kill counter, and the marker's proxy count no longer describes this
-// process's load. Staleness is judged against the heartbeat (how recently this
+// the cap off) while ANY other workload on the same boot bumped the counter
+// (the host-wide one where no cgroup counter is readable; see oomKillEpoch),
+// and the marker's proxy count no longer describes this process's load. Staleness is judged against the heartbeat (how recently this
 // process was last seen running), not StartedUnix (when it started): a
 // long-running process refreshes the heartbeat and is never blamed for a kill
 // that happened while it was legitimately still up. A marker with no heartbeat
@@ -271,6 +318,26 @@ func oomReadJSON(path string, v any) bool {
 	return err == nil && json.Unmarshal(b, v) == nil
 }
 
+// oomReadJSONChecked is oomReadJSON that also says when the file EXISTS but
+// could not be read or parsed (torn, hand-edited, disk full). A missing file is
+// normal (first start) and returns no warning. The caller proceeds as if there
+// were no state, so without the warning a standing cap or an OOM attribution
+// would silently vanish.
+func oomReadJSONChecked(path string, v any) (ok bool, warning string) {
+	if oomReadJSON(path, v) {
+		return true, ""
+	}
+	// Only a genuinely absent file is normal. Any OTHER stat failure (EACCES on
+	// a parent directory, EIO, ENOTDIR) means the file may well be there and we
+	// simply could not look, so the warning has to stand: a standing cap or an
+	// OOM kill recorded there is not applied, and saying so is the whole point
+	// of this check.
+	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
+		return false, ""
+	}
+	return false, "[oomcap] warn: " + filepath.Base(path) + " exists but could not be read, so it is treated as empty (a standing cap or an OOM kill recorded there is not applied)"
+}
+
 func oomWriteJSON(path string, v any) error {
 	b, err := json.Marshal(v)
 	if err != nil {
@@ -316,6 +383,131 @@ func readBootID() string {
 	return strings.TrimSpace(string(b))
 }
 
+// parseCgroupOOMKills reads the oom_kill field out of a cgroup v2 memory.events
+// file. ok is false when the field is absent or unparseable.
+func parseCgroupOOMKills(events string) (int64, bool) {
+	for _, line := range strings.Split(events, "\n") {
+		if k, v, ok := strings.Cut(line, " "); ok && k == "oom_kill" {
+			if n, err := strconv.ParseInt(strings.TrimSpace(v), 10, 64); err == nil && n >= 0 {
+				return n, true
+			}
+		}
+	}
+	return 0, false
+}
+
+// readCgroupOOMKills returns the OOM-kill counter of the cgroup subtree this
+// process runs in, and a scope label naming which cgroup it was read from.
+//
+// memory.events is hierarchical, so a cgroup's counter includes every kill in
+// its descendants. The process's own cgroup is not used: systemd removes a
+// service's cgroup when it stops and creates a new one on restart, so its
+// counter resets exactly when we need to compare across a restart. The parent
+// (or the nearest ancestor with a readable file) persists, and still counts only
+// kills inside that subtree, not the whole host's. When the process IS the mount
+// root (a container), its own file is the persistent one and is used.
+//
+// What the subtree covers, honestly: for a system unit that parent is
+// /system.slice, which also holds every OTHER service on the box, and with the
+// systemd Docker driver it holds the containers too. A beta provider container
+// running on the same host can therefore bump the counter this provider reads
+// and be blamed on it here. That is a deliberate trade for a counter that
+// survives a restart; the scope label travels with the reading so an operator
+// reading the ledger can see which subtree the number covered.
+// ok is false when no memory.events can be read (cgroup v1, no cgroup).
+func readCgroupOOMKills(mount, selfCgroup string) (kills int64, scope string, ok bool) {
+	rel := ""
+	for _, line := range strings.Split(selfCgroup, "\n") {
+		if strings.HasPrefix(line, "0::") {
+			rel = strings.TrimSpace(strings.TrimPrefix(line, "0::"))
+			break
+		}
+	}
+	if rel == "" {
+		return 0, "", false
+	}
+	mount = filepath.Clean(mount)
+	dir := filepath.Join(mount, rel)
+	if dir != mount {
+		dir = filepath.Dir(dir) // start at the parent: it outlives our own cgroup
+	}
+	for {
+		if b, err := os.ReadFile(filepath.Join(dir, "memory.events")); err == nil {
+			if n, found := parseCgroupOOMKills(string(b)); found {
+				at := strings.TrimPrefix(dir, mount)
+				if at == "" {
+					at = "/"
+				}
+				return n, "cgroup:" + at, true
+			}
+		}
+		if dir == mount || len(dir) <= len(mount) {
+			return 0, "", false
+		}
+		dir = filepath.Dir(dir)
+	}
+}
+
+// oomKillEpoch returns the (epoch, counter) pair the marker stores and compares.
+// The epoch is the boot id, plus the scope the counter covers when it comes from
+// a cgroup: a reading is only comparable to a marker taken from the same counter
+// on the same boot, and oomKilledSinceMarker already refuses to compare across
+// different epochs. With a readable cgroup file the counter covers this
+// process's ANCESTOR cgroup's subtree (see readCgroupOOMKills on what that
+// subtree includes: for a system unit, /system.slice and everything under it),
+// so a kill anywhere in that subtree counts, and a kill elsewhere on the host
+// does not. Otherwise it is the host-wide /proc/vmstat counter with the plain
+// boot id, as before. The first start after an upgrade has a plain-boot-id
+// marker, so it is not compared (never a false attribution).
+func oomKillEpoch(bootID, mount, selfCgroup string, vmstatKills int64) (string, int64) {
+	if bootID != "" {
+		if n, scope, ok := readCgroupOOMKills(mount, selfCgroup); ok {
+			return bootID + "|" + scope, n
+		}
+	}
+	return bootID, vmstatKills
+}
+
+// readOOMKillEpoch is oomKillEpoch for the running process.
+func readOOMKillEpoch() (string, int64) {
+	self, _ := os.ReadFile("/proc/self/cgroup")
+	return oomKillEpoch(readBootID(), "/sys/fs/cgroup", string(self), readVmstatOOMKills())
+}
+
+// oomCapResetOnOff forgets the standing automatic cap. Turning the kill switch
+// off has to mean the automatic cap is GONE, not merely not enforced while off:
+// nothing ages the cap while off (the reduce and relax logic never runs), so a
+// cap set days ago is still there, still binding the moment the switch goes back
+// on, and it can shed proxies on the very start the operator turned the switch
+// back on to let the pool grow. The reduction history is kept: it is what stops
+// a flapping box from cutting the pool again on the very next OOM.
+//
+// Deliberately NOT an age check on SinceUnix. A long-running provider
+// legitimately holds the same cap for days (SinceUnix only moves at a reduction
+// or a relax, and a relax is evaluated at start), so dropping a cap merely
+// because it is old would shed proxies mid-run on a healthy box. "off" is the
+// operator saying stop, and stop means no standing cap.
+func oomCapResetOnOff() []string {
+	dir, err := oomCapDir()
+	if err != nil {
+		return nil
+	}
+	statePath := filepath.Join(dir, "oom_cap.json")
+	var st oomCapState
+	if !oomReadJSON(statePath, &st) || st.Cap <= 0 {
+		return nil
+	}
+	from := st.Cap
+	st.Cap = 0
+	if werr := oomWriteJSON(statePath, st); werr != nil {
+		importantLogf("[oomcap] warn: could not clear the automatic cap %d (%v); it stays in place and is not enforced while the mode is off\n", from, werr)
+		return nil
+	}
+	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: "clear", From: from, To: 0, Mode: oomCapModeName(oomCapOff),
+		Reason: "kill switch off"})
+	return []string{"[oomcap] cleared the automatic start cap " + strconv.Itoa(from) + " -> none (the kill switch forgets the standing cap)"}
+}
+
 // oomCapDecide runs once per start BEFORE the launch selection: it reads the
 // previous marker, decides what an OOM-aware cap does, persists the cap state and
 // returns the log lines. In "on" mode the persisted cap is then enforced by
@@ -323,7 +515,7 @@ func readBootID() string {
 func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []string {
 	mode := oomCapMode()
 	if mode == oomCapOff {
-		return nil
+		return oomCapResetOnOff()
 	}
 	dir, err := oomCapDir()
 	if err != nil {
@@ -332,10 +524,16 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	_ = os.MkdirAll(dir, 0o700)
 	statePath := filepath.Join(dir, "oom_cap.json")
 
+	var warnings []string
 	var prev oomMarker
-	havePrev := oomReadJSON(filepath.Join(dir, "run.marker"), &prev)
+	havePrev, w := oomReadJSONChecked(filepath.Join(dir, "run.marker"), &prev)
+	if w != "" {
+		warnings = append(warnings, w)
+	}
 	var st oomCapState
-	oomReadJSON(statePath, &st)
+	if _, w := oomReadJSONChecked(statePath, &st); w != "" {
+		warnings = append(warnings, w)
+	}
 
 	var d oomCapDecision
 	var msg string
@@ -349,7 +547,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	_ = oomWriteJSON(statePath, st)
 
 	if d.Action == "none" || d.Action == "" {
-		return nil
+		return warnings
 	}
 	modeName := "shadow"
 	if mode == oomCapOn {
@@ -360,7 +558,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 	if mode == oomCapOn {
 		verb, tail = "applied: "+msg+": ", ""
 	}
-	return []string{"[oomcap] " + verb + oomCapActionPhrase(d, mode == oomCapOn) + tail}
+	return append(warnings, "[oomcap] "+verb+oomCapActionPhrase(d, mode == oomCapOn)+tail)
 }
 
 // oomCapActionPhrase words a decision for the log: "would reduce ..." in shadow,

@@ -3,6 +3,7 @@ package main
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -362,5 +363,162 @@ func TestOOMWriteJSONConcurrentWritersLeaveWholeFile(t *testing.T) {
 	var st oomCapState
 	if !oomReadJSON(path, &st) || st.SinceUnix != 1 {
 		t.Fatalf("state file torn or unreadable after concurrent writes: %+v", st)
+	}
+}
+
+// A cap or OOM attribution that sits in a torn, hand-edited or unreadable file
+// silently vanishes. A missing file is normal (first start) and stays silent;
+// a file that exists but cannot be read is reported.
+func TestOOMCapDecideWarnsWhenStateFilesAreUnreadable(t *testing.T) {
+	withTempHome(t)
+	dir, err := oomCapDir()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	if lines := oomCapDecide(4127, "boot-A", 0, oomT0); lines != nil {
+		t.Fatalf("missing state files are normal and must be silent, got %q", lines)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "oom_cap.json"), []byte(`{"cap": 33`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines := oomCapDecide(4127, "boot-A", 0, oomT0.Add(time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "oom_cap.json exists but could not be read") {
+		t.Fatalf("a torn oom_cap.json must be reported once, got %q", lines)
+	}
+	// The decision rewrites the state file, so the next start is clean.
+	if lines := oomCapDecide(4127, "boot-A", 0, oomT0.Add(2*time.Hour)); lines != nil {
+		t.Fatalf("after the rewrite the warning must not repeat, got %q", lines)
+	}
+
+	if err := os.WriteFile(filepath.Join(dir, "run.marker"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	lines = oomCapDecide(4127, "boot-A", 0, oomT0.Add(3*time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "run.marker exists but could not be read") {
+		t.Fatalf("an unreadable run.marker must be reported, got %q", lines)
+	}
+}
+
+func writeMemoryEvents(t *testing.T, root, rel string, oomKill int) {
+	t.Helper()
+	dir := filepath.Join(root, rel)
+	if err := os.MkdirAll(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	body := "low 0\nhigh 0\nmax 0\noom 0\noom_kill " + strconv.Itoa(oomKill) + "\noom_group_kill 0\n"
+	if err := os.WriteFile(filepath.Join(dir, "memory.events"), []byte(body), 0o644); err != nil {
+		t.Fatal(err)
+	}
+}
+
+func TestParseCgroupOOMKills(t *testing.T) {
+	if n, ok := parseCgroupOOMKills("low 0\nhigh 0\nmax 0\noom 2\noom_kill 3\noom_group_kill 1\n"); !ok || n != 3 {
+		t.Fatalf("got %d ok=%v, want 3 (oom_kill, not oom or oom_group_kill)", n, ok)
+	}
+	for _, bad := range []string{"", "oom 1\n", "oom_kill x\n", "oom_kill -1\n"} {
+		if _, ok := parseCgroupOOMKills(bad); ok {
+			t.Fatalf("%q must not parse", bad)
+		}
+	}
+}
+
+// The service's own cgroup is recreated on restart, so its counter resets. The
+// counter to compare is the parent's, which persists and is hierarchical.
+func TestReadCgroupOOMKillsUsesTheParentNotTheRecreatedOwnCgroup(t *testing.T) {
+	root := t.TempDir()
+	unit := "/user.slice/user-1000.slice/user@1000.service/app.slice/urnetwork.service"
+	self := "0::" + unit + "\n"
+	writeMemoryEvents(t, root, unit, 0)
+	writeMemoryEvents(t, root, "/user.slice/user-1000.slice/user@1000.service/app.slice", 3)
+	writeMemoryEvents(t, root, "/user.slice", 40)
+
+	n, scope, ok := readCgroupOOMKills(root, self)
+	if !ok || n != 3 || scope != "cgroup:/user.slice/user-1000.slice/user@1000.service/app.slice" {
+		t.Fatalf("got %d %q ok=%v, want the app.slice counter 3", n, scope, ok)
+	}
+}
+
+func TestReadCgroupOOMKillsWalksUpPastAnUnreadableParent(t *testing.T) {
+	root := t.TempDir()
+	unit := "/system.slice/urnetwork.service"
+	writeMemoryEvents(t, root, "/system.slice", 5)
+	n, scope, ok := readCgroupOOMKills(root, "0::"+unit+"\n")
+	if !ok || n != 5 || scope != "cgroup:/system.slice" {
+		t.Fatalf("got %d %q ok=%v", n, scope, ok)
+	}
+}
+
+func TestReadCgroupOOMKillsInAContainerUsesItsOwnRoot(t *testing.T) {
+	root := t.TempDir()
+	writeMemoryEvents(t, root, ".", 2)
+	n, scope, ok := readCgroupOOMKills(root, "0::/\n")
+	if !ok || n != 2 || scope != "cgroup:/" {
+		t.Fatalf("got %d %q ok=%v", n, scope, ok)
+	}
+}
+
+func TestReadCgroupOOMKillsReportsNotOKWithoutAnyFile(t *testing.T) {
+	for name, self := range map[string]string{
+		"no file on the path": "0::/system.slice/urnetwork.service\n",
+		"cgroup v1 only":      "1:name=systemd:/x\n",
+		"empty":               "",
+	} {
+		if _, _, ok := readCgroupOOMKills(t.TempDir(), self); ok {
+			t.Fatalf("%s: must report not ok", name)
+		}
+	}
+}
+
+// The finding: the host-wide counter blamed this provider for another
+// workload's OOM kill. With a cgroup counter, only kills inside this subtree
+// count; the host counter is ignored.
+func TestOOMKillEpochIgnoresAnotherWorkloadsKillOnTheHost(t *testing.T) {
+	root := t.TempDir()
+	unit := "/user.slice/user-1000.slice/app.slice/urnetwork.service"
+	self := "0::" + unit + "\n"
+	parent := "/user.slice/user-1000.slice/app.slice"
+	writeMemoryEvents(t, root, parent, 1)
+
+	epochA, killsA := oomKillEpoch("boot-A", root, self, 10) // marker taken here
+	marker := &oomMarker{BootID: epochA, OOMKills: killsA, StartedUnix: oomT0.Unix(), LastSeenUnix: oomT0.Unix()}
+
+	// Some other container on the host is OOM-killed: only the host counter moves.
+	epochB, killsB := oomKillEpoch("boot-A", root, self, 11)
+	if oomKilledSinceMarker(marker, epochB, killsB, oomT0.Add(time.Hour)) {
+		t.Fatal("another workload's OOM kill on the host must not be blamed on this provider")
+	}
+
+	// A kill inside this subtree does count.
+	writeMemoryEvents(t, root, parent, 2)
+	epochC, killsC := oomKillEpoch("boot-A", root, self, 11)
+	if !oomKilledSinceMarker(marker, epochC, killsC, oomT0.Add(time.Hour)) {
+		t.Fatal("an OOM kill inside this provider's own cgroup subtree must be attributed")
+	}
+}
+
+// Without a readable cgroup file the host-wide counter and the plain boot id are
+// used, exactly as before, and a marker from a different scope is not compared.
+func TestOOMKillEpochFallsBackToHostAndNeverComparesAcrossScopes(t *testing.T) {
+	epoch, kills := oomKillEpoch("boot-A", t.TempDir(), "0::/nowhere\n", 7)
+	if epoch != "boot-A" || kills != 7 {
+		t.Fatalf("fallback = %q,%d, want the plain boot id and the host counter", epoch, kills)
+	}
+	if e, k := oomKillEpoch("", t.TempDir(), "0::/x\n", 7); e != "" || k != 7 {
+		t.Fatalf("an unknown boot id stays unknown, got %q,%d", e, k)
+	}
+
+	// A marker written under the old (host) epoch must not be compared with a
+	// cgroup-scoped reading after an upgrade: the counters are different things.
+	root := t.TempDir()
+	writeMemoryEvents(t, root, "/system.slice", 50)
+	hostMarker := &oomMarker{BootID: "boot-A", OOMKills: 3, StartedUnix: oomT0.Unix(), LastSeenUnix: oomT0.Unix()}
+	e, k := oomKillEpoch("boot-A", root, "0::/system.slice/urnetwork.service\n", 3)
+	if oomKilledSinceMarker(hostMarker, e, k, oomT0.Add(time.Hour)) {
+		t.Fatal("a host-scoped marker must not be compared with a cgroup-scoped reading")
 	}
 }

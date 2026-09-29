@@ -5,10 +5,23 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"sync"
 	"time"
 )
 
 const critLogMaxSize = 1 * 1024 * 1024
+
+// critLogMu serializes the open/stat/rotate/write sequence. Without it two
+// goroutines (the pressure monitor and the reload loop both log here) can both
+// see the file over the limit and both rotate: one truncates while the other is
+// mid-append, and lines are lost or interleaved. It is per process; a HotSwap
+// parent and candidate still append independently (O_APPEND keeps each line
+// whole, and a rotation race between them can at worst drop a diagnostic line).
+var critLogMu sync.Mutex
+
+// critLogInCriticalSection, when set by a test, runs inside the locked section
+// so the test can assert the lock is held there without depending on timing.
+var critLogInCriticalSection func()
 
 func critLogPath() (string, error) {
 	home, err := os.UserHomeDir()
@@ -19,6 +32,11 @@ func critLogPath() (string, error) {
 }
 
 func critLog(format string, args ...any) {
+	critLogMu.Lock()
+	defer critLogMu.Unlock()
+	if critLogInCriticalSection != nil {
+		critLogInCriticalSection()
+	}
 	p, err := critLogPath()
 	if err != nil {
 		return
@@ -34,7 +52,14 @@ func critLog(format string, args ...any) {
 	if err != nil {
 		return
 	}
-	defer f.Close()
+	// The handle changes when the file is rotated, so close whichever one is
+	// current on the way out instead of deferring a close on the first. The nil
+	// check covers the reopen failing after a rotation, which leaves f nil.
+	defer func() {
+		if f != nil {
+			f.Close()
+		}
+	}()
 
 	info, err := f.Stat()
 	if err != nil {
@@ -48,7 +73,6 @@ func critLog(format string, args ...any) {
 		if err != nil {
 			return
 		}
-		defer f.Close()
 	}
 
 	f.Write([]byte(msg))

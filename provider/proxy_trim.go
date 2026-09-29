@@ -5,13 +5,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"fmt"
 	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
 	"strconv"
 	"strings"
-	"sync/atomic"
 )
 
 // proxy_trim.go implements the operator `proxy trim <N>` hard cap: hold the
@@ -48,9 +49,122 @@ func readTrimTarget() (int, error) {
 	}
 	n, err := strconv.Atoi(s)
 	if err != nil || n < 0 {
-		return 0, nil // treat unparseable as no cap, never a false cap
+		// Treat unparseable as no cap, never a false cap, but say so once: a
+		// cap the operator believes is set has silently stopped applying.
+		// The ramlog line is immediate, but the events.log copy is an
+		// open+write+fsync and this runs while reload() holds r.mu, so it is
+		// queued for after the lock is released (same reason the trim and
+		// ledger writes there are deferred). Callers with no deferred queue
+		// simply drain it themselves.
+		if w := trimGarbageWarning(s); w != "" {
+			tlog("%s\n", w)
+			deferCritWrite(w)
+		}
+		return 0, nil
 	}
 	return n, nil
+}
+
+// deferredCrit holds critical-log lines produced while a caller holds a lock
+// it must not block on. Drained by drainDeferredCrit after the lock is gone.
+var deferredCrit struct {
+	sync.Mutex
+	lines    []string
+	draining bool
+	cond     *sync.Cond
+}
+
+// deferCritWrite queues a line for the post-unlock critical-log write.
+func deferCritWrite(line string) {
+	deferredCrit.Lock()
+	defer deferredCrit.Unlock()
+	deferredCrit.lines = append(deferredCrit.lines, line)
+}
+
+// drainDeferredCritFn hands the queued lines to fn, in the order the batches
+// were queued. Batches are serialised, so lines reach events.log in the order
+// the reloads that produced them ran, but the file I/O happens with no lock
+// held.
+//
+// The serialisation is needed because r.mu is released by reload()'s OWN defer,
+// which runs AFTER this drain defer: a second reload can otherwise start and
+// finish its drain while the first is still writing, and the trim ledger can
+// record a later cap change before an earlier one.
+func drainDeferredCritFn(fn func([]string)) {
+	deferredCrit.Lock()
+	if deferredCrit.cond == nil {
+		deferredCrit.cond = sync.NewCond(&deferredCrit.Mutex)
+	}
+	for deferredCrit.draining {
+		deferredCrit.cond.Wait()
+	}
+	deferredCrit.draining = true
+	batch := deferredCrit.lines
+	deferredCrit.lines = nil
+	deferredCrit.Unlock() // the writes themselves hold no lock
+
+	func() {
+		defer func() {
+			deferredCrit.Lock()
+			deferredCrit.draining = false
+			deferredCrit.cond.Broadcast()
+			deferredCrit.Unlock()
+		}()
+		fn(batch)
+	}()
+}
+
+// drainDeferredCrit returns and clears the queued lines without writing them.
+// Used where the caller wants the lines itself (tests, and the startup path
+// which writes them directly). It does NOT participate in batch ordering, so
+// only one such caller may run at a time; the startup path runs once per
+// process, before reloads exist.
+func drainDeferredCrit() []string {
+	deferredCrit.Lock()
+	defer deferredCrit.Unlock()
+	out := deferredCrit.lines
+	deferredCrit.lines = nil
+	return out
+}
+
+// trimGarbageSeen is every unparseable proxy_trim value already warned about,
+// so a bad file is reported once instead of on every reload. A SET, keyed by the
+// FULL value: keying on a truncated one collides (two different long values
+// sharing a first 40 bytes would look identical), and keeping only the last
+// value re-warns on an A, B, A sequence. Growth is bounded by the operator
+// editing the file, not by the reload loop.
+var trimGarbageSeen struct {
+	sync.Mutex
+	seen map[string]bool
+}
+
+// trimGarbageReset clears the warned set. Tests only.
+func trimGarbageReset() {
+	trimGarbageSeen.Lock()
+	defer trimGarbageSeen.Unlock()
+	trimGarbageSeen.seen = nil
+}
+
+// trimGarbageWarning returns the warning line for unparseable proxy_trim
+// content the first time that exact value is seen, and "" for any repeat.
+// Truncation happens only when formatting the message, never in the key.
+func trimGarbageWarning(content string) string {
+	trimGarbageSeen.Lock()
+	if trimGarbageSeen.seen == nil {
+		trimGarbageSeen.seen = map[string]bool{}
+	}
+	if trimGarbageSeen.seen[content] {
+		trimGarbageSeen.Unlock()
+		return ""
+	}
+	trimGarbageSeen.seen[content] = true
+	trimGarbageSeen.Unlock()
+
+	shown := content
+	if len(shown) > 40 {
+		shown = shown[:40] + "..."
+	}
+	return fmt.Sprintf("[proxy][trim] warn: proxy_trim holds %q, which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`", shown)
 }
 
 // writeTrimTarget sets the operator cap. n <= 0 clears it.
@@ -68,7 +182,28 @@ func writeTrimTarget(n int) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return err
 	}
-	return os.WriteFile(path, []byte(strconv.Itoa(n)), 0o600)
+	// Write to a unique temp file and rename over the target. A plain WriteFile
+	// truncates first, so a reader (or a crash) between truncate and write sees
+	// an empty file, which reads as "no cap", and the cap silently lapses.
+	tmp, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".*.tmp")
+	if err != nil {
+		return err
+	}
+	tmpPath := tmp.Name()
+	if _, err := tmp.WriteString(strconv.Itoa(n)); err != nil {
+		tmp.Close()
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	return nil
 }
 
 // trimPreviewText renders what `proxy trim <count>` would do to the given
