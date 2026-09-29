@@ -364,6 +364,55 @@ The `[r]drop` message indicates the provider dropped a packet because it couldn'
 
 ---
 
+## 🔒 Proxy Quality Control: MiTM, Signal Quality, and Continuous Re-grading
+
+Every candidate proxy earns its place in the pool. Nothing is admitted on the strength of "it responded once".
+
+### 1. Man-in-the-middle detection is a real TLS handshake, not a heuristic
+
+`probeProxy` (`provider/proxy_probe.go:226`) runs three stages over a single tunnel:
+
+1. **SOCKS5 greeting.** Is this actually a SOCKS5 proxy?
+2. **SOCKS5 `CONNECT` to the API host on 443.** Can the proxy reach the backend at all?
+3. **A real TLS handshake through that tunnel**, with `ServerName` pinned to the API host and verified against the **system root pool** (`proxyProbeTLSClientConfig`, `proxy_probe.go:222`).
+
+Stage 3 is the MiTM check, and it is the reason a proxy cannot quietly intercept traffic. An interceptor answers `CONNECT` with `0x00` exactly like an honest proxy, so it passes stage 2. It then presents **its own certificate** at the TLS layer. Verification against the system roots fails, and the proxy is classified `probeTLSFailed`, so it is never admitted.
+
+`probeTLSFailed` is deliberately kept distinct from `probeDead` and `probeSocks5Only` (see the comment at `proxy_table_probe.go:427`): the tunnel works and the proxy is alive, it simply will not relay TLS transparently. A dead proxy and a lying proxy are different faults and are counted differently.
+
+A hostile proxy that was previously good is caught on the same path. The stale re-probe demotes a once-good proxy that has turned hostile, and consecutive TLS failures retire it from the cache entirely. Both behaviours are pinned by tests, including a regression test written specifically for the case where a good proxy turns hostile (`TestReview_ReaperStaleReprobeDemotesTLSFailed`, `TestReview_ReaperBlacklistsTLSFailedAfterThree`).
+
+What you see in the log when this happens:
+
+- `ProbeOK=false` recorded against the cached entry, so the address is not launched
+- a demotion line on a stale re-probe, naming a TLS-verify failure
+- a blacklist line once the consecutive-failure threshold is reached
+
+### 2. The signal quality gate: can this proxy actually reach the popular web?
+
+A proxy that passes MiTM checking can still be useless, so a second gate measures whether it can reach real, in-demand destinations.
+
+- **127 popular hostnames**, all on port 443 (`provider/ip_probe_targets.go:29`)
+- each is reached **through the proxy** with a SOCKS5 `CONNECT`, and counts only when the reply is `REP == 0x00`
+- the score is `OK / Total` over the targets **actually attempted**, so a local DNS or routing failure on our side can never convict a working proxy
+- a `Decidable` gate separates "we could not measure" from "we measured and it was bad"
+- **pass bar 0.6**: anything below it is never spawned. The **preferred bar of 0.9 is recorded and clamped but gates nothing** in this tree; the only bar that decides admission is the pass bar.
+- **Sample width 12 by default**, growing to a maximum of 36, and the growth happens **only for borderline candidates** (a score within 0.15 of the pass bar). A clearly good or clearly dead proxy is settled at the small width, so probe bandwidth is spent in proportion to uncertainty rather than on every proxy. `min_sample_width` defaults to 0, so the start-small staging path is off unless an operator sets it.
+- Successive sweeps use a **disjoint-block rotation**, so consecutive passes at the same width land on non-overlapping strides and genuinely new hosts rather than re-dialing the same ones
+
+The two stages are separate jobs. **Stage 0** is liveness: the three-stage check above decides only whether the proxy is alive and honest, and says nothing about quality. **Stage 1** is the table probe above, and it is what produces the A to F grade that decides admission order.
+
+### 3. Grades are continuously refreshed, so the pool converges on the best of the best
+
+Nothing is graded once and trusted forever.
+
+- **The fetch cycle probes new addresses only.** Re-probing everything every cycle would be both slow and a suspicious traffic pattern, and would be especially bad on a large box.
+- **The URL reaper** ticks every 5 minutes, works to a stale window that scales from 3 hours down to 1 hour under memory pressure, and spends a budget of 32 grade refreshes per cycle, oldest first. Under pressure the window shortens, so refreshes happen more often.
+- **The paid and file grader** runs on a wider window, 6 hours down to 3 under pressure, skips proxies that earned recently, and force-probes anything not checked in 24 hours.
+- **Below-bar entries are never spawned**, so a proxy that decays is not merely ignored, it stops carrying traffic.
+
+The net effect is that a proxy holds its place only by continuing to pass. The A to F funnel admits the best first on every fill, and the re-grading keeps re-ordering the pool against reality rather than against a snapshot from days ago.
+
 ## 🛡️ Capacity Control: Trim Cap, OOM Cap, Memory Limits
 
 Every line here is mirrored to `/dev/shm/urnetwork-important.log` and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
