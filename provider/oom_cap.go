@@ -2,10 +2,12 @@ package main
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
@@ -100,10 +102,6 @@ const (
 // use the source so a shed driven by the automatic cap is not attributed to the
 // operator.
 func effectiveTrimCapSource() (int, string, error) {
-	operator, err := readTrimTarget()
-	if err != nil {
-		return 0, "", err
-	}
 	auto := 0
 	if oomCapMode() == oomCapOn {
 		var st oomCapState
@@ -112,6 +110,14 @@ func effectiveTrimCapSource() (int, string, error) {
 		}
 		auto = st.Cap
 	}
+	operator, err := readTrimTarget()
+	if err != nil {
+		importantLogf("%s\n", trimUnreadableWarning(err))
+		if auto > 0 {
+			return auto, trimCapOOM, nil
+		}
+		return 0, "", nil
+	}
 	switch {
 	case auto > 0 && (operator == 0 || auto < operator):
 		return auto, trimCapOOM, nil
@@ -119,6 +125,24 @@ func effectiveTrimCapSource() (int, string, error) {
 		return operator, trimCapOperator, nil
 	}
 	return 0, "", nil
+}
+
+// trimUnreadableSeen is the proxy_trim read error already warned about, so a
+// file that stays unreadable is reported once instead of on every reload.
+var trimUnreadableSeen atomic.Value
+
+// trimUnreadableWarning returns the warning line for an unreadable proxy_trim
+// the first time that exact error is seen, and "" for a repeat.
+func trimUnreadableWarning(err error) string {
+	if err == nil {
+		return ""
+	}
+	msg := err.Error()
+	if prev, _ := trimUnreadableSeen.Load().(string); prev == msg {
+		return ""
+	}
+	trimUnreadableSeen.Store(msg)
+	return fmt.Sprintf("[proxy][trim] warn: cannot read proxy_trim (%s); ignoring the operator cap, the automatic cap still applies", msg)
 }
 
 // effectiveTrimCap is effectiveTrimCapSource without the source.
