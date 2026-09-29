@@ -105,9 +105,11 @@ func TestRetentionBatchDrainsMoreThanOneEvent(t *testing.T) {
 	}
 }
 
-// Rotation must not lose writes: after a rotation the writer reopens, so lines
-// written afterwards land in the NEW file rather than the renamed generation.
-func TestRetentionWriterReopensAfterRotation(t *testing.T) {
+// Rotation must not lose writes, and must not put the crossing batch into the
+// generation that is about to be renamed. The check happens BEFORE the write
+// (an earlier version checked after, and its own comment claimed the opposite),
+// so the batch that trips the cap goes into the NEW file.
+func TestRetentionWriterRotatesBeforeTheCrossingWrite(t *testing.T) {
 	dir := t.TempDir()
 	t.Setenv("URNETWORK_PROXY_HEALTH_DIR", dir)
 	path := filepath.Join(dir, "proxy_health.log")
@@ -118,28 +120,26 @@ func TestRetentionWriterReopensAfterRotation(t *testing.T) {
 	if b, err := os.ReadFile(path); err != nil || !strings.Contains(string(b), "before-rotation") {
 		t.Fatalf("pre-rotation write missing: %v", err)
 	}
-	// Push the writer's own byte count to the threshold. Rotation is driven by
-	// that count rather than a stat, so this is the real trigger, not a stub.
-	w.bytes = proxyHealthLogMaxBytes - 1
-	w.write([]string{"crossing-line"}) // the write that trips the threshold
-	w.bytes = 0                        // already rotated and reset
-	w.write([]string{"after-rotation"})
 
+	// Fill the writer to just under the cap, then write the batch that trips it.
+	w.bytes = proxyHealthLogMaxBytes // the pre-write check fires on the NEXT batch
+	w.write([]string{"crossing-line"})
+
+	// Rotation must already have happened, and the crossing line must be in the
+	// NEW file, not in the one that was renamed.
 	if _, err := os.Stat(path + ".1"); err != nil {
-		t.Fatalf("rotation did not happen: %v", err)
+		t.Fatalf("rotation did not happen before the crossing write: %v", err)
 	}
-	// The new generation must carry the post-rotation line, and the old handle
-	// must not still be writing into the renamed file.
 	w.close()
-	current, err := os.ReadFile(path)
+	live, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(current), "after-rotation") {
-		t.Fatalf("the post-rotation line is not in the live log: %q", current)
+	if !strings.Contains(string(live), "crossing-line") {
+		t.Fatalf("the crossing batch must land in the NEW live log, got %q", live)
 	}
-	if strings.Contains(string(current), "before-rotation") {
-		t.Fatalf("the pre-rotation line must live in the rotated generation, not the live log")
+	if strings.Contains(string(live), "before-rotation") {
+		t.Fatal("the pre-rotation line belongs to the rotated generation, not the live log")
 	}
 	rotated, err := os.ReadFile(path + ".1")
 	if err != nil {
@@ -147,6 +147,21 @@ func TestRetentionWriterReopensAfterRotation(t *testing.T) {
 	}
 	if !strings.Contains(string(rotated), "before-rotation") {
 		t.Fatalf("rotation lost the pre-rotation line: %q", rotated)
+	}
+
+	// Writing after the rotation must keep working against the new file.
+	w2 := newRetentionLogWriter()
+	defer w2.close()
+	w2.write([]string{"after-rotation"})
+	live2, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(live2), "after-rotation") {
+		t.Fatalf("writes after a rotation must reach the new log, got %q", live2)
+	}
+	if !strings.Contains(string(live2), "crossing-line") {
+		t.Fatal("the crossing line must still be in the live log after a later write")
 	}
 }
 

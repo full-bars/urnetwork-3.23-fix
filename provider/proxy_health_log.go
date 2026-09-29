@@ -245,6 +245,14 @@ func formatEventLines(r connect.ProxyHealthReport, now time.Time) []string {
 
 const proxyHealthLogMaxBytes = 20 * 1024 * 1024 // 20 MB
 
+// proxyHealthLogMu serialises every append and rotation of proxy_health.log.
+// Two independent writers touch that file: the retention writer (a long-lived
+// goroutine holding an open handle) and writeProxyHealthEvents (the heartbeat).
+// Without a shared lock, a rotation by one renames the file out from under the
+// other's open descriptor, and the loser's subsequent writes land in the renamed
+// generation; the next rotation then overwrites .1 and those events are gone.
+var proxyHealthLogMu sync.Mutex
+
 // proxyHealthDir resolves the directory for the persistent files:
 // URNETWORK_PROXY_HEALTH_DIR, else <home>/.urnetwork. Returns ok=false if neither
 // can be resolved (persistence then disabled by the caller).
@@ -286,6 +294,8 @@ func writeProxyHealthEvents(dir string, r connect.ProxyHealthReport, now time.Ti
 	if len(lines) == 0 {
 		return
 	}
+	proxyHealthLogMu.Lock()
+	defer proxyHealthLogMu.Unlock()
 	path := filepath.Join(dir, "proxy_health.log")
 	rotateIfNeeded(path, proxyHealthLogMaxBytes)
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
@@ -421,6 +431,30 @@ func (w *retentionLogWriter) write(events []string) {
 			return
 		}
 	}
+	// Rotate BEFORE writing, when the previous batch already filled the file.
+	// Checking after the write (as an earlier version did, despite its own
+	// comment) puts the batch that crosses the threshold into the generation
+	// that is about to be renamed, so the newest events are the ones lost from
+	// the live file.
+	//
+	// w.bytes is this writer's own count, seeded from the file size at open and
+	// incremented by exactly what it appended, so it is the live size without a
+	// stat per line.
+	proxyHealthLogMu.Lock()
+	defer proxyHealthLogMu.Unlock()
+	if w.bytes >= proxyHealthLogMaxBytes {
+		w.close()
+		if _, err := os.Stat(w.path); err == nil {
+			_ = os.Rename(w.path, w.path+".1")
+		}
+		w.bytes = 0
+		if w.f == nil {
+			w.reopen(filepath.Dir(w.path))
+			if w.f == nil {
+				return
+			}
+		}
+	}
 	var b strings.Builder
 	ts := time.Now().UTC().Format(time.RFC3339)
 	for _, e := range events {
@@ -428,30 +462,13 @@ func (w *retentionLogWriter) write(events []string) {
 	}
 	n, err := w.f.WriteString(b.String())
 	if err != nil {
-		// The handle went bad (rotation, truncation, disk). Drop it so the
-		// next batch reopens rather than writing into a dead file forever.
+		// The handle went bad (rotation by the OTHER writer, truncation, disk).
+		// Drop it so the next batch reopens rather than writing into a dead
+		// file forever.
 		w.close()
 		return
 	}
 	w.bytes += int64(n)
-	// Rotate on the writer's OWN byte count, not a stat per event: w.bytes was
-	// seeded from the file size at open and every write adds exactly what it
-	// appended, so it is the live size without a syscall per line. rotateIfNeeded
-	// would stat the file, which is the cost being removed, and it would also
-	// miss the case where the handle holds writes the stat cannot see.
-	//
-	// Rotate BEFORE writing the batch that crosses the threshold, so the
-	// generation boundary is clean: close the handle, rotate, and reopen on the
-	// next write. Doing it after the write (as a naive port of the old
-	// per-event order) would put the crossing line in the file that is about to
-	// be renamed.
-	if w.bytes >= proxyHealthLogMaxBytes {
-		w.close()
-		if _, err := os.Stat(w.path); err == nil {
-			_ = os.Rename(w.path, w.path+".1")
-		}
-		w.bytes = 0
-	}
 }
 
 func (w *retentionLogWriter) reopen(dir string) {
