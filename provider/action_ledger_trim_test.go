@@ -34,6 +34,15 @@ func TestLedgerTrimKeepsAnOversizedNewestLine(t *testing.T) {
 	if !strings.Contains(string(b), "yyy") {
 		t.Fatalf("the newest (oversized) entry must survive, got %d bytes", len(b))
 	}
+	// The point the first version of this test missed: the older lines MUST
+	// still be trimmed away. Keeping them all (start = 0) leaves the file over
+	// the bound forever and makes every later append re-run a useless trim.
+	if strings.Contains(string(b), "xxx") {
+		t.Fatalf("older lines must still be trimmed; got %d bytes, still contains the old entries", len(b))
+	}
+	if len(b) > 2000+16 {
+		t.Fatalf("result is %d bytes: trimming did not reduce the file to the oversized newest line", len(b))
+	}
 }
 
 // The ordinary case must still behave: keep the newest whole lines that fit, and
