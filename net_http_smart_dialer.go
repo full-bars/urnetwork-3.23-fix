@@ -203,9 +203,9 @@ func (self *clientDialer) needsConnectProbe(now time.Time) (bool, int) {
 	return now.Sub(self.connectObservedAt) > smartDialerProbeRefreshAge, 1
 }
 
-// probeDialers gives every dialer that lacks a current connect-cost
-// measurement a few connect-only attempts, so the measured-cost preference has
-// something to compare.
+// probeDialers gives the dialers a few connect-only attempts each when any of
+// them lacks a current connect-cost measurement, so the measured-cost
+// preference has something to compare.
 //
 // Why it exists: the preference only ranks dialers it has measured, but the
 // highest-priority transport (fragment) is tried first and, wherever it
@@ -213,17 +213,32 @@ func (self *clientDialer) needsConnectProbe(now time.Time) (bool, int) {
 // dialed and never measured. On exactly the networks that need no DPI
 // circumvention the preference then has no faster option to pick.
 //
-// A probe is a normal outcome for its dialer: a failure is recorded like a
-// real dial failure (a blocked transport still cannot lead the order) and
-// only a genuine fresh connection becomes a sample. It never carries a live
-// request and does nothing while the smart dialer is off, so the legacy path
-// is untouched. It returns how many dialers it attempted.
+// When any dialer needs a probe, EVERY dialer is probed in the same round,
+// the current leader included. Samples taken at different times against
+// different hosts (a real dial during the startup storm against a probe
+// afterwards) are not comparable, so the comparison has to be made on one
+// basis.
+//
+// A successful probe is a normal success for its dialer and a fresh
+// connection becomes a sample. A failed probe is recorded like a real dial
+// failure only for a dialer that has never succeeded (a blocked transport
+// still cannot lead the order); for a dialer with real successes it is left
+// out of the health record, because one failed GET to the api host must not
+// demote the transport that is carrying live traffic. A probe never carries a
+// live request, does nothing while the smart dialer is off (and stops as soon
+// as it is turned off), and is skipped while custom extenders are configured,
+// because then only the extenders are used. It returns how many dialers it
+// attempted.
 func (self *ClientStrategy) probeDialers(ctx context.Context, probe dialProbe) int {
 	if !SmartDialerEnabled() {
 		return 0
 	}
 
 	self.mutex.Lock()
+	if 0 < len(self.extenderIpSecrets) {
+		self.mutex.Unlock()
+		return 0
+	}
 	dialers := make([]*clientDialer, 0, len(self.dialers))
 	for dialer := range self.dialers {
 		dialers = append(dialers, dialer)
@@ -234,30 +249,42 @@ func (self *ClientStrategy) probeDialers(ctx context.Context, probe dialProbe) i
 		return cmp.Or(cmp.Compare(a.priority, b.priority), cmp.Compare(a.description, b.description))
 	})
 
-	probed := 0
+	now := time.Now()
+	anyNeeded := false
 	for _, dialer := range dialers {
-		if ctx.Err() != nil {
+		if needed, _ := dialer.needsConnectProbe(now); needed {
+			anyNeeded = true
 			break
 		}
-		needed, attempts := dialer.needsConnectProbe(time.Now())
-		if !needed {
-			continue
+	}
+	if !anyNeeded {
+		return 0
+	}
+
+	probed := 0
+	for _, dialer := range dialers {
+		if ctx.Err() != nil || !SmartDialerEnabled() {
+			break
 		}
+		_, attempts := dialer.needsConnectProbe(now)
 
 		attempted := false
-		for i := 0; i < attempts && ctx.Err() == nil; i += 1 {
+		for i := 0; i < attempts && ctx.Err() == nil && SmartDialerEnabled(); i += 1 {
 			start := time.Now()
 			fresh, establish, err := probe(ctx, dialer)
 			if ctx.Err() != nil {
 				// canceled mid-probe: an aborted attempt is not evidence
 				break
 			}
-			dialer.Update(ctx, err, time.Since(start))
 			attempted = true
 			if err != nil {
+				if dialer.Stats().successCount == 0 {
+					dialer.Update(ctx, err, time.Since(start))
+				}
 				// do not hammer a transport that cannot connect here
 				break
 			}
+			dialer.Update(ctx, nil, time.Since(start))
 			if fresh {
 				dialer.observeConnect(establish)
 			}

@@ -2,10 +2,13 @@ package connect
 
 import (
 	"context"
+	"crypto/tls"
 	"errors"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/netip"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -64,10 +67,11 @@ func TestProbeMeasuresATransportThatIsNeverDialedAndLetsItWin(t *testing.T) {
 	}
 
 	probed := strategy.probeDialers(context.Background(), fixedProbe(map[string]time.Duration{
-		"normal": 80 * time.Millisecond,
+		"normal":   80 * time.Millisecond,
+		"fragment": 600 * time.Millisecond,
 	}, nil))
-	if probed != 1 {
-		t.Fatalf("probed %d dialers, want 1 (only normal is unmeasured)", probed)
+	if probed != 2 {
+		t.Fatalf("probed %d dialers, want 2 (normal is unmeasured, so every transport is probed on one basis)", probed)
 	}
 
 	if _, samples := normal.measuredLatency(); samples < smartDialerMinSamples {
@@ -218,5 +222,137 @@ func TestProbeDialersMeasuresEveryDefaultTransportOverRealHttp(t *testing.T) {
 		if !dialer.hasMeasuredLatency() {
 			t.Fatalf("%s is not measured after the probe", dialer.description)
 		}
+	}
+}
+
+// A probe that fails must not demote a transport that has real successes. The
+// leader's measurement goes stale because its live connection is long-lived,
+// so it is refreshed; one failed GET to the api host at that moment must not
+// drop it from the serial list or halve its weight while it still carries
+// traffic.
+func TestProbeFailureDoesNotDemoteALeaderThatHasRealSuccesses(t *testing.T) {
+	withSmartDialer(t, true)
+
+	normal := testDialer("normal", 25, 0.5, 10, 80*time.Millisecond, 0)
+	normal.mutex.Lock()
+	normal.connectObservedAt = time.Now().Add(-2 * smartDialerProbeRefreshAge)
+	normal.mutex.Unlock()
+	fragment := testDialer("fragment", 0, 0.25, 10, 300*time.Millisecond, 0)
+
+	// every probe fails: the api host hiccuped
+	probeStrategy(normal, fragment).probeDialers(context.Background(), fixedProbe(map[string]time.Duration{}, nil))
+
+	if !normal.IsLastSuccess() {
+		t.Fatalf("a failed refresh probe made the leading transport count as failing")
+	}
+	if !normal.hasMeasuredLatency() {
+		t.Fatalf("a failed refresh probe made the leading transport unmeasured")
+	}
+	if normal.Stats().errorCount != 0 {
+		t.Fatalf("a failed probe was recorded as an error on a transport with real successes")
+	}
+	if got := dialerOrder([]*clientDialer{fragment, normal}); !equalOrder(got, []string{"normal", "fragment"}) {
+		t.Fatalf("order = %v, want [normal fragment]: one failed probe must not change the leader", got)
+	}
+}
+
+// Probed samples are only comparable if they are taken together, against the
+// same host, so when any transport needs a probe the leader is probed too.
+func TestProbeProbesTheLeaderInTheSameRoundAsAnUnmeasuredTransport(t *testing.T) {
+	withSmartDialer(t, true)
+
+	fragment := testDialer("fragment", 0, 0.25, smartDialerMinSamples, 600*time.Millisecond, 0)
+	normal := &clientDialer{description: "normal", priority: 25, minimumWeight: 0.5}
+
+	probedFragment := false
+	probe := func(ctx context.Context, dialer *clientDialer) (bool, time.Duration, error) {
+		if dialer == fragment {
+			probedFragment = true
+		}
+		return true, 100 * time.Millisecond, nil
+	}
+	probeStrategy(fragment, normal).probeDialers(context.Background(), probe)
+
+	if !probedFragment {
+		t.Fatalf("the measured leader was not probed alongside the unmeasured transport")
+	}
+}
+
+// Turning the smart dialer off stops the probe at once, not at the end of the
+// round.
+func TestProbeStopsMidRoundWhenSmartDialerIsTurnedOff(t *testing.T) {
+	withSmartDialer(t, true)
+
+	a := &clientDialer{description: "a", priority: 0, minimumWeight: 0.25}
+	b := &clientDialer{description: "b", priority: 25, minimumWeight: 0.5}
+	var calls atomic.Int32
+	probe := func(ctx context.Context, dialer *clientDialer) (bool, time.Duration, error) {
+		calls.Add(1)
+		SetSmartDialer(false)
+		return true, time.Millisecond, nil
+	}
+	probeStrategy(a, b).probeDialers(context.Background(), probe)
+
+	if got := calls.Load(); got != 1 {
+		t.Fatalf("%d probe calls after the smart dialer was turned off, want 1", got)
+	}
+}
+
+// With custom extenders configured the strategy only uses the extenders, so
+// the plain transports would be probed for nothing.
+func TestProbeIsSkippedWhileCustomExtendersAreConfigured(t *testing.T) {
+	withSmartDialer(t, true)
+
+	normal := &clientDialer{description: "normal", priority: 25, minimumWeight: 0.5}
+	strategy := probeStrategy(normal)
+	strategy.extenderIpSecrets = map[netip.Addr]string{netip.MustParseAddr("192.0.2.1"): "secret"}
+
+	var calls atomic.Int32
+	probed := strategy.probeDialers(context.Background(), fixedProbe(map[string]time.Duration{
+		"normal": time.Millisecond,
+	}, &calls))
+
+	if probed != 0 || calls.Load() != 0 {
+		t.Fatalf("probed=%d calls=%d with custom extenders, want 0 and 0", probed, calls.Load())
+	}
+}
+
+// The probe must dial through the dialer's own TLS function: that is where a
+// transport's fragmenting, reordering or proxy path lives, and cloning the
+// transport must not lose it. The plain-http test above cannot show this
+// because http never calls DialTLSContext.
+func TestProbeDialsThroughTheDialersTlsFunctionOverHttps(t *testing.T) {
+	withSmartDialer(t, true)
+
+	server := httptest.NewTLSServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		io.Copy(io.Discard, r.Body)
+		w.WriteHeader(http.StatusOK)
+	}))
+	defer server.Close()
+
+	var tlsDials atomic.Int32
+	dialer := &clientDialer{
+		description:   "counting",
+		priority:      0,
+		minimumWeight: 0.25,
+		settings:      DefaultClientStrategySettings(),
+		dialTlsContext: func(ctx context.Context, network string, address string) (net.Conn, error) {
+			tlsDials.Add(1)
+			d := &tls.Dialer{Config: &tls.Config{InsecureSkipVerify: true}}
+			return d.DialContext(ctx, network, address)
+		},
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+	defer cancel()
+	if probed := probeStrategy(dialer).ProbeDialers(ctx, server.URL); probed != 1 {
+		t.Fatalf("probed %d, want 1", probed)
+	}
+
+	if tlsDials.Load() < int32(smartDialerMinSamples) {
+		t.Fatalf("the dialer's TLS function ran %d times, want at least %d: the probe bypassed it", tlsDials.Load(), smartDialerMinSamples)
+	}
+	if _, samples := dialer.measuredLatency(); samples < smartDialerMinSamples {
+		t.Fatalf("%d samples over https, want at least %d", samples, smartDialerMinSamples)
 	}
 }
