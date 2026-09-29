@@ -54,20 +54,30 @@ func TestUnreadableProxyTrimWarnsOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	t.Setenv("URNETWORK_OOM_CAP", "on")
-	old := importantLogHook
-	var lines []string
-	importantLogHook = func(line string) { lines = append(lines, line) }
-	t.Cleanup(func() { importantLogHook = old })
+	trimUnreadableReset()
+	t.Cleanup(trimUnreadableReset)
+	drainDeferredCrit() // start from an empty queue
 
-	effectiveTrimCapSource()
-	first := strings.Join(lines, "\n")
-	if !strings.Contains(first, "cannot read proxy_trim") {
-		t.Fatalf("an unreadable proxy_trim must warn, got %q", first)
+	// First sighting warns on the ramlog and queues the events.log line.
+	out := captureTlog(t, func() { effectiveTrimCapSource() })
+	if !strings.Contains(out, "cannot read proxy_trim") {
+		t.Fatalf("an unreadable proxy_trim must warn, got %q", out)
 	}
-	lines = nil
-	effectiveTrimCapSource() // the same error a second time
-	if got := strings.Join(lines, "\n"); strings.Contains(got, "cannot read proxy_trim") {
-		t.Fatalf("the same error must warn once, not on every reload, got %q", got)
+	if strings.Contains(out, "\n\n") {
+		t.Fatalf("a warning must not be followed by a blank line, got %q", out)
+	}
+	first := drainDeferredCrit()
+	if len(first) != 1 || !strings.Contains(first[0], "cannot read proxy_trim") {
+		t.Fatalf("the warning must queue exactly one events.log line, got %q", first)
+	}
+
+	// A repeat of the same error says nothing at all, not even a blank line.
+	repeat := captureTlog(t, func() { effectiveTrimCapSource() })
+	if strings.TrimSpace(repeat) != "" {
+		t.Fatalf("the same error must warn once, not on every reload, got %q", repeat)
+	}
+	if got := drainDeferredCrit(); len(got) != 0 {
+		t.Fatalf("a repeat must queue nothing, got %q", got)
 	}
 }
 

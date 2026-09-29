@@ -122,7 +122,14 @@ func effectiveTrimCapSource() (int, string, error) {
 	}
 	operator, err := readTrimTarget()
 	if err != nil {
-		importantLogf("%s\n", trimUnreadableWarning(err))
+		// Same shape as the invalid-value warning in readTrimTarget: the ramlog
+		// line is immediate, the events.log write is queued for after whatever
+		// lock this caller holds, and a repeat of the same error says nothing
+		// at all (not even a blank line).
+		if w := trimUnreadableWarning(err); w != "" {
+			tlog("%s\n", w)
+			deferCritWrite(w)
+		}
 		if auto > 0 {
 			return auto, trimCapOOM, nil
 		}
@@ -140,6 +147,10 @@ func effectiveTrimCapSource() (int, string, error) {
 // trimUnreadableSeen is the proxy_trim read error already warned about, so a
 // file that stays unreadable is reported once instead of on every reload.
 var trimUnreadableSeen atomic.Value
+
+// trimUnreadableReset clears the warned-on error. Tests only: without it one
+// test's unreadable file silences the warning in every test after it.
+func trimUnreadableReset() { trimUnreadableSeen.Store("") }
 
 // trimUnreadableWarning returns the warning line for an unreadable proxy_trim
 // the first time that exact error is seen, and "" for a repeat.

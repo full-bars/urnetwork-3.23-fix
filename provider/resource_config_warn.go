@@ -89,7 +89,9 @@ func estimatedPoolFootprint(n int) int64 {
 }
 
 // ramReserve is what the provider leaves for the OS and every other tenant on
-// the box: a floor on small boxes, a share of RAM on large ones.
+// the box: a floor on small boxes, a share of RAM on large ones. Never more
+// than the box actually has, so a provider in a container capped below the
+// floor reserves what it has rather than reporting a negative remainder.
 func ramReserve(ram int64) int64 {
 	if ram <= 0 {
 		return 0
@@ -97,6 +99,9 @@ func ramReserve(ram int64) int64 {
 	byPercent := ram * resourceRAMReservePercent / resourceRAMReservePercentOf
 	if byPercent > resourceRAMReserveFloor {
 		return byPercent
+	}
+	if resourceRAMReserveFloor > ram {
+		return ram
 	}
 	return resourceRAMReserveFloor
 }

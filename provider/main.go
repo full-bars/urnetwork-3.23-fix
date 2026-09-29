@@ -4059,7 +4059,7 @@ func provide(opts docopt.Opts) {
 	// queued (an unparseable proxy_trim) is written straight away here rather
 	// than waiting for a reload that may be hours away.
 	for _, line := range drainDeferredCrit() {
-		critLog("%s\n", line)
+		critLog("%s", line)
 	}
 	{
 		// Say once, at startup, what RAM ceiling this process tunes itself

@@ -53,8 +53,13 @@ func critLog(format string, args ...any) {
 		return
 	}
 	// The handle changes when the file is rotated, so close whichever one is
-	// current on the way out instead of deferring a close on the first.
-	defer func() { f.Close() }()
+	// current on the way out instead of deferring a close on the first. The nil
+	// check covers the reopen failing after a rotation, which leaves f nil.
+	defer func() {
+		if f != nil {
+			f.Close()
+		}
+	}()
 
 	info, err := f.Stat()
 	if err != nil {

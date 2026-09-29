@@ -502,7 +502,7 @@ func (r *ProxyReloader) reload() {
 		// Anything a callee queued while r.mu was held (the invalid-cap warning)
 		// drains here, after the lock is gone and in the order it was produced.
 		for _, line := range drainDeferredCrit() {
-			critLog("%s\n", line)
+			critLog("%s", line)
 		}
 		for _, write := range pendingCrit {
 			write()
