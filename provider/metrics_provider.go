@@ -54,7 +54,12 @@ var startupDiag = &startupDiagnostics{}
 
 // markCleanShutdown writes a marker file so next startup knows this was clean.
 func markCleanShutdown() {
-	stateDir := mustStateDir()
+	markCleanShutdownIn(mustStateDir())
+}
+
+// markCleanShutdownIn is markCleanShutdown against an explicit state dir, so a
+// test can exercise the marker without touching the real one.
+func markCleanShutdownIn(stateDir string) {
 	if stateDir == "" {
 		return
 	}
@@ -62,6 +67,18 @@ func markCleanShutdown() {
 	if err := os.WriteFile(path, []byte(time.Now().UTC().Format(time.RFC3339)), 0600); err != nil {
 		tlog("[metrics] failed to write shutdown marker: %v\n", err)
 	}
+}
+
+// readCleanShutdown reports whether the state dir carries a clean-shutdown
+// marker, leaving the file in place: it records that the process which ran here
+// before us exited cleanly, and that stays true until whoever runs next rewrites
+// it on its own exit.
+func readCleanShutdown(stateDir string) bool {
+	if stateDir == "" {
+		return false
+	}
+	_, err := os.Stat(filepath.Join(stateDir, ".clean-shutdown"))
+	return err == nil
 }
 
 // detectStartup reads the shutdown marker and version file, then removes the
@@ -79,14 +96,18 @@ func detectStartup() {
 		return
 	}
 
-	// Check for clean-shutdown marker
-	shutdownPath := filepath.Join(stateDir, ".clean-shutdown")
-	if data, err := os.ReadFile(shutdownPath); err == nil {
-		startupDiag.cleanShutdown = true
-		_ = data // timestamp available if needed
-	}
-	// Remove marker — if we crash, it won't be re-created
-	os.Remove(shutdownPath)
+	// Check for clean-shutdown marker.
+	//
+	// The marker is NOT removed here. It records "the process that ran here
+	// before me shut down cleanly", and that stays true until this process
+	// writes its own on the way out. Deleting it on read meant the ONLY
+	// evidence of a clean exit existed between exit and the next start, so a
+	// `systemctl restart`, a `kill`, and an OOM kill all looked identical on the
+	// next boot: all three skip the clean-exit path, so none of them left the
+	// file. Rewriting it on exit keeps it meaningful across any number of
+	// restarts while still going stale on its own if the process is killed
+	// (the file is then simply absent, which is the crash case).
+	startupDiag.cleanShutdown = readCleanShutdown(stateDir)
 
 	// Check for version change (upgrade detection)
 	versionPath := filepath.Join(stateDir, ".provider_version")
@@ -94,12 +115,13 @@ func detectStartup() {
 		startupDiag.previousVersion = strings.TrimSpace(string(data))
 	}
 	// Write current version
-	os.WriteFile(versionPath, []byte(RequireVersion()), 0600)
+	currentVersion := RequireVersion()
+	os.WriteFile(versionPath, []byte(currentVersion), 0600)
 
 	// The restart marker is consumed the same way: read, then deleted, so it
 	// only ever describes the restart that just happened.
 	marker := consumeRestartMarker(stateDir, time.Now())
-	startupDiag.restartReason = classifyRestart(marker, startupDiag.cleanShutdown, startupDiag.previousVersion)
+	startupDiag.restartReason = classifyRestart(marker, startupDiag.cleanShutdown, startupDiag.previousVersion, currentVersion)
 }
 
 // mustStateDir returns ~/.urnetwork or "" on error.

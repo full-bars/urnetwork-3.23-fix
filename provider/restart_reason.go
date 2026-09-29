@@ -18,8 +18,19 @@ const (
 )
 
 // restartMarkerMaxAge is how old a .restart-reason marker may be and still
-// count. An older one was left by a restart that never completed.
-const restartMarkerMaxAge = 10 * time.Minute
+// count, as a guard against a marker left by a restart that never completed
+// being read as the reason for a restart days later.
+//
+// It has to cover the WHOLE update, not just the restart: the marker is written
+// before the binary is fetched, verified and swapped, and on a slow link or a
+// loaded box that easily takes longer than a few minutes. At the old 10 minutes
+// an ordinary in-place upgrade expired its own marker, the reason fell through
+// to the version-change branch, and every upgraded box reported itself unclean
+// for the life of that version (observed on two boxes after the 32.1 -> 32.7
+// update, one reporting "unclean (v3.23.0-fix.32.1 to v3.23.0-fix.32.7)").
+// An hour leaves room for a slow download plus a restart while still expiring
+// a marker abandoned by a restart that never ran.
+const restartMarkerMaxAge = time.Hour
 
 // restartMarkerReasons are the reasons a marker may carry. Everything else in
 // the reason set is derived by classifyRestart, never written.
@@ -61,15 +72,19 @@ func consumeRestartMarker(stateDir string, now time.Time) string {
 }
 
 // classifyRestart decides why this process started. A fresh marker written by
-// whoever restarted us wins. Otherwise the clean-shutdown marker separates a
-// plain restart or reboot from a crash, and a missing version file means
-// there was no previous run.
-func classifyRestart(markerReason string, cleanShutdown bool, previousVersion string) string {
+// whoever restarted us wins. Otherwise a version change is an UPGRADE, not a
+// crash: the binary on disk is not the one that wrote .provider_version, so
+// something deliberately replaced it, and reporting that as unclean told
+// operators a box had crashed when it had been updated. Only a same-version
+// start with no marker and no clean-shutdown marker is a genuine unclean exit.
+func classifyRestart(markerReason string, cleanShutdown bool, previousVersion, currentVersion string) string {
 	switch {
 	case markerReason != "":
 		return markerReason
 	case cleanShutdown:
 		return restartReasonClean
+	case previousVersion != "" && previousVersion != currentVersion:
+		return restartReasonUpdate
 	case previousVersion != "":
 		return restartReasonUnclean
 	default:
