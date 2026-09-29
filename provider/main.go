@@ -3125,6 +3125,12 @@ func provide(opts docopt.Opts) {
 		applyTurboMemoryLimit(profile, maxMemory)
 		applyEcoSettings(maxMemory)
 		ensureMemoryLimit(maxMemory)
+		// First proxy goroutine: the tier/profile limits are in place now, so
+		// this is the first point where the soft memory limit in force is the
+		// one this process will actually run under. Read at the old call site
+		// (before the first launch) it saw no limit at all on every auto, eco,
+		// turbo and default node, because the tier code sets GOMEMLIMIT here.
+		resourceConfigWarningsOnce()
 		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
@@ -4045,25 +4051,18 @@ func provide(opts docopt.Opts) {
 	if startupCap, startupSource, serr := effectiveTrimCapSource(); serr == nil && startupCap > 0 {
 		primeTrimCapSeen(startupCap, startupSource)
 	}
+	// Store the launch count for the startup resource warning, which runs from
+	// the first proxy goroutine (after the tier memory limits are applied) and
+	// needs the pool size this start actually opens, not the desired count.
+	resourceConfigLaunchCount.Store(int64(len(launchSettings)))
 	{
-		// Say once, at startup, when the limits this process runs under are short
-		// for the pool it is about to launch (see resource_config_warn.go).
-		in := resourceConfigInput{
-			Proxies:     len(launchSettings),
-			GOGCEnv:     os.Getenv("GOGC") != "",
-			AutoProfile: os.Getenv("URNETWORK_PROFILE") == "auto",
-		}
-		if limit := debug.SetMemoryLimit(-1); limit > 0 && limit < math.MaxInt64 {
-			in.GoMemLimit = limit
-		}
-		if ceiling, ok := connect.CgroupMemoryCeiling(); ok {
-			in.CgroupCeiling = ceiling
-		}
+		// Say once, at startup, what RAM ceiling this process tunes itself
+		// against (see resource_config_warn.go). The short-pool warning that
+		// used to sit here moved into the first launch goroutine, because the
+		// soft memory limit it reports is only in force after the tier code
+		// has run.
 		ceilingBytes, ceilingSource := connect.EffectiveRAMLimit()
 		importantLogf("%s\n", ramCeilingLogLine(ceilingBytes, ceilingSource))
-		for _, w := range resourceConfigWarnings(in) {
-			importantLogf("[proxy][resources] warning: %s\n", w)
-		}
 	}
 	// Record what this start actually launched, for the next start's decision.
 	oomCapRecordStart(len(launchSettings), bootID, oomKills, time.Now())
