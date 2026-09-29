@@ -5,13 +5,14 @@ import (
 	"path/filepath"
 	"slices"
 	"sort"
+	"sync"
+	"sync/atomic"
 
 	"fmt"
 	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
 	"strconv"
 	"strings"
-	"sync/atomic"
 )
 
 // proxy_trim.go implements the operator `proxy trim <N>` hard cap: hold the
@@ -50,29 +51,81 @@ func readTrimTarget() (int, error) {
 	if err != nil || n < 0 {
 		// Treat unparseable as no cap, never a false cap, but say so once: a
 		// cap the operator believes is set has silently stopped applying.
+		// The ramlog line is immediate, but the events.log copy is an
+		// open+write+fsync and this runs while reload() holds r.mu, so it is
+		// queued for after the lock is released (same reason the trim and
+		// ledger writes there are deferred). Callers with no deferred queue
+		// simply drain it themselves.
 		if w := trimGarbageWarning(s); w != "" {
-			importantLogf("%s\n", w)
+			tlog("%s\n", w)
+			deferCritWrite(w)
 		}
 		return 0, nil
 	}
 	return n, nil
 }
 
-// trimGarbageSeen is the last unparseable proxy_trim content already warned
-// about, so a bad file is reported once instead of on every reload.
-var trimGarbageSeen atomic.Value
+// deferredCrit holds critical-log lines produced while a caller holds a lock
+// it must not block on. Drained by drainDeferredCrit after the lock is gone.
+var deferredCrit struct {
+	sync.Mutex
+	lines []string
+}
+
+// deferCritWrite queues a line for the post-unlock critical-log write.
+func deferCritWrite(line string) {
+	deferredCrit.Lock()
+	defer deferredCrit.Unlock()
+	deferredCrit.lines = append(deferredCrit.lines, line)
+}
+
+// drainDeferredCrit returns and clears the queued lines.
+func drainDeferredCrit() []string {
+	deferredCrit.Lock()
+	defer deferredCrit.Unlock()
+	out := deferredCrit.lines
+	deferredCrit.lines = nil
+	return out
+}
+
+// trimGarbageSeen is every unparseable proxy_trim value already warned about,
+// so a bad file is reported once instead of on every reload. A SET, keyed by the
+// FULL value: keying on a truncated one collides (two different long values
+// sharing a first 40 bytes would look identical), and keeping only the last
+// value re-warns on an A, B, A sequence. Growth is bounded by the operator
+// editing the file, not by the reload loop.
+var trimGarbageSeen struct {
+	sync.Mutex
+	seen map[string]bool
+}
+
+// trimGarbageReset clears the warned set. Tests only.
+func trimGarbageReset() {
+	trimGarbageSeen.Lock()
+	defer trimGarbageSeen.Unlock()
+	trimGarbageSeen.seen = nil
+}
 
 // trimGarbageWarning returns the warning line for unparseable proxy_trim
-// content the first time it is seen, and "" for a repeat of the same content.
+// content the first time that exact value is seen, and "" for any repeat.
+// Truncation happens only when formatting the message, never in the key.
 func trimGarbageWarning(content string) string {
-	if len(content) > 40 {
-		content = content[:40] + "..."
+	trimGarbageSeen.Lock()
+	if trimGarbageSeen.seen == nil {
+		trimGarbageSeen.seen = map[string]bool{}
 	}
-	if prev, _ := trimGarbageSeen.Load().(string); prev == content {
+	if trimGarbageSeen.seen[content] {
+		trimGarbageSeen.Unlock()
 		return ""
 	}
-	trimGarbageSeen.Store(content)
-	return fmt.Sprintf("[proxy][trim] warn: proxy_trim holds %q, which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`", content)
+	trimGarbageSeen.seen[content] = true
+	trimGarbageSeen.Unlock()
+
+	shown := content
+	if len(shown) > 40 {
+		shown = shown[:40] + "..."
+	}
+	return fmt.Sprintf("[proxy][trim] warn: proxy_trim holds %q, which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`", shown)
 }
 
 // writeTrimTarget sets the operator cap. n <= 0 clears it.

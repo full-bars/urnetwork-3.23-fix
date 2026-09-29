@@ -4055,6 +4055,12 @@ func provide(opts docopt.Opts) {
 	// the first proxy goroutine (after the tier memory limits are applied) and
 	// needs the pool size this start actually opens, not the desired count.
 	resourceConfigLaunchCount.Store(int64(len(launchSettings)))
+	// Startup holds no reload lock, so any critical-log line the cap lookup
+	// queued (an unparseable proxy_trim) is written straight away here rather
+	// than waiting for a reload that may be hours away.
+	for _, line := range drainDeferredCrit() {
+		critLog("%s\n", line)
+	}
 	{
 		// Say once, at startup, what RAM ceiling this process tunes itself
 		// against (see resource_config_warn.go). The short-pool warning that

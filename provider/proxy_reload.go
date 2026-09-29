@@ -499,6 +499,11 @@ func (r *ProxyReloader) reload() {
 	// tail, not every other reload-path caller waiting on r.mu.
 	var pendingCrit []func()
 	defer func() {
+		// Anything a callee queued while r.mu was held (the invalid-cap warning)
+		// drains here, after the lock is gone and in the order it was produced.
+		for _, line := range drainDeferredCrit() {
+			critLog("%s\n", line)
+		}
 		for _, write := range pendingCrit {
 			write()
 		}

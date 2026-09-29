@@ -316,7 +316,12 @@ func oomReadJSONChecked(path string, v any) (ok bool, warning string) {
 	if oomReadJSON(path, v) {
 		return true, ""
 	}
-	if _, err := os.Stat(path); err != nil {
+	// Only a genuinely absent file is normal. Any OTHER stat failure (EACCES on
+	// a parent directory, EIO, ENOTDIR) means the file may well be there and we
+	// simply could not look, so the warning has to stand: a standing cap or an
+	// OOM kill recorded there is not applied, and saying so is the whole point
+	// of this check.
+	if _, err := os.Stat(path); err != nil && os.IsNotExist(err) {
 		return false, ""
 	}
 	return false, "[oomcap] warn: " + filepath.Base(path) + " exists but could not be read, so it is treated as empty (a standing cap or an OOM kill recorded there is not applied)"
