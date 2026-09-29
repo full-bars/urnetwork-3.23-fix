@@ -16,13 +16,20 @@ const (
 	// resourceBaseOverhead is the fixed heap of a provider with no proxies
 	// (control socket, metrics, stores, pools).
 	resourceBaseOverhead = 100 << 20
-	// resourceBytesPerProxy is calibrated to the high side of the measured
-	// fleet, which spans roughly 0.2-0.55 MiB of heap per proxy.
-	resourceBytesPerProxy = 256 << 10
+	// resourceBytesPerProxy is calibrated to the high side of a sample of the
+	// running fleet after days of uptime (not fresh restarts). Go heap per proxy
+	// there ran from about 0.4 to 1.2 MiB with a median near 0.65 and the upper
+	// quartile near 1, and the whole process footprint (RSS plus swap) per proxy
+	// had a median near 1 MiB, because a long-running proxy also carries its
+	// connections, buffers and the clients routed through it. An estimate at
+	// roughly 1 MiB per proxy warned on every sampled node that was under
+	// resource pressure and on no healthy one; a quarter of that (the earlier
+	// figure, taken from freshly started providers) warned on none of them.
+	resourceBytesPerProxy = 1 << 20
 	// Connected clients are unknown at startup but drive memory (about 0.8 MiB
-	// heap each). A 2 GiB box reached ~540 clients on 2,001 proxies (0.27 per proxy) and
-	// its heap went 415 -> 791 MiB, so reserve a peak-load allowance of 0.15
-	// clients per proxy, which is what the estimate adds on top of the proxies.
+	// heap each on the box this was first measured on), so the estimate also
+	// reserves a peak-load allowance of 0.15 clients per proxy on top of the
+	// proxies.
 	resourceClientsPerProxy = 0.15
 	resourceBytesPerClient  = 800 << 10
 	// resourceRSSFactor scales a heap estimate to what a cgroup ceiling must
