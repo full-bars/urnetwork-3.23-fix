@@ -266,7 +266,7 @@ func TestControlClient_MalformedQueueSurfacesErrorNotOverwritten(t *testing.T) {
 	}
 }
 
-func TestControlClient_All14KeysCanonicalizationAndValidation(t *testing.T) {
+func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 	dir := t.TempDir()
 	p := Provider{StateDir: dir}
 
@@ -289,6 +289,32 @@ func TestControlClient_All14KeysCanonicalizationAndValidation(t *testing.T) {
 		{"gogc", "gogc", "200"},
 		{"profile", "profile", "turbo-v4"},
 		{"ramlogs", "ramlogs", "on"},
+		{"baseline", "baseline", "on"},
+		// Keys added since this table was written; the coverage check below is
+		// what noticed they were missing.
+		{"proxy-audit", "proxy_audit", "on"},
+		{"smart-dialer", "smart_dialer", "on"},
+		{"oom-cap", "oom_cap", "shadow"},
+		{"metrics", "metrics", "on"},
+		{"metrics-listen", "metrics_listen", "auto"},
+	}
+
+	// Every CANONICAL key must appear in the table, so a new key cannot be added
+	// to the map and never exercised. Aliases are not required: the table lists
+	// one spelling per key, and the aliases resolve through the same map. The
+	// table had drifted well behind the map, so this is the check that stops it
+	// drifting again.
+	for canonicalKey := range canonicalKeyValuesForTest() {
+		found := false
+		for _, tc := range testCases {
+			if tc.canonicalKey == canonicalKey {
+				found = true
+				break
+			}
+		}
+		if !found {
+			t.Errorf("canonical key %q is in the map but not in this table; add a case", canonicalKey)
+		}
 	}
 
 	for _, tc := range testCases {
@@ -451,4 +477,15 @@ func TestProviderVersionFromSocket_ValidResponse(t *testing.T) {
 	if v != "3.23.1" {
 		t.Errorf("version = %q, want %q", v, "3.23.1")
 	}
+}
+
+// canonicalKeyValuesForTest returns the distinct canonical key names in the
+// map, so a coverage check can assert each one has a case in the table without
+// caring which alias a case happens to use.
+func canonicalKeyValuesForTest() map[string]bool {
+	out := make(map[string]bool, len(controlKeyCanonical))
+	for _, canonical := range controlKeyCanonical {
+		out[canonical] = true
+	}
+	return out
 }
