@@ -1,0 +1,321 @@
+package urnettools
+
+import (
+	"encoding/json"
+	"strings"
+	"testing"
+	"time"
+)
+
+// The compare maths is where an upgrade verdict is actually decided, so every
+// rule the brief names gets a test on a SYNTHETIC series. Nothing here reads a
+// clock or a file: rows are built with fixed timestamps, so the results are
+// exact rather than approximate.
+
+func ts(t *testing.T, s string) time.Time {
+	t.Helper()
+	v, err := time.Parse(time.RFC3339, s)
+	if err != nil {
+		t.Fatalf("bad timestamp %q: %v", s, err)
+	}
+	return v.UTC()
+}
+
+func u64(v uint64) *uint64   { return &v }
+func i64(v int64) *int64     { return &v }
+func f64(v float64) *float64 { return &v }
+
+// sample builds a row with a lifetime counter, the thing the rate derives from.
+func sample(t *testing.T, at string, lifetime uint64) baselineRow {
+	tm := ts(t, at)
+	r := baselineRow{V: 1, Kind: "sample", TS: tm.Format(time.RFC3339), Version: "v1"}
+	tr := struct {
+		BillableBytes         uint64  `json:"billable_bytes"`
+		TotalBytes            uint64  `json:"total_bytes"`
+		LifetimeBillableBytes *uint64 `json:"lifetime_billable_bytes,omitempty"`
+	}{BillableBytes: lifetime, LifetimeBillableBytes: u64(lifetime)}
+	r.Traffic = &tr
+	return r
+}
+
+// The rate must come from the lifetime counter's delta over the time delta, NOT
+// from the instantaneous rate field. A box showing 4.6 KiB/s now and 56 KiB/s a
+// minute later is normal; averaging those would report a number that never
+// happened. This test makes the two disagree and checks which one wins.
+func TestCompareRateComesFromTheCounterDeltaNotTheInstantaneousRate(t *testing.T) {
+	rows := []baselineRow{sample(t, "2026-09-30T12:00:00Z", 0), sample(t, "2026-09-30T12:10:00Z", 600*1024)}
+	// Put a wildly wrong instantaneous rate on the first row. The delta must win.
+	rows[0].Rate.Avg5mBps = i64(999_999_999)
+	// 600 KiB over 600 s = 1 KiB/s.
+	got := billableBpsFrom(rows)
+	wantKiBps := 1.0
+	if got*8/1024 != wantKiBps {
+		t.Errorf("rate = %.4f KiB/s, want %.1f; the instantaneous rate must be ignored",
+			got*8/1024, wantKiBps)
+	}
+}
+
+func TestCompareIgnoresACounterThatWentDown(t *testing.T) {
+	// A counter that dropped means it was reset: a fresh lifetime store, or a
+	// wiped state directory. Reporting that as a rate would produce an enormous
+	// fictional number, and reporting it as negative would be nonsense.
+	rows := []baselineRow{sample(t, "2026-09-30T12:00:00Z", 5_000_000), sample(t, "2026-09-30T12:10:00Z", 1000)}
+	if got := billableBpsFrom(rows); got != 0 {
+		t.Errorf("rate = %v for a reset counter, want 0: the interval is not measurable", got)
+	}
+}
+
+func TestCompareSkipsRowsWithoutALifetimeTotal(t *testing.T) {
+	// The lifetime store may not have been running for the whole segment. A
+	// missing total treated as zero would produce a huge rate.
+	rows := []baselineRow{sample(t, "2026-09-30T12:00:00Z", 4096), sample(t, "2026-09-30T12:10:00Z", 4096)}
+	rows[1].Traffic = nil // no total at all
+	got := billableBpsFrom(rows)
+	if got != 0 {
+		t.Errorf("rate = %v with only one usable row, want 0", got)
+	}
+}
+
+func TestCompareRampIsExcludedFromBothSides(t *testing.T) {
+	// A pool that just restarted under-earns while it ramps. Those minutes
+	// would drag the "before" figure down and make a later segment look like an
+	// improvement it was not.
+	before := []baselineRow{
+		startRow(t, "2026-09-30T11:00:00Z"),
+		// The ramp: almost no traffic for the first 20 minutes.
+		sample(t, "2026-09-30T11:05:00Z", 1024),
+		sample(t, "2026-09-30T11:10:00Z", 2048),
+		sample(t, "2026-09-30T11:15:00Z", 3072),
+		// Then it settles.
+		sample(t, "2026-09-30T11:25:00Z", 3072+5*1024*1024),
+		sample(t, "2026-09-30T11:35:00Z", 3072+10*1024*1024),
+		sample(t, "2026-09-30T11:45:00Z", 3072+15*1024*1024),
+	}
+	ramped := excludeRamp(before, 20*time.Minute)
+	if len(ramped) >= len(before) {
+		t.Fatalf("ramp exclusion removed nothing: %d of %d rows kept", len(ramped), len(before))
+	}
+	// The start mark itself is KEPT: it is the boundary the reader counts
+	// restarts from. Every other kept row must be past the ramp.
+	start := ts(t, "2026-09-30T11:00:00Z")
+	sawStart := false
+	for _, r := range ramped {
+		at, ok := r.timeAt()
+		if !ok {
+			t.Fatal("a kept row has no timestamp")
+		}
+		if r.Kind == "start" {
+			sawStart = true
+			continue
+		}
+		if at.Sub(start) < 20*time.Minute {
+			t.Errorf("row at %s survived the ramp exclusion; it is only %v after the start",
+				at.Format(time.RFC3339), at.Sub(start))
+		}
+	}
+	if !sawStart {
+		t.Error("the start mark was dropped; it is the boundary compare splits on")
+	}
+}
+
+func TestCompareReportsInsufficientDataInsteadOfPercentages(t *testing.T) {
+	// Under four samples a segment may sit entirely inside one burst, and a
+	// percentage from it would be trusted far more than it deserves.
+	before := []baselineRow{sample(t, "2026-09-30T12:00:00Z", 0), sample(t, "2026-09-30T12:10:00Z", 1024)}
+	after := []baselineRow{
+		sample(t, "2026-09-30T13:00:00Z", 0), sample(t, "2026-09-30T13:10:00Z", 1024),
+		sample(t, "2026-09-30T13:20:00Z", 2048), sample(t, "2026-09-30T13:30:00Z", 3072),
+	}
+	r := compareSegments(before, after)
+	if !strings.Contains(r.Insufficient, "insufficient data") {
+		t.Errorf("Insufficient = %q, want an insufficient-data message", r.Insufficient)
+	}
+	if !strings.Contains(r.Insufficient, "2 samples before") {
+		t.Errorf("Insufficient = %q, want the actual counts so the operator can see how far short it fell", r.Insufficient)
+	}
+	out, err := renderCompare(r, false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(out, "insufficient data") {
+		t.Errorf("the rendered output does not say the data was insufficient:\n%s", out)
+	}
+}
+
+func TestCompareWarnsWhenCapacityChanged(t *testing.T) {
+	// A box trimmed from 1170 to 500 is not a regression, and reading it as one
+	// is exactly the misreading the warning exists to prevent.
+	before := fullSegment(t, "2026-09-30T11:00:00Z", 1170, 1170)
+	after := fullSegment(t, "2026-09-30T13:00:00Z", 500, 500)
+	r := compareSegments(before, after)
+	if len(r.Warnings) == 0 {
+		t.Fatal("no warning for a capacity change; a trimmed box would read as a regression")
+	}
+	if !strings.Contains(r.Warnings[0], "capacity changed 1170 -> 500") {
+		t.Errorf("warning = %q, want it to name the change", r.Warnings[0])
+	}
+	if !strings.Contains(r.Warnings[0], "rate difference includes that") {
+		t.Errorf("warning = %q, want it to say the rate difference is affected", r.Warnings[0])
+	}
+}
+
+func TestCompareWarnsWhenTheAvailabilitySourceChanged(t *testing.T) {
+	// A docker box and a systemd box report availability from different readers,
+	// so the two figures are not comparable and the reader has to be told.
+	before := fullSegment(t, "2026-09-30T11:00:00Z", 500, 500)
+	after := fullSegment(t, "2026-09-30T13:00:00Z", 500, 500)
+	// Mark the after rows as cgroup-sourced.
+	for i := range after {
+		after[i].Host = &struct {
+			MemAvailableMiB *int64   `json:"mem_available_mib,omitempty"`
+			AvailSource     string   `json:"avail_source,omitempty"`
+			SwapUsedMiB     *int64   `json:"swap_used_mib,omitempty"`
+			PSISomeAvg60    *float64 `json:"psi_some_avg60,omitempty"`
+			PSIFullAvg60    *float64 `json:"psi_full_avg60,omitempty"`
+			PSIFullAvg300   *float64 `json:"psi_full_avg300,omitempty"`
+			Load1           *float64 `json:"load1,omitempty"`
+		}{MemAvailableMiB: i64(1024), AvailSource: "cgroup"}
+	}
+	r := compareSegments(before, after)
+	found := false
+	for _, w := range r.Warnings {
+		if strings.Contains(w, "not like for like") {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("no warning about the availability source changing; warnings=%v", r.Warnings)
+	}
+}
+
+func TestCompareCountsRestartsInTheSegment(t *testing.T) {
+	// A rate computed across a restart mixes two processes, so the reader has
+	// to see that it happened.
+	rows := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
+	rows[2].Kind = "start"
+	rows[2].TS = "2026-09-30T11:20:00Z"
+	s := summarizeSegment(rows)
+	if s.Restarts != 1 {
+		t.Errorf("restarts = %d, want 1", s.Restarts)
+	}
+}
+
+func TestCompareMeasuresOOMKillDeltaAcrossTheSegment(t *testing.T) {
+	rows := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
+	// Every row must carry the counter: the delta is first-to-last, so a nil
+	// first row would read as zero and report a delta that never happened.
+	for i := range rows {
+		kills := int64(2)
+		if i == len(rows)-1 {
+			kills = 5
+		}
+		rows[i].OOM = &struct {
+			Kills int64  `json:"kills"`
+			Scope string `json:"scope,omitempty"`
+		}{Kills: kills, Scope: "cgroup:memory.events"}
+	}
+	s := summarizeSegment(rows)
+	if s.OOMKillDelta != 3 {
+		t.Errorf("OOM kill delta = %d, want 3 (2 to 5)", s.OOMKillDelta)
+	}
+}
+
+func TestCompareReportsHostMinAndSwapMax(t *testing.T) {
+	// The brief asks for available as a MIN (worst moment) and swap as a MAX
+	// (worst moment). A mean would hide the moment a box ran out.
+	rows := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
+	avails := []int64{8000, 200, 5000, 7000, 6000}
+	swaps := []int64{10, 900, 20, 30, 40}
+	psis := []float64{0.1, 4.5, 0.2, 0.3, 0.4}
+	for i := range rows {
+		rows[i].Host = &struct {
+			MemAvailableMiB *int64   `json:"mem_available_mib,omitempty"`
+			AvailSource     string   `json:"avail_source,omitempty"`
+			SwapUsedMiB     *int64   `json:"swap_used_mib,omitempty"`
+			PSISomeAvg60    *float64 `json:"psi_some_avg60,omitempty"`
+			PSIFullAvg60    *float64 `json:"psi_full_avg60,omitempty"`
+			PSIFullAvg300   *float64 `json:"psi_full_avg300,omitempty"`
+			Load1           *float64 `json:"load1,omitempty"`
+		}{MemAvailableMiB: i64(avails[i]), AvailSource: "host", SwapUsedMiB: i64(swaps[i]), PSIFullAvg60: f64(psis[i])}
+	}
+	s := summarizeSegment(rows)
+	if s.AvailMin != 200 {
+		t.Errorf("available min = %d, want 200 (the worst moment, not the mean)", s.AvailMin)
+	}
+	if s.SwapMax != 900 {
+		t.Errorf("swap max = %d, want 900", s.SwapMax)
+	}
+	if s.PSIFullMax < 4.5 {
+		t.Errorf("PSI full max = %v, want at least 4.5", s.PSIFullMax)
+	}
+}
+
+func TestCompareRendersEveryRowTheBriefAsksFor(t *testing.T) {
+	before := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
+	after := fullSegment(t, "2026-09-30T13:00:00Z", 100, 100)
+	out, err := renderCompare(compareSegments(before, after), false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{
+		"billable KiB/s", "proxies up", "clients", "RSS MiB (mean)", "RSS MiB (max)",
+		"host available MiB (min)", "swap used MiB (max)", "PSI full avg60 (mean)",
+		"PSI full avg60 (max)", "desired", "trim cap", "restarts", "OOM kills",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("the comparison is missing the %q row:\n%s", want, out)
+		}
+	}
+}
+
+func TestCompareJSONOutputRoundTrips(t *testing.T) {
+	before := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
+	after := fullSegment(t, "2026-09-30T13:00:00Z", 100, 100)
+	out, err := renderCompare(compareSegments(before, after), true)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var back compareResult
+	if err := json.Unmarshal([]byte(out), &back); err != nil {
+		t.Fatalf("--json output does not parse: %v\n%s", err, out)
+	}
+	if back.Before.Rows != back.After.Rows {
+		t.Errorf("round-trip lost rows: %d vs %d", back.Before.Rows, back.After.Rows)
+	}
+}
+
+// fullSegment builds N samples four minutes apart with a steady lifetime
+// counter, a proxy count, RSS, and host figures, so a comparison has something
+// real to report.
+func fullSegment(t *testing.T, startISO string, desired, trimCap int) []baselineRow {
+	t.Helper()
+	start := ts(t, startISO)
+	rows := make([]baselineRow, 0, 5)
+	var lifetime uint64
+	for i := 0; i < 5; i++ {
+		at := start.Add(time.Duration(i) * 4 * time.Minute)
+		lifetime += 512 * 1024 // 512 KiB per 4 min = 2 KiB/s
+		r := sample(t, at.Format(time.RFC3339), lifetime)
+		r.Proxies.Up = 90
+		r.Clients = int64(3 + i)
+		r.Resources.RSSBytes = u64(400 << 20)
+		r.Desired = &desired
+		r.TrimCap = &trimCap
+		r.Host = &struct {
+			MemAvailableMiB *int64   `json:"mem_available_mib,omitempty"`
+			AvailSource     string   `json:"avail_source,omitempty"`
+			SwapUsedMiB     *int64   `json:"swap_used_mib,omitempty"`
+			PSISomeAvg60    *float64 `json:"psi_some_avg60,omitempty"`
+			PSIFullAvg60    *float64 `json:"psi_full_avg60,omitempty"`
+			PSIFullAvg300   *float64 `json:"psi_full_avg300,omitempty"`
+			Load1           *float64 `json:"load1,omitempty"`
+		}{MemAvailableMiB: i64(4096), AvailSource: "host", SwapUsedMiB: i64(16), PSIFullAvg60: f64(0.5)}
+		rows = append(rows, r)
+	}
+	return rows
+}
+
+func startRow(t *testing.T, at string) baselineRow {
+	t.Helper()
+	return baselineRow{V: 1, Kind: "start", TS: ts(t, at).Format(time.RFC3339), Version: "v1"}
+}

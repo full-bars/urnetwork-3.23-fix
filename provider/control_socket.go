@@ -520,6 +520,25 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
 
+	case "mark":
+		// An operator annotation on the baseline timeline. It goes through the
+		// socket so the provider stays the only writer: a second writer would be
+		// a second process appending to the same file during a hot swap, which
+		// is the case the append's inter-process lock exists for.
+		label := strings.TrimSpace(req.Value)
+		if label == "" {
+			// An unlabelled mark is a line a reader cannot act on and compare
+			// cannot use as a boundary, so it is refused rather than written.
+			return controlResponse{OK: false, Error: "mark: a label is required"}
+		}
+		ts, err := baselineMark(label)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("mark: %v", err)}
+		}
+		// Report the timestamp actually recorded, so the operator can correlate
+		// it with their own notes rather than guessing when the mark landed.
+		return controlResponse{OK: true, Value: ts.UTC().Format(time.RFC3339)}
+
 	case "ledger":
 		// The capacity-decision timeline (~/.urnetwork/autopilot.jsonl): the
 		// newest Limit entries (default 20, at most 200) as a JSON array in Value.
