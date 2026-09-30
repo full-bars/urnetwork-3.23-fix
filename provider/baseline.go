@@ -520,14 +520,28 @@ func baselineRecord(e baselineSample) {
 
 // baselineWarnWrite logs at most one line per hour. A full disk would otherwise
 // produce one warning per sample forever.
+// baselineNowUnix is the clock the write-warning rate limiter reads. It is a
+// variable so a test can drive the limiter deterministically; nothing else
+// depends on it and production never assigns it.
+var baselineNowUnix = func() int64 { return time.Now().Unix() }
+
+// baselineWarnHook, when set by a test, runs once per warning actually
+// EMITTED (after the rate limiter has decided to allow it). The
+// baselineWriteErrorHook above fires on every attempt, which is a different
+// question: one is "a write was tried", this is "an operator was told".
+var baselineWarnHook func()
+
 func baselineWarnWrite(err error) {
-	now := time.Now().Unix()
+	now := baselineNowUnix()
 	last := baselineWarnLast.Load()
 	if now-last < 3600 {
 		return
 	}
 	if !baselineWarnLast.CompareAndSwap(last, now) {
 		return
+	}
+	if baselineWarnHook != nil {
+		baselineWarnHook()
 	}
 	if err != nil {
 		importantLogf("[baseline] cannot write %s: %v; recording is off until this clears\n",
