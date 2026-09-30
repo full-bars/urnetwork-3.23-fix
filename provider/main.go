@@ -3136,6 +3136,11 @@ func provide(opts docopt.Opts) {
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
 
 		clientStrategy := connect.NewClientStrategy(proxyCtx, clientStrategySettings)
+		probeTag := "proxy"
+		if isNative {
+			probeTag = "direct"
+		}
+		startSmartDialerProbes(proxyCtx, clientStrategy, apiUrl, probeTag)
 
 		// Plumb the out-of-band peer-client-key fetcher so each
 		// per-peer encryption session can cross-check the

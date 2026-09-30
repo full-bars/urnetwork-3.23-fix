@@ -1194,6 +1194,7 @@ type clientDialer struct {
 	// keeps its byte-identical semantics for the smart_dialer-off path.
 	connectLatencyNanos int64 // EMA of connection-establishment cost; 0 = no samples
 	connectSamples      int   // genuine connection establishments the EMA is built from
+	connectObservedAt   time.Time
 
 	httpClient      *http.Client
 	websocketDialer *websocket.Dialer
@@ -1472,6 +1473,7 @@ func (self *clientDialer) observeConnect(duration time.Duration) {
 		self.connectLatencyNanos = int64(latencyAlpha*float64(nanos) + (1-latencyAlpha)*float64(self.connectLatencyNanos))
 	}
 	self.connectSamples += 1
+	self.connectObservedAt = time.Now()
 }
 
 func (self *clientDialer) IsExtender() bool {
@@ -1500,6 +1502,7 @@ func (self *clientDialer) ResetHealth() {
 	self.latencySamples = 0
 	self.connectLatencyNanos = 0
 	self.connectSamples = 0
+	self.connectObservedAt = time.Time{}
 }
 
 func (self *clientDialer) String() string {
