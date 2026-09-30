@@ -425,7 +425,17 @@ func (w *retentionLogWriter) write(events []string) {
 	if !ok {
 		return
 	}
-	if w.f == nil || w.path != filepath.Join(dir, "proxy_health.log") {
+	proxyHealthLogMu.Lock()
+	defer proxyHealthLogMu.Unlock()
+	// The other writer (writeProxyHealthEvents) rotates by renaming the file
+	// under this lock, which leaves an open handle here pointing at the rotated
+	// generation while the path string is unchanged. Compare the handle with
+	// what the path names NOW, and reopen when they differ. The live size is
+	// re-read at the same time, because the other writer's appends never pass
+	// through w.bytes.
+	if size, live := w.liveSize(filepath.Join(dir, "proxy_health.log")); live {
+		w.bytes = size
+	} else {
 		w.reopen(dir)
 		if w.f == nil {
 			return
@@ -437,11 +447,8 @@ func (w *retentionLogWriter) write(events []string) {
 	// that is about to be renamed, so the newest events are the ones lost from
 	// the live file.
 	//
-	// w.bytes is this writer's own count, seeded from the file size at open and
-	// incremented by exactly what it appended, so it is the live size without a
-	// stat per line.
-	proxyHealthLogMu.Lock()
-	defer proxyHealthLogMu.Unlock()
+	// w.bytes is the live size as just read (or, after a reopen, seeded from the
+	// file), incremented by exactly what this batch appends.
 	if w.bytes >= proxyHealthLogMaxBytes {
 		w.close()
 		if _, err := os.Stat(w.path); err == nil {
@@ -469,6 +476,26 @@ func (w *retentionLogWriter) write(events []string) {
 		return
 	}
 	w.bytes += int64(n)
+}
+
+// liveSize reports whether the open handle is still the file path names, and
+// that file's current size. It is false when there is no handle, the handle was
+// opened for a different path, the path no longer exists, or the path now names
+// a different file (the other writer rotated it). The caller holds
+// proxyHealthLogMu.
+func (w *retentionLogWriter) liveSize(path string) (int64, bool) {
+	if w.f == nil || w.path != path {
+		return 0, false
+	}
+	handle, err := w.f.Stat()
+	if err != nil {
+		return 0, false
+	}
+	current, err := os.Stat(path)
+	if err != nil || !os.SameFile(handle, current) {
+		return 0, false
+	}
+	return current.Size(), true
 }
 
 func (w *retentionLogWriter) reopen(dir string) {

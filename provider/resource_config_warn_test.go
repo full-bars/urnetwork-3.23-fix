@@ -264,6 +264,11 @@ func TestRAMCheckFiresUnderACgroupCeiling(t *testing.T) {
 // halves of the contract: the limit and the pool count reach the warning, and
 // the warning fires exactly once no matter how many proxies launch.
 func TestResourceConfigWarningsOnceReadsTheLimitInForce(t *testing.T) {
+	// resourceConfigInputFrom reads both from the process environment; a pinned
+	// GOGC under URNETWORK_PROFILE=auto adds a third warning and would break the
+	// two-line assertion on a CI runner or a developer shell that sets them.
+	t.Setenv("GOGC", "")
+	t.Setenv("URNETWORK_PROFILE", "")
 	var mu sync.Mutex
 	var lines []string
 	oldGather := resourceConfigGather

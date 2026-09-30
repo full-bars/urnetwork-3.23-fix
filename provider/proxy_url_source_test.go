@@ -35,6 +35,12 @@ func withTempHome(t *testing.T) string {
 	trimCapSeen.Store(0)
 	trimCapSourceSeen.Store("")
 	t.Cleanup(func() { trimCapSeen.Store(0); trimCapSourceSeen.Store("") })
+	// The deferred critical-log queue is process-wide too. A test that reads an
+	// unreadable proxy_trim or oom_cap.json queues a warning and never drains
+	// it, and the next test that drains would inherit that line and fail only
+	// when a shuffled run puts the two in that order.
+	drainDeferredCrit()
+	t.Cleanup(func() { drainDeferredCrit() })
 	// lifetimeStore and globalProxyEarningsStore are, like globalClientJWTStore
 	// above, built at package init from the real home and never repointed by
 	// the HOME redirect. TestMain moves them off the developer's real home for

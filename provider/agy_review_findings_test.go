@@ -245,3 +245,16 @@ func TestRAMReserveNeverExceedsTheBox(t *testing.T) {
 		t.Fatalf("a 256 MiB box should report nothing left after the reserve, got %q", got)
 	}
 }
+
+// withTempHome is the isolation boundary for tests, so a critical-log line one
+// test queued and never drained must not reach the next. Before the queue was
+// reset there, TestDeferredCritWriteDoesNotDoubleTheNewline failed whenever a
+// shuffled predecessor (for example the unreadable-proxy_trim test) ran first
+// and left its warning in the process-wide queue.
+func TestWithTempHomeStartsWithAnEmptyDeferredCritQueue(t *testing.T) {
+	deferCritWrite("left behind by an earlier test")
+	withTempHome(t)
+	if lines := drainDeferredCrit(); len(lines) != 0 {
+		t.Fatalf("a new temp home must start with an empty deferred critical-log queue, got %q", lines)
+	}
+}

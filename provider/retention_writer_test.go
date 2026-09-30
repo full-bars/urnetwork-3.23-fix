@@ -121,8 +121,12 @@ func TestRetentionWriterRotatesBeforeTheCrossingWrite(t *testing.T) {
 		t.Fatalf("pre-rotation write missing: %v", err)
 	}
 
-	// Fill the writer to just under the cap, then write the batch that trips it.
-	w.bytes = proxyHealthLogMaxBytes // the pre-write check fires on the NEXT batch
+	// Fill the live file to the cap (sparse, so it costs no disk), then write the
+	// batch that trips it. The writer reads the live size before each batch, so
+	// the file itself has to be full: setting w.bytes would be overwritten.
+	if err := os.Truncate(path, proxyHealthLogMaxBytes); err != nil {
+		t.Fatal(err)
+	}
 	w.write([]string{"crossing-line"})
 
 	// Rotation must already have happened, and the crossing line must be in the
@@ -175,4 +179,80 @@ func itoa(i int) string {
 		i /= 10
 	}
 	return string(b)
+}
+
+// The heartbeat writer (writeProxyHealthEvents) rotates proxy_health.log by
+// renaming it while the retention writer still holds an open handle. Comparing
+// the path string cannot see that: the path is unchanged, the handle now points
+// at the renamed generation, and on POSIX writes to it still succeed. Every
+// later RETAIN line then went to .1, and the next rotation replaced .1 and
+// deleted them. The writer must notice the handle no longer names the live file
+// and reopen it.
+func TestRetentionWriterReopensAfterTheHeartbeatRotatesTheFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("URNETWORK_PROXY_HEALTH_DIR", dir)
+	path := filepath.Join(dir, "proxy_health.log")
+
+	w := newRetentionLogWriter()
+	defer w.close()
+	w.write([]string{"before-rotation"})
+
+	// the other writer rotates the file and starts a fresh one
+	rotateIfNeeded(path, 0)
+	if err := os.WriteFile(path, []byte("| heartbeat line |\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	w.write([]string{"after-rotation"})
+
+	live, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(live), "after-rotation") {
+		t.Fatalf("a RETAIN line written after the rotation must land in the live file, live=%q", live)
+	}
+	rotated, err := os.ReadFile(path + ".1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(rotated), "after-rotation") {
+		t.Fatalf("a RETAIN line written after the rotation went into the rotated generation: %q", rotated)
+	}
+	if !strings.Contains(string(rotated), "before-rotation") {
+		t.Fatalf("the rotated generation must keep what was written before it: %q", rotated)
+	}
+}
+
+// The byte count that triggers rotation is the writer's own; appends by the
+// heartbeat writer make it stale. Re-reading the live size under the lock keeps
+// the 20 MB cap honest.
+func TestRetentionWriterRefreshesItsSizeFromTheLiveFile(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("URNETWORK_PROXY_HEALTH_DIR", dir)
+	path := filepath.Join(dir, "proxy_health.log")
+
+	w := newRetentionLogWriter()
+	defer w.close()
+	w.write([]string{"first"})
+
+	// the heartbeat writer appends through its own handle
+	f, err := os.OpenFile(path, os.O_APPEND|os.O_WRONLY, 0o644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := f.WriteString(strings.Repeat("h", 4096) + "\n"); err != nil {
+		t.Fatal(err)
+	}
+	f.Close()
+
+	w.write([]string{"second"})
+
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if w.bytes < info.Size()-int64(len("| second |")) {
+		t.Fatalf("writer counts %d bytes but the live file is %d", w.bytes, info.Size())
+	}
 }

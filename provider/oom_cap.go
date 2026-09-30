@@ -646,10 +646,14 @@ func oomCapUpdatePeak(running int, now time.Time) {
 
 // oomCapRecordStart writes this start's marker (after the launch selection, so
 // it records what was actually launched).
+//
+// It writes in every mode, including off. The marker only observes state, and
+// oomCapUpdatePeak keeps refreshing its heartbeat while the kill switch is off,
+// so skipping the write here left an OLD marker alive with the OOMKills
+// baseline and peak of the last start that ran with the switch on. A kill that
+// happened while the switch was off was then blamed, with that stale peak, on
+// the first clean start after it went back on.
 func oomCapRecordStart(launching int, bootID string, oomKills int64, now time.Time) {
-	if oomCapMode() == oomCapOff {
-		return
-	}
 	dir, err := oomCapDir()
 	if err != nil {
 		return
