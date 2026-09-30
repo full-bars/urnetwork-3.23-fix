@@ -41,6 +41,11 @@ urnetwork-3.23-fix/
 │   ├── metrics_provider.go       # Provider-specific metrics registration
 │   ├── contract_metrics.go       # Per-contract Prometheus counters
 │   ├── lifetime_metrics.go       # Provider lifetime Prometheus gauges
+│   ├── oom_cap.go                # OOM-aware start cap (shadow by default) and kill switch
+│   ├── action_ledger.go          # Audit ledger of capacity decisions (autopilot.jsonl)
+│   ├── memory_headroom.go        # Low free-memory watcher (host or cgroup headroom log)
+│   ├── resource_config_warn.go   # Startup warning when memory limits are short for the pool
+│   ├── smart_dialer_probe.go     # Background connect probes for the smart dialer
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
@@ -83,6 +88,7 @@ urnetwork-3.23-fix/
 │   ├── discover.go              # Provider discovery (/proc + systemd units)
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
 │   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
+│   ├── autopilot.go             # autopilot log: timeline of capacity decisions (OOM cap, trim)
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
 │   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
 │   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)
@@ -145,6 +151,8 @@ urnetwork-3.23-fix/
     ├── transport_pt.go           # Pluggable tunnel transport
     ├── net_http.go               # HTTP proxy with chunked encoding
     ├── net_http_doh.go           # DNS-over-HTTPS resolver
+    ├── net_http_smart_dialer.go  # Smart dialer: measured-cost transport preference (off by default)
+    ├── emoji/                    # Network tag validation and suggestion (copied from upstream)
     ├── net_resilient.go          # Platform-aware resilient connections
     ├── message_pool.go           # GC-reducing byte buffer pool
     ├── proxy_health.go           # Proxy health scoring

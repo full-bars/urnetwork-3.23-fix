@@ -46,6 +46,9 @@ systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for
 
 `Type=notify` and `NotifyAccess=all` means the next update will hotswap.
 
+> [!NOTE]
+> **A small box may restart instead (v3.23.0-fix.32.8).** The new provider runs while the old one drains, so both are resident at once. A hotswap is declined unless available memory is at least 1.1 times the running provider's RSS, bounded by the provider's cgroup headroom, and the update falls back to a plain restart. The `urnet_hotswap_outcomes_total` counter records it with the reason `low_memory`. A restart on a box that cannot hold two providers is the safe outcome, because a hotswap there risks running out of memory in the middle of the update.
+
 > [!IMPORTANT]
 > Builds up to and including v3.23.0-fix.32.0 do not perform the unit migration on units with no `Type=` line, so on those the update always restarts. Once a node is on a build with the fix, the sequence above applies: the next update migrates and restarts, and the one after that hotswaps. If you would rather a node never hotswap, use `urnet-tools restart` after installing an update by hand.
 

@@ -28,6 +28,11 @@ urnetwork-3.23-fix/
 │   ├── net_http_doh.go               # DNS-over-HTTPS resolver (server scoring, serve-stale)
 │   ├── bandwidth_reporter.go         # Pushes periodic JSON telemetry to a configurable report URL
 │   ├── important_log.go              # Important-event log (/dev/shm/urnetwork-important.log)
+│   ├── oom_cap.go                    # OOM-aware start cap (shadow by default) + kill switch (oom-cap on|off|shadow)
+│   ├── action_ledger.go              # Audit ledger of capacity decisions (~/.urnetwork/autopilot.jsonl)
+│   ├── memory_headroom.go            # Low free-memory watcher (host or cgroup headroom log)
+│   ├── resource_config_warn.go       # Startup warning when GOMEMLIMIT or RAM is short for the pool
+│   ├── smart_dialer_probe.go         # Background connect probes so the smart dialer can compare transports
 │   ├── tlog.go                       # Thread-safe timestamped logging helpers
 │   ├── shmlog.go                     # Rolling ring-buffer RAM log (/dev/shm/urnetwork.log)
 │   └── ...                           # (network stack, transport, IP layer — see root)
@@ -57,6 +62,7 @@ urnetwork-3.23-fix/
 │       ├── fsync_unix.go / _other.go # cross-platform fsync + file-ownership helpers
 │       ├── restart_escalation.go     # staged-tool restart routing
 │       ├── restore_delegate.go       # set/fast-auth state-dir chown
+│       ├── autopilot.go              # autopilot log: timeline of capacity decisions (OOM cap, trim)
 │       ├── provider_recover_*.go     # per-platform user/UID recovery
 │       ├── docker.go                 # container discovery + docker CLI seam
 │       └── ...                       # platform-specific lifecycle + test files
@@ -75,6 +81,8 @@ urnetwork-3.23-fix/
 ├── net.go                            # TCP/TLS dialing with SOCKS5 proxy support (trackedConn)
 ├── net_http.go                       # Control-plane dialing & ClientStrategy
 ├── net_http_doh.go                   # DNS-over-HTTPS resolver with caching
+├── net_http_smart_dialer.go          # Smart dialer: measured-cost transport preference + connect probes (off by default)
+├── emoji/                            # Network tag validation and suggestion (copied from upstream connect)
 ├── transport.go                      # PlatformTransport: WebSocket (H1) + QUIC/H3 + DNS PT
 ├── transport_p2p.go / _webrtc.go     # P2P WebRTC transport
 ├── transport_pt.go                   # Pluggable transport: DNS packet translation
