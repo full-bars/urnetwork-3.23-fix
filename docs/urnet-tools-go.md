@@ -102,7 +102,22 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
 | `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
 | `set oom-cap [on\|off\|shadow]` | **(New in 32.8)** Show or set the OOM-aware start cap kill switch. `shadow` (default) decides and logs and enforces nothing, `on` enforces, `off` disables it and forgets a standing cap. Any source saying `off` wins. Live and persisted. |
-| `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error. |
+| `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error.
+| `baseline show [-n N] [--json]` | **(New in 32.9)** Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. Default 20 rows, at most 200. Reads `~/.urnetwork/baseline.jsonl` directly, so it works on a box whose provider is stopped. |
+| `baseline mark <label>` | **(New in 32.9)** Annotate the timeline, for example just before an upgrade. Goes through the control socket, so the provider stays the only writer to the file. Prints the timestamp recorded. A label is required: an unlabelled mark is a boundary `compare` cannot use. Works while the recorder is off, and never deletes the file. |
+| `baseline compare [--from A] [--to B] [--skip-ramp 20m] [--json]` | **(New in 32.9)** Compare the box's behaviour across an upgrade. With no arguments it splits at the most recent start whose version differs from the previous one. `A` and `B` are a mark label, a timestamp prefix, or (for `A`) the default. See the rules below, because they decide what the numbers mean. |
+
+#### What `baseline compare` actually computes
+
+The billable rate is the **lifetime byte counter's delta divided by the time delta**, never an average of the instantaneous rates. Instantaneous readings are bursty: a box showing 4.6 KiB/s now and 56 KiB/s a minute later is ordinary, and averaging those would report a figure that never happened.
+
+- A counter that went **down** was reset (a fresh lifetime store, or a wiped state directory). That interval is skipped rather than reported.
+- Rows with no lifetime total are skipped, since the store may not have been running for the whole segment.
+- The first `--skip-ramp` (default 20 minutes) after every start mark is excluded from **both** sides: a pool that just restarted under-earns while it ramps, and those minutes would otherwise make the comparison a story about the ramp.
+- A segment with **fewer than 4 samples** prints `insufficient data` and no percentages, because a segment that short may sit entirely inside one burst.
+- **Capacity and availability-source changes are warned about.** A box trimmed from 1170 to 500 is not a regression, and a container reporting host memory is not comparable to a systemd box. The row for `desired` and `trim cap` is always printed so the two sides can be read side by side.
+
+Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |

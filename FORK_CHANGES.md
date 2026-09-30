@@ -3556,6 +3556,20 @@ This batch makes `urnet-tools status` and `top` report what is actually true.
 
 ## 180. v32.8: Capacity Self-Management and a Measured-Cost Smart Dialer (PR #697 to #706, #708, #709)
 
+## Baseline recorder: judging an upgrade without setting anything up
+
+Before this, telling whether an upgrade made a box worse meant remembering to capture a baseline by hand. On 2026-09-30 one such file turned out to hold only a header. Every provider now keeps its own small local time series of how it behaved, so the comparison is already there on every box.
+
+**Files Added**: `provider/baseline.go`, `internal/urnettools/baseline.go`.
+
+**Files Modified**: `provider/main.go` (starts the recorder), `provider/control_socket.go` (the `baseline` key and the `mark` command), `internal/urnettools/cobra.go`, `internal/urnettools/control_client.go`, `docs/`, `PROJECT_STRUCTURE.md`, `CHANGELOG.md`.
+
+- **A local behaviour record** (`~/.urnetwork/baseline.jsonl`, 1 MiB, newest whole lines kept, rotation serialized across processes because a hot swap has both a parent and a candidate running): a start mark at launch, then one sample every 15 minutes, the first at 5 minutes because a sample at t=0 measures a pool that has not launched. Counts and totals only: no proxy address, username or password ever reaches the file. A field that could not be measured is omitted rather than written as zero, because a zero reads as "measured, and the answer was nothing" and for host memory that would misread a healthy box as a catastrophic one.
+- **Host memory is the tighter of host and cgroup, with its source recorded.** In Docker `/proc/meminfo` shows the host's free RAM, so a container near its limit would otherwise read healthy and a memory regression would be invisible on exactly those boxes. `avail_source` says which reader supplied the figure so a container is not compared against a systemd box as if it were like for like.
+- **`urnet-tools baseline show` / `mark` / `compare`**: `show` and `mark` read the file directly, so they work on a box whose provider will not start, which is when the record matters most. `mark` goes through the control socket so the provider stays the only writer, and never deletes the file.
+- **The comparison derives its rate from the lifetime byte counter's delta over the time delta**, never from the instantaneous rate, which is bursty: a box reading 4.6 KiB/s now and 56 KiB/s a minute later is ordinary. A counter that went down was reset and that interval is skipped. The ramp after a start is excluded from both sides, a segment under four samples prints `insufficient data` rather than a percentage, and a capacity or availability-source change is warned about so a trimmed box is not read as a regression.
+- **`set baseline off`** stops recording at once, without a restart, and keeps the existing file. The default is on: the point is a baseline nobody has to remember to take.
+
 This batch lets the provider protect a box that is running short of memory, and replaces a hardcoded latency assumption with a measurement. Both new behaviors are conservative by default: the OOM cap runs in `shadow` and the smart dialer is off.
 
 **Files Modified**: `provider/*` (19 files), `internal/urnettools/*` (6 files), `net_http.go`, `net_http_smart_dialer.go`, `tuning.go`, `util.go`, `emoji/*`, `ip_security_cfaa_block.go`, `docs/`, `LOG_REFERENCE.md`, `releases/`.
