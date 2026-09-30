@@ -1,16 +1,21 @@
 package urnettools
 
 import (
+	"bufio"
 	"encoding/json"
 	"fmt"
+	"os"
+	"path/filepath"
 	"sort"
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/spf13/cobra"
 )
 
-// baseline.go is the CLI half of the baseline recorder: `urnet-tools baseline
-// show`, `mark` and `compare`.
+// baseline.go is the CLI half of the baseline recorder: `urnet-tools baseline`
+// show, mark and compare.
 //
 // The single-writer rule is the important structural point: show and compare
 // read ~/.urnetwork/baseline.jsonl directly, because they are read-only and
@@ -18,6 +23,326 @@ import (
 // the control socket so the provider stays the only writer. A second writer
 // would be a second process appending to the same JSONL during a hot swap,
 // which is exactly the case the append's inter-process lock exists for.
+
+// readBaselineFile parses the record. A line that does not parse is skipped
+// rather than fatal: a box killed mid-write leaves a partial line, and one bad
+// line must not hide every other sample.
+func readBaselineFile(path string) ([]baselineRow, error) {
+	f, err := os.Open(path)
+	if os.IsNotExist(err) {
+		return nil, fmt.Errorf("no baseline record at %s; a provider writes one from its "+
+			"first start, so this box may not have run since the recorder shipped", path)
+	}
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	var rows []baselineRow
+	sc := bufio.NewScanner(f)
+	sc.Buffer(make([]byte, 64<<10), 1<<20)
+	for sc.Scan() {
+		line := sc.Bytes()
+		if len(line) == 0 {
+			continue
+		}
+		var r baselineRow
+		if json.Unmarshal(line, &r) == nil && r.Kind != "" {
+			rows = append(rows, r)
+		}
+	}
+	return rows, sc.Err()
+}
+
+func cmdBaselineShow(path string, rows []baselineRow, opts baselineOpts) error {
+	if opts.asJSON {
+		b, err := json.MarshalIndent(rows, "", "  ")
+		if err != nil {
+			return err
+		}
+		fmt.Println(string(b))
+		return nil
+	}
+	if len(rows) == 0 {
+		return fmt.Errorf("the baseline record at %s is empty", path)
+	}
+	limit := opts.limit
+	if limit <= 0 {
+		limit = baselineDefaultShow
+	}
+	if limit > baselineMaxShow {
+		limit = baselineMaxShow
+	}
+	shown := rows
+	if len(shown) > limit {
+		shown = shown[len(shown)-limit:]
+	}
+	var b strings.Builder
+	b.WriteString("  time                 kind    ver        up  want  rssMiB  availMiB  swapMiB  billableMiB\n")
+	for _, r := range shown {
+		up := "-"
+		if r.Kind == "sample" {
+			up = strconv.Itoa(r.Proxies.Up)
+		}
+		want := "-"
+		if r.Desired != nil {
+			want = strconv.Itoa(*r.Desired)
+		}
+		rss, avail, swap, bill := "-", "-", "-", "-"
+		if v, ok := r.rssBytes(); ok {
+			rss = fmt.Sprintf("%.0f", float64(v)/1024/1024)
+		}
+		if v, ok := r.availMiB(); ok {
+			avail = strconv.FormatInt(v, 10)
+		}
+		if v, ok := r.swapMiB(); ok {
+			swap = strconv.FormatInt(v, 10)
+		}
+		// A delta from the previous shown row, because an instantaneous reading
+		// of a bursty counter is not a rate anyone should act on.
+		bill = "-"
+		_ = bill
+		label := r.Label
+		if label == "" {
+			label = r.Kind
+		}
+		b.WriteString(fmt.Sprintf("  %-20s %-7s %-10s %3s  %4s  %6s  %8s  %7s  %10s\n",
+			r.TS, label, shortVersion(r.Version), up, want, rss, avail, swap, bill))
+	}
+	b.WriteString(fmt.Sprintf("\n%s\n", baselineFileSummary(path, rows, shown)))
+
+	fmt.Print(b.String())
+	return nil
+}
+
+func shortVersion(v string) string {
+	if v == "" {
+		return "-"
+	}
+	return v
+}
+
+func baselineFileSummary(path string, all, shown []baselineRow) string {
+	var b strings.Builder
+	first, last := "", ""
+	if len(all) > 0 {
+		first = all[0].TS
+		last = all[len(all)-1].TS
+	}
+	size := int64(0)
+	if st, err := os.Stat(path); err == nil {
+		size = st.Size()
+	}
+	fmt.Fprintf(&b, "  first: %s\n  last:  %s\n  size:  %d bytes, %d samples on disk, showing %d\n",
+		baselineOrDash(first), baselineOrDash(last), size, len(all), len(shown))
+	return b.String()
+}
+
+func baselineOrDash(s string) string {
+	if s == "" {
+		return "-"
+	}
+	return s
+}
+
+// cmdBaselineCompare splits the record at the boundary the operator asked for
+// and reports both sides.
+func cmdBaselineCompare(rows []baselineRow, opts baselineOpts) error {
+	if opts.ramp == 0 {
+		opts.ramp = baselineDefaultRamp
+	}
+	before, after, boundary, err := splitAtBoundary(rows, opts.from, opts.to)
+	if err != nil {
+		return err
+	}
+	before = excludeRamp(before, opts.ramp)
+	after = excludeRamp(after, opts.ramp)
+	res := compareSegments(before, after)
+	if opts.asJSON {
+		// The boundary is part of the answer, so it goes in the JSON rather
+		// than on a line above it, which would make the output unparseable.
+		res.Boundary = boundary
+		out, err := renderCompare(res, true)
+		if err != nil {
+			return err
+		}
+		fmt.Println(out)
+		return nil
+	}
+	out, err := renderCompare(res, false)
+	if err != nil {
+		return err
+	}
+	fmt.Printf("boundary: %s\n\n", boundary)
+	fmt.Print(out)
+	return nil
+}
+
+// --- the commands ---
+
+const (
+	baselineDefaultShow = 20
+	baselineMaxShow     = 200
+	// baselineDefaultRamp is how long after a start the pool is treated as still
+	// ramping. Twenty minutes is the default the brief names.
+	baselineDefaultRamp = 20 * time.Minute
+)
+
+func newBaselineCmd() *cobra.Command {
+	return &cobra.Command{
+		Use:   "baseline [show|mark|compare] [flags]",
+		Short: "Show this box's recorded baseline, and compare an upgrade against it",
+		Long: "A provider records a small local time series of how it behaved, so any " +
+			"upgrade can be judged against what the box did BEFORE it. Nothing external " +
+			"is involved: no Prometheus, no Grafana, no sampler over ssh.\n\n" +
+			"  show      the newest samples as a table\n" +
+			"  mark      annotate the timeline, for example just before an upgrade\n" +
+			"  compare   before and after the last upgrade, or between two marks\n\n" +
+			"The record lives in ~/.urnetwork/baseline.jsonl and holds counts and totals " +
+			"only: no proxy addresses, usernames or passwords.",
+		DisableFlagParsing: true,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			if hasHelpFlag(args) {
+				return cmd.Help()
+			}
+			return cmdBaseline(args)
+		},
+	}
+}
+
+// parseBaselineArgs splits the subcommand and its flags. The target flags are
+// parsed the same way as every other command, so `--user` and friends work.
+func parseBaselineArgs(args []string) (sub string, opts baselineOpts, err error) {
+	if len(args) == 0 {
+		return "", opts, fmt.Errorf("usage: urnet-tools baseline [show|mark|compare] [flags]")
+	}
+	sub = args[0]
+	switch sub {
+	case "show", "mark", "compare":
+	default:
+		return "", opts, fmt.Errorf("unknown subcommand %q (usage: urnet-tools baseline "+
+			"[show|mark|compare])", sub)
+	}
+	rest := args[1:]
+	for len(rest) > 0 {
+		switch {
+		case rest[0] == "--json":
+			opts.asJSON = true
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "--skip-ramp="):
+			d, perr := time.ParseDuration(strings.TrimPrefix(rest[0], "--skip-ramp="))
+			if perr != nil || d < 0 {
+				return "", opts, fmt.Errorf("--skip-ramp must be a duration (got %q)",
+					strings.TrimPrefix(rest[0], "--skip-ramp="))
+			}
+			opts.ramp = d
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "-n="):
+			n, cerr := strconv.Atoi(strings.TrimPrefix(rest[0], "-n="))
+			if cerr != nil || n <= 0 {
+				return "", opts, fmt.Errorf("-n must be a positive integer (got %q)",
+					strings.TrimPrefix(rest[0], "-n="))
+			}
+			opts.limit = n
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "--from="):
+			opts.from = strings.TrimPrefix(rest[0], "--from=")
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "--to="):
+			opts.to = strings.TrimPrefix(rest[0], "--to=")
+			rest = rest[1:]
+		default:
+			t, remaining, terr := parseTargetFlags(rest)
+			if terr != nil {
+				return "", opts, terr
+			}
+			opts.target = t
+			opts.positional = remaining
+			rest = nil
+		}
+	}
+	return sub, opts, nil
+}
+
+type baselineOpts struct {
+	target     Target
+	limit      int
+	ramp       time.Duration
+	asJSON     bool
+	from, to   string
+	positional []string
+}
+
+func cmdBaseline(args []string) error {
+	sub, opts, err := parseBaselineArgs(args)
+	if err != nil {
+		return err
+	}
+	switch sub {
+	case "mark":
+		return cmdBaselineMark(opts)
+	default:
+		// show and compare read the file directly, so they work on a box whose
+		// provider is stopped. That is the whole point of a local record: after a
+		// bad upgrade that will not start, the evidence is still there.
+		path, err := baselineLocalPath(opts.target)
+		if err != nil {
+			return err
+		}
+		rows, err := readBaselineFile(path)
+		if err != nil {
+			return err
+		}
+		switch sub {
+		case "show":
+			return cmdBaselineShow(path, rows, opts)
+		case "compare":
+			return cmdBaselineCompare(rows, opts)
+		}
+	}
+	return nil
+}
+
+func cmdBaselineMark(opts baselineOpts) error {
+	if len(opts.positional) == 0 {
+		return fmt.Errorf("usage: urnet-tools baseline mark <label>")
+	}
+	label := strings.Join(opts.positional, " ")
+	if strings.TrimSpace(label) == "" {
+		return fmt.Errorf("a mark needs a label")
+	}
+	p, err := selectTarget(Discover(), opts.target)
+	if err != nil {
+		return err
+	}
+	if p.StateDir == "" {
+		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
+	}
+	resp, err := sendSocketRequest(filepath.Join(p.StateDir, "provider.sock"),
+		controlRequest{Cmd: "mark", Value: label})
+	if err != nil {
+		return err
+	}
+	if !resp.OK {
+		return fmt.Errorf("mark failed: %s", resp.Error)
+	}
+	fmt.Printf("marked %s at %s\n", label, resp.Value)
+	return nil
+}
+
+// baselineLocalPath resolves the state dir for a read without a running
+// provider: try the requested target, then the caller's own home, because after
+// an upgrade that will not start the operator is usually looking at their own
+// box.
+func baselineLocalPath(t Target) (string, error) {
+	// Read the caller's own HOME rather than going through a running provider:
+	// show and compare have to work on a box whose provider will not start,
+	// which is exactly when the record matters most.
+	home := os.Getenv("HOME")
+	if home == "" {
+		return "", fmt.Errorf("cannot resolve the state directory: HOME is not set")
+	}
+	return filepath.Join(home, ".urnetwork", "baseline.jsonl"), nil
+}
 
 // baselineRow is one parsed line. It mirrors the provider's on-disk shape.
 type baselineRow struct {
@@ -361,15 +686,18 @@ const baselineMinSegmentSamples = 4
 
 // compareResult is what `baseline compare` prints.
 type compareResult struct {
-	Before segmentStats
-	After  segmentStats
+	// Boundary names the split that produced the two sides, so a reader of the
+	// JSON knows what was compared without re-deriving it.
+	Boundary string       `json:"boundary"`
+	Before   segmentStats `json:"before"`
+	After    segmentStats `json:"after"`
 	// Warnings are the one-line caveats: a capacity change or a change of
 	// availability source makes the two sides not like for like, and a reader
 	// who is not told will read a trimmed box as a regression.
-	Warnings []string
+	Warnings []string `json:"warnings,omitempty"`
 	// Insufficient is set when either side is below the sample floor.
-	Insufficient string
-	Rows         []compareRow
+	Insufficient string       `json:"insufficient_data,omitempty"`
+	Rows         []compareRow `json:"rows"`
 }
 
 type compareRow struct {
@@ -522,4 +850,97 @@ func renderCompare(r compareResult, asJSON bool) (string, error) {
 		b.WriteString("warning: " + w + "\n")
 	}
 	return b.String(), nil
+}
+
+// splitAtBoundary divides the record into the two sides a comparison reports.
+//
+// A boundary is a mark label, a timestamp, or the special value "last-update",
+// which means the most recent start whose version differs from the previous one:
+// the segment BEFORE it is "before" and the segment AFTER it is "after". That
+// default is what makes `baseline compare` useful with no arguments at all,
+// which is the case an operator actually runs after an upgrade.
+func splitAtBoundary(rows []baselineRow, from, to string) (before, after []baselineRow, boundary string, err error) {
+	var fromIdx, toIdx int
+	if len(rows) == 0 {
+		return nil, nil, "", fmt.Errorf("the baseline record is empty")
+	}
+	fromIdx, toIdx, boundary, err = resolveBoundary(rows, from, to)
+	if err != nil {
+		return nil, nil, "", err
+	}
+	// The split is at the boundary: everything before it is "before", and
+	// everything from it onward is "after". rows[toIdx:] would be empty
+	// whenever toIdx is the end of the record, which is the default, so the
+	// after side has to start at fromIdx and toIdx only caps it when --to
+	// was given.
+	after = rows[fromIdx:]
+	if toIdx > fromIdx && toIdx < len(rows) {
+		after = rows[fromIdx:toIdx]
+	}
+	return rows[:fromIdx], after, boundary, nil
+}
+
+// resolveBoundary turns the --from and --to arguments into row indexes.
+func resolveBoundary(rows []baselineRow, from, to string) (fromIdx, toIdx int, label string, err error) {
+	// Default: the last upgrade. A start whose version differs from the one
+	// before it is the boundary; a restart of the SAME version is not an
+	// upgrade and must not split the comparison.
+	boundaryIdx := -1
+	for i, r := range rows {
+		if r.Kind != "start" || r.PreviousVersion == "" {
+			continue
+		}
+		if r.Version != r.PreviousVersion {
+			boundaryIdx = i
+		}
+	}
+	if boundaryIdx < 0 {
+		// No upgrade recorded: fall back to the midpoint so the command still
+		// says something useful rather than erroring out.
+		mid := len(rows) / 2
+		if mid == 0 {
+			return 0, len(rows), "no upgrade recorded; showing the whole record", nil
+		}
+		return mid, len(rows), "no upgrade recorded; comparing the two halves of the record", nil
+	}
+	fromIdx = boundaryIdx
+	toIdx = len(rows)
+	label = fmt.Sprintf("last update at %s (%s -> %s)", rows[boundaryIdx].TS,
+		rows[boundaryIdx].PreviousVersion, rows[boundaryIdx].Version)
+
+	// An explicit --from moves the boundary to a mark label or a timestamp.
+	if from != "" {
+		idx, ok := findBoundaryRow(rows, from)
+		if !ok {
+			return 0, 0, "", fmt.Errorf("no mark or timestamp matching %q; "+
+				"marks are recorded by `baseline mark <label>`", from)
+		}
+		fromIdx, label = idx, "from "+from
+	}
+	// An explicit --to ends the "after" side early.
+	if to != "" {
+		idx, ok := findBoundaryRow(rows, to)
+		if !ok {
+			return 0, 0, "", fmt.Errorf("no mark or timestamp matching %q", to)
+		}
+		toIdx = idx
+	}
+	return fromIdx, toIdx, label, nil
+}
+
+// findBoundaryRow matches a mark label exactly, or a timestamp that prefixes the
+// row's own, so "2026-09-30T12" finds the 12:00 rows without the operator having
+// to type the seconds.
+func findBoundaryRow(rows []baselineRow, want string) (int, bool) {
+	for i, r := range rows {
+		if r.Kind == "mark" && r.Label == want {
+			return i, true
+		}
+	}
+	for i, r := range rows {
+		if r.TS != "" && strings.HasPrefix(r.TS, want) {
+			return i, true
+		}
+	}
+	return 0, false
 }

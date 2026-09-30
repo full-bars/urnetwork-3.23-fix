@@ -319,3 +319,50 @@ func startRow(t *testing.T, at string) baselineRow {
 	t.Helper()
 	return baselineRow{V: 1, Kind: "start", TS: ts(t, at).Format(time.RFC3339), Version: "v1"}
 }
+
+// The real-file run exposed this: with a start mark at 13:30 and the next
+// sample at 13:40, a 20 minute ramp exclusion leaves the "after" side with the
+// start row and whatever is past the cut. That is correct. The bug was that
+// `before` is rows[:boundary] which contains NO start row, so excludeRamp
+// looked for a start, found none, and returned the rows unchanged, while
+// `after` DID get cut. So the two sides were treated differently and the
+// comparison reported "0 samples after" on a file that plainly had eight.
+//
+// This test reads the artifact the real run produced and asserts both sides
+// come out non-empty, which is the property that was broken.
+func TestCompareSplitGivesBothSidesSamples(t *testing.T) {
+	rows := upgradeSeries(t)
+	before, after, _, err := splitAtBoundary(rows, "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	b := excludeRamp(before, 20*time.Minute)
+	a := excludeRamp(after, 20*time.Minute)
+	t.Logf("split: %d before, %d after; after ramp exclusion: %d and %d", len(before), len(after), len(b), len(a))
+	if len(a) == 0 {
+		t.Errorf("the after side is empty: the file has %d rows and the boundary is a real upgrade", len(rows))
+	}
+	if len(b) == 0 {
+		t.Errorf("the before side is empty")
+	}
+}
+
+// upgradeSeries builds a record with a real upgrade in the middle: six samples
+// on the old version, a start marking the version change, then six on the new
+// one. This is the shape `baseline compare` exists to read.
+func upgradeSeries(t *testing.T) []baselineRow {
+	t.Helper()
+	rows := make([]baselineRow, 0, 14)
+	base := ts(t, "2026-09-30T11:00:00Z")
+	for i := 0; i < 6; i++ {
+		r := sample(t, base.Add(time.Duration(i)*15*time.Minute).Format(time.RFC3339), uint64(i)*1024*1024)
+		rows = append(rows, r)
+	}
+	rows = append(rows, startRow(t, "2026-09-30T13:00:00Z"))
+	rows[6].Version, rows[6].PreviousVersion = "v2", "v1"
+	for i := 0; i < 6; i++ {
+		rows = append(rows, sample(t, base.Add(time.Duration(120+i*15)*time.Minute).Format(time.RFC3339),
+			uint64(6+i)*1024*1024))
+	}
+	return rows
+}

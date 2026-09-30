@@ -340,3 +340,77 @@ func TestBaselineStartAndMarkRecords(t *testing.T) {
 		t.Errorf("a mark carries measurements: %+v", rows[1])
 	}
 }
+
+// The cap has to hold under a real workload, not just a few appends: 2,000
+// samples at roughly 600 bytes each is about 1.2 MiB, so the trim has to run
+// several times and keep the file bounded.
+func TestBaselineCapHoldsAfterTwoThousandSamples(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, baselineFileName)
+	base := time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC)
+	for i := 0; i < 2000; i++ {
+		e := baselineSample{V: 1, Kind: "sample", Version: "v3.23.0-fix.32.9"}
+		e.TS = base.Add(time.Duration(i) * 15 * time.Minute).Format(time.RFC3339)
+		e.Proxies.Up = i % 1200
+		e.Proxies.Dead = i % 7
+		e.Desired = &[]int{1200}[0]
+		if err := baselineAppend(path, e, baselineMaxBytes); err != nil {
+			t.Fatalf("append %d: %v", i, err)
+		}
+	}
+	st, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := baselineTail(path, 100000)
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Logf("after 2000 samples: file is %d bytes (cap %d), %d rows survive", st.Size(), baselineMaxBytes, len(rows))
+	if st.Size() > baselineMaxBytes {
+		t.Errorf("file is %d bytes, over the %d cap", st.Size(), baselineMaxBytes)
+	}
+	if len(rows) == 0 {
+		t.Fatal("the trim emptied the file")
+	}
+	// The newest sample must be the last one written, not an old one.
+	if last := rows[len(rows)-1]; last.Proxies.Up != (1999 % 1200) {
+		t.Errorf("newest row has proxy %d, want %d: the trim kept the wrong end", last.Proxies.Up, 1999%1200)
+	}
+	// And every surviving line must parse, i.e. no line was split.
+	raw, _ := os.ReadFile(path)
+	if raw[len(raw)-1] != '\n' {
+		t.Error("the file does not end on a line boundary")
+	}
+
+	// 2,000 of THESE samples must exceed the cap, so the trim has to run and the
+	// bound has to hold afterwards. Without this the test above could pass with
+	// a trim that never executes.
+	wide := filepath.Join(dir, "wide.jsonl")
+	for i := 0; i < 2000; i++ {
+		e := baselineSample{V: 1, Kind: "sample", Version: "v3.23.0-fix.32.9"}
+		e.TS = base.Add(time.Duration(i) * 15 * time.Minute).Format(time.RFC3339)
+		e.Proxies.Up = i % 1200
+		e.StateReason = strings.Repeat("x", 300)
+		e.State = "degraded"
+		if err := baselineAppend(wide, e, 64<<10); err != nil {
+			t.Fatalf("wide append %d: %v", i, err)
+		}
+	}
+	wst, _ := os.Stat(wide)
+	wrows, _ := baselineTail(wide, 100000)
+	t.Logf("wide case: file is %d bytes (cap %d), %d rows survive", wst.Size(), 64<<10, len(wrows))
+	if wst.Size() > 64<<10 {
+		t.Errorf("wide file is %d bytes, over the %d cap", wst.Size(), 64<<10)
+	}
+	if len(wrows) == 0 {
+		t.Fatal("the trim emptied the wide file")
+	}
+	if len(wrows) >= 2000 {
+		t.Errorf("all %d rows survived, so the trim never ran", len(wrows))
+	}
+	raww, _ := os.ReadFile(wide)
+	if wst.Size() > 64<<10 && raww[len(raww)-1] != '\n' {
+		t.Error("the trimmed file does not end on a line boundary")
+	}
+}
