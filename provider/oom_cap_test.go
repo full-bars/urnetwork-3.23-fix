@@ -522,3 +522,46 @@ func TestOOMKillEpochFallsBackToHostAndNeverComparesAcrossScopes(t *testing.T) {
 		t.Fatal("a host-scoped marker must not be compared with a cgroup-scoped reading")
 	}
 }
+
+// A kill that happened while the kill switch was off must not be blamed after
+// the switch goes back on. With the switch off the start used to write no
+// marker while the heartbeat kept the OLD one fresh, so its OOMKills baseline
+// and peak came from the last start that ran with the switch on, and the next
+// clean start read the counter as having risen and reduced the cap for it.
+func TestOOMCapDoesNotBlameAKillFromWhileTheSwitchWasOff(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+	oomCapStartup(1000, 1000, "boot-A", 3, oomT0)
+
+	// the operator turns the switch off, a kill happens, the provider restarts
+	t.Setenv("URNETWORK_OOM_CAP", "off")
+	oomCapStartup(1000, 1000, "boot-A", 4, oomT0.Add(time.Hour))
+	oomCapUpdatePeak(1000, oomT0.Add(2*time.Hour)) // the heartbeat runs while off
+
+	// the switch goes back on and the next start is clean (counter unchanged)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+	lines := oomCapStartup(1000, 1000, "boot-A", 4, oomT0.Add(3*time.Hour))
+	for _, l := range lines {
+		if strings.Contains(l, "OOM kill since the last start") {
+			t.Fatalf("a kill from the switch-off period was blamed after re-enabling: %q", lines)
+		}
+	}
+	if got, _ := effectiveTrimCap(); got != 0 {
+		t.Fatalf("no cap should stand after a clean start, got %d", got)
+	}
+}
+
+// Turning the switch off must not stop a kill AFTER re-enabling from being
+// blamed: the marker written while off carries the real baseline, so a fresh
+// rise in the counter still reduces the cap.
+func TestOOMCapStillBlamesAKillAfterTheSwitchIsBackOn(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("URNETWORK_OOM_CAP", "off")
+	oomCapStartup(1000, 1000, "boot-A", 4, oomT0)
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+	oomCapStartup(1000, 1000, "boot-A", 4, oomT0.Add(time.Hour))
+	lines := oomCapStartup(1000, 800, "boot-A", 5, oomT0.Add(2*time.Hour))
+	if len(lines) != 1 || !strings.Contains(lines[0], "OOM kill since the last start") {
+		t.Fatalf("a kill after re-enabling must be blamed, got %q", lines)
+	}
+}
