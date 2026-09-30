@@ -3066,6 +3066,14 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runBillableRateWriter(ctx) })
 	go connect.HandleError(func() { runNodeSnapshotSampler(ctx) })
 
+	// The baseline recorder. Started here, beside the other long-lived
+	// samplers and tied to the SAME ctx, so it stops when the provider stops:
+	// a recorder that outlives its process would be a second writer on the file
+	// after a hot swap promoted the candidate. baselineStart writes the start
+	// mark before launching the goroutine, because a sample with no start beside
+	// it cannot be told apart from one the operator never had.
+	baselineStart(ctx, currentVersionForBaseline(), previousVersionForBaseline())
+
 	proxyURLs := resolveProxyURLs(opts)
 	proxyURLRefresh := resolveDuration(opts, "--proxy_url_refresh", "PROXY_URL_REFRESH", 1*time.Hour)
 	proxyURLMax := resolveInt(opts, "--proxy_url_max", "PROXY_URL_MAX", 500)

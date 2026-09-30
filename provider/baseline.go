@@ -770,3 +770,22 @@ func configuredProxyCount() int {
 // goroutineCount is here so the resources block can report a real number on
 // every platform; runtime is imported for it.
 var goroutineCount = runtime.NumGoroutine
+
+// currentVersionForBaseline is the running build, with the same "dev"
+// fallback the control socket's version command uses so a build without
+// -ldflags still records something readable.
+func currentVersionForBaseline() string {
+	if v := RequireVersion(); v != "" {
+		return v
+	}
+	return "dev"
+}
+
+// previousVersionForBaseline is the version this provider replaced, read
+// through the same locked accessor the node snapshot uses. Empty on a first
+// start, which is correct: there was no previous version.
+func previousVersionForBaseline() string {
+	startupDiag.mu.Lock()
+	defer startupDiag.mu.Unlock()
+	return startupDiag.previousVersion
+}
