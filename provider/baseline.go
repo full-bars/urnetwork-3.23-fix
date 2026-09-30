@@ -609,44 +609,78 @@ func baselineCollect(now time.Time) baselineInputs {
 	return in
 }
 
-// readBaselineHost gathers the host-level readings. Per brief #2074 the
-// availability figure is the tighter of host and cgroup, with provenance.
+// baselineHostRaw is the raw result of every host reader, before any
+// omission decision. Each field is nil when its reader failed. Keeping the
+// readings separate from the decision is what makes the omission rule testable
+// without a real /proc, and it is what stops one failed reader from discarding
+// the others.
+type baselineHostRaw struct {
+	HostMiB    int64 // -1 when unreadable
+	CgroupMiB  int64 // -1 when there is no cgroup limit
+	SwapUsed   *int64
+	PSISome60  *float64
+	PSIFull60  *float64
+	PSIFull300 *float64
+	Load1      *float64
+}
+
+// readBaselineHost gathers the host-level readings. Every reader is
+// best-effort and independent: a box with no cgroup limit still records host
+// memory, and a box with an unreadable /proc/meminfo still records PSI and
+// load. Only the memory fields are dropped when BOTH memory readers fail.
 func readBaselineHost() (baselineHost, error) {
-	var h baselineHost
-	host := readMemAvailableMiB()
-	cgroup := readCgroupAvailableMiB()
-	// >= so a legitimately-read 0 (memory exhausted, right before OOM) is data
-	// rather than indistinguishable from no data. Both readers return -1 on
-	// error, so 0 is real.
+	raw := baselineHostRaw{
+		HostMiB:   readMemAvailableMiB(),
+		CgroupMiB: readCgroupAvailableMiB(),
+	}
+	if used, ok := readSwapUsedMiB(); ok {
+		raw.SwapUsed = &used
+	}
+	if some, err := readPSI("some"); err == nil {
+		raw.PSISome60 = &some
+	}
+	if full60, full300, err := readPSIFull(); err == nil {
+		raw.PSIFull60, raw.PSIFull300 = &full60, &full300
+	}
+	if l1, _, err := getSystemLoad(); err == nil {
+		raw.Load1 = &l1
+	}
+	return buildBaselineHost(raw)
+}
+
+// buildBaselineHost applies the omission rules to the raw readings. Per brief
+// #2074 mem_available_mib is the TIGHTER of host and cgroup, with avail_source
+// naming which supplied it and host winning a tie. When neither reader worked,
+// the memory fields are omitted but everything else still stands: losing PSI
+// because /proc/meminfo was unreadable would be a silent gap in exactly the
+// situation an operator is trying to diagnose.
+//
+// The comparisons are >= 0, following readMemAvailFrac: a real reading of 0
+// means memory is exhausted, and treating that as no-data would hide the case
+// that matters most. Both readers return -1 on error, so 0 is real data.
+func buildBaselineHost(raw baselineHostRaw) (baselineHost, error) {
+	h := baselineHost{
+		SwapUsedMiB:   raw.SwapUsed,
+		PSISomeAvg60:  raw.PSISome60,
+		PSIFullAvg60:  raw.PSIFull60,
+		PSIFullAvg300: raw.PSIFull300,
+		Load1:         raw.Load1,
+	}
+	host, cgroup := raw.HostMiB, raw.CgroupMiB
 	switch {
 	case host >= 0 && cgroup >= 0:
-		v := int64(host)
-		src := "host"
+		v, src := host, "host"
 		if cgroup < host {
-			v = int64(cgroup)
-			src = "cgroup"
+			v, src = cgroup, "cgroup"
 		}
 		h.MemAvailableMiB, h.AvailSource = &v, src
 	case host >= 0:
-		v := int64(host)
-		h.MemAvailableMiB, h.AvailSource = &v, "host"
+		h.MemAvailableMiB, h.AvailSource = &host, "host"
 	case cgroup >= 0:
-		v := int64(cgroup)
-		h.MemAvailableMiB, h.AvailSource = &v, "cgroup"
+		h.MemAvailableMiB, h.AvailSource = &cgroup, "cgroup"
 	default:
+		// No memory reading at all: omit those two fields, keep the rest.
 		return h, errNoHostData
-	}
-	if used, ok := readSwapUsedMiB(); ok {
-		h.SwapUsedMiB = &used
-	}
-	if some, err := readPSI("some"); err == nil {
-		h.PSISomeAvg60 = &some
-	}
-	if full60, full300, err := readPSIFull(); err == nil {
-		h.PSIFullAvg60, h.PSIFullAvg300 = &full60, &full300
-	}
-	if l1, _, err := getSystemLoad(); err == nil {
-		h.Load1 = &l1
 	}
 	return h, nil
 }
