@@ -24,7 +24,10 @@ import (
 //
 //   - An unknown field is OMITTED, never written as zero. A zero reads as
 //     "measured, and the answer was nothing", which for host memory or PSI
-//     would be a catastrophic misreading of a perfectly healthy box.
+//     would be a catastrophic misreading of a perfectly healthy box. This is
+//     strict for the host readers, which can fail. The NodeSnapshot-derived
+//     fields (rate, pressure, contracts, resources) carry no unknown marker, so
+//     there a zero is omitted and an absent field means "zero or unknown".
 //   - Recording never blocks or fails the thing it observes. Write errors are
 //     ignored, except for one rate-limited line so a broken disk is visible
 //     rather than silent.
