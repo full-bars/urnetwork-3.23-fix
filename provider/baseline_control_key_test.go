@@ -1,6 +1,8 @@
 package main
 
 import (
+	"context"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -133,5 +135,40 @@ func TestBaselineKeyIsALiveEffectKey(t *testing.T) {
 func TestBaselineClearRestoresTheDefault(t *testing.T) {
 	if got := liveDefaults["baseline"]; !strings.EqualFold(got, "on") {
 		t.Fatalf("clearing baseline would restore %q, but the recorder's default is on", got)
+	}
+}
+
+// A provider that boots with the key persisted off must still have a sampler,
+// or turning the key on later would log "applied" while nothing ever records.
+func TestBaselineSamplerRunsWhenTheKeyStartsOffSoOnTakesEffectLive(t *testing.T) {
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	t.Setenv("USERPROFILE", dir)
+	baselineEnabled.Store(false)
+	t.Cleanup(func() { baselineEnabled.Store(true) })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := baselineStart(ctx, "v-test", "")
+	if done == nil {
+		t.Fatal("baselineStart launched no sampler while the key was off, so `set baseline on` " +
+			"would never start recording until a restart")
+	}
+	if rows, _ := baselineTail(filepath.Join(dir, ".urnetwork", baselineFileName), 10); len(rows) != 0 {
+		t.Errorf("wrote %d rows while the key was off, want 0", len(rows))
+	}
+	cancel()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("sampler did not stop when the provider context was cancelled")
+	}
+}
+
+func TestBaselineMarkWithNoStateDirIsRefusedNotWrittenRelativeToCwd(t *testing.T) {
+	prev := baselinePathFn
+	baselinePathFn = func() string { return "" }
+	t.Cleanup(func() { baselinePathFn = prev })
+	if _, err := baselineMark("x"); err == nil {
+		t.Fatal("baselineMark with no state directory succeeded; it would write relative to the cwd")
 	}
 }

@@ -372,8 +372,7 @@ func resolveBaselineInterval() time.Duration {
 // file passes the bound. The inter-process lock is not optional: during a
 // HotSwap the parent and the candidate both record, and an unlocked rotation
 // can clobber the shared temp file or drop an entry appended after its
-// snapshot.
-// maxBytes is a parameter rather than the constant so a test can prove the
+// snapshot. maxBytes is a parameter rather than the constant so a test can prove the
 // trim with a 200-byte file instead of writing a megabyte.
 func baselineAppend(path string, s baselineSample, maxBytes int64) error {
 	line, err := json.Marshal(s)
@@ -475,7 +474,11 @@ func baselineTail(path string, n int) ([]baselineSample, error) {
 
 // baselinePath returns the recorder's file, or "" when the state directory
 // cannot be resolved.
-func baselinePath() string {
+func baselinePath() string { return baselinePathFn() }
+
+// baselinePathFn is a variable so a test can simulate an unresolvable state
+// directory; production never assigns it.
+var baselinePathFn = func() string {
 	dir, err := oomCapDir()
 	if err != nil {
 		return ""
@@ -518,8 +521,6 @@ func baselineRecord(e baselineSample) {
 	}
 }
 
-// baselineWarnWrite logs at most one line per hour. A full disk would otherwise
-// produce one warning per sample forever.
 // baselineNowUnix is the clock the write-warning rate limiter reads. It is a
 // variable so a test can drive the limiter deterministically; nothing else
 // depends on it and production never assigns it.
@@ -531,6 +532,8 @@ var baselineNowUnix = func() int64 { return time.Now().Unix() }
 // question: one is "a write was tried", this is "an operator was told".
 var baselineWarnHook func()
 
+// baselineWarnWrite logs at most one line per hour. A full disk would otherwise
+// produce one warning per sample forever.
 func baselineWarnWrite(err error) {
 	now := baselineNowUnix()
 	last := baselineWarnLast.Load()
@@ -553,19 +556,21 @@ func baselineWarnWrite(err error) {
 }
 
 // baselineStart writes the start mark and launches the sampler. It is called
-// from the provider launcher, and the wiring test asserts that.
-func baselineStart(ctx context.Context, version, previous string) {
-	if !baselineIsEnabled() {
-		return
-	}
-	now := time.Now()
-	baselineRecord(baselineStartSample(version, previous, now))
-	go baselineRun(ctx)
+// from the provider launcher, and the wiring test asserts that. The sampler is
+// launched even when the key is off: it checks the flag on every tick, so
+// `set baseline on` takes effect live. Returns a channel closed when it exits.
+func baselineStart(ctx context.Context, version, previous string) <-chan struct{} {
+	// baselineRecord is a no-op while the key is off, so no start mark is written.
+	baselineRecord(baselineStartSample(version, previous, time.Now()))
+	done := make(chan struct{})
+	go baselineRun(ctx, done)
+	return done
 }
 
 // baselineRun samples until ctx is cancelled. The first sample is delayed, so a
 // sample at t=0 does not measure a pool that has not launched yet.
-func baselineRun(ctx context.Context) {
+func baselineRun(ctx context.Context, done chan<- struct{}) {
+	defer close(done)
 	interval := resolveBaselineInterval()
 	first := time.NewTimer(baselineFirstSampleDelay)
 	defer first.Stop()
@@ -593,7 +598,12 @@ func baselineRun(ctx context.Context) {
 // writer.
 func baselineMark(label string) (time.Time, error) {
 	now := time.Now()
-	if err := baselineAppend(baselinePath(), baselineMarkSample(label, now), baselineMaxBytes); err != nil {
+	path := baselinePath()
+	if path == "" {
+		// An empty path would open a file relative to the working directory.
+		return time.Time{}, errNoStateDir
+	}
+	if err := baselineAppend(path, baselineMarkSample(label, now), baselineMaxBytes); err != nil {
 		return time.Time{}, err
 	}
 	return now, nil

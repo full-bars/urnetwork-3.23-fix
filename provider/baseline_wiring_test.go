@@ -68,7 +68,7 @@ func TestBaselineStartReceivesTheProviderContext(t *testing.T) {
 // first sample has a start to be read against.
 func TestBaselineStartWritesTheMarkBeforeStartingTheGoroutine(t *testing.T) {
 	markLine := sourceLine(t, "baseline.go", "baselineRecord(baselineStartSample(")
-	goLine := sourceLine(t, "baseline.go", "go baselineRun(ctx)")
+	goLine := sourceLine(t, "baseline.go", "go baselineRun(ctx, done)")
 	if markLine < 0 {
 		t.Error("baselineStart does not write a start mark; without one a compare has no " +
 			"boundary to split on and cannot find the upgrade")
