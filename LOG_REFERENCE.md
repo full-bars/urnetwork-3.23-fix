@@ -153,10 +153,15 @@ The former `[eco]` memory monitor lines are retired. Their host available RAM si
 
 ## 🎚️ Capacity Control: Trim, OOM Cap, Memory Headroom
 
+Every line here is mirrored to `/dev/shm/urnetwork-important.log` and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
+
 ```text
 [proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying
+[proxy][trim] received: cap cleared (was 2000); pool may regrow toward 4127 desired
 [proxy][trim] applied: cap=2000: shed 2127 worst-graded running, held 0 additions (pool ~2000)
 [proxy][trim] startup: cap=2000, launching 2000 of 4127 desired, holding 2127 worst-graded until the cap is raised
+[proxy][trim] warn: proxy_trim holds "abc", which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`
+[proxy][trim] warn: cannot read proxy_trim (read ...: permission denied); ignoring the operator cap, the automatic cap still applies
 [oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap 0 -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)
 [oomcap] applied: OOM kill since the last start (peak running 4127): reduce the automatic start cap 0 -> 3301
 [proxy][resources] effective RAM ceiling 1024 MiB (cgroup v2 memory.max at /system.slice/urnetwork.service)
@@ -179,7 +184,7 @@ The former `[eco]` memory monitor lines are retired. Their host available RAM si
 | `[proxy][resources] warning` | At startup the limits this process runs under are short for the pool. Two separate checks, because the two numbers answer different questions. **Heap:** the finite `GOMEMLIMIT` is compared against the Go heap the pool needs (100 MiB plus about 0.65 MiB per proxy, sampled from running nodes after days of uptime; the average client share is already in that figure). This is logged after the tier and profile limits are applied, so it reports the limit actually in force, not one the tier code was about to replace. **Box:** the whole-process footprint (100 MiB plus about 0.9 MiB per proxy, RSS plus swap) is compared against the RAM the box gives the provider, minus a reserve of the larger of 300 MiB and 10% for the OS and other tenants. The two checks are separate on purpose: a pool can sit comfortably under its heap limit while already thrashing physical RAM. The footprint estimate includes swap while a cgroup `memory.max` does not, so a cgroup-capped box is the least validated case. The provider never changes these limits; it says what to change. |
 | `low memory headroom` | Host or cgroup available memory stayed below max(150 MiB, 10% of RAM), at most 400 MiB, for two consecutive 30s samples. Connected clients drive memory (about 0.8 MiB each), so this can happen with no change in the proxy count. `recovered` is logged after four consecutive samples 25% above the line. Observation only. |
 
-Every automatic or operator capacity decision is also appended to `~/.urnetwork/autopilot.jsonl` (one JSON object per line: time, actor, action, from, to, mode, reason; capped at 256 KiB, newest lines kept). The control socket serves it as the `ledger` command.
+Every automatic or operator capacity decision is also appended to `~/.urnetwork/autopilot.jsonl` (one JSON object per line: time, actor, action, from, to, mode, reason; capped at 256 KiB, newest lines kept). Read it with `urnet-tools autopilot log [limit]` (shadow decisions show as `[shadow]`) or the control socket's `ledger` command. That file is the audit trail for a self-managing provider: if it is ever empty or zero bytes, the ledger was truncated rather than cleared, and that is a bug.
 
 > [!NOTE]
 > The kill switch is `urnet-tools set oom-cap on|off|shadow`. Any source saying `off` wins, including an `off` set here against `URNETWORK_OOM_CAP=on` in the unit.
@@ -277,6 +282,25 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 - Without the suppressed count, the first failure of a new session logs cleanly: `[t]auth error <id> = Timeout.`
 - This is normal during platform outages or high load. The provider retries automatically.
 - Seeing this occasionally is expected. Seeing it continuously for many minutes indicates a platform-side issue.
+
+---
+
+## 🧭 Smart Dialer and Give-up Lines
+
+```text
+[smart-dialer][proxy] measured connect cost of 4 transports
+[proxy][auth] proxy[12] (203.0.113.7:1080) attempts=4 admit_wait=1.2s attempt=15.0s cut_short=true err=context deadline exceeded
+[proxy][auth] direct attempts=4 admit_wait=0.0s attempt=1.8s cut_short=false err=tls: handshake failure
+```
+
+| Message | Meaning |
+|---|---|
+| `[smart-dialer][proxy]` / `[smart-dialer][direct]` `measured connect cost of N transports` | A background probe round measured N transports for a proxy's client strategy (`proxy`) or the provider's own connection (`direct`). The first round runs 20 to 80 seconds after start, then a check runs every 5 minutes. A round that attempted nothing logs nothing, so silence is normal: everything is already measured, the smart dialer is off (the default), or custom extenders are configured. Probes are connect-only, never carry a request, and a failed probe never demotes a transport that has real successes. |
+| `[proxy][auth] ... attempts=` | One line per auth give-up. `attempts` counts the ladder's attempts, genuine failures and slow ones together. `admit_wait` is the time spent waiting for an admission slot and `attempt` is how long the last attempt ran, so latency can be told apart from a refusal. `err` is the raw error. `direct` is the provider's own non-proxy connection. |
+| `cut_short=true` | The last attempt was cut off by the connect deadline: the proxy is slow, not refused. A slow give-up does not count toward URL eviction or the 14-day drop and does not move the shared auth rate limiter, so latency cannot spiral into a failure cascade. `cut_short=false` is a genuine failure. |
+
+> [!NOTE]
+> Turn the smart dialer on or off with `urnet-tools smart-dialer [status|on|off]`. It is live, persisted and off by default. With it off, transport scoring and ordering are exactly what they were before it existed.
 
 ---
 
@@ -412,43 +436,6 @@ Nothing is graded once and trusted forever.
 - **Below-bar entries are never spawned**, so a proxy that decays is not merely ignored, it stops carrying traffic.
 
 The net effect is that a proxy holds its place only by continuing to pass. The A to F funnel admits the best first on every fill, and the re-grading keeps re-ordering the pool against reality rather than against a snapshot from days ago.
-
-## 🛡️ Capacity Control: Trim Cap, OOM Cap, Memory Limits
-
-Every line here is mirrored to `/dev/shm/urnetwork-important.log` and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
-
-```text
-[proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying
-[proxy][trim] received: cap cleared (was 2000); pool may regrow toward 4127 desired
-[proxy][trim] applied: cap=2000: shed 2127 worst-graded running, held 0 additions (pool ~2000)
-[proxy][trim] startup: cap=2000, launching 2000 of 4127 desired, holding 2127 worst-graded until the cap is raised
-[proxy][trim] warn: proxy_trim holds "abc", which is not a proxy count, so no operator cap applies; set one with `urnet-tools proxy trim <count>`
-[proxy][trim] warn: cannot read proxy_trim (read ...: permission denied); ignoring the operator cap, the automatic cap still applies
-[oomcap] shadow: OOM kill since the last start (peak running 4127): would reduce the automatic start cap none -> 3301 (not enforced; set URNETWORK_OOM_CAP=on to enforce)
-[oomcap] applied: OOM kill since the last start (peak running 4127): reduced the automatic start cap none -> 3301
-[oomcap] cleared the automatic start cap 3301 -> none (the kill switch forgets the standing cap)
-[oomcap] mode on: enforcing cap 3301, this sheds about 826 of 4127 running proxies on the next reload
-[proxy][resources] effective RAM ceiling 1024 MiB (cgroup v2 memory.max at /system.slice/urnetwork.service)
-[proxy][resources] warning: GOMEMLIMIT=400 MiB is below the ~581 MiB of heap this pool of 1300 proxies is expected to need, ...
-[proxy][resources] warning: this pool of 2001 proxies is expected to need about 1894 MiB of memory but this box gives the provider about 1930 MiB (1630 MiB left after holding back 300 MiB for the OS and other tenants), ...
-[proxy][resources] low memory headroom: 132 MiB available, below 193 MiB (2001 proxies, 77780 goroutines); connected clients drive memory, so this can happen without any change in the proxy count. Consider `urnet-tools proxy trim` if it persists
-[proxy][resources] memory headroom recovered: 420 MiB available (2001 proxies, 41000 goroutines)
-```
-
-| Message | Meaning |
-|---|---|
-| `[proxy][trim] received` | A trim cap was seen for the first time or changed. The ` (automatic OOM cap)` suffix means the automatic OOM cap is binding, not your own cap. `cap cleared` is logged when the cap is removed. |
-| `[proxy][trim] applied` | What the cap did: how many worst-graded running proxies were shed and how many additions were held back. Shed proxies keep their state (ID, health, grade) so they relaunch as themselves when the cap rises. |
-| `[proxy][trim] startup` | The cap is applied BEFORE launching, so a restart never opens every desired proxy and then sheds down. Held proxies stay desired and are admitted by the next reload. |
-| `[proxy][trim] warn` | The operator cap file is unusable: either it holds something that is not a number (logged once per distinct value), or it could not be read at all (logged once per distinct error). An unreadable file does NOT disable the automatic OOM cap. |
-| `[oomcap] shadow` / `applied` | The OOM-aware start cap. When this provider's own cgroup subtree was OOM-killed since the previous start (same boot, higher `oom_kill` counter in the parent cgroup's `memory.events`, which is hierarchical and survives a service restart), the next start runs fewer proxies. `shadow` only logs what it would do; `applied` means it is enforced. Never below max(50, desired/4), at most 3 reductions per 24h, relaxing 10% per clean 24h. The counter covers the PARENT cgroup's subtree, which for a system unit is `/system.slice` and therefore includes other services and, with the systemd Docker driver, other containers. A marker not seen running in the last 72h is never blamed. |
-| `[oomcap] cleared the automatic start cap` | The kill switch went off, so the standing automatic cap is forgotten rather than merely left unenforced. Without this, a cap set days earlier rebinds the moment the switch goes back on. |
-| `[oomcap] mode on` | A live `urnet-tools set oom-cap on` says what it costs: the cap now in force and how many running proxies the next reload would drop. |
-| `[proxy][resources] effective RAM ceiling` | Once at startup: the RAM ceiling the provider tunes itself against (tier selection, soft memory limit, GC governor, headroom threshold, hot-swap gate) and which limit set it: the tightest cgroup `memory.max` or `memory.high` on the unit or an ancestor slice, a cgroup v1 limit, or the host's total RAM when nothing limits it. A unit that sets both reads the lower number. If a box tunes smaller than expected after an upgrade, this line says why. |
-| `[proxy][resources] warning` | Two independent checks, because the two numbers answer different questions. **Heap:** a finite `GOMEMLIMIT` is compared against the Go heap the pool needs (100 MiB plus about 0.65 MiB per proxy). **Box:** the whole-process footprint (100 MiB plus about 0.9 MiB per proxy) is compared against the RAM this box gives the provider, minus a reserve of the larger of 300 MiB and 10%. A pool can sit comfortably under its heap limit while already thrashing physical RAM. The heap warning never advises raising the limit above what the box has. |
-| `low memory headroom` | Host or cgroup available memory stayed below 10% of RAM, clamped to between 150 MiB and 400 MiB, for two consecutive 30s samples. Connected clients drive memory, so this can happen with no change in the proxy count. `recovered` is logged after four consecutive samples 25% above the line. Observation only. |
-
-Every capacity decision is also appended to `~/.urnetwork/autopilot.jsonl` (time, actor, action, from, to, mode, reason; capped at 256 KiB, newest lines kept). Read it with `urnet-tools autopilot log` or the control socket's `ledger` command. That file is the audit trail for a self-managing agent: if it is ever empty or zero bytes, the ledger was truncated rather than cleared, and that is a bug.
 
 ## 💓 Health Heartbeat
 

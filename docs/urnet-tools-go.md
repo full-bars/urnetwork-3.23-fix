@@ -100,6 +100,9 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `auto [on\|off]` | Enable or disable Smart Auto hardware profile. |
 | `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. Self-elevates to root when needed (apply live + persist atomically, or roll back). |
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
+| `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
+| `set oom-cap [on\|off\|shadow]` | **(New in 32.8)** Show or set the OOM-aware start cap kill switch. `shadow` (default) decides and logs and enforces nothing, `on` enforces, `off` disables it and forgets a standing cap. Any source saying `off` wins. Live and persisted. |
+| `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
@@ -170,6 +173,7 @@ urnet-tools proxy trim off
 - **Traffic Tiebreaker:** Proxies with active billable bandwidth are shed last within their grade tier, preserving active earning connections.
 - **Persistence:** Stored at `~/.urnetwork/proxy_trim`, surviving provider restarts and reloads.
 - **AIMD Integration:** Clamps the AIMD pool controller `TargetPoolSize` so automated pressure management works within the hard cap.
+- **Receipts and preview (32.8):** every change logs `[proxy][trim] received` and `applied` lines. `--preview` is computed by the running provider, and the CLI says so when it cannot reach one. Shed proxies keep their state, and the cap is honored before launching at startup. See [Proxy Management](Proxy-Management.md).
 
 ### 2. Session Save and Load
 

@@ -144,6 +144,11 @@ urnet-docker proxy trim --unit urfix 500
 > 3. **Persistent Cap:** The target count is persisted to `~/.urnetwork/proxy_trim`. It stays in effect across restarts and reloads until explicitly raised or cleared with `proxy trim off`.
 > 4. **Prevents Over-Budget Re-Spawning:** During background URL fetch cycles and configuration reloads, new proxy additions are capped to prevent exceeding the trim target while retaining candidate history.
 > 5. **Controller Coordination:** The AIMD resource pressure controller's `TargetPoolSize` is automatically clamped to this cap so automatic and manual controls never conflict.
+> 6. **Honored Before Launching (v3.23.0-fix.32.8):** A restart splits the desired list with the same ranking a live trim uses *before* it launches anything, so it never opens every desired proxy and then sheds down. Held proxies stay desired and are admitted by the next reload once the cap is raised.
+> 7. **Shed Proxies Keep Their State:** A shed proxy keeps its ID, health, downtime and grade history, so it relaunches as itself when the cap rises instead of as an ungraded newcomer.
+> 8. **Every Change Leaves a Receipt:** The log shows `[proxy][trim] received: cap=N (was X)` when a cap is seen or changes and an `applied:` result line even when nothing needed shedding. See the [Log Message Reference](../LOG_REFERENCE.md).
+> 9. **`--preview` Asks the Running Provider:** The preview is computed inside the running provider over the control socket, where the real pool exists. Builds before v3.23.0-fix.32.8 built it in the short-lived CLI process, where the health registry is empty, so it always answered "nothing to shed". The CLI now says so when it cannot reach a provider.
+> 10. **Two Caps, the Tighter One Wins:** The automatic [OOM cap](Configuration.md#-control-socket--runtime-settings) can also limit the pool after a kernel OOM kill. It never writes `proxy_trim`; the effective cap is the tighter of the two, and the log says which is binding.
 
 ---
 

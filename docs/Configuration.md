@@ -145,6 +145,18 @@ urnet-tools set report-interval 300 # change one, live, no restart
 urnet-tools set report-interval off # clear it
 ```
 
+**Capacity and dialer settings (v3.23.0-fix.32.8).** Two settings are control keys with their own commands. Both are live, persisted and re-applied at startup.
+
+| Key | Values | Default | Command | What it does |
+| :--- | :--- | :--- | :--- | :--- |
+| `oom_cap` | `on`, `off`, `shadow` | `shadow` | `urnet-tools set oom-cap on\|off\|shadow` (or `URNETWORK_OOM_CAP` in the unit) | OOM-aware start cap. After a kernel OOM kill of the provider's own cgroup subtree the next start runs 80% of the peak running proxies, never below the larger of 50 and desired/4, at most 3 reductions per 24h, relaxing 10% per clean day. `shadow` decides and logs and enforces nothing; `on` enforces; `off` disables it and forgets a standing cap. Any source saying `off` wins, even against `URNETWORK_OOM_CAP=on`. The effective cap is the tighter of this and your `proxy trim` cap. |
+| `smart_dialer` | `on`, `off` | `off` | `urnet-tools smart-dialer [status\|on\|off]` | Transport choice from measured connect cost. With it on, weights come from success ratio and error streak, scaled by cost relative to the fastest transport that works here, and serial attempts try measured-faster transports first. It never removes a transport, a blocked transport still loses to a slow working one, and a client with one working transport is unaffected. There is no environment variable. With it off, scoring is exactly what it was. |
+
+> [!NOTE]
+> The smart dialer is off by default in this release. The plan is to turn it on by default in a later release once it has had more testing, so enabling it on a few nodes now is what gets it there.
+
+Read every capacity decision with `urnet-tools autopilot log [limit]`. The log lines these settings produce are described in the [Log Message Reference](../LOG_REFERENCE.md) and the [smart dialer section](../LOG_REFERENCE.md#-smart-dialer-and-give-up-lines).
+
 **Confirming a change landed.** The provider logs every accepted and rejected
 change, which is the authoritative signal rather than the CLI's exit code:
 

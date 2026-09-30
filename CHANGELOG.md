@@ -1,5 +1,44 @@
 # Changelog
 
+## [v3.23.0-fix.32.8]
+
+### Fixed
+
+- **The OOM kill switch never turned the feature off** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/706>): `set oom-cap off` was treated as a clear, which re-applies the default (`shadow`). It now disables the feature, forgets a standing cap, and takes effect at once. The marker heartbeat runs while it is off.
+- **An upgraded box reported itself as a crash** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/706>): `status` now reports `update` after an in-place upgrade. A crash still reports `unclean`.
+- **A crash could be reported as clean** (<https://github.com/full-bars/urnetwork-3.23-fix/commit/855339684>): the clean-shutdown marker is consumed on read again. A plain `systemctl restart` therefore reads `unclean` (tracked in <https://github.com/full-bars/urnetwork-3.23-fix/issues/707>).
+- **An unreadable `proxy_url.json` could destroy the pool state** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/706>): an unreadable file is skipped, not treated as empty, so grades and the blacklist survive one bad read.
+- **Retention events were dropped on a slow disk** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/706>, <https://github.com/full-bars/urnetwork-3.23-fix/commit/2465f9e2f>): the writer drains in batches and rotates before the write that would cross the limit.
+- **The action ledger never trimmed an oversized newest line** (<https://github.com/full-bars/urnetwork-3.23-fix/commit/bd6cdfad2>).
+- **Trim kept no state for the proxies it shed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/702>): shed proxies keep their ID, health and grade, and a finished drain no longer triggers a wasted reload.
+- **The trim cap is written atomically and read honestly** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/705>): a garbage value is reported once and an unreadable file no longer blocks the automatic cap.
+- **The status denominator ignored the trim cap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>) and **`proxy trim --preview` always answered "nothing to shed"**: the running provider now computes the preview.
+- **The trim cap is honored before launching at startup** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/699>): a restart no longer opens every desired proxy and then sheds.
+- **The goroutine pressure sensor judges per proxy** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/699>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/702>): a healthy pool above about 1,000 proxies no longer sits at pressure 1.00.
+- **RAM detection honors the unit's own cgroup limit** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/701>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/702>): `MemoryMax=` and `MemoryHigh=` on a systemd unit are now seen, and reclaimable page cache is not counted as used.
+- **The OOM cap blamed this provider for other workloads** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/705>): attribution is scoped to the provider's own cgroup subtree, and a kill after long uptime is still attributed.
+- **GC settings were reverted or ratcheted** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>): the profile GOGC is applied once per process, and the governor can release with self-heal off.
+- **Concurrent log writers could lose lines, and unreadable state was silently dropped** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/705>).
+- **A slow give-up could mislabel a later genuine failure** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/704>): deadline-cut attempts are reported as slow and no longer move the shared auth rate limiter.
+- **Content-filtering blocklist refreshed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/697>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/703>): the blocked-destination table is refreshed from upstream.
+
+### Added
+
+- **An OOM-aware start cap, shadow by default, with a kill switch** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/700>): after a kernel OOM kill the next start runs a reduced, self-relaxing cap. `urnet-tools set oom-cap on|off|shadow` or `URNETWORK_OOM_CAP`. `shadow` decides and logs and enforces nothing.
+- **An audit ledger and `urnet-tools autopilot log [limit]`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/700>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/701>): every capacity decision is appended to `~/.urnetwork/autopilot.jsonl`.
+- **A low memory headroom log and startup memory warnings** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/699>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/700>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/705>): advisory only, the provider never changes the limits. A new `effective RAM ceiling` line names the limit in force.
+- **Trim receipts in the log** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>): `[proxy][trim] received` and `applied` lines.
+- **`urnet-tools smart-dialer [status|on|off]`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/704>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/709>): a measured-cost transport preference in place of the hardcoded 500 ms baseline, with background probes so every transport gets measured. Off by default, with the plan to make it the default in a later release after more testing.
+- **An `emoji` package** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/708>): network tag validation and suggestion, copied from upstream. No provider behavior changes.
+
+### Changed
+
+- **A hotswap is declined when the box cannot hold two providers** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>): the update falls back to a plain restart when available memory is under 1.1 times the running provider's RSS.
+- **The per-proxy memory estimate matches running nodes** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/705>): the startup warning now fires on RAM-tight hosts with large pools.
+- **Capacity decisions reach the important buffer and the disk event log** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/701>).
+
+---
+
 ## [v3.23.0-fix.32.7]
 
 ### Fixed
