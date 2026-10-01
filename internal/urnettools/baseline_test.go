@@ -118,6 +118,54 @@ func TestCompareRampIsExcludedFromBothSides(t *testing.T) {
 	}
 }
 
+func TestExcludeRampDropsTheRampAfterEveryStart(t *testing.T) {
+	// A segment that spans two restarts has two ramps. Dropping only the one
+	// after the latest start leaves the first ramp's near-idle samples in the
+	// averages, which is the skew the exclusion exists to prevent.
+	rows := []baselineRow{
+		startRow(t, "2026-09-30T11:00:00Z"),
+		sample(t, "2026-09-30T11:05:00Z", 1024),        // ramp after the first start
+		sample(t, "2026-09-30T11:30:00Z", 5*1024*1024), // settled
+		startRow(t, "2026-09-30T12:00:00Z"),
+		sample(t, "2026-09-30T12:05:00Z", 6*1024*1024),  // ramp after the second start
+		sample(t, "2026-09-30T12:30:00Z", 11*1024*1024), // settled
+	}
+	got := excludeRamp(rows, 20*time.Minute)
+
+	var kept []string
+	for _, r := range got {
+		kept = append(kept, r.Kind+"@"+r.TS)
+	}
+	for _, r := range got {
+		if r.Kind == "start" {
+			continue
+		}
+		at, ok := r.timeAt()
+		if !ok {
+			t.Fatal("a kept row has no timestamp")
+		}
+		for _, s := range []string{"2026-09-30T11:00:00Z", "2026-09-30T12:00:00Z"} {
+			d := at.Sub(ts(t, s))
+			if d >= 0 && d < 20*time.Minute {
+				t.Errorf("row at %s survived: only %v after the start at %s (kept: %v)",
+					at.Format(time.RFC3339), d, s, kept)
+			}
+		}
+	}
+	starts := 0
+	for _, r := range got {
+		if r.Kind == "start" {
+			starts++
+		}
+	}
+	if starts != 2 {
+		t.Errorf("kept %d start marks, want both: they are the boundaries restarts are counted from", starts)
+	}
+	if len(got) != 4 {
+		t.Errorf("kept %d rows, want 4 (two starts and the two settled samples): %v", len(got), kept)
+	}
+}
+
 func TestCompareReportsInsufficientDataInsteadOfPercentages(t *testing.T) {
 	// Under four samples a segment may sit entirely inside one burst, and a
 	// percentage from it would be trusted far more than it deserves.
