@@ -1,6 +1,9 @@
 package main
 
-import "testing"
+import (
+	"os"
+	"testing"
+)
 
 // Per brief #2074: mem_available_mib is the tighter of the host and cgroup
 // readings, with avail_source naming which one supplied it and host winning a
@@ -155,5 +158,24 @@ func TestParsePSIFullRejectsContentWithNoFullLine(t *testing.T) {
 	}
 	if _, _, err := parsePSIFull(""); err == nil {
 		t.Error("empty content must be an error, not zeros")
+	}
+}
+
+// The unit tests feed parsePSIFull a string, which never noticed that the
+// reader opened a file the kernel does not have: /proc/pressure/full does not
+// exist. The "full" line lives in the resource files (memory, io), so on every
+// real Linux box the two psi_full fields were silently omitted. This reads the
+// real file, so it fails if the path is wrong; it skips only on a kernel with
+// no PSI at all.
+func TestReadPSIFullReadsTheRealKernelFile(t *testing.T) {
+	if _, err := os.Stat("/proc/pressure/memory"); err != nil {
+		t.Skip("this kernel has no PSI")
+	}
+	avg60, avg300, err := readPSIFull()
+	if err != nil {
+		t.Fatalf("readPSIFull failed on a kernel that has /proc/pressure/memory: %v", err)
+	}
+	if avg60 < 0 || avg300 < 0 {
+		t.Errorf("avg60=%v avg300=%v, want non-negative", avg60, avg300)
 	}
 }

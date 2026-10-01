@@ -751,11 +751,13 @@ func readSwapUsedMiB() (int64, bool) {
 	return total - free, true
 }
 
-// readPSIFull returns the "full" line's avg60 and avg300. readPSI only parses
-// "some", and the baseline needs both the full-pressure stall time and its
-// longer window, so this is a separate reader rather than a widened one.
+// readPSIFull returns the memory "full" line's avg60 and avg300. The "full" line
+// lives in the resource files (/proc/pressure/memory); there is no
+// /proc/pressure/full. readPSI only parses "some", and the baseline needs both
+// the full-pressure stall time and its longer window, so this is a separate
+// reader rather than a widened one.
 func readPSIFull() (avg60, avg300 float64, err error) {
-	b, err := os.ReadFile("/proc/pressure/full")
+	b, err := os.ReadFile("/proc/pressure/memory")
 	if err != nil {
 		return 0, 0, err
 	}

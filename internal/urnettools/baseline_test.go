@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"encoding/json"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -413,4 +414,112 @@ func upgradeSeries(t *testing.T) []baselineRow {
 			uint64(6+i)*1024*1024))
 	}
 	return rows
+}
+
+// summarizeSegment must measure SAMPLE rows only. A start or mark row carries no
+// measurements, so counting it adds a zero to the proxy and client means, counts
+// it toward the four-sample floor, and (as rows[0]) makes the OOM delta start
+// from 0 and report the whole cumulative kill counter as new kills.
+func TestSummarizeSegmentIgnoresStartAndMarkRows(t *testing.T) {
+	mk := func(at string, up int, kills int64) baselineRow {
+		r := sample(t, at, 0)
+		r.Proxies.Up = up
+		r.Clients = int64(up)
+		r.OOM = &struct {
+			Kills int64  `json:"kills"`
+			Scope string `json:"scope,omitempty"`
+		}{Kills: kills}
+		return r
+	}
+	rows := []baselineRow{
+		startRow(t, "2026-09-30T12:00:00Z"),
+		{V: 1, Kind: "mark", TS: ts(t, "2026-09-30T12:05:00Z").Format(time.RFC3339), Label: "x"},
+		mk("2026-09-30T12:20:00Z", 100, 7),
+		mk("2026-09-30T12:35:00Z", 100, 7),
+		mk("2026-09-30T12:50:00Z", 100, 7),
+		mk("2026-09-30T13:05:00Z", 100, 7),
+	}
+	s := summarizeSegment(rows)
+	if s.Rows != 4 {
+		t.Errorf("Rows = %d, want 4: only the sample rows count toward the sample floor", s.Rows)
+	}
+	if s.ProxiesUpMean != 100 {
+		t.Errorf("ProxiesUpMean = %v, want 100: start and mark rows must not add zeros", s.ProxiesUpMean)
+	}
+	if s.ClientsMean != 100 {
+		t.Errorf("ClientsMean = %v, want 100", s.ClientsMean)
+	}
+	if s.OOMKillDelta != 0 {
+		t.Errorf("OOMKillDelta = %d, want 0: the counter was 7 throughout, a start row must not make it look like 7 new kills", s.OOMKillDelta)
+	}
+	if s.Restarts != 1 {
+		t.Errorf("Restarts = %d, want 1: restarts are still counted from start rows", s.Restarts)
+	}
+}
+
+// The documented forms are space separated: `-n 5`, `--from A`, `--to B`,
+// `--skip-ramp 20m`. The parser only knew the `=` forms, so the documented
+// usage fell through to the strict target-flag parser and was rejected.
+func TestParseBaselineArgsAcceptsSpaceSeparatedAndEqualsForms(t *testing.T) {
+	_, o, err := parseBaselineArgs([]string{"show", "-n", "5", "--json"})
+	if err != nil || o.limit != 5 || !o.asJSON {
+		t.Fatalf("show -n 5 --json: opts=%+v err=%v", o, err)
+	}
+	_, o, err = parseBaselineArgs([]string{"compare", "--from", "before upgrade", "--to", "after", "--skip-ramp", "30m"})
+	if err != nil || o.from != "before upgrade" || o.to != "after" || o.ramp != 30*time.Minute {
+		t.Fatalf("compare with space separated flags: opts=%+v err=%v", o, err)
+	}
+	_, o, err = parseBaselineArgs([]string{"compare", "--from=a", "--to=b", "--skip-ramp=5m", "-n=3"})
+	if err != nil || o.from != "a" || o.to != "b" || o.ramp != 5*time.Minute || o.limit != 3 {
+		t.Fatalf("compare with = flags: opts=%+v err=%v", o, err)
+	}
+	for _, bad := range [][]string{{"show", "-n"}, {"compare", "--from"}, {"compare", "--skip-ramp", "soon"}, {"show", "-n", "0"}} {
+		if _, _, err := parseBaselineArgs(bad); err == nil {
+			t.Errorf("%v was accepted, want an error", bad)
+		}
+	}
+}
+
+// show and compare must read the state directory of the provider the caller
+// selected, not always $HOME. An explicit --state-dir resolves directly, and
+// no target at all keeps the caller's own ~/.urnetwork.
+func TestBaselineLocalPathHonoursTheSelectedStateDir(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	got, err := baselineLocalPath(Target{})
+	if err != nil || got != filepath.Join(home, ".urnetwork", "baseline.jsonl") {
+		t.Fatalf("no target: path=%q err=%v", got, err)
+	}
+	other := t.TempDir()
+	got, err = baselineLocalPath(Target{StateDir: other})
+	if err != nil || got != filepath.Join(other, "baseline.jsonl") {
+		t.Fatalf("--state-dir: path=%q err=%v, want it under %s", got, err, other)
+	}
+}
+
+// A mark placed shortly after a start puts that start in the "before" side, so
+// the "after" side has no start of its own and its ramp used to be kept. The
+// ramp context comes from the whole record, so the sample 15 minutes after the
+// start is dropped even though the boundary is the later mark.
+func TestCompareExcludesTheRampWhenTheBoundaryIsAMarkAfterAStart(t *testing.T) {
+	rows := []baselineRow{
+		sample(t, "2026-09-30T09:00:00Z", 0),
+		startRow(t, "2026-09-30T10:00:00Z"),
+		{V: 1, Kind: "mark", TS: ts(t, "2026-09-30T10:10:00Z").Format(time.RFC3339), Label: "m"},
+		sample(t, "2026-09-30T10:15:00Z", 1024), // 15 min after the start: still ramping
+		sample(t, "2026-09-30T10:40:00Z", 2048), // settled
+	}
+	before, after, _, err := splitAtBoundary(rows, "m", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	starts := startTimes(rows)
+	after = excludeRampAround(after, starts, 20*time.Minute)
+	before = excludeRampAround(before, starts, 20*time.Minute)
+	for _, r := range after {
+		if r.Kind == "sample" && r.TS == ts(t, "2026-09-30T10:15:00Z").Format(time.RFC3339) {
+			t.Error("the 10:15 sample is inside the ramp of the 10:00 start and must be excluded from the after side")
+		}
+	}
+	_ = before
 }
