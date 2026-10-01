@@ -8,7 +8,7 @@ It takes two steps: turn metrics on at each provider, then start the bundle on a
 
 Prometheus is the fleet view: it answers "how is this node doing right now", across every box, on a live dashboard. It is also the heavier option, and it says nothing about how a box behaved *before* an upgrade unless you were already recording.
 
-Every provider therefore also keeps a small local record of its own behaviour in `~/.urnetwork/baseline.jsonl`, on by default, with no setup. It holds counts and totals only, never proxy addresses, usernames or passwords. `urnet-tools baseline show` prints the newest rows and `urnet-tools baseline compare` reports a rate, proxy count, memory and restart difference across an upgrade, warning you when the capacity changed so a trimmed box is not misread as a regression.
+Every provider therefore also keeps a small local record of its own behaviour in `~/.urnetwork/baseline.jsonl`, on by default, with no setup. It holds counts and totals only, never proxy addresses, usernames or passwords. The same file also records the GC state (`gc`: GOGC in force, whether the governor is tightening, and the GC CPU share) and the kernel's socket-table pressure (`net`: conntrack fill, TIME_WAIT and orphaned TCP sockets). These are observation only and feed no decision; a field the box cannot read is left out rather than written as zero. `urnet-tools baseline show` prints the newest rows and `urnet-tools baseline compare` reports a rate, proxy count, memory and restart difference across an upgrade, warning you when the capacity changed so a trimmed box is not misread as a regression.
 
 This is the no-setup alternative for the one question Prometheus does not answer: did that upgrade make this box worse? It is not a replacement for the fleet view, and it is not a time-series database. For a fleet, use the bundle below.
 
@@ -221,5 +221,11 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_fd_limit` | gauge | | File descriptor limit (Linux) |
 | `urnet_restart_reason` | gauge | `reason` | Value 1 for the reason the current process started; absent for other reasons |
 | `urnet_gc_cycles_total` | counter | | Garbage collection cycles |
+| `urnet_gc_gogc` | gauge | | GOGC value currently in force |
+| `urnet_gc_tightening` | gauge | | 1 while the GC governor holds GOGC below its baseline |
+| `urnet_gc_cpu_fraction` | gauge | | Share of CPU spent in GC over the last window; absent until a window completes |
+| `urnet_conntrack_used_ratio` | gauge | | `nf_conntrack_count` over `nf_conntrack_max` (Linux, when conntrack is loaded). Overflow drops packets silently |
+| `urnet_tcp_time_wait` | gauge | | TCP sockets in TIME_WAIT (Linux) |
+| `urnet_tcp_orphans` | gauge | | Orphaned TCP sockets (Linux) |
 | `urnet_goroutines` | gauge | | Goroutines |
 | `urnet_pool_latency_ms` | gauge | | Message pool average latency |
