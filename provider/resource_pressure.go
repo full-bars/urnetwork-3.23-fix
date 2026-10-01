@@ -655,6 +655,11 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		tlog("[proxy][pressure] gcGovernor armed (baseline GOGC=%d)\n", gcState.baselineGOGC)
 	}
 	gcState.currentGOGC = gcState.baselineGOGC
+	// However this loop ends (ctx, or a panic the supervisor restarts it after),
+	// leave the score, memory budget and GOGC neutral. Without it a dead monitor
+	// froze its last reading in force, and a restart would adopt the tightened
+	// GOGC as its baseline.
+	defer resetPressureActuators(&gcState, debug.SetGCPercent)
 
 	var headroom headroomTracker
 	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)

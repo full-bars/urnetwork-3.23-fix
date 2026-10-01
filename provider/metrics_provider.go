@@ -383,6 +383,9 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "# TYPE urnet_proxy_audit_parks_24h gauge\n")
 	fmt.Fprintf(&b, "urnet_proxy_audit_parks_24h %d\n", audit.Parks24h)
 
+	// --- Supervised background loops ---
+	b.WriteString(supervisedLoopMetrics())
+
 	// --- Lifetime persisted metrics ---
 	if lm := lifetimeStore; lm != nil {
 		pqe, clas, up, deny, recov, lost, bill := lm.Snapshot()
