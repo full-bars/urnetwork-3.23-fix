@@ -150,15 +150,13 @@ func cmdBaselineCompare(rows []baselineRow, opts baselineOpts) error {
 	if opts.ramp == 0 {
 		opts.ramp = baselineDefaultRamp
 	}
+	starts := rampStarts(rows)
 	before, after, boundary, err := splitAtBoundary(rows, opts.from, opts.to)
 	if err != nil {
 		return err
 	}
-	// The ramp context is the WHOLE record: a boundary that is a mark soon after a
-	// start leaves that start on the other side.
-	starts := startTimes(rows)
-	before = excludeRampAround(before, starts, opts.ramp)
-	after = excludeRampAround(after, starts, opts.ramp)
+	before = excludeRamp(before, starts, opts.ramp)
+	after = excludeRamp(after, starts, opts.ramp)
 	res := compareSegments(before, after)
 	if opts.asJSON {
 		// The boundary is part of the answer, so it goes in the JSON rather
@@ -226,60 +224,41 @@ func parseBaselineArgs(args []string) (sub string, opts baselineOpts, err error)
 			"[show|mark|compare])", sub)
 	}
 	rest := args[1:]
-	// value returns the value of a flag given either as `--name=value` or as
-	// `--name value`, and how many arguments it used. The documented forms are the
-	// space separated ones, so both have to work.
-	value := func(name string) (string, int, error) {
-		if v, ok := strings.CutPrefix(rest[0], name+"="); ok {
-			return v, 1, nil
-		}
-		if len(rest) < 2 {
-			return "", 0, fmt.Errorf("%s needs a value", name)
-		}
-		return rest[1], 2, nil
-	}
-	is := func(name string) bool { return rest[0] == name || strings.HasPrefix(rest[0], name+"=") }
 	for len(rest) > 0 {
+		// Normalize value-taking options so both spellings share validation.
+		switch rest[0] {
+		case "-n", "--from", "--to", "--skip-ramp":
+			if len(rest) < 2 {
+				return "", opts, fmt.Errorf("%s requires a value", rest[0])
+			}
+			rest = append([]string{rest[0] + "=" + rest[1]}, rest[2:]...)
+		}
 		switch {
 		case rest[0] == "--json":
 			opts.asJSON = true
 			rest = rest[1:]
-		case is("--skip-ramp"):
-			v, n, verr := value("--skip-ramp")
-			if verr != nil {
-				return "", opts, verr
-			}
-			d, perr := time.ParseDuration(v)
+		case strings.HasPrefix(rest[0], "--skip-ramp="):
+			d, perr := time.ParseDuration(strings.TrimPrefix(rest[0], "--skip-ramp="))
 			if perr != nil || d < 0 {
-				return "", opts, fmt.Errorf("--skip-ramp must be a duration (got %q)", v)
+				return "", opts, fmt.Errorf("--skip-ramp must be a duration (got %q)",
+					strings.TrimPrefix(rest[0], "--skip-ramp="))
 			}
 			opts.ramp = d
-			rest = rest[n:]
-		case is("-n"):
-			v, n, verr := value("-n")
-			if verr != nil {
-				return "", opts, verr
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "-n="):
+			n, cerr := strconv.Atoi(strings.TrimPrefix(rest[0], "-n="))
+			if cerr != nil || n <= 0 {
+				return "", opts, fmt.Errorf("-n must be a positive integer (got %q)",
+					strings.TrimPrefix(rest[0], "-n="))
 			}
-			count, cerr := strconv.Atoi(v)
-			if cerr != nil || count <= 0 {
-				return "", opts, fmt.Errorf("-n must be a positive integer (got %q)", v)
-			}
-			opts.limit = count
-			rest = rest[n:]
-		case is("--from"):
-			v, n, verr := value("--from")
-			if verr != nil {
-				return "", opts, verr
-			}
-			opts.from = v
-			rest = rest[n:]
-		case is("--to"):
-			v, n, verr := value("--to")
-			if verr != nil {
-				return "", opts, verr
-			}
-			opts.to = v
-			rest = rest[n:]
+			opts.limit = n
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "--from="):
+			opts.from = strings.TrimPrefix(rest[0], "--from=")
+			rest = rest[1:]
+		case strings.HasPrefix(rest[0], "--to="):
+			opts.to = strings.TrimPrefix(rest[0], "--to=")
+			rest = rest[1:]
 		default:
 			t, remaining, terr := parseTargetFlags(rest)
 			if terr != nil {
@@ -359,18 +338,12 @@ func cmdBaselineMark(opts baselineOpts) error {
 	return nil
 }
 
-// baselineLocalPath resolves the state dir for a read without a running
-// provider: try the requested target, then the caller's own home, because after
-// an upgrade that will not start the operator is usually looking at their own
-// box.
+// baselineLocalPath resolves explicit targets through local discovery, including
+// stopped providers. Only an untargeted read falls back to the caller's HOME.
 func baselineLocalPath(t Target) (string, error) {
-	// An explicit --state-dir resolves directly, with no discovery at all.
 	if t.StateDir != "" {
 		return filepath.Join(t.StateDir, "baseline.jsonl"), nil
 	}
-	// Any other selector names a provider. Discovery includes stopped units, so
-	// this still works on a box whose provider will not start, which is exactly
-	// when the record matters most. It does not need the provider's socket.
 	if t != (Target{}) {
 		p, err := selectTarget(Discover(), t)
 		if err != nil {
@@ -381,8 +354,6 @@ func baselineLocalPath(t Target) (string, error) {
 		}
 		return filepath.Join(p.StateDir, "baseline.jsonl"), nil
 	}
-	// No target: the caller's own HOME, so the common case of one provider on
-	// the box where the operator is logged in needs no discovery either.
 	home := os.Getenv("HOME")
 	if home == "" {
 		return "", fmt.Errorf("cannot resolve the state directory: HOME is not set")
@@ -520,22 +491,9 @@ func (r baselineRow) oomKills() int64 {
 	return r.OOM.Kills
 }
 
-// excludeRamp drops the rows within skip after EVERY start mark in the segment,
-// on BOTH sides of a comparison. A pool that just restarted under-earns while it
-// ramps back up, and those minutes would otherwise drag one side's figure and
-// make the comparison a story about the ramp rather than about the upgrade. A
-// segment that spans more than one restart has more than one ramp, and each is
-// excluded; the settled rows between them are kept.
-//
-// The start marks themselves are kept: they are the boundaries, and the reader
-// counts restarts from them. A segment with no start mark is returned
-// unchanged, because there is no ramp to exclude.
-func excludeRamp(rows []baselineRow, skip time.Duration) []baselineRow {
-	return excludeRampAround(rows, startTimes(rows), skip)
-}
-
-// startTimes returns the timestamp of every start mark in rows.
-func startTimes(rows []baselineRow) []time.Time {
+// rampStarts collects starts from the complete record, so a ramp crossing a
+// comparison boundary is excluded on both sides.
+func rampStarts(rows []baselineRow) []time.Time {
 	var starts []time.Time
 	for _, r := range rows {
 		if r.Kind != "start" {
@@ -548,12 +506,9 @@ func startTimes(rows []baselineRow) []time.Time {
 	return starts
 }
 
-// excludeRampAround is excludeRamp with the start marks supplied by the caller.
-// A comparison splits the record at a boundary, and a boundary that is a mark
-// shortly after a start leaves that start on the other side, so a side judged
-// only by its own rows would keep a ramp it should drop. The caller passes the
-// starts of the WHOLE record to both sides.
-func excludeRampAround(rows []baselineRow, starts []time.Time, skip time.Duration) []baselineRow {
+// excludeRamp drops rows within skip after any recorded start. Start rows stay
+// available for restart counts; rows with unusable timestamps are also kept.
+func excludeRamp(rows []baselineRow, starts []time.Time, skip time.Duration) []baselineRow {
 	if skip <= 0 || len(starts) == 0 {
 		return rows
 	}
@@ -663,28 +618,31 @@ func billableBpsFrom(rows []baselineRow) float64 {
 }
 
 // summarizeSegment computes the rows for one side of a comparison.
-func summarizeSegment(all []baselineRow) segmentStats {
+func summarizeSegment(rows []baselineRow) segmentStats {
 	s := newSegmentStats()
-	// Start and mark rows carry no measurements. Counting them would add a zero
-	// to the proxy and client means, count them toward the sample floor, and (as
-	// rows[0]) make the OOM delta start from zero. Restarts are still counted
-	// from the start rows, and nothing else reads them.
-	rows := make([]baselineRow, 0, len(all))
-	for _, r := range all {
-		if r.Kind == "start" {
-			s.Restarts++
-		}
-		if r.Kind == "sample" {
-			rows = append(rows, r)
-		}
-	}
-	s.Rows = len(rows)
 	if len(rows) == 0 {
 		return s
 	}
 	var upSum, clientSum, rssSum, psiSum float64
 	var upN, clientN, rssN, psiN int
+	var firstOOM, lastOOM int64
+	haveOOM := false
 	for _, r := range rows {
+		// A start mark inside a segment is a restart, which is what the reader
+		// needs to see: a rate computed across a restart mixes two processes.
+		if r.Kind == "start" {
+			s.Restarts++
+		}
+		if r.Kind != "sample" {
+			continue
+		}
+		s.Rows++
+		if r.OOM != nil {
+			if !haveOOM {
+				firstOOM, haveOOM = r.OOM.Kills, true
+			}
+			lastOOM = r.OOM.Kills
+		}
 		upSum += float64(r.Proxies.Up)
 		upN++
 		clientSum += float64(r.Clients)
@@ -739,10 +697,8 @@ func summarizeSegment(all []baselineRow) segmentStats {
 		s.PSIFullMean = psiSum / float64(psiN)
 	}
 	s.BillableBps = billableBpsFrom(rows)
-	first := rows[0].oomKills()
-	last := rows[len(rows)-1].oomKills()
-	if last >= first {
-		s.OOMKillDelta = last - first
+	if haveOOM && lastOOM >= firstOOM {
+		s.OOMKillDelta = lastOOM - firstOOM
 	}
 	return s
 }

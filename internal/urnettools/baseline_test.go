@@ -2,7 +2,9 @@ package urnettools
 
 import (
 	"encoding/json"
+	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
 	"testing"
 	"time"
@@ -92,7 +94,7 @@ func TestCompareRampIsExcludedFromBothSides(t *testing.T) {
 		sample(t, "2026-09-30T11:35:00Z", 3072+10*1024*1024),
 		sample(t, "2026-09-30T11:45:00Z", 3072+15*1024*1024),
 	}
-	ramped := excludeRamp(before, 20*time.Minute)
+	ramped := excludeRamp(before, rampStarts(before), 20*time.Minute)
 	if len(ramped) >= len(before) {
 		t.Fatalf("ramp exclusion removed nothing: %d of %d rows kept", len(ramped), len(before))
 	}
@@ -131,7 +133,7 @@ func TestExcludeRampDropsTheRampAfterEveryStart(t *testing.T) {
 		sample(t, "2026-09-30T12:05:00Z", 6*1024*1024),  // ramp after the second start
 		sample(t, "2026-09-30T12:30:00Z", 11*1024*1024), // settled
 	}
-	got := excludeRamp(rows, 20*time.Minute)
+	got := excludeRamp(rows, rampStarts(rows), 20*time.Minute)
 
 	var kept []string
 	for _, r := range got {
@@ -251,8 +253,7 @@ func TestCompareCountsRestartsInTheSegment(t *testing.T) {
 
 func TestCompareMeasuresOOMKillDeltaAcrossTheSegment(t *testing.T) {
 	rows := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)
-	// Every row must carry the counter: the delta is first-to-last, so a nil
-	// first row would read as zero and report a delta that never happened.
+	// The delta uses the first and last available sample counters.
 	for i := range rows {
 		kills := int64(2)
 		if i == len(rows)-1 {
@@ -385,8 +386,8 @@ func TestCompareSplitGivesBothSidesSamples(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b := excludeRamp(before, 20*time.Minute)
-	a := excludeRamp(after, 20*time.Minute)
+	b := excludeRamp(before, rampStarts(before), 20*time.Minute)
+	a := excludeRamp(after, rampStarts(rows), 20*time.Minute)
 	t.Logf("split: %d before, %d after; after ramp exclusion: %d and %d", len(before), len(after), len(b), len(a))
 	if len(a) == 0 {
 		t.Errorf("the after side is empty: the file has %d rows and the boundary is a real upgrade", len(rows))
@@ -416,110 +417,155 @@ func upgradeSeries(t *testing.T) []baselineRow {
 	return rows
 }
 
-// summarizeSegment must measure SAMPLE rows only. A start or mark row carries no
-// measurements, so counting it adds a zero to the proxy and client means, counts
-// it toward the four-sample floor, and (as rows[0]) makes the OOM delta start
-// from 0 and report the whole cumulative kill counter as new kills.
-func TestSummarizeSegmentIgnoresStartAndMarkRows(t *testing.T) {
-	mk := func(at string, up int, kills int64) baselineRow {
-		r := sample(t, at, 0)
-		r.Proxies.Up = up
-		r.Clients = int64(up)
-		r.OOM = &struct {
-			Kills int64  `json:"kills"`
-			Scope string `json:"scope,omitempty"`
-		}{Kills: kills}
-		return r
+func TestBaselineArgsValueForms(t *testing.T) {
+	for _, equals := range []bool{false, true} {
+		args := []string{"compare"}
+		for _, pair := range [][2]string{{"-n", "12"}, {"--from", "before upgrade"}, {"--to", "2026-09-30T13"}, {"--skip-ramp", "5m"}} {
+			if equals {
+				args = append(args, pair[0]+"="+pair[1])
+			} else {
+				args = append(args, pair[0], pair[1])
+			}
+		}
+		args = append(args, "--json", "--user", "provider-user")
+		sub, opts, err := parseBaselineArgs(args)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if sub != "compare" || opts.limit != 12 || opts.from != "before upgrade" || opts.to != "2026-09-30T13" || opts.ramp != 5*time.Minute || !opts.asJSON || opts.target.User != "provider-user" || len(opts.positional) != 0 {
+			t.Fatalf("equals=%v: unexpected options: %s %+v", equals, sub, opts)
+		}
 	}
-	rows := []baselineRow{
-		startRow(t, "2026-09-30T12:00:00Z"),
-		{V: 1, Kind: "mark", TS: ts(t, "2026-09-30T12:05:00Z").Format(time.RFC3339), Label: "x"},
-		mk("2026-09-30T12:20:00Z", 100, 7),
-		mk("2026-09-30T12:35:00Z", 100, 7),
-		mk("2026-09-30T12:50:00Z", 100, 7),
-		mk("2026-09-30T13:05:00Z", 100, 7),
+	for _, flag := range []string{"-n", "--from", "--to", "--skip-ramp"} {
+		if _, _, err := parseBaselineArgs([]string{"compare", flag}); err == nil {
+			t.Errorf("missing value accepted for %s", flag)
+		}
 	}
-	s := summarizeSegment(rows)
-	if s.Rows != 4 {
-		t.Errorf("Rows = %d, want 4: only the sample rows count toward the sample floor", s.Rows)
-	}
-	if s.ProxiesUpMean != 100 {
-		t.Errorf("ProxiesUpMean = %v, want 100: start and mark rows must not add zeros", s.ProxiesUpMean)
-	}
-	if s.ClientsMean != 100 {
-		t.Errorf("ClientsMean = %v, want 100", s.ClientsMean)
-	}
-	if s.OOMKillDelta != 0 {
-		t.Errorf("OOMKillDelta = %d, want 0: the counter was 7 throughout, a start row must not make it look like 7 new kills", s.OOMKillDelta)
-	}
-	if s.Restarts != 1 {
-		t.Errorf("Restarts = %d, want 1: restarts are still counted from start rows", s.Restarts)
-	}
-}
-
-// The documented forms are space separated: `-n 5`, `--from A`, `--to B`,
-// `--skip-ramp 20m`. The parser only knew the `=` forms, so the documented
-// usage fell through to the strict target-flag parser and was rejected.
-func TestParseBaselineArgsAcceptsSpaceSeparatedAndEqualsForms(t *testing.T) {
-	_, o, err := parseBaselineArgs([]string{"show", "-n", "5", "--json"})
-	if err != nil || o.limit != 5 || !o.asJSON {
-		t.Fatalf("show -n 5 --json: opts=%+v err=%v", o, err)
-	}
-	_, o, err = parseBaselineArgs([]string{"compare", "--from", "before upgrade", "--to", "after", "--skip-ramp", "30m"})
-	if err != nil || o.from != "before upgrade" || o.to != "after" || o.ramp != 30*time.Minute {
-		t.Fatalf("compare with space separated flags: opts=%+v err=%v", o, err)
-	}
-	_, o, err = parseBaselineArgs([]string{"compare", "--from=a", "--to=b", "--skip-ramp=5m", "-n=3"})
-	if err != nil || o.from != "a" || o.to != "b" || o.ramp != 5*time.Minute || o.limit != 3 {
-		t.Fatalf("compare with = flags: opts=%+v err=%v", o, err)
-	}
-	for _, bad := range [][]string{{"show", "-n"}, {"compare", "--from"}, {"compare", "--skip-ramp", "soon"}, {"show", "-n", "0"}} {
-		if _, _, err := parseBaselineArgs(bad); err == nil {
-			t.Errorf("%v was accepted, want an error", bad)
+	for _, pair := range [][2]string{{"-n", "0"}, {"-n", "-1"}, {"-n", "bad"}, {"--skip-ramp", "-1m"}, {"--skip-ramp", "bad"}} {
+		_, _, spacedErr := parseBaselineArgs([]string{"compare", pair[0], pair[1]})
+		_, _, equalsErr := parseBaselineArgs([]string{"compare", pair[0] + "=" + pair[1]})
+		if spacedErr == nil || equalsErr == nil || spacedErr.Error() != equalsErr.Error() {
+			t.Errorf("%v: validation differs: %v / %v", pair, spacedErr, equalsErr)
 		}
 	}
 }
 
-// show and compare must read the state directory of the provider the caller
-// selected, not always $HOME. An explicit --state-dir resolves directly, and
-// no target at all keeps the caller's own ~/.urnetwork.
-func TestBaselineLocalPathHonoursTheSelectedStateDir(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	got, err := baselineLocalPath(Target{})
-	if err != nil || got != filepath.Join(home, ".urnetwork", "baseline.jsonl") {
-		t.Fatalf("no target: path=%q err=%v", got, err)
+func TestBaselineCompareRampCrossesBoundary(t *testing.T) {
+	start := startRow(t, "2026-09-30T12:00:00Z")
+	start.PreviousVersion = "v0"
+	rows := []baselineRow{
+		sample(t, "2026-09-30T11:30:00Z", 100),
+		start,
+		sample(t, "2026-09-30T12:05:00Z", 200),
+		{Kind: "mark", Label: "during ramp", TS: "2026-09-30T12:10:00Z"},
+		sample(t, "2026-09-30T12:15:00Z", 300),
+		sample(t, "2026-09-30T12:20:00Z", 400),
+		sample(t, "2026-09-30T12:25:00Z", 500),
 	}
-	other := t.TempDir()
-	got, err = baselineLocalPath(Target{StateDir: other})
-	if err != nil || got != filepath.Join(other, "baseline.jsonl") {
-		t.Fatalf("--state-dir: path=%q err=%v, want it under %s", got, err, other)
+	for _, from := range []string{"during ramp", "2026-09-30T12:10"} {
+		out := captureStdout(t, func() {
+			if err := cmdBaselineCompare(rows, baselineOpts{from: from, ramp: 20 * time.Minute, asJSON: true}); err != nil {
+				t.Fatal(err)
+			}
+		})
+		var got compareResult
+		if err := json.Unmarshal([]byte(out), &got); err != nil {
+			t.Fatal(err)
+		}
+		if got.Before.Rows != 1 || got.After.Rows != 2 || got.Before.Restarts != 1 || got.After.Restarts != 0 || got.Boundary != "from "+from {
+			t.Fatalf("boundary %q: unexpected result %+v", from, got)
+		}
 	}
 }
 
-// A mark placed shortly after a start puts that start in the "before" side, so
-// the "after" side has no start of its own and its ramp used to be kept. The
-// ramp context comes from the whole record, so the sample 15 minutes after the
-// start is dropped even though the boundary is the later mark.
-func TestCompareExcludesTheRampWhenTheBoundaryIsAMarkAfterAStart(t *testing.T) {
-	rows := []baselineRow{
-		sample(t, "2026-09-30T09:00:00Z", 0),
-		startRow(t, "2026-09-30T10:00:00Z"),
-		{V: 1, Kind: "mark", TS: ts(t, "2026-09-30T10:10:00Z").Format(time.RFC3339), Label: "m"},
-		sample(t, "2026-09-30T10:15:00Z", 1024), // 15 min after the start: still ramping
-		sample(t, "2026-09-30T10:40:00Z", 2048), // settled
+func TestBaselineSummaryIgnoresEventMeasurements(t *testing.T) {
+	samples := fullSegment(t, "2026-09-30T11:00:00Z", 100, 100)[:3]
+	want := summarizeSegment(samples)
+	rows := append([]baselineRow(nil), samples...)
+	for _, kind := range []string{"start", "mark", "unknown"} {
+		var event baselineRow
+		if err := json.Unmarshal([]byte(`{"kind":"`+kind+`","proxies":{"up":999},"clients":999,"resources":{"rss_bytes":99999999999},"host":{"mem_available_mib":1,"swap_used_mib":9999,"psi_full_avg60":999},"oom":{"kills":999}}`), &event); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, event)
 	}
-	before, after, _, err := splitAtBoundary(rows, "m", "")
-	if err != nil {
+	want.Restarts = 1
+	if got := summarizeSegment(rows); !reflect.DeepEqual(got, want) {
+		t.Fatalf("events changed sample statistics: got %+v, want %+v", got, want)
+	}
+	if got := compareSegments(rows, rows); got.Insufficient == "" {
+		t.Fatal("events incorrectly satisfied the minimum sample count")
+	}
+}
+
+func TestBaselineSummaryUsesAvailableSampleOOMCounters(t *testing.T) {
+	for _, counters := range []string{
+		`[{"kind":"start","oom":{"kills":0}},{"kind":"sample"},{"kind":"sample","oom":{"kills":2}},{"kind":"sample"},{"kind":"sample","oom":{"kills":5}},{"kind":"sample"},{"kind":"mark","oom":{"kills":100}}]`,
+		`[{"kind":"sample","oom":{"kills":2}},{"kind":"sample","oom":{"kills":5}}]`,
+	} {
+		var rows []baselineRow
+		if err := json.Unmarshal([]byte(counters), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if got := summarizeSegment(rows).OOMKillDelta; got != 3 {
+			t.Errorf("OOM delta = %d, want 3", got)
+		}
+	}
+	for _, counters := range []string{
+		`[{"kind":"sample"}]`,
+		`[{"kind":"sample"},{"kind":"sample","oom":{"kills":5}}]`,
+		`[{"kind":"sample","oom":{"kills":5}},{"kind":"sample","oom":{"kills":2}}]`,
+	} {
+		var rows []baselineRow
+		if err := json.Unmarshal([]byte(counters), &rows); err != nil {
+			t.Fatal(err)
+		}
+		if got := summarizeSegment(rows).OOMKillDelta; got != 0 {
+			t.Errorf("OOM delta = %d, want 0 for missing, single or reset counters", got)
+		}
+	}
+}
+
+func TestBaselineOfflineTargets(t *testing.T) {
+	home, stateDir := t.TempDir(), t.TempDir()
+	t.Setenv("HOME", home)
+	oldProcesses, oldStopped := discoverProcessesFn, discoverStoppedFn
+	t.Cleanup(func() { discoverProcessesFn, discoverStoppedFn = oldProcesses, oldStopped })
+	discoverProcessesFn = func() []Provider { return nil }
+	discoverStoppedFn = func([]Provider) []Provider {
+		return []Provider{{User: "provider-user", Unit: "urnetwork.service", StateDir: stateDir}}
+	}
+	path := filepath.Join(stateDir, "baseline.jsonl")
+	if err := os.WriteFile(path, []byte("{\"kind\":\"sample\",\"ts\":\"2026-09-30T12:00:00Z\"}\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	starts := startTimes(rows)
-	after = excludeRampAround(after, starts, 20*time.Minute)
-	before = excludeRampAround(before, starts, 20*time.Minute)
-	for _, r := range after {
-		if r.Kind == "sample" && r.TS == ts(t, "2026-09-30T10:15:00Z").Format(time.RFC3339) {
-			t.Error("the 10:15 sample is inside the ramp of the 10:00 start and must be excluded from the after side")
+	for _, selector := range []string{"--state-dir=" + stateDir, "--user=provider-user", "--unit=urnetwork.service"} {
+		for _, sub := range []string{"show", "compare"} {
+			captureStdout(t, func() {
+				if err := cmdBaseline([]string{sub, "--json", selector}); err != nil {
+					t.Errorf("%s %s without provider socket: %v", sub, selector, err)
+				}
+			})
 		}
 	}
-	_ = before
+	if _, err := baselineLocalPath(Target{User: "missing-user"}); err == nil {
+		t.Error("unresolved target fell back to HOME")
+	}
+	discoverStoppedFn = func([]Provider) []Provider {
+		return []Provider{{User: "provider-user"}}
+	}
+	if _, err := baselineLocalPath(Target{User: "provider-user"}); err == nil {
+		t.Error("target without a state dir was accepted")
+	}
+	discoverProcessesFn = func() []Provider { t.Fatal("untargeted or explicit path read invoked discovery"); return nil }
+	if got, err := baselineLocalPath(Target{}); err != nil || got != filepath.Join(home, ".urnetwork", "baseline.jsonl") {
+		t.Fatalf("HOME fallback = %q, %v", got, err)
+	}
+	t.Setenv("HOME", "")
+	if got, err := baselineLocalPath(Target{StateDir: stateDir}); err != nil || got != path {
+		t.Fatalf("explicit path without HOME = %q, %v", got, err)
+	}
+	if _, err := baselineLocalPath(Target{}); err == nil {
+		t.Error("untargeted read without HOME succeeded")
+	}
 }
