@@ -225,20 +225,20 @@ func TestSelectURLProxiesToShed(t *testing.T) {
 		"5.5.5.5:1080": {Health: "dead", Source: "file"}, // never shed: not url
 	}}
 	traffic := map[string]uint64{"1.1.1.1:1080": 100, "4.4.4.4:1080": 5}
-	got := selectURLProxiesToShed(state, traffic, 3)
+	got := selectURLProxiesToShed(state, traffic, nil, 3)
 	want := []string{"2.2.2.2:1080", "3.3.3.3:1080", "4.4.4.4:1080"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("got %v want %v", got, want)
 	}
 	// n larger than pool: return everything url-sourced, still ordered
-	if got := selectURLProxiesToShed(state, traffic, 99); len(got) != 4 {
+	if got := selectURLProxiesToShed(state, traffic, nil, 99); len(got) != 4 {
 		t.Fatalf("overshoot: %v", got)
 	}
 }
 
 func TestSelectURLProxiesToShed_EmptyState(t *testing.T) {
 	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
-	got := selectURLProxiesToShed(state, nil, 5)
+	got := selectURLProxiesToShed(state, nil, nil, 5)
 	if len(got) != 0 {
 		t.Fatalf("empty state should return nothing, got %v", got)
 	}
@@ -249,7 +249,7 @@ func TestSelectURLProxiesToShed_AllFileSourced(t *testing.T) {
 		"1.1.1.1:1080": {Health: "dead", Source: "file"},
 		"2.2.2.2:1080": {Health: "dead", Source: "file"},
 	}}
-	got := selectURLProxiesToShed(state, nil, 10)
+	got := selectURLProxiesToShed(state, nil, nil, 10)
 	if len(got) != 0 {
 		t.Fatalf("all file-sourced should return nothing, got %v", got)
 	}
@@ -262,7 +262,7 @@ func TestSelectURLProxiesToShed_TrafficTieBreaking(t *testing.T) {
 		"3.3.3.3:1080": {Health: "up", Source: "url"},
 	}}
 	// same health, no traffic data → sorted by address (lexicographic)
-	got := selectURLProxiesToShed(state, nil, 2)
+	got := selectURLProxiesToShed(state, nil, nil, 2)
 	want := []string{"1.1.1.1:1080", "2.2.2.2:1080"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("tie-break by address: got %v want %v", got, want)
@@ -281,7 +281,7 @@ func TestSelectURLProxiesToShed_TrafficOrdering(t *testing.T) {
 		"2.2.2.2:1080": 5,
 		"3.3.3.3:1080": 500,
 	}
-	got := selectURLProxiesToShed(state, traffic, 2)
+	got := selectURLProxiesToShed(state, traffic, nil, 2)
 	want := []string{"2.2.2.2:1080", "3.3.3.3:1080"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("shed lowest-traffic first: got %v want %v", got, want)
@@ -296,7 +296,7 @@ func TestSelectURLProxiesToShed_HealthTierOrdering(t *testing.T) {
 		"4.4.4.4:1080": {Health: "recently_offline", Source: "url"},
 		"5.5.5.5:1080": {Health: "dead", Source: "url"},
 	}}
-	got := selectURLProxiesToShed(state, nil, 5)
+	got := selectURLProxiesToShed(state, nil, nil, 5)
 	want := []string{"5.5.5.5:1080", "2.2.2.2:1080", "3.3.3.3:1080", "4.4.4.4:1080", "1.1.1.1:1080"}
 	if !slices.Equal(got, want) {
 		t.Fatalf("health tier ordering: got %v want %v", got, want)
