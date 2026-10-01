@@ -1519,7 +1519,7 @@ func (self *clientDialer) String() string {
 	} else if self.settings != nil && self.settings.ProxySettings != nil {
 		var clients int64
 		var maxAge time.Duration
-		bw := RegisterProxyBandwidth(self.settings.ProxySettings.Index)
+		bw := RegisteredProxyBandwidth(self.settings.ProxySettings.Index)
 		if bw != nil {
 			clients = bw.Clients.Load()
 			maxAge = bw.MaxAge()
