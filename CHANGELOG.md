@@ -25,6 +25,7 @@ _Nothing yet._
 - **Concurrent log writers could lose lines, and unreadable state was silently dropped** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/705>).
 - **A slow give-up could mislabel a later genuine failure** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/704>): deadline-cut attempts are reported as slow and no longer move the shared auth rate limiter.
 - **Content-filtering blocklist refreshed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/697>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/703>): the blocked-destination table is refreshed from upstream.
+- **A hotswap could leave the audit trail without the new process's start entry** (<https://github.com/full-bars/urnetwork-3.23-fix/issues/670>): the old process persists its own audit ring again at the end of its drain, which can land after the new process's merged persist and leave a ring without the new process's entries on disk until the next control command or a clean shutdown. The new process now waits out the drain, merges again and persists, so a crash soon after a hotswap no longer loses it. Audit trail only, traffic was never affected.
 
 ### Added
 
