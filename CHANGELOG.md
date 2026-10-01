@@ -2,9 +2,7 @@
 
 ## [Unreleased]
 
-### Added
-
-- **A built-in baseline recorder** (`~/.urnetwork/baseline.jsonl`, `urnet-tools baseline show|mark|compare`): every provider records a small local time series of its own behaviour, on by default and with no setup, so an upgrade can be judged against what the box did before it rather than against a baseline somebody remembered to capture. Counts and totals only, never proxy addresses, usernames or passwords; an unmeasured field is omitted rather than written as zero. The comparison derives its rate from the lifetime counter's delta, excludes the post-restart ramp from both sides, and warns when capacity changed so a trimmed box is not misread as a regression. `set baseline off` stops recording without a restart and keeps the existing file.
+_Nothing yet._
 
 ## [v3.23.0-fix.32.8]
 
@@ -36,6 +34,7 @@
 - **Trim receipts in the log** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/698>): `[proxy][trim] received` and `applied` lines.
 - **`urnet-tools smart-dialer [status|on|off]`** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/704>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/709>): a measured-cost transport preference in place of the hardcoded 500 ms baseline, with background probes so every transport gets measured. Off by default, with the plan to make it the default in a later release after more testing.
 - **An `emoji` package** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/708>): network tag validation and suggestion, copied from upstream. No provider behavior changes.
+- **A built-in baseline recorder** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/712>, `~/.urnetwork/baseline.jsonl`, `urnet-tools baseline show|mark|compare`): every provider records a small local time series of its own behaviour, on by default and with no setup, so an upgrade can be judged against what the box did before it rather than against a baseline somebody remembered to capture. Counts and totals only, never proxy addresses, usernames or passwords; an unmeasured field is omitted rather than written as zero. The comparison derives its rate from the lifetime counter's delta, excludes the post-restart ramp from both sides, and warns when capacity changed so a trimmed box is not misread as a regression. `set baseline off` stops recording without a restart and keeps the existing file.
 
 ### Changed
 
