@@ -255,12 +255,13 @@ var setKeyHelps = []string{
 // shortcut. The exceptions send "off" as a real value, because their off state
 // is not their default: hot_restart and ramlogs keep a concrete off behaviour,
 // proxy_self_heal and metrics would otherwise revert to a default that is not
-// off, and oom_cap would revert to the "shadow" default, which decides and logs
+// off, oom_cap would revert to the "shadow" default, which decides and logs
 // but enforces nothing, so the documented kill switch would never turn the
-// feature off.
+// feature off, and baseline would revert to "on", so `set baseline off` would
+// report success while the recorder kept writing.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline":
 		return false
 	}
 	return true
