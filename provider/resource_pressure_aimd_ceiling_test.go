@@ -135,3 +135,64 @@ func TestCapURLTargetLeavesRoomForPaid(t *testing.T) {
 		}
 	}
 }
+
+// Pressure is held for many minutes, and each sustained-high sample cuts again
+// at 0.7x. The ceiling must remember where pressure FIRST hit, not the last,
+// lowest cut of the cascade, or a transient host event pins the pool near the
+// floor for a day.
+func TestAimdCeilingCascadeKeepsTheFirstHit(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	var c aimdCeilingState
+	c.record(1000, now)
+	c.record(700, now.Add(10*time.Minute))
+	c.record(490, now.Add(20*time.Minute))
+	if got := c.effective(now.Add(20 * time.Minute)); got != 900 {
+		t.Fatalf("ceiling after a cascade = %d, want 900 (0.9 x the first hit of 1000)", got)
+	}
+}
+
+// Once the ceiling has been released, a new episode starts fresh at its own level.
+func TestAimdCeilingNewEpisodeAfterReleaseStartsFresh(t *testing.T) {
+	now := time.Unix(1_700_000_000, 0)
+	var c aimdCeilingState
+	c.record(1000, now)
+	later := now.Add(25 * time.Hour)
+	c.record(300, later)
+	if got := c.effective(later); got != 270 {
+		t.Fatalf("ceiling for a fresh episode = %d, want 270", got)
+	}
+}
+
+// The recorded hit is the real pool, not a target the cache never reached.
+func TestCeilingHitUsesTheSmallerOfTargetAndPool(t *testing.T) {
+	cases := []struct{ target, pool, want int }{
+		{1000, 600, 600},
+		{500, 900, 500},
+		{500, 0, 500}, // pool size unknown
+	}
+	for _, tc := range cases {
+		if got := ceilingHit(tc.target, tc.pool); got != tc.want {
+			t.Errorf("ceilingHit(%d, %d) = %d, want %d", tc.target, tc.pool, got, tc.want)
+		}
+	}
+}
+
+// The trim cap counts RUNNING non-direct proxies. proxy.state also holds dead,
+// backed-off and trim-held entries; counting those drove cap - paid to nothing
+// and pinned the URL pool at 1.
+func TestPaidRunningCountCountsOnlyRunningPaid(t *testing.T) {
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		"paid-up:1":    {Health: "up", Source: "file"},
+		"paid-run2:1":  {Health: "up", Source: ""},
+		"paid-dead:1":  {Health: "dead", Source: "file"},
+		"url-up:1":     {Health: "up", Source: "url"},
+		directProxyKey: {Health: "up", Source: "file"},
+	}}
+	running := []string{"paid-up:1", "paid-run2:1", "url-up:1", directProxyKey, "unknown:1"}
+	if got := paidRunningCount(state, running); got != 2 {
+		t.Fatalf("paidRunningCount = %d, want 2 (running non-URL, non-direct, known to the state)", got)
+	}
+	if got := paidRunningCount(state, nil); got != 0 {
+		t.Fatalf("paidRunningCount with nothing running = %d, want 0", got)
+	}
+}

@@ -1,11 +1,25 @@
 package main
 
 import (
+	"runtime/debug"
 	"testing"
 	"time"
 )
 
 const mib = 1 << 20
+
+// restoreGCProcessState puts back what applyGCLevel changes process-wide, so a
+// test that tightens the governor does not leave GOGC low for the rest of the run.
+func restoreGCProcessState(t *testing.T) {
+	t.Helper()
+	orig, _ := readGOGCPercent()
+	t.Cleanup(func() {
+		if orig > 0 {
+			debug.SetGCPercent(orig)
+		}
+		gcTightening.Store(false)
+	})
+}
 
 // The numerator must be what the process is actually holding (live heap plus
 // stacks), not the heap goal. The goal moves with GOGC, which is what the
@@ -27,15 +41,19 @@ func TestHeapFracFromLiveHeapAndStacks(t *testing.T) {
 // small live set) must not read as an emergency.
 func TestHealthyBoxAtSoftLimitIsNotAnEmergency(t *testing.T) {
 	frac := heapFracFrom(120*mib, 10*mib, 680*mib) // live is small; the goal would be near 680
-	score, _ := computePressure(pressureSample{HeapFrac: frac, RunningProxies: 100})
+	score, comps := computePressure(pressureSample{HeapFrac: frac, RunningProxies: 100})
 	if score >= 1.0 {
 		t.Fatalf("score = %v for live frac %.2f, want below the emergency pin", score, frac)
+	}
+	if comps["heap"] != 0 {
+		t.Fatalf("heap component = %v for live frac %.2f, want none below the ramp", comps["heap"], frac)
 	}
 }
 
 // Same heapFrac in, same level out, whichever tick feeds it: the 10s subtick
 // and the 30s sweep must not disagree about one reading.
 func TestSubtickAndSweepAgreeOnOneReading(t *testing.T) {
+	restoreGCProcessState(t)
 	sub := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100}
 	sweep := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100}
 	gcSubtickStep(0.75, 0, sub)
@@ -49,6 +67,7 @@ func TestSubtickAndSweepAgreeOnOneReading(t *testing.T) {
 // reading. The subtick must honour the same veto, or it re-tightens within
 // 10s of every release.
 func TestSubtickHonoursCPUVeto(t *testing.T) {
+	restoreGCProcessState(t)
 	vetoed := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100}
 	gcSubtickStep(0.75, 0.9, vetoed)
 	if vetoed.level != 0 {
@@ -63,6 +82,7 @@ func TestSubtickHonoursCPUVeto(t *testing.T) {
 
 // Memory above 0.85 of the budget overrides the CPU veto, as in the sweep.
 func TestSubtickCPUVetoYieldsToRealMemoryPressure(t *testing.T) {
+	restoreGCProcessState(t)
 	st := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100}
 	gcSubtickStep(0.88, 0.9, st)
 	if st.level < 2 {
@@ -72,6 +92,7 @@ func TestSubtickCPUVetoYieldsToRealMemoryPressure(t *testing.T) {
 
 // Flapping into the critical level must not force a full GC every time.
 func TestFreeOSMemoryIsRateLimited(t *testing.T) {
+	restoreGCProcessState(t)
 	calls := 0
 	origFree, origNow := gcFreeOSMemory, gcNow
 	defer func() { gcFreeOSMemory, gcNow = origFree, origNow }()
@@ -99,5 +120,16 @@ func TestFreeOSMemoryIsRateLimited(t *testing.T) {
 	applyGCLevel(st)
 	if calls != 2 {
 		t.Fatalf("re-entry after the interval: calls = %d, want 2", calls)
+	}
+}
+
+// The sweep's sample must take its heap fraction from the same source the
+// subtick uses. A stub on the shared seam proves the sample reads it.
+func TestSampleHeapFracComesFromTheSharedNumerator(t *testing.T) {
+	orig := heapFracFn
+	defer func() { heapFracFn = orig }()
+	heapFracFn = func() float64 { return 0.7777 }
+	if got := collectPressureSample().HeapFrac; got != 0.7777 {
+		t.Fatalf("sample HeapFrac = %v, want the shared numerator's 0.7777", got)
 	}
 }
