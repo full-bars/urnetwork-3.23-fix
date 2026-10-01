@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **A built-in baseline recorder** (`~/.urnetwork/baseline.jsonl`, `urnet-tools baseline show|mark|compare`): every provider records a small local time series of its own behaviour, on by default and with no setup, so an upgrade can be judged against what the box did before it rather than against a baseline somebody remembered to capture. Counts and totals only, never proxy addresses, usernames or passwords; an unmeasured field is omitted rather than written as zero. The comparison derives its rate from the lifetime counter's delta, excludes the post-restart ramp from both sides, and warns when capacity changed so a trimmed box is not misread as a regression. `set baseline off` stops recording without a restart and keeps the existing file.
+
 ## [v3.23.0-fix.32.8]
 
 ### Fixed

@@ -30,6 +30,7 @@ urnetwork-3.23-fix/
 │   ├── important_log.go              # Important-event log (/dev/shm/urnetwork-important.log)
 │   ├── oom_cap.go                    # OOM-aware start cap (shadow by default) + kill switch (oom-cap on|off|shadow)
 │   ├── action_ledger.go              # Audit ledger of capacity decisions (~/.urnetwork/autopilot.jsonl)
+│   ├── baseline.go                   # Local behaviour recorder (~/.urnetwork/baseline.jsonl) for upgrade comparison
 │   ├── memory_headroom.go            # Low free-memory watcher (host or cgroup headroom log)
 │   ├── resource_config_warn.go       # Startup warning when GOMEMLIMIT or RAM is short for the pool
 │   ├── smart_dialer_probe.go         # Background connect probes so the smart dialer can compare transports

@@ -312,6 +312,7 @@ var liveEffectKeys = map[string]bool{
 	// resolve* functions read globalControlState on every call — already live.
 	"fast_auth":                   true,
 	"smart_dialer":                true,
+	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
 	"oom_cap":                     true,
@@ -365,7 +366,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -466,6 +467,11 @@ var liveDefaults = map[string]string{
 	// off default; without the entry, clear reported success while the live
 	// dialer stayed enabled until restart.
 	"smart_dialer": "off",
+	// Clearing the baseline key re-enables the recorder. Its default is ON,
+	// because a free upgrade baseline is the point: leaving it off after an
+	// operator cleared it would mean the file silently stops growing and
+	// nobody notices until they need it.
+	"baseline": "on",
 	// Clearing the OOM cap key returns to the safe default: decide and log only.
 	"oom_cap": "shadow",
 }
@@ -513,6 +519,25 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "mark":
+		// An operator annotation on the baseline timeline. It goes through the
+		// socket so the provider stays the only writer: a second writer would be
+		// a second process appending to the same file during a hot swap, which
+		// is the case the append's inter-process lock exists for.
+		label := strings.TrimSpace(req.Value)
+		if label == "" {
+			// An unlabelled mark is a line a reader cannot act on and compare
+			// cannot use as a boundary, so it is refused rather than written.
+			return controlResponse{OK: false, Error: "mark: a label is required"}
+		}
+		ts, err := baselineMark(label)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("mark: %v", err)}
+		}
+		// Report the timestamp actually recorded, so the operator can correlate
+		// it with their own notes rather than guessing when the mark landed.
+		return controlResponse{OK: true, Value: ts.UTC().Format(time.RFC3339)}
 
 	case "ledger":
 		// The capacity-decision timeline (~/.urnetwork/autopilot.jsonl): the
@@ -1018,6 +1043,19 @@ func applyLiveSideEffect(key, value string) error {
 			was = "on"
 		}
 		tlog("⚙️ [control] applied smart_dialer=%s (was %s)\n", value, was)
+	case "baseline":
+		// Sampling is a goroutine that checks the flag each tick, so turning it
+		// off takes effect on the next tick and needs no restart and no signal.
+		// The file is deliberately left alone: it is the only copy of this
+		// box's pre-upgrade behaviour.
+		enabled := strings.EqualFold(value, "on")
+		was := "off"
+		if baselineIsEnabled() {
+			was = "on"
+		}
+		baselineEnabled.Store(enabled)
+		tlog("⚙️ [control] applied baseline=%s (was %s); the existing %s is kept\n",
+			value, was, baselineFileName)
 	}
 	return nil
 }
@@ -1194,6 +1232,18 @@ func applyPersistedRuntimeTuning(state *controlState) {
 		if err := applyLiveSideEffect("smart_dialer", v); err != nil {
 			tlog("[control] failed to apply persisted smart_dialer=%s: %s\n", v, err)
 		}
+	}
+	// Replay the baseline key in BOTH directions, and apply the DEFAULT when
+	// there is no persisted value. Honouring only an explicit "on" would leave a
+	// stale off in place across a restart; but doing nothing when the value is
+	// absent would leave whatever the flag happened to be. The default has to be
+	// applied explicitly, because an empty state carries no entry to replay.
+	v, ok := state.get("baseline")
+	if !ok {
+		v = liveDefaults["baseline"]
+	}
+	if err := applyLiveSideEffect("baseline", v); err != nil {
+		tlog("[control] failed to apply baseline=%s: %s\n", v, err)
 	}
 }
 

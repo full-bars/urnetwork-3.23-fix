@@ -35,6 +35,25 @@ func withTempHome(t *testing.T) string {
 	trimCapSeen.Store(0)
 	trimCapSourceSeen.Store("")
 	t.Cleanup(func() { trimCapSeen.Store(0); trimCapSourceSeen.Store("") })
+	// The baseline recorder's state is process-wide too. A test that switches
+	// the key off, or that provokes a write failure to rate-limit the warning,
+	// would otherwise leave the next test with a recorder that writes nothing or
+	// one that stays quiet for an hour. Reset both at setup and on cleanup, so
+	// a shuffled run cannot depend on which of those ran first.
+	prevBaselineEnabled := baselineEnabled.Load()
+	baselineEnabled.Store(true)
+	t.Cleanup(func() { baselineEnabled.Store(prevBaselineEnabled) })
+	baselineWarnLast.Store(0)
+	t.Cleanup(func() { baselineWarnLast.Store(0) })
+	prevBaselineHook := baselineWriteErrorHook
+	baselineWriteErrorHook = nil
+	t.Cleanup(func() { baselineWriteErrorHook = prevBaselineHook })
+	prevBaselineWarn := baselineWarnHook
+	baselineWarnHook = nil
+	t.Cleanup(func() { baselineWarnHook = prevBaselineWarn })
+	prevBaselineClock := baselineNowUnix
+	baselineNowUnix = func() int64 { return time.Now().Unix() }
+	t.Cleanup(func() { baselineNowUnix = prevBaselineClock })
 	// The deferred critical-log queue is process-wide too. A test that reads an
 	// unreadable proxy_trim or oom_cap.json queues a warning and never drains
 	// it, and the next test that drains would inherit that line and fail only

@@ -101,6 +101,7 @@ var controlKeys = map[string]bool{
 	"report_url":                  true,
 	"report_interval":             true,
 	"fast_auth":                   true,
+	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_url_max":               true,
 	"proxy_url_refresh":           true,
