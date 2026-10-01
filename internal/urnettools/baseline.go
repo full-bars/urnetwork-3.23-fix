@@ -474,32 +474,32 @@ func (r baselineRow) oomKills() int64 {
 	return r.OOM.Kills
 }
 
-// excludeRamp drops the rows within skip of the most recent start mark in the
-// segment, on BOTH sides of a comparison. A pool that just restarted under-earns
-// while it ramps back up, and those minutes would otherwise drag one side's
-// figure and make the comparison a story about the ramp rather than about the
-// upgrade.
+// excludeRamp drops the rows within skip after EVERY start mark in the segment,
+// on BOTH sides of a comparison. A pool that just restarted under-earns while it
+// ramps back up, and those minutes would otherwise drag one side's figure and
+// make the comparison a story about the ramp rather than about the upgrade. A
+// segment that spans more than one restart has more than one ramp, and each is
+// excluded; the settled rows between them are kept.
 //
-// The start mark itself is kept: it is the boundary, and the reader counts
-// restarts from it. A segment with no start mark is returned unchanged, because
-// there is no ramp to exclude.
+// The start marks themselves are kept: they are the boundaries, and the reader
+// counts restarts from them. A segment with no start mark is returned
+// unchanged, because there is no ramp to exclude.
 func excludeRamp(rows []baselineRow, skip time.Duration) []baselineRow {
-	var startAt time.Time
+	if skip <= 0 {
+		return rows
+	}
+	var starts []time.Time
 	for _, r := range rows {
 		if r.Kind != "start" {
 			continue
 		}
 		if at, ok := r.timeAt(); ok {
-			// The LAST start is the relevant one for a segment: an earlier one
-			// means the segment spans two lives and the later boundary is the
-			// one the ramp belongs to.
-			startAt = at
+			starts = append(starts, at)
 		}
 	}
-	if startAt.IsZero() || skip <= 0 {
+	if len(starts) == 0 {
 		return rows
 	}
-	cut := startAt.Add(skip)
 	out := make([]baselineRow, 0, len(rows))
 	for _, r := range rows {
 		at, ok := r.timeAt()
@@ -509,11 +509,21 @@ func excludeRamp(rows []baselineRow, skip time.Duration) []baselineRow {
 			out = append(out, r)
 			continue
 		}
-		if r.Kind == "start" || !at.Before(cut) {
+		if r.Kind == "start" || !inRamp(at, starts, skip) {
 			out = append(out, r)
 		}
 	}
 	return out
+}
+
+// inRamp reports whether at falls within skip after any of the start marks.
+func inRamp(at time.Time, starts []time.Time, skip time.Duration) bool {
+	for _, s := range starts {
+		if !at.Before(s) && at.Before(s.Add(skip)) {
+			return true
+		}
+	}
+	return false
 }
 
 // segmentStats is what compare reports for one side.
