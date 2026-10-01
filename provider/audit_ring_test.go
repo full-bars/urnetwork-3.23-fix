@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"path/filepath"
 	"sync"
 	"testing"
@@ -440,3 +441,108 @@ var auditT0 = time.Date(2026, 9, 21, 10, 0, 0, 0, time.UTC)
 func t0() time.Time { return auditT0 }
 func t1() time.Time { return auditT0.Add(1 * time.Second) }
 func t2() time.Time { return auditT0.Add(2 * time.Second) }
+
+// The successor merges audit.json once at takeover and persists the combined
+// ring. The parent then persists again at the END of its drain, up to
+// HotSwapDrainTimeout later, from its own ring, which has none of the
+// successor's entries. Two processes, so auditPersistMu cannot order them, and
+// the parent's write can land last. The disk then holds a parent-only ring, and
+// nothing rewrites it until the next control command more than 30s after the
+// last persist (or a clean shutdown), so a crash in that time loses the
+// successor's start entry. reconcileAuditRingAfterHandoff re-merges and
+// persists once the parent's drain is over, so the disk holds both.
+func TestReconcileAuditRingAfterHandoffRestoresSuccessorEntries(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	defer func() { globalAuditRing = prevRing }()
+	prevPersist := lastAuditPersist
+	defer func() { lastAuditPersist = prevPersist }()
+
+	// Parent: records and flushes at the handoff commit point.
+	parent := &AuditRing{path: path}
+	globalAuditRing = parent
+	lastAuditPersist = time.Time{}
+	recordAndPersist(CommandAudit{Timestamp: t0(), Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	recordAndPersist(CommandAudit{Timestamp: t1(), Cmd: "hotswap", Key: "version", Value: "v3.23.0", Source: "trigger", OK: true})
+	forceAuditPersist()
+
+	// Successor: spawn-time snapshot without the hotswap entry, plus its own
+	// start entry, then the takeover merge, which persists the combined ring.
+	succ := &AuditRing{path: path}
+	globalAuditRing = succ
+	succ.Append(CommandAudit{Timestamp: t0(), Cmd: "set", Key: "metrics", Value: "on", OK: true})
+	lastAuditPersist = time.Now()
+	recordProcessStart(true, true)
+	mergeAuditRingFromDisk()
+
+	// Parent's drain ends: it records one more entry and persists its own ring
+	// over the successor's.
+	globalAuditRing = parent
+	recordAndPersist(CommandAudit{Timestamp: t2(), Cmd: "set", Key: "node_name", Value: "nyc-1", OK: true})
+	forceAuditPersist()
+
+	onDisk := func() map[string]int {
+		var saved struct {
+			Entries []CommandAudit `json:"entries"`
+		}
+		if ok, err := loadJSONWithRecovery(path, &saved); err != nil || !ok {
+			t.Fatalf("reload audit.json: ok=%v err=%v", ok, err)
+		}
+		seen := map[string]int{}
+		for _, e := range saved.Entries {
+			seen[e.Cmd+"|"+e.Key]++
+		}
+		return seen
+	}
+
+	// Premise: this reproduces the bug. The parent's late write left the disk
+	// without the successor's start entry.
+	if onDisk()["start|version"] != 0 {
+		t.Fatal("test premise broken: the parent's drain-end persist did not overwrite the successor's start entry")
+	}
+
+	// The successor reconciles once the drain is over.
+	globalAuditRing = succ
+	reconcileAuditRingAfterHandoff(context.Background(), time.Millisecond)
+
+	got := onDisk()
+	want := map[string]int{
+		"set|metrics":     1,
+		"hotswap|version": 1,
+		"set|node_name":   1, // the parent's drain-window entry is carried over too
+		"start|version":   1, // the successor's own start entry is back
+	}
+	for k, n := range want {
+		if got[k] != n {
+			t.Errorf("on-disk entry %q count = %d, want %d (disk %v)", k, got[k], n, got)
+		}
+	}
+}
+
+// A cancelled context must stop the reconcile before it touches the disk: the
+// provider is shutting down and main()'s own final persist owns the file.
+func TestReconcileAuditRingAfterHandoffStopsOnCancel(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "audit.json")
+	prevRing := globalAuditRing
+	globalAuditRing = &AuditRing{path: path}
+	defer func() { globalAuditRing = prevRing }()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	done := make(chan struct{})
+	go func() {
+		reconcileAuditRingAfterHandoff(ctx, time.Hour)
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Fatal("reconcileAuditRingAfterHandoff did not return after its context was cancelled")
+	}
+	var saved struct {
+		Entries []CommandAudit `json:"entries"`
+	}
+	if ok, _ := loadJSONWithRecovery(path, &saved); ok {
+		t.Error("a cancelled reconcile still wrote audit.json")
+	}
+}

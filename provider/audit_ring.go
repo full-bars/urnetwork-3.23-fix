@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -342,4 +343,39 @@ func formatAuditSummary(e CommandAudit) string {
 		return fmt.Sprintf("%s %s=%s ok=%v src=%s", e.Cmd, e.Key, e.Value, e.OK, e.Source)
 	}
 	return fmt.Sprintf("%s %s ok=%v src=%s", e.Cmd, e.Key, e.OK, e.Source)
+}
+
+// auditReconcileGrace is how long past the parent's drain timeout the
+// successor waits before reconciling, so the parent's drain-end persist has
+// landed first.
+const auditReconcileGrace = 10 * time.Second
+
+// reconcileAuditRingAfterHandoff re-merges audit.json into the live ring and
+// persists it once the parent's drain is over.
+//
+// The takeover merge runs once, right after the parent yields its control
+// socket, and persists the combined ring. The parent then persists AGAIN at the
+// end of its drain (up to HotSwapDrainTimeout later) from its own ring, which
+// holds none of the successor's entries. They are two processes, so
+// auditPersistMu cannot order the writes, and the parent's can land last. The
+// disk then holds a parent-only ring until the next control command more than
+// 30s after the last persist, or a clean shutdown, so a crash in between loses
+// the successor's start entry. Waiting past the drain, merging again (which also
+// carries over anything the parent recorded during the drain) and persisting
+// unconditionally puts the authoritative ring back on disk.
+//
+// The persist is unconditional because mergeAuditRingFromDisk persists only when
+// it added something, and after the parent's overwrite it often adds nothing.
+// A cancelled ctx returns without touching the disk: the provider is shutting
+// down and main()'s own final persist owns the file.
+func reconcileAuditRingAfterHandoff(ctx context.Context, wait time.Duration) {
+	t := time.NewTimer(wait)
+	defer t.Stop()
+	select {
+	case <-ctx.Done():
+		return
+	case <-t.C:
+	}
+	mergeAuditRingFromDisk()
+	forceAuditPersist()
 }
