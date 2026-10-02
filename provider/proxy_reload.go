@@ -770,8 +770,18 @@ func (r *ProxyReloader) reload() {
 			// prune further down is gated on urlCacheLoaded for exactly this
 			// reason; the cancel has to be too. A proxy is only "no longer
 			// desired" when we actually know what the desired set is.
+			//
+			// Only URL-sourced proxies depend on that cache. A file or internal
+			// proxy is "no longer desired" because the operator removed it from a
+			// source this reload DID read, so an unreadable proxy_url.json must
+			// not hold it up: with the gate on every address, `proxy remove` was
+			// silently never applied for as long as the file stayed unreadable. An
+			// entry with no recorded source is treated as URL-sourced (the
+			// conservative reading for state written before sources were recorded).
 			if !urlCacheLoaded {
-				continue
+				if e, ok := r.state.Proxies[addr]; !ok || e.Source == "" || e.Source == "url" {
+					continue
+				}
 			}
 			removed = append(removed, addr)
 		}

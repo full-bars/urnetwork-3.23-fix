@@ -447,6 +447,19 @@ var fetchMu sync.Mutex
 func readURLStateForMerge() (*ProxyURLState, bool) {
 	state, err := readProxyURLState()
 	if err != nil {
+		// Unparseable content is not a transient read error: skipping would
+		// repeat forever (every other reader returns early too, so nothing ever
+		// rewrites the file) and the URL pipeline would stay off. Keep the bad
+		// file as evidence and start from an empty cache, as 32.7 did.
+		if isProxyURLStateCorrupt(err) {
+			dest, qerr := quarantineProxyURLState()
+			if qerr == nil {
+				importantLogf("[proxy][url] proxy_url.json is corrupt (%v); kept as %s and starting from an empty cache", err, dest)
+				return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}, true
+			}
+			tlog("[proxy][url] warning: proxy_url.json is corrupt (%v) and could not be moved aside (%v), skipping this merge cycle\n", err, qerr)
+			return nil, false
+		}
 		tlog("[proxy][url] warning: could not read proxy_url.json, skipping this merge cycle to protect the cache: %v\n", err)
 		return nil, false
 	}

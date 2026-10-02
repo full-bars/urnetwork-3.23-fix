@@ -121,6 +121,34 @@ func readProxyURLStateFrom(path string) (*ProxyURLState, error) {
 	return &s, nil
 }
 
+// isProxyURLStateCorrupt reports whether err from readProxyURLState means the
+// file's CONTENT cannot be parsed (empty, truncated or hand-edited), as opposed
+// to an I/O error reading it. A read error can be transient and the file is
+// worth keeping; unparseable content is not transient and nothing will ever
+// make it parse, so it must not be treated like one.
+func isProxyURLStateCorrupt(err error) bool {
+	var syntaxErr *json.SyntaxError
+	var typeErr *json.UnmarshalTypeError
+	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+}
+
+// quarantineProxyURLState moves an unparseable proxy_url.json aside to
+// proxy_url.json.corrupt (replacing any earlier quarantined copy, so the disk
+// cost stays bounded) and returns where it went. The evidence is kept; the
+// pipeline can then start from an empty cache instead of skipping every merge
+// cycle for as long as the bad file sits there.
+func quarantineProxyURLState() (string, error) {
+	path, err := proxyURLStatePath()
+	if err != nil {
+		return "", err
+	}
+	dest := path + ".corrupt"
+	if err := os.Rename(path, dest); err != nil {
+		return "", err
+	}
+	return dest, nil
+}
+
 func writeProxyURLState(s *ProxyURLState) error {
 	path, err := proxyURLStatePath()
 	if err != nil {
