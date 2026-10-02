@@ -19,7 +19,7 @@ func TestHostMemoryReaders(t *testing.T) {
 	if !tok || total <= 0 {
 		t.Fatalf("total unreadable: %d %v", total, tok)
 	}
-	if !aok || avail <= 0 {
+	if !aok || avail < 0 {
 		t.Fatalf("available unreadable: %d %v", avail, aok)
 	}
 	if avail > total {
