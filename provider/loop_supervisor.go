@@ -106,10 +106,12 @@ func superviseLoop(ctx context.Context, name string, fn func(), onFail func()) {
 		if onFail != nil {
 			connect.HandleError(onFail)
 		}
-		setLoopUp(name, false, true)
-		if !loopSleep(ctx, backoff) {
+		if !loopSleep(ctx, backoff) || ctx.Err() != nil {
 			return
 		}
+		// Counted only once another run is about to start, so a shutdown
+		// during the backoff does not report a restart that never happened.
+		setLoopUp(name, false, true)
 	}
 }
 

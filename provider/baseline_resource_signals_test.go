@@ -9,18 +9,31 @@ import (
 
 func TestParseSockstat(t *testing.T) {
 	content := "sockets: used 190\nTCP: inuse 29 orphan 3 tw 112 alloc 40 mem 7\nUDP: inuse 4 mem 2\n"
-	tw, orphans, ok := parseSockstat(content)
-	if !ok || tw != 112 || orphans != 3 {
-		t.Fatalf("parseSockstat = (%d, %d, %v), want (112, 3, true)", tw, orphans, ok)
+	tw, orphans, haveTW, haveOrphan := parseSockstat(content)
+	if !haveTW || !haveOrphan || tw != 112 || orphans != 3 {
+		t.Fatalf("parseSockstat = (%d, %d, %v, %v), want (112, 3, true, true)", tw, orphans, haveTW, haveOrphan)
 	}
 }
 
 func TestParseSockstatMissingTCPLine(t *testing.T) {
-	if _, _, ok := parseSockstat("sockets: used 190\nUDP: inuse 4 mem 2\n"); ok {
-		t.Fatal("ok = true with no TCP line, want false")
+	if _, _, a, b := parseSockstat("sockets: used 190\nUDP: inuse 4 mem 2\n"); a || b {
+		t.Fatal("reported a counter with no TCP line, want none")
 	}
-	if _, _, ok := parseSockstat("TCP: inuse 29 alloc 40 mem 7\n"); ok {
-		t.Fatal("ok = true with neither tw nor orphan, want false")
+	if _, _, a, b := parseSockstat("TCP: inuse 29 alloc 40 mem 7\n"); a || b {
+		t.Fatal("reported a counter with neither tw nor orphan, want none")
+	}
+}
+
+// A line carrying only one counter must not make the other read as zero.
+func TestParseSockstatPartialLine(t *testing.T) {
+	tw, _, haveTW, haveOrphan := parseSockstat("TCP: inuse 29 tw 112 alloc 40\n")
+	if !haveTW || haveOrphan || tw != 112 {
+		t.Fatalf("tw-only line = (%d, %v, %v), want (112, true, false)", tw, haveTW, haveOrphan)
+	}
+	orphans := int64(0)
+	_, orphans, haveTW, haveOrphan = parseSockstat("TCP: inuse 29 orphan 0 alloc 40\n")
+	if haveTW || !haveOrphan || orphans != 0 {
+		t.Fatalf("orphan-only line = (%d, %v, %v), want (0, false, true)", orphans, haveTW, haveOrphan)
 	}
 }
 

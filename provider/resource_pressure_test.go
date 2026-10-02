@@ -191,6 +191,20 @@ func TestAimdStep(t *testing.T) {
 	}
 }
 
+func TestClearPressureStatusRemovesStaleScore(t *testing.T) {
+	home := withTempHome(t)
+	writePressureStatus(0.95, map[string]float64{"psi_mem": 0.95}, &gcGovernorState{})
+	path := filepath.Join(home, ".urnetwork", "pressure_status")
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal(err)
+	}
+	clearPressureStatus()
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("pressure_status still present after clear: %v", err)
+	}
+	clearPressureStatus() // idempotent when already gone
+}
+
 func TestWritePressureStatus(t *testing.T) {
 	home := withTempHome(t)
 	gc := &gcGovernorState{level: 2, lastHeapFrac: 0.85, gcStateName: "hard"}

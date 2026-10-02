@@ -38,14 +38,14 @@ type baselineNet struct {
 //
 //	TCP: inuse 29 orphan 3 tw 112 alloc 40 mem 7
 //
-// ok is false when there is no TCP line or it carries neither counter.
-func parseSockstat(content string) (timeWait, orphans int64, ok bool) {
+// Each counter reports its own presence: a line carrying only one of them
+// must not turn the other into a zero reading.
+func parseSockstat(content string) (timeWait, orphans int64, haveTW, haveOrphan bool) {
 	for _, line := range strings.Split(content, "\n") {
 		if !strings.HasPrefix(line, "TCP:") {
 			continue
 		}
 		fields := strings.Fields(line)
-		var haveTW, haveOrphan bool
 		for i := 1; i+1 < len(fields); i++ {
 			switch fields[i] {
 			case "tw":
@@ -58,9 +58,9 @@ func parseSockstat(content string) (timeWait, orphans int64, ok bool) {
 				}
 			}
 		}
-		return timeWait, orphans, haveTW || haveOrphan
+		return timeWait, orphans, haveTW, haveOrphan
 	}
-	return 0, 0, false
+	return 0, 0, false, false
 }
 
 // conntrackUsedFrac is count/max, unknown when max is not positive. A real
@@ -97,8 +97,12 @@ func readBaselineNet() *baselineNet {
 		}
 	}
 	if b, err := os.ReadFile("/proc/net/sockstat"); err == nil {
-		if tw, orphans, ok := parseSockstat(string(b)); ok {
-			n.TimeWait, n.Orphans, any = &tw, &orphans, true
+		tw, orphans, haveTW, haveOrphan := parseSockstat(string(b))
+		if haveTW {
+			n.TimeWait, any = &tw, true
+		}
+		if haveOrphan {
+			n.Orphans, any = &orphans, true
 		}
 	}
 	if !any {

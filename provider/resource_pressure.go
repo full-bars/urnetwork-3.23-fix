@@ -700,7 +700,10 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// leave the score, memory budget and GOGC neutral. Without it a dead monitor
 	// froze its last reading in force, and a restart would adopt the tightened
 	// GOGC as its baseline.
-	defer resetPressureActuators(&gcState, debug.SetGCPercent)
+	defer func() {
+		resetPressureActuators(&gcState, debug.SetGCPercent)
+		clearPressureStatus()
+	}()
 
 	var headroom headroomTracker
 	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
@@ -861,6 +864,17 @@ func writePressureStatus(score float64, comps map[string]float64, gcState *gcGov
 	path := filepath.Join(home, ".urnetwork", "pressure_status")
 	_ = os.MkdirAll(filepath.Dir(path), 0700)
 	_ = os.WriteFile(path, payload, 0600)
+}
+
+// clearPressureStatus removes the persisted score when the monitor exits, so
+// a reader does not see the dead monitor's last (possibly emergency) reading
+// during the restart backoff. Best-effort, like writePressureStatus.
+func clearPressureStatus() {
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return
+	}
+	_ = os.Remove(filepath.Join(home, ".urnetwork", "pressure_status"))
 }
 
 // gcStateNameOf returns the governor's human-readable state, defaulting to
