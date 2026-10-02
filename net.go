@@ -472,7 +472,7 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 			return nil, err
 		}
 
-		bw := RegisterProxyBandwidth(self.Index)
+		bw := RegisteredProxyBandwidth(self.Index)
 		if bw != nil {
 			tc := &trackedConn{Conn: conn, bw: bw}
 			return tc, nil

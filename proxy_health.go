@@ -242,6 +242,25 @@ func RegisterProxyBandwidth(index int) *ProxyBandwidth {
 	return h.bw
 }
 
+// RegisteredProxyBandwidth returns the bandwidth of a proxy that is currently
+// registered, or nil. Unlike RegisterProxyBandwidth it NEVER creates a registry
+// entry: it is for callers that merely observe or account against a proxy
+// (logging, the dial path). A draining proxy's late log line or dial used to
+// recreate an address-less entry after UnregisterProxy that nothing would ever
+// remove, inflating ProxyHealthCount and everything derived from it.
+func RegisteredProxyBandwidth(index int) *ProxyBandwidth {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	h, ok := proxyHealthByIndex[index]
+	if !ok {
+		return nil
+	}
+	if h.bw == nil {
+		h.bw = &ProxyBandwidth{}
+	}
+	return h.bw
+}
+
 // markProxyUp records that the proxy's platform transport is live.
 func markProxyUp(index int) {
 	proxyHealthMu.Lock()
