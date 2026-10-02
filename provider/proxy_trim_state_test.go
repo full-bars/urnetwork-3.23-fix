@@ -467,3 +467,46 @@ func TestReload_WritesTheLedgerAfterReleasingTheReloaderLock(t *testing.T) {
 		t.Fatalf("the ledger must still get the trim entry, got %+v", got)
 	}
 }
+
+// While desired exceeds the cap the held proxies re-enter the budget on every
+// reload, so "held N additions" is true every cycle. That is not news: the
+// durable events.log and the important buffer must get the applied line when
+// the cap changes or running proxies are shed, not once per reload (hourly
+// reconcile, every slow-auth reload, every drain re-trigger) for the life of
+// the cap.
+func TestReload_HeldAdditionsDoNotRepeatTheDurableAppliedLine(t *testing.T) {
+	resetTrimCapSeen()
+	t.Cleanup(resetTrimCapSeen)
+	r, _, _ := trimFixtureRunning(t, 2) // capped startup: 2 running, 1 held
+	if err := writeTrimTarget(2); err != nil {
+		t.Fatal(err)
+	}
+	countApplied := func() int {
+		p, err := critLogPath()
+		if err != nil {
+			t.Fatal(err)
+		}
+		b, err := os.ReadFile(p)
+		if err != nil {
+			return 0
+		}
+		return strings.Count(string(b), "[proxy][trim] applied")
+	}
+
+	r.reload() // the cap first appears: a change, logged durably once
+	afterFirst := countApplied()
+	if afterFirst != 1 {
+		t.Fatalf("the cap change must write exactly one durable applied line, got %d", afterFirst)
+	}
+
+	var ram string
+	for i := 0; i < 3; i++ {
+		ram += captureTlog(t, func() { r.reload() })
+	}
+	if got := countApplied(); got != afterFirst {
+		t.Fatalf("held additions with an unchanged cap wrote %d more durable applied lines, want 0", got-afterFirst)
+	}
+	if !strings.Contains(ram, "[proxy][trim] applied: cap=2: shed 0 worst-graded running, held 1 additions") {
+		t.Fatalf("the held-additions state must stay visible on the RAM log, got:\n%s", ram)
+	}
+}
