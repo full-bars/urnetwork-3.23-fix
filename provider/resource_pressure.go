@@ -288,6 +288,10 @@ func collectPressureSample() pressureSample {
 
 	if v, err := readPSI("memory"); err == nil {
 		s.PSIMem = v
+	} else if v, herr := readHostMemPressure(); herr == nil {
+		// No PSI (macOS, Windows, old kernels): use the OS memory-pressure
+		// level, translated onto the same percent scale.
+		s.PSIMem = v
 	} else {
 		s.SensorErrs["psi_mem"] = err
 	}
