@@ -612,11 +612,11 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(probeLines) > 0 {
 			// The fetch itself succeeded but every NEW line was unparseable
 			// or dead — distinct from the fetch-failed case above (N3).
-			tlog("[proxy][url] %s: fetched %d lines, %d new, all unparseable or dead\n", url, len(lines), len(probeLines))
-			warnProxySourceFailure(url, fmt.Sprintf("fetched %d lines, %d new, all unparseable or dead", len(lines), len(probeLines)))
+			tlog("[proxy][url] %s: fetched %d lines, %d new, all unparseable or dead\n", labels[i], len(lines), len(probeLines))
+			warnProxySourceFailure(labels[i], fmt.Sprintf("fetched %d lines, %d new, all unparseable or dead", len(lines), len(probeLines)))
 		}
 		tlog("[proxy][url] probed %s: %d/%d new qualified (%d cached, skipped), %d below-bar, %d socks5-only\n",
-			url, len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
+			labels[i], len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
 	}
 	if skippedCached > 0 {
 		// Cached-skip is the main efficiency change of this PR; the

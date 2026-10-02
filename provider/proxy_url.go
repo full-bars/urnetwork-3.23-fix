@@ -220,13 +220,26 @@ var proxyURLHTTPClient = &http.Client{
 // lines. It does not parse the lines — callers parse each line with
 // parseProxyURLLine. Returns an error on network failure, non-200 status, or
 // an empty body; never blocks longer than 30s.
+// stripURLFromError returns the underlying cause of a *net/url.Error, whose own
+// message repeats the request URL (credentials and query tokens included). Any
+// other error is returned unchanged.
+func stripURLFromError(err error) error {
+	var ue *neturl.Error
+	if errors.As(err, &ue) && ue.Err != nil {
+		return ue.Err
+	}
+	return err
+}
+
 func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 	reqCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 	defer cancel()
 
 	req, err := http.NewRequestWithContext(reqCtx, http.MethodGet, url, nil)
 	if err != nil {
-		return nil, fmt.Errorf("build request: %w", err)
+		// url.Parse failures are also *net/url.Error values whose message embeds
+		// the whole URL, query token included.
+		return nil, fmt.Errorf("build request: %w", stripURLFromError(err))
 	}
 	resp, err := proxyURLHTTPClient.Do(req)
 	if err != nil {
@@ -234,11 +247,7 @@ func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
 		// request URL, credentials included. That string lands in the log,
 		// the resolution reason and the operator warning, so surface the
 		// underlying cause (the URL-free URL field) instead.
-		var ue *neturl.Error
-		if errors.As(err, &ue) && ue.Err != nil {
-			err = ue.Err
-		}
-		return nil, fmt.Errorf("fetch: %w", err)
+		return nil, fmt.Errorf("fetch: %w", stripURLFromError(err))
 	}
 	defer resp.Body.Close()
 
