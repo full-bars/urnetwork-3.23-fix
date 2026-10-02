@@ -7,3 +7,6 @@ import "os"
 // chownConfigFdToDirOwner is a no-op on platforms without a unix ownership
 // model (the config dir belongs to the invoking user on Windows already).
 func chownConfigFdToDirOwner(file *os.File, dir string) {}
+
+// mkdirAllForOwner is os.MkdirAll where there is no unix ownership model.
+func mkdirAllForOwner(dir string, perm os.FileMode) error { return os.MkdirAll(dir, perm) }
