@@ -103,6 +103,19 @@ func TestSuperviseLoopRestartsAfterUnexpectedReturn(t *testing.T) {
 	}
 }
 
+// A shutdown during the backoff must not report a restart that never happened.
+func TestSuperviseLoopNoRestartCountedWhenCancelledDuringBackoff(t *testing.T) {
+	resetLoopStatus("test-cancel-backoff")
+	origSleep := loopSleep
+	defer func() { loopSleep = origSleep }()
+	ctx, cancel := context.WithCancel(context.Background())
+	loopSleep = func(ctx context.Context, d time.Duration) bool { cancel(); return false }
+	superviseLoop(ctx, "test-cancel-backoff", func() {}, nil)
+	if st := loopStatusOf("test-cancel-backoff"); st.Restarts != 0 {
+		t.Fatalf("restarts = %d, want 0", st.Restarts)
+	}
+}
+
 func TestSupervisedLoopMetricsLines(t *testing.T) {
 	loopStatusOf("test-metrics") // register
 	out := supervisedLoopMetrics()

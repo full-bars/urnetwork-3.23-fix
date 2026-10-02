@@ -1,6 +1,11 @@
 package urnettools
 
-import "testing"
+import (
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"testing"
+)
 
 // `urnet-tools set baseline off` must be sent to the provider as the VALUE
 // "off", not as the generic clear. The clear path drops the override and
@@ -32,5 +37,25 @@ func TestDefaultOnKeysNeverTakeTheOffAsClearPath(t *testing.T) {
 		if treatsOffAsClear(k) {
 			t.Errorf("%s has a live default that is not off, so off must be sent as a value", k)
 		}
+	}
+}
+
+// The caller, not just the lookup helpers: with the provider down, `set
+// baseline off` must queue a "set ... off" op rather than a "clear".
+func TestSetBaselineOffQueuesAValueThroughTheCaller(t *testing.T) {
+	dir := t.TempDir()
+	if err := applySetOverride(Provider{StateDir: dir}, "baseline", "off", false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(filepath.Join(dir, "pending_overrides.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ops []pendingOp
+	if err := json.Unmarshal(data, &ops); err != nil {
+		t.Fatal(err)
+	}
+	if len(ops) != 1 || ops[0].Op != "set" || ops[0].Key != "baseline" || ops[0].Value != "off" {
+		t.Fatalf("queued ops = %+v, want one set baseline=off", ops)
 	}
 }
