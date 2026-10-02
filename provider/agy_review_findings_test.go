@@ -39,6 +39,7 @@ func TestDeferredCritWriteDoesNotDoubleTheNewline(t *testing.T) {
 
 // Draining empties the queue, so a line cannot be written twice.
 func TestDrainDeferredCritEmptiesTheQueue(t *testing.T) {
+	drainDeferredCrit() // another test in a shuffled run may have left a line in the process-wide queue
 	deferCritWrite("once")
 	if got := drainDeferredCrit(); len(got) != 1 {
 		t.Fatalf("first drain = %q, want one line", got)
