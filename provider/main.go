@@ -4298,9 +4298,11 @@ func provide(opts docopt.Opts) {
 	go connect.HandleError(func() { runProxyGradeSummary(ctx) })
 	go connect.HandleError(func() { pruneURLProxyBlacklist(ctx) })
 	go connect.HandleError(func() { runProxyURLCleanup(ctx, cleanupScope, cleanupInterval, selfHealEnabled) })
-	go connect.HandleError(func() { runPressureMonitor(ctx, selfHealEnabled) })
-	go connect.HandleError(func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) })
-	go connect.HandleError(func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) })
+	// Supervised: a panic restarts the loop with backoff instead of ending it for
+	// good (and leaving the last pressure score, GOGC and memory budget in force).
+	go superviseLoop(ctx, "pressure_monitor", func() { runPressureMonitor(ctx, selfHealEnabled) }, nil)
+	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
+	go superviseLoop(ctx, "degraded_proxy_reaper", func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) }, nil)
 	// Proxy audit: parks proven-junk paid/file proxies when proxy audit is on
 	// (`urnet-tools proxy audit on`), and only logs would-park otherwise. Also
 	// started in a HotSwap candidate on purpose: its memory begins at its own
