@@ -53,3 +53,42 @@ func TestFetchCycleDeadSourceLinesUseTheRedactedLabel(t *testing.T) {
 		t.Fatalf("the cycle's log output leaks the URL's token:\n%s", out)
 	}
 }
+
+// A redirect target reaches ssrfVerifyURLHost, and its errors used to embed the
+// URL: the hostless "no host" message used %q on the raw URL, and a url.Parse
+// failure is a *url.Error that carries it. stripURLFromError on the outer error
+// returns that inner error, so a token in a redirect's query string could reach
+// the fetch-failure log.
+func TestSSRFVerifyURLHostErrorsDoNotEchoTheURL(t *testing.T) {
+	for _, raw := range []string{
+		"https:?token=SECRET",
+		"http://exa mple.com/?token=SECRET",
+	} {
+		err := ssrfVerifyURLHost(raw)
+		if err == nil {
+			t.Fatalf("ssrfVerifyURLHost(%q) accepted a URL it should refuse", raw)
+		}
+		if strings.Contains(err.Error(), "SECRET") {
+			t.Errorf("ssrfVerifyURLHost(%q) leaks the token: %q", raw, err.Error())
+		}
+	}
+}
+
+func TestFetchRedirectToAHostlessURLDoesNotEchoItsToken(t *testing.T) {
+	prevLoopback := ssrfAllowLoopback.Load()
+	ssrfAllowLoopback.Store(true)
+	t.Cleanup(func() { ssrfAllowLoopback.Store(prevLoopback) })
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Location", "https:?token=REMOTE_ONLY")
+		w.WriteHeader(http.StatusFound)
+	}))
+	defer srv.Close()
+
+	_, err := fetchProxyURLLines(context.Background(), srv.URL+"/p.txt")
+	if err == nil {
+		t.Fatal("expected the redirect to be refused")
+	}
+	if strings.Contains(err.Error(), "REMOTE_ONLY") {
+		t.Fatalf("the fetch error leaks the redirect's token: %q", err.Error())
+	}
+}

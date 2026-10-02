@@ -64,13 +64,16 @@ func ssrfLookupHost(host string) error {
 // ssrfVerifyURLHost rejects a URL whose recorded host resolves only to blocked
 // (non-global) addresses. host may be an IP literal or a hostname.
 func ssrfVerifyURLHost(rawURL string) error {
+	// Neither error may carry rawURL: a redirect target can hold a query token,
+	// and these errors reach the fetch-failure log. A url.Parse failure is a
+	// *url.Error that embeds the URL, so only its cause is returned.
 	u, err := url.Parse(rawURL)
 	if err != nil {
-		return err
+		return stripURLFromError(err)
 	}
 	host := u.Hostname()
 	if host == "" {
-		return fmt.Errorf("source URL %q has no host", rawURL)
+		return fmt.Errorf("source URL has no host")
 	}
 	return ssrfLookupHost(host)
 }
