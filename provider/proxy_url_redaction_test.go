@@ -92,3 +92,21 @@ func TestFetchRedirectToAHostlessURLDoesNotEchoItsToken(t *testing.T) {
 		t.Fatalf("the fetch error leaks the redirect's token: %q", err.Error())
 	}
 }
+
+// The resolution reason feeds the systemd status line and the node snapshot,
+// and the operator warning goes to the important log. Both must carry the
+// redacted source label, not the raw URL.
+func TestFetchFailureResolutionReasonUsesTheRedactedLabel(t *testing.T) {
+	withTempHome(t)
+	resetGlobalControlStateForTest()
+	captureTlog(t, func() {
+		fetchAndMergeProxyURLs(context.Background(), []string{"http://127.0.0.1:1/p%zz.txt?token=SECRET"}, 0, "127.0.0.1", 1)
+	})
+	reason := getProxyResolutionReason()
+	if reason == "" {
+		t.Fatal("a failed fetch left no resolution reason")
+	}
+	if strings.Contains(reason, "SECRET") {
+		t.Fatalf("the resolution reason leaks the URL's token: %q", reason)
+	}
+}
