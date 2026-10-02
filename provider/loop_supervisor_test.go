@@ -8,6 +8,14 @@ import (
 	"time"
 )
 
+// resetLoopStatus forgets a loop's recorded status so a test that asserts exact
+// restart counts also passes under -count=N, where the registry persists.
+func resetLoopStatus(name string) {
+	loopStatusMu.Lock()
+	defer loopStatusMu.Unlock()
+	delete(loopStatuses, name)
+}
+
 func TestNextLoopBackoff(t *testing.T) {
 	cases := []struct {
 		name         string
@@ -29,6 +37,7 @@ func TestNextLoopBackoff(t *testing.T) {
 // A panicking loop must be restarted, with growing backoff, and onFail must
 // run after every failure so the loop's actuators fail neutral.
 func TestSuperviseLoopRestartsAfterPanic(t *testing.T) {
+	resetLoopStatus("test-panic")
 	origSleep := loopSleep
 	defer func() { loopSleep = origSleep }()
 	var sleeps []time.Duration
@@ -74,6 +83,7 @@ func TestSuperviseLoopRestartsAfterPanic(t *testing.T) {
 // A loop that returns while the context is live is a failure too, not a clean
 // exit: without this a silently ended loop is never noticed.
 func TestSuperviseLoopRestartsAfterUnexpectedReturn(t *testing.T) {
+	resetLoopStatus("test-return")
 	origSleep := loopSleep
 	defer func() { loopSleep = origSleep }()
 	loopSleep = func(ctx context.Context, d time.Duration) bool { return ctx.Err() == nil }
