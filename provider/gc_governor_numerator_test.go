@@ -12,6 +12,11 @@ const mib = 1 << 20
 // test that tightens the governor does not leave GOGC low for the rest of the run.
 func restoreGCProcessState(t *testing.T) {
 	t.Helper()
+	// gcGovernor returns early when GOGC is set or the kill switch is on, so
+	// every governor test must run with adaptive GC enabled regardless of the
+	// environment it inherits.
+	t.Setenv("GOGC", "")
+	t.Setenv(adaptiveGCDisableEnv, "")
 	orig, _ := readGOGCPercent()
 	t.Cleanup(func() {
 		if orig > 0 {
