@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 )
@@ -339,10 +340,6 @@ func oomReadJSONChecked(path string, v any) (ok bool, warning string) {
 }
 
 func oomWriteJSON(path string, v any) error {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return err
-	}
 	// A HotSwap parent and candidate both write these files at start. Without
 	// the lock one can truncate the shared .tmp while the other renames it, and
 	// the state file ends up holding a partial write.
@@ -351,6 +348,17 @@ func oomWriteJSON(path string, v any) error {
 		return err
 	}
 	defer release()
+	return oomWriteJSONLocked(path, v)
+}
+
+// oomWriteJSONLocked is oomWriteJSON for a caller that already holds the file's
+// lock (acquireJWTStoreLock is not reentrant: a second acquire from the same
+// process blocks).
+func oomWriteJSONLocked(path string, v any) error {
+	b, err := json.Marshal(v)
+	if err != nil {
+		return err
+	}
 	tmp := path + ".tmp"
 	if err := os.WriteFile(tmp, b, 0o600); err != nil {
 		return err
@@ -629,8 +637,25 @@ func oomCapUpdatePeak(running int, now time.Time) {
 		return
 	}
 	path := filepath.Join(dir, "run.marker")
+	// Read, decide and write under the file's lock. During a HotSwap the parent
+	// is still draining while the candidate has already written its own marker,
+	// and an unlocked read-modify-write let the parent's hourly heartbeat land
+	// on top of the candidate's fresh marker with its own older OOMKills
+	// baseline and a peak counted from its draining pool, so the next start
+	// counted a kill the candidate had already acted on a second time.
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return
+	}
+	defer release()
 	var m oomMarker
 	if !oomReadJSON(path, &m) {
+		return
+	}
+	// A marker this process did not write belongs to another start (the
+	// candidate's, during a HotSwap). Leave it alone: refreshing it here would
+	// vouch for a process that is not this one and mix this pool into its peak.
+	if own, ok := oomOwnMarkerStart.Load(path); ok && m.StartedUnix != own.(int64) {
 		return
 	}
 	next := m
@@ -640,9 +665,14 @@ func oomCapUpdatePeak(running int, now time.Time) {
 	}
 	next, heartbeatChanged := oomMarkerWithHeartbeat(next, now)
 	if peakChanged || heartbeatChanged {
-		_ = oomWriteJSON(path, next)
+		_ = oomWriteJSONLocked(path, next)
 	}
 }
+
+// oomOwnMarkerStart records, per marker path, the StartedUnix of the marker this
+// process wrote at its own start. oomCapUpdatePeak only touches a marker that
+// still carries it.
+var oomOwnMarkerStart sync.Map
 
 // oomCapRecordStart writes this start's marker (after the launch selection, so
 // it records what was actually launched).
@@ -659,7 +689,17 @@ func oomCapRecordStart(launching int, bootID string, oomKills int64, now time.Ti
 		return
 	}
 	_ = os.MkdirAll(dir, 0o700)
-	_ = oomWriteJSON(filepath.Join(dir, "run.marker"), oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix()})
+	path := filepath.Join(dir, "run.marker")
+	// Under the same lock oomCapUpdatePeak takes, so a draining parent's
+	// read-modify-write cannot straddle this write.
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return
+	}
+	defer release()
+	if oomWriteJSONLocked(path, oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix()}) == nil {
+		oomOwnMarkerStart.Store(path, now.Unix())
+	}
 }
 
 // oomCapStartup is decide + record in one call (tests, and callers that do not
