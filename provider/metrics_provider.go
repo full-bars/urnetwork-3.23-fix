@@ -70,9 +70,9 @@ func markCleanShutdownIn(stateDir string) {
 }
 
 // readCleanShutdown reports whether the state dir carries a clean-shutdown
-// marker, leaving the file in place: it records that the process which ran here
-// before us exited cleanly, and that stays true until whoever runs next rewrites
-// it on its own exit.
+// marker. It does not remove it: detectStartup deletes the marker right after
+// reading it, so the marker is consumed once per start and a crash, which never
+// runs the clean-exit path, can never be mislabelled clean by a stale file.
 func readCleanShutdown(stateDir string) bool {
 	if stateDir == "" {
 		return false

@@ -3307,8 +3307,8 @@ func provide(opts docopt.Opts) {
 					// never queue behind slow or dead proxies for a shared
 					// 3-slot semaphore, even if it enters slow-retry mode
 					// itself.
-					usesSlowRetrySemaphore := proxySettings != nil && !isURLSourced && (authFailures >= maxAuthFailures || 0 < slowRetryCycles)
-					if usesSlowRetrySemaphore {
+					useSemaphore := usesSlowRetrySemaphore(proxySettings != nil, isURLSourced, authFailures, maxAuthFailures, slowRetryCycles, genuineRetryCycles)
+					if useSemaphore {
 						select {
 						case slowRetrySemaphore <- struct{}{}:
 						case <-proxyCtx.Done():
@@ -3319,7 +3319,7 @@ func provide(opts docopt.Opts) {
 					release, waitErr := globalProxyAdmissionGate.Admit(proxyCtx, admitFailureCount)
 					admitWait = time.Since(admitStart)
 					if waitErr != nil {
-						if usesSlowRetrySemaphore {
+						if useSemaphore {
 							<-slowRetrySemaphore
 						}
 						return "", connect.Id{}, false, waitErr
@@ -3343,7 +3343,7 @@ func provide(opts docopt.Opts) {
 					// cycle, potentially causing genuine proxies to fail too.
 					// Release immediately after auth — the slot must not be
 					// held across the 24h sleep in the slow-retry block below.
-					if usesSlowRetrySemaphore {
+					if useSemaphore {
 						<-slowRetrySemaphore
 					}
 					if proxySettings != nil {
@@ -7016,4 +7016,20 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 			tlog("[proxy] warn: failed to signal proxy reload after warmup (write .reload): %v\n", err)
 		}
 	}
+}
+
+// usesSlowRetrySemaphore reports whether this auth attempt must take a slot on
+// the shared slow-retry semaphore, which caps how many failing paid or file
+// proxies sit in the auth pipeline at once. The direct connection (the
+// provider's own identity) and URL-sourced proxies never queue behind it. A
+// proxy qualifies once its first ladder is exhausted (authFailures at the
+// ceiling), while it is in the slow retry ramp, and after any genuine give-up:
+// the genuine give-up pins authFailures one below the ceiling and zeroes
+// slowRetryCycles, so genuineRetryCycles is what keeps every later ramp and
+// daily attempt on the semaphore.
+func usesSlowRetrySemaphore(hasProxy, isURLSourced bool, authFailures, maxAuthFailures, slowRetryCycles, genuineRetryCycles int) bool {
+	if !hasProxy || isURLSourced {
+		return false
+	}
+	return authFailures >= maxAuthFailures || 0 < slowRetryCycles || 0 < genuineRetryCycles
 }
