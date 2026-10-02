@@ -103,6 +103,10 @@ type baselineSample struct {
 
 	Resources baselineResources `json:"resources"`
 	Host      *baselineHost     `json:"host,omitempty"`
+	// GC and Net are observation-only signals (see resource_signals.go). Pointers
+	// so a box that could read neither writes no block rather than an empty one.
+	GC  *baselineGC  `json:"gc,omitempty"`
+	Net *baselineNet `json:"net,omitempty"`
 
 	// Pointers because encoding/json's omitempty does nothing for a struct
 	// value: a plain struct would serialise as {} even when nothing was known,
@@ -199,6 +203,9 @@ type baselineInputs struct {
 
 	oom baselineOOM
 
+	gc  *baselineGC
+	net *baselineNet
+
 	contracts [2]int64 // acquired, denied
 	errs      map[string]uint64
 	errsKnown bool
@@ -272,6 +279,8 @@ func buildBaselineSample(in baselineInputs) baselineSample {
 		o := in.oom
 		s.OOM = &o
 	}
+	s.GC = in.gc
+	s.Net = in.net
 	// Restart always describes this start, so it is known even when the reason
 	// is empty: clean_shutdown is the load-bearing field.
 	s.Restart = &baselineRestart{Reason: snap.Restart.Reason, CleanShutdown: snap.Restart.CleanShutdown}
@@ -628,6 +637,8 @@ func baselineCollect(now time.Time) baselineInputs {
 
 	scope, kills := readOOMKillEpoch()
 	in.oom = baselineOOM{Kills: kills, Scope: scope}
+
+	in.gc, in.net = readBaselineGC(now), readBaselineNet()
 
 	acquired, denied := globalContractMetrics.totals()
 	in.contracts = [2]int64{acquired, denied}
