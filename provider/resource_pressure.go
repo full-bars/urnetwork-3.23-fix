@@ -318,24 +318,14 @@ func collectPressureSample() pressureSample {
 	} else if err != nil {
 		s.SensorErrs["load"] = err
 	}
-	// Heap fraction of the memory budget. The numerator is the amount of
-	// runtime-managed memory the limit actually counts (Sys minus released),
-	// which includes goroutine stacks and runtime overhead, not just live
-	// heap. The denominator is the current GOMEMLIMIT soft limit if one is set;
-	// otherwise it falls back to the effective RAM so the heap sensor and the
-	// emergency pin still work even in a process with no finite limit.
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	used := float64(ms.Sys - ms.HeapReleased)
-	limit := debug.SetMemoryLimit(-1)
-	if limit <= 0 || limit >= math.MaxInt64 {
-		if ram := detectEffectiveRAMLimitBytes(); ram > 0 {
-			limit = ram
-		}
-	}
-	if limit > 0 {
-		s.HeapFrac = used / float64(limit)
-	}
+	// Heap fraction of the memory budget: live heap plus goroutine stacks over
+	// the GOMEMLIMIT soft limit (effective RAM when no finite limit is set).
+	// The same numerator feeds the 10s subtick, so the two governor paths cannot
+	// disagree about one reading. It is deliberately NOT Sys-HeapReleased: that
+	// tracks the heap goal, which moves with the GOGC value the governor itself
+	// writes, so a box merely sitting at its soft limit read as an emergency
+	// and the governor chased its own tail.
+	s.HeapFrac = heapFracFn()
 	return s
 }
 
@@ -383,6 +373,16 @@ const (
 	ecoPressureMiB int64 = 300
 )
 
+// gcFreeOSMemoryMinInterval bounds how often entering the critical level may
+// force a full GC and scavenge.
+const gcFreeOSMemoryMinInterval = 5 * time.Minute
+
+// Seams for tests.
+var (
+	gcFreeOSMemory = debug.FreeOSMemory
+	gcNow          = time.Now
+)
+
 // gcTightening is true while the governor is actively tightening (level>0).
 // Pool GROWTH is frozen while true; shrinking is still allowed.
 var gcTightening atomic.Bool
@@ -397,6 +397,7 @@ type gcGovernorState struct {
 	gcStateName          string
 	lastHeapFrac         float64
 	lastHostAvailMiB     int64
+	lastFreeOS           time.Time // last forced FreeOSMemory, for rate limiting
 }
 
 // gcAdaptiveEnabled reports whether the governor may act at all this run:
@@ -435,23 +436,42 @@ func readGOGCPercent() (int, bool) {
 	return 0, false
 }
 
-// liveHeapFrac is the raw live-heap fraction of the memory budget, for the
-// fast 10s subtick. Same numerator/denominator convention as the sensor.
-func liveHeapFrac() float64 {
-	live := readLiveHeapBytes()
-	if live == 0 {
+// readStackBytes returns the bytes of memory the runtime holds for goroutine
+// stacks (/memory/classes/heap/stacks:bytes), or 0 if unavailable.
+func readStackBytes() uint64 {
+	samples := []metrics.Sample{{Name: "/memory/classes/heap/stacks:bytes"}}
+	metrics.Read(samples)
+	if samples[0].Value.Kind() == metrics.KindUint64 {
+		return samples[0].Value.Uint64()
+	}
+	return 0
+}
+
+// heapFracFrom is the one definition of the governor's heap fraction: live
+// heap plus stacks over the memory budget. 0 when either the live reading or
+// the limit is unavailable.
+func heapFracFrom(live, stacks uint64, limit int64) float64 {
+	if live == 0 || limit <= 0 {
 		return 0
 	}
+	return float64(live+stacks) / float64(limit)
+}
+
+// heapFracFn is the one heap numerator seam: the 10s subtick, the 30s sweep
+// sample and the self-heal-off tick all read it, so they cannot disagree about
+// one reading. A variable so a test can prove the sample goes through it.
+var heapFracFn = liveHeapFrac
+
+// liveHeapFrac is the heap fraction of the memory budget used by BOTH the 10s
+// subtick and the 30s sweep sample.
+func liveHeapFrac() float64 {
 	limit := debug.SetMemoryLimit(-1)
 	if limit <= 0 || limit >= math.MaxInt64 {
 		if ram := detectEffectiveRAMLimitBytes(); ram > 0 {
 			limit = ram
 		}
 	}
-	if limit <= 0 {
-		return 0
-	}
-	return float64(live) / float64(limit)
+	return heapFracFrom(readLiveHeapBytes(), readStackBytes(), limit)
 }
 
 // hostAvailMiB returns the tighter of host and cgroup available memory, or -1
@@ -495,8 +515,12 @@ func applyGCLevel(state *gcGovernorState) {
 	case 3:
 		gogc = min(state.baselineGOGC, 10)
 		name = "critical"
-		// Return memory to the OS at the critical state.
-		debug.FreeOSMemory()
+		// Return memory to the OS at the critical state, but not on every
+		// re-entry: flapping 2<->3 would otherwise force a full GC each time.
+		if now := gcNow(); state.lastFreeOS.IsZero() || now.Sub(state.lastFreeOS) >= gcFreeOSMemoryMinInterval {
+			state.lastFreeOS = now
+			gcFreeOSMemory()
+		}
 	}
 	state.gcStateName = name
 	if gogc != state.currentGOGC {
@@ -521,7 +545,12 @@ func gcGovernor(heapFrac float64, hostAvail int64, psiCPU float64, canRelease bo
 		return
 	}
 
-	// Heap level from the raw fraction.
+	// Heap level from the raw fraction. Note (inference from the arithmetic, not
+	// measured): with a finite GOMEMLIMIT and a live-heap numerator, levels 1 to 3
+	// already put the heap goal at or above the limit, so the limit paces GC and
+	// the GOGC write adds little. The heap layer's real effects are gcTightening
+	// (which freezes pool growth) and the level-3 FreeOSMemory; the host-RAM
+	// levels below still tighten GOGC for real.
 	heapLevel := 0
 	switch {
 	case heapFrac >= 0.92:
@@ -591,11 +620,23 @@ func logGCGovernorChange(prevGOGC int, state *gcGovernorState) {
 	}
 }
 
+// cpuVetoSignal is the normalized CPU PSI the governor's CPU veto reads, the
+// same quantity the sweep passes (comps["psi_cpu"]). 0 when PSI is
+// unavailable, which leaves the veto inert, as before.
+func cpuVetoSignal() float64 {
+	v, err := readPSI("cpu")
+	if err != nil {
+		return 0
+	}
+	return normalizeRamp(v, psiRampLo, psiRampHi)
+}
+
 // gcSubtickStep is the fast heap-only path: tighten on a raw live-heap spike.
-// It is host-blind (hostAvail -1) and never releases.
-func gcSubtickStep(heapFrac float64, state *gcGovernorState) {
+// It is host-blind (hostAvail -1) and never releases, but honours the same
+// CPU veto as the sweep.
+func gcSubtickStep(heapFrac, psiCPU float64, state *gcGovernorState) {
 	prev := state.currentGOGC
-	gcGovernor(heapFrac, -1, 0, false, state)
+	gcGovernor(heapFrac, -1, psiCPU, false, state)
 	logGCGovernorChange(prev, state)
 }
 
@@ -603,9 +644,9 @@ func gcSubtickStep(heapFrac float64, state *gcGovernorState) {
 // governor is a memory-safety actuator independent of self-heal, so this tick
 // must still give it the host+heap view and the right to RELEASE; skipping it
 // left a tightened GOGC in place for the rest of the process's life.
-func gcSelfHealOffTick(heapFrac float64, hostAvail int64, state *gcGovernorState) {
+func gcSelfHealOffTick(heapFrac float64, hostAvail int64, psiCPU float64, state *gcGovernorState) {
 	prev := state.currentGOGC
-	gcGovernor(heapFrac, hostAvail, 0, true, state)
+	gcGovernor(heapFrac, hostAvail, psiCPU, true, state)
 	logGCGovernorChange(prev, state)
 }
 
@@ -672,12 +713,13 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// Fast heap-only path: tighten on a raw live-heap spike without
 			// waiting for the 30s sweep. This subtick is intentionally heap-only
 			// and host-blind, so it can only tighten — it never participates in
-			// release (that needs the full sweep's host+heap view), and the CPU
-			// veto (also host-sweep-derived) does not apply here. Passing -1 for
-			// hostAvail makes the host layer inert, and canRelease=false keeps it
-			// from touching the calm counter.
+			// release (that needs the full sweep's host+heap view). It uses the
+			// same heap numerator and the same CPU veto as the sweep, so it cannot
+			// re-tighten within 10s of a release the sweep granted during a
+			// CPU-bound episode. Passing -1 for hostAvail makes the host layer
+			// inert, and canRelease=false keeps it from touching the calm counter.
 			if gcAdaptiveEnabled() {
-				gcSubtickStep(liveHeapFrac(), &gcState)
+				gcSubtickStep(heapFracFn(), cpuVetoSignal(), &gcState)
 			}
 			continue
 		case <-fullTicker.C:
@@ -708,7 +750,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// The GC governor is independent of self-heal: keep giving it the
 			// full host+heap view so a tightened level can release.
 			if gcAdaptiveEnabled() {
-				gcSelfHealOffTick(liveHeapFrac(), hostAvailMiB(), &gcState)
+				gcSelfHealOffTick(heapFracFn(), hostAvailMiB(), cpuVetoSignal(), &gcState)
 			}
 			continue
 		}
@@ -950,6 +992,100 @@ func paidStaleThreshold(pressure float64) time.Duration {
 	return paidStaleCalm - time.Duration(t*float64(paidStaleCalm-paidStaleHot))
 }
 
+// aimdCeilingFrac and aimdCeilingDecay shape the regrowth ceiling. After a
+// pressure cut the pool may not regrow past aimdCeilingFrac of the level
+// where pressure appeared; the ceiling then relaxes back to that level over
+// aimdCeilingDecay and is released, so a box whose capacity has changed can
+// rediscover it. Without the memory the loop sawtooths: +aimdIncrement every
+// poolControlInterval until it hits the same wall, then shed again.
+const (
+	aimdCeilingFrac  = 0.9
+	aimdCeilingDecay = 24 * time.Hour
+)
+
+// aimdCeilingState remembers where pressure last forced a cut. In memory
+// only: a restart forgets it and the pool rediscovers its level.
+type aimdCeilingState struct {
+	level int       // starting ceiling: aimdCeilingFrac x hit, never below aimdFloor
+	hit   int       // pool target when pressure forced the cut
+	at    time.Time // when the cut happened
+}
+
+// record notes a cut made at pool size hit. While a ceiling is still active the
+// highest hit wins: a sustained episode cuts again every sample at 0.7x, and
+// remembering the last, lowest cut would pin the pool near the floor for a day
+// after what is often an external, transient host event. A ceiling that has
+// been released starts fresh.
+func (c *aimdCeilingState) record(hit int, now time.Time) {
+	if c.effective(now) > 0 && c.hit > hit {
+		hit = c.hit
+	}
+	level := int(float64(hit) * aimdCeilingFrac)
+	if level < aimdFloor {
+		level = aimdFloor
+	}
+	if hit < level {
+		hit = level
+	}
+	c.level, c.hit, c.at = level, hit, now
+}
+
+// effective returns the current regrowth ceiling, or 0 for none.
+func (c *aimdCeilingState) effective(now time.Time) int {
+	if c.at.IsZero() {
+		return 0
+	}
+	age := now.Sub(c.at)
+	if age < 0 {
+		age = 0
+	}
+	if age >= aimdCeilingDecay {
+		return 0
+	}
+	return c.level + int(float64(c.hit-c.level)*float64(age)/float64(aimdCeilingDecay))
+}
+
+// ceilingHit is the pool size to remember for a cut: the smaller of the target
+// and the pool that actually exists, because a target the cache never reached
+// would record a ceiling that constrains nothing. pool <= 0 means unknown.
+func ceilingHit(target, pool int) int {
+	if pool > 0 && pool < target {
+		return pool
+	}
+	return target
+}
+
+// combineCeilings returns the tightest positive of the operator-configured
+// ceiling and the learned one; 0 means no ceiling.
+func combineCeilings(configured, learned int) int {
+	switch {
+	case configured <= 0:
+		return learned
+	case learned <= 0:
+		return configured
+	case learned < configured:
+		return learned
+	}
+	return configured
+}
+
+// capURLTarget clamps the URL pool target to what the running-proxy cap
+// leaves after paid proxies, which the cap also counts and which are never
+// shed. It never returns below 1: a zero target reads as "first run".
+func capURLTarget(next, cap, paid int) int {
+	if cap <= 0 {
+		return next
+	}
+	room := cap - paid
+	if room < 1 {
+		room = 1
+	}
+	if next > room {
+		return room
+	}
+	return next
+}
+
 // aimdStep computes the next target pool size. cacheSize anchors growth so
 // the target never runs far ahead of what actually exists.
 func aimdStep(target, cacheSize int, pressure float64, ceiling int) int {
@@ -978,13 +1114,16 @@ func aimdStep(target, cacheSize int, pressure float64, ceiling int) int {
 
 // selectURLProxiesToShed ranks URL-sourced proxies for removal under
 // sustained pressure: dead first, then degraded tiers, then healthy ones by
-// ascending traffic — shedding an earning proxy is the last resort, and the
-// caller logs each healthy shed individually.
-func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, n int) []string {
+// ascending persisted earnings, then ascending lifetime traffic. Lifetime
+// traffic alone is empty right after a restart, which made every proxy look
+// idle; the earnings score survives restarts. Shedding an earning proxy is
+// the last resort, and the caller logs each healthy shed individually.
+func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, earnings map[string]float64, n int) []string {
 	rank := healthRank // shared with the operator proxy-trim shed ranking
 	type cand struct {
 		addr string
 		r    int
+		earn float64
 		tx   uint64
 	}
 	var cands []cand
@@ -992,11 +1131,17 @@ func selectURLProxiesToShed(state *ProxyState, traffic map[string]uint64, n int)
 		if e.Source != "url" {
 			continue
 		}
-		cands = append(cands, cand{addr, rank(e.Health), traffic[addr]})
+		cands = append(cands, cand{addr, rank(e.Health), earnings[addr], traffic[addr]})
 	}
 	slices.SortFunc(cands, func(a, b cand) int {
 		if a.r != b.r {
 			return a.r - b.r
+		}
+		if a.earn != b.earn {
+			if a.earn < b.earn {
+				return -1
+			}
+			return 1
 		}
 		if a.tx != b.tx {
 			if a.tx < b.tx {
@@ -1028,6 +1173,7 @@ const poolControlInterval = 5 * time.Minute
 // recovers and the target grows back).
 func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled bool) {
 	var highSamples int
+	var ceilingMemory aimdCeilingState
 	ticker := time.NewTicker(poolControlInterval)
 	defer ticker.Stop()
 	for {
@@ -1083,12 +1229,14 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 				target = aimdFloor
 			}
 		}
-		next := aimdStep(target, cacheSize, effectivePressure, resolveProxyURLMax(configuredMax))
+		next := aimdStep(target, cacheSize, effectivePressure,
+			combineCeilings(resolveProxyURLMax(configuredMax), ceilingMemory.effective(time.Now())))
 		// An operator trim cap overrides the AIMD operating point: never grow
-		// the URL pool target above the running-proxy cap (they fight otherwise,
-		// burning fetch/probe work on proxies that can never launch).
-		if tc, _ := effectiveTrimCap(); tc > 0 && next > tc {
-			next = tc
+		// the URL pool target above what the running-proxy cap leaves after paid
+		// proxies (they fight otherwise, burning fetch/probe work on proxies that
+		// can never launch). The cap counts every running proxy, paid included.
+		if tc, _ := effectiveTrimCap(); tc > 0 {
+			next = capURLTarget(next, tc, paidProxyCount())
 		}
 		if next != urlState.TargetPoolSize {
 			urlState.TargetPoolSize = next
@@ -1102,6 +1250,8 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		}
 
 		if pressure > aimdShrinkAbove {
+			// Remember where pressure hit so regrowth stops short of it.
+			ceilingMemory.record(ceilingHit(target, cacheSize), time.Now())
 			shedPoolToTarget(next)
 			highSamples = 0 // one cut per sustained-high episode; re-arm
 		}
@@ -1130,8 +1280,15 @@ func shedPoolToTarget(target int) {
 	// Per-proxy traffic for last-resort ranking, keyed by proxy identity to
 	// match state.Proxies.
 	traffic := runningProxyTraffic()
+	now := time.Now()
+	earnings := make(map[string]float64, len(state.Proxies))
+	for addr, e := range state.Proxies {
+		if e.Source == "url" {
+			earnings[addr] = proxyEarningsScore(addr, now)
+		}
+	}
 
-	shed := selectURLProxiesToShed(state, traffic, excess)
+	shed := selectURLProxiesToShed(state, traffic, earnings, excess)
 	for _, addr := range shed {
 		if state.Proxies[addr].Health == "up" {
 			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
@@ -1143,4 +1300,34 @@ func shedPoolToTarget(target int) {
 		return
 	}
 	tlog("[proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
+}
+
+// paidRunningCount is how many of the running proxies are paid or file
+// sourced: in proxy.state, not URL-sourced, and not the direct transport. The
+// trim/OOM cap counts RUNNING proxies, so this must too. proxy.state also holds
+// every desired entry, dead or backed-off or held by trim, and counting those
+// drove cap minus paid to nothing and pinned the URL pool at 1. The pool
+// controller never sheds these, though the operator trim can.
+func paidRunningCount(state *ProxyState, running []string) int {
+	n := 0
+	for _, key := range running {
+		if key == directProxyKey {
+			continue
+		}
+		if e, ok := state.Proxies[key]; ok && e.Source != "url" {
+			n++
+		}
+	}
+	return n
+}
+
+// paidProxyCount reads proxy.state and the running set for paidRunningCount.
+// Returns 0 when the state cannot be read, which leaves the cap clamp at its
+// pre-existing behaviour.
+func paidProxyCount() int {
+	state, err := readProxyState()
+	if err != nil {
+		return 0
+	}
+	return paidRunningCount(state, runningProxyAddresses())
 }

@@ -28,7 +28,7 @@ func TestGCSelfHealOffTickReleasesTightenedLevel(t *testing.T) {
 	// Calm samples on the self-heal-off tick must walk the level back to 0.
 	var logs strings.Builder
 	for i := 0; i < 4*3; i++ {
-		logs.WriteString(captureTlog(t, func() { gcSelfHealOffTick(0.10, 4000, state) }))
+		logs.WriteString(captureTlog(t, func() { gcSelfHealOffTick(0.10, 4000, 0, state) }))
 	}
 	if state.level != 0 {
 		t.Fatalf("12 calm self-heal-off ticks should release to level 0, stuck at %d", state.level)
@@ -53,7 +53,7 @@ func TestGCSubtickTightenIsLogged(t *testing.T) {
 	t.Cleanup(func() { debug.SetGCPercent(orig); gcTightening.Store(false) })
 
 	state := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100}
-	out := captureTlog(t, func() { gcSubtickStep(0.85, state) })
+	out := captureTlog(t, func() { gcSubtickStep(0.85, 0, state) })
 	if state.level != 2 {
 		t.Fatalf("0.85 heap should reach level 2, got %d", state.level)
 	}
