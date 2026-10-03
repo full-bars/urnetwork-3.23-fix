@@ -221,7 +221,7 @@ These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicte
 - URL-fetch pacing stretches from 1× to 8× the configured interval as pressure rises (replaces the old binary skip-at-threshold gate)
 - Proxy probe concurrency scales down toward a floor of 1 worker
 - The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
-- An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
+- An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending persisted earnings, then ascending lifetime traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
 
 ### Proxy audit
 
