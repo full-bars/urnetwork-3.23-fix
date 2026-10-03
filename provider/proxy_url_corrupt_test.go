@@ -16,6 +16,9 @@ func TestReadURLStateForMergeQuarantinesACorruptFile(t *testing.T) {
 		"empty":     "",
 		"truncated": `{"sources":["https://example.invalid/list"],"cache":{"1.2.3.4:1080":{`,
 		"wrongtype": `{"cache":"not-a-map"}`,
+		// time.Time.UnmarshalJSON returns a time parse error, which is neither a
+		// SyntaxError nor an UnmarshalTypeError
+		"badtimestamp": `{"cache":{"1.2.3.4:1080":{"last_probe":"not-a-time"}}}`,
 	} {
 		t.Run(name, func(t *testing.T) {
 			withTempHome(t)

@@ -113,7 +113,7 @@ func readProxyURLStateFrom(path string) (*ProxyURLState, error) {
 	}
 	var s ProxyURLState
 	if err := json.Unmarshal(b, &s); err != nil {
-		return nil, fmt.Errorf("parse proxy_url.json: %w", err)
+		return nil, &proxyURLParseError{err: err}
 	}
 	if s.Cache == nil {
 		s.Cache = map[string]ProxyURLEntry{}
@@ -121,15 +121,24 @@ func readProxyURLStateFrom(path string) (*ProxyURLState, error) {
 	return &s, nil
 }
 
+// proxyURLParseError marks an error from decoding the file's content, as
+// opposed to reading it. json.Unmarshal can fail with more than a SyntaxError or
+// an UnmarshalTypeError (an invalid last_probe or blacklist timestamp comes back
+// as a time parse error), so classifying by the decoder's error types missed
+// content that nothing will ever make parse.
+type proxyURLParseError struct{ err error }
+
+func (e *proxyURLParseError) Error() string { return "parse proxy_url.json: " + e.err.Error() }
+func (e *proxyURLParseError) Unwrap() error { return e.err }
+
 // isProxyURLStateCorrupt reports whether err from readProxyURLState means the
 // file's CONTENT cannot be parsed (empty, truncated or hand-edited), as opposed
 // to an I/O error reading it. A read error can be transient and the file is
 // worth keeping; unparseable content is not transient and nothing will ever
 // make it parse, so it must not be treated like one.
 func isProxyURLStateCorrupt(err error) bool {
-	var syntaxErr *json.SyntaxError
-	var typeErr *json.UnmarshalTypeError
-	return errors.As(err, &syntaxErr) || errors.As(err, &typeErr)
+	var parseErr *proxyURLParseError
+	return errors.As(err, &parseErr)
 }
 
 // quarantineProxyURLState moves an unparseable proxy_url.json aside to
