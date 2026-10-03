@@ -144,3 +144,56 @@ func TestSoleH3FailureStillCountsAsABackendAndProxyFailure(t *testing.T) {
 		t.Fatal("sole-transport H3 failures must still be recorded against the proxy")
 	}
 }
+
+// An auxiliary H3 that authenticates must not clear the failures H1 recorded,
+// or a healthy H3 would hide an H1 outage. The sole H3 (and H1) still clear.
+func TestAuxiliaryH3AuthSuccessDoesNotClearBackendFailures(t *testing.T) {
+	resetBackendDegraded()
+	t.Cleanup(resetBackendDegraded)
+
+	for _, c := range []struct {
+		name  string
+		mode  TransportMode
+		h3    bool
+		clear bool
+	}{
+		{"auxiliary h3", TransportModeAuto, true, false},
+		{"h1 in auto without h3", TransportModeAuto, false, true},
+		{"sole h3", TransportModeH3, false, true},
+	} {
+		resetBackendDegraded()
+		noteBackendFailure()
+		noteBackendFailure()
+		transport := &PlatformTransport{targetMode: c.mode, settings: &PlatformTransportSettings{EnableH3: c.h3}}
+		transport.noteAuthSuccess()
+		if cleared := backendFails() == 0; cleared != c.clear {
+			t.Fatalf("%s: failures cleared=%v, want %v", c.name, cleared, c.clear)
+		}
+	}
+}
+
+// With an auxiliary H3 neither transport may idle-drain because the other won
+// the election, so both stay connected. Otherwise the sole-mode behavior holds:
+// a transport that is not the active mode drains.
+func TestDrainsWhenInactiveExemptsBothTransportsWhileAuxiliary(t *testing.T) {
+	aux := &PlatformTransport{targetMode: TransportModeAuto, settings: &PlatformTransportSettings{EnableH3: true}}
+	auto := &PlatformTransport{targetMode: TransportModeAuto, settings: &PlatformTransportSettings{}}
+
+	for _, c := range []struct {
+		name   string
+		t      *PlatformTransport
+		active TransportMode
+		pt     TransportMode
+		want   bool
+	}{
+		{"aux: h3 active, h1 idle must stay", aux, TransportModeH3, TransportModeH1, false},
+		{"aux: h1 active, h3 idle must stay", aux, TransportModeH1, TransportModeH3, false},
+		{"aux: active mode itself", aux, TransportModeH1, TransportModeH1, false},
+		{"no aux: inactive mode drains", auto, TransportModeH1, TransportModeH3Dns, true},
+		{"no aux: active mode does not drain", auto, TransportModeH1, TransportModeH1, false},
+	} {
+		if got := c.t.drainsWhenInactive(c.active, c.pt); got != c.want {
+			t.Fatalf("%s: drainsWhenInactive=%v, want %v", c.name, got, c.want)
+		}
+	}
+}

@@ -646,6 +646,26 @@ func (self *PlatformTransport) h3Auxiliary() bool {
 	return self.targetMode == TransportModeAuto && self.settings.EnableH3
 }
 
+// noteAuthSuccess clears the shared backend failure state after a successful
+// auth. An auxiliary H3 authenticating must not clear failures H1 recorded: H1
+// is the health signal, so only it may reset the state.
+func (self *PlatformTransport) noteAuthSuccess() {
+	if self.h3Auxiliary() {
+		return
+	}
+	noteBackendSuccess()
+}
+
+// drainsWhenInactive reports whether a transport running ptMode should drain
+// after InactiveDrainTimeout of no traffic because activeMode is another mode.
+// Equally preferred modes tie and only one is elected active, so without an
+// exemption the other idles out and reconnects in a cycle, and when H3 wins the
+// election it is H1, the health signal, that gets torn down. With an auxiliary
+// H3 both transports stay connected and both carry traffic.
+func (self *PlatformTransport) drainsWhenInactive(activeMode TransportMode, ptMode TransportMode) bool {
+	return activeMode != ptMode && !self.h3Auxiliary()
+}
+
 // h3AuxiliaryMaxBackoff is how long an auxiliary H3 waits between attempts once
 // it keeps failing. A network that filters UDP stays filtered, and each attempt
 // costs a handshake timeout, so a failing H3 backs off far beyond the 60 second
@@ -914,7 +934,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 				for {
 					mode, notify := self.activeMode()
-					if mode != TransportModeH1 {
+					if self.drainsWhenInactive(mode, TransportModeH1) {
 						startReadCount := readCounter.Load()
 						startWriteCount := writeCounter.Load()
 						select {
@@ -1416,7 +1436,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
-		noteBackendSuccess()
+		self.noteAuthSuccess()
 
 		conn := connStream.conn
 		stream := connStream.stream
@@ -1453,13 +1473,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
 
 			atomic.AddInt64(&activeProxyConnections, 1)
-			if idx, ok := self.proxyIndex(); ok {
+			// an auxiliary H3 is not the identity health signal: its connects and
+			// drops must not mark it up, down or dropped while H1 says if it is healthy
+			if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
 				markProxyUp(idx)
 			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
-				if idx, ok := self.proxyIndex(); ok {
+				if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
 					markProxyDown(idx)
 					RecordProxyTransportDrop(idx, nil)
 				}
@@ -1475,7 +1497,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 				for {
 					mode, notify := self.activeMode()
-					if mode != ptMode {
+					if self.drainsWhenInactive(mode, ptMode) {
 						startReadCount := readCounter.Load()
 						startWriteCount := writeCounter.Load()
 						select {
