@@ -903,8 +903,15 @@ func (r *ProxyReloader) reload() {
 			}
 			added = kept
 		}
-		if shedCount > 0 || dropped > 0 || trimChanged {
+		// The durable line is for a change: a new cap, or running proxies shed.
+		// Held additions alone repeat on every reload for as long as desired
+		// exceeds the cap (startup-held proxies carry no backoff and re-enter
+		// the budget each cycle), so they stay on the RAM log, or the important
+		// buffer and the fsynced events.log fill with a line that carries no news.
+		if shedCount > 0 || trimChanged {
 			logImportant("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+		} else if dropped > 0 {
+			tlog("[proxy][trim] applied: cap=%d: shed 0 worst-graded running, held %d additions (pool ~%d)\n", trimCap, dropped, runningNonDirect)
 		}
 		if trimChanged {
 			pendingCrit = append(pendingCrit, func() {
