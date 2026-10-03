@@ -14,7 +14,8 @@ func TestInstallerScriptDoInstallBodyNotDuplicated(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	script := string(b)
+	// a Windows checkout may convert the script to CRLF; the markers span lines
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
 	for _, marker := range []string{
 		`pr_info "Fetching release information for tag`,
 		`ensure_tools_on_path "$install_path"`,
