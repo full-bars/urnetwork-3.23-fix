@@ -823,8 +823,17 @@ func currentVersionForBaseline() string {
 
 // previousVersionForBaseline is the version this provider replaced, read
 // through the same locked accessor the node snapshot uses. Empty on a first
-// start, which is correct: there was no previous version.
+// install.
+//
+// The value is only filled in by detectStartup, which is otherwise lazy (a
+// metrics scrape or the snapshot sampler runs it). The recorder writes its
+// start mark synchronously during startup, before either has necessarily run,
+// so it must run it first: without that the start row carries no previous
+// version and `baseline compare` cannot find the upgrade boundary. detectStartup
+// takes the same lock, so it is called before the accessor locks, and it is a
+// no-op after its first run.
 func previousVersionForBaseline() string {
+	detectStartup()
 	startupDiag.mu.Lock()
 	defer startupDiag.mu.Unlock()
 	return startupDiag.previousVersion
