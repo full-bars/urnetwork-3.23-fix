@@ -297,6 +297,16 @@ type PlatformTransportSettings struct {
 	Log Logger
 
 	PtDnsSlowMultiple int
+
+	// EnableH3 starts an H3 (QUIC) transport beside H1 in Auto mode. It is OFF
+	// by default and is meant for an identity that reaches the platform from
+	// the host's own address (the direct identity): runH3 opens a host UDP
+	// socket, so a proxied identity must never enable it without a socket
+	// that goes through its proxy. While EnableH3 is set in Auto mode H3 is an
+	// auxiliary transport: H1 stays the authoritative health signal, so an H3
+	// connect failure (UDP filtered, no route) is "mode unavailable" and is NOT
+	// a backend failure or a proxy auth failure. See h3Auxiliary.
+	EnableH3 bool
 }
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
@@ -522,9 +532,11 @@ func (self *PlatformTransport) run() {
 		go HandleError(func() {
 			self.runH1(0)
 		}, self.cancel)
-		// go HandleError(func() {
-		// 	self.runH3(TransportModeH3, 0, 1)
-		// }, self.cancel)
+		if self.settings.EnableH3 {
+			go HandleError(func() {
+				self.runH3(TransportModeH3, 0, 1)
+			}, self.cancel)
+		}
 		// go HandleError(func() {
 		// 	self.runH3(TransportModeH3Dns, self.settings.ModeInitialDelay, self.settings.PtDnsSlowMultiple)
 		// }, self.cancel)
@@ -625,6 +637,27 @@ func (self *PlatformTransport) proxyIndex() (int, bool) {
 		return 0, true
 	}
 	return ps.Index, true
+}
+
+// h3Auxiliary reports whether this transport runs H3 only as an opt-in
+// auxiliary beside H1 (Auto mode with EnableH3). The explicit H3 target mode is
+// the sole transport and keeps the full failure accounting.
+func (self *PlatformTransport) h3Auxiliary() bool {
+	return self.targetMode == TransportModeAuto && self.settings.EnableH3
+}
+
+// h3AuxiliaryMaxBackoff is how long an auxiliary H3 waits between attempts once
+// it keeps failing. A network that filters UDP stays filtered, and each attempt
+// costs a handshake timeout, so a failing H3 backs off far beyond the 60 second
+// ceiling the sole transport uses.
+const h3AuxiliaryMaxBackoff = 10 * time.Minute
+
+// nextH3Backoff doubles the wait between failed attempts up to max.
+func nextH3Backoff(current time.Duration, base time.Duration, max time.Duration) time.Duration {
+	if current == 0 {
+		return base
+	}
+	return min(current*2, max)
 }
 
 func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
@@ -1151,6 +1184,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 	}
 
 	var authErrBackoff time.Duration
+	h3UnavailableLogged := false
 
 	for {
 		// stand down while a strictly better mode is active
@@ -1339,19 +1373,33 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// from a closing multi-client window would otherwise gate the
 			// next session.
 			if self.ctx.Err() == nil {
-				noteBackendFailure()
-				if idx, ok := self.proxyIndex(); ok {
-					RecordProxyAuthFailure(idx, err)
+				// an auxiliary H3 (opt-in, beside H1) is not a health signal
+				if !self.h3Auxiliary() {
+					noteBackendFailure()
+					if idx, ok := self.proxyIndex(); ok {
+						RecordProxyAuthFailure(idx, err)
+					}
 				}
 			}
-			if ok, suppressed := shouldLogAuthErr(); ok {
+			if self.h3Auxiliary() {
+				// an auxiliary H3 that cannot connect is "unavailable", not an
+				// auth error: say so once, then only at verbose levels
+				if !h3UnavailableLogged {
+					h3UnavailableLogged = true
+					self.log.Infof("[t]h3 unavailable, staying on h1 (retrying quietly): %s\n", err)
+				} else if self.log.V(2).Enabled() {
+					self.log.Infof("[t]h3 unavailable: %s\n", err)
+				}
+			} else if ok, suppressed := shouldLogAuthErr(); ok {
 				if suppressed > 0 {
 					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
 				} else {
 					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if authErrBackoff == 0 {
+			if self.h3Auxiliary() {
+				authErrBackoff = nextH3Backoff(authErrBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
+			} else if authErrBackoff == 0 {
 				authErrBackoff = self.settings.ReconnectTimeout
 			} else {
 				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
