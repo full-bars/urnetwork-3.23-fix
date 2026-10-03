@@ -1,6 +1,8 @@
 package main
 
 import (
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -189,6 +191,11 @@ type oomMarker struct {
 	// means an old marker written before this field existed; age-checks fall
 	// back to StartedUnix in that case.
 	LastSeenUnix int64 `json:"last_seen_unix,omitempty"`
+	// StartID is a random token written at each start. StartedUnix has one
+	// second of resolution, so a parent and a candidate that record their starts
+	// in the same second carry the same value; ownership is checked on this
+	// token instead. Empty on a marker written before this field existed.
+	StartID string `json:"start_id,omitempty"`
 }
 
 // oomHeartbeatInterval bounds how often oomCapUpdatePeak refreshes
@@ -655,7 +662,12 @@ func oomCapUpdatePeak(running int, now time.Time) {
 	// A marker this process did not write belongs to another start (the
 	// candidate's, during a HotSwap). Leave it alone: refreshing it here would
 	// vouch for a process that is not this one and mix this pool into its peak.
-	if own, ok := oomOwnMarkerStart.Load(path); ok && m.StartedUnix != own.(int64) {
+	//
+	// A process with no recorded start of its own (the marker write failed, or
+	// it never ran one) owns nothing either, and a marker without a StartID was
+	// written by a start that is not this one.
+	own, ok := oomOwnMarkerStart.Load(path)
+	if !ok || m.StartID == "" || m.StartID != own.(string) {
 		return
 	}
 	next := m
@@ -669,10 +681,21 @@ func oomCapUpdatePeak(running int, now time.Time) {
 	}
 }
 
-// oomOwnMarkerStart records, per marker path, the StartedUnix of the marker this
+// oomOwnMarkerStart records, per marker path, the StartID of the marker this
 // process wrote at its own start. oomCapUpdatePeak only touches a marker that
 // still carries it.
 var oomOwnMarkerStart sync.Map
+
+// oomNewStartID returns a token unique to one start. A failure to read random
+// bytes falls back to the clock, which still differs between two starts that
+// are not in the same nanosecond.
+func oomNewStartID() string {
+	var b [8]byte
+	if _, err := rand.Read(b[:]); err != nil {
+		return strconv.FormatInt(time.Now().UnixNano(), 16)
+	}
+	return hex.EncodeToString(b[:])
+}
 
 // oomCapRecordStart writes this start's marker (after the launch selection, so
 // it records what was actually launched).
@@ -697,8 +720,9 @@ func oomCapRecordStart(launching int, bootID string, oomKills int64, now time.Ti
 		return
 	}
 	defer release()
-	if oomWriteJSONLocked(path, oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix()}) == nil {
-		oomOwnMarkerStart.Store(path, now.Unix())
+	startID := oomNewStartID()
+	if oomWriteJSONLocked(path, oomMarker{BootID: bootID, OOMKills: oomKills, Proxies: launching, StartedUnix: now.Unix(), StartID: startID}) == nil {
+		oomOwnMarkerStart.Store(path, startID)
 	}
 }
 

@@ -76,15 +76,9 @@ func TestMarkerHeartbeatKeepsRunningWhileTheSwitchIsOff(t *testing.T) {
 	now := time.Now()
 	// A marker written well beyond oomMarkerMaxAge ago, with a stale heartbeat.
 	old := now.Add(-100 * time.Hour)
-	if err := oomWriteJSON(filepath.Join(dir, "run.marker"), oomMarker{
-		BootID:       "boot-A",
-		OOMKills:     3,
-		Proxies:      100,
-		StartedUnix:  old.Unix(),
-		LastSeenUnix: old.Unix(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// The marker is this process's own, recorded at its start 100h ago (a
+	// process only heartbeats a marker it recorded itself).
+	oomCapRecordStart(100, "boot-A", 3, old)
 
 	// With the switch OFF, the heartbeat must still be refreshed. The peak is
 	// not updated (the feature is off), but liveness must be recorded.
@@ -116,15 +110,9 @@ func TestOOMKillIsStillClaimedAfterALongOffPeriod(t *testing.T) {
 
 	now := time.Now()
 	old := now.Add(-100 * time.Hour)
-	if err := oomWriteJSON(filepath.Join(dir, "run.marker"), oomMarker{
-		BootID:       "boot-A",
-		OOMKills:     3,
-		Proxies:      100,
-		StartedUnix:  old.Unix(),
-		LastSeenUnix: old.Unix(),
-	}); err != nil {
-		t.Fatal(err)
-	}
+	// This process wrote the marker at its own start, 100h ago (a process only
+	// heartbeats a marker it recorded itself).
+	oomCapRecordStart(100, "boot-A", 3, old)
 	// The process has been up and heartbeating through the whole off period.
 	oomCapUpdatePeak(100, now)
 
