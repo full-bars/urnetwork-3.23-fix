@@ -487,8 +487,14 @@ func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr s
 // already includes this run's billable bytes (Observe credits them), so the
 // larger of the two is the score except right after a restart cleared it.
 func runningProxyEarnings() map[string]uint64 {
+	return runningProxyEarningsAt(time.Now())
+}
+
+// runningProxyEarningsAt is runningProxyEarnings at a given instant, which is
+// what the decayed score is evaluated at; the tests pin it so no assertion
+// depends on the wall clock.
+func runningProxyEarningsAt(now time.Time) map[string]uint64 {
 	earnings := map[string]uint64{}
-	now := time.Now()
 	for key, bw := range connect.ProxyBandwidthSnapshotByKey() {
 		if bw == nil {
 			continue

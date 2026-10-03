@@ -7,6 +7,10 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+// earningsTestNow is the fixed instant every assertion here evaluates the
+// decayed score at, so none of them depends on the wall clock.
+var earningsTestNow = time.Date(2026, 10, 3, 12, 0, 0, 0, time.UTC)
+
 // registerTrafficProxy registers a live proxy with separate total and billable
 // byte counts, the way a real provider sees them: most of the total is
 // non-billable platform traffic.
@@ -30,7 +34,7 @@ func TestRunningProxyEarnings_UsesBillableNotTotalBytes(t *testing.T) {
 	registerTrafficProxy(1, "10.0.0.1:1080", 50<<30, 0)    // busy, earned nothing
 	registerTrafficProxy(2, "10.0.0.2:1080", 1<<20, 1<<20) // small, all billable
 
-	earnings := runningProxyEarnings()
+	earnings := runningProxyEarningsAt(earningsTestNow)
 	if earnings["10.0.0.1:1080"] != 0 {
 		t.Fatalf("a proxy with 50 GiB total and no billable bytes reads as earning %d", earnings["10.0.0.1:1080"])
 	}
@@ -56,9 +60,9 @@ func TestRunningProxyEarnings_DecayedScoreProtectsAnIdleSinceRestartEarner(t *te
 
 	registerTrafficProxy(1, "10.0.0.1:1080", 1<<30, 0) // earned last week, idle this run
 	registerTrafficProxy(2, "10.0.0.2:1080", 1<<30, 0) // never earned
-	creditEarningsAt(globalProxyEarningsStore, "10.0.0.1:1080", 5<<30, time.Now().Add(-24*time.Hour))
+	creditEarningsAt(globalProxyEarningsStore, "10.0.0.1:1080", 5<<30, earningsTestNow.Add(-24*time.Hour))
 
-	earnings := runningProxyEarnings()
+	earnings := runningProxyEarningsAt(earningsTestNow)
 	if earnings["10.0.0.1:1080"] == 0 {
 		t.Fatalf("a proxy with a 5 GiB decayed earnings score reads as idle")
 	}
@@ -81,7 +85,7 @@ func TestRunningProxyEarnings_ThisRunsBillableCountsBeforeTheStoreHasIt(t *testi
 	defer restore()
 
 	registerTrafficProxy(1, "10.0.0.1:1080", 10<<20, 4<<20)
-	if got := runningProxyEarnings()["10.0.0.1:1080"]; got != 4<<20 {
+	if got := runningProxyEarningsAt(earningsTestNow)["10.0.0.1:1080"]; got != 4<<20 {
 		t.Fatalf("earnings = %d, want this run's 4 MiB billable", got)
 	}
 }
@@ -95,13 +99,13 @@ func TestRunningProxyEarnings_TakesTheLargerOfRunAndDecayedScore(t *testing.T) {
 	defer restore()
 
 	registerTrafficProxy(1, "10.0.0.1:1080", 100<<20, 40<<20)
-	creditEarningsAt(globalProxyEarningsStore, "10.0.0.1:1080", 10<<20, time.Now())
-	if got := runningProxyEarnings()["10.0.0.1:1080"]; got != 40<<20 {
+	creditEarningsAt(globalProxyEarningsStore, "10.0.0.1:1080", 10<<20, earningsTestNow)
+	if got := runningProxyEarningsAt(earningsTestNow)["10.0.0.1:1080"]; got != 40<<20 {
 		t.Fatalf("earnings = %d, want the larger run billable %d", got, 40<<20)
 	}
 	registerTrafficProxy(2, "10.0.0.2:1080", 100<<20, 1<<20)
-	creditEarningsAt(globalProxyEarningsStore, "10.0.0.2:1080", 30<<20, time.Now())
-	if got := runningProxyEarnings()["10.0.0.2:1080"]; got < 29<<20 {
-		t.Fatalf("earnings = %d, want about the larger decayed score %d", got, 30<<20)
+	creditEarningsAt(globalProxyEarningsStore, "10.0.0.2:1080", 30<<20, earningsTestNow)
+	if got := runningProxyEarningsAt(earningsTestNow)["10.0.0.2:1080"]; got != 30<<20 {
+		t.Fatalf("earnings = %d, want the larger decayed score %d", got, 30<<20)
 	}
 }
