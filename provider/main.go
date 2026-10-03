@@ -3705,7 +3705,11 @@ func provide(opts docopt.Opts) {
 			InstanceId: instanceId,
 			AppVersion: RequireVersion(),
 		}
-		platformTransport := connect.NewPlatformTransportWithDefaults(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth)
+		platformSettings := platformTransportSettingsFor(proxySettings, isNative)
+		if platformSettings.EnableH3 {
+			tlog("[t]h3 enabled for the direct identity (URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n")
+		}
+		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
 		unregCloser := RegisterCoordinatorCloser(func() {
