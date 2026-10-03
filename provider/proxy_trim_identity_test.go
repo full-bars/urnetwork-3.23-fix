@@ -10,7 +10,9 @@ import (
 // given cumulative traffic, the way the launch path does.
 func registerBandwidthProxy(index int, address, key string, rx uint64) {
 	connect.RegisterProxy(index, address, key)
-	connect.RegisterProxyBandwidth(index).TotalRx.Store(rx)
+	bw := connect.RegisterProxyBandwidth(index)
+	bw.TotalRx.Store(rx)
+	bw.BillableRx.Store(rx)
 }
 
 // TestRunningProxyTraffic_KeyedByIdentity pins that the traffic map the trim and
@@ -25,7 +27,7 @@ func TestRunningProxyTraffic_KeyedByIdentity(t *testing.T) {
 	earnerKey := identityKey("10.0.0.1:1080", "u")
 	registerBandwidthProxy(1, "10.0.0.1:1080", earnerKey, 10<<30)
 
-	traffic := runningProxyTraffic()
+	traffic := runningProxyEarnings()
 	if traffic[earnerKey] != 10<<30 {
 		t.Fatalf("traffic must be keyed by identity: traffic[%q]=%d, full map %v", earnerKey, traffic[earnerKey], traffic)
 	}
@@ -49,7 +51,7 @@ func TestSelectWorstRunningProxies_KeepsCredentialedEarner(t *testing.T) {
 	}
 	// Tie the tiebreak the wrong way for the earner: its key sorts before the
 	// idle one, so only the traffic rule can save it.
-	shed := selectWorstRunningProxies(state, nil, runningProxyTraffic(), []string{earnerKey, idleKey}, 1)
+	shed := selectWorstRunningProxies(state, nil, runningProxyEarnings(), []string{earnerKey, idleKey}, 1)
 	if len(shed) != 1 || shed[0] != idleKey {
 		t.Fatalf("shed %q, want the idle proxy %q; the earner must be kept", shed, idleKey)
 	}
@@ -88,7 +90,7 @@ func TestTrimPreviewSelection_KeepsCredentialedEarner(t *testing.T) {
 	registerBandwidthProxy(2, "10.0.0.2:1080", idleKey, 0)
 	state := map[string]ProxyEntry{earnerKey: {Health: "up"}, idleKey: {Health: "up"}}
 
-	shed := selectWorstRunningProxies(state, nil, runningProxyTraffic(), runningProxyAddresses(), 1)
+	shed := selectWorstRunningProxies(state, nil, runningProxyEarnings(), runningProxyAddresses(), 1)
 	if len(shed) != 1 || shed[0] != idleKey {
 		t.Fatalf("shed %q, want the idle proxy %q", shed, idleKey)
 	}
@@ -111,7 +113,7 @@ func TestTrimPreview_AccountsSharingAnAddressAreSeparateProxies(t *testing.T) {
 		t.Fatalf("two accounts at one address must be two running proxies, got %q", running)
 	}
 	state := map[string]ProxyEntry{earnerKey: {Health: "up"}, idleKey: {Health: "up"}}
-	shed := selectWorstRunningProxies(state, nil, runningProxyTraffic(), running, 1)
+	shed := selectWorstRunningProxies(state, nil, runningProxyEarnings(), running, 1)
 	if len(shed) != 1 || shed[0] != idleKey {
 		t.Fatalf("shed %q, want the idle account %q and never the earner", shed, idleKey)
 	}

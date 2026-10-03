@@ -1320,7 +1320,7 @@ func shedPoolToTarget(target int) {
 
 	// Per-proxy traffic for last-resort ranking, keyed by proxy identity to
 	// match state.Proxies.
-	traffic := runningProxyTraffic()
+	traffic := runningProxyEarnings()
 	now := time.Now()
 	earnings := make(map[string]float64, len(state.Proxies))
 	for addr, e := range state.Proxies {

@@ -7,6 +7,7 @@ import (
 	"sort"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"fmt"
 	"github.com/docopt/docopt-go"
@@ -241,7 +242,7 @@ func livePreviewText(count int) (string, error) {
 			running = append(running, k)
 		}
 	}
-	return trimPreviewText(state, urlState, running, runningProxyTraffic(), count), nil
+	return trimPreviewText(state, urlState, running, runningProxyEarnings(), count), nil
 }
 
 // previewViaControlSocket asks the running provider what a trim would shed.
@@ -469,29 +470,45 @@ func selectWorstRunningProxies(state map[string]ProxyEntry, gradeFor func(addr s
 	return out
 }
 
-// runningProxyTraffic builds a per-identity traffic map (keyed by
-// ProxySettings.Key(): address, or address+user for a credentialed proxy) for
-// the shed tiebreak. The key MUST match the running list and proxy.state keys
-// the rankings look it up with; keying by the bare address made a credentialed
-// proxy's traffic invisible, so an active earner ranked as idle and could be
-// shed first. Best-effort: only used as a last-resort tiebreak among proxies
-// with identical health and grade.
-func runningProxyTraffic() map[string]uint64 {
-	traffic := map[string]uint64{}
+// runningProxyEarnings builds a per-identity map of what each running proxy has
+// EARNED, in billable bytes (keyed by ProxySettings.Key(): address, or
+// address+user for a credentialed proxy), for the shed rankings. The key MUST
+// match the running list and proxy.state keys the rankings look it up with;
+// keying by the bare address made a credentialed proxy's earnings invisible, so
+// an active earner ranked as idle and could be shed first.
+//
+// It is billable bytes, never total bytes: total includes the platform's
+// non-billable traffic, which on a measured provider was about 17x the billable
+// figure, so a proxy that moved a lot of total traffic and earned nothing ranked
+// as a protected earner while a small real earner could be shed first. Each
+// value is the larger of this run's billable bytes and the decayed earnings
+// score: a proxy that earned heavily last week but has been idle since this
+// process started is still a proven earner and must not look idle. The score
+// already includes this run's billable bytes (Observe credits them), so the
+// larger of the two is the score except right after a restart cleared it.
+func runningProxyEarnings() map[string]uint64 {
+	earnings := map[string]uint64{}
+	now := time.Now()
 	for key, bw := range connect.ProxyBandwidthSnapshotByKey() {
 		if bw == nil {
 			continue
 		}
-		traffic[key] += bw.TotalRx.Load() + bw.TotalTx.Load()
+		earned := bw.BillableRx.Load() + bw.BillableTx.Load()
+		if score := proxyEarningsScore(key, now); 0 < score {
+			earned = max(earned, uint64(score))
+		}
+		if 0 < earned {
+			earnings[key] = earned
+		}
 	}
-	return traffic
+	return earnings
 }
 
 // runningProxyAddresses returns the currently RUNNING proxies as identity keys
 // (ProxySettings.Key(): address, or address+user for a credentialed proxy) from
 // the health surface (bandwidth + connecting), so --preview reports the running
 // pool rather than the larger desired set in proxy.state. The keys must match
-// the ones proxy.state and runningProxyTraffic use, or the preview ranks a
+// the ones proxy.state and runningProxyEarnings use, or the preview ranks a
 // credentialed proxy as unknown and idle. The health snapshot lists proxies as
 // "proxy[N] (addr)" display strings, so each one is resolved to its identity via
 // the registry index, falling back to the parsed address when it is not registered.

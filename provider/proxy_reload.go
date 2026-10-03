@@ -841,7 +841,7 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 	if trimCap := trimCapNow; trimErr == nil && trimCap > 0 {
-		traffic := runningProxyTraffic()
+		traffic := runningProxyEarnings()
 		// Read the URL cache here: the urlState read earlier is scoped to its own
 		// if/else and is not visible in this hook.
 		trimURLState, _ := readProxyURLState()
