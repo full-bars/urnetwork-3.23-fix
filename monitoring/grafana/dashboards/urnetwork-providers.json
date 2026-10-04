@@ -2030,7 +2030,7 @@
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Payload carried by each platform transport, before framing. Keepalives and speed or latency echoes are excluded. Needs a provider with the transport counters; older providers leave this empty.",
+      "description": "Payload carried by each platform transport, before framing. h1 is every proxy identity's H1 together, while h3 exists for the direct identity only, so the two are not on the same footing. Keepalives and speed or latency echoes are excluded. Needs a provider with the transport counters; older providers leave this empty.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -2080,13 +2080,13 @@
     },
     {
       "type": "timeseries",
-      "title": "H3 share of outbound frames",
+      "title": "H3 share of the direct identity's outbound frames",
       "id": 35,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Fraction of outbound payload frames sent on H3 rather than H1. Both transports carry traffic when H3 is on, so this is the first read on whether H3 moves anything. Near zero means the path never keeps up.",
+      "description": "Fraction of the direct identity's outbound payload frames sent on H3 rather than H1. Compared against the direct identity's H1 only, because H3 runs for that identity alone and every proxy has its own H1. Near zero while H3 is up and traffic flows means the path never keeps up.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -2099,7 +2099,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(urnet_transport_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) + rate(urnet_transport_direct_h1_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])), 1e-9)",
           "refId": "A",
           "legendFormat": "{{instance}}",
           "range": true,

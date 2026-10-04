@@ -40,7 +40,7 @@ func TestH3TxSharePercent(t *testing.T) {
 		{"quarter", 75, 25, 25},
 	}
 	for _, c := range cases {
-		snap := TransportModeStatsSnapshot{H1FramesTx: c.h1, H3FramesTx: c.h3}
+		snap := TransportModeStatsSnapshot{H1DirectFramesTx: c.h1, H3FramesTx: c.h3}
 		if got := snap.H3TxSharePercent(); got != c.want {
 			t.Fatalf("%s: got %d, want %d", c.name, got, c.want)
 		}
@@ -52,7 +52,7 @@ func TestHealthSuffixHiddenUntilH3Attempted(t *testing.T) {
 		t.Fatalf("a box that never tried H3 must see no new fields, got %q", got)
 	}
 	got := TransportModeStatsSnapshot{
-		H1FramesTx: 50, H3FramesTx: 50, H3Attempts: 3, H3Up: 1, H3Drops: 2, H3ConnectFailures: 1,
+		H1DirectFramesTx: 50, H3FramesTx: 50, H3Attempts: 3, H3Up: 1, H3Drops: 2, H3ConnectFailures: 1,
 	}.HealthSuffix()
 	want := " h3_up=1 h3_tx_share=50% h3_drops=2 h3_conn_fail=1"
 	if got != want {
@@ -215,5 +215,44 @@ func TestRunH3CountsADnsModeAttemptUnderDns(t *testing.T) {
 	}
 	if after.H3Attempts != before.H3Attempts {
 		t.Fatalf("a DNS-mode attempt leaked into the H3 counters: %d -> %d", before.H3Attempts, after.H3Attempts)
+	}
+}
+
+// The share is measured against the direct identity's H1, not every proxy's: a
+// provider has hundreds of H1 transports and one H3, so against the total a busy
+// H3 would read as 0%.
+func TestH3TxShareIgnoresTheProxiesH1Traffic(t *testing.T) {
+	snap := TransportModeStatsSnapshot{
+		H1FramesTx:       1_000_000, // every proxy's H1
+		H1DirectFramesTx: 100,
+		H3FramesTx:       100,
+	}
+	if got := snap.H3TxSharePercent(); got != 50 {
+		t.Fatalf("share = %d%%, want 50%% of the direct identity's frames", got)
+	}
+	// the same H3 traffic with no direct H1 traffic is all H3
+	if got := (TransportModeStatsSnapshot{H1FramesTx: 1_000_000, H3FramesTx: 10}).H3TxSharePercent(); got != 100 {
+		t.Fatalf("share = %d%%, want 100%%", got)
+	}
+}
+
+func TestPrometheusExposesTheDirectH1Counters(t *testing.T) {
+	h1DirectStats.addTx(321)
+	defer func() {
+		h1DirectStats.framesTx.Add(^uint64(0))
+		h1DirectStats.bytesTx.Add(^uint64(320))
+	}()
+	w := httptest.NewRecorder()
+	PrometheusHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"# TYPE urnet_transport_direct_h1_frames_total counter",
+		"# TYPE urnet_transport_direct_h1_payload_bytes_total counter",
+		`urnet_transport_direct_h1_frames_total{dir="tx"} `,
+		`urnet_transport_direct_h1_payload_bytes_total{dir="rx"} `,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
 	}
 }

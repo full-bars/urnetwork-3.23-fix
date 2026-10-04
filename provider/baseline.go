@@ -198,10 +198,14 @@ type baselineH3Datagram struct {
 // them, so they are absent unless a transport was built with one of those target
 // modes and attempted a connection.
 type baselineTransport struct {
-	H1      baselineTransportMode `json:"h1"`
-	H3      *baselineH3           `json:"h3,omitempty"`
-	Dns     *baselinePt           `json:"dns,omitempty"`
-	DnsPump *baselinePt           `json:"dns_pump,omitempty"`
+	// H1 is every H1 transport in the process, one per proxy identity. H1Direct
+	// is the direct identity's H1 alone, the fair comparison for H3, and is
+	// absent when that identity moved nothing.
+	H1       baselineTransportMode  `json:"h1"`
+	H1Direct *baselineTransportMode `json:"h1_direct,omitempty"`
+	H3       *baselineH3            `json:"h3,omitempty"`
+	Dns      *baselinePt            `json:"dns,omitempty"`
+	DnsPump  *baselinePt            `json:"dns_pump,omitempty"`
 }
 
 type baselineContracts struct {
@@ -924,6 +928,12 @@ func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram c
 			BytesTx:  modes.H1BytesTx,
 			BytesRx:  modes.H1BytesRx,
 		},
+	}
+	if d := (baselineTransportMode{
+		FramesTx: modes.H1DirectFramesTx, FramesRx: modes.H1DirectFramesRx,
+		BytesTx: modes.H1DirectBytesTx, BytesRx: modes.H1DirectBytesRx,
+	}); d != (baselineTransportMode{}) {
+		out.H1Direct = &d
 	}
 	out.Dns = baselinePtFrom(modes.Dns)
 	out.DnsPump = baselinePtFrom(modes.DnsPump)

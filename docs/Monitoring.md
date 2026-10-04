@@ -180,6 +180,8 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_connections_active` | gauge | | Active connections |
 | `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded |
 | `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing |
+| `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. This is the fair comparison for H3, which runs for that identity alone; `urnet_transport_frames_total{mode="h1"}` is every proxy identity together |
+| `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only |
 | `urnet_h3_up` | gauge | | H3 connections up now |
 | `urnet_h3_connect_attempts_total` | counter | | H3 connect attempts |
 | `urnet_h3_connects_total` | counter | | H3 connections that authenticated |

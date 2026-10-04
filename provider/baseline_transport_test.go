@@ -111,3 +111,19 @@ func TestBaselineTransportDnsModesAbsentUntilAttempted(t *testing.T) {
 		}
 	}
 }
+
+func TestBaselineTransportDirectH1IsOptional(t *testing.T) {
+	got := buildBaselineTransport(connect.TransportModeStatsSnapshot{H1FramesTx: 100}, connect.H3DatagramSnapshot{})
+	if got.H1Direct != nil {
+		t.Fatalf("no direct H1 traffic: block must be absent, got %+v", got.H1Direct)
+	}
+	got = buildBaselineTransport(connect.TransportModeStatsSnapshot{
+		H1FramesTx: 100, H1DirectFramesTx: 7, H1DirectBytesTx: 700,
+	}, connect.H3DatagramSnapshot{})
+	if got.H1Direct == nil || got.H1Direct.FramesTx != 7 || got.H1Direct.BytesTx != 700 {
+		t.Fatalf("direct h1 = %+v", got.H1Direct)
+	}
+	if got.H1.FramesTx != 100 {
+		t.Fatalf("h1 total must still be every identity: %+v", got.H1)
+	}
+}

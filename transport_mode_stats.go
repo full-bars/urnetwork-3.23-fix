@@ -46,7 +46,13 @@ type h3FamilyCounters struct {
 }
 
 var (
-	h1ModeStats transportModeStats
+	// h1ModeStats counts every H1 transport in the process, which on a provider
+	// is one per proxy identity. h1DirectStats counts only the identities that
+	// are eligible for H3 (the direct identity), which is the fair thing to put
+	// H3 against: H3 exists for that one identity, so comparing it with all the
+	// proxies' H1 traffic reads as about 0% whatever H3 actually does.
+	h1ModeStats   transportModeStats
+	h1DirectStats transportModeStats
 
 	h3Counters        h3FamilyCounters
 	h3DnsCounters     h3FamilyCounters
@@ -72,7 +78,9 @@ func h3CountersFor(mode TransportMode) *h3FamilyCounters {
 // TransportModeStatsSnapshot is a point-in-time copy of the per-mode counters.
 type TransportModeStatsSnapshot struct {
 	H1FramesTx, H1FramesRx, H1BytesTx, H1BytesRx uint64
-	H3FramesTx, H3FramesRx, H3BytesTx, H3BytesRx uint64
+	// H1Direct is H1 for the identities eligible for H3 only.
+	H1DirectFramesTx, H1DirectFramesRx, H1DirectBytesTx, H1DirectBytesRx uint64
+	H3FramesTx, H3FramesRx, H3BytesTx, H3BytesRx                         uint64
 
 	H3Attempts        uint64
 	H3Connects        uint64
@@ -118,6 +126,10 @@ func TransportModeStats() TransportModeStatsSnapshot {
 		H1FramesRx:        h1ModeStats.framesRx.Load(),
 		H1BytesTx:         h1ModeStats.bytesTx.Load(),
 		H1BytesRx:         h1ModeStats.bytesRx.Load(),
+		H1DirectFramesTx:  h1DirectStats.framesTx.Load(),
+		H1DirectFramesRx:  h1DirectStats.framesRx.Load(),
+		H1DirectBytesTx:   h1DirectStats.bytesTx.Load(),
+		H1DirectBytesRx:   h1DirectStats.bytesRx.Load(),
 		H3FramesTx:        h3ModeStats.framesTx.Load(),
 		H3FramesRx:        h3ModeStats.framesRx.Load(),
 		H3BytesTx:         h3ModeStats.bytesTx.Load(),
@@ -132,10 +144,12 @@ func TransportModeStats() TransportModeStatsSnapshot {
 	}
 }
 
-// H3TxSharePercent is the share of outbound payload frames carried by H3, or -1
-// when nothing has been sent on either mode.
+// H3TxSharePercent is the share of the direct identity's outbound payload frames
+// carried by H3, or -1 when nothing has been sent on either mode. It is measured
+// against the direct identity's H1 traffic, not every proxy's, because H3 runs
+// for that identity alone.
 func (self TransportModeStatsSnapshot) H3TxSharePercent() int {
-	total := self.H1FramesTx + self.H3FramesTx
+	total := self.H1DirectFramesTx + self.H3FramesTx
 	if total == 0 {
 		return -1
 	}

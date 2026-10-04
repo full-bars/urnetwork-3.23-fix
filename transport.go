@@ -1040,6 +1040,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 									return
 								}
 								h1ModeStats.addTx(byteCount)
+								if self.settings.EnableH3 {
+									h1DirectStats.addTx(byteCount)
+								}
 							}
 						case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 							ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
@@ -1156,6 +1159,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							return
 						case receive <- message:
 							h1ModeStats.addRx(len(message))
+							if self.settings.EnableH3 {
+								h1DirectStats.addRx(len(message))
+							}
 							self.log.V(2).Infof("[tr]%s<-\n", clientId)
 						case <-time.After(self.settings.ReadTimeout):
 							self.log.Infof("[tr]drop %s<-\n", clientId)
