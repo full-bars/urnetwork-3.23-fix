@@ -758,7 +758,7 @@ func (r *ProxyReloader) reload() {
 				r.drainMu.Lock()
 				r.drainingProxies[addr] = cancel
 				r.drainMu.Unlock()
-				tlog("[proxy] draining %s (%d active clients): source went empty\n", addr, bw.Clients.Load())
+				tlog("[proxy] draining %s (%d active clients): source went empty\n", proxyKeyDisplay(addr), bw.Clients.Load())
 				go func(cancelFn context.CancelFunc, proxyAddr string) {
 					defer func() {
 						r.drainMu.Lock()
@@ -773,11 +773,27 @@ func (r *ProxyReloader) reload() {
 						select {
 						case <-r.parentCtx.Done():
 							return
-						case <-time.After(5 * time.Second):
+						case <-time.After(drainPollInterval):
 						}
 					}
-					tlog("[proxy] drain complete: %s\n", proxyAddr)
+					tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(proxyAddr))
 					cancelFn()
+
+					// The source can come back while a proxy drains, and reload
+					// skips a proxy that is draining, so without a re-trigger it
+					// would sit unstarted until the reconciler's next hourly tick.
+					// A trim-shed proxy stays in the desired set on purpose, so it
+					// must not re-trigger, exactly as the removal path below does.
+					desired, err := currentDesiredProxyIdentities()
+					if err == nil && desired[proxyAddr] {
+						if r.isTrimShed(proxyAddr) {
+							tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(proxyAddr))
+						} else if reloadPath, err := proxyReloadPath(); err == nil {
+							if err := writeReloadTrigger(reloadPath); err == nil {
+								tlog("[proxy] re-triggered reload for %s (source returned while draining)\n", proxyKeyDisplay(proxyAddr))
+							}
+						}
+					}
 				}(cancel, addr)
 				draining++
 			}

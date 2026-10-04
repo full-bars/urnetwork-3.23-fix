@@ -174,6 +174,9 @@ func TestReload_EmptySource_StopsRunningProxies(t *testing.T) {
 // the ordinary removal path does. A proxy with no clients still stops at once.
 func TestReload_EmptySource_DrainsProxyWithActiveClients(t *testing.T) {
 	resetProxyCounters(t)
+	old := drainPollInterval
+	drainPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { drainPollInterval = old })
 
 	r := emptyReloader(t, writeProxyFile(t, "# empty"))
 	var cancelled atomic.Int32
@@ -211,6 +214,73 @@ func TestReload_EmptySource_DrainsProxyWithActiveClients(t *testing.T) {
 	if got := cancelled.Load(); got != 1 {
 		t.Fatalf("cancelled = %d after the last client left, want 1", got)
 	}
+}
+
+// A source can come back while a proxy drains. reload() skips a proxy that is
+// draining, so without a re-trigger the proxy would sit unstarted until the
+// reconciler's next hourly tick. The drain goroutine has to wake the reloader,
+// exactly as the ordinary removal path does.
+func TestReload_EmptySourceReTriggersWhenTheSourceReturnsWhileDraining(t *testing.T) {
+	resetProxyCounters(t)
+	old := drainPollInterval
+	drainPollInterval = 20 * time.Millisecond
+	t.Cleanup(func() { drainPollInterval = old })
+
+	file := writeProxyFile(t, "# empty")
+	r := emptyReloader(t, file)
+
+	// The identity key of a credentialed proxy is address+user, so parse the
+	// line the loader will read later rather than guessing the key.
+	fixture := writeProxyFile(t, "flap.example:1:u1:p1")
+	settings, err := readProxySettingsFromFile(fixture)
+	if err != nil || len(settings) != 1 {
+		t.Fatalf("fixture line: settings=%d err=%v", len(settings), err)
+	}
+	key := settings[0].Key()
+
+	r.cancelMap[key] = func() {}
+	r.runningAuth[key] = settings[0]
+	// The drain goroutine reads the desired set from proxy.state, and reload
+	// reloads that from disk, so the source has to be persisted, not just set
+	// on the in-memory struct.
+	if err := writeProxyState(&ProxyState{
+		Source:  file,
+		Proxies: map[string]ProxyEntry{key: {Source: "file"}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	connect.RegisterProxy(987003, key, key)
+	bw := connect.RegisterProxyBandwidth(987003)
+	t.Cleanup(func() { connect.UnregisterProxy(987003) })
+	bw.Clients.Store(2)
+
+	r.reload() // the source is empty, so the proxy is handed to the drain path
+
+	// The source comes back while it drains.
+	if err := os.WriteFile(file, []byte("flap.example:1:u1:p1\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	bw.Clients.Store(0)
+
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if after, err := readReloadSeq(reloadPath); err == nil && after > before {
+			return
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	t.Fatal("the drain finished with the source back but no reload was triggered")
 }
 
 func TestReload_EmptySource_StillReadsEmpty(t *testing.T) {
