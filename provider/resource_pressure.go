@@ -808,7 +808,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 
 		writePressureStatus(smoothed, comps, &gcState)
 		if r := pressureRegime(smoothed); r != lastRegime {
-			tlog("[proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
+			tlog("🧯 [proxy][pressure] %.2f (%s)\n", smoothed, formatComponents(comps))
 			lastRegime = r
 		}
 	}
@@ -1287,7 +1287,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		}
 		release()
 		if next != target {
-			tlog("[proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+			tlog("🧯 [proxy][pressure] pool target %d -> %d (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
 		}
 
 		if pressure > aimdShrinkAbove {
@@ -1332,7 +1332,7 @@ func shedPoolToTarget(target int) {
 	shed := selectURLProxiesToShed(state, traffic, earnings, excess)
 	for _, addr := range shed {
 		if state.Proxies[addr].Health == "up" {
-			tlog("[proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
+			tlog("🧯 [proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
 		}
 		applyShedBackoff(addr, time.Now())
 	}
@@ -1340,7 +1340,7 @@ func shedPoolToTarget(target int) {
 		tlog("[proxy][pressure] warn: shed failed: %v\n", err)
 		return
 	}
-	tlog("[proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
+	tlog("🧯 [proxy][pressure] shed %d url proxies to reach target %d\n", len(shed), target)
 }
 
 // paidRunningCount is how many of the running proxies are paid or file

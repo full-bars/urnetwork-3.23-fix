@@ -509,7 +509,7 @@ func (self *ContractManager) providePing() {
 			}
 			if !logWait {
 				logWait = true
-				self.client.log.Infof("[contract]provide ping wait\n")
+				self.client.log.Infof("⏳ [contract]provide ping wait\n")
 			}
 			select {
 			case <-self.ctx.Done():
@@ -625,7 +625,7 @@ func (self *ContractManager) expireQueuedContracts() {
 			}
 		}()
 		if 0 < len(expired) {
-			self.client.log.V(1).Infof("[contract]expired %d queued contracts\n", len(expired))
+			self.client.log.V(1).Infof("⌛ [contract]expired %d queued contracts\n", len(expired))
 			self.closeContracts(expired)
 		}
 	}
@@ -708,7 +708,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						}
 
 						self.contractStatus(contractStatus)
-						self.client.log.Infof("🤝 [contract] acquired size=%s destination=%s\n",
+						self.client.log.Infof("💚 [contract] acquired size=%s destination=%s\n",
 							ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())),
 							contractKey.Destination.DestinationId)
 						atomic.AddUint64(&contractsAcquired, 1)
@@ -1252,9 +1252,9 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 					noteBackendFailure()
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
-							self.client.log.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
+							self.client.log.Infof("⚠️ [contract]oob err = %s (%d suppressed)\n", err, suppressed)
 						} else {
-							self.client.log.Infof("[contract]oob err = %s\n", err)
+							self.client.log.Infof("⚠️ [contract]oob err = %s\n", err)
 						}
 					}
 				}
@@ -1332,9 +1332,9 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		if allottedByteCount > 0 {
 			util = float64(ackedByteCount) / float64(allottedByteCount) * 100
 		}
-		action := "closed"
+		action := "🚪 closed"
 		if checkpoint {
-			action = "checkpointed"
+			action = "📍 checkpointed"
 		}
 		self.client.log.Infof("[contract] %s acked=%s allotted=%s util=%.0f%% destination=%s\n",
 			action,
