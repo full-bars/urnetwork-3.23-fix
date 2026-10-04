@@ -403,6 +403,13 @@ func deriveStateReason(in stateInputs) string {
 			return fmt.Sprintf("startup stuck: %s for %d min", startupResolving, mins)
 		}
 		if in.startup != "" {
+			// The no-source phase is a deliberate configuration, not something
+			// being retried: the operator set up no proxy source and turned the
+			// direct transport off, so there is nothing to retry. systemdStatusLine
+			// describes the same case without "retrying"; the two must agree.
+			if in.startup == startupNoSource {
+				return in.startup
+			}
 			return in.startup + ", retrying"
 		}
 		var parts []string
