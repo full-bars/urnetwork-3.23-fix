@@ -285,6 +285,23 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 - This is normal during platform outages or high load. The provider retries automatically.
 - Seeing this occasionally is expected. Seeing it continuously for many minutes indicates a platform-side issue.
 
+
+---
+
+## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3=on`)
+
+Only a box that sets `URNETWORK_H3=on` logs these, and only for the direct identity.
+
+```
+[c]h3 connect to 203.0.113.10:443 (api.example.net)
+[t]h3 unavailable, staying on h1 (retrying quietly): <error>
+```
+
+- `[c]h3 connect to <address> (<server>)` is one H3 connection attempt to the platform. It is expected at start and on each retry.
+- `[t]h3 unavailable, staying on h1 (retrying quietly)` appears once per transport when H3 cannot connect, for example because UDP is filtered. It is not an error: H1 carries the node, the failure is not counted as a backend or proxy auth failure, and H3 retries with a backoff that doubles up to 10 minutes. The same failure is logged again only at verbose level 2 as `[t]h3 unavailable: <error>`.
+- `[c]h3 connect err = <error>` is the transport-level detail behind a failed attempt.
+- What to watch while testing it: the `[t]auth error` rate and the backend-degraded state must not rise, and billable per hour must not fall against a box without it. Any of those is a reason to turn it off (unset `URNETWORK_H3` and restart).
+
 ---
 
 ## 🧭 Smart Dialer and Give-up Lines

@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.8
+**Current Version**: v3.23.0-fix.32.9
 
 ---
 
@@ -3554,7 +3554,7 @@ This batch makes `urnet-tools status` and `top` report what is actually true.
 - **Direct sockets count as total traffic** (PR #693): total bytes were counted only on proxy connections, so a direct-only node showed billable with total stuck at zero. The UDP and TCP sequences wrap their socket with `trackDirect` when a bandwidth record exists; an already-tracked conn (a proxy dial) is returned as is, so proxy mode is not counted twice. The TCP wrap comes after the raw-socket options.
 - **`top` zoom, Internals panel, menu, and quiet-node layout** (PR #694): `w` zooms both graphs to the last 15 seconds at the refresh rate. A runtime Internals panel shows the goroutine count and trend, heap, stacks, GC goal, allocation rate, GC cycles and pause p99, GC share of CPU and scheduler latency p99 (`internals` is a cheap cached `runtime/metrics` read; `g` swaps in a goroutine profile grouped by where each goroutine is parked, taken at most once every 5 seconds). `m` opens a menu of eight color themes and braille/block/tty graph styles saved to `top.conf` (`NO_COLOR` and a dumb terminal still force mono). A layout that fits a quiet node gives back rows a node with a small proxy pool does not use. `-` now refreshes faster and `+` slower, like btop.
 
-## 180. v32.8: Capacity Self-Management and a Measured-Cost Smart Dialer (PR #697 to #706, #708, #709, #712 to #733)
+## 180. v32.8: Capacity Self-Management and a Measured-Cost Smart Dialer (PR #697 to #706, #708, #709, #712 to #733, #743, #745)
 
 This batch lets the provider protect a box that is running short of memory, and replaces a hardcoded latency assumption with a measurement. Both new behaviors are conservative by default: the OOM cap runs in `shadow` and the smart dialer is off. It also adds a built-in baseline recorder, on by default, so the next upgrade can be judged against what the box did before it.
 
@@ -3565,7 +3565,7 @@ This batch lets the provider protect a box that is running short of memory, and 
 - **OOM-aware start cap, shadow by default** (PR #700, #705, #706): after a kernel OOM kill of this provider's own cgroup subtree (same boot id, higher `oom_kill` in the parent cgroup's `memory.events`), the next start runs 80% of the peak running proxies. Floor: the larger of 50 and desired/4. At most 3 reductions per 24h, then it freezes; it relaxes 10% at a start that comes a full clean day after the last change. It never writes `proxy_trim`; the tighter of the two caps applies. The run marker carries an hourly heartbeat so a kill after long uptime is attributed, and a marker with no sign of life for 72 hours is ignored. `urnet-tools set oom-cap on|off|shadow` or `URNETWORK_OOM_CAP`; any source saying `off` wins, and `off` forgets the standing cap.
 - **Action ledger** (PR #700, #701, commit `bd6cdfad2`): every cap decision and trim result is appended to `~/.urnetwork/autopilot.jsonl` (256 KiB, newest lines kept, rotation serialized across processes), served as the `ledger` control command and shown by `urnet-tools autopilot log [limit]`.
 - **Memory awareness** (PR #698, #699, #700, #701, #702, #705): RAM detection walks the process's own cgroup and ancestors for the tightest `memory.max` or `memory.high`, so a systemd unit's `MemoryMax=` is seen (`tuning.go`, `util.go`). Headroom excludes reclaimable page cache and is unknown when a limited level's usage cannot be read. Startup logs the `effective RAM ceiling` and warns when `GOMEMLIMIT` is short for the pool's heap or the box is short for its footprint. A `low memory headroom` line logs after two 30s samples below the line. All advisory: the provider never changes these values.
-- **Trim correctness** (PR #698, #699, #702, #705): shed proxies keep their state entry; the status denominator honors the cap; operator trim commands leave `received` and `applied` receipts; `proxy trim --preview` is computed by the running provider; the cap is honored before launching at startup; the cap file is written atomically and reported when unreadable; a finished drain of a shed proxy no longer triggers a reload.
+- **Trim correctness** (PR #698, #699, #702, #705, #743, #745): shed proxies keep their state entry; the status denominator honors the cap; operator trim commands leave `received` and `applied` receipts; `proxy trim --preview` is computed by the running provider; the cap is honored before launching at startup; the cap file is written atomically and reported when unreadable; a finished drain of a shed proxy no longer triggers a reload. The live trim, the URL pool shed and `trim --preview` rank by billable earnings, the larger of this run's billable bytes and the decayed earnings score, not by total bytes (which ran about 17x billable on a measured provider); a proxy still launching, with no bandwidth record yet, keeps its stored score instead of reading as earning nothing.
 - **Pressure and GC** (PR #698, #699, #702): the goroutine sensor judges per proxy from 50 running proxies up, excludes the direct transport, and keeps the absolute ramp for small pools. The auto-profile GOGC is applied once per process, a persisted `set gogc` wins, and the governor can release with self-heal off. Every GOGC change is logged.
 - **HotSwap gate** (PR #698): a hotswap is declined when MemAvailable is under 1.1x the running provider's RSS (bounded by cgroup headroom), falling back to a plain restart. The `urnet_hotswap_outcomes_total` reason is `low_memory`.
 - **Restart reason** (PR #706, commit `855339684`): an upgrade reads `update`, not `unclean`. The clean-shutdown marker is consumed on read, so a plain `systemctl restart` reads `unclean` like a crash (issue #707 tracks telling them apart).
@@ -3595,3 +3595,19 @@ This batch lets the provider protect a box that is running short of memory, and 
 
 > [!NOTE]
 > When porting to another line: the smart dialer and the capacity stack live in `provider/` and the root `net_http*.go`. `sn` keeps the engine pristine and carries its own registry in `provider/proxy_health.go`, so ports adapt instead of cherry-picking.
+
+## 181. v32.9: H3 (QUIC) Beside H1 for the Direct Identity, Beta (PR #744, #746)
+
+The engine already contained a working H3 platform transport that `Auto` mode never launched. This batch lets the direct identity run it beside H1 behind `URNETWORK_H3=on`. It is off by default and changes nothing on a box that does not set it. It is beta: no platform-side gain is proven, because the platform does not score or pay by transport mode.
+
+**Files Modified**: `transport.go`, `provider/main.go`, `docs/Configuration.md`, `LOG_REFERENCE.md`, `releases/`, `CHANGELOG.md`.
+
+**Files Added**: `provider/h3_direct.go`, `provider/h3_direct_test.go`, `transport_h3_counted.go`, `transport_h3_auxiliary_test.go`, `transport_h3_counted_test.go`.
+
+- **Direct identity only** (PR #744): `URNETWORK_H3` (`on`, `1`, `true`, `yes`) is honored only for an identity with no proxy, because `runH3` opens a host UDP socket and a proxied identity would leak its QUIC from the host address. The settings are otherwise the engine defaults (`provider/h3_direct.go`).
+- **H1 stays the health signal** (PR #744): with `EnableH3` set in `Auto` mode H3 is auxiliary. A failed H3 connect is "mode unavailable": it is not recorded as a backend failure or a proxy auth failure, backs off up to 10 minutes and logs a single `[t]h3 unavailable, staying on h1` line. Auxiliary H3 authentication does not clear the failures H1 recorded, and its connects and drops do not mark the identity up, down or dropped. The sole H3 target mode keeps the full accounting.
+- **Both transports stay connected** (PR #744): H1 and H3 tie on preference, so one is elected active, and the other used to idle-drain and reconnect in a cycle, tearing H1 down when H3 connected first. While H3 is auxiliary neither drains for being inactive.
+- **H3 bytes count into total** (PR #746): the H3 UDP socket bypasses the byte counting TCP connections get. It is wrapped in a conn that credits the identity's total, and the wrapper implements `ReadBatch` because quic-go reads through a path that unwraps the file descriptor and bypasses an ordinary wrapper; it also keeps satisfying `OOBCapablePacketConn` so ECN, the DF bit and batching are not lost. Billable is counted at the IP layer and is unaffected.
+
+> [!NOTE]
+> When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the CodeRabbit-driven accounting fixes must travel with it.
