@@ -2,9 +2,13 @@
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [v3.23.0-fix.32.9]
+
 ### Added
 
-- **`URNETWORK_H3` (beta, off by default): H3 (QUIC) beside H1 for the direct identity**: the engine already contained a working H3 platform transport that Auto mode never launched. With `URNETWORK_H3=on` the direct (non-proxied) identity starts it beside H1; a proxied identity never does, because `runH3` opens a host UDP socket. H3 is auxiliary: H1 remains the health signal, so an H3 connect failure is "mode unavailable", backs off quietly up to 10 minutes and is not recorded as a backend failure or a proxy auth failure (the sole H3 target mode keeps the full accounting). Costs one extra platform connection per box. Its socket bytes count into the identity's total traffic (billable is counted at the IP layer and is unaffected). No platform-side gain is proven.
+- **`URNETWORK_H3` (beta, off by default): H3 (QUIC) beside H1 for the direct identity** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/744>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/746>): the engine already contained a working H3 platform transport that Auto mode never launched. With `URNETWORK_H3=on` the direct (non-proxied) identity starts it beside H1; a proxied identity never does, because `runH3` opens a host UDP socket. H3 is auxiliary: H1 remains the health signal, so an H3 connect failure is "mode unavailable", backs off quietly up to 10 minutes and is not recorded as a backend failure or a proxy auth failure (the sole H3 target mode keeps the full accounting), and an H3 connect or drop does not mark the identity up, down or dropped. Both transports stay connected and neither idle-drains because the other won the election. Costs one extra platform connection per box. Its socket bytes count into the identity's total traffic (billable is counted at the IP layer and is unaffected). No platform-side gain is proven. Needs a restart to take effect.
 
 ## [v3.23.0-fix.32.8]
 
