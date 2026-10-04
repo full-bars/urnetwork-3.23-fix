@@ -109,3 +109,32 @@ func TestRunningProxyEarnings_TakesTheLargerOfRunAndDecayedScore(t *testing.T) {
 		t.Fatalf("earnings = %d, want the larger decayed score %d", got, 30<<20)
 	}
 }
+
+// A proxy that is running but has not got a bandwidth record yet (registered,
+// still launching) must still carry its stored earnings. Building the map only
+// from the bandwidth snapshot gave such a proxy zero, so on a tie it could be
+// shed ahead of a proxy with a lower stored score.
+func TestRunningProxyEarnings_ProxyWithoutABandwidthRecordKeepsItsStoredScore(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	t.Cleanup(connect.ResetProxyHealthForTesting)
+	restore := withGlobalEarningsStore(t)
+	defer restore()
+
+	// proven earner, registered but launching: no bandwidth record
+	connect.RegisterProxy(1, "10.0.0.1:1080", "10.0.0.1:1080")
+	creditEarningsAt(globalProxyEarningsStore, "10.0.0.1:1080", 50<<20, earningsTestNow)
+	// weaker earner with a bandwidth record
+	registerTrafficProxy(2, "10.0.0.2:1080", 100<<20, 1<<20)
+	creditEarningsAt(globalProxyEarningsStore, "10.0.0.2:1080", 5<<20, earningsTestNow)
+
+	earnings := runningProxyEarningsAt(earningsTestNow)
+	if earnings["10.0.0.1:1080"] != 50<<20 {
+		t.Fatalf("launching proxy with a stored score reads %d, want %d", earnings["10.0.0.1:1080"], 50<<20)
+	}
+
+	state := map[string]ProxyEntry{"10.0.0.1:1080": {Health: "up"}, "10.0.0.2:1080": {Health: "up"}}
+	shed := selectWorstRunningProxies(state, nil, earnings, runningProxyAddresses(), 1)
+	if len(shed) != 1 || shed[0] != "10.0.0.2:1080" {
+		t.Fatalf("shed %v, want the weaker earner and not the launching proven earner", shed)
+	}
+}

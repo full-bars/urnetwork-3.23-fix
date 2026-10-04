@@ -495,17 +495,30 @@ func runningProxyEarnings() map[string]uint64 {
 // depends on the wall clock.
 func runningProxyEarningsAt(now time.Time) map[string]uint64 {
 	earnings := map[string]uint64{}
-	for key, bw := range connect.ProxyBandwidthSnapshotByKey() {
-		if bw == nil {
-			continue
-		}
-		earned := bw.BillableRx.Load() + bw.BillableTx.Load()
-		if score := proxyEarningsScore(key, now); 0 < score {
-			earned = max(earned, uint64(score))
+	score := func(key string, billable uint64) {
+		earned := billable
+		if s := proxyEarningsScore(key, now); 0 < s {
+			earned = max(earned, uint64(s))
 		}
 		if 0 < earned {
 			earnings[key] = earned
 		}
+	}
+	snapshot := connect.ProxyBandwidthSnapshotByKey()
+	for key, bw := range snapshot {
+		if bw == nil {
+			continue
+		}
+		score(key, bw.BillableRx.Load()+bw.BillableTx.Load())
+	}
+	// a running proxy has no bandwidth record until it finishes launching, so it
+	// is absent from the snapshot. Walk the running identity keys as well, or it
+	// reads zero and can be shed ahead of a proxy with a lower stored score
+	for _, key := range runningProxyAddresses() {
+		if bw, ok := snapshot[key]; ok && bw != nil {
+			continue
+		}
+		score(key, 0)
 	}
 	return earnings
 }
