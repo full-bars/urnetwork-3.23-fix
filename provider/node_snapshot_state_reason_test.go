@@ -132,3 +132,13 @@ func TestSourceFailureIsDegradedEvenDuringWarmup(t *testing.T) {
 		t.Fatalf("resolving at 30s: state %q, want starting", got)
 	}
 }
+
+// A no-source phase is a configuration the operator chose, not something being
+// attempted, so the reason must read exactly as the phase with no ", retrying"
+// suffix — systemdStatusLine names the same case without it.
+func TestNoSourceReasonDoesNotSayRetrying(t *testing.T) {
+	in := stateInputs{uptime: 30 * time.Second, startup: startupNoSource}
+	if got := deriveStateReason(in); got != startupNoSource {
+		t.Fatalf("no-source reason = %q, want %q", got, startupNoSource)
+	}
+}
