@@ -411,6 +411,62 @@ func (r *ProxyReloader) clearTrimShed(addr string) {
 	delete(r.trimShed, addr)
 }
 
+// drainProxyAfterRemoval takes over a cancelled proxy's shutdown: it waits for
+// the last client to leave, then cancels and re-triggers a reload if the proxy
+// is desired again by then. The ordinary removal pass and the empty-source path
+// both need exactly this, so they share it rather than drift apart.
+//
+// A drained proxy that is still desired is normally re-added (credential
+// rotation, or a source flap that removed and re-added it while it drained).
+// A TRIM-SHED proxy also stays in the desired set on purpose (to keep its
+// grade/health state), so IT must not re-trigger here: under a binding cap the
+// next reload would only hold it again, and each shed proxy that finished
+// draining would burn a reload cycle and log a false "re-added while draining"
+// line. Checking THIS address's shed mark (not just "some cap happens to bind")
+// matters: a non-shed proxy re-added while draining under a binding cap must
+// still re-trigger promptly rather than wait for the reconciler's next tick.
+// The next natural reload admits a shed proxy when the cap allows.
+func (r *ProxyReloader) drainProxyAfterRemoval(addr string, cancel context.CancelFunc, reason string) {
+	r.drainMu.Lock()
+	r.drainingProxies[addr] = cancel
+	r.drainMu.Unlock()
+
+	bw := connect.ProxyBandwidthByKey(addr)
+	tlog("[proxy] draining %s (%d active clients)%s\n", proxyKeyDisplay(addr), bw.Clients.Load(), reason)
+
+	go func() {
+		defer func() {
+			r.drainMu.Lock()
+			delete(r.drainingProxies, addr)
+			r.drainMu.Unlock()
+		}()
+		for {
+			bw := connect.ProxyBandwidthByKey(addr)
+			if bw == nil || bw.Clients.Load() == 0 {
+				break
+			}
+			select {
+			case <-r.parentCtx.Done():
+				return
+			case <-time.After(drainPollInterval):
+			}
+		}
+		tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(addr))
+		cancel()
+
+		desired, err := currentDesiredProxyIdentities()
+		if err == nil && desired[addr] {
+			if r.isTrimShed(addr) {
+				tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(addr))
+			} else if reloadPath, err := proxyReloadPath(); err == nil {
+				if err := writeReloadTrigger(reloadPath); err == nil {
+					tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(addr))
+				}
+			}
+		}
+	}()
+}
+
 // reconciliationReloadInterval is how often runReloadReconciler forces a
 // reload cycle regardless of whether anything is known to have changed. This
 // is a belt-and-suspenders safety net, not the primary reload path — normal
@@ -1099,56 +1155,7 @@ func (r *ProxyReloader) reload() {
 			continue
 		}
 
-		r.drainMu.Lock()
-		r.drainingProxies[addr] = cancel
-		r.drainMu.Unlock()
-
-		tlog("[proxy] draining %s (%d active clients)\n", proxyKeyDisplay(addr), bw.Clients.Load())
-
-		go func(cancelFn context.CancelFunc, proxyAddr string) {
-			defer func() {
-				r.drainMu.Lock()
-				delete(r.drainingProxies, proxyAddr)
-				r.drainMu.Unlock()
-			}()
-			for {
-				bw := connect.ProxyBandwidthByKey(proxyAddr)
-				if bw == nil || bw.Clients.Load() == 0 {
-					break
-				}
-				select {
-				case <-r.parentCtx.Done():
-					return
-				case <-time.After(drainPollInterval):
-				}
-			}
-			tlog("[proxy] drain complete: %s\n", proxyKeyDisplay(proxyAddr))
-			cancelFn()
-
-			desired, err := currentDesiredProxyIdentities()
-			if err == nil && desired[proxyAddr] {
-				// A drained proxy that is still desired is normally re-added
-				// (credential rotation, or a source flap that removed and
-				// re-added it while it drained). But a TRIM-SHED proxy also
-				// stays in the desired set on purpose (to keep its grade/health
-				// state), so IT must not re-trigger here: under a binding cap
-				// the next reload would only hold it again, and each shed
-				// proxy that finished draining would burn a reload cycle and
-				// log a false "re-added while draining" line. Checking THIS
-				// address's shed mark (not just "some cap happens to bind")
-				// matters: a non-shed proxy re-added while draining under a
-				// binding cap must still re-trigger promptly rather than wait
-				// for the reconciler's next tick. The next natural reload
-				// admits a shed proxy when the cap allows.
-				if r.isTrimShed(proxyAddr) {
-					tlog("[proxy] drain complete: %s stays within the trim cap; not re-triggering a reload\n", proxyKeyDisplay(proxyAddr))
-				} else if reloadPath, err := proxyReloadPath(); err == nil {
-					if err := writeReloadTrigger(reloadPath); err == nil {
-						tlog("[proxy] re-triggered reload for %s (re-added while draining)\n", proxyKeyDisplay(proxyAddr))
-					}
-				}
-			}
-		}(cancel, addr)
+		r.drainProxyAfterRemoval(addr, cancel, "")
 	}
 
 	// Note: if all running proxies enter draining state and none are added, the
