@@ -1302,7 +1302,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				if err != nil {
 					return nil, err
 				}
-				packetConn = udpConn
+				packetConn = self.countH3Socket(udpConn)
 			}
 
 			defer func() {
