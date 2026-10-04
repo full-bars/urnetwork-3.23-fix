@@ -310,6 +310,10 @@ type PlatformTransportSettings struct {
 	// "mode unavailable" and is NOT a backend failure or a proxy auth failure.
 	// See h3Auxiliary.
 	EnableH3 bool
+
+	// sendRouteObserverForTest, when set, is called with the send route of each
+	// H3 connection once it is registered, so a test can push messages into it.
+	sendRouteObserverForTest func(send chan []byte)
 }
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
@@ -1301,6 +1305,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				InitialPacketSize:       1400,
 				EnableDatagrams:         offerDatagrams,
 			}
+			applyH3MemoryBounds(quicConfig)
 			var tlsConfig *tls.Config
 			if self.settings.QuicTlsConfig != nil {
 				// copy
@@ -1560,9 +1565,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			var datagramReassembler *H3DatagramReassembler
 			if connStream.useDatagrams {
 				var datagramErr error
+				datagramSettings, datagramBudget := h3DatagramLimits()
 				datagramReassembler, datagramErr = NewH3DatagramReassembler(
-					h3DatagramSettings,
-					h3DatagramBudget,
+					datagramSettings,
+					datagramBudget,
 					h3DatagramStats,
 				)
 				if datagramErr != nil {
@@ -1571,6 +1577,28 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				}
 				defer datagramReassembler.Close()
 				self.log.Infof("[t]h3 datagram accepted by the server, receiving datagrams on %s\n", clientId)
+			}
+
+			// send side of a negotiated DATAGRAM connection
+			var datagramFragmenter *H3DatagramFragmenter
+			var maxDatagramByteCount atomic.Int64
+			datagramGuard := newH3DatagramSendGuard()
+			// when the stream and the datagram lane last received something, which
+			// is how the guard tells a dead datagram lane from a dead connection
+			var lastStreamReceiveNano atomic.Int64
+			lastStreamReceiveNano.Store(time.Now().UnixNano())
+			if connStream.useDatagrams {
+				datagramSettings, _ := h3DatagramLimits()
+				var fragmenterErr error
+				datagramFragmenter, fragmenterErr = NewH3DatagramFragmenter(datagramSettings, h3DatagramStats)
+				if fragmenterErr != nil {
+					self.log.Infof("[t]h3 datagram sender init error = %s\n", fragmenterErr)
+					return
+				}
+				maxDatagramByteCount.Store(int64(initialH3DatagramPathByteCount(
+					datagramSettings.TargetDatagramByteCount,
+					conn.SendDatagram,
+				)))
 			}
 
 			var readCounter atomic.Uint64
@@ -1601,6 +1629,36 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			send := make(chan []byte, self.settings.TransportBufferSize)
 			receive := make(chan []byte, self.settings.TransportBufferSize)
 
+			// The stream writer reads `streamInput`. Without DATAGRAM that is `send`
+			// itself. With it, a dispatcher sits between them and decides the lane
+			// per message, and the stream lane goes through a bounded queue: a
+			// datagram send that blocks on quic-go's own queue must not hold up the
+			// frames that go on the stream, and the queue is bounded by count and by
+			// the bytes it retains so splitting the lanes cannot double what a
+			// connection holds.
+			streamInput := (<-chan []byte)(send)
+			var streamSend chan []byte
+			var streamSendBudget *H3HybridStreamSendBudget
+			if connStream.useDatagrams {
+				streamQueueMessageCount := min(
+					H3HybridStreamQueueMessageCount,
+					max(1, self.settings.TransportBufferSize),
+				)
+				streamSend = make(chan []byte, streamQueueMessageCount)
+				streamSendBudget = NewH3HybridStreamSendBudget(
+					streamQueueMessageCount,
+					H3HybridStreamQueueByteCount,
+					h3DatagramStats,
+				)
+				streamInput = streamSend
+			}
+			releaseStreamMessage := func(message []byte) {
+				if streamSendBudget != nil {
+					streamSendBudget.Release(H3HybridStreamRetainedByteCount(message))
+				}
+				MessagePoolReturn(message)
+			}
+
 			// the platform can route any destination,
 			// since every client has a platform transport
 			var sendTransport Transport
@@ -1614,6 +1672,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 			self.routeManager.UpdateTransport(sendTransport, []Route{send})
 			self.routeManager.UpdateTransport(receiveTransport, []Route{receive})
+			if observer := self.settings.sendRouteObserverForTest; observer != nil {
+				observer(send)
+			}
 
 			atomic.AddInt64(&activeProxyConnections, 1)
 			// an auxiliary H3 is not the identity health signal: its connects and
@@ -1694,12 +1755,21 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 			go HandleError(func() {
 				defer handleCancel()
+				if streamSend != nil {
+					// the dispatcher closes streamSend when it ends; return whatever
+					// was queued for the stream and never written
+					defer func() {
+						for message := range streamSend {
+							releaseStreamMessage(message)
+						}
+					}()
+				}
 
 				for {
 					select {
 					case <-handleCtx.Done():
 						return
-					case message, ok := <-send:
+					case message, ok := <-streamInput:
 						if !ok {
 							return
 						}
@@ -1709,7 +1779,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
 						messageByteCount := len(message)
 						err := framer.Write(stream, message)
-						MessagePoolReturn(message)
+						releaseStreamMessage(message)
+						if err == nil && connStream.useDatagrams {
+							h3DatagramStats.RecordStreamSent(messageByteCount)
+						}
 						if err != nil {
 							// note that for websocket a dealine timeout cannot be recovered
 							if ok, suppressed := shouldLogWriteErr(); ok {
@@ -1738,6 +1811,129 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					}
 				}
 			}, handleCancel)
+
+			if connStream.useDatagrams {
+				go HandleError(func() {
+					defer handleCancel()
+					defer close(streamSend)
+
+					datagramSettings, _ := h3DatagramLimits()
+					logSendError := func(err error) {
+						if ok, suppressed := shouldLogWriteErr(); ok {
+							if suppressed > 0 {
+								self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+							} else {
+								self.log.Infof("[ts]%s-> error = %s\n", clientId, err)
+							}
+						}
+					}
+					// offerStream moves one message to the bounded stream queue,
+					// compacting an oversized backing buffer first and returning the
+					// message to the pool on every failure path
+					offerStream := func(message []byte) bool {
+						retainedByteCount := H3HybridStreamRetainedByteCount(message)
+						if streamSendBudget.MaxByteCount() < retainedByteCount &&
+							len(message) <= streamSendBudget.MaxByteCount()-MessagePoolMetaByteCount {
+							compactMessage := MessagePoolCopy(message)
+							MessagePoolReturn(message)
+							message = compactMessage
+							retainedByteCount = H3HybridStreamRetainedByteCount(message)
+						}
+						if !streamSendBudget.Acquire(handleCtx, retainedByteCount) {
+							MessagePoolReturn(message)
+							if handleCtx.Err() == nil {
+								logSendError(fmt.Errorf(
+									"H3 hybrid stream message retained bytes %d exceed queue limit %d",
+									retainedByteCount, streamSendBudget.MaxByteCount()))
+							}
+							return false
+						}
+						select {
+						case <-handleCtx.Done():
+							streamSendBudget.Release(retainedByteCount)
+							MessagePoolReturn(message)
+							return false
+						case streamSend <- message:
+							return true
+						}
+					}
+
+					// Datagrams are only used while H1 is up. H1 is the authoritative
+					// path and Transfer recovers anything a lossy lane drops by
+					// resending, so with H1 up a dead datagram lane costs a resend.
+					// With H1 down H3 is the only path and a dead lane would stall
+					// every small frame, so the stream carries everything.
+					var h1Up atomic.Bool
+					refreshH1Up := func() {
+						modes, _ := self.modesAvailable()
+						h1Up.Store(modes[TransportModeH1])
+					}
+					refreshH1Up()
+					refresh := time.NewTicker(time.Second)
+					defer refresh.Stop()
+
+					for {
+						select {
+						case <-handleCtx.Done():
+							return
+						case <-refresh.C:
+							refreshH1Up()
+						case message, ok := <-send:
+							if !ok {
+								return
+							}
+							useDatagram := H3DatagramSendEnabled() && h1Up.Load() &&
+								datagramSettings.UseDatagramForPath(len(message), int(maxDatagramByteCount.Load()))
+							if useDatagram {
+								now := time.Now()
+								streamAlive := now.Sub(time.Unix(0, lastStreamReceiveNano.Load())) < datagramGuard.window
+								allowed, trippedNow := datagramGuard.allow(now, streamAlive)
+								if trippedNow {
+									h3DatagramBlackholes.Add(1)
+									self.log.Infof("[t]h3 datagram send switched off for this connection: %d datagrams sent and none received for %s while the stream is alive, sending on the stream again (%s)\n",
+										datagramGuard.sinceReceive.Load(), datagramGuard.window, clientId)
+								}
+								useDatagram = allowed
+							}
+							if useDatagram {
+								messageByteCount := len(message)
+								currentMax := int(maxDatagramByteCount.Load())
+								useStream, nextMax, err := datagramFragmenter.SendHybrid(handleCtx, message, currentMax,
+									func(sendCtx context.Context, datagram []byte) error {
+										// The context bounds a call that can block:
+										// quic-go's SendDatagram waits while its
+										// 32-datagram queue is full.
+										if err := sendCtx.Err(); err != nil {
+											return err
+										}
+										return conn.SendDatagram(datagram)
+									})
+								if nextMax != currentMax {
+									maxDatagramByteCount.Store(int64(nextMax))
+								}
+								if err != nil {
+									MessagePoolReturn(message)
+									logSendError(err)
+									return
+								}
+								if !useStream {
+									datagramGuard.noteSent(time.Now())
+									MessagePoolReturn(message)
+									writeCounter.Add(1)
+									writePayloadCounter.Add(1)
+									writePayloadBytes.Add(uint64(messageByteCount))
+									counters.addTx(messageByteCount)
+									self.log.V(2).Infof("[ts]%s->datagram\n", clientId)
+									continue
+								}
+							}
+							if !offerStream(message) {
+								return
+							}
+						}
+					}
+				}, handleCancel)
+			}
 
 			// `receive` has one closer, after EVERY reader has finished: a second
 			// reader (DATAGRAM) sending on a channel the stream reader already
@@ -1788,6 +1984,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						return
 					}
 					readCounter.Add(1)
+					lastStreamReceiveNano.Store(time.Now().UnixNano())
 
 					if 0 == len(message) {
 						// ping
@@ -1846,6 +2043,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						if message == nil {
 							continue
 						}
+						datagramGuard.noteReceived()
 						readCounter.Add(1)
 						select {
 						case receive <- message:

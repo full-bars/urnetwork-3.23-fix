@@ -77,6 +77,24 @@ func h3GateWatch() (bool, <-chan struct{}) {
 	return h3Gate.watch()
 }
 
+// h3DatagramSendGate is the runtime switch for SENDING datagrams on a connection
+// that negotiated them. It defaults to off, so enabling the offer alone is the
+// receive-only experiment, and it is read per message, so flipping it takes
+// effect at once with no reconnect.
+var h3DatagramSendGate = newH3Gate()
+
+// SetH3DatagramSendEnabled switches datagram send on or off and returns the
+// previous value. It only matters on a connection where the server accepted
+// DATAGRAM, and the stream carries everything while it is off.
+func SetH3DatagramSendEnabled(enabled bool) (previous bool) {
+	return h3DatagramSendGate.set(enabled)
+}
+
+// H3DatagramSendEnabled reports whether datagram send is switched on.
+func H3DatagramSendEnabled() bool {
+	return h3DatagramSendGate.get()
+}
+
 // SetH3DatagramsEnabled switches the offer of QUIC DATAGRAM on the H3
 // connection and returns the previous value. See h3DatagramGate.
 func SetH3DatagramsEnabled(enabled bool) (previous bool) {

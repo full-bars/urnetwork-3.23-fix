@@ -314,6 +314,7 @@ var liveEffectKeys = map[string]bool{
 	"smart_dialer":                true,
 	"h3":                          true,
 	"h3_datagram":                 true,
+	"h3_datagram_send":            true,
 	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
@@ -368,7 +369,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3", "h3_datagram":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3", "h3_datagram", "h3_datagram_send":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -469,6 +470,9 @@ var liveDefaults = map[string]string{
 	// off default; without the entry, clear reported success while the live
 	// dialer stayed enabled until restart.
 	"smart_dialer": "off",
+	// Clearing h3_datagram_send stops sending datagrams: it is an experiment and
+	// its default is off, with no environment variable behind it.
+	"h3_datagram_send": "off",
 	// Clearing h3_datagram stops offering DATAGRAM: it is an experiment and
 	// its default is off, with no environment variable behind it.
 	"h3_datagram": "off",
@@ -1067,6 +1071,14 @@ func applyLiveSideEffect(key, value string) error {
 		enabled := strings.EqualFold(value, "on")
 		previous := connect.SetH3DatagramsEnabled(enabled)
 		tlog("⚙️ [control] applied h3_datagram=%s (was %s)\n", value, onOff(previous))
+	case "h3_datagram_send":
+		// Read per message, so this takes effect at once with no reconnect. It
+		// only matters on an H3 connection where the server accepted DATAGRAM
+		// (h3_datagram), and the stream carries everything while it is off.
+		// See connect.SetH3DatagramSendEnabled.
+		enabled := strings.EqualFold(value, "on")
+		previous := connect.SetH3DatagramSendEnabled(enabled)
+		tlog("⚙️ [control] applied h3_datagram_send=%s (was %s)\n", value, onOff(previous))
 	case "baseline":
 		// Sampling is a goroutine that checks the flag each tick, so turning it
 		// off takes effect on the next tick and needs no restart and no signal.
@@ -1256,6 +1268,11 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	datagramValue, _ := state.get("h3_datagram")
 	if err := applyLiveSideEffect("h3_datagram", onOff(strings.EqualFold(datagramValue, "on"))); err != nil {
 		tlog("[control] failed to apply h3_datagram: %s\n", err)
+	}
+	// h3_datagram_send has no environment default either: unset means off.
+	sendValue, _ := state.get("h3_datagram_send")
+	if err := applyLiveSideEffect("h3_datagram_send", onOff(strings.EqualFold(sendValue, "on"))); err != nil {
+		tlog("[control] failed to apply h3_datagram_send: %s\n", err)
 	}
 	// h3 is replayed in BOTH directions, falling back to URNETWORK_H3 when the
 	// key was never set: a persisted off must beat the env var, and an unset key
