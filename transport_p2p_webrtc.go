@@ -436,6 +436,7 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 			"stun:stun2.l.google.com:19302",
 			"stun:stun3.l.google.com:19302",
 			"stun:stun4.l.google.com:19302",
+			"stun:stun.cloudflare.com:3478",
 		},
 	}
 }

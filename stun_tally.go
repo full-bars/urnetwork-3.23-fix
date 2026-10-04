@@ -61,6 +61,14 @@ func (t *stunTallyT) record(ok bool, log Logger) {
 	t.mu.Lock()
 	defer t.mu.Unlock()
 
+	// The first real (non-test) pulse starts the background active probe loop,
+	// which keeps per-provider / per-IP-family reachability fresh to fold into
+	// the emitted line. Only the process-global instance starts it; unit tests
+	// drive local stunTallyT{} values and must not spawn the real network loop.
+	if t == stunTally {
+		startStunProbe()
+	}
+
 	if ok {
 		t.ok++
 	} else {
@@ -92,7 +100,7 @@ func (t *stunTallyT) record(ok bool, log Logger) {
 		t.nextLogAt = now.Add(stunLowInterval)
 	}
 
-	log.Infof("📡 [stun] ok=%d fail=%d\n", okN, failN)
+	log.Infof("📡 [stun] ok=%d fail=%d%s\n", okN, failN, stunProbe.suffix())
 }
 
 // stunFailMarkers match the pion/ice v4.2.7 srflx-gathering failure strings
