@@ -298,14 +298,17 @@ type PlatformTransportSettings struct {
 
 	PtDnsSlowMultiple int
 
-	// EnableH3 starts an H3 (QUIC) transport beside H1 in Auto mode. It is OFF
-	// by default and is meant for an identity that reaches the platform from
-	// the host's own address (the direct identity): runH3 opens a host UDP
-	// socket, so a proxied identity must never enable it without a socket
-	// that goes through its proxy. While EnableH3 is set in Auto mode H3 is an
-	// auxiliary transport: H1 stays the authoritative health signal, so an H3
-	// connect failure (UDP filtered, no route) is "mode unavailable" and is NOT
-	// a backend failure or a proxy auth failure. See h3Auxiliary.
+	// EnableH3 makes this identity eligible for an H3 (QUIC) transport beside
+	// H1 in Auto mode. It is OFF by default and is meant for an identity that
+	// reaches the platform from the host's own address (the direct identity):
+	// runH3 opens a host UDP socket, so a proxied identity must never enable
+	// it without a socket that goes through its proxy. Eligible is not
+	// running: H3 only dials while the runtime gate is on (SetH3Enabled), so
+	// an eligible identity with the gate off opens no socket. While H3 runs in
+	// Auto mode it is an auxiliary transport: H1 stays the authoritative
+	// health signal, so an H3 connect failure (UDP filtered, no route) is
+	// "mode unavailable" and is NOT a backend failure or a proxy auth failure.
+	// See h3Auxiliary.
 	EnableH3 bool
 }
 
@@ -639,11 +642,19 @@ func (self *PlatformTransport) proxyIndex() (int, bool) {
 	return ps.Index, true
 }
 
-// h3Auxiliary reports whether this transport runs H3 only as an opt-in
-// auxiliary beside H1 (Auto mode with EnableH3). The explicit H3 target mode is
-// the sole transport and keeps the full failure accounting.
-func (self *PlatformTransport) h3Auxiliary() bool {
+// h3Gated reports whether this transport's H3 is an opt-in auxiliary that the
+// runtime gate (SetH3Enabled) switches: Auto mode on an eligible identity.
+func (self *PlatformTransport) h3Gated() bool {
 	return self.targetMode == TransportModeAuto && self.settings.EnableH3
+}
+
+// h3Auxiliary reports whether this transport runs H3 only as an opt-in
+// auxiliary beside H1: eligible (Auto mode with EnableH3) and switched on. With
+// the gate off H3 does not run at all, so H1 behaves exactly as it does on a
+// build without H3. The explicit H3 target mode is the sole transport and keeps
+// the full failure accounting.
+func (self *PlatformTransport) h3Auxiliary() bool {
+	return self.h3Gated() && H3Enabled()
 }
 
 // noteAuthSuccess clears the shared backend failure state after a successful
@@ -1229,6 +1240,12 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 	h3UnavailableLogged := false
 
 	for {
+		// an eligible identity with the runtime gate off opens no socket and
+		// dials nothing: wait here until it is switched on
+		if !self.waitH3Enabled() {
+			return
+		}
+
 		// stand down while a strictly better mode is active
 		func() {
 			for {
@@ -1457,6 +1474,11 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}
 		authErrBackoff = 0
+		if self.h3Gated() && !H3Enabled() {
+			// switched off while the dial was in flight
+			connStream.close()
+			continue
+		}
 		self.noteAuthSuccess()
 		h3Connects.Add(1)
 
@@ -1488,8 +1510,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			connectTime := time.Now()
 			defer func() {
 				h3Up.Add(-1)
-				// a connection that ends while its transport is still wanted is a drop
-				if self.ctx.Err() == nil {
+				// a connection that ends while its transport is still wanted is a
+				// drop; closing it because the gate was turned off is not
+				if self.ctx.Err() == nil && (!self.h3Gated() || H3Enabled()) {
 					h3Drops.Add(1)
 				}
 				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d, payload bytes out=%d in=%d)\n",
@@ -1533,6 +1556,25 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				// note `send` is not closed. This channel is left open.
 				// it used to be closed after a delay, but it is not needed to close it.
 			}()
+
+			if self.h3Gated() {
+				go HandleError(func() {
+					defer handleCancel()
+
+					for {
+						on, notify := h3GateWatch()
+						if !on {
+							self.log.Infof("[t]h3 switched off, closing %s\n", clientId)
+							return
+						}
+						select {
+						case <-handleCtx.Done():
+							return
+						case <-notify:
+						}
+					}
+				}, handleCancel)
+			}
 
 			go HandleError(func() {
 				defer handleCancel()

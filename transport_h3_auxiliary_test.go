@@ -6,13 +6,26 @@ import (
 	"time"
 )
 
+// switchH3Gate sets the runtime gate for one test and restores it after. The
+// gate is process wide, so a test that leaves it on would make every later
+// eligible transport dial.
+func switchH3Gate(t *testing.T, enabled bool) {
+	t.Helper()
+	previous := SetH3Enabled(enabled)
+	t.Cleanup(func() { SetH3Enabled(previous) })
+}
+
 func TestH3IsOffByDefault(t *testing.T) {
+	if H3Enabled() {
+		t.Fatal("the runtime H3 gate must default to off")
+	}
 	if DefaultPlatformTransportSettings().EnableH3 {
 		t.Fatal("EnableH3 must default to false: runH3 opens a host UDP socket")
 	}
 }
 
 func TestH3AuxiliaryOnlyInAutoModeWithEnableH3(t *testing.T) {
+	switchH3Gate(t, true)
 	cases := []struct {
 		mode   TransportMode
 		enable bool
@@ -73,6 +86,9 @@ func proxyFailureTotal(index int) int64 {
 func newClosedPortTransport(t *testing.T, mode TransportMode, enableH3 bool) (*PlatformTransport, context.CancelFunc) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
+	if enableH3 {
+		switchH3Gate(t, true)
+	}
 	settings := DefaultPlatformTransportSettings()
 	settings.EnableH3 = enableH3
 	settings.H3Port = 1
@@ -148,6 +164,7 @@ func TestSoleH3FailureStillCountsAsABackendAndProxyFailure(t *testing.T) {
 // An auxiliary H3 that authenticates must not clear the failures H1 recorded,
 // or a healthy H3 would hide an H1 outage. The sole H3 (and H1) still clear.
 func TestAuxiliaryH3AuthSuccessDoesNotClearBackendFailures(t *testing.T) {
+	switchH3Gate(t, true)
 	resetBackendDegraded()
 	t.Cleanup(resetBackendDegraded)
 
@@ -176,6 +193,7 @@ func TestAuxiliaryH3AuthSuccessDoesNotClearBackendFailures(t *testing.T) {
 // the election, so both stay connected. Otherwise the sole-mode behavior holds:
 // a transport that is not the active mode drains.
 func TestDrainsWhenInactiveExemptsBothTransportsWhileAuxiliary(t *testing.T) {
+	switchH3Gate(t, true)
 	aux := &PlatformTransport{targetMode: TransportModeAuto, settings: &PlatformTransportSettings{EnableH3: true}}
 	auto := &PlatformTransport{targetMode: TransportModeAuto, settings: &PlatformTransportSettings{}}
 
@@ -196,4 +214,81 @@ func TestDrainsWhenInactiveExemptsBothTransportsWhileAuxiliary(t *testing.T) {
 			t.Fatalf("%s: drainsWhenInactive=%v, want %v", c.name, got, c.want)
 		}
 	}
+}
+
+// Eligible is not running: with the gate off an eligible identity is not an
+// auxiliary H3, so H1 keeps exactly the behaviour it has without H3.
+func TestEligibleIdentityWithGateOffIsNotAuxiliary(t *testing.T) {
+	switchH3Gate(t, false)
+	transport := &PlatformTransport{targetMode: TransportModeAuto, settings: &PlatformTransportSettings{EnableH3: true}}
+	if transport.h3Auxiliary() {
+		t.Fatal("gate off: must not be auxiliary")
+	}
+	if !transport.h3Gated() {
+		t.Fatal("an eligible Auto-mode identity is gated")
+	}
+	if !transport.drainsWhenInactive(TransportModeH1, TransportModeH3Dns) {
+		t.Fatal("gate off: an inactive mode must drain as it does without H3")
+	}
+	SetH3Enabled(true)
+	if !transport.h3Auxiliary() {
+		t.Fatal("gate on: eligible identity is auxiliary")
+	}
+}
+
+func TestSetH3EnabledReturnsPreviousAndWakesWaiters(t *testing.T) {
+	switchH3Gate(t, false)
+	if SetH3Enabled(true) {
+		t.Fatal("previous should be false")
+	}
+	if !SetH3Enabled(true) {
+		t.Fatal("previous should be true")
+	}
+	_, notify := h3GateWatch()
+	select {
+	case <-notify:
+		t.Fatal("a no-op set must not wake waiters")
+	default:
+	}
+	SetH3Enabled(false)
+	select {
+	case <-notify:
+	default:
+		t.Fatal("a change must wake waiters")
+	}
+}
+
+// With the gate off an eligible identity must open no socket and dial nothing,
+// and turning the gate on starts dialing without a restart.
+func TestGateOffDoesNotDialAndGateOnStartsDialing(t *testing.T) {
+	switchH3Gate(t, false)
+	transport, cancel := newClosedPortTransport(t, TransportModeAuto, false)
+	transport.settings.EnableH3 = true // eligible, gate stays off
+	done := make(chan struct{})
+	before := TransportModeStats().H3Attempts
+	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+
+	time.Sleep(400 * time.Millisecond)
+	if got := TransportModeStats().H3Attempts; got != before {
+		t.Fatalf("gate off: %d dial attempts, want 0", got-before)
+	}
+
+	SetH3Enabled(true)
+	deadline := time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3Attempts == before && time.Now().Before(deadline) {
+		time.Sleep(20 * time.Millisecond)
+	}
+	if TransportModeStats().H3Attempts == before {
+		t.Fatal("gate on: expected the transport to start dialing without a restart")
+	}
+
+	SetH3Enabled(false)
+	time.Sleep(300 * time.Millisecond)
+	settled := TransportModeStats().H3Attempts
+	time.Sleep(500 * time.Millisecond)
+	if got := TransportModeStats().H3Attempts; got != settled {
+		t.Fatalf("gate turned off again: still dialing (%d more attempts)", got-settled)
+	}
+	cancel()
+	<-done
 }
