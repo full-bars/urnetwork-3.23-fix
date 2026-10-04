@@ -1574,7 +1574,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							return
 						}
 						writeCounter.Add(1)
-						writePayloadCounter.Add(1)
+						if 0 < len(message) {
+							writePayloadCounter.Add(1)
+						}
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
