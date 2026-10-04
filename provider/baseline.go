@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // baseline.go records a small, bounded, local time series of how this box
@@ -97,7 +99,11 @@ type baselineSample struct {
 	Sessions baselineSessions `json:"sessions"`
 	Rate     baselineRate     `json:"rate"`
 
-	Traffic   *baselineTraffic   `json:"traffic,omitempty"`
+	Traffic *baselineTraffic `json:"traffic,omitempty"`
+	// Transport says which platform transport carried the traffic. Traffic
+	// above is one total; without this a comparison across an H3 change cannot
+	// tell whether H3 moved anything.
+	Transport *baselineTransport `json:"transport,omitempty"`
 	Contracts *baselineContracts `json:"contracts,omitempty"`
 	Pressure  *float64           `json:"pressure,omitempty"`
 
@@ -136,6 +142,49 @@ type baselineTraffic struct {
 	BillableBytes         uint64  `json:"billable_bytes"`
 	TotalBytes            uint64  `json:"total_bytes"`
 	LifetimeBillableBytes *uint64 `json:"lifetime_billable_bytes,omitempty"`
+}
+
+// baselineTransportMode is what one platform transport mode carried: payload
+// frames and bytes per direction, cumulative since the process started.
+// Keepalives are excluded, so an idle transport reads zero.
+type baselineTransportMode struct {
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+}
+
+// baselineH3 is the H3 side: what it carried plus its connection lifecycle.
+// All counters are cumulative since the process started, and Up is the number
+// of H3 connections up when the sample was taken.
+type baselineH3 struct {
+	baselineTransportMode
+	Up              int64  `json:"up"`
+	Attempts        uint64 `json:"attempts"`
+	Connects        uint64 `json:"connects"`
+	ConnectFailures uint64 `json:"connect_failures"`
+	// Drops are connections that ended while the transport was still wanted. A
+	// close caused by turning the h3 or h3_datagram switch is not one.
+	Drops    uint64              `json:"drops"`
+	Datagram *baselineH3Datagram `json:"datagram,omitempty"`
+}
+
+// baselineH3Datagram is the QUIC DATAGRAM experiment: whether the server took
+// the offer and what arrived over it. Offered without Accepted means an old
+// server in the way.
+type baselineH3Datagram struct {
+	Offered    uint64 `json:"offered"`
+	Accepted   uint64 `json:"accepted"`
+	RxMessages uint64 `json:"rx_messages"`
+	RxBytes    uint64 `json:"rx_bytes"`
+	RxDrops    uint64 `json:"rx_drops"`
+}
+
+// baselineTransport is the per-mode traffic split. H3 is nil until H3 has been
+// attempted, so a box that never enables it writes no new fields beyond H1.
+type baselineTransport struct {
+	H1 baselineTransportMode `json:"h1"`
+	H3 *baselineH3           `json:"h3,omitempty"`
 }
 
 type baselineContracts struct {
@@ -206,6 +255,9 @@ type baselineInputs struct {
 	gc  *baselineGC
 	net *baselineNet
 
+	// transport is the per-mode traffic split, nil when it was not read.
+	transport *baselineTransport
+
 	contracts [2]int64 // acquired, denied
 	errs      map[string]uint64
 	errsKnown bool
@@ -253,6 +305,7 @@ func buildBaselineSample(in baselineInputs) baselineSample {
 		}
 		s.Traffic = t
 	}
+	s.Transport = in.transport
 	if in.contracts != [2]int64{} {
 		s.Contracts = &baselineContracts{Acquired: in.contracts[0], Denied: in.contracts[1]}
 	}
@@ -643,6 +696,8 @@ func baselineCollect(now time.Time) baselineInputs {
 	acquired, denied := globalContractMetrics.totals()
 	in.contracts = [2]int64{acquired, denied}
 
+	in.transport = buildBaselineTransport(connect.TransportModeStats(), connect.H3DatagramCounters())
+
 	in.errs, in.errsKnown = snapshotErrors(), true
 	return in
 }
@@ -837,4 +892,46 @@ func previousVersionForBaseline() string {
 	startupDiag.mu.Lock()
 	defer startupDiag.mu.Unlock()
 	return startupDiag.previousVersion
+}
+
+// buildBaselineTransport turns the engine's per-mode counters into the sample
+// block. It is a pure function of its inputs so the omission rule is testable:
+// the H3 part exists only once H3 has been attempted, and its datagram part only
+// once DATAGRAM has been offered, so a box that never enables either writes no
+// new fields beyond the always-present H1 counters.
+func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram connect.H3DatagramSnapshot) *baselineTransport {
+	out := &baselineTransport{
+		H1: baselineTransportMode{
+			FramesTx: modes.H1FramesTx,
+			FramesRx: modes.H1FramesRx,
+			BytesTx:  modes.H1BytesTx,
+			BytesRx:  modes.H1BytesRx,
+		},
+	}
+	if modes.H3Attempts == 0 {
+		return out
+	}
+	out.H3 = &baselineH3{
+		baselineTransportMode: baselineTransportMode{
+			FramesTx: modes.H3FramesTx,
+			FramesRx: modes.H3FramesRx,
+			BytesTx:  modes.H3BytesTx,
+			BytesRx:  modes.H3BytesRx,
+		},
+		Up:              modes.H3Up,
+		Attempts:        modes.H3Attempts,
+		Connects:        modes.H3Connects,
+		ConnectFailures: modes.H3ConnectFailures,
+		Drops:           modes.H3Drops,
+	}
+	if datagram.Offered != 0 {
+		out.H3.Datagram = &baselineH3Datagram{
+			Offered:    datagram.Offered,
+			Accepted:   datagram.Accepted,
+			RxMessages: datagram.RxMessages,
+			RxBytes:    datagram.RxBytes,
+			RxDrops:    datagram.RxDrops,
+		}
+	}
+	return out
 }
