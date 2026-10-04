@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTransportModeStatsIgnoreEmptyFrames(t *testing.T) {
@@ -134,5 +135,85 @@ func TestPrometheusExposesH3DatagramCounters(t *testing.T) {
 	}
 	if !strings.Contains(body, `urnet_h3_datagram_rx_rejected_total{reason="malformed"} `) {
 		t.Fatal("missing rejected sample")
+	}
+}
+
+func TestH3CountersForSeparatesTheModes(t *testing.T) {
+	if h3CountersFor(TransportModeH3) == h3CountersFor(TransportModeH3Dns) ||
+		h3CountersFor(TransportModeH3Dns) == h3CountersFor(TransportModeH3DnsPump) ||
+		h3CountersFor(TransportModeH3) == h3CountersFor(TransportModeH3DnsPump) {
+		t.Fatal("H3, DNS and DNS pump must not share counters")
+	}
+	if h3CountersFor(TransportModeH3) != &h3Counters {
+		t.Fatal("H3 must map to the H3 counters")
+	}
+	// anything else that reaches runH3 counts as H3, as before
+	if h3CountersFor(TransportModeAuto) != &h3Counters {
+		t.Fatal("an unrecognised mode must fall back to the H3 counters")
+	}
+}
+
+func TestDnsModesAppearInTheSnapshotAndHealthSuffixOnlyOnceAttempted(t *testing.T) {
+	if got := (TransportModeStatsSnapshot{}).HealthSuffix(); got != "" {
+		t.Fatalf("nothing attempted: got %q", got)
+	}
+	got := TransportModeStatsSnapshot{
+		Dns:     PtModeSnapshot{Attempts: 2, Up: 1, ConnectFailures: 1},
+		DnsPump: PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
+	}.HealthSuffix()
+	want := " dns_up=1 dns_conn_fail=1 dnspump_up=0 dnspump_conn_fail=1"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// h3 untouched: no h3 fields from the DNS modes alone
+	if strings.Contains(got, "h3_") {
+		t.Fatalf("DNS modes must not produce h3 fields: %q", got)
+	}
+}
+
+func TestPrometheusExposesPacketTranslationModes(t *testing.T) {
+	w := httptest.NewRecorder()
+	PrometheusHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, family := range []string{
+		"urnet_transport_pt_up",
+		"urnet_transport_pt_connect_attempts_total",
+		"urnet_transport_pt_connects_total",
+		"urnet_transport_pt_connect_failures_total",
+		"urnet_transport_pt_drops_total",
+	} {
+		if !strings.Contains(body, "# TYPE "+family+" ") {
+			t.Fatalf("missing family %s", family)
+		}
+		for _, mode := range []string{"h3dns", "h3dnspump"} {
+			if !strings.Contains(body, family+`{mode="`+mode+`"} `) {
+				t.Fatalf("missing %s sample for %s", family, mode)
+			}
+		}
+	}
+	for _, mode := range []string{"h3dns", "h3dnspump"} {
+		if !strings.Contains(body, `urnet_transport_payload_bytes_total{mode="`+mode+`",dir="tx"} `) {
+			t.Fatalf("missing bytes sample for %s", mode)
+		}
+	}
+}
+
+// runH3 started for the DNS mode must count under the DNS counters, not H3, even
+// though it is the same function. The dial fails (closed port), but the attempt
+// is the point.
+func TestRunH3CountsADnsModeAttemptUnderDns(t *testing.T) {
+	before := TransportModeStats()
+	transport, cancel := newClosedPortTransport(t, TransportModeH3Dns, false)
+	done := make(chan struct{})
+	go func() { defer close(done); transport.runH3(TransportModeH3Dns, 0, 1) }()
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+	<-done
+	after := TransportModeStats()
+	if after.Dns.Attempts <= before.Dns.Attempts {
+		t.Fatal("a DNS-mode attempt was not counted under the DNS counters")
+	}
+	if after.H3Attempts != before.H3Attempts {
+		t.Fatalf("a DNS-mode attempt leaked into the H3 counters: %d -> %d", before.H3Attempts, after.H3Attempts)
 	}
 }

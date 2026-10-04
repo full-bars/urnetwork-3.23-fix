@@ -80,3 +80,34 @@ func TestBaselineSampleCarriesTransport(t *testing.T) {
 		t.Fatalf("no transport block expected when none was read: %s", line)
 	}
 }
+
+func TestBaselineTransportDnsModesAbsentUntilAttempted(t *testing.T) {
+	got := buildBaselineTransport(connect.TransportModeStatsSnapshot{H1FramesTx: 1}, connect.H3DatagramSnapshot{})
+	if got.Dns != nil || got.DnsPump != nil {
+		t.Fatalf("DNS modes must be absent until attempted: %+v %+v", got.Dns, got.DnsPump)
+	}
+	// the DNS modes are independent of H3: attempted DNS, never attempted H3
+	got = buildBaselineTransport(connect.TransportModeStatsSnapshot{
+		Dns:     connect.PtModeSnapshot{FramesTx: 3, BytesRx: 90, Attempts: 2, Connects: 1, ConnectFailures: 1, Up: 1},
+		DnsPump: connect.PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
+	}, connect.H3DatagramSnapshot{})
+	if got.H3 != nil {
+		t.Fatalf("DNS activity must not create an h3 block: %+v", got.H3)
+	}
+	if got.Dns == nil || got.Dns.FramesTx != 3 || got.Dns.BytesRx != 90 || got.Dns.Attempts != 2 ||
+		got.Dns.Connects != 1 || got.Dns.ConnectFailures != 1 || got.Dns.Up != 1 {
+		t.Fatalf("dns = %+v", got.Dns)
+	}
+	if got.DnsPump == nil || got.DnsPump.Attempts != 1 || got.DnsPump.ConnectFailures != 1 {
+		t.Fatalf("dns pump = %+v", got.DnsPump)
+	}
+	line, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, want := range []string{`"dns":{"frames_tx":3`, `"dns_pump":{`} {
+		if !strings.Contains(string(line), want) {
+			t.Fatalf("missing %s in %s", want, line)
+		}
+	}
+}

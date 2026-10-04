@@ -2403,6 +2403,84 @@
           "sort": "desc"
         }
       }
+    },
+    {
+      "type": "timeseries",
+      "title": "DNS and DNS pump transports (WhoDis)",
+      "id": 40,
+      "datasource": {
+        "type": "prometheus",
+        "uid": "${datasource}"
+      },
+      "description": "The WhoDis DNS and DNS-pump packet-translation transports: connections up, and connect attempts and failures per hour. Auto mode does not start them, so this stays at zero unless a transport was built with one of those target modes.",
+      "gridPos": {
+        "h": 8,
+        "w": 12,
+        "x": 0,
+        "y": 122
+      },
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (mode) (urnet_transport_pt_up{job=\"urnetwork\", instance=~\"$instance\"})",
+          "refId": "A",
+          "legendFormat": "{{mode}} up",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (mode) (increase(urnet_transport_pt_connect_attempts_total{job=\"urnetwork\", instance=~\"$instance\"}[1h]))",
+          "refId": "B",
+          "legendFormat": "{{mode}} attempts/h",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (mode) (increase(urnet_transport_pt_connect_failures_total{job=\"urnetwork\", instance=~\"$instance\"}[1h]))",
+          "refId": "C",
+          "legendFormat": "{{mode}} failures/h",
+          "range": true,
+          "instant": false
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "custom": {
+            "drawStyle": "line",
+            "lineWidth": 1,
+            "fillOpacity": 15,
+            "showPoints": "never",
+            "spanNulls": true
+          }
+        },
+        "overrides": []
+      },
+      "options": {
+        "legend": {
+          "displayMode": "table",
+          "placement": "bottom",
+          "calcs": [
+            "lastNotNull",
+            "max"
+          ]
+        },
+        "tooltip": {
+          "mode": "multi",
+          "sort": "desc"
+        }
+      }
     }
   ]
 }

@@ -109,12 +109,26 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h1\",dir=\"rx\"} %d\n", modeStats.H1FramesRx)
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h3\",dir=\"tx\"} %d\n", modeStats.H3FramesTx)
 		fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"h3\",dir=\"rx\"} %d\n", modeStats.H3FramesRx)
+		for _, pt := range []struct {
+			mode string
+			snap PtModeSnapshot
+		}{{"h3dns", modeStats.Dns}, {"h3dnspump", modeStats.DnsPump}} {
+			fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"%s\",dir=\"tx\"} %d\n", pt.mode, pt.snap.FramesTx)
+			fmt.Fprintf(&b, "urnet_transport_frames_total{mode=\"%s\",dir=\"rx\"} %d\n", pt.mode, pt.snap.FramesRx)
+		}
 		fmt.Fprintf(&b, "# HELP urnet_transport_payload_bytes_total Payload bytes carried by each platform transport mode, before framing.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_transport_payload_bytes_total counter\n")
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1\",dir=\"tx\"} %d\n", modeStats.H1BytesTx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h1\",dir=\"rx\"} %d\n", modeStats.H1BytesRx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h3\",dir=\"tx\"} %d\n", modeStats.H3BytesTx)
 		fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"h3\",dir=\"rx\"} %d\n", modeStats.H3BytesRx)
+		for _, pt := range []struct {
+			mode string
+			snap PtModeSnapshot
+		}{{"h3dns", modeStats.Dns}, {"h3dnspump", modeStats.DnsPump}} {
+			fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"%s\",dir=\"tx\"} %d\n", pt.mode, pt.snap.BytesTx)
+			fmt.Fprintf(&b, "urnet_transport_payload_bytes_total{mode=\"%s\",dir=\"rx\"} %d\n", pt.mode, pt.snap.BytesRx)
+		}
 		fmt.Fprintf(&b, "# HELP urnet_h3_up H3 connections up now.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_h3_up gauge\n")
 		fmt.Fprintf(&b, "urnet_h3_up %d\n", modeStats.H3Up)
@@ -130,6 +144,37 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# HELP urnet_h3_drops_total H3 connections that ended while the transport was still wanted.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_h3_drops_total counter\n")
 		fmt.Fprintf(&b, "urnet_h3_drops_total %d\n", modeStats.H3Drops)
+		// WhoDis DNS and the DNS pump run through the same code as H3 but are
+		// their own modes. Auto mode does not start them, so these stay zero
+		// unless a transport is built with one of those target modes.
+		ptRows := []struct {
+			mode string
+			snap PtModeSnapshot
+		}{{"h3dns", modeStats.Dns}, {"h3dnspump", modeStats.DnsPump}}
+		// each family is one contiguous block: HELP, TYPE, then its samples. The
+		// header is written out literally so the dashboard lint, which scans this
+		// source for "# TYPE urnet_..." lines, still sees every family.
+		ptFamily := func(header, name string, value func(PtModeSnapshot) int64) {
+			b.WriteString(header)
+			for _, pt := range ptRows {
+				fmt.Fprintf(&b, "%s{mode=\"%s\"} %d\n", name, pt.mode, value(pt.snap))
+			}
+		}
+		ptFamily("# HELP urnet_transport_pt_up Packet-translation (DNS and DNS pump) transport connections up now.\n"+
+			"# TYPE urnet_transport_pt_up gauge\n", "urnet_transport_pt_up",
+			func(m PtModeSnapshot) int64 { return m.Up })
+		ptFamily("# HELP urnet_transport_pt_connect_attempts_total Packet-translation transport connect attempts.\n"+
+			"# TYPE urnet_transport_pt_connect_attempts_total counter\n", "urnet_transport_pt_connect_attempts_total",
+			func(m PtModeSnapshot) int64 { return int64(m.Attempts) })
+		ptFamily("# HELP urnet_transport_pt_connects_total Packet-translation transport connections that authenticated.\n"+
+			"# TYPE urnet_transport_pt_connects_total counter\n", "urnet_transport_pt_connects_total",
+			func(m PtModeSnapshot) int64 { return int64(m.Connects) })
+		ptFamily("# HELP urnet_transport_pt_connect_failures_total Packet-translation transport connect attempts that failed.\n"+
+			"# TYPE urnet_transport_pt_connect_failures_total counter\n", "urnet_transport_pt_connect_failures_total",
+			func(m PtModeSnapshot) int64 { return int64(m.ConnectFailures) })
+		ptFamily("# HELP urnet_transport_pt_drops_total Packet-translation transport connections that ended while still wanted.\n"+
+			"# TYPE urnet_transport_pt_drops_total counter\n", "urnet_transport_pt_drops_total",
+			func(m PtModeSnapshot) int64 { return int64(m.Drops) })
 
 		// --- H3 DATAGRAM: did the server take the offer, and what arrived ---
 		dg := H3DatagramCounters()

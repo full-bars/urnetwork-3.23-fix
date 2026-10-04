@@ -154,18 +154,29 @@ type baselineTransportMode struct {
 	BytesRx  uint64 `json:"bytes_rx"`
 }
 
-// baselineH3 is the H3 side: what it carried plus its connection lifecycle.
-// All counters are cumulative since the process started, and Up is the number
-// of H3 connections up when the sample was taken.
-type baselineH3 struct {
-	baselineTransportMode
+// baselineLifecycle is one mode's connection lifecycle. All counters are
+// cumulative since the process started, and Up is the number of connections up
+// when the sample was taken.
+type baselineLifecycle struct {
 	Up              int64  `json:"up"`
 	Attempts        uint64 `json:"attempts"`
 	Connects        uint64 `json:"connects"`
 	ConnectFailures uint64 `json:"connect_failures"`
 	// Drops are connections that ended while the transport was still wanted. A
 	// close caused by turning the h3 or h3_datagram switch is not one.
-	Drops    uint64              `json:"drops"`
+	Drops uint64 `json:"drops"`
+}
+
+// baselinePt is what a mode that runs through the H3 code carried, plus its
+// lifecycle: H3 itself and the WhoDis DNS and DNS-pump packet-translation modes.
+type baselinePt struct {
+	baselineTransportMode
+	baselineLifecycle
+}
+
+// baselineH3 is the H3 side: the common block plus the DATAGRAM experiment.
+type baselineH3 struct {
+	baselinePt
 	Datagram *baselineH3Datagram `json:"datagram,omitempty"`
 }
 
@@ -182,9 +193,15 @@ type baselineH3Datagram struct {
 
 // baselineTransport is the per-mode traffic split. H3 is nil until H3 has been
 // attempted, so a box that never enables it writes no new fields beyond H1.
+//
+// Dns and DnsPump are the WhoDis DNS and DNS-pump modes. Auto mode does not start
+// them, so they are absent unless a transport was built with one of those target
+// modes and attempted a connection.
 type baselineTransport struct {
-	H1 baselineTransportMode `json:"h1"`
-	H3 *baselineH3           `json:"h3,omitempty"`
+	H1      baselineTransportMode `json:"h1"`
+	H3      *baselineH3           `json:"h3,omitempty"`
+	Dns     *baselinePt           `json:"dns,omitempty"`
+	DnsPump *baselinePt           `json:"dns_pump,omitempty"`
 }
 
 type baselineContracts struct {
@@ -908,22 +925,26 @@ func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram c
 			BytesRx:  modes.H1BytesRx,
 		},
 	}
+	out.Dns = baselinePtFrom(modes.Dns)
+	out.DnsPump = baselinePtFrom(modes.DnsPump)
 	if modes.H3Attempts == 0 {
 		return out
 	}
-	out.H3 = &baselineH3{
+	out.H3 = &baselineH3{baselinePt: baselinePt{
 		baselineTransportMode: baselineTransportMode{
 			FramesTx: modes.H3FramesTx,
 			FramesRx: modes.H3FramesRx,
 			BytesTx:  modes.H3BytesTx,
 			BytesRx:  modes.H3BytesRx,
 		},
-		Up:              modes.H3Up,
-		Attempts:        modes.H3Attempts,
-		Connects:        modes.H3Connects,
-		ConnectFailures: modes.H3ConnectFailures,
-		Drops:           modes.H3Drops,
-	}
+		baselineLifecycle: baselineLifecycle{
+			Up:              modes.H3Up,
+			Attempts:        modes.H3Attempts,
+			Connects:        modes.H3Connects,
+			ConnectFailures: modes.H3ConnectFailures,
+			Drops:           modes.H3Drops,
+		},
+	}}
 	if datagram.Offered != 0 {
 		out.H3.Datagram = &baselineH3Datagram{
 			Offered:    datagram.Offered,
@@ -934,4 +955,17 @@ func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram c
 		}
 	}
 	return out
+}
+
+// baselinePtFrom returns nil until the mode has been attempted.
+func baselinePtFrom(m connect.PtModeSnapshot) *baselinePt {
+	if m.Attempts == 0 {
+		return nil
+	}
+	return &baselinePt{
+		baselineTransportMode: baselineTransportMode{FramesTx: m.FramesTx, FramesRx: m.FramesRx, BytesTx: m.BytesTx, BytesRx: m.BytesRx},
+		baselineLifecycle: baselineLifecycle{
+			Up: m.Up, Attempts: m.Attempts, Connects: m.Connects, ConnectFailures: m.ConnectFailures, Drops: m.Drops,
+		},
+	}
 }

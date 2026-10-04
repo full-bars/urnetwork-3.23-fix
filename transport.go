@@ -1233,6 +1233,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 	clientId, _ := self.getAuth().ClientId()
 
+	// H3 and the DNS packet-translation modes all run here: count each under the
+	// mode it was started for
+	counters := h3CountersFor(ptMode)
+
 	if 0 < initialTimeout {
 		select {
 		case <-self.ctx.Done():
@@ -1269,7 +1273,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 
 		connect := func() (*h3ConnStream, error) {
-			h3Attempts.Add(1)
+			counters.attempts.Add(1)
 			// DATAGRAM is only offered by the gated auxiliary H3 on the plain H3
 			// path, never by the sole H3 mode or the DNS translation modes
 			offerDatagrams := ptMode == TransportModeH3 && self.h3Gated() && H3DatagramsEnabled()
@@ -1478,7 +1482,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// from a closing multi-client window would otherwise gate the
 			// next session.
 			if self.ctx.Err() == nil {
-				h3ConnectFailures.Add(1)
+				counters.connectFailures.Add(1)
 				// an auxiliary H3 (opt-in, beside H1) is not a health signal
 				if !self.h3Auxiliary() {
 					noteBackendFailure()
@@ -1528,7 +1532,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			continue
 		}
 		self.noteAuthSuccess()
-		h3Connects.Add(1)
+		counters.connects.Add(1)
 
 		conn := connStream.conn
 		stream := connStream.stream
@@ -1573,15 +1577,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// changed, which is an operator action and not a drop
 			var gateClosed atomic.Bool
 
-			h3Up.Add(1)
+			counters.up.Add(1)
 			// per-connection frame and byte counts, so the log says what this transport carried
 			connectTime := time.Now()
 			defer func() {
-				h3Up.Add(-1)
+				counters.up.Add(-1)
 				// a connection that ends while its transport is still wanted is a
 				// drop; closing it because the gate was turned off is not
 				if self.ctx.Err() == nil && !gateClosed.Load() && (!self.h3Gated() || H3Enabled()) {
-					h3Drops.Add(1)
+					counters.drops.Add(1)
 				}
 				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d, payload bytes out=%d in=%d)\n",
 					clientId, time.Since(connectTime).Round(time.Second), writeCounter.Load(), readCounter.Load(),
@@ -1715,7 +1719,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						if 0 < messageByteCount {
 							writePayloadCounter.Add(1)
 							writePayloadBytes.Add(uint64(messageByteCount))
-							h3ModeStats.addTx(messageByteCount)
+							counters.addTx(messageByteCount)
 						}
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
@@ -1786,7 +1790,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						return
 					case receive <- message:
 						readPayloadBytes.Add(uint64(len(message)))
-						h3ModeStats.addRx(len(message))
+						counters.addRx(len(message))
 						self.log.V(2).Infof("[tr]%s<-\n", clientId)
 					case <-time.After(time.Duration(slowMultiple) * self.settings.ReadTimeout):
 						self.log.Infof("[tr]drop %s<-\n", clientId)
@@ -1818,7 +1822,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						select {
 						case receive <- message:
 							readPayloadBytes.Add(uint64(len(message)))
-							h3ModeStats.addRx(len(message))
+							counters.addRx(len(message))
 							self.log.V(2).Infof("[tr]%s<-datagram\n", clientId)
 						default:
 							// the route is full: drop now instead of holding the

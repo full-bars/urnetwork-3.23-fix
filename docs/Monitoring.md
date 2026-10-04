@@ -105,7 +105,7 @@ Add any of these to `.env`, then run `docker compose up -d`:
 - **Traffic:** billable and total bytes per second, clients per node, and the top 15 proxies by billable traffic.
 - **Proxies:** pool status, grades, recoveries and losses, and contract outcomes.
 - **Node health:** errors by category, resource pressure, memory, goroutines, sessions, and DNS-over-HTTPS failures. Two panels plot memory and file descriptors against their limits (the limit is a dashed line).
-- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, and datagram messages received and dropped per second.
+- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, datagram messages received and dropped per second, and the WhoDis DNS and DNS-pump transports (connections up, attempts and failures). Auto mode does not start the DNS modes, so that panel stays at zero unless a transport was built with one of those target modes.
 - **Lifecycle:** restarts by reason, uptime per node, HotSwap outcomes per hour, and version skew (each version in the fleet and how many nodes run it).
 
 The transport panels need a provider that exports the `urnet_transport_*` and `urnet_h3_*` series. On older providers they stay empty, and the H3 and DATAGRAM series only move once `h3` and `h3_datagram` are switched on.
@@ -178,7 +178,7 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_bytes_total` | counter | `direction` | All bytes, all proxies |
 | `urnet_clients_active` | gauge | | Active clients, all proxies |
 | `urnet_connections_active` | gauge | | Active connections |
-| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`) per direction. Keepalives and speed or latency echoes are excluded |
+| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded |
 | `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing |
 | `urnet_h3_up` | gauge | | H3 connections up now |
 | `urnet_h3_connect_attempts_total` | counter | | H3 connect attempts |
@@ -191,6 +191,11 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_h3_datagram_rx_bytes_total` | counter | | Bytes of messages received over DATAGRAM |
 | `urnet_h3_datagram_rx_dropped_total` | counter | | Received DATAGRAM messages dropped because the receive route was full |
 | `urnet_h3_datagram_rx_rejected_total` | counter | `reason` | DATAGRAMs refused by the datagram layer: `malformed`, `duplicate`, `checksum` |
+| `urnet_transport_pt_up` | gauge | `mode` | Packet-translation (`h3dns`, `h3dnspump`) transport connections up now |
+| `urnet_transport_pt_connect_attempts_total` | counter | `mode` | Packet-translation transport connect attempts |
+| `urnet_transport_pt_connects_total` | counter | `mode` | Packet-translation transport connections that authenticated |
+| `urnet_transport_pt_connect_failures_total` | counter | `mode` | Packet-translation transport connect attempts that failed |
+| `urnet_transport_pt_drops_total` | counter | `mode` | Packet-translation transport connections that ended while still wanted |
 | `urnet_proxy_pool_size` | gauge | `status` | Proxies by status: up, connecting, degraded, dead |
 | `urnet_proxy_bytes_total` | counter | `proxy`, `direction` | Bytes per proxy |
 | `urnet_proxy_billable_bytes_total` | counter | `proxy`, `direction` | Billable bytes per proxy |
