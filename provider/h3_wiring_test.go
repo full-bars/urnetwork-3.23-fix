@@ -33,9 +33,10 @@ func TestBandwidthIsRegisteredBeforeTheTransportStarts(t *testing.T) {
 		}
 		switch h3WiringCallee(call.Fun) {
 		case "connect.RegisterProxyBandwidth":
-			if registerAt == -1 {
-				registerAt = fset.Position(call.Pos()).Line
-			}
+			// Record EVERY registration, not just the first: main.go registers
+			// one per proxy and one for the native identity, and the LAST of
+			// them is the one that has to precede the transport.
+			registerAt = fset.Position(call.Pos()).Line
 		case "connect.NewPlatformTransport":
 			if transportAt == -1 {
 				transportAt = fset.Position(call.Pos()).Line
@@ -47,7 +48,7 @@ func TestBandwidthIsRegisteredBeforeTheTransportStarts(t *testing.T) {
 		t.Fatalf("main.go no longer calls both: RegisterProxyBandwidth at %d, NewPlatformTransport at %d", registerAt, transportAt)
 	}
 	if registerAt > transportAt {
-		t.Fatalf("RegisterProxyBandwidth is called at line %d, after NewPlatformTransport at line %d: an H3 socket started by that transport would never be wrapped", registerAt, transportAt)
+		t.Fatalf("the last RegisterProxyBandwidth is called at line %d, after NewPlatformTransport at line %d: an H3 socket started by that transport would never be wrapped", registerAt, transportAt)
 	}
 }
 
