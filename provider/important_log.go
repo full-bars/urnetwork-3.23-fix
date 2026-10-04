@@ -11,6 +11,10 @@ import "strings"
 var importantLogMarkers = []string{
 	"[profit]",
 	"[earn]",
+	// The process-wide STUN health aggregate ([stun], at most once a minute)
+	// is the only success signal for STUN and the only record of the
+	// ok/fail balance — keep it in the important buffer.
+	"[stun]",
 	"[health]",
 	"[outage]",
 	"[pace]",

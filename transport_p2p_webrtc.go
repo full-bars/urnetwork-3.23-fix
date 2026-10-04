@@ -509,6 +509,12 @@ func (self *pionLeveledLogger) Debug(msg string) {
 
 func (self *pionLeveledLogger) Debugf(format string, args ...any) {
 	if v := self.log.V(2); v.Enabled() {
+		// STUN gather failures (e.g. "Failed to resolve STUN host", a
+		// timed-out server-reflexive transaction) surface here; count one
+		// fail pulse toward the process-wide [stun] aggregate.
+		if isStunFailLine(self.scope, fmt.Sprintf(format, args...)) {
+			stunTally.record(false, self.log)
+		}
 		v.Infof("[pion:"+self.scope+"]"+format, args...)
 	}
 }
@@ -528,6 +534,12 @@ func (self *pionLeveledLogger) Warn(msg string) {
 }
 
 func (self *pionLeveledLogger) Warnf(format string, args ...any) {
+	// STUN gather failures (e.g. "failed to get server reflexive address",
+	// "STUN host ... filtered for location tracking reasons") surface here;
+	// count one fail pulse toward the process-wide [stun] aggregate.
+	if isStunFailLine(self.scope, fmt.Sprintf(format, args...)) {
+		stunTally.record(false, self.log)
+	}
 	self.log.Warningf("[pion:"+self.scope+"]"+format, args...)
 }
 
@@ -860,6 +872,13 @@ func (self *peerConn) addIceCandidates() {
 	self.pc.OnICECandidate(func(candidate *webrtc.ICECandidate) {
 		if candidate == nil {
 			return
+		}
+		// A server-reflexive (srflx) candidate means the STUN server answered
+		// our binding request with an XOR-MAPPED-ADDRESS: one successful STUN
+		// transaction. Pion never logs STUN success, so count it here — this
+		// is the ok pulse for the process-wide [stun] aggregate.
+		if candidate.Typ == webrtc.ICECandidateTypeSrflx {
+			stunTally.record(true, self.log)
 		}
 		candidateBytes, err := json.Marshal(candidate.ToJSON())
 		if err != nil {
