@@ -1965,6 +1965,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if dohFailures > 0 {
 			healthLine += fmt.Sprintf(" dns_failures=%d", dohFailures)
 		}
+		healthLine += connect.TransportModeStats().HealthSuffix()
 		tlog("%s\n", healthLine)
 
 		// Message-pool heartbeat: one aggregated line per tick, written so an

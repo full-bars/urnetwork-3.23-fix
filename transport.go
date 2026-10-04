@@ -1023,8 +1023,12 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							if len(message) <= 16 {
 								self.log.Infof("[ts]send message must be >16 bytes (%d)\n", len(message))
 								MessagePoolReturn(message)
-							} else if write(message) != nil {
-								return
+							} else {
+								byteCount := len(message)
+								if write(message) != nil {
+									return
+								}
+								h1ModeStats.addTx(byteCount)
 							}
 						case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 							ws.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
@@ -1140,6 +1144,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 							MessagePoolReturn(message)
 							return
 						case receive <- message:
+							h1ModeStats.addRx(len(message))
 							self.log.V(2).Infof("[tr]%s<-\n", clientId)
 						case <-time.After(self.settings.ReadTimeout):
 							self.log.Infof("[tr]drop %s<-\n", clientId)
@@ -1242,6 +1247,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 
 		connect := func() (*h3ConnStream, error) {
+			h3Attempts.Add(1)
 			// quicConfig := &quic.Config{
 			// 	HandshakeIdleTimeout: self.settings.QuicConnectTimeout + self.settings.QuicHandshakeTimeout,
 			// }
@@ -1407,6 +1413,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// from a closing multi-client window would otherwise gate the
 			// next session.
 			if self.ctx.Err() == nil {
+				h3ConnectFailures.Add(1)
 				// an auxiliary H3 (opt-in, beside H1) is not a health signal
 				if !self.h3Auxiliary() {
 					noteBackendFailure()
@@ -1451,6 +1458,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		}
 		authErrBackoff = 0
 		self.noteAuthSuccess()
+		h3Connects.Add(1)
 
 		stream := connStream.stream
 
@@ -1472,12 +1480,21 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
 			var writePayloadCounter atomic.Uint64
+			var writePayloadBytes atomic.Uint64
+			var readPayloadBytes atomic.Uint64
 
-			// per-connection frame counts, so the log says what this transport carried
+			h3Up.Add(1)
+			// per-connection frame and byte counts, so the log says what this transport carried
 			connectTime := time.Now()
 			defer func() {
-				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d)\n",
-					clientId, time.Since(connectTime).Round(time.Second), writeCounter.Load(), readCounter.Load())
+				h3Up.Add(-1)
+				// a connection that ends while its transport is still wanted is a drop
+				if self.ctx.Err() == nil {
+					h3Drops.Add(1)
+				}
+				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d, payload bytes out=%d in=%d)\n",
+					clientId, time.Since(connectTime).Round(time.Second), writeCounter.Load(), readCounter.Load(),
+					writePayloadBytes.Load(), readPayloadBytes.Load())
 			}()
 
 			send := make(chan []byte, self.settings.TransportBufferSize)
@@ -1560,6 +1577,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						// 	panic("[t]shared should be set")
 						// }
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
+						messageByteCount := len(message)
 						err := framer.Write(stream, message)
 						MessagePoolReturn(message)
 						if err != nil {
@@ -1574,8 +1592,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							return
 						}
 						writeCounter.Add(1)
-						if 0 < len(message) {
+						if 0 < messageByteCount {
 							writePayloadCounter.Add(1)
+							writePayloadBytes.Add(uint64(messageByteCount))
+							h3ModeStats.addTx(messageByteCount)
 						}
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
@@ -1625,6 +1645,8 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						MessagePoolReturn(message)
 						return
 					case receive <- message:
+						readPayloadBytes.Add(uint64(len(message)))
+						h3ModeStats.addRx(len(message))
 						self.log.V(2).Infof("[tr]%s<-\n", clientId)
 					case <-time.After(time.Duration(slowMultiple) * self.settings.ReadTimeout):
 						self.log.Infof("[tr]drop %s<-\n", clientId)
