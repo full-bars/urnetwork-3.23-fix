@@ -156,6 +156,15 @@ message Auth {
     // the pair (client_id, instance_id) represents a single in memory instance
     // this helps the platform distinguish multiple instances from multiple transports of the same instance
     bytes instance_id = 3;
+
+    // offered only on the H3 control stream. Zero keeps the legacy reliable
+    // stream data path. An old server echoes this unknown field but cannot set
+    // the separate accepted field, which makes mixed-version fallback safe.
+    uint32 h3_datagram_version = 4;
+
+    // set by the server only when it accepts the offered envelope version and
+    // both QUIC endpoints negotiated RFC 9221 DATAGRAM support.
+    uint32 h3_datagram_accepted_version = 5;
 }
 
 
