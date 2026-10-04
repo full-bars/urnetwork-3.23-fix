@@ -4,6 +4,7 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+	"time"
 )
 
 // A proxy_url.json whose CONTENT cannot be parsed (empty after a power loss,
@@ -149,5 +150,57 @@ func TestReload_UnreadableURLCacheKeepsURLProxiesRunning(t *testing.T) {
 		if _, ok := r.cancelMap[kept]; !ok {
 			t.Fatalf("%s (URL or unknown source) must keep running while the URL cache is unreadable", kept)
 		}
+	}
+}
+
+// The quarantine keeps the bad file as evidence and starts from an empty cache,
+// but the sources, the permanent blacklist, the exclude patterns and the
+// degraded-cleanup threshold are configuration, not cache: nothing else records
+// them, so they have to survive into the replacement state. Dropped, the first
+// write after a quarantine persists them as empty and they are gone for good.
+func TestQuarantineKeepsTheConfigurationAndDropsOnlyTheCache(t *testing.T) {
+	withTempHome(t)
+	path, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	blacklisted := "bad.example:1080"
+	good := &ProxyURLState{
+		Sources:                  []string{"https://example.invalid/list.txt"},
+		ExcludePatterns:          []string{"spam.example"},
+		DegradedCleanupThreshold: "24h",
+		Blacklist:                map[string]time.Time{blacklisted: time.Now().UTC()},
+		Cache:                    map[string]ProxyURLEntry{"1.2.3.4:1080": {User: "u"}},
+	}
+	if err := writeProxyURLState(good); err != nil {
+		t.Fatal(err)
+	}
+	// Read it once so the configuration is what the process has seen.
+	if _, err := readProxyURLState(); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0600); err != nil {
+		t.Fatal(err)
+	}
+
+	state, ok := readURLStateForMerge()
+	if !ok {
+		t.Fatal("a corrupt file must be quarantined and the merge allowed to proceed")
+	}
+	if len(state.Cache) != 0 {
+		t.Fatalf("cache = %d entries, want an empty cache after a quarantine", len(state.Cache))
+	}
+	if len(state.Sources) != 1 || state.Sources[0] != good.Sources[0] {
+		t.Fatalf("sources = %v, want %v", state.Sources, good.Sources)
+	}
+	if len(state.ExcludePatterns) != 1 || state.ExcludePatterns[0] != "spam.example" {
+		t.Fatalf("exclude patterns = %v", state.ExcludePatterns)
+	}
+	if state.DegradedCleanupThreshold != "24h" {
+		t.Fatalf("degraded-cleanup threshold = %q, want 24h", state.DegradedCleanupThreshold)
+	}
+	if _, ok := state.Blacklist[blacklisted]; !ok {
+		t.Fatalf("blacklist = %v, want %s kept: a permanent eviction must not be lost with the cache", state.Blacklist, blacklisted)
 	}
 }
