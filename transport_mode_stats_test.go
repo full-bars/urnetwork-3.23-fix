@@ -100,3 +100,39 @@ func TestPrometheusExposesTransportModeStats(t *testing.T) {
 		t.Fatalf("snapshot did not reflect the adds: before=%+v after=%+v", before, after)
 	}
 }
+
+func TestH3DatagramHealthSuffixHiddenUntilOffered(t *testing.T) {
+	if got := (H3DatagramSnapshot{Accepted: 0, Offered: 0, RxMessages: 9}).HealthSuffix(); got != "" {
+		t.Fatalf("a box that never offered DATAGRAM must see no new fields, got %q", got)
+	}
+	got := H3DatagramSnapshot{Offered: 3, Accepted: 2, RxMessages: 40, RxDrops: 1}.HealthSuffix()
+	want := " h3_dg=2/3 dg_rx=40 dg_rx_drop=1"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// offered but never accepted is the signal an old server is in the way
+	if got := (H3DatagramSnapshot{Offered: 2}).HealthSuffix(); got != " h3_dg=0/2 dg_rx=0 dg_rx_drop=0" {
+		t.Fatalf("got %q", got)
+	}
+}
+
+func TestPrometheusExposesH3DatagramCounters(t *testing.T) {
+	w := httptest.NewRecorder()
+	PrometheusHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, family := range []string{
+		"urnet_h3_datagram_offered_total",
+		"urnet_h3_datagram_accepted_total",
+		"urnet_h3_datagram_rx_messages_total",
+		"urnet_h3_datagram_rx_bytes_total",
+		"urnet_h3_datagram_rx_dropped_total",
+		"urnet_h3_datagram_rx_rejected_total",
+	} {
+		if !strings.Contains(body, "# TYPE "+family+" counter") {
+			t.Fatalf("missing family %s", family)
+		}
+	}
+	if !strings.Contains(body, `urnet_h3_datagram_rx_rejected_total{reason="malformed"} `) {
+		t.Fatal("missing rejected sample")
+	}
+}

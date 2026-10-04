@@ -1209,6 +1209,11 @@ type h3ConnStream struct {
 	stream        *quic.Stream
 	quicTransport *quic.Transport
 	packetConn    net.PacketConn
+	// offeredDatagrams is whether this connection offered QUIC DATAGRAM, and
+	// useDatagrams whether the server accepted. A connection that offered and
+	// was not accepted runs on the plain stream.
+	offeredDatagrams bool
+	useDatagrams     bool
 }
 
 // close ends the connection, then the transport, then the socket
@@ -1265,6 +1270,12 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 		connect := func() (*h3ConnStream, error) {
 			h3Attempts.Add(1)
+			// DATAGRAM is only offered by the gated auxiliary H3 on the plain H3
+			// path, never by the sole H3 mode or the DNS translation modes
+			offerDatagrams := ptMode == TransportModeH3 && self.h3Gated() && H3DatagramsEnabled()
+			if offerDatagrams {
+				h3DatagramOffered.Add(1)
+			}
 			// quicConfig := &quic.Config{
 			// 	HandshakeIdleTimeout: self.settings.QuicConnectTimeout + self.settings.QuicHandshakeTimeout,
 			// }
@@ -1278,6 +1289,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				Allow0RTT:               true,
 				DisablePathMTUDiscovery: true,
 				InitialPacketSize:       1400,
+				EnableDatagrams:         offerDatagrams,
 			}
 			var tlsConfig *tls.Config
 			if self.settings.QuicTlsConfig != nil {
@@ -1383,11 +1395,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// closure. The echo verification below compares against the same
 			// per-attempt bytes, so the snapshot is consistent.
 			auth := self.getAuth()
-			authBytes, err := EncodeFrame(&protocol.Auth{
+			authMessage := &protocol.Auth{
 				ByJwt:      auth.ByJwt,
 				AppVersion: auth.AppVersion,
 				InstanceId: auth.InstanceId.Bytes(),
-			}, self.settings.ProtocolVersion)
+			}
+			SetH3DatagramAuthOffer(authMessage, offerDatagrams)
+			authBytes, err := EncodeFrame(authMessage, self.settings.ProtocolVersion)
 			if err != nil {
 				return nil, err
 			}
@@ -1398,21 +1412,55 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				return nil, err
 			}
 			stream.SetReadDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.AuthTimeout))
+			useDatagrams := false
 			if message, err := framer.Read(stream); err != nil {
 				return nil, err
 			} else {
-				// verify the auth echo
-				if !bytes.Equal(authBytes, message) {
-					return nil, fmt.Errorf("Auth response error: bad bytes.")
+				defer MessagePoolReturn(message)
+				if !offerDatagrams {
+					// verify the auth echo, byte for byte as before
+					if !bytes.Equal(authBytes, message) {
+						return nil, fmt.Errorf("Auth response error: bad bytes.")
+					}
+				} else {
+					// A server that accepts DATAGRAM answers with a re-encoded
+					// Auth that carries the accepted version, so the bytes differ
+					// from the request. A server that does not echoes the request
+					// unchanged, which validates as "not accepted": the plain
+					// stream, the intended fallback.
+					responseMessage, err := DecodeFrame(message)
+					if err != nil {
+						return nil, err
+					}
+					authResponse, ok := responseMessage.(*protocol.Auth)
+					if !ok {
+						return nil, fmt.Errorf("Auth response error: got %T.", responseMessage)
+					}
+					connectionState := conn.ConnectionState()
+					useDatagrams, err = ValidateH3DatagramAuthResponse(
+						authMessage,
+						authResponse,
+						true,
+						connectionState.SupportsDatagrams.Local,
+						connectionState.SupportsDatagrams.Remote,
+					)
+					if err != nil {
+						return nil, err
+					}
+					if useDatagrams {
+						h3DatagramAccepted.Add(1)
+					}
 				}
 			}
 
 			success = true
 			return &h3ConnStream{
-				conn:          conn,
-				stream:        stream,
-				quicTransport: quicTransport,
-				packetConn:    packetConn,
+				conn:             conn,
+				stream:           stream,
+				quicTransport:    quicTransport,
+				packetConn:       packetConn,
+				offeredDatagrams: offerDatagrams,
+				useDatagrams:     useDatagrams,
 			}, nil
 		}
 
@@ -1482,6 +1530,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		self.noteAuthSuccess()
 		h3Connects.Add(1)
 
+		conn := connStream.conn
 		stream := connStream.stream
 
 		c := func() {
@@ -1498,12 +1547,31 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 
 			framer := NewFramer(self.settings.FramerSettings)
 
+			var datagramReassembler *H3DatagramReassembler
+			if connStream.useDatagrams {
+				var datagramErr error
+				datagramReassembler, datagramErr = NewH3DatagramReassembler(
+					h3DatagramSettings,
+					h3DatagramBudget,
+					h3DatagramStats,
+				)
+				if datagramErr != nil {
+					self.log.Infof("[t]h3 datagram receiver init error = %s\n", datagramErr)
+					return
+				}
+				defer datagramReassembler.Close()
+				self.log.Infof("[t]h3 datagram accepted by the server, receiving datagrams on %s\n", clientId)
+			}
+
 			var readCounter atomic.Uint64
 			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
 			var writePayloadCounter atomic.Uint64
 			var writePayloadBytes atomic.Uint64
 			var readPayloadBytes atomic.Uint64
+			// set when this connection is closed because a gate (h3 or h3_datagram)
+			// changed, which is an operator action and not a drop
+			var gateClosed atomic.Bool
 
 			h3Up.Add(1)
 			// per-connection frame and byte counts, so the log says what this transport carried
@@ -1512,7 +1580,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				h3Up.Add(-1)
 				// a connection that ends while its transport is still wanted is a
 				// drop; closing it because the gate was turned off is not
-				if self.ctx.Err() == nil && (!self.h3Gated() || H3Enabled()) {
+				if self.ctx.Err() == nil && !gateClosed.Load() && (!self.h3Gated() || H3Enabled()) {
 					h3Drops.Add(1)
 				}
 				self.log.Infof("[t]h3 closed %s after %s (frames out=%d in=%d, payload bytes out=%d in=%d)\n",
@@ -1565,12 +1633,22 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						on, notify := h3GateWatch()
 						if !on {
 							self.log.Infof("[t]h3 switched off, closing %s\n", clientId)
+							gateClosed.Store(true)
+							return
+						}
+						// the DATAGRAM offer is made at dial time, so a change
+						// closes the connection and lets it reconnect with it
+						datagramsOn, datagramNotify := h3DatagramGate.watch()
+						if datagramsOn != connStream.offeredDatagrams {
+							self.log.Infof("[t]h3 datagram offer changed (now %v), reconnecting %s\n", datagramsOn, clientId)
+							gateClosed.Store(true)
 							return
 						}
 						select {
 						case <-handleCtx.Done():
 							return
 						case <-notify:
+						case <-datagramNotify:
 						}
 					}
 				}, handleCancel)
@@ -1651,11 +1729,29 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				}
 			}, handleCancel)
 
+			// `receive` has one closer, after EVERY reader has finished: a second
+			// reader (DATAGRAM) sending on a channel the stream reader already
+			// closed would panic the provider.
+			var receiveReaders sync.WaitGroup
+			receiveReaders.Add(1)
+			go func() {
+				receiveReaders.Wait()
+				close(receive)
+			}()
+
 			go HandleError(func() {
 				defer func() {
 					handleCancel()
-					close(receive)
+					receiveReaders.Done()
 				}()
+
+				if connStream.useDatagrams {
+					// DATAGRAM activity is invisible to a stream read deadline, so
+					// a deadline here would tear down a connection whose stream is
+					// legitimately idle. QUIC's own idle timeout still detects a
+					// dead peer, and closing the connection unblocks the read.
+					stream.SetReadDeadline(time.Time{})
+				}
 
 				for {
 					select {
@@ -1664,7 +1760,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					default:
 					}
 
-					stream.SetReadDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.ReadTimeout))
+					if !connStream.useDatagrams {
+						stream.SetReadDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.ReadTimeout))
+					}
 					message, err := framer.Read(stream)
 					if err != nil {
 						self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
@@ -1695,10 +1793,42 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						MessagePoolReturn(message)
 					}
 				}
-			}, func() {
-				handleCancel()
-				close(receive)
-			})
+			}, handleCancel)
+
+			if connStream.useDatagrams {
+				receiveReaders.Add(1)
+				go HandleError(func() {
+					defer func() {
+						handleCancel()
+						receiveReaders.Done()
+					}()
+
+					for {
+						datagram, err := conn.ReceiveDatagram(handleCtx)
+						if err != nil {
+							// the context ended or the connection closed
+							return
+						}
+						message := datagramReassembler.Accept(datagram, time.Now())
+						if message == nil {
+							continue
+						}
+						readCounter.Add(1)
+						readPayloadCounter.Add(1)
+						select {
+						case receive <- message:
+							readPayloadBytes.Add(uint64(len(message)))
+							h3ModeStats.addRx(len(message))
+							self.log.V(2).Infof("[tr]%s<-datagram\n", clientId)
+						default:
+							// the route is full: drop now instead of holding the
+							// pump. The lane is unreliable and Transfer resends.
+							h3DatagramDrops.Add(1)
+							MessagePoolReturn(message)
+						}
+					}
+				}, handleCancel)
+			}
 
 			select {
 			case <-handleCtx.Done():
