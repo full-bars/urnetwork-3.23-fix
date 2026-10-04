@@ -116,10 +116,17 @@ func joinFindings(fs []poolFinding) string {
 // tag. It is used by one goroutine (the dump loop) and needs no lock.
 type poolWatch struct {
 	hist map[string][]int64
+	// prev holds the cumulative counters seen on the previous dump, so the
+	// reuse finding can be judged on the interval rather than on the lifetime
+	// of the tag. Lifetime reuse is the wrong question: a tag that churned
+	// heavily once and has since gone quiet keeps a low lifetime ratio
+	// forever, so it would stay flagged as a finding long after the churn
+	// stopped — a warning that can never be cleared.
+	prev map[string]poolTagStat
 }
 
 func newPoolWatch() *poolWatch {
-	return &poolWatch{hist: map[string][]int64{}}
+	return &poolWatch{hist: map[string][]int64{}, prev: map[string]poolTagStat{}}
 }
 
 // observe records one dump and returns its summary.
@@ -146,15 +153,24 @@ func (w *poolWatch) observe(stats []poolTagStat) poolSummary {
 				Detail: fmt.Sprintf("outstanding %d -> %d over %d dumps and still rising", h[0], h[len(h)-1], poolTrendWindow),
 			})
 		}
-		if st.Taken >= poolLowReuseTakes {
-			reuse := 100 * float64(st.Taken-min(st.Taken, st.Created)) / float64(st.Taken)
-			if reuse < poolLowReusePct {
-				sum.LowReuse = append(sum.LowReuse, poolFinding{
-					PoolSize: st.PoolSize, Tag: st.Tag, Caller: st.Caller,
-					Detail: fmt.Sprintf("%.0f%% reuse over %d takes", reuse, st.Taken),
-				})
+		// Reuse is judged on the takes since the previous dump, and only
+		// once there are enough NEW takes to mean anything. A tag with no new
+		// activity this interval says nothing about its current behaviour, and
+		// reporting on it would leave a finding nothing can ever clear.
+		if prev, had := w.prev[st.key()]; had {
+			taken := st.Taken - prev.Taken
+			created := st.Created - prev.Created
+			if taken >= poolLowReuseTakes {
+				reuse := 100 * float64(taken-min(taken, created)) / float64(taken)
+				if reuse < poolLowReusePct {
+					sum.LowReuse = append(sum.LowReuse, poolFinding{
+						PoolSize: st.PoolSize, Tag: st.Tag, Caller: st.Caller,
+						Detail: fmt.Sprintf("%.0f%% reuse over %d takes since the last dump", reuse, taken),
+					})
+				}
 			}
 		}
+		w.prev[st.key()] = st
 	}
 	sum.Warm = sum.Dumps >= poolTrendWindow
 	sortFindings(sum.Growing)
@@ -197,7 +213,29 @@ func growingWithoutLevelling(h []int64) bool {
 	third := (n - 1) / 3
 	early := h[third] - h[0]
 	late := h[n-1] - h[n-1-third]
-	return late > 0 && late*2 >= early
+	if late <= 0 || late*2 < early {
+		return false
+	}
+	// A leak is SUSTAINED growth, not one burst at the end. Without this, a
+	// window that sat flat and then took a single step up satisfies every test
+	// above — the total grew, the intervals are non-decreasing, and the late
+	// third outpaces the early one — so a one-off spike is reported as a
+	// possible leak. Require the second half of the window to carry real
+	// growth of its own, not just a larger final step.
+	mid := n / 2
+	laterGrowth := h[n-1] - h[mid]
+	if laterGrowth < poolLeakFloor {
+		return false
+	}
+	// And the growth must not be a single jump: at least two of the intervals
+	// in the later half must have risen.
+	rises := 0
+	for i := mid + 1; i < n; i++ {
+		if h[i] > h[i-1] {
+			rises++
+		}
+	}
+	return rises >= 2
 }
 
 // poolCallerLabel joins call sites in a stable order. The label used to come

@@ -32,6 +32,25 @@ func TestPoolSummary_RealSeriesArePlateausNotLeaks(t *testing.T) {
 	}
 }
 
+// A flat window that takes ONE step up at the end is not a leak. It satisfies
+// every other test in growingWithoutLevelling — the total grew, no interval
+// decreased, and the late third outpaces the early one — so before the
+// sustained-growth check a single burst was reported as a possible leak.
+func TestPoolSummary_SingleBurstIsNotALeak(t *testing.T) {
+	burst := []int64{1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1100}
+	s := feed(newPoolWatch(), 4096, 11, "ip.go:1", burst, 5000)
+	if !s.Healthy() || len(s.Growing) != 0 {
+		t.Fatalf("a single burst was reported as a leak: %s", s)
+	}
+
+	// Two steps in the later half is a real, if modest, upward trend and is
+	// still reported.
+	sustained := []int64{1000, 1000, 1000, 1000, 1000, 1000, 1050, 1060, 1070, 1080}
+	s = feed(newPoolWatch(), 4096, 12, "ip.go:1", sustained, 5000)
+	if len(s.Growing) != 1 {
+		t.Fatalf("sustained growth in the later half was not flagged: %s", s)
+	}
+}
 func TestPoolSummary_RampThenPlateauIsNotALeak(t *testing.T) {
 	// tag=224 after a restart: outstanding climbs for a few minutes as the
 	// working set fills, then flattens. Ten samples all non-decreasing except
@@ -91,9 +110,15 @@ func TestPoolSummary_WarmingUpNeedsAFullWindow(t *testing.T) {
 
 func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	w := newPoolWatch()
-	// 30% reuse over 50k takes is allocation churn worth a look.
-	churn := poolTagStat{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 50000, Returned: 50000, Created: 35000}
-	// 0% reuse over one take is just a first allocation.
+	// Reuse is judged on the interval between dumps, so the first observation
+	// only establishes a baseline. Seed it, then observe the interval.
+	w.observe([]poolTagStat{
+		{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 10000, Returned: 10000, Created: 7000},
+		{PoolSize: 4096, Tag: 0, Taken: 0, Created: 0},
+	})
+	// 30% reuse over 50k NEW takes is allocation churn worth a look.
+	churn := poolTagStat{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 60000, Returned: 60000, Created: 42000}
+	// 0% reuse over one new take is just a first allocation.
 	first := poolTagStat{PoolSize: 4096, Tag: 0, Taken: 1, Returned: 1, Created: 1}
 	s := w.observe([]poolTagStat{churn, first})
 	if len(s.LowReuse) != 1 || s.LowReuse[0].Tag != 8 {
@@ -101,6 +126,19 @@ func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	}
 	if !strings.Contains(s.String(), "low reuse") || !strings.Contains(s.String(), "30%") {
 		t.Fatalf("summary = %q", s)
+	}
+
+	// A tag that churned hard once and has since gone quiet must NOT stay
+	// flagged: with no new takes this interval there is nothing to judge, and
+	// a lifetime-based finding could never be cleared.
+	quiet := churn
+	quiet2 := first
+	quiet2.Taken, quiet2.Returned, quiet2.Created = 1, 1, 1
+	s = w.observe([]poolTagStat{quiet, quiet2})
+	for _, f := range s.LowReuse {
+		if f.Tag == 8 {
+			t.Fatalf("a tag with no new takes is still reported: %+v", f)
+		}
 	}
 }
 
