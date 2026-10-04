@@ -86,6 +86,18 @@ func TestPoolSummary_SlowSteadyLeakIsStillCaught(t *testing.T) {
 	}
 }
 
+// The sustained-growth gate compares the second half of the window against a
+// floor that poolLeakFloor defines over the WHOLE window. Enforcing the full
+// floor on the half silently doubled the rate a leak had to reach: +10 a dump
+// gains 90 over the window but only 40 over the second half, so it used to be
+// dropped.
+func TestPoolSummary_VerySlowSteadyLeakIsStillCaught(t *testing.T) {
+	slow := []int64{500, 510, 520, 530, 540, 550, 560, 570, 580, 590} // +10 a dump
+	if s := feed(newPoolWatch(), 2048, 8, "a.go:1", slow, 5000); s.Healthy() {
+		t.Fatalf("a +10-per-dump leak went unnoticed: %s", s)
+	}
+}
+
 func TestPoolSummary_JitterAndTinyGrowthAreNotLeaks(t *testing.T) {
 	jitter := []int64{300, 320, 290, 310, 305, 330, 295, 315, 300, 320}
 	if s := feed(newPoolWatch(), 2048, 4, "a.go:1", jitter, 5000); !s.Healthy() {
@@ -163,6 +175,22 @@ func TestPoolSummary_CounterResetDoesNotCrashOrFlag(t *testing.T) {
 	s := w.observe([]poolTagStat{{PoolSize: 2048, Tag: 7, Caller: "a.go:1", Taken: 10, Returned: 10, Created: 1}})
 	if !s.Healthy() {
 		t.Fatalf("counter reset flagged: %s", s)
+	}
+}
+
+// A reset can drop Created as well as Taken. Unsigned subtraction then wraps to
+// about 1.8e19 takes and the reuse ratio comes out as "0% reuse over 18
+// quintillion takes" — a finding nothing can ever clear. A rollback has to
+// re-seed the interval baseline instead of computing an interval from it.
+func TestPoolSummary_CounterRollbackDoesNotUnderflow(t *testing.T) {
+	w := newPoolWatch()
+	w.observe([]poolTagStat{{PoolSize: 2048, Tag: 9, Caller: "a.go:1", Taken: 10000, Returned: 0, Created: 1000}})
+	s := w.observe([]poolTagStat{{PoolSize: 2048, Tag: 9, Caller: "a.go:1", Taken: 10, Returned: 10, Created: 5}})
+	if !s.Healthy() {
+		t.Fatalf("counter rollback flagged: %s", s)
+	}
+	if len(s.LowReuse) != 0 {
+		t.Fatalf("counter rollback produced a reuse finding: %s", s)
 	}
 }
 

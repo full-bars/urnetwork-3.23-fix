@@ -158,6 +158,15 @@ func (w *poolWatch) observe(stats []poolTagStat) poolSummary {
 		// activity this interval says nothing about its current behaviour, and
 		// reporting on it would leave a finding nothing can ever clear.
 		if prev, had := w.prev[st.key()]; had {
+			// A counter that went backwards is a reset (a subsystem restart
+			// or an explicit reset), not a negative interval: unsigned
+			// subtraction would wrap to a huge positive and report a bogus
+			// "0% reuse over 18 quintillion takes". Re-seed the baseline and
+			// say nothing this dump.
+			if st.Taken < prev.Taken || st.Created < prev.Created {
+				w.prev[st.key()] = st
+				continue
+			}
 			taken := st.Taken - prev.Taken
 			created := st.Created - prev.Created
 			if taken >= poolLowReuseTakes {
@@ -224,7 +233,11 @@ func growingWithoutLevelling(h []int64) bool {
 	// growth of its own, not just a larger final step.
 	mid := n / 2
 	laterGrowth := h[n-1] - h[mid]
-	if laterGrowth < poolLeakFloor {
+	// poolLeakFloor is defined over the whole window; the later half carries
+	// about half its intervals, so require half the floor. The full floor here
+	// would double the rate a leak has to reach before it is reported, and a
+	// steady slow leak would never show up at all.
+	if laterGrowth < poolLeakFloor/2 {
 		return false
 	}
 	// And the growth must not be a single jump: at least two of the intervals
