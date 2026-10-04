@@ -1471,6 +1471,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			var readCounter atomic.Uint64
 			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
+			var writePayloadCounter atomic.Uint64
 
 			// per-connection frame counts, so the log says what this transport carried
 			connectTime := time.Now()
@@ -1523,13 +1524,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					mode, notify := self.activeMode()
 					if self.drainsWhenInactive(mode, ptMode) {
 						startReadCount := readPayloadCounter.Load()
-						startWriteCount := writeCounter.Load()
+						startWriteCount := writePayloadCounter.Load()
 						select {
 						case <-handleCtx.Done():
 							return
 						case <-time.After(time.Duration(slowMultiple) * self.settings.InactiveDrainTimeout):
 							// no activity after cool down, shut down this transport
-							if readPayloadCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
+							if readPayloadCounter.Load() == startReadCount && writePayloadCounter.Load() == startWriteCount {
 								handleCancel()
 							}
 						case <-notify:
@@ -1573,6 +1574,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							return
 						}
 						writeCounter.Add(1)
+						writePayloadCounter.Add(1)
 						self.log.V(2).Infof("[ts]%s->\n", clientId)
 					case <-WakeupAfter(self.settings.PingTimeout, self.settings.PingTimeout):
 						stream.SetWriteDeadline(time.Now().Add(time.Duration(slowMultiple) * self.settings.WriteTimeout))
@@ -1580,6 +1582,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							// note that for websocket a dealine timeout cannot be recovered
 							return
 						}
+						writeCounter.Add(1)
 					}
 				}
 			}, handleCancel)
