@@ -1469,6 +1469,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			framer := NewFramer(self.settings.FramerSettings)
 
 			var readCounter atomic.Uint64
+			var readPayloadCounter atomic.Uint64
 			var writeCounter atomic.Uint64
 
 			// per-connection frame counts, so the log says what this transport carried
@@ -1521,14 +1522,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				for {
 					mode, notify := self.activeMode()
 					if self.drainsWhenInactive(mode, ptMode) {
-						startReadCount := readCounter.Load()
+						startReadCount := readPayloadCounter.Load()
 						startWriteCount := writeCounter.Load()
 						select {
 						case <-handleCtx.Done():
 							return
 						case <-time.After(time.Duration(slowMultiple) * self.settings.InactiveDrainTimeout):
 							// no activity after cool down, shut down this transport
-							if readCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
+							if readPayloadCounter.Load() == startReadCount && writeCounter.Load() == startWriteCount {
 								handleCancel()
 							}
 						case <-notify:
@@ -1610,6 +1611,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						MessagePoolReturn(message)
 						continue
 					}
+
+					// count payload reads only: pings are keepalive, not use
+					readPayloadCounter.Add(1)
 
 					select {
 					case <-handleCtx.Done():
