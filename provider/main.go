@@ -1503,7 +1503,7 @@ func runLifetimeCollector(ctx context.Context) {
 		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
 		if a1 != prevA1 || a2 != prevA2 || a3 != prevA3 || a4 != prevA4 || a5 != prevA5 || a6 != prevA6 || a7 != prevA7 {
 			if a1|a2|a3|a4|a5|a6|a7 != 0 {
-				tlog("♾️⚖️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+				tlog("♾️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
 					a1, a2, a3, a4, a5, a6, fmtBytes(a7))
 			}
 			prevA1, prevA2, prevA3, prevA4, prevA5, prevA6, prevA7 = a1, a2, a3, a4, a5, a6, a7
@@ -2840,7 +2840,7 @@ func provide(opts docopt.Opts) {
 		}
 		finishIdentity(RequireVersion())
 	} else {
-		tlog("♻️⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
+		tlog("⚡ [hotswap] Candidate PID %d promoted to live provider (version=%s)\n", os.Getpid(), RequireVersion())
 	}
 
 	// Log JWT expiry status at startup
@@ -4242,7 +4242,7 @@ func provide(opts docopt.Opts) {
 	if readyVersion == "" {
 		readyVersion = "unknown"
 	}
-	tlog("📶 Ready — %s | profile=%s | proxies=%d%s\n", readyVersion, readyProfile, len(allProxySettings), logsHint)
+	tlog("✅ Ready — %s | profile=%s | proxies=%d%s\n", readyVersion, readyProfile, len(allProxySettings), logsHint)
 
 	// Start the hot-reload watcher: it polls ~/.urnetwork/proxy.reload and applies
 	// add/remove diffs to the running proxy set without restarting the provider.
