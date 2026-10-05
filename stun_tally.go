@@ -59,7 +59,6 @@ type stunTallyT struct {
 // emitted, so an idle host stays silent.
 func (t *stunTallyT) record(ok bool, log Logger) {
 	t.mu.Lock()
-	defer t.mu.Unlock()
 
 	// The first real (non-test) pulse starts the background active probe loop,
 	// which keeps per-provider / per-IP-family reachability fresh to fold into
@@ -77,11 +76,27 @@ func (t *stunTallyT) record(ok bool, log Logger) {
 
 	now := time.Now()
 	if t.nextLogAt.IsZero() {
-		// First activity: prime the interval but do not emit yet.
+		// First activity: prime BOTH ends of the window. Seeding lastLogAt at
+		// construction instead made the first emit measure the entire process
+		// uptime, so a busy host reported a rate near zero and locked itself to
+		// the slow cadence for the rest of the run.
+		t.lastLogAt = now
 		t.nextLogAt = now.Add(stunHighInterval)
+		t.mu.Unlock()
 		return
 	}
 	if now.Before(t.nextLogAt) {
+		t.mu.Unlock()
+		return
+	}
+
+	// Counts left over from long ago are not this window's events — reporting
+	// them would resurrect a stale burst as if it had just happened.
+	if now.Sub(t.lastLogAt) > 2*stunLowInterval {
+		t.ok, t.fail = 0, 0
+		t.lastLogAt = now
+		t.nextLogAt = now.Add(stunHighInterval)
+		t.mu.Unlock()
 		return
 	}
 
@@ -99,7 +114,11 @@ func (t *stunTallyT) record(ok bool, log Logger) {
 	} else {
 		t.nextLogAt = now.Add(stunLowInterval)
 	}
+	t.mu.Unlock()
 
+	// Rendering the suffix and writing the line both happen outside the lock:
+	// suffix() takes the prober's own mutex, and a log sink on a hot path must
+	// never run while holding the tally lock.
 	log.Infof("📡 [stun] ok=%d fail=%d%s\n", okN, failN, stunProbe.suffix())
 }
 

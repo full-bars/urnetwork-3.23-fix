@@ -104,3 +104,123 @@ func TestStunTallyIdleNeverEmits(t *testing.T) {
 		t.Fatalf("idle window: want 0 emits, got %d", len(log.lines))
 	}
 }
+
+// TestStunTallyFirstPulseSeedsWindow: a tally built long before its first pulse
+// must not measure the whole idle period on its first emit. Seeding lastLogAt at
+// construction did exactly that — a busy host reported ~0 events/min and then sat
+// on the slow cadence for the rest of the run.
+func TestStunTallyFirstPulseSeedsWindow(t *testing.T) {
+	log := &captureLogger{}
+	tl := &stunTallyT{lastLogAt: time.Now().Add(-2 * time.Hour)}
+	tl.record(true, log)
+	if time.Since(tl.lastLogAt) > time.Minute {
+		t.Errorf("first pulse must re-seed lastLogAt to now, got %s ago", time.Since(tl.lastLogAt))
+	}
+	if tl.nextLogAt.IsZero() {
+		t.Error("first pulse must arm nextLogAt")
+	}
+	if len(log.lines) != 0 {
+		t.Errorf("first pulse must not emit, got %q", log.lines)
+	}
+}
+
+// TestStunTallyDiscardsStaleWindow: counts left over from long ago are not this
+// window's events — reporting them would resurrect a stale burst as fresh.
+func TestStunTallyDiscardsStaleWindow(t *testing.T) {
+	log := &captureLogger{}
+	tl := &stunTallyT{
+		lastLogAt: time.Now().Add(-2 * time.Hour),
+		nextLogAt: time.Now().Add(-time.Minute),
+		ok:        500,
+		fail:      500,
+	}
+	tl.record(true, log)
+	if len(log.lines) != 0 {
+		t.Fatalf("stale window must not emit, got %q", log.lines)
+	}
+	if tl.ok != 0 || tl.fail != 0 {
+		t.Errorf("stale counts must be dropped, got ok=%d fail=%d", tl.ok, tl.fail)
+	}
+}
+
+// blockingLogger blocks inside Infof until released, so a test can prove the
+// tally lock is not held across the log call.
+type blockingLogger struct {
+	entered chan struct{}
+	release chan struct{}
+}
+
+func (l *blockingLogger) Info(...any)             {}
+func (l *blockingLogger) Infof(string, ...any)    { close(l.entered); <-l.release }
+func (l *blockingLogger) Warningf(string, ...any) {}
+func (l *blockingLogger) Errorf(string, ...any)   {}
+func (l *blockingLogger) V(int32) Verbose         { return nopVerbose{} }
+
+// TestStunTallyDoesNotHoldLockDuringLog: a concurrent recorder must not block
+// behind a log sink, i.e. the emit path unlocks before rendering and writing.
+func TestStunTallyDoesNotHoldLockDuringLog(t *testing.T) {
+	tl := &stunTallyT{
+		lastLogAt: time.Now().Add(-time.Minute),
+		nextLogAt: time.Now().Add(-time.Second),
+		ok:        1,
+	}
+	log := &blockingLogger{entered: make(chan struct{}), release: make(chan struct{})}
+	go tl.record(true, log)
+	select {
+	case <-log.entered:
+	case <-time.After(2 * time.Second):
+		t.Fatal("emit never reached the logger")
+	}
+
+	// While the sink is blocked inside Infof, the lock must be free.
+	done := make(chan struct{})
+	go func() { tl.record(true, &captureLogger{}); close(done) }()
+	select {
+	case <-done:
+	case <-time.After(2 * time.Second):
+		t.Error("tally lock held across the log call: concurrent record blocked")
+	}
+	close(log.release)
+}
+
+// quietVerbose / quietLogger model production levels: V(anything) is disabled.
+type quietVerbose struct{}
+
+func (quietVerbose) Enabled() bool        { return false }
+func (quietVerbose) Info(...any)          {}
+func (quietVerbose) Infof(string, ...any) {}
+
+type quietLogger struct{}
+
+func (quietLogger) Info(...any)             {}
+func (quietLogger) Infof(string, ...any)    {}
+func (quietLogger) Warningf(string, ...any) {}
+func (quietLogger) Errorf(string, ...any)   {}
+func (quietLogger) V(int32) Verbose         { return quietVerbose{} }
+
+// TestPionDebugfCountsFailuresAtProductionLogLevel: STUN gather failures must
+// reach the aggregate with verbose logging OFF — the production case. Gating the
+// count behind V(2) meant DNS and srflx failures never counted at all.
+func TestPionDebugfCountsFailuresAtProductionLogLevel(t *testing.T) {
+	pl := &pionLeveledLogger{log: quietLogger{}, scope: "ice"}
+
+	stunTally.mu.Lock()
+	before := stunTally.fail
+	stunTally.mu.Unlock()
+
+	pl.Debugf("Failed to resolve STUN host: udp4 %s: no such host", "stun:foo:3478")
+
+	stunTally.mu.Lock()
+	after := stunTally.fail
+	stunTally.mu.Unlock()
+	if after != before+1 {
+		t.Errorf("STUN gather failure at level 0 must count: fail %d -> %d", before, after)
+	}
+	StopStunProbe()
+}
+
+// TestStopStunProbeIsIdempotent: stopping the loop twice must not panic.
+func TestStopStunProbeIsIdempotent(t *testing.T) {
+	StopStunProbe()
+	StopStunProbe()
+}
