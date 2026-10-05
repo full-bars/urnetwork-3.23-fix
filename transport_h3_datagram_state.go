@@ -9,9 +9,9 @@ import (
 // there is one connection per process and one set of limits and counters; the
 // reassembly budget is shared so a future per-proxy H3 stays bounded as a whole.
 var (
-	h3DatagramSettings = DefaultH3DatagramSettings()
-	h3DatagramStats    = &H3DatagramStats{}
-	h3DatagramBudget   = NewH3DatagramReassemblyBudget(h3DatagramSettings.ProcessReassemblyByteCount)
+	// the limits and the shared reassembly budget are resolved on first use, see
+	// h3DatagramLimits, so they can scale with the provider's memory budget
+	h3DatagramStats = &H3DatagramStats{}
 
 	// h3DatagramOffered counts H3 connections that offered DATAGRAM, and
 	// h3DatagramAccepted those where the server accepted. Offered without
@@ -22,6 +22,9 @@ var (
 	// h3DatagramDrops counts received datagram messages dropped because the
 	// receive route was full. The lane is unreliable, so Transfer resends.
 	h3DatagramDrops atomic.Uint64
+	// h3DatagramBlackholes counts connections whose datagram lane the send guard
+	// switched off because datagrams went out and none came back.
+	h3DatagramBlackholes atomic.Uint64
 )
 
 // H3DatagramSnapshot is a point-in-time copy of the H3 DATAGRAM counters.
@@ -36,8 +39,18 @@ type H3DatagramSnapshot struct {
 	RxMalformed uint64
 	RxDuplicate uint64
 	RxChecksum  uint64
-	// Gate is whether the offer is switched on right now.
-	Gate bool
+	// What this side sent: messages and bytes that went as datagrams, those
+	// that were too large and went on the stream instead, and send errors.
+	TxMessages       uint64
+	TxBytes          uint64
+	TxStreamMessages uint64
+	TxErrors         uint64
+	// Blackholes counts connections whose datagram send the guard switched off.
+	Blackholes uint64
+	// Gate is whether the offer is switched on right now, SendGate whether
+	// sending datagrams is.
+	Gate     bool
+	SendGate bool
 }
 
 // H3DatagramCounters returns the cumulative H3 DATAGRAM counters.
@@ -52,7 +65,14 @@ func H3DatagramCounters() H3DatagramSnapshot {
 		RxMalformed: layer.MalformedFragmentCount,
 		RxDuplicate: layer.DuplicateFragmentCount,
 		RxChecksum:  layer.ChecksumFailureCount,
-		Gate:        H3DatagramsEnabled(),
+
+		TxMessages:       layer.SentMessageCount,
+		TxBytes:          layer.SentMessageByteCount,
+		TxStreamMessages: layer.StreamSentMessageCount,
+		TxErrors:         layer.SendErrorCount,
+		Blackholes:       h3DatagramBlackholes.Load(),
+		Gate:             H3DatagramsEnabled(),
+		SendGate:         H3DatagramSendEnabled(),
 	}
 }
 
@@ -63,6 +83,13 @@ func (self H3DatagramSnapshot) HealthSuffix() string {
 	if self.Offered == 0 {
 		return ""
 	}
-	return fmt.Sprintf(" h3_dg=%d/%d dg_rx=%d dg_rx_drop=%d",
+	out := fmt.Sprintf(" h3_dg=%d/%d dg_rx=%d dg_rx_drop=%d",
 		self.Accepted, self.Offered, self.RxMessages, self.RxDrops)
+	// the send part appears once anything was sent as a datagram, so a
+	// receive-only box does not grow fields it cannot fill
+	if self.TxMessages != 0 || self.TxErrors != 0 || self.Blackholes != 0 {
+		out += fmt.Sprintf(" dg_tx=%d dg_tx_stream=%d dg_tx_err=%d dg_blackhole=%d",
+			self.TxMessages, self.TxStreamMessages, self.TxErrors, self.Blackholes)
+	}
+	return out
 }

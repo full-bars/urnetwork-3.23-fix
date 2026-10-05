@@ -2339,13 +2339,13 @@
     },
     {
       "type": "timeseries",
-      "title": "DATAGRAM messages received and dropped per second",
+      "title": "DATAGRAM messages per second, and the send lane split",
       "id": 39,
       "datasource": {
         "type": "prometheus",
         "uid": "${datasource}"
       },
-      "description": "Messages received over DATAGRAM, and received messages dropped because the receive route was full. The lane is unreliable, so a drop is resent by the transfer layer, but a climbing drop rate is the signal to stop the experiment.",
+      "description": "Messages received over DATAGRAM and dropped because the receive route was full, messages sent as datagrams, and messages sent on the stream of a connection that negotiated DATAGRAM, so the lane split is sent against stream. The lane is unreliable, so a drop is resent by the transfer layer, but a climbing drop rate is the signal to stop the experiment. Blackholes below count connections whose datagram send was switched off.",
       "gridPos": {
         "h": 8,
         "w": 12,
@@ -2372,6 +2372,39 @@
           "expr": "sum by (instance) (rate(urnet_h3_datagram_rx_dropped_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]))",
           "refId": "B",
           "legendFormat": "{{instance}} dropped",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (rate(urnet_h3_datagram_tx_messages_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "C",
+          "legendFormat": "{{instance}} sent",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (rate(urnet_h3_datagram_tx_stream_messages_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]))",
+          "refId": "D",
+          "legendFormat": "{{instance}} sent on stream",
+          "range": true,
+          "instant": false
+        },
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "${datasource}"
+          },
+          "expr": "sum by (instance) (increase(urnet_h3_datagram_blackholes_total{job=\"urnetwork\", instance=~\"$instance\"}[1h]))",
+          "refId": "E",
+          "legendFormat": "{{instance}} blackholes/h",
           "range": true,
           "instant": false
         }

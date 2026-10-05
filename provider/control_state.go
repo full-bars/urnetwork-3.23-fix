@@ -118,6 +118,7 @@ var controlKeys = map[string]bool{
 	"smart_dialer":                true,
 	"h3":                          true,
 	"h3_datagram":                 true,
+	"h3_datagram_send":            true,
 	"oom_cap":                     true,
 }
 

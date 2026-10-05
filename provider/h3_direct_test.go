@@ -198,3 +198,46 @@ func TestH3DatagramControlKeyDrivesTheOffer(t *testing.T) {
 		t.Fatal("a persisted off must be replayed at startup")
 	}
 }
+
+// h3_datagram_send is live and has no environment default: unset means off, a
+// persisted on is replayed at startup in both directions, and clearing returns to
+// off. It is read per message, so it needs no restart and no reconnect.
+func TestH3DatagramSendControlKeyDrivesTheSendGate(t *testing.T) {
+	previous := connect.H3DatagramSendEnabled()
+	t.Cleanup(func() { connect.SetH3DatagramSendEnabled(previous) })
+
+	if needsRestart("h3_datagram_send") {
+		t.Fatal("h3_datagram_send is live: needsRestart must be false")
+	}
+	for _, bad := range []string{"maybe", "", "1"} {
+		if err := validateControlValue("h3_datagram_send", bad); err == nil {
+			t.Fatalf("h3_datagram_send=%q must be rejected", bad)
+		}
+	}
+	if err := applyLiveSideEffect("h3_datagram_send", "on"); err != nil || !connect.H3DatagramSendEnabled() {
+		t.Fatalf("set on: err=%v enabled=%v", err, connect.H3DatagramSendEnabled())
+	}
+	if err := applyLiveDefault("h3_datagram_send"); err != nil || connect.H3DatagramSendEnabled() {
+		t.Fatalf("clear: err=%v enabled=%v", err, connect.H3DatagramSendEnabled())
+	}
+
+	state := newControlState()
+	applyPersistedRuntimeTuning(state)
+	if connect.H3DatagramSendEnabled() {
+		t.Fatal("an unset key must leave datagram send off")
+	}
+	if err := state.set("h3_datagram_send", "on"); err != nil {
+		t.Fatal(err)
+	}
+	applyPersistedRuntimeTuning(state)
+	if !connect.H3DatagramSendEnabled() {
+		t.Fatal("a persisted on must be replayed at startup")
+	}
+	if err := state.set("h3_datagram_send", "off"); err != nil {
+		t.Fatal(err)
+	}
+	applyPersistedRuntimeTuning(state)
+	if connect.H3DatagramSendEnabled() {
+		t.Fatal("a persisted off must be replayed at startup")
+	}
+}

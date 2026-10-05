@@ -593,7 +593,7 @@ func TestNeedsRestart_AutoComputed(t *testing.T) {
 		"report_url", "report_interval",
 		"proxy_url_refresh", "proxy_url_max",
 		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
-		"node_name", "hot_restart", "h3", "h3_datagram",
+		"node_name", "hot_restart", "h3", "h3_datagram", "h3_datagram_send",
 	}
 	for _, k := range liveKeys {
 		if needsRestart(k) {

@@ -193,6 +193,11 @@ The test file covers the two enabled rules. `prometheus.yml` lists `urnetwork.ym
 | `urnet_h3_datagram_rx_bytes_total` | counter | | Bytes of messages received over DATAGRAM |
 | `urnet_h3_datagram_rx_dropped_total` | counter | | Received DATAGRAM messages dropped because the receive route was full |
 | `urnet_h3_datagram_rx_rejected_total` | counter | `reason` | DATAGRAMs refused by the datagram layer: `malformed`, `duplicate`, `checksum` |
+| `urnet_h3_datagram_tx_messages_total` | counter | | Messages sent over DATAGRAM |
+| `urnet_h3_datagram_tx_bytes_total` | counter | | Bytes of messages sent over DATAGRAM |
+| `urnet_h3_datagram_tx_stream_messages_total` | counter | | Messages sent on the reliable stream of a connection that negotiated DATAGRAM, so the lane split is tx_messages against this |
+| `urnet_h3_datagram_tx_errors_total` | counter | | DATAGRAM send errors |
+| `urnet_h3_datagram_blackholes_total` | counter | | Connections whose datagram send was switched off because datagrams went out and none came back |
 | `urnet_transport_pt_up` | gauge | `mode` | Packet-translation (`h3dns`, `h3dnspump`) transport connections up now |
 | `urnet_transport_pt_connect_attempts_total` | counter | `mode` | Packet-translation transport connect attempts |
 | `urnet_transport_pt_connects_total` | counter | `mode` | Packet-translation transport connections that authenticated |
