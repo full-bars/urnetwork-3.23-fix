@@ -503,13 +503,13 @@ func (self *ContractManager) providePing() {
 			if provide {
 				if logWait {
 					logWait = false
-					self.client.log.Infof("[contract]provide ping continue\n")
+					self.client.log.Infof("▶️ [contract] provide ping continue\n")
 				}
 				return true
 			}
 			if !logWait {
 				logWait = true
-				self.client.log.Infof("[contract]provide ping wait\n")
+				self.client.log.Infof("⏳ [contract] provide ping wait\n")
 			}
 			select {
 			case <-self.ctx.Done():
@@ -625,7 +625,7 @@ func (self *ContractManager) expireQueuedContracts() {
 			}
 		}()
 		if 0 < len(expired) {
-			self.client.log.V(1).Infof("[contract]expired %d queued contracts\n", len(expired))
+			self.client.log.V(1).Infof("⌛ [contract] expired %d queued contracts\n", len(expired))
 			self.closeContracts(expired)
 		}
 	}
@@ -1252,9 +1252,9 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 					noteBackendFailure()
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
-							self.client.log.Infof("[contract]oob err = %s (%d suppressed)\n", err, suppressed)
+							self.client.log.Infof("⚠️ [contract]oob err = %s (%d suppressed)\n", err, suppressed)
 						} else {
-							self.client.log.Infof("[contract]oob err = %s\n", err)
+							self.client.log.Infof("⚠️ [contract]oob err = %s\n", err)
 						}
 					}
 				}
@@ -1287,6 +1287,48 @@ func (self *ContractManager) CheckpointContract(
 	unackedByteCount ByteCount,
 ) {
 	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
+}
+
+// newCloseContract builds the message one close report sends, with a fresh
+// ReportId. It is a pure function of its inputs so the identity is testable
+// without a transport, and so no caller can accidentally omit it.
+func newCloseContract(
+	contractId Id,
+	ackedByteCount ByteCount,
+	unackedByteCount ByteCount,
+	checkpoint bool,
+) *protocol.CloseContract {
+	return &protocol.CloseContract{
+		ContractId:       contractId.Bytes(),
+		AckedByteCount:   uint64(ackedByteCount),
+		UnackedByteCount: uint64(unackedByteCount),
+		Checkpoint:       checkpoint,
+		ReportId:         NewId().Bytes(),
+	}
+}
+
+// closeContractLine renders the close report line. The marker leads the line so
+// `[contract] closed` and `[contract] checkpointed` stay contiguous tokens: both
+// are quoted in LOG_REFERENCE.md and the release notes, and a parser matching
+// them must keep working.
+func closeContractLine(
+	checkpoint bool,
+	ackedByteCount ByteCount,
+	allottedByteCount ByteCount,
+	util float64,
+	destination Id,
+) string {
+	emoji, action := "🚪", "closed"
+	if checkpoint {
+		emoji, action = "📍", "checkpointed"
+	}
+	return fmt.Sprintf("%s [contract] %s acked=%s allotted=%s util=%.0f%% destination=%s",
+		emoji,
+		action,
+		ByteCountHumanReadable(ackedByteCount),
+		ByteCountHumanReadable(allottedByteCount),
+		util,
+		destination)
 }
 
 func (self *ContractManager) CloseContract(
@@ -1332,16 +1374,11 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		if allottedByteCount > 0 {
 			util = float64(ackedByteCount) / float64(allottedByteCount) * 100
 		}
-		action := "closed"
-		if checkpoint {
-			action = "checkpointed"
-		}
-		self.client.log.Infof("[contract] %s acked=%s allotted=%s util=%.0f%% destination=%s\n",
-			action,
-			ByteCountHumanReadable(ackedByteCount),
-			ByteCountHumanReadable(allottedByteCount),
-			util,
-			contractKey.Destination.DestinationId)
+		// The marker leads the line so the `[contract] closed` token stays
+		// contiguous: LOG_REFERENCE.md and the release notes both quote it, and
+		// anything matching it must keep working.
+		self.client.log.Infof("%s\n",
+			closeContractLine(checkpoint, ackedByteCount, allottedByteCount, util, contractKey.Destination.DestinationId))
 		if !checkpoint {
 			atomic.AddUint64(&contractUtilSum, uint64(util))
 		}
@@ -1373,12 +1410,16 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 	// holds little state — a mutex, a monitor, and a derived context
 	// — and its supervisor goroutine exits on success or when the
 	// parent context closes, so there's no long-lived leak.
-	frame, err := ToFrame(&protocol.CloseContract{
-		ContractId:       contractId.Bytes(),
-		AckedByteCount:   uint64(ackedByteCount),
-		UnackedByteCount: uint64(unackedByteCount),
-		Checkpoint:       checkpoint,
-	}, self.settings.ProtocolVersion)
+	// One identity belongs to this logical incremental report: a fresh ReportId
+	// is attached to each report so the backend can tell a ControlSync
+	// retransmission (same serialized frame) from a new report. Another
+	// equal-byte checkpoint is a different operation with its own id.
+	// Older backends ignore the field and preserve legacy incremental semantics.
+	closeContract := newCloseContract(contractId, ackedByteCount, unackedByteCount, checkpoint)
+	// The report id is the client's only record of the identity it reported; a
+	// dedup or escrow mismatch cannot be triaged from the client side without it.
+	self.client.log.V(2).Infof("[contract] close %s report_id=%s checkpoint=%v\n", contractId, Id(closeContract.ReportId), checkpoint)
+	frame, err := ToFrame(closeContract, self.settings.ProtocolVersion)
 	if err != nil {
 		self.client.log.Infof("[contract]could not create close contract frame = %s\n", err)
 		return

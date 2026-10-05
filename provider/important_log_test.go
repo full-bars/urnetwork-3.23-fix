@@ -23,6 +23,9 @@ func TestIsImportantLogLine(t *testing.T) {
 		"0926 01:02:03 [proxy][resources] warning: GOMEMLIMIT=400 MiB is below the ~581 MiB this pool ...",
 		"0926 01:02:03 [proxy][resources] low memory headroom: 132 MiB available, below 193 MiB (2001 proxies, 77780 goroutines); ...",
 		"0926 01:02:03 [proxy][resources] memory headroom recovered: 420 MiB available (2001 proxies, 41000 goroutines)",
+		// The process-wide STUN aggregate: the only success signal for STUN and
+		// the only record of the ok/fail balance.
+		"1005 00:00:00 📡 [stun] ok=12 fail=0 | google: v4=ok v6=ok · meteredca: v4=ok v6=fail",
 	}
 	for _, l := range important {
 		if !isImportantLogLine(l) {
@@ -37,6 +40,9 @@ func TestIsImportantLogLine(t *testing.T) {
 		"pool[2048] tag=0 [] r=1/t=1/c=0 = 100% return",
 		"0625 01:18:34 [proxy] reloaded: +989 added, -0 removed",
 		"0625 01:18:34 [proxy][trim] warn: reload trigger write failed: boom",
+		// A bare "[stun]" without the aggregate's emoji is not the aggregate
+		// line and must not ride into the important buffer.
+		"1005 00:00:01 [stun] unrelated line mentioning stun in prose",
 	}
 	for _, l := range noise {
 		if isImportantLogLine(l) {

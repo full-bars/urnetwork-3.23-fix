@@ -455,7 +455,11 @@ func readURLStateForMerge() (*ProxyURLState, bool) {
 			dest, qerr := quarantineProxyURLState()
 			if qerr == nil {
 				importantLogf("[proxy][url] proxy_url.json is corrupt (%v); kept as %s and starting from an empty cache", err, dest)
-				return &ProxyURLState{Cache: map[string]ProxyURLEntry{}}, true
+				// The corrupt file cannot supply its configuration and nothing
+				// else records it, so start from the last configuration seen:
+				// an empty cache, but the sources, the permanent blacklist and
+				// the exclude patterns survive into the next write.
+				return rememberedURLStateConfig(), true
 			}
 			tlog("[proxy][url] warning: proxy_url.json is corrupt (%v) and could not be moved aside (%v), skipping this merge cycle\n", err, qerr)
 			return nil, false
