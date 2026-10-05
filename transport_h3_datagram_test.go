@@ -284,9 +284,10 @@ func TestH3HybridDatagramPathReductionFallsBackPastFragmentLimit(t *testing.T) {
 	message := bytes.Repeat([]byte{0x5a}, 1200)
 	sendCount := 0
 	useStream, nextMax, err := fragmenter.SendHybrid(
+		context.Background(),
 		message,
 		settings.TargetDatagramByteCount,
-		func([]byte) error {
+		func(context.Context, []byte) error {
 			sendCount += 1
 			return &quic.DatagramTooLargeError{
 				MaxDatagramPayloadSize: H3DatagramHeaderByteCount + 100,
@@ -323,9 +324,10 @@ func TestH3HybridDatagramKeepsContractControlOnStream(t *testing.T) {
 	message := bytes.Repeat([]byte{0x4f}, 1515)
 	sendCount := 0
 	useStream, nextMax, err := fragmenter.SendHybrid(
+		context.Background(),
 		message,
 		settings.TargetDatagramByteCount,
-		func([]byte) error {
+		func(context.Context, []byte) error {
 			sendCount += 1
 			return nil
 		},
@@ -355,9 +357,10 @@ func TestH3HybridDatagramPathReductionRetriesOneCompleteDatagram(t *testing.T) {
 	message := bytes.Repeat([]byte{0x6b}, 1100)
 	var datagramByteCounts []int
 	useStream, nextMax, err := fragmenter.SendHybrid(
+		context.Background(),
 		message,
 		settings.TargetDatagramByteCount,
-		func(datagram []byte) error {
+		func(_ context.Context, datagram []byte) error {
 			datagramByteCounts = append(datagramByteCounts, len(datagram))
 			if len(datagramByteCounts) == 1 {
 				return &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 1200}
@@ -396,9 +399,10 @@ func TestH3HybridDatagramPathReductionRetriesTwoFragments(t *testing.T) {
 	message := bytes.Repeat([]byte{0x2c}, 1288)
 	var datagramByteCounts []int
 	useStream, nextMax, err := fragmenter.SendHybrid(
+		context.Background(),
 		message,
 		settings.TargetDatagramByteCount,
-		func(datagram []byte) error {
+		func(_ context.Context, datagram []byte) error {
 			datagramByteCounts = append(datagramByteCounts, len(datagram))
 			if len(datagramByteCounts) == 1 {
 				return &quic.DatagramTooLargeError{
@@ -594,7 +598,7 @@ func captureH3Datagrams(
 		t.Fatal(err)
 	}
 	var datagrams [][]byte
-	_, err = fragmenter.Send(message, maxDatagramByteCount, func(datagram []byte) error {
+	_, err = fragmenter.Send(context.Background(), message, maxDatagramByteCount, func(_ context.Context, datagram []byte) error {
 		datagrams = append(datagrams, bytes.Clone(datagram))
 		return nil
 	})
@@ -842,11 +846,11 @@ func TestH3DatagramFragmenterBoundsAndSendFailure(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fragmenter.Send(bytes.Repeat([]byte{1}, 33), settings.TargetDatagramByteCount, func([]byte) error { return nil }); !errors.Is(err, ErrH3DatagramMessageTooLarge) {
+	if _, err := fragmenter.Send(context.Background(), bytes.Repeat([]byte{1}, 33), settings.TargetDatagramByteCount, func(context.Context, []byte) error { return nil }); !errors.Is(err, ErrH3DatagramMessageTooLarge) {
 		t.Fatalf("oversized error=%v", err)
 	}
 	wantErr := errors.New("synthetic send refusal")
-	if sent, err := fragmenter.Send([]byte("valid"), settings.TargetDatagramByteCount, func([]byte) error { return wantErr }); sent != 0 || !errors.Is(err, wantErr) {
+	if sent, err := fragmenter.Send(context.Background(), []byte("valid"), settings.TargetDatagramByteCount, func(context.Context, []byte) error { return wantErr }); sent != 0 || !errors.Is(err, wantErr) {
 		t.Fatalf("sent=%d error=%v", sent, err)
 	}
 	if snapshot := stats.Snapshot(); snapshot.SendErrorCount != 2 || snapshot.SentMessageCount != 0 {
@@ -891,7 +895,7 @@ func captureH3DatagramsForFuzz(
 		return nil, err
 	}
 	var datagrams [][]byte
-	_, err = fragmenter.Send(message, maxDatagramByteCount, func(datagram []byte) error {
+	_, err = fragmenter.Send(context.Background(), message, maxDatagramByteCount, func(_ context.Context, datagram []byte) error {
 		datagrams = append(datagrams, bytes.Clone(datagram))
 		return nil
 	})

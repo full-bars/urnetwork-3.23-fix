@@ -52,8 +52,12 @@ const (
 	// reliable stream. Splitting one Transfer message across multiple lossy
 	// DATAGRAMs multiplies its loss probability and made full-MTU TCP 19% slower
 	// in the corrected one-bar full-TUN benchmark.
-	defaultH3DatagramMaxFragments  = 1
-	defaultH3DatagramMaxMessages   = 32
+	defaultH3DatagramMaxFragments = 1
+	defaultH3DatagramMaxMessages  = 32
+	// h3DatagramExpireInterval drives fragment expiry independently of arriving
+	// datagrams, so an incomplete message on a quiet but open connection is
+	// released instead of holding its allocation until teardown.
+	h3DatagramExpireInterval       = 5 * time.Second
 	defaultH3DatagramReplayIds     = 256
 	defaultH3DatagramMessageBytes  = 8 * 1024
 	defaultH3DatagramPeerBytes     = 64 * 1024
@@ -643,14 +647,23 @@ func NewH3DatagramFragmenter(settings *H3DatagramSettings, stats *H3DatagramStat
 	return &H3DatagramFragmenter{settings: settings, stats: stats}, nil
 }
 
-// Send emits every fragment through the provided blocking sender. quic-go
-// copies each slice before returning, so one bounded scratch buffer is reused.
-// A failure may follow earlier fragments; Transfer will retry the whole frame
-// with a new message id.
+// H3DatagramSend dispatches one datagram onto the connection. The context is the
+// caller's bound on a call that can block: quic-go's Connection.SendDatagram
+// waits while its 32-datagram queue is full, so an implementation that calls it
+// directly must arrange its own limit — send under a deadline and drop the
+// unreliable datagram on expiry — rather than stall the frame path behind one
+// congested peer.
+type H3DatagramSend func(ctx context.Context, datagram []byte) error
+
+// Send emits every fragment through the provided sender. quic-go copies each
+// slice before returning, so one bounded scratch buffer is reused. A failure may
+// follow earlier fragments; Transfer will retry the whole frame with a new
+// message id.
 func (self *H3DatagramFragmenter) send(
+	ctx context.Context,
 	message []byte,
 	maxDatagramByteCount int,
-	send func(datagram []byte) error,
+	send H3DatagramSend,
 ) (fragmentCount int, err error) {
 	if len(message) < 1 || self.settings.MaxMessageByteCount < len(message) {
 		return 0, ErrH3DatagramMessageTooLarge
@@ -687,7 +700,7 @@ func (self *H3DatagramFragmenter) send(
 		binary.BigEndian.PutUint16(datagram[24:26], uint16(fragmentIndex))
 		binary.BigEndian.PutUint16(datagram[26:28], uint16(fragmentCount))
 		copy(datagram[H3DatagramHeaderByteCount:], message[offset:end])
-		if err := send(datagram); err != nil {
+		if err := send(ctx, datagram); err != nil {
 			return fragmentIndex, err
 		}
 		self.stats.sentFragmentCount.Add(1)
@@ -701,11 +714,12 @@ func (self *H3DatagramFragmenter) send(
 // Send emits one complete Transfer frame through the bounded DATAGRAM carrier.
 // Public callers observe any failed carrier attempt in SendErrorCount.
 func (self *H3DatagramFragmenter) Send(
+	ctx context.Context,
 	message []byte,
 	maxDatagramByteCount int,
-	send func(datagram []byte) error,
+	send H3DatagramSend,
 ) (fragmentCount int, err error) {
-	fragmentCount, err = self.send(message, maxDatagramByteCount, send)
+	fragmentCount, err = self.send(ctx, message, maxDatagramByteCount, send)
 	if err != nil {
 		self.stats.sendErrorCount.Add(1)
 	}
@@ -719,9 +733,10 @@ func (self *H3DatagramFragmenter) Send(
 // is retried once under a new message id, or moved to the reliable stream when
 // it no longer fits the bounded packet lane.
 func (self *H3DatagramFragmenter) SendHybrid(
+	ctx context.Context,
 	message []byte,
 	maxDatagramByteCount int,
-	send func(datagram []byte) error,
+	send H3DatagramSend,
 ) (useStream bool, nextMaxDatagramByteCount int, err error) {
 	nextMaxDatagramByteCount = maxDatagramByteCount
 	if !self.settings.UseDatagramForPath(
@@ -730,7 +745,7 @@ func (self *H3DatagramFragmenter) SendHybrid(
 	) {
 		return true, nextMaxDatagramByteCount, nil
 	}
-	if _, err = self.send(message, maxDatagramByteCount, send); err == nil {
+	if _, err = self.send(ctx, message, maxDatagramByteCount, send); err == nil {
 		return false, nextMaxDatagramByteCount, nil
 	}
 
@@ -748,7 +763,7 @@ func (self *H3DatagramFragmenter) SendHybrid(
 	) {
 		return true, nextMaxDatagramByteCount, nil
 	}
-	_, err = self.send(message, nextMaxDatagramByteCount, send)
+	_, err = self.send(ctx, message, nextMaxDatagramByteCount, send)
 	if err != nil {
 		self.stats.sendErrorCount.Add(1)
 	}

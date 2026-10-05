@@ -193,7 +193,7 @@ func sendSmallDatagramMessage(t *testing.T, conn *quic.Conn, message []byte) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := fragmenter.Send(message, settings.TargetDatagramByteCount, conn.SendDatagram); err != nil {
+	if _, err := fragmenter.Send(context.Background(), message, settings.TargetDatagramByteCount, func(_ context.Context, datagram []byte) error { return conn.SendDatagram(datagram) }); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -330,7 +330,7 @@ func TestH3DatagramShutdownWhileDatagramsFlowDoesNotPanic(t *testing.T) {
 				}
 				message := bytes.Repeat([]byte("f"), 300)
 				for ctx.Err() == nil {
-					if _, err := fragmenter.Send(message, settings.TargetDatagramByteCount, conn.SendDatagram); err != nil {
+					if _, err := fragmenter.Send(context.Background(), message, settings.TargetDatagramByteCount, func(_ context.Context, datagram []byte) error { return conn.SendDatagram(datagram) }); err != nil {
 						return
 					}
 					sent.Add(1)
