@@ -1742,8 +1742,17 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// `receive` has one closer, after EVERY reader has finished: a second
 			// reader (DATAGRAM) sending on a channel the stream reader already
 			// closed would panic the provider.
+			//
+			// Every reader's slot is reserved HERE, before the closer starts
+			// waiting. The datagram reader is spawned after the stream reader, so
+			// an Add made at its spawn site can race a Wait that already observed
+			// zero — a WaitGroup misuse, and then a send on the closed channel.
 			var receiveReaders sync.WaitGroup
-			receiveReaders.Add(1)
+			readerCount := 1
+			if connStream.useDatagrams {
+				readerCount++
+			}
+			receiveReaders.Add(readerCount)
 			go func() {
 				receiveReaders.Wait()
 				close(receive)
@@ -1821,7 +1830,6 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						}
 					}
 				})
-				receiveReaders.Add(1)
 				go HandleError(func() {
 					defer func() {
 						handleCancel()
