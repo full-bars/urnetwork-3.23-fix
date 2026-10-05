@@ -839,9 +839,16 @@ type Auth struct {
 	AppVersion string `protobuf:"bytes,2,opt,name=app_version,json=appVersion,proto3" json:"app_version,omitempty"`
 	// the pair (client_id, instance_id) represents a single in memory instance
 	// this helps the platform distinguish multiple instances from multiple transports of the same instance
-	InstanceId    []byte `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	InstanceId []byte `protobuf:"bytes,3,opt,name=instance_id,json=instanceId,proto3" json:"instance_id,omitempty"`
+	// offered only on the H3 control stream. Zero keeps the legacy reliable
+	// stream data path. An old server echoes this unknown field but cannot set
+	// the separate accepted field, which makes mixed-version fallback safe.
+	H3DatagramVersion uint32 `protobuf:"varint,4,opt,name=h3_datagram_version,json=h3DatagramVersion,proto3" json:"h3_datagram_version,omitempty"`
+	// set by the server only when it accepts the offered envelope version and
+	// both QUIC endpoints negotiated RFC 9221 DATAGRAM support.
+	H3DatagramAcceptedVersion uint32 `protobuf:"varint,5,opt,name=h3_datagram_accepted_version,json=h3DatagramAcceptedVersion,proto3" json:"h3_datagram_accepted_version,omitempty"`
+	unknownFields             protoimpl.UnknownFields
+	sizeCache                 protoimpl.SizeCache
 }
 
 func (x *Auth) Reset() {
@@ -893,6 +900,20 @@ func (x *Auth) GetInstanceId() []byte {
 		return x.InstanceId
 	}
 	return nil
+}
+
+func (x *Auth) GetH3DatagramVersion() uint32 {
+	if x != nil {
+		return x.H3DatagramVersion
+	}
+	return 0
+}
+
+func (x *Auth) GetH3DatagramAcceptedVersion() uint32 {
+	if x != nil {
+		return x.H3DatagramAcceptedVersion
+	}
+	return 0
 }
 
 type Provide struct {
@@ -2470,13 +2491,15 @@ const file_transfer_proto_rawDesc = "" +
 	"\x03tag\x18\x04 \x01(\v2\x0e.bringyour.TagH\x00R\x03tag\x88\x01\x01B\x06\n" +
 	"\x04_tag\"\"\n" +
 	"\x03Tag\x12\x1b\n" +
-	"\tsend_time\x18\x01 \x01(\x04R\bsendTime\"_\n" +
+	"\tsend_time\x18\x01 \x01(\x04R\bsendTime\"\xd0\x01\n" +
 	"\x04Auth\x12\x15\n" +
 	"\x06by_jwt\x18\x01 \x01(\tR\x05byJwt\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
 	"appVersion\x12\x1f\n" +
 	"\vinstance_id\x18\x03 \x01(\fR\n" +
-	"instanceId\"4\n" +
+	"instanceId\x12.\n" +
+	"\x13h3_datagram_version\x18\x04 \x01(\rR\x11h3DatagramVersion\x12?\n" +
+	"\x1ch3_datagram_accepted_version\x18\x05 \x01(\rR\x19h3DatagramAcceptedVersion\"4\n" +
 	"\aProvide\x12)\n" +
 	"\x04keys\x18\x01 \x03(\v2\x15.bringyour.ProvideKeyR\x04keys\"f\n" +
 	"\n" +

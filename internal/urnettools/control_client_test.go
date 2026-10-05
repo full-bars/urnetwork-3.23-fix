@@ -295,6 +295,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"proxy-audit", "proxy_audit", "on"},
 		{"smart-dialer", "smart_dialer", "on"},
 		{"h3", "h3", "on"},
+		{"h3-datagram", "h3_datagram", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},
 		{"metrics-listen", "metrics_listen", "auto"},

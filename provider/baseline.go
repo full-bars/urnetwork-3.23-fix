@@ -14,6 +14,8 @@ import (
 	"strings"
 	"sync/atomic"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // baseline.go records a small, bounded, local time series of how this box
@@ -97,7 +99,11 @@ type baselineSample struct {
 	Sessions baselineSessions `json:"sessions"`
 	Rate     baselineRate     `json:"rate"`
 
-	Traffic   *baselineTraffic   `json:"traffic,omitempty"`
+	Traffic *baselineTraffic `json:"traffic,omitempty"`
+	// Transport says which platform transport carried the traffic. Traffic
+	// above is one total; without this a comparison across an H3 change cannot
+	// tell whether H3 moved anything.
+	Transport *baselineTransport `json:"transport,omitempty"`
 	Contracts *baselineContracts `json:"contracts,omitempty"`
 	Pressure  *float64           `json:"pressure,omitempty"`
 
@@ -136,6 +142,71 @@ type baselineTraffic struct {
 	BillableBytes         uint64  `json:"billable_bytes"`
 	TotalBytes            uint64  `json:"total_bytes"`
 	LifetimeBillableBytes *uint64 `json:"lifetime_billable_bytes,omitempty"`
+}
+
+// baselineTransportMode is what one platform transport mode carried: payload
+// frames and bytes per direction, cumulative since the process started.
+// Keepalives are excluded, so an idle transport reads zero.
+type baselineTransportMode struct {
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+}
+
+// baselineLifecycle is one mode's connection lifecycle. All counters are
+// cumulative since the process started, and Up is the number of connections up
+// when the sample was taken.
+type baselineLifecycle struct {
+	Up              int64  `json:"up"`
+	Attempts        uint64 `json:"attempts"`
+	Connects        uint64 `json:"connects"`
+	ConnectFailures uint64 `json:"connect_failures"`
+	// Drops are connections that ended while the transport was still wanted. A
+	// close caused by turning the h3 or h3_datagram switch is not one.
+	Drops uint64 `json:"drops"`
+}
+
+// baselinePt is what a mode that runs through the H3 code carried, plus its
+// lifecycle: H3 itself and the WhoDis DNS and DNS-pump packet-translation modes.
+type baselinePt struct {
+	baselineTransportMode
+	baselineLifecycle
+}
+
+// baselineH3 is the H3 side: the common block plus the DATAGRAM experiment.
+type baselineH3 struct {
+	baselinePt
+	Datagram *baselineH3Datagram `json:"datagram,omitempty"`
+}
+
+// baselineH3Datagram is the QUIC DATAGRAM experiment: whether the server took
+// the offer and what arrived over it. Offered without Accepted means an old
+// server in the way.
+type baselineH3Datagram struct {
+	Offered    uint64 `json:"offered"`
+	Accepted   uint64 `json:"accepted"`
+	RxMessages uint64 `json:"rx_messages"`
+	RxBytes    uint64 `json:"rx_bytes"`
+	RxDrops    uint64 `json:"rx_drops"`
+}
+
+// baselineTransport is the per-mode traffic split. H3 is nil until H3 has been
+// attempted, so a box that never enables it writes no new fields beyond H1.
+//
+// Dns and DnsPump are the WhoDis DNS and DNS-pump modes. Auto mode does not start
+// them, so they are absent unless a transport was built with one of those target
+// modes and attempted a connection.
+type baselineTransport struct {
+	// H1 is every H1 transport in the process, one per proxy identity. H1Direct
+	// is the direct identity's H1 alone, the fair comparison for H3, and is
+	// absent unless H3 was attempted and that identity's counters differ from
+	// the all-transports H1.
+	H1       baselineTransportMode  `json:"h1"`
+	H1Direct *baselineTransportMode `json:"h1_direct,omitempty"`
+	H3       *baselineH3            `json:"h3,omitempty"`
+	Dns      *baselinePt            `json:"dns,omitempty"`
+	DnsPump  *baselinePt            `json:"dns_pump,omitempty"`
 }
 
 type baselineContracts struct {
@@ -206,6 +277,9 @@ type baselineInputs struct {
 	gc  *baselineGC
 	net *baselineNet
 
+	// transport is the per-mode traffic split, nil when it was not read.
+	transport *baselineTransport
+
 	contracts [2]int64 // acquired, denied
 	errs      map[string]uint64
 	errsKnown bool
@@ -253,6 +327,7 @@ func buildBaselineSample(in baselineInputs) baselineSample {
 		}
 		s.Traffic = t
 	}
+	s.Transport = in.transport
 	if in.contracts != [2]int64{} {
 		s.Contracts = &baselineContracts{Acquired: in.contracts[0], Denied: in.contracts[1]}
 	}
@@ -643,6 +718,8 @@ func baselineCollect(now time.Time) baselineInputs {
 	acquired, denied := globalContractMetrics.totals()
 	in.contracts = [2]int64{acquired, denied}
 
+	in.transport = buildBaselineTransport(connect.TransportModeStats(), connect.H3DatagramCounters())
+
 	in.errs, in.errsKnown = snapshotErrors(), true
 	return in
 }
@@ -837,4 +914,75 @@ func previousVersionForBaseline() string {
 	startupDiag.mu.Lock()
 	defer startupDiag.mu.Unlock()
 	return startupDiag.previousVersion
+}
+
+// buildBaselineTransport turns the engine's per-mode counters into the sample
+// block. It is a pure function of its inputs so the omission rule is testable:
+// the H3 part exists only once H3 has been attempted, and its datagram part only
+// once DATAGRAM has been offered, so a box that never enables either writes no
+// new fields beyond the always-present H1 counters.
+func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram connect.H3DatagramSnapshot) *baselineTransport {
+	out := &baselineTransport{
+		H1: baselineTransportMode{
+			FramesTx: modes.H1FramesTx,
+			FramesRx: modes.H1FramesRx,
+			BytesTx:  modes.H1BytesTx,
+			BytesRx:  modes.H1BytesRx,
+		},
+	}
+	if modes.H3Attempts != 0 {
+		// H1Direct is the direct identity's H1 alone. Only meaningful once H3
+		// has been attempted, and only worth writing when it differs from the
+		// all-transports H1 — on a direct-only box the two are identical, and
+		// emitting both just duplicates the counters every 15 minutes.
+		if d := (baselineTransportMode{
+			FramesTx: modes.H1DirectFramesTx, FramesRx: modes.H1DirectFramesRx,
+			BytesTx: modes.H1DirectBytesTx, BytesRx: modes.H1DirectBytesRx,
+		}); d != (baselineTransportMode{}) && d != out.H1 {
+			out.H1Direct = &d
+		}
+	}
+	out.Dns = baselinePtFrom(modes.Dns)
+	out.DnsPump = baselinePtFrom(modes.DnsPump)
+	if modes.H3Attempts == 0 {
+		return out
+	}
+	out.H3 = &baselineH3{baselinePt: baselinePt{
+		baselineTransportMode: baselineTransportMode{
+			FramesTx: modes.H3FramesTx,
+			FramesRx: modes.H3FramesRx,
+			BytesTx:  modes.H3BytesTx,
+			BytesRx:  modes.H3BytesRx,
+		},
+		baselineLifecycle: baselineLifecycle{
+			Up:              modes.H3Up,
+			Attempts:        modes.H3Attempts,
+			Connects:        modes.H3Connects,
+			ConnectFailures: modes.H3ConnectFailures,
+			Drops:           modes.H3Drops,
+		},
+	}}
+	if datagram.Offered != 0 {
+		out.H3.Datagram = &baselineH3Datagram{
+			Offered:    datagram.Offered,
+			Accepted:   datagram.Accepted,
+			RxMessages: datagram.RxMessages,
+			RxBytes:    datagram.RxBytes,
+			RxDrops:    datagram.RxDrops,
+		}
+	}
+	return out
+}
+
+// baselinePtFrom returns nil until the mode has been attempted.
+func baselinePtFrom(m connect.PtModeSnapshot) *baselinePt {
+	if m.Attempts == 0 {
+		return nil
+	}
+	return &baselinePt{
+		baselineTransportMode: baselineTransportMode{FramesTx: m.FramesTx, FramesRx: m.FramesRx, BytesTx: m.BytesTx, BytesRx: m.BytesRx},
+		baselineLifecycle: baselineLifecycle{
+			Up: m.Up, Attempts: m.Attempts, Connects: m.Connects, ConnectFailures: m.ConnectFailures, Drops: m.Drops,
+		},
+	}
 }
