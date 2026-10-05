@@ -245,6 +245,11 @@ var setKeyHelps = []string{
 	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
 	"  ramlogs             on|off        in-memory ramlogs toggle",
 	"  metrics             on|off        enable metrics endpoint",
+	"  h3                  on|off        run H3 (QUIC) beside H1 for the DIRECT identity only. H1 stays the health signal: if H3 cannot connect it backs off quietly and is never counted as a backend or proxy failure. Live; a persisted off beats URNETWORK_H3=on (default: off, or URNETWORK_H3)",
+	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: off)",
+	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: off)",
+	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
+	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe by default: it logs the verdict without acting, so nothing is shed until you turn it on",
 }
 
 // treatsOffAsClear reports whether `set <key> off` is turned into a generic

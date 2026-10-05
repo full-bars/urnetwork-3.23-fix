@@ -512,7 +512,7 @@ func newSetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "set",
 		Short:              "runtime tuning override",
-		Long:               "Read or write a runtime tuning override in the provider's state directory, applied live on the provider's next tick with no restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list the available keys (node-name, report-interval, proxy-url-max, proxy-url-refresh, cleanup-scope, cleanup-interval, fast-auth).",
+		Long:               "Read or write a runtime tuning override in the provider's state directory, applied live on the provider's next tick with no restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list every available key with its value domain, its default, and what it changes.",
 		Example:            "  urnet-tools set help\n  urnet-tools set report-interval 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
