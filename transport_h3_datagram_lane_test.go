@@ -203,3 +203,48 @@ func TestLowerDatagramPathLimitOnlyLowers(t *testing.T) {
 		t.Fatalf("a nonsensical report must be ignored, live=%d", live.Load())
 	}
 }
+
+// The lane reports every send error asynchronously, but a too-large report is
+// path-size discovery, not a failed send: it must lower the live path limit and
+// leave the send-error metric alone, exactly as the synchronous SendHybrid path
+// does. A different error is a real failure and must still be counted.
+func TestH3DatagramSendLaneTooLargeReportIsNotASendError(t *testing.T) {
+	run := func(t *testing.T, sendErr error, wantLimit int64, wantSendErrors uint64) {
+		t.Helper()
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+
+		stats := &H3DatagramStats{}
+		var live atomic.Int64
+		live.Store(1360)
+
+		reported := make(chan struct{}, 1)
+		lane := newH3DatagramSender(ctx,
+			func([]byte) error { return sendErr },
+			func(err error) {
+				reportH3DatagramSendError(stats, &live, err)
+				reported <- struct{}{}
+			})
+		if !lane.trySend([]byte{0x01}) {
+			t.Fatal("an empty lane must take the first datagram")
+		}
+		select {
+		case <-reported:
+		case <-time.After(2 * time.Second):
+			t.Fatal("the lane swallowed its send error")
+		}
+		if got := live.Load(); got != wantLimit {
+			t.Fatalf("live path limit = %d, want %d", got, wantLimit)
+		}
+		if got := stats.Snapshot().SendErrorCount; got != wantSendErrors {
+			t.Fatalf("sendErrorCount = %d, want %d", got, wantSendErrors)
+		}
+	}
+
+	t.Run("a too-large report lowers the limit without counting", func(t *testing.T) {
+		run(t, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 1200}, 1200, 0)
+	})
+	t.Run("a real send failure is counted and leaves the limit", func(t *testing.T) {
+		run(t, errors.New("datagram send failed"), 1360, 1)
+	})
+}

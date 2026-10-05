@@ -2,7 +2,10 @@ package connect
 
 import (
 	"context"
+	"errors"
 	"sync/atomic"
+
+	quic "github.com/quic-go/quic-go"
 )
 
 // h3DatagramSendLaneDepth is how many datagrams may be waiting on the lane's
@@ -64,11 +67,35 @@ func newH3DatagramSender(ctx context.Context, send func([]byte) error, report fu
 // so the dispatcher's next frame takes the stream rather than a datagram the path
 // can no longer carry.
 func lowerDatagramPathLimit(live *atomic.Int64, reported int64) bool {
-	if reported <= 0 || live.Load() <= reported {
+	if reported <= 0 {
 		return false
 	}
-	live.Store(reported)
-	return true
+	for {
+		current := live.Load()
+		if current <= reported {
+			return false
+		}
+		if live.CompareAndSwap(current, reported) {
+			return true
+		}
+	}
+}
+
+// reportH3DatagramSendError is the lane's asynchronous send-error callback. The
+// lane sends on its own goroutine, so the errors quic-go returned synchronously
+// now arrive here. A too-large report means the path shrank: lower the live limit
+// (never raise it) so the next frame takes the stream instead of being discarded.
+// It is not counted -- quic-go rejects an oversized DATAGRAM before queueing it,
+// so that is path-size discovery, not a failed application send. Everything else
+// is counted, so the send-error metric keeps meaning something. This mirrors the
+// synchronous SendHybrid path, which likewise excludes the too-large case.
+func reportH3DatagramSendError(stats *H3DatagramStats, live *atomic.Int64, err error) {
+	var tooLarge *quic.DatagramTooLargeError
+	if errors.As(err, &tooLarge) {
+		lowerDatagramPathLimit(live, tooLarge.MaxDatagramPayloadSize)
+		return
+	}
+	stats.sendErrorCount.Add(1)
 }
 
 // trySend hands one datagram to the lane without waiting, and reports whether it
