@@ -1754,16 +1754,18 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}, handleCancel)
 
 			go HandleError(func() {
-				defer handleCancel()
-				if streamSend != nil {
-					// the dispatcher closes streamSend when it ends; return whatever
-					// was queued for the stream and never written
-					defer func() {
+				// Cancel FIRST, then drain: the dispatcher closes streamSend only
+				// when it sees handleCtx done, so a drain registered ahead of the
+				// cancel waits forever on a channel nothing will close, and the
+				// connection never exits.
+				defer func() {
+					handleCancel()
+					if streamSend != nil {
 						for message := range streamSend {
 							releaseStreamMessage(message)
 						}
-					}()
-				}
+					}
+				}()
 
 				for {
 					select {
@@ -1912,9 +1914,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 									maxDatagramByteCount.Store(int64(nextMax))
 								}
 								if err != nil {
-									MessagePoolReturn(message)
+									// A datagram-path failure is not a stream failure: put the
+									// message on the reliable lane rather than tearing the whole
+									// connection down. Only a stream write error owns that.
 									logSendError(err)
-									return
+									if !offerStream(message) {
+										MessagePoolReturn(message)
+										return
+									}
+									continue
 								}
 								if !useStream {
 									datagramGuard.noteSent(time.Now())

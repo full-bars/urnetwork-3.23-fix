@@ -756,9 +756,16 @@ func (self *H3DatagramFragmenter) SendHybrid(
 	}
 
 	var tooLargeErr *quic.DatagramTooLargeError
-	if !errors.As(err, &tooLargeErr) ||
-		int(tooLargeErr.MaxDatagramPayloadSize) <= H3DatagramHeaderByteCount ||
-		maxDatagramByteCount <= int(tooLargeErr.MaxDatagramPayloadSize) {
+	if !errors.As(err, &tooLargeErr) {
+		self.stats.sendErrorCount.Add(1)
+		return false, nextMaxDatagramByteCount, err
+	}
+	if int(tooLargeErr.MaxDatagramPayloadSize) <= H3DatagramHeaderByteCount {
+		// The path cannot carry even one fragment, so no datagram will ever fit
+		// here: take the reliable lane rather than failing the carrier.
+		return true, nextMaxDatagramByteCount, nil
+	}
+	if maxDatagramByteCount <= int(tooLargeErr.MaxDatagramPayloadSize) {
 		self.stats.sendErrorCount.Add(1)
 		return false, nextMaxDatagramByteCount, err
 	}

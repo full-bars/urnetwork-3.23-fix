@@ -40,7 +40,17 @@ func newH3DatagramSendGuard() *h3DatagramSendGuard {
 
 // noteSent records one datagram sent.
 func (self *h3DatagramSendGuard) noteSent(now time.Time) {
-	if self.sinceReceive.Add(1) == 1 {
+	n := self.sinceReceive.Add(1)
+	if n == 1 {
+		self.firstUnanswered.Store(now.UnixNano())
+		return
+	}
+	// Below the threshold, an idle gap longer than the window means the earlier
+	// sends are not a blackhole in progress: they are a datagram sent long ago
+	// plus a fresh burst. Re-peg the clock so the burst is measured from its own
+	// start instead of from that lone send, which would trip the guard on the
+	// burst's first frames.
+	if n < self.minSent && self.window < now.Sub(time.Unix(0, self.firstUnanswered.Load())) {
 		self.firstUnanswered.Store(now.UnixNano())
 	}
 }
