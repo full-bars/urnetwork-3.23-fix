@@ -1796,6 +1796,21 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}, handleCancel)
 
 			if connStream.useDatagrams {
+				// Expiry is otherwise driven only by arriving datagrams, so an
+				// incomplete message on a quiet but open connection would hold
+				// its allocations until teardown. A timer releases them.
+				go HandleError(func() {
+					ticker := time.NewTicker(h3DatagramExpireInterval)
+					defer ticker.Stop()
+					for {
+						select {
+						case <-handleCtx.Done():
+							return
+						case <-ticker.C:
+							datagramReassembler.Expire(time.Now())
+						}
+					}
+				})
 				receiveReaders.Add(1)
 				go HandleError(func() {
 					defer func() {
@@ -1814,9 +1829,11 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 							continue
 						}
 						readCounter.Add(1)
-						readPayloadCounter.Add(1)
 						select {
 						case receive <- message:
+							// counted only once the route accepted it: a dropped
+							// datagram must not show up as payload received
+							readPayloadCounter.Add(1)
 							readPayloadBytes.Add(uint64(len(message)))
 							h3ModeStats.addRx(len(message))
 							self.log.V(2).Infof("[tr]%s<-datagram\n", clientId)
