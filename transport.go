@@ -1826,11 +1826,12 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					// up the stream frames queued behind it.
 					datagramSender := newH3DatagramSender(handleCtx, conn.SendDatagram, func(err error) {
 						// The lane sends asynchronously, so the errors quic-go returned
-						// synchronously now arrive here. A too-large report lowers the
-						// live path limit (never raises it) so the next frame takes the
-						// stream instead of being discarded, and is not counted;
-						// reportH3DatagramSendError counts everything else so the
-						// send-error metric keeps meaning something.
+						// synchronously now arrive here. A usable too-large report lowers
+						// the live path limit (never raises it) so the next frame takes
+						// the stream instead of being discarded, and is not counted;
+						// reportH3DatagramSendError counts everything else -- every
+						// other error and any too-large report that could not lower the
+						// limit -- so the send-error metric keeps meaning something.
 						reportH3DatagramSendError(h3DatagramStats, &maxDatagramByteCount, err)
 					})
 					logSendError := func(err error) {

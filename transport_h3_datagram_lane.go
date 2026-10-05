@@ -83,16 +83,28 @@ func lowerDatagramPathLimit(live *atomic.Int64, reported int64) bool {
 
 // reportH3DatagramSendError is the lane's asynchronous send-error callback. The
 // lane sends on its own goroutine, so the errors quic-go returned synchronously
-// now arrive here. A too-large report means the path shrank: lower the live limit
-// (never raise it) so the next frame takes the stream instead of being discarded.
-// It is not counted -- quic-go rejects an oversized DATAGRAM before queueing it,
-// so that is path-size discovery, not a failed application send. Everything else
-// is counted, so the send-error metric keeps meaning something. This mirrors the
-// synchronous SendHybrid path, which likewise excludes the too-large case.
+// now arrive here. A too-large report means the path shrank: a usable report
+// lowers the live limit (never raises it) so the next frame takes the stream
+// instead of being discarded, and is deliberately not counted -- quic-go rejects
+// an oversized DATAGRAM before queueing it, so that is path-size discovery, not a
+// failed application send. This differs from the synchronous SendHybrid path,
+// whose main branch also excludes the too-large case but whose edge branch counts
+// when the reported size cannot lower the current limit. Here a report that does
+// not lower the live limit -- a nonsensical non-positive size, or one no smaller
+// than the limit already in effect -- is unusable: nothing changes the path, so
+// the rejected datagram is counted rather than swallowed. Everything else is
+// counted too, so the send-error metric keeps meaning something.
 func reportH3DatagramSendError(stats *H3DatagramStats, live *atomic.Int64, err error) {
 	var tooLarge *quic.DatagramTooLargeError
 	if errors.As(err, &tooLarge) {
-		lowerDatagramPathLimit(live, tooLarge.MaxDatagramPayloadSize)
+		if lowerDatagramPathLimit(live, tooLarge.MaxDatagramPayloadSize) {
+			// The report lowered the path limit: path-size discovery, not a
+			// failed application send.
+			return
+		}
+		// The report changed nothing, so the rejected datagram would otherwise
+		// vanish: count it so the metric makes it visible.
+		stats.sendErrorCount.Add(1)
 		return
 	}
 	stats.sendErrorCount.Add(1)

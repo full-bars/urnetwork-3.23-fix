@@ -247,4 +247,13 @@ func TestH3DatagramSendLaneTooLargeReportIsNotASendError(t *testing.T) {
 	t.Run("a real send failure is counted and leaves the limit", func(t *testing.T) {
 		run(t, errors.New("datagram send failed"), 1360, 1)
 	})
+	t.Run("a non-positive too-large report is counted and leaves the limit", func(t *testing.T) {
+		run(t, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 0}, 1360, 1)
+	})
+	t.Run("a negative too-large report is counted and leaves the limit", func(t *testing.T) {
+		run(t, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: -5}, 1360, 1)
+	})
+	t.Run("a too-large report that cannot lower the limit is counted", func(t *testing.T) {
+		run(t, &quic.DatagramTooLargeError{MaxDatagramPayloadSize: 1400}, 1360, 1)
+	})
 }
