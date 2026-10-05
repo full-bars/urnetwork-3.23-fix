@@ -245,6 +245,12 @@ var setKeyHelps = []string{
 	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
 	"  ramlogs             on|off        in-memory ramlogs toggle",
 	"  metrics             on|off        enable metrics endpoint",
+	"  metrics-listen      auto|<ip:port> /metrics listen address. auto binds loopback plus every Tailscale IPv4 (0.0.0.0 in a container); an explicit address is used as-is, and off clears back to auto. Live; a change rebinds a running listener (default: auto)",
+	"  h3                  on|off        run H3 (QUIC) beside H1 for the DIRECT identity only. H1 stays the health signal: if H3 cannot connect it backs off quietly and is never counted as a backend or proxy failure. Live; clearing it (or set h3 off, which is treated as a clear) hands the decision back to URNETWORK_H3, so the startup default wins (default: off, or URNETWORK_H3)",
+	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: off)",
+	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: off)",
+	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
+	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
 }
 
 // treatsOffAsClear reports whether `set <key> off` is turned into a generic
@@ -273,7 +279,7 @@ func printSetHelp() {
 Usage: urnet-tools set <key> [<value>|off] [target]
 
 Runtime overrides are managed via the provider's control socket (~/.urnetwork/provider.sock).
-When the provider is running, changes take effect immediately without a restart.
+When the provider is running, most changes take effect immediately without a restart; profile and ramlogs need a restart.
 When the provider is not running, changes are queued in pending_overrides.json and apply on next startup.
 
 Set a value:  urnet-tools set <key> <value>
@@ -505,12 +511,19 @@ func formatSets(p Provider, want string) error {
 		{"cleanup-scope", "proxy_dead_cleanup_scope"},
 		{"cleanup-interval", "proxy_dead_cleanup_interval"},
 		{"hot-restart", "hot_restart"},
+		{"oom-cap", "oom_cap"},
+		{"smart-dialer", "smart_dialer"},
 		{"gomemlimit", "gomemlimit"},
 		{"gogc", "gogc"},
 		{"profile", "profile"},
 		{"ramlogs", "ramlogs"},
 		{"metrics", "metrics"},
 		{"metrics-listen", "metrics_listen"},
+		{"h3", "h3"},
+		{"h3-datagram", "h3_datagram"},
+		{"h3-datagram-send", "h3_datagram_send"},
+		{"baseline", "baseline"},
+		{"proxy-audit", "proxy_audit"},
 	}
 
 	for _, item := range orderedKeys {
