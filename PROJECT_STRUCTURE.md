@@ -31,6 +31,8 @@ urnetwork-3.23-fix/
 │   ├── oom_cap.go                    # OOM-aware start cap (shadow by default) + kill switch (oom-cap on|off|shadow)
 │   ├── action_ledger.go              # Audit ledger of capacity decisions (~/.urnetwork/autopilot.jsonl)
 │   ├── baseline.go                   # Local behaviour recorder (~/.urnetwork/baseline.jsonl) for upgrade comparison
+│   ├── h3_direct.go                  # H3 settings and eligibility for the direct identity
+│   ├── node_internals.go             # Internals snapshot (goroutines, heap, transport split) served to `top`
 │   ├── memory_headroom.go            # Low free-memory watcher (host or cgroup headroom log)
 │   ├── resource_config_warn.go       # Startup warning when GOMEMLIMIT or RAM is short for the pool
 │   ├── smart_dialer_probe.go         # Background connect probes so the smart dialer can compare transports
@@ -64,6 +66,7 @@ urnetwork-3.23-fix/
 │       ├── restart_escalation.go     # staged-tool restart routing
 │       ├── restore_delegate.go       # set/fast-auth state-dir chown
 │       ├── autopilot.go              # autopilot log: timeline of capacity decisions (OOM cap, trim)
+│       ├── internals.go              # Internals snapshot for the `top` panel (goroutines, heap, transport split)
 │       ├── provider_recover_*.go     # per-platform user/UID recovery
 │       ├── docker.go                 # container discovery + docker CLI seam
 │       └── ...                       # platform-specific lifecycle + test files
@@ -85,6 +88,13 @@ urnetwork-3.23-fix/
 ├── net_http_smart_dialer.go          # Smart dialer: measured-cost transport preference + connect probes (off by default)
 ├── emoji/                            # Network tag validation and suggestion (copied from upstream connect)
 ├── transport.go                      # PlatformTransport: WebSocket (H1) + QUIC/H3 + DNS PT
+├── transport_h3_gate.go              # Runtime on/off gate for H3, live-switchable
+├── transport_h3_counted.go           # Byte-counting wrapper for the H3 UDP socket
+├── transport_h3_datagram.go          # QUIC DATAGRAM message layer, receive route and guard
+├── transport_h3_datagram_lane.go     # Bounded send lane for outgoing datagrams
+├── transport_h3_datagram_state.go    # DATAGRAM counters shown on the [health] line
+├── transport_h3_memory.go            # H3 memory bound (matches upstream)
+├── transport_mode_stats.go           # Payload frames and bytes per transport mode
 ├── transport_p2p.go / _webrtc.go     # P2P WebRTC transport
 ├── transport_pt.go                   # Pluggable transport: DNS packet translation
 ├── transfer*.go                      # Client state machine, contracts, encryption, routing

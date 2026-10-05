@@ -2112,7 +2112,7 @@ Zero added latency (still wakes on the next real notification) and structurally 
 **Purpose**:
 - `hub init` now checks `URNETWORK_HUB_TOKEN`/`URNETWORK_HUB_TOKEN_FILE`/`URNETWORK_HUB_TOKEN_STDIN` on startup and, if present, fetches the CA cert from `$HUB/ca-cert?token=...` automatically before doing anything else — removes a manual bootstrap step for new hub deployments.
 - The hub now watches `hub_ca.pem` via file poll and reloads the CA certificate on change without a restart, enabling live CA rotation.
-- New `URNETWORK_HUB_DASHBOARD_PASS` env var gates the dashboard (`/`) and read-only API endpoints behind HTTP Basic Auth. Independent of `URNETWORK_HUB_TOKEN` (which still protects the write endpoints) — see [docs/Hub-Setup.md](docs/Hub-Setup.md#locking-down-the-dashboard).
+- New `URNETWORK_HUB_DASHBOARD_PASS` env var gates the dashboard (`/`) and read-only API endpoints behind HTTP Basic Auth. It is independent of `URNETWORK_HUB_TOKEN`, which still protects the write endpoints. The `docs/Hub-Setup.md` page that described locking down the dashboard was removed with the hub in 32.0.
 
 **Files Changed**: `hub/main.go`, `hub/onboard.go`, `hub/onboard_test.go`, `hub/main_test.go`, `provider/bandwidth_reporter.go`, `provider/bandwidth_reporter_ca_test.go`, `docs/Hub-Setup.md`
 
@@ -3611,3 +3611,52 @@ The engine already contained a working H3 platform transport that `Auto` mode ne
 
 > [!NOTE]
 > When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the CodeRabbit-driven accounting fixes must travel with it.
+
+## 182. v32.9: H3 Switches On Live and Carries Datagrams (PR #751, #752, #753, #757, #761, #762, #763, #764, #765)
+
+The first H3 entry let the direct identity run H3 beside H1 at startup. This batch makes it switchable while the provider runs, and adds the QUIC DATAGRAM lane so small frames can travel unreliably beside the stream.
+
+**Files Modified**: `transport.go`, `provider/main.go`, `provider/control_socket.go`, `go.mod`, `docs/`, `LOG_REFERENCE.md`, `releases/`, `CHANGELOG.md`.
+
+**Files Added**: `transport_h3_gate.go`, `transport_h3_datagram.go`, `transport_h3_datagram_state.go`, `transport_h3_datagram_guard.go`, `transport_h3_datagram_lane.go`, `transport_h3_datagram_errors.go`, `transport_h3_counted.go`, `transport_h3_memory.go`.
+
+- **H3 switches on and off live** (PR #753): the `h3` control key (`urnet-tools set h3 on|off`) turns the H3 transport on the direct identity on or off with no restart. On lets the idle transport dial; off closes a live connection and stops further dials. Neither state change counts as a drop. The key is persisted and re-applied at startup, and clearing it hands the decision back to `URNETWORK_H3`. The startup gate logs `[t]h3 eligible for the direct identity, currently <on|off>`.
+- **A runtime gate** (PR #753): `transport_h3_gate.go` holds the on/off state so the transport can be started and stopped without a process restart.
+- **QUIC DATAGRAM, receive side** (PR #761): `h3_datagram` is off by default. With it on, an H3 connection offers RFC 9221 DATAGRAM when it dials, and a server that accepts sends its small frames as datagrams instead of on the reliable stream. A server that does not understand the offer echoes it back and the connection runs on the stream as before. `transport_h3_datagram.go` adds the message layer and its Auth negotiation fields, and `transport_h3_datagram_state.go` holds the counters shown on the `[health]` line as `h3_dg=accepted/offered`, `dg_rx` and `dg_rx_drop`. quic-go is bumped to v0.61.0.
+- **DATAGRAM send lane** (PR #762, #763): `h3_datagram_send` is off by default. With it on, the provider sends small frames as datagrams on a connection where the server accepted them, but never while H1 is down, because H1 is the authoritative path and the transfer layer resends what a lossy lane drops. `transport_h3_datagram_lane.go` sends datagrams on a goroutine of its own with a queue 16 deep, so a stalled datagram flight cannot hold stream frames behind it. A blackhole guard turns the lane off for the rest of a connection when datagrams go out and none come back while the stream is alive, and `dg_blackhole` counts it.
+- **A too-large datagram report is a send error only when it changes nothing** (PR #765): quic-go reports an oversized DATAGRAM before it queues it, which is path-size discovery. When the report lowers the path limit the frame was redirected and nothing is counted. Only a report that changes nothing means the datagram was actually dropped, and only then does it count as a send error.
+- **H3 connections release their socket** (PR #751): when an H3 connection ends, its quic transport and UDP socket are closed, so a repeat connect-and-drop cycle no longer leaks.
+- **Keepalives count as writes, not payload** (PR #752): the transport counts keepalive writes on the write path, an empty routed message no longer inflates the payload counter, and the inactive-drain check counts payload reads only.
+- **The bandwidth record is registered before the transport starts** (PR #757): the identity's bandwidth record now exists before H3 starts, so the first bytes are credited to it.
+- **The new keys are documented** (PR #764): `urnet-tools set help` now lists the `h3`, `h3-datagram`, `h3-datagram-send`, `baseline` and `proxy-audit` keys with their value domain, default and effect. It corrects the `h3` precedence rule and adds the `metrics-listen` row, and the bare `set` listing iterates every documented key.
+
+## 183. v32.9: Per-Transport Metrics, a Transport Panel, and a Transport-Aware Baseline (PR #753, #755, #759)
+
+H3 could carry traffic without the operator being able to see how much. This batch counts what each transport mode carries and shows it in the metrics, the `[health]` line, the baseline record, and `top`.
+
+**Files Modified**: `transport_mode_stats.go`, `provider/baseline.go`, `provider/node_internals.go`, `internal/urnettools/internals.go`, `internal/urnettools/top_*.go`, `metrics_prometheus.go`, `docs/Monitoring.md`, `LOG_REFERENCE.md`, `releases/`, `CHANGELOG.md`.
+
+- **Counters by transport mode** (PR #753): `transport_mode_stats.go` counts payload frames and bytes by mode (`h1`, `h3`, `h3dns`, `h3dnspump`) and direction, plus the H3 lifecycle (up, attempts, connects, failures, drops). The DNS and DNS-pump modes count under their own names, and the direct identity's H1 has its own series so H3 is compared against the identity it runs for, not every proxy together.
+- **The H3 part of the `[health]` line** (PR #753): the health line gains `h3_up`, `h3_tx_share`, `h3_drops` and `h3_conn_fail` once H3 has been attempted. The datagram fields (`h3_dg`, `dg_rx`, `dg_rx_drop`, and the send fields) appear once a connection has offered DATAGRAM. A box that never enables H3 sees no new fields.
+- **The transport is recorded in the baseline** (PR #755): each `baseline.jsonl` sample carries an optional transport block. It holds H1 and H3 frames and bytes each way, the H3 lifecycle, and what DATAGRAM carried, all cumulative since the process started. A before-and-after across an H3 change can then tell whether H3 moved anything. Older readers ignore the block. The Grafana dashboard gains a Transport row.
+- **The Internals panel shows the transport split** (PR #759): `top` adds two rows to the Internals panel when a split exists. The first shows h3 up, its share of outbound frames and its drop count. The second shows H3's outbound payload against both modes'. A box that has never attempted H3 draws the panel it drew before.
+
+## 184. v32.9: STUN Aggregate, Log Markers, and Close-Report Identity (PR #748, #749, #750)
+
+Three smaller changes that make the logs and the retry identity honest.
+
+**Files Modified**: `stun_probe.go`, `stun_tally.go`, `provider/`, `transport.go`, `protocol/`, `LOG_REFERENCE.md`, `releases/`, `CHANGELOG.md`.
+
+- **STUN success aggregate** (PR #749): a low-noise `[stun] ok=N fail=M | <provider>: v4=ok v6=ok · ...` line reports STUN probe results per endpoint and family. It follows the active ICE settings, adds a probe-only Cloudflare STUN endpoint, counts failures at production levels, and measures its window from the first pulse so the first line does not read the whole idle period. Response bodies are bounded, and Cloudflare is kept out of ICE.
+- **Emoji markers are standardized** (PR #748): provider log lines use one consistent set of emoji markers, and the documented ready, hotswap and lifetime markers are restored.
+- **Close reports carry a ReportId** (PR #750): `CloseContract` frames gain a `ReportId`, so a retry or an out-of-band copy of the same report can be deduplicated. The close report is built in one place and its id is logged, and a test pins the id to the production path.
+
+## 185. v32.9: Proxy Source, Pool, and Smoke Corrections (PR #756, #758, #760)
+
+Corrections to the proxy source and pool handling, plus one CI change.
+
+**Files Modified**: `provider/proxy_url.go`, `provider/proxy_url_source.go`, `provider/`, `.github/workflows/tool-functional-smoke.yml`, `releases/`, `CHANGELOG.md`.
+
+- **A corrupt `proxy_url.json` keeps its configuration** (PR #758): quarantine used to restart from an empty state, so the sources, the permanent blacklist, the exclude patterns and the degraded-cleanup threshold went with the cache. None of them is cache and nothing else records them. The replacement state now starts from the last configuration that parsed, with an empty cache.
+- **A pool whose source went empty stops** (PR #756): an unreadable `proxy_url.json` makes the desired set unknown, not empty. The empty-source branch now applies the same source-based protection as the removal pass. It stops the proxies a source that went empty used to supply, keeps url-sourced and unrecorded proxies, keeps only unknown-desired proxies, and stops calling a deliberate no-source configuration `retrying`. Pool reuse is judged on the interval and requires sustained growth.
+- **Smoke runs are serialized** (PR #760): the smoke runs are serialized so the test account's sign-in limit is not tripped.

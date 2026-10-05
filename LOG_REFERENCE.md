@@ -288,19 +288,52 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 
 ---
 
-## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3=on`)
+## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3` or the `h3` key)
 
-Only a box that sets `URNETWORK_H3=on` logs these, and only for the direct identity.
+Only a box that runs H3 logs these, and only for the direct identity. H3 is off by default. It starts when `URNETWORK_H3` is set at startup, or when the `h3` control key is switched on live with `urnet-tools set h3 on`.
 
 ```
+[t]h3 eligible for the direct identity, currently on (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly
 [c]h3 connect to 203.0.113.10:443 (api.example.net)
 [t]h3 unavailable, staying on h1 (retrying quietly): <error>
+⚙️ [control] applied h3=on (was off)
 ```
 
+- `[t]h3 eligible for the direct identity, currently <on|off>` is logged once for a direct identity that is allowed to run H3. It says whether H3 is currently on, and names the two ways to change it.
 - `[c]h3 connect to <address> (<server>)` is one H3 connection attempt to the platform. It is expected at start and on each retry.
 - `[t]h3 unavailable, staying on h1 (retrying quietly)` appears once per transport when H3 cannot connect, for example because UDP is filtered. It is not an error: H1 carries the node, the failure is not counted as a backend or proxy auth failure, and H3 retries with a backoff that doubles up to 10 minutes. The same failure is logged again only at verbose level 2 as `[t]h3 unavailable: <error>`.
 - `[c]h3 connect err = <error>` is the transport-level detail behind a failed attempt.
-- What to watch while testing it: the `[t]auth error` rate and the backend-degraded state must not rise, and billable per hour must not fall against a box without it. Any of those is a reason to turn it off (unset `URNETWORK_H3` and restart).
+- `⚙️ [control] applied h3=<on|off>` is the control-socket confirmation when the `h3` key changes. The datagram keys log `applied h3_datagram=...` and `applied h3_datagram_send=...`. A change of any of the three is not counted as an H3 drop.
+- What to watch while testing it: the `[t]auth error` rate and the backend-degraded state must not rise, and billable per hour must not fall against a box without it. Any of those is a reason to turn it off (`urnet-tools set h3 off` or unset `URNETWORK_H3` and restart).
+
+### What H3 adds to the `[health]` line
+
+Once H3 has been attempted, the health heartbeat line gains these fields. A box that never enables H3 sees none of them.
+
+```
+[health] ... h3_up=1 h3_tx_share=42% h3_drops=0 h3_conn_fail=1
+```
+
+- `h3_up` is 1 while an H3 connection is up, 0 otherwise.
+- `h3_tx_share` is the share of the direct identity's outbound payload frames that H3 carried. `n/a` means no frames were sent yet.
+- `h3_drops` counts H3 connections that ended while the transport was still wanted. Switching `h3` is not one.
+- `h3_conn_fail` counts H3 connect attempts that failed.
+
+With `h3_datagram` on and a server that accepted the offer, the line also carries `h3_dg=accepted/offered dg_rx=<n> dg_rx_drop=<n>`. With `h3_datagram_send` on, it adds `dg_tx`, `dg_tx_stream`, `dg_tx_err` and `dg_blackhole`.
+
+---
+
+## 📡 STUN Success Aggregate
+
+The provider reports the result of its STUN probe as one low-noise line. The probe follows the active ICE settings and adds a probe-only Cloudflare endpoint, so a filtered or broken STUN path shows up without turning on verbose logging.
+
+```
+📡 [stun] ok=12 fail=0 | google: v4=ok v6=ok · meteredca: v4=ok v6=fail
+```
+
+- `ok` and `fail` count the probe results in the current window. The line is written on a low-volume interval and moves to a shorter interval when activity is high, so a busy host reports more often and a quiet one stays quiet.
+- The part after `|` lists each STUN provider and the result for the IPv4 and IPv6 families. `ok` means the binding request was answered, `fail` means it was not, and a family the host cannot reach is reported as such.
+- The first line of a run measures from the first pulse, not from process start, so a long idle period is not read as a burst of failures.
 
 ---
 

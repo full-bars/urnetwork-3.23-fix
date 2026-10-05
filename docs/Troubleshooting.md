@@ -104,7 +104,7 @@ The signaling layer is responsible for contract creation and connection handshak
 | :--- | :--- | :--- |
 | `oob err = Timeout` | The signaling response took >60s. | Check for network congestion or CPU starvation. |
 | `oob err = Invalid` | Authentication token (JWT) or credentials failed. | Verify your `<AUTH-CODE>` or email/pass. |
-| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](High-Volume-Performance-Tuning). |
+| `exit could not create contract` | Repeated timeouts prevented contract initialization. | See [Performance Tuning](High-Volume-Performance-Tuning.md). |
 
 ## 4. Resource Exhaustion
 
