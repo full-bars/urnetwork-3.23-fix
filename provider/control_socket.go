@@ -312,6 +312,7 @@ var liveEffectKeys = map[string]bool{
 	// resolve* functions read globalControlState on every call — already live.
 	"fast_auth":                   true,
 	"smart_dialer":                true,
+	"h3":                          true,
 	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
@@ -366,7 +367,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -478,6 +479,11 @@ var liveDefaults = map[string]string{
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
 func applyLiveDefault(key string) error {
+	if key == "h3" {
+		// Clearing the key hands the decision back to URNETWORK_H3, which is
+		// what a restart would use, so the live state matches the persisted one.
+		return applyLiveSideEffect(key, onOff(h3Enabled()))
+	}
 	def, ok := liveDefaults[key]
 	if !ok {
 		return nil
@@ -1043,6 +1049,13 @@ func applyLiveSideEffect(key, value string) error {
 			was = "on"
 		}
 		tlog("⚙️ [control] applied smart_dialer=%s (was %s)\n", value, was)
+	case "h3":
+		// Eligible direct identities already have an idle H3 transport waiting
+		// on this gate, so it takes effect at once: on lets it dial, off closes
+		// a live H3 connection and stops further dials. See connect.SetH3Enabled.
+		enabled := strings.EqualFold(value, "on")
+		previous := connect.SetH3Enabled(enabled)
+		tlog("⚙️ [control] applied h3=%s (was %s)\n", value, onOff(previous))
 	case "baseline":
 		// Sampling is a goroutine that checks the flag each tick, so turning it
 		// off takes effect on the next tick and needs no restart and no signal.
@@ -1227,6 +1240,12 @@ func applyPersistedRuntimeTuning(state *controlState) {
 		if err := applyMetricsLive("on"); err != nil {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
+	}
+	// h3 is replayed in BOTH directions, falling back to URNETWORK_H3 when the
+	// key was never set: a persisted off must beat the env var, and an unset key
+	// must not leave the gate at its zero value when the env var asks for H3.
+	if err := applyLiveSideEffect("h3", onOff(resolveH3(state))); err != nil {
+		tlog("[control] failed to apply h3: %s\n", err)
 	}
 	if v, ok := state.get("smart_dialer"); ok && strings.EqualFold(v, "on") {
 		if err := applyLiveSideEffect("smart_dialer", v); err != nil {

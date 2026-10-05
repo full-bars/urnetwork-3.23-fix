@@ -21,41 +21,138 @@ func TestH3EnabledParsesTheEnvironment(t *testing.T) {
 	}
 }
 
-// H3 is for the direct identity only. Even with the switch on, a proxied
-// identity must never get it: runH3 opens a host UDP socket, which would send
-// its QUIC from the host instead of its proxy.
-func TestH3NeverEnabledForAProxiedIdentity(t *testing.T) {
+// H3 is for the direct identity only. A proxied identity must never be eligible,
+// whatever the switch says: runH3 opens a host UDP socket, which would send its
+// QUIC from the host instead of its proxy.
+func TestH3NeverEligibleForAProxiedIdentity(t *testing.T) {
 	proxied := &connect.ProxySettings{Network: "tcp", Address: "127.0.0.1:1080"}
 
-	t.Setenv("URNETWORK_H3", "on")
-	if platformTransportSettingsFor(proxied, false).EnableH3 {
-		t.Fatal("a proxied identity got H3")
-	}
-	if platformTransportSettingsFor(proxied, true).EnableH3 {
-		t.Fatal("an identity with proxy settings got H3 even though flagged native")
-	}
-	if !platformTransportSettingsFor(nil, true).EnableH3 {
-		t.Fatal("the direct identity did not get H3 with the switch on")
-	}
-	if platformTransportSettingsFor(nil, false).EnableH3 {
-		t.Fatal("a non-native identity without proxy settings got H3")
-	}
-
-	t.Setenv("URNETWORK_H3", "")
-	if platformTransportSettingsFor(nil, true).EnableH3 {
-		t.Fatal("H3 must be off unless the operator opts in")
+	for _, env := range []string{"on", ""} {
+		t.Setenv("URNETWORK_H3", env)
+		if platformTransportSettingsFor(proxied, false).EnableH3 {
+			t.Fatal("a proxied identity was eligible for H3")
+		}
+		if platformTransportSettingsFor(proxied, true).EnableH3 {
+			t.Fatal("an identity with proxy settings was eligible even though flagged native")
+		}
+		if platformTransportSettingsFor(nil, false).EnableH3 {
+			t.Fatal("a non-native identity without proxy settings was eligible")
+		}
+		if !platformTransportSettingsFor(nil, true).EnableH3 {
+			t.Fatal("the direct identity must be eligible, so the runtime gate can start H3 without a restart")
+		}
 	}
 }
 
-// With the switch off the settings are exactly the engine defaults, so a box
-// that does not opt in sees no change at all.
-func TestPlatformTransportSettingsAreTheDefaultsWhenOff(t *testing.T) {
-	t.Setenv("URNETWORK_H3", "")
-	got := platformTransportSettingsFor(nil, true)
+// A proxied identity's settings are exactly the engine defaults, and a direct
+// identity differs only by eligibility, so a box that never switches H3 on
+// sees no change in how transports are configured.
+func TestPlatformTransportSettingsAreTheDefaultsExceptEligibility(t *testing.T) {
 	want := connect.DefaultPlatformTransportSettings()
-	if got.EnableH3 != want.EnableH3 || got.H3Port != want.H3Port ||
-		got.ReconnectTimeout != want.ReconnectTimeout || got.PingTimeout != want.PingTimeout ||
-		got.AuthTimeout != want.AuthTimeout || got.TransportBufferSize != want.TransportBufferSize {
-		t.Fatalf("settings differ from the engine defaults with H3 off: %+v vs %+v", got, want)
+	proxied := &connect.ProxySettings{Network: "tcp", Address: "127.0.0.1:1080"}
+	for _, c := range []struct {
+		name string
+		got  *connect.PlatformTransportSettings
+		h3   bool
+	}{
+		{"proxied", platformTransportSettingsFor(proxied, false), false},
+		{"direct", platformTransportSettingsFor(nil, true), true},
+	} {
+		if c.got.EnableH3 != c.h3 || c.got.H3Port != want.H3Port ||
+			c.got.ReconnectTimeout != want.ReconnectTimeout || c.got.PingTimeout != want.PingTimeout ||
+			c.got.AuthTimeout != want.AuthTimeout || c.got.TransportBufferSize != want.TransportBufferSize {
+			t.Fatalf("%s: settings differ from the engine defaults beyond eligibility: %+v vs %+v", c.name, c.got, want)
+		}
+	}
+}
+
+// The control key beats the environment in both directions, and an unset key
+// falls back to the environment.
+func TestResolveH3ControlKeyBeatsTheEnvironment(t *testing.T) {
+	for _, c := range []struct {
+		name string
+		env  string
+		key  string // "" = unset
+		want bool
+	}{
+		{"unset, env off", "", "", false},
+		{"unset, env on", "on", "", true},
+		{"key on, env off", "", "on", true},
+		{"key off, env on", "on", "off", false},
+		{"key on, env on", "on", "on", true},
+	} {
+		t.Setenv("URNETWORK_H3", c.env)
+		state := newControlState()
+		if c.key != "" {
+			if err := state.set("h3", c.key); err != nil {
+				t.Fatalf("%s: set: %v", c.name, err)
+			}
+		}
+		if got := resolveH3(state); got != c.want {
+			t.Fatalf("%s: resolveH3=%v, want %v", c.name, got, c.want)
+		}
+	}
+	if resolveH3(nil) != h3Enabled() {
+		t.Fatal("a nil state must fall back to the environment")
+	}
+}
+
+func restoreH3Gate(t *testing.T) {
+	t.Helper()
+	previous := connect.H3Enabled()
+	t.Cleanup(func() { connect.SetH3Enabled(previous) })
+}
+
+// The h3 key reaches the running process: set applies at once, a persisted
+// value is replayed at startup in both directions, and clear hands the
+// decision back to the environment.
+func TestH3ControlKeyDrivesTheLiveGate(t *testing.T) {
+	restoreH3Gate(t)
+	t.Setenv("URNETWORK_H3", "")
+
+	if needsRestart("h3") {
+		t.Fatal("h3 is live: needsRestart must be false")
+	}
+	for _, bad := range []string{"maybe", "", "1"} {
+		if err := validateControlValue("h3", bad); err == nil {
+			t.Fatalf("h3=%q must be rejected", bad)
+		}
+	}
+	for _, ok := range []string{"on", "off", "ON"} {
+		if err := validateControlValue("h3", ok); err != nil {
+			t.Fatalf("h3=%q: %v", ok, err)
+		}
+	}
+
+	if err := applyLiveSideEffect("h3", "on"); err != nil || !connect.H3Enabled() {
+		t.Fatalf("set on: err=%v enabled=%v", err, connect.H3Enabled())
+	}
+	if err := applyLiveSideEffect("h3", "off"); err != nil || connect.H3Enabled() {
+		t.Fatalf("set off: err=%v enabled=%v", err, connect.H3Enabled())
+	}
+
+	// clear returns to the environment, not to a hardcoded off
+	t.Setenv("URNETWORK_H3", "on")
+	if err := applyLiveDefault("h3"); err != nil || !connect.H3Enabled() {
+		t.Fatalf("clear with env on: err=%v enabled=%v", err, connect.H3Enabled())
+	}
+	t.Setenv("URNETWORK_H3", "")
+	if err := applyLiveDefault("h3"); err != nil || connect.H3Enabled() {
+		t.Fatalf("clear with env off: err=%v enabled=%v", err, connect.H3Enabled())
+	}
+
+	// startup replay: a persisted off beats the env var, an unset key follows it
+	state := newControlState()
+	t.Setenv("URNETWORK_H3", "on")
+	applyPersistedRuntimeTuning(state)
+	if !connect.H3Enabled() {
+		t.Fatal("unset key with env on: the gate must follow the environment at startup")
+	}
+	if err := state.set("h3", "off"); err != nil {
+		t.Fatal(err)
+	}
+	applyPersistedRuntimeTuning(state)
+	if connect.H3Enabled() {
+		t.Fatal("a persisted off must beat URNETWORK_H3=on at startup")
 	}
 }
