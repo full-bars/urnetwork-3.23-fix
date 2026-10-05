@@ -637,6 +637,24 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 			}}, nil)
 		}},
 		{"top_goroutines_collecting_120x40", 120, 40, func(m *topModel) { pressKey(m, 'g') }},
+		// H3 up beside H1 and carrying a fifth of the outbound payload: the
+		// panel gains the transport rows.
+		{"top_transport_120x40", 120, 40, func(m *topModel) {
+			m.rt.cur.Transport = &NodeTransportStats{
+				H1FramesTx: 8000, H1FramesRx: 7500, H1BytesTx: 45 << 20, H1BytesRx: 40 << 20,
+				H3FramesTx: 2000, H3FramesRx: 1900, H3BytesTx: 12 << 20, H3BytesRx: 11 << 20,
+				H3Attempts: 3, H3Connects: 2, H3ConnectFailures: 1, H3Drops: 1, H3Up: 1,
+				H3TxSharePercent: 20,
+			}
+		}},
+		// H3 attempted, nothing up, nothing sent: the share reads as a
+		// placeholder rather than as 0%.
+		{"top_transport_down_120x40", 120, 40, func(m *topModel) {
+			m.rt.cur.Transport = &NodeTransportStats{
+				H1FramesTx: 8000, H1FramesRx: 7500, H1BytesTx: 45 << 20, H1BytesRx: 40 << 20,
+				H3Attempts: 2, H3ConnectFailures: 2, H3TxSharePercent: -1,
+			}
+		}},
 		// Too short for the third panel: Resources keeps the column, as before.
 		{"top_internals_short_100x30", 100, 30, func(m *topModel) {}},
 	}
@@ -653,6 +671,42 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The panel is taller only when the provider reports a transport split: every
+// box that does not run H3 draws the same screens it drew before.
+func TestTopInternalsPanelGrowsForTheTransportSplit(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := internalsModel(t, clock)
+	if got := m.internalsRows(); got != topInternalsRows {
+		t.Fatalf("rows with no transport = %d, want %d", got, topInternalsRows)
+	}
+	if m.hasTransport() {
+		t.Fatal("hasTransport is true with no transport block")
+	}
+	m.rt.cur.Transport = &NodeTransportStats{H3Attempts: 1}
+	if !m.hasTransport() {
+		t.Fatal("hasTransport is false with a transport block")
+	}
+	if got := m.internalsRows(); got != topInternalsRows+topTransportRows {
+		t.Fatalf("rows with transport = %d, want %d", got, topInternalsRows+topTransportRows)
+	}
+}
+
+func TestTopMiBPairFormatsOneOfAll(t *testing.T) {
+	cases := []struct {
+		one, all uint64
+		want     string
+	}{
+		{12 << 20, 57 << 20, "12.0/57.0 MiB"},
+		{1 << 19, 3 << 20, "0.5/3.0 MiB"},
+		{0, 0, "0.0/0.0 MiB"},
+	}
+	for _, c := range cases {
+		if got := topMiBPair(c.one, c.all); got != c.want {
+			t.Errorf("topMiBPair(%d, %d) = %q, want %q", c.one, c.all, got, c.want)
+		}
 	}
 }
 

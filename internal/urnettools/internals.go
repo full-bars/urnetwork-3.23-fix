@@ -31,6 +31,34 @@ type NodeInternals struct {
 	GCPauseP99Ms    float64 `json:"gc_pause_p99_ms"`
 	SchedLatP99Ms   float64 `json:"sched_latency_p99_ms"`
 	GCCPUFraction   float64 `json:"gc_cpu_fraction"`
+
+	// Transport is what each platform transport mode has carried. A provider
+	// that never attempted H3 reports none, and top draws no transport rows.
+	Transport *NodeTransportStats `json:"transport,omitempty"`
+}
+
+// NodeTransportStats is the provider's per-mode transport read: payload frames
+// and bytes per mode and direction, the H3 connection counters and H3's share of
+// outbound frames. Counters are cumulative since the provider started.
+type NodeTransportStats struct {
+	H1FramesTx uint64 `json:"h1_frames_tx"`
+	H1FramesRx uint64 `json:"h1_frames_rx"`
+	H1BytesTx  uint64 `json:"h1_bytes_tx"`
+	H1BytesRx  uint64 `json:"h1_bytes_rx"`
+	H3FramesTx uint64 `json:"h3_frames_tx"`
+	H3FramesRx uint64 `json:"h3_frames_rx"`
+	H3BytesTx  uint64 `json:"h3_bytes_tx"`
+	H3BytesRx  uint64 `json:"h3_bytes_rx"`
+
+	H3Attempts        uint64 `json:"h3_attempts"`
+	H3Connects        uint64 `json:"h3_connects"`
+	H3ConnectFailures uint64 `json:"h3_connect_failures"`
+	H3Drops           uint64 `json:"h3_drops"`
+	H3Up              int64  `json:"h3_up"`
+
+	// H3TxSharePercent is H3's share of outbound payload frames, or -1 when
+	// neither mode has sent one.
+	H3TxSharePercent int `json:"h3_tx_share_percent"`
 }
 
 // GoroutineGroup is the goroutines parked in one place.
