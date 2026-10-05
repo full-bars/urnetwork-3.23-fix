@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math"
 	mathrand "math/rand"
@@ -1820,6 +1821,23 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					defer close(streamSend)
 
 					datagramSettings, _ := h3DatagramLimits()
+					// Datagrams leave on their own goroutine: quic-go's SendDatagram
+					// blocks while its flight is full and takes no context, so calling
+					// it from here would let a peer that stops draining datagrams hold
+					// up the stream frames queued behind it.
+					datagramSender := newH3DatagramSender(handleCtx, conn.SendDatagram, func(err error) {
+						// The lane sends asynchronously, so the errors quic-go returned
+						// synchronously now arrive here. A too-large report means the
+						// path shrank: lower the live limit (never raise it) so the next
+						// frame takes the stream instead of being discarded. Everything
+						// else is counted, so the send-error metric keeps meaning
+						// something.
+						var tooLarge *quic.DatagramTooLargeError
+						if errors.As(err, &tooLarge) {
+							lowerDatagramPathLimit(&maxDatagramByteCount, tooLarge.MaxDatagramPayloadSize)
+						}
+						h3DatagramStats.sendErrorCount.Add(1)
+					})
 					logSendError := func(err error) {
 						if ok, suppressed := shouldLogWriteErr(); ok {
 							if suppressed > 0 {
@@ -1901,14 +1919,15 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 								messageByteCount := len(message)
 								currentMax := int(maxDatagramByteCount.Load())
 								useStream, nextMax, err := datagramFragmenter.SendHybrid(handleCtx, message, currentMax,
-									func(sendCtx context.Context, datagram []byte) error {
-										// The context bounds a call that can block:
-										// quic-go's SendDatagram waits while its
-										// 32-datagram queue is full.
-										if err := sendCtx.Err(); err != nil {
-											return err
+									func(_ context.Context, datagram []byte) error {
+										// The lane takes the datagram or reports the flight
+										// full; either way the dispatcher never waits on
+										// quic-go's blocking send, and a full lane falls back
+										// to the reliable stream.
+										if !datagramSender.trySend(datagram) {
+											return errQuicDatagramFlightFull
 										}
-										return conn.SendDatagram(datagram)
+										return nil
 									})
 								if nextMax != currentMax {
 									maxDatagramByteCount.Store(int64(nextMax))
@@ -1917,9 +1936,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 									// A datagram-path failure is not a stream failure: put the
 									// message on the reliable lane rather than tearing the whole
 									// connection down. Only a stream write error owns that.
+									// offerStream owns the message on every path, including its
+									// failures, so it must not be returned here as well.
 									logSendError(err)
 									if !offerStream(message) {
-										MessagePoolReturn(message)
 										return
 									}
 									continue
