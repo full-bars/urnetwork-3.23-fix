@@ -11,10 +11,11 @@ import "strings"
 var importantLogMarkers = []string{
 	"[profit]",
 	"[earn]",
-	// The process-wide STUN health aggregate ([stun], at most once a minute)
-	// is the only success signal for STUN and the only record of the
-	// ok/fail balance — keep it in the important buffer.
-	"[stun]",
+	// The process-wide STUN health aggregate (the "📡 [stun]" line, at most
+	// once a minute) is the only success signal for STUN and the only record of
+	// the ok/fail balance — keep it in the important buffer. The emoji is part
+	// of the marker so a bare "[stun]" elsewhere does not ride into the buffer.
+	"📡 [stun]",
 	"[health]",
 	"[outage]",
 	"[pace]",

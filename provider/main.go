@@ -4380,6 +4380,10 @@ func provide(opts docopt.Opts) {
 	flushRetentionEvents()
 	FlushPersistentErrors()
 	forceAuditPersist()
+	// Stop the background STUN probe loop. Log-only, and it would die with the
+	// process anyway, but the loop waits on a five-minute timer between cycles
+	// and there is no reason to leave it running through shutdown.
+	connect.StopStunProbe()
 	if metricsServer != nil {
 		ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 		defer cancel()
