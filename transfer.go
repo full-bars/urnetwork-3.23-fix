@@ -701,6 +701,9 @@ func NewClientWithTag(
 	routeManager := NewRouteManagerWithLogger(ctx, clientTag, log)
 	contractManager := NewContractManager(ctx, client, settings.ContractManagerSettings)
 	webRtcManager := NewWebRtcManager(ctx, NewClientSignalSender(client), settings.WebRtcSettings)
+	// The STUN reachability probe is process-wide and log-only, but it must
+	// report the endpoints this client actually gathers from.
+	SetActiveWebRtcSettings(settings.WebRtcSettings)
 	streamManager := NewStreamManager(ctx, client, webRtcManager, settings.StreamManagerSettings)
 	// ClientKeyManager must precede EncryptionSessionManager — the latter holds
 	// a reference to sign the published TLS cert

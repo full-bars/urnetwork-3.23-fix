@@ -8,6 +8,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -169,7 +170,7 @@ func StopStunProbe() {
 func (p *stunProber) run() {
 	defer func() { recover() }() // keep the loop alive no matter what
 
-	settings := DefaultWebRtcSettings()
+	settings := probeSettings()
 	endpoints := stunProbeEndpoints(settings)
 
 	v6Avail := ipv6Available() // reuse the existing gate: no route => n/a
@@ -217,6 +218,30 @@ func (p *stunProber) run() {
 	p.mu.Lock()
 	p.result = &stunProbeResult{At: time.Now(), Providers: providers}
 	p.mu.Unlock()
+}
+
+// activeWebRtcSettings is the settings ICE actually gathers from in this process.
+// The probe reports reachability for the endpoints a client really uses, so it
+// follows the active client's list rather than the compiled defaults — a client
+// may be given different IceServerUrls, and the probe must not report endpoints
+// ICE never gathers from.
+var activeWebRtcSettings atomic.Pointer[WebRtcSettings]
+
+// SetActiveWebRtcSettings records the settings a client's ICE uses. Called where
+// the WebRTC manager is created.
+func SetActiveWebRtcSettings(settings *WebRtcSettings) {
+	if settings != nil {
+		activeWebRtcSettings.Store(settings)
+	}
+}
+
+// probeSettings returns the active ICE settings, or the defaults before any
+// client exists (unit tests, and a probe that somehow starts first).
+func probeSettings() *WebRtcSettings {
+	if settings := activeWebRtcSettings.Load(); settings != nil {
+		return settings
+	}
+	return DefaultWebRtcSettings()
 }
 
 // stunProbeEndpoints returns the endpoints one probe cycle covers: every
@@ -382,7 +407,14 @@ func isStunSuccessResponse(msg, txid []byte) bool {
 	if putU16nil(msg[0:2]) != stunMsgBindingResp {
 		return false
 	}
-	return hasXorMappedAddress(msg)
+	// Attributes live inside the body the header declares, so the scan is bounded
+	// by it: bytes past the declared length are not part of this message, and a
+	// body the datagram does not carry is not a response at all.
+	bodyByteCount := int(putU16nil(msg[2:4]))
+	if len(msg) < stunHeaderSize+bodyByteCount {
+		return false
+	}
+	return hasXorMappedAddress(msg[:stunHeaderSize+bodyByteCount])
 }
 
 // hasXorMappedAddress scans a STUN message's attribute section for a

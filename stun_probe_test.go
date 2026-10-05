@@ -179,6 +179,42 @@ func TestIsStunSuccessResponse(t *testing.T) {
 	if isStunSuccessResponse(bad, txid) {
 		t.Error("foreign magic cookie must not be accepted")
 	}
+
+	// An attribute sitting past the length the header declares is not part of the
+	// message, and a body the datagram does not carry is not a response.
+	outsideBody := buildStunMsg(stunMsgBindingResp, txid, attr)
+	putU16(outsideBody[2:4], 0)
+	if isStunSuccessResponse(outsideBody, txid) {
+		t.Error("an attribute outside the declared body must not count as success")
+	}
+	shortBody := buildStunMsg(stunMsgBindingResp, txid, attr)
+	putU16(shortBody[2:4], uint16(len(attr)+8))
+	if isStunSuccessResponse(shortBody, txid) {
+		t.Error("a declared body larger than the datagram must not be accepted")
+	}
+}
+
+// The probe must report the endpoints ICE actually gathers from, not the
+// compiled defaults, so a client given its own IceServerUrls is not told about
+// servers it never contacts.
+func TestProbeFollowsTheActiveIceSettings(t *testing.T) {
+	original := probeSettings()
+	t.Cleanup(func() { SetActiveWebRtcSettings(original) })
+
+	SetActiveWebRtcSettings(&WebRtcSettings{IceServerUrls: []string{"stun:stun.example.net:3478"}})
+	endpoints := stunProbeEndpoints(probeSettings())
+	found := false
+	for _, endpoint := range endpoints {
+		if endpoint == "stun:stun.example.net:3478" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("probe must follow the active ice list, got %v", endpoints)
+	}
+	if len(activeWebRtcSettings.Load().IceServerUrls) != 1 {
+		t.Fatal("active ice settings were not recorded")
+	}
 }
 
 // TestStunProbeEndpointsDedup: an endpoint listed twice — or configured in ICE
