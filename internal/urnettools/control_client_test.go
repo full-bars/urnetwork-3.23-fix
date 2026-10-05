@@ -294,6 +294,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		// what noticed they were missing.
 		{"proxy-audit", "proxy_audit", "on"},
 		{"smart-dialer", "smart_dialer", "on"},
+		{"h3", "h3", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},
 		{"metrics-listen", "metrics_listen", "auto"},

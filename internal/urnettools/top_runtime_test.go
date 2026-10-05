@@ -637,6 +637,24 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 			}}, nil)
 		}},
 		{"top_goroutines_collecting_120x40", 120, 40, func(m *topModel) { pressKey(m, 'g') }},
+		// H3 up beside H1 and carrying a fifth of the outbound payload: the
+		// panel gains the transport rows.
+		{"top_transport_120x40", 120, 40, func(m *topModel) {
+			m.rt.cur.Transport = &NodeTransportStats{
+				H1FramesTx: 8000, H1FramesRx: 7500, H1BytesTx: 45 << 20, H1BytesRx: 40 << 20,
+				H3FramesTx: 2000, H3FramesRx: 1900, H3BytesTx: 12 << 20, H3BytesRx: 11 << 20,
+				H3Attempts: 3, H3Connects: 2, H3ConnectFailures: 1, H3Drops: 1, H3Up: 1,
+				H3TxSharePercent: 20,
+			}
+		}},
+		// H3 attempted, nothing up, nothing sent: the share reads as a
+		// placeholder rather than as 0%.
+		{"top_transport_down_120x40", 120, 40, func(m *topModel) {
+			m.rt.cur.Transport = &NodeTransportStats{
+				H1FramesTx: 8000, H1FramesRx: 7500, H1BytesTx: 45 << 20, H1BytesRx: 40 << 20,
+				H3Attempts: 2, H3ConnectFailures: 2, H3TxSharePercent: -1,
+			}
+		}},
 		// Too short for the third panel: Resources keeps the column, as before.
 		{"top_internals_short_100x30", 100, 30, func(m *topModel) {}},
 	}
@@ -653,6 +671,61 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// The panel keeps its runtime figures when the box cannot hold the transport
+// split too: the split must never be the reason the whole panel disappears.
+func TestTopInternalsDegradesWithoutTheTransportRows(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	withTransport := func(h int) string {
+		t.Helper()
+		clock.t = topBase
+		m := internalsModel(t, clock)
+		m.rt.cur.Transport = &NodeTransportStats{
+			H1FramesTx: 8000, H1FramesRx: 7500, H1BytesTx: 45 << 20, H1BytesRx: 40 << 20,
+			H3FramesTx: 2000, H3FramesRx: 1900, H3BytesTx: 12 << 20, H3BytesRx: 11 << 20,
+			H3Attempts: 3, H3Connects: 2, H3ConnectFailures: 1, H3Drops: 1, H3Up: 1,
+			H3TxSharePercent: 20,
+		}
+		txt, _ := showOnSim(t, m, 120, h)
+		return txt
+	}
+	tall := withTransport(40)
+	if !strings.Contains(tall, "h3      up 1") || !strings.Contains(tall, "h3/all") {
+		t.Fatalf("a tall box must draw the transport rows:\n%s", tall)
+	}
+	// 33 rows leaves the panel exactly topInternalsRows after Now and Resources.
+	short := withTransport(33)
+	if !strings.Contains(short, "Internals") || !strings.Contains(short, "gor") {
+		t.Fatalf("the panel and its runtime figures must survive a box too short for the split:\n%s", short)
+	}
+	if strings.Contains(short, "h3/all") {
+		t.Fatalf("the transport rows were drawn into a box that cannot hold them:\n%s", short)
+	}
+}
+
+func TestTopBytePairScalesToTheFigure(t *testing.T) {
+	const maxValueCells = 20 // kvAt writes into width-col, the panel is 30 wide with col 8
+	cases := []struct {
+		one, all uint64
+		want     string
+	}{
+		{12 << 20, 57 << 20, "12.0/57.0 MiB"},
+		{1 << 19, 3 << 20, "0.5/3.0 MiB"},
+		{0, 0, "0.0/0.0 B"},
+		{50 << 30, 250 << 30, "50.0/250.0 GiB"},
+		{1 << 40, 2 << 40, "1.0/2.0 TiB"},
+		{1 << 39, (1 << 40) - 1, "512.0/1024.0 GiB"},
+	}
+	for _, c := range cases {
+		got := topBytePair(c.one, c.all)
+		if got != c.want {
+			t.Errorf("topBytePair(%d, %d) = %q, want %q", c.one, c.all, got, c.want)
+		}
+		if len(got) > maxValueCells {
+			t.Errorf("topBytePair(%d, %d) = %q is %d cells, wider than the %d the panel has", c.one, c.all, got, len(got), maxValueCells)
+		}
 	}
 }
 

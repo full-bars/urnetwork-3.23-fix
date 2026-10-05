@@ -116,6 +116,7 @@ var controlKeys = map[string]bool{
 	"metrics_listen":              true,
 	"proxy_audit":                 true,
 	"smart_dialer":                true,
+	"h3":                          true,
 	"oom_cap":                     true,
 }
 

@@ -21,11 +21,25 @@ on:
 # push is therefore scoped to main (the one branch with no PR to trigger on),
 # and the concurrency group collapses a branch's runs whichever event started
 # them, so rapid successive pushes to a PR supersede rather than stack.
-# cancel-in-progress stays false for main: a main-branch validation run should
-# finish, not be cancelled by the next merge.
+#
+# The group is REPO-WIDE, not per branch, because the scarce resource is the
+# GAUNTLET account's sign-in rate limit, which every job in this workflow spends
+# and every PR shares. Per-branch groups let six open PRs authenticate at the
+# same time — three jobs each, and the container jobs mint one per provider —
+# and the platform then answers 429 with `retry-after: 300` ("too many recent
+# sign-in attempts for this account from your network address"). Every job that
+# loses that race fails as if the code were broken, on every PR at once, and the
+# retries in the losing jobs keep the window full so it never drains. One smoke
+# run at a time keeps the account inside its limit; a queued run waits instead of
+# racing. This is a throughput cost taken deliberately, and it is far cheaper
+# than a red board on unrelated PRs.
+#
+# cancel-in-progress stays false everywhere: a run that is already minting and
+# testing should finish, and GitHub keeps only one run queued per group, so a
+# newer push supersedes a pending run without cutting a live one short.
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
-  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+  group: ${{ github.workflow }}
+  cancel-in-progress: false
 
 jobs:
   native-functional-smoke:

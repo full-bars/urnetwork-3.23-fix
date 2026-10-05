@@ -11,6 +11,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // Runtime internals for `urnet-tools top`: what the Go runtime says about the
@@ -62,6 +64,71 @@ type NodeInternals struct {
 	GCPauseP99Ms    float64 `json:"gc_pause_p99_ms"`
 	SchedLatP99Ms   float64 `json:"sched_latency_p99_ms"`
 	GCCPUFraction   float64 `json:"gc_cpu_fraction"` // GC cpu / total cpu
+
+	// Transport is what each platform transport mode has carried, present only
+	// once H3 has been attempted. A box that never ran H3 has no split to show
+	// and no rows are drawn for it.
+	Transport *NodeTransportStats `json:"transport,omitempty"`
+}
+
+// NodeTransportStats is the per-mode transport read for `urnet-tools top`:
+// payload frames and bytes per mode and direction (keepalives excluded, so an
+// idle transport reads zero), the H3 connection counters and H3's share of
+// outbound frames. Cumulative since the process started.
+type NodeTransportStats struct {
+	H1FramesTx uint64 `json:"h1_frames_tx"`
+	H1FramesRx uint64 `json:"h1_frames_rx"`
+	H1BytesTx  uint64 `json:"h1_bytes_tx"`
+	H1BytesRx  uint64 `json:"h1_bytes_rx"`
+	H3FramesTx uint64 `json:"h3_frames_tx"`
+	H3FramesRx uint64 `json:"h3_frames_rx"`
+	H3BytesTx  uint64 `json:"h3_bytes_tx"`
+	H3BytesRx  uint64 `json:"h3_bytes_rx"`
+
+	// H3Attempts counts H3 connection attempts, H3Connects the ones that came
+	// up, H3ConnectFailures the ones that did not, H3Drops the H3 connections
+	// that ended after they were up, and H3Up how many are up now.
+	H3Attempts        uint64 `json:"h3_attempts"`
+	H3Connects        uint64 `json:"h3_connects"`
+	H3ConnectFailures uint64 `json:"h3_connect_failures"`
+	H3Drops           uint64 `json:"h3_drops"`
+	H3Up              int64  `json:"h3_up"`
+
+	// H3TxSharePercent is H3's share of outbound payload frames, or -1 when
+	// neither mode has sent one.
+	H3TxSharePercent int `json:"h3_tx_share_percent"`
+}
+
+// nodeTransportStats maps the counters into the reply, or nil while H3 has
+// never been attempted: a box that does not run H3 gets no transport block, so
+// the panel it draws is exactly the one it drew before.
+func nodeTransportStats() *NodeTransportStats {
+	stats := connect.TransportModeStats()
+	if stats.H3Attempts == 0 {
+		return nil
+	}
+	return transportStatsFromSnapshot(stats)
+}
+
+// transportStatsFromSnapshot is the pure mapping, so the field names can be
+// tested without touching the process-wide counters.
+func transportStatsFromSnapshot(stats connect.TransportModeStatsSnapshot) *NodeTransportStats {
+	return &NodeTransportStats{
+		H1FramesTx:        stats.H1FramesTx,
+		H1FramesRx:        stats.H1FramesRx,
+		H1BytesTx:         stats.H1BytesTx,
+		H1BytesRx:         stats.H1BytesRx,
+		H3FramesTx:        stats.H3FramesTx,
+		H3FramesRx:        stats.H3FramesRx,
+		H3BytesTx:         stats.H3BytesTx,
+		H3BytesRx:         stats.H3BytesRx,
+		H3Attempts:        stats.H3Attempts,
+		H3Connects:        stats.H3Connects,
+		H3ConnectFailures: stats.H3ConnectFailures,
+		H3Drops:           stats.H3Drops,
+		H3Up:              stats.H3Up,
+		H3TxSharePercent:  stats.H3TxSharePercent(),
+	}
 }
 
 // GoroutineGroup is the goroutines parked in one place: Func is the first frame
@@ -121,6 +188,9 @@ func (c *internalsCollector) Get(now time.Time) *NodeInternals {
 		return c.cached
 	}
 	out, raw := readInternals(now, nil)
+	// The transport split is read on every rebuild: the atomics are cheap and
+	// the reply has to move with the counters while H3 carries traffic.
+	out.Transport = nodeTransportStats()
 	switch {
 	case c.base == nil:
 		c.base = raw

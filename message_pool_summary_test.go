@@ -32,6 +32,25 @@ func TestPoolSummary_RealSeriesArePlateausNotLeaks(t *testing.T) {
 	}
 }
 
+// A flat window that takes ONE step up at the end is not a leak. It satisfies
+// every other test in growingWithoutLevelling — the total grew, no interval
+// decreased, and the late third outpaces the early one — so before the
+// sustained-growth check a single burst was reported as a possible leak.
+func TestPoolSummary_SingleBurstIsNotALeak(t *testing.T) {
+	burst := []int64{1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1000, 1100}
+	s := feed(newPoolWatch(), 4096, 11, "ip.go:1", burst, 5000)
+	if !s.Healthy() || len(s.Growing) != 0 {
+		t.Fatalf("a single burst was reported as a leak: %s", s)
+	}
+
+	// Two steps in the later half is a real, if modest, upward trend and is
+	// still reported.
+	sustained := []int64{1000, 1000, 1000, 1000, 1000, 1000, 1050, 1060, 1070, 1080}
+	s = feed(newPoolWatch(), 4096, 12, "ip.go:1", sustained, 5000)
+	if len(s.Growing) != 1 {
+		t.Fatalf("sustained growth in the later half was not flagged: %s", s)
+	}
+}
 func TestPoolSummary_RampThenPlateauIsNotALeak(t *testing.T) {
 	// tag=224 after a restart: outstanding climbs for a few minutes as the
 	// working set fills, then flattens. Ten samples all non-decreasing except
@@ -67,6 +86,18 @@ func TestPoolSummary_SlowSteadyLeakIsStillCaught(t *testing.T) {
 	}
 }
 
+// The sustained-growth gate compares the second half of the window against a
+// floor that poolLeakFloor defines over the WHOLE window. Enforcing the full
+// floor on the half silently doubled the rate a leak had to reach: +10 a dump
+// gains 90 over the window but only 40 over the second half, so it used to be
+// dropped.
+func TestPoolSummary_VerySlowSteadyLeakIsStillCaught(t *testing.T) {
+	slow := []int64{500, 510, 520, 530, 540, 550, 560, 570, 580, 590} // +10 a dump
+	if s := feed(newPoolWatch(), 2048, 8, "a.go:1", slow, 5000); s.Healthy() {
+		t.Fatalf("a +10-per-dump leak went unnoticed: %s", s)
+	}
+}
+
 func TestPoolSummary_JitterAndTinyGrowthAreNotLeaks(t *testing.T) {
 	jitter := []int64{300, 320, 290, 310, 305, 330, 295, 315, 300, 320}
 	if s := feed(newPoolWatch(), 2048, 4, "a.go:1", jitter, 5000); !s.Healthy() {
@@ -91,9 +122,15 @@ func TestPoolSummary_WarmingUpNeedsAFullWindow(t *testing.T) {
 
 func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	w := newPoolWatch()
-	// 30% reuse over 50k takes is allocation churn worth a look.
-	churn := poolTagStat{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 50000, Returned: 50000, Created: 35000}
-	// 0% reuse over one take is just a first allocation.
+	// Reuse is judged on the interval between dumps, so the first observation
+	// only establishes a baseline. Seed it, then observe the interval.
+	w.observe([]poolTagStat{
+		{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 10000, Returned: 10000, Created: 7000},
+		{PoolSize: 4096, Tag: 0, Taken: 0, Created: 0},
+	})
+	// 30% reuse over 50k NEW takes is allocation churn worth a look.
+	churn := poolTagStat{PoolSize: 16384, Tag: 8, Caller: "x.go:1/y.go:2", Taken: 60000, Returned: 60000, Created: 42000}
+	// 0% reuse over one new take is just a first allocation.
 	first := poolTagStat{PoolSize: 4096, Tag: 0, Taken: 1, Returned: 1, Created: 1}
 	s := w.observe([]poolTagStat{churn, first})
 	if len(s.LowReuse) != 1 || s.LowReuse[0].Tag != 8 {
@@ -101,6 +138,19 @@ func TestPoolSummary_LowReuseNeedsRealVolume(t *testing.T) {
 	}
 	if !strings.Contains(s.String(), "low reuse") || !strings.Contains(s.String(), "30%") {
 		t.Fatalf("summary = %q", s)
+	}
+
+	// A tag that churned hard once and has since gone quiet must NOT stay
+	// flagged: with no new takes this interval there is nothing to judge, and
+	// a lifetime-based finding could never be cleared.
+	quiet := churn
+	quiet2 := first
+	quiet2.Taken, quiet2.Returned, quiet2.Created = 1, 1, 1
+	s = w.observe([]poolTagStat{quiet, quiet2})
+	for _, f := range s.LowReuse {
+		if f.Tag == 8 {
+			t.Fatalf("a tag with no new takes is still reported: %+v", f)
+		}
 	}
 }
 
@@ -125,6 +175,22 @@ func TestPoolSummary_CounterResetDoesNotCrashOrFlag(t *testing.T) {
 	s := w.observe([]poolTagStat{{PoolSize: 2048, Tag: 7, Caller: "a.go:1", Taken: 10, Returned: 10, Created: 1}})
 	if !s.Healthy() {
 		t.Fatalf("counter reset flagged: %s", s)
+	}
+}
+
+// A reset can drop Created as well as Taken. Unsigned subtraction then wraps to
+// about 1.8e19 takes and the reuse ratio comes out as "0% reuse over 18
+// quintillion takes" — a finding nothing can ever clear. A rollback has to
+// re-seed the interval baseline instead of computing an interval from it.
+func TestPoolSummary_CounterRollbackDoesNotUnderflow(t *testing.T) {
+	w := newPoolWatch()
+	w.observe([]poolTagStat{{PoolSize: 2048, Tag: 9, Caller: "a.go:1", Taken: 10000, Returned: 0, Created: 1000}})
+	s := w.observe([]poolTagStat{{PoolSize: 2048, Tag: 9, Caller: "a.go:1", Taken: 10, Returned: 10, Created: 5}})
+	if !s.Healthy() {
+		t.Fatalf("counter rollback flagged: %s", s)
+	}
+	if len(s.LowReuse) != 0 {
+		t.Fatalf("counter rollback produced a reuse finding: %s", s)
 	}
 }
 

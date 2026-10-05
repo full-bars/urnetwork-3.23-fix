@@ -12,6 +12,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -118,7 +119,63 @@ func readProxyURLStateFrom(path string) (*ProxyURLState, error) {
 	if s.Cache == nil {
 		s.Cache = map[string]ProxyURLEntry{}
 	}
+	// Remember the configuration half of the file. A later quarantine starts
+	// from an empty cache, and none of this is cache: nothing else records the
+	// sources, the permanent blacklist, the exclude patterns or the cleanup
+	// threshold, so losing them here loses them for good.
+	rememberURLStateConfig(&s)
 	return &s, nil
+}
+
+// lastURLStateConfig is the configuration half of the newest proxy_url.json
+// that parsed. See rememberURLStateConfig.
+var (
+	lastURLStateConfigMu sync.Mutex
+	lastURLStateConfig   ProxyURLState
+)
+
+// rememberURLStateConfig keeps the operator-set half of the state — sources,
+// blacklist, exclude patterns, degraded-cleanup threshold — for the quarantine
+// path. A corrupt file is moved aside and the cache starts empty, but the
+// configuration is not the cache: nothing else records it, and the first write
+// after a quarantine would otherwise persist it as empty and lose it for good.
+func rememberURLStateConfig(s *ProxyURLState) {
+	if s == nil {
+		return
+	}
+	lastURLStateConfigMu.Lock()
+	defer lastURLStateConfigMu.Unlock()
+	lastURLStateConfig = ProxyURLState{
+		Sources:                  append([]string(nil), s.Sources...),
+		Blacklist:                copyURLBlacklist(s.Blacklist),
+		ExcludePatterns:          append([]string(nil), s.ExcludePatterns...),
+		DegradedCleanupThreshold: s.DegradedCleanupThreshold,
+	}
+}
+
+// rememberedURLStateConfig returns the last configuration seen with an empty
+// cache, ready to be filled by the merge that quarantined the file.
+func rememberedURLStateConfig() *ProxyURLState {
+	lastURLStateConfigMu.Lock()
+	defer lastURLStateConfigMu.Unlock()
+	return &ProxyURLState{
+		Sources:                  append([]string(nil), lastURLStateConfig.Sources...),
+		Blacklist:                copyURLBlacklist(lastURLStateConfig.Blacklist),
+		ExcludePatterns:          append([]string(nil), lastURLStateConfig.ExcludePatterns...),
+		DegradedCleanupThreshold: lastURLStateConfig.DegradedCleanupThreshold,
+		Cache:                    map[string]ProxyURLEntry{},
+	}
+}
+
+func copyURLBlacklist(in map[string]time.Time) map[string]time.Time {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]time.Time, len(in))
+	for addr, at := range in {
+		out[addr] = at
+	}
+	return out
 }
 
 // proxyURLParseError marks an error from decoding the file's content, as

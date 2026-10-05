@@ -136,6 +136,7 @@ var controlKeyCanonical = map[string]string{
 	"baseline":                    "baseline",
 	"baseline_recorder":           "baseline",
 	"smart_dialer":                "smart_dialer",
+	"h3":                          "h3",
 	"proxy-audit":                 "proxy_audit",
 	"proxy_audit":                 "proxy_audit",
 	"proxy-url-max":               "proxy_url_max",
@@ -196,7 +197,7 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", canonicalKey, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:

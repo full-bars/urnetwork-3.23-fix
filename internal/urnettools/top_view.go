@@ -537,6 +537,45 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		sched = topMillis(in.SchedLatP99Ms)
 	}
 	row("sched", "p99 "+sched, m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
+	// The transport split, once the provider has run H3. Both rows are drawn
+	// only when the box that is left can hold them: on a terminal where the
+	// panel fits its runtime figures but not these two, the panel keeps the
+	// figures instead of vanishing whole.
+	if t := in.Transport; t != nil && y+2 <= b.Height() {
+		share := "--"
+		if t.H3TxSharePercent >= 0 {
+			share = fmt.Sprintf("%d%%", t.H3TxSharePercent)
+		}
+		// Colour on the state an operator can act on. Drops are cumulative for
+		// the life of the process, so thresholding them would latch this row
+		// yellow after a single drop ever while H3 sat connected, and would show
+		// nothing for H3 sitting down with a clean drop count.
+		level := topInfo
+		if t.H3Up <= 0 {
+			level = topWarn
+		}
+		row("h3", fmt.Sprintf("up %d tx %s drops %d", t.H3Up, share, t.H3Drops), m.style(level))
+		row("h3/all", topBytePair(t.H3BytesTx, t.TxBytesTotal()), th.Dim)
+	}
+}
+
+// topBytePair renders "one/all" in one unit, e.g. "12.3/57.0 GiB". The h3/all
+// row reads it as how much of all outbound payload one mode carried. The unit
+// follows the larger side so a long-running node stays inside the panel at TiB
+// scale instead of truncating the unit off the end of the value.
+func topBytePair(one, all uint64) string {
+	unit, scale := "B", float64(1)
+	switch {
+	case all >= 1<<40:
+		unit, scale = "TiB", 1<<40
+	case all >= 1<<30:
+		unit, scale = "GiB", 1<<30
+	case all >= 1<<20:
+		unit, scale = "MiB", 1<<20
+	case all >= 1<<10:
+		unit, scale = "KiB", 1<<10
+	}
+	return fmt.Sprintf("%.1f/%.1f %s", float64(one)/scale, float64(all)/scale, unit)
 }
 
 // topLevelFor is topWarn past warn and topBad past bad, else no color.
