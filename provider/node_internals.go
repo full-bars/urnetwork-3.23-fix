@@ -130,10 +130,17 @@ type NodePtModeStats struct {
 // the panel it draws is exactly the one it drew before.
 func nodeTransportStats() *NodeTransportStats {
 	stats := connect.TransportModeStats()
-	if stats.H3Attempts == 0 {
+	if !transportBlockOwed(stats) {
 		return nil
 	}
 	return transportStatsFromSnapshot(stats)
+}
+
+// transportBlockOwed reports whether any transport mode has been attempted, i.e.
+// whether the reply should carry a transport block at all. H3 alone used to be
+// the gate, which hid the DNS modes on a node that runs those without H3.
+func transportBlockOwed(stats connect.TransportModeStatsSnapshot) bool {
+	return stats.H3Attempts != 0 || stats.Dns.Attempts != 0 || stats.DnsPump.Attempts != 0
 }
 
 // transportStatsFromSnapshot is the pure mapping, so the field names can be
@@ -167,8 +174,7 @@ func transportStatsFromSnapshot(stats connect.TransportModeStatsSnapshot) *NodeT
 // while the mode has never been attempted, so a box that does not run it draws
 // the panel it drew before.
 func ptModeStatsFromSnapshot(mode connect.PtModeSnapshot) *NodePtModeStats {
-	if mode.FramesTx == 0 && mode.FramesRx == 0 && mode.BytesTx == 0 && mode.BytesRx == 0 &&
-		mode.Up == 0 && mode.Attempts == 0 && mode.Connects == 0 && mode.ConnectFailures == 0 && mode.Drops == 0 {
+	if mode == (connect.PtModeSnapshot{}) {
 		return nil
 	}
 	return &NodePtModeStats{
