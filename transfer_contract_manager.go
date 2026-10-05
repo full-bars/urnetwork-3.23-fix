@@ -503,13 +503,13 @@ func (self *ContractManager) providePing() {
 			if provide {
 				if logWait {
 					logWait = false
-					self.client.log.Infof("[contract]provide ping continue\n")
+					self.client.log.Infof("▶️ [contract] provide ping continue\n")
 				}
 				return true
 			}
 			if !logWait {
 				logWait = true
-				self.client.log.Infof("⏳ [contract]provide ping wait\n")
+				self.client.log.Infof("⏳ [contract] provide ping wait\n")
 			}
 			select {
 			case <-self.ctx.Done():
@@ -625,7 +625,7 @@ func (self *ContractManager) expireQueuedContracts() {
 			}
 		}()
 		if 0 < len(expired) {
-			self.client.log.V(1).Infof("⌛ [contract]expired %d queued contracts\n", len(expired))
+			self.client.log.V(1).Infof("⌛ [contract] expired %d queued contracts\n", len(expired))
 			self.closeContracts(expired)
 		}
 	}
@@ -708,7 +708,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						}
 
 						self.contractStatus(contractStatus)
-						self.client.log.Infof("💚 [contract] acquired size=%s destination=%s\n",
+						self.client.log.Infof("🤝 [contract] acquired size=%s destination=%s\n",
 							ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())),
 							contractKey.Destination.DestinationId)
 						atomic.AddUint64(&contractsAcquired, 1)
@@ -1289,6 +1289,30 @@ func (self *ContractManager) CheckpointContract(
 	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
 }
 
+// closeContractLine renders the close report line. The marker leads the line so
+// `[contract] closed` and `[contract] checkpointed` stay contiguous tokens: both
+// are quoted in LOG_REFERENCE.md and the release notes, and a parser matching
+// them must keep working.
+func closeContractLine(
+	checkpoint bool,
+	ackedByteCount ByteCount,
+	allottedByteCount ByteCount,
+	util float64,
+	destination Id,
+) string {
+	emoji, action := "🚪", "closed"
+	if checkpoint {
+		emoji, action = "📍", "checkpointed"
+	}
+	return fmt.Sprintf("%s [contract] %s acked=%s allotted=%s util=%.0f%% destination=%s",
+		emoji,
+		action,
+		ByteCountHumanReadable(ackedByteCount),
+		ByteCountHumanReadable(allottedByteCount),
+		util,
+		destination)
+}
+
 func (self *ContractManager) CloseContract(
 	contractId Id,
 	ackedByteCount ByteCount,
@@ -1332,16 +1356,11 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		if allottedByteCount > 0 {
 			util = float64(ackedByteCount) / float64(allottedByteCount) * 100
 		}
-		action := "🚪 closed"
-		if checkpoint {
-			action = "📍 checkpointed"
-		}
-		self.client.log.Infof("[contract] %s acked=%s allotted=%s util=%.0f%% destination=%s\n",
-			action,
-			ByteCountHumanReadable(ackedByteCount),
-			ByteCountHumanReadable(allottedByteCount),
-			util,
-			contractKey.Destination.DestinationId)
+		// The marker leads the line so the `[contract] closed` token stays
+		// contiguous: LOG_REFERENCE.md and the release notes both quote it, and
+		// anything matching it must keep working.
+		self.client.log.Infof("%s\n",
+			closeContractLine(checkpoint, ackedByteCount, allottedByteCount, util, contractKey.Destination.DestinationId))
 		if !checkpoint {
 			atomic.AddUint64(&contractUtilSum, uint64(util))
 		}
