@@ -17,7 +17,7 @@ require (
 	github.com/pion/logging v0.2.4
 	github.com/pion/transport/v4 v4.0.2
 	github.com/pion/webrtc/v4 v4.2.15
-	github.com/quic-go/quic-go v0.60.0
+	github.com/quic-go/quic-go v0.61.0
 	github.com/spf13/cobra v1.10.2
 	github.com/urfoundation/sn v0.0.0-20260706061858-0d02cc78d823
 	github.com/urnetwork/glog v1.2.10-0.20260227220536-1de77fab89bd

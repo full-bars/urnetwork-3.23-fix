@@ -156,3 +156,45 @@ func TestH3ControlKeyDrivesTheLiveGate(t *testing.T) {
 		t.Fatal("a persisted off must beat URNETWORK_H3=on at startup")
 	}
 }
+
+// h3_datagram is live and has no environment default: unset means off, a
+// persisted on is replayed at startup, and clearing returns to off.
+func TestH3DatagramControlKeyDrivesTheOffer(t *testing.T) {
+	previous := connect.H3DatagramsEnabled()
+	t.Cleanup(func() { connect.SetH3DatagramsEnabled(previous) })
+
+	if needsRestart("h3_datagram") {
+		t.Fatal("h3_datagram is live: needsRestart must be false")
+	}
+	for _, bad := range []string{"maybe", "", "1"} {
+		if err := validateControlValue("h3_datagram", bad); err == nil {
+			t.Fatalf("h3_datagram=%q must be rejected", bad)
+		}
+	}
+	if err := applyLiveSideEffect("h3_datagram", "on"); err != nil || !connect.H3DatagramsEnabled() {
+		t.Fatalf("set on: err=%v enabled=%v", err, connect.H3DatagramsEnabled())
+	}
+	if err := applyLiveDefault("h3_datagram"); err != nil || connect.H3DatagramsEnabled() {
+		t.Fatalf("clear: err=%v enabled=%v", err, connect.H3DatagramsEnabled())
+	}
+
+	state := newControlState()
+	applyPersistedRuntimeTuning(state)
+	if connect.H3DatagramsEnabled() {
+		t.Fatal("an unset key must leave the offer off")
+	}
+	if err := state.set("h3_datagram", "on"); err != nil {
+		t.Fatal(err)
+	}
+	applyPersistedRuntimeTuning(state)
+	if !connect.H3DatagramsEnabled() {
+		t.Fatal("a persisted on must be replayed at startup")
+	}
+	if err := state.set("h3_datagram", "off"); err != nil {
+		t.Fatal(err)
+	}
+	applyPersistedRuntimeTuning(state)
+	if connect.H3DatagramsEnabled() {
+		t.Fatal("a persisted off must be replayed at startup")
+	}
+}

@@ -313,6 +313,7 @@ var liveEffectKeys = map[string]bool{
 	"fast_auth":                   true,
 	"smart_dialer":                true,
 	"h3":                          true,
+	"h3_datagram":                 true,
 	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
@@ -367,7 +368,7 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("%s: must be none, url, or all (got %q)", key, value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3", "h3_datagram":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -468,6 +469,9 @@ var liveDefaults = map[string]string{
 	// off default; without the entry, clear reported success while the live
 	// dialer stayed enabled until restart.
 	"smart_dialer": "off",
+	// Clearing h3_datagram stops offering DATAGRAM: it is an experiment and
+	// its default is off, with no environment variable behind it.
+	"h3_datagram": "off",
 	// Clearing the baseline key re-enables the recorder. Its default is ON,
 	// because a free upgrade baseline is the point: leaving it off after an
 	// operator cleared it would mean the file silently stops growing and
@@ -1056,6 +1060,13 @@ func applyLiveSideEffect(key, value string) error {
 		enabled := strings.EqualFold(value, "on")
 		previous := connect.SetH3Enabled(enabled)
 		tlog("⚙️ [control] applied h3=%s (was %s)\n", value, onOff(previous))
+	case "h3_datagram":
+		// The offer is made when H3 dials, so a change closes the live H3
+		// connection and it reconnects with the new setting. It does nothing
+		// while h3 itself is off. See connect.SetH3DatagramsEnabled.
+		enabled := strings.EqualFold(value, "on")
+		previous := connect.SetH3DatagramsEnabled(enabled)
+		tlog("⚙️ [control] applied h3_datagram=%s (was %s)\n", value, onOff(previous))
 	case "baseline":
 		// Sampling is a goroutine that checks the flag each tick, so turning it
 		// off takes effect on the next tick and needs no restart and no signal.
@@ -1240,6 +1251,11 @@ func applyPersistedRuntimeTuning(state *controlState) {
 		if err := applyMetricsLive("on"); err != nil {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
+	}
+	// h3_datagram has no environment default, so an unset key means off.
+	datagramValue, _ := state.get("h3_datagram")
+	if err := applyLiveSideEffect("h3_datagram", onOff(strings.EqualFold(datagramValue, "on"))); err != nil {
+		tlog("[control] failed to apply h3_datagram: %s\n", err)
 	}
 	// h3 is replayed in BOTH directions, falling back to URNETWORK_H3 when the
 	// key was never set: a persisted off must beat the env var, and an unset key
