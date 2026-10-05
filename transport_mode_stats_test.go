@@ -5,6 +5,7 @@ import (
 	"net/http/httptest"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestTransportModeStatsIgnoreEmptyFrames(t *testing.T) {
@@ -39,7 +40,7 @@ func TestH3TxSharePercent(t *testing.T) {
 		{"quarter", 75, 25, 25},
 	}
 	for _, c := range cases {
-		snap := TransportModeStatsSnapshot{H1FramesTx: c.h1, H3FramesTx: c.h3}
+		snap := TransportModeStatsSnapshot{H1DirectFramesTx: c.h1, H3FramesTx: c.h3}
 		if got := snap.H3TxSharePercent(); got != c.want {
 			t.Fatalf("%s: got %d, want %d", c.name, got, c.want)
 		}
@@ -51,7 +52,7 @@ func TestHealthSuffixHiddenUntilH3Attempted(t *testing.T) {
 		t.Fatalf("a box that never tried H3 must see no new fields, got %q", got)
 	}
 	got := TransportModeStatsSnapshot{
-		H1FramesTx: 50, H3FramesTx: 50, H3Attempts: 3, H3Up: 1, H3Drops: 2, H3ConnectFailures: 1,
+		H1DirectFramesTx: 50, H3FramesTx: 50, H3Attempts: 3, H3Up: 1, H3Drops: 2, H3ConnectFailures: 1,
 	}.HealthSuffix()
 	want := " h3_up=1 h3_tx_share=50% h3_drops=2 h3_conn_fail=1"
 	if got != want {
@@ -134,5 +135,142 @@ func TestPrometheusExposesH3DatagramCounters(t *testing.T) {
 	}
 	if !strings.Contains(body, `urnet_h3_datagram_rx_rejected_total{reason="malformed"} `) {
 		t.Fatal("missing rejected sample")
+	}
+}
+
+func TestH3CountersForSeparatesTheModes(t *testing.T) {
+	if h3CountersFor(TransportModeH3) == h3CountersFor(TransportModeH3Dns) ||
+		h3CountersFor(TransportModeH3Dns) == h3CountersFor(TransportModeH3DnsPump) ||
+		h3CountersFor(TransportModeH3) == h3CountersFor(TransportModeH3DnsPump) {
+		t.Fatal("H3, DNS and DNS pump must not share counters")
+	}
+	if h3CountersFor(TransportModeH3) != &h3Counters {
+		t.Fatal("H3 must map to the H3 counters")
+	}
+	// anything else that reaches runH3 counts as H3, as before
+	if h3CountersFor(TransportModeAuto) != &h3Counters {
+		t.Fatal("an unrecognised mode must fall back to the H3 counters")
+	}
+}
+
+func TestDnsModesAppearInTheSnapshotAndHealthSuffixOnlyOnceAttempted(t *testing.T) {
+	if got := (TransportModeStatsSnapshot{}).HealthSuffix(); got != "" {
+		t.Fatalf("nothing attempted: got %q", got)
+	}
+	got := TransportModeStatsSnapshot{
+		Dns:     PtModeSnapshot{Attempts: 2, Up: 1, ConnectFailures: 1},
+		DnsPump: PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
+	}.HealthSuffix()
+	want := " h3dns_up=1 h3dns_conn_fail=1 h3dnspump_up=0 h3dnspump_conn_fail=1"
+	if got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+	// h3 untouched: no h3 fields from the DNS modes alone
+	if strings.Contains(got, "h3_") {
+		t.Fatalf("DNS modes must not produce h3 fields: %q", got)
+	}
+}
+
+// TestHealthSuffixFormatsH3AndDnsTogether: the H3 fields and the DNS-mode fields
+// must compose on one line without dropping, doubling or misordering a field.
+func TestHealthSuffixFormatsH3AndDnsTogether(t *testing.T) {
+	got := TransportModeStatsSnapshot{
+		H1FramesTx: 10, H3FramesTx: 5, H3Attempts: 2, H3Up: 1,
+		Dns:     PtModeSnapshot{Attempts: 1, Up: 1},
+		DnsPump: PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
+	}.HealthSuffix()
+	for _, want := range []string{" h3_up=1", "h3_tx_share=", "h3dns_up=1", "h3dns_conn_fail=0", "h3dnspump_up=0", "h3dnspump_conn_fail=1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("combined suffix missing %q: %q", want, got)
+		}
+	}
+	if strings.Count(got, "h3_up=") != 1 || strings.Count(got, "h3dns_up=") != 1 {
+		t.Errorf("a field must appear exactly once: %q", got)
+	}
+}
+
+func TestPrometheusExposesPacketTranslationModes(t *testing.T) {
+	w := httptest.NewRecorder()
+	PrometheusHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, family := range []string{
+		"urnet_transport_pt_up",
+		"urnet_transport_pt_connect_attempts_total",
+		"urnet_transport_pt_connects_total",
+		"urnet_transport_pt_connect_failures_total",
+		"urnet_transport_pt_drops_total",
+	} {
+		if !strings.Contains(body, "# TYPE "+family+" ") {
+			t.Fatalf("missing family %s", family)
+		}
+		for _, mode := range []string{"h3dns", "h3dnspump"} {
+			if !strings.Contains(body, family+`{mode="`+mode+`"} `) {
+				t.Fatalf("missing %s sample for %s", family, mode)
+			}
+		}
+	}
+	for _, mode := range []string{"h3dns", "h3dnspump"} {
+		if !strings.Contains(body, `urnet_transport_payload_bytes_total{mode="`+mode+`",dir="tx"} `) {
+			t.Fatalf("missing bytes sample for %s", mode)
+		}
+	}
+}
+
+// runH3 started for the DNS mode must count under the DNS counters, not H3, even
+// though it is the same function. The dial fails (closed port), but the attempt
+// is the point.
+func TestRunH3CountsADnsModeAttemptUnderDns(t *testing.T) {
+	before := TransportModeStats()
+	transport, cancel := newClosedPortTransport(t, TransportModeH3Dns, false)
+	done := make(chan struct{})
+	go func() { defer close(done); transport.runH3(TransportModeH3Dns, 0, 1) }()
+	time.Sleep(600 * time.Millisecond)
+	cancel()
+	<-done
+	after := TransportModeStats()
+	if after.Dns.Attempts <= before.Dns.Attempts {
+		t.Fatal("a DNS-mode attempt was not counted under the DNS counters")
+	}
+	if after.H3Attempts != before.H3Attempts {
+		t.Fatalf("a DNS-mode attempt leaked into the H3 counters: %d -> %d", before.H3Attempts, after.H3Attempts)
+	}
+}
+
+// The share is measured against the direct identity's H1, not every proxy's: a
+// provider has hundreds of H1 transports and one H3, so against the total a busy
+// H3 would read as 0%.
+func TestH3TxShareIgnoresTheProxiesH1Traffic(t *testing.T) {
+	snap := TransportModeStatsSnapshot{
+		H1FramesTx:       1_000_000, // every proxy's H1
+		H1DirectFramesTx: 100,
+		H3FramesTx:       100,
+	}
+	if got := snap.H3TxSharePercent(); got != 50 {
+		t.Fatalf("share = %d%%, want 50%% of the direct identity's frames", got)
+	}
+	// the same H3 traffic with no direct H1 traffic is all H3
+	if got := (TransportModeStatsSnapshot{H1FramesTx: 1_000_000, H3FramesTx: 10}).H3TxSharePercent(); got != 100 {
+		t.Fatalf("share = %d%%, want 100%%", got)
+	}
+}
+
+func TestPrometheusExposesTheDirectH1Counters(t *testing.T) {
+	h1DirectStats.addTx(321)
+	defer func() {
+		h1DirectStats.framesTx.Add(^uint64(0))
+		h1DirectStats.bytesTx.Add(^uint64(320))
+	}()
+	w := httptest.NewRecorder()
+	PrometheusHandler().ServeHTTP(w, httptest.NewRequest(http.MethodGet, "/metrics", nil))
+	body := w.Body.String()
+	for _, want := range []string{
+		"# TYPE urnet_transport_direct_h1_frames_total counter",
+		"# TYPE urnet_transport_direct_h1_payload_bytes_total counter",
+		`urnet_transport_direct_h1_frames_total{dir="tx"} `,
+		`urnet_transport_direct_h1_payload_bytes_total{dir="rx"} `,
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
 	}
 }
