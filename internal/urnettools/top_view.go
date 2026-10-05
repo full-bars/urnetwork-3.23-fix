@@ -75,7 +75,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	// internals and the column is tall enough, Resources shrinks to its three
 	// rows and Internals takes the rest.
 	resRows := m.resourceRows() + 2
-	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+m.internalsRows()
+	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+topInternalsRows
 	var side []tui.Rect
 	if withInternals {
 		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Flex(1))
@@ -537,24 +537,45 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		sched = topMillis(in.SchedLatP99Ms)
 	}
 	row("sched", "p99 "+sched, m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
-	// The transport split, once the provider has run H3: the H3 connection
-	// counters and H3's share of outbound frames, then what H3 carries against
-	// both modes' outbound payload. Keepalives are excluded, so an idle repair
-	// transport reads as inactive (up, but moving nothing).
-	if t := in.Transport; t != nil {
+	// The transport split, once the provider has run H3. Both rows are drawn
+	// only when the box that is left can hold them: on a terminal where the
+	// panel fits its runtime figures but not these two, the panel keeps the
+	// figures instead of vanishing whole.
+	if t := in.Transport; t != nil && y+2 <= b.Height() {
 		share := "--"
 		if t.H3TxSharePercent >= 0 {
 			share = fmt.Sprintf("%d%%", t.H3TxSharePercent)
 		}
-		row("h3", fmt.Sprintf("up %d tx %s drops %d", t.H3Up, share, t.H3Drops), m.style(topLevelFor(float64(t.H3Drops), 1, 5)))
-		row("h3 tx", topMiBPair(t.H3BytesTx, t.H1BytesTx+t.H3BytesTx), th.Dim)
+		// Colour on the state an operator can act on. Drops are cumulative for
+		// the life of the process, so thresholding them would latch this row
+		// yellow after a single drop ever while H3 sat connected, and would show
+		// nothing for H3 sitting down with a clean drop count.
+		level := topInfo
+		if t.H3Up <= 0 {
+			level = topWarn
+		}
+		row("h3", fmt.Sprintf("up %d tx %s drops %d", t.H3Up, share, t.H3Drops), m.style(level))
+		row("h3/all", topBytePair(t.H3BytesTx, t.TxBytesTotal()), th.Dim)
 	}
 }
 
-// topMiBPair renders "one/all" in MiB, e.g. "12.3/58.6 MiB": the transport row
-// reads it as how much of the whole outbound payload one mode carried.
-func topMiBPair(one, all uint64) string {
-	return fmt.Sprintf("%.1f/%.1f MiB", float64(one)/(1<<20), float64(all)/(1<<20))
+// topBytePair renders "one/all" in one unit, e.g. "12.3/57.0 GiB". The h3/all
+// row reads it as how much of all outbound payload one mode carried. The unit
+// follows the larger side so a long-running node stays inside the panel at TiB
+// scale instead of truncating the unit off the end of the value.
+func topBytePair(one, all uint64) string {
+	unit, scale := "B", float64(1)
+	switch {
+	case all >= 1<<40:
+		unit, scale = "TiB", 1<<40
+	case all >= 1<<30:
+		unit, scale = "GiB", 1<<30
+	case all >= 1<<20:
+		unit, scale = "MiB", 1<<20
+	case all >= 1<<10:
+		unit, scale = "KiB", 1<<10
+	}
+	return fmt.Sprintf("%.1f/%.1f %s", float64(one)/scale, float64(all)/scale, unit)
 }
 
 // topLevelFor is topWarn past warn and topBad past bad, else no color.

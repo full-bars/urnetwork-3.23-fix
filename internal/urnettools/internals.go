@@ -61,6 +61,11 @@ type NodeTransportStats struct {
 	H3TxSharePercent int `json:"h3_tx_share_percent"`
 }
 
+// TxBytesTotal is every transport mode's outbound payload: the denominator the
+// top panel shows H3's own outbound against. It lives with the struct so adding
+// a mode is a change in one place rather than in the view.
+func (t *NodeTransportStats) TxBytesTotal() uint64 { return t.H1BytesTx + t.H3BytesTx }
+
 // GoroutineGroup is the goroutines parked in one place.
 type GoroutineGroup struct {
 	Func  string `json:"func"`

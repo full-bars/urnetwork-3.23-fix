@@ -47,11 +47,9 @@ const (
 	topGroupsEvery = 5 * time.Second
 
 	// Internals panel geometry: frame plus eight rows, and the goroutine list
-	// fits the same box.
+	// fits the same box. The transport split draws inside whatever height is
+	// left, so it never changes whether the panel appears at all.
 	topInternalsRows = 10
-	// topTransportRows is how many extra rows the transport split takes when the
-	// provider reports one: the H3 up/share/drops line and the H3/H1 byte split.
-	topTransportRows = 2
 )
 
 // topScale holds one graph's axis top steady. The top rises at once when the
@@ -233,15 +231,6 @@ func (m *topModel) hasInternals() bool { return m.rt.ok && m.rt.cur != nil }
 // exactly the rows it drew before.
 func (m *topModel) hasTransport() bool {
 	return m.rt.cur != nil && m.rt.cur.Transport != nil
-}
-
-// internalsRows is how tall the Internals panel has to be: frame plus eight
-// rows, and two more for the transport split once the provider reports one.
-func (m *topModel) internalsRows() int {
-	if m.hasTransport() {
-		return topInternalsRows + topTransportRows
-	}
-	return topInternalsRows
 }
 
 // internalsRate is a counter's rate over the newest stretch of at least

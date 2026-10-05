@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 
 	"github.com/urnetwork/connect"
@@ -37,5 +38,25 @@ func TestTransportStatsShareIsNegativeWhenNothingWasSent(t *testing.T) {
 	got := transportStatsFromSnapshot(connect.TransportModeStatsSnapshot{H3Attempts: 2, H3ConnectFailures: 2})
 	if got.H3TxSharePercent != -1 {
 		t.Fatalf("share = %d, want -1 with no frames sent", got.H3TxSharePercent)
+	}
+}
+
+// The mapping is written field by field, so a counter added in connect would be
+// dropped here (and then dropped again in the tool's mirror struct) with nothing
+// failing. This pins it.
+func TestTransportStatsMappingCoversEverySnapshotCounter(t *testing.T) {
+	// Derived from the frame counters rather than copied, so the tool cannot
+	// recompute it and disagree with the provider.
+	derived := map[string]bool{"H3TxSharePercent": true}
+	snapshot := reflect.TypeOf(connect.TransportModeStatsSnapshot{})
+	mapped := reflect.TypeOf(NodeTransportStats{})
+	for i := 0; i < snapshot.NumField(); i++ {
+		name := snapshot.Field(i).Name
+		if derived[name] {
+			continue
+		}
+		if _, ok := mapped.FieldByName(name); !ok {
+			t.Errorf("connect.TransportModeStatsSnapshot.%s has no field on NodeTransportStats: it would silently drop out of the internals reply", name)
+		}
 	}
 }
