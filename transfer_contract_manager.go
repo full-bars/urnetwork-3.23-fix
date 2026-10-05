@@ -1289,6 +1289,24 @@ func (self *ContractManager) CheckpointContract(
 	self.CloseContractWithCheckpoint(contractId, ackedByteCount, unackedByteCount, true)
 }
 
+// newCloseContract builds the message one close report sends, with a fresh
+// ReportId. It is a pure function of its inputs so the identity is testable
+// without a transport, and so no caller can accidentally omit it.
+func newCloseContract(
+	contractId Id,
+	ackedByteCount ByteCount,
+	unackedByteCount ByteCount,
+	checkpoint bool,
+) *protocol.CloseContract {
+	return &protocol.CloseContract{
+		ContractId:       contractId.Bytes(),
+		AckedByteCount:   uint64(ackedByteCount),
+		UnackedByteCount: uint64(unackedByteCount),
+		Checkpoint:       checkpoint,
+		ReportId:         NewId().Bytes(),
+	}
+}
+
 // closeContractLine renders the close report line. The marker leads the line so
 // `[contract] closed` and `[contract] checkpointed` stay contiguous tokens: both
 // are quoted in LOG_REFERENCE.md and the release notes, and a parser matching
@@ -1392,12 +1410,16 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 	// holds little state — a mutex, a monitor, and a derived context
 	// — and its supervisor goroutine exits on success or when the
 	// parent context closes, so there's no long-lived leak.
-	frame, err := ToFrame(&protocol.CloseContract{
-		ContractId:       contractId.Bytes(),
-		AckedByteCount:   uint64(ackedByteCount),
-		UnackedByteCount: uint64(unackedByteCount),
-		Checkpoint:       checkpoint,
-	}, self.settings.ProtocolVersion)
+	// One identity belongs to this logical incremental report: a fresh ReportId
+	// is attached to each report so the backend can tell a ControlSync
+	// retransmission (same serialized frame) from a new report. Another
+	// equal-byte checkpoint is a different operation with its own id.
+	// Older backends ignore the field and preserve legacy incremental semantics.
+	closeContract := newCloseContract(contractId, ackedByteCount, unackedByteCount, checkpoint)
+	// The report id is the client's only record of the identity it reported; a
+	// dedup or escrow mismatch cannot be triaged from the client side without it.
+	self.client.log.V(2).Infof("[contract] close %s report_id=%s checkpoint=%v\n", contractId, Id(closeContract.ReportId), checkpoint)
+	frame, err := ToFrame(closeContract, self.settings.ProtocolVersion)
 	if err != nil {
 		self.client.log.Infof("[contract]could not create close contract frame = %s\n", err)
 		return
