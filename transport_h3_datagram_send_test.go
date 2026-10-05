@@ -37,6 +37,12 @@ type sendHarness struct {
 	cancel       context.CancelFunc
 	done         chan struct{}
 	transport    *PlatformTransport
+	sessions     chan h3TestSession
+	// conn and stream are the server side of the live connection, so a test can
+	// abort one direction and induce a stream write error deterministically while
+	// the connection itself stays up.
+	conn   *quic.Conn
+	stream *quic.Stream
 }
 
 // startSendHarness starts the server and the transport. serverReadsDatagrams is
@@ -56,6 +62,8 @@ func startSendHarness(t *testing.T, serverReadsDatagrams bool, h1Up bool) *sendH
 		if !accepted {
 			return
 		}
+		harness.conn = conn
+		harness.stream = stream
 		// stream reader: everything non-empty the client wrote on the stream
 		go func() {
 			for {
@@ -119,6 +127,7 @@ func startSendHarness(t *testing.T, serverReadsDatagrams bool, h1Up bool) *sendH
 		transport.setModeAvailable(TransportModeH1, true)
 	}
 	harness.transport = transport
+	harness.sessions = server.sessions
 	harness.cancel = transportCancel
 	harness.done = make(chan struct{})
 	go func() { defer close(harness.done); transport.runH3(TransportModeH3, 0, 1) }()
