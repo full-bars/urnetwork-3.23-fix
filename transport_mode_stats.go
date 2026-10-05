@@ -158,7 +158,9 @@ func (self TransportModeStatsSnapshot) H3TxSharePercent() int {
 
 // HealthSuffix renders the H3 part of the [health] line, or "" while H3 has
 // never been attempted so a box without H3 sees no new fields. The DNS modes add
-// their own fields only once one of them has been attempted.
+// their own fields only once one of them has been attempted; their keys carry
+// the h3 prefix so a log scraper cannot conflate them with the dns_failures=
+// figure the same line already reports for DoH resolution.
 func (self TransportModeStatsSnapshot) HealthSuffix() string {
 	out := ""
 	if self.H3Attempts != 0 {
@@ -170,10 +172,10 @@ func (self TransportModeStatsSnapshot) HealthSuffix() string {
 			self.H3Up, share, self.H3Drops, self.H3ConnectFailures)
 	}
 	if self.Dns.Attempts != 0 {
-		out += fmt.Sprintf(" dns_up=%d dns_conn_fail=%d", self.Dns.Up, self.Dns.ConnectFailures)
+		out += fmt.Sprintf(" h3dns_up=%d h3dns_conn_fail=%d", self.Dns.Up, self.Dns.ConnectFailures)
 	}
 	if self.DnsPump.Attempts != 0 {
-		out += fmt.Sprintf(" dnspump_up=%d dnspump_conn_fail=%d", self.DnsPump.Up, self.DnsPump.ConnectFailures)
+		out += fmt.Sprintf(" h3dnspump_up=%d h3dnspump_conn_fail=%d", self.DnsPump.Up, self.DnsPump.ConnectFailures)
 	}
 	return out
 }

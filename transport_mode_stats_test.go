@@ -161,13 +161,31 @@ func TestDnsModesAppearInTheSnapshotAndHealthSuffixOnlyOnceAttempted(t *testing.
 		Dns:     PtModeSnapshot{Attempts: 2, Up: 1, ConnectFailures: 1},
 		DnsPump: PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
 	}.HealthSuffix()
-	want := " dns_up=1 dns_conn_fail=1 dnspump_up=0 dnspump_conn_fail=1"
+	want := " h3dns_up=1 h3dns_conn_fail=1 h3dnspump_up=0 h3dnspump_conn_fail=1"
 	if got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 	// h3 untouched: no h3 fields from the DNS modes alone
 	if strings.Contains(got, "h3_") {
 		t.Fatalf("DNS modes must not produce h3 fields: %q", got)
+	}
+}
+
+// TestHealthSuffixFormatsH3AndDnsTogether: the H3 fields and the DNS-mode fields
+// must compose on one line without dropping, doubling or misordering a field.
+func TestHealthSuffixFormatsH3AndDnsTogether(t *testing.T) {
+	got := TransportModeStatsSnapshot{
+		H1FramesTx: 10, H3FramesTx: 5, H3Attempts: 2, H3Up: 1,
+		Dns:     PtModeSnapshot{Attempts: 1, Up: 1},
+		DnsPump: PtModeSnapshot{Attempts: 1, ConnectFailures: 1},
+	}.HealthSuffix()
+	for _, want := range []string{" h3_up=1", "h3_tx_share=", "h3dns_up=1", "h3dns_conn_fail=0", "h3dnspump_up=0", "h3dnspump_conn_fail=1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("combined suffix missing %q: %q", want, got)
+		}
+	}
+	if strings.Count(got, "h3_up=") != 1 || strings.Count(got, "h3dns_up=") != 1 {
+		t.Errorf("a field must appear exactly once: %q", got)
 	}
 }
 
