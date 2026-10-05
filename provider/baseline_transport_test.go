@@ -27,6 +27,45 @@ func TestBaselineTransportOmitsH3UntilAttempted(t *testing.T) {
 	}
 }
 
+// A direct-only box has H3 enabled on its native identity, so H1Direct mirrors H1
+// exactly. Before H3 has been attempted the block says nothing new, and writing
+// it duplicates every counter on every 15-minute sample.
+func TestBaselineTransportOmitsH1DirectUntilH3Attempted(t *testing.T) {
+	modes := connect.TransportModeStatsSnapshot{
+		H1FramesTx: 10, H1FramesRx: 20, H1BytesTx: 1000, H1BytesRx: 2000,
+		H1DirectFramesTx: 10, H1DirectFramesRx: 20, H1DirectBytesTx: 1000, H1DirectBytesRx: 2000,
+	}
+	got := buildBaselineTransport(modes, connect.H3DatagramSnapshot{})
+	if got.H1Direct != nil {
+		t.Fatalf("H3 never attempted: h1_direct must be omitted, got %+v", got.H1Direct)
+	}
+	line, err := json.Marshal(got)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(line), "h1_direct") {
+		t.Fatalf("no h1_direct field before H3 is attempted: %s", line)
+	}
+
+	// Still identical after H3 was attempted: the direct identity carries all of
+	// H1, so there is no split to record.
+	modes.H3Attempts = 3
+	if got := buildBaselineTransport(modes, connect.H3DatagramSnapshot{}); got.H1Direct != nil {
+		t.Fatalf("h1_direct equal to h1 must be withheld, got %+v", got.H1Direct)
+	}
+
+	// With a proxy pool the totals differ from the direct identity, and the split
+	// is exactly what the panel needs.
+	modes.H1FramesTx, modes.H1BytesTx = 30, 3000
+	got = buildBaselineTransport(modes, connect.H3DatagramSnapshot{})
+	if got.H1Direct == nil {
+		t.Fatal("h1_direct must be written when the direct identity differs from h1")
+	}
+	if got.H1Direct.FramesTx != 10 || got.H1Direct.FramesRx != 20 || got.H1Direct.BytesTx != 1000 || got.H1Direct.BytesRx != 2000 {
+		t.Fatalf("h1_direct = %+v", got.H1Direct)
+	}
+}
+
 func TestBaselineTransportH3AndDatagramBlocks(t *testing.T) {
 	modes := connect.TransportModeStatsSnapshot{
 		H1FramesTx: 5, H3FramesTx: 7, H3FramesRx: 8, H3BytesTx: 700, H3BytesRx: 800,
@@ -113,17 +152,27 @@ func TestBaselineTransportDnsModesAbsentUntilAttempted(t *testing.T) {
 }
 
 func TestBaselineTransportDirectH1IsOptional(t *testing.T) {
-	got := buildBaselineTransport(connect.TransportModeStatsSnapshot{H1FramesTx: 100}, connect.H3DatagramSnapshot{})
+	// No direct traffic at all: absent.
+	got := buildBaselineTransport(connect.TransportModeStatsSnapshot{H1FramesTx: 100, H3Attempts: 1}, connect.H3DatagramSnapshot{})
 	if got.H1Direct != nil {
 		t.Fatalf("no direct H1 traffic: block must be absent, got %+v", got.H1Direct)
 	}
+	// A real direct split with H3 attempted: present.
 	got = buildBaselineTransport(connect.TransportModeStatsSnapshot{
-		H1FramesTx: 100, H1DirectFramesTx: 7, H1DirectBytesTx: 700,
+		H1FramesTx: 100, H1DirectFramesTx: 7, H1DirectBytesTx: 700, H3Attempts: 1,
 	}, connect.H3DatagramSnapshot{})
 	if got.H1Direct == nil || got.H1Direct.FramesTx != 7 || got.H1Direct.BytesTx != 700 {
 		t.Fatalf("direct h1 = %+v", got.H1Direct)
 	}
 	if got.H1.FramesTx != 100 {
 		t.Fatalf("h1 total must still be every identity: %+v", got.H1)
+	}
+	// Withheld until H3 has been attempted: the block exists for the H3
+	// comparison, so before that it records nothing the H1 block does not.
+	got = buildBaselineTransport(connect.TransportModeStatsSnapshot{
+		H1FramesTx: 100, H1DirectFramesTx: 7, H1DirectBytesTx: 700,
+	}, connect.H3DatagramSnapshot{})
+	if got.H1Direct != nil {
+		t.Fatalf("h1_direct must wait until H3 has been attempted, got %+v", got.H1Direct)
 	}
 }

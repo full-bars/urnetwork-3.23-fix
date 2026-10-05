@@ -200,7 +200,8 @@ type baselineH3Datagram struct {
 type baselineTransport struct {
 	// H1 is every H1 transport in the process, one per proxy identity. H1Direct
 	// is the direct identity's H1 alone, the fair comparison for H3, and is
-	// absent when that identity moved nothing.
+	// absent unless H3 was attempted and that identity's counters differ from
+	// the all-transports H1.
 	H1       baselineTransportMode  `json:"h1"`
 	H1Direct *baselineTransportMode `json:"h1_direct,omitempty"`
 	H3       *baselineH3            `json:"h3,omitempty"`
@@ -929,11 +930,17 @@ func buildBaselineTransport(modes connect.TransportModeStatsSnapshot, datagram c
 			BytesRx:  modes.H1BytesRx,
 		},
 	}
-	if d := (baselineTransportMode{
-		FramesTx: modes.H1DirectFramesTx, FramesRx: modes.H1DirectFramesRx,
-		BytesTx: modes.H1DirectBytesTx, BytesRx: modes.H1DirectBytesRx,
-	}); d != (baselineTransportMode{}) {
-		out.H1Direct = &d
+	if modes.H3Attempts != 0 {
+		// H1Direct is the direct identity's H1 alone. Only meaningful once H3
+		// has been attempted, and only worth writing when it differs from the
+		// all-transports H1 — on a direct-only box the two are identical, and
+		// emitting both just duplicates the counters every 15 minutes.
+		if d := (baselineTransportMode{
+			FramesTx: modes.H1DirectFramesTx, FramesRx: modes.H1DirectFramesRx,
+			BytesTx: modes.H1DirectBytesTx, BytesRx: modes.H1DirectBytesRx,
+		}); d != (baselineTransportMode{}) && d != out.H1 {
+			out.H1Direct = &d
+		}
 	}
 	out.Dns = baselinePtFrom(modes.Dns)
 	out.DnsPump = baselinePtFrom(modes.DnsPump)
