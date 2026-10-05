@@ -2,6 +2,7 @@ package connect
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
 	"net"
 	"sort"
@@ -124,6 +125,9 @@ func (p *stunProber) suffix() string {
 var (
 	stunProbeOnce sync.Once
 	stunProbeOn   bool
+	// stunProbeStop ends the loop. Closed by StopStunProbe, once.
+	stunProbeStop   = make(chan struct{})
+	stunProbeStopOn sync.Once
 )
 
 func startStunProbe() {
@@ -131,10 +135,29 @@ func startStunProbe() {
 		stunProbeOn = true
 		go func() {
 			for {
+				select {
+				case <-stunProbeStop:
+					return
+				default:
+				}
 				stunProbe.run()
-				time.Sleep(stunProbeInterval)
+				// Wait out the interval, but wake immediately on a stop: a
+				// shutdown must not sit behind a five-minute sleep.
+				select {
+				case <-stunProbeStop:
+					return
+				case <-time.After(stunProbeInterval):
+				}
 			}
 		}()
+	})
+}
+
+// StopStunProbe ends the background probe loop. Safe to call when it was never
+// started, and safe to call more than once.
+func StopStunProbe() {
+	stunProbeStopOn.Do(func() {
+		close(stunProbeStop)
 	})
 }
 
@@ -147,12 +170,7 @@ func (p *stunProber) run() {
 	defer func() { recover() }() // keep the loop alive no matter what
 
 	settings := DefaultWebRtcSettings()
-	endpoints := append([]string{}, settings.IceServerUrls...)
-	// Probe-only addition: not part of the real ICE candidate gathering (that
-	// would change NAT/footprint behavior), so it is probed for visibility but
-	// deliberately left out of IceServerUrls. See the operator question in the
-	// code review about whether it should be promoted to a real endpoint.
-	endpoints = append(endpoints, "stun:stun.cloudflare.com:3478")
+	endpoints := stunProbeEndpoints(settings)
 
 	v6Avail := ipv6Available() // reuse the existing gate: no route => n/a
 
@@ -176,8 +194,13 @@ func (p *stunProber) run() {
 			wg.Add(1)
 			go func(h, pr string, fi int, fn string) {
 				defer wg.Done()
+				// Probe OUTSIDE the lock: a probe is a socket round trip, and
+				// evaluating it as an argument to the append below held mu for
+				// the whole cycle, serializing every endpoint behind the first
+				// slow one.
+				ok := probeEndpoint(h, pr, fn, v6Avail)
 				mu.Lock()
-				out = append(out, res{prov, fi, probeEndpoint(h, pr, fn, v6Avail)})
+				out = append(out, res{prov, fi, ok})
 				mu.Unlock()
 			}(host, port, fam, familyName)
 		}
@@ -194,6 +217,30 @@ func (p *stunProber) run() {
 	p.mu.Lock()
 	p.result = &stunProbeResult{At: time.Now(), Providers: providers}
 	p.mu.Unlock()
+}
+
+// stunProbeEndpoints returns the endpoints one probe cycle covers: every
+// configured ICE server, plus the probe-only cloudflare host (probed for
+// visibility, deliberately kept OUT of IceServerUrls so it never affects ICE
+// candidate gathering). Deduplicated by host:port, so an endpoint listed twice —
+// or also configured in ICE — is probed once per cycle.
+func stunProbeEndpoints(settings *WebRtcSettings) []string {
+	all := append(append([]string{}, settings.IceServerUrls...), "stun:stun.cloudflare.com:3478")
+	seen := map[string]bool{}
+	out := make([]string, 0, len(all))
+	for _, url := range all {
+		host, port := stunEndpoint(url)
+		if host == "" {
+			continue
+		}
+		key := host + ":" + port
+		if seen[key] {
+			continue
+		}
+		seen[key] = true
+		out = append(out, url)
+	}
+	return out
 }
 
 // aggregateFamily merges a new per-endpoint result into an existing per-provider
@@ -244,6 +291,14 @@ func stunEndpoint(raw string) (host, port string) {
 	return s, stunDefaultPort
 }
 
+// lookupHostBounded resolves host under the same deadline as the probe itself,
+// so a resolver that never answers cannot hold the probe cycle open.
+func lookupHostBounded(host string) ([]net.IP, error) {
+	ctx, cancel := context.WithTimeout(context.Background(), stunProbeTimeout)
+	defer cancel()
+	return net.DefaultResolver.LookupIP(ctx, "ip", host)
+}
+
 // probeEndpoint resolves familyName on host and issues one STUN binding
 // request, returning the per-endpoint family result.
 func probeEndpoint(host, port, familyName string, v6Avail bool) stunFamilyResult {
@@ -254,7 +309,7 @@ func probeEndpoint(host, port, familyName string, v6Avail bool) stunFamilyResult
 			return stunFamNA // no IPv6 route: skip, not a failure
 		}
 	}
-	ips, err := net.LookupIP(host)
+	ips, err := lookupHostBounded(host)
 	if err != nil {
 		return stunFamFail // host named by config but unresolvable
 	}
@@ -306,13 +361,28 @@ func stunBindingRequest(conn net.Conn) bool {
 	if err != nil || n < stunHeaderSize {
 		return false
 	}
-	if putU32nil(resp[4:8]) != stunMagicCookie || !bytes.Equal(resp[8:20], txid[:]) {
+	if !isStunSuccessResponse(resp[:n], txid[:]) {
+		return false
+	}
+	return true
+}
+
+// isStunSuccessResponse reports whether a received datagram is a Binding Success
+// Response to OUR transaction that carries the reflected address. Everything
+// else is not a success: a mismatched cookie or transaction id, an error
+// response (even one carrying bytes shaped like an attribute), or a success
+// response with no XOR-MAPPED-ADDRESS.
+func isStunSuccessResponse(msg, txid []byte) bool {
+	if len(msg) < stunHeaderSize {
+		return false
+	}
+	if putU32nil(msg[4:8]) != stunMagicCookie || !bytes.Equal(msg[8:20], txid) {
 		return false // not a response to our transaction
 	}
-	if msgType := putU16nil(resp[0:2]); msgType == stunMsgBindingResp {
-		return true
+	if putU16nil(msg[0:2]) != stunMsgBindingResp {
+		return false
 	}
-	return hasXorMappedAddress(resp[:n])
+	return hasXorMappedAddress(msg)
 }
 
 // hasXorMappedAddress scans a STUN message's attribute section for a

@@ -133,3 +133,73 @@ func TestAggregateFamily(t *testing.T) {
 		t.Errorf("na+na -> want na, got %v", got)
 	}
 }
+
+// buildStunMsg renders a STUN message with the given type, transaction id and
+// raw attribute bytes, for the response-parsing tests.
+func buildStunMsg(msgType uint16, txid []byte, attrs []byte) []byte {
+	m := make([]byte, stunHeaderSize+len(attrs))
+	putU16(m[0:2], msgType)
+	putU16(m[2:4], uint16(len(attrs)))
+	putU32(m[4:8], stunMagicCookie)
+	copy(m[8:20], txid)
+	copy(m[20:], attrs)
+	return m
+}
+
+// TestIsStunSuccessResponse pins the acceptance rule: only a Binding Success
+// Response to OUR transaction that carries XOR-MAPPED-ADDRESS is a success. An
+// error response shaped like one, or a success reflecting nothing, is not —
+// both used to be counted as success.
+func TestIsStunSuccessResponse(t *testing.T) {
+	txid := []byte("0123456789ab")
+	attr := make([]byte, 12) // type 0x0020, length 8, 8 bytes of value
+	putU16(attr[0:2], stunAttrXorMapped)
+	putU16(attr[2:4], 8)
+
+	cases := []struct {
+		name string
+		msg  []byte
+		want bool
+	}{
+		{"success with xor-mapped", buildStunMsg(stunMsgBindingResp, txid, attr), true},
+		{"success without xor-mapped", buildStunMsg(stunMsgBindingResp, txid, nil), false},
+		{"error response carrying xor-mapped", buildStunMsg(0x0111, txid, attr), false},
+		{"foreign transaction id", buildStunMsg(stunMsgBindingResp, []byte("xxxxxxxxxxxx"), attr), false},
+		{"truncated", []byte{0x01, 0x01}, false},
+	}
+	for _, c := range cases {
+		if got := isStunSuccessResponse(c.msg, txid); got != c.want {
+			t.Errorf("%s: got %v, want %v", c.name, got, c.want)
+		}
+	}
+
+	// A foreign magic cookie is not our transaction either.
+	bad := buildStunMsg(stunMsgBindingResp, txid, attr)
+	putU32(bad[4:8], 0)
+	if isStunSuccessResponse(bad, txid) {
+		t.Error("foreign magic cookie must not be accepted")
+	}
+}
+
+// TestStunProbeEndpointsDedup: an endpoint listed twice — or configured in ICE
+// and also probed as the probe-only host — is probed once per cycle.
+func TestStunProbeEndpointsDedup(t *testing.T) {
+	settings := &WebRtcSettings{IceServerUrls: []string{
+		"stun:stun.l.google.com:19302",
+		"stun:stun.l.google.com:19302",
+		"stun:stun.cloudflare.com:3478",
+	}}
+	eps := stunProbeEndpoints(settings)
+	seen := map[string]int{}
+	for _, e := range eps {
+		seen[e]++
+	}
+	for e, n := range seen {
+		if n != 1 {
+			t.Errorf("endpoint %q appears %d times, want 1", e, n)
+		}
+	}
+	if seen["stun:stun.l.google.com:19302"] != 1 || seen["stun:stun.cloudflare.com:3478"] != 1 {
+		t.Errorf("want google + cloudflare once each, got %v", eps)
+	}
+}
