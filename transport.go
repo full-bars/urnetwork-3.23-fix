@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"crypto/tls"
+	"errors"
 	"fmt"
 	"math"
 	mathrand "math/rand"
@@ -1824,7 +1825,19 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					// blocks while its flight is full and takes no context, so calling
 					// it from here would let a peer that stops draining datagrams hold
 					// up the stream frames queued behind it.
-					datagramSender := newH3DatagramSender(handleCtx, conn.SendDatagram)
+					datagramSender := newH3DatagramSender(handleCtx, conn.SendDatagram, func(err error) {
+						// The lane sends asynchronously, so the errors quic-go returned
+						// synchronously now arrive here. A too-large report means the
+						// path shrank: lower the live limit (never raise it) so the next
+						// frame takes the stream instead of being discarded. Everything
+						// else is counted, so the send-error metric keeps meaning
+						// something.
+						var tooLarge *quic.DatagramTooLargeError
+						if errors.As(err, &tooLarge) {
+							lowerDatagramPathLimit(&maxDatagramByteCount, tooLarge.MaxDatagramPayloadSize)
+						}
+						h3DatagramStats.sendErrorCount.Add(1)
+					})
 					logSendError := func(err error) {
 						if ok, suppressed := shouldLogWriteErr(); ok {
 							if suppressed > 0 {
@@ -1923,9 +1936,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 									// A datagram-path failure is not a stream failure: put the
 									// message on the reliable lane rather than tearing the whole
 									// connection down. Only a stream write error owns that.
+									// offerStream owns the message on every path, including its
+									// failures, so it must not be returned here as well.
 									logSendError(err)
 									if !offerStream(message) {
-										MessagePoolReturn(message)
 										return
 									}
 									continue

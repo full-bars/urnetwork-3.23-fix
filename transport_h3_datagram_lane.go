@@ -18,20 +18,29 @@ const h3DatagramSendLaneDepth = 16
 // stops draining datagrams hold up stream frames behind it: an unreliable lane
 // stalling a reliable one. Here the blocking call happens on this goroutine, and
 // the dispatcher only ever hands over a datagram it can hand over immediately.
+//
+// Sending here is asynchronous, so the errors quic-go returns synchronously are
+// asynchronous too. onSendError reports each one so the caller can lower the path
+// limit on a too-large report and keep counting failures.
 type h3DatagramSender struct {
-	send    chan []byte
-	done    chan struct{}
+	ctx    context.Context
+	send   chan []byte
+	done   chan struct{}
+	report func(error)
+
 	stopped atomic.Bool
 }
 
 // newH3DatagramSender starts the lane. The goroutine exits when ctx ends, and
 // anything still queued is dropped, which is what an unreliable lane is for.
-func newH3DatagramSender(ctx context.Context, send func([]byte) error) *h3DatagramSender {
+func newH3DatagramSender(ctx context.Context, send func([]byte) error, report func(error)) *h3DatagramSender {
 	self := &h3DatagramSender{
-		send: make(chan []byte, h3DatagramSendLaneDepth),
-		done: make(chan struct{}),
+		ctx:    ctx,
+		send:   make(chan []byte, h3DatagramSendLaneDepth),
+		done:   make(chan struct{}),
+		report: report,
 	}
-	go func() {
+	go HandleError(func() {
 		defer func() {
 			self.stopped.Store(true)
 			close(self.done)
@@ -41,13 +50,25 @@ func newH3DatagramSender(ctx context.Context, send func([]byte) error) *h3Datagr
 			case <-ctx.Done():
 				return
 			case payload := <-self.send:
-				// A failure here is the lane's own; the guard and the connection's
-				// failure handling own the outcome, so the datagram is dropped.
-				_ = send(payload)
+				if err := send(payload); err != nil && self.report != nil {
+					self.report(err)
+				}
 			}
 		}
-	}()
+	})
 	return self
+}
+
+// lowerDatagramPathLimit records a path limit quic-go reported from the lane
+// goroutine. It only ever lowers the live limit and ignores a nonsensical report,
+// so the dispatcher's next frame takes the stream rather than a datagram the path
+// can no longer carry.
+func lowerDatagramPathLimit(live *atomic.Int64, reported int64) bool {
+	if reported <= 0 || live.Load() <= reported {
+		return false
+	}
+	live.Store(reported)
+	return true
 }
 
 // trySend hands one datagram to the lane without waiting, and reports whether it
@@ -55,9 +76,13 @@ func newH3DatagramSender(ctx context.Context, send func([]byte) error) *h3Datagr
 // message through one reused scratch buffer, so an owned copy is what makes an
 // asynchronous send safe.
 func (self *h3DatagramSender) trySend(payload []byte) bool {
-	// A stopped lane has no reader: taking the datagram would only park it in a
-	// channel nobody drains.
-	if self.stopped.Load() {
+	// A stopped or cancelled lane has no reader: taking the datagram would only
+	// park it in a channel nobody drains, while the caller counted it as sent.
+	if self.stopped.Load() || self.ctx.Err() != nil {
+		return false
+	}
+	// Congestion is the common case here, so refuse before paying for the copy.
+	if cap(self.send) <= len(self.send) {
 		return false
 	}
 	owned := make([]byte, len(payload))
