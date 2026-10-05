@@ -2099,7 +2099,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) + rate(urnet_transport_direct_h1_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])), 1e-9)",
+          "expr": "sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])) / clamp_min(sum by (instance) (rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])) + sum by (instance) (rate(urnet_transport_direct_h1_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval])), 1e-9)",
           "refId": "A",
           "legendFormat": "{{instance}}",
           "range": true,
