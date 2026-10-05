@@ -94,9 +94,35 @@ type NodeTransportStats struct {
 	H3Drops           uint64 `json:"h3_drops"`
 	H3Up              int64  `json:"h3_up"`
 
-	// H3TxSharePercent is H3's share of outbound payload frames, or -1 when
-	// neither mode has sent one.
+	// H1Direct is H1 for the identities eligible for H3 alone — the fair
+	// comparison for H3, since it leaves the proxy pool out of the denominator.
+	H1DirectFramesTx uint64 `json:"h1_direct_frames_tx"`
+	H1DirectFramesRx uint64 `json:"h1_direct_frames_rx"`
+	H1DirectBytesTx  uint64 `json:"h1_direct_bytes_tx"`
+	H1DirectBytesRx  uint64 `json:"h1_direct_bytes_rx"`
+
+	// Dns and DnsPump are the WhoDis DNS and DNS-pump packet-translation modes,
+	// absent until one of them has been attempted.
+	Dns     *NodePtModeStats `json:"dns,omitempty"`
+	DnsPump *NodePtModeStats `json:"dns_pump,omitempty"`
+
+	// H3TxSharePercent is H3's share of the direct identity's outbound payload
+	// frames, or -1 when neither mode has sent one.
 	H3TxSharePercent int `json:"h3_tx_share_percent"`
+}
+
+// NodePtModeStats is one packet-translation mode's counters, mirroring the
+// snapshot's per-mode block so a mode that is running is visible in the reply.
+type NodePtModeStats struct {
+	FramesTx        uint64 `json:"frames_tx"`
+	FramesRx        uint64 `json:"frames_rx"`
+	BytesTx         uint64 `json:"bytes_tx"`
+	BytesRx         uint64 `json:"bytes_rx"`
+	Up              int64  `json:"up"`
+	Attempts        uint64 `json:"attempts"`
+	Connects        uint64 `json:"connects"`
+	ConnectFailures uint64 `json:"connect_failures"`
+	Drops           uint64 `json:"drops"`
 }
 
 // nodeTransportStats maps the counters into the reply, or nil while H3 has
@@ -127,7 +153,34 @@ func transportStatsFromSnapshot(stats connect.TransportModeStatsSnapshot) *NodeT
 		H3ConnectFailures: stats.H3ConnectFailures,
 		H3Drops:           stats.H3Drops,
 		H3Up:              stats.H3Up,
+		H1DirectFramesTx:  stats.H1DirectFramesTx,
+		H1DirectFramesRx:  stats.H1DirectFramesRx,
+		H1DirectBytesTx:   stats.H1DirectBytesTx,
+		H1DirectBytesRx:   stats.H1DirectBytesRx,
+		Dns:               ptModeStatsFromSnapshot(stats.Dns),
+		DnsPump:           ptModeStatsFromSnapshot(stats.DnsPump),
 		H3TxSharePercent:  stats.H3TxSharePercent(),
+	}
+}
+
+// ptModeStatsFromSnapshot mirrors one packet-translation mode's counters, or nil
+// while the mode has never been attempted, so a box that does not run it draws
+// the panel it drew before.
+func ptModeStatsFromSnapshot(mode connect.PtModeSnapshot) *NodePtModeStats {
+	if mode.FramesTx == 0 && mode.FramesRx == 0 && mode.BytesTx == 0 && mode.BytesRx == 0 &&
+		mode.Up == 0 && mode.Attempts == 0 && mode.Connects == 0 && mode.ConnectFailures == 0 && mode.Drops == 0 {
+		return nil
+	}
+	return &NodePtModeStats{
+		FramesTx:        mode.FramesTx,
+		FramesRx:        mode.FramesRx,
+		BytesTx:         mode.BytesTx,
+		BytesRx:         mode.BytesRx,
+		Up:              mode.Up,
+		Attempts:        mode.Attempts,
+		Connects:        mode.Connects,
+		ConnectFailures: mode.ConnectFailures,
+		Drops:           mode.Drops,
 	}
 }
 
