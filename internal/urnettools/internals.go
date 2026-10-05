@@ -56,15 +56,50 @@ type NodeTransportStats struct {
 	H3Drops           uint64 `json:"h3_drops"`
 	H3Up              int64  `json:"h3_up"`
 
-	// H3TxSharePercent is H3's share of outbound payload frames, or -1 when
-	// neither mode has sent one.
+	// H1Direct is H1 for the identities eligible for H3 alone: the denominator
+	// the provider measures H3's share against.
+	H1DirectFramesTx uint64 `json:"h1_direct_frames_tx"`
+	H1DirectFramesRx uint64 `json:"h1_direct_frames_rx"`
+	H1DirectBytesTx  uint64 `json:"h1_direct_bytes_tx"`
+	H1DirectBytesRx  uint64 `json:"h1_direct_bytes_rx"`
+
+	// Dns and DnsPump are the WhoDis DNS and DNS-pump modes, absent until the
+	// provider has attempted one of them.
+	Dns     *NodePtModeStats `json:"dns,omitempty"`
+	DnsPump *NodePtModeStats `json:"dns_pump,omitempty"`
+
+	// H3TxSharePercent is H3's share of the direct identity's outbound payload
+	// frames, or -1 when neither mode has sent one.
 	H3TxSharePercent int `json:"h3_tx_share_percent"`
+}
+
+// NodePtModeStats is one packet-translation mode's counters, mirroring the
+// provider's block of the same name.
+type NodePtModeStats struct {
+	FramesTx        uint64 `json:"frames_tx"`
+	FramesRx        uint64 `json:"frames_rx"`
+	BytesTx         uint64 `json:"bytes_tx"`
+	BytesRx         uint64 `json:"bytes_rx"`
+	Up              int64  `json:"up"`
+	Attempts        uint64 `json:"attempts"`
+	Connects        uint64 `json:"connects"`
+	ConnectFailures uint64 `json:"connect_failures"`
+	Drops           uint64 `json:"drops"`
 }
 
 // TxBytesTotal is every transport mode's outbound payload: the denominator the
 // top panel shows H3's own outbound against. It lives with the struct so adding
 // a mode is a change in one place rather than in the view.
-func (t *NodeTransportStats) TxBytesTotal() uint64 { return t.H1BytesTx + t.H3BytesTx }
+func (t *NodeTransportStats) TxBytesTotal() uint64 {
+	total := t.H1BytesTx + t.H3BytesTx
+	if t.Dns != nil {
+		total += t.Dns.BytesTx
+	}
+	if t.DnsPump != nil {
+		total += t.DnsPump.BytesTx
+	}
+	return total
+}
 
 // GoroutineGroup is the goroutines parked in one place.
 type GoroutineGroup struct {
