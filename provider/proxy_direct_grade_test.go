@@ -295,8 +295,9 @@ func TestDirectGradeLine_StaleAfterSeveralIntervals(t *testing.T) {
 }
 
 // TestIsImportantLogLine_DirectGrade: the direct line must reach the /dev/shm
-// important buffer in every state. The pre-existing "graded" marker would catch
-// "(ungraded)" by substring but NOT a real grade line, so the marker is explicit.
+// important buffer in every state. No existing marker can match it — they all
+// carry the "[proxy][grade] " prefix while this line continues with "direct: "
+// — so the explicit marker is load-bearing.
 func TestIsImportantLogLine_DirectGrade(t *testing.T) {
 	for _, line := range []string{
 		"[proxy][grade] direct: A (score 1.00, 12/12)",
@@ -308,6 +309,41 @@ func TestIsImportantLogLine_DirectGrade(t *testing.T) {
 		if !isImportantLogLine(line) {
 			t.Errorf("direct grade line must reach the important buffer: %q", line)
 		}
+	}
+}
+
+// TestReadDirectGrade_ToleratesCorruptionAndZeroTimestamps: a corrupt file is
+// "no evidence", never an error the caller must handle, and a grade with a zero
+// timestamp must degrade to the stale state rather than rendering a bogus "ago".
+func TestReadDirectGrade_ToleratesCorruptionAndZeroTimestamps(t *testing.T) {
+	home := withTempHome(t)
+	t.Setenv("DISABLE_DIRECT_IP", "")
+	p := filepath.Join(home, ".urnetwork", "direct_grade.json")
+	if err := os.MkdirAll(filepath.Dir(p), 0o700); err != nil {
+		t.Fatal(err)
+	}
+
+	// corrupt bytes -> no evidence, and the summary reports ungraded
+	if err := os.WriteFile(p, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readDirectGrade(); ok {
+		t.Errorf("a corrupt file must read as no evidence")
+	}
+	if got := directGradeLine(); got != "direct: (ungraded)" {
+		t.Errorf("corrupt grade line = %q, want the ungraded state", got)
+	}
+
+	// Graded=true with a zero timestamp -> stale, not a negative "ago"
+	if err := writeDirectGrade(directGrade{Graded: true}); err != nil {
+		t.Fatal(err)
+	}
+	g, ok := readDirectGrade()
+	if !ok || !g.Graded {
+		t.Fatalf("expected the grade to round-trip, got ok=%v %+v", ok, g)
+	}
+	if got := directGradeLine(); got != "direct: (stale)" {
+		t.Errorf("zero-timestamp grade line = %q, want the stale state", got)
 	}
 }
 

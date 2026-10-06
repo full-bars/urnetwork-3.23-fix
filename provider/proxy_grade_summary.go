@@ -674,7 +674,11 @@ func runProxyGradeSummaryOnce() {
 		"[proxy][grade] " + s.sourcesLine(),
 		"[proxy][grade] " + s.changesLine(),
 		"[proxy][grade] " + s.scoresLine(),
-		"[proxy][grade] " + directGradeLine(),
+	}
+	// Gated the same way as the tracked==0 path: a disabled transport has nothing
+	// to report, and printing "direct: off" every five minutes forever is noise.
+	if isDirectEnabled() {
+		lines = append(lines, "[proxy][grade] "+directGradeLine())
 	}
 	for _, l := range lines {
 		importantLogf("%s\n", l)

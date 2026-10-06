@@ -60,7 +60,12 @@ var directProbeDialLimiter = rate.NewLimiter(rate.Limit(directProbeDialsPerSec),
 
 const (
 	directProbeDialsPerSec = 10
-	directProbeDialBurst   = 20
+	// The burst must cover the widest sample an operator can set: the loader
+	// clamps sample_width to 63, and a bucket smaller than the pass would make
+	// the tail of a wide pass wait past the per-target timeout, gutting the
+	// sample and silently degrading the line to (stale). The pass runs once per
+	// sweep, so a burst this size costs nothing.
+	directProbeDialBurst = 64
 )
 
 // directDial is the dialer the direct pass uses, as a var so a test can inject a
@@ -208,7 +213,8 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 
 // runDirectGradeOnce performs one direct-path pass and persists it. It is a full
 // skip when the table probe is killed (the probes themselves are then the
-// problem) or when the direct transport is not running (nothing to measure).
+// problem) or when the direct transport is DISABLED IN CONFIG — the gate is
+// desired state, not whether the transport goroutine actually came up.
 func runDirectGradeOnce(ctx context.Context) {
 	cfg := resolveProxyTableProbeConfig()
 	if !cfg.Enabled {
