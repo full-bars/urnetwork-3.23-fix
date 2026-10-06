@@ -662,7 +662,11 @@ func runProxyGradeSummaryOnce() {
 	if s.tracked == 0 {
 		// No proxies configured — skip rather than write 4 lines every 5
 		// minutes of "(0 running, 0 tracked)" into important/disk/grades
-		// logs.
+		// logs. A node running only the direct transport still has one thing
+		// worth reporting, so emit just that line.
+		if isDirectEnabled() {
+			importantLogf("%s\n", directGradeLine())
+		}
 		return
 	}
 	lines := []string{

@@ -5,7 +5,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
-	"strconv"
+	"strings"
 	"testing"
 	"time"
 )
@@ -19,7 +19,9 @@ import (
 // consulting the DNS cache, so a test can point the NAMES at loopback but can
 // never redirect a literal entry — those always dial the real address.
 func directSampleHosts(cfg proxyTableProbeConfig) (literals, names []string) {
-	for _, h := range sampleProbeHosts(tableProbePassCounter.Load(), cfg.SampleWidth, cfg.UseSpreadOrder) {
+	// mirror the pass the grader is about to run: it uses its OWN counter, and
+	// takes the pre-increment value, so Load() is exactly the pass it will use
+	for _, h := range sampleProbeHosts(directProbePassCounter.Load(), cfg.SampleWidth, cfg.UseSpreadOrder) {
 		if net.ParseIP(h) != nil {
 			literals = append(literals, h)
 		} else {
@@ -48,8 +50,11 @@ func seedDirectDNS(t *testing.T, names []string, ip string) {
 	})
 }
 
-// listenLoopbackTCP starts an accept-and-close listener and returns its port.
-func listenLoopbackTCP(t *testing.T) uint16 {
+// directTestConfig installs an offline dialer and returns the config the pass
+// will use. EVERY destination is dialed to a loopback listener, so the test never
+// touches the network — including the table's literal-IP rows, which bypass the
+// DNS cache and would otherwise dial the real address.
+func directTestConfig(t *testing.T) proxyTableProbeConfig {
 	t.Helper()
 	ln, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
@@ -65,27 +70,16 @@ func listenLoopbackTCP(t *testing.T) uint16 {
 			_ = c.Close()
 		}
 	}()
-	_, portStr, err := net.SplitHostPort(ln.Addr().String())
-	if err != nil {
-		t.Fatal(err)
-	}
-	p, err := strconv.Atoi(portStr)
-	if err != nil {
-		t.Fatal(err)
-	}
-	return uint16(p)
-}
 
-func directTestConfig(t *testing.T) proxyTableProbeConfig {
-	t.Helper()
-	saved := directProbePort
-	directProbePort = listenLoopbackTCP(t)
-	t.Cleanup(func() { directProbePort = saved })
+	saved := directDial
+	directDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+		var d net.Dialer
+		return d.DialContext(ctx, "tcp", ln.Addr().String())
+	}
+	t.Cleanup(func() { directDial = saved })
 
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 6
-	// short: the literal-IP entries dial the real address and must not stall
-	// the test on a filtered port
 	cfg.TargetTimeout = 300 * time.Millisecond
 	return cfg
 }
@@ -231,6 +225,89 @@ func TestDirectGradeLine_OffAndUngraded(t *testing.T) {
 	t.Setenv("DISABLE_DIRECT_IP", "")
 	if got := directGradeLine(); got != "[proxy][grade] direct: (ungraded)" {
 		t.Errorf("ungraded direct line = %q, want the ungraded state", got)
+	}
+}
+
+// TestProbeTableDirect_RotatesHostBlocks pins the direct pass's OWN rotation.
+// It must not ride tableProbePassCounter: that counter is advanced by the URL
+// fetcher and the paid sweep, so on a node running only the direct transport it
+// never moves and the grade would dial the same block forever.
+func TestProbeTableDirect_RotatesHostBlocks(t *testing.T) {
+	withTempHome(t)
+	cfg := directTestConfig(t)
+	const w = 6
+	cfg.SampleWidth = w
+
+	start := directProbePassCounter.Load()
+	b1 := sampleProbeHosts(start, w, cfg.UseSpreadOrder)
+	b2 := sampleProbeHosts(start+1, w, cfg.UseSpreadOrder)
+	if len(b1) == 0 || len(b2) == 0 {
+		t.Fatal("empty block")
+	}
+	seen := map[string]bool{}
+	for _, h := range b1 {
+		seen[h] = true
+	}
+	overlap := 0
+	for _, h := range b2 {
+		if seen[h] {
+			overlap++
+		}
+	}
+	if overlap != 0 {
+		t.Errorf("consecutive direct passes overlap by %d hosts; the counter must advance", overlap)
+	}
+
+	// and the grader must actually advance its own counter, once per pass
+	seedDirectDNS(t, b1, "127.0.0.1")
+	seedDirectDNS(t, b2, "127.0.0.1")
+	before := directProbePassCounter.Load()
+	probeTableDirect(context.Background(), cfg)
+	probeTableDirect(context.Background(), cfg)
+	if got := directProbePassCounter.Load() - before; got != 2 {
+		t.Errorf("direct pass counter advanced by %d, want 2", got)
+	}
+}
+
+// TestDirectGradeLine_StaleAfterSeveralIntervals: a grade older than a few sweep
+// intervals must not be presented as a current reading (e.g. after the transport
+// was toggled off and back on, or when passes keep failing to decide).
+func TestDirectGradeLine_StaleAfterSeveralIntervals(t *testing.T) {
+	withTempHome(t)
+	t.Setenv("DISABLE_DIRECT_IP", "")
+
+	base := directGrade{Score: 1.0, OK: 12, Total: 12, SampleWidth: 12, Graded: true}
+	base.LastGraded = time.Now().Add(-4 * proxyReaperInterval)
+	if err := writeDirectGrade(base); err != nil {
+		t.Fatal(err)
+	}
+	if got := directGradeLine(); got != "[proxy][grade] direct: (stale)" {
+		t.Errorf("stale direct line = %q, want the stale state", got)
+	}
+
+	base.LastGraded = time.Now()
+	if err := writeDirectGrade(base); err != nil {
+		t.Fatal(err)
+	}
+	if got := directGradeLine(); !strings.Contains(got, "A (score 1.00") {
+		t.Errorf("fresh direct line = %q, want a real grade", got)
+	}
+}
+
+// TestIsImportantLogLine_DirectGrade: the direct line must reach the /dev/shm
+// important buffer in every state. The pre-existing "graded" marker would catch
+// "(ungraded)" by substring but NOT a real grade line, so the marker is explicit.
+func TestIsImportantLogLine_DirectGrade(t *testing.T) {
+	for _, line := range []string{
+		"[proxy][grade] direct: A (score 1.00, 12/12)",
+		"[proxy][grade] direct: F (score 0.00, 0/12)",
+		"[proxy][grade] direct: (ungraded)",
+		"[proxy][grade] direct: (stale)",
+		"[proxy][grade] direct: off",
+	} {
+		if !isImportantLogLine(line) {
+			t.Errorf("direct grade line must reach the important buffer: %q", line)
+		}
 	}
 }
 

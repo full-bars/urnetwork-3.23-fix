@@ -7,6 +7,7 @@ import (
 	"net"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"time"
 )
 
@@ -37,9 +38,14 @@ import (
 // a verdict that anything acts on, so spending extra dials to harden it would be
 // pointless.
 
-// directProbePort is the destination port the direct pass dials. A var, not a
-// constant, so tests can point it at an unprivileged listener.
-var directProbePort uint16 = 443
+// directDial is the dialer the direct pass uses, as a var so a test can inject a
+// deterministic offline dialer. A port override alone cannot keep a test off the
+// network: the table's literal-IP rows are parsed before the DNS cache, so they
+// would still dial the real address.
+var directDial = func(ctx context.Context, network, addr string) (net.Conn, error) {
+	var d net.Dialer
+	return d.DialContext(ctx, network, addr)
+}
 
 // directGrade is the persisted, read-only result of one direct-path pass.
 type directGrade struct {
@@ -110,14 +116,20 @@ func probeDirectTarget(ctx context.Context, ip net.IP, port uint16, timeout time
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
-	var d net.Dialer
-	conn, err := d.DialContext(dialCtx, "tcp", net.JoinHostPort(ip.String(), fmt.Sprint(port)))
+	conn, err := directDial(dialCtx, "tcp", net.JoinHostPort(ip.String(), fmt.Sprint(port)))
 	if err != nil {
 		return false, true
 	}
 	_ = conn.Close()
 	return true, true
 }
+
+// directProbePassCounter advances once per direct pass so the grade walks the
+// table like the proxy probe does. It must NOT share tableProbePassCounter: that
+// one is advanced by the URL fetcher and the paid sweep, so on a node running
+// only the direct transport it never moves and the direct pass would dial the
+// same block forever.
+var directProbePassCounter atomic.Uint64
 
 // probeTableDirect runs one direct-path pass over a fixed-width sample of the
 // health table, mirroring the proxy probe's scoring and decidability rules so
@@ -127,7 +139,11 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 	if width <= 0 {
 		width = 12
 	}
-	hosts := sampleProbeHosts(tableProbePassCounter.Load(), width, cfg.UseSpreadOrder)
+	// advance FIRST so consecutive passes walk disjoint blocks; the proxy probe
+	// seeds on fnv(address)+pass, so the two sample different hosts by design —
+	// the scores are comparable as estimates of the same fraction, not paired.
+	pass := directProbePassCounter.Add(1) - 1
+	hosts := sampleProbeHosts(pass, width, cfg.UseSpreadOrder)
 
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
 	unresolved := 0
@@ -140,7 +156,7 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 			unresolved++
 			continue
 		}
-		answered, attempted := probeDirectTarget(ctx, ip, directProbePort, cfg.TargetTimeout)
+		answered, attempted := probeDirectTarget(ctx, ip, 443, cfg.TargetTimeout)
 		if !attempted {
 			unresolved++
 			continue
@@ -203,6 +219,9 @@ func runDirectGradeOnce(ctx context.Context) {
 func runDirectGrader(ctx context.Context) {
 	ticker := time.NewTicker(proxyReaperInterval)
 	defer ticker.Stop()
+	// one immediate pass so a fresh process is not reported ungraded for a
+	// whole tick (a pass that cannot decide writes nothing, so this is safe)
+	runDirectGradeOnce(ctx)
 	for {
 		select {
 		case <-ctx.Done():
@@ -222,6 +241,12 @@ func directGradeLine() string {
 	g, ok := readDirectGrade()
 	if !ok || !g.Graded {
 		return "[proxy][grade] direct: (ungraded)"
+	}
+	// A grade older than a few sweep intervals is not a current reading: if the
+	// transport was toggled off and back on, or passes keep failing to decide,
+	// say so rather than presenting a historical score as today's.
+	if time.Since(g.LastGraded) > 3*proxyReaperInterval {
+		return "[proxy][grade] direct: (stale)"
 	}
 	return fmt.Sprintf("[proxy][grade] direct: %s (score %.2f, %d/%d, %s ago)",
 		proxyGradeTier(g.Score), g.Score, g.OK, g.Total,

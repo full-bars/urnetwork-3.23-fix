@@ -55,6 +55,10 @@ var importantLogMarkers = []string{
 	// them here.
 	"[proxy][grade] paid",
 	"[proxy][grade] graded",
+	// The read-only direct-path grade. It must match explicitly: the graded
+	// marker above would catch the "(ungraded)" state by substring but NOT a real
+	// grade line, so without this the line is captured only when it has no grade.
+	"[proxy][grade] direct:",
 	// Capacity-control decisions (trim commands and results, the OOM-aware start
 	// cap and its kill switch, startup limit warnings, low memory headroom):
 	// rare and high-value, and the only record of why a box ran fewer proxies or
