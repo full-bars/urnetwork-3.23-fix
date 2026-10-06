@@ -88,6 +88,24 @@ type proxyTableProbeConfig struct {
 	// sample block on it. Scoped to the paid grading sweep only (the URL
 	// admission path already runs its own stage-0 SOCKS5+API liveness).
 	Stage0Liveness bool
+	// UseSpreadOrder selects the content-keyed spread sampler (fnv64a order)
+	// over the authored contiguous-block sampler for the stage-1 table probe.
+	// It fixes the correlated-sample A<->F churn (see proxy_spread_sampler.go)
+	// at identical dial cost. false restores the historical contiguous blocks
+	// byte for byte (kill switch / A-B lever). Default true.
+	UseSpreadOrder bool
+	// MinConfirmDials is the minimum number of ATTEMPTED dials (res.Total, NOT
+	// SampleWidth — SampleWidth is the intended block size and is set before a
+	// single dial, so keying on it would make the floor vacuous) a pass must
+	// accumulate before the viability abort may convict it. A sub-bar pass below
+	// the floor keeps dialing its block, so a correlated region-deny cluster can
+	// never seal an F from a handful of dials. 0 disables the rule and restores
+	// the previous behaviour exactly, which is what the URL admission path uses
+	// so its dial profile stays byte-identical — but on the PAID path 0 means
+	// "unset" and takes the staged default, so -1 is the explicit force-off
+	// there. It gates CONVICTION, not just the abort: a pass that runs out of
+	// block below the floor is refused a verdict rather than convicted.
+	MinConfirmDials int
 	// MaxPaidProbesPerTick caps how many paid/file proxies ONE grading pass
 	// (one 5-minute tick) may probe. This is the throughput lever that turns
 	// a 4000-proxy full sweep from ~22h into ~100 minutes: the collector
@@ -111,6 +129,8 @@ func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 		MaxSampleWidth:       36,
 		BorderlineBand:       0.15,
 		MaxPaidProbesPerTick: 200,
+		UseSpreadOrder:       true,
+		MinConfirmDials:      0,
 	}
 }
 
@@ -185,16 +205,18 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 		return cfg
 	}
 	var over struct {
-		Enabled        *bool    `json:"enabled"`
-		SampleWidth    *int     `json:"sample_width"`
-		TimeoutMS      *int     `json:"timeout_ms"`
-		PassBar        *float64 `json:"pass_bar"`
-		PreferredBar   *float64 `json:"preferred_bar"`
-		MaxSampleWidth *int     `json:"max_sample_width"`
-		BorderlineBand *float64 `json:"borderline_band"`
-		MaxPaidPerTick *int     `json:"max_paid_probes_per_tick"`
-		MinSampleWidth *int     `json:"min_sample_width"`
-		Stage0On       *bool    `json:"stage0_liveness"`
+		Enabled         *bool    `json:"enabled"`
+		SampleWidth     *int     `json:"sample_width"`
+		TimeoutMS       *int     `json:"timeout_ms"`
+		PassBar         *float64 `json:"pass_bar"`
+		PreferredBar    *float64 `json:"preferred_bar"`
+		MaxSampleWidth  *int     `json:"max_sample_width"`
+		BorderlineBand  *float64 `json:"borderline_band"`
+		MaxPaidPerTick  *int     `json:"max_paid_probes_per_tick"`
+		MinSampleWidth  *int     `json:"min_sample_width"`
+		Stage0On        *bool    `json:"stage0_liveness"`
+		UseSpreadOrder  *bool    `json:"use_spread_order"`
+		MinConfirmDials *int     `json:"min_confirm_dials"`
 	}
 	if err := json.Unmarshal(b, &over); err != nil {
 		return cfg
@@ -225,6 +247,15 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	}
 	if over.MinSampleWidth != nil && *over.MinSampleWidth > 0 {
 		cfg.MinSampleWidth = *over.MinSampleWidth
+	}
+	if over.UseSpreadOrder != nil {
+		cfg.UseSpreadOrder = *over.UseSpreadOrder
+	}
+	// -1 is the explicit force-OFF: it is passed through so the paid grader,
+	// which otherwise defaults an unset floor to its staged base width, can be
+	// A/B-ed off without disabling all probing.
+	if over.MinConfirmDials != nil && *over.MinConfirmDials >= -1 {
+		cfg.MinConfirmDials = *over.MinConfirmDials
 	}
 	if over.Stage0On != nil {
 		cfg.Stage0Liveness = *over.Stage0On
@@ -259,6 +290,7 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	if cfg.MaxSampleWidth > connect.ProbeHostCount()/2 {
 		cfg.MaxSampleWidth = connect.ProbeHostCount() / 2
 	}
+	clampConfirmFloor(&cfg)
 	// An inverted bar pair would let the log label ("preferred") disagree
 	// with the gate decision. Clamp PreferredBar up to PassBar.
 	if cfg.PreferredBar < cfg.PassBar {
@@ -446,7 +478,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	if baseW > cfg.SampleWidth {
 		baseW = cfg.SampleWidth
 	}
-	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), baseW)
+	hosts := sampleProbeHosts(tableProbeSeed(address, pass), baseW, cfg.UseSpreadOrder)
 
 	// res.SampleWidth is the number of targets the pass INTENDED to dial
 	// (base block len(hosts), plus any adaptive growth). Unresolvable hosts
@@ -484,6 +516,10 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			res.Failed = append(res.Failed, host)
 		}
 
+		// NOTE: excluding denied hosts from `remaining` is both protection and
+		// acceleration — `best` DECREASES as `remaining` shrinks, so denials make
+		// the abort seal EARLIER, not later. That is why the floor has to gate
+		// conviction as well as the abort (see the Decidable gate below).
 		// Viability abort — the pass ends only when the verdict is already
 		// decided: even if every remaining target succeeds, the bar is
 		// unreachable. Viability is measured against the denominator the
@@ -494,25 +530,36 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		// the no-convict guarantee (finding H2).
 		remaining := len(hosts) - res.Total - baseUnresolved
 		best := float64(res.OK+remaining) / float64(res.Total+remaining)
-		if best < cfg.PassBar {
+		// The abort may not convict below the evidence floor: a
+		// sub-MinConfirmDials pass is too thin to seal a verdict, so it runs out
+		// the rest of its block (0 disables — the URL path — restoring the old
+		// behaviour byte for byte).
+		if best < cfg.PassBar && res.Total >= cfg.MinConfirmDials {
 			break
 		}
 	}
 
-	// ADAPTIVE GROWTH (borderline-only) toward SampleWidth, then MaxSampleWidth
-	// when MinSampleWidth staged the base smaller. The base pass yields a
-	// decisive verdict for clearly-good and clearly-dead proxies
-	// (growthNeeded false); only a score within BorderlineBand of PassBar
-	// grows. Growth blocks are drawn at the BASE WIDTH (consecutive same-width
+	// ADAPTIVE GROWTH toward SampleWidth, then MaxSampleWidth when
+	// MinSampleWidth staged the base smaller. Two triggers: growthNeeded (the
+	// base score sits within BorderlineBand of PassBar, so a small sample cannot
+	// separate mediocre-but-usable from failing) and confirmNeeded (a below-band
+	// pass that has not yet ATTEMPTED MinConfirmDials, so it is too thin to
+	// convict). Growth blocks are drawn at the BASE WIDTH (consecutive same-width
 	// strides via disjointGrowthHosts), maintaining the disjoint-rotation
-	// guarantee the base pass relies on. Clearly-good and clearly-dead proxies
-	// never grow: paid probe bandwidth is spent only in the uncertain middle.
-	if cfg.MaxSampleWidth > baseW && growthNeeded(res, cfg) {
+	// guarantee the base pass relies on.
+	if cfg.MaxSampleWidth > baseW && (growthNeeded(res, cfg) || confirmNeeded(res, cfg)) {
 		// Grow to the wider of SampleWidth or MaxSampleWidth (probeWidth), so
 		// the pool-sizing semantics is centralized in one helper.
 		growTo := cfg.probeWidth()
+		// A CONFIRMATION-only growth needs just enough fresh dials to reach the
+		// floor. Expanding to the full adaptive width instead would spend ~30
+		// dials on a proxy that is already failing — and at a 4s target timeout
+		// that is minutes per dead proxy, on evidence the floor never asked for.
+		if !growthNeeded(res, cfg) && cfg.MinConfirmDials > res.Total {
+			growTo = res.SampleWidth + (cfg.MinConfirmDials - res.Total)
+		}
 		extra := growTo - res.SampleWidth
-		extraHosts := disjointGrowthHosts(address, pass, baseW, extra)
+		extraHosts := disjointGrowthHosts(address, pass, baseW, extra, cfg.UseSpreadOrder)
 		for _, host := range extraHosts {
 			if ctx.Err() != nil {
 				break
@@ -547,7 +594,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 				remainingExtra = 0
 			}
 			best := float64(res.OK+remainingExtra) / float64(res.Total+remainingExtra)
-			if best < cfg.PassBar {
+			if best < cfg.PassBar && res.Total >= cfg.MinConfirmDials {
 				break
 			}
 		}
@@ -580,6 +627,18 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	if res.Total > 0 {
 		res.Score = float64(res.OK) / float64(res.Total)
 	}
+	// The floor is a CONVICTION gate, not merely an abort gate. The abort above
+	// only fires when the bar is unreachable AND the floor has been met, so a
+	// pass that simply RAN OUT of block — growth exhausted, or a growth host that
+	// was denied or unresolvable — can end below the floor with a quorum and
+	// convict anyway. Refusing the verdict keeps the prior grade (the same
+	// "absence of evidence is not evidence" rule the quorum uses).
+	//
+	// MUST run after Score is set: an earlier placement compared an unset 0.0 and
+	// refused every below-floor pass, including a perfect one.
+	if cfg.MinConfirmDials > 0 && res.Total < cfg.MinConfirmDials && res.Score < cfg.PassBar {
+		res.Decidable = false
+	}
 	return res
 }
 
@@ -609,6 +668,64 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 	return score >= lo && score <= hi
 }
 
+// clampConfirmFloor bounds MinConfirmDials by the widest block the probe can
+// dial. A floor above probeWidth() can never be satisfied, so the pass would
+// grow on every sweep and still convict on thin evidence. EVERY writer of the
+// floor must run this, including the paid grader — it overrides the resolved
+// config AFTER the loader clamp, so clamping only in the loader leaves the paid
+// path with an unsatisfiable floor and a silently disabled abort.
+func clampConfirmFloor(cfg *proxyTableProbeConfig) {
+	// The floor can only be satisfied by dials the pass can actually make: the
+	// base block, plus growth when the growth trigger can fire at all. Bounding
+	// it by probeWidth() alone is not enough — with max_sample_width <= baseW the
+	// growth trigger never fires, so a floor above baseW would make every pass
+	// non-decidable and stop grading entirely, which is worse than a low floor.
+	reachable := cfg.SampleWidth
+	if cfg.MinSampleWidth > 0 && cfg.MinSampleWidth < cfg.SampleWidth {
+		reachable = cfg.MinSampleWidth
+	}
+	if cfg.MaxSampleWidth > reachable {
+		reachable = cfg.probeWidth()
+	}
+	if cfg.MinConfirmDials > reachable {
+		cfg.MinConfirmDials = reachable
+	}
+}
+
+// confirmNeeded reports whether a below-band pass has not yet accumulated the
+// minimum confirmation evidence and must therefore grow before it may convict.
+//
+// MinConfirmDials floors ATTEMPTED dials (res.Total), never SampleWidth:
+// SampleWidth is the intended block size and is set before a single dial, so
+// keying on it would make the floor vacuous — the operator-facing "0/6" line
+// already overstates dials for exactly that reason. 0 disables the rule, which
+// is what the URL admission path uses so its dial profile stays byte-identical.
+//
+// Only a BELOW-band pass qualifies: an in-band pass is already grown by
+// growthNeeded, and an above-band pass has nothing to confirm.
+//
+// KNOWN RESIDUAL: with the floor equal to the base width, a spread block that
+// still draws enough denied hosts to score below the band at full width convicts
+// on that single pass with no corroboration. The spread sampler makes that a
+// hypergeometric tail rather than a certainty, so churn is greatly reduced but
+// not structurally eliminated; eliminating it would mean growing on the FIRST
+// below-band conviction, which costs dials on every genuinely-bad proxy.
+func confirmNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
+	if cfg.MinConfirmDials <= 0 || res.Total <= 0 || res.Total >= cfg.MinConfirmDials {
+		return false
+	}
+	// The box must still have been able to put the question. A base that could
+	// only attempt a small fraction of its block was starved by the resolver or
+	// the dial limiter, and growing it would spend the whole growth block
+	// re-asking something the box cannot currently ask — slowest exactly when the
+	// sweep is already under pressure.
+	if res.SampleWidth > 0 && res.Total*2 < res.SampleWidth {
+		return false
+	}
+	score := float64(res.OK) / float64(res.Total)
+	return score < cfg.PassBar-cfg.BorderlineBand
+}
+
 // disjointGrowthHosts returns up to `extra` DISTINCT hosts to add to a base
 // probe block, drawn from consecutive SAME-WIDTH rotation strides so they are
 // provably disjoint from the base block and from one another.
@@ -620,7 +737,7 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 // (draining the table in order), stopping at `count`. This is what makes the
 // adaptive growth block overlap-free — a call at a DIFFERENT width would
 // break the stride tiling and collide with the base ~20% of the time.
-func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []string {
+func disjointGrowthHosts(address string, pass uint64, baseWidth, count int, spread bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	// Walk the table in consecutive same-width strides (seed, seed+1, ...)
@@ -630,7 +747,7 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 	// ~127), so enough consecutive steps can wrap around the boundary back
 	// into already-visited hosts.
 	for step := 1; len(out) < count; step++ {
-		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass)+uint64(step), baseWidth)
+		hosts := sampleProbeHosts(tableProbeSeed(address, pass)+uint64(step), baseWidth, spread)
 		if len(hosts) == 0 {
 			break // table exhausted (guard; should not happen)
 		}
@@ -1011,6 +1128,6 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 // describeProxyTableProbeConfig is for logs: a one-line dump of the
 // effective stage-1 configuration.
 func describeProxyTableProbeConfig(cfg proxyTableProbeConfig) string {
-	return fmt.Sprintf("enabled=%v sample_width=%d max_sample_width=%d borderline_band=%.2f max_paid_probes_per_tick=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f",
-		cfg.Enabled, cfg.SampleWidth, cfg.MaxSampleWidth, cfg.BorderlineBand, cfg.MaxPaidProbesPerTick, cfg.TargetTimeout, cfg.PassBar, cfg.PreferredBar)
+	return fmt.Sprintf("enabled=%v sample_width=%d max_sample_width=%d borderline_band=%.2f max_paid_probes_per_tick=%d timeout=%v pass_bar=%.2f preferred_bar=%.2f use_spread_order=%v min_confirm_dials=%d",
+		cfg.Enabled, cfg.SampleWidth, cfg.MaxSampleWidth, cfg.BorderlineBand, cfg.MaxPaidProbesPerTick, cfg.TargetTimeout, cfg.PassBar, cfg.PreferredBar, cfg.UseSpreadOrder, cfg.MinConfirmDials)
 }

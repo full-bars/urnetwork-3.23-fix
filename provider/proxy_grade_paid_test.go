@@ -410,7 +410,7 @@ func TestPaidProxyGrader_UndecidableKeepsPriorGrade(t *testing.T) {
 func tableProbePassPinnedUndecidable(address string) uint64 {
 	cfg := resolveProxyTableProbeConfig()
 	for pass := uint64(0); pass < 64; pass++ {
-		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		hosts := sampleProbeHosts(tableProbeSeed(address, pass), cfg.SampleWidth, cfg.UseSpreadOrder)
 		hasLiteral := false
 		for _, h := range hosts {
 			if net.ParseIP(h) != nil {
@@ -465,7 +465,7 @@ func seedProbeDNSFailForAddress(t *testing.T, address string, passes ...uint64) 
 	added := map[string]bool{}
 	probeDNSCache.Lock()
 	for _, pass := range passes {
-		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		hosts := sampleProbeHosts(tableProbeSeed(address, pass), cfg.SampleWidth, cfg.UseSpreadOrder)
 		for _, h := range hosts {
 			if _, exists := probeDNSCache.fail[h]; !exists {
 				added[h] = true
