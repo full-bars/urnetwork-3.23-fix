@@ -88,6 +88,12 @@ type proxyTableProbeConfig struct {
 	// sample block on it. Scoped to the paid grading sweep only (the URL
 	// admission path already runs its own stage-0 SOCKS5+API liveness).
 	Stage0Liveness bool
+	// UseSpreadOrder selects the content-keyed spread sampler (fnv64a order)
+	// over the authored contiguous-block sampler for the stage-1 table probe.
+	// It fixes the correlated-sample A<->F churn (see proxy_spread_sampler.go)
+	// at identical dial cost. false restores the historical contiguous blocks
+	// byte for byte (kill switch / A-B lever). Default true.
+	UseSpreadOrder bool
 	// MaxPaidProbesPerTick caps how many paid/file proxies ONE grading pass
 	// (one 5-minute tick) may probe. This is the throughput lever that turns
 	// a 4000-proxy full sweep from ~22h into ~100 minutes: the collector
@@ -111,6 +117,7 @@ func defaultProxyTableProbeConfig() proxyTableProbeConfig {
 		MaxSampleWidth:       36,
 		BorderlineBand:       0.15,
 		MaxPaidProbesPerTick: 200,
+		UseSpreadOrder:       true,
 	}
 }
 
@@ -195,6 +202,7 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 		MaxPaidPerTick *int     `json:"max_paid_probes_per_tick"`
 		MinSampleWidth *int     `json:"min_sample_width"`
 		Stage0On       *bool    `json:"stage0_liveness"`
+		UseSpreadOrder *bool    `json:"use_spread_order"`
 	}
 	if err := json.Unmarshal(b, &over); err != nil {
 		return cfg
@@ -225,6 +233,9 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	}
 	if over.MinSampleWidth != nil && *over.MinSampleWidth > 0 {
 		cfg.MinSampleWidth = *over.MinSampleWidth
+	}
+	if over.UseSpreadOrder != nil {
+		cfg.UseSpreadOrder = *over.UseSpreadOrder
 	}
 	if over.Stage0On != nil {
 		cfg.Stage0Liveness = *over.Stage0On
@@ -446,7 +457,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	if baseW > cfg.SampleWidth {
 		baseW = cfg.SampleWidth
 	}
-	hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), baseW)
+	hosts := sampleProbeHosts(tableProbeSeed(address, pass), baseW, cfg.UseSpreadOrder)
 
 	// res.SampleWidth is the number of targets the pass INTENDED to dial
 	// (base block len(hosts), plus any adaptive growth). Unresolvable hosts
@@ -512,7 +523,7 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		// the pool-sizing semantics is centralized in one helper.
 		growTo := cfg.probeWidth()
 		extra := growTo - res.SampleWidth
-		extraHosts := disjointGrowthHosts(address, pass, baseW, extra)
+		extraHosts := disjointGrowthHosts(address, pass, baseW, extra, cfg.UseSpreadOrder)
 		for _, host := range extraHosts {
 			if ctx.Err() != nil {
 				break
@@ -620,7 +631,7 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 // (draining the table in order), stopping at `count`. This is what makes the
 // adaptive growth block overlap-free — a call at a DIFFERENT width would
 // break the stride tiling and collide with the base ~20% of the time.
-func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []string {
+func disjointGrowthHosts(address string, pass uint64, baseWidth, count int, spread bool) []string {
 	seen := map[string]bool{}
 	var out []string
 	// Walk the table in consecutive same-width strides (seed, seed+1, ...)
@@ -630,7 +641,7 @@ func disjointGrowthHosts(address string, pass uint64, baseWidth, count int) []st
 	// ~127), so enough consecutive steps can wrap around the boundary back
 	// into already-visited hosts.
 	for step := 1; len(out) < count; step++ {
-		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass)+uint64(step), baseWidth)
+		hosts := sampleProbeHosts(tableProbeSeed(address, pass)+uint64(step), baseWidth, spread)
 		if len(hosts) == 0 {
 			break // table exhausted (guard; should not happen)
 		}

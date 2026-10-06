@@ -645,7 +645,7 @@ func TestReview_ResolveConfig_RejectsOutOfRangeValues(t *testing.T) {
 			def},
 		{"a partial file leaves other fields at their defaults",
 			map[string]any{"sample_width": 7},
-			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar, MaxSampleWidth: def.MaxSampleWidth, BorderlineBand: def.BorderlineBand, MaxPaidProbesPerTick: def.MaxPaidProbesPerTick}},
+			proxyTableProbeConfig{Enabled: true, SampleWidth: 7, TargetTimeout: def.TargetTimeout, PassBar: def.PassBar, PreferredBar: def.PreferredBar, MaxSampleWidth: def.MaxSampleWidth, BorderlineBand: def.BorderlineBand, MaxPaidProbesPerTick: def.MaxPaidProbesPerTick, UseSpreadOrder: def.UseSpreadOrder}},
 		{"an empty object is all defaults", map[string]any{}, def},
 	}
 	for _, c := range cases {
@@ -1377,7 +1377,7 @@ func seedProbeDNSForAddress(t *testing.T, address string, passes ...uint64) {
 	added := map[string]bool{}
 	probeDNSCache.Lock()
 	for _, pass := range passes {
-		hosts, _ := connect.SampleProbeTargets(tableProbeSeed(address, pass), cfg.SampleWidth)
+		hosts := sampleProbeHosts(tableProbeSeed(address, pass), cfg.SampleWidth, cfg.UseSpreadOrder)
 		for _, h := range hosts {
 			if _, exists := probeDNSCache.m[h]; !exists {
 				added[h] = true
