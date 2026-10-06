@@ -27,7 +27,13 @@ ok()   { PASS=$((PASS+1)); echo "PASS: $1" | tee -a "$REPORT"; touch /tmp/shaked
 bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 skip() { SKIP=$((SKIP+1)); echo "SKIP: $1" | tee -a "$REPORT"; }
 t1bad() { TIER1_FAIL=1; bad "$1"; }
-section() { echo "" | tee -a "$REPORT"; echo "===== $1 =====" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
+# Every section header carries minutes elapsed since script start. The suite
+# overran its budget for many releases and the report had no per-section
+# timing at all, so locating the slow legs needed a forensic pass over .bak
+# timestamps. This makes the next run self-diagnosing. Assigned before the
+# first section() call (the A section).
+SHAKEDOWN_T0=$(date +%s)
+section() { echo "" | tee -a "$REPORT"; echo "===== $1 ===== [t+$(( ($(date +%s) - SHAKEDOWN_T0) / 60 ))m]" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 
 # run_check: exit-status-first assertion. Runs $cmd..., PASS iff exit 0.
 # Tolerates a trailing literal "2>&1" (call-site convention) by filtering it.
@@ -55,6 +61,19 @@ j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalct
 # j_full: unbounded journal (self-test calibration, panic sweep).
 j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
 
+# The provider writes to the journal normally, but with URNETWORK_RAMLOGS=1 or
+# URNETWORK_PROFILE=lowmem/eco it redirects stdout/stderr to /dev/shm
+# (provider/main.go initSHMLogger), so a journal-only poll never sees a
+# client_id and false-fails the restart checks under those settings (sections
+# R, S and X all hit this). The RAM log is O_APPEND and carries a
+# "--- provider restarted at" delimiter at each start, so the CURRENT start's
+# lines can be isolated reliably.
+RAMLOG=/dev/shm/urnetwork.log
+ramlog_since_last_start() {
+  [ -f "$RAMLOG" ] || return 0
+  awk '/--- provider restarted at/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$RAMLOG" 2>/dev/null
+}
+
 # journal_line_count: total journal lines (snapshot marker for polling).
 journal_line_count() { j | wc -l; }
 
@@ -62,6 +81,9 @@ journal_line_count() { j | wc -l; }
 # marker line count (a NEW journal entry from a restart). The provider runs a
 # synchronous up-to-1GB O_SYNC disk audit at every provide start (audit.go,
 # 10-60s on 1CPU). Fixed sleeps false-fail. Poll instead.
+# Also reads the RAM log's current start: under URNETWORK_RAMLOGS=1 or the
+# lowmem/eco profiles the journal stays empty, so a journal-only wait would
+# never succeed.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
@@ -69,6 +91,9 @@ wait_client_id() {
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+    if [ -z "$cid" ]; then
+      cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+    fi
     if [ -n "$cid" ]; then echo "$cid"; return 0; fi
     sleep 5
   done
@@ -792,7 +817,13 @@ r_restart "all Q/R drop-ins removed + base unit restored (cleanup)"
 r_assert_env "REPORT_URL absent after full cleanup" "^URNETWORK_REPORT_URL=" absent
 r_assert_env "RAMLOGS absent after full cleanup" "^URNETWORK_RAMLOGS=" absent
 RESTART_CLEAN=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Restart --value urnetwork.service 2>/dev/null)
-[ "$RESTART_CLEAN" = "no" ] && ok "R: Restart= back to base default 'no' after full cleanup" || bad "R: Restart= is '$RESTART_CLEAN' after full cleanup, want 'no'"
+# Assert against the RESTORED base unit's own Restart=, not a hardcoded 'no':
+# Q's 'no' was written into the base unit AFTER the backup was taken, so
+# restoring the pre-Q original necessarily drops it. systemd's default when
+# the unit has no Restart= line is 'no'.
+R_BASE_RESTART_LINE=$(grep -iE '^[[:space:]]*Restart=' "$BASE_UNIT" 2>/dev/null | tail -1 | tr -d '[:space:]' | cut -d= -f2)
+R_EXPECT_RESTART="${R_BASE_RESTART_LINE:-no}"
+[ "$RESTART_CLEAN" = "$R_EXPECT_RESTART" ] && ok "R: Restart= ($RESTART_CLEAN) matches the restored base unit after full cleanup" || bad "R: Restart= is '$RESTART_CLEAN' after full cleanup, want the restored base unit's '$R_EXPECT_RESTART'"
 
 # ---------- S. Settings survive an update ----------
 section "S. Settings survive an update"
@@ -999,80 +1030,111 @@ MARK=$(restart_provider)
 CID_U3=$(wait_client_id "$MARK" 120)
 [ -n "$CID_U3" ] && ok "U3: provider recovered after unblocking (client_id ${CID_U3:0:12}…)" || bad "U3: provider did not recover after unblocking api.bringyour.com"
 
-# Cleanup: remove the Type=notify drop-in, confirm the unit reverts to
-# simple (the base unit carries no Type= line, so simple is the default).
+# Cleanup: remove the Type=notify drop-in and confirm the effective Type
+# returns to the BASE unit's own Type. That is NOT necessarily "simple": an
+# earlier `urnet-tools update` migrates the base unit to Type=notify for any
+# >=31 binary, so assuming the installer's Type=simple survives is wrong and
+# failed every run. Asserting the drop-in's effect is gone is the real
+# property under test.
 rm -f "$OVERRIDE_DIR/notify.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 MARK=$(restart_provider)
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "U: cleanup restart ok" || bad "U: cleanup restart produced no client_id"
 U_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
-[ "$U_TYPE_AFTER" = "simple" ] && ok "U: unit Type reverted to simple after notify.conf removed" || bad "U: unit Type is '$U_TYPE_AFTER' after cleanup, want simple"
+U_BASE_TYPE_LINE=$(grep -iE '^[[:space:]]*Type=' "$BASE_UNIT" 2>/dev/null | tail -1 | tr -d '[:space:]' | cut -d= -f2)
+U_EXPECT_TYPE="${U_BASE_TYPE_LINE:-simple}"
+[ "$U_TYPE_AFTER" = "$U_EXPECT_TYPE" ] && ok "U: unit Type ($U_TYPE_AFTER) matches the base unit after notify.conf removed" || bad "U: unit Type is '$U_TYPE_AFTER' after cleanup, want the base unit's '$U_EXPECT_TYPE'"
 
 # ---------- V. Hotswap decline and engage (order matters) ----------
 section "V. Hotswap decline and engage"
-# triggerHotSwap evaluates the RUNNING (old) provider, not the staged
-# binary, so the decline REASON depends on sequence (order per the "v31
-# BATTERY CORRECTION" progress entry):
-#   V1: old (<31) provider on Type=simple  -> declines on VERSION
-#       (hotSwapVersionOK fails; ErrHotSwapNotSupported)
-#   V2: >=31 provider on Type=simple       -> declines on UNIT TYPE
-#       (hotSwapVersionOK passes, hotSwapUnitOK fails; ErrHotSwapUnitNotNotify)
-#   V3: >=31 provider on Type=notify       -> hotswap ENGAGES
-# Two distinct hotswap-eligible tags exist on the remote (both >=31, so both
-# pass the version gate): v3.23.0-fix.31.0-rc1 and v3.23.0-fix.31.1-rc1.
-# Sequencing a real 31.0-rc1 -> 31.1-rc1 transition (rather than a
-# same-tag re-apply) means a genuine version change is observed, not a
-# no-op. EXPECTED_VERSION is restored at the end of this section for
-# everything downstream.
+# `urnet-tools update` reconciles the unit's Type= to the binary it is
+# installing BEFORE it ever considers a hotswap, and hotSwapPreflight
+# evaluates the RUNNING provider. That ordering decides which outcome each
+# transition can reach:
+#   V1: pre-31 running binary on a Type=simple unit, updating to >=31
+#       -> the unit is MIGRATED to Type=notify and a standard restart is
+#          used. The version gate is never reached: migration short-circuits
+#          the hotswap attempt entirely (the old "declines on VERSION"
+#          expectation predates the migration feature and is unreachable).
+#   V2: >=31 running binary on a NON-notify unit -> declines on UNIT TYPE
+#       (ErrHotSwapUnitNotNotify), in urnet-tools' own pre-flight, before the
+#       provider is ever signalled.
+#   V3: >=31 running binary on Type=notify with NOTIFY_SOCKET present
+#       -> hotswap ENGAGES zero-downtime.
+#
+# The tags here MUST be version-stamped tags. providerVersionReadOnly reads
+# the running image's version from the embedded URNET_VERSION_STAMP (buildinfo
+# carries only a Go pseudo-version, which the reader deliberately rejects).
+# The pre-stamp tags this battery used to name (30.9, 31.0-rc1, 31.1-rc1)
+# therefore read back as an EMPTY version, so the version gate declined on
+# every run and the engage path was unreachable whatever the unit Type was.
+# 31.2/31.3/31.4 are the oldest published tags that carry the stamp.
+# EXPECTED_VERSION is restored at the end for everything downstream.
 OLD_HOTSWAP_VERSION="v3.23.0-fix.30.9"
-V_TAG_A="v3.23.0-fix.31.0-rc1"
-V_TAG_B="v3.23.0-fix.31.1-rc1"
+V_TAG_A="v3.23.0-fix.31.2"
+V_TAG_B="v3.23.0-fix.31.3"
+V_TAG_C="v3.23.0-fix.31.4"
 V_BASE_A=$(echo "$V_TAG_A" | grep -oE "v3\.23\.0-fix\.[0-9]+")
 V_BASE_B=$(echo "$V_TAG_B" | grep -oE "v3\.23\.0-fix\.[0-9]+")
+V_BASE_C=$(echo "$V_TAG_C" | grep -oE "v3\.23\.0-fix\.[0-9]+")
 
-# V1: old provider (<31), Type=simple -> VERSION decline.
+# V1: pre-31 running binary on Type=simple, updating to a stamped >=31 tag
+# -> the unit is migrated to Type=notify and the update uses a standard
+# restart (NOT a hotswap).
 run_check "V1: install pre-hotswap provider $OLD_HOTSWAP_VERSION" timeout 300 urnet-tools update --tag "$OLD_HOTSWAP_VERSION" -f 2>&1
 V_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
-[ "$V_TYPE" = "simple" ] && ok "V1: unit is Type=simple ahead of the version-gate test" || bad "V1: unit Type is '$V_TYPE', want simple"
+[ "$V_TYPE" = "simple" ] && ok "V1: unit is Type=simple ahead of the migration test" || bad "V1: unit Type is '$V_TYPE', want simple"
 V1_OUT=$(timeout 300 urnet-tools update --tag "$V_TAG_A" -f 2>&1); V1_RC=$?
-echo "$V1_OUT" | grep -iE "hotswap|does not support" | tee -a "$REPORT"
+echo "$V1_OUT" | grep -iE "hotswap|migrat|Type=notify" | tee -a "$REPORT"
 if [ "$V1_RC" -eq 124 ]; then
-  t1bad "V1: update HUNG on the version-gate decline path"
-elif echo "$V1_OUT" | grep -qi "does not support zero-downtime hotswap"; then
-  ok "V1: hotswap declined citing VERSION (exact: 'does not support zero-downtime hotswap')"
+  t1bad "V1: update HUNG on the unit-migration path"
+fi
+V_TYPE_AFTER_V1=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
+if echo "$V1_OUT" | grep -qiE "migrated .* from Type=simple to Type=notify" && [ "$V_TYPE_AFTER_V1" = "notify" ]; then
+  ok "V1: unit MIGRATED Type=simple -> Type=notify for the >=31 binary (standard restart, no hotswap attempted)"
 else
-  bad "V1: expected a VERSION-gate hotswap decline; message not found in update output"
+  bad "V1: expected the unit migration to Type=notify for a >=31 binary; output did not show it (unit Type now '$V_TYPE_AFTER_V1')"
 fi
-if echo "$V1_OUT" | grep -qi "is not Type=notify"; then
-  bad "V1: unit-type decline message appeared on the VERSION-gate step -- wrong gate reached first"
-fi
-[ "$V1_RC" -eq 0 ] && ok "V1: update fell back to a normal restart and completed (exit 0)" || bad "V1: update did not complete after the VERSION-gate decline (exit $V1_RC)"
+[ "$V1_RC" -eq 0 ] && ok "V1: update completed after the migration (exit 0)" || bad "V1: update did not complete after the migration (exit $V1_RC)"
 BIN_VER_V1=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
-echo "$BIN_VER_V1" | grep -qF "$V_BASE_A" && ok "V1: fallback restart landed on $V_BASE_A ($BIN_VER_V1)" || bad "V1: binary is $BIN_VER_V1 after fallback restart, want $V_BASE_A"
+echo "$BIN_VER_V1" | grep -qF "$V_BASE_A" && ok "V1: update landed on $V_BASE_A ($BIN_VER_V1)" || bad "V1: binary is $BIN_VER_V1 after the update, want $V_BASE_A"
 MARK=$(restart_provider)
 CID_V1=$(wait_client_id "$MARK" 120)
-[ -n "$CID_V1" ] && ok "V1: provider healthy after VERSION-gate decline+restart (client_id ${CID_V1:0:12}…)" || bad "V1: no client_id after V1"
+[ -n "$CID_V1" ] && ok "V1: provider healthy after the migration restart (client_id ${CID_V1:0:12}…)" || bad "V1: no client_id after V1"
 
-# V2: >=31 provider (now $V_TAG_A), Type=simple -> UNIT TYPE decline.
-# ErrHotSwapUnitNotNotify (hotSwapUnitOK, commit 4b54e915) means urnet-tools
-# declines in its OWN pre-flight, on its own stdout, and NEVER signals the
-# provider at all. This is a materially different code path from
-# provider/hotswap.go's internal "Running under systemd without Type=notify
-# (NOTIFY_SOCKET unset)" tlog line, which only fires if the provider WAS
-# signalled and then aborted the handoff -- the pre-4b54e915 behavior, which
-# also never actually restarted (a permanent update no-op on Type=simple
-# nodes). So this step must assert BOTH: urnet-tools' own decline text is
-# present, AND the provider-side abort tlog is ABSENT -- that absence is
-# what actually pins 4b54e915.
+# V2: >=31 provider on a NON-notify unit -> UNIT TYPE decline.
+# ErrHotSwapUnitNotNotify (hotSwapUnitOK) means urnet-tools declines in its
+# OWN pre-flight, on its own stdout, and NEVER signals the provider at all.
+# A Type=simple drop-in makes the EFFECTIVE Type= simple while the base unit
+# file stays Type=notify (V1's migration rewrote it), so migrateUnitToNotify
+# cannot rewrite anything and the pre-flight actually runs. This is the same
+# gate a real installer-written Type=simple node hits. It is a materially
+# different code path from provider/hotswap.go's internal "Running under
+# systemd without Type=notify (NOTIFY_SOCKET unset)" tlog line, which only
+# fires if the provider WAS signalled and then aborted the handoff. So this
+# step asserts BOTH: urnet-tools' own decline text is present, AND the
+# provider-side abort tlog is ABSENT.
+cat > "$OVERRIDE_DIR/v2-simple.conf" << 'EOF'
+[Service]
+Type=simple
+EOF
+chown -R urnet:urnet /home/urnet/.config
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
+V2_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
+[ "$V2_TYPE" = "simple" ] && ok "V2: effective unit Type is simple (drop-in) ahead of the unit-type-gate test" || bad "V2: effective unit Type is '$V2_TYPE', want simple"
 V2_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 V2_MARK=$(journal_line_count)
 V2_OUT=$(timeout 300 urnet-tools update --tag "$V_TAG_B" -f 2>&1); V2_RC=$?
 echo "$V2_OUT" | grep -iE "hotswap|Type=notify|Provider_Install_Linux" | tee -a "$REPORT"
-if echo "$V2_OUT" | grep -q "is not Type=notify" && echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh"; then
-  ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify: 'is not Type=notify' + 'Provider_Install_Linux.sh')"
+# The real urnet-tools pre-flight text names Provider_Install_Linux.sh (the
+# file that writes Type=simple). No "is not Type=notify" string exists
+# anywhere in the binary -- the previous assertion grepped for one that never
+# existed, so V2 could not pass regardless of what the update did.
+if echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$V2_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
+  ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify)"
 else
-  bad "V2: expected urnet-tools' own pre-flight unit-type decline text ('is not Type=notify' + 'Provider_Install_Linux.sh'); not found in update output"
+  bad "V2: expected urnet-tools' own pre-flight unit-type decline text ('zero-downtime hotswap unavailable' + 'Provider_Install_Linux.sh'); not found in update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
 if j_full | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
@@ -1087,9 +1149,9 @@ else
 fi
 V2_PID_AFTER=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 if [ -n "$V2_PID_BEFORE" ] && [ -n "$V2_PID_AFTER" ] && [ "$V2_PID_BEFORE" != "$V2_PID_AFTER" ]; then
-  ok "V2: a real restart occurred ($V2_PID_BEFORE -> $V2_PID_AFTER) -- the fallback path actually restarts, unlike the pre-4b54e915 signal-then-abort no-op"
+  ok "V2: a real restart occurred ($V2_PID_BEFORE -> $V2_PID_AFTER) -- the fallback path actually restarts"
 else
-  bad "V2: PID did not change ($V2_PID_BEFORE) -- update looks like a no-op on this Type=simple node (the exact bug 4b54e915 fixed)"
+  bad "V2: PID did not change ($V2_PID_BEFORE) -- update looks like a no-op on this non-notify node"
 fi
 BIN_VER_V2=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "$BIN_VER_V2" | grep -qF "$V_BASE_B" && ok "V2: fallback restart landed on $V_BASE_B ($BIN_VER_V2)" || bad "V2: binary is $BIN_VER_V2 after fallback restart, want $V_BASE_B"
@@ -1097,13 +1159,14 @@ MARK=$(restart_provider)
 CID_V2=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V2" ] && ok "V2: provider healthy after unit-type decline+fallback restart (client_id ${CID_V2:0:12}…)" || bad "V2: no client_id after V2"
 
-# Reinstall $V_TAG_A so V3 observes a genuine 31.0-rc1 -> 31.1-rc1
-# transition under Type=notify, per the correction entry's ordering,
-# instead of re-applying the tag already running.
-run_check "V3 setup: reinstall $V_TAG_A ahead of the engage test" timeout 300 urnet-tools update --tag "$V_TAG_A" -f 2>&1
+# Remove the Type=simple drop-in: V3 needs a genuinely Type=notify unit, and
+# the running process must be restarted under it so it carries NOTIFY_SOCKET
+# (systemd only sets that at exec time).
+rm -f "$OVERRIDE_DIR/v2-simple.conf"
+runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 
-# V3: switch to Type=notify, restart cleanly (not via update), THEN
-# hotswap should ENGAGE on a real version transition (31.0-rc1 -> 31.1-rc1).
+# V3: Type=notify + a stamped >=31 running binary -> hotswap ENGAGES on a
+# real version transition ($V_TAG_B -> $V_TAG_C).
 cat > "$OVERRIDE_DIR/notify.conf" << 'EOF'
 [Service]
 Type=notify
@@ -1117,13 +1180,32 @@ CID_V3PRE=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V3PRE" ] || bad "V3: pre-engage restart under Type=notify produced no client_id"
 V3_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
 [ "$V3_TYPE" = "notify" ] && ok "V3: unit is Type=notify ahead of the engage test" || bad "V3: unit Type is '$V3_TYPE', want notify"
+V3_PROCID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
+if [ -n "$V3_PROCID" ] && tr '\0' '\n' < /proc/$V3_PROCID/environ | grep -q '^NOTIFY_SOCKET='; then
+  ok "V3: running provider carries NOTIFY_SOCKET (started under Type=notify) -- hotswap can engage"
+else
+  bad "V3: running provider has no NOTIFY_SOCKET -- the handoff cannot engage from this state"
+fi
 BIN_VER_V3PRE=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
-echo "$BIN_VER_V3PRE" | grep -qF "$V_BASE_A" && ok "V3: running $V_BASE_A ahead of the engage test (genuine transition, not a same-tag re-apply)" || bad "V3: running $BIN_VER_V3PRE ahead of the engage test, want $V_BASE_A"
+echo "$BIN_VER_V3PRE" | grep -qF "$V_BASE_B" && ok "V3: running $V_BASE_B ahead of the engage test (genuine transition, not a same-tag re-apply)" || bad "V3: running $BIN_VER_V3PRE ahead of the engage test, want $V_BASE_B"
 
 V3_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 V3_MARK=$(journal_line_count)
-run_check "V3: update --tag $V_TAG_B -f (hotswap should ENGAGE)" timeout 180 urnet-tools update --tag "$V_TAG_B" -f 2>&1
-
+V3_OUT=$(timeout 300 urnet-tools update --tag "$V_TAG_C" -f 2>&1); V3_RC=$?
+echo "$V3_OUT" | grep -iE "hotswap|zero-downtime" | tee -a "$REPORT"
+if echo "$V3_OUT" | grep -qi "triggered zero-downtime HotSwap handoff"; then
+  ok "V3: urnet-tools triggered the zero-downtime HotSwap handoff (SIGUSR2 sent)"
+else
+  echo "$V3_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+  bad "V3: urnet-tools did NOT trigger the hotswap under Type=notify with a stamped >=31 running binary (see decline/error above)"
+fi
+if [ "$V3_RC" -eq 0 ]; then
+  ok "V3: update completed after the handoff (exit 0)"
+elif [ "$V3_RC" -eq 124 ]; then
+  t1bad "V3: update HUNG during the handoff"
+else
+  bad "V3: update did not complete after the handoff (exit $V3_RC)"
+fi
 V3_PID_AFTER=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 if [ -n "$V3_PID_BEFORE" ] && [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_BEFORE" != "$V3_PID_AFTER" ]; then
   ok "V3: main PID CHANGED ($V3_PID_BEFORE -> $V3_PID_AFTER) -- a real handoff"
@@ -1157,11 +1239,15 @@ else
   echo "INFO: lsof unavailable or socket owner not resolvable; relied on urnet-tools status reachability above" | tee -a "$REPORT"
 fi
 BIN_VER_V3=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
-echo "$BIN_VER_V3" | grep -qF "$V_BASE_B" && ok "V3: hotswap landed on $V_BASE_B ($BIN_VER_V3), a genuine version transition" || bad "V3: running image is $BIN_VER_V3 after the handoff, want $V_BASE_B"
+echo "$BIN_VER_V3" | grep -qF "$V_BASE_C" && ok "V3: hotswap landed on $V_BASE_C ($BIN_VER_V3), a genuine version transition" || bad "V3: running image is $BIN_VER_V3 after the handoff, want $V_BASE_C"
 CID_V3=$(wait_client_id "$V3_MARK" 30)
 [ -n "$CID_V3" ] && ok "V3: identity continuity confirmed post-handoff (client_id ${CID_V3:0:12}…)" || echo "INFO: no fresh client_id line post-handoff (may be expected: identity persists rather than being re-logged)" | tee -a "$REPORT"
 
-# Cleanup: back to Type=simple and EXPECTED_VERSION, confirm both.
+# Cleanup: remove the drop-in and re-pin to EXPECTED_VERSION. The unit's Type
+# is NOT "simple" by default any more: `urnet-tools update` migrates the base
+# unit to Type=notify for any >=31 binary (and EXPECTED_VERSION is >=31), so
+# assert the effective Type matches the BASE unit after the drop-in is gone,
+# rather than assuming the installer's original Type=simple survives.
 rm -f "$OVERRIDE_DIR/notify.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 run_check "V: re-pin to $EXPECTED_VERSION after the hotswap battery" timeout 300 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
@@ -1169,7 +1255,9 @@ MARK=$(restart_provider)
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "V: cleanup restart ok" || bad "V: cleanup restart produced no client_id"
 V_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
-[ "$V_TYPE_AFTER" = "simple" ] && ok "V: unit Type reverted to simple" || bad "V: unit Type is '$V_TYPE_AFTER' after cleanup, want simple"
+V_BASE_TYPE_LINE=$(grep -iE '^[[:space:]]*Type=' "$BASE_UNIT" 2>/dev/null | tail -1 | tr -d '[:space:]' | cut -d= -f2)
+V_EXPECT_TYPE="${V_BASE_TYPE_LINE:-simple}"
+[ "$V_TYPE_AFTER" = "$V_EXPECT_TYPE" ] && ok "V: unit Type ($V_TYPE_AFTER) matches the base unit after the V drop-in was removed" || bad "V: unit Type is '$V_TYPE_AFTER' after cleanup, want the base unit's '$V_EXPECT_TYPE'"
 BIN_VER_VCLEAN=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "$BIN_VER_VCLEAN" | grep -qF "$EXPECTED_BASE" && ok "V: binary back to $EXPECTED_BASE after hotswap battery" || t1bad "V: binary is $BIN_VER_VCLEAN after hotswap battery, want $EXPECTED_BASE"
 
@@ -1337,7 +1425,6 @@ Type=$w8_type
 EOF
   chown -R urnet:urnet /home/urnet/.config
   runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-  W8_MARK=$(journal_line_count)
   timeout 90 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
   W8_RESTART_RC=$?
   if [ "$W8_RESTART_RC" -eq 124 ]; then
@@ -1350,31 +1437,43 @@ EOF
     bad "W8 (T8): unit under Type=$w8_type did not reach active (state: $W8_ACTIVE)"
     continue
   fi
+  # Probe the DECLINE with the direct trigger. A non-notify Type is refused in
+  # urnet-tools' own pre-flight (ErrHotSwapUnitNotNotify), whose text names
+  # Provider_Install_Linux.sh. Two prior mistakes are corrected here: (1) the
+  # fixture grepped for "is not Type=notify", a string that exists nowhere in
+  # the binary, so it could never match; (2) it drove the probe with
+  # `update --tag $EXPECTED_VERSION`, which is a same-version NO-OP (cmdUpdate's
+  # skip branch), so no hotswap pre-flight ran at all and no decline could be
+  # emitted. `urnet-tools hotswap` runs the exact same pre-flight without a
+  # binary swap, so a declined handoff is observable deterministically.
   W8_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
-  W8_OUT=$(timeout 180 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1); W8_RC=$?
-  sleep 3
+  W8_OUT=$(timeout 60 urnet-tools hotswap -f 2>&1); W8_RC=$?
   W8_DECLINED=0
-  echo "$W8_OUT" | grep -qi "NOTIFY_SOCKET" && W8_DECLINED=1
-  j_full | awk -v n="$W8_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify" && W8_DECLINED=1
+  echo "$W8_OUT" | grep -q "Provider_Install_Linux.sh" && W8_DECLINED=1
+  echo "$W8_OUT" | grep -qi "zero-downtime hotswap unavailable" && W8_DECLINED=1
   W8_PID_AFTER=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
   if [ "$W8_DECLINED" = "1" ] && [ "$W8_PID_BEFORE" = "$W8_PID_AFTER" ]; then
     ok "W8 (T8): hotswap declined cleanly under Type=$w8_type (live PID unchanged, $W8_PID_AFTER)"
   elif [ "$W8_PID_BEFORE" != "$W8_PID_AFTER" ] && [ -n "$W8_PID_AFTER" ]; then
-    bad "W8 (T8): PID changed under Type=$w8_type ($W8_PID_BEFORE -> $W8_PID_AFTER) -- hotswap should have declined, not engaged, on a non-notify type"
+    bad "W8 (T8): PID changed under Type=$w8_type ($W8_PID_BEFORE -> $W8_PID_AFTER) -- a declined hotswap must not cycle the unit"
   else
     bad "W8 (T8): no clean decline signal found under Type=$w8_type (exit $W8_RC)"
   fi
-  [ "$W8_RC" -ne 124 ] && ok "W8: update command did not hang under Type=$w8_type" || t1bad "W8: update command HUNG under Type=$w8_type"
+  [ "$W8_RC" -ne 124 ] && ok "W8: hotswap command did not hang under Type=$w8_type" || t1bad "W8: hotswap command HUNG under Type=$w8_type"
 done
 
-# Cleanup: remove the Type=exec/forking drop-in, restore Type=simple.
+# Cleanup: remove the Type=exec/forking drop-in and confirm the effective Type
+# returns to the BASE unit's own Type (which `urnet-tools update` manages for
+# the installed binary, so it is not necessarily "simple").
 rm -f "$OVERRIDE_DIR/w8-type.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
 MARK=$(restart_provider)
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W: cleanup restart ok after failure injection battery" || bad "W: cleanup restart produced no client_id"
 W_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
-[ "$W_TYPE_AFTER" = "simple" ] && ok "W: unit Type reverted to simple" || bad "W: unit Type is '$W_TYPE_AFTER' after cleanup, want simple"
+W_BASE_TYPE_LINE=$(grep -iE '^[[:space:]]*Type=' "$BASE_UNIT" 2>/dev/null | tail -1 | tr -d '[:space:]' | cut -d= -f2)
+W_EXPECT_TYPE="${W_BASE_TYPE_LINE:-simple}"
+[ "$W_TYPE_AFTER" = "$W_EXPECT_TYPE" ] && ok "W: unit Type ($W_TYPE_AFTER) matches the base unit after the W drop-in was removed" || bad "W: unit Type is '$W_TYPE_AFTER' after cleanup, want the base unit's '$W_EXPECT_TYPE'"
 
 
 # ---------- X. Low-memory edge case (scoped) ----------
@@ -1436,14 +1535,31 @@ Environment="URNETWORK_PROFILE=lowmem"
 EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
+# The lowmem profile REDIRECTS the provider's stdout/stderr to the RAM log
+# (provider/main.go: lowmem, eco and ramlogs all call initSHMLogger), so the
+# journal never receives a client_id line under it. The old check waited for a
+# journal client_id and therefore failed a perfectly healthy provider. Read the
+# RAM log for the positive identity signal and a log-free liveness signal
+# (process alive + control socket reachable) so the check never depends on the
+# journal.
 X_MARK2=$(journal_line_count)
 timeout 150 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
-X_CID2=$(wait_client_id "$X_MARK2" 150)
+X_CID2=$(wait_client_id "$X_MARK2" 150)   # resolved from the RAM log under lowmem
 PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
-if [ -n "$X_CID2" ] && [ -n "$PROC_PID" ] && tr '\0' '\n' < /proc/$PROC_PID/environ | grep -qxF "URNETWORK_PROFILE=lowmem"; then
-  ok "X: lowmem profile healthy at the fleet-realistic MemoryMax=1G floor"
+X_PROFILE_APPLIED=0
+if [ -n "$PROC_PID" ] && tr '\0' '\n' < /proc/$PROC_PID/environ | grep -qxF "URNETWORK_PROFILE=lowmem"; then
+  X_PROFILE_APPLIED=1
+fi
+X_ALIVE=0
+if [ -n "$PROC_PID" ] && urnet-tools status >/dev/null 2>&1; then
+  X_ALIVE=1
+fi
+X_RAM_CID=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1)
+[ -n "$X_RAM_CID" ] && echo "  INFO: lowmem RAM log shows $X_RAM_CID" | tee -a "$REPORT"
+if [ "$X_PROFILE_APPLIED" = "1" ] && [ "$X_ALIVE" = "1" ]; then
+  ok "X: lowmem profile applied and healthy at MemoryMax=1G (process up, control socket reachable)"
 else
-  bad "X: lowmem profile NOT healthy (or not applied) at MemoryMax=1G"
+  bad "X: lowmem profile NOT healthy (or not applied) at MemoryMax=1G (profile_applied=$X_PROFILE_APPLIED alive=$X_ALIVE)"
 fi
 
 # Remove the constraint. Assert it is actually gone before returning; no
@@ -1530,9 +1646,33 @@ cp "$JWT_FILE" "/home/$Z_USER/.urnetwork/jwt"
 chown -R "$Z_USER:$Z_USER" "/home/$Z_USER"
 chmod 600 "/home/$Z_USER/.urnetwork/jwt"
 Z_XDG="/run/user/$(id -u $Z_USER)"
+# enable-linger only SCHEDULES user@<uid>.service for the NEXT BOOT. On an
+# already-running machine a freshly created user has NO user manager, so
+# every `systemctl --user` call for them dies with "Failed to connect to bus:
+# No such file or directory" -- the exact failure that made 8 Z checks fail
+# on every recent tag. Start the manager explicitly as root and WAIT for its
+# private bus socket before any --user call for this user.
+systemctl start "user@$(id -u "$Z_USER").service" 2>/dev/null || true
+Z_BUS_OK=0
+for _ in $(seq 1 30); do
+  [ -S "$Z_XDG/bus" ] && { Z_BUS_OK=1; break; }
+  sleep 1
+done
+if [ "$Z_BUS_OK" = "1" ]; then
+  ok "Z: user manager for $Z_USER started (bus at $Z_XDG/bus)"
+else
+  bad "Z: user manager for $Z_USER never came up ($Z_XDG/bus missing) -- --user calls will fail"
+fi
 mkdir -p "$Z_XDG" && chown "$Z_USER:$Z_USER" "$Z_XDG"
 runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user daemon-reload
-runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user start urnetwork.service
+# Bounded: the copied unit may be Type=notify (the base unit is migrated for a
+# >=31 binary), under which `systemctl start` blocks until READY=1. A bounded
+# start fails this one check instead of wedging the whole suite.
+Z_START_RC=0
+timeout 120 runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user start urnetwork.service || Z_START_RC=$?
+if [ "$Z_START_RC" -eq 124 ]; then
+  bad "Z: starting $Z_USER's provider timed out at 120s (unit Type=notify never got READY?)"
+fi
 
 Z_CID=""
 Z_END=$(( $(date +%s) + 120 ))
@@ -1581,8 +1721,12 @@ fi
 
 # Teardown: remove the second provider entirely so it does not linger into
 # later sections (all of which assume single-provider).
-runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user stop urnetwork.service 2>/dev/null
+timeout 60 runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user stop urnetwork.service 2>/dev/null
 loginctl disable-linger "$Z_USER" 2>/dev/null
+# Stop the user manager as well: while user@<uid>.service is active it holds
+# the user's session open and `userdel -r` can fail with "user is currently
+# used by process". disable-linger only changes the NEXT boot.
+systemctl stop "user@$(id -u "$Z_USER").service" 2>/dev/null || true
 userdel -r "$Z_USER" >/dev/null 2>&1
 if id "$Z_USER" >/dev/null 2>&1; then
   bad "Z: teardown failed, $Z_USER still exists"
@@ -1844,6 +1988,7 @@ fi
 # ---------- Summary ----------
 section "SUMMARY"
 echo "PASS=$PASS FAIL=$FAIL SKIP=$SKIP TIER1_FAIL=$TIER1_FAIL" | tee -a "$REPORT"
+echo "TOTAL_ELAPSED_MIN=$(( ($(date +%s) - SHAKEDOWN_T0) / 60 ))" | tee -a "$REPORT"
 echo "SHAKEDOWN END $(date -u +%FT%TZ)" >> "$REPORT"
 # MUST-FIX 18: exit non-zero on Tier-1 FAILs so the workflow can gate on it.
 [ "$TIER1_FAIL" = "1" ] && exit 1

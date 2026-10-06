@@ -33,7 +33,14 @@ permissions:
 jobs:
   shakedown:
     runs-on: ubuntu-latest
-    timeout-minutes: 150   # the shakedown itself targets ~110 min of work
+    # The shakedown itself needs ~125-135 min of real work (Phase 1 ~50 min,
+    # Phase 2 70 min fixed, plus teardown). This cap is the OUTER bound only;
+    # the inner `timeout` on the run step is what actually terminates the
+    # script and turns a hang into a catchable 124. Keep the outer cap
+    # comfortably above the inner one so a slow-but-healthy run is never
+    # guillotined by the job timeout (which would report as a raw job kill,
+    # not a verdict).
+    timeout-minutes: 210
     # Two runs share the same gauntlet account server-side. Queue, never cancel.
     concurrency:
       group: shakedown
@@ -141,10 +148,13 @@ jobs:
           # installs docker), so run it under sudo with HOME in a fresh tempdir.
           # `timeout` restores the old watchdog semantics: a hang becomes a
           # catchable 124 exit (so the verdict logic works) instead of a raw
-          # job kill.
+          # job kill. 10800s (180 min) covers the measured real cost: Phase 1
+          # ~50 min + Phase 2 70 min + teardown, with headroom. The old 7200s
+          # cap killed every recent run at exactly 120 min, right after Phase
+          # 2's last sample, before remove-dead/AB/shutdown ran at all.
           set +e
           RUN_HOME=$(mktemp -d)
-          sudo -E env HOME="$RUN_HOME" timeout 7200 bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
+          sudo -E env HOME="$RUN_HOME" timeout 10800 bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
           SHAKE_EXIT=$?
           set -e
           echo "::group::Shakedown Report"
