@@ -2,6 +2,14 @@ package main
 
 import (
 	"context"
+	"crypto/ecdsa"
+	"crypto/elliptic"
+	"crypto/rand"
+	"crypto/tls"
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"io"
+	"math/big"
 	"net"
 	"os"
 	"path/filepath"
@@ -56,7 +64,11 @@ func seedDirectDNS(t *testing.T, names []string, ip string) {
 // DNS cache and would otherwise dial the real address.
 func directTestConfig(t *testing.T) proxyTableProbeConfig {
 	t.Helper()
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	cert, err := selfSignedForTest()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ln, err := tls.Listen("tcp", "127.0.0.1:0", &tls.Config{Certificates: []tls.Certificate{cert}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -67,7 +79,18 @@ func directTestConfig(t *testing.T) proxyTableProbeConfig {
 			if err != nil {
 				return
 			}
-			_ = c.Close()
+			go func(c net.Conn) {
+				defer c.Close()
+				// Complete the handshake, THEN hold the connection open until the
+				// client closes. Closing before the handshake finishes would make
+				// every probe look unreachable.
+				if tc, ok := c.(*tls.Conn); ok {
+					if err := tc.Handshake(); err != nil {
+						return
+					}
+				}
+				_, _ = io.Copy(io.Discard, c)
+			}(c)
 		}
 	}()
 
@@ -78,10 +101,79 @@ func directTestConfig(t *testing.T) proxyTableProbeConfig {
 	}
 	t.Cleanup(func() { directDial = saved })
 
+	// The pass now requires a VERIFIED TLS handshake, so the test seam must
+	// supply a TLS endpoint and a config that accepts its self-signed cert. The
+	// verification behaviour itself is exercised by
+	// TestProbeTableDirect_InterceptedIsItsOwnOutcome.
+	savedTLS := directTLSConfig
+	directTLSConfig = func(serverName string) *tls.Config {
+		return &tls.Config{ServerName: serverName, InsecureSkipVerify: true, MinVersion: tls.VersionTLS12}
+	}
+	t.Cleanup(func() { directTLSConfig = savedTLS })
+
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 6
 	cfg.TargetTimeout = 300 * time.Millisecond
 	return cfg
+}
+
+// selfSignedForTest mints a throwaway certificate so the direct pass has a TLS
+// endpoint to handshake with.
+func selfSignedForTest() (tls.Certificate, error) {
+	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	tmpl := &x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: "direct-test"},
+		NotBefore:             time.Now().Add(-time.Hour),
+		NotAfter:              time.Now().Add(time.Hour),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		IsCA:                  true,
+		BasicConstraintsValid: true,
+	}
+	der, err := x509.CreateCertificate(rand.Reader, tmpl, tmpl, &key.PublicKey, key)
+	if err != nil {
+		return tls.Certificate{}, err
+	}
+	return tls.Certificate{Certificate: [][]byte{der}, PrivateKey: key}, nil
+}
+
+// TestProbeTableDirect_InterceptedIsItsOwnOutcome pins the distinction the whole
+// TLS change exists for: a connection that completes but whose certificate does
+// NOT verify must be reported as intercepted, never counted as reachable. Under
+// a plain TCP probe this box would have scored a perfect A.
+//
+// Falsifiable: make the probe count a completed TCP connect as reachable and this
+// pass scores 1.0 instead of reporting interception.
+func TestProbeTableDirect_InterceptedIsItsOwnOutcome(t *testing.T) {
+	withTempHome(t)
+	cfg := directTestConfig(t) // installs the TLS listener and a permissive seam
+	// ...then REPLACE the seam with one that verifies against the system roots,
+	// which the throwaway certificate cannot satisfy. directTLSConfig is a
+	// package-level seam, so it MUST be restored or every later test inherits
+	// strict verification.
+	prev := directTLSConfig
+	t.Cleanup(func() { directTLSConfig = prev })
+	directTLSConfig = func(serverName string) *tls.Config {
+		return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+	}
+	_, names := directSampleHosts(cfg)
+	seedDirectDNS(t, names, "127.0.0.1")
+
+	res := probeTableDirect(context.Background(), cfg)
+	if res.OK != 0 {
+		t.Errorf("a destination whose certificate does not verify must never count as reachable: OK=%d", res.OK)
+	}
+	if res.Intercepted == 0 {
+		t.Errorf("expected the intercepted outcome to be recorded, got %+v", res)
+	}
+	if res.Intercepted != res.Total {
+		t.Errorf("every attempted destination should be intercepted here: intercepted=%d total=%d",
+			res.Intercepted, res.Total)
+	}
 }
 
 // TestProbeTableDirect_ScoresReachableSample: every DNS name in the sample
@@ -104,10 +196,10 @@ func TestProbeTableDirect_ScoresReachableSample(t *testing.T) {
 		t.Errorf("every seeded name should have been reachable: ok=%d names=%d failed=%v",
 			res.OK, len(names), res.Failed)
 	}
-	for _, f := range res.Failed {
-		if net.ParseIP(f) == nil {
-			t.Errorf("only literal-IP entries may fail in this test, got %q", f)
-		}
+	// Every name was seeded to loopback and every dial is redirected there, so
+	// nothing should have failed at all — the literals are redirected too now.
+	if len(res.Failed) != 0 {
+		t.Errorf("expected no failures with the dialer redirected to the test endpoint, got %v", res.Failed)
 	}
 	_ = literals
 }

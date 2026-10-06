@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net"
 	"os"
@@ -49,6 +51,28 @@ import (
 // a verdict that anything acts on, so spending extra dials to harden it would be
 // pointless.
 
+// directProbeOutcome classifies one direct-path dial. The three decidable
+// outcomes are deliberately DISTINCT: a connection that completes but whose TLS
+// handshake fails verification is neither a healthy route nor a dead one — it is
+// the signature of a transparent interceptor, which is exactly what an
+// unauthenticated TCP ACK cannot tell apart from a working route. The proxy probe
+// does not need this distinction, because its CONNECT reply comes from the proxy
+// over a tunnel the box does not control, so a local middlebox cannot forge it.
+type directProbeOutcome int
+
+const (
+	directUnattempted directProbeOutcome = iota // box-side: limiter denial or caller deadline
+	directUnreachable                           // the connection never completed
+	directIntercepted                           // TCP completed, TLS verification failed
+	directReachable                             // TCP completed and the TLS chain verified
+)
+
+// directTLSConfig builds the client config the direct pass verifies with. A var
+// so a test can inject a CA, mirroring proxyProbeTLSClientConfig on the proxy side.
+var directTLSConfig = func(serverName string) *tls.Config {
+	return &tls.Config{ServerName: serverName, MinVersion: tls.VersionTLS12}
+}
+
 // directProbeDialLimiter paces the direct pass on its OWN bucket. Sharing
 // globalProbeDialLimiter coupled the two: a direct burst could deny a proxy pass
 // a token, and a denial shrinks `remaining` in the proxy viability-abort
@@ -79,11 +103,14 @@ var directDial = func(ctx context.Context, network, addr string) (net.Conn, erro
 
 // directGrade is the persisted, read-only result of one direct-path pass.
 type directGrade struct {
-	Score       float64   `json:"score"`
-	OK          int       `json:"ok"`
-	Total       int       `json:"total"`
-	SampleWidth int       `json:"sample_width"`
-	Graded      bool      `json:"graded"`
+	Score       float64 `json:"score"`
+	OK          int     `json:"ok"`
+	Total       int     `json:"total"`
+	SampleWidth int     `json:"sample_width"`
+	Graded      bool    `json:"graded"`
+	// Intercepted is how many sampled destinations completed a connection but
+	// failed TLS verification. Reported, never folded into the score silently.
+	Intercepted int       `json:"intercepted,omitempty"`
 	LastGraded  time.Time `json:"last_graded"`
 	Failed      []string  `json:"failed,omitempty"`
 }
@@ -136,22 +163,40 @@ func writeDirectGrade(g directGrade) error {
 // the destination accepted the connection. attempted=false means the BOX could
 // not send (limiter denial or caller deadline), which is not evidence about the
 // route — the same positive-evidence-only rule the proxy probe uses.
-func probeDirectTarget(ctx context.Context, ip net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
+func probeDirectTarget(ctx context.Context, ip net.IP, host string, port uint16, timeout time.Duration) (directProbeOutcome, bool) {
 	waitCtx, cancelWait := context.WithTimeout(ctx, timeout)
 	err := directProbeDialLimiter.Wait(waitCtx)
 	cancelWait()
 	if err != nil || ctx.Err() != nil {
-		return false, false
+		return directUnattempted, false
 	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 
 	conn, err := directDial(dialCtx, "tcp", net.JoinHostPort(ip.String(), fmt.Sprint(port)))
 	if err != nil {
-		return false, true
+		return directUnreachable, true
 	}
-	_ = conn.Close()
-	return true, true
+	defer conn.Close()
+
+	// A VERIFIED TLS handshake with SNI is the evidence, not a bare TCP ACK: any
+	// transparent interceptor completes a TCP handshake for every destination, so
+	// a TCP-only pass would report a perfect score for a box with no egress.
+	// A certificate-verification failure is its own outcome. A genuinely
+	// misconfigured certificate lands there too, which is why the count is
+	// reported rather than folded silently into the score.
+	tlsConn := tls.Client(conn, directTLSConfig(host))
+	if deadline, ok := dialCtx.Deadline(); ok {
+		_ = tlsConn.SetDeadline(deadline)
+	}
+	if err := tlsConn.HandshakeContext(dialCtx); err != nil {
+		var certErr *tls.CertificateVerificationError
+		if errors.As(err, &certErr) {
+			return directIntercepted, true
+		}
+		return directUnreachable, true
+	}
+	return directReachable, true
 }
 
 // directProbePassCounter advances once per direct pass so the grade walks the
@@ -178,6 +223,7 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 
 	res := tableProbeResult{SampleWidth: len(hosts), Failed: []string{}}
 	unresolved := 0
+	intercepted := 0
 	for _, host := range hosts {
 		if ctx.Err() != nil {
 			break
@@ -187,15 +233,19 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 			unresolved++
 			continue
 		}
-		answered, attempted := probeDirectTarget(ctx, ip, 443, cfg.TargetTimeout)
+		outcome, attempted := probeDirectTarget(ctx, ip, host, 443, cfg.TargetTimeout)
 		if !attempted {
 			unresolved++
 			continue
 		}
 		res.Total++
-		if answered {
+		switch outcome {
+		case directReachable:
 			res.OK++
-		} else {
+		case directIntercepted:
+			intercepted++
+			res.Failed = append(res.Failed, host+" (intercepted)")
+		default:
 			res.Failed = append(res.Failed, host)
 		}
 	}
@@ -208,6 +258,7 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 	if res.Total > 0 {
 		res.Score = float64(res.OK) / float64(res.Total)
 	}
+	res.Intercepted = intercepted
 	return res
 }
 
@@ -235,6 +286,7 @@ func runDirectGradeOnce(ctx context.Context) {
 		Total:       res.Total,
 		SampleWidth: res.SampleWidth,
 		Graded:      true,
+		Intercepted: res.Intercepted,
 		LastGraded:  time.Now(),
 		Failed:      capFailedList(res.Failed),
 	}
@@ -287,7 +339,14 @@ func directGradeLine() string {
 	if time.Since(g.LastGraded) > 3*proxyReaperInterval {
 		return "direct: (stale)"
 	}
+	ago := time.Since(g.LastGraded).Round(time.Minute)
+	if ago < 0 {
+		ago = 0 // a backward clock step must not render a negative age
+	}
+	if g.Intercepted > 0 {
+		return fmt.Sprintf("direct: %s (score %.2f, %d/%d, %d intercepted, %s ago)",
+			proxyGradeTier(g.Score), g.Score, g.OK, g.Total, g.Intercepted, ago)
+	}
 	return fmt.Sprintf("direct: %s (score %.2f, %d/%d, %s ago)",
-		proxyGradeTier(g.Score), g.Score, g.OK, g.Total,
-		time.Since(g.LastGraded).Round(time.Minute))
+		proxyGradeTier(g.Score), g.Score, g.OK, g.Total, ago)
 }
