@@ -243,7 +243,8 @@ func BuildVerifyAssignMessage(serverKeyId byte, trailId Id, serverNonce []byte, 
 // (VALIDATOR.md A.4), signed by the server:
 //
 //	CTX(19) ‖ 0x04 ‖ server_key_id(1) ‖ trail_id(16) ‖ server_nonce(32) ‖ vpk(32)
-//	        ‖ M(1) ‖ (client_id_1(16) ‖ time_ms_1(8)) ‖ … ‖ (client_id_M(16) ‖ time_ms_M(8))
+//	        ‖ M(1) ‖ (client_id_1(16) ‖ time_ms_1(8) ‖ egress_ip_hash_1(32)) …
+//	        ‖ (client_id_M(16) ‖ time_ms_M(8) ‖ egress_ip_hash_M(32))
 //
 // Unlike EXTEND/ASSIGN there is no separate count byte: M itself is the hop
 // count, so `len(hops)` must equal `m`. Times are the server-stamped unix
