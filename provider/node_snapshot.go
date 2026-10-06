@@ -414,7 +414,7 @@ func deriveStateReason(in stateInputs) string {
 		}
 		var parts []string
 		if total := in.proxies.total(); total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
-			parts = append(parts, fmt.Sprintf("%d of %d proxies dead or degraded", in.proxies.Dead+in.proxies.Degraded, total))
+			parts = append(parts, fmt.Sprintf("%d of %d proxies down", in.proxies.Dead+in.proxies.Degraded, total))
 		}
 		if in.pressure >= 0.8 {
 			parts = append(parts, fmt.Sprintf("resource pressure %.2f", in.pressure))
@@ -438,7 +438,7 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 		// proxy[0], so a lone entry is that connection, not a proxy.
 		return "the only connection is dead or connecting"
 	case proxies.Up == 0:
-		return fmt.Sprintf("all %d proxies dead or connecting", total)
+		return fmt.Sprintf("all %d proxies down or connecting", total)
 	}
 
 	recent := authFailuresSince(hist, now.Add(-snapshotAuthWaveWindow))

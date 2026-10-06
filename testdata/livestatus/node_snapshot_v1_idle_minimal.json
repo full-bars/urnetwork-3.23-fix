@@ -48,5 +48,5 @@
     "mem_limit_bytes": 4294967296,
     "goroutines": 1204
   },
-  "idle_hint": "all 58 proxies dead or connecting"
+  "idle_hint": "all 58 proxies down or connecting"
 }

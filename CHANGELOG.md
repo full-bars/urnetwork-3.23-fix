@@ -2,7 +2,9 @@
 
 ## [Unreleased]
 
-_Nothing yet._
+### Changed
+
+- **The dropped bucket is labeled on its own, and the idle hint reads again**: the live status and `top` view called the was-up-now-down bucket `down`, the same word the whole-pool figure uses for dead plus dropped. The breakdown bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. The idle hint no longer calls every offline proxy dead. Labels and wording only; the reaper inputs are unchanged.
 
 ## [v3.23.0-fix.32.9]
 

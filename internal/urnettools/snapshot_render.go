@@ -214,7 +214,7 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
 
 	emit(liveRow{label: "proxies", sep: ", ", segs: []string{
 		fmt.Sprintf("%d up", s.Proxies.Up),
-		fmt.Sprintf("%d degraded", s.Proxies.Degraded),
+		fmt.Sprintf("%d dropped", s.Proxies.Degraded),
 		fmt.Sprintf("%d connecting", s.Proxies.Connecting),
 		fmt.Sprintf("%d dead", s.Proxies.Dead),
 	}})

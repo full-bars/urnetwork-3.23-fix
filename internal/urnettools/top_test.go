@@ -517,9 +517,9 @@ func TestParseTopFlags(t *testing.T) {
 }
 
 func TestWrapText(t *testing.T) {
-	got := wrapText("all 58 proxies dead or connecting", 16, 2, false)
+	got := wrapText("all 58 proxies down or connecting", 16, 2, false)
 	// Three lines would be needed, so the second is cut off with an ellipsis.
-	if strings.Join(got, "|") != "all 58 proxies|dead or ..." {
+	if strings.Join(got, "|") != "all 58 proxies|down or ..." {
 		t.Fatalf("wrap = %q", got)
 	}
 	if got := wrapText("all 58 proxies dead", 28, 2, false); strings.Join(got, "|") != "all 58 proxies dead" {
