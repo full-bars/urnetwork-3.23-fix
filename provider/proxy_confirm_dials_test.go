@@ -84,6 +84,8 @@ func TestConfirmNeeded_Table(t *testing.T) {
 		{"in-band is growthNeeded's job", 3, 2, 6, false}, // 0.667
 		{"above band has nothing to confirm", 2, 2, 6, false},
 		{"nothing asked", 0, 0, 6, false},
+		{"starved base does not grow", 2, 0, 6, false}, // only 2 of 6 attempted
+		{"half-attempted base still grows", 3, 0, 6, true},
 	}
 	for _, c := range cases {
 		res := tableProbeResult{Total: c.total, OK: c.ok, SampleWidth: 6}
@@ -91,6 +93,29 @@ func TestConfirmNeeded_Table(t *testing.T) {
 		if got := confirmNeeded(res, cfg); got != c.want {
 			t.Errorf("%s: confirmNeeded(total=%d ok=%d floor=%d) = %v, want %v",
 				c.name, c.total, c.ok, c.floor, got, c.want)
+		}
+	}
+}
+
+// TestClampConfirmFloor_BoundsEveryWriter pins the shared clamp directly. The
+// paid grader overrides the resolved config AFTER the loader clamp, so it must
+// call this too — clamping only in the loader leaves the paid path with an
+// unsatisfiable floor and a silently disabled fail-fast abort.
+func TestClampConfirmFloor_BoundsEveryWriter(t *testing.T) {
+	cases := []struct {
+		sampleWidth, maxSampleWidth, floor, want int
+	}{
+		{6, 6, 6, 6},     // exactly the widest block: allowed
+		{4, 4, 6, 4},     // the paid override on a narrow config: clamped
+		{12, 36, 6, 6},   // room to spare: untouched
+		{12, 36, 99, 36}, // above the ceiling: clamped to probeWidth
+	}
+	for _, c := range cases {
+		cfg := proxyTableProbeConfig{SampleWidth: c.sampleWidth, MaxSampleWidth: c.maxSampleWidth, MinConfirmDials: c.floor}
+		clampConfirmFloor(&cfg)
+		if cfg.MinConfirmDials != c.want {
+			t.Errorf("sampleWidth=%d max=%d floor=%d: got %d, want %d",
+				c.sampleWidth, c.maxSampleWidth, c.floor, cfg.MinConfirmDials, c.want)
 		}
 	}
 }

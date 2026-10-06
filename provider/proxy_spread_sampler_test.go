@@ -200,6 +200,38 @@ func TestSpreadSampler_RegionalDenyCannotMonopoliseABlock(t *testing.T) {
 	}
 }
 
+// TestDisjointGrowthHosts_SpreadStrideDisjoint covers the spread=true growth
+// stride. The legacy disjointness test pins only the contiguous order, so the
+// permuted axis the default config now uses had no direct unit test.
+func TestDisjointGrowthHosts_SpreadStrideDisjoint(t *testing.T) {
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 6
+	cfg.MaxSampleWidth = 12
+	extra := cfg.MaxSampleWidth - cfg.SampleWidth
+	for p := 0; p < 400; p++ {
+		seed := tableProbeSeed("1.2.3.4:1080", uint64(p))
+		base := sampleProbeHosts(seed, cfg.SampleWidth, true)
+		baseSet := map[string]bool{}
+		for _, h := range base {
+			baseSet[h] = true
+		}
+		grown := disjointGrowthHosts("1.2.3.4:1080", uint64(p), cfg.SampleWidth, extra, true)
+		if len(grown) != extra {
+			t.Fatalf("pass %d: growth returned %d hosts, want %d", p, len(grown), extra)
+		}
+		seen := map[string]bool{}
+		for _, h := range grown {
+			if baseSet[h] {
+				t.Errorf("pass %d: growth host %q collides with the spread base", p, h)
+			}
+			if seen[h] {
+				t.Errorf("pass %d: duplicate host %q inside the growth block", p, h)
+			}
+			seen[h] = true
+		}
+	}
+}
+
 // the kill switch must reproduce the legacy behaviour exactly.
 func TestSampleProbeHosts_KillSwitchMatchesLegacy(t *testing.T) {
 	for _, seed := range []uint64{0, 3, 77} {

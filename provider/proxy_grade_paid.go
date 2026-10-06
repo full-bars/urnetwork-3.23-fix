@@ -93,6 +93,7 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// makes a region-deny cluster dial its whole block instead of sealing an F
 	// from the first three correlated failures. URL admission keeps 0.
 	probeCfg.MinConfirmDials = 6
+	clampConfirmFloor(&probeCfg)
 	if !probeCfg.Enabled {
 		// Kill switch: stage-1 table probing is off globally. Paid
 		// grading must be a full skip too — the operator turned the

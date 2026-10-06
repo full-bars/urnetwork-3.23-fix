@@ -62,9 +62,11 @@ func hostHash(host string) uint64 {
 // ascending fnv64a(hostname), tie-broken by hostname so the result is a strict
 // total order and therefore independent of the input slice's order. Cached and
 // rebuilt only when the table size changes (an upstream edit that keeps the
-// same length reuses the cached permutation only if it is still valid — see the
-// length guard; a same-length content change is vanishingly unlikely and would
-// at worst delay the reorder until the next process start).
+// same length KEEPS SERVING THE CACHED PERMUTATION, because the guard compares
+// length only and never content. That is safe today: probeHostNames is a
+// compile-time constant with no runtime writer, so the table cannot change
+// under a running process at all. If the table ever becomes runtime-mutable,
+// this must validate membership (e.g. a hash sum) instead of length.
 func spreadOrderHosts() []string {
 	probeSpreadOrder.mu.Lock()
 	defer probeSpreadOrder.mu.Unlock()
