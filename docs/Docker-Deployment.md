@@ -583,21 +583,21 @@ volumes:
 
 ### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
 
-As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
+As of v31.2, the repository ships a ready-made Prometheus + Grafana stack under `monitoring/`. It scrapes the provider's built-in `/metrics` endpoint, which listens on `9100` by default and takes the next free port up to `9103` when that one is taken:
 
 ```bash
 # Start the provider + monitoring stack together
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+docker compose -f docker-compose.yml -f monitoring/docker-compose.yml up -d
 ```
 
 This brings up:
-- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
+- **Prometheus** — configured to scrape the providers listed under `monitoring/prometheus/targets/`, at a 30s interval
 - **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
 
 > [!TIP]
-> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
+> If you run multiple provider containers, add each one to `monitoring/prometheus/targets/`. Each container needs a unique host-side port mapping onto the provider's metrics port (for example `-p 9091:9100` on the first and `-p 9092:9100` on the second). Read the address a container actually bound from `urnet-tools metrics status` inside it.
 
-The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
+The metrics endpoint is off by default. Turn it on inside the container with `docker exec urnetwork urnet-tools metrics on`; the setting is persisted and re-applied at startup, and no environment variable is needed. `URNETWORK_METRICS` sets a listen address rather than a switch, so `-e URNETWORK_METRICS=0` passes an invalid address that fails to bind instead of disabling the endpoint. To turn it off, run `urnet-tools metrics off`.
 
 See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
 
