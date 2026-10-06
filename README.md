@@ -74,7 +74,7 @@ curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
 irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
 
-If your antivirus blocks that one-liner (Defender flags download-and-execute as suspicious), download and run it in two steps instead:
+If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
 
 ```powershell
 irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"

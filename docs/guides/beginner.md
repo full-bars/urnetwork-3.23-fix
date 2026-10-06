@@ -37,6 +37,7 @@ powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 ```
 
 If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
+
 ```powershell
 irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
 powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
