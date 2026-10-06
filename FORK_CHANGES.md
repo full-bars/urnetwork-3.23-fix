@@ -1751,7 +1751,7 @@ The glog→Logger interface migration (#65, PR #69, 2026-06-15) added a wrapper 
 
 ## 70. Code Review Findings — Reaper Lock, Heartbeat, Hub Regressions (PR #225)
 
-**Purpose**: Fixes for critical bugs found in a comprehensive code review audit conducted by Opus. Covers provider reliability, data integrity, and hub infrastructure.
+**Purpose**: Fixes for critical bugs found in a comprehensive code review audit. Covers provider reliability, data integrity, and hub infrastructure.
 
 ### 70a. Reaper Lock Fix (proxy_url_source.go)
 
@@ -2325,7 +2325,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **Fix**:
 - Status server: `ReadHeaderTimeout: 10s`, `IdleTimeout: 120s`, matching the hub's configuration (`hub/main.go`); `WriteTimeout` deliberately unset so the SSE stream is not killed.
 - `hub-join`: one shared `http.Client{Timeout: 30s}`, both POSTs replaced, `signal.NotifyContext` so Ctrl-C aborts a wedged join; the previously-discarded KE2 response decode error is now checked and reported as a parse error instead of a confusing hex failure two lines later.
-- #321 (same-night hotfix): CodeRabbit test-gen landed after #317 merged and generated `pake_handlers_test.go` against the pre-#317 `doHubJoin(hubURL)` signature, breaking the hub test package build on `main`; all call sites updated to the context signature.
+- #321 (same-night hotfix): automated test-gen landed after #317 merged and generated `pake_handlers_test.go` against the pre-#317 `doHubJoin(hubURL)` signature, breaking the hub test package build on `main`; all call sites updated to the context signature.
 
 **Files Modified**: `provider/main.go`, `hub/pake_handlers.go`, `hub/pake_handlers_test.go`
 
@@ -2832,7 +2832,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Builder stage copies `go.mod`/`go.sum` and runs `go mod download` first as a separate cacheable layer, so dependency downloads are only invalidated when the module manifests change, not on every source edit.
 - Expanded `.dockerignore` to keep docs, res, and scratch files out of the build context.
 
-**Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, CodeRabbit) green.
+**Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, automated review) green.
 
 **How to Identify in New Upstream**: `profiling.go` (loopback diagnostics) does not exist upstream. `message_pool.go`'s `EnhancedMetrics`/`globalPoolMetrics` and `error_tracking.go` are fork-only. The `URNETWORK_PPROF` env var and the `/metrics/pool` + `/metrics/errors` routes on the loopback listener are fork additions.
 
@@ -3041,9 +3041,9 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ---
 
-## 142. Pelican Egg CodeRabbit Fixes (PR #482)
+## 142. Pelican Egg Review Fixes (PR #482)
 
-**Purpose**: Address 3 actionable CodeRabbit findings from PR #480 (Pelican egg support).
+**Purpose**: Address 3 actionable review findings from PR #480 (Pelican egg support).
 
 **Files Modified**: `docker/scripts/test_pelican_gates.sh`, `pelican/README.md`, `pelican/egg-urnetwork-323fix.json`.
 
@@ -3093,7 +3093,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ## 145. urnet-tools Update Verification Hardening (PR #486)
 
-**Purpose**: Harden the `do_update()` function against race conditions and edge cases identified by DeepSeek V4 Pro review.
+**Purpose**: Harden the `do_update()` function against race conditions and edge cases identified by an external review.
 
 **Files Modified**: `cmd/urnet-tools/main.go` (or equivalent shell script).
 
