@@ -438,7 +438,7 @@ func deriveIdleHint(proxies SnapshotProxies, hist []cumulativeSample, now time.T
 		// proxy[0], so a lone entry is that connection, not a proxy.
 		return "the only connection is dead or connecting"
 	case proxies.Up == 0:
-		return fmt.Sprintf("all %d proxies dead or connecting", total)
+		return fmt.Sprintf("all %d proxies down or connecting", total)
 	}
 
 	recent := authFailuresSince(hist, now.Add(-snapshotAuthWaveWindow))

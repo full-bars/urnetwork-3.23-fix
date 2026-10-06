@@ -82,7 +82,7 @@ func TestSnapshotContractMinimalLeavesOptionalsNil(t *testing.T) {
 	if s.Resources.MemLimitBytes == nil || *s.Resources.MemLimitBytes != 4294967296 {
 		t.Fatalf("mem_limit_bytes = %v", s.Resources.MemLimitBytes)
 	}
-	if s.IdleHint == nil || *s.IdleHint != "all 58 proxies dead or connecting" {
+	if s.IdleHint == nil || *s.IdleHint != "all 58 proxies down or connecting" {
 		t.Fatalf("idle_hint = %v", s.IdleHint)
 	}
 	if s.Proxies.Dead != 46 || s.Proxies.Connecting != 12 || s.Rate.NowBps != 0 {

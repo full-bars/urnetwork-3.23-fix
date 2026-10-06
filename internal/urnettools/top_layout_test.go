@@ -66,7 +66,7 @@ func TestTopEventsPanelSizeFollowsTheEvents(t *testing.T) {
 func TestTopCompactProxiesLine(t *testing.T) {
 	m := modelWithProxies(t, 1, 0, 0, 0)
 	txt, _ := showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "1 up   0 down   0 connecting   0 dead") {
+	if !strings.Contains(txt, "1 up   0 dropped   0 connecting   0 dead") {
 		t.Fatalf("compact pool line missing:\n%s", txt)
 	}
 	if strings.Contains(txt, "████████████████████████") && strings.Contains(txt, "connecting ░") {

@@ -271,7 +271,7 @@ func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
 		label string
 		n     int
 		on    tui.Style
-	}{{"up", p.Up, th.OK}, {"down", p.Degraded, th.Warn}, {"connecting", p.Connecting, tui.Style{}}, {"dead", p.Dead, th.Bad}} {
+	}{{"up", p.Up, th.OK}, {"dropped", p.Degraded, th.Warn}, {"connecting", p.Connecting, tui.Style{}}, {"dead", p.Dead, th.Bad}} {
 		style := st.on
 		if st.n == 0 {
 			style = th.Dim
@@ -300,7 +300,7 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 		n     int
 		fill  tui.Style
 	}{
-		{"up", p.Up, th.OK}, {"down", p.Degraded, th.Warn},
+		{"up", p.Up, th.OK}, {"dropped", p.Degraded, th.Warn},
 		{"connecting", p.Connecting, th.Dim}, {"dead", p.Dead, th.Bad},
 	}
 	for i, bar := range bars {

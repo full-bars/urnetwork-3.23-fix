@@ -38,7 +38,7 @@ A new file, `provider/node_snapshot.go`, defines `NodeSnapshot` and a collector 
 | Identity | schema version, provider version, previous version, start time, uptime |
 | Earning | billable rate now, 1 minute average, 5 minute average, active clients, active sessions (classical and PQE) |
 | Lifecycle | restart reason, whether the last shutdown was clean |
-| Health | proxies by status (up, down, connecting, dead), recent auth failures, pressure score |
+| Health | proxies by status (up, dropped, connecting, dead), recent auth failures, pressure score |
 | Resources | heap in use, memory limit, RSS, goroutines, open file descriptors, descriptor limit |
 | Restart safety | `busy` (derived from the 1 minute rate against the idle threshold) and whether config changes are waiting for a restart |
 
@@ -79,7 +79,7 @@ On every platform the existing output stays, and a live block is added underneat
 Live (provider v3.23.0-fix.32.1)     FLOWING
   throughput  38.2 MiB/s   1m 41.0   5m 35.4   ▂▃▅▆▇▇▆▅▆▇█▇
   clients     212 sessions
-  proxies     58 up, 2 down, 0 connecting, 0 dead
+  proxies     58 up, 2 dropped, 0 connecting, 0 dead
   uptime      3d 4h        last restart: update (v3.23.0-fix.32.0 to v3.23.0-fix.32.1)
   memory      1.8 GiB heap of 4.0 GiB limit, RSS 2.1 GiB, 1204 goroutines, 310 of 65536 fds
   pressure    0.21
