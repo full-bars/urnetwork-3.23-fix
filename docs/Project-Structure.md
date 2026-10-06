@@ -49,6 +49,8 @@ urnetwork-3.23-fix/
 │   ├── memory_headroom.go        # Low free-memory watcher (host or cgroup headroom log)
 │   ├── resource_config_warn.go   # Startup warning when memory limits are short for the pool
 │   ├── smart_dialer_probe.go     # Background connect probes for the smart dialer
+│   ├── proxy_spread_sampler.go   # Content-keyed spread sampler for the stage-1 table probe
+│   ├── proxy_direct_grade.go     # Read-only direct-path health grade (~/.urnetwork/direct_grade.json)
 │   └── Makefile                  # Cross-compile targets (amd64, arm64, darwin)
 │
 ├── protocol/                     # Protobuf definitions and generated Go code
