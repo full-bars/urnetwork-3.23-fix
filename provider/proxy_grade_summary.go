@@ -670,6 +670,7 @@ func runProxyGradeSummaryOnce() {
 		"[proxy][grade] " + s.sourcesLine(),
 		"[proxy][grade] " + s.changesLine(),
 		"[proxy][grade] " + s.scoresLine(),
+		directGradeLine(),
 	}
 	for _, l := range lines {
 		importantLogf("%s\n", l)
