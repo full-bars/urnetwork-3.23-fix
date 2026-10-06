@@ -931,9 +931,9 @@ Usage:
     provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -985,11 +985,19 @@ Options:
                                      and submit the transaction (via --rpc); without it, the ready-to-submit
                                      calldata is printed for the offline/air-gapped snclaim path.
     --dry-run                        Build and sign the extrinsic but do not submit.
-    --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
-    --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
-                                     The head-bind digest is bound to this address, so it MUST equal the
-                                     snclaim sender, whose mirror must be the hotkey's on-chain coldkey.
-    --contract=<contract>            STSubnet proxy contract address (0x, 20 bytes).
+    --manifest=<file>                Fleet manifest JSON (schema/chain_id/netuid/coordinator/fleet_id/
+                                     hotkey/generation/members). Required by bind-head and unbind-head;
+                                     the manifest is the single source for the fleet identity.
+    --hotkey_seed_file=<file>        sr25519 hotkey seed file (raw or hex 32 bytes). Required by
+                                     bind-head: the fleet binding is dual-signed, and this key must
+                                     match the manifest hotkey.
+    --client_id=<hex16>              The provider's 16-byte client_id (hex). Defaults to the client_id in
+                                     the provider's client JWT store (the "direct" entry).
+    --client_seed_file=<file>        Ed25519 client seed file (raw or hex 32 bytes) overriding the
+                                     provider's own client key for the binding/revoke signature.
+    --valid_from_epoch=<n>           First epoch the fleet binding is valid (bind-head).
+    --valid_to_epoch=<n>             Last epoch the fleet binding is valid (bind-head).
+    --effective_epoch=<n>            Epoch at which the fleet revoke takes effect (unbind-head).
     <key>                            Authentication key
     <proxy_user>                     SOCKS5 user
     <proxy_password>                 SOCKS5 password

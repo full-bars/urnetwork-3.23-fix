@@ -292,28 +292,25 @@ func wantSnDigest() (out [32]byte) {
 	return out
 }
 
-func TestSnReadHeadBindDigest_FirstEndpointSucceeds(t *testing.T) {
+func TestSnReadFleetRevokeDigest_FirstEndpointSucceeds(t *testing.T) {
 	want := wantSnDigest()
 	server := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
 	defer server.Close()
 
-	digest, chainId, rpcUrl, err := snReadHeadBindDigest(context.Background(),
+	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(),
 		[]string{server.URL}, "0x1234", []byte{1, 2, 3})
 	if err != nil {
-		t.Fatalf("snReadHeadBindDigest unexpected error: %s", err)
+		t.Fatalf("snReadFleetRevokeDigest unexpected error: %s", err)
 	}
 	if digest != want {
 		t.Errorf("digest = %x; want %x", digest, want)
-	}
-	if chainId != 1 {
-		t.Errorf("chainId = %d; want 1", chainId)
 	}
 	if rpcUrl != server.URL {
 		t.Errorf("rpcUrl = %q; want %q", rpcUrl, server.URL)
 	}
 }
 
-func TestSnReadHeadBindDigest_FailoverToSecondEndpoint(t *testing.T) {
+func TestSnReadFleetRevokeDigest_FailoverToSecondEndpoint(t *testing.T) {
 	want := wantSnDigest()
 
 	bad := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -324,23 +321,20 @@ func TestSnReadHeadBindDigest_FailoverToSecondEndpoint(t *testing.T) {
 	good := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
 	defer good.Close()
 
-	digest, chainId, rpcUrl, err := snReadHeadBindDigest(context.Background(),
+	digest, rpcUrl, err := snReadFleetRevokeDigest(context.Background(),
 		[]string{bad.URL, good.URL}, "0x1234", []byte{1, 2, 3})
 	if err != nil {
-		t.Fatalf("snReadHeadBindDigest should fail over to the second endpoint, got error: %s", err)
+		t.Fatalf("snReadFleetRevokeDigest should fail over to the second endpoint, got error: %s", err)
 	}
 	if rpcUrl != good.URL {
 		t.Errorf("rpcUrl = %q; want the second (working) endpoint %q", rpcUrl, good.URL)
-	}
-	if chainId != 1 {
-		t.Errorf("chainId = %d; want 1", chainId)
 	}
 	if digest != want {
 		t.Errorf("digest = %x; want %x", digest, want)
 	}
 }
 
-func TestSnReadHeadBindDigest_ShortReturnData(t *testing.T) {
+func TestSnReadFleetRevokeDigest_ShortReturnData(t *testing.T) {
 	// eth_call returns valid hex but only 4 bytes (< 32): that endpoint must
 	// be treated as unusable (printed as "expected >= 32"), not trusted.
 	server := snRPCServer("0x1", "0x1234")
@@ -354,7 +348,7 @@ func TestSnReadHeadBindDigest_ShortReturnData(t *testing.T) {
 	os.Stdout = w
 	defer func() { os.Stdout = old }()
 
-	_, _, _, callErr := snReadHeadBindDigest(context.Background(),
+	_, _, callErr := snReadFleetRevokeDigest(context.Background(),
 		[]string{server.URL}, "0x1234", []byte{1, 2, 3})
 
 	w.Close()
@@ -364,56 +358,15 @@ func TestSnReadHeadBindDigest_ShortReturnData(t *testing.T) {
 	if callErr == nil {
 		t.Fatal("short headBindDigest data must fail when it is the only endpoint")
 	}
-	if callErr.Error() != "no --rpc endpoint answered headBindDigest" {
-		t.Errorf("error = %q; want %q", callErr, "no --rpc endpoint answered headBindDigest")
+	if callErr.Error() != "no --rpc endpoint answered the fleet revoke digest" {
+		t.Errorf("error = %q; want %q", callErr, "no --rpc endpoint answered the fleet revoke digest")
 	}
 	if !strings.Contains(string(out), "expected >= 32") {
 		t.Errorf("stdout %q does not mention %q", out, "expected >= 32")
 	}
 }
 
-func TestSnReadHeadBindDigest_BadChainIdFailsOverToNextEndpoint(t *testing.T) {
-	want := wantSnDigest()
-
-	// First endpoint answers eth_chainId with a non-hex value. Per
-	// snReadHeadBindDigest, a parseEthHexQuantity failure on eth_chainId
-	// must be treated as a per-endpoint failure (printed, then `continue`),
-	// not a fatal error — the loop must still try the next endpoint.
-	badChainId := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		body, _ := io.ReadAll(r.Body)
-		var req struct {
-			Method string `json:"method"`
-		}
-		_ = json.Unmarshal(body, &req)
-		w.Header().Set("Content-Type", "application/json")
-		if req.Method == "eth_chainId" {
-			io.WriteString(w, `{"jsonrpc":"2.0","id":1,"result":"0xzz"}`)
-			return
-		}
-		io.WriteString(w, `{"jsonrpc":"2.0","id":1,"error":{"code":-32601,"message":"method not found"}}`)
-	}))
-	defer badChainId.Close()
-
-	good := snRPCServer("0x1", "0x"+hex.EncodeToString(want[:]))
-	defer good.Close()
-
-	digest, chainId, rpcUrl, err := snReadHeadBindDigest(context.Background(),
-		[]string{badChainId.URL, good.URL}, "0x1234", []byte{1, 2, 3})
-	if err != nil {
-		t.Fatalf("snReadHeadBindDigest should fail over past a malformed eth_chainId, got error: %s", err)
-	}
-	if rpcUrl != good.URL {
-		t.Errorf("rpcUrl = %q; want the second (working) endpoint %q", rpcUrl, good.URL)
-	}
-	if chainId != 1 {
-		t.Errorf("chainId = %d; want 1", chainId)
-	}
-	if digest != want {
-		t.Errorf("digest = %x; want %x", digest, want)
-	}
-}
-
-func TestSnReadHeadBindDigest_AllEndpointsFail(t *testing.T) {
+func TestSnReadFleetRevokeDigest_AllEndpointsFail(t *testing.T) {
 	bad1 := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "boom", http.StatusInternalServerError)
 	}))
@@ -423,12 +376,12 @@ func TestSnReadHeadBindDigest_AllEndpointsFail(t *testing.T) {
 	}))
 	defer bad2.Close()
 
-	_, _, _, err := snReadHeadBindDigest(context.Background(),
+	_, _, err := snReadFleetRevokeDigest(context.Background(),
 		[]string{bad1.URL, bad2.URL}, "0x1234", []byte{1, 2, 3})
 	if err == nil {
 		t.Fatal("expected an error when every endpoint fails")
 	}
-	if err.Error() != "no --rpc endpoint answered headBindDigest" {
-		t.Errorf("error = %q; want %q", err, "no --rpc endpoint answered headBindDigest")
+	if err.Error() != "no --rpc endpoint answered the fleet revoke digest" {
+		t.Errorf("error = %q; want %q", err, "no --rpc endpoint answered the fleet revoke digest")
 	}
 }
