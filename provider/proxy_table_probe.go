@@ -101,7 +101,10 @@ type proxyTableProbeConfig struct {
 	// the floor keeps dialing its block, so a correlated region-deny cluster can
 	// never seal an F from a handful of dials. 0 disables the rule and restores
 	// the previous behaviour exactly, which is what the URL admission path uses
-	// so its dial profile stays byte-identical.
+	// so its dial profile stays byte-identical — but on the PAID path 0 means
+	// "unset" and takes the staged default, so -1 is the explicit force-off
+	// there. It gates CONVICTION, not just the abort: a pass that runs out of
+	// block below the floor is refused a verdict rather than convicted.
 	MinConfirmDials int
 	// MaxPaidProbesPerTick caps how many paid/file proxies ONE grading pass
 	// (one 5-minute tick) may probe. This is the throughput lever that turns
@@ -248,7 +251,10 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	if over.UseSpreadOrder != nil {
 		cfg.UseSpreadOrder = *over.UseSpreadOrder
 	}
-	if over.MinConfirmDials != nil && *over.MinConfirmDials >= 0 {
+	// -1 is the explicit force-OFF: it is passed through so the paid grader,
+	// which otherwise defaults an unset floor to its staged base width, can be
+	// A/B-ed off without disabling all probing.
+	if over.MinConfirmDials != nil && *over.MinConfirmDials >= -1 {
 		cfg.MinConfirmDials = *over.MinConfirmDials
 	}
 	if over.Stage0On != nil {
@@ -510,6 +516,10 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			res.Failed = append(res.Failed, host)
 		}
 
+		// NOTE: excluding denied hosts from `remaining` is both protection and
+		// acceleration — `best` DECREASES as `remaining` shrinks, so denials make
+		// the abort seal EARLIER, not later. That is why the floor has to gate
+		// conviction as well as the abort (see the Decidable gate below).
 		// Viability abort — the pass ends only when the verdict is already
 		// decided: even if every remaining target succeeds, the bar is
 		// unreachable. Viability is measured against the denominator the
@@ -617,6 +627,18 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 	if res.Total > 0 {
 		res.Score = float64(res.OK) / float64(res.Total)
 	}
+	// The floor is a CONVICTION gate, not merely an abort gate. The abort above
+	// only fires when the bar is unreachable AND the floor has been met, so a
+	// pass that simply RAN OUT of block — growth exhausted, or a growth host that
+	// was denied or unresolvable — can end below the floor with a quorum and
+	// convict anyway. Refusing the verdict keeps the prior grade (the same
+	// "absence of evidence is not evidence" rule the quorum uses).
+	//
+	// MUST run after Score is set: an earlier placement compared an unset 0.0 and
+	// refused every below-floor pass, including a perfect one.
+	if cfg.MinConfirmDials > 0 && res.Total < cfg.MinConfirmDials && res.Score < cfg.PassBar {
+		res.Decidable = false
+	}
 	return res
 }
 
@@ -653,8 +675,20 @@ func growthNeeded(res tableProbeResult, cfg proxyTableProbeConfig) bool {
 // config AFTER the loader clamp, so clamping only in the loader leaves the paid
 // path with an unsatisfiable floor and a silently disabled abort.
 func clampConfirmFloor(cfg *proxyTableProbeConfig) {
-	if w := cfg.probeWidth(); cfg.MinConfirmDials > w {
-		cfg.MinConfirmDials = w
+	// The floor can only be satisfied by dials the pass can actually make: the
+	// base block, plus growth when the growth trigger can fire at all. Bounding
+	// it by probeWidth() alone is not enough — with max_sample_width <= baseW the
+	// growth trigger never fires, so a floor above baseW would make every pass
+	// non-decidable and stop grading entirely, which is worse than a low floor.
+	reachable := cfg.SampleWidth
+	if cfg.MinSampleWidth > 0 && cfg.MinSampleWidth < cfg.SampleWidth {
+		reachable = cfg.MinSampleWidth
+	}
+	if cfg.MaxSampleWidth > reachable {
+		reachable = cfg.probeWidth()
+	}
+	if cfg.MinConfirmDials > reachable {
+		cfg.MinConfirmDials = reachable
 	}
 }
 

@@ -224,7 +224,8 @@ func TestProbeConfigOverrides_RoundTrip(t *testing.T) {
 		{"defaults", map[string]any{}, true, 0},
 		{"spread off", map[string]any{"use_spread_order": false}, false, 0},
 		{"floor set", map[string]any{"min_confirm_dials": 9}, true, 9},
-		{"negative floor ignored", map[string]any{"min_confirm_dials": -1}, true, 0},
+		{"-1 forces the floor off", map[string]any{"min_confirm_dials": -1}, true, -1},
+		{"-2 is out of range and ignored", map[string]any{"min_confirm_dials": -2}, true, 0},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
