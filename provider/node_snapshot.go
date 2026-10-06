@@ -414,7 +414,7 @@ func deriveStateReason(in stateInputs) string {
 		}
 		var parts []string
 		if total := in.proxies.total(); total > 0 && 2*(in.proxies.Dead+in.proxies.Degraded) > total {
-			parts = append(parts, fmt.Sprintf("%d of %d proxies dead or degraded", in.proxies.Dead+in.proxies.Degraded, total))
+			parts = append(parts, fmt.Sprintf("%d of %d proxies down", in.proxies.Dead+in.proxies.Degraded, total))
 		}
 		if in.pressure >= 0.8 {
 			parts = append(parts, fmt.Sprintf("resource pressure %.2f", in.pressure))

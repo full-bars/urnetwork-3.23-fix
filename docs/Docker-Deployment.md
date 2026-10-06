@@ -410,7 +410,7 @@ The load will prompt for the passphrase, check the network_id against the curren
 
 ## 🩺 Viewing Proxy Health
 
-You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
+You can view the full list of never-up and dropped proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
 
 - Persistent (always): `docker exec -it <container> proxy-health`
 - Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`

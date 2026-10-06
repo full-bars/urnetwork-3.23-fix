@@ -34,17 +34,17 @@ func TestFormatStateFile(t *testing.T) {
 	now := time.Date(2026, 6, 2, 16, 5, 11, 0, time.UTC)
 	out := formatStateFile(r, now)
 
-	if !strings.Contains(out, "Up: 3 | Down: 2 | Dead: 1 | Degraded: 1") {
+	if !strings.Contains(out, "Up: 3 | Down: 2 (dropped 1, never-up 1)") {
 		t.Fatalf("missing summary header in:\n%s", out)
 	}
 	if !strings.Contains(out, "Lifetime Recovered: 5 | Lifetime Lost: 4") {
 		t.Fatalf("missing lifetime header in:\n%s", out)
 	}
-	if !strings.Contains(out, "| DEAD     | proxy[2]         | c:1                                     |") {
-		t.Fatalf("missing dead line in:\n%s", out)
+	if !strings.Contains(out, "| NEVER UP | proxy[2]         | c:1                                     |") {
+		t.Fatalf("missing never-up line in:\n%s", out)
 	}
-	if !strings.Contains(out, "| DEGRADED | proxy[1]         | b:1                                     |") {
-		t.Fatalf("missing degraded line in:\n%s", out)
+	if !strings.Contains(out, "| DROPPED  | proxy[1]         | b:1                                     |") {
+		t.Fatalf("missing dropped line in:\n%s", out)
 	}
 }
 
@@ -61,11 +61,11 @@ func TestFormatEventLines(t *testing.T) {
 	if !strings.Contains(joined, "| 2026-06-02T16:05:11Z | RECOVERED | proxy[1]         | b:1                   | after=55m8s   |") {
 		t.Fatalf("missing/!= recovered line in:\n%s", joined)
 	}
-	if !strings.Contains(joined, "| 2026-06-02T16:05:11Z | DEGRADED  | proxy[3]         | d:1                   |               |") {
-		t.Fatalf("missing degraded line in:\n%s", joined)
+	if !strings.Contains(joined, "| 2026-06-02T16:05:11Z | DROPPED   | proxy[3]         | d:1                   |               |") {
+		t.Fatalf("missing dropped line in:\n%s", joined)
 	}
-	if !strings.Contains(joined, "| 2026-06-02T16:05:11Z | DEAD      | proxy[2]         | c:1                   |               |") {
-		t.Fatalf("missing dead line in:\n%s", joined)
+	if !strings.Contains(joined, "| 2026-06-02T16:05:11Z | NEVER UP  | proxy[2]         | c:1                   |               |") {
+		t.Fatalf("missing never-up line in:\n%s", joined)
 	}
 }
 
@@ -119,16 +119,16 @@ func TestWriteProxyHealthFiles(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(state), "| DEAD     | proxy[2]         | c:1                                     |") {
-		t.Fatalf("state file missing dead entry:\n%s", state)
+	if !strings.Contains(string(state), "| NEVER UP | proxy[2]         | c:1                                     |") {
+		t.Fatalf("state file missing never-up entry:\n%s", state)
 	}
 
 	events, err := os.ReadFile(filepath.Join(dir, "proxy_health.log"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(events), "| DEAD      | proxy[2]         | c:1                   |               |") {
-		t.Fatalf("event log missing dead entry:\n%s", events)
+	if !strings.Contains(string(events), "| NEVER UP  | proxy[2]         | c:1                   |               |") {
+		t.Fatalf("event log missing never-up entry:\n%s", events)
 	}
 
 	// No events -> event log unchanged (no empty append).

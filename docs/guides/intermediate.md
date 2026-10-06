@@ -256,7 +256,7 @@ These work across all platforms via the Go `urnet-tools` binary (or on Docker vi
 | `urnet-tools proxy summary` | Fleet summary: source breakdown (file/URL/internal), health state, URL feed cache |
 | `urnet-tools proxy traffic` | Live proxy traffic snapshot and max age |
 | `urnet-tools status` | Provider process status and uptime |
-| `urnet-tools proxy health` | Per-proxy up/degraded/dead status |
+| `urnet-tools proxy health` | Per-proxy up, dropped, and never-up status |
 
 ---
 
@@ -293,7 +293,7 @@ Set these before starting the provider — `export VAR=value` on Linux/macOS, `$
 urnet-tools proxy health
 ```
 
-Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts.
+Shows how many proxies are up, dropped, or never-up, with lifetime recovery/loss counts.
 
 ---
 

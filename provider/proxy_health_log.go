@@ -130,7 +130,10 @@ func formatStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	fmt.Fprintf(&b, "=======================================================================\n")
 	fmt.Fprintf(&b, " URNETWORK PROXY HEALTH REPORT\n")
 	fmt.Fprintf(&b, " Updated: %s\n", now.UTC().Format(time.RFC3339))
-	fmt.Fprintf(&b, " Up: %d | Down: %d | Dead: %d | Degraded: %d\n", r.Up, down, len(r.Dead), len(r.Degraded))
+	// "Down" is the total of the two down buckets. Name them inline (dropped =
+	// was up, now down; never-up = never connected) so the sum is obvious and
+	// the word "degraded" is not reused for a hard gone state.
+	fmt.Fprintf(&b, " Up: %d | Down: %d (dropped %d, never-up %d)\n", r.Up, down, len(r.Degraded), len(r.Dead))
 	fmt.Fprintf(&b, " Lifetime Recovered: %d | Lifetime Lost: %d\n", r.LifetimeRecovered, r.LifetimeLost)
 	fmt.Fprintf(&b, "=======================================================================\n")
 	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
@@ -138,11 +141,11 @@ func formatStateFile(r connect.ProxyHealthReport, now time.Time) string {
 	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
 	for _, s := range r.Dead {
 		p, ip := parseProxyString(s)
-		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "DEAD", p, ip, "")
+		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "NEVER UP", p, ip, "")
 	}
 	for _, s := range r.Degraded {
 		p, ip := parseProxyString(s)
-		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "DEGRADED", p, ip, "")
+		fmt.Fprintf(&b, "| %-8s | %-16s | %-39s | %-10s |\n", "DROPPED", p, ip, "")
 	}
 	fmt.Fprintf(&b, "+----------+------------------+-----------------------------------------+------------+\n")
 	return b.String()
@@ -234,11 +237,11 @@ func formatEventLines(r connect.ProxyHealthReport, now time.Time) []string {
 	}
 	for _, e := range r.NewlyDegraded {
 		p := fmt.Sprintf("proxy[%d]", e.Index)
-		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-16s | %-21s | %-13s |", ts, "DEGRADED", p, e.Address, ""))
+		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-16s | %-21s | %-13s |", ts, "DROPPED", p, e.Address, ""))
 	}
 	for _, e := range r.NewlyDead {
 		p := fmt.Sprintf("proxy[%d]", e.Index)
-		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-16s | %-21s | %-13s |", ts, "DEAD", p, e.Address, ""))
+		lines = append(lines, fmt.Sprintf("| %s | %-9s | %-16s | %-21s | %-13s |", ts, "NEVER UP", p, e.Address, ""))
 	}
 	return lines
 }

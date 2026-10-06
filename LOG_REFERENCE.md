@@ -556,19 +556,19 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 
 ```
 | 2026-08-04T00:12:03Z | RECOVERED | proxy[47]  | 1.2.3.4:8080     | after=3m12s |
-| 2026-08-04T00:12:03Z | DEGRADED  | proxy[49]  | 5.6.7.8:1081     |             |
-| 2026-08-04T00:12:03Z | DEAD      | proxy[112] | 45.3.32.184:1081 |             |
+| 2026-08-04T00:12:03Z | DROPPED   | proxy[49]  | 5.6.7.8:1081     |             |
+| 2026-08-04T00:12:03Z | NEVER UP  | proxy[112] | 45.3.32.184:1081 |             |
 ```
 
 | Field | Meaning |
 |---|---|
 | Timestamp | RFC3339 UTC. |
 | `RECOVERED` | A proxy that was down came back up. `after=` shows how long it was down (only when a `downSince` was recorded). |
-| `DEGRADED` | A proxy that was up went down (worked before, now not). |
-| `DEAD` | A proxy that never connected within a full pulse cycle. Emitted **once per proxy** (the `deadLogged` latch) prevents repeat rows for the same proxy. |
+| `DROPPED` | A proxy that was up went down (worked before, now not). |
+| `NEVER UP` | A proxy that never connected within a full pulse cycle. Emitted **once per proxy** (the `deadLogged` latch) prevents repeat rows for the same proxy. |
 
 > [!IMPORTANT]
-> `DEAD` rows were unreachable before the connecting-state bound shipped (the `!connecting` gate could never pass for a never-up proxy, so the path was latently dead). A fleet that has never seen `DEAD` rows will start seeing them for proxies that genuinely never connected within 65 minutes. This is a fixed latent bug; the rows are diagnostics only and nothing alerts on them.
+> `NEVER UP` rows were unreachable before the connecting-state bound shipped (the `!connecting` gate could never pass for a never-up proxy, so the path was latently dead). A fleet that has never seen `NEVER UP` rows will start seeing them for proxies that genuinely never connected within 65 minutes. This is a fixed latent bug; the rows are diagnostics only and nothing alerts on them.
 
 ### ⏱️ Hourly Pulse Marker
 

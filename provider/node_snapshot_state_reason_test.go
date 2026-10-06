@@ -27,9 +27,9 @@ func TestDeriveSnapshotStateFollowsStartupPhase(t *testing.T) {
 		{"empty source is degraded once startup ends", stateInputs{uptime: 3 * time.Minute, startup: startupSourceEmpty}, "degraded", "proxy source returned no usable proxies, retrying"},
 		{"settled startup falls through to normal states", stateInputs{uptime: 3 * time.Minute, proxies: healthy, avg1m: 1e9}, "flowing", ""},
 
-		{"degraded by dead proxies says how many", stateInputs{uptime: time.Hour, proxies: SnapshotProxies{Up: 4, Dead: 4, Degraded: 2}}, "degraded", "6 of 10 proxies dead or degraded"},
+		{"degraded by dead proxies says how many", stateInputs{uptime: time.Hour, proxies: SnapshotProxies{Up: 4, Dead: 4, Degraded: 2}}, "degraded", "6 of 10 proxies down"},
 		{"degraded by pressure says the level", stateInputs{uptime: time.Hour, proxies: healthy, pressure: 0.85}, "degraded", "resource pressure 0.85"},
-		{"degraded by both says both", stateInputs{uptime: time.Hour, proxies: SnapshotProxies{Up: 2, Dead: 8}, pressure: 0.9}, "degraded", "8 of 10 proxies dead or degraded; resource pressure 0.90"},
+		{"degraded by both says both", stateInputs{uptime: time.Hour, proxies: SnapshotProxies{Up: 2, Dead: 8}, pressure: 0.9}, "degraded", "8 of 10 proxies down; resource pressure 0.90"},
 		{"idle and flowing carry no state reason", stateInputs{uptime: time.Hour, proxies: healthy, avg1m: 0}, "idle", ""},
 	}
 	for _, tc := range cases {
