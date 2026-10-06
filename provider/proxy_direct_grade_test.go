@@ -217,13 +217,13 @@ func TestDirectGradeLine_OffAndUngraded(t *testing.T) {
 
 	// direct transport disabled by env -> "off", not "ungraded"
 	t.Setenv("DISABLE_DIRECT_IP", "1")
-	if got := directGradeLine(); got != "[proxy][grade] direct: off" {
+	if got := directGradeLine(); got != "direct: off" {
 		t.Errorf("disabled direct line = %q, want the off state", got)
 	}
 
 	// enabled but never graded -> "(ungraded)"
 	t.Setenv("DISABLE_DIRECT_IP", "")
-	if got := directGradeLine(); got != "[proxy][grade] direct: (ungraded)" {
+	if got := directGradeLine(); got != "direct: (ungraded)" {
 		t.Errorf("ungraded direct line = %q, want the ungraded state", got)
 	}
 }
@@ -281,7 +281,7 @@ func TestDirectGradeLine_StaleAfterSeveralIntervals(t *testing.T) {
 	if err := writeDirectGrade(base); err != nil {
 		t.Fatal(err)
 	}
-	if got := directGradeLine(); got != "[proxy][grade] direct: (stale)" {
+	if got := directGradeLine(); got != "direct: (stale)" {
 		t.Errorf("stale direct line = %q, want the stale state", got)
 	}
 

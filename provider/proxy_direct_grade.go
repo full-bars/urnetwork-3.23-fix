@@ -9,6 +9,8 @@ import (
 	"path/filepath"
 	"sync/atomic"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Direct-path (native local-IP transport) health grading.
@@ -22,8 +24,17 @@ import (
 //
 // This adds a READ-ONLY grade for the direct path, sampled from the SAME
 // destination table with the SAME sampler as the proxy probe, so the two scores
-// are directly comparable. "my own route reaches 11/12 of the table, my proxies
-// reach 5/12" is the control that separates a bad proxy from a bad box.
+// are comparable as ESTIMATES of the same fraction (not paired — the proxy probe
+// seeds on fnv(address)+pass and this one on its own counter, so they sample
+// different hosts). "my own route reaches 11/12 of the table, my proxies reach
+// 5/12" is the control that separates a bad proxy from a bad box.
+//
+// What it measures, precisely: EGRESS IPv4:443 reachability from this box. It is
+// gated on the operator's CONFIG (the direct toggle file / env), i.e. desired
+// state, not on whether the transport goroutine actually came up. And the
+// transport's own product is INBOUND reachability of the box IP (NAT/CGNAT/
+// firewall), which no outbound probe can see — so read the line as "this box's
+// egress can reach the internet", not "the direct transport is healthy".
 //
 // SAFETY — structural, not a guard to remember: the result is written to its
 // OWN file (direct_grade.json) and NEVER into proxy.state, so no existing
@@ -37,6 +48,20 @@ import (
 // no adaptive growth and no confirmation floor — it is a visibility metric, not
 // a verdict that anything acts on, so spending extra dials to harden it would be
 // pointless.
+
+// directProbeDialLimiter paces the direct pass on its OWN bucket. Sharing
+// globalProbeDialLimiter coupled the two: a direct burst could deny a proxy pass
+// a token, and a denial shrinks `remaining` in the proxy viability-abort
+// arithmetic (best = (OK+remaining)/(Total+remaining), which DECREASES as
+// remaining shrinks), so a proxy pass could be sealed at F one dial early by the
+// direct pass's traffic. A dedicated bucket makes the isolation structural rather
+// than merely low-probability.
+var directProbeDialLimiter = rate.NewLimiter(rate.Limit(directProbeDialsPerSec), directProbeDialBurst)
+
+const (
+	directProbeDialsPerSec = 10
+	directProbeDialBurst   = 20
+)
 
 // directDial is the dialer the direct pass uses, as a var so a test can inject a
 // deterministic offline dialer. A port override alone cannot keep a test off the
@@ -108,7 +133,7 @@ func writeDirectGrade(g directGrade) error {
 // route — the same positive-evidence-only rule the proxy probe uses.
 func probeDirectTarget(ctx context.Context, ip net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
 	waitCtx, cancelWait := context.WithTimeout(ctx, timeout)
-	err := globalProbeDialLimiter.Wait(waitCtx)
+	err := directProbeDialLimiter.Wait(waitCtx)
 	cancelWait()
 	if err != nil || ctx.Err() != nil {
 		return false, false
@@ -137,7 +162,8 @@ var directProbePassCounter atomic.Uint64
 func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbeResult {
 	width := cfg.SampleWidth
 	if width <= 0 {
-		width = 12
+		// only reachable for a hand-built config; resolved configs always carry a width
+		width = defaultProxyTableProbeConfig().SampleWidth
 	}
 	// advance FIRST so consecutive passes walk disjoint blocks; the proxy probe
 	// seeds on fnv(address)+pass, so the two sample different hosts by design —
@@ -206,12 +232,18 @@ func runDirectGradeOnce(ctx context.Context) {
 		LastGraded:  time.Now(),
 		Failed:      capFailedList(res.Failed),
 	}
+	// Emit only on a tier CHANGE: the summary carries the steady state, and an
+	// unconditional line here would write ~288 near-identical important lines a
+	// day on a healthy box (the paid grader keys its lines the same way).
+	prev, hadPrev := readDirectGrade()
 	if err := writeDirectGrade(g); err != nil {
 		tlog("[proxy][grade] warning: could not write direct grade: %v\n", err)
 		return
 	}
-	importantLogf("[proxy][grade] direct: %s (score %.2f, %d/%d)\n",
-		proxyGradeTier(res.Score), res.Score, res.OK, res.Total)
+	if !hadPrev || !prev.Graded || proxyGradeTier(prev.Score) != proxyGradeTier(res.Score) {
+		importantLogf("[proxy][grade] direct: %s (score %.2f, %d/%d)\n",
+			proxyGradeTier(res.Score), res.Score, res.OK, res.Total)
+	}
 }
 
 // runDirectGrader drives the direct-path grade on the reaper ticker cadence, so
@@ -232,23 +264,24 @@ func runDirectGrader(ctx context.Context) {
 	}
 }
 
-// directGradeLine renders the read-only direct-path grade for the summary line.
-// It is display-only: nothing in the provider consumes the value.
+// directGradeLine renders the read-only direct-path grade for the summary. It
+// returns the text WITHOUT the log prefix, which the caller applies like every
+// sibling summary line. Display-only: nothing in the provider consumes the value.
 func directGradeLine() string {
 	if !isDirectEnabled() {
-		return "[proxy][grade] direct: off"
+		return "direct: off"
 	}
 	g, ok := readDirectGrade()
 	if !ok || !g.Graded {
-		return "[proxy][grade] direct: (ungraded)"
+		return "direct: (ungraded)"
 	}
 	// A grade older than a few sweep intervals is not a current reading: if the
 	// transport was toggled off and back on, or passes keep failing to decide,
 	// say so rather than presenting a historical score as today's.
 	if time.Since(g.LastGraded) > 3*proxyReaperInterval {
-		return "[proxy][grade] direct: (stale)"
+		return "direct: (stale)"
 	}
-	return fmt.Sprintf("[proxy][grade] direct: %s (score %.2f, %d/%d, %s ago)",
+	return fmt.Sprintf("direct: %s (score %.2f, %d/%d, %s ago)",
 		proxyGradeTier(g.Score), g.Score, g.OK, g.Total,
 		time.Since(g.LastGraded).Round(time.Minute))
 }
