@@ -24,6 +24,11 @@ import (
 // dials; drop `&& res.Total >= cfg.MinConfirmDials` from the growth abort -> 5;
 // drop the abort entirely -> 8.
 func TestMinConfirmDials_GrowthLoopBoundsExactFloor(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
 
@@ -66,6 +71,11 @@ func TestMinConfirmDials_GrowthLoopBoundsExactFloor(t *testing.T) {
 // Falsifiable: remove `res.Total*2 < res.SampleWidth` from confirmNeeded -> the
 // probe grows and dials past 2.
 func TestMinConfirmDials_ResolverStarvationSuppressesGrowth(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
 
@@ -76,11 +86,33 @@ func TestMinConfirmDials_ResolverStarvationSuppressesGrowth(t *testing.T) {
 	cfg.MinConfirmDials = 6
 	cfg.TargetTimeout = time.Second
 
-	pass := tableProbePassCounter.Load()
-	base := sampleProbeHosts(tableProbeSeed(addr, pass), cfg.SampleWidth, cfg.UseSpreadOrder)
-	if len(base) < 6 {
-		t.Fatalf("table too small: got %d hosts", len(base))
+	// Literal-IP rows resolve BEFORE the DNS cache, so poisoning cannot stop
+	// them, and their presence also lifts Total above the starvation guard's
+	// threshold. Pick a pass whose sample contains NO literal rows, so the
+	// poisoning below controls every dial and the assertion is exact.
+	pass := uint64(0)
+	var base []string
+	for ; pass < 10000; pass++ {
+		cand := sampleProbeHosts(tableProbeSeed(addr, pass), cfg.SampleWidth, cfg.UseSpreadOrder)
+		if len(cand) != cfg.SampleWidth {
+			continue
+		}
+		literal := false
+		for _, h := range cand {
+			if net.ParseIP(h) != nil {
+				literal = true
+				break
+			}
+		}
+		if !literal {
+			base = cand
+			break
+		}
 	}
+	if len(base) < 6 {
+		t.Skip("no literal-free 6-host sample found for this listener address")
+	}
+	tableProbePassCounter.Store(pass)
 	resolvable := map[string]bool{}
 	probeDNSCache.Lock()
 	for i, h := range base {
@@ -106,15 +138,19 @@ func TestMinConfirmDials_ResolverStarvationSuppressesGrowth(t *testing.T) {
 		}
 	})
 
+	// the sample is literal-free, so exactly the two seeded hosts are attemptable
+	wantAttempted := 2
+
 	before := connects.Load()
 	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	dials := int(connects.Load() - before)
 
-	if dials != 2 {
-		t.Fatalf("starved base dialed %d times, want 2 — a resolver-starved pass must not grow", dials)
+	if dials != wantAttempted {
+		t.Fatalf("starved base dialed %d times, want %d: a resolver-starved pass must not grow",
+			dials, wantAttempted)
 	}
-	if res.Total != 2 || res.SampleWidth != 6 {
-		t.Errorf("Total=%d SampleWidth=%d, want 2 and 6 (no growth block)", res.Total, res.SampleWidth)
+	if res.Total != wantAttempted || res.SampleWidth != 6 {
+		t.Errorf("Total=%d SampleWidth=%d, want %d and 6 (no growth block)", res.Total, res.SampleWidth, wantAttempted)
 	}
 	if res.Decidable {
 		t.Errorf("a pass below the resolvable quorum must not be decidable")
@@ -129,6 +165,11 @@ func TestMinConfirmDials_ResolverStarvationSuppressesGrowth(t *testing.T) {
 // Falsifiable: drop `&& res.Total >= cfg.MinConfirmDials` from the base abort ->
 // the floor=6 run stops at 4 dials like the floor=0 run.
 func TestMinConfirmDials_PartialSuccessSuppressesPrematureConviction(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	// dial 1 answers, everything after refuses
 	newServer := func() (string, func()) {
 		addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte {
@@ -188,6 +229,11 @@ func TestMinConfirmDials_PartialSuccessSuppressesPrematureConviction(t *testing.
 // Falsifiable: hardcode cfg.UseSpreadOrder at the sampling call site -> one of the
 // two host-order assertions fails.
 func TestProbeTableThroughProxy_HonoursSpreadOrderAndKillSwitch(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	addr, cleanup := listenSocks5ConnectOnce(t, 0x05)
 	defer cleanup()
 
@@ -258,6 +304,11 @@ func TestProbeTableThroughProxy_HonoursSpreadOrderAndKillSwitch(t *testing.T) {
 // Falsifiable: leave the spread sampler on with the switch off -> the abort
 // boundary and the dialed hosts differ.
 func TestKillSwitch_ReproducesTheLegacyDialProfileIncludingTheAbort(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
 

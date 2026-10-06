@@ -19,6 +19,11 @@ import (
 // regression: the same all-refused pass must fail fast with the floor off and
 // dial its whole block with the floor on.
 func TestMinConfirmDials_SubBarPassRunsWholeBlockBeforeConviction(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	// every CONNECT refused, so the bar is unreachable from the first dial —
 	// exactly the case the fail-fast abort was built for.
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
@@ -109,6 +114,11 @@ func TestConfirmNeeded_Table(t *testing.T) {
 // Falsifiable: remove the shortfall sizing and this pass dials ~14 times instead
 // of 6.
 func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	withTempHome(t)
 	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
@@ -177,6 +187,11 @@ func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
 // Falsifiable: remove the `res.Total < cfg.MinConfirmDials` conviction gate and
 // the pass becomes decidable again.
 func TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
 

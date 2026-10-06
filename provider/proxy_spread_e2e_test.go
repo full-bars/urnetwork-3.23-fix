@@ -159,6 +159,11 @@ func TestProbeVerdictPipeline_RegionalDenyDoesNotBlackOutTheSpreadSampler(t *tes
 // Falsifiable: drop the floor condition from the growth-loop abort and the pass
 // settles below the floor.
 func TestMinConfirmDials_GrowthLoopAlsoRespectsTheFloor(t *testing.T) {
+	// Pin the pass counter for the whole test: a concurrent grader or URL fetch
+	// advances tableProbePassCounter, which would move the probe's internal seed
+	// between the DNS seeding below and the probe read, sampling a different block.
+	origPass := tableProbePassCounter.Load()
+	t.Cleanup(func() { tableProbePassCounter.Store(origPass) })
 	withTempHome(t)
 	addr, _, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
 	defer cleanup()
