@@ -69,10 +69,14 @@ func spreadOrderHosts() []string {
 	probeSpreadOrder.mu.Lock()
 	defer probeSpreadOrder.mu.Unlock()
 
-	t := connect.ProbeHostNames() // copy — never mutate the package-owned table
-	if probeSpreadOrder.hosts != nil && len(probeSpreadOrder.hosts) == len(t) {
+	// Length check FIRST: connect.ProbeHostNames() copies the whole table, so the
+	// cached path must not allocate a copy it is about to discard. This runs once
+	// per sampled block, under this mutex, from up to scaledProbeConcurrency
+	// concurrent probes.
+	if n := connect.ProbeHostCount(); probeSpreadOrder.hosts != nil && len(probeSpreadOrder.hosts) == n {
 		return probeSpreadOrder.hosts
 	}
+	t := connect.ProbeHostNames() // copy — never mutate the package-owned table
 	sort.Slice(t, func(i, j int) bool {
 		hi, hj := hostHash(t[i]), hostHash(t[j])
 		if hi != hj {

@@ -265,12 +265,6 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 			cfg.BorderlineBand = cap
 		}
 	}
-	// Clamp the corroboration floor to the widest block the probe can dial: a
-	// floor above probeWidth() could never be satisfied, so the pass would grow
-	// on every sweep and still convict on thin evidence.
-	if w := cfg.probeWidth(); cfg.MinConfirmDials > w {
-		cfg.MinConfirmDials = w
-	}
 	// Clamp sample width so the disjoint-block rotation property holds
 	// (two blocks of n out of a table of total are disjoint only when
 	// 2n <= total). Upstream's default width is the whole table; a wide
@@ -289,6 +283,14 @@ func loadProxyTableProbeConfig() proxyTableProbeConfig {
 	// overflow (the probe uses SampleWidth alone); no warning needed there.
 	if cfg.MaxSampleWidth > connect.ProbeHostCount()/2 {
 		cfg.MaxSampleWidth = connect.ProbeHostCount() / 2
+	}
+	// Clamp the corroboration floor AFTER the width clamps: it is bounded by the
+	// widest block the probe can actually dial, so bounding it against the
+	// PRE-clamp widths would let a wide sample_width override leave a floor that
+	// can never be satisfied (the pass would grow on every sweep and still
+	// convict on thin evidence).
+	if w := cfg.probeWidth(); cfg.MinConfirmDials > w {
+		cfg.MinConfirmDials = w
 	}
 	// An inverted bar pair would let the log label ("preferred") disagree
 	// with the gate decision. Clamp PreferredBar up to PassBar.
@@ -534,14 +536,14 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		}
 	}
 
-	// ADAPTIVE GROWTH (borderline-only) toward SampleWidth, then MaxSampleWidth
-	// when MinSampleWidth staged the base smaller. The base pass yields a
-	// decisive verdict for clearly-good and clearly-dead proxies
-	// (growthNeeded false); only a score within BorderlineBand of PassBar
-	// grows. Growth blocks are drawn at the BASE WIDTH (consecutive same-width
+	// ADAPTIVE GROWTH toward SampleWidth, then MaxSampleWidth when
+	// MinSampleWidth staged the base smaller. Two triggers: growthNeeded (the
+	// base score sits within BorderlineBand of PassBar, so a small sample cannot
+	// separate mediocre-but-usable from failing) and confirmNeeded (a below-band
+	// pass that has not yet ATTEMPTED MinConfirmDials, so it is too thin to
+	// convict). Growth blocks are drawn at the BASE WIDTH (consecutive same-width
 	// strides via disjointGrowthHosts), maintaining the disjoint-rotation
-	// guarantee the base pass relies on. Clearly-good and clearly-dead proxies
-	// never grow: paid probe bandwidth is spent only in the uncertain middle.
+	// guarantee the base pass relies on.
 	if cfg.MaxSampleWidth > baseW && (growthNeeded(res, cfg) || confirmNeeded(res, cfg)) {
 		// Grow to the wider of SampleWidth or MaxSampleWidth (probeWidth), so
 		// the pool-sizing semantics is centralized in one helper.

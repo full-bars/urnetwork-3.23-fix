@@ -95,22 +95,17 @@ func TestConfirmNeeded_Table(t *testing.T) {
 	}
 }
 
-// TestMinConfirmDials_FloorCannotExceedWhatTheProbeDials guards the clamp: a
-// floor above probeWidth() could never be satisfied, so the pass would grow on
-// every sweep and still convict on thin evidence.
+// TestMinConfirmDials_FloorCannotExceedWhatTheProbeDials guards the clamp
+// through the REAL resolver, and pins the order of the clamps: the floor must be
+// bounded by the post-clamp widths, so a wide sample_width override cannot leave
+// an unsatisfiable floor behind (which would make the pass grow on every sweep
+// and still convict on thin evidence).
 func TestMinConfirmDials_FloorCannotExceedWhatTheProbeDials(t *testing.T) {
-	cfg := defaultProxyTableProbeConfig()
-	cfg.SampleWidth = 12
-	cfg.MaxSampleWidth = 36
-	if w := cfg.probeWidth(); w != 36 {
-		t.Fatalf("probeWidth = %d, want 36", w)
-	}
-	// mirror the resolver's clamp arithmetic
-	capped := 999
-	if w := cfg.probeWidth(); capped > w {
-		capped = w
-	}
-	if capped != 36 {
-		t.Fatalf("floor clamp produced %d, want 36", capped)
+	withTempHome(t)
+	writeReviewProbeOverride(t, map[string]any{"sample_width": 1000, "min_confirm_dials": 500})
+	cfg := loadProxyTableProbeConfig()
+	if cfg.MinConfirmDials > cfg.probeWidth() {
+		t.Fatalf("floor %d exceeds probeWidth %d — the floor clamp ran before the width clamps",
+			cfg.MinConfirmDials, cfg.probeWidth())
 	}
 }
