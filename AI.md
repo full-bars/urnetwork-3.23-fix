@@ -120,6 +120,8 @@ urnet-tools uninstall              # full removal
 # Experimental
 urnet-tools hot-restart on|off     # client JWT reuse (default off)
 urnet-tools fast-auth on|off       # bypass auth rate limiter
+urnet-tools set h3 on|off          # H3 (QUIC) transport for the direct identity (beta)
+urnet-tools set h3-datagram on|off # offer QUIC DATAGRAM on the H3 connection (beta)
 ```
 
 ## Environment Variables
@@ -141,6 +143,7 @@ Key variables:
 | `URNETWORK_RAMLOGS` | `1` = log to /dev/shm |
 | `URNETWORK_SKIP_AUDIT` | `1` = skip startup system audit (disk speed, ulimit, conntrack checks) |
 | `URNETWORK_HOT_RESTART` | `1` = experimental client JWT reuse |
+| `URNETWORK_H3` | `on` (or `1`, `true`, `yes`) = run H3 (QUIC) beside H1 for the direct identity (beta, off by default); the `h3` control key overrides it live |
 
 ## Release & Versioning
 
@@ -180,4 +183,4 @@ Key variables:
 | [Troubleshooting](docs/Troubleshooting.md) | Exit codes, errors, resource issues |
 | [Project Structure](PROJECT_STRUCTURE.md) | Directory layout, architecture |
 | [Log Reference](LOG_REFERENCE.md) | Every log line documented |
-| [Fork Changes](FORK_CHANGES.md) | All ~66 modifications from upstream |
+| [Fork Changes](FORK_CHANGES.md) | All fork modifications from upstream |

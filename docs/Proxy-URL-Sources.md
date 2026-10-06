@@ -93,6 +93,8 @@ full set of `proxy_probe.json` knobs.
 **Persistence**: `Score`, `Graded`, and `Failed` are stored per proxy in
 `proxy_url.json`, alongside the existing cache fields.
 
+**A damaged `proxy_url.json` does not cost you your configuration.** If the file cannot be parsed, the provider quarantines it and rebuilds from the last good state: your source URLs, the permanent blacklist, the exclude patterns and the degraded-cleanup threshold are carried over, and only the proxy cache starts empty. Previously the rebuild started from nothing, so the next write persisted all four as empty and the operator's sources and evictions were lost.
+
 ---
 
 ## 📝 Setting It Up

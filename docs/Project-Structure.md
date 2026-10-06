@@ -44,6 +44,8 @@ urnetwork-3.23-fix/
 │   ├── oom_cap.go                # OOM-aware start cap (shadow by default) and kill switch
 │   ├── action_ledger.go          # Audit ledger of capacity decisions (autopilot.jsonl)
 │   ├── baseline.go               # Local behaviour record (baseline.jsonl) for upgrade comparison
+│   ├── h3_direct.go              # H3 settings and eligibility for the direct identity
+│   ├── node_internals.go         # Internals snapshot (goroutines, heap, transport split) served to `top`
 │   ├── memory_headroom.go        # Low free-memory watcher (host or cgroup headroom log)
 │   ├── resource_config_warn.go   # Startup warning when memory limits are short for the pool
 │   ├── smart_dialer_probe.go     # Background connect probes for the smart dialer
@@ -90,7 +92,8 @@ urnetwork-3.23-fix/
 │   ├── update.go                # Interactive-first update, digest verify, atomic swap
 │   ├── legacy_cmds.go           # Reporting config, lifecycle, tuning, and proxy commands
 │   ├── autopilot.go             # autopilot log: timeline of capacity decisions (OOM cap, trim)
-│       ├── baseline.go               # baseline show/mark/compare: this box's own record
+│   ├── baseline.go              # baseline show/mark/compare: this box's own record
+│   ├── internals.go             # Internals snapshot for the `top` panel (transport split)
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
 │   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
 │   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)
@@ -131,12 +134,21 @@ urnetwork-3.23-fix/
 │
 ├── .github/workflows/
 │   ├── build.yml                 # CI: parallel test-and-lint + build-and-push Docker (multi-arch)
-│   ├── dash-compat.yml           # Dash/POSIX compatibility check
-│   ├── release.yml               # Tags a new release, scans (VirusTotal + ClamAV), uploads provider binaries
+│   ├── release.yml               # Tag push: builds provider binaries (multi-GOOS), scans (VirusTotal + ClamAV), publishes the release
 │   ├── shakedown.yml             # Pre-release shakedown: fresh-droplet install + proxy + URL + docker test on v3.23.0-fix.* tags
-│   ├── shakedown-sweeper.yml     # Every 15 min: destroy orphaned shakedown-ci droplets >3h, reap stale SSH keys
+│   ├── docker-shakedown.yml      # Docker shakedown on v3.23.0-fix.* tags
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
-│   └── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
+│   ├── dash-compat.yml           # Dash/POSIX compatibility check
+│   ├── unix-lifecycle.yml        # Unix lifecycle verification (push to main + PR)
+│   ├── windows-lifecycle.yml     # Windows lifecycle verification (push to main + PR)
+│   ├── lifecycle-stress.yml      # Lifecycle stress test (PRs touching provider/, daily, manual)
+│   ├── docker-multi-container.yml # Multi-container scaling test (fix/* pushes + manual)
+│   ├── tool-functional-smoke.yml # urnet-tools functional smoke (main + PR, manual)
+│   ├── functional-soak.yml       # Three-hour functional soak (manual only)
+│   ├── cfaa-blocklist-sync.yml   # Twice-daily CFAA blocklist data refresh from upstream
+│   ├── upstream_monitor.yml      # Twice-daily: watch urnetwork/connect PRs and commits, Discord alerts
+│   ├── wiki-sync.yml             # On docs/** push: copy docs/*.md into the GitHub wiki
+│   └── pr-labeler.yml            # Label pull requests
 │
 └── Root package files (core network stack):
     ├── ip.go                     # IP packet relay core (81 KB)
@@ -149,6 +161,13 @@ urnetwork-3.23-fix/
     ├── transfer_encrypt.go       # Per-contract encryption
     ├── transfer_queue.go         # Backpressure queue
     ├── transport.go              # Transport abstraction layer
+    ├── transport_h3_gate.go      # Runtime on/off gate for the H3 transport
+    ├── transport_h3_counted.go   # Byte-counting wrapper for the H3 UDP socket
+    ├── transport_h3_datagram.go  # QUIC DATAGRAM message layer and receive route
+    ├── transport_h3_datagram_lane.go  # Bounded send lane for outgoing datagrams
+    ├── transport_h3_datagram_state.go # DATAGRAM counters shown on the [health] line
+    ├── transport_h3_memory.go    # H3 memory bound
+    ├── transport_mode_stats.go   # Payload frames and bytes per transport mode
     ├── transport_p2p_webrtc.go   # WebRTC P2P transport
     ├── transport_pt.go           # Pluggable tunnel transport
     ├── net_http.go               # HTTP proxy with chunked encoding
