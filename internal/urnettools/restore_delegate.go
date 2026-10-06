@@ -246,7 +246,7 @@ var setKeyHelps = []string{
 	"  ramlogs             on|off        in-memory ramlogs toggle",
 	"  metrics             on|off        enable metrics endpoint",
 	"  metrics-listen      auto|<ip:port> /metrics listen address. auto binds loopback plus every Tailscale IPv4 (0.0.0.0 in a container); an explicit address is used as-is, and off clears back to auto. Live; a change rebinds a running listener (default: auto)",
-	"  h3                  on|off        run H3 (QUIC) beside H1 for the DIRECT identity only. H1 stays the health signal: if H3 cannot connect it backs off quietly and is never counted as a backend or proxy failure. Live; clearing it (or set h3 off, which is treated as a clear) hands the decision back to URNETWORK_H3, so the startup default wins (default: off, or URNETWORK_H3)",
+	"  h3                  on|off        run H3 (QUIC) beside H1 for the DIRECT identity only. H1 stays the health signal: if H3 cannot connect it backs off quietly and is never counted as a backend or proxy failure. Live; off is the kill switch and beats URNETWORK_H3, closing a live connection and stopping further dials, while clearing the key hands the decision back to URNETWORK_H3, so the startup default wins (default: off, or URNETWORK_H3)",
 	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: off)",
 	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: off)",
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
@@ -263,11 +263,13 @@ var setKeyHelps = []string{
 // proxy_self_heal and metrics would otherwise revert to a default that is not
 // off, oom_cap would revert to the "shadow" default, which decides and logs
 // but enforces nothing, so the documented kill switch would never turn the
-// feature off, and baseline would revert to "on", so `set baseline off` would
-// report success while the recorder kept writing.
+// feature off, baseline would revert to "on", so `set baseline off` would
+// report success while the recorder kept writing, and h3 would revert to
+// URNETWORK_H3, which may be on, so the box an operator switched off would
+// come back on at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3":
 		return false
 	}
 	return true

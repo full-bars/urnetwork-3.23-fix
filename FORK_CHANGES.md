@@ -3610,7 +3610,7 @@ The engine already contained a working H3 platform transport that `Auto` mode ne
 - **H3 bytes count into total** (PR #746): the H3 UDP socket bypasses the byte counting TCP connections get. It is wrapped in a conn that credits the identity's total, and the wrapper implements `ReadBatch` because quic-go reads through a path that unwraps the file descriptor and bypasses an ordinary wrapper; it also keeps satisfying `OOBCapablePacketConn` so ECN, the DF bit and batching are not lost. Billable is counted at the IP layer and is unaffected.
 
 > [!NOTE]
-> When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the CodeRabbit-driven accounting fixes must travel with it.
+> When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the review-driven accounting fixes must travel with it.
 
 ## 182. v32.9: H3 Switches On Live and Carries Datagrams (PR #751, #752, #753, #757, #761, #762, #763, #764, #765)
 
