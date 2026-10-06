@@ -2,8 +2,11 @@ package main
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // MinConfirmDials is a floor on ATTEMPTED dials (res.Total), not on
@@ -94,6 +97,71 @@ func TestConfirmNeeded_Table(t *testing.T) {
 			t.Errorf("%s: confirmNeeded(total=%d ok=%d floor=%d) = %v, want %v",
 				c.name, c.total, c.ok, c.floor, got, c.want)
 		}
+	}
+}
+
+// TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall pins the dial
+// budget: a pass that fell ONE dial short of the floor must grow by one dial, not
+// to the full adaptive width. Expanding to probeWidth (30 extra here) spends ~30
+// dials on a proxy that is already failing — at a 4s target timeout that is
+// minutes per dead proxy inside a sweep.
+//
+// Falsifiable: remove the shortfall sizing and this pass dials ~14 times instead
+// of 6.
+func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
+	withTempHome(t)
+	addr, connects, cleanup := listenSocks5Sequenced(t, func(n int) byte { return 0x05 })
+	defer cleanup()
+
+	cfg := defaultProxyTableProbeConfig()
+	cfg.SampleWidth = 6
+	cfg.MinSampleWidth = 6
+	cfg.MaxSampleWidth = 36 // room to grow: the trap only bites with a wide ceiling
+	cfg.UseSpreadOrder = true
+	cfg.MinConfirmDials = 6
+	cfg.TargetTimeout = 300 * time.Millisecond
+
+	// exactly ONE unresolvable base host: 5 attempted, all refused, so the pass
+	// lands one dial short of the floor
+	base := sampleProbeHosts(tableProbeSeed(addr, tableProbePassCounter.Load()), cfg.MinSampleWidth, true)
+	probeDNSCache.Lock()
+	for i, h := range base {
+		if i == 0 {
+			delete(probeDNSCache.m, h)
+			probeDNSCache.fail[h] = time.Now()
+		} else {
+			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+			delete(probeDNSCache.fail, h)
+		}
+	}
+	probeDNSCache.Unlock()
+	// seed the whole growth block, so every growth dial is attemptable and the
+	// dial count measures the SIZING, not resolution luck
+	for _, h := range disjointGrowthHosts(addr, tableProbePassCounter.Load(), cfg.MinSampleWidth, 30, true) {
+		probeDNSCache.Lock()
+		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+		delete(probeDNSCache.fail, h)
+		probeDNSCache.Unlock()
+	}
+	t.Cleanup(func() {
+		probeDNSCache.Lock()
+		defer probeDNSCache.Unlock()
+		for _, h := range connect.ProbeHostNames() {
+			delete(probeDNSCache.m, h)
+			delete(probeDNSCache.fail, h)
+		}
+	})
+
+	before := connects.Load()
+	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
+	dials := int(connects.Load() - before)
+
+	if res.Total != cfg.MinConfirmDials {
+		t.Errorf("Total = %d, want exactly the floor %d", res.Total, cfg.MinConfirmDials)
+	}
+	if dials > cfg.MinConfirmDials+1 {
+		t.Errorf("dialed %d times to cover a 1-dial shortfall (floor %d) — the confirmation growth "+
+			"expanded to the adaptive width instead of the shortfall", dials, cfg.MinConfirmDials)
 	}
 }
 

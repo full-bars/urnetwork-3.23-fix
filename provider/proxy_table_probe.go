@@ -541,6 +541,13 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		// Grow to the wider of SampleWidth or MaxSampleWidth (probeWidth), so
 		// the pool-sizing semantics is centralized in one helper.
 		growTo := cfg.probeWidth()
+		// A CONFIRMATION-only growth needs just enough fresh dials to reach the
+		// floor. Expanding to the full adaptive width instead would spend ~30
+		// dials on a proxy that is already failing — and at a 4s target timeout
+		// that is minutes per dead proxy, on evidence the floor never asked for.
+		if !growthNeeded(res, cfg) && cfg.MinConfirmDials > res.Total {
+			growTo = res.SampleWidth + (cfg.MinConfirmDials - res.Total)
+		}
 		extra := growTo - res.SampleWidth
 		extraHosts := disjointGrowthHosts(address, pass, baseW, extra, cfg.UseSpreadOrder)
 		for _, host := range extraHosts {
