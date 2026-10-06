@@ -55,6 +55,11 @@ var importantLogMarkers = []string{
 	// them here.
 	"[proxy][grade] paid",
 	"[proxy][grade] graded",
+	// The read-only direct-path grade needs its OWN marker: every marker above
+	// carries the "[proxy][grade] " prefix while this line continues with
+	// "direct: ", so none of them match a real grade line — nor the "(ungraded)"
+	// state, which contains the word but not the prefixed marker.
+	"[proxy][grade] direct:",
 	// Capacity-control decisions (trim commands and results, the OOM-aware start
 	// cap and its kill switch, startup limit warnings, low memory headroom):
 	// rare and high-value, and the only record of why a box ran fewer proxies or

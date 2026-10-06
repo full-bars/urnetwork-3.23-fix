@@ -662,7 +662,11 @@ func runProxyGradeSummaryOnce() {
 	if s.tracked == 0 {
 		// No proxies configured — skip rather than write 4 lines every 5
 		// minutes of "(0 running, 0 tracked)" into important/disk/grades
-		// logs.
+		// logs. A node running only the direct transport still has one thing
+		// worth reporting, so emit just that line.
+		if isDirectEnabled() {
+			importantLogf("[proxy][grade] %s\n", directGradeLine())
+		}
 		return
 	}
 	lines := []string{
@@ -670,6 +674,11 @@ func runProxyGradeSummaryOnce() {
 		"[proxy][grade] " + s.sourcesLine(),
 		"[proxy][grade] " + s.changesLine(),
 		"[proxy][grade] " + s.scoresLine(),
+	}
+	// Gated the same way as the tracked==0 path: a disabled transport has nothing
+	// to report, and printing "direct: off" every five minutes forever is noise.
+	if isDirectEnabled() {
+		lines = append(lines, "[proxy][grade] "+directGradeLine())
 	}
 	for _, l := range lines {
 		importantLogf("%s\n", l)

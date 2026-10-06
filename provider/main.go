@@ -4298,6 +4298,9 @@ func provide(opts docopt.Opts) {
 	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
 	// non-URL proxies read-only on the 1-3h stale sweep (design note).
 	go connect.HandleError(func() { runPaidProxyGrader(ctx, apiProbeHost, apiProbePort) })
+	// Direct-path (native local-IP) health grade: read-only visibility into the
+	// box's own route, persisted to its own file so no consumer can act on it.
+	go connect.HandleError(func() { runDirectGrader(ctx) })
 	// Periodic A-F grade summary of the RUNNING proxy set (design 2026-08-09):
 	// running/per-source/changes/scores lines (important + disk + grades.log)
 	// and a ramlog-only next-probe countdown. Pure-read, never probes.

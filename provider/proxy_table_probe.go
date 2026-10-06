@@ -354,6 +354,10 @@ type tableProbeResult struct {
 	Decidable bool
 	// Failed lists the target hostnames that did not answer.
 	Failed []string
+	// Intercepted counts destinations whose connection completed but whose TLS
+	// verification failed — the direct pass's middlebox signal. The proxy path
+	// never sets it (its CONNECT reply cannot be forged locally).
+	Intercepted int
 }
 
 // qualified reports whether the pass clears the given bar. A pass that
