@@ -136,6 +136,13 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 ```
 
+If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
+
+```powershell
+irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+```
+
 No admin rights required. This installs:
 - The provider binary at `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe`
 - The `urnet-tools` Go management binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper has been retired)
