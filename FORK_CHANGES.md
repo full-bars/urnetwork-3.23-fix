@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.9
+**Current Version**: v3.23.0-fix.32.10
 
 ---
 
@@ -3668,3 +3668,21 @@ The `/latest-version` endpoint on the download worker exists so a client can fin
 **Files Modified**: `workers/dl-fullbars/src/index.js`, `releases/`, `CHANGELOG.md`.
 
 - **The latest tag is read from the `/releases/latest` redirect** (PR #768): the redirect carries the tag in its final URL, so no token is needed and the shared-egress rate limit does not apply. The GitHub API stays as a fallback, and a set `GITHUB_TOKEN` raises that path's ceiling from 60 to 5000 requests per hour. The worker must be deployed with `wrangler deploy` in `workers/dl-fullbars/` for the fix to take effect. The `meso-miner` copy ships with its own release (PR #168).
+
+## 187. v32.10: Stage-1 Probe Sampling Fix and a Read-Only Direct-Path Grade (PR #769, #771, #772, #773, #774, #775, #776)
+
+The stage-1 table probe drew a contiguous block of the destination table, which is grouped by theme. Destination failures are correlated inside a theme, so one refused region failed the whole pass. The score then swung between A and F as the rotation moved between regions, although the proxy never changed. The probe now samples a fixed, content-keyed permutation of the table. A confirmation floor gates both the early abort and the final verdict. The batch also adds a read-only grade for the box's own direct path. An operator can then tell a bad proxy from a bad box. That grade writes to its own state file and never into `proxy.state`.
+
+**Files Modified**: `provider/proxy_table_probe.go`, `provider/proxy_grade_paid.go`, `provider/proxy_url_source.go`, `provider/proxy_grade_summary.go`, `provider/important_log.go`, `provider/main.go`, `provider/sn.go`, `provider/sn_fleet.go`, `provider/proxy_health_log.go`, `provider/node_snapshot.go`, `internal/urnettools/snapshot_render.go`, `internal/urnettools/top_view.go`, `docs/Configuration.md`, `docs/Project-Structure.md`, `docs/Proxy-URL-Sources.md`, `LOG_REFERENCE.md`, `PROJECT_STRUCTURE.md`, `releases/`, `CHANGELOG.md`.
+
+**Files Added**: `provider/proxy_spread_sampler.go`, `provider/proxy_direct_grade.go`, `verify_wire.go`.
+
+- **The stage-1 probe no longer condemns a proxy on a clustered sample** (PR #775): `provider/proxy_spread_sampler.go` draws blocks of a fixed permutation of the host table, ordered by `fnv64a(hostname)`. One block spans many themes. The contiguous-block math is mirrored exactly. Blocks stay disjoint, the table is still walked in order, and the dial count does not change. `use_spread_order=false` restores the contiguous sampler byte for byte. That is the A/B lever for measuring the change.
+- **A confirmation floor gates the verdict** (PR #775): `min_confirm_dials` floors the ATTEMPTED dials a below-bar pass must accumulate before the abort may convict it. The same floor refuses a verdict to a pass that runs out of block below it. The paid grader defaults the floor to 6. The URL admission path and the reaper zero it, so their dial profile does not change. `-1` is the explicit force-off on the paid path.
+- **A read-only direct-path grade** (PR #776): `provider/proxy_direct_grade.go` samples the same table with the same sampler. It dials each host at port 443 from the box's own egress. The result is written to `~/.urnetwork/direct_grade.json` and never into `proxy.state`, so no consumer can act on it. It runs on the reaper tick, gated on the table probe and the direct transport. It emits `[proxy][grade] direct:` on a tier change.
+- **The proxy-health down bucket is `dropped`** (PR #769): the live status and the `top` view no longer reuse `degraded` for the was-up-now-down bucket. Labels and wording only.
+- **The sn pin is advanced and head bind/unbind move to the fleet binding** (PR #771): `provider/sn_fleet.go` and `verify_wire.go` carry the release-1.0 many-to-one dual-signed fleet binding. They also carry the `/verify` message suite. The commands keep their names and their offline-print and on-chain submit shape. The flags follow the new model.
+- **The metrics and profile documentation is corrected** (PR #772, #773, #774): the metrics port is `9100` (next free up to `9103`). The endpoint is off by default, and `URNETWORK_METRICS` is a bind address. The docs describe the `monitoring/` bundle that ships.
+
+> [!NOTE]
+> When porting to another line: the probe sampler and the direct grade live in `provider/`. `sn` and `meso-miner` share `proxy_table_probe.go`. Any port of the stage-1 probe must carry the spread sampler and the confirmation floor. The direct grade has no consumer. It ports without a data-model change.

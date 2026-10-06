@@ -114,7 +114,9 @@ a restart.
 | `timeout_ms` | int | `4000` | Per-target dial timeout, in milliseconds. |
 | `pass_bar` | float | `0.6` | Minimum score (fraction of successful dials) required for admission to the auth queue. |
 | `preferred_bar` | float | `0.9` | Score threshold above which a proxy is marked preferred tier. |
-| `border_line_band` | float | `0.15` | Half-width around the pass bar that counts a proxy as borderline. A borderline score grows the sample toward `max_sample_width`; a score farther away is a decisive verdict and stops at the base width. |
+| `borderline_band` | float | `0.15` | Half-width around the pass bar that counts a proxy as borderline. A borderline score grows the sample toward `max_sample_width`; a score farther away is a decisive verdict and stops at the base width. |
+| `use_spread_order` | bool | `true` | Draw each sample block from a fixed, content-keyed spread of the destination table instead of consecutive rows. The table is grouped by theme, and a failure inside a theme is correlated, so a consecutive block could fail as a group and condemn a proxy whose capability never changed. `false` restores the consecutive-row sampler. |
+| `min_confirm_dials` | int | `0` | The fewest dials a below-bar pass must attempt before it may convict a proxy. The floor gates both the early abort and the final verdict, so a pass that runs out of block below the floor keeps its previous grade. The paid grader forces 6; the URL admission path and the reaper keep 0. `-1` forces the floor off on the paid path. |
 | `max_paid_probes_per_tick` | int | `200` | Cap on how many paid/file proxies one 5-minute scoring sweep probes. |
 | `stage0_liveness` | bool | `false` | One-dial SOCKS5 and API reachability gate before a sample block. The paid grader forces true. |
 

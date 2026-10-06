@@ -13,6 +13,7 @@ urnetwork-3.23-fix/
 │   ├── proxy_failure_history.go      # Persistent per-proxy failure count (across requeues)
 │   ├── proxy_auth_history.go         # Proven-proxy set for rate limiter gating
 │   ├── proxy_probe.go                # Dual-stage SOCKS5 probe (TCP + API CONNECT)
+│   ├── proxy_spread_sampler.go       # Content-keyed spread sampler for the stage-1 table probe
 │   ├── proxy_url.go                  # Proxy URL state persistence (proxy_url.json)
 │   ├── proxy_url_source.go           # URL fetcher, merge, periodic refresh, reaper, blacklist
 │   ├── proxy_reload.go               # Hot-reload engine via .reload trigger files + give-up cooldown
@@ -21,6 +22,7 @@ urnetwork-3.23-fix/
 │   ├── proxy_health_log.go           # Durable state persistence for proxy health (disk writer)
 │   ├── proxy_slow_retry.go           # Slow-retry state: 24h daily gate, 14-day drop (file proxies)
 │   ├── proxy_benchmark.go            # Opt-in staggered latency probing (TCP and SOCKS5)
+│   ├── proxy_direct_grade.go         # Read-only direct-path health grade (~/.urnetwork/direct_grade.json)
 │   ├── proxy_match.go                # Pattern-based proxy removal (proxy remove --match)
 │   ├── contract_metrics.go           # Fleet-wide per-proxy contract history tracking
 │   ├── client_jwt_hotrestart.go      # Client JWT renew + identity snapshot across hot restarts

@@ -32,6 +32,8 @@ unreachable for unrelated reasons. Hostnames are resolved through the
 box's own DNS, not through the proxy being probed, so a proxy with broken
 DNS is not penalized for a resolution failure that isn't its fault.
 
+The sample block is drawn from a fixed, content-keyed spread of the table, not from consecutive rows. The table is grouped by theme, and a failure inside a theme is correlated. A consecutive block could then fail as a group. The proxy could swing between A and F although its capability never changed. A spread block spans many themes at the same dial count. Set `use_spread_order` to false in `proxy_probe.json` to restore the consecutive-row sampler. A `min_confirm_dials` floor (default 0; the paid grader forces 6) makes a below-bar pass attempt that many dials. Only then may it convict a proxy. It gates the final verdict as well as the early abort.
+
 A grade is only written when the pass is decidable — a quorum of the
 sampled hosts answered and the probe context wasn't cancelled. An empty,
 cancelled, or resolver-gutted pass leaves the proxy's previous grade in

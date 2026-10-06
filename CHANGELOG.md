@@ -2,9 +2,22 @@
 
 ## [Unreleased]
 
+## [v3.23.0-fix.32.10]
+
+### Added
+
+- **A read-only grade for the direct path** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/776>): the provider grades its own local-IP egress, so an operator can tell a bad proxy from a bad box. It samples the same destination table as the proxy probe, with the same sampler. It dials each host at port 443 from the box's own address. The grade lands in `~/.urnetwork/direct_grade.json` and never in `proxy.state`, so no existing consumer can act on it. It runs on the reaper tick and needs the table probe and the direct transport enabled. It logs `[proxy][grade] direct:` on a tier change.
+
+### Fixed
+
+- **The stage-1 probe condemned proxies on a clustered sample** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/775>): the probe drew a contiguous block of the destination table, which is grouped by theme. A block landed on one or two adjacent themes. One refused region then failed the whole pass. The score swung between A and F as the rotation moved between regions, although the proxy never changed. The probe now samples a fixed, content-keyed permutation of the table. The dial count is identical, and `use_spread_order=false` restores the old sampling.
+- **A thin pass could still convict a proxy** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/775>): a new `min_confirm_dials` floor gates the early abort and the final verdict. A pass below the floor keeps dialing. A pass that runs out of block below the floor keeps the previous grade. The paid grader uses 6 by default. The URL admission path and the reaper keep 0, so their dial profile is unchanged. `-1` forces the floor off on the paid path.
+- **The proxy-health down bucket reused the word degraded** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/769>): the live status and the `top` view called the was-up-now-down bucket `degraded`. The whole-pool figure uses that word for a different state. The bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. Labels and wording only; the reaper inputs are unchanged.
+
 ### Changed
 
-- **The dropped bucket is labeled on its own, and the idle hint reads again**: the live status and `top` view called the was-up-now-down bucket `down`, the same word the whole-pool figure uses for dead plus dropped. The breakdown bucket is `dropped` now, matching the proxy health report, so `down` has one meaning. The idle hint no longer calls every offline proxy dead. Labels and wording only; the reaper inputs are unchanged.
+- **The sn pin is advanced and the head binding model is updated** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/771>): `bind-head` and `unbind-head` now use the many-to-one dual-signed fleet binding. The commands keep their names and their offline-print and on-chain submit shape. The flags follow the new model (`--manifest`, `--hotkey_seed_file`, the epoch flags, `--client_id`, `--client_seed_file`).
+- **The metrics and profile documentation is corrected** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/772>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/773>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/774>): the metrics port is `9100`, not `9091`. The endpoint takes the next free port up to `9103`. The endpoint is off until `urnet-tools metrics on` turns it on. `URNETWORK_METRICS` sets a bind address, not a switch. The docs now describe the `monitoring/` bundle that ships, not a compose file that does not exist.
 
 ## [v3.23.0-fix.32.9]
 
