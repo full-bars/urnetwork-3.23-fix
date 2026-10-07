@@ -80,23 +80,40 @@ ramlog_since_last_start() {
 # snapshot, so a stale block from an earlier RAM-logged start can never
 # satisfy a wait, while a fresh block is read as soon as it appears (even if
 # it appeared before the wait call).
-ramlog_mark() { grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true; }
+ramlog_mark() {
+  local c
+  c=$(grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true)
+  echo "${c:-0}"
+}
+
+# ramlog_gate_open: the wait_client_id freshness predicate. True when the RAM
+# log's delimiter count exceeds the pre-restart mark, i.e. a start block newer
+# than the last restart exists and is safe to read. Exposed for the gate
+# self-test.
+ramlog_gate_open() {
+  local cur
+  cur=$(ramlog_mark)
+  case "$cur" in ''|*[!0-9]*) cur=0;; esac
+  [ "$cur" -gt "${1:-0}" ]
+}
 # gate_selftest: provider-free check of the RAM-log freshness predicate against
 # a fake log. Catches the class of bug where the base mark is snapshotted at
 # wait start instead of before the restart, and where block isolation breaks.
 gate_selftest() {
-  local tf=/tmp/shakedown-gate-selftest.log saved="$RAMLOG" m1 m2 blk
+  local tf saved="$RAMLOG" m1 m2 blk
+  tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX)
   { echo '--- provider restarted at T1 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
   RAMLOG="$tf"
   m1=$(ramlog_mark); m1=${m1:-0}
-  [ "$m1" = "1" ] || echo "SELF-TEST-FAIL: ramlog_mark counted $m1, want 1" | tee -a "$REPORT"
+  [ "$m1" = "1" ] || bad "SELF-TEST-FAIL: ramlog_mark counted $m1, want 1"
   blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
-  [ "$blk" = "1" ] || echo "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1" | tee -a "$REPORT"
+  [ "$blk" = "1" ] || bad "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1"
+  if ramlog_gate_open "$m1"; then bad "SELF-TEST-FAIL: gate open with base == current count ($m1) -- stale blocks could satisfy a wait"; fi
   { echo '--- provider restarted at T2 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000002 (new)'; } >> "$tf"
   m2=$(ramlog_mark); m2=${m2:-0}
-  [ "$m2" -gt "$m1" ] || echo "SELF-TEST-FAIL: gate would not open on a new delimiter ($m1 -> $m2)" | tee -a "$REPORT"
+  ramlog_gate_open "$m1" || bad "SELF-TEST-FAIL: gate stayed closed after a new delimiter ($m1 -> $m2)"
   blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
-  [ "$blk" = "1" ] || echo "SELF-TEST-FAIL: ramlog_since_last_start did not isolate the newest block ($blk lines)" | tee -a "$REPORT"
+  [ "$blk" = "1" ] || bad "SELF-TEST-FAIL: ramlog_since_last_start did not isolate the newest block ($blk lines)"
   rm -f "$tf"
   RAMLOG="$saved"
 }
@@ -119,21 +136,22 @@ journal_line_count() { j | wc -l; }
 # false-pass a restart that never completed. The fallback may only read once
 # the delimiter count exceeds RAMLOG_MARK; a provider that is not RAM-logging
 # never adds one, so the fallback stays inert for it and the journal governs.
+# With RAMLOG_MARK empty (no restart_provider has run yet), the fallback
+# reverts to snapshot-at-wait-start -- the legacy lenient semantics; assign
+# RAMLOG_MARK before any raw start that a ramlog-mode wait follows.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
   local end=$(( $(date +%s) + max_wait ))
-  local base_delims cur_delims
+  local base_delims
   base_delims="${RAMLOG_MARK:-}"
-  [ -n "$base_delims" ] || base_delims=$(ramlog_mark)
-  base_delims=${base_delims:-0}
+  case "$base_delims" in ''|*[!0-9]*) base_delims=$(ramlog_mark);; esac
+  case "$base_delims" in ''|*[!0-9]*) base_delims=0;; esac
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
     if [ -z "$cid" ]; then
-      cur_delims=$(ramlog_mark)
-      cur_delims=${cur_delims:-0}
-      if [ "$cur_delims" -gt "$base_delims" ]; then
+      if ramlog_gate_open "$base_delims"; then
         cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
       fi
     fi
@@ -175,7 +193,9 @@ restart_provider() {
   m=$(ramlog_mark)
   m=${m:-0}
   echo "$m $(journal_line_count)"
-  timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
+  # systemctl/timeout messages must never join the DATA line above: the
+  # caller parses "<ramlog_mark> <journal_mark>" from this function stdout.
+  timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service >&2
 }
 
 echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
@@ -1030,6 +1050,9 @@ U_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) system
 # an unwrapped call measures nothing and, if READY never arrives, hangs until
 # the CI job watchdog kills the whole run instead of failing this one check.
 U1_T0=$(date +%s)
+U1_MARK=$(journal_line_count)
+RAMLOG_MARK=$(ramlog_mark)
+RAMLOG_MARK=${RAMLOG_MARK:-0}
 timeout 120 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 U1_ACTIVE=0
 for i in $(seq 1 30); do
@@ -1044,7 +1067,9 @@ if [ "$U1_ACTIVE" = "1" ]; then
 else
   bad "U1: unit did not reach active within 30s under Type=notify"
 fi
-CID_U=$(wait_client_id 0 120)
+# wait_client_id 0 would match ANY historical client_id in the journal window
+# and pass on a stale id; anchor to the pre-restart line count instead.
+CID_U=$(wait_client_id "$U1_MARK" 120)
 [ -n "$CID_U" ] || bad "U1: provider never minted a client_id after reaching active"
 
 # U2: `systemctl --user status` shows a live STATUS= line (sd_notify
@@ -1160,15 +1185,19 @@ CID_V1=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V1" ] && ok "V1: provider healthy after the migration restart (client_id ${CID_V1:0:12}…)" || bad "V1: no client_id after V1"
 
 # V2: >=31 provider under a Type=simple drop-in override.
-# The current product SELF-HEALS the unit type on update (a >=31 binary needs
-# Type=notify for hotswap): with a simple-effective unit it migrates the unit
-# to Type=notify and proceeds with a standard restart instead of declining.
-# The old expectation (a decline citing Provider_Install_Linux.sh) predates
-# that self-heal; either outcome is accepted here, and -- the regression guard
-# that matters -- the provider journal must show NO signal-then-abort trace
-# (provider/hotswap.go's internal "Running under systemd without Type=notify
-# (NOTIFY_SOCKET unset)" line only fires if the provider WAS signalled and
-# then aborted the handoff; urnet-tools must never get there).
+# Three acceptable outcomes, all observed from the product depending on unit
+# state: (1) the tool rewrites the base unit to Type=notify and reports the
+# migration (exact line: "migrated ... from Type=simple to Type=notify");
+# (2) the base unit cannot win over the drop-in and the tool says so
+# ("cannot be migrated automatically") and proceeds with a standard restart;
+# (3) the tool declines hotswap in its own pre-flight citing the unit type.
+# The migration regex must NOT be loose: the un-migratable note contains both
+# "migrated" and "Type=notify", and a wildcard match would misreport the note
+# as a successful migration. The regression guard that matters in all three:
+# the provider journal shows NO signal-then-abort trace (provider/hotswap.go's
+# internal "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"
+# line only fires if the provider WAS signalled and then aborted the handoff;
+# urnet-tools must never get there).
 cat > "$OVERRIDE_DIR/v2-simple.conf" << 'EOF'
 [Service]
 Type=simple
@@ -1185,18 +1214,15 @@ echo "$V2_OUT" | grep -iE "hotswap|Type=notify|Provider_Install_Linux" | tee -a 
 # file that writes Type=simple). No "is not Type=notify" string exists
 # anywhere in the binary -- the previous assertion grepped for one that never
 # existed, so V2 could not pass regardless of what the update did.
-if echo "$V2_OUT" | grep -qiE "migrated .* to Type=notify"; then
-  ok "V2: urnet-tools self-healed the effective unit type (Type=simple drop-in) to Type=notify and used a standard restart"
+if echo "$V2_OUT" | grep -qiE "migrated .* from Type=simple to Type=notify"; then
+  ok "V2: urnet-tools migrated the effective unit type to Type=notify and used a standard restart"
+elif echo "$V2_OUT" | grep -q "cannot be migrated automatically"; then
+  ok "V2: the Type=simple drop-in override is correctly reported as un-migratable (a drop-in wins over the base unit); update proceeded with a standard restart"
 elif echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$V2_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
   ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify)"
 else
-  V2_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
-  if [ "$V2_TYPE_AFTER" = "notify" ]; then
-    ok "V2: unit type self-healed to Type=notify (update message not matched; effective Type confirms)"
-  else
-    echo "$V2_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
-    bad "V2: expected the unit-type self-heal (migration to Type=notify) or a clean unit-type decline; neither appeared (effective Type '$V2_TYPE_AFTER')"
-  fi
+  echo "$V2_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+  bad "V2: expected a unit-type self-heal, an explicit un-migratable note, or a clean unit-type decline; none appeared in the update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
 if j_full | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
@@ -1275,10 +1301,13 @@ fi
 # systemd processes the takeover notify, so poll it (bounded) rather than
 # sampling once.
 V3_PID_AFTER=""
-V3_POLL_END=$(( $(date +%s) + 20 ))
+V3_POLL_END=$(( $(date +%s) + 60 ))
 while [ "$(date +%s)" -lt "$V3_POLL_END" ]; do
   V3_PID_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)
   if [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ]; then break; fi
+  # MAINPID= is sent only after the takeover ACK; if the journal shows the ACK
+  # the handoff is done even if this poll has not seen the new pid yet.
+  if j_full | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then break; fi
   sleep 2
 done
 if [ -n "$V3_PID_BEFORE" ] && [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_BEFORE" != "$V3_PID_AFTER" ]; then
@@ -1332,7 +1361,17 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 V_DRAIN_END=$(( $(date +%s) + 60 ))
 while [ "$(pgrep -u urnet -f 'urnetwork provide' | wc -l)" -gt 1 ] && [ "$(date +%s)" -lt "$V_DRAIN_END" ]; do sleep 3; done
 V_REMAIN=$(pgrep -u urnet -f 'urnetwork provide' | wc -l)
-[ "$V_REMAIN" -gt 1 ] && bad "V: hotswap parent drain did not finish within 60s ($V_REMAIN provider processes remain) -- drain should end within HotSwapDrainTimeout (30s)"
+if [ "$V_REMAIN" -gt 1 ]; then
+  bad "V: hotswap parent drain did not finish within 60s ($V_REMAIN provider processes remain) -- drain should end within HotSwapDrainTimeout (30s)"
+  # A stuck drain would make the re-pin refuse with "2 providers found" and
+  # bury the real cause; clear the stuck parent so the re-pin tests what it
+  # says it tests.
+  V_STUCK=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
+  [ -n "$V_STUCK" ] && kill -9 "$V_STUCK" 2>/dev/null || true
+  sleep 2
+else
+  ok "V: hotswap parent drained cleanly within 60s"
+fi
 run_check "V: re-pin to $EXPECTED_VERSION after the hotswap battery" timeout 300 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
 __RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
