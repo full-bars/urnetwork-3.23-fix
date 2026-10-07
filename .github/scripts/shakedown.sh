@@ -49,7 +49,7 @@ run_check() {
     ok "$name (exit 0)"
   else
     bad "$name (exit $rc)"
-    echo "$out" | tail -5 | sed 's/^/    | /' | tee -a "$REPORT"
+    echo "$out" | tail -25 | sed 's/^/    | /' | tee -a "$REPORT"
   fi
   return "$rc"
 }
