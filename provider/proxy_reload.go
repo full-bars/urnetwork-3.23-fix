@@ -180,7 +180,11 @@ func cleanStaleSelfProxyLock() {
 	if !ok || pid != os.Getpid() {
 		return
 	}
-	if time.Unix(ts, 0).Before(processStart) {
+	// Inclusive bound: a lock written by the previous image in the same
+	// integer second as this process's start must be cleaned too, and at
+	// cleanup time this image cannot yet hold a lock of its own (it runs
+	// before any local consumer).
+	if ts <= processStart.Unix() {
 		// Compare before removing, like the steal path: another holder
 		// could have replaced the file between the read and the remove.
 		if current, err := os.ReadFile(path); err != nil || string(current) != string(b) {
@@ -882,7 +886,12 @@ func (r *ProxyReloader) reload() {
 		if time.Since(slotAcquiredAt) < reloadHardLimit {
 			return false
 		}
-		tlog("🚨 [proxy] reload aborted at %s after %v (hard limit %v): state left as-is, next trigger retries\n",
+		// Mark the trigger un-consumed: an aborted reload did none of its
+		// work, and without this the change would wait for the next trigger
+		// (up to the hourly reconciler) instead of being retried on a later
+		// watch tick.
+		r.reloadSlotSkipped.Store(true)
+		tlog("🚨 [proxy] reload aborted at %s after %v (hard limit %v): state left as-is, retried on a later tick\n",
 			phase, time.Since(slotAcquiredAt).Round(time.Second), reloadHardLimit)
 		return true
 	}
@@ -1285,8 +1294,8 @@ func (r *ProxyReloader) reload() {
 	// long: everything above is reads, idempotent store adoption and the
 	// planning itself, so the running fleet is untouched — no trim, removal
 	// or launch is staged, and no audit or events.log record can describe
-	// work that will not happen. (The direct hot-toggle and the H3
-	// re-resolve above are idempotent and safe to have run.)
+	// work that will not happen. (The direct hot-toggle above is idempotent
+	// and safe to have run.)
 	if overdue("planning") {
 		return
 	}
