@@ -706,7 +706,12 @@ func TestOpenRCCrondNote(t *testing.T) {
 	}
 
 	// Installed: the probe decides.
-	openrcStatFn = func(string) (os.FileInfo, error) { return nil, nil }
+	openrcStatFn = func(path string) (os.FileInfo, error) {
+		if path == "/etc/init.d/crond" {
+			return nil, nil
+		}
+		return nil, os.ErrNotExist
+	}
 	openrcCrondStatusFn = func() error { return nil }
 	if note := openrcCrondNote(); note != "" {
 		t.Fatalf("started crond note = %q, want empty", note)
@@ -767,6 +772,57 @@ func TestOpenRCSudoHintOnPermissionError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "re-run as root") {
 		t.Fatalf("error = %v, want the sudo hint", err)
+	}
+}
+
+// TestOpenRCCleanupSweepsCronWithoutService: the periodic auto-update entry
+// can exist without the init script (auto-update does not require the
+// service); uninstall must still remove it — and must not run rc-service
+// against a service that is not installed.
+func TestOpenRCCleanupSweepsCronWithoutService(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, false) // active, service NOT installed
+	if err := openrcSetAutoUpdate("weekly", "/x/urnet-tools"); err != nil {
+		t.Fatal(err)
+	}
+
+	cleanupLifecycle(Provider{})
+
+	if rig.ran() != 0 {
+		t.Fatalf("rc-service must not run without an installed service; ran %v", rig.argv)
+	}
+	if _, err := os.Stat(filepath.Join(openrcPeriodicBaseDir, "weekly", openrcUpdateCronName)); !os.IsNotExist(err) {
+		t.Fatalf("periodic entry still present after cleanup (err=%v)", err)
+	}
+}
+
+// TestOpenRCLifecycleFallsThroughToBareProvider: with the service stopped and
+// only a bare provider running, start/stop/restart must NOT act on the
+// service (the normal unitless path handles the running provider — rc-service
+// stop would falsely report success while the bare process keeps running); a
+// simply-stopped service (no providers discovered) still routes.
+func TestOpenRCLifecycleFallsThroughToBareProvider(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
+	discoverSystemdFn = func() []Provider { return []Provider{{User: "alice", PID: 777}} }
+
+	for _, verb := range []string{"start", "stop", "restart"} {
+		handled, err := openrcRouteLifecycle(verb, nil, true, false)
+		if handled || err != nil {
+			t.Fatalf("%s with only a bare provider: handled=%v err=%v, want false,nil", verb, handled, err)
+		}
+	}
+	if rig.ran() != 0 {
+		t.Fatalf("rc-service must not run for a sole bare provider; argv=%v", rig.argv)
+	}
+
+	// No providers discovered: a simply-stopped service still routes.
+	discoverSystemdFn = func() []Provider { return nil }
+	handled, err := openrcRouteLifecycle("start", nil, false, false)
+	if !handled || err != nil {
+		t.Fatalf("start with no providers: handled=%v err=%v, want true,nil", handled, err)
+	}
+	if got := strings.Join(rig.argv[len(rig.argv)-1], " "); got != "rc-service urnetwork start" {
+		t.Fatalf("argv = %q, want the service start", got)
 	}
 }
 

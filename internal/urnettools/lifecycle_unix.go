@@ -180,8 +180,14 @@ var systemdTimerDisableFn = func(args ...string) error {
 // OpenRC host there is no systemd timer: the service, its rc-update entry,
 // the init script and the periodic auto-update entry are cleaned instead.
 func cleanupLifecycle(p Provider) {
-	if openrcActive() && openrcServiceInstalled() {
-		openrcCleanup()
+	if openrcActive() {
+		// The periodic auto-update entry can exist without the init script
+		// (auto-update does not require the service), so it is swept
+		// whenever OpenRC is active; the service cleanup only when installed.
+		openrcCleanupCronEntries()
+		if openrcServiceInstalled() {
+			openrcCleanupService()
+		}
 		// Fall through: a provider that ALSO has a systemd unit (migration
 		// edge) must still get that unit's timer disabled below. The normal
 		// OpenRC case has p.Unit == "" and returns immediately.

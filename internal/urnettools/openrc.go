@@ -233,6 +233,36 @@ func openrcServiceProvider() (Provider, bool) {
 	return provs[0], true
 }
 
+// openrcLifecycleTargetApplies is openrcTargetApplies plus the running-target
+// rule for start/stop/restart: with NO selectors and discovery showing running
+// providers, the route applies only when at least one of them is the service's
+// supervised process. If the service is stopped and only a BARE provider runs,
+// the normal unitless path must handle it (matching the systemd path's
+// preference for the running target over a stopped unit) — `rc-service stop`
+// would otherwise falsely report success while the bare process keeps running.
+// Zero discovered providers (a simply-stopped service) still routes, so
+// `urnet-tools start` keeps working on a service-only host. The auto-start and
+// auto-update routes deliberately do NOT use this: their periodic entry is not
+// service-bound and stays useful for a bare provider.
+func openrcLifecycleTargetApplies(t Target) bool {
+	if !openrcTargetApplies(t) {
+		return false
+	}
+	if t.User != "" || t.StateDir != "" || t.Network != "" || t.NetworkID != "" || t.PID > 0 {
+		return true // the selector already matched the supervised provider
+	}
+	provs := discoverSystemdFn()
+	if len(provs) == 0 {
+		return true
+	}
+	for _, p := range provs {
+		if providerSupervisedByOpenRCFn(p) {
+			return true
+		}
+	}
+	return false
+}
+
 // openrcGateProvider is the provider record used for the restart confirm gate
 // and the restart-reason marker on an OpenRC host: the service name, enriched
 // best-effort with the service's own supervised provider so the audit line
@@ -269,7 +299,7 @@ func openrcRouteLifecycle(verb string, args []string, force, dryRun bool) (bool,
 	if len(rest) > 0 {
 		return false, nil
 	}
-	if !openrcTargetApplies(t) {
+	if !openrcLifecycleTargetApplies(t) {
 		return false, nil
 	}
 	if dryRun {
@@ -509,12 +539,24 @@ func openrcCrondNote() string {
 	return fmt.Sprintf("could not check whether crond is running (%v); make sure busybox crond runs or the auto-update entry will not fire", err)
 }
 
-// openrcCleanup removes the OpenRC lifecycle artifacts for an uninstall: the
-// service is stopped and de-registered, the init script is removed, and the
-// periodic auto-update entry is cleared. Every step is best-effort with a
-// warning: uninstall must not abort halfway on a permission error, and the
-// caller may not be root (the system service needs root to remove).
-func openrcCleanup() {
+// openrcCleanupCronEntries removes the periodic auto-update entries (and any
+// installer-paused leftovers) from every queue. Split from the service
+// cleanup because the entry can exist without the init script: auto-update
+// does not require the service, and an uninstall must not leave crond firing
+// for a provider that is gone.
+func openrcCleanupCronEntries() {
+	for _, dir := range openrcPeriodicIntervals {
+		for _, path := range openrcCronEntryPaths(dir) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", path, err, path)
+			}
+		}
+	}
+}
+
+// openrcCleanupService stops and de-registers the service and removes the
+// init script. Callers gate this on the service actually being installed.
+func openrcCleanupService() {
 	if err := openrcRunFn(openrcServiceArgv("stop")...); err != nil {
 		fmt.Fprintf(os.Stderr, "uninstall: warning: rc-service %s stop: %v\n", openrcServiceName, err)
 	}
@@ -524,13 +566,16 @@ func openrcCleanup() {
 	if err := os.Remove(openrcInitScriptPath); err != nil && !os.IsNotExist(err) {
 		fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", openrcInitScriptPath, err, openrcInitScriptPath)
 	}
-	for _, dir := range openrcPeriodicIntervals {
-		for _, path := range openrcCronEntryPaths(dir) {
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", path, err, path)
-			}
-		}
-	}
+}
+
+// openrcCleanup removes the OpenRC lifecycle artifacts for an uninstall: the
+// service is stopped and de-registered, the init script is removed, and the
+// periodic auto-update entry is cleared. Every step is best-effort with a
+// warning: uninstall must not abort halfway on a permission error, and the
+// caller may not be root (the system service needs root to remove).
+func openrcCleanup() {
+	openrcCleanupService()
+	openrcCleanupCronEntries()
 }
 
 // providerSupervisedByOpenRC reports whether the provider process is the

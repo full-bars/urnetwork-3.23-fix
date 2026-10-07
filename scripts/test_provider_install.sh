@@ -427,7 +427,13 @@ test_openrc_staged_script_and_nonroot_output() {
     assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-service urnetwork start')" "non-root output prints the start command"
     rm -rf "$tmpd"
 }
-test_openrc_staged_script_and_nonroot_output
+# OpenRC installer tests require a non-root runner: as root, the root branch
+# of install_openrc_units would touch /etc (rc-update) and abort the suite.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "⊘ SKIP: OpenRC installer tests need a non-root runner"
+else
+    test_openrc_staged_script_and_nonroot_output
+fi
 
 # A missing install directory must not leave the OpenRC service installed: the
 # teardown runs before the "directory not found" bailout (non-root prints the
@@ -453,7 +459,11 @@ test_openrc_uninstall_missing_dir_still_tears_down_service() {
     assert_eq "1" "$(echo "$out" | grep -c "could not be found")" "missing-dir uninstall still reports the missing directory"
     rm -rf "$tmpd"
 }
-test_openrc_uninstall_missing_dir_still_tears_down_service
+if [ "$(id -u)" -eq 0 ]; then
+    echo "⊘ SKIP: OpenRC installer tests need a non-root runner"
+else
+    test_openrc_uninstall_missing_dir_still_tears_down_service
+fi
 
 echo "======================================"
 if [ $FAILS -eq 0 ]; then

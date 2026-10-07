@@ -982,7 +982,9 @@ openrc_teardown_service ()
         pr_info "    sudo rc-service urnetwork stop"
         pr_info "    sudo rc-update del urnetwork default"
         pr_info "    sudo rm -f %s" "$openrc_initd_file"
-        pr_info "    sudo rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update"
+        pr_info "    sudo rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/daily/urnetwork-update.installer-paused"
+        pr_info "    sudo rm -f /etc/periodic/weekly/urnetwork-update /etc/periodic/weekly/urnetwork-update.installer-paused"
+        pr_info "    sudo rm -f /etc/periodic/monthly/urnetwork-update /etc/periodic/monthly/urnetwork-update.installer-paused"
     fi
 }
 
@@ -1092,6 +1094,16 @@ EOF
         return 0
     fi
 
+    # Same rule for a user whose home directory does not exist: the service's
+    # logs and state live there (and command= may point into it), so the unit
+    # would fail at every start.
+    if [ ! -d "$openrc_home" ]; then
+        pr_warn "User '%s' has no home directory (%s); the service is NOT installed (its logs and state live there)." "$openrc_user" "$openrc_home"
+        pr_info "Fix the home directory (usermod -m -d %s %s, or recreate the user with useradd -m) and re-run." "$openrc_home" "$openrc_user"
+        pr_info "The service script is staged at %s if you prefer to finish by hand." "$openrc_staged"
+        return 0
+    fi
+
     if [ "$(id -u)" -ne 0 ]; then
         pr_warn "Installing a system service needs root."
         pr_info "To finish, run these commands:"
@@ -1130,6 +1142,10 @@ EOF
         if ! rc-service urnetwork start; then
             pr_err "warning: unable to restart urnetwork after update; start it with: rc-service urnetwork start"
         fi
+    elif openrc_service_running; then
+        # The service was left running (the non-forced update path): starting
+        # it would print "already started" while the OLD binary is still live.
+        pr_info "The service is still running the previous binary; restart it to apply: rc-service urnetwork restart"
     else
         pr_info "Start the service: rc-service urnetwork start"
     fi

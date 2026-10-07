@@ -77,6 +77,14 @@ var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the
 // so the operator-facing decline text is identical on both paths and no
 // caller can gate on a bool and lose the reason.
 func hotSwapPreflight(p Provider) error {
+	// OpenRC supervision is checked FIRST: it is the dominant, upgrade-proof
+	// blocker (no sd_notify handoff), so a supervised provider always records
+	// reason="openrc" rather than a version or unit-type reason that an
+	// operator action could not fix. It also short-circuits before the
+	// running-image version read.
+	if err := openrcHotSwapDecline(p); err != nil {
+		return err
+	}
 	if !hotSwapVersionOK(p) {
 		return ErrHotSwapNotSupported
 	}
