@@ -1327,6 +1327,25 @@ func aimdStep(target, cacheSize int, pressure float64, ceiling int) int {
 	}
 }
 
+// aimdMoveMessage explains one pool-target move in a plain sentence,
+// attributing the cause honestly: AIMD pressure steps, cache tracking and cap
+// or ceiling changes all share this path, and a wrong attribution sends an
+// operator chasing a cause that never existed.
+func aimdMoveMessage(target, next, cacheSize int, pressure float64) string {
+	switch {
+	case next > target && pressure < aimdGrowBelow:
+		return fmt.Sprintf("Pool size target raised %d -> %d: pressure is low (%.2f), growing toward the allowed maximum. (pressure=%.2f cache=%d)\n", target, next, pressure, pressure, cacheSize)
+	case next > target:
+		return fmt.Sprintf("Pool size target raised %d -> %d: a cap or ceiling changed. (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+	case pressure > aimdShrinkAbove:
+		return fmt.Sprintf("Pool size target lowered %d -> %d: pressure has been high (%.2f), shrinking to fit. (pressure=%.2f cache=%d)\n", target, next, pressure, pressure, cacheSize)
+	case pressure < aimdGrowBelow && next == cacheSize+aimdIncrement:
+		return fmt.Sprintf("Pool size target lowered %d -> %d: only %d proxies are cached, so the target follows the live pool. (pressure=%.2f cache=%d)\n", target, next, cacheSize, pressure, cacheSize)
+	default:
+		return fmt.Sprintf("Pool size target lowered %d -> %d: a cap or ceiling lowered it. (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
+	}
+}
+
 // selectURLProxiesToShed ranks URL-sourced proxies for removal under
 // sustained pressure: dead first, then degraded tiers, then healthy ones by
 // ascending persisted earnings, then ascending lifetime traffic. Lifetime
@@ -1471,19 +1490,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 		}
 		release()
 		if next != target {
-			// Attribute the move honestly: AIMD pressure steps and cap or
-			// ceiling changes share this path, and blaming the wrong one
-			// sends an operator chasing memory that was never the cause.
-			switch {
-			case next > target && pressure < aimdGrowBelow:
-				tlog("🧯 [proxy][pressure] Pool size target raised %d -> %d: pressure is low (%.2f), growing toward the allowed maximum. (pressure=%.2f cache=%d)\n", target, next, pressure, pressure, cacheSize)
-			case next > target:
-				tlog("🧯 [proxy][pressure] Pool size target raised %d -> %d: a cap or ceiling changed. (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
-			case pressure > aimdShrinkAbove:
-				tlog("🧯 [proxy][pressure] Pool size target lowered %d -> %d: pressure has been high (%.2f), shrinking to fit. (pressure=%.2f cache=%d)\n", target, next, pressure, pressure, cacheSize)
-			default:
-				tlog("🧯 [proxy][pressure] Pool size target lowered %d -> %d: a cap or ceiling lowered it. (pressure=%.2f cache=%d)\n", target, next, pressure, cacheSize)
-			}
+			tlog("🧯 [proxy][pressure] %s", aimdMoveMessage(target, next, cacheSize, pressure))
 		}
 
 		if pressure > aimdShrinkAbove {

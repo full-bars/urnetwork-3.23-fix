@@ -486,30 +486,54 @@ func TestThrashTrackerSourceFlipReBaselines(t *testing.T) {
 		psiSomeTotal: 100, psiFullTotal: 100, psiSomeOK: true, psiFullOK: true,
 		psiSomeUnit: true, psiUnit: true,
 		swapIn: 50, swapOut: 50, swapOK: true, swapUnit: true,
+		pgscan: 50, pgscanOK: true, pgscanUnit: true,
 	}
 	tr.rates(rd, thrashT0)
 	rd.psiSomeTotal, rd.psiFullTotal = 100+90_000_000, 100+45_000_000
 	rd.swapIn = 50 + 9000
+	rd.pgscan = 50 + 9000
 	r := tr.rates(rd, thrashT0.Add(90*time.Second))
-	if r.fullFrac < 0.49 || r.fullFrac > 0.51 || r.swapInPS < 99 {
-		t.Fatalf("same-source rates: full=%v swapIn=%v", r.fullFrac, r.swapInPS)
+	if r.fullFrac < 0.49 || r.fullFrac > 0.51 || r.swapInPS < 99 || r.pgscanPS < 99 {
+		t.Fatalf("same-source rates: full=%v swapIn=%v pgscan=%v", r.fullFrac, r.swapInPS, r.pgscanPS)
 	}
 	// Flip to host counters with much larger cumulative values: the tracker
 	// must re-baseline instead of fabricating a huge rate (the false-severe
-	// bug: only backward moves are clamped, forward jumps are not).
+	// bug: only backward moves are clamped, forward jumps are not). This
+	// includes pgscan, whose unit tag the reader must carry.
 	rd.psiSomeUnit, rd.psiUnit, rd.swapUnit = false, false, false
+	rd.pgscanUnit = false
 	rd.psiSomeTotal, rd.psiFullTotal = 9_000_000_000, 9_000_000_000
 	rd.swapIn, rd.swapOut = 900_000_000, 900_000_000
+	rd.pgscan = 900_000_000
 	r = tr.rates(rd, thrashT0.Add(180*time.Second))
-	if r.fullOK || r.swapOK {
-		t.Fatalf("source flip must report unavailable, got (fullOK=%v swapOK=%v)", r.fullOK, r.swapOK)
+	if r.fullOK || r.swapOK || r.pgscanOK {
+		t.Fatalf("source flip must report unavailable, got (fullOK=%v swapOK=%v pgscanOK=%v)", r.fullOK, r.swapOK, r.pgscanOK)
 	}
 	// The next same-source tick yields real rates again.
 	rd.psiFullTotal += 45_000_000
 	rd.swapIn += 9000
+	rd.pgscan += 9000
 	r = tr.rates(rd, thrashT0.Add(270*time.Second))
-	if r.fullFrac < 0.49 || r.fullFrac > 0.51 {
-		t.Fatalf("post-flip rates: full=%v", r.fullFrac)
+	if r.fullFrac < 0.49 || r.fullFrac > 0.51 || r.pgscanPS < 99 {
+		t.Fatalf("post-flip rates: full=%v pgscan=%v", r.fullFrac, r.pgscanPS)
+	}
+}
+
+// The unit memory.stat branch must tag pgscan as unit-sourced; without the
+// tag a tick that falls back to the boot-cumulative host counter reads as a
+// huge forward jump and fabricates a rate instead of re-baselining (the
+// false corroborator the struct comment describes).
+func TestThrashReadTagsUnitPgscanSource(t *testing.T) {
+	prev := thrashMemstatFn
+	thrashMemstatFn = func(string) (string, bool) { return "pgscan_direct 4242\n", true }
+	t.Cleanup(func() { thrashMemstatFn = prev })
+
+	rd := readThrashRead()
+	if !rd.pgscanOK || rd.pgscan != 4242 {
+		t.Fatalf("unit pgscan_direct must be read: ok=%v v=%d", rd.pgscanOK, rd.pgscan)
+	}
+	if !rd.pgscanUnit {
+		t.Fatal("a unit-sourced pgscan reading must set pgscanUnit (else a unit-to-host flip fabricates a rate)")
 	}
 }
 

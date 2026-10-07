@@ -98,6 +98,31 @@ const (
 	trimCapOOM      = "oomcap"
 )
 
+// automaticTrimCapSource returns the tighter of the AUTOMATIC caps alone —
+// the OOM cap (only in "on" mode) and the thrash cap — independent of the
+// operator's trim file, with 0/"" when neither is standing. A caller that
+// must not claim "no automatic cap" while an operator cap merely masks one
+// reads this instead of re-deriving the pair.
+func automaticTrimCapSource() (int, string) {
+	auto := 0
+	autoSource := ""
+	if oomCapMode() == oomCapOn {
+		var st oomCapState
+		if dir, derr := oomCapDir(); derr == nil {
+			oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
+		}
+		if st.Cap > 0 {
+			auto, autoSource = st.Cap, trimCapOOM
+		}
+	}
+	// The thrash cap: the "escape and remember" state the thrash watchdog
+	// leaves behind after a swap-thrash restart. The tighter automatic wins.
+	if tc, ok := activeThrashCap(time.Now()); ok && tc > 0 && (auto == 0 || tc < auto) {
+		auto, autoSource = tc, trimCapThrash
+	}
+	return auto, autoSource
+}
+
 // effectiveTrimCapSource is the cap the launch and reload paths enforce and the
 // source that binds: the tightest positive of the operator's trim file (never
 // written by the auto logic) and the automatic OOM cap, which counts only in
@@ -115,22 +140,7 @@ const (
 // memory. Here the operator cap reads as 0, says so once, and the automatic cap
 // still applies.
 func effectiveTrimCapSource() (int, string, error) {
-	auto := 0
-	autoSource := ""
-	if oomCapMode() == oomCapOn {
-		var st oomCapState
-		if dir, derr := oomCapDir(); derr == nil {
-			oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
-		}
-		if st.Cap > 0 {
-			auto, autoSource = st.Cap, trimCapOOM
-		}
-	}
-	// The thrash cap: the "escape and remember" state the thrash watchdog
-	// leaves behind after a swap-thrash restart. The tighter automatic wins.
-	if tc, ok := activeThrashCap(time.Now()); ok && tc > 0 && (auto == 0 || tc < auto) {
-		auto, autoSource = tc, trimCapThrash
-	}
+	auto, autoSource := automaticTrimCapSource()
 	operator, err := readTrimTarget()
 	if err != nil {
 		// Same shape as the invalid-value warning in readTrimTarget: the ramlog

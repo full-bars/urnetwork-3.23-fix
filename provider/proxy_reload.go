@@ -1208,8 +1208,16 @@ func (r *ProxyReloader) reload() {
 
 	// The mid-reload counters fold into the "Proxy list reloaded" summary at
 	// the end of this function (readability contract); kept as variables so
-	// the plan/apply split is unchanged.
-	reloadRunning, reloadDesired := len(running), len(desiredSet)
+	// the plan/apply split is unchanged. The direct transport lives in the
+	// running map but is not a proxy, so the count excludes it, like the
+	// trim receipt's.
+	reloadRunning := 0
+	for addr := range running {
+		if addr != directProxyKey {
+			reloadRunning++
+		}
+	}
+	reloadDesired := len(desiredSet)
 	reloadLockWait := lockWait.Round(time.Millisecond)
 
 	var added []*connect.ProxySettings

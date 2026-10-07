@@ -344,6 +344,18 @@ func readRAMTotalMiB() (int64, bool) {
 	return 0, false
 }
 
+// thrashMemstatFn reads the unit cgroup's memory.stat contents; a var so
+// tests can exercise unit-source detection without a live cgroup tree.
+var thrashMemstatFn = func(unitDir string) (string, bool) {
+	if unitDir == "" {
+		return "", false
+	}
+	if b, err := os.ReadFile(filepath.Join(unitDir, "memory.stat")); err == nil {
+		return string(b), true
+	}
+	return "", false
+}
+
 // readThrashRead assembles one reading. Unit-level sources are preferred
 // (they describe this service); host sources are the fallback and are what
 // makes detection work on kernels without unit swap counters.
@@ -379,13 +391,7 @@ func readThrashRead() thrashRead {
 
 	// Unit memory.stat: swap counters (kernel-dependent), refaults, direct
 	// reclaim. One read serves all three.
-	var memstat string
-	var haveMemstat bool
-	if unitDir != "" {
-		if b, err := os.ReadFile(filepath.Join(unitDir, "memory.stat")); err == nil {
-			memstat, haveMemstat = string(b), true
-		}
-	}
+	memstat, haveMemstat := thrashMemstatFn(unitDir)
 
 	// Swap activity: unit counters when the kernel has them, else host
 	// /proc/vmstat. Never a fake zero.
@@ -417,7 +423,7 @@ func readThrashRead() thrashRead {
 	// Direct reclaim: unit pgscan_direct, else host vmstat.
 	if haveMemstat {
 		if v, ok := parseMemoryStatCounter(memstat, "pgscan_direct"); ok {
-			rd.pgscan, rd.pgscanOK = v, true
+			rd.pgscan, rd.pgscanOK, rd.pgscanUnit = v, true, true
 		}
 	}
 	if !rd.pgscanOK {
@@ -987,6 +993,12 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	case "unknown":
 		return thrashEscalationAlert("attributed-unknown", "the swap cannot be attributed to this provider and no per-unit PSI is readable; not restarting blind")
 	}
+	// A supervisor's presence is only half the restart contract: the unit's
+	// restart policy must also restart on exit status 75. The shipped units
+	// use Restart=on-failure, which covers it; an operator override
+	// (Restart=no, Restart=on-success, or a policy that excludes status 75)
+	// leaves the provider dead after a restart attempt — provider unit
+	// overrides must restart on exit 75.
 	if os.Getenv("INVOCATION_ID") == "" && os.Getenv("NOTIFY_SOCKET") == "" {
 		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd), so a self-exit would not be restarted; not restarting")
 	}
@@ -1278,7 +1290,6 @@ func runThrashWatchdog(ctx context.Context, selfHealEnabled bool) {
 			esc := thrashEscalate(now, rt, rd, selfHealEnabled, attr, share, shareOK)
 			switch esc.Action {
 			case "restart":
-				lastAction = fmt.Sprintf("restart %d/%d, cap %d -> %d", esc.Restarts, thrashMaxRestarts24h, esc.Running, esc.Cap)
 				importantLogf("%s\n", esc.Msg)
 				// os.Exit skips the defers: clear the stale status first.
 				clearThrashStatusFile()

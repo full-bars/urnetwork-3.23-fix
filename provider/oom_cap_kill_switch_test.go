@@ -159,3 +159,40 @@ func TestOOMCapLiveApplyOffClearsTheStandingCap(t *testing.T) {
 // callers skip capping entirely on an error, so one unreadable file silently
 // disabled the OOM protection on exactly the boxes short of memory. The
 // automatic cap is independent of the operator's file and must still apply.
+//
+// An operator trim cap tighter than a standing automatic cap masks it in the
+// effective source, but the automatic cap still exists: the live `set oom-cap
+// on` line must not claim nothing automatic is standing.
+func TestOOMCapLiveApplyOnWithTighterOperatorCapNamesTheStandingAutomaticCap(t *testing.T) {
+	withTempHome(t)
+	dir, _ := oomCapDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := oomWriteJSON(filepath.Join(dir, "oom_cap.json"), oomCapState{Cap: 500}); err != nil {
+		t.Fatal(err)
+	}
+	// Operator cap tighter than the automatic 500: the effective source
+	// becomes the operator's, which must not read as "no automatic cap".
+	if err := os.WriteFile(filepath.Join(dir, "proxy_trim"), []byte("300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+	old := importantLogHook
+	var lines []string
+	importantLogHook = func(line string) { lines = append(lines, line) }
+	t.Cleanup(func() { importantLogHook = old })
+
+	applyLiveSideEffect("oom_cap", "on")
+
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "no automatic cap is standing") {
+		t.Fatalf("a masked automatic cap must not read as none standing:\n%s", joined)
+	}
+	if !strings.Contains(joined, "automatic cap 500 (oomcap) is standing") {
+		t.Fatalf("the standing automatic cap must be named with its source, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "operator trim cap is the effective limit") {
+		t.Fatalf("the operator cap must be named as the effective limit, got:\n%s", joined)
+	}
+}
