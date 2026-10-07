@@ -1114,13 +1114,18 @@ func auth(opts docopt.Opts) {
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	jwtPath := filepath.Join(urNetworkDir, "jwt")
 
+	// ONE buffered reader for the whole command. A bufio.Reader reads a whole
+	// chunk from the pipe, not just the one line it returns, so a second reader
+	// created later sees only EOF - which is exactly how the auth code that
+	// followed the overwrite answer on the same pipe was being lost.
+	stdinReader := bufio.NewReader(os.Stdin)
+
 	if _, err := os.Stat(jwtPath); !errors.Is(err, os.ErrNotExist) {
 		// jwt exists
 		if force, _ := opts.Bool("-f"); !force {
 			fmt.Printf("%s exists. Overwrite? [yN]\n", jwtPath)
 
-			reader := bufio.NewReader(os.Stdin)
-			confirm, _ := reader.ReadString('\n')
+			confirm, _ := stdinReader.ReadString('\n')
 			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 				return
 			}
@@ -1209,7 +1214,18 @@ func auth(opts docopt.Opts) {
 			fmt.Print("Enter auth code: ")
 			authCodeBytes, err := term.ReadPassword(int(syscall.Stdin))
 			if err != nil {
-				panic(err)
+				// Not a terminal: the code arrived on a pipe or a redirect.
+				// term.ReadPassword needs a TTY (it ioctls to suppress echo),
+				// and the old code PANICKED here, so every scripted auth -
+				// the OpenRC installer's prompt, `urnetwork auth <<<code`,
+				// any provisioning automation - crashed instead of working.
+				// Read one plain line instead; there is no echo to suppress
+				// on a pipe anyway.
+				line, readErr := stdinReader.ReadString('\n')
+				if line == "" && readErr != nil {
+					shmLogFatal(14, "could not read the auth code from stdin: %v", readErr)
+				}
+				authCodeBytes = []byte(line)
 			}
 			authCode = strings.TrimSpace(string(authCodeBytes))
 			fmt.Printf("\n")
