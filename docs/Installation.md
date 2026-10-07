@@ -126,20 +126,39 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 Install via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
 
-If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
+Windows Defender may flag this one-liner. See the note below.
 
-```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
-```
+> [!NOTE]
+> Windows Defender may flag the Windows install one-liner, and it may flag the downloaded
+> binaries. What we see are machine-learning heuristics (the `!ml` suffix), not signatures;
+> for the binaries we publish they are false positives. Recent release pages record the scan
+> results for the published binaries. If Defender blocks the one-liner, download the script,
+> review it, and run it from disk instead. If Defender quarantines an extracted binary,
+> allow it from Windows Security > Virus & threat protection > Protection history. Both lines
+> go in PowerShell:
+>
+> ```powershell
+> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+> ```
+
+<details>
+<summary>The detections you may see, and what each one means</summary>
+
+- `Trojan:Script/Wacatac.B!ml`, `Trojan:Script/Wacatac.C!ml`: Defender's machine-learning label for the PowerShell installer script fetching and extracting a remote payload.
+- `Trojan:Win32/Wacatac.B!ml`, `Trojan:Win32/Wacatac.C!ml`: Defender's machine-learning label for files whose shape looks like a packed trojan. Our Go binaries are stripped, statically linked and unsigned, which reads as a packed payload. The B and C variants are different model generations, so one binary can be flagged under more than one name. `Trojan:Win32/Execution.A!ml` is another label from the same family on some builds.
+- `Trojan:Win32/Commando.A!ml`: fires on the download-and-run command line itself (the `irm ... | iex` one-liner), not on the installed files. Fetching a remote script and piping it into execution reads as a trojan-downloader pattern to the model.
+- `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for scheduled-task activity. The installer registers Task Scheduler tasks — a weekly update task (on `latest` installs) and, if you accept auto-start, a logon task so the provider starts at login — and a behavioural model cannot tell that apart from persistence malware.
+
+</details>
 
 Uninstall via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
+irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex
 ```
 
 ### What gets installed
@@ -149,7 +168,7 @@ powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
 | Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
 | Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
-| Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
+| Startup (optional) | Task Scheduler logon task `urnetwork-autostart` |
 | PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
 
 ### Post-install commands
@@ -198,7 +217,7 @@ Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tool
 .\Provider_Install_Win32.ps1
 ```
 
-This registers the PATH entry and optional startup shortcut — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
+This registers the PATH entry and optional Task Scheduler logon task — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
 
 > [!TIP]
 > The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.

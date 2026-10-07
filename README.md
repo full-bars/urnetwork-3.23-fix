@@ -9,31 +9,6 @@
 
 A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. Tuned for professional providers managing large proxy lists, high throughput, and production-grade operations.
 
-## 🆚 What this fork changes vs upstream
-
-| | Upstream | This fork |
-| :--- | :--- | :--- |
-| Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
-| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
-| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
-| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
-| Dead proxy handling | Retry forever (15 min loop, no ceiling) | 24 h daily retry, 14-day drop (file) or 65 min cleanup (URL), persisted state |
-| Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
-| Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
-| Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
-| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
-| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
-| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
-| Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
-| Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
-| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
-| Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
-| Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
-| Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
-| Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
-
----
-
 ## 🗺 Start Here
 
 | If you want to... | Go here |
@@ -68,18 +43,6 @@ curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
 ```
 
-**🪟 Windows (PowerShell)**
-
-```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 | iex
-```
-
-If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
-
-```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
-```
 
 **🐋 Docker**
 
@@ -92,6 +55,58 @@ docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```sh
 curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
 ```
+
+**🪟 Windows (PowerShell)**
+
+```powershell
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
+```
+
+Windows Defender may flag this one-liner. See the note below.
+
+> [!NOTE]
+> Windows Defender may flag the Windows install one-liner, and it may flag the downloaded
+> binaries. What we see are machine-learning heuristics (the `!ml` suffix), not signatures;
+> for the binaries we publish they are false positives. Recent release pages record the scan
+> results for the published binaries. If Defender blocks the one-liner, download the script,
+> review it, and run it from disk instead. If Defender quarantines an extracted binary,
+> allow it from Windows Security > Virus & threat protection > Protection history. Both lines
+> go in PowerShell:
+>
+> ```powershell
+> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+> ```
+
+<details>
+<summary>The detections you may see, and what each one means</summary>
+
+- `Trojan:Script/Wacatac.B!ml`, `Trojan:Script/Wacatac.C!ml`: Defender's machine-learning label for the PowerShell installer script fetching and extracting a remote payload.
+- `Trojan:Win32/Wacatac.B!ml`, `Trojan:Win32/Wacatac.C!ml`: Defender's machine-learning label for files whose shape looks like a packed trojan. Our Go binaries are stripped, statically linked and unsigned, which reads as a packed payload. The B and C variants are different model generations, so one binary can be flagged under more than one name. `Trojan:Win32/Execution.A!ml` is another label from the same family on some builds.
+- `Trojan:Win32/Commando.A!ml`: fires on the download-and-run command line itself (the `irm ... | iex` one-liner), not on the installed files. Fetching a remote script and piping it into execution reads as a trojan-downloader pattern to the model.
+- `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for scheduled-task activity. The installer registers Task Scheduler tasks — a weekly update task (on `latest` installs) and, if you accept auto-start, a logon task so the provider starts at login — and a behavioural model cannot tell that apart from persistence malware.
+
+</details>
+
+### After you install
+
+After installation, authenticate and start providing:
+
+```bash
+# Linux / macOS: one Go binary on every platform
+urnetwork auth
+urnet-tools proxy add ~/proxies.txt
+urnet-tools proxy refresh
+urnet-tools auto on
+```
+On Windows, run the same commands in PowerShell but use a Windows path, e.g.
+`urnet-tools proxy add "$env:USERPROFILE\Downloads\proxies.txt"`. Full per-OS
+walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Adding-Proxies.md).
+
+> [!NOTE]
+> Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
+>
+> Docker-only deployments: the provider runs in a container, but the management tool (`urnet-docker`) runs **on the docker host, outside the container**. Install it with the one-liner above (use `curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools` for the systemd variant; GitHub fallback: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh` (use `| sh -s -- urnet-tools` for the systemd variant)). The tool self-updates afterward (`urnet-docker update`).
 
 ### Uninstall
 
@@ -123,24 +138,6 @@ docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:late
 rm /usr/local/bin/urnet-docker   # root install
 rm ~/.local/bin/urnet-docker     # non-root install
 ```
-
-After installation, authenticate and start providing:
-
-```bash
-# Linux / macOS: one Go binary on every platform
-urnetwork auth
-urnet-tools proxy add ~/proxies.txt
-urnet-tools proxy refresh
-urnet-tools auto on
-```
-On Windows, run the same commands in PowerShell but use a Windows path, e.g.
-`urnet-tools proxy add "$env:USERPROFILE\Downloads\proxies.txt"`. Full per-OS
-walkthrough, including the `.txt.txt` extension trap: [Adding Proxies](docs/Adding-Proxies.md).
-
-> [!NOTE]
-> Since v3.23.0-fix.27.0, `urnet-tools` is a provider-aware Go binary (the legacy POSIX shell + PowerShell variants are retired). It discovers every provider on the box and **refuses to act on an ambiguous target** — on multi-provider machines, pass `--unit` / `--user` / `--network` / `--network-id` / `--state-dir`. See [docs/urnet-tools-go.md](docs/urnet-tools-go.md).
->
-> Docker-only deployments: the provider runs in a container, but the management tool (`urnet-docker`) runs **on the docker host, outside the container**. Install it with the one-liner above (use `curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh -s -- urnet-tools` for the systemd variant; GitHub fallback: `curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/install-urnet-docker.sh | sh` (use `| sh -s -- urnet-tools` for the systemd variant)). The tool self-updates afterward (`urnet-docker update`).
 
 ### 🐋 Docker (Production-Ready)
 
@@ -185,6 +182,31 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 > - `urnet-docker proxy add ~/proxies.txt`
 > - `cat proxies.txt | urnet-docker proxy paste`
 > - `urnet-docker proxy traffic`
+
+---
+
+## 🆚 What this fork changes vs upstream
+
+| | Upstream | This fork |
+| :--- | :--- | :--- |
+| Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
+| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
+| Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
+| Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
+| Dead proxy handling | Retry forever (15 min loop, no ceiling) | 24 h daily retry, 14-day drop (file) or 65 min cleanup (URL), persisted state |
+| Proxy source | Static file only | File and/or live URL feed, with scoped auto-cleanup |
+| Error noise | Log-level throttle (suppresses repeated lines) | Shared auth rate limiter reduces the error source itself — fewer API calls hit the failure path |
+| Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
+| Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
+| Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
+| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
+| Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
+| Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
+| Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
+| Node identity on the dashboard | Hostname only | `rename` sets the display label and `show-ip` appends the public IP, both without a restart |
+| Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
+| Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
+| Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
 
 ---
 
