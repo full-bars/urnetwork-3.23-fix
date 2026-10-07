@@ -303,6 +303,7 @@ jobs:
               '#include <sys/types.h>' \
               '#include <sys/socket.h>' \
               '#include <sys/un.h>' \
+              '#include <sys/unpcb.h>' \
               '#include <stdio.h>' \
               '#include <unistd.h>' \
               'int main(void) {' \
@@ -310,6 +311,7 @@ jobs:
               '  if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sv) != 0) { perror("socketpair"); return 1; }' \
               '  struct xucred xc; socklen_t len = sizeof(xc);' \
               '  if (getsockopt(sv[1], SOL_LOCAL, LOCAL_PEERCRED, &xc, &len) != 0) { perror("LOCAL_PEERCRED"); return 1; }' \
+              '  if (xc.cr_version != XUCRED_VERSION) { printf("LOCAL_PEERCRED: unexpected cr_version %d\\n", xc.cr_version); return 1; }' \
               '  printf("LOCAL_PEERCRED ok: cr_version=%u cr_uid=%u\\n", xc.cr_version, xc.cr_uid);' \
               '  return 0;' \
               '}' > /tmp/xucred_test.c
