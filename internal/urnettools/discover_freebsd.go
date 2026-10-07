@@ -30,11 +30,17 @@ import (
 // host state dir, so discovery makes no jail claim and this is recorded as a
 // known gap rather than silently approximated.
 func discoverProcesses() []Provider {
-	rows := parseProcstatBasic(runProcstat("-b"))
+	// `-a` is REQUIRED: procstat without a command or a pid list prints its
+	// usage and exits non-zero. Calling `procstat -b` alone therefore yields
+	// empty output on every call, discovery silently found nothing, and the
+	// install-location fallback below covered for it — so the live-process path
+	// was broken while the tool still printed a plausible inventory row.
+	// A FreeBSD CI run with a real provider-named process is what caught this.
+	rows := parseProcstatBasic(runProcstat("-a", "-b"))
 	if len(rows) == 0 {
 		return nil
 	}
-	creds := parseProcstatCredentials(runProcstat("-s"))
+	creds := parseProcstatCredentials(runProcstat("-a", "-s"))
 
 	var out []Provider
 	for _, r := range rows {
@@ -145,8 +151,8 @@ func freebsdProcessOwner(c procstatCreds) (username, home string) {
 // A missing or failing procstat yields empty output rather than an error:
 // discovery then reports no providers, which is the honest outcome when the
 // process table cannot be read, and keeps the caller free of error plumbing.
-func runProcstat(flags string) string {
-	out, err := execWithTimeout(5*time.Second, "procstat", flags)
+func runProcstat(args ...string) string {
+	out, err := execWithTimeout(5*time.Second, "procstat", args...)
 	if err != nil {
 		return ""
 	}

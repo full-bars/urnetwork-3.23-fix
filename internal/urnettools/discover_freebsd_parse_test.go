@@ -1,6 +1,11 @@
 package urnettools
 
-import "testing"
+import (
+	"os"
+	"regexp"
+	"strings"
+	"testing"
+)
 
 // procstat -b emits a header row and one row per process. PATH is the
 // kernel-reported image path, which is the only field discovery trusts to
@@ -139,6 +144,36 @@ func TestParseUIDField(t *testing.T) {
 		got, ok := parseUIDField(c.in)
 		if got != c.want || ok != c.ok {
 			t.Errorf("parseUIDField(%q) = %d,%v want %d,%v", c.in, got, ok, c.want, c.ok)
+		}
+	}
+}
+
+// The exact procstat argv is a contract with the tool, and getting it wrong
+// fails SILENTLY rather than loudly: `procstat -b` with no pid list and no -a
+// prints its usage and exits non-zero, runProcstat turns that into empty
+// output, and discovery falls back to the install location — so the tool still
+// prints a plausible inventory row while the live-process path never runs.
+//
+// A FreeBSD CI run with a real provider-named process is what caught this. This
+// test reads the real call sites rather than restating them, so deleting a flag
+// from discoverProcesses fails here instead of on a user's box.
+func TestDiscoverProcessesCallsProcstatWithAllFlag(t *testing.T) {
+	b, err := os.ReadFile("discover_freebsd.go")
+	if err != nil {
+		t.Skipf("cannot read discover_freebsd.go: %v", err)
+	}
+	src := string(b)
+	// Match only real invocations: `runProcstat(` followed by a quote, so the
+	// variadic function DEFINITION `runProcstat(args ...string)` is not
+	// mistaken for a call site.
+	calls := regexp.MustCompile(`runProcstat\(\s*"`).FindAllString(src, -1)
+	if len(calls) == 0 {
+		t.Fatal("no runProcstat call sites found; the discovery seam moved")
+	}
+	// Both procstat invocations must carry -a alongside their subcommand.
+	for _, want := range []string{`runProcstat("-a", "-b")`, `runProcstat("-a", "-s")`} {
+		if !strings.Contains(src, want) {
+			t.Errorf("discover_freebsd.go must call %s; without -a procstat prints usage and exits non-zero, so discovery silently finds nothing", want)
 		}
 	}
 }

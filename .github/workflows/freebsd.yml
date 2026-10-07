@@ -102,9 +102,12 @@ jobs:
             # rc.d do what the Go code assumes.
 
             echo "=== procstat output shape (discovery parser contract) ==="
-            procstat -b | head -5
+            # `-a` is required: bare `procstat -b` prints usage and exits
+            # non-zero. Probing it that way is what hid the same bug in
+            # discoverProcesses for a whole review cycle.
+            procstat -a -b | head -5
             echo "--- credentials ---"
-            procstat -s | head -5
+            procstat -a -s | head -5
 
             # --- live process discovery ---------------------------------------
             # The kernel-reported PATH is what discovery matches on, so the
@@ -162,8 +165,8 @@ jobs:
               echo "DISCOVERY OK: live pid $spid found"
             else
               echo "FATAL: discovery did not report the live pid $spid"
-              echo "--- procstat -b (all) for comparison ---"
-              procstat -b | head -20 || true
+              echo "--- procstat -a -b (all) for comparison ---"
+              procstat -a -b | head -20 || true
               exit 1
             fi
 
