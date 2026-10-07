@@ -55,6 +55,38 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `self-heal [on\|off\|status] [target]` | Toggle or query resource-pressure self-healing monitor (`~/.urnetwork/proxy_self_heal`). |
 | `default [set <target> \| show \| clear]` | Persist, inspect, or clear default provider target for current user in `os.UserConfigDir()/urnet-tools/default`. |
 
+#### OpenRC (Alpine) command parity
+
+On a host where OpenRC is the running init system and the installer's `urnetwork` service exists, the lifecycle commands act on that service. The backend is chosen at run time by looking at the running init system, never by operating system. A host where systemd is running keeps the systemd behavior even if OpenRC is installed beside it. The install walkthrough is in [Installation: Alpine Linux (OpenRC)](Installation.md#-alpine-linux-openrc).
+
+| Command | What it runs on OpenRC |
+|---|---|
+| `start` | `rc-service urnetwork start` |
+| `stop` | `rc-service urnetwork stop` |
+| `restart` | `rc-service urnetwork restart`, behind the usual confirm gate (`-f` skips the prompt) |
+| `auto-start on` / `off` | `rc-update add urnetwork default` / `rc-update del urnetwork default` |
+| `auto-update daily\|weekly\|monthly` / `off` | A busybox `crond` entry in `/etc/periodic/<interval>/urnetwork-update` that runs `urnet-tools update -f`. There is no systemd timer. `off` removes it from every interval. |
+| `logs [N]` | Follows the service's log file, `/var/log/urnetwork.log` (the file named by `output_log` in `/etc/init.d/urnetwork`), falling back to the error log. |
+| `status` | Prints `rc-service urnetwork status`, then the usual table with the live control-socket view. |
+| `uninstall` | When it targets the service's provider: stops the service, runs `rc-update del`, removes `/etc/init.d/urnetwork` and clears the auto-update entry. |
+
+`auto-update` only fires while `crond` is running. If it is not, the command still writes the entry and prints a note with the commands to enable `crond`.
+
+These commands need root, because they change a system service. Run as an ordinary user, a failing command adds a hint to re-run as root.
+
+`update` also restarts the service, with a stop/start instead of a HotSwap. See [HotSwap](HotSwap.md#not-available-under-openrc-alpine).
+
+**Ambiguity is refused on purpose.** `start` is not gated. But a `stop` or `restart` with no selector, on a box where the service runs beside another provider, is refused rather than acted on. Stopping only the service would leave the other provider running while the tool reported success. Name the target with `--user`, `--unit` or `--state-dir` (the selectors in [Targeting & Selectors](#-targeting--selectors)):
+
+```text
+N providers found on this box, specify a target: [alice (pid 4242)]
+  urnet-tools stop --user <user>          # a specific provider
+  urnet-tools stop --unit urnetwork       # the OpenRC service
+  urnet-tools providers             # list what was found
+```
+
+`N` is the provider count the tool reports, and the bracketed list names the providers that are not the service's own (here, `alice`'s). `restart` prints the same message with `restart` in the example commands. A selector that matches the service's own provider, such as `--unit urnetwork` or `--user urnet`, goes straight to `rc-service`.
+
 ### Proxy Management Commands
 
 | Command | What it does |
@@ -102,9 +134,9 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
 | `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
 | `set oom-cap [on\|off\|shadow]` | **(New in 32.8)** Show or set the OOM-aware start cap kill switch. `shadow` (default) decides and logs and enforces nothing, `on` enforces, `off` disables it and forgets a standing cap. Any source saying `off` wins. Live and persisted. |
-| `set h3 [on\|off]` | **(New in 32.9)** Show or set the H3 (QUIC) transport on the **direct** identity, live and persisted. Off by default. On lets the idle transport dial; off closes a live connection and stops further dials, and neither counts as a drop. Clearing it hands the decision back to `URNETWORK_H3`. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
-| `set h3-datagram [on\|off]` | **(New in 32.9)** Offer QUIC DATAGRAM (RFC 9221) on the H3 connection, so a server that accepts can send its small frames as datagrams instead of on the reliable stream. Off by default, receive side only, no environment variable. |
-| `set h3-datagram-send [on\|off]` | **(New in 32.9)** Also send small frames as datagrams on a connection where the server accepted them. Off by default, read per message, and used only while H1 is up. |
+| `set h3 [on\|off]` | **(New in 32.9)** Show or set the H3 (QUIC) transport on the **direct** identity, live and persisted. Off by default, except on a node with no proxy source configured, where it turns on automatically once startup settles. An explicit `set h3 off` always wins. On lets the idle transport dial; off closes a live connection and stops further dials, and neither counts as a drop. Clearing it hands the decision back to `URNETWORK_H3`. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
+| `set h3-datagram [on\|off]` | **(New in 32.9)** Offer QUIC DATAGRAM (RFC 9221) on the H3 connection, so a server that accepts can send its small frames as datagrams instead of on the reliable stream. Off by default (on automatically for a node with no proxy source, like `h3`), receive side only, no environment variable. |
+| `set h3-datagram-send [on\|off]` | **(New in 32.9)** Also send small frames as datagrams on a connection where the server accepted them. Off by default (on automatically for a node with no proxy source, like `h3`), read per message, and used only while H1 is up. |
 | `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error.
 | `baseline show [-n N] [--json]` | **(New in 32.8)** Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. Default 20 rows, at most 200. Reads `~/.urnetwork/baseline.jsonl` directly, so it works on a box whose provider is stopped. |
 | `baseline mark <label>` | **(New in 32.8)** Annotate the timeline, for example just before an upgrade. Goes through the control socket, so the provider stays the only writer to the file. Prints the timestamp recorded. A label is required: an unlabelled mark is a boundary `compare` cannot use. Works while the recorder is off, and never deletes the file. |

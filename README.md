@@ -300,7 +300,8 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 ## 🏗 Build Info
 
 - **Base engine:** UrNetwork v3.23
-- **Language:** Go 1.27, compiled on Alpine
+- **Language:** Go 1.27, built on Alpine
+- **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), macOS and Windows. Alpine setup: [docs/Installation.md](docs/Installation.md#-alpine-linux-openrc)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64`, `darwin/amd64` + `darwin/arm64` via GitHub Actions → GHCR
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
 

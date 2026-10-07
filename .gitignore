@@ -42,3 +42,6 @@ ADVICE-REQUEST.md
 raw-advice.jsonl
 live-advice.log
 FINDINGS-*.md
+
+# local agent prompt (not a doc)
+787-docs-prompt.md
