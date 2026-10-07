@@ -125,8 +125,9 @@ func automaticTrimCapSource() (int, string) {
 
 // effectiveTrimCapSource is the cap the launch and reload paths enforce and the
 // source that binds: the tightest positive of the operator's trim file (never
-// written by the auto logic) and the automatic OOM cap, which counts only in
-// "on" mode. cap 0 means no cap and the source is "". Logs and the action ledger
+// written by the auto logic) and the automatic caps — the OOM cap (only in
+// "on" mode) and the thrash cap (thrash_cap.go, written only by a deliberate
+// escalation). cap 0 means no cap and the source is "". Logs and the action ledger
 // use the source so a shed driven by the automatic cap is not attributed to the
 // operator.
 //
