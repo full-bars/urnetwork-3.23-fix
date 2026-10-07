@@ -61,10 +61,15 @@ run_check() {
 # every NR>n mark offset (taken against earlier reads) silently swallows
 # post-mark lines -- a stop event could be missed (false pass). An anchored
 # start keeps offsets exact and the window only grows.
-J_SINCE="${J_SINCE:-$(date -u -d '-90 min' +%FT%T.%NZ)}"
-j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "$J_SINCE" 2>/dev/null; }
+J_SINCE="${J_SINCE:-$(date -u -d '-90 min' +%FT%T.%3NZ)}"
+# A relative override ("90 min ago") would re-introduce the sliding window the
+# anchor exists to remove; normalize it to an absolute stamp up front.
+case "$J_SINCE" in *ago*) J_SINCE=$(date -u -d "$J_SINCE" +%FT%T.%3NZ);; esac
+# -q: without it journalctl prints "-- No entries --" when the filter matches
+# nothing, inflating a mark by one line and shifting every later NR>n read.
+j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -q --since "$J_SINCE" 2>/dev/null; }
 # j_full: unbounded journal (self-test calibration only).
-j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
+j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -q 2>/dev/null; }
 
 # The provider writes to the journal normally, but with URNETWORK_RAMLOGS=1 or
 # URNETWORK_PROFILE=lowmem/eco it redirects stdout/stderr to /dev/shm
@@ -121,7 +126,7 @@ ramlog_gate_open() {
 # through t1bad: a broken gate is the false-pass class this harness exists to
 # kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out probe wmark w_stale w_fresh w_empty w_evict w_dyn w_journal_stale w_journal_fresh gf=0
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out probe wmark w_stale w_fresh w_empty w_evict w_dyn w_journal_stale w_journal_fresh gf=0 RAMLOG_MARK
   tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
@@ -216,8 +221,10 @@ gate_selftest() {
   [ "$w_fresh" = "00000000-0000-0000-0000-000000000006" ] || { t1bad "SELF-TEST-FAIL: wait_client_id did not read the fresh block with base '-' ('$w_fresh')"; gf=1; }
   # Empty/unset mark: the documented safety net re-snapshots at wait start, so
   # the existing block (written before the wait) must be refused -- and the
-  # diagnostic warning must actually be emitted.
+  # diagnostic warning must actually be emitted. REPORT is pinned to /dev/null
+  # in here: these are SIMULATED warnings and must not land in the real report.
   w_empty=$( {
+    REPORT=/dev/null
     cnt="${tf}.cnt"; : > "$cnt"
     date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
     sleep() { :; }
@@ -229,18 +236,21 @@ gate_selftest() {
   grep -q "no RAMLOG_MARK snapshot" "$tf.werr" || { t1bad "SELF-TEST-FAIL: missing-snapshot warning not emitted"; gf=1; }
   rm -f "$tf.werr"
   # Eviction warning: a journal read below the wait mark must warn on
-  # stderr/report, and stdout must stay clean.
+  # stderr/report, and stdout must stay clean (a leaked warning line would
+  # become a truthy client_id at every caller).
   w_evict=$( {
+    REPORT=/dev/null
     cnt="${tf}.cnt"; : > "$cnt"
     journal_line_count() { echo 2; }
     date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
     sleep() { :; }
     j() { :; }
-    RAMLOG_MARK="-"
+    RAMLOG_MARK="$wmark"
     wait_client_id 5 1
-  } 2>&1 >/dev/null )
-  echo "$w_evict" | grep -q "NR>n reads may be shifted" || { t1bad "SELF-TEST-FAIL: journal eviction warning not emitted"; gf=1; }
-  rm -f "${tf}.cnt"
+  } 2>"$tf.werr" )
+  [ -z "$w_evict" ] || { t1bad "SELF-TEST-FAIL: eviction warning leaked to stdout ('$w_evict')"; gf=1; }
+  grep -q "NR>n reads may be shifted" "$tf.werr" || { t1bad "SELF-TEST-FAIL: journal eviction warning not emitted"; gf=1; }
+  rm -f "$tf.werr" "${tf}.cnt"
   # A delimiter written WHILE the poll runs must open the gate mid-wait.
   w_dyn=$(
     cnt="${tf}.cnt"; : > "$cnt"
@@ -357,6 +367,9 @@ wait_client_id() {
     if [ -n "$cid" ]; then echo "$cid"; return 0; fi
     sleep 5
   done
+  # Nothing found: if the journal has meanwhile fallen below the mark the miss
+  # may be an eviction artifact rather than a product failure -- say so.
+  journal_mark_ok "$after_lines" || true
   return 1
 }
 
@@ -505,7 +518,7 @@ RAMLOG_MARK=$(ramlog_mark_snapshot)
 # First validate that this box's journalctl ACCEPTS the anchored window: j()
 # swallows stderr, so a bad --since string would silently empty every journal
 # read and collapse every mark to 0.
-J_GUARD=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "$J_SINCE" -n0 2>&1); J_GUARD_RC=$?
+J_GUARD=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager -q --since "$J_SINCE" --lines=1 2>&1); J_GUARD_RC=$?
 if [ "$J_GUARD_RC" -ne 0 ] || echo "$J_GUARD" | grep -qi "failed to parse"; then
   t1bad "journalctl rejected the anchored J_SINCE ('$J_SINCE', exit $J_GUARD_RC): $J_GUARD"
   # Abort as ENV_BLOCKER: every journal read would silently return empty and
@@ -1441,8 +1454,9 @@ else
   bad "V2: expected a unit-type self-heal, an explicit un-migratable note, or a clean unit-type decline; none appeared in the update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
-journal_mark_ok "$V2_MARK" || true
-if j | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
+if ! journal_mark_ok "$V2_MARK"; then
+  bad "V2: journal evicted below the mark -- cannot verify the signal-then-abort line's absence"
+elif j | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
   bad "V2: provider journal shows the SIGNAL-THEN-ABORT path (regression of 4b54e915) -- urnet-tools should decline before ever signalling the provider"
 else
   ok "V2: no signal-then-abort trace in the provider journal -- the decline happened in urnet-tools' own pre-flight (4b54e915 holds)"
@@ -1551,13 +1565,13 @@ if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ -n "$V3_PID_BEFORE" ] &
 else
   bad "V3: systemd MainPID '$V3_MAINPID' does not look like the new notify-capable process (before=$V3_PID_BEFORE)"
 fi
-journal_mark_ok "$V3_MARK" || true
-if j | awk -v n="$V3_MARK" 'NR>n' | grep -qE "Stopped urnetwork.service|Stopping urnetwork.service"; then
+if ! journal_mark_ok "$V3_MARK"; then
+  bad "V3: journal evicted below the handoff mark -- cannot verify the stop event's absence"
+elif j | awk -v n="$V3_MARK" 'NR>n' | grep -qE "Stopped urnetwork.service|Stopping urnetwork.service"; then
   bad "V3: unit entered inactive/activating during the handoff (journal shows a stop) -- not zero-downtime, distinguishes this from V2's plain restart"
 else
   ok "V3: no unit stop/inactive event during the handoff (zero-downtime, per journal) -- distinguishes this from V2's plain restart"
 fi
-journal_mark_ok "$V3_MARK" || true
 if j | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then
   ok "V3: candidate confirmed active takeover (ACK) in the journal"
 else
