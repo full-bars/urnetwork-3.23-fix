@@ -29,6 +29,11 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
       - name: Build FreeBSD binaries on the runner (cross)
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
@@ -177,8 +182,19 @@ jobs:
             # Hard assertion: optimize_bsd.go writes exactly these names. If a
             # key does not exist, `optimize` applies nothing while reporting
             # success — the precise failure this workflow exists to catch.
-            for k in net.inet.tcp.recvspace net.inet.tcp.sendspace \
-                     kern.maxfiles kern.maxfilesperproc; do
+            #
+            # The list is derived from the Go source so the two cannot drift:
+            # a key added to bsdSysctlWrites() is checked here automatically,
+            # and a key REMOVED from it stops being checked instead of
+            # silently going unverified.
+            keys="$(sed -n '/^func bsdSysctlWrites/,/^}/p' internal/urnettools/optimize_bsd.go \
+                   | grep -oE '"(net|kern)\.[a-z._]+"' | tr -d '"' | sort -u)"
+            if [ -z "$keys" ]; then
+              echo "FATAL: could not extract the tuning key list from optimize_bsd.go"
+              exit 1
+            fi
+            echo "keys the code writes:"; echo "$keys" | sed 's/^/  /'
+            for k in $keys; do
               v="$(sysctl -n "$k" 2>/dev/null || true)"
               if [ -z "$v" ]; then
                 echo "FATAL: tuning key $k does not exist on this kernel"
