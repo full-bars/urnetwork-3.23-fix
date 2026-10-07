@@ -112,8 +112,8 @@ func TestOOMCapLiveApplyOnNamesTheCapAndTheShed(t *testing.T) {
 	applyLiveSideEffect("oom_cap", "on")
 
 	joined := strings.Join(lines, "\n")
-	if !strings.Contains(joined, "enforcing cap 500") {
-		t.Fatalf("live apply on must name the cap in force, got %q", joined)
+	if !strings.Contains(joined, "enforcing automatic cap 500 (oomcap)") {
+		t.Fatalf("live apply on must name the cap in force and its source, got %q", joined)
 	}
 	if !strings.Contains(joined, "sheds about 0 of") {
 		t.Fatalf("live apply on must report the shed count, got %q", joined)

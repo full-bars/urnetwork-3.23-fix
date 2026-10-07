@@ -116,12 +116,20 @@ const (
 // still applies.
 func effectiveTrimCapSource() (int, string, error) {
 	auto := 0
+	autoSource := ""
 	if oomCapMode() == oomCapOn {
 		var st oomCapState
 		if dir, derr := oomCapDir(); derr == nil {
 			oomReadJSON(filepath.Join(dir, "oom_cap.json"), &st)
 		}
-		auto = st.Cap
+		if st.Cap > 0 {
+			auto, autoSource = st.Cap, trimCapOOM
+		}
+	}
+	// The thrash cap: the "escape and remember" state the thrash watchdog
+	// leaves behind after a swap-thrash restart. The tighter automatic wins.
+	if tc, ok := activeThrashCap(time.Now()); ok && tc > 0 && (auto == 0 || tc < auto) {
+		auto, autoSource = tc, trimCapThrash
 	}
 	operator, err := readTrimTarget()
 	if err != nil {
@@ -134,13 +142,13 @@ func effectiveTrimCapSource() (int, string, error) {
 			deferCritWrite(w)
 		}
 		if auto > 0 {
-			return auto, trimCapOOM, nil
+			return auto, autoSource, nil
 		}
 		return 0, "", nil
 	}
 	switch {
 	case auto > 0 && (operator == 0 || auto < operator):
-		return auto, trimCapOOM, nil
+		return auto, autoSource, nil
 	case operator > 0:
 		return operator, trimCapOperator, nil
 	}

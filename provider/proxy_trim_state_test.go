@@ -190,11 +190,14 @@ func TestReload_TrimLogsReceiptAndResult(t *testing.T) {
 		t.Fatal(err)
 	}
 	first := captureTlog(t, func() { r.reload() })
-	if !strings.Contains(first, "[proxy][trim] received: cap=1 (was none); 3 running, 3 desired, applying") {
+	if !strings.Contains(first, "[proxy][trim] received: limiting this provider to 1 running proxies (was none); 3 running now, 3 desired, applying") {
 		t.Fatalf("missing receipt line, got:\n%s", first)
 	}
-	if !strings.Contains(first, "[proxy][trim] applied: cap=1: shed 2 worst-graded running") {
+	if !strings.Contains(first, "[proxy][trim] applied: the running cap is now 1 — removed 2 lowest-graded running proxies") {
 		t.Fatalf("missing result line, got:\n%s", first)
+	}
+	if !strings.Contains(first, "(cap=1 shed=2 held=") {
+		t.Fatalf("applied line must keep the machine tail, got:\n%s", first)
 	}
 
 	second := captureTlog(t, func() { r.reload() })
@@ -506,7 +509,7 @@ func TestReload_HeldAdditionsDoNotRepeatTheDurableAppliedLine(t *testing.T) {
 	if got := countApplied(); got != afterFirst {
 		t.Fatalf("held additions with an unchanged cap wrote %d more durable applied lines, want 0", got-afterFirst)
 	}
-	if !strings.Contains(ram, "[proxy][trim] applied: cap=2: shed 0 worst-graded running, held 1 additions") {
+	if !strings.Contains(ram, "[proxy][trim] applied: the running cap is now 2 — nothing to remove; holding 1 additions") {
 		t.Fatalf("the held-additions state must stay visible on the RAM log, got:\n%s", ram)
 	}
 }

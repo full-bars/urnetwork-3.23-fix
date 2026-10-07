@@ -272,7 +272,7 @@ func (a *authRateLimiter) decrease(reason string) {
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
-	tlog("[proxy][authrate] %s — cutting auth rate %.2f -> %.2f req/s\n", reason, float64(oldRate), float64(newRate))
+	tlog("[proxy][authrate] The API pushed back (%s), so this provider is slowing its own sign-in attempts from %.2f to %.2f per second. (cutting auth rate %.2f -> %.2f req/s)\n", reason, float64(oldRate), float64(newRate), float64(oldRate), float64(newRate))
 }
 
 // maybeLogPinnedHeartbeat logs that the rate is unchanged because it's
@@ -283,7 +283,14 @@ func (a *authRateLimiter) maybeLogPinnedHeartbeat(reason string) {
 		return
 	}
 	a.lastHeartbeatAt = time.Now()
-	tlog("[proxy][authrate] still pinned at %.2f req/s (latest trigger: %s)\n", float64(a.limiter.Limit()), reason)
+	limit := a.limiter.Limit()
+	if limit == a.min {
+		tlog("[proxy][authrate] Sign-in attempts are held at the minimum of %.2f per second; the API is still pushing back (latest trigger: %s). (still pinned at %.2f req/s)\n",
+			float64(limit), reason, float64(limit))
+	} else {
+		tlog("[proxy][authrate] Sign-in attempts are at the maximum of %.2f per second and the API is happy (latest trigger: %s). (still pinned at %.2f req/s)\n",
+			float64(limit), reason, float64(limit))
+	}
 }
 
 func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
@@ -310,7 +317,7 @@ func (a *authRateLimiter) recordSuccessAndMaybeIncrease() {
 	}
 	a.limiter.SetLimit(newRate)
 	a.lastAdjustedAt = time.Now()
-	tlog("[proxy][authrate] %d clean attempts — raising auth rate %.2f -> %.2f req/s\n", authRateIncreaseThreshold, float64(oldRate), float64(newRate))
+	tlog("[proxy][authrate] The API is accepting sign-ins again (%d in a row), so the rate is creeping up from %.2f to %.2f per second. (%d clean attempts — raising auth rate %.2f -> %.2f req/s)\n", authRateIncreaseThreshold, float64(oldRate), float64(newRate), authRateIncreaseThreshold, float64(oldRate), float64(newRate))
 }
 
 // CurrentRate reports the limiter's current requests/sec, for logging and

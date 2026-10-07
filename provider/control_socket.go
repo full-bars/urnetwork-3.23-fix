@@ -1029,11 +1029,11 @@ func applyLiveSideEffect(key, value string) error {
 				importantLogf("%s\n", line)
 			}
 		} else if oomCapMode() == oomCapOn {
-			if cap, source, err := effectiveTrimCapSource(); err == nil && source == trimCapOOM {
+			if cap, source, err := effectiveTrimCapSource(); err == nil && (source == trimCapOOM || source == trimCapThrash) {
 				running := runningProxyCountForPressure()
 				shed := max(0, running-cap)
-				importantLogf("[oomcap] mode on: enforcing cap %d, this sheds about %d of %d running proxies on the next reload\n",
-					cap, shed, running)
+				importantLogf("[oomcap] mode on: enforcing automatic cap %d (%s), this sheds about %d of %d running proxies on the next reload\n",
+					cap, source, shed, running)
 			} else {
 				importantLogf("[oomcap] mode on: no automatic cap is standing, so the pool is not trimmed by it until an OOM kill sets one\n")
 			}

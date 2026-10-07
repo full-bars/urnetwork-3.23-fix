@@ -701,7 +701,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 				if seq == lastSeq {
 					continue
 				}
-				tlog("🔄 [proxy] reload trigger: seq %d → %d\n", lastSeq, seq)
+				tlog("🔄 [proxy] Reload requested (trigger #%d, was #%d)\n", seq, lastSeq)
 				r.reload()
 				// Record the sequence only after the reload. A reload that
 				// could not take the slot is retried on a later tick
@@ -1206,8 +1206,11 @@ func (r *ProxyReloader) reload() {
 		return
 	}
 
-	tlog("[proxy] reload: running=%d desired=%d lock_wait=%v\n",
-		len(running), len(desiredSet), lockWait.Round(time.Millisecond))
+	// The mid-reload counters fold into the "Proxy list reloaded" summary at
+	// the end of this function (readability contract); kept as variables so
+	// the plan/apply split is unchanged.
+	reloadRunning, reloadDesired := len(running), len(desiredSet)
+	reloadLockWait := lockWait.Round(time.Millisecond)
 
 	var added []*connect.ProxySettings
 	deferredBackoff := 0
@@ -1314,8 +1317,11 @@ func (r *ProxyReloader) reload() {
 		}
 	}
 	autoNote := ""
-	if trimSource == trimCapOOM {
+	switch trimSource {
+	case trimCapOOM:
 		autoNote = " (automatic OOM cap)"
+	case trimCapThrash:
+		autoNote = " (automatic thrash cap: memory was thrashing on the last run)"
 	}
 	trimChanged := false
 	if trimErr == nil {
@@ -1329,7 +1335,7 @@ func (r *ProxyReloader) reload() {
 				if prevCap > 0 {
 					prev = strconv.Itoa(prevCap)
 				}
-				logImportant("[proxy][trim] received: cap=%d (was %s); %d running, %d desired, applying%s", trimCapNow, prev, runningProxies, len(desiredSet), autoNote)
+				logImportant("[proxy][trim] received: limiting this provider to %d running proxies (was %s); %d running now, %d desired, applying%s (cap=%d was=%s running=%d desired=%d)", trimCapNow, prev, runningProxies, len(desiredSet), autoNote, trimCapNow, prev, runningProxies, len(desiredSet))
 			} else {
 				// The cap that just cleared may have been the automatic OOM cap
 				// relaxing to zero, not an operator command: attribute the
@@ -1426,9 +1432,9 @@ func (r *ProxyReloader) reload() {
 		// the budget each cycle), so they stay on the RAM log, or the important
 		// buffer and the fsynced events.log fill with a line that carries no news.
 		if shedCount > 0 || trimChanged {
-			logImportant("[proxy][trim] applied: cap=%d: shed %d worst-graded running, held %d additions (pool ~%d)", trimCap, shedCount, dropped, runningNonDirect-shedCount)
+			logImportant("[proxy][trim] applied: the running cap is now %d — removed %d lowest-graded running proxies, holding %d additions so the pool stays under the cap. (cap=%d shed=%d held=%d pool~%d)", trimCap, shedCount, dropped, trimCap, shedCount, dropped, runningNonDirect-shedCount)
 		} else if dropped > 0 {
-			tlog("[proxy][trim] applied: cap=%d: shed 0 worst-graded running, held %d additions (pool ~%d)\n", trimCap, dropped, runningNonDirect)
+			tlog("[proxy][trim] applied: the running cap is now %d — nothing to remove; holding %d additions so the pool stays under the cap. (cap=%d shed=0 held=%d pool~%d)\n", trimCap, dropped, trimCap, dropped, runningNonDirect)
 		}
 		if trimChanged {
 			pendingCrit = append(pendingCrit, func() {
@@ -1648,11 +1654,24 @@ func (r *ProxyReloader) reload() {
 	if pruned > 0 {
 		tlog("[proxy] pruned %d stale proxy.state entries (no longer desired)\n", pruned)
 	}
+	// One operator-readable sentence, with the machine form kept verbatim in
+	// the trailing paren — the docs, the CHANGELOG and several tests match on
+	// the "reloaded: +N added" prefix.
+	reloadTail := fmt.Sprintf("reloaded: +%d added%s, -%d removed", len(added), fromSources, len(removed))
 	if deferredTotal > 0 {
-		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed, %d deferred (backoff=%d warmup=%d) [%s]\n",
-			len(added), fromSources, len(removed), deferredTotal, deferredBackoff, warmupDeferred, reloadDur)
-	} else {
-		tlog("🔄 [proxy] reloaded: +%d added%s, -%d removed [%s]\n",
-			len(added), fromSources, len(removed), reloadDur)
+		reloadTail += fmt.Sprintf(", %d deferred (backoff=%d warmup=%d)", deferredTotal, deferredBackoff, warmupDeferred)
+	}
+	reloadTail += fmt.Sprintf(" [%s] running=%d desired=%d lock_wait=%v", reloadDur, reloadRunning, reloadDesired, reloadLockWait)
+	switch {
+	case len(added) == 0 && len(removed) == 0 && deferredTotal == 0:
+		tlog("🔄 [proxy] Proxy list reloaded: nothing changed, took %s — %d running, %d desired. (%s)\n",
+			reloadDur, reloadRunning, reloadDesired, reloadTail)
+	case deferredTotal > 0:
+		tlog("🔄 [proxy] Proxy list reloaded: %d added%s, %d removed, %d held back (%d backing off, %d still warming up), took %s — %d running, %d desired. (%s)\n",
+			len(added), fromSources, len(removed), deferredTotal, deferredBackoff, warmupDeferred,
+			reloadDur, reloadRunning, reloadDesired, reloadTail)
+	default:
+		tlog("🔄 [proxy] Proxy list reloaded: %d added%s, %d removed, took %s — %d running, %d desired. (%s)\n",
+			len(added), fromSources, len(removed), reloadDur, reloadRunning, reloadDesired, reloadTail)
 	}
 }
