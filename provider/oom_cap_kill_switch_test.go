@@ -196,3 +196,38 @@ func TestOOMCapLiveApplyOnWithTighterOperatorCapNamesTheStandingAutomaticCap(t *
 		t.Fatalf("the operator cap must be named as the effective limit, got:\n%s", joined)
 	}
 }
+
+// The tie goes to the operator source (auto < operator is false), so an
+// operator cap EQUAL to the automatic cap must also read as "standing,
+// operator effective" rather than claiming enforcement by the automatic one.
+func TestOOMCapLiveApplyOnOperatorCapEqualToAutomaticNamesBoth(t *testing.T) {
+	withTempHome(t)
+	dir, _ := oomCapDir()
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := oomWriteJSON(filepath.Join(dir, "oom_cap.json"), oomCapState{Cap: 300}); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "proxy_trim"), []byte("300\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("URNETWORK_OOM_CAP", "on")
+	old := importantLogHook
+	var lines []string
+	importantLogHook = func(line string) { lines = append(lines, line) }
+	t.Cleanup(func() { importantLogHook = old })
+
+	applyLiveSideEffect("oom_cap", "on")
+
+	joined := strings.Join(lines, "\n")
+	if strings.Contains(joined, "enforcing automatic cap") {
+		t.Fatalf("a tie must report the operator source as effective, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "automatic cap 300 (oomcap) is standing") {
+		t.Fatalf("the standing automatic cap must be named at the tie, got:\n%s", joined)
+	}
+	if !strings.Contains(joined, "operator trim cap is the effective limit") {
+		t.Fatalf("the operator cap must be named as the effective limit at the tie, got:\n%s", joined)
+	}
+}

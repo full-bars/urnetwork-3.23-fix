@@ -222,4 +222,8 @@ func TestAimdMoveMessageAttributesCause(t *testing.T) {
 	if grow := aimdMoveMessage(100, 100+aimdIncrement, 100, 0.1); !strings.Contains(grow, "pressure is low") {
 		t.Fatalf("a low-pressure raise keeps its wording: %q", grow)
 	}
+	// A raise at mid pressure is attributed to a cap or ceiling change.
+	if capRaise := aimdMoveMessage(100, 140, 100, 0.5); !strings.Contains(capRaise, "a cap or ceiling changed") {
+		t.Fatalf("a mid-pressure raise keeps its wording: %q", capRaise)
+	}
 }

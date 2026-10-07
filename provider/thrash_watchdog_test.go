@@ -537,6 +537,25 @@ func TestThrashReadTagsUnitPgscanSource(t *testing.T) {
 	}
 }
 
+// The real seam body (not the test stub above) must read the unit
+// memory.stat file, report not-ok for a missing file, and not-ok for an
+// empty unit dir; the stub replaces it, so pin the default here.
+func TestThrashMemstatFnReadsUnitDir(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "memory.stat"), []byte("pgscan_direct 7\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok := thrashMemstatFn(dir); !ok || got != "pgscan_direct 7\n" {
+		t.Fatalf("real unit memory.stat must be read: ok=%v got=%q", ok, got)
+	}
+	if _, ok := thrashMemstatFn(filepath.Join(dir, "missing")); ok {
+		t.Fatal("a missing memory.stat must report not-ok")
+	}
+	if _, ok := thrashMemstatFn(""); ok {
+		t.Fatal("an empty unit dir must report not-ok")
+	}
+}
+
 func TestThrashTrackerClampsFraction(t *testing.T) {
 	var tr thrashTracker
 	rd := thrashRead{psiFullTotal: 1, psiFullOK: true, psiUnit: true}
