@@ -16,9 +16,9 @@ func HostMemoryTotalBytes() (int64, bool) {
 
 // HostMemoryAvailableBytes approximates Linux MemAvailable from the VM page
 // statistics: free, inactive and cache pages are all reclaimable without
-// paging out anonymous memory. launder is the count of pages freed but not yet
-// reclaimed by the pager; it is included because the kernel has already
-// dropped the reference to them.
+// paging out anonymous memory. laundry is the count of pages that have been
+// freed but not yet reclaimed by the pager; it is included because the kernel
+// has already dropped the reference to them.
 //
 // A statistic the kernel does not report is skipped rather than treated as
 // zero, so a counter that appears in a later FreeBSD release degrades to
@@ -32,7 +32,10 @@ func HostMemoryAvailableBytes() (int64, bool) {
 		"vm.stats.vm.v_free_count",
 		"vm.stats.vm.v_inactive_count",
 		"vm.stats.vm.v_cache_count",
-		"vm.stats.vm.v_launder_count",
+		// Note the name: the kernel calls it "laundry", not "launder". The
+		// wrong spelling reads as ENOENT and silently drops a counter that
+		// exists, which is how it survived until a FreeBSD CI run.
+		"vm.stats.vm.v_laundry_count",
 	}
 
 	var pages int64

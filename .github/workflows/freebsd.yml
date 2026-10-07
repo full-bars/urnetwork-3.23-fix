@@ -44,9 +44,24 @@ jobs:
           done
           file out/urnet-tools out/provider
 
+      - name: Build FreeBSD test binaries on the runner
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+        run: |
+          set -e
+          # Pre-compile the test binaries for freebsd/amd64. They are then run
+          # INSIDE the VM, so the real FreeBSD code paths execute against a
+          # real kernel without needing a Go toolchain in the image.
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/root.test .
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/provider.test ./provider
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/urnettools.test ./internal/urnettools
+          ls -la out/
+
       - name: Run on a real FreeBSD kernel
         id: freebsd
-        uses: vmactions/freebsd-vm@v1
+        # Pinned by commit SHA: `@v1` is a mutable tag, so a third-party change
+        # would silently alter what this job verifies. Bump deliberately.
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
         with:
           release: "14.5"
           mem: 4096
@@ -87,59 +102,76 @@ jobs:
             procstat -s | head -5
 
             # --- live process discovery ---------------------------------------
-            # `provide` is the only provider subcommand that stays running, so
-            # it is the only way to get a real row in the process table for
-            # the discovery parsers to read. `--version` and `help` both exit
-            # immediately and would leave nothing to parse.
-            echo "=== start a real provider process for discovery ==="
-            mkdir -p "$HOME/.urnetwork"
-            cp ./out/provider "$HOME/.urnetwork/urnetwork"
-            echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
-            chmod 755 "$HOME/.urnetwork/urnetwork"
-            ( HOME="$HOME" ./out/provider provide > /tmp/prov.out 2>&1 & echo $! > /tmp/bsd_pid )
-            sleep 4
-            bsd_pid="$(cat /tmp/bsd_pid 2>/dev/null || echo 0)"
-            echo "provider pid=$bsd_pid"
+            # The kernel-reported PATH is what discovery matches on, so the
+            # stand-in must be a long-running binary whose path has a provider
+            # basename. `provider --help`/`--version` exit immediately and
+            # would leave nothing to parse; the real `provide` needs network
+            # and auth and exits on a bare box. A copy of /bin/sleep renamed to
+            # a provider name gives a deterministic long-lived process with no
+            # network, no auth and no startup race.
+            echo "=== live process discovery ==="
+            mkdir -p /tmp/ci/bin
+            cp /bin/sleep /tmp/ci/bin/urnetwork
+            cp /bin/sleep /tmp/ci/bin/notaprovider
+            chmod 755 /tmp/ci/bin/urnetwork /tmp/ci/bin/notaprovider
+            /tmp/ci/bin/urnetwork 600 &
+            spid=$!
+            /tmp/ci/bin/notaprovider 600 &
+            npid=$!
+            sleep 2
 
-            # Hard assertion, not a note: if procstat cannot show this process,
-            # the discovery parser contract is broken and the feature is dead.
-            echo "--- procstat -b for pid $bsd_pid ---"
-            if ! procstat -b "$bsd_pid"; then
-              echo "FATAL: procstat -b could not report pid $bsd_pid"
-              cat /tmp/prov.out || true
+            echo "--- procstat -b for the provider-named pid $spid ---"
+            if ! procstat -b "$spid"; then
+              echo "FATAL: procstat -b could not report pid $spid"
               exit 1
             fi
-            echo "--- procstat -s for pid $bsd_pid ---"
-            if ! procstat -s "$bsd_pid"; then
-              echo "FATAL: procstat -s could not report pid $bsd_pid"
+            echo "--- procstat -s for the provider-named pid $spid ---"
+            if ! procstat -s "$spid"; then
+              echo "FATAL: procstat -s could not report pid $spid"
               exit 1
             fi
             # EUID/RUID are columns 3 and 4 of the documented
-            # "PID COMM EUID RUID ..." layout. If that layout ever changes the
+            # "PID COMM EUID RUID ..." layout. If that layout changes, the
             # discovery parsers silently attribute providers to the wrong user,
-            # so assert the columns parse as numbers rather than printing them.
-            euid="$(procstat -s "$bsd_pid" 2>/dev/null | awk 'NR==2 {print $3}')"
-            if [ -z "$euid" ] || [ "$euid" -eq 0 ] 2>/dev/null; then
-              echo "FATAL: could not parse EUID column (got '$euid'); procstat -s layout changed"
-              procstat -s "$bsd_pid" || true
-              exit 1
-            fi
+            # so assert the column parses as a non-empty uid rather than
+            # printing it and moving on.
+            euid="$(procstat -s "$spid" 2>/dev/null | awk 'NR==2 {print $3}')"
+            case "$euid" in
+              ''|*[!0-9]*)
+                echo "FATAL: could not parse EUID column (got '$euid'); procstat -s layout changed"
+                procstat -s "$spid" || true
+                exit 1
+                ;;
+            esac
             echo "EUID parsed OK: $euid"
 
-            echo "=== the tool discovers a live provider process ==="
-            # This is the end-to-end assertion that the procstat parsers agree
-            # with real output: a live process named like a provider must show
-            # up in the inventory.
-            if ./out/urnet-tools providers | tee /tmp/providers.out | grep -qi urnetwork; then
-              echo "DISCOVERY OK: live provider found"
+            echo "=== the tool discovers a LIVE provider process ==="
+            # Assert on the PID, not on the word "urnetwork": discoverProcesses
+            # falls back to the standard install location when nothing is
+            # running, so printing any row at all proves nothing. A row carrying
+            # this exact live PID is the only real proof the procstat parsers
+            # agree with the kernel.
+            ./out/urnet-tools providers > /tmp/providers.out 2>&1 || true
+            cat /tmp/providers.out
+            if grep -q "$spid" /tmp/providers.out; then
+              echo "DISCOVERY OK: live pid $spid found"
             else
-              echo "FATAL: discovery did not find the live provider process"
-              cat /tmp/providers.out || true
+              echo "FATAL: discovery did not report the live pid $spid"
               echo "--- procstat -b (all) for comparison ---"
               procstat -b | head -20 || true
               exit 1
             fi
-            kill "$bsd_pid" 2>/dev/null || true
+
+            # The negative case: a live process that is NOT a provider must not
+            # be reported. Without this, isProviderArg could match anything and
+            # the test would still pass.
+            if grep -q "$npid" /tmp/providers.out; then
+              echo "FATAL: discovery reported non-provider pid $npid as a provider"
+              exit 1
+            fi
+            echo "NEGATIVE OK: non-provider pid $npid correctly ignored"
+
+            kill "$spid" "$npid" 2>/dev/null || true
 
             echo "=== FreeBSD tuning keys exist (optimize_bsd.go contract) ==="
             # Hard assertion: optimize_bsd.go writes exactly these names. If a
@@ -264,28 +296,44 @@ jobs:
             }
             go version
           run: |
-            echo "=== go vet on FreeBSD ==="
-            # go vet compiles every package for THIS GOOS, so it catches a
-            # freebsd-tagged file that references a symbol that does not exist
-            # on this kernel's build. This is the check that would have caught
-            # the original 8 undefined symbols at PR time.
-            go vet ./... 2>&1 | tail -40
+            echo "=== run the FreeBSD-tagged Go tests ==="
+            # These are REAL compiled test binaries built for freebsd/amd64 on
+            # the runner. They execute the actual FreeBSD code paths —
+            # HostMemoryAvailableBytes, verifyPeerCredentials, the procstat
+            # parsers — against this kernel. A broken implementation fails here
+            # instead of shipping to a user's box.
+            #
+            # The action already cd'd us into $GITHUB_WORKSPACE and synced the
+            # tree, so `out/` and the package dirs are relative to cwd.
+            # Run each binary from its own package dir so any relative
+            # testdata path resolves the way it does locally.
+            #
+            # PIPELINE EXIT STATUS: `cmd | tail` returns TAIL's status, never
+            # the test binary's, so a `|| failures=1` after the pipe would never
+            # fire and the job would go green on a failing test. Write each
+            # binary's output to a file, then check the status separately.
+            failures=0
 
-            echo "=== go test: the FreeBSD-tagged tests ==="
-            # These test files only compile and run on a FreeBSD kernel. On
-            # Linux they are skipped or absent, so nothing else in CI executes
-            # them — this is their only real coverage.
-            go test -count=1 -v ./internal/urnettools/ \
-              -run 'TestRenderBSD|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl' 2>&1 | tail -40
-            go test -count=1 -v ./provider/ \
-              -run 'TestMemPressureSwapFrac|TestPeerAllowed' 2>&1 | tail -30
-            go test -count=1 -v . -run 'TestHostMemoryReaders|TestEffectiveRAMLimit' 2>&1 | tail -20
+            cd provider || exit 1
+            ../out/provider.test -test.v -test.run 'TestVerifyPeerCredentials' > /tmp/t1.log 2>&1 || failures=1
+            tail -30 /tmp/t1.log
+            echo "--- provider peercred tests done ---"
 
-            echo "=== the full suite (long) ==="
-            # TMPDIR must be SHORT: Go nests the test name under TMPDIR and a
-            # long path breaks AF_UNIX binds with EINVAL on any kernel.
-            mkdir -p /tmp/gotest
-            TMPDIR=/tmp/gotest go test -count=1 -timeout 900s ./internal/urnettools/ 2>&1 | tail -30
+            cd .. || exit 1
+            out/root.test -test.v -test.run 'TestFreeBSDHostMemory|TestHostMemoryReaders|TestEffectiveRAMLimit' > /tmp/t2.log 2>&1 || failures=1
+            tail -30 /tmp/t2.log
+            echo "--- root sysmem tests done ---"
+
+            cd internal/urnettools || exit 1
+            ../../out/urnettools.test -test.v -test.run 'TestRenderBSD|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl' > /tmp/t3.log 2>&1 || failures=1
+            tail -40 /tmp/t3.log
+            echo "--- urnettools bsd tests done ---"
+
+            if [ "$failures" -ne 0 ]; then
+              echo "FATAL: a FreeBSD Go test binary failed"
+              exit 1
+            fi
+            echo "ALL FREEBSD GO TESTS PASSED"
 
       - name: Summary
         if: always()
