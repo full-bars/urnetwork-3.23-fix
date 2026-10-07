@@ -175,11 +175,30 @@ fi
 
 # Logs must be root-owned files, NOT inside the service user's home: a symlink
 # planted in a user-writable home would aim a root append at an arbitrary file.
+# The INVARIANT is about the directory, not the file: /var/log must be root-owned
+# (so the service user cannot plant or replace a name in it) while the log FILES
+# must belong to the service user, because supervise-daemon opens them after
+# dropping privileges and a root-owned file makes the child die before exec.
 for f in /var/log/urnetwork.log /var/log/urnetwork.err; do
   if [ -e "$f" ] && [ ! -L "$f" ]; then
     ok "$f exists and is a real file"
   else
     fail "$f missing or is a symlink"
+  fi
+done
+LOG_DIR_OWNER=$(stat -c %u /var/log 2>/dev/null)
+if [ "$LOG_DIR_OWNER" = "0" ]; then
+  ok "/var/log is root-owned (the service user cannot plant a name in it)"
+else
+  fail "/var/log is owned by uid $LOG_DIR_OWNER, not root"
+fi
+SVC_UID=$(id -u "$SVC_USER" 2>/dev/null)
+for f in /var/log/urnetwork.log /var/log/urnetwork.err; do
+  fowner=$(stat -c %u "$f" 2>/dev/null)
+  if [ "$fowner" = "$SVC_UID" ]; then
+    ok "$f is owned by $SVC_USER (supervise-daemon can open it after dropping privileges)"
+  else
+    fail "$f is owned by uid $fowner, but supervise-daemon opens it as $SVC_USER (uid $SVC_UID) - the child cannot start"
   fi
 done
 
@@ -200,6 +219,30 @@ if ps -o user,args 2>/dev/null | grep '[u]rnetwork provide' | grep -qv '^root'; 
   ok "provider runs as a non-root user"
 else
   echo "   NOTE: could not confirm the provider's uid (ps output format differs on busybox)"
+fi
+
+# --- is the provider ACTUALLY running? --------------------------------------
+# rc-service reporting "started" only means supervise-daemon is up; it says
+# nothing about the provider itself. Check the process, and dump the service
+# state when it is missing so a failure is debuggable from the log alone.
+say "verifying the provider process is actually alive"
+sleep 3
+if pgrep -f "urnetwork provide" >/dev/null 2>&1; then
+  ok "the provider process is running"
+else
+  fail "supervise-daemon is up but no provider process exists"
+  echo "   --- init script (key lines) ---"
+  grep -E '^command|^command_user|^supervisor|^respawn|^output_log|^error_log' /etc/init.d/urnetwork 2>/dev/null | sed 's/^/     /'
+  echo "   --- supervise-daemon procs ---"
+  ps -o pid,ppid,user,args 2>/dev/null | grep -E '[s]upervise' | sed 's/^/     /' || echo "     (none)"
+  echo "   --- /var/log/urnetwork.err ---"
+  tail -15 /var/log/urnetwork.err 2>/dev/null | sed 's/^/     /' || echo "     (empty)"
+  echo "   --- /var/log/urnetwork.log ---"
+  tail -15 /var/log/urnetwork.log 2>/dev/null | sed 's/^/     /' || echo "     (empty)"
+  echo "   --- can the service user exec the binary? ---"
+  su -s /bin/sh "$SVC_USER" -c "test -x /home/$SVC_USER/.local/share/urnetwork-provider/bin/urnetwork && echo yes || echo no" 2>&1 | sed 's/^/     /'
+  echo "   --- direct run as the service user (5s cap) ---"
+  su -s /bin/sh "$SVC_USER" -c "timeout 5 /home/$SVC_USER/.local/share/urnetwork-provider/bin/urnetwork provide" 2>&1 | head -6 | sed 's/^/     /'
 fi
 
 # --- discovery: the whole point of the OpenRC backend -----------------------
@@ -251,6 +294,18 @@ else
 fi
 
 # --- lifecycle routes -------------------------------------------------------
+# Diagnostic: the OpenRC routing decides by looking at the provider's PARENT
+# process (it must be supervise-daemon). Print the tree so a routing failure is
+# debuggable from the log alone rather than needing a live container.
+say "process tree (diagnostic)"
+for pid in $(pgrep -f 'urnetwork provide' 2>/dev/null); do
+  ppid=$(awk '{print $4}' "/proc/$pid/stat" 2>/dev/null)
+  pcomm=$(cat "/proc/$pid/comm" 2>/dev/null)
+  parent_comm=$(cat "/proc/$ppid/comm" 2>/dev/null)
+  echo "   provider pid=$pid comm=$pcomm ppid=$ppid parent_comm=$parent_comm"
+done
+echo "   supervise-daemon procs: $(pgrep -c -f supervise-daemon 2>/dev/null || echo 0)"
+
 say "verifying lifecycle commands route to rc-service"
 rc-service urnetwork start >/dev/null 2>&1
 sleep 4
@@ -266,10 +321,18 @@ fi
 
 # restart must go through rc-service, and the provider must come back. -f is
 # what automation uses to state its intent up front.
-if timeout 60 "$TOOLS" restart -f >/dev/null 2>&1; then
+# set -e is active: capture the failure inside the if, not as a bare assignment
+# (a failing command substitution there aborts the whole script).
+if RESTART_OUT=$(timeout 60 "$TOOLS" restart -f 2>&1); then
+  RESTART_RC=0
+else
+  RESTART_RC=$?
+fi
+if [ "$RESTART_RC" -eq 0 ]; then
   ok "urnet-tools restart -f returned success"
 else
-  fail "urnet-tools restart -f failed"
+  fail "urnet-tools restart -f failed (rc=$RESTART_RC)"
+  echo "$RESTART_OUT" | head -8 | sed 's/^/     /'
 fi
 sleep 5
 if rc-service urnetwork status 2>/dev/null | grep -q started; then
@@ -278,10 +341,76 @@ else
   fail "service down after restart"
 fi
 
-if timeout 60 "$TOOLS" stop -f >/dev/null 2>&1 && timeout 60 "$TOOLS" start -f >/dev/null 2>&1; then
+if STOP_OUT=$(timeout 60 "$TOOLS" stop -f 2>&1); then STOP_RC=0; else STOP_RC=$?; fi
+if START_OUT=$(timeout 60 "$TOOLS" start -f 2>&1); then START_RC=0; else START_RC=$?; fi
+if [ "$STOP_RC" -eq 0 ] && [ "$START_RC" -eq 0 ]; then
   ok "stop then start both routed through rc-service"
 else
-  fail "stop/start routing failed"
+  fail "stop/start routing failed (stop rc=$STOP_RC, start rc=$START_RC)"
+  echo "$STOP_OUT" | head -6 | sed 's/^/     stop: /'
+  echo "$START_OUT" | head -6 | sed 's/^/     start: /'
+fi
+
+# --- the root-owned auto-update tool (security) ------------------------------
+# The weekly cron entry runs AS ROOT. Its binary must not be reachable through
+# any directory the service user can write - root-owned files alone do not
+# defend a path whose ancestor (their home) is user-writable, because they can
+# rename the ancestor and plant a replacement. This checks the fix: a
+# root-owned copy is staged outside the home, and the cron entry names it and
+# carries the guard.
+say "verifying the root-owned auto-update tool"
+ROOT_TOOL=/usr/local/libexec/urnetwork/urnet-tools
+if [ -f "$ROOT_TOOL" ]; then
+  OWNER=$(stat -c %u "$ROOT_TOOL" 2>/dev/null)
+  if [ "$OWNER" = "0" ]; then
+    ok "$ROOT_TOOL exists and is root-owned"
+  else
+    fail "$ROOT_TOOL is owned by uid $OWNER, not root"
+  fi
+  # Every ancestor must be root-owned and not group/world writable.
+  d=$(dirname "$ROOT_TOOL"); bad=""
+  while [ "$d" != "/" ] && [ -n "$d" ]; do
+    o=$(stat -c %u "$d" 2>/dev/null); m=$(stat -c %a "$d" 2>/dev/null)
+    [ "$o" = "0" ] || bad="$bad $d(owner=$o)"
+    [ $((0$m & 022)) -eq 0 ] || bad="$bad $d(mode=$m)"
+    d=$(dirname "$d")
+  done
+  if [ -z "$bad" ]; then
+    ok "no ancestor of the cron tool is writable by a non-root user"
+  else
+    fail "user-writable ancestor(s) of the cron tool:$bad"
+  fi
+else
+  fail "$ROOT_TOOL was not staged by the installer"
+fi
+
+# The cron entry must reference the root-owned tool and carry the guard.
+# Use the ROOT-OWNED tool explicitly: that is the one the cron entry will run,
+# and exercising it proves the staged copy is functional, not just present.
+AU_OUT=$(timeout 45 "$ROOT_TOOL" auto-update weekly 2>&1) && AU_OK=1 || AU_OK=0
+if [ "$AU_OK" = "1" ]; then
+  ENTRY=""
+  for f in /etc/periodic/weekly/urnetwork-update /etc/periodic/daily/urnetwork-update /etc/periodic/monthly/urnetwork-update; do
+    [ -f "$f" ] && ENTRY="$f" && break
+  done
+  if [ -n "$ENTRY" ]; then
+    if grep -q "usr/local/libexec/urnetwork/urnet-tools" "$ENTRY"; then
+      ok "cron entry names the root-owned tool"
+    else
+      fail "cron entry does not name the root-owned tool"
+      grep -n 'tool=' "$ENTRY" | sed 's/^/     /'
+    fi
+    if grep -q "writable by a non-root user" "$ENTRY"; then
+      ok "cron entry carries the root-ownership guard"
+    else
+      fail "cron entry has no root-ownership guard"
+    fi
+  else
+    fail "auto-update weekly wrote no periodic entry"
+  fi
+else
+  fail "auto-update weekly failed via the root-owned tool"
+  echo "$AU_OUT" | head -6 | sed 's/^/     /'
 fi
 
 # --- verdict -----------------------------------------------------------------

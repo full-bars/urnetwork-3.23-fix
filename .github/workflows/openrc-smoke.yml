@@ -53,7 +53,11 @@ jobs:
           set -euo pipefail
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
-            if go build -o urnet-tools ./cmd/urnet-tools/; then
+            # CGO_ENABLED=0 is REQUIRED: a default build links glibc
+            # dynamically, and glibc binaries cannot exec on musl Alpine (the
+            # missing interpreter surfaces as "No such file or directory"),
+            # which would leave the service "started" but the provider dead.
+            if CGO_ENABLED=0 go build -o urnet-tools ./cmd/urnet-tools/; then
               echo "Build succeeded"; break
             fi
             if [ $attempt -lt 3 ]; then sleep 10; fi
@@ -64,7 +68,7 @@ jobs:
           # the update-verify step actually talk to. The real binary exits
           # without a JWT, which would crash-respawn every 5s under
           # supervise-daemon and make version polling time out.
-          go build -o urnetwork-fake ./cmd/fake-provider/
+          CGO_ENABLED=0 go build -o urnetwork-fake ./cmd/fake-provider/
           ls -la urnet-tools urnetwork-fake
 
       - name: Stage a fake release the installer can fetch
@@ -96,11 +100,27 @@ jobs:
           # The tool binary is also fetched directly from the mirror path.
           cp urnet-tools "$DL/urnet-tools-linux-${{ matrix.binarch }}"
 
-          # Release metadata, in the GitHub release shape the installer parses
-          # (.tag_name).
-          mkdir -p "$ROOT/api"
+          # Release metadata, in the GitHub release shape the installer parses.
+          # The per-tag response MUST carry the tool asset with a sha256 digest:
+          # without a digest the installer treats the release as predating Go
+          # tool assets and falls back to copying the SHELL script as
+          # urnet-tools, so the modern download+verify path would never run.
+          mkdir -p "$ROOT/api/releases/tags"
           cat > "$ROOT/api/latest.json" <<EOF
           {"tag_name": "$CI_TAG"}
+          EOF
+          TOOL_DIGEST=$(sha256sum "$DL/urnet-tools-linux-${{ matrix.binarch }}" | awk '{print $1}')
+          cat > "$ROOT/api/releases/tags/$CI_TAG" <<EOF
+          {
+            "tag_name": "$CI_TAG",
+            "assets": [
+              {
+                "name": "urnet-tools-linux-${{ matrix.binarch }}",
+                "browser_download_url": "http://127.0.0.1:8099/releases/download/$CI_TAG/urnet-tools-linux-${{ matrix.binarch }}",
+                "digest": "sha256:$TOOL_DIGEST"
+              }
+            ]
+          }
           EOF
 
           # The installer script itself.
