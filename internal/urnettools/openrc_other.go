@@ -28,3 +28,8 @@ func openrcRestartService(_ Provider) (bool, error) { return false, nil }
 func openrcHotSwapDecline(_ Provider) error { return nil }
 
 func renderOpenRCStatus() error { return nil }
+
+// providerSupervisedByOpenRCFn reports whether a provider process is
+// supervised by OpenRC's supervise-daemon; off Linux there is no OpenRC, so
+// it is always false. A var to mirror the Linux seam.
+var providerSupervisedByOpenRCFn = func(_ Provider) bool { return false }
