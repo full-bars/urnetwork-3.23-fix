@@ -15,12 +15,21 @@ import (
 // is no nf_conntrack at all — FreeBSD's firewall is pf, whose table limit is
 // tuned per-rule rather than with a global sysctl. So a conntrack-sized write
 // would be a silent no-op at best.
+//
+// Every key here is asserted to exist on a real kernel by the FreeBSD CI job,
+// which extracts this list rather than repeating it. An earlier draft also
+// listed "net.inet.tcp.sendspace.max", which does not exist — `optimize` aborts
+// on the first unreadable key and rolls the whole set back, so a wrong name
+// here means the command fails on every box. The TCP autotune ceilings
+// (autosndbufmax / autorcvbufmax) would be the way to raise the maximum
+// autotuned buffer; they are deliberately NOT set until their names are
+// confirmed against a real kernel, because guessing costs a CI cycle and a
+// red job, and an unverified key in this list is worse than no key.
 func bsdSysctlWrites() [][]string {
 	return [][]string{
 		// Socket buffers for the UDP/WebRTC and TCP transfer paths.
 		{"net.inet.tcp.recvspace", "4194304"},
 		{"net.inet.tcp.sendspace", "4194304"},
-		{"net.inet.tcp.sendspace.max", "8388608"},
 		// Descriptor budget: one open socket per proxied connection is the
 		// provider's load-bearing resource.
 		{"kern.maxfiles", "200000"},
@@ -38,11 +47,10 @@ func bsdSysctlWrites() [][]string {
 // boot-time value, and sysrc updates it in place.
 func bsdRcConfVars() map[string]string {
 	return map[string]string{
-		"net.inet.tcp.recvspace":     "net.inet.tcp.recvspace",
-		"net.inet.tcp.sendspace":     "net.inet.tcp.sendspace",
-		"net.inet.tcp.sendspace.max": "net.inet.tcp.sendspace.max",
-		"kern.maxfiles":              "kern.maxfiles",
-		"kern.maxfilesperproc":       "kern.maxfilesperproc",
+		"net.inet.tcp.recvspace": "net.inet.tcp.recvspace",
+		"net.inet.tcp.sendspace": "net.inet.tcp.sendspace",
+		"kern.maxfiles":          "kern.maxfiles",
+		"kern.maxfilesperproc":   "kern.maxfilesperproc",
 	}
 }
 
