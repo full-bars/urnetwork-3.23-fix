@@ -64,7 +64,7 @@ run_check() {
 # start keeps offsets exact and the window only grows.
 J_SINCE="${J_SINCE:-$(date -u -d '-90 min' +%FT%T.%NZ)}"
 j() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "$J_SINCE" 2>/dev/null; }
-# j_full: unbounded journal (self-test calibration, panic sweep).
+# j_full: unbounded journal (self-test calibration only).
 j_full() { runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager 2>/dev/null; }
 
 # The provider writes to the journal normally, but with URNETWORK_RAMLOGS=1 or
@@ -122,7 +122,7 @@ ramlog_gate_open() {
 # through t1bad: a broken gate is the false-pass class this harness exists to
 # kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out wmark w_stale w_fresh w_empty w_dyn gf=0
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out probe wmark w_stale w_fresh w_empty w_dyn w_journal gf=0
   tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
@@ -173,12 +173,19 @@ gate_selftest() {
   [ "$(ramlog_mark)" = "2026-01-01T00:00:05.123Z" ] || { t1bad "SELF-TEST-FAIL: fractional timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
   # restart_provider's data-line contract ("<mark> <journal_count>"), split at
   # every call site with ${x%% *}/${x##* }; the subshell keeps the stubs local.
-  rp_out=$(
+  # Prove the stderr capture mechanism: `) 2>file` on the assignment does NOT
+  # capture the substitution's stderr in bash (that redirect applies to the
+  # assignment AFTER the expansion); the nested-group form does. If this probe
+  # ever fails, the two stderr checks below are inert.
+  probe=$( { echo "stderr-probe" >&2; } 2>"$tf.rperr" )
+  [ -s "$tf.rperr" ] || { t1bad "SELF-TEST-FAIL: stderr capture probe wrote nothing"; gf=1; }
+  rm -f "$tf.rperr"
+  rp_out=$( {
     timeout() { :; }
     id() { echo 0; }   # keep the $(id -u urnet) expansion quiet before urnet exists
     journal_line_count() { echo 4321; }
     restart_provider
-  ) 2>"$tf.rperr"
+  } 2>"$tf.rperr" )
   [ "${rp_out%% *}" = "2026-01-01T00:00:05.123Z" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: restart_provider data line is '$rp_out'"; gf=1; }
   [ -s "$tf.rperr" ] && { t1bad "SELF-TEST-FAIL: restart_provider stub wrote stderr: $(head -1 "$tf.rperr")"; gf=1; }
   rm -f "$tf.rperr"
@@ -228,6 +235,18 @@ gate_selftest() {
     wait_client_id 0 30
   )
   [ "$w_dyn" = "00000000-0000-0000-0000-000000000008" ] || { t1bad "SELF-TEST-FAIL: wait_client_id did not pick up a delimiter written mid-poll ('$w_dyn')"; gf=1; }
+  # The journal branch: NR>n must skip exactly the pre-mark lines and return
+  # only the id logged after the mark (stale id at line n, fresh at n+1).
+  w_journal=$(
+    cnt="${tf}.cnt"; : > "$cnt"
+    date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
+    sleep() { :; }
+    j() { local k; for k in $(seq 1 6); do echo "filler line $k"; done; echo 'client_id: 00000000-0000-0000-0000-00000000000a (new)'; echo 'client_id: 00000000-0000-0000-0000-00000000000b (new)'; }
+    journal_line_count() { echo 20; }
+    RAMLOG_MARK="$wmark"
+    wait_client_id 6 30
+  )
+  [ "$w_journal" = "00000000-0000-0000-0000-00000000000b" ] || { t1bad "SELF-TEST-FAIL: journal NR>n offset returned '$w_journal', want ...000b"; gf=1; }
   rm -f "${tf}.cnt"
   # A missing log file (real first boot) must read as "no delimiter", not error.
   rm -f "$tf"
@@ -235,12 +254,12 @@ gate_selftest() {
   [ "$(ramlog_mark_snapshot)" = "-" ] || { t1bad "SELF-TEST-FAIL: snapshot on a missing file is '$(ramlog_mark_snapshot)', want '-'"; gf=1; }
   if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open with no log file"; gf=1; fi
   # ... and restart_provider's data line on a delimiter-free log.
-  rp_out=$(
+  rp_out=$( {
     timeout() { :; }
     id() { echo 0; }
     journal_line_count() { echo 4321; }
     restart_provider
-  ) 2>"$tf.rperr"
+  } 2>"$tf.rperr" )
   [ "${rp_out%% *}" = "-" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: delimiter-free data line is '$rp_out', want '- 4321'"; gf=1; }
   [ -s "$tf.rperr" ] && { t1bad "SELF-TEST-FAIL: delimiter-free stub wrote stderr: $(head -1 "$tf.rperr")"; gf=1; }
   rm -f "$tf.rperr"
@@ -279,7 +298,15 @@ wait_client_id() {
   local end=$(( $(date +%s) + max_wait ))
   local base_delims
   base_delims="${RAMLOG_MARK:-}"
-  [ -n "$base_delims" ] || base_delims=$(ramlog_mark)
+  if [ -z "$base_delims" ]; then
+    echo "WARN: wait_client_id had no RAMLOG_MARK snapshot; re-snapshotting at wait start (the gate self-test exercises this path deliberately)" | tee -a "$REPORT" >&2
+    base_delims=$(ramlog_mark)
+  fi
+  # A journal that shrank below the mark (window/quota eviction) would make
+  # NR>n skip into unrelated lines; warn instead of grepping shifted data.
+  local j_now
+  j_now=$(journal_line_count)
+  [ "$j_now" -ge "$after_lines" ] || echo "WARN: journal has $j_now lines but the wait mark is $after_lines (eviction?) -- NR>n reads may be shifted" | tee -a "$REPORT" >&2
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
@@ -436,6 +463,13 @@ export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
 RAMLOG_MARK=$(ramlog_mark_snapshot)
 # Same for the journal side: a bare marker of 0 would match ANY historical
 # client_id on a reused runner; anchor to the pre-start line count.
+# First validate that this box's journalctl ACCEPTS the anchored window: j()
+# swallows stderr, so a bad --since string would silently empty every journal
+# read and collapse every mark to 0.
+J_GUARD=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "$J_SINCE" -n0 2>&1); J_GUARD_RC=$?
+if [ "$J_GUARD_RC" -ne 0 ] || echo "$J_GUARD" | grep -qi "failed to parse"; then
+  t1bad "journalctl rejected the anchored J_SINCE ('$J_SINCE', exit $J_GUARD_RC): $J_GUARD"
+fi
 B_MARK=$(journal_line_count)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
 # MUST-FIX 8: poll for client_id instead of sleep 8. The provider
@@ -1469,7 +1503,7 @@ else
   bad "V3: main PID did not change (before=$V3_PID_BEFORE after=$V3_PID_AFTER) -- hotswap did not engage"
 fi
 V3_MAINPID="$V3_PID_AFTER"
-if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ "$V3_MAINPID" != "$V3_PID_BEFORE" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_MAINPID" && [ -r "/proc/$V3_MAINPID/environ" ] && tr '\0' '\n' < "/proc/$V3_MAINPID/environ" | grep -q '^NOTIFY_SOCKET='; then
+if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ -n "$V3_PID_BEFORE" ] && [ "$V3_PID_BEFORE" != "0" ] && [ "$V3_MAINPID" != "$V3_PID_BEFORE" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_MAINPID" && [ -r "/proc/$V3_MAINPID/environ" ] && tr '\0' '\n' < "/proc/$V3_MAINPID/environ" | grep -q '^NOTIFY_SOCKET='; then
   ok "V3: systemd MainPID $V3_MAINPID is a live provider process and carries NOTIFY_SOCKET (handoff target runs under Type=notify)"
 else
   bad "V3: systemd MainPID '$V3_MAINPID' does not look like the new notify-capable process (before=$V3_PID_BEFORE)"
@@ -1495,7 +1529,7 @@ if [ -n "$SOCK_OWNER_PIDS" ]; then
   # older pid. The owner set must include the new pid, which must itself
   # differ from the old pid -- otherwise a failed handoff would report the
   # old process as "the new PID" trivially.
-  if [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_BEFORE" != "0" ] && [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ]; then
+  if [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ -n "$V3_PID_BEFORE" ] && [ "$V3_PID_BEFORE" != "0" ] && [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ]; then
     if echo "$SOCK_OWNER_PIDS" | grep -qx "$V3_PID_AFTER"; then
       ok "V3: control socket owned by the new PID ($V3_PID_AFTER)"
     else
@@ -1535,7 +1569,7 @@ if [ "$V_REMAIN" -gt 1 ]; then
   # says it tests. Target exactly the retiring parent pid sampled before the
   # handoff: the parent can exit between the count above and the kill, and
   # `pgrep | head -1` would then return the healthy new provider.
-  if [ -n "$V3_PID_BEFORE" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_PID_BEFORE"; then
+  if [ -n "$V3_PID_BEFORE" ] && [ "$V3_PID_BEFORE" != "0" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_PID_BEFORE"; then
     kill -9 "$V3_PID_BEFORE" 2>/dev/null || true
   fi
   sleep 2
