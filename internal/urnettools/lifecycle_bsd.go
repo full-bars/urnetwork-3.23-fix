@@ -1,0 +1,87 @@
+package urnettools
+
+import (
+	"fmt"
+	"path/filepath"
+	"strings"
+)
+
+// renderBSDServiceScript returns the rc.d script for a provider. It is a pure
+// function of its inputs so the script shape can be asserted in a test without
+// writing to /usr/local/etc.
+//
+// rc.conf carries the overrides (<service>_enable, _user, _flags) because that
+// is the rc.subr convention: editing rc.conf is how an operator changes the
+// service's settings.
+func renderBSDServiceScript(service, binary, user, workingDir string) string {
+	return fmt.Sprintf(`#!/bin/sh
+#
+# PROVIDE: %[1]s
+# REQUIRE: LOGIN NETWORKING
+# KEYWORD: shutdown
+#
+# rc.conf knobs:
+#   %[1]s_enable="YES"   start at boot (set by urnet-tools auto-start)
+#   %[1]s_user="%[2]s"   run as this user
+#   %[1]s_flags=""       extra flags for the provider
+#
+# To run at boot:
+#   sysrc %[1]s_enable=YES
+
+. /etc/rc.subr
+
+name="%[1]s"
+rcvar=%[1]s_enable
+
+: $%[1]s_enable="NO"
+: $%[1]s_user="%[2]s"
+: $%[1]s_flags=""
+
+load_rc_config $name
+
+: ${%[1]s_enable:="NO"}
+: ${%[1]s_user:="%[2]s"}
+: ${%[1]s_flags:=""}
+
+start_cmd="%[1]s_start"
+stop_cmd="%[1]s_stop"
+
+%[1]s_start()
+{
+    cd %[3]s || return 1
+    echo "Starting %[1]s."
+    su -m ${%[1]s_user} -c "%[4]s provide $%[1]s_flags"
+}
+
+%[1]s_stop()
+{
+    echo "Stopping %[1]s."
+    pkill -TERM -f %[4]s
+}
+
+run_rc_command "$1"
+`, service, user, workingDir, binary)
+}
+
+// bsdRcServiceName is the rc.d service name for a provider binary. Derived from
+// the binary so a beta build and a stable build on one box get different
+// services instead of fighting over a single name.
+func bsdRcServiceName(binary string) string {
+	base := providerBinaryBasename(binary)
+	if base == "" {
+		return "urnetwork"
+	}
+	return base
+}
+
+// providerBinaryBasename is the lowercase basename of a provider binary, used
+// to name the rc.d service after the binary it runs.
+func providerBinaryBasename(binary string) string {
+	base := strings.ToLower(filepath.Base(binary))
+	// filepath.Base("") is ".", which would name the service "." — refuse it
+	// rather than produce a path-shaped service name.
+	if base == "." || base == string(filepath.Separator) {
+		return ""
+	}
+	return base
+}

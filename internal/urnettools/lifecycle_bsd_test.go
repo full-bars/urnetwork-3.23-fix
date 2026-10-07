@@ -1,0 +1,90 @@
+package urnettools
+
+import (
+	"strings"
+	"testing"
+)
+
+// renderBSDServiceScript produces the rc.d script the FreeBSD installer writes.
+// The installer in scripts/Provider_Install_FreeBSD.sh carries its own copy of
+// this template (a shell script cannot call into Go), so these assertions are
+// about the Go-side renderer and the two must be kept in step by hand.
+func TestRenderBSDServiceScriptShape(t *testing.T) {
+	script := renderBSDServiceScript("urnetwork", "/usr/local/bin/urnetwork", "tester", "/home/tester")
+
+	// rc.subr provides run_rc_command; without it the script is not an rc.d
+	// script at all.
+	if !strings.Contains(script, ". /etc/rc.subr") {
+		t.Error("script does not source rc.subr")
+	}
+	if !strings.Contains(script, "run_rc_command") {
+		t.Error("script does not call run_rc_command")
+	}
+	// PROVIDE is what makes the script discoverable by the rc system.
+	if !strings.Contains(script, "PROVIDE: urnetwork") {
+		t.Error("script lacks the PROVIDE declaration")
+	}
+	// The knobs are read from rc.conf, which is what setAutoStart writes.
+	for _, knob := range []string{"urnetwork_enable", "urnetwork_user", "urnetwork_flags"} {
+		if !strings.Contains(script, knob) {
+			t.Errorf("script does not read the %s rc.conf knob", knob)
+		}
+	}
+	// The binary and working directory must be baked in, and the service must
+	// run the provider's `provide` subcommand.
+	if !strings.Contains(script, "/usr/local/bin/urnetwork provide") {
+		t.Error("script does not invoke the provider binary's provide subcommand")
+	}
+	if !strings.Contains(script, "cd /home/tester") {
+		t.Error("script does not cd to the working directory")
+	}
+}
+
+// The rc.conf variables are expanded at RUN time by the rc system, after
+// load_rc_config has read /etc/rc.conf. A template that hard-codes the literal
+// text "urnetwork_user" into the su(1) invocation therefore runs the provider
+// as a user literally named "urnetwork_user", or fails outright — and it looks
+// correct when read. This pins the expansion.
+func TestRenderBSDServiceScriptExpandsUserVariable(t *testing.T) {
+	script := renderBSDServiceScript("urnetwork", "/usr/local/bin/urnetwork", "tester", "/home/tester")
+
+	// Every rc.conf knob must be referenced as a shell variable so it is expanded
+	// at run time, after load_rc_config has read /etc/rc.conf. The ${...} form
+	// is required where a default is wanted and $name where it is not.
+	for _, want := range []string{
+		"${urnetwork_enable:=",
+		"${urnetwork_user:=",
+		"${urnetwork_flags:=",
+		"$urnetwork_flags",
+	} {
+		if !strings.Contains(script, want) {
+			t.Errorf("script does not expand %q as a shell variable", want)
+		}
+	}
+	// The bare (unexpanded) name must not appear as a command argument. The
+	// match has to skip the "${...}" form, which is exactly the one we want.
+	for _, bad := range []string{
+		"su -m urnetwork_user",
+		"su -m urnetwork_enable",
+	} {
+		if strings.Contains(script, bad) {
+			t.Errorf("script passes a literal rc.conf knob name to su: %q", bad)
+		}
+	}
+}
+
+// A beta build and a stable build on one box must not collide on one service
+// name, so the name comes from the binary.
+func TestBSDRcServiceNameFromBinary(t *testing.T) {
+	for _, c := range []struct{ binary, want string }{
+		{"/usr/local/bin/urnetwork", "urnetwork"},
+		{"/usr/local/bin/urnetwork_beta", "urnetwork_beta"},
+		{"/usr/local/bin/urnet-provider", "urnet-provider"},
+		{"/usr/local/bin/provider", "provider"},
+		{"", "urnetwork"},
+	} {
+		if got := bsdRcServiceName(c.binary); got != c.want {
+			t.Errorf("bsdRcServiceName(%q) = %q, want %q", c.binary, got, c.want)
+		}
+	}
+}

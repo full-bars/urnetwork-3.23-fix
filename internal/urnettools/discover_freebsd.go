@@ -7,7 +7,6 @@ import (
 	osuser "os/user"
 	"path/filepath"
 	"strconv"
-	"strings"
 	"time"
 )
 
@@ -235,10 +234,4 @@ func narrowToAccessible(providers []Provider) []Provider {
 // platformIsPrivileged on freebsd: euid==0 (root).
 func platformIsPrivileged() bool {
 	return os.Geteuid() == 0
-}
-
-// providerBinaryBasename is used by the rc.d script writer to name the service
-// after the binary it runs.
-func providerBinaryBasename(binary string) string {
-	return strings.ToLower(filepath.Base(binary))
 }
