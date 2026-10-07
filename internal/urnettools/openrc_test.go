@@ -272,8 +272,19 @@ func TestOpenRCAutoUpdatePeriodicEntry(t *testing.T) {
 		t.Fatal(err)
 	}
 	content := string(b)
-	if !strings.Contains(content, `exec "/opt/urnet/urnet-tools" update -f`) {
+	// The entry names the tool in a variable and execs the variable, because a
+	// guard verifies the path is not reachable through a user-writable
+	// directory before exec'ing (the entry runs as root).
+	if !strings.Contains(content, `tool='/opt/urnet/urnet-tools'`) {
+		t.Fatalf("entry content = %q, want it to set tool='/opt/urnet/urnet-tools'", content)
+	}
+	if !strings.Contains(content, `exec "$tool" update -f`) {
 		t.Fatalf("entry content = %q, want an exec of the tool with `update -f`", content)
+	}
+	// The guard is the security property: root must not execute a binary an
+	// unprivileged user could have planted by renaming an ancestor directory.
+	if !strings.Contains(content, "writable by a non-root user") {
+		t.Fatalf("entry content = %q, want the root-ownership guard", content)
 	}
 	if !strings.HasPrefix(content, "#!/bin/sh\n") {
 		t.Fatalf("entry must start with a #!/bin/sh shebang, got %q", content)
@@ -662,8 +673,11 @@ func TestOpenRCAutoUpdateEntryUsesSiblingTool(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(b), `exec "`+sibling+`" update -f`) {
-		t.Fatalf("entry = %q, want it to exec the sibling tool %q", b, sibling)
+	if !strings.Contains(string(b), `tool='`+sibling+`'`) {
+		t.Fatalf("entry = %q, want it to name the sibling tool %q", b, sibling)
+	}
+	if !strings.Contains(string(b), `exec "$tool" update -f`) {
+		t.Fatalf("entry = %q, want an exec of the named tool", b)
 	}
 
 	// Leftover positionals are refused here too.
@@ -1066,5 +1080,46 @@ func TestOpenRCRouteStopsRefuseAmbiguity(t *testing.T) {
 				t.Fatalf("refused command still acted on the service (%d rc calls)", rig.ran())
 			}
 		})
+	}
+}
+
+// TestOpenRCStartWorksWithStoppedServiceDiscovered is the regression guard for
+// a routing hole that made `urnet-tools start` fail on a real Alpine box with
+// "no owning systemd unit".
+//
+// Stopped-service discovery reports the STOPPED service as a provider row
+// (Supervisor "openrc", no pid, not running) so `urnet-tools providers` can
+// list it. That row made len(provs) non-zero, and the old routing test only
+// looked for a SUPERVISED (i.e. running) process among the rows - so a
+// stopped service declined the OpenRC route and fell through to the systemd
+// path, which cannot start it. A stopped service must route to rc-service.
+func TestOpenRCStartWorksWithStoppedServiceDiscovered(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
+	// The row discover_openrc.go produces for a stopped service.
+	stopped := Provider{User: "urnet", StateDir: "/home/urnet/.urnetwork", Supervisor: "openrc"}
+	discoverSystemdFn = func() []Provider { return []Provider{stopped} }
+
+	for _, verb := range []string{"start", "stop", "restart"} {
+		before := rig.ran()
+		handled, err := openrcRouteLifecycle(verb, nil, true, false)
+		if !handled || err != nil {
+			t.Fatalf("%s with only the stopped service discovered: handled=%v err=%v, want true,nil", verb, handled, err)
+		}
+		if rig.ran() != before+1 {
+			t.Fatalf("%s: rc-service did not run", verb)
+		}
+		if got := strings.Join(rig.argv[len(rig.argv)-1], " "); got != "rc-service urnetwork "+verb {
+			t.Fatalf("%s: argv = %q", verb, got)
+		}
+	}
+
+	// And the running service still routes.
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID == 4242 }
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", PID: 4242, Running: true}}
+	}
+	if handled, err := openrcRouteLifecycle("restart", nil, true, false); !handled || err != nil {
+		t.Fatalf("running service: handled=%v err=%v, want true,nil", handled, err)
 	}
 }

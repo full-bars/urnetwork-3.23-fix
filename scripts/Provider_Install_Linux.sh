@@ -1385,11 +1385,23 @@ command="$install_path/bin/urnetwork"
 command_args="provide"
 command_user="$openrc_user"
 supervisor="supervise-daemon"
+# Crash handling. respawn_max=0 means UNLIMITED, which turns a binary that
+# cannot start (bad download, corrupt state, missing interface) into a 5-second
+# restart loop that floods /var/log forever and never tells anyone. The systemd
+# path is bounded - Restart=on-failure still hits the default StartLimitBurst -
+# so this matches it: restart promptly, back off as failures repeat, then give
+# up so the operator can see a stopped service instead of a spinning one.
 respawn_delay=5
-respawn_max=0
-# Logs live under /var/log, root-owned, NOT in the service user's home.
-# supervise-daemon opens these paths before dropping privileges, so a symlink
-# planted in a user-writable home would aim a root append at an arbitrary file.
+respawn_delay_step=5
+respawn_delay_cap=60
+respawn_max=10
+respawn_period=3600
+# Logs live under /var/log, NOT in the service user's home.
+# supervise-daemon opens these files AFTER dropping to command_user, so they
+# must be OWNED by that user or the child cannot start at all. That stays safe
+# because the safety property is the DIRECTORY: /var/log is root-owned, so the
+# service user cannot create or replace a name in it (a planted symlink is
+# impossible) - they can only write the file they were given.
 # /var/log is also the OpenRC convention, and it makes `urnet-tools logs` able
 # to tail the file directly even when the service is stopped (a provider with no
 # live process has no /proc/<pid>/fd/1 to read).
@@ -1447,6 +1459,37 @@ EOF
 #
 # Called from BOTH install paths (already-root, and the sudo-escalated one) so
 # the shipped state is identical either way.
+# openrc_stage_root_owned_tool copies urnet-tools to a ROOT-ONLY location.
+#
+# Why this exists (security): the weekly auto-update runs as ROOT from busybox
+# crond and EXECUTES this binary. Under the default OpenRC layout the install
+# tree sits in the service user's home, and chowning the tree root:root does NOT
+# make it safe - the user owns /home/urnet, so they can rename .local aside and
+# recreate the path with their own urnet-tools, and root executes it at the next
+# tick. Root-owned files cannot defend a path whose ANCESTOR is user-writable.
+# The tool root runs therefore lives under /usr/local/libexec, where no path
+# component is writable by a non-root user.
+#
+# The tool self-updates (selfUpdateTool replaces the running executable), so a
+# root-run update keeps this copy current.
+openrc_root_tool_dir=/usr/local/libexec/urnetwork
+openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+
+openrc_stage_root_owned_tool ()
+{
+    [ "$(id -u)" -eq 0 ] || return 1
+    [ -f "$install_path/bin/urnet-tools" ] || return 1
+    mkdir -p "$openrc_root_tool_dir" 2>/dev/null || return 1
+    chown root:root "$openrc_root_tool_dir" 2>/dev/null || true
+    chmod 0755 "$openrc_root_tool_dir" 2>/dev/null || true
+    if cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path" 2>/dev/null; then
+        chown root:root "$openrc_root_tool_path" 2>/dev/null || true
+        chmod 0755 "$openrc_root_tool_path" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
 openrc_finalize_root_paths ()
 {
     case "$install_path" in
@@ -1460,12 +1503,53 @@ openrc_finalize_root_paths ()
             ;;
     esac
 
-    # Create the log targets root-owned and not group/world writable, so the
-    # paths supervise-daemon opens cannot be pre-empted by the service user.
+    # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
+    #
+    # Ownership matters here and was wrong at first: supervise-daemon opens
+    # output_log/error_log AFTER dropping to command_user, so a root-owned 0644
+    # file cannot be opened by the service user and the child dies before exec -
+    # silently, with both logs empty. Root-owning the files looked safer and
+    # broke the service.
+    #
+    # Handing the FILES to the service user is still safe, because the safety
+    # property is the DIRECTORY: /var/log is root-owned and not writable by the
+    # service user, so they cannot create, rename or replace a name in it - a
+    # symlink planted there is impossible. All they can do is write the log file
+    # they were given, which is what a log is for.
+    mkdir -p /var/log 2>/dev/null || true
     : > /var/log/urnetwork.log 2>/dev/null || pr_warn "could not create /var/log/urnetwork.log"
     : > /var/log/urnetwork.err 2>/dev/null || pr_warn "could not create /var/log/urnetwork.err"
-    chown root:root /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+    chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
     chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+
+    # Stage the root-owned tool the weekly cron will execute (see the function
+    # comment: root must never exec anything reachable through a user-writable
+    # directory).
+    if openrc_stage_root_owned_tool; then
+        pr_info "Staged the auto-update tool at %s (root-owned)." "$openrc_root_tool_path"
+    fi
+
+    # Rotate them. A provider that crash-loops (or one simply busy enough)
+    # writes to these without limit, and Alpine boxes are often small VPS with a
+    # couple of GB of root filesystem - filling /var/log bricks the host, not
+    # just the provider. Alpine ships busybox logrotate via the `logrotate`
+    # package, but the rule is harmless to install even before that package
+    # exists, so write it unconditionally.
+    if [ -d /etc/logrotate.d ]; then
+        cat > /etc/logrotate.d/urnetwork <<'ROTATE'
+/var/log/urnetwork.log /var/log/urnetwork.err {
+    weekly
+    rotate 4
+    size 10M
+    missingok
+    notifempty
+    copytruncate
+    compress
+    delaycompress
+}
+ROTATE
+        chmod 0644 /etc/logrotate.d/urnetwork 2>/dev/null || true
+    fi
 }
 
 # The four privileged steps (install the unit, enable the runlevel, start)

@@ -286,15 +286,35 @@ func openrcLifecycleTargetAppliesFrom(provs []Provider, t Target) bool {
 	if t.User != "" || t.StateDir != "" || t.Network != "" || t.NetworkID != "" || t.PID > 0 {
 		return true // the selector already matched the supervised provider
 	}
-	if len(provs) == 0 {
-		return true
-	}
+	// No selectors. Decide by what is actually RUNNING, which is what the user
+	// means by "the provider":
+	//   - nothing running: the service is the only candidate, so `start` works
+	//     (this is the case a stopped service must not lose - and the reason
+	//     this cannot simply test len(provs)==0: stopped-service discovery now
+	//     reports the stopped service as a row, so the slice is NOT empty);
+	//   - the service's own process is running: it is the target;
+	//   - only some OTHER process runs: that is the user's provider, and the
+	//     unitless path must handle it rather than `rc-service` reporting
+	//     success while the bare process keeps running.
+	// Several running at once still routes, so the ambiguity refusal below can
+	// name them instead of silently picking one.
+	running := 0
+	serviceRunning := false
 	for _, p := range provs {
+		// A discovered row is a live process when it carries a pid; the
+		// stopped-service record carries neither a pid nor Running.
+		if p.PID <= 0 && !p.Running {
+			continue
+		}
+		running++
 		if providerSupervisedByOpenRCFn(p) {
-			return true
+			serviceRunning = true
 		}
 	}
-	return false
+	if running == 0 {
+		return true
+	}
+	return serviceRunning
 }
 
 // openrcServiceLogPaths returns the stdout/stderr files the generated init
@@ -365,8 +385,13 @@ func openrcTailServiceLogs(p Provider, lines int) (bool, error) {
 func openrcOthersBeyondService(provs []Provider, t Target) []string {
 	var out []string
 	for _, p := range provs {
-		if providerSupervisedByOpenRCFn(p) {
-			continue // the OpenRC service's own provider is the one being acted on
+		// The service's own record is not "another provider", whether it is
+		// running (supervised) or stopped (discovered from the init script with
+		// Supervisor "openrc"). Missing the stopped case made a bare
+		// `urnet-tools stop` on a stopped service refuse with "2 providers
+		// found", naming the service itself as the other one.
+		if providerSupervisedByOpenRCFn(p) || p.Supervisor == "openrc" {
+			continue
 		}
 		label := p.User
 		if label == "" {
@@ -441,13 +466,14 @@ func openrcRouteLifecycle(verb string, args []string, force, dryRun bool) (bool,
 	// selector-less start on a multi-provider box is the common first-run case
 	// the routing exists to support.
 	hasSelector := t.User != "" || t.StateDir != "" || t.Network != "" || t.NetworkID != "" || t.PID > 0
-	if !hasSelector && (verb == "stop" || verb == "restart") && len(openrcOthersBeyondService(provs, t)) > 0 {
+	if others := openrcOthersBeyondService(provs, t); !hasSelector && (verb == "stop" || verb == "restart") && len(others) > 0 {
+		// Count the other providers PLUS the service, which is also a target.
 		return true, fmt.Errorf(
 			"%d providers found on this box, specify a target: %s\n"+
 				"  urnet-tools %s --user <user>          # a specific provider\n"+
 				"  urnet-tools %s --unit %s       # the OpenRC service\n"+
 				"  urnet-tools providers             # list what was found",
-			len(provs)+1, openrcOthersBeyondService(provs, t), verb, verb, openrcServiceName)
+			len(others)+1, others, verb, verb, openrcServiceName)
 	}
 	if dryRun {
 		fmt.Printf("[dry-run] would %s %s (OpenRC service)\n", verb, openrcServiceName)
@@ -558,7 +584,25 @@ func openrcRouteAutoUpdate(interval string, rest []string, dryRun bool) (bool, e
 // then a bare name. PATH deliberately precedes this executable: a tool run
 // from a transient copy (a fresh build in /tmp) must not bake that path into
 // a persistent cron entry.
+// openrcRootToolPath is where the installer stages a ROOT-OWNED copy of
+// urnet-tools. It must match openrc_root_tool_path in
+// scripts/Provider_Install_Linux.sh.
+const openrcRootToolPath = "/usr/local/libexec/urnetwork/urnet-tools"
+
+// openrcUpdateToolPath picks the binary the PERIODIC CRON ENTRY will execute.
+//
+// SECURITY: that entry runs as ROOT. Anything it executes must live somewhere
+// no non-root user can influence. The install tree is normally inside the
+// service user's home, and root-owning the tree does not help: the user owns
+// their home, so they can rename the tree aside and recreate the path with
+// their own urnet-tools - root then runs it at the next tick. The root-owned
+// copy under /usr/local/libexec is therefore preferred over every other
+// candidate, and a user-reachable path is only used when that copy is absent
+// (a pre-upgrade install), which openrcUpdateCronScript then guards.
 func openrcUpdateToolPath(p Provider) string {
+	if fi, err := openrcStatFn(openrcRootToolPath); err == nil && !fi.IsDir() {
+		return openrcRootToolPath
+	}
 	if p.Binary != "" {
 		cand := filepath.Join(filepath.Dir(p.Binary), "urnet-tools")
 		if fi, err := openrcStatFn(cand); err == nil && !fi.IsDir() {
@@ -656,13 +700,40 @@ func openrcSetAutoUpdate(interval, toolPath string) error {
 // openrcUpdateCronScript is the periodic entry's content. `update -f` is the
 // unattended form: no confirmation prompts, and a failed restart surfaces in
 // the cron output.
+// shellQuoteSingle wraps a string in POSIX single quotes, escaping embedded
+// single quotes. The cron entry interpolates a filesystem path into a /bin/sh
+// script, so the path must survive quoting intact whatever it contains.
+func shellQuoteSingle(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'"\''"`) + "'"
+}
+
 func openrcUpdateCronScript(toolPath string) string {
 	return "#!/bin/sh\n" +
 		"# URnetwork provider auto-update — installed by `urnet-tools auto-update`.\n" +
-		"# Runs from busybox crond's periodic queue (see /etc/crontabs/root).\n" +
+		"# Runs from busybox crond's periodic queue (see /etc/crontabs/root), AS ROOT.\n" +
 		"# Zero-downtime HotSwap is unavailable under OpenRC (no sd_notify):\n" +
 		"# the update performs a stop/start service restart.\n" +
-		"exec \"" + toolPath + "\" update -f\n"
+		"#\n" +
+		"# SECURITY: this entry executes as root, so the binary it runs must not be\n" +
+		"# reachable through any directory a non-root user can write. Root-owned\n" +
+		"# FILES are not enough — a user who owns an ancestor directory can rename\n" +
+		"# it aside and plant their own binary at the same path. Verify every\n" +
+		"# component from the root down before exec'ing; refuse loudly otherwise.\n" +
+		"tool=" + shellQuoteSingle(toolPath) + "\n" +
+		"dir=$(dirname \"$tool\")\n" +
+		"while [ \"$dir\" != \"/\" ] && [ -n \"$dir\" ]; do\n" +
+		"\tif [ ! -d \"$dir\" ]; then\n" +
+		"\t\techo \"urnetwork-update: refusing to run: $dir is missing\" >&2; exit 1\n" +
+		"\tfi\n" +
+		"\towner=$(stat -c %u \"$dir\" 2>/dev/null)\n" +
+		"\tmode=$(stat -c %a \"$dir\" 2>/dev/null)\n" +
+		"\tif [ \"$owner\" != \"0\" ] || [ \"$(($mode & 022))\" -ne 0 ]; then\n" +
+		"\t\techo \"urnetwork-update: refusing to run $tool: $dir is writable by a non-root user (owner=$owner mode=$mode)\" >&2\n" +
+		"\t\texit 1\n" +
+		"\tfi\n" +
+		"\tdir=$(dirname \"$dir\")\n" +
+		"done\n" +
+		"exec \"$tool\" update -f\n"
 }
 
 // openrcCrondStatusFn probes the crond service: nil when started, an
