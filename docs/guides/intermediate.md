@@ -136,12 +136,28 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 ```
 
-If Windows Defender blocks that one-liner, download the script, review it, and run it from disk in two steps instead (both lines in PowerShell):
+Windows Defender may flag this one-liner. See the note below.
 
-```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
-powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
-```
+> [!NOTE]
+> Windows Defender may flag the Windows install one-liner, and it may flag the downloaded
+> binaries. What we see are machine-learning heuristics (the `!ml` suffix), not signatures;
+> for the binaries we publish they are false positives. Each release page records the scan
+> results for those binaries. If Defender blocks the one-liner, download the script, review
+> it, and run it from disk instead. Both lines go in PowerShell:
+>
+> ```powershell
+> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+> ```
+
+<details>
+<summary>The detections you may see, and what each one means</summary>
+
+- `Trojan:Script/Wacatac.B!ml`, `Trojan:Script/Wacatac.C!ml`, `Trojan:Win32/Wacatac.B!ml`, `Trojan:Win32/Wacatac.C!ml`: Defender's machine-learning label for files whose shape looks like a packed trojan. Our Go binaries are stripped, statically linked and unsigned, which reads as a packed payload. The B and C variants are different model generations, so one binary can be flagged under more than one name.
+- `Trojan:Win32/Commando.A!ml`: fires on the download-and-run command line itself (the `irm ... | iex` one-liner), not on the installed files. Fetching a remote script and piping it into execution reads as a trojan-downloader pattern to the model.
+- `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for creating a scheduled task. The installer registers a scheduled task so the provider can update itself, and a behavioural model cannot tell that apart from persistence malware.
+
+</details>
 
 No admin rights required. This installs:
 - The provider binary at `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe`
