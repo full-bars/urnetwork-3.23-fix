@@ -1008,6 +1008,12 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	// OpenRC host: when the running provider is the process supervise-daemon
+	// supervises, restart the service through rc-service (this is the
+	// update flow's stop/start path — HotSwap declines under OpenRC).
+	if handled, err := openrcRestartService(p); handled {
+		return err
+	}
 	if p.Unit != "" {
 		// Determine the unit's real scope up front (isUserUnit checks whether
 		// a systemd system unit file exists). A user-owned unit MUST be

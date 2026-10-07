@@ -23,6 +23,10 @@ func cmdAutoStart(args []string, force, dryRun bool) error {
 	if mode != "on" && mode != "off" {
 		return fmt.Errorf("invalid value %q: must be on or off", mode)
 	}
+	// OpenRC hosts: auto-start is rc-update add|del <service> default.
+	if handled, err := openrcRouteAutoStart(mode, args[1:], force, dryRun); handled {
+		return err
+	}
 	t, _, err := parseTargetFlags(args[1:])
 	if err != nil {
 		return err
@@ -56,6 +60,11 @@ func cmdAutoUpdate(args []string, force, dryRun bool) error {
 	case "off", "daily", "weekly", "monthly":
 	default:
 		return fmt.Errorf("invalid interval %q: daily|weekly|monthly|off", interval)
+	}
+	// OpenRC hosts: the auto-update schedule is a busybox crond periodic
+	// entry instead of a systemd timer.
+	if handled, err := openrcRouteAutoUpdate(interval, args[1:], dryRun); handled {
+		return err
 	}
 	t, _, err := parseTargetFlags(args[1:])
 	if err != nil {

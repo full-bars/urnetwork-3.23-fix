@@ -170,8 +170,14 @@ func enableTimer(p Provider, timer string) error {
 
 // cleanupLifecycle on Unix disables the auto-update timer. The unit disable
 // in cmdUninstall handles the service, but the <unit>-update.timer would
-// keep firing for a provider that is gone (heavyweight review S7).
+// keep firing for a provider that is gone (heavyweight review S7). On an
+// OpenRC host there is no systemd timer: the service, its rc-update entry,
+// the init script and the periodic auto-update entry are cleaned instead.
 func cleanupLifecycle(p Provider) {
+	if openrcActive() && openrcServiceInstalled() {
+		openrcCleanup()
+		return
+	}
 	if p.Unit == "" {
 		return
 	}

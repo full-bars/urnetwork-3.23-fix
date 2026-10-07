@@ -96,12 +96,14 @@ get_arch ()
 operation=""
 arch="$(get_arch)"
 has_systemd=0
+has_openrc=0
 no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
 api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 
 install_path="$HOME/.local/share/urnetwork-provider"
+install_path_explicit=0
 version_file="$install_path/.version"
 
 # Canonical URL for re-running this installer in a freshly created user's context.
@@ -117,6 +119,16 @@ fi
 
 if command -v systemctl > /dev/null; then
     has_systemd=1
+fi
+
+# OpenRC detection (Alpine and friends): rc-service must be present and the
+# host must show an OpenRC runtime marker — /run/openrc on a booted host, or
+# the openrc-run runner. Systemd wins when both somehow exist: the systemd
+# branches below run first and are unchanged.
+if command -v rc-service > /dev/null 2>&1; then
+    if [ -d /run/openrc ] || [ -x /sbin/openrc-run ] || [ -x /usr/sbin/openrc-run ]; then
+        has_openrc=1
+    fi
 fi
 
 pr_err ()
@@ -516,6 +528,7 @@ while [ $# -gt 0 ]; do
             fi
 
             install_path="$2"
+            install_path_explicit=1
             shift 2
             ;;
 
@@ -575,6 +588,14 @@ systemd_service="$systemd_userdir/urnetwork.service"
 systemd_update_service="$systemd_userdir/urnetwork-update.service"
 systemd_update_timer="$systemd_userdir/urnetwork-update.timer"
 systemd_units_stopped=0
+
+# OpenRC service layout (Alpine and friends). OpenRC has no user services, so
+# the provider runs as a system-level service under a dedicated user (default
+# 'urnet'), matching the issue's deployment model; URNET_OPENRC_USER overrides
+# the account for non-default setups.
+openrc_user="${URNET_OPENRC_USER:-urnet}"
+openrc_initd_file="/etc/init.d/urnetwork"
+openrc_units_stopped=0
 
 stop_systemd_units ()
 {
@@ -848,6 +869,171 @@ EOF
     fi
 }
 
+# ---- OpenRC (Alpine and friends) -----------------------------------------
+# The provider runs as a system service under a dedicated user (default
+# 'urnet'). OpenRC has no user services, so the init script is system-level
+# and needs root; a non-root install still gets the exact commands to finish
+# (never a silent degrade). The script uses supervise-daemon for crash
+# respawn. Zero-downtime updates are unavailable (no sd_notify): the
+# urnet-tools update path performs a stop/start restart instead.
+
+# openrc_user_home: the service user's home — the provider's state dir and
+# the supervise-daemon logs live under it. Falls back to /home/<user> when
+# the account has no passwd entry yet.
+openrc_user_home ()
+{
+    openrc_home=""
+    if command -v getent > /dev/null 2>&1; then
+        openrc_home="$(getent passwd "$openrc_user" 2>/dev/null | cut -d: -f6)"
+    fi
+    if [ -z "$openrc_home" ] && [ -r /etc/passwd ]; then
+        openrc_home="$(awk -F: -v u="$openrc_user" '$1 == u { print $6; exit }' /etc/passwd 2>/dev/null)"
+    fi
+    [ -n "$openrc_home" ] || openrc_home="/home/$openrc_user"
+    printf '%s' "$openrc_home"
+}
+
+# openrc_service_running: rc-service status exits 0 when the service is
+# started and 3 when stopped; any other failure (missing service, no
+# permission) counts as not running for the stop/restart notes.
+openrc_service_running ()
+{
+    [ -f "$openrc_initd_file" ] || return 1
+    rc-service urnetwork status > /dev/null 2>&1
+}
+
+# stop_openrc_units mirrors stop_systemd_units for the OpenRC service. Only
+# root can stop a system service; a non-root run leaves it up (the binary
+# swap is rename-based and safe) and prints the restart command that applies
+# the update.
+stop_openrc_units ()
+{
+    openrc_service_running || return 0
+
+    if [ "$(id -u)" -ne 0 ]; then
+        pr_info "urnetwork (OpenRC service) is running; the installer cannot restart it as a non-root user."
+        pr_info "Apply this install afterwards with: sudo rc-service urnetwork restart"
+        return 0
+    fi
+
+    if [ "$operation" = "update" ] && [ "$FORCE" != "1" ]; then
+        pr_info "urnetwork (OpenRC service) is running — the binary will be updated on disk."
+        pr_info "Restart the service when convenient to apply the update: rc-service urnetwork restart"
+        return 0
+    fi
+
+    if [ "$FORCE" != "1" ]; then
+        confirm_restart "Upgrading or reinstalling requires temporarily stopping the URNetwork provider to safely swap the core binary."
+    fi
+
+    pr_info "urnetwork (OpenRC service) is running — it will be stopped for the update and restarted once finished."
+    if rc-service urnetwork stop; then
+        openrc_units_stopped=1
+    else
+        pr_err "warning: failed to stop urnetwork (OpenRC service); continuing anyway"
+    fi
+}
+
+# install_openrc_units: write the openrc-run service script (supervise-daemon,
+# command_user = the service user, output/error logs under its home) and
+# either install it as root or print the exact sudo commands to finish. The
+# script is always staged inside the install dir so a non-root operator has a
+# concrete file to copy.
+install_openrc_units ()
+{
+    openrc_home="$(openrc_user_home)"
+    openrc_staged="$install_path/urnetwork.openrc"
+
+    if ! id "$openrc_user" > /dev/null 2>&1; then
+        pr_warn "User '%s' does not exist; the service will fail to start until it does." "$openrc_user"
+        pr_info "    create it first: useradd -m -s /bin/sh %s    # or: adduser -D %s" "$openrc_user" "$openrc_user"
+    fi
+
+    case "$install_path" in
+        "$openrc_home"/*) ;;
+        *)
+            pr_warn "This install is at %s but the service runs as '%s' (%s)." "$install_path" "$openrc_user" "$openrc_home"
+            pr_warn "For a working service, install as that user: su - %s -c 'curl -fSsL %s | sh'" "$openrc_user" "$urnet_install_url"
+            pr_warn "(or set URNET_OPENRC_USER to the account that owns %s)" "$install_path"
+            ;;
+    esac
+
+    pr_info "Writing OpenRC service script to %s" "$openrc_staged"
+    cat > "$openrc_staged" <<EOF
+#!/sbin/openrc-run
+# URnetwork Provider — OpenRC service (written by Provider_Install_Linux.sh)
+#
+# supervise-daemon keeps the provider running and respawns it on exit
+# (respawn_delay=5s, unlimited respawns). command_user makes the provider run
+# as '$openrc_user' with HOME=$openrc_home, so its state lives in
+# $openrc_home/.urnetwork.
+#
+# NOTE: zero-downtime updates (HotSwap) are unavailable under OpenRC —
+# supervise-daemon has no sd_notify MainPID handoff. \`urnet-tools update\`
+# performs a stop/start service restart under this init system.
+
+command="$install_path/bin/urnetwork"
+command_args="provide"
+command_user="$openrc_user"
+supervisor="supervise-daemon"
+respawn_delay=5
+respawn_max=0
+output_log="$openrc_home/urnetwork.log"
+error_log="$openrc_home/urnetwork.err"
+
+depend() {
+    use net
+    after firewall
+}
+EOF
+    if ! chmod 755 "$openrc_staged"; then
+        pr_err "Failed to make %s executable" "$openrc_staged"
+        exit 1
+    fi
+
+    if [ "$(id -u)" -ne 0 ]; then
+        pr_warn "Installing a system service needs root."
+        pr_info "To finish, run these commands:"
+        pr_info "    sudo cp %s %s" "$openrc_staged" "$openrc_initd_file"
+        pr_info "    sudo chmod +x %s" "$openrc_initd_file"
+        pr_info "    sudo rc-update add urnetwork default"
+        pr_info "    sudo rc-service urnetwork start"
+        return 0
+    fi
+
+    # The service runs as $openrc_user: hand it the install tree when it lives
+    # under that user's home, so the supervised process can execute the binary
+    # and `urnet-tools update` (run by that user) can replace it.
+    case "$install_path" in
+        "$openrc_home"/*)
+            chown -R "$openrc_user" "$install_path" 2>/dev/null || pr_warn "could not chown %s to %s" "$install_path" "$openrc_user"
+            ;;
+    esac
+
+    if ! cp "$openrc_staged" "$openrc_initd_file"; then
+        pr_err "Failed to install %s" "$openrc_initd_file"
+        exit 1
+    fi
+    if ! chmod 755 "$openrc_initd_file"; then
+        pr_err "Failed to make %s executable" "$openrc_initd_file"
+        exit 1
+    fi
+
+    pr_info "Enabling urnetwork in the default runlevel"
+    if ! rc-update add urnetwork default; then
+        pr_err "Failed to enable the urnetwork service (rc-update add urnetwork default)"
+        exit 1
+    fi
+
+    if [ "$openrc_units_stopped" -eq 1 ]; then
+        if ! rc-service urnetwork start; then
+            pr_err "warning: unable to restart urnetwork after update; start it with: rc-service urnetwork start"
+        fi
+    else
+        pr_info "Start the service: rc-service urnetwork start"
+    fi
+}
+
 # Run a command string as another user with HOME and the per-user systemd bus
 # reachable. Prefers 'runuser', which works on SELinux-enforcing hosts where a
 # root 'su' is denied ("failed to execute shell: Permission denied"); falls back
@@ -1033,6 +1219,23 @@ do_install ()
     : "${tag:=latest}"
     : "${no_modify_bashrc:=0}"
     original_operation="$operation"
+
+    # OpenRC hosts run the provider as a system service under the service
+    # user (default 'urnet'). When root installs with the DEFAULT install
+    # path, land the install inside that user's home: the supervised process
+    # must be able to execute the binary, and `urnet-tools update` run by
+    # that user must be able to replace it — neither works from root's home.
+    # An explicit -i/--install path always wins.
+    if [ "$has_openrc" -eq 1 ] && [ "$(id -u)" -eq 0 ] && [ "$install_path_explicit" -eq 0 ]; then
+        openrc_root_home="$(openrc_user_home)"
+        if [ -d "$openrc_root_home" ]; then
+            install_path="$openrc_root_home/.local/share/urnetwork-provider"
+            version_file="$install_path/.version"
+            pr_info "OpenRC service user '%s': installing under %s" "$openrc_user" "$install_path"
+        else
+            pr_warn "Service user '%s' has no home directory (%s); installing to %s." "$openrc_user" "$openrc_root_home" "$install_path"
+        fi
+    fi
 
     # Dependency Check
     if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
@@ -1327,6 +1530,10 @@ do_install ()
         stop_systemd_units
     fi
 
+    if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
+        stop_openrc_units
+    fi
+
     if [ -d "$install_path" ] && [ "$operation" = "install" ]; then
         pr_info "Found existing installation in $install_path, updating instead"
         operation=update
@@ -1466,6 +1673,10 @@ do_install ()
         install_systemd_units
     fi
 
+    if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
+        install_openrc_units
+    fi
+
     # The symlinks are not a shell-startup edit, so they are made regardless of
     # -B; the rc-file blocks honour it.
     ensure_tools_on_path "$install_path"
@@ -1498,6 +1709,23 @@ do_install ()
                 printf "This ensures the provider keeps running in the background after you log out.\n"
                 printf "\n"
                 printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
+            fi
+
+            if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
+                printf "Start service:         \e[1mrc-service urnetwork start\e[0m\n"
+                printf "Disable service:       \e[1mrc-update del urnetwork && rc-service urnetwork stop\e[0m\n"
+                printf "Enable auto-updates:   \e[1murnet-tools auto-update on\e[0m    # weekly by default; needs busybox crond\n"
+                printf "Disable auto-updates:  \e[1murnet-tools auto-update off\e[0m\n"
+                printf "\n"
+                printf "\e[1;33mNote:\e[0m zero-downtime updates are unavailable under OpenRC (no sd_notify);\n"
+                printf "\e[1murnet-tools update\e[0m performs a stop/start service restart.\n"
+                printf "\n"
+                printf "\e[1mRefer to <https://docs.ur.io/provider#linux-and-macos> for more detailed instructions.\e[0m\n"
+            fi
+
+            if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 0 ]; then
+                printf "\nNo service supervisor (systemd or OpenRC) found: tools only, no autostart or update service.\n"
+                printf "Run the provider in the foreground, or under your own supervisor: \e[1murnetwork provide\e[0m\n"
             fi
             ;;
 
@@ -1556,6 +1784,22 @@ do_uninstall ()
         rm -f "$HOME/.config/systemd/user/urnetwork.service"
         rm -f "$HOME/.config/systemd/user/urnetwork-update.service"
         rm -f "$HOME/.config/systemd/user/urnetwork-update.timer"
+    fi
+
+    if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
+        pr_info "Removing OpenRC service"
+        if [ "$(id -u)" -eq 0 ]; then
+            rc-service urnetwork stop 2>/dev/null || true
+            rc-update del urnetwork default 2>/dev/null || true
+            rm -f "$openrc_initd_file" 2>/dev/null || pr_err "warning: could not remove %s" "$openrc_initd_file"
+            rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update 2>/dev/null || true
+        else
+            pr_warn "Removing the system service needs root; run:"
+            pr_info "    sudo rc-service urnetwork stop"
+            pr_info "    sudo rc-update del urnetwork default"
+            pr_info "    sudo rm -f %s" "$openrc_initd_file"
+            pr_info "    sudo rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update"
+        fi
     fi
 
     remove_tool_links "$install_path"

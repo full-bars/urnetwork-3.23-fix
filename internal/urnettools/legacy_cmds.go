@@ -153,6 +153,11 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
+	// OpenRC hosts have no systemd unit: start the service through
+	// rc-service instead (detection-based, never GOOS-based).
+	if handled, err := openrcRouteLifecycle("start", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("start", args, force, dryRun)
 	if err != nil {
 		return err
@@ -175,6 +180,9 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
+	if handled, err := openrcRouteLifecycle("stop", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("stop", args, force, dryRun)
 	if err != nil {
 		return err
@@ -293,6 +301,9 @@ func logsUnitlessProvider(p Provider, lines int) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
+	if handled, err := openrcRouteLifecycle("restart", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("restart", args, force, dryRun)
 	if err != nil {
 		return err

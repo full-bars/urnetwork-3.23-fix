@@ -610,7 +610,12 @@ func renderStatusBase(p Provider) error {
 		renderStatusPanel(p)
 		return nil
 	}
-	if err := renderSystemctlStatus(p); err == nil {
+	if openrcActive() && openrcServiceInstalled() {
+		// OpenRC host: the supervisor view is `rc-service urnetwork status`
+		// (a stopped service exits 3 — a state, not a failure), and the
+		// table below adds the live control-socket view.
+		_ = renderOpenRCStatus()
+	} else if err := renderSystemctlStatus(p); err == nil {
 		return nil
 	} else if p.Unit != "" {
 		// Weird: unit set but systemctl failed; surface it.

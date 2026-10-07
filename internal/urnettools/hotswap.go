@@ -277,8 +277,22 @@ var processNotifySocketFunc = processNotifySocket
 // hand the main PID over with.
 var ErrHotSwapNeedsRestart = errors.New("zero-downtime hotswap unavailable: the running provider was started before its systemd unit became Type=notify, so it has no notify socket; this update uses a service restart, and updates after it can hot swap")
 
+// ErrHotSwapOpenRC is returned when the running provider is supervised by
+// OpenRC's supervise-daemon. There is no sd_notify MainPID handoff, so an
+// in-process baton handoff would orphan the successor while supervise-daemon
+// respawns a second provider; the update uses a stop/start service restart
+// instead. This is the documented OpenRC trade (issue #786).
+var ErrHotSwapOpenRC = errors.New("zero-downtime hotswap unavailable: the provider is supervised by OpenRC's supervise-daemon, which has no sd_notify MainPID handoff; this update uses a stop/start service restart")
+
 func hotSwapUnitOK(p Provider) error {
 	if p.Unit == "" {
+		// A provider with no systemd unit that IS supervised by OpenRC must
+		// not hand off in-process (see openrcHotSwapDecline). Any other
+		// unitless provider (e.g. the Docker PID-1 in-place execve path)
+		// keeps working here unconditionally.
+		if err := openrcHotSwapDecline(p); err != nil {
+			return err
+		}
 		return nil
 	}
 	typ, err := unitTypeFunc(p)

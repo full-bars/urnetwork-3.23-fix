@@ -26,6 +26,8 @@ func hotswapDeclineReason(err error) string {
 		return "low_memory"
 	case errors.Is(err, ErrHotSwapNeedsRestart):
 		return "needs_restart"
+	case errors.Is(err, ErrHotSwapOpenRC):
+		return "openrc"
 	case strings.Contains(err.Error(), "query systemd unit type"):
 		return "unit_query_error"
 	case strings.Contains(err.Error(), "not yet supported on Windows"):
