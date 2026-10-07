@@ -58,11 +58,16 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	}
 	// The binary and working directory must be baked in, and the service must
 	// run the provider's `provide` subcommand.
-	if !strings.Contains(script, "/usr/local/bin/urnetwork provide") {
-		t.Error("script does not invoke the provider binary's provide subcommand")
+	// The binary path is single-quoted inside the su -c string so a path with a
+	// space is passed as one command rather than word-split.
+	if !strings.Contains(script, `'/usr/local/bin/urnetwork' provide`) {
+		t.Error("script does not invoke the quoted provider binary's provide subcommand")
 	}
-	if !strings.Contains(script, "cd /home/tester") {
-		t.Error("script does not cd to the working directory")
+	// The working directory is QUOTED in the rendered script so an install under
+	// a home containing a space still boots. Assert the quoted form; an
+	// unquoted `cd <path>` here would be the bug this quoting prevents.
+	if !strings.Contains(script, `cd "/home/tester"`) {
+		t.Error("script does not cd to the quoted working directory")
 	}
 }
 
