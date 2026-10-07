@@ -56,6 +56,41 @@ pr_warn() {
     printf "%s: $fmt\n" "$me" "$@" >&2
 }
 
+# --- service account resolution ---
+#
+# resolve_service_user prints the account the provider must run as. Order:
+# an explicit override, then SUDO_USER (who actually invoked sudo; $USER is
+# "root" there), then logname (the login session owner, which survives a
+# plain `su -`), then the current uid. $USER alone is NOT trusted: it is
+# unset under cron and is "root" for a plain root login.
+resolve_service_user() {
+    if [ -n "${SERVICE_USER_OVERRIDE:-}" ]; then
+        printf '%s\n' "$SERVICE_USER_OVERRIDE"
+        return
+    fi
+    if [ -n "${SUDO_USER:-}" ]; then
+        printf '%s\n' "$SUDO_USER"
+        return
+    fi
+    _lu="$(logname 2>/dev/null || true)"
+    if [ -n "$_lu" ] && [ "$_lu" != "root" ]; then
+        printf '%s\n' "$_lu"
+        return
+    fi
+    id -un
+}
+
+# user_home prints a user's home directory from the passwd database. $HOME is
+# not usable when running under sudo (it may still be root's), and the service
+# user must be able to read the install and state directories.
+user_home() {
+    _h="$(getent passwd "$1" 2>/dev/null | cut -d: -f6)"
+    if [ -z "$_h" ]; then
+        _h="$(pw usershow "$1" 2>/dev/null | cut -d: -f9)"
+    fi
+    printf '%s\n' "${_h:-$HOME}"
+}
+
 # --- paths ---
 #
 # The binary lives in the SAME location the Go tool's discovery fallback looks
@@ -63,11 +98,17 @@ pr_warn() {
 # stopped install is still discoverable and lifecycle commands have a target.
 # Keep the two in step.
 
-install_path="$HOME/.local/share/urnetwork-provider"
-provider_bin="$install_path/bin/urnetwork"
 service_name="urnetwork"
 rc_script="/usr/local/etc/rc.d/$service_name"
-state_dir="$HOME/.urnetwork"
+
+# Paths come from the SERVICE user's home, not $HOME. Under sudo $HOME may
+# still be root's, and an install under /root would be unreadable by the
+# account the provider actually runs as.
+service_user="$(resolve_service_user)"
+service_home="$(user_home "$service_user")"
+install_path="$service_home/.local/share/urnetwork-provider"
+provider_bin="$install_path/bin/urnetwork"
+state_dir="$service_home/.urnetwork"
 github_api="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 github_raw="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main"
 
@@ -96,6 +137,16 @@ enable_service() {
     sysrc "$service_name"_enable=YES 2>/dev/null
 }
 
+# install_wrapper_tool downloads this script as the urnet-tools stand-in.
+# Staged to a temp file and renamed so a running tool is never truncated in
+# place (ETXTBSY would otherwise break `update` while the tool is executing).
+install_wrapper_tool() {
+    _td="$1"
+    curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$_td/urnet-tools.wrapper" 2>/dev/null || return 1
+    chmod 755 "$_td/urnet-tools.wrapper"
+    mv -f "$_td/urnet-tools.wrapper" "$install_path/bin/urnet-tools"
+}
+
 # --- rc.d script ---
 #
 # One template, emitted on stdout by write_rc_script_body so the root and
@@ -103,7 +154,7 @@ enable_service() {
 # into the file.
 
 write_rc_script() {
-    write_rc_script_body "${1:-${SUDO_USER:-$USER}}" > "$rc_script"
+    write_rc_script_body "${1:-$(resolve_service_user)}" > "$rc_script"
     chmod 755 "$rc_script"
 }
 
@@ -119,7 +170,7 @@ write_rc_script() {
 # under a home directory containing a space would otherwise break `cd` and
 # `su -c` at boot.
 write_rc_script_body() {
-    run_user="${1:-${SUDO_USER:-$USER}}"
+    run_user="${1:-$(resolve_service_user)}"
     cat <<RCSCRIPT
 #!/bin/sh
 #
@@ -199,6 +250,18 @@ RCSCRIPT
 do_install() {
     version="${1:-latest}"
 
+    # Refuse BEFORE downloading: an install that runs the internet-facing
+    # relay as root is a privilege escalation the operator never asked for.
+    # resolve_service_user only settles on root when the caller is root with
+    # no sudo parent and names no override, so this never blocks a normal
+    # `sudo install` (SUDO_USER is used) - only a genuine root login.
+    if [ "$service_user" = "root" ]; then
+        pr_err "refusing to install a service that runs as root"
+        pr_err "re-run as a normal user (sudo is fine: SUDO_USER is used),"
+        pr_err "or name an account: SERVICE_USER_OVERRIDE=<user> %s install" "$me"
+        exit 1
+    fi
+
     if [ "$version" = "latest" ]; then
         release_url="$github_api/releases/latest"
     else
@@ -261,8 +324,14 @@ do_install() {
     fi
 
     mkdir -p "$install_path/bin"
-    cp "$provider_src" "$provider_bin" || { pr_err "Failed to install binary"; rm -rf "$tmpdir"; exit 1; }
-    chmod 755 "$provider_bin"
+    # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
+    # is exactly the `update` case: the provider is still executing the file
+    # being replaced. Staging next to the target and renaming is atomic, is
+    # allowed over a running image, and never leaves a half-written binary.
+    staged="$provider_bin.new.$$"
+    cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
+    chmod 755 "$staged"
+    mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
 
     echo "$tag" > "$install_path/version"
 
@@ -292,27 +361,24 @@ do_install() {
                 chmod 755 "$install_path/bin/urnet-tools"
             else
                 pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
-                curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
-                chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+                install_wrapper_tool "$tmpdir" || true
             fi
         else
             pr_warn "urnet-tools download failed, falling back to shell wrapper"
-            curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
-            chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+            install_wrapper_tool "$tmpdir" || true
         fi
     else
-        curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
-        chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+        install_wrapper_tool "$tmpdir" || true
     fi
 
-    # The rc.d script and rc.conf are ROOT-owned, but the provider itself must
-    # NOT run as root: under `sudo`, $USER is often "root", which would install
-    # a service that runs the internet-facing relay as root. SUDO_USER is the
-    # account that actually invoked sudo; fall back to $USER when it is unset
-    # (a plain root login).
-    service_user="${SUDO_USER:-$USER}"
-    if [ "$service_user" = "root" ] && [ -n "${SUDO_USER:-}" ]; then
-        service_user="$SUDO_USER"
+    # The rc.d script and rc.conf are ROOT-owned; the files the SERVICE user
+    # must read are not. Under sudo the download and copy ran as root, so hand
+    # the install and state directories to the service user or the provider
+    # starts as an account that cannot read its own binary.
+    if [ "$(id -u)" = "0" ] && [ "$service_user" != "root" ]; then
+        chown -R "$service_user" "$install_path" 2>/dev/null || true
+        mkdir -p "$state_dir"
+        chown -R "$service_user" "$state_dir" 2>/dev/null || true
     fi
 
     if [ "$(id -u)" != "0" ]; then
@@ -373,10 +439,15 @@ do_install_service() {
         pr_err "install-service needs root: sudo %s install-service" "$me"
         exit 1
     fi
-    # Under sudo, $USER is usually "root"; SUDO_USER is who actually invoked
-    # it. Running the provider as root because a bootstrap was run with sudo
-    # would be a privilege escalation the operator never asked for.
-    service_user="${SUDO_USER:-$USER}"
+    # Running the provider as root because a bootstrap was run with sudo, or
+    # because the box was logged into as root, would be a privilege
+    # escalation the operator never asked for: refuse and say what to do.
+    service_user="$(resolve_service_user)"
+    if [ "$service_user" = "root" ]; then
+        pr_err "refusing to install a service that runs as root"
+        pr_err "re-run as a normal user, or set SERVICE_USER_OVERRIDE=<user>"
+        exit 1
+    fi
     mkdir -p "$(dirname "$rc_script")"
     write_rc_script "$service_user"
     sysrc "$service_name"_enable=YES
