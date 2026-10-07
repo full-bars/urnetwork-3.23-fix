@@ -53,18 +53,27 @@ jobs:
           cpu: 2
           sync: rsync
           prepare: |
-            # procstat is what discovery reads the process table from. If it
-            # is missing the parsers are never exercised, so install it.
-            pkg install -y procstat coreutils || true
+            # procstat is base FreeBSD (procstat(1) is in the base system, not a
+            # package). Do NOT pkg-install it: on a stock image there is no
+            # matching package, the install fails, and a `|| true` here hides
+            # that — which then breaks every procstat check downstream.
+            command -v procstat >/dev/null 2>&1 || {
+              echo "FATAL: procstat not present in the base image"
+              exit 1
+            }
           run: |
-            set -e
             echo "=== kernel ==="
             freebsd-version
             uname -a
 
+            # The provider's docopt usage has NO version subcommand, so
+            # `provider --version` prints usage and exits 1. Use `help`, which
+            # is a real pattern and exits 0 — this proves the FreeBSD binary
+            # actually LOADS AND RUNS, which is the claim being made.
             echo "=== binaries link and run natively ==="
             ./out/urnet-tools --version
-            ./out/provider --version
+            ./out/provider help > /dev/null
+            echo "provider help exit=$?"
 
             # --- the reason this workflow exists -------------------------------
             # Each check below asserts a syscall/shell behavior that is
@@ -76,60 +85,120 @@ jobs:
             procstat -b | head -5
             echo "--- credentials ---"
             procstat -s | head -5
-            echo "--- a provider-shaped process: start the binary in provide ---"
-            # The provider daemonizes; --version does not. Start something
-            # real so procstat has a live process table entry to read, and
-            # prove the parser handles a genuine row rather than a fixture.
-            ( ./out/provider --help >/dev/null 2>&1 & echo $! > /tmp/bsd_pid ) || true
-            sleep 2
-            if [ -f /tmp/bsd_pid ]; then
-              bsd_pid="$(cat /tmp/bsd_pid)"
-              echo "--- procstat -b for pid $bsd_pid ---"
-              procstat -b "$bsd_pid" || echo "NOTE: pid already exited"
-              echo "--- procstat -s for pid $bsd_pid ---"
-              procstat -s "$bsd_pid" || echo "NOTE: pid already exited"
-              echo "--- parsed credentials (EUID/RUID columns) ---"
-              procstat -s "$bsd_pid" 2>/dev/null | awk 'NR>1 {print "pid="$1" euid="$3" ruid="$4}' || true
+
+            # --- live process discovery ---------------------------------------
+            # `provide` is the only provider subcommand that stays running, so
+            # it is the only way to get a real row in the process table for
+            # the discovery parsers to read. `--version` and `help` both exit
+            # immediately and would leave nothing to parse.
+            echo "=== start a real provider process for discovery ==="
+            mkdir -p "$HOME/.urnetwork"
+            cp ./out/provider "$HOME/.urnetwork/urnetwork"
+            echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
+            chmod 755 "$HOME/.urnetwork/urnetwork"
+            ( HOME="$HOME" ./out/provider provide > /tmp/prov.out 2>&1 & echo $! > /tmp/bsd_pid )
+            sleep 4
+            bsd_pid="$(cat /tmp/bsd_pid 2>/dev/null || echo 0)"
+            echo "provider pid=$bsd_pid"
+
+            # Hard assertion, not a note: if procstat cannot show this process,
+            # the discovery parser contract is broken and the feature is dead.
+            echo "--- procstat -b for pid $bsd_pid ---"
+            if ! procstat -b "$bsd_pid"; then
+              echo "FATAL: procstat -b could not report pid $bsd_pid"
+              cat /tmp/prov.out || true
+              exit 1
+            fi
+            echo "--- procstat -s for pid $bsd_pid ---"
+            if ! procstat -s "$bsd_pid"; then
+              echo "FATAL: procstat -s could not report pid $bsd_pid"
+              exit 1
+            fi
+            # EUID/RUID are columns 3 and 4 of the documented
+            # "PID COMM EUID RUID ..." layout. If that layout ever changes the
+            # discovery parsers silently attribute providers to the wrong user,
+            # so assert the columns parse as numbers rather than printing them.
+            euid="$(procstat -s "$bsd_pid" 2>/dev/null | awk 'NR==2 {print $3}')"
+            if [ -z "$euid" ] || [ "$euid" -eq 0 ] 2>/dev/null; then
+              echo "FATAL: could not parse EUID column (got '$euid'); procstat -s layout changed"
+              procstat -s "$bsd_pid" || true
+              exit 1
+            fi
+            echo "EUID parsed OK: $euid"
+
+            echo "=== the tool discovers a live provider process ==="
+            # This is the end-to-end assertion that the procstat parsers agree
+            # with real output: a live process named like a provider must show
+            # up in the inventory.
+            if ./out/urnet-tools providers | tee /tmp/providers.out | grep -qi urnetwork; then
+              echo "DISCOVERY OK: live provider found"
+            else
+              echo "FATAL: discovery did not find the live provider process"
+              cat /tmp/providers.out || true
+              echo "--- procstat -b (all) for comparison ---"
+              procstat -b | head -20 || true
+              exit 1
             fi
             kill "$bsd_pid" 2>/dev/null || true
 
-            echo "=== the tool discovers a live provider process ==="
-            # A live process named like a provider must be visible to
-            # `urnet-tools providers`. This is the end-to-end assertion that
-            # the procstat parsers match reality.
-            cp ./out/provider "$HOME/.urnetwork/urnetwork" 2>/dev/null || {
-              mkdir -p "$HOME/.urnetwork"; cp ./out/provider "$HOME/.urnetwork/urnetwork"; }
-            echo "test-jwt-for-discovery" > "$HOME/.urnetwork/jwt"
-            ( "$HOME/.urnetwork/urnetwork" --version >/dev/null 2>&1 & ) || true
-            sleep 2
-            ./out/urnet-tools providers || echo "NOTE: discovery returned nothing (see procstat rows above)"
-
-            echo "=== host memory reads (sysmem_freebsd.go) ==="
-            echo "hw.physmem -> $(sysctl -n hw.physmem)"
-            echo "pagesize  -> $(sysctl -n hw.pagesize)"
-            echo "free      -> $(sysctl -n vm.stats.vm.v_free_count 2>/dev/null || echo absent)"
-            echo "inactive  -> $(sysctl -n vm.stats.vm.v_inactive_count 2>/dev/null || echo absent)"
-            echo "cache     -> $(sysctl -n vm.stats.vm.v_cache_count 2>/dev/null || echo absent)"
-            echo "launder   -> $(sysctl -n vm.stats.vm.v_launder_count 2>/dev/null || echo absent)"
-            echo "swap_tot  -> $(sysctl -n vm.swap_total 2>/dev/null || echo absent)"
-            echo "swap_used -> $(sysctl -n vm.swap_used 2>/dev/null || echo absent)"
-
             echo "=== FreeBSD tuning keys exist (optimize_bsd.go contract) ==="
+            # Hard assertion: optimize_bsd.go writes exactly these names. If a
+            # key does not exist, `optimize` applies nothing while reporting
+            # success — the precise failure this workflow exists to catch.
             for k in net.inet.tcp.recvspace net.inet.tcp.sendspace \
                      kern.maxfiles kern.maxfilesperproc; do
-              printf '%-34s = %s\n' "$k" "$(sysctl -n "$k" 2>/dev/null || echo MISSING)"
+              v="$(sysctl -n "$k" 2>/dev/null || true)"
+              if [ -z "$v" ]; then
+                echo "FATAL: tuning key $k does not exist on this kernel"
+                exit 1
+              fi
+              printf '%-34s = %s\n' "$k" "$v"
+            done
+            # Host-memory keys the Go code reads.
+            for k in hw.physmem vm.stats.vm.v_free_count vm.stats.vm.v_inactive_count; do
+              v="$(sysctl -n "$k" 2>/dev/null || true)"
+              if [ -z "$v" ]; then
+                echo "FATAL: memory key $k does not exist; sysmem_freebsd.go would fall back"
+                exit 1
+              fi
+              printf '%-34s = %s\n' "$k" "$v"
+            done
+            # The swap keys the pressure sensor reads. vm.swap_total is 0 when
+            # no swap device is configured, which is a valid state (the sensor
+            # then reports no pressure) — but the key must still EXIST.
+            for k in vm.swap_total vm.swap_used; do
+              if ! sysctl -n "$k" >/dev/null 2>&1; then
+                echo "FATAL: swap key $k does not exist on this kernel"
+                exit 1
+              fi
+              printf '%-34s = %s\n' "$k" "$(sysctl -n "$k")"
             done
             echo "--- linux-only keys must NOT resolve here ---"
             for k in net.core.rmem_max fs.file-max net.netfilter.nf_conntrack_max; do
               printf '%-34s = %s\n' "$k" "$(sysctl -n "$k" 2>/dev/null || echo 'absent (expected)')"
             done
             echo "--- sysrc present for persistence? ---"
-            command -v sysrc || echo "NOTE: sysrc missing"
+            if ! command -v sysrc >/dev/null 2>&1; then
+              echo "FATAL: sysrc missing; setAutoStart cannot write rc.conf"
+              exit 1
+            fi
+            echo "sysrc OK"
 
             echo "=== rc.d + crontab present for lifecycle ==="
-            [ -f /etc/rc.subr ] && echo "rc.subr OK" || echo "rc.subr MISSING"
-            command -v service && echo "service OK" || echo "service MISSING"
-            command -v crontab && echo "crontab OK" || echo "crontab MISSING"
+            for f in /etc/rc.subr; do
+              if [ ! -f "$f" ]; then
+                echo "FATAL: $f missing; the rc.d script cannot run"
+                exit 1
+              fi
+              echo "$f OK"
+            done
+            for c in service crontab; do
+              if ! command -v "$c" >/dev/null 2>&1; then
+                echo "FATAL: $c missing; lifecycle commands cannot work"
+                exit 1
+              fi
+              echo "$c OK"
+            done
 
             echo "=== generated rc.d script is valid shell ==="
             # The Go renderer and the shell installer each carry a copy of
@@ -170,6 +239,53 @@ jobs:
               echo "state dir and jwt present"
               ls -la "$HOME/.urnetwork" || true
             fi
+
+      - name: Go test suite on FreeBSD (native toolchain)
+        id: gotest
+        uses: vmactions/freebsd-vm@v1
+        with:
+          release: "14.5"
+          mem: 6144
+          cpu: 2
+          sync: rsync
+          prepare: |
+            # pkg/go are needed to run the real test suite on the kernel. These
+            # DO exist as packages; unlike procstat (base system) they must be
+            # installed, and a failed install here must fail the job rather than
+            # be swallowed by `|| true` — a missing compiler silently turns
+            # this job into a no-op that always passes.
+            pkg install -y go bash || {
+              echo "FATAL: failed to install the Go toolchain on the VM"
+              exit 1
+            }
+            command -v go >/dev/null 2>&1 || {
+              echo "FATAL: go still not on PATH after pkg install"
+              exit 1
+            }
+            go version
+          run: |
+            echo "=== go vet on FreeBSD ==="
+            # go vet compiles every package for THIS GOOS, so it catches a
+            # freebsd-tagged file that references a symbol that does not exist
+            # on this kernel's build. This is the check that would have caught
+            # the original 8 undefined symbols at PR time.
+            go vet ./... 2>&1 | tail -40
+
+            echo "=== go test: the FreeBSD-tagged tests ==="
+            # These test files only compile and run on a FreeBSD kernel. On
+            # Linux they are skipped or absent, so nothing else in CI executes
+            # them — this is their only real coverage.
+            go test -count=1 -v ./internal/urnettools/ \
+              -run 'TestRenderBSD|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl' 2>&1 | tail -40
+            go test -count=1 -v ./provider/ \
+              -run 'TestMemPressureSwapFrac|TestPeerAllowed' 2>&1 | tail -30
+            go test -count=1 -v . -run 'TestHostMemoryReaders|TestEffectiveRAMLimit' 2>&1 | tail -20
+
+            echo "=== the full suite (long) ==="
+            # TMPDIR must be SHORT: Go nests the test name under TMPDIR and a
+            # long path breaks AF_UNIX binds with EINVAL on any kernel.
+            mkdir -p /tmp/gotest
+            TMPDIR=/tmp/gotest go test -count=1 -timeout 900s ./internal/urnettools/ 2>&1 | tail -30
 
       - name: Summary
         if: always()
