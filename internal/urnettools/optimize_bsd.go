@@ -4,7 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
-	"sort"
+	"path/filepath"
 	"strings"
 )
 
@@ -20,12 +20,12 @@ import (
 // Every key here is asserted to exist on a real kernel by the FreeBSD CI job,
 // which extracts this list rather than repeating it. An earlier draft also
 // listed "net.inet.tcp.sendspace.max", which does not exist — `optimize` aborts
-// on the first unreadable key and rolls the whole set back, so a wrong name
-// here means the command fails on every box. The TCP autotune ceilings
+// on the first unreadable key and rolls the whole set back, so a wrong name here
+// means the command fails on every box. The TCP autotune ceilings
 // (autosndbufmax / autorcvbufmax) would be the way to raise the maximum
 // autotuned buffer; they are deliberately NOT set until their names are
-// confirmed against a real kernel, because guessing costs a CI cycle and a
-// red job, and an unverified key in this list is worse than no key.
+// confirmed against a real kernel, because guessing costs a CI cycle and a red
+// job, and an unverified key in this list is worse than no key.
 func bsdSysctlWrites() [][]string {
 	return [][]string{
 		// Socket buffers for the UDP/WebRTC and TCP transfer paths.
@@ -38,72 +38,128 @@ func bsdSysctlWrites() [][]string {
 	}
 }
 
-// WHY sysrc AND NOT /etc/sysctl.conf: a review suggested the latter, on the
-// grounds that sysctl(8) "serves to query/modify MIBs" while sysrc(8) "works on
-// values in the system rc.conf configuration files". That is true of the two
-// TOOLS, and it does not apply here: these tunables (net.inet.tcp.recvspace,
-// kern.maxfiles and friends) are loader tunables declared in
-// /etc/defaults/rc.conf, and the kernel reads them from rc.conf at boot. That is
-// exactly what sysrc edits. /etc/sysctl.conf is a separate, additional
-// mechanism read by /etc/rc.d/sysctl, not a replacement for rc.conf.
+// WHY /etc/sysctl.conf AND NOT sysrc(8): FreeBSD persists runtime sysctl
+// tunables in /etc/sysctl.conf, which /etc/rc.d/sysctl applies at boot in
+// multi-user mode (sysctl.conf(5)). sysrc(8) is NOT an alternative — it edits
+// rc.conf(5), whose variables are SHELL variable names, and a dotted sysctl MIB
+// is not a valid shell assignment. Writing `net.inet.tcp.recvspace="..."` into
+// rc.conf produces a line no boot script can consume, so the live setting would
+// revert at the next reboot. An earlier version persisted through sysrc on
+// exactly that reasoning and persisted nothing while reporting success.
 //
-// Either mechanism would work; rc.conf is the one whose variables already
-// exist with the same names, so sysrc updates an existing entry in place rather
-// than introducing a second source of truth for the same knob.
+// kern.maxfiles and kern.maxfilesperproc are also settable at runtime and so
+// belong in the same file; /boot/loader.conf is only needed when a value must
+// be in place before any rc script runs.
 
-// bsdRcConfVars maps each tuned sysctl to the rc.conf variable that persists
-// it. FreeBSD does not read /etc/sysctl.conf at boot — sysctl(8) persistence
-// lives in rc.conf, written through sysrc(8) — so writing a sysctl.conf file
-// the way optimizeLinux does would apply nothing after a reboot.
-//
-// Each key here is an existing rc.conf knob with a matching sysctl name, which
-// is what makes sysrc the correct writer: the variable already carries the
-// boot-time value, and sysrc updates it in place.
-func bsdRcConfVars() map[string]string {
-	return map[string]string{
-		"net.inet.tcp.recvspace": "net.inet.tcp.recvspace",
-		"net.inet.tcp.sendspace": "net.inet.tcp.sendspace",
-		"kern.maxfiles":          "kern.maxfiles",
-		"kern.maxfilesperproc":   "kern.maxfilesperproc",
-	}
+// bsdSysctlConfPath is the file /etc/rc.d/sysctl reads at boot.
+const bsdSysctlConfPath = "/etc/sysctl.conf"
+
+// Markers delimiting the block this tool owns. Everything between them is
+// rewritten on each run; lines outside it are never touched.
+const (
+	bsdConfBeginMarker = "# --- urnet-tools optimize (managed block) ---"
+	bsdConfEndMarker   = "# --- end urnet-tools optimize ---"
+)
+
+// renderBSDConfLine returns the sysctl.conf line for one key. sysctl.conf uses
+// the sysctl(8) syntax `mib=value` and treats '#' as a comment introducer, so a
+// key carrying one could be silently truncated to a comment.
+func renderBSDConfLine(key, value string) string {
+	return key + "=" + value
 }
 
-// rollbackBSDDefaults restores the rc.conf variables optimizeFreeBSD changed,
-// clearing any that had no prior value so the persisted half of a failed run
-// does not reappear at the next boot.
+// upsertBSDConfLines returns conf with every managed key set to its target
+// value. A key already present is REPLACED in place, preserving the file's
+// other content and comment order; a key absent is appended under a single
+// marked block.
 //
-// Restoring goes through sysrc(8) rather than editing rc.conf directly: sysrc
-// rewrites the file atomically and preserves its formatting, which every other
-// service on the box also depends on.
-func rollbackBSDDefaults(prior map[string]string) {
-	// Reverse order so the file is returned to a consistent state even if a
-	// later restore fails; a failure here is logged, never masked over the
-	// original error.
-	vars := make([]string, 0, len(prior))
-	for v := range prior {
-		vars = append(vars, v)
-	}
-	sort.Strings(vars)
-	for i := len(vars) - 1; i >= 0; i-- {
-		v := vars[i]
-		arg := v + "="
-		if prior[v] != "" {
-			arg = v + "=" + prior[v]
+// Pure, so the file rewriting is testable without root. A value is rejected
+// rather than written if it is not a plain decimal number, because sysctl.conf
+// is sourced by the boot scripts and anything else is at best a syntax error.
+func upsertBSDConfLines(conf string, writes [][]string) (string, error) {
+	lines := strings.Split(conf, "\n")
+
+	for _, w := range writes {
+		key, value := w[0], w[1]
+		if err := validateBSDConfValue(key, value); err != nil {
+			return "", err
 		}
-		if out, err := exec.Command("sysrc", arg).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "optimize: warning: sysrc rollback %s failed: %v (%s)\n",
-				v, err, strings.TrimSpace(string(out)))
+		want := renderBSDConfLine(key, value)
+
+		// Replace an existing assignment to this key, wherever it lives.
+		replaced := false
+		for i, l := range lines {
+			trimmed := strings.TrimSpace(l)
+			if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+				continue
+			}
+			if k, _, ok := strings.Cut(trimmed, "="); ok && strings.TrimSpace(k) == key {
+				lines[i] = want
+				replaced = true
+				break
+			}
+		}
+		if replaced {
+			continue
+		}
+
+		// Otherwise append into the managed block, creating it on first use.
+		if begin := indexOfLine(lines, bsdConfBeginMarker); begin >= 0 {
+			end := indexOfLine(lines, bsdConfEndMarker)
+			if end < begin {
+				return "", fmt.Errorf("sysctl.conf has a begin marker with no end marker; refusing to edit")
+			}
+			block := make([]string, 0, end-begin+1)
+			block = append(block, lines[begin+1:end]...)
+			block = append(block, want)
+			rest := append([]string{}, lines[end:]...)
+			lines = append(append(append([]string{}, lines[:begin+1]...), block...), rest...)
+			continue
+		}
+
+		// No managed block yet: create one, keeping a trailing newline tidy.
+		if n := len(lines); n > 0 && lines[n-1] == "" {
+			lines[n-1] = bsdConfBeginMarker
+			lines = append(lines, want, bsdConfEndMarker, "")
+		} else {
+			lines = append(lines, "", bsdConfBeginMarker, want, bsdConfEndMarker)
 		}
 	}
+	return strings.Join(lines, "\n"), nil
+}
+
+// indexOfLine returns the index of the first line equal to want, or -1.
+func indexOfLine(lines []string, want string) int {
+	for i, l := range lines {
+		if strings.TrimSpace(l) == want {
+			return i
+		}
+	}
+	return -1
+}
+
+// validateBSDConfValue rejects a value that is not a plain decimal number.
+// sysctl.conf is consumed by shell at boot; a value carrying a quote, a space,
+// a newline or a '#' would either be a syntax error or truncate the line into a
+// comment, and either way the boot value would not be the one asked for.
+func validateBSDConfValue(key, value string) error {
+	if value == "" {
+		return fmt.Errorf("refusing to persist an empty value for %s", key)
+	}
+	for _, c := range value {
+		if c < '0' || c > '9' {
+			return fmt.Errorf("refusing to persist non-numeric value %q for %s", value, key)
+		}
+	}
+	return nil
 }
 
 // optimizeFreeBSD applies the FreeBSD equivalents of the golden-fleet tuning.
 //
 // The shape matches optimizeLinux deliberately: snapshot the prior live values,
-// apply, roll back on any failure, then persist. Persisting here means rc.conf
-// rather than a sysctl.conf file, which is the one part that genuinely differs
-// and the part that would otherwise look like it worked while reverting at the
-// next reboot.
+// apply, roll back on any failure, then persist. Persisting writes
+// /etc/sysctl.conf through a temp file and a rename, so an interrupted run cannot
+// leave a half-written boot file.
 func optimizeFreeBSD() error {
 	if os.Geteuid() != 0 {
 		self, _ := os.Executable()
@@ -127,6 +183,14 @@ func optimizeFreeBSD() error {
 		prior[w[0]] = strings.TrimSpace(string(out))
 	}
 
+	// Snapshot the boot file too, so a persist failure restores it exactly. The
+	// bytes are the source of truth, not a re-render: re-rendering would lose
+	// entries this tool does not manage.
+	confBefore, confExisted, err := readBSDConf()
+	if err != nil {
+		return fmt.Errorf("optimize: cannot read %s (%v); aborting", bsdSysctlConfPath, err)
+	}
+
 	applied := 0
 	for _, w := range writes {
 		if out, err := exec.Command("sysctl", "-w", w[0]+"="+w[1]).CombinedOutput(); err != nil {
@@ -138,47 +202,88 @@ func optimizeFreeBSD() error {
 		applied++
 	}
 
-	// Persist through sysrc so the values survive a reboot. A persistence
-	// failure must not leave the live settings changed with nothing recording
-	// them, so the live values are rolled back to their prior state.
-	//
-	// The rc.conf values are snapshotted too, and each is restored on failure.
-	// A partial sysrc run would otherwise leave earlier keys persisted in
-	// rc.conf: the live settings roll back immediately, but at the next reboot
-	// the persisted half would come back — a change the operator never
-	// completed and was told had been rolled back.
-	rcVars := bsdRcConfVars()
-	priorRC := make(map[string]string, len(writes))
-	for _, w := range writes {
-		v, ok := rcVars[w[0]]
-		if !ok {
-			continue
-		}
-		out, err := exec.Command("sysrc", "-n", v).Output()
-		if err != nil {
-			// Not currently set. sysrc reports "sysrc: unknown oid" for an
-			// unset variable; anything else is a real failure, but either way
-			// there is no prior value to restore, so record it as unset.
-			priorRC[v] = ""
-			continue
-		}
-		priorRC[v] = strings.TrimSpace(string(out))
+	newConf, err := upsertBSDConfLines(confBefore, writes)
+	if err != nil {
+		// The file is untouched at this point, so only the live values need
+		// reverting — but they must be, or the box runs tuned until reboot.
+		fmt.Fprintf(os.Stderr, "optimize: warning: rendering %s failed: %v; rolling back\n",
+			bsdSysctlConfPath, err)
+		rollbackSysctls(writes, prior)
+		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live settings",
+			bsdSysctlConfPath, err)
+	}
+	if err := writeBSDConf(newConf, confExisted); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: writing %s failed: %v; rolling back\n",
+			bsdSysctlConfPath, err)
+		rollbackBSDConf(confBefore, confExisted)
+		rollbackSysctls(writes, prior)
+		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live and boot settings",
+			bsdSysctlConfPath, err)
 	}
 
-	for _, w := range writes {
-		v, ok := rcVars[w[0]]
-		if !ok {
-			continue
-		}
-		if out, err := exec.Command("sysrc", v+"="+w[1]).CombinedOutput(); err != nil {
-			fmt.Fprintf(os.Stderr, "optimize: warning: sysrc %s failed: %v (%s); rolling back\n",
-				v, err, strings.TrimSpace(string(out)))
-			rollbackBSDDefaults(priorRC)
-			rollbackSysctls(writes, prior)
-			return fmt.Errorf("optimize: persist %s failed (%v); rolled back live and rc.conf settings", v, err)
-		}
-	}
-
-	fmt.Println("optimize: done (live + rc.conf persisted)")
+	fmt.Println("optimize: done (live + " + bsdSysctlConfPath + " persisted)")
 	return nil
+}
+
+// readBSDConf returns the current contents of the boot file and whether it
+// existed. A missing file is not an error: it will be created.
+func readBSDConf() (content string, existed bool, err error) {
+	data, err := os.ReadFile(bsdSysctlConfPath)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return "", false, nil
+		}
+		return "", false, err
+	}
+	return string(data), true, nil
+}
+
+// writeBSDConf replaces the boot file atomically, preserving its existing mode
+// when there is one. The temp file is created in the same directory so the
+// rename stays on one filesystem and is therefore atomic.
+func writeBSDConf(content string, existed bool) error {
+	mode := os.FileMode(0o644)
+	if existed {
+		if fi, err := os.Stat(bsdSysctlConfPath); err == nil {
+			mode = fi.Mode().Perm()
+		}
+	}
+	dir := filepath.Dir(bsdSysctlConfPath)
+	tmp, err := os.CreateTemp(dir, ".sysctl.conf.urnet")
+	if err != nil {
+		return err
+	}
+	name := tmp.Name()
+	defer os.Remove(name)
+
+	if _, err := tmp.WriteString(content); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Chmod(mode); err != nil {
+		tmp.Close()
+		return err
+	}
+	if err := tmp.Close(); err != nil {
+		return err
+	}
+	return os.Rename(name, bsdSysctlConfPath)
+}
+
+// rollbackBSDConf restores the exact prior bytes of the boot file, or removes it
+// if it did not exist before. Leaving behind a file this tool created and then
+// failed to write would change the box's boot behaviour even though the command
+// reported a rollback.
+func rollbackBSDConf(content string, existed bool) {
+	if !existed {
+		if err := os.Remove(bsdSysctlConfPath); err != nil && !os.IsNotExist(err) {
+			fmt.Fprintf(os.Stderr, "optimize: warning: removing %s failed: %v\n",
+				bsdSysctlConfPath, err)
+		}
+		return
+	}
+	if err := writeBSDConf(content, true); err != nil {
+		fmt.Fprintf(os.Stderr, "optimize: warning: restoring %s failed: %v\n",
+			bsdSysctlConfPath, err)
+	}
 }

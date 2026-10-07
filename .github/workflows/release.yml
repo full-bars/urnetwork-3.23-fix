@@ -154,6 +154,18 @@ jobs:
           name: provider-windows-arm64
           path: release_tmp/windows/arm64/
 
+      - name: Download provider freebsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-freebsd-amd64
+          path: release_tmp/freebsd/amd64/
+
+      - name: Download provider freebsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-freebsd-arm64
+          path: release_tmp/freebsd/arm64/
+
       - name: Download urnet-tools linux amd64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -189,6 +201,18 @@ jobs:
         with:
           name: urnet-tools-windows-arm64
           path: tool_tmp/windows/arm64/
+
+      - name: Download urnet-tools freebsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-freebsd-amd64
+          path: tool_tmp/freebsd/amd64/
+
+      - name: Download urnet-tools freebsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-freebsd-arm64
+          path: tool_tmp/freebsd/arm64/
 
       - name: Download urnet-docker linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -261,6 +285,15 @@ jobs:
           cp tool_tmp/windows/arm64/urnet-tools urnet-tools-windows-arm64
           cp tool_tmp/windows/amd64/urnet-docker urnet-docker-windows-amd64
           cp tool_tmp/windows/arm64/urnet-docker urnet-docker-windows-arm64
+
+          # FreeBSD: the install script looks for freebsd/<arch>/provider inside
+          # the universal tarball and for a urnet-tools-freebsd-<arch> asset, so
+          # both must exist or every install fails with "binary not found in
+          # release tarball".
+          for arch in amd64 arm64; do
+            cp "provider_tmp/freebsd/$arch/provider" "release_tmp/freebsd/$arch/provider"
+            cp "tool_tmp/freebsd/$arch/urnet-tools" "tool_tmp/urnet-tools-freebsd-$arch"
+          done
           # NOTE: these copies are deliberately NOT suppressed with || true —
           # a missing/renamed tool artifact must fail the release BEFORE it
           # publishes, not ship a release that breaks installers + self-update
@@ -278,7 +311,7 @@ jobs:
           # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp
-          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ windows/ urnet-tools
+          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ windows/ freebsd/ urnet-tools
           cd ..
 
           # Per-platform tarballs — flat (no subdirs), each with its own script
@@ -305,6 +338,14 @@ jobs:
             mkdir -p "per-platform/${plat}"
             cp "release_tmp/windows/${arch}/provider.exe" "per-platform/${plat}/"
             cp "tool_tmp/windows/${arch}/urnet-tools" "per-platform/${plat}/urnet-tools.exe"
+            cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
+          done
+
+          for plat in freebsd-amd64 freebsd-arm64; do
+            arch="${plat#freebsd-}"
+            mkdir -p "per-platform/${plat}"
+            cp "release_tmp/freebsd/${arch}/provider" "per-platform/${plat}/"
+            cp scripts/Provider_Install_FreeBSD.sh "per-platform/${plat}/urnet-tools"
             cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
           done
 
