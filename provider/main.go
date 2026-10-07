@@ -2895,9 +2895,9 @@ func provide(opts docopt.Opts) {
 		// Wire the control socket "hotswap" command so urnet-tools can
 		// trigger a handoff on any platform (including Windows, which has
 		// no SIGUSR2).
-		hotSwapTrigger = func() error {
+		setHotSwapTrigger(func() error {
 			return runHotSwapParentHandoff(ctx, cancel, opts)
-		}
+		})
 	}
 
 	// Drain buffered retention events before exit so a shutdown racing the
@@ -3760,9 +3760,9 @@ func provide(opts docopt.Opts) {
 				_ = hotSwapIPC.Close()
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
-				hotSwapTrigger = func() error {
+				setHotSwapTrigger(func() error {
 					return runHotSwapParentHandoff(ctx, cancel, opts)
-				}
+				})
 
 				// Wait for the parent to actually release the control socket before
 				// reloading state and binding our own. The parent only closes it when
@@ -4284,7 +4284,12 @@ func provide(opts docopt.Opts) {
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
+	// A hot swap execs in place: the pid survives and the previous image's
+	// proxy.lock would read as held-by-a-live-holder. Clear it before any
+	// reload path (watcher, watchdog, first reload) can observe it.
+	cleanStaleSelfProxyLock()
 	reloader.StartWatcher(ctx)
+	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx) }, nil)
 	// Reconcile against the operator trim cap immediately at startup. The launch
 	// loop above already holds back the worst-graded proxies above the cap
 	// (startupTrimSelection); this reload confirms the cap, logs the result, and

@@ -880,11 +880,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Value: "shutting down"}
 
 	case "hotswap":
-		if hotSwapTrigger == nil {
+		hotSwap := getHotSwapTrigger()
+		if hotSwap == nil {
 			return controlResponse{OK: false, Error: "hotswap trigger not available"}
 		}
 		go func() {
-			if err := hotSwapTrigger(); err != nil {
+			if err := hotSwap(); err != nil {
 				tlog("[hotswap] background handoff failed: %v\n", err)
 			}
 		}()
@@ -1241,8 +1242,26 @@ func listenOrWait(addr string, wait time.Duration) (net.Listener, error) {
 // that calls runHotSwapParentHandoff with the live ctx/cancel/opts. The
 // control socket's "hotswap" command calls this instead of duplicating the
 // startup scope. Nil when not set (e.g. tests that don't wire the full
-// startup path).
-var hotSwapTrigger func() error
+// startup path). Guarded by hotSwapTriggerMu: the promoted candidate's ack
+// path can re-arm it after takeover while other goroutines read it.
+var (
+	hotSwapTriggerMu sync.RWMutex
+	hotSwapTrigger   func() error
+)
+
+// setHotSwapTrigger stores the hot-swap trigger function, safe for concurrent use.
+func setHotSwapTrigger(fn func() error) {
+	hotSwapTriggerMu.Lock()
+	defer hotSwapTriggerMu.Unlock()
+	hotSwapTrigger = fn
+}
+
+// getHotSwapTrigger returns the current hot-swap trigger function (nil if unset).
+func getHotSwapTrigger() func() error {
+	hotSwapTriggerMu.RLock()
+	defer hotSwapTriggerMu.RUnlock()
+	return hotSwapTrigger
+}
 
 func applyPersistedRuntimeTuning(state *controlState) {
 	if v, ok := state.get("gomemlimit"); ok && v != "" && !strings.EqualFold(v, "off") {

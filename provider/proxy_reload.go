@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -81,7 +82,28 @@ func acquireProxyLockAt(path string) (func(), error) {
 	}
 	if existing, err := os.ReadFile(path); err == nil {
 		if isLockStale(existing) {
-			os.Remove(path)
+			// An empty or unparseable lock younger than the write grace is
+			// likely an acquirer that has created the file but not yet
+			// written its pid+timestamp (create and write are not atomic).
+			// Stealing it would admit two holders at once; falling through
+			// to O_EXCL below fails safely instead.
+			steal := true
+			if _, _, ok := parseLockContent(existing); !ok {
+				if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) < proxyLockWriteGrace {
+					steal = false
+				}
+			}
+			if steal {
+				// Remove only the file we actually judged stale: two racing
+				// stealers could otherwise have the slower one delete the
+				// faster one's fresh lock. The re-read narrows the window;
+				// POSIX has no compare-and-delete, so a microsecond-sized
+				// window remains — a fresh lock installed inside it fails
+				// our O_EXCL below, which is the safe outcome.
+				if current, err := os.ReadFile(path); err == nil && string(current) == string(existing) {
+					os.Remove(path)
+				}
+			}
 		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
@@ -91,13 +113,88 @@ func acquireProxyLockAt(path string) (func(), error) {
 		}
 		return nil, err
 	}
-	fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
-	f.Close()
+	nonce := atomic.AddUint64(&proxyLockNonce, 1)
+	content := fmt.Sprintf("%d\n%d\n%d\n", os.Getpid(), time.Now().Unix(), nonce)
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return nil, err
+	}
+	// Release removes the lock ONLY while the file is still ours. A stale
+	// steal can replace it with a NEW holder's lock (isLockStale admits a
+	// live holder's lock once it ages past the PID-reuse bound), and an
+	// unconditional remove would delete THEIR lock and let a third acquirer
+	// in while they are still working. The read-compare-remove cannot be
+	// atomic on POSIX; the residual window (a steal landing between the
+	// read and the remove) is accepted — closing it needs flock, which is
+	// not portable to the Windows build.
 	var once sync.Once
-	return func() { once.Do(func() { os.Remove(path) }) }, nil
+	return func() {
+		once.Do(func() {
+			if current, err := os.ReadFile(path); err == nil && string(current) == content {
+				os.Remove(path)
+			}
+		})
+	}, nil
 }
 
 const proxyLockStaleAge = 5 * time.Minute
+
+// proxyLockNonce disambiguates lock content across acquisitions within one
+// process: with second-granularity timestamps two acquisitions by this
+// process inside the same second would otherwise carry byte-identical
+// content, and a late release of the first would remove the second holder's
+// lock.
+var proxyLockNonce uint64
+
+// proxyLockWriteGrace covers the non-atomic create-then-write window of a
+// lock acquisition: lock content that does not parse and is younger than
+// this is assumed mid-write, not stale.
+var proxyLockWriteGrace = 5 * time.Second
+
+// processStart approximates this process's start time. A hot swap execs in
+// place: the pid survives and deferred cleanup never runs, so a proxy.lock
+// written by the previous image carries our own pid with an old timestamp
+// and would read as "held by a live holder" until proxyLockMaxAge ages it
+// out — blocking every lock consumer in the fresh image for up to an hour.
+var processStart = time.Now()
+
+// cleanStaleSelfProxyLock removes a proxy.lock that carries this process's
+// own pid but predates this process's start. Run it at startup, before the
+// first reload, so an escalated hot restart is not greeted by its own old
+// lock.
+func cleanStaleSelfProxyLock() {
+	path, err := proxyLockPath()
+	if err != nil {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	pid, ts, ok := parseLockContent(b)
+	if !ok || pid != os.Getpid() {
+		return
+	}
+	// Inclusive bound: a lock written by the previous image in the same
+	// integer second as this process's start must be cleaned too, and at
+	// cleanup time this image cannot yet hold a lock of its own (it runs
+	// before any local consumer).
+	if ts <= processStart.Unix() {
+		// Compare before removing, like the steal path: another holder
+		// could have replaced the file between the read and the remove.
+		if current, err := os.ReadFile(path); err != nil || string(current) != string(b) {
+			return
+		}
+		if os.Remove(path) == nil {
+			tlog("[proxy] removed a proxy.lock left behind by a previous image with this pid\n")
+		}
+	}
+}
 
 // proxyLockMaxAge is the outer bound: even if the holder appears alive
 // (Signal(0) succeeds), a lock older than this is unconditionally stale.
@@ -118,6 +215,48 @@ var writeReloadTriggerDebounce = 30 * time.Second
 // tests can shrink it and finish in milliseconds instead of blocking on the
 // real interval.
 var drainPollInterval = 5 * time.Second
+
+// reloadSlotTimeout bounds how long a new reload waits for an in-flight
+// reload to release its slot before skipping. This replaced an unbounded
+// r.mu.Lock() wait: a reload that stalls mid-body used to block every future
+// trigger silently and forever (observed on a starved box: 13h, see the LA7
+// incident) because the file-lock auto-steal never frees the in-process
+// mutex. Vars (not consts) so tests can shrink them.
+var reloadSlotTimeout = 10 * time.Minute
+
+// reloadSlotPollInterval is the poll cadence while waiting for the slot.
+var reloadSlotPollInterval = 250 * time.Millisecond
+
+// reloadHardLimit bounds a single reload's runtime. The reload body checks it
+// at phase boundaries and aborts cleanly; RunReloadWatchdog escalates when a
+// reload overruns it. A healthy-box reload — even for a many-thousand-proxy
+// fleet — completes in seconds to a couple of minutes; overrunning this means
+// the box is pathological (thrashing) or the goroutine is stuck.
+var reloadHardLimit = 20 * time.Minute
+
+// reloadWatchdogInterval is how often the reload watchdog checks for an
+// overrunning reload.
+var reloadWatchdogInterval = 30 * time.Second
+
+// reloadWatchdogReFire bounds how often one overrunning episode asks for a
+// hot restart. The hotswap decline ledger throttles repeats further; this
+// just bounds our asks.
+var reloadWatchdogReFire = 5 * time.Minute
+
+// reloadOverdueAction is the reload watchdog's escalation when a reload has
+// held the slot past reloadHardLimit. Default: ask for a hot restart — the
+// only recovery from a goroutine that is truly stuck — gated on the
+// hot_restart control key. Overridable for tests.
+var reloadOverdueAction = func() error {
+	if !hotRestartEnabled() {
+		return fmt.Errorf("hot restart disabled (hot_restart=off)")
+	}
+	trigger := getHotSwapTrigger()
+	if trigger == nil {
+		return fmt.Errorf("hot swap trigger not installed")
+	}
+	return trigger()
+}
 
 var lastReloadTriggerTime struct {
 	sync.Mutex
@@ -166,17 +305,32 @@ func doWriteReloadTrigger(path string) error {
 	return os.Rename(tmp, path)
 }
 
-func isLockStale(data []byte) bool {
-	lines := strings.SplitN(strings.TrimSpace(string(data)), "\n", 2)
+// parseLockContent extracts the pid and timestamp from lock content. ok is
+// false for empty, truncated or unparseable content — which must NOT be
+// treated as stale on sight while an acquirer may still be mid-write (see
+// the write-grace guard in acquireProxyLockAt).
+func parseLockContent(data []byte) (pid int, ts int64, ok bool) {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
 	if len(lines) < 2 {
-		return true
+		return 0, 0, false
 	}
-	pid, err := strconv.Atoi(lines[0])
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
 	if err != nil {
-		return true
+		return 0, 0, false
 	}
-	ts, err := strconv.ParseInt(lines[1], 10, 64)
+	ts, err = strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
 	if err != nil {
+		return 0, 0, false
+	}
+	return pid, ts, true
+}
+
+func isLockStale(data []byte) bool {
+	// Only the first two lines (pid, timestamp) are interpreted; the third
+	// is a per-acquisition nonce, and any trailing content must not confuse
+	// the parse.
+	pid, ts, ok := parseLockContent(data)
+	if !ok {
 		return true
 	}
 
@@ -210,8 +364,22 @@ func isLockStale(data []byte) bool {
 // number and calls reload(). reload() is serialized by mu so two reloads never
 // overlap.
 type ProxyReloader struct {
-	mu        sync.Mutex // serializes reloads
-	cancelMap map[string]context.CancelFunc
+	mu sync.Mutex // serializes reloads
+	// reloadActive/reloadStartedAt track the in-flight reload for
+	// RunReloadWatchdog. reloadStartedAt is stored immediately BEFORE the
+	// slot is published as active, and both are cleared before r.mu is
+	// released, so the watchdog never sees active=true while the slot is
+	// free or paired with a previous reload's timestamp.
+	reloadActive    atomic.Bool
+	reloadStartedAt atomic.Int64 // unix nanos
+	// reloadSlotSkipped records that the last reload() could not take the
+	// slot; the watcher then leaves the trigger sequence unrecorded so the
+	// trigger is retried on a later tick instead of being dropped.
+	reloadSlotSkipped atomic.Bool
+	// watchdogActionInFlight single-flights the hot-restart request so a
+	// slow handoff cannot stack goroutines on every re-fire.
+	watchdogActionInFlight atomic.Bool
+	cancelMap              map[string]context.CancelFunc
 	// runningAuth records the settings each running proxy was launched with.
 	// The reloader diffs the desired set by address only, so without this it
 	// cannot tell whether a running proxy's credentials still match the
@@ -534,11 +702,115 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 					continue
 				}
 				tlog("🔄 [proxy] reload trigger: seq %d → %d\n", lastSeq, seq)
-				lastSeq = seq
 				r.reload()
+				// Record the sequence only after the reload. A reload that
+				// could not take the slot is retried on a later tick
+				// instead of dropping its trigger; every other outcome
+				// (ran, skipped for a source error, aborted) is a decision,
+				// not a lost notification.
+				if !r.reloadSlotSkipped.Load() {
+					lastSeq = seq
+				}
 			}
 		}
 	})
+}
+
+// acquireReloadSlot takes r.mu, waiting up to reloadSlotTimeout for an
+// in-flight reload to finish. It returns false when the slot never freed (or
+// the parent context cancelled), so the caller can skip instead of blocking
+// forever.
+func (r *ProxyReloader) acquireReloadSlot() bool {
+	deadline := time.Now().Add(reloadSlotTimeout)
+	// One reused timer: time.After in the loop would schedule a fresh timer
+	// on every poll tick.
+	poll := time.NewTimer(reloadSlotPollInterval)
+	defer poll.Stop()
+	for {
+		if r.mu.TryLock() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		// Shutdown must never wait out the slot timeout: the parent context
+		// cancels on SIGTERM and on hotswap drain, and a reload that cannot
+		// take the slot has nothing to do anyway.
+		if r.parentCtx != nil {
+			select {
+			case <-r.parentCtx.Done():
+				return false
+			case <-poll.C:
+			}
+			poll.Reset(reloadSlotPollInterval)
+		} else {
+			time.Sleep(reloadSlotPollInterval)
+		}
+	}
+}
+
+// RunReloadWatchdog watches for a reload holding the slot past
+// reloadHardLimit and escalates: a loud record (ramlog + events.log) and a
+// hot-restart request through reloadOverdueAction (gated on hot_restart).
+// This is the backstop for the case the reload body cannot handle itself —
+// a goroutine stuck inside a call that never returns. Without it, one stuck
+// reload stalls every future trigger and every proxy-pool maintenance path
+// for as long as the process lives.
+func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(reloadWatchdogInterval)
+	defer ticker.Stop()
+	var lastFired time.Time
+	var episodeStart int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !r.reloadActive.Load() {
+			episodeStart = 0
+			continue
+		}
+		started := r.reloadStartedAt.Load()
+		if started <= 0 {
+			continue
+		}
+		held := time.Since(time.Unix(0, started))
+		if held < reloadHardLimit {
+			continue
+		}
+		// Fire once per episode, then at most once per reloadWatchdogReFire
+		// while the same reload stays overdue. The hotswap decline ledger
+		// throttles repeats further.
+		if episodeStart == started && time.Since(lastFired) < reloadWatchdogReFire {
+			continue
+		}
+		episodeStart = started
+		lastFired = time.Now()
+		// tlog is a cheap in-memory write and goes out immediately; the
+		// fsyncing critLog record is written inside the action goroutine so
+		// a thrashing disk or a busy critLogMu cannot stall this ticker
+		// loop — the very escalation it exists to fire.
+		tlog("🚨 [proxy] reload watchdog: reload overdue %v — requesting hot restart\n", held.Round(time.Second))
+		// Single-flight: a hot-swap handoff can take minutes, and stacking a
+		// fresh goroutine on every re-fire would leak them if it ever hung.
+		if r.watchdogActionInFlight.CompareAndSwap(false, true) {
+			go connect.HandleError(func() {
+				defer r.watchdogActionInFlight.Store(false)
+				critLog("%s", fmt.Sprintf("[proxy] reload watchdog: reload overdue %v (hard limit %v) — requesting hot restart",
+					held.Round(time.Second), reloadHardLimit))
+				if err := reloadOverdueAction(); err != nil {
+					critLog("%s", fmt.Sprintf("[proxy] reload watchdog: hot restart unavailable: %v — operator action needed (urnet-tools restart)", err))
+					tlog("🚨 [proxy] reload watchdog: hot restart unavailable: %v — operator action needed (urnet-tools restart)\n", err)
+				} else {
+					critLog("%s", "[proxy] reload watchdog: hot restart requested")
+					tlog("🚨 [proxy] reload watchdog: hot restart requested\n")
+				}
+			})
+		} else {
+			tlog("🚨 [proxy] reload watchdog: a hot-restart request is already in flight\n")
+		}
+	}
 }
 
 // reload diffs the proxy source against the currently running set and applies
@@ -576,12 +848,64 @@ func (r *ProxyReloader) reload() {
 		pendingCrit = append(pendingCrit, func() { critLog("%s", fmt.Sprintf(format, args...)) })
 	}
 
-	r.mu.Lock()
+	r.reloadSlotSkipped.Store(false)
+	if !r.acquireReloadSlot() {
+		if r.parentCtx != nil && r.parentCtx.Err() != nil {
+			// Shutdown, not contention: no retry is wanted and no alarm is
+			// due.
+			tlog("[proxy] reload cancelled: shutting down\n")
+			return
+		}
+		r.reloadSlotSkipped.Store(true)
+		held := "unknown"
+		if started := r.reloadStartedAt.Load(); started > 0 {
+			held = time.Since(time.Unix(0, started)).Round(time.Second).String()
+		}
+		tlog("[proxy] reload skipped: a previous reload has held the slot for %s (slot wait limit %v) — RunReloadWatchdog escalates if it is stuck\n", held, reloadSlotTimeout)
+		return
+	}
 	defer r.mu.Unlock()
+	// Publish the timestamp BEFORE the active flag: whenever the watchdog
+	// sees active=true, startedAt already belongs to this reload. Clear both
+	// before the slot is released (defers run LIFO) so a stale startedAt
+	// can never survive into the next window.
+	r.reloadStartedAt.Store(time.Now().UnixNano())
+	r.reloadActive.Store(true)
+	defer func() {
+		r.reloadActive.Store(false)
+		r.reloadStartedAt.Store(0)
+	}()
+	slotAcquiredAt := time.Now()
+
+	// overdue reports when this reload has run past reloadHardLimit so the
+	// caller can abort at the next phase boundary; the watchdog is the hard
+	// backstop for a goroutine that never reaches another check. ("start"
+	// is effectively a zero-limit test hook; "planning" guards the mutation
+	// section before any trim, removal or launch is staged.)
+	overdue := func(phase string) bool {
+		if time.Since(slotAcquiredAt) < reloadHardLimit {
+			return false
+		}
+		// Mark the trigger un-consumed: an aborted reload did none of its
+		// work, and without this the change would wait for the next trigger
+		// (up to the hourly reconciler) instead of being retried on a later
+		// watch tick.
+		r.reloadSlotSkipped.Store(true)
+		tlog("🚨 [proxy] reload aborted at %s after %v (hard limit %v): state left as-is, retried on a later tick\n",
+			phase, time.Since(slotAcquiredAt).Round(time.Second), reloadHardLimit)
+		return true
+	}
+	if overdue("start") {
+		return
+	}
 
 	lockAcqStart := time.Now()
 	lockRelease, err := acquireProxyLockWithRetry()
 	if err != nil {
+		// Transient cross-process contention (a CLI or reaper holding the
+		// file lock): mark the trigger un-consumed so the watcher retries
+		// it on a later tick instead of dropping the change.
+		r.reloadSlotSkipped.Store(true)
 		tlog("[proxy] reload skipped: %v (waited %v)\n", err, time.Since(reloadStart).Round(time.Millisecond))
 		return
 	}
@@ -966,6 +1290,16 @@ func (r *ProxyReloader) reload() {
 	// later relaunch allocate a new ID and rank the proxy as ungraded.
 	trimShedSet := map[string]bool{}
 
+	// Abort BEFORE the fleet-mutation section if this reload has run too
+	// long: everything above is reads, idempotent store adoption and the
+	// planning itself, so the running fleet is untouched — no trim, removal
+	// or launch is staged, and no audit or events.log record can describe
+	// work that will not happen. (The direct hot-toggle above is idempotent
+	// and safe to have run.)
+	if overdue("planning") {
+		return
+	}
+
 	// Operator trim cap (provider proxy trim <N>): hold the running pool at N.
 	// Shed the A-F-worst running proxies above N (folded into removed so they are
 	// cancelled), and drop the worst-graded not-yet-running additions above the
@@ -1271,6 +1605,14 @@ func (r *ProxyReloader) reload() {
 
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
 	// goroutine from racing this write and resurrecting removed proxies.
+	//
+	// This runs under r.mu by design: the slot must not free until the
+	// post-reload state is on disk, and an fsync cannot be made cancellable
+	// portably. If the filesystem stalls here past reloadHardLimit (a
+	// thrashing disk), the reload watchdog is the bound — it escalates to a
+	// hot restart, the only way to shed a goroutine stuck in a syscall.
+	// Skipping the write instead would drop the prune and ID bookkeeping
+	// this pass just computed.
 	proxyStateMu.Lock()
 	if diskState, err := readProxyState(); err == nil {
 		for addr, entry := range r.state.Proxies {
