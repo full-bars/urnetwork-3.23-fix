@@ -79,11 +79,14 @@ ramlog_since_last_start() {
 # the provider trims the log down to its newest two-thirds once it passes 5MB
 # (provider/shmlog_linux.go), so the count can go DOWN mid-run and a
 # count-based mark would then never be exceeded again -- every later wait in
-# RAM-log mode would false-fail. The RFC3339 timestamp is unique per start
-# (format: provider/shmlog_linux.go) and survives trims of the oldest content.
+# RAM-log mode would false-fail. The RFC3339 timestamp (format:
+# provider/shmlog_linux.go) has second granularity but is unique per start in
+# practice: every snapshot site is separated from the prior delimiter write by
+# at least one wait/assert cycle. A fractional-second stamp (RFC3339Nano) is
+# tolerated too, and either way the value survives trims of the oldest content.
 ramlog_mark() {
   grep -- "--- provider restarted at" "$RAMLOG" 2>/dev/null | tail -1 \
-    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})' | tail -1
+    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(\.[0-9]+)?(Z|[+-][0-9]{2}:[0-9]{2})' | tail -1
 }
 
 # ramlog_mark_snapshot: ramlog_mark with the no-delimiter case normalized to
@@ -113,7 +116,7 @@ ramlog_gate_open() {
 # through t1bad: a broken gate is the false-pass class this harness exists to
 # kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 m3 blk cid gf=0
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out gf=0
   tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
@@ -128,6 +131,8 @@ gate_selftest() {
   { echo '--- provider restarted at 2026-01-01T00:00:01Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
   m1=$(ramlog_mark)
   [ -n "$m1" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark found no timestamp on a delimiter line"; gf=1; }
+  ramlog_gate_open "-" || { t1bad "SELF-TEST-FAIL: gate stayed closed with base '-' after the first delimiter appeared"; gf=1; }
+  [ "$(ramlog_mark_snapshot)" = "$m1" ] || { t1bad "SELF-TEST-FAIL: snapshot on a populated log is '$(ramlog_mark_snapshot)', want '$m1'"; gf=1; }
   blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
   [ "$blk" = "1" ] || { t1bad "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1"; gf=1; }
   if ramlog_gate_open "$m1"; then t1bad "SELF-TEST-FAIL: gate open with base == current mark ($m1) -- stale blocks could satisfy a wait"; gf=1; fi
@@ -148,6 +153,27 @@ gate_selftest() {
   if ramlog_gate_open "$m2"; then t1bad "SELF-TEST-FAIL: gate open after an old-block trim with no new delimiter"; gf=1; fi
   { echo '--- provider restarted at 2026-01-01T00:00:03Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000003 (new)'; } >> "$tf"
   ramlog_gate_open "$m2" || { t1bad "SELF-TEST-FAIL: gate stayed closed after a post-trim start"; gf=1; }
+  cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+  [ "$cid" = "00000000-0000-0000-0000-000000000003" ] || { t1bad "SELF-TEST-FAIL: post-trim extraction returned '$cid', want ...0003"; gf=1; }
+  # The extraction regex must accept a numeric UTC offset and a fractional
+  # stamp, still returning a unique per-start token.
+  { echo '--- provider restarted at 2026-01-01T00:00:04+02:00 ---'; } > "$tf"
+  [ "$(ramlog_mark)" = "2026-01-01T00:00:04+02:00" ] || { t1bad "SELF-TEST-FAIL: offset timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
+  { echo '--- provider restarted at 2026-01-01T00:00:05.123Z ---'; } > "$tf"
+  [ "$(ramlog_mark)" = "2026-01-01T00:00:05.123Z" ] || { t1bad "SELF-TEST-FAIL: fractional timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
+  # restart_provider's data-line contract ("<mark> <journal_count>"), split at
+  # every call site with ${x%% *}/${x##* }; the subshell keeps the stubs local.
+  rp_out=$(
+    timeout() { :; }
+    journal_line_count() { echo 4321; }
+    restart_provider
+  )
+  [ "${rp_out%% *}" = "2026-01-01T00:00:05.123Z" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: restart_provider data line is '$rp_out'"; gf=1; }
+  # A missing log file (real first boot) must read as "no delimiter", not error.
+  rm -f "$tf"
+  [ -z "$(ramlog_mark)" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark non-empty on a missing file"; gf=1; }
+  [ "$(ramlog_mark_snapshot)" = "-" ] || { t1bad "SELF-TEST-FAIL: snapshot on a missing file is '$(ramlog_mark_snapshot)', want '-'"; gf=1; }
+  if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open with no log file"; gf=1; fi
   rm -f "$tf"
   RAMLOG="$saved"
   [ "$gf" = "0" ] && ok "gate self-test: RAM-log freshness predicate verified (identity gate, trim-safe)"
@@ -172,10 +198,12 @@ journal_line_count() { j | wc -l; }
 # the newest delimiter differs from RAMLOG_MARK; a provider that is not
 # RAM-logging never writes one, so the fallback stays inert for it and the
 # journal governs. RAMLOG_MARK "-" means no delimiter existed at snapshot
-# time (the first delimiter to appear opens the gate); an empty RAMLOG_MARK
-# means no snapshot was taken and the fallback re-snapshots at wait start --
-# the legacy lenient semantics, so assign RAMLOG_MARK before any raw start
-# that a ramlog-mode wait follows.
+# time (the first delimiter to appear opens the gate). An empty RAMLOG_MARK
+# means no snapshot was taken and the fallback re-snapshots at wait start:
+# that direction can only MISS a block written before the wait call
+# (false-fail, never a stale read), and it is kept only as a safety net --
+# every current call site assigns RAMLOG_MARK before its wait, so keep
+# assigning it before any raw start a ramlog-mode wait follows.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
@@ -1256,7 +1284,7 @@ echo "$V2_OUT" | grep -iE "hotswap|Type=notify|Provider_Install_Linux" | tee -a 
 # existed, so V2 could not pass regardless of what the update did.
 if echo "$V2_OUT" | grep -qiE "migrated .* from Type=simple to Type=notify"; then
   ok "V2: urnet-tools migrated the effective unit type to Type=notify and used a standard restart"
-elif echo "$V2_OUT" | grep -q "cannot be migrated automatically"; then
+elif echo "$V2_OUT" | grep -qi "cannot be migrated automatically"; then
   ok "V2: the Type=simple drop-in override is correctly reported as un-migratable (a drop-in wins over the base unit); update proceeded with a standard restart"
 elif echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$V2_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
   ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify)"
@@ -1319,6 +1347,11 @@ echo "$BIN_VER_V3PRE" | grep -qF "$V_BASE_B" && ok "V3: running $V_BASE_B ahead 
 
 V3_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 V3_MARK=$(journal_line_count)
+# The post-handoff wait below targets a start block THIS update writes (the
+# hotswap candidate), so snapshot the RAM-log mark now: a stale mark from the
+# pre-engage restart would let the RAM fallback read the pre-handoff block and
+# false-pass the identity check.
+RAMLOG_MARK=$(ramlog_mark_snapshot)
 V3_OUT=$(timeout 300 urnet-tools update --tag "$V_TAG_C" -f 2>&1); V3_RC=$?
 echo "$V3_OUT" | grep -iE "hotswap|zero-downtime" | tee -a "$REPORT"
 if echo "$V3_OUT" | grep -qi "triggered zero-downtime HotSwap handoff"; then
@@ -1378,7 +1411,10 @@ if command -v lsof >/dev/null 2>&1; then
   SOCK_OWNER_PID=$(lsof -t /home/urnet/.urnetwork/provider.sock 2>/dev/null | head -1)
 fi
 if [ -n "$SOCK_OWNER_PID" ]; then
-  [ "$SOCK_OWNER_PID" = "$V3_PID_AFTER" ] && ok "V3: control socket owned by the new PID ($SOCK_OWNER_PID)" || bad "V3: control socket owned by PID $SOCK_OWNER_PID, want $V3_PID_AFTER"
+  # The owner must be the NEW pid, not merely equal to V3_PID_AFTER: if the
+  # handoff failed, V3_PID_AFTER is still the old pid and the socket would be
+  # reported as "owned by the new PID" trivially.
+  [ "$SOCK_OWNER_PID" = "$V3_PID_AFTER" ] && [ "$SOCK_OWNER_PID" != "$V3_PID_BEFORE" ] && ok "V3: control socket owned by the new PID ($SOCK_OWNER_PID)" || bad "V3: control socket owned by PID $SOCK_OWNER_PID, want new PID $V3_PID_AFTER (before=$V3_PID_BEFORE)"
 else
   echo "INFO: lsof unavailable or socket owner not resolvable; relied on urnet-tools status reachability above" | tee -a "$REPORT"
 fi
@@ -1400,6 +1436,7 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 # targets a single provider -- a real operator hits the same transient
 # refusal.
 V_DRAIN_END=$(( $(date +%s) + 60 ))
+V_REMAIN0=$(pgrep -u urnet -f 'urnetwork provide' | wc -l)
 while [ "$(pgrep -u urnet -f 'urnetwork provide' | wc -l)" -gt 1 ] && [ "$(date +%s)" -lt "$V_DRAIN_END" ]; do sleep 3; done
 V_REMAIN=$(pgrep -u urnet -f 'urnetwork provide' | wc -l)
 if [ "$V_REMAIN" -gt 1 ]; then
@@ -1415,8 +1452,10 @@ if [ "$V_REMAIN" -gt 1 ]; then
   sleep 2
 elif [ "$V_REMAIN" -eq 0 ]; then
   bad "V: no provider process survived the hotswap drain -- provider vanished"
-else
+elif [ "$V_REMAIN0" -gt 1 ]; then
   ok "V: hotswap parent drained cleanly within 60s"
+else
+  ok "V: single provider at cleanup -- no drain was in progress (parent already exited or the handoff did not engage)"
 fi
 run_check "V: re-pin to $EXPECTED_VERSION after the hotswap battery" timeout 300 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
 __RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
