@@ -40,8 +40,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	// state dir on the host running the tests.
 	discoverSystemdFn = func() []Provider { return nil }
 	// Default: a discovered provider counts as the service's supervised
-	// process; tests that need a bare provider override this.
-	providerSupervisedByOpenRCFn = func(p Provider) bool { return true }
+	// process when it has a pid (the production check reads /proc/<pid>);
+	// tests that need a bare provider override this.
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID > 0 }
 
 	dir := t.TempDir()
 	openrcInitScriptPath = filepath.Join(dir, "urnetwork")
@@ -569,13 +570,38 @@ func TestOpenRCRouteSelectorFlags(t *testing.T) {
 		}
 	}
 
-	// Ambiguous discovery: no guessing, fall through.
+	// Ambiguous discovery for the SELECTOR (two providers share the selector
+	// value): no guessing, fall through.
 	discoverSystemdFn = func() []Provider {
-		return []Provider{{PID: 1, StateDir: "/a"}, {PID: 2, StateDir: "/b"}}
+		return []Provider{{User: "alice", PID: 1, StateDir: "/a"}, {User: "alice", PID: 2, StateDir: "/b"}}
 	}
-	handled, _ := openrcRouteLifecycle("stop", []string{"--pid", "1"}, false, false)
+	handled, _ := openrcRouteLifecycle("stop", []string{"--user", "alice"}, false, false)
 	if handled {
-		t.Fatal("ambiguous discovery must fall through for selector flags")
+		t.Fatal("a selector matching multiple providers must fall through")
+	}
+
+	// A --pid match is never ambiguous just because OTHER providers exist:
+	// it names one process, and routing applies when that process is the
+	// service's supervised child.
+	discoverSystemdFn = func() []Provider {
+		return []Provider{
+			{User: "urnet", StateDir: "/home/urnet/.urnetwork", PID: 4242}, // supervised (rig default)
+			{User: "alice", StateDir: "/home/alice/.urnetwork", PID: 777},  // bare
+		}
+	}
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID == 4242 }
+	before := rig.ran()
+	handled, err := openrcRouteLifecycle("stop", []string{"--pid", "4242"}, false, false)
+	if !handled || err != nil {
+		t.Fatalf("--pid of the supervised provider among several: handled=%v err=%v, want true,nil", handled, err)
+	}
+	if rig.ran() != before+1 {
+		t.Fatal("rc-service did not run for the supervised --pid match")
+	}
+	// The same selector naming the BARE provider must not act on the service.
+	handled, _ = openrcRouteLifecycle("stop", []string{"--pid", "777"}, false, false)
+	if handled {
+		t.Fatal("--pid of a bare provider must fall through")
 	}
 }
 
@@ -626,7 +652,7 @@ func TestOpenRCAutoUpdateEntryUsesSiblingTool(t *testing.T) {
 		t.Fatal(err)
 	}
 	discoverSystemdFn = func() []Provider {
-		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", Binary: providerBin}}
+		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", PID: 4242, Binary: providerBin}}
 	}
 
 	if err := cmdAutoUpdate([]string{"weekly"}, false, false); err != nil {
@@ -668,7 +694,7 @@ func TestOpenRCBareProviderNotTreatedAsService(t *testing.T) {
 
 	// The gate provider must not be enriched from the bare provider: no
 	// restart marker for an unrelated state dir.
-	gp := openrcGateProvider()
+	gp := openrcGateProvider(Target{})
 	if gp.StateDir != "" || gp.User != "" || gp.PID != 0 {
 		t.Fatalf("gate provider enriched from a bare provider: %+v", gp)
 	}
@@ -727,11 +753,12 @@ func TestOpenRCCrondNote(t *testing.T) {
 	}
 }
 
-// TestOpenRCCleanupFallThroughDisablesSystemdTimer: cleanupLifecycle must run
-// the OpenRC cleanup AND still disable a coexisting systemd unit's timer
-// (migration edge) — and never execute a real systemctl in tests.
-func TestOpenRCCleanupFallThroughDisablesSystemdTimer(t *testing.T) {
-	rig := newOpenRCTestRig(t, true, true)
+// TestOpenRCCleanupTargetAware: cleanupLifecycle is target-aware — the
+// service artifacts are removed only when the uninstall targets the service's
+// own supervised provider; a bare provider (or a systemd-unit provider) must
+// not tear the service down; and the periodic entry is still swept when no
+// service exists.
+func TestOpenRCCleanupTargetAware(t *testing.T) {
 	oldTimer := systemdTimerDisableFn
 	var timerArgs [][]string
 	systemdTimerDisableFn = func(args ...string) error {
@@ -740,17 +767,65 @@ func TestOpenRCCleanupFallThroughDisablesSystemdTimer(t *testing.T) {
 	}
 	t.Cleanup(func() { systemdTimerDisableFn = oldTimer })
 
-	cleanupLifecycle(Provider{Unit: "urnetwork-mig.service"})
+	t.Run("supervised provider: full openrc cleanup, no systemd timer", func(t *testing.T) {
+		rig := newOpenRCTestRig(t, true, true)
+		timerArgs = nil
+		cleanupLifecycle(Provider{PID: 4242})
+		if rig.ran() != 2 {
+			t.Fatalf("openrc cleanup ran %d commands, want 2", rig.ran())
+		}
+		if len(timerArgs) != 0 {
+			t.Fatalf("systemd timer disable ran for a unitless provider: %v", timerArgs)
+		}
+	})
 
-	if rig.ran() != 2 {
-		t.Fatalf("openrc cleanup ran %d commands, want 2", rig.ran())
-	}
-	if len(timerArgs) != 1 {
-		t.Fatalf("systemd timer disable ran %d times, want 1", len(timerArgs))
-	}
-	if got := strings.Join(timerArgs[0], " "); !strings.Contains(got, "-update.timer") {
-		t.Fatalf("timer disable args = %q, want the -update.timer unit", got)
-	}
+	t.Run("bare provider with the service installed: leave the service alone", func(t *testing.T) {
+		rig := newOpenRCTestRig(t, true, true)
+		providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
+		timerArgs = nil
+		if err := openrcSetAutoUpdate("weekly", "/x/urnet-tools"); err != nil {
+			t.Fatal(err)
+		}
+		cleanupLifecycle(Provider{PID: 777})
+		if rig.ran() != 0 {
+			t.Fatalf("rc-service must not run for a bare provider; ran %v", rig.argv)
+		}
+		if _, err := os.Stat(openrcInitScriptPath); err != nil {
+			t.Fatalf("init script removed for a bare-provider uninstall: %v", err)
+		}
+		if _, err := os.Stat(filepath.Join(openrcPeriodicBaseDir, "weekly", openrcUpdateCronName)); err != nil {
+			t.Fatalf("periodic entry removed for a bare-provider uninstall: %v", err)
+		}
+	})
+
+	t.Run("systemd-unit provider: openrc service untouched, timer disabled", func(t *testing.T) {
+		rig := newOpenRCTestRig(t, true, true)
+		timerArgs = nil
+		cleanupLifecycle(Provider{Unit: "urnetwork-mig.service"})
+		if rig.ran() != 0 {
+			t.Fatalf("openrc cleanup ran for a systemd-unit provider: %v", rig.argv)
+		}
+		if len(timerArgs) != 1 {
+			t.Fatalf("systemd timer disable ran %d times, want 1", len(timerArgs))
+		}
+		if got := strings.Join(timerArgs[0], " "); !strings.Contains(got, "-update.timer") {
+			t.Fatalf("timer disable args = %q, want the -update.timer unit", got)
+		}
+	})
+
+	t.Run("no service installed: sweep the cron entry only", func(t *testing.T) {
+		rig := newOpenRCTestRig(t, true, false)
+		if err := openrcSetAutoUpdate("weekly", "/x/urnet-tools"); err != nil {
+			t.Fatal(err)
+		}
+		cleanupLifecycle(Provider{})
+		if rig.ran() != 0 {
+			t.Fatalf("rc-service must not run without an installed service; ran %v", rig.argv)
+		}
+		if _, err := os.Stat(filepath.Join(openrcPeriodicBaseDir, "weekly", openrcUpdateCronName)); !os.IsNotExist(err) {
+			t.Fatalf("periodic entry still present after cleanup (err=%v)", err)
+		}
+	})
 }
 
 // TestOpenRCSudoHintOnPermissionError: a non-root run cannot manage the
@@ -826,6 +901,97 @@ func TestOpenRCLifecycleFallsThroughToBareProvider(t *testing.T) {
 	}
 }
 
+// TestOpenRCPausedEntrySweptOnEnable: a .installer-paused leftover (even in
+// the target queue) is removed when auto-update is (re-)enabled, so a stale
+// file can never be executed by run-parts.
+func TestOpenRCPausedEntrySweptOnEnable(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+
+	weeklyDir := filepath.Join(openrcPeriodicBaseDir, "weekly")
+	dailyDir := filepath.Join(openrcPeriodicBaseDir, "daily")
+	if err := os.MkdirAll(weeklyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(dailyDir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	pausedWeekly := filepath.Join(weeklyDir, openrcUpdateCronPausedName)
+	pausedDaily := filepath.Join(dailyDir, openrcUpdateCronPausedName)
+	for _, p := range []string{pausedWeekly, pausedDaily} {
+		if err := os.WriteFile(p, []byte("#!/bin/sh\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	if err := openrcSetAutoUpdate("weekly", "/x/urnet-tools"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(pausedWeekly); !os.IsNotExist(err) {
+		t.Fatalf("paused leftover in the target queue survived enable (err=%v)", err)
+	}
+	if _, err := os.Stat(pausedDaily); !os.IsNotExist(err) {
+		t.Fatalf("paused leftover in another queue survived enable (err=%v)", err)
+	}
+	if _, err := os.Stat(filepath.Join(weeklyDir, openrcUpdateCronName)); err != nil {
+		t.Fatalf("live entry missing after enable: %v", err)
+	}
+}
+
+// TestRenderStatusBaseOpenRCStoppedService: with no resolved process (a
+// stopped service) the rc-service view is still shown.
+func TestRenderStatusBaseOpenRCStoppedService(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	if err := renderStatusBase(Provider{}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range rig.argv {
+		if strings.Join(a, " ") == "rc-service urnetwork status" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rc-service status not run for a stopped service; argv = %v", rig.argv)
+	}
+}
+
+// TestOpenRCHotSwapPreflightUnsupervisedOldVersion: the OpenRC decline is
+// checked first, but an UNSUPERVISED provider with an unsupported version
+// must still decline with the version reason (the reorder must not swallow
+// it).
+func TestOpenRCHotSwapPreflightUnsupervisedOldVersion(t *testing.T) {
+	oldSupervised := providerSupervisedByOpenRCFn
+	t.Cleanup(func() { providerSupervisedByOpenRCFn = oldSupervised })
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
+
+	err := hotSwapPreflight(Provider{Version: "v3.23.0-fix.20.0"})
+	if !errors.Is(err, ErrHotSwapNotSupported) {
+		t.Fatalf("hotSwapPreflight(unsupervised, old) = %v, want ErrHotSwapNotSupported", err)
+	}
+}
+
+// TestOpenRCRouteElevationHint: a failed rc-service/rc-update run as a
+// non-root user must carry the elevation hint.
+func TestOpenRCRouteElevationHint(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("euid-based hint cannot be exercised as root")
+	}
+	newOpenRCTestRig(t, true, true)
+	openrcRunFn = func(args ...string) error { return errors.New("exit status 1") }
+
+	_, err := openrcRouteLifecycle("stop", nil, false, false)
+	if err == nil || !strings.Contains(err.Error(), "re-run as root") {
+		t.Fatalf("stop route error = %v, want the elevation hint", err)
+	}
+	_, err = openrcRouteAutoStart("on", nil, false, false)
+	if err == nil || !strings.Contains(err.Error(), "re-run as root") {
+		t.Fatalf("auto-start route error = %v, want the elevation hint", err)
+	}
+	if _, err := openrcRestartService(Provider{PID: 4242}); err == nil || !strings.Contains(err.Error(), "re-run as root") {
+		t.Fatalf("restart error = %v, want the elevation hint", err)
+	}
+}
+
 // TestRenderStatusBaseOpenRCView: the service's rc-service view is shown only
 // when the resolved target is the service's supervised process.
 func TestRenderStatusBaseOpenRCView(t *testing.T) {
@@ -854,5 +1020,51 @@ func TestRenderStatusBaseOpenRCView(t *testing.T) {
 	}
 	if rig.ran() != 0 {
 		t.Fatalf("bare provider got the service view: %v", rig.argv)
+	}
+}
+
+// TestOpenRCRouteStopsRefuseAmbiguity is review finding R2: with the OpenRC
+// service AND another provider on the box, a selector-less stop/restart must
+// NOT silently act on the service alone and report success while the other
+// provider keeps running. It must refuse like the systemd path does. `start` is
+// not destructive and stays allowed; any explicit selector is honoured.
+func TestOpenRCRouteStopsRefuseAmbiguity(t *testing.T) {
+	svc := Provider{User: "urnet", StateDir: "/home/urnet/.urnetwork", Network: "net1", PID: 777, Running: true}
+	other := Provider{User: "alice", StateDir: "/home/alice/.urnetwork", Network: "net2", PID: 4242, Running: true}
+
+	for _, tc := range []struct {
+		name     string
+		verb     string
+		provs    []Provider
+		args     []string
+		wantHand bool
+		wantErr  bool
+	}{
+		{"stop refuses with a bare provider present", "stop", []Provider{svc, other}, nil, true, true},
+		{"restart refuses with a bare provider present", "restart", []Provider{svc, other}, nil, true, true},
+		{"start is allowed (not destructive)", "start", []Provider{svc, other}, nil, true, false},
+		{"stop proceeds with only the service", "stop", []Provider{svc}, nil, true, false},
+		{"explicit --user picks one provider", "stop", []Provider{svc, other}, []string{"--user", "urnet"}, true, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rig := newOpenRCTestRig(t, true, true)
+			provs := tc.provs
+			discoverSystemdFn = func() []Provider { return provs }
+			providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID == 777 }
+
+			handled, err := openrcRouteLifecycle(tc.verb, tc.args, true, false)
+			if handled != tc.wantHand {
+				t.Fatalf("handled=%v want %v (err=%v)", handled, tc.wantHand, err)
+			}
+			if tc.wantErr && err == nil {
+				t.Fatalf("expected refusal error, got nil (ran=%d)", rig.ran())
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if tc.wantErr && rig.ran() != 0 {
+				t.Fatalf("refused command still acted on the service (%d rc calls)", rig.ran())
+			}
+		})
 	}
 }

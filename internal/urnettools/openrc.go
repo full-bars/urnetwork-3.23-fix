@@ -3,6 +3,7 @@
 package urnettools
 
 import (
+	"bufio"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -181,6 +182,64 @@ func openrcValidInterval(interval string) bool {
 	return false
 }
 
+// openrcSelectorMatches reports whether a discovered provider satisfies the
+// target's selector flags. With no selectors set, every provider matches.
+func openrcSelectorMatches(t Target, p Provider) bool {
+	if t.User != "" && t.User != p.User {
+		return false
+	}
+	if t.StateDir != "" && t.StateDir != p.StateDir {
+		return false
+	}
+	if t.Network != "" && t.Network != p.Network {
+		return false
+	}
+	if t.NetworkID != "" && t.NetworkID != p.NetworkID {
+		return false
+	}
+	if t.PID > 0 && t.PID != p.PID {
+		return false
+	}
+	return true
+}
+
+// openrcMatchedProvider returns the uniquely matched discovered provider for
+// the target's selectors, when it is the process the OpenRC service
+// supervises. A --pid (or any selector) match is never "ambiguous" just
+// because OTHER providers exist: the selector names one process, and routing
+// applies only when that process is supervise-daemon's child. With no
+// selectors, exactly one discovered provider is required.
+func openrcMatchedProvider(t Target) (Provider, bool) {
+	return openrcMatchedProviderFrom(discoverSystemdFn(), t)
+}
+
+// openrcMatchedProviderFrom is openrcMatchedProvider against an ALREADY-TAKEN
+// discovery snapshot.
+//
+// Why the snapshot is passed in (review finding R1): one command used to run
+// Discover() up to four separate times — once in each selector check, and again
+// for the confirm gate. Every call re-scans /proc, re-reads each provider's
+// control socket and re-shells out to systemctl, so two checks inside the SAME
+// command could disagree if the service restarted in between, and the PID
+// liveness re-check that follows could read a recycled PID. Resolving once and
+// passing the slice makes every decision in one command agree with every
+// other by construction.
+func openrcMatchedProviderFrom(provs []Provider, t Target) (Provider, bool) {
+	var matches []Provider
+	for _, p := range provs {
+		if openrcSelectorMatches(t, p) {
+			matches = append(matches, p)
+		}
+	}
+	if len(matches) != 1 {
+		return Provider{}, false
+	}
+	if !providerSupervisedByOpenRCFn(matches[0]) {
+		return Provider{}, false
+	}
+	return matches[0], true
+}
+
 // openrcTargetApplies reports whether a parsed target names the OpenRC
 // service (or names nothing at all). Any other explicit unit is a different
 // provider and must not be hijacked by the OpenRC backend. Selector flags
@@ -188,49 +247,21 @@ func openrcValidInterval(interval string) bool {
 // they match a discovered provider that IS the service's own supervised
 // process — `stop --pid <bare-pid>` must not silently stop the service
 // instead, and a bare provider must not satisfy a selector on the service's
-// behalf. Ambiguous discovery falls through so the normal path's precise
-// error runs rather than a guess.
+// behalf. No unique supervised match falls through so the normal path's
+// precise error runs rather than a guess.
 func openrcTargetApplies(t Target) bool {
+	return openrcTargetAppliesFrom(discoverSystemdFn(), t)
+}
+
+func openrcTargetAppliesFrom(provs []Provider, t Target) bool {
 	if t.Unit != "" && t.Unit != openrcServiceName && t.Unit != openrcServiceName+".service" {
 		return false
 	}
 	if t.User == "" && t.StateDir == "" && t.Network == "" && t.NetworkID == "" && t.PID == 0 {
 		return true
 	}
-	p, ok := openrcServiceProvider()
-	if !ok {
-		return false
-	}
-	switch {
-	case t.User != "" && t.User != p.User:
-		return false
-	case t.StateDir != "" && t.StateDir != p.StateDir:
-		return false
-	case t.Network != "" && t.Network != p.Network:
-		return false
-	case t.NetworkID != "" && t.NetworkID != p.NetworkID:
-		return false
-	case t.PID > 0 && t.PID != p.PID:
-		return false
-	}
-	return true
-}
-
-// openrcServiceProvider returns the single discovered provider when it is the
-// process the OpenRC service supervises, and ok=false otherwise. Discovery on
-// an OpenRC host is process-based, so a running BARE provider (manual launch,
-// service stopped) is discoverable but is NOT the service's: trusting it
-// would retarget service operations onto an unrelated process (and write
-// restart markers into its state dir).
-func openrcServiceProvider() (Provider, bool) {
-	provs := discoverSystemdFn()
-	if len(provs) != 1 {
-		return Provider{}, false
-	}
-	if !providerSupervisedByOpenRCFn(provs[0]) {
-		return Provider{}, false
-	}
-	return provs[0], true
+	_, ok := openrcMatchedProviderFrom(provs, t)
+	return ok
 }
 
 // openrcLifecycleTargetApplies is openrcTargetApplies plus the running-target
@@ -245,13 +276,16 @@ func openrcServiceProvider() (Provider, bool) {
 // auto-update routes deliberately do NOT use this: their periodic entry is not
 // service-bound and stays useful for a bare provider.
 func openrcLifecycleTargetApplies(t Target) bool {
-	if !openrcTargetApplies(t) {
+	return openrcLifecycleTargetAppliesFrom(discoverSystemdFn(), t)
+}
+
+func openrcLifecycleTargetAppliesFrom(provs []Provider, t Target) bool {
+	if !openrcTargetAppliesFrom(provs, t) {
 		return false
 	}
 	if t.User != "" || t.StateDir != "" || t.Network != "" || t.NetworkID != "" || t.PID > 0 {
 		return true // the selector already matched the supervised provider
 	}
-	provs := discoverSystemdFn()
 	if len(provs) == 0 {
 		return true
 	}
@@ -263,13 +297,107 @@ func openrcLifecycleTargetApplies(t Target) bool {
 	return false
 }
 
+// openrcServiceLogPaths returns the stdout/stderr files the generated init
+// script points supervise-daemon at, read back from the script itself rather
+// than hardcoded, so a user who edited output_log keeps working.
+func openrcServiceLogPaths() (stdout, stderr string) {
+	stdout, stderr = "/var/log/urnetwork.log", "/var/log/urnetwork.err"
+	f, err := os.Open(openrcInitScriptPath)
+	if err != nil {
+		return stdout, stderr
+	}
+	defer f.Close()
+	sc := bufio.NewScanner(f)
+	for sc.Scan() {
+		line := strings.TrimSpace(sc.Text())
+		if strings.HasPrefix(line, "output_log=") {
+			if v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "output_log=")), `"'`); v != "" {
+				stdout = v
+			}
+		}
+		if strings.HasPrefix(line, "error_log=") {
+			if v := strings.Trim(strings.TrimSpace(strings.TrimPrefix(line, "error_log=")), `"'`); v != "" {
+				stderr = v
+			}
+		}
+	}
+	return stdout, stderr
+}
+
+// openrcTailServiceLogs streams the OpenRC service's log files. handled is true
+// only on an OpenRC host with an installed service, so every other platform
+// falls through unchanged.
+//
+// Prefers stdout; falls back to stderr when only that one exists (a provider
+// whose stdout is quiet). Reports the precise problem when neither is readable,
+// rather than the generic "no logs".
+func openrcTailServiceLogs(p Provider, lines int) (bool, error) {
+	if !openrcActive() || !openrcServiceInstalled() {
+		return false, nil
+	}
+	stdout, stderr := openrcServiceLogPaths()
+	target := ""
+	for _, cand := range []string{stdout, stderr} {
+		if fi, err := os.Stat(cand); err == nil && !fi.IsDir() {
+			target = cand
+			break
+		}
+	}
+	if target == "" {
+		return true, fmt.Errorf("OpenRC service %s has no readable log file (looked for %s and %s): the service may never have started, or supervise-daemon has no output redirection configured",
+			openrcServiceName, stdout, stderr)
+	}
+	fmt.Printf("Streaming %s (%d lines) from the OpenRC service — provider %s\n", target, lines, providerLabel(p))
+	cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", target)
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	return true, cmd.Run()
+}
+
+// openrcOthersBeyondService names the discovered providers that are NOT the
+// OpenRC service's own supervised process — i.e. the ones a selector-less
+// stop/restart would silently leave running.
+//
+// This is only ever called for a SELECTOR-LESS target (the caller gates on it),
+// and openrcSelectorMatches matches EVERY provider for such a target — so the
+// exclusion has to be "is this the service's own supervised process", not "does
+// it match the selector".
+func openrcOthersBeyondService(provs []Provider, t Target) []string {
+	var out []string
+	for _, p := range provs {
+		if providerSupervisedByOpenRCFn(p) {
+			continue // the OpenRC service's own provider is the one being acted on
+		}
+		label := p.User
+		if label == "" {
+			label = "unknown"
+		}
+		if p.Network != "" {
+			label += "@" + p.Network
+		}
+		if p.PID > 0 {
+			label += fmt.Sprintf(" (pid %d)", p.PID)
+		} else if p.Unit != "" {
+			label += " (stopped unit " + p.Unit + ")"
+		}
+		out = append(out, label)
+	}
+	return out
+}
+
 // openrcGateProvider is the provider record used for the restart confirm gate
 // and the restart-reason marker on an OpenRC host: the service name, enriched
 // best-effort with the service's own supervised provider so the audit line
-// shows the real user/state when they are unambiguous.
-func openrcGateProvider() Provider {
+// shows the real user/state when they are unambiguous. The target's selectors
+// are honored, so `restart --pid <service-pid>` enriches from exactly that
+// process.
+func openrcGateProvider(t Target) Provider {
+	return openrcGateProviderFrom(discoverSystemdFn(), t)
+}
+
+func openrcGateProviderFrom(provs []Provider, t Target) Provider {
 	p := Provider{Unit: openrcServiceName}
-	if prov, ok := openrcServiceProvider(); ok {
+	if prov, ok := openrcMatchedProviderFrom(provs, t); ok {
 		p.User = prov.User
 		p.StateDir = prov.StateDir
 		p.StateHome = prov.StateHome
@@ -299,15 +427,34 @@ func openrcRouteLifecycle(verb string, args []string, force, dryRun bool) (bool,
 	if len(rest) > 0 {
 		return false, nil
 	}
-	if !openrcLifecycleTargetApplies(t) {
+	// ONE discovery snapshot for the whole command (review finding R1).
+	provs := discoverSystemdFn()
+	if !openrcLifecycleTargetAppliesFrom(provs, t) {
 		return false, nil
+	}
+	// Ambiguity refusal for destructive verbs (review finding R2). With the
+	// service plus some other provider on the box, `stop`/`restart` with no
+	// selector would act on the OpenRC service ONLY and silently leave the
+	// other one running — the same shape the systemd path refuses outright
+	// ("2 providers found, specify a target"), and a false "stopped" report.
+	// `start` is deliberately NOT gated: starting is not destructive, and a
+	// selector-less start on a multi-provider box is the common first-run case
+	// the routing exists to support.
+	hasSelector := t.User != "" || t.StateDir != "" || t.Network != "" || t.NetworkID != "" || t.PID > 0
+	if !hasSelector && (verb == "stop" || verb == "restart") && len(openrcOthersBeyondService(provs, t)) > 0 {
+		return true, fmt.Errorf(
+			"%d providers found on this box, specify a target: %s\n"+
+				"  urnet-tools %s --user <user>          # a specific provider\n"+
+				"  urnet-tools %s --unit %s       # the OpenRC service\n"+
+				"  urnet-tools providers             # list what was found",
+			len(provs)+1, openrcOthersBeyondService(provs, t), verb, verb, openrcServiceName)
 	}
 	if dryRun {
 		fmt.Printf("[dry-run] would %s %s (OpenRC service)\n", verb, openrcServiceName)
 		return true, nil
 	}
 	if verb == "restart" {
-		gateProvider := openrcGateProvider()
+		gateProvider := openrcGateProviderFrom(provs, t)
 		ok, err := confirmGate("restart "+openrcServiceName+" (OpenRC service)", gateProvider, force, dryRun)
 		if err != nil {
 			return true, err
@@ -320,7 +467,7 @@ func openrcRouteLifecycle(verb string, args []string, force, dryRun bool) (bool,
 	}
 	fmt.Printf("running rc-service %s %s...\n", openrcServiceName, verb)
 	if err := openrcRunFn(openrcServiceArgv(verb)...); err != nil {
-		return true, fmt.Errorf("rc-service %s %s: %w", openrcServiceName, verb, err)
+		return true, fmt.Errorf("rc-service %s %s: %w%s", openrcServiceName, verb, err, openrcElevationHint())
 	}
 	fmt.Printf("%s %s (OpenRC service)\n", openrcVerbPast(verb), openrcServiceName)
 	return true, nil
@@ -365,7 +512,7 @@ func openrcRouteAutoStart(mode string, rest []string, force, dryRun bool) (bool,
 		action = "del"
 	}
 	if err := openrcRunFn(openrcUpdateArgv(action)...); err != nil {
-		return true, fmt.Errorf("rc-update %s %s: %w", action, openrcServiceName, err)
+		return true, fmt.Errorf("rc-update %s %s: %w%s", action, openrcServiceName, err, openrcElevationHint())
 	}
 	return true, nil
 }
@@ -393,7 +540,7 @@ func openrcRouteAutoUpdate(interval string, rest []string, dryRun bool) (bool, e
 		fmt.Printf("[dry-run] would set auto-update %s for %s (busybox crond periodic entry)\n", interval, openrcServiceName)
 		return true, nil
 	}
-	if err := openrcSetAutoUpdate(interval, openrcUpdateToolPath(openrcGateProvider())); err != nil {
+	if err := openrcSetAutoUpdate(interval, openrcUpdateToolPath(openrcGateProvider(t))); err != nil {
 		return true, err
 	}
 	if interval != "off" {
@@ -432,7 +579,18 @@ func openrcUpdateToolPath(p Provider) string {
 // a bare "permission denied" would leave the operator guessing.
 func openrcSudoHint(err error) string {
 	if errors.Is(err, fs.ErrPermission) {
-		return " — re-run as root (sudo urnet-tools auto-update ...)"
+		return " — re-run as root (sudo urnet-tools ...)"
+	}
+	return ""
+}
+
+// openrcElevationHint is the euid-based hint for rc-service/rc-update
+// failures: their exit status says nothing about the cause, but the system
+// service requires root, so an unprivileged failure is called out instead of
+// surfacing a bare errno.
+func openrcElevationHint() string {
+	if os.Geteuid() != 0 {
+		return " — re-run as root (sudo urnet-tools ...)"
 	}
 	return ""
 }
@@ -471,12 +629,10 @@ func openrcSetAutoUpdate(interval, toolPath string) error {
 	if !openrcValidInterval(interval) {
 		return fmt.Errorf("invalid interval %q: daily|weekly|monthly|off", interval)
 	}
-	// Move semantics: clear the other queues so an interval change never
-	// leaves two entries firing (and drop any paused leftover with them).
+	// Clear every queue — the entry AND any installer-paused leftover, in the
+	// target directory too — so an interval change never leaves two entries
+	// firing and no stale file survives the rewrite.
 	for _, dir := range openrcPeriodicIntervals {
-		if dir == interval {
-			continue
-		}
 		for _, path := range openrcCronEntryPaths(dir) {
 			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
 				return fmt.Errorf("auto-update %s: remove stale %s: %w%s", interval, path, err, openrcSudoHint(err))
@@ -573,6 +729,9 @@ func openrcCleanupService() {
 // periodic auto-update entry is cleared. Every step is best-effort with a
 // warning: uninstall must not abort halfway on a permission error, and the
 // caller may not be root (the system service needs root to remove).
+//
+// Used by callers that KNOW the uninstall targets the service's own provider;
+// cleanupLifecycle composes the two halves selectively (see there).
 func openrcCleanup() {
 	openrcCleanupService()
 	openrcCleanupCronEntries()
@@ -653,7 +812,7 @@ func openrcRestartService(p Provider) (bool, error) {
 	}
 	fmt.Printf("restarting %s (OpenRC service, pid %d)...\n", openrcServiceName, p.PID)
 	if err := openrcRunFn(openrcServiceArgv("restart")...); err != nil {
-		return true, fmt.Errorf("rc-service %s restart: %w", openrcServiceName, err)
+		return true, fmt.Errorf("rc-service %s restart: %w%s", openrcServiceName, err, openrcElevationHint())
 	}
 	fmt.Printf("restarted %s (OpenRC service)\n", openrcServiceName)
 	return true, nil
