@@ -54,7 +54,6 @@ run_check() {
   return "$rc"
 }
 
-# j: search the provider journal (full, no -n window).
 # j: search the provider journal with a bounded window. Full-journal reads
 # on a 5s cadence are heavy on 1GB. The window START is anchored once here:
 # a relative "--since 90 min ago" re-evaluates at every read, so once the
@@ -122,7 +121,7 @@ ramlog_gate_open() {
 # through t1bad: a broken gate is the false-pass class this harness exists to
 # kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out probe wmark w_stale w_fresh w_empty w_dyn w_journal gf=0
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out probe wmark w_stale w_fresh w_empty w_evict w_dyn w_journal_stale w_journal_fresh gf=0
   tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
@@ -181,13 +180,14 @@ gate_selftest() {
   [ -s "$tf.rperr" ] || { t1bad "SELF-TEST-FAIL: stderr capture probe wrote nothing"; gf=1; }
   rm -f "$tf.rperr"
   rp_out=$( {
-    timeout() { :; }
+    timeout() { echo "systemctl-noise"; }   # must be sent to stderr by restart_provider's >&2
     id() { echo 0; }   # keep the $(id -u urnet) expansion quiet before urnet exists
     journal_line_count() { echo 4321; }
     restart_provider
   } 2>"$tf.rperr" )
   [ "${rp_out%% *}" = "2026-01-01T00:00:05.123Z" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: restart_provider data line is '$rp_out'"; gf=1; }
-  [ -s "$tf.rperr" ] && { t1bad "SELF-TEST-FAIL: restart_provider stub wrote stderr: $(head -1 "$tf.rperr")"; gf=1; }
+  [ "$(printf '%s\n' "$rp_out" | wc -l)" = "1" ] || { t1bad "SELF-TEST-FAIL: systemctl noise joined the data line (>&2 missing?): '$rp_out'"; gf=1; }
+  grep -q "systemctl-noise" "$tf.rperr" || { t1bad "SELF-TEST-FAIL: systemctl noise did not land on stderr: $(head -1 "$tf.rperr")"; gf=1; }
   rm -f "$tf.rperr"
   # wait_client_id end-to-end: a stale mark must refuse the block; the "-"
   # sentinel must accept it. sleep/j are stubbed and date is a file-backed
@@ -215,16 +215,32 @@ gate_selftest() {
   )
   [ "$w_fresh" = "00000000-0000-0000-0000-000000000006" ] || { t1bad "SELF-TEST-FAIL: wait_client_id did not read the fresh block with base '-' ('$w_fresh')"; gf=1; }
   # Empty/unset mark: the documented safety net re-snapshots at wait start, so
-  # the existing block (written before the wait) must be refused.
-  w_empty=$(
+  # the existing block (written before the wait) must be refused -- and the
+  # diagnostic warning must actually be emitted.
+  w_empty=$( {
     cnt="${tf}.cnt"; : > "$cnt"
     date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
     sleep() { :; }
     j() { :; }
     unset RAMLOG_MARK
     wait_client_id 0 30
-  )
+  } 2>"$tf.werr" )
   [ -z "$w_empty" ] || { t1bad "SELF-TEST-FAIL: wait_client_id read a stale block with an empty/unset mark ('$w_empty')"; gf=1; }
+  grep -q "no RAMLOG_MARK snapshot" "$tf.werr" || { t1bad "SELF-TEST-FAIL: missing-snapshot warning not emitted"; gf=1; }
+  rm -f "$tf.werr"
+  # Eviction warning: a journal read below the wait mark must warn on
+  # stderr/report, and stdout must stay clean.
+  w_evict=$( {
+    cnt="${tf}.cnt"; : > "$cnt"
+    journal_line_count() { echo 2; }
+    date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
+    sleep() { :; }
+    j() { :; }
+    RAMLOG_MARK="-"
+    wait_client_id 5 1
+  } 2>&1 >/dev/null )
+  echo "$w_evict" | grep -q "NR>n reads may be shifted" || { t1bad "SELF-TEST-FAIL: journal eviction warning not emitted"; gf=1; }
+  rm -f "${tf}.cnt"
   # A delimiter written WHILE the poll runs must open the gate mid-wait.
   w_dyn=$(
     cnt="${tf}.cnt"; : > "$cnt"
@@ -235,18 +251,30 @@ gate_selftest() {
     wait_client_id 0 30
   )
   [ "$w_dyn" = "00000000-0000-0000-0000-000000000008" ] || { t1bad "SELF-TEST-FAIL: wait_client_id did not pick up a delimiter written mid-poll ('$w_dyn')"; gf=1; }
-  # The journal branch: NR>n must skip exactly the pre-mark lines and return
-  # only the id logged after the mark (stale id at line n, fresh at n+1).
-  w_journal=$(
+  # The journal branch: a stale id AT the mark line must be excluded (the wait
+  # must return empty), and an id past the mark must be returned. The RAM
+  # fixture is reset and the gate pinned closed so only the journal branch can
+  # answer -- a dirty fixture would mask the exclusion check via the fallback.
+  : > "$tf"
+  RAMLOG_MARK="-"
+  w_journal_stale=$(
     cnt="${tf}.cnt"; : > "$cnt"
     date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
     sleep() { :; }
-    j() { local k; for k in $(seq 1 6); do echo "filler line $k"; done; echo 'client_id: 00000000-0000-0000-0000-00000000000a (new)'; echo 'client_id: 00000000-0000-0000-0000-00000000000b (new)'; }
+    j() { local k; for k in $(seq 1 5); do echo "filler line $k"; done; echo 'client_id: 00000000-0000-0000-0000-00000000000a (new)'; }
     journal_line_count() { echo 20; }
-    RAMLOG_MARK="$wmark"
     wait_client_id 6 30
   )
-  [ "$w_journal" = "00000000-0000-0000-0000-00000000000b" ] || { t1bad "SELF-TEST-FAIL: journal NR>n offset returned '$w_journal', want ...000b"; gf=1; }
+  [ -z "$w_journal_stale" ] || { t1bad "SELF-TEST-FAIL: journal NR>n did not exclude the stale id at line n ('$w_journal_stale')"; gf=1; }
+  w_journal_fresh=$(
+    cnt="${tf}.cnt"; : > "$cnt"
+    date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
+    sleep() { :; }
+    j() { local k; for k in $(seq 1 5); do echo "filler line $k"; done; echo 'client_id: 00000000-0000-0000-0000-00000000000a (new)'; echo 'client_id: 00000000-0000-0000-0000-00000000000b (new)'; }
+    journal_line_count() { echo 20; }
+    wait_client_id 6 30
+  )
+  [ "$w_journal_fresh" = "00000000-0000-0000-0000-00000000000b" ] || { t1bad "SELF-TEST-FAIL: journal NR>n offset did not return the fresh id at line n+1 ('$w_journal_fresh')"; gf=1; }
   rm -f "${tf}.cnt"
   # A missing log file (real first boot) must read as "no delimiter", not error.
   rm -f "$tf"
@@ -255,13 +283,14 @@ gate_selftest() {
   if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open with no log file"; gf=1; fi
   # ... and restart_provider's data line on a delimiter-free log.
   rp_out=$( {
-    timeout() { :; }
+    timeout() { echo "systemctl-noise"; }
     id() { echo 0; }
     journal_line_count() { echo 4321; }
     restart_provider
   } 2>"$tf.rperr" )
   [ "${rp_out%% *}" = "-" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: delimiter-free data line is '$rp_out', want '- 4321'"; gf=1; }
-  [ -s "$tf.rperr" ] && { t1bad "SELF-TEST-FAIL: delimiter-free stub wrote stderr: $(head -1 "$tf.rperr")"; gf=1; }
+  [ "$(printf '%s\n' "$rp_out" | wc -l)" = "1" ] || { t1bad "SELF-TEST-FAIL: delimiter-free data line has extra lines: '$rp_out'"; gf=1; }
+  grep -q "systemctl-noise" "$tf.rperr" || { t1bad "SELF-TEST-FAIL: delimiter-free stub noise did not land on stderr: $(head -1 "$tf.rperr")"; gf=1; }
   rm -f "$tf.rperr"
   RAMLOG="$saved"
   [ "$gf" = "0" ] && ok "gate self-test: RAM-log freshness predicate verified (identity gate, trim-safe)"
@@ -269,6 +298,18 @@ gate_selftest() {
 
 # journal_line_count: total journal lines (snapshot marker for polling).
 journal_line_count() { j | wc -l; }
+
+# journal_mark_ok: true when the journal still holds at least as many lines as
+# the given mark. A journal that shrank below its mark (window/quota vacuum)
+# makes every NR>n read skip into unrelated lines; warn loudly instead of
+# grepping shifted data.
+journal_mark_ok() {
+  local n
+  n=$(journal_line_count)
+  [ "$n" -ge "${1:-0}" ] && return 0
+  echo "WARN: journal at $n lines is below mark ${1:-0} (eviction?) -- NR>n reads may be shifted" | tee -a "$REPORT" >&2
+  return 1
+}
 
 # wait_client_id: poll for a client_id line that appears AFTER the given
 # marker line count (a NEW journal entry from a restart). The provider runs a
@@ -302,11 +343,9 @@ wait_client_id() {
     echo "WARN: wait_client_id had no RAMLOG_MARK snapshot; re-snapshotting at wait start (the gate self-test exercises this path deliberately)" | tee -a "$REPORT" >&2
     base_delims=$(ramlog_mark)
   fi
-  # A journal that shrank below the mark (window/quota eviction) would make
-  # NR>n skip into unrelated lines; warn instead of grepping shifted data.
-  local j_now
-  j_now=$(journal_line_count)
-  [ "$j_now" -ge "$after_lines" ] || echo "WARN: journal has $j_now lines but the wait mark is $after_lines (eviction?) -- NR>n reads may be shifted" | tee -a "$REPORT" >&2
+  # A journal that shrank below the mark would make NR>n skip into unrelated
+  # lines; journal_mark_ok warns loudly instead.
+  journal_mark_ok "$after_lines" || true
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
@@ -323,14 +362,14 @@ wait_client_id() {
 
 # cids_since: the DISTINCT client_ids logged after journal line N, sorted
 # (sorted so `comm` can diff two of these directly).
-cids_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $2}' | sort -u; }
+cids_since() { journal_mark_ok "$1" || true; j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $2}' | sort -u; }
 # markers_since: the (new)/(reused) markers logged after journal line N.
-markers_since() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $3}'; }
+markers_since() { journal_mark_ok "$1" || true; j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | awk '{print $3}'; }
 # markers_snapshot: the raw "client_id: <id> (new|reused)" lines after journal
 # line N, captured ONCE. cids_since and markers_since each re-read the journal,
 # so deriving an id set and its marker counts from separate calls samples a
 # growing log at two different instants. Snapshot, then derive.
-markers_snapshot() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)"; }
+markers_snapshot() { journal_mark_ok "$1" || true; j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)"; }
 
 # restart_provider: systemctl --user restart + return the pre-restart journal
 # line count (for wait_client_id).
@@ -469,6 +508,9 @@ RAMLOG_MARK=$(ramlog_mark_snapshot)
 J_GUARD=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) journalctl --user -u urnetwork.service --no-pager --since "$J_SINCE" -n0 2>&1); J_GUARD_RC=$?
 if [ "$J_GUARD_RC" -ne 0 ] || echo "$J_GUARD" | grep -qi "failed to parse"; then
   t1bad "journalctl rejected the anchored J_SINCE ('$J_SINCE', exit $J_GUARD_RC): $J_GUARD"
+  # Abort as ENV_BLOCKER: every journal read would silently return empty and
+  # the remaining ~2h of checks would produce garbage verdicts.
+  exit 75
 fi
 B_MARK=$(journal_line_count)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
@@ -1399,6 +1441,7 @@ else
   bad "V2: expected a unit-type self-heal, an explicit un-migratable note, or a clean unit-type decline; none appeared in the update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
+journal_mark_ok "$V2_MARK" || true
 if j | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
   bad "V2: provider journal shows the SIGNAL-THEN-ABORT path (regression of 4b54e915) -- urnet-tools should decline before ever signalling the provider"
 else
@@ -1508,11 +1551,13 @@ if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ -n "$V3_PID_BEFORE" ] &
 else
   bad "V3: systemd MainPID '$V3_MAINPID' does not look like the new notify-capable process (before=$V3_PID_BEFORE)"
 fi
+journal_mark_ok "$V3_MARK" || true
 if j | awk -v n="$V3_MARK" 'NR>n' | grep -qE "Stopped urnetwork.service|Stopping urnetwork.service"; then
   bad "V3: unit entered inactive/activating during the handoff (journal shows a stop) -- not zero-downtime, distinguishes this from V2's plain restart"
 else
   ok "V3: no unit stop/inactive event during the handoff (zero-downtime, per journal) -- distinguishes this from V2's plain restart"
 fi
+journal_mark_ok "$V3_MARK" || true
 if j | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then
   ok "V3: candidate confirmed active takeover (ACK) in the journal"
 else
