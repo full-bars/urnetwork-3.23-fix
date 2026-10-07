@@ -389,6 +389,72 @@ test_remove_tool_links_only_removes_our_links() {
 }
 test_remove_tool_links_only_removes_our_links
 
+# --- OpenRC installer branch -------------------------------------------------
+# The CI runner is not root, so these pin the STAGED service script's content
+# and the exact sudo commands a non-root operator is told to run; the root
+# install path is covered by the container smoke (root-only).
+#
+# Both run in a FRESH bash that re-sources the library: an earlier test
+# replaces pr_info/pr_warn/pr_err with no-ops at shell scope, which would
+# silently empty the captured output.
+test_openrc_staged_script_and_nonroot_output() {
+    local tmpd me out staged expected_home
+    tmpd="$(mktemp -d)"
+    me="$(id -un)"
+    expected_home="$(openrc_user="$me"; openrc_user_home)"
+    out="$(
+        PT_INSTALL="$tmpd/install" PT_ME="$me" PT_INITD="$tmpd/init.d-urnetwork" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_INSTALL"
+            mkdir -p "$install_path"
+            openrc_user="$PT_ME"
+            openrc_initd_file="$PT_INITD"
+            urnet_install_url="https://example.invalid/install.sh"
+            install_openrc_units
+        '
+    )"
+    staged="$tmpd/install/urnetwork.openrc"
+    assert_eq "1" "$([ -x "$staged" ] && echo 1 || echo 0)" "install_openrc_units stages an executable service script"
+    assert_eq "1" "$(grep -c '^supervisor="supervise-daemon"$' "$staged")" "staged script uses supervise-daemon"
+    assert_eq "1" "$(grep -c '^command_args="provide"$' "$staged")" "staged script runs the provider with 'provide'"
+    assert_eq "1" "$(grep -c "^command_user=\"$me\"\$" "$staged")" "staged script runs as the service user"
+    assert_eq "1" "$(grep -c "^command=\"$tmpd/install/bin/urnetwork\"\$" "$staged")" "staged script points at the installed provider binary"
+    assert_eq "1" "$(grep -c '^respawn_delay=5$' "$staged")" "staged script respawns with a delay"
+    assert_eq "1" "$(grep -c "^output_log=\"$expected_home/urnetwork.log\"\$" "$staged")" "logs live under the service user's home"
+    assert_eq "1" "$(echo "$out" | grep -c "sudo cp $staged")" "non-root output prints the exact sudo cp command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo chmod +x')" "non-root output prints the sudo chmod command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-update add urnetwork default')" "non-root output prints the rc-update command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-service urnetwork start')" "non-root output prints the start command"
+    rm -rf "$tmpd"
+}
+test_openrc_staged_script_and_nonroot_output
+
+# A missing install directory must not leave the OpenRC service installed: the
+# teardown runs before the "directory not found" bailout (non-root prints the
+# sudo commands; root does the work — root covered by the container smoke).
+test_openrc_uninstall_missing_dir_still_tears_down_service() {
+    local tmpd me out
+    tmpd="$(mktemp -d)"
+    me="$(id -un)"
+    out="$(
+        PT_MISSING="$tmpd/missing" PT_ME="$me" PT_INITD="$tmpd/init.d-urnetwork" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_MISSING"
+            install_path_explicit=1
+            openrc_user="$PT_ME"
+            openrc_initd_file="$PT_INITD"
+            has_systemd=0
+            has_openrc=1
+            do_uninstall 2>&1 || true
+        '
+    )" || true
+    assert_eq "1" "$(echo "$out" | grep -c "removing the OpenRC service anyway")" "missing-dir uninstall still runs the OpenRC teardown"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-update del urnetwork default')" "missing-dir uninstall prints the rc-update command"
+    assert_eq "1" "$(echo "$out" | grep -c "could not be found")" "missing-dir uninstall still reports the missing directory"
+    rm -rf "$tmpd"
+}
+test_openrc_uninstall_missing_dir_still_tears_down_service
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"

@@ -915,6 +915,9 @@ openrc_service_running ()
 openrc_maybe_redirect_install_path ()
 {
     [ "$has_openrc" -eq 1 ] || return 0
+    # Only when the OpenRC branch is the one that will run: a host where the
+    # systemd path is chosen (systemctl present) keeps root's own install path.
+    [ "$has_systemd" -eq 0 ] || return 0
     [ "$(id -u)" -eq 0 ] || return 0
     [ "$install_path_explicit" -eq 0 ] || return 0
     openrc_root_home="$(openrc_user_home)"
@@ -952,16 +955,43 @@ openrc_restore_update_entry ()
     return 0
 }
 
+# openrc_teardown_service: stop and de-register the OpenRC service and remove
+# its artifacts (init script, periodic entry including a paused one, and the
+# service user's state). Root does the work; a non-root run prints the exact
+# sudo commands. Shared by the normal uninstall path and the
+# missing-install-directory path, where the service must still be removed.
+openrc_teardown_service ()
+{
+    pr_info "Removing OpenRC service"
+    if [ "$(id -u)" -eq 0 ]; then
+        rc-service urnetwork stop 2>/dev/null || true
+        rc-update del urnetwork default 2>/dev/null || true
+        rm -f "$openrc_initd_file" 2>/dev/null || pr_err "warning: could not remove %s" "$openrc_initd_file"
+        rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/daily/urnetwork-update.installer-paused \
+              /etc/periodic/weekly/urnetwork-update /etc/periodic/weekly/urnetwork-update.installer-paused \
+              /etc/periodic/monthly/urnetwork-update /etc/periodic/monthly/urnetwork-update.installer-paused 2>/dev/null || true
+        # The provider's state lives in the SERVICE user's home (the service
+        # runs as that user), not in the invoking user's home.
+        openrc_state_home="$(openrc_user_home)"
+        if [ -d "$openrc_state_home/.urnetwork" ]; then
+            pr_info "Removing: %s/.urnetwork" "$openrc_state_home"
+            rm -rf "$openrc_state_home/.urnetwork"
+        fi
+    else
+        pr_warn "Removing the system service needs root; run:"
+        pr_info "    sudo rc-service urnetwork stop"
+        pr_info "    sudo rc-update del urnetwork default"
+        pr_info "    sudo rm -f %s" "$openrc_initd_file"
+        pr_info "    sudo rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update"
+    fi
+}
+
 # stop_openrc_units mirrors stop_systemd_units for the OpenRC service. Only
 # root can stop a system service; a non-root run leaves it up (the binary
 # swap is rename-based and safe) and prints the restart command that applies
 # the update.
 stop_openrc_units ()
 {
-    # Keep a scheduled auto-update from firing mid-install (see
-    # openrc_pause_update_entry). Restored by install_openrc_units.
-    openrc_pause_update_entry
-
     openrc_service_running || return 0
 
     if [ "$(id -u)" -ne 0 ]; then
@@ -973,12 +1003,19 @@ stop_openrc_units ()
     if [ "$operation" = "update" ] && [ "$FORCE" != "1" ]; then
         pr_info "urnetwork (OpenRC service) is running — the binary will be updated on disk."
         pr_info "Restart the service when convenient to apply the update: rc-service urnetwork restart"
+        # The swap still happens: keep a scheduled update from racing it.
+        openrc_pause_update_entry
         return 0
     fi
 
     if [ "$FORCE" != "1" ]; then
         confirm_restart "Upgrading or reinstalling requires temporarily stopping the URNetwork provider to safely swap the core binary."
     fi
+
+    # Only now, after the confirm gate can no longer abort the install, pause
+    # the scheduled update entry (an aborted confirm must not leave it
+    # paused). Restored by install_openrc_units.
+    openrc_pause_update_entry
 
     pr_info "urnetwork (OpenRC service) is running — it will be stopped for the update and restarted once finished."
     if rc-service urnetwork stop; then
@@ -1774,10 +1811,14 @@ do_install ()
             fi
 
             if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
-                printf "Start service:         \e[1mrc-service urnetwork start\e[0m\n"
-                printf "Disable service:       \e[1mrc-update del urnetwork default && rc-service urnetwork stop\e[0m\n"
-                printf "Enable auto-updates:   \e[1murnet-tools auto-update weekly\e[0m    # needs busybox crond\n"
-                printf "Disable auto-updates:  \e[1murnet-tools auto-update off\e[0m\n"
+                if [ "$(id -u)" -eq 0 ] && id "$openrc_user" > /dev/null 2>&1; then
+                    printf "Start service:         \e[1mrc-service urnetwork start\e[0m\n"
+                    printf "Disable service:       \e[1mrc-update del urnetwork default && rc-service urnetwork stop\e[0m\n"
+                    printf "Enable auto-updates:   \e[1murnet-tools auto-update weekly\e[0m    # needs busybox crond\n"
+                    printf "Disable auto-updates:  \e[1murnet-tools auto-update off\e[0m\n"
+                else
+                    printf "OpenRC service not installed yet — finish with the steps printed above.\n"
+                fi
                 printf "\n"
                 printf "\e[1;33mNote:\e[0m zero-downtime updates are unavailable under OpenRC (no sd_notify);\n"
                 printf "\e[1murnet-tools update\e[0m performs a stop/start service restart.\n"
@@ -1830,6 +1871,14 @@ do_uninstall ()
     openrc_maybe_redirect_install_path
 
     if [ ! -d "$install_path" ]; then
+        # On OpenRC the service must still be removed even when the tools
+        # directory is gone: a live service keeps respawning a provider whose
+        # binary may no longer exist, and its runlevel entry would restart it
+        # on every boot.
+        if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
+            pr_warn "Directory '%s' was not found; removing the OpenRC service anyway." "$install_path"
+            openrc_teardown_service
+        fi
         pr_err "Directory '%s' could not be found, are you sure you have URnetwork installed?" "$install_path"
         exit 1
     fi
@@ -1854,26 +1903,7 @@ do_uninstall ()
     fi
 
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
-        pr_info "Removing OpenRC service"
-        if [ "$(id -u)" -eq 0 ]; then
-            rc-service urnetwork stop 2>/dev/null || true
-            rc-update del urnetwork default 2>/dev/null || true
-            rm -f "$openrc_initd_file" 2>/dev/null || pr_err "warning: could not remove %s" "$openrc_initd_file"
-            rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update 2>/dev/null || true
-            # The provider's state lives in the SERVICE user's home (the
-            # service runs as that user), not in the invoking user's home.
-            openrc_state_home="$(openrc_user_home)"
-            if [ -d "$openrc_state_home/.urnetwork" ]; then
-                pr_info "Removing: %s/.urnetwork" "$openrc_state_home"
-                rm -rf "$openrc_state_home/.urnetwork"
-            fi
-        else
-            pr_warn "Removing the system service needs root; run:"
-            pr_info "    sudo rc-service urnetwork stop"
-            pr_info "    sudo rc-update del urnetwork default"
-            pr_info "    sudo rm -f %s" "$openrc_initd_file"
-            pr_info "    sudo rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update"
-        fi
+        openrc_teardown_service
     fi
 
     remove_tool_links "$install_path"

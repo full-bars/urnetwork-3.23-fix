@@ -168,6 +168,12 @@ func enableTimer(p Provider, timer string) error {
 	return exec.Command("systemctl", "enable", "--now", timer).Run()
 }
 
+// systemdTimerDisableFn runs one systemctl command for the auto-update timer
+// cleanup. Seam for tests so unit tests never execute a real systemctl.
+var systemdTimerDisableFn = func(args ...string) error {
+	return exec.Command("systemctl", args...).Run()
+}
+
 // cleanupLifecycle on Unix disables the auto-update timer. The unit disable
 // in cmdUninstall handles the service, but the <unit>-update.timer would
 // keep firing for a provider that is gone (heavyweight review S7). On an
@@ -186,10 +192,10 @@ func cleanupLifecycle(p Provider) {
 	timer := strings.TrimSuffix(p.Unit, ".service") + "-update.timer"
 	if isUserUnit(p.Unit) && p.User != "" {
 		args := append(systemctlUserArgs(p.User), "disable", "--now", timer)
-		_ = exec.Command("systemctl", args...).Run()
+		_ = systemdTimerDisableFn(args...)
 		return
 	}
-	_ = exec.Command("systemctl", "disable", "--now", timer).Run()
+	_ = systemdTimerDisableFn("disable", "--now", timer)
 }
 
 // renderSystemctlStatus reproduces the pre-rewrite Linux `status` behavior:

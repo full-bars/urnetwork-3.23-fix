@@ -610,10 +610,10 @@ func renderStatusBase(p Provider) error {
 		renderStatusPanel(p)
 		return nil
 	}
-	if openrcActive() && openrcServiceInstalled() {
-		// OpenRC host: the supervisor view is `rc-service urnetwork status`
-		// (a stopped service exits 3 — a state, not a failure), and the
-		// table below adds the live control-socket view.
+	// OpenRC host: show the supervisor's view only when the resolved target
+	// IS the service's supervised process (or no process was resolved); the
+	// table below carries the live control-socket view either way.
+	if openrcActive() && openrcServiceInstalled() && p.Unit == "" && (p.PID == 0 || providerSupervisedByOpenRCFn(p)) {
 		_ = renderOpenRCStatus()
 	} else if err := renderSystemctlStatus(p); err == nil {
 		return nil

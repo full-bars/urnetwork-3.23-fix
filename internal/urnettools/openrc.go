@@ -35,6 +35,10 @@ const (
 
 	// openrcUpdateCronName is the periodic entry that runs the auto-update.
 	openrcUpdateCronName = "urnetwork-update"
+	// openrcUpdateCronPausedName is the entry's name while the installer has
+	// it paused around a binary swap (see the shell installer); cleanup and
+	// `auto-update off` must sweep it too.
+	openrcUpdateCronPausedName = openrcUpdateCronName + ".installer-paused"
 )
 
 var (
@@ -181,21 +185,22 @@ func openrcValidInterval(interval string) bool {
 // service (or names nothing at all). Any other explicit unit is a different
 // provider and must not be hijacked by the OpenRC backend. Selector flags
 // (--user/--state-dir/--network/--network-id/--pid) are only accepted when
-// they match the service's OWN discovered provider: `stop --pid <bare-pid>`
-// must not silently stop the service instead, and ambiguous discovery falls
-// through so the normal path's precise error runs rather than a guess.
+// they match a discovered provider that IS the service's own supervised
+// process — `stop --pid <bare-pid>` must not silently stop the service
+// instead, and a bare provider must not satisfy a selector on the service's
+// behalf. Ambiguous discovery falls through so the normal path's precise
+// error runs rather than a guess.
 func openrcTargetApplies(t Target) bool {
-	if t.Unit != "" && t.Unit != openrcServiceName {
+	if t.Unit != "" && t.Unit != openrcServiceName && t.Unit != openrcServiceName+".service" {
 		return false
 	}
 	if t.User == "" && t.StateDir == "" && t.Network == "" && t.NetworkID == "" && t.PID == 0 {
 		return true
 	}
-	provs := discoverSystemdFn()
-	if len(provs) != 1 {
+	p, ok := openrcServiceProvider()
+	if !ok {
 		return false
 	}
-	p := provs[0]
 	switch {
 	case t.User != "" && t.User != p.User:
 		return false
@@ -211,22 +216,39 @@ func openrcTargetApplies(t Target) bool {
 	return true
 }
 
+// openrcServiceProvider returns the single discovered provider when it is the
+// process the OpenRC service supervises, and ok=false otherwise. Discovery on
+// an OpenRC host is process-based, so a running BARE provider (manual launch,
+// service stopped) is discoverable but is NOT the service's: trusting it
+// would retarget service operations onto an unrelated process (and write
+// restart markers into its state dir).
+func openrcServiceProvider() (Provider, bool) {
+	provs := discoverSystemdFn()
+	if len(provs) != 1 {
+		return Provider{}, false
+	}
+	if !providerSupervisedByOpenRCFn(provs[0]) {
+		return Provider{}, false
+	}
+	return provs[0], true
+}
+
 // openrcGateProvider is the provider record used for the restart confirm gate
 // and the restart-reason marker on an OpenRC host: the service name, enriched
-// best-effort with the sole discovered provider so the audit line shows the
-// real user/state when they are unambiguous.
+// best-effort with the service's own supervised provider so the audit line
+// shows the real user/state when they are unambiguous.
 func openrcGateProvider() Provider {
 	p := Provider{Unit: openrcServiceName}
-	if provs := discoverSystemdFn(); len(provs) == 1 {
-		p.User = provs[0].User
-		p.StateDir = provs[0].StateDir
-		p.StateHome = provs[0].StateHome
-		p.Network = provs[0].Network
-		p.PID = provs[0].PID
+	if prov, ok := openrcServiceProvider(); ok {
+		p.User = prov.User
+		p.StateDir = prov.StateDir
+		p.StateHome = prov.StateHome
+		p.Network = prov.Network
+		p.PID = prov.PID
 		// Binary feeds openrcUpdateToolPath's first preference (the
 		// urnet-tools beside the provider binary); without it the cron entry
 		// would always fall back to this running executable.
-		p.Binary = provs[0].Binary
+		p.Binary = prov.Binary
 	}
 	return p
 }
@@ -354,8 +376,11 @@ func openrcRouteAutoUpdate(interval string, rest []string, dryRun bool) (bool, e
 
 // openrcUpdateToolPath resolves the urnet-tools binary the auto-update cron
 // entry must run. Preference order: the tool beside the provider binary (the
-// canonical install layout the shell installer creates), then this running
-// binary, then PATH.
+// canonical install layout the shell installer creates), then PATH (the
+// installer also links /usr/local/bin/urnet-tools), then this running binary,
+// then a bare name. PATH deliberately precedes this executable: a tool run
+// from a transient copy (a fresh build in /tmp) must not bake that path into
+// a persistent cron entry.
 func openrcUpdateToolPath(p Provider) string {
 	if p.Binary != "" {
 		cand := filepath.Join(filepath.Dir(p.Binary), "urnet-tools")
@@ -363,11 +388,11 @@ func openrcUpdateToolPath(p Provider) string {
 			return cand
 		}
 	}
-	if self, err := openrcExecutableFn(); err == nil && self != "" {
-		return self
-	}
 	if p, err := openrcLookPathFn("urnet-tools"); err == nil {
 		return p
+	}
+	if self, err := openrcExecutableFn(); err == nil && self != "" {
+		return self
 	}
 	return "urnet-tools"
 }
@@ -380,6 +405,15 @@ func openrcSudoHint(err error) string {
 		return " — re-run as root (sudo urnet-tools auto-update ...)"
 	}
 	return ""
+}
+
+// openrcCronEntryPaths lists the auto-update entry (and its installer-paused
+// form) in one queue directory.
+func openrcCronEntryPaths(dir string) []string {
+	return []string{
+		filepath.Join(openrcPeriodicBaseDir, dir, openrcUpdateCronName),
+		filepath.Join(openrcPeriodicBaseDir, dir, openrcUpdateCronPausedName),
+	}
 }
 
 // openrcSetAutoUpdate writes or removes the busybox crond periodic entry that
@@ -396,9 +430,10 @@ func openrcSudoHint(err error) string {
 func openrcSetAutoUpdate(interval, toolPath string) error {
 	if interval == "off" {
 		for _, dir := range openrcPeriodicIntervals {
-			path := filepath.Join(openrcPeriodicBaseDir, dir, openrcUpdateCronName)
-			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-				return fmt.Errorf("auto-update off: remove %s: %w%s", path, err, openrcSudoHint(err))
+			for _, path := range openrcCronEntryPaths(dir) {
+				if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+					return fmt.Errorf("auto-update off: remove %s: %w%s", path, err, openrcSudoHint(err))
+				}
 			}
 		}
 		return nil
@@ -407,14 +442,15 @@ func openrcSetAutoUpdate(interval, toolPath string) error {
 		return fmt.Errorf("invalid interval %q: daily|weekly|monthly|off", interval)
 	}
 	// Move semantics: clear the other queues so an interval change never
-	// leaves two entries firing.
+	// leaves two entries firing (and drop any paused leftover with them).
 	for _, dir := range openrcPeriodicIntervals {
 		if dir == interval {
 			continue
 		}
-		path := filepath.Join(openrcPeriodicBaseDir, dir, openrcUpdateCronName)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("auto-update %s: remove stale %s: %w%s", interval, path, err, openrcSudoHint(err))
+		for _, path := range openrcCronEntryPaths(dir) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				return fmt.Errorf("auto-update %s: remove stale %s: %w%s", interval, path, err, openrcSudoHint(err))
+			}
 		}
 	}
 	dir := filepath.Join(openrcPeriodicBaseDir, interval)
@@ -443,6 +479,14 @@ func openrcUpdateCronScript(toolPath string) string {
 		"exec \"" + toolPath + "\" update -f\n"
 }
 
+// openrcCrondStatusFn probes the crond service: nil when started, an
+// ExitError with code 3 when stopped, any other error when the check itself
+// failed. Seam for tests (the default runs rc-service with its output
+// discarded).
+var openrcCrondStatusFn = func() error {
+	return exec.Command(openrcToolPathFn("rc-service"), "crond", "status").Run()
+}
+
 // openrcCrondNote returns an actionable note when the periodic entry would
 // never fire, so `auto-update weekly` does not silently schedule into a queue
 // nothing runs. Empty when crond has an OpenRC service that reports started.
@@ -454,7 +498,7 @@ func openrcCrondNote() string {
 	// rc-service status exits 0 when started and 3 when stopped. The probe's
 	// output is discarded so it never interleaves with this command's own
 	// output, and "could not check" is distinguished from "stopped".
-	err := exec.Command(openrcToolPathFn("rc-service"), "crond", "status").Run()
+	err := openrcCrondStatusFn()
 	if err == nil {
 		return ""
 	}
@@ -481,9 +525,10 @@ func openrcCleanup() {
 		fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", openrcInitScriptPath, err, openrcInitScriptPath)
 	}
 	for _, dir := range openrcPeriodicIntervals {
-		path := filepath.Join(openrcPeriodicBaseDir, dir, openrcUpdateCronName)
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", path, err, path)
+		for _, path := range openrcCronEntryPaths(dir) {
+			if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
+				fmt.Fprintf(os.Stderr, "uninstall: warning: could not remove %s: %v (run: sudo rm -f %s)\n", path, err, path)
+			}
 		}
 	}
 }
@@ -518,20 +563,24 @@ func isSuperviseDaemonComm(comm string) bool {
 	return comm == "supervise-daemon" || comm == "supervise-daemo"
 }
 
-// parentPID returns the parent pid from /proc/<pid>/stat. comm may contain
-// spaces and parentheses, so only the fields after the LAST ')' are parsed
-// (state ppid pgrp ...).
+// parentPID returns the parent pid from /proc/<pid>/stat.
 func parentPID(pid int) int {
 	b, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", pid))
 	if err != nil {
 		return 0
 	}
-	s := string(b)
-	i := strings.LastIndexByte(s, ')')
+	return parseParentPID(string(b))
+}
+
+// parseParentPID extracts field 4 (ppid) from /proc/<pid>/stat content. comm
+// may contain spaces and parentheses, so only the fields after the LAST ')'
+// are parsed (state ppid pgrp ...).
+func parseParentPID(stat string) int {
+	i := strings.LastIndexByte(stat, ')')
 	if i < 0 {
 		return 0
 	}
-	fields := strings.Fields(s[i+1:])
+	fields := strings.Fields(stat[i+1:])
 	if len(fields) < 2 {
 		return 0
 	}

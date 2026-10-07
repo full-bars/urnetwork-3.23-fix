@@ -3,7 +3,9 @@
 package urnettools
 
 import (
+	"errors"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -25,16 +27,21 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	oldInit, oldRun, oldToolPath := openrcInitScriptPath, openrcRunFn, openrcToolPathFn
 	oldPeriodic, oldExecutable := openrcPeriodicBaseDir, openrcExecutableFn
 	oldDiscover := discoverSystemdFn
+	oldSupervised := providerSupervisedByOpenRCFn
 	t.Cleanup(func() {
 		openrcProbeFn, systemdRunningFn = oldProbe, oldSystemd
 		openrcInitScriptPath, openrcRunFn, openrcToolPathFn = oldInit, oldRun, oldToolPath
 		openrcPeriodicBaseDir, openrcExecutableFn = oldPeriodic, oldExecutable
 		discoverSystemdFn = oldDiscover
+		providerSupervisedByOpenRCFn = oldSupervised
 	})
 	// The restart gate enriches its audit line from discovery; stub it so a
 	// test never touches (or writes a restart marker into) a real provider
 	// state dir on the host running the tests.
 	discoverSystemdFn = func() []Provider { return nil }
+	// Default: a discovered provider counts as the service's supervised
+	// process; tests that need a bare provider override this.
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return true }
 
 	dir := t.TempDir()
 	openrcInitScriptPath = filepath.Join(dir, "urnetwork")
@@ -413,17 +420,34 @@ func TestIsSuperviseDaemonComm(t *testing.T) {
 }
 
 // TestParentPID reads the real /proc for this test process: its parent must
-// match os.Getppid(). Also pins the parsing against a comm containing
-// spaces and parentheses (the reason only fields after the last ')' are
-// parsed).
+// match os.Getppid(). The pure parser is pinned separately (TestParseParentPID).
 func TestParentPID(t *testing.T) {
 	if got, want := parentPID(os.Getpid()), os.Getppid(); got != want {
 		t.Fatalf("parentPID(self) = %d, want %d", got, want)
 	}
-	// A process whose comm contains ')' is parsed correctly because only the
-	// fields after the LAST ')' are used.
 	if got := parentPID(1); got != 0 {
 		t.Fatalf("parentPID(1) = %d, want 0 (init has no parent)", got)
+	}
+}
+
+// TestParseParentPID pins the /proc/<pid>/stat parser, including a comm that
+// contains spaces and parentheses (the reason only fields after the LAST ')'
+// are parsed).
+func TestParseParentPID(t *testing.T) {
+	for _, c := range []struct {
+		stat string
+		want int
+	}{
+		{"1234 (supervise-daemo) S 1 1234 1234 0 -1 4194560", 1},
+		{"1234 (bash) S 5678 1234 1234 0 -1 4194560", 5678},
+		{"1234 (a b) c) R 42 1234 1234", 42}, // comm with spaces and a ')'
+		{"1234 (x) S", 0},                    // truncated: no ppid field
+		{"garbage", 0},
+		{"", 0},
+	} {
+		if got := parseParentPID(c.stat); got != c.want {
+			t.Errorf("parseParentPID(%q) = %d, want %d", c.stat, got, c.want)
+		}
 	}
 }
 
@@ -458,21 +482,35 @@ func TestOpenRCCleanupRemovesArtifacts(t *testing.T) {
 // TestOpenRCToolPathResolution pins the auto-update tool resolution order:
 // the tool beside the provider binary wins, then the running executable.
 func TestOpenRCToolPathResolution(t *testing.T) {
-	oldStat, oldExec := openrcStatFn, openrcExecutableFn
-	t.Cleanup(func() { openrcStatFn, openrcExecutableFn = oldStat, oldExec })
+	oldStat, oldExec, oldLook := openrcStatFn, openrcExecutableFn, openrcLookPathFn
+	t.Cleanup(func() { openrcStatFn, openrcExecutableFn, openrcLookPathFn = oldStat, oldExec, oldLook })
 
 	dir := t.TempDir()
 	providerBin := filepath.Join(dir, "urnetwork")
 	if err := os.WriteFile(providerBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	// No sibling tool yet: falls to the running executable.
+	// No sibling tool, no PATH tool: falls to the running executable.
+	openrcLookPathFn = func(string) (string, error) { return "", os.ErrNotExist }
 	openrcExecutableFn = func() (string, error) { return "/usr/local/bin/urnet-tools", nil }
 	openrcStatFn = func(path string) (os.FileInfo, error) { return os.Stat(path) }
 	if got := openrcUpdateToolPath(Provider{Binary: providerBin}); got != "/usr/local/bin/urnet-tools" {
 		t.Fatalf("tool path = %q, want the running executable fallback", got)
 	}
-	// Sibling tool present: it wins.
+	// A PATH tool wins over the running executable: a transient copy (a fresh
+	// build in /tmp) must not be baked into the persistent cron entry.
+	openrcLookPathFn = func(name string) (string, error) {
+		if name == "urnet-tools" {
+			return "/usr/local/bin/urnet-tools", nil
+		}
+		return "", os.ErrNotExist
+	}
+	openrcExecutableFn = func() (string, error) { return "/tmp/transient/urnet-tools", nil }
+	if got := openrcUpdateToolPath(Provider{Binary: providerBin}); got != "/usr/local/bin/urnet-tools" {
+		t.Fatalf("tool path = %q, want the PATH tool ahead of the transient executable", got)
+	}
+	// Sibling tool present: it wins over everything.
+	openrcLookPathFn = func(string) (string, error) { return "", os.ErrNotExist }
 	sibling := filepath.Join(dir, "urnet-tools")
 	if err := os.WriteFile(sibling, []byte("#!/bin/sh\n"), 0o755); err != nil {
 		t.Fatal(err)
@@ -605,5 +643,160 @@ func TestOpenRCAutoUpdateEntryUsesSiblingTool(t *testing.T) {
 	// Leftover positionals are refused here too.
 	if err := cmdAutoUpdate([]string{"weekly", "typo"}, false, false); err == nil || !strings.Contains(err.Error(), "positional") {
 		t.Fatalf("cmdAutoUpdate(weekly typo) = %v, want a positional-arguments error", err)
+	}
+}
+
+// TestOpenRCBareProviderNotTreatedAsService: a running BARE provider (manual
+// launch, service stopped) is discoverable on an OpenRC host but is NOT the
+// service's process. Selectors must not match it, and the restart gate must
+// not write a restart marker into its state dir.
+func TestOpenRCBareProviderNotTreatedAsService(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return false } // a bare provider
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{User: "alice", StateDir: "/home/alice/.urnetwork", PID: 777}}
+	}
+
+	// A selector matching the bare provider must NOT route to the service.
+	handled, err := openrcRouteLifecycle("stop", []string{"--pid", "777"}, false, false)
+	if handled || err != nil {
+		t.Fatalf("bare-provider selector: handled=%v err=%v, want false,nil (falls through)", handled, err)
+	}
+	if rig.ran() != 0 {
+		t.Fatal("rc-service must not run for a bare provider")
+	}
+
+	// The gate provider must not be enriched from the bare provider: no
+	// restart marker for an unrelated state dir.
+	gp := openrcGateProvider()
+	if gp.StateDir != "" || gp.User != "" || gp.PID != 0 {
+		t.Fatalf("gate provider enriched from a bare provider: %+v", gp)
+	}
+}
+
+// TestOpenRCAutoRoutesSelectorFallthrough: the auto-start/auto-update routes
+// apply the same selector contract as the lifecycle route.
+func TestOpenRCAutoRoutesSelectorFallthrough(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", PID: 4242}}
+	}
+
+	if handled, _ := openrcRouteAutoStart("on", []string{"--user", "other"}, false, false); handled {
+		t.Fatal("auto-start with a foreign --user must fall through")
+	}
+	if handled, _ := openrcRouteAutoUpdate("weekly", []string{"--user", "other"}, false); handled {
+		t.Fatal("auto-update with a foreign --user must fall through")
+	}
+	if handled, err := openrcRouteAutoStart("on", []string{"--user", "urnet"}, false, false); !handled || err != nil {
+		t.Fatalf("auto-start with a matching --user: handled=%v err=%v, want true,nil", handled, err)
+	}
+}
+
+// TestOpenRCCrondNote pins the three crond-note branches: not installed,
+// stopped (exit 3), probe failure — and the quiet happy path.
+func TestOpenRCCrondNote(t *testing.T) {
+	oldStat, oldProbe := openrcStatFn, openrcCrondStatusFn
+	t.Cleanup(func() { openrcStatFn, openrcCrondStatusFn = oldStat, oldProbe })
+
+	// Not installed: no /etc/init.d/crond.
+	openrcStatFn = func(string) (os.FileInfo, error) { return nil, os.ErrNotExist }
+	if note := openrcCrondNote(); !strings.Contains(note, "not installed") {
+		t.Fatalf("not-installed note = %q", note)
+	}
+
+	// Installed: the probe decides.
+	openrcStatFn = func(string) (os.FileInfo, error) { return nil, nil }
+	openrcCrondStatusFn = func() error { return nil }
+	if note := openrcCrondNote(); note != "" {
+		t.Fatalf("started crond note = %q, want empty", note)
+	}
+	stoppedErr := exec.Command("sh", "-c", "exit 3").Run() // real *exec.ExitError, code 3
+	openrcCrondStatusFn = func() error { return stoppedErr }
+	if note := openrcCrondNote(); !strings.Contains(note, "not started") {
+		t.Fatalf("stopped crond note = %q", note)
+	}
+	openrcCrondStatusFn = func() error { return errors.New("boom") }
+	if note := openrcCrondNote(); !strings.Contains(note, "could not check") {
+		t.Fatalf("probe-failure note = %q", note)
+	}
+}
+
+// TestOpenRCCleanupFallThroughDisablesSystemdTimer: cleanupLifecycle must run
+// the OpenRC cleanup AND still disable a coexisting systemd unit's timer
+// (migration edge) — and never execute a real systemctl in tests.
+func TestOpenRCCleanupFallThroughDisablesSystemdTimer(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	oldTimer := systemdTimerDisableFn
+	var timerArgs [][]string
+	systemdTimerDisableFn = func(args ...string) error {
+		timerArgs = append(timerArgs, append([]string(nil), args...))
+		return nil
+	}
+	t.Cleanup(func() { systemdTimerDisableFn = oldTimer })
+
+	cleanupLifecycle(Provider{Unit: "urnetwork-mig.service"})
+
+	if rig.ran() != 2 {
+		t.Fatalf("openrc cleanup ran %d commands, want 2", rig.ran())
+	}
+	if len(timerArgs) != 1 {
+		t.Fatalf("systemd timer disable ran %d times, want 1", len(timerArgs))
+	}
+	if got := strings.Join(timerArgs[0], " "); !strings.Contains(got, "-update.timer") {
+		t.Fatalf("timer disable args = %q, want the -update.timer unit", got)
+	}
+}
+
+// TestOpenRCSudoHintOnPermissionError: a non-root run cannot manage the
+// /etc/periodic queue; the error must say how to elevate.
+func TestOpenRCSudoHintOnPermissionError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("permission-based test cannot run as root")
+	}
+	newOpenRCTestRig(t, true, true)
+	base := t.TempDir()
+	ro := filepath.Join(base, "periodic")
+	if err := os.Mkdir(ro, 0o500); err != nil {
+		t.Fatal(err)
+	}
+	openrcPeriodicBaseDir = ro
+	err := openrcSetAutoUpdate("weekly", "/x/urnet-tools")
+	if err == nil {
+		t.Fatal("expected a permission error writing into a read-only queue")
+	}
+	if !strings.Contains(err.Error(), "re-run as root") {
+		t.Fatalf("error = %v, want the sudo hint", err)
+	}
+}
+
+// TestRenderStatusBaseOpenRCView: the service's rc-service view is shown only
+// when the resolved target is the service's supervised process.
+func TestRenderStatusBaseOpenRCView(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+
+	// Supervised provider: rc-service status is shown.
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return true }
+	if err := renderStatusBase(Provider{PID: 123}); err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, a := range rig.argv {
+		if strings.Join(a, " ") == "rc-service urnetwork status" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatalf("rc-service status not run; argv = %v", rig.argv)
+	}
+
+	// Bare provider: no service view.
+	rig.argv = nil
+	providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
+	if err := renderStatusBase(Provider{PID: 123}); err != nil {
+		t.Fatal(err)
+	}
+	if rig.ran() != 0 {
+		t.Fatalf("bare provider got the service view: %v", rig.argv)
 	}
 }
