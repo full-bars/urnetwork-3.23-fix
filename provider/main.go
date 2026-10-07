@@ -1924,6 +1924,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	// elapsed, so the startup ramp is not recorded as dead.
 	const deadConfirmDelay = 65 * time.Minute
 
+	// healthVerdictAttentionDownPct: how much of the pool may be down before
+	// the plain-sentence health verdict reads "needs attention" (percent).
+	const healthVerdictAttentionDownPct = 10
+
 	// per-proxy byte counts from the previous tick, used to compute rates.
 	prevTick := map[string]trafficBytes{}
 	prevTickTime := time.Now()
@@ -2211,6 +2215,29 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		}
 		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
+
+		// Plain-sentence verdict (readability contract): one line, checked in
+		// severity order. "earning" means traffic RIGHT NOW (serving > 0),
+		// not billable-today, so a box that is quiet after the midnight reset
+		// reads idle rather than unhealthy.
+		totalProxies := report.Up + down
+		switch {
+		case uptime < deadConfirmDelay:
+			tlog("❤️ [health] Verdict: starting up — %d of %d proxies up so far; failures are not judged until the first %s have passed.\n",
+				report.Up, totalProxies, roundDur(deadConfirmDelay))
+		case report.Up == 0:
+			tlog("❤️ [health] Verdict: down — none of the %d proxies is up; nothing can earn.\n", totalProxies)
+		case down == 0 && serving > 0:
+			tlog("❤️ [health] Verdict: healthy — all %d proxies up and earning, nothing needs attention.\n", totalProxies)
+		case down == 0:
+			tlog("❤️ [health] Verdict: healthy but idle — all %d proxies up, no customer traffic right now.\n", totalProxies)
+		case down*100 >= totalProxies*healthVerdictAttentionDownPct:
+			tlog("❤️ [health] Verdict: needs attention — only %d of %d proxies up, %d down (%d dead, %d failing).\n",
+				report.Up, totalProxies, down, len(report.Dead), len(report.Degraded))
+		default:
+			tlog("❤️ [health] Verdict: mostly healthy — %d of %d proxies up, %d down (%d dead, %d failing); see the lists above.\n",
+				report.Up, totalProxies, down, len(report.Dead), len(report.Degraded))
+		}
 
 		// See desiredAddressesForHistoryPruning for why this isn't just
 		// currently-registered health entries.
@@ -4316,6 +4343,12 @@ func provide(opts docopt.Opts) {
 	// good (and leaving the last pressure score, GOGC and memory budget in force).
 	go superviseLoop(ctx, "pressure_monitor", func() { runPressureMonitor(ctx, selfHealEnabled) }, nil)
 	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
+	// Thrash watchdog: senses swap-thrash independently of the pressure
+	// score, holds the freeze-growth rung, and (gated on self-heal,
+	// supervision, attribution and the anti-loop cap) restarts the
+	// provider. onFail releases the freeze rung so a dead loop cannot
+	// hold the pool flat forever.
+	go superviseLoop(ctx, "thrash_watchdog", func() { runThrashWatchdog(ctx, selfHealEnabled) }, func() { thrashFreeze.Store(false) })
 	go superviseLoop(ctx, "degraded_proxy_reaper", func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) }, nil)
 	// Proxy audit: parks proven-junk paid/file proxies when proxy audit is on
 	// (`urnet-tools proxy audit on`), and only logs would-park otherwise. Also
