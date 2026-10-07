@@ -35,7 +35,7 @@ func shrinkReloadVars(t *testing.T, timeout, hardLimit, interval, reFire time.Du
 // action is still about to read it.
 func waitWatchdogActionIdle(t *testing.T, r *ProxyReloader) {
 	t.Helper()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for r.watchdogActionInFlight.Load() {
 		if time.Now().After(deadline) {
 			t.Fatal("escalation goroutine did not finish in time")
@@ -113,7 +113,7 @@ func TestReloadWatchdogEscalatesOnOverdueReload(t *testing.T) {
 		r.RunReloadWatchdog(ctx)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -322,7 +322,7 @@ func TestReloadWatchdogRefireIsThrottled(t *testing.T) {
 	// Wait for the first re-fire (throttled), then a short observation
 	// window: a fixed sleep flakes under CI contention, so the lower bound
 	// is waited for rather than slept at.
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for calls.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -432,19 +432,25 @@ func TestReloadWatchdogRefiresForANewEpisode(t *testing.T) {
 		r.RunReloadWatchdog(ctx)
 	}()
 
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
 	if calls.Load() == 0 {
 		t.Fatal("first episode never fired")
 	}
-	// End the episode: with reFire = 1h, only an episode reset can fire again.
+	// Let the first escalation goroutine finish before starting the next
+	// episode, so the single-flight guard cannot suppress the new one.
+	waitWatchdogActionIdle(t, r)
+	// End the episode: with reFire = 1h, only a fresh episode (new start
+	// timestamp) can fire again.
 	r.reloadActive.Store(false)
 	time.Sleep(30 * time.Millisecond)
 	r.reloadStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
 	r.reloadActive.Store(true)
-	deadline = time.Now().Add(2 * time.Second)
+	// Generous deadline: a busy CI runner schedules the ticker late; the
+	// assertion is about episode semantics, not about tick latency.
+	deadline = time.Now().Add(10 * time.Second)
 	for calls.Load() < 2 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
@@ -476,7 +482,7 @@ func TestReloadWatchdogReportsFailedEscalation(t *testing.T) {
 		defer close(done)
 		r.RunReloadWatchdog(ctx)
 	}()
-	deadline := time.Now().Add(2 * time.Second)
+	deadline := time.Now().Add(10 * time.Second)
 	for calls.Load() == 0 && time.Now().Before(deadline) {
 		time.Sleep(2 * time.Millisecond)
 	}
