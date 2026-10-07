@@ -82,14 +82,27 @@ func acquireProxyLockAt(path string) (func(), error) {
 	}
 	if existing, err := os.ReadFile(path); err == nil {
 		if isLockStale(existing) {
-			// Remove only the file we actually judged stale: two racing
-			// stealers could otherwise have the slower one delete the
-			// faster one's fresh lock. The re-read narrows the window;
-			// POSIX has no compare-and-delete, so a microsecond-sized
-			// window remains — a fresh lock installed inside it fails our
-			// O_EXCL below, which is the safe outcome.
-			if current, err := os.ReadFile(path); err == nil && string(current) == string(existing) {
-				os.Remove(path)
+			// An empty or unparseable lock younger than the write grace is
+			// likely an acquirer that has created the file but not yet
+			// written its pid+timestamp (create and write are not atomic).
+			// Stealing it would admit two holders at once; falling through
+			// to O_EXCL below fails safely instead.
+			steal := true
+			if _, _, ok := parseLockContent(existing); !ok {
+				if info, statErr := os.Stat(path); statErr == nil && time.Since(info.ModTime()) < proxyLockWriteGrace {
+					steal = false
+				}
+			}
+			if steal {
+				// Remove only the file we actually judged stale: two racing
+				// stealers could otherwise have the slower one delete the
+				// faster one's fresh lock. The re-read narrows the window;
+				// POSIX has no compare-and-delete, so a microsecond-sized
+				// window remains — a fresh lock installed inside it fails
+				// our O_EXCL below, which is the safe outcome.
+				if current, err := os.ReadFile(path); err == nil && string(current) == string(existing) {
+					os.Remove(path)
+				}
 			}
 		}
 	}
@@ -138,6 +151,11 @@ const proxyLockStaleAge = 5 * time.Minute
 // lock.
 var proxyLockNonce uint64
 
+// proxyLockWriteGrace covers the non-atomic create-then-write window of a
+// lock acquisition: lock content that does not parse and is younger than
+// this is assumed mid-write, not stale.
+var proxyLockWriteGrace = 5 * time.Second
+
 // processStart approximates this process's start time. A hot swap execs in
 // place: the pid survives and deferred cleanup never runs, so a proxy.lock
 // written by the previous image carries our own pid with an old timestamp
@@ -158,19 +176,16 @@ func cleanStaleSelfProxyLock() {
 	if err != nil {
 		return
 	}
-	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
-	if len(lines) < 2 {
-		return
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if err != nil || pid != os.Getpid() {
-		return
-	}
-	ts, err := strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
-	if err != nil {
+	pid, ts, ok := parseLockContent(b)
+	if !ok || pid != os.Getpid() {
 		return
 	}
 	if time.Unix(ts, 0).Before(processStart) {
+		// Compare before removing, like the steal path: another holder
+		// could have replaced the file between the read and the remove.
+		if current, err := os.ReadFile(path); err != nil || string(current) != string(b) {
+			return
+		}
 		if os.Remove(path) == nil {
 			tlog("[proxy] removed a proxy.lock left behind by a previous image with this pid\n")
 		}
@@ -286,20 +301,32 @@ func doWriteReloadTrigger(path string) error {
 	return os.Rename(tmp, path)
 }
 
+// parseLockContent extracts the pid and timestamp from lock content. ok is
+// false for empty, truncated or unparseable content — which must NOT be
+// treated as stale on sight while an acquirer may still be mid-write (see
+// the write-grace guard in acquireProxyLockAt).
+func parseLockContent(data []byte) (pid int, ts int64, ok bool) {
+	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
+	if len(lines) < 2 {
+		return 0, 0, false
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil {
+		return 0, 0, false
+	}
+	ts, err = strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
+	if err != nil {
+		return 0, 0, false
+	}
+	return pid, ts, true
+}
+
 func isLockStale(data []byte) bool {
 	// Only the first two lines (pid, timestamp) are interpreted; the third
 	// is a per-acquisition nonce, and any trailing content must not confuse
 	// the parse.
-	lines := strings.Split(strings.TrimSpace(string(data)), "\n")
-	if len(lines) < 2 {
-		return true
-	}
-	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
-	if err != nil {
-		return true
-	}
-	ts, err := strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
-	if err != nil {
+	pid, ts, ok := parseLockContent(data)
+	if !ok {
 		return true
 	}
 
@@ -691,6 +718,10 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 // forever.
 func (r *ProxyReloader) acquireReloadSlot() bool {
 	deadline := time.Now().Add(reloadSlotTimeout)
+	// One reused timer: time.After in the loop would schedule a fresh timer
+	// on every poll tick.
+	poll := time.NewTimer(reloadSlotPollInterval)
+	defer poll.Stop()
 	for {
 		if r.mu.TryLock() {
 			return true
@@ -705,8 +736,9 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 			select {
 			case <-r.parentCtx.Done():
 				return false
-			case <-time.After(reloadSlotPollInterval):
+			case <-poll.C:
 			}
+			poll.Reset(reloadSlotPollInterval)
 		} else {
 			time.Sleep(reloadSlotPollInterval)
 		}
@@ -814,6 +846,12 @@ func (r *ProxyReloader) reload() {
 
 	r.reloadSlotSkipped.Store(false)
 	if !r.acquireReloadSlot() {
+		if r.parentCtx != nil && r.parentCtx.Err() != nil {
+			// Shutdown, not contention: no retry is wanted and no alarm is
+			// due.
+			tlog("[proxy] reload cancelled: shutting down\n")
+			return
+		}
 		r.reloadSlotSkipped.Store(true)
 		held := "unknown"
 		if started := r.reloadStartedAt.Load(); started > 0 {
@@ -855,6 +893,10 @@ func (r *ProxyReloader) reload() {
 	lockAcqStart := time.Now()
 	lockRelease, err := acquireProxyLockWithRetry()
 	if err != nil {
+		// Transient cross-process contention (a CLI or reaper holding the
+		// file lock): mark the trigger un-consumed so the watcher retries
+		// it on a later tick instead of dropping the change.
+		r.reloadSlotSkipped.Store(true)
 		tlog("[proxy] reload skipped: %v (waited %v)\n", err, time.Since(reloadStart).Round(time.Millisecond))
 		return
 	}

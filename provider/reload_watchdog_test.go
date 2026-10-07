@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -315,13 +316,21 @@ func TestReloadWatchdogRefireIsThrottled(t *testing.T) {
 		defer close(done)
 		r.RunReloadWatchdog(ctx)
 	}()
-	time.Sleep(150 * time.Millisecond)
+	// Wait for the first re-fire (throttled), then a short observation
+	// window: a fixed sleep flakes under CI contention, so the lower bound
+	// is waited for rather than slept at.
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	time.Sleep(20 * time.Millisecond)
 	cancel()
 	<-done
 	waitWatchdogActionIdle(t, r)
-	// Ticks land every 5ms; without the re-fire throttle this would be ~30.
-	if calls.Load() < 2 || calls.Load() > 4 {
-		t.Fatalf("escalation calls = %d, want 2..4 with a 60ms re-fire over 150ms", calls.Load())
+	// Ticks land every 5ms; without the re-fire throttle this would be far
+	// more than three by now.
+	if calls.Load() < 2 || calls.Load() > 3 {
+		t.Fatalf("escalation calls = %d, want 2..3 with a 60ms re-fire", calls.Load())
 	}
 }
 
@@ -495,5 +504,106 @@ func TestProxyLockReleaseAfterDeletionIsNoop(t *testing.T) {
 	rel()
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("release after deletion must not recreate the lock, stat err = %v", err)
+	}
+}
+
+// Transient cross-process lock contention must mark the trigger un-consumed
+// so the watcher retries it, not drop it.
+func TestReloadMarksSkipWhenProxyLockContended(t *testing.T) {
+	r, _, _ := trimFixture(t)
+	rel, err := acquireProxyLock()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rel()
+	out := captureTlog(t, func() { r.reload() })
+	if !r.reloadSlotSkipped.Load() {
+		t.Fatal("a proxy-lock contention skip must mark the trigger for retry")
+	}
+	if !strings.Contains(out, "reload skipped") {
+		t.Fatalf("expected skip log, got:\n%s", out)
+	}
+}
+
+// The create-then-write window of a lock acquisition: a fresh empty lock
+// must not be stolen; the same content aged past the grace is a crashed
+// writer and may be.
+func TestAcquireProxyLockDoesNotStealFreshEmptyLock(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.lock")
+	oldGrace := proxyLockWriteGrace
+	proxyLockWriteGrace = 50 * time.Millisecond
+	t.Cleanup(func() { proxyLockWriteGrace = oldGrace })
+
+	if err := os.WriteFile(path, nil, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := acquireProxyLockAt(path); err == nil {
+		t.Fatal("a fresh empty lock must not be stolen")
+	}
+	old := time.Now().Add(-time.Minute)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatal(err)
+	}
+	rel, err := acquireProxyLockAt(path)
+	if err != nil {
+		t.Fatalf("an aged empty lock must be stealable: %v", err)
+	}
+	rel()
+}
+
+// Shutdown cancellation must not mark the trigger for retry nor emit the
+// escalation alarm.
+func TestReloadCancelledOnShutdownDoesNotMarkSkip(t *testing.T) {
+	shrinkReloadVars(t, time.Hour, time.Minute, time.Second, time.Second)
+	withTempHome(t)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel() // shutting down
+	r := &ProxyReloader{parentCtx: ctx}
+	r.mu.Lock() // slot held by the in-flight reload
+	defer r.mu.Unlock()
+
+	out := captureTlog(t, func() { r.reload() })
+	if r.reloadSlotSkipped.Load() {
+		t.Fatal("a shutdown cancellation must not mark the trigger for retry")
+	}
+	if !strings.Contains(out, "shutting down") {
+		t.Fatalf("expected the calm shutdown line, got:\n%s", out)
+	}
+}
+
+// cleanStaleSelfProxyLock removes only an old lock carrying this process's
+// own pid: other-pid and fresh self locks are left alone.
+func TestCleanStaleSelfProxyLock(t *testing.T) {
+	withTempHome(t)
+	path, err := proxyLockPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.WriteFile(path, []byte("424242\n1700000000\n7\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cleanStaleSelfProxyLock()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("a lock with another pid must be left alone")
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n%d\n8\n", os.Getpid(), time.Now().Unix())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cleanStaleSelfProxyLock()
+	if _, err := os.Stat(path); err != nil {
+		t.Fatal("a fresh self lock must be left alone")
+	}
+	if err := os.WriteFile(path, []byte(fmt.Sprintf("%d\n%d\n9\n", os.Getpid(), time.Now().Add(-time.Hour).Unix())), 0600); err != nil {
+		t.Fatal(err)
+	}
+	cleanStaleSelfProxyLock()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("an old self lock must be removed, stat err = %v", err)
 	}
 }
