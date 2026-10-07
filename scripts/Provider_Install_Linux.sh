@@ -622,6 +622,15 @@ stop_systemd_units ()
 # across installs and updates since nothing else in this script scans
 # urnetwork.service.d for foreign files -- only override.conf is managed
 # by override_set_env/override_rm_env.
+#
+# A VALID policy can still be wrong for THIS service: the provider's
+# swap-thrash watchdog performs its supervised restart by exiting with
+# status 75, and only `always` and `on-failure` restart on that exit;
+# `no`, `on-success`, `on-abnormal`, `on-watchdog` and `on-abort` all
+# leave the service stopped after a detected thrash. A
+# RestartPreventExitStatus that lists 75 has the same effect. Those are
+# warned about, never rewritten: the policy is the operator's choice, but
+# the consequence is otherwise silent.
 sanitize_restart_dropins ()
 {
     dropin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
@@ -632,6 +641,17 @@ sanitize_restart_dropins ()
         if grep -Eq '^Restart=(yes|true|1)[[:space:]]*$' "$f"; then
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
             sed -i -E 's/^Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
+        fi
+        if grep -Eq '^Restart=(no|on-success|on-abnormal|on-watchdog|on-abort)[[:space:]]*$' "$f"; then
+            pr_warn "%s sets a restart policy that will not restart the provider's swap-thrash recovery (that recovery exits with status 75). Use Restart=on-failure or Restart=always." "$f"
+        fi
+        if grep -Eq '^RestartPreventExitStatus=' "$f"; then
+            rpes="$(grep -E '^RestartPreventExitStatus=' "$f" | sed -E 's/^[^=]*=//')"
+            case " $rpes " in
+                *" 75 "*)
+                    pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. Remove 75 from RestartPreventExitStatus." "$f"
+                    ;;
+            esac
         fi
     done
 }

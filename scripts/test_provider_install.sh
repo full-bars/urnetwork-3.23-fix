@@ -389,6 +389,45 @@ test_remove_tool_links_only_removes_our_links() {
 }
 test_remove_tool_links_only_removes_our_links
 
+test_sanitize_restart_dropins_flags_weakened_policies() {
+    local tmp d out
+    tmp="$(mktemp -d)"
+    d="$tmp/systemd/user/urnetwork.service.d"
+    mkdir -p "$d"
+    out="$tmp/warns.txt"
+
+    # A valid-but-weakened policy: Restart=no never restarts the exit-75 recovery.
+    printf '[Service]\nRestart=no\n' > "$d/weaken.conf"
+    : > "$out"
+    pr_warn() { printf '%s ' "$@" >> "$out"; printf '\n' >> "$out"; }
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "Restart=no drop-in warns about the exit-75 recovery restart"
+
+    # on-failure is correct and stays silent.
+    printf '[Service]\nRestart=on-failure\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "Restart=on-failure stays silent"
+
+    # Blocking exit 75 has the same effect as a weakened policy.
+    printf '[Service]\nRestart=on-failure\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "RestartPreventExitStatus=75 warns"
+
+    # The invalid-value repair still wins, and a repaired drop-in does not
+    # also warn about exit 75 (the value now restarts on it).
+    printf '[Service]\nRestart=yes\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'Repairing invalid' "$out")" "Restart=yes is still repaired"
+    assert_eq "0" "$(grep -c 'swap-thrash recovery' "$out")" "a repaired drop-in does not also warn about exit 75"
+    assert_eq "Restart=on-failure" "$(grep -E '^Restart=' "$d/weaken.conf")" "the repair rewrites the value"
+
+    rm -rf "$tmp"
+}
+test_sanitize_restart_dropins_flags_weakened_policies
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
