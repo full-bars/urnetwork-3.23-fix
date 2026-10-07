@@ -2895,9 +2895,9 @@ func provide(opts docopt.Opts) {
 		// Wire the control socket "hotswap" command so urnet-tools can
 		// trigger a handoff on any platform (including Windows, which has
 		// no SIGUSR2).
-		hotSwapTrigger = func() error {
+		setHotSwapTrigger(func() error {
 			return runHotSwapParentHandoff(ctx, cancel, opts)
-		}
+		})
 	}
 
 	// Drain buffered retention events before exit so a shutdown racing the
@@ -3760,9 +3760,9 @@ func provide(opts docopt.Opts) {
 				_ = hotSwapIPC.Close()
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
-				hotSwapTrigger = func() error {
+				setHotSwapTrigger(func() error {
 					return runHotSwapParentHandoff(ctx, cancel, opts)
-				}
+				})
 
 				// Wait for the parent to actually release the control socket before
 				// reloading state and binding our own. The parent only closes it when

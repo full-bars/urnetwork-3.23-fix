@@ -12,8 +12,8 @@ import (
 )
 
 // shrinkReloadVars swaps the reload timing vars for test-sized values and
-// restores them on cleanup. The tests below depend on this so they run in
-// milliseconds instead of minutes.
+// restores them on cleanup. All three call sites below depend on this so the
+// tests run in milliseconds instead of minutes.
 func shrinkReloadVars(t *testing.T, timeout, hardLimit, interval, reFire time.Duration) {
 	t.Helper()
 	oldTimeout, oldLimit := reloadSlotTimeout, reloadHardLimit
@@ -136,9 +136,9 @@ func TestReloadOverdueActionHonorsHotRestartSwitch(t *testing.T) {
 	resetGlobalControlStateForTest()
 	t.Cleanup(resetGlobalControlStateForTest)
 	var called atomic.Int32
-	restoreTrigger := hotSwapTrigger
-	hotSwapTrigger = func() error { called.Add(1); return nil }
-	t.Cleanup(func() { hotSwapTrigger = restoreTrigger })
+	restoreTrigger := getHotSwapTrigger()
+	setHotSwapTrigger(func() error { called.Add(1); return nil })
+	t.Cleanup(func() { setHotSwapTrigger(restoreTrigger) })
 
 	t.Setenv("URNETWORK_HOT_RESTART", "0")
 	err := reloadOverdueAction()
@@ -211,5 +211,169 @@ func TestReloadAbortsAtHardLimit(t *testing.T) {
 	r.mu.Unlock()
 	if r.reloadActive.Load() {
 		t.Fatal("an aborted reload must not leave reloadActive set")
+	}
+	if r.reloadStartedAt.Load() != 0 {
+		t.Fatal("an aborted reload must not leave reloadStartedAt set")
+	}
+}
+
+// A completed reload must leave no watchdog state behind: a stale
+// reloadStartedAt from an earlier reload is exactly what let a fresh reload
+// look instantly overdue and trip a false escalation.
+func TestReloadClearsWatchdogStateAfterCompletion(t *testing.T) {
+	r, _, _ := trimFixture(t)
+	out := captureTlog(t, func() { r.reload() })
+	if strings.Contains(out, "reload aborted") {
+		t.Fatalf("fixture reload should complete, got:\n%s", out)
+	}
+	if r.reloadActive.Load() {
+		t.Fatal("a completed reload must clear reloadActive")
+	}
+	if r.reloadStartedAt.Load() != 0 {
+		t.Fatalf("a completed reload must clear reloadStartedAt, got %d", r.reloadStartedAt.Load())
+	}
+	if !r.mu.TryLock() {
+		t.Fatal("a completed reload must release the slot")
+	}
+	r.mu.Unlock()
+}
+
+// A stale or missing timestamp with the active flag set must never escalate:
+// the watchdog waits for a real timestamp, and the store order guarantees
+// active=true always carries this reload's timestamp.
+func TestReloadWatchdogIgnoresStaleOrMissingTimestamp(t *testing.T) {
+	// A LONG hard limit: "fresh" must stay fresh for the whole test, since
+	// the point is the timestamp guards, not the overdue path.
+	shrinkReloadVars(t, time.Minute, time.Minute, 5*time.Millisecond, time.Millisecond)
+	withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return nil }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	r := &ProxyReloader{}
+	// Active with NO timestamp — the window the old publish order exposed:
+	// must not fire.
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(0)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx)
+	}()
+	time.Sleep(60 * time.Millisecond)
+	// A fresh reload starts: recent timestamp, still no fire.
+	r.reloadStartedAt.Store(time.Now().UnixNano())
+	time.Sleep(60 * time.Millisecond)
+	cancel()
+	<-done
+	if calls.Load() != 0 {
+		t.Fatalf("watchdog escalated %d times on missing/fresh reload state", calls.Load())
+	}
+}
+
+// The re-fire throttle must space escalation attempts, not fire on every
+// watchdog tick.
+func TestReloadWatchdogRefireIsThrottled(t *testing.T) {
+	shrinkReloadVars(t, time.Minute, 10*time.Millisecond, 5*time.Millisecond, 60*time.Millisecond)
+	withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return nil }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	r := &ProxyReloader{}
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx)
+	}()
+	time.Sleep(150 * time.Millisecond)
+	cancel()
+	<-done
+	// Ticks land every 5ms; without the re-fire throttle this would be ~30.
+	if calls.Load() < 2 || calls.Load() > 4 {
+		t.Fatalf("escalation calls = %d, want 2..4 with a 60ms re-fire over 150ms", calls.Load())
+	}
+}
+
+// With hot restart allowed but no trigger registered, the action must report
+// that cleanly (and never crash on a nil trigger).
+func TestReloadOverdueActionWithoutTrigger(t *testing.T) {
+	resetGlobalControlStateForTest()
+	t.Cleanup(resetGlobalControlStateForTest)
+	restoreTrigger := getHotSwapTrigger()
+	setHotSwapTrigger(nil)
+	t.Cleanup(func() { setHotSwapTrigger(restoreTrigger) })
+
+	t.Setenv("URNETWORK_HOT_RESTART", "")
+	err := reloadOverdueAction()
+	if err == nil || !strings.Contains(err.Error(), "not installed") {
+		t.Fatalf("want trigger-not-installed error, got %v", err)
+	}
+}
+
+// Shutdown must cancel a slot wait promptly instead of waiting out the slot
+// timeout.
+func TestAcquireReloadSlotCancelsOnShutdown(t *testing.T) {
+	shrinkReloadVars(t, time.Hour, time.Minute, time.Second, time.Second)
+	oldPoll := reloadSlotPollInterval
+	reloadSlotPollInterval = 5 * time.Millisecond
+	t.Cleanup(func() { reloadSlotPollInterval = oldPoll })
+
+	ctx, cancel := context.WithCancel(context.Background())
+	r := &ProxyReloader{parentCtx: ctx}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	go func() {
+		time.Sleep(20 * time.Millisecond)
+		cancel()
+	}()
+
+	start := time.Now()
+	if r.acquireReloadSlot() {
+		t.Fatal("must not acquire while the slot is held")
+	}
+	if elapsed := time.Since(start); elapsed > 2*time.Second {
+		t.Fatalf("slot wait returned after %v; cancellation must end it promptly", elapsed)
+	}
+}
+
+// Same-second re-acquisition: identical pid+timestamp but a different nonce
+// must not let an earlier release remove the later holder's lock.
+func TestProxyLockReleaseSameSecondReplacement(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.lock")
+
+	rel, err := acquireProxyLockAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	own, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	lines := strings.Split(strings.TrimSpace(string(own)), "\n")
+	if len(lines) < 3 {
+		t.Fatalf("lock content should carry the nonce line, got %q", own)
+	}
+	// Same pid, same second, different nonce: the same-second collision the
+	// token must distinguish.
+	replacement := lines[0] + "\n" + lines[1] + "\n" + "18446744073709551615\n"
+	if err := os.WriteFile(path, []byte(replacement), 0600); err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	got, err := os.ReadFile(path)
+	if err != nil || string(got) != replacement {
+		t.Fatalf("release removed a same-second replacement holder's lock: content %q err %v", got, err)
 	}
 }
