@@ -145,7 +145,10 @@ func wrapRow(r liveRow, width int) []string {
 
 // renderLiveBlock draws the live section of `urnet-tools status`. Every line
 // ends in a newline; the block starts with a header, no leading blank line.
-func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
+// pressureSummary, when non-empty, is the provider's persisted one-sentence
+// pressure summary: it replaces the bare score in the pressure row (the
+// sentence carries the score too).
+func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string {
 	var b strings.Builder
 	state := strings.ToUpper(s.State)
 	if state == "" {
@@ -251,7 +254,14 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
 		emit(liveRow{label: "memory", sep: ", ", segs: mem})
 	}
 
-	emit(liveRow{label: "pressure", segs: []string{fmt.Sprintf("%.2f", s.Pressure)}})
+	// Plain language first: when the provider persists its summary sentence
+	// (every monitor tick), the row shows the sentence instead of the raw
+	// number. Older providers that never wrote the file keep the bare score.
+	pressureText := fmt.Sprintf("%.2f", s.Pressure)
+	if pressureSummary != "" {
+		pressureText = pressureSummary
+	}
+	emit(liveRow{label: "pressure", segs: []string{pressureText}})
 
 	if label, text, ok := s.whyRow(); ok {
 		emit(liveRow{label: label, segs: []string{text}})

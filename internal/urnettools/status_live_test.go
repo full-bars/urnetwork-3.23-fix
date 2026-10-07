@@ -74,6 +74,65 @@ func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	}
 }
 
+func TestStatusShowsPersistedPressureSummary(t *testing.T) {
+	dir := t.TempDir()
+	summary := "system calm (pressure 0.21); heap at 33% of its soft limit; 981 MB RAM free"
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"),
+		[]byte(`{"summary":"`+summary+`","thrash_state":"calm"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{User: "u", StateDir: dir, Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, summary) {
+		t.Fatalf("status must print the persisted summary sentence:\n%s", out)
+	}
+}
+
+func TestStatusFallsBackToBarePressureScore(t *testing.T) {
+	// No pressure_status file (older provider / monitor stopped): the live
+	// block still shows the score row, unchanged.
+	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "system calm") {
+		t.Fatalf("no summary must not be invented:\n%s", out)
+	}
+	if !strings.Contains(out, "0.21") {
+		t.Fatalf("the bare score row must remain:\n%s", out)
+	}
+}
+
+func TestPressureSummaryLine(t *testing.T) {
+	dir := t.TempDir()
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a missing file must render nothing, got %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"  hello calm  "}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "hello calm" {
+		t.Fatalf("summary trimmed, got %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("garbage must render nothing, got %q", got)
+	}
+	if got := pressureSummaryLine(""); got != "" {
+		t.Fatalf("an empty state dir must render nothing, got %q", got)
+	}
+}
+
 func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, nil, true)

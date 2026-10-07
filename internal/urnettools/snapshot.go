@@ -225,7 +225,28 @@ func printLiveBlock(p Provider) {
 		return
 	}
 	fmt.Println()
-	fmt.Print(renderLiveBlock(snap, statusLiveOpts()))
+	fmt.Print(renderLiveBlock(snap, statusLiveOpts(), pressureSummaryLine(p.StateDir)))
+}
+
+// pressureSummaryLine reads the provider's persisted one-sentence pressure
+// summary so `status` can show plain language, not just the score. Best
+// effort: a missing or unreadable file (an older provider, or its monitor
+// stopped) simply renders nothing.
+func pressureSummaryLine(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	b, err := os.ReadFile(filepath.Join(stateDir, "pressure_status"))
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return ""
+	}
+	return strings.TrimSpace(st.Summary)
 }
 
 // printProviderSummary prints one compact row per provider, fetching the
