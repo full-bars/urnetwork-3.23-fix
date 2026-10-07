@@ -39,8 +39,10 @@ jobs:
     # script and turns a hang into a catchable 124. Keep the outer cap
     # comfortably above the inner one so a slow-but-healthy run is never
     # guillotined by the job timeout (which would report as a raw job kill,
-    # not a verdict).
-    timeout-minutes: 210
+    # not a verdict). Budget: inner 180 min + the release-asset wait step
+    # (up to 60 min on tag-triggered runs) + checkout/setup/mint time, so
+    # 260 keeps the outer cap above the worst-case total.
+    timeout-minutes: 260
     # Two runs share the same gauntlet account server-side. Queue, never cancel.
     concurrency:
       group: shakedown

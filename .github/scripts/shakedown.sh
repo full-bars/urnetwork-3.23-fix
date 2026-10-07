@@ -14,7 +14,7 @@
 #    update-tag/self-update. Everything that restarts the provider.
 #  - Phase 2 (20-100m): final restart, seed blackhole, uninterrupted
 #    observation with resource sampling every 5m, 10m refresh, remove-dead
-#    --yes at the end (~110m total). Watchdog ~7200s in the workflow.
+#    --yes at the end (~125-135m total). Inner watchdog 10800s in the workflow.
 #  - No billable traffic: mainnet provider with free proxies, but no real
 #    clients. Accepted explicitly. Checks use logs/state/CLI only.
 set -u
@@ -25,7 +25,7 @@ PASS=0; FAIL=0; SKIP=0
 TIER1_FAIL=0
 ok()   { PASS=$((PASS+1)); echo "PASS: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 bad()  { FAIL=$((FAIL+1)); echo "FAIL: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
-skip() { SKIP=$((SKIP+1)); echo "SKIP: $1" | tee -a "$REPORT"; }
+skip() { SKIP=$((SKIP+1)); echo "SKIP: $1" | tee -a "$REPORT"; touch /tmp/shakedown.heartbeat 2>/dev/null; }
 t1bad() { TIER1_FAIL=1; bad "$1"; }
 # Every section header carries minutes elapsed since script start. The suite
 # overran its budget for many releases and the report had no per-section
@@ -83,16 +83,30 @@ journal_line_count() { j | wc -l; }
 # 10-60s on 1CPU). Fixed sleeps false-fail. Poll instead.
 # Also reads the RAM log's current start: under URNETWORK_RAMLOGS=1 or the
 # lowmem/eco profiles the journal stays empty, so a journal-only wait would
-# never succeed.
+# never succeed. The RAM fallback is FRESHNESS-GATED: the log persists across
+# sections (nothing deletes /dev/shm/urnetwork.log), so a stale block from an
+# earlier RAM-logged start would otherwise satisfy the very first poll
+# (before the restarted provider has logged anything) and false-pass a
+# restart that never completed. The fallback may only read once a NEW
+# "--- provider restarted at" delimiter appeared since this wait began; a
+# provider that is not RAM-logging never adds one, so the fallback stays
+# inert for it and the journal governs.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
   local end=$(( $(date +%s) + max_wait ))
+  local start_delims cur_delims
+  start_delims=$(grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true)
+  start_delims=${start_delims:-0}
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
     if [ -z "$cid" ]; then
-      cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+      cur_delims=$(grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true)
+      cur_delims=${cur_delims:-0}
+      if [ "$cur_delims" -gt "$start_delims" ]; then
+        cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+      fi
     fi
     if [ -n "$cid" ]; then echo "$cid"; return 0; fi
     sleep 5
@@ -1075,9 +1089,9 @@ OLD_HOTSWAP_VERSION="v3.23.0-fix.30.9"
 V_TAG_A="v3.23.0-fix.31.2"
 V_TAG_B="v3.23.0-fix.31.3"
 V_TAG_C="v3.23.0-fix.31.4"
-V_BASE_A=$(echo "$V_TAG_A" | grep -oE "v3\.23\.0-fix\.[0-9]+")
-V_BASE_B=$(echo "$V_TAG_B" | grep -oE "v3\.23\.0-fix\.[0-9]+")
-V_BASE_C=$(echo "$V_TAG_C" | grep -oE "v3\.23\.0-fix\.[0-9]+")
+V_BASE_A=$(echo "$V_TAG_A" | grep -oE "v3\.23\.0-fix\.[0-9.]+")
+V_BASE_B=$(echo "$V_TAG_B" | grep -oE "v3\.23\.0-fix\.[0-9.]+")
+V_BASE_C=$(echo "$V_TAG_C" | grep -oE "v3\.23\.0-fix\.[0-9.]+")
 
 # V1: pre-31 running binary on Type=simple, updating to a stamped >=31 tag
 # -> the unit is migrated to Type=notify and the update uses a standard
@@ -1449,8 +1463,13 @@ EOF
   W8_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
   W8_OUT=$(timeout 60 urnet-tools hotswap -f 2>&1); W8_RC=$?
   W8_DECLINED=0
-  echo "$W8_OUT" | grep -q "Provider_Install_Linux.sh" && W8_DECLINED=1
-  echo "$W8_OUT" | grep -qi "zero-downtime hotswap unavailable" && W8_DECLINED=1
+  # Both strings must be present: "Provider_Install_Linux.sh" names the
+  # unit-type pre-flight decline, and requiring both keeps an unrelated
+  # "zero-downtime hotswap unavailable" (e.g. the version gate) from
+  # satisfying this check. Mirrors V2's conjunction.
+  if echo "$W8_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$W8_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
+    W8_DECLINED=1
+  fi
   W8_PID_AFTER=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
   if [ "$W8_DECLINED" = "1" ] && [ "$W8_PID_BEFORE" = "$W8_PID_AFTER" ]; then
     ok "W8 (T8): hotswap declined cleanly under Type=$w8_type (live PID unchanged, $W8_PID_AFTER)"
@@ -1556,10 +1575,14 @@ if [ -n "$PROC_PID" ] && urnet-tools status >/dev/null 2>&1; then
 fi
 X_RAM_CID=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1)
 [ -n "$X_RAM_CID" ] && echo "  INFO: lowmem RAM log shows $X_RAM_CID" | tee -a "$REPORT"
-if [ "$X_PROFILE_APPLIED" = "1" ] && [ "$X_ALIVE" = "1" ]; then
-  ok "X: lowmem profile applied and healthy at MemoryMax=1G (process up, control socket reachable)"
+# The identity assertion is part of the pass condition: a lowmem provider
+# whose process stays up and whose control socket answers but that never
+# authenticates is exactly the failure the MemoryMax=1G floor can produce.
+# X_CID2 (waited, RAM-log freshness-gated) is the identity signal here.
+if [ "$X_PROFILE_APPLIED" = "1" ] && [ "$X_ALIVE" = "1" ] && [ -n "$X_CID2" ]; then
+  ok "X: lowmem profile applied and healthy at MemoryMax=1G (process up, control socket reachable, client_id ${X_CID2:0:12}...)"
 else
-  bad "X: lowmem profile NOT healthy (or not applied) at MemoryMax=1G (profile_applied=$X_PROFILE_APPLIED alive=$X_ALIVE)"
+  bad "X: lowmem profile NOT healthy (or not applied) at MemoryMax=1G (profile_applied=$X_PROFILE_APPLIED alive=$X_ALIVE cid=${X_CID2:-none})"
 fi
 
 # Remove the constraint. Assert it is actually gone before returning; no
@@ -1672,6 +1695,8 @@ Z_START_RC=0
 timeout 120 runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user start urnetwork.service || Z_START_RC=$?
 if [ "$Z_START_RC" -eq 124 ]; then
   bad "Z: starting $Z_USER's provider timed out at 120s (unit Type=notify never got READY?)"
+elif [ "$Z_START_RC" -ne 0 ]; then
+  bad "Z: starting $Z_USER's provider failed outright (exit $Z_START_RC)"
 fi
 
 Z_CID=""
@@ -1725,8 +1750,13 @@ timeout 60 runuser -u "$Z_USER" -- env XDG_RUNTIME_DIR="$Z_XDG" systemctl --user
 loginctl disable-linger "$Z_USER" 2>/dev/null
 # Stop the user manager as well: while user@<uid>.service is active it holds
 # the user's session open and `userdel -r` can fail with "user is currently
-# used by process". disable-linger only changes the NEXT boot.
+# used by process". disable-linger only changes the NEXT boot. Terminate the
+# user's sessions and runtime dir too: user-runtime-dir@<uid>.service keeps
+# /run/user/<uid> mounted, which can also make userdel -r fail or leak a
+# tmpfs mount.
+loginctl terminate-user "$Z_USER" 2>/dev/null || true
 systemctl stop "user@$(id -u "$Z_USER").service" 2>/dev/null || true
+systemctl stop "user-runtime-dir@$(id -u "$Z_USER").service" 2>/dev/null || true
 userdel -r "$Z_USER" >/dev/null 2>&1
 if id "$Z_USER" >/dev/null 2>&1; then
   bad "Z: teardown failed, $Z_USER still exists"
