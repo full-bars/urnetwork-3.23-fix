@@ -176,7 +176,9 @@ func enableTimer(p Provider, timer string) error {
 func cleanupLifecycle(p Provider) {
 	if openrcActive() && openrcServiceInstalled() {
 		openrcCleanup()
-		return
+		// Fall through: a provider that ALSO has a systemd unit (migration
+		// edge) must still get that unit's timer disabled below. The normal
+		// OpenRC case has p.Unit == "" and returns immediately.
 	}
 	if p.Unit == "" {
 		return

@@ -122,9 +122,14 @@ if command -v systemctl > /dev/null; then
 fi
 
 # OpenRC detection (Alpine and friends): rc-service must be present and the
-# host must show an OpenRC runtime marker — /run/openrc on a booted host, or
-# the openrc-run runner. Systemd wins when both somehow exist: the systemd
-# branches below run first and are unchanged.
+# host must show an OpenRC marker — /run/openrc on a booted host, or the
+# openrc-run runner. This is INSTALL-TIME detection: the installer may run
+# before the first OpenRC boot (e.g. provisioning a chroot) and the service it
+# writes is meant to start at that boot. The urnet-tools RUNTIME backend
+# requires /run/openrc instead, because rc-service refuses every action on a
+# system OpenRC did not boot. Systemd wins when both somehow exist: the
+# systemd branches below run first and are unchanged (Alpine itself ships no
+# systemd package, so a systemctl binary on an OpenRC host is exotic).
 if command -v rc-service > /dev/null 2>&1; then
     if [ -d /run/openrc ] || [ -x /sbin/openrc-run ] || [ -x /usr/sbin/openrc-run ]; then
         has_openrc=1
@@ -902,12 +907,61 @@ openrc_service_running ()
     rc-service urnetwork status > /dev/null 2>&1
 }
 
+# openrc_maybe_redirect_install_path: OpenRC root installs use the service
+# user's home by default (see do_install), so BOTH install and uninstall must
+# resolve the same path — otherwise a root uninstall looks in root's home and
+# cannot find the install. Explicit -i/--install paths and non-root runs are
+# untouched. Sets install_path (and version_file) when it applies.
+openrc_maybe_redirect_install_path ()
+{
+    [ "$has_openrc" -eq 1 ] || return 0
+    [ "$(id -u)" -eq 0 ] || return 0
+    [ "$install_path_explicit" -eq 0 ] || return 0
+    openrc_root_home="$(openrc_user_home)"
+    [ -d "$openrc_root_home" ] || return 0
+    install_path="$openrc_root_home/.local/share/urnetwork-provider"
+    version_file="$install_path/.version"
+    return 0
+}
+
+# openrc_pause_update_entry / openrc_restore_update_entry: move the periodic
+# auto-update entry out of the queue while the installer swaps binaries, so a
+# scheduled `urnet-tools update -f` cannot race the install (the systemd path
+# disables its timer for the same reason). The .installer-paused suffix is
+# restored by the next install run even if this one dies mid-way, and the
+# restore scans every queue so leftovers self-heal.
+openrc_pause_update_entry ()
+{
+    [ "$(id -u)" -eq 0 ] || return 0
+    for d in daily weekly monthly; do
+        if [ -f "/etc/periodic/$d/urnetwork-update" ]; then
+            mv "/etc/periodic/$d/urnetwork-update" "/etc/periodic/$d/urnetwork-update.installer-paused" 2>/dev/null || true
+        fi
+    done
+    return 0
+}
+
+openrc_restore_update_entry ()
+{
+    [ "$(id -u)" -eq 0 ] || return 0
+    for d in daily weekly monthly; do
+        if [ -f "/etc/periodic/$d/urnetwork-update.installer-paused" ]; then
+            mv "/etc/periodic/$d/urnetwork-update.installer-paused" "/etc/periodic/$d/urnetwork-update" 2>/dev/null || pr_warn "could not re-enable the auto-update entry in /etc/periodic/%s" "$d"
+        fi
+    done
+    return 0
+}
+
 # stop_openrc_units mirrors stop_systemd_units for the OpenRC service. Only
 # root can stop a system service; a non-root run leaves it up (the binary
 # swap is rename-based and safe) and prints the restart command that applies
 # the update.
 stop_openrc_units ()
 {
+    # Keep a scheduled auto-update from firing mid-install (see
+    # openrc_pause_update_entry). Restored by install_openrc_units.
+    openrc_pause_update_entry
+
     openrc_service_running || return 0
 
     if [ "$(id -u)" -ne 0 ]; then
@@ -944,10 +998,9 @@ install_openrc_units ()
     openrc_home="$(openrc_user_home)"
     openrc_staged="$install_path/urnetwork.openrc"
 
-    if ! id "$openrc_user" > /dev/null 2>&1; then
-        pr_warn "User '%s' does not exist; the service will fail to start until it does." "$openrc_user"
-        pr_info "    create it first: useradd -m -s /bin/sh %s    # or: adduser -D %s" "$openrc_user" "$openrc_user"
-    fi
+    # Re-enable a paused auto-update entry (including one left by a previous
+    # failed install run) before anything can return early.
+    openrc_restore_update_entry
 
     case "$install_path" in
         "$openrc_home"/*) ;;
@@ -989,6 +1042,17 @@ EOF
     if ! chmod 755 "$openrc_staged"; then
         pr_err "Failed to make %s executable" "$openrc_staged"
         exit 1
+    fi
+
+    # A unit whose command_user cannot be resolved fails at every start, so
+    # do NOT install/enable one: hand the operator the exact steps instead.
+    if ! id "$openrc_user" > /dev/null 2>&1; then
+        pr_warn "User '%s' does not exist; the service is NOT installed (a unit with an unresolvable command_user fails at every start)." "$openrc_user"
+        pr_info "Create the service user and install as it:"
+        pr_info "    useradd -m -s /bin/sh %s    # or: adduser -D %s" "$openrc_user" "$openrc_user"
+        pr_info "    su - %s -c 'curl -fSsL %s | sh'" "$openrc_user" "$urnet_install_url"
+        pr_info "The service script is staged at %s if you prefer to finish by hand." "$openrc_staged"
+        return 0
     fi
 
     if [ "$(id -u)" -ne 0 ]; then
@@ -1225,16 +1289,14 @@ do_install ()
     # path, land the install inside that user's home: the supervised process
     # must be able to execute the binary, and `urnet-tools update` run by
     # that user must be able to replace it — neither works from root's home.
-    # An explicit -i/--install path always wins.
-    if [ "$has_openrc" -eq 1 ] && [ "$(id -u)" -eq 0 ] && [ "$install_path_explicit" -eq 0 ]; then
-        openrc_root_home="$(openrc_user_home)"
-        if [ -d "$openrc_root_home" ]; then
-            install_path="$openrc_root_home/.local/share/urnetwork-provider"
-            version_file="$install_path/.version"
-            pr_info "OpenRC service user '%s': installing under %s" "$openrc_user" "$install_path"
-        else
-            pr_warn "Service user '%s' has no home directory (%s); installing to %s." "$openrc_user" "$openrc_root_home" "$install_path"
-        fi
+    # An explicit -i/--install path always wins. do_uninstall resolves the
+    # same path through the same helper.
+    openrc_path_before="$install_path"
+    openrc_maybe_redirect_install_path
+    if [ "$install_path" != "$openrc_path_before" ]; then
+        pr_info "OpenRC service user '%s': installing under %s" "$openrc_user" "$install_path"
+    elif [ "$has_openrc" -eq 1 ] && [ "$(id -u)" -eq 0 ] && [ "$install_path_explicit" -eq 0 ]; then
+        pr_warn "Service user '%s' has no home directory (%s); installing to %s." "$openrc_user" "$(openrc_user_home)" "$install_path"
     fi
 
     # Dependency Check
@@ -1713,8 +1775,8 @@ do_install ()
 
             if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
                 printf "Start service:         \e[1mrc-service urnetwork start\e[0m\n"
-                printf "Disable service:       \e[1mrc-update del urnetwork && rc-service urnetwork stop\e[0m\n"
-                printf "Enable auto-updates:   \e[1murnet-tools auto-update on\e[0m    # weekly by default; needs busybox crond\n"
+                printf "Disable service:       \e[1mrc-update del urnetwork default && rc-service urnetwork stop\e[0m\n"
+                printf "Enable auto-updates:   \e[1murnet-tools auto-update weekly\e[0m    # needs busybox crond\n"
                 printf "Disable auto-updates:  \e[1murnet-tools auto-update off\e[0m\n"
                 printf "\n"
                 printf "\e[1;33mNote:\e[0m zero-downtime updates are unavailable under OpenRC (no sd_notify);\n"
@@ -1762,6 +1824,11 @@ do_uninstall ()
         esac
     done
 
+    # Resolve the same path the install used: on an OpenRC host a root install
+    # lands under the service user's home (see do_install), so a root uninstall
+    # must look there too.
+    openrc_maybe_redirect_install_path
+
     if [ ! -d "$install_path" ]; then
         pr_err "Directory '%s' could not be found, are you sure you have URnetwork installed?" "$install_path"
         exit 1
@@ -1793,6 +1860,13 @@ do_uninstall ()
             rc-update del urnetwork default 2>/dev/null || true
             rm -f "$openrc_initd_file" 2>/dev/null || pr_err "warning: could not remove %s" "$openrc_initd_file"
             rm -f /etc/periodic/daily/urnetwork-update /etc/periodic/weekly/urnetwork-update /etc/periodic/monthly/urnetwork-update 2>/dev/null || true
+            # The provider's state lives in the SERVICE user's home (the
+            # service runs as that user), not in the invoking user's home.
+            openrc_state_home="$(openrc_user_home)"
+            if [ -d "$openrc_state_home/.urnetwork" ]; then
+                pr_info "Removing: %s/.urnetwork" "$openrc_state_home"
+                rm -rf "$openrc_state_home/.urnetwork"
+            fi
         else
             pr_warn "Removing the system service needs root; run:"
             pr_info "    sudo rc-service urnetwork stop"

@@ -242,7 +242,7 @@ Proxy Management [target]:
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
-  auto-update <on|off>            ⏰  manage auto-update schedule
+  auto-update <daily|weekly|monthly|off>  ⏰  manage auto-update schedule
   auto-start <on|off>             ▶   toggle auto-start on login
 
 Providers are identified three ways (use any; the = form works too,

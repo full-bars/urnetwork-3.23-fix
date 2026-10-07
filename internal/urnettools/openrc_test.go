@@ -56,8 +56,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 }
 
 // TestProbeOpenRCDetection pins the detection rule: rc-service must be
-// resolvable AND at least one OpenRC runtime marker must exist. A host with
-// only one of the two is not treated as OpenRC.
+// resolvable AND /run/openrc must exist — the runtime marker OpenRC creates
+// at boot. A host that merely has the openrc package installed (no boot) must
+// NOT be treated as OpenRC: rc-service refuses every action there.
 func TestProbeOpenRCDetection(t *testing.T) {
 	oldLook, oldStat := openrcLookPathFn, openrcStatFn
 	t.Cleanup(func() { openrcLookPathFn, openrcStatFn = oldLook, oldStat })
@@ -68,11 +69,11 @@ func TestProbeOpenRCDetection(t *testing.T) {
 		markers   map[string]bool
 		want      bool
 	}{
-		{"rc-service + /run/openrc", true, map[string]bool{"/run/openrc": true}, true},
-		{"rc-service + /sbin/openrc-run", true, map[string]bool{"/sbin/openrc-run": true}, true},
-		{"rc-service + /usr/sbin/openrc-run", true, map[string]bool{"/usr/sbin/openrc-run": true}, true},
+		{"rc-service + /run/openrc (booted)", true, map[string]bool{"/run/openrc": true}, true},
+		{"rc-service + openrc-run only (packaged, never booted)", true, map[string]bool{"/sbin/openrc-run": true}, false},
+		{"rc-service + /usr/sbin/openrc-run only", true, map[string]bool{"/usr/sbin/openrc-run": true}, false},
 		{"rc-service, no markers", true, map[string]bool{}, false},
-		{"no rc-service, marker present", false, map[string]bool{"/run/openrc": true}, false},
+		{"no rc-service, /run/openrc present", false, map[string]bool{"/run/openrc": true}, false},
 		{"nothing", false, map[string]bool{}, false},
 	}
 	for _, c := range cases {
@@ -386,7 +387,9 @@ func TestOpenRCHotSwapDecline(t *testing.T) {
 }
 
 // TestIsSuperviseDaemonComm pins the /proc comm match, including the
-// kernel's 15-byte truncation of "supervise-daemon".
+// kernel's 15-byte truncation of "supervise-daemon" and the rejection of
+// short comms that a prefix test would wrongly accept ("su" is a prefix of
+// "supervise-daemon" — every su-parented provider would be misclassified).
 func TestIsSuperviseDaemonComm(t *testing.T) {
 	for _, c := range []struct {
 		comm string
@@ -395,6 +398,10 @@ func TestIsSuperviseDaemonComm(t *testing.T) {
 		{"supervise-daemon", true},
 		{"supervise-daemo", true}, // TASK_COMM_LEN truncation
 		{"", false},
+		{"su", false},
+		{"s", false},
+		{"sup", false},
+		{"supervise", false},
 		{"go", false},
 		{"supervised", false},
 		{"init", false},
@@ -472,5 +479,131 @@ func TestOpenRCToolPathResolution(t *testing.T) {
 	}
 	if got := openrcUpdateToolPath(Provider{Binary: providerBin}); got != sibling {
 		t.Fatalf("tool path = %q, want the sibling %q", got, sibling)
+	}
+}
+
+// TestOpenRCRouteSelectorFlags pins the selector-flag contract: a selector
+// that matches the service's own discovered provider routes to the service;
+// one that points somewhere else (a bare process's pid, another state dir)
+// must NOT be silently retargeted onto the service.
+func TestOpenRCRouteSelectorFlags(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", Network: "net1", PID: 4242}}
+	}
+
+	// Matching selectors route to the service.
+	for _, args := range [][]string{
+		{"--state-dir", "/home/urnet/.urnetwork"},
+		{"--user", "urnet"},
+		{"--network", "net1"},
+		{"--pid", "4242"},
+		{"--unit", "urnetwork"},
+	} {
+		before := rig.ran()
+		handled, err := openrcRouteLifecycle("stop", args, false, false)
+		if !handled || err != nil {
+			t.Fatalf("matching selector %v: handled=%v err=%v, want true,nil", args, handled, err)
+		}
+		if rig.ran() != before+1 {
+			t.Fatalf("matching selector %v: no rc-service ran", args)
+		}
+		if got := strings.Join(rig.argv[len(rig.argv)-1], " "); got != "rc-service urnetwork stop" {
+			t.Fatalf("matching selector %v: argv = %q", args, got)
+		}
+	}
+
+	// Foreign selectors fall through to the normal path (which errors with
+	// its own precise message) instead of acting on the service.
+	for _, args := range [][]string{
+		{"--pid", "9999"},
+		{"--state-dir", "/home/other/.urnetwork"},
+		{"--user", "other"},
+		{"--network", "othernet"},
+	} {
+		before := rig.ran()
+		handled, err := openrcRouteLifecycle("stop", args, false, false)
+		if handled || err != nil {
+			t.Fatalf("foreign selector %v: handled=%v err=%v, want false,nil", args, handled, err)
+		}
+		if rig.ran() != before {
+			t.Fatalf("foreign selector %v: rc-service must not run", args)
+		}
+	}
+
+	// Ambiguous discovery: no guessing, fall through.
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{PID: 1, StateDir: "/a"}, {PID: 2, StateDir: "/b"}}
+	}
+	handled, _ := openrcRouteLifecycle("stop", []string{"--pid", "1"}, false, false)
+	if handled {
+		t.Fatal("ambiguous discovery must fall through for selector flags")
+	}
+}
+
+// TestOpenRCAutoStartRouting exercises cmdAutoStart end to end on OpenRC and
+// pins the leftover-positional refusal (a mistyped command must not silently
+// run rc-update).
+func TestOpenRCAutoStartRouting(t *testing.T) {
+	rig := newOpenRCTestRig(t, true, true)
+
+	if err := cmdAutoStart([]string{"on"}, false, false); err != nil {
+		t.Fatalf("cmdAutoStart(on): %v", err)
+	}
+	if err := cmdAutoStart([]string{"off"}, false, false); err != nil {
+		t.Fatalf("cmdAutoStart(off): %v", err)
+	}
+	if rig.ran() != 2 {
+		t.Fatalf("ran %d commands, want 2", rig.ran())
+	}
+	if got, want := strings.Join(rig.argv[0], " "), "rc-update add urnetwork default"; got != want {
+		t.Errorf("on argv = %q, want %q", got, want)
+	}
+	if got, want := strings.Join(rig.argv[1], " "), "rc-update del urnetwork default"; got != want {
+		t.Errorf("off argv = %q, want %q", got, want)
+	}
+
+	before := rig.ran()
+	if err := cmdAutoStart([]string{"on", "typo"}, false, false); err == nil || !strings.Contains(err.Error(), "positional") {
+		t.Fatalf("cmdAutoStart(on typo) = %v, want a positional-arguments error", err)
+	}
+	if rig.ran() != before {
+		t.Fatal("a mistyped auto-start must not run rc-update")
+	}
+}
+
+// TestOpenRCAutoUpdateEntryUsesSiblingTool: the periodic entry must exec the
+// urnet-tools beside the provider binary (the canonical install layout), not
+// whichever transient binary happens to be running.
+func TestOpenRCAutoUpdateEntryUsesSiblingTool(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+
+	dir := t.TempDir()
+	providerBin := filepath.Join(dir, "urnetwork")
+	if err := os.WriteFile(providerBin, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	sibling := filepath.Join(dir, "urnet-tools")
+	if err := os.WriteFile(sibling, []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	discoverSystemdFn = func() []Provider {
+		return []Provider{{User: "urnet", StateDir: "/home/urnet/.urnetwork", Binary: providerBin}}
+	}
+
+	if err := cmdAutoUpdate([]string{"weekly"}, false, false); err != nil {
+		t.Fatalf("cmdAutoUpdate(weekly): %v", err)
+	}
+	b, err := os.ReadFile(filepath.Join(openrcPeriodicBaseDir, "weekly", openrcUpdateCronName))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(b), `exec "`+sibling+`" update -f`) {
+		t.Fatalf("entry = %q, want it to exec the sibling tool %q", b, sibling)
+	}
+
+	// Leftover positionals are refused here too.
+	if err := cmdAutoUpdate([]string{"weekly", "typo"}, false, false); err == nil || !strings.Contains(err.Error(), "positional") {
+		t.Fatalf("cmdAutoUpdate(weekly typo) = %v, want a positional-arguments error", err)
 	}
 }
