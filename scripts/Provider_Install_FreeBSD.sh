@@ -150,22 +150,46 @@ load_rc_config \$name
 start_cmd="${service_name}_start"
 stop_cmd="${service_name}_stop"
 
+# The provider is long-lived, so start it through daemon(8). Running it in the
+# foreground would make "service $service_name start" never return AND stall the
+# boot sequence, because rc runs start synchronously.
+#
+# daemon(8) also settles two things a bare "su -m ... &" would not:
+#   - -u sets HOME, USER and SHELL for the target user, so the provider's state
+#     dir lands in that user's home rather than root's.
+#   - -p writes the child pid through pidfile(3), which is what gives
+#     "service $service_name onestatus" something real to check. Without it
+#     status always reports "not running" and every start launches a duplicate.
+daemon="/usr/sbin/daemon"
+pidfile="/var/run/$service_name.pid"
+logdir="/var/log/$service_name"
+
 ${service_name}_start()
 {
-    cd "$HOME" || return 1
+    mkdir -p "$logdir"
+    chown \${${service_name}_user} "$logdir"
     echo "Starting $service_name."
-    su -m \${${service_name}_user} -c "'$provider_bin' provide \$${service_name}_flags"
+    $daemon -f -t $service_name -p "$pidfile" -o "$logdir/stdout.log" -m 0 \
+        -u \${${service_name}_user} \
+        "$provider_bin" provide \$${service_name}_flags
 }
 
 ${service_name}_stop()
 {
     echo "Stopping $service_name."
-    # Match the provider's own exec name, not the whole command line: a
-    # -f pattern containing the binary path also matches urnet-tools, cron and
-    # anything else that merely mentions the path, so stopping the service
-    # would kill unrelated processes.
-    pkill -TERM -x "$(basename "$provider_bin")" 2>/dev/null || \
-        pkill -TERM -f "^$provider_bin provide"
+    # Signal the CHILD, whose pid the pidfile holds. A "-f" pattern on the
+    # binary path would also match urnet-tools, cron and anything else that
+    # merely mentions the path, so the pidfile is the precise handle.
+    if [ -f "$pidfile" ]; then
+        pid="$(cat "$pidfile")"
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            [ -f "$pidfile" ] || break
+            sleep 1
+        done
+    fi
+    pkill -TERM -x "$(basename "$provider_bin")" 2>/dev/null || true
+    rm -f "$pidfile"
 }
 
 run_rc_command "\$1"

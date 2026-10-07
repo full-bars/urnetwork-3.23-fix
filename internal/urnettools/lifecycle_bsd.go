@@ -46,24 +46,47 @@ load_rc_config $name
 start_cmd="%[1]s_start"
 stop_cmd="%[1]s_stop"
 
+# The provider is long-lived, so start it through daemon(8). Running it in the
+# foreground would make "service %[1]s start" never return AND stall the boot
+# sequence, because rc runs start synchronously.
+#
+# daemon(8) also settles two things a bare "su -m ... &" would not:
+#   - -u sets HOME, USER and SHELL for the target user, so the provider's state
+#     dir lands in that user's home rather than root's.
+#   - -p writes the child pid through pidfile(3), which is what gives
+#     "service %[1]s onestatus" something real to check. Without it status
+#     always reports "not running" and every start launches a duplicate.
+daemon="/usr/sbin/daemon"
+pidfile="/var/run/%[1]s.pid"
+logdir="/var/log/%[1]s"
+
 %[1]s_start()
 {
-    cd "%[3]s" || return 1
+    mkdir -p "$logdir"
+    chown \${%[1]s_user} "$logdir"
     echo "Starting %[1]s."
-    su -m ${%[1]s_user} -c "'%[4]s' provide $%[1]s_flags"
+    $daemon -f -t %[1]s -p "$pidfile" -o "$logdir/stdout.log" -m 0 \
+        -u \${%[1]s_user} \
+        "%[4]s" provide \$${%[1]s_flags}
 }
 
 %[1]s_stop()
 {
     echo "Stopping %[1]s."
-    # Match the provider's own exec name, not the whole command line: a -f
-    # pattern containing the binary path also matches urnet-tools, cron and
-    # anything else that merely mentions the path, so stopping the service
-    # would kill unrelated processes.
-    pkill -TERM -x "$(basename "%[4]s")" 2>/dev/null || \
-        pkill -TERM -f "^%[4]s provide"
+    # Signal the CHILD, whose pid the pidfile holds. A "-f" pattern on the
+    # binary path would also match urnet-tools, cron and anything else that
+    # merely mentions the path, so the pidfile is the precise handle.
+    if [ -f "$pidfile" ]; then
+        pid="$(cat "$pidfile")"
+        kill "$pid" 2>/dev/null || true
+        for _ in 1 2 3 4 5 6 7 8 9 10; do
+            [ -f "$pidfile" ] || break
+            sleep 1
+        done
+    fi
+    pkill -TERM -x "$(basename "%[4]s")" 2>/dev/null || true
+    rm -f "$pidfile"
 }
-
 run_rc_command "$1"
 `, service, user, workingDir, binary)
 }

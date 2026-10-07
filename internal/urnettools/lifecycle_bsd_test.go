@@ -58,16 +58,39 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	}
 	// The binary and working directory must be baked in, and the service must
 	// run the provider's `provide` subcommand.
-	// The binary path is single-quoted inside the su -c string so a path with a
-	// space is passed as one command rather than word-split.
-	if !strings.Contains(script, `'/usr/local/bin/urnetwork' provide`) {
-		t.Error("script does not invoke the quoted provider binary's provide subcommand")
+	// The provider is started through daemon(8), not run in the foreground:
+	// a foreground `service <svc> start` would never return and would stall the
+	// boot sequence, since rc runs start synchronously.
+	if !strings.Contains(script, `daemon="/usr/sbin/daemon"`) {
+		t.Error("script does not use daemon(8); a foreground provider would hang start and boot")
 	}
-	// The working directory is QUOTED in the rendered script so an install under
-	// a home containing a space still boots. Assert the quoted form; an
-	// unquoted `cd <path>` here would be the bug this quoting prevents.
-	if !strings.Contains(script, `cd "/home/tester"`) {
-		t.Error("script does not cd to the quoted working directory")
+	if !strings.Contains(script, "$daemon -f") {
+		t.Error("script does not invoke daemon with -f")
+	}
+	// -p gives `service onestatus` a real pid to check; without it status always
+	// reports "not running" and every start launches a duplicate.
+	if !strings.Contains(script, `-p "$pidfile"`) {
+		t.Error("script does not pass the child pidfile to daemon")
+	}
+	if !strings.Contains(script, `kill "$pid"`) {
+		t.Error("script does not stop the provider through its pidfile")
+	}
+	// -u makes daemon set HOME/USER/SHELL for the target user, so the state dir
+	// lands in that user's home rather than root's. It also replaces the old
+	// `su -m`, which kept the caller's HOME.
+	if !strings.Contains(script, `-u \${urnetwork_user}`) {
+		t.Error("script does not run the provider as the rc.conf user via daemon -u")
+	}
+	// `su -m` appears in the explanatory comment, so assert on executable
+	// lines only — a comment mentioning a mechanism is not that mechanism.
+	for _, line := range strings.Split(script, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		if strings.Contains(trimmed, "su -m") {
+			t.Errorf("script still executes su -m: %q", trimmed)
+		}
 	}
 }
 
