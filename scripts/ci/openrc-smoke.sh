@@ -235,10 +235,14 @@ say "verifying urnet-tools logs"
 # Reading the file works in both states, which is why the logs moved to /var/log.
 rc-service urnetwork stop >/dev/null 2>&1
 sleep 3
-# `logs` FOLLOWS by design (tail -f), so it never returns on its own. Bound it:
-# timeout kills the follow, and any output it produced before that is what we
-# assert on.
-LOGOUT=$(timeout 8 "$TOOLS" logs -n 5 2>&1 || true)
+# `logs` FOLLOWS by design (tail -f), so it never returns on its own. Bound it
+# with timeout, and write to a FILE rather than using command substitution: the
+# tool spawns `tail -f` as a child, and if that grandchild inherits the pipe
+# `$(...)` waits on it forever even after timeout kills the parent. A file
+# redirect has no pipe to hold open, so the command returns as soon as timeout
+# fires and the output so far is still there to assert on.
+timeout -k 2 8 "$TOOLS" logs -n 5 > /tmp/urnet-logs-out.txt 2>&1 || true
+LOGOUT=$(cat /tmp/urnet-logs-out.txt 2>/dev/null)
 if echo "$LOGOUT" | grep -qiE 'urnetwork|/var/log'; then
   ok "logs readable while the service is STOPPED (reads the file, not the fd)"
 else
@@ -251,12 +255,21 @@ say "verifying lifecycle commands route to rc-service"
 rc-service urnetwork start >/dev/null 2>&1
 sleep 4
 
-# restart must go through rc-service, and the provider must come back.
-BEFORE=$(rc-service urnetwork status 2>/dev/null | grep -c started || true)
-if timeout 60 "$TOOLS" restart >/dev/null 2>&1; then
-  ok "urnet-tools restart returned success"
+# The confirm gate must REFUSE when there is no terminal to ask on: silently
+# restarting a provider someone did not confirm is the thing the gate exists to
+# prevent. This is a check, not a nuisance - it proves the gate is live.
+if timeout 30 "$TOOLS" restart </dev/null >/dev/null 2>&1; then
+  fail "restart ran WITHOUT confirmation and without a terminal"
 else
-  fail "urnet-tools restart failed"
+  ok "restart refuses without a terminal (confirm gate is live)"
+fi
+
+# restart must go through rc-service, and the provider must come back. -f is
+# what automation uses to state its intent up front.
+if timeout 60 "$TOOLS" restart -f >/dev/null 2>&1; then
+  ok "urnet-tools restart -f returned success"
+else
+  fail "urnet-tools restart -f failed"
 fi
 sleep 5
 if rc-service urnetwork status 2>/dev/null | grep -q started; then
@@ -265,7 +278,7 @@ else
   fail "service down after restart"
 fi
 
-if timeout 60 "$TOOLS" stop >/dev/null 2>&1 && timeout 60 "$TOOLS" start >/dev/null 2>&1; then
+if timeout 60 "$TOOLS" stop -f >/dev/null 2>&1 && timeout 60 "$TOOLS" start -f >/dev/null 2>&1; then
   ok "stop then start both routed through rc-service"
 else
   fail "stop/start routing failed"
