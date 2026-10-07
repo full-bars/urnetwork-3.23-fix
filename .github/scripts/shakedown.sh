@@ -116,7 +116,7 @@ ramlog_gate_open() {
 # through t1bad: a broken gate is the false-pass class this harness exists to
 # kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out gf=0
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid rp_out wmark w_stale w_fresh gf=0
   tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
   if [ -z "$tf" ] || [ ! -f "$tf" ]; then
     t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
@@ -128,11 +128,13 @@ gate_selftest() {
   [ -z "$(ramlog_mark)" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark returned '$(ramlog_mark)' on a delimiter-free log"; gf=1; }
   [ "$(ramlog_mark_snapshot)" = "-" ] || { t1bad "SELF-TEST-FAIL: snapshot on a delimiter-free log is '$(ramlog_mark_snapshot)', want '-'"; gf=1; }
   if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open on a delimiter-free log"; gf=1; fi
+  if ramlog_gate_open ""; then t1bad "SELF-TEST-FAIL: gate open with an empty base on a delimiter-free log"; gf=1; fi
   { echo '--- provider restarted at 2026-01-01T00:00:01Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
   m1=$(ramlog_mark)
   [ -n "$m1" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark found no timestamp on a delimiter line"; gf=1; }
   ramlog_gate_open "-" || { t1bad "SELF-TEST-FAIL: gate stayed closed with base '-' after the first delimiter appeared"; gf=1; }
   [ "$(ramlog_mark_snapshot)" = "$m1" ] || { t1bad "SELF-TEST-FAIL: snapshot on a populated log is '$(ramlog_mark_snapshot)', want '$m1'"; gf=1; }
+  ramlog_gate_open "" || { t1bad "SELF-TEST-FAIL: gate stayed closed with an empty base on a populated log"; gf=1; }
   blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
   [ "$blk" = "1" ] || { t1bad "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1"; gf=1; }
   if ramlog_gate_open "$m1"; then t1bad "SELF-TEST-FAIL: gate open with base == current mark ($m1) -- stale blocks could satisfy a wait"; gf=1; fi
@@ -159,22 +161,58 @@ gate_selftest() {
   # stamp, still returning a unique per-start token.
   { echo '--- provider restarted at 2026-01-01T00:00:04+02:00 ---'; } > "$tf"
   [ "$(ramlog_mark)" = "2026-01-01T00:00:04+02:00" ] || { t1bad "SELF-TEST-FAIL: offset timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
+  { echo '--- provider restarted at 2026-01-01T00:00:07.987654321-04:00 ---'; } > "$tf"
+  [ "$(ramlog_mark)" = "2026-01-01T00:00:07.987654321-04:00" ] || { t1bad "SELF-TEST-FAIL: combined fractional+offset timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
   { echo '--- provider restarted at 2026-01-01T00:00:05.123Z ---'; } > "$tf"
   [ "$(ramlog_mark)" = "2026-01-01T00:00:05.123Z" ] || { t1bad "SELF-TEST-FAIL: fractional timestamp not extracted ('$(ramlog_mark)')"; gf=1; }
   # restart_provider's data-line contract ("<mark> <journal_count>"), split at
   # every call site with ${x%% *}/${x##* }; the subshell keeps the stubs local.
   rp_out=$(
     timeout() { :; }
+    id() { echo 0; }   # keep the $(id -u urnet) expansion quiet before urnet exists
     journal_line_count() { echo 4321; }
     restart_provider
   )
   [ "${rp_out%% *}" = "2026-01-01T00:00:05.123Z" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: restart_provider data line is '$rp_out'"; gf=1; }
+  # wait_client_id end-to-end: a stale mark must refuse the block; the "-"
+  # sentinel must accept it. sleep/j are stubbed and date is a file-backed
+  # counter (a variable would die in each command-substitution subshell), so
+  # the poll runs a bounded few iterations, provider-free -- this is the
+  # class where a re-snapshot inside wait_client_id would pass silently.
+  { echo '--- provider restarted at 2026-01-01T00:00:06Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000006 (new)'; } > "$tf"
+  wmark=$(ramlog_mark)
+  w_stale=$(
+    cnt="${tf}.cnt"; : > "$cnt"
+    date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
+    sleep() { :; }
+    j() { :; }
+    RAMLOG_MARK="$wmark"
+    wait_client_id 0 30
+  )
+  [ -z "$w_stale" ] || { t1bad "SELF-TEST-FAIL: wait_client_id read a stale block with base == current mark ('$w_stale')"; gf=1; }
+  w_fresh=$(
+    cnt="${tf}.cnt"; : > "$cnt"
+    date() { local n; n=$(wc -l < "$cnt"); n=$((n+1)); echo x >> "$cnt"; if [ "$n" -le 2 ]; then echo 0; else echo 100; fi; }
+    sleep() { :; }
+    j() { :; }
+    RAMLOG_MARK="-"
+    wait_client_id 0 30
+  )
+  [ "$w_fresh" = "00000000-0000-0000-0000-000000000006" ] || { t1bad "SELF-TEST-FAIL: wait_client_id did not read the fresh block with base '-' ('$w_fresh')"; gf=1; }
+  rm -f "${tf}.cnt"
   # A missing log file (real first boot) must read as "no delimiter", not error.
   rm -f "$tf"
   [ -z "$(ramlog_mark)" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark non-empty on a missing file"; gf=1; }
   [ "$(ramlog_mark_snapshot)" = "-" ] || { t1bad "SELF-TEST-FAIL: snapshot on a missing file is '$(ramlog_mark_snapshot)', want '-'"; gf=1; }
   if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open with no log file"; gf=1; fi
-  rm -f "$tf"
+  # ... and restart_provider's data line on a delimiter-free log.
+  rp_out=$(
+    timeout() { :; }
+    id() { echo 0; }
+    journal_line_count() { echo 4321; }
+    restart_provider
+  )
+  [ "${rp_out%% *}" = "-" ] && [ "${rp_out##* }" = "4321" ] || { t1bad "SELF-TEST-FAIL: delimiter-free data line is '$rp_out', want '- 4321'"; gf=1; }
   RAMLOG="$saved"
   [ "$gf" = "0" ] && ok "gate self-test: RAM-log freshness predicate verified (identity gate, trim-safe)"
 }
@@ -1293,7 +1331,7 @@ else
   bad "V2: expected a unit-type self-heal, an explicit un-migratable note, or a clean unit-type decline; none appeared in the update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
-if j_full | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
+if j | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
   bad "V2: provider journal shows the SIGNAL-THEN-ABORT path (regression of 4b54e915) -- urnet-tools should decline before ever signalling the provider"
 else
   ok "V2: no signal-then-abort trace in the provider journal -- the decline happened in urnet-tools' own pre-flight (4b54e915 holds)"
@@ -1345,7 +1383,10 @@ fi
 BIN_VER_V3PRE=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "$BIN_VER_V3PRE" | grep -qF "$V_BASE_B" && ok "V3: running $V_BASE_B ahead of the engage test (genuine transition, not a same-tag re-apply)" || bad "V3: running $BIN_VER_V3PRE ahead of the engage test, want $V_BASE_B"
 
-V3_PID_BEFORE=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
+# Same source as the after-sample (systemd MainPID): pgrep | head -1 returns
+# the OLDEST match and could pick a stray provider from an earlier section,
+# which would then also mis-target the drain-kill below.
+V3_PID_BEFORE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)
 V3_MARK=$(journal_line_count)
 # The post-handoff wait below targets a start block THIS update writes (the
 # hotswap candidate), so snapshot the RAM-log mark now: a stale mark from the
@@ -1395,26 +1436,32 @@ if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ "$V3_MAINPID" != "$V3_P
 else
   bad "V3: systemd MainPID '$V3_MAINPID' does not look like the new notify-capable process (before=$V3_PID_BEFORE)"
 fi
-if j_full | awk -v n="$V3_MARK" 'NR>n' | grep -qE "Stopped urnetwork.service|Stopping urnetwork.service"; then
+if j | awk -v n="$V3_MARK" 'NR>n' | grep -qE "Stopped urnetwork.service|Stopping urnetwork.service"; then
   bad "V3: unit entered inactive/activating during the handoff (journal shows a stop) -- not zero-downtime, distinguishes this from V2's plain restart"
 else
   ok "V3: no unit stop/inactive event during the handoff (zero-downtime, per journal) -- distinguishes this from V2's plain restart"
 fi
-if j_full | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then
+if j | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then
   ok "V3: candidate confirmed active takeover (ACK) in the journal"
 else
   bad "V3: no candidate takeover ACK found in the journal"
 fi
 run_check "V3: control socket reachable via urnet-tools status" urnet-tools status 2>&1
-SOCK_OWNER_PID=""
+SOCK_OWNER_PIDS=""
 if command -v lsof >/dev/null 2>&1; then
-  SOCK_OWNER_PID=$(lsof -t /home/urnet/.urnetwork/provider.sock 2>/dev/null | head -1)
+  SOCK_OWNER_PIDS=$(lsof -t /home/urnet/.urnetwork/provider.sock 2>/dev/null)
 fi
-if [ -n "$SOCK_OWNER_PID" ]; then
-  # The owner must be the NEW pid, not merely equal to V3_PID_AFTER: if the
-  # handoff failed, V3_PID_AFTER is still the old pid and the socket would be
-  # reported as "owned by the new PID" trivially.
-  [ "$SOCK_OWNER_PID" = "$V3_PID_AFTER" ] && [ "$SOCK_OWNER_PID" != "$V3_PID_BEFORE" ] && ok "V3: control socket owned by the new PID ($SOCK_OWNER_PID)" || bad "V3: control socket owned by PID $SOCK_OWNER_PID, want new PID $V3_PID_AFTER (before=$V3_PID_BEFORE)"
+if [ -n "$SOCK_OWNER_PIDS" ]; then
+  # Membership, not `head -1`: while the retiring parent drains it can still
+  # hold an fd on the socket path and head -1 (numeric order) would pick the
+  # older pid. The owner set must include the new pid, which must itself
+  # differ from the old pid -- otherwise a failed handoff would report the
+  # old process as "the new PID" trivially.
+  if [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ] && echo "$SOCK_OWNER_PIDS" | grep -qx "$V3_PID_AFTER"; then
+    ok "V3: control socket owned by the new PID ($V3_PID_AFTER)"
+  else
+    bad "V3: control socket owners '$SOCK_OWNER_PIDS' do not include the new PID $V3_PID_AFTER (before=$V3_PID_BEFORE)"
+  fi
 else
   echo "INFO: lsof unavailable or socket owner not resolvable; relied on urnet-tools status reachability above" | tee -a "$REPORT"
 fi
