@@ -68,6 +68,26 @@ func NewResilientDialTlsContext(
 	fragment bool,
 	reorder bool,
 ) DialTlsContextFunction {
+	return newResilientDialTlsContext(connectSettings, fragment, reorder, false)
+}
+
+// NewResilientDialTlsContextWithSegment is NewResilientDialTlsContext with the
+// combined tcp-segment mode available (see ResilientTlsConn.segment).
+func NewResilientDialTlsContextWithSegment(
+	connectSettings *ConnectSettings,
+	fragment bool,
+	reorder bool,
+	segment bool,
+) DialTlsContextFunction {
+	return newResilientDialTlsContext(connectSettings, fragment, reorder, segment)
+}
+
+func newResilientDialTlsContext(
+	connectSettings *ConnectSettings,
+	fragment bool,
+	reorder bool,
+	segment bool,
+) DialTlsContextFunction {
 	return func(
 		ctx context.Context,
 		network string,
@@ -91,7 +111,7 @@ func NewResilientDialTlsContext(
 			return nil, err
 		}
 
-		rconn := NewResilientTlsConn(conn, fragment, reorder)
+		rconn := newResilientTlsConn(conn, fragment, reorder, segment)
 
 		// copy and extend
 		tlsConfig := connectSettings.TlsConfig.Clone()
@@ -125,7 +145,18 @@ type ResilientTlsConn struct {
 	conn     net.Conn
 	fragment bool
 	reorder  bool
-	buffer   []byte
+	// segment cuts each tls-record write of the fragment path into two tcp
+	// segments, at an interior byte boundary that is NOT a record boundary.
+	// With fragment it is the combined mode: a hello split across BOTH small
+	// tls records AND small tcp segments, the pair a single-method
+	// reassembling middlebox (russia's tspu) does not stitch back together,
+	// where record fragmentation alone or tcp segmentation alone each lose
+	// (foci 2025, foci-2025-0016). It needs no raw sockets -- the write
+	// boundaries are the segmentation -- so it works inside the ios network
+	// extension and on non-root android. It composes with reorder, which adds
+	// the raw-socket ttl alternation on top where that is available.
+	segment bool
+	buffer  []byte
 
 	// setTtl replaces the SetSocketTtl syscall; nil means call it directly.
 	// This is a test seam so the reorder paths can be observed and made to
@@ -141,10 +172,18 @@ type ResilientTlsConn struct {
 
 // must be created before the tls connection starts
 func NewResilientTlsConn(conn net.Conn, fragment bool, reorder bool) *ResilientTlsConn {
+	return newResilientTlsConn(conn, fragment, reorder, false)
+}
+
+// newResilientTlsConn is the full form with the combined-mode tcp
+// segmentation (see the `segment` field). The public three-argument
+// constructor keeps every existing caller on segment off.
+func newResilientTlsConn(conn net.Conn, fragment bool, reorder bool, segment bool) *ResilientTlsConn {
 	return &ResilientTlsConn{
 		conn:     conn,
 		fragment: fragment,
 		reorder:  reorder,
+		segment:  segment,
 		buffer:   []byte{},
 		enabled:  true,
 	}
@@ -262,6 +301,37 @@ func (self *ResilientTlsConn) writeRecord(w io.Writer, record []byte) error {
 	return err
 }
 
+// combinedSegmentMinLen is the shortest record the combined mode cuts into two
+// tcp segments. Below it the record is one `Write`: a cut needs two non-empty
+// halves, and splitting a 1-byte record buys no tcp-segment boundary. A real
+// fragment carries at least a 5-byte record header, so this never declines a
+// fragment the mode means to segment.
+const combinedSegmentMinLen = 2
+
+// writeRecordMaybeSegmented writes record to w. In the combined mode
+// (`segment`) it cuts the record into two tcp segments at an interior byte
+// boundary -- a write boundary that is NOT a tls record boundary -- so the
+// record never lands whole in one segment and the segment boundaries fall
+// inside records rather than between them. This is the half a middlebox that
+// reassembles records from segment starts (or that only inspects records whole
+// within a segment) does not stitch, and with the record fragmentation the
+// fragment path already performs it is the combined pair of foci 2025. Each
+// write fails closed exactly as `writeRecord` does: a short or failed first
+// half closes the connection and never reaches the second. Without `segment`
+// it is `writeRecord` unchanged, so every single-method dialer is untouched.
+func (self *ResilientTlsConn) writeRecordMaybeSegmented(w io.Writer, record []byte) error {
+	if !self.segment || len(record) < combinedSegmentMinLen {
+		return self.writeRecord(w, record)
+	}
+	// cut inside the record: neither half is a whole tls record, so no segment
+	// carries a complete record and no record is contained by a single segment
+	cut := len(record) / 2
+	if err := self.writeRecord(w, record[0:cut]); err != nil {
+		return err
+	}
+	return self.writeRecord(w, record[cut:])
+}
+
 // writeFragmentsAlternatingTtl sends the server-name portion of the client
 // hello one fragment at a time, alternating the socket TTL to force
 // retransmits and out-of-order arrival, then writes the tail record. The
@@ -277,7 +347,7 @@ func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn,
 
 	self.applyTtlBestEffort(ttlCtl, resilientLowTtl)
 	record := tlsHeader.reconstruct(handshakeBytes[0:split])
-	if err := self.writeRecord(tcpConn, record); err != nil {
+	if err := self.writeRecordMaybeSegmented(tcpConn, record); err != nil {
 		return err
 	}
 
@@ -291,7 +361,7 @@ func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn,
 		// not the final restore, so best effort
 		self.applyTtlBestEffort(ttlCtl, ttl)
 		record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, serverNameValueEnd)])
-		if err := self.writeRecord(tcpConn, record); err != nil {
+		if err := self.writeRecordMaybeSegmented(tcpConn, record); err != nil {
 			return err
 		}
 	}
@@ -303,7 +373,7 @@ func (self *ResilientTlsConn) writeFragmentsAlternatingTtl(tcpConn *net.TCPConn,
 	}
 
 	tailRecord := tlsHeader.reconstruct(handshakeBytes[serverNameValueEnd:])
-	return self.writeRecord(tcpConn, tailRecord)
+	return self.writeRecordMaybeSegmented(tcpConn, tailRecord)
 }
 
 // writeBlocksAlternatingTtl sends the record in blocks, alternating the
@@ -407,20 +477,26 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 							} else if self.fragment {
 
+								if self.segment {
+									// the two writes of a record must leave as two segments: without
+									// NODELAY Nagle may coalesce them and erase the cut
+									tcpConn.SetNoDelay(true)
+								}
+
 								record := tlsHeader.reconstruct(handshakeBytes[0:split])
-								if err := self.writeRecord(tcpConn, record); err != nil {
+								if err := self.writeRecordMaybeSegmented(tcpConn, record); err != nil {
 									return 0, err
 								}
 
 								for i := split; i < meta.ServerNameValueEnd; i += step {
 									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
-									if err := self.writeRecord(tcpConn, record); err != nil {
+									if err := self.writeRecordMaybeSegmented(tcpConn, record); err != nil {
 										return 0, err
 									}
 								}
 
 								record = tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
-								if err := self.writeRecord(tcpConn, record); err != nil {
+								if err := self.writeRecordMaybeSegmented(tcpConn, record); err != nil {
 									return 0, err
 								}
 
@@ -465,20 +541,23 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 						} else {
 
 							if self.fragment {
+								// no SetNoDelay here: a generic net.Conn exposes no socket option
+								// and there are no raw sockets on this path. The write boundaries
+								// are the segmentation.
 								record := tlsHeader.reconstruct(handshakeBytes[0:split])
-								if err := self.writeRecord(self.conn, record); err != nil {
+								if err := self.writeRecordMaybeSegmented(self.conn, record); err != nil {
 									return 0, err
 								}
 
 								for i := split; i < meta.ServerNameValueEnd; i += step {
 									record := tlsHeader.reconstruct(handshakeBytes[i:min(i+step, meta.ServerNameValueEnd)])
-									if err := self.writeRecord(self.conn, record); err != nil {
+									if err := self.writeRecordMaybeSegmented(self.conn, record); err != nil {
 										return 0, err
 									}
 								}
 
 								record = tlsHeader.reconstruct(handshakeBytes[meta.ServerNameValueEnd:])
-								if err := self.writeRecord(self.conn, record); err != nil {
+								if err := self.writeRecordMaybeSegmented(self.conn, record); err != nil {
 									return 0, err
 								}
 							} else {
