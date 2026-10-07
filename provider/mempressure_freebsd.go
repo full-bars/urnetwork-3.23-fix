@@ -3,48 +3,43 @@
 package main
 
 import (
-	"errors"
-
-	"golang.org/x/sys/unix"
+	"fmt"
+	"os/exec"
 )
 
 // readHostMemPressure reports memory pressure as a PSI-style percent on
 // FreeBSD.
 //
 // FreeBSD has no /proc/pressure/memory, so this is the fallback the pressure
-// collector reaches for. Swap utilization is the signal: a kernel under
-// memory pressure starts faulting pages out, and the fraction of configured
-// swap already in use rises long before the host is in trouble. It is a
-// lagging signal compared with PSI, so it is deliberately mapped conservatively
-// (see memPressurePercentFromSwapFrac).
+// collector reaches for. Swap utilization is the signal: a kernel under memory
+// pressure starts faulting pages out, and the fraction of configured swap
+// already in use rises long before the host is in trouble. It is a lagging
+// signal compared with PSI, so it is deliberately mapped conservatively (see
+// memPressurePercentFromSwapFrac).
 //
-// Without configured swap (vm.swap_total == 0) there is nothing to read and
-// the MemAvailable fraction in readMemAvailFrac remains the memory signal; this
+// The reading comes from swapinfo(8), NOT from a sysctl. An earlier version
+// read "vm.swap_used", which does not exist: FreeBSD exposes vm.swap_total but
+// no matching "used" counter, so the read failed and the pressure sensor was
+// silently inert. swapinfo -k is the supported interface for swap usage and is
+// present in the base system.
+//
+// Without configured swap (total == 0) there is nothing to read and the
+// MemAvailable fraction in readMemAvailFrac remains the memory signal; this
 // reports no pressure rather than inventing one.
 func readHostMemPressure() (float64, error) {
-	total, err := swapBlocks()
-	if err != nil || total == 0 {
+	out, err := exec.Command("swapinfo", "-k").Output()
+	if err != nil {
+		return 0, fmt.Errorf("swapinfo: %w", err)
+	}
+	total, used, ok := parseSwapinfo(out)
+	if !ok || total == 0 {
 		return 0, errNoHostMemPressure
 	}
-	used, err := unix.SysctlUint32("vm.swap_used")
-	if err != nil {
-		return 0, errors.New("vm.swap_used: " + err.Error())
-	}
-	if uint64(used) > total {
-		// Should not happen; a used count above the total means the reading
-		// is not comparable, and treating it as 100% would pin the governor
-		// on a bogus reading.
+	if used > total {
+		// Should not happen; a used count above the total means the reading is
+		// not comparable, and treating it as 100% would pin the governor on a
+		// bogus reading.
 		return 0, errNoHostMemPressure
 	}
 	return memPressurePercentFromSwapFrac(float64(used) / float64(total)), nil
-}
-
-// swapBlocks is the total configured swap in FreeBSD's native block units.
-// Both swap sysctls count these, so the ratio below needs no unit conversion.
-func swapBlocks() (uint64, error) {
-	v, err := unix.SysctlUint64("vm.swap_total")
-	if err != nil {
-		return 0, err
-	}
-	return v, nil
 }

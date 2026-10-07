@@ -214,16 +214,17 @@ jobs:
               fi
               printf '%-34s = %s\n' "$k" "$v"
             done
-            # The swap keys the pressure sensor reads. vm.swap_total is 0 when
-            # no swap device is configured, which is a valid state (the sensor
-            # then reports no pressure) — but the key must still EXIST.
-            for k in vm.swap_total vm.swap_used; do
-              if ! sysctl -n "$k" >/dev/null 2>&1; then
-                echo "FATAL: swap key $k does not exist on this kernel"
-                exit 1
-              fi
-              printf '%-34s = %s\n' "$k" "$(sysctl -n "$k")"
-            done
+            # Swap accounting comes from swapinfo(8), not a sysctl: FreeBSD has
+            # vm.swap_total but no vm.swap_used. Verify the TOOL is present and
+            # that its output has the columns the parser reads.
+            if ! command -v swapinfo >/dev/null 2>&1; then
+              echo "FATAL: swapinfo missing; the memory pressure sensor cannot read swap usage"
+              exit 1
+            fi
+            echo "swapinfo OK"
+            echo "vm.swap_total = $(sysctl -n vm.swap_total 2>/dev/null || echo absent)"
+            echo "--- swapinfo -k (what parseSwapinfo reads) ---"
+            swapinfo -k || { echo "FATAL: swapinfo -k failed"; exit 1; }
             echo "--- linux-only keys must NOT resolve here ---"
             for k in net.core.rmem_max fs.file-max net.netfilter.nf_conntrack_max; do
               printf '%-34s = %s\n' "$k" "$(sysctl -n "$k" 2>/dev/null || echo 'absent (expected)')"
