@@ -19,18 +19,24 @@ or could not see the problem:
 | Thrash responder (proposed) | swap thrash (PSI full + pswpout + refaults) | freeze growth -> shed -> escape+remember | same risk: another loop unless folded in |
 | Backend outage watcher | backend degraded probes | logs + webhook (observer) | observer only; fine as-is |
 
+Since this doc was written, phase 2a shipped: the thrash watchdog merged together with the readable-log pass, using this doc's state names and the shared action ledger. Reality check against principle 1: the pressure monitor, the thrash watchdog and the reload watchdog currently run three independent tickers with overlapping /proc and cgroup reads. "One supervisor loop" therefore means collapsing three live loops into one, not relocating code - the single biggest cost of the fold-in.
+
 ## 2. Principles
 
 1. ONE supervisor loop owns sensing, state, and escalation. Components expose actions;
    they do not each grow their own timer and policy.
 2. The core must be lock-free relative to the pathologies it responds to: it may not
    share the reload mutex, the proxy lock, or any lock a wedge can hold. The responder
-   must survive the disease.
+   must survive the disease. It must also preserve the hotswap-concurrency guard the
+   thrash watchdog already carries (`thrashHotSwapBusy`: never restart while a hot-swap
+   is draining or mid-handoff) - easy to drop in a refactor.
 3. IP-preserving by default: more running proxies means more earnings. Tiers a-c below
    lose zero identities; shedding is bounded, floored, worst-first, and reversible.
 4. Every action is recorded with reason and outcome (reuse the existing action-ledger /
    audit-ring pattern), and every action is bounded by global budgets and hysteresis.
-5. Off means off: with self-heal disabled, behavior is exactly as today.
+5. Off means off for actions: with self-heal disabled, no actuator fires and behavior is
+   exactly as today. Sensing, logging and status stay visible (the shipped thrash
+   watchdog works this way), so an operator can watch the system without arming it.
 
 ## 3. Sensors (one sample, shared)
 
@@ -61,31 +67,75 @@ only after sustained calm).
 - d. SHED (bounded IP loss): the last resort for sustained heavy pressure only: the
   smallest step that relieves, worst-first (dead/degraded earn nothing), with a floor
   (never below N proxies), hysteresis, and reversible re-admission. Trim cap and OOM cap
-  become this rung's budget inputs instead of parallel cap systems.
-- e. COMPONENT RESTART: reload-watchdog escalation, hot-restart of subsystems.
+  become this rung's budget inputs instead of parallel cap systems. There is no code
+  precedent for this rung today - it is greenfield, unlike rung c, which wraps the
+  audit's existing park action.
+- e. COMPONENT RESTART: restart the wedged component without the whole process (the
+  target to build toward; today both watchdogs go straight to a full restart).
 - f. ESCAPE (heaviest): hotswap/restart the provider; remember the condition (a "thrash
   cap" in the oom-cap pattern: start leaner next time, relax after clean windows).
 
+Until a component-restart actuator narrower than a process restart exists, e and f are
+the same action with different callers; treat them as one rung.
+
 ## 5. Status and config surfaces
 
-- `urnet-tools heal status` (new): state, score and components, active budgets, parked
-  count, shed history, hotswap availability, recent ledger entries. `self-heal status`
-  remains as an alias until deprecated.
+- `urnet-tools self-heal status` (extended): state, score and components, active budgets,
+  parked count, shed history, hotswap availability, recent ledger entries. The shipped
+  surface is already `self-heal` (CLI and status file), so the name stays; `heal` was the
+  working title and no rename is planned. `urnet-tools status` also prints the current
+  reading as one sentence.
 - One config block for budgets/floors; existing keys keep working. Audit/trim/OOM-cap
   keys become ladder parameters rather than separate engines.
 
 ## 6. Migration path
 
-1. Ship the sensors + `heal status` (read-only, zero behavior change).
-2. Fold the reload watchdog and the thrash responder in as the component-restart rung;
-   their loops become the supervisor core's lock-free spine.
-3. Wrap audit/pacing/AIMD/trim as ladder rungs one at a time, each behind a flag, each
-   with its own tests.
-4. Only then consider changing defaults (still opt-in).
+Steps 1 and 2 already happened, fused: the swap-thrash watchdog (phase 2a) shipped the
+real sensor set, a state machine using this doc's state names, ledger writes, and a
+supervised-restart actuator gated on self-heal - plus a readable-log pass. There is no
+standalone sensors-only checkpoint, so the restart actuator cannot be pulled without the
+sensors; the only axis is the existing self-heal toggle.
+
+What remains, concretely:
+
+1. Fold the thrash responder in: close to a relocation - it already speaks the
+   supervisor's state names and ledger format. The reload watchdog is the larger half of
+   this step: its own ticker, no `thrashStateT`-style states, and no ledger writes at
+   all; its state and ledger support must be built, not moved. Split the work accordingly.
+2. Collapse the loops: "one supervisor loop" means merging the pressure monitor, the
+   thrash watchdog and the reload watchdog - three independent tickers reading
+   overlapping /proc and cgroup sources - into one. Size this as a refactor, not a
+   relocation; it is the biggest single lift in the fold-in.
+3. Wrap audit as the park rung: the concrete first task is the acting gate. Audit's
+   acting mode depends on `hotRestartEnabled()` today; moving it under the supervisor is
+   this step's whole content.
+4. Wrap pacing/AIMD/trim as ladder rungs one at a time, each behind a flag, each with
+   its own tests.
+5. Only then consider changing defaults (still opt-in).
+
+Invariants the fold-in must preserve (easy to drop in a refactor):
+
+- the hotswap-concurrency guard (`thrashHotSwapBusy`): never restart while a hot-swap is
+  draining or mid-handoff;
+- the exit-75 restart contract: the restart actuator exits 75, and the unit's restart
+  policy must restart on it (`Restart=on-failure` or `always`; the installer warns about
+  drop-ins that weaken this);
+- attribution: never restart for swap owned by another process;
+- off-means-off for actions (sensing and logging stay visible).
 
 ## 7. Open questions
 
-- H3-carrier narrowing: worth measuring as a memory rung? (canary test)
+- H3-carrier narrowing as a memory rung: measured candidate (~0.55 MiB and ~13 goroutines
+  per carrier on the canary); confirm on a canary before adding the rung.
 - Should update-verify failures feed the healing state or stay separate?
-- Should audit's acting mode depend on the supervisor instead of the hot-restart toggle
-  directly?
+- Should the supervisor's critical-state transitions also fire a webhook, or is polling
+  `self-heal status` the intended operator workflow?
+- Two rungs can engage at once from different causes today (e.g. audit parks while thrash
+  freeze-growth holds); a shared budget arbitrates this only once the rungs merge -
+  confirm the arbitration order then.
+- The "who loses an IP" ordering assumes each proxy maps to an independently
+  shed/restartable IP; confirm that for every provider topology (shared uplink,
+  multi-identity-per-process).
+- OpenRC and Docker deployments have no systemd exit-75 restart; the restart rung is
+  inert there by construction - document the actuator's per-init behavior when the
+  supervisor ships.
