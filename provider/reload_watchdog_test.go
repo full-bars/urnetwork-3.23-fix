@@ -18,12 +18,29 @@ func shrinkReloadVars(t *testing.T, timeout, hardLimit, interval, reFire time.Du
 	t.Helper()
 	oldTimeout, oldLimit := reloadSlotTimeout, reloadHardLimit
 	oldInterval, oldReFire := reloadWatchdogInterval, reloadWatchdogReFire
+	oldPoll := reloadSlotPollInterval
 	reloadSlotTimeout, reloadHardLimit = timeout, hardLimit
 	reloadWatchdogInterval, reloadWatchdogReFire = interval, reFire
+	reloadSlotPollInterval = 2 * time.Millisecond
 	t.Cleanup(func() {
 		reloadSlotTimeout, reloadHardLimit = oldTimeout, oldLimit
 		reloadWatchdogInterval, reloadWatchdogReFire = oldInterval, oldReFire
+		reloadSlotPollInterval = oldPoll
 	})
+}
+
+// waitWatchdogActionIdle blocks until no stubbed escalation goroutine is in
+// flight, so cleanup never restores reloadOverdueAction while a spawned
+// action is still about to read it.
+func waitWatchdogActionIdle(t *testing.T, r *ProxyReloader) {
+	t.Helper()
+	deadline := time.Now().Add(2 * time.Second)
+	for r.watchdogActionInFlight.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("escalation goroutine did not finish in time")
+		}
+		time.Sleep(time.Millisecond)
+	}
 }
 
 // A reload that cannot take the slot must SKIP — with a loud line naming how
@@ -101,6 +118,7 @@ func TestReloadWatchdogEscalatesOnOverdueReload(t *testing.T) {
 	}
 	cancel()
 	<-done
+	waitWatchdogActionIdle(t, r)
 	if calls.Load() < 1 {
 		t.Fatal("watchdog never escalated for a reload overdue past the hard limit")
 	}
@@ -181,8 +199,9 @@ func TestProxyLockReleaseKeepsReplacementLock(t *testing.T) {
 		t.Fatalf("release touched a replacement holder's lock: content %q err %v", got, err)
 	}
 
-	// A normal release still removes our own lock (the aged replacement is
-	// stale, so acquisition steals it first).
+	// A normal release still removes our own lock (the replacement is
+	// stale — dead pid and an old timestamp — so acquisition steals it
+	// first).
 	rel2, err := acquireProxyLockAt(path)
 	if err != nil {
 		t.Fatal(err)
@@ -299,6 +318,7 @@ func TestReloadWatchdogRefireIsThrottled(t *testing.T) {
 	time.Sleep(150 * time.Millisecond)
 	cancel()
 	<-done
+	waitWatchdogActionIdle(t, r)
 	// Ticks land every 5ms; without the re-fire throttle this would be ~30.
 	if calls.Load() < 2 || calls.Load() > 4 {
 		t.Fatalf("escalation calls = %d, want 2..4 with a 60ms re-fire over 150ms", calls.Load())
@@ -375,5 +395,105 @@ func TestProxyLockReleaseSameSecondReplacement(t *testing.T) {
 	got, err := os.ReadFile(path)
 	if err != nil || string(got) != replacement {
 		t.Fatalf("release removed a same-second replacement holder's lock: content %q err %v", got, err)
+	}
+}
+
+// A new overdue episode must fire immediately even when the previous one
+// fired recently: the throttle is per-episode, not global.
+func TestReloadWatchdogRefiresForANewEpisode(t *testing.T) {
+	shrinkReloadVars(t, time.Minute, 10*time.Millisecond, 5*time.Millisecond, time.Hour)
+	withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return nil }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	r := &ProxyReloader{}
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx)
+	}()
+
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	if calls.Load() == 0 {
+		t.Fatal("first episode never fired")
+	}
+	// End the episode: with reFire = 1h, only an episode reset can fire again.
+	r.reloadActive.Store(false)
+	time.Sleep(30 * time.Millisecond)
+	r.reloadStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
+	r.reloadActive.Store(true)
+	deadline = time.Now().Add(2 * time.Second)
+	for calls.Load() < 2 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	waitWatchdogActionIdle(t, r)
+	if calls.Load() < 2 {
+		t.Fatalf("a fresh overdue episode must fire despite the 1h re-fire throttle; calls=%d", calls.Load())
+	}
+}
+
+// A failing escalation is recorded durably and does not stop the watchdog.
+func TestReloadWatchdogReportsFailedEscalation(t *testing.T) {
+	shrinkReloadVars(t, time.Minute, 10*time.Millisecond, 5*time.Millisecond, time.Millisecond)
+	home := withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return errors.New("boom") }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	r := &ProxyReloader{}
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(time.Now().Add(-time.Hour).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx)
+	}()
+	deadline := time.Now().Add(2 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	waitWatchdogActionIdle(t, r)
+	if calls.Load() == 0 {
+		t.Fatal("watchdog never escalated")
+	}
+	events, err := os.ReadFile(filepath.Join(home, ".urnetwork", "events.log"))
+	if err != nil || !strings.Contains(string(events), "hot restart unavailable: boom") {
+		t.Fatalf("failed escalation must be recorded in events.log: err=%v content=%.400s", err, events)
+	}
+}
+
+// Releasing after the lock file was deleted (any cause) must be a quiet
+// no-op.
+func TestProxyLockReleaseAfterDeletionIsNoop(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "proxy.lock")
+	rel, err := acquireProxyLockAt(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+	rel()
+	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("release after deletion must not recreate the lock, stat err = %v", err)
 	}
 }

@@ -82,7 +82,15 @@ func acquireProxyLockAt(path string) (func(), error) {
 	}
 	if existing, err := os.ReadFile(path); err == nil {
 		if isLockStale(existing) {
-			os.Remove(path)
+			// Remove only the file we actually judged stale: two racing
+			// stealers could otherwise have the slower one delete the
+			// faster one's fresh lock. The re-read narrows the window;
+			// POSIX has no compare-and-delete, so a microsecond-sized
+			// window remains — a fresh lock installed inside it fails our
+			// O_EXCL below, which is the safe outcome.
+			if current, err := os.ReadFile(path); err == nil && string(current) == string(existing) {
+				os.Remove(path)
+			}
 		}
 	}
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
@@ -99,12 +107,18 @@ func acquireProxyLockAt(path string) (func(), error) {
 		os.Remove(path)
 		return nil, err
 	}
-	f.Close()
+	if err := f.Close(); err != nil {
+		os.Remove(path)
+		return nil, err
+	}
 	// Release removes the lock ONLY while the file is still ours. A stale
 	// steal can replace it with a NEW holder's lock (isLockStale admits a
 	// live holder's lock once it ages past the PID-reuse bound), and an
 	// unconditional remove would delete THEIR lock and let a third acquirer
-	// in while they are still working.
+	// in while they are still working. The read-compare-remove cannot be
+	// atomic on POSIX; the residual window (a steal landing between the
+	// read and the remove) is accepted — closing it needs flock, which is
+	// not portable to the Windows build.
 	var once sync.Once
 	return func() {
 		once.Do(func() {
@@ -123,6 +137,45 @@ const proxyLockStaleAge = 5 * time.Minute
 // content, and a late release of the first would remove the second holder's
 // lock.
 var proxyLockNonce uint64
+
+// processStart approximates this process's start time. A hot swap execs in
+// place: the pid survives and deferred cleanup never runs, so a proxy.lock
+// written by the previous image carries our own pid with an old timestamp
+// and would read as "held by a live holder" until proxyLockMaxAge ages it
+// out — blocking every lock consumer in the fresh image for up to an hour.
+var processStart = time.Now()
+
+// cleanStaleSelfProxyLock removes a proxy.lock that carries this process's
+// own pid but predates this process's start. Run it at startup, before the
+// first reload, so an escalated hot restart is not greeted by its own old
+// lock.
+func cleanStaleSelfProxyLock() {
+	path, err := proxyLockPath()
+	if err != nil {
+		return
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return
+	}
+	lines := strings.Split(strings.TrimSpace(string(b)), "\n")
+	if len(lines) < 2 {
+		return
+	}
+	pid, err := strconv.Atoi(strings.TrimSpace(lines[0]))
+	if err != nil || pid != os.Getpid() {
+		return
+	}
+	ts, err := strconv.ParseInt(strings.TrimSpace(lines[1]), 10, 64)
+	if err != nil {
+		return
+	}
+	if time.Unix(ts, 0).Before(processStart) {
+		if os.Remove(path) == nil {
+			tlog("[proxy] removed a proxy.lock left behind by a previous image with this pid\n")
+		}
+	}
+}
 
 // proxyLockMaxAge is the outer bound: even if the holder appears alive
 // (Signal(0) succeeds), a lock older than this is unconditionally stale.
@@ -698,14 +751,18 @@ func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
 		}
 		episodeStart = started
 		lastFired = time.Now()
-		critLog("%s", fmt.Sprintf("[proxy] reload watchdog: reload overdue %v (hard limit %v) — requesting hot restart",
-			held.Round(time.Second), reloadHardLimit))
+		// tlog is a cheap in-memory write and goes out immediately; the
+		// fsyncing critLog record is written inside the action goroutine so
+		// a thrashing disk or a busy critLogMu cannot stall this ticker
+		// loop — the very escalation it exists to fire.
 		tlog("🚨 [proxy] reload watchdog: reload overdue %v — requesting hot restart\n", held.Round(time.Second))
 		// Single-flight: a hot-swap handoff can take minutes, and stacking a
 		// fresh goroutine on every re-fire would leak them if it ever hung.
 		if r.watchdogActionInFlight.CompareAndSwap(false, true) {
 			go connect.HandleError(func() {
 				defer r.watchdogActionInFlight.Store(false)
+				critLog("%s", fmt.Sprintf("[proxy] reload watchdog: reload overdue %v (hard limit %v) — requesting hot restart",
+					held.Round(time.Second), reloadHardLimit))
 				if err := reloadOverdueAction(); err != nil {
 					critLog("%s", fmt.Sprintf("[proxy] reload watchdog: hot restart unavailable: %v — operator action needed (urnet-tools restart)", err))
 					tlog("🚨 [proxy] reload watchdog: hot restart unavailable: %v — operator action needed (urnet-tools restart)\n", err)
@@ -1182,10 +1239,12 @@ func (r *ProxyReloader) reload() {
 	// later relaunch allocate a new ID and rank the proxy as ungraded.
 	trimShedSet := map[string]bool{}
 
-	// Abort BEFORE the mutation section if this reload has run too long:
-	// everything above is reads and planning, so returning here leaves the
-	// pool exactly as it was — no trim, removal or launch is staged, so no
-	// audit or events.log record can describe work that will not happen.
+	// Abort BEFORE the fleet-mutation section if this reload has run too
+	// long: everything above is reads, idempotent store adoption and the
+	// planning itself, so the running fleet is untouched — no trim, removal
+	// or launch is staged, and no audit or events.log record can describe
+	// work that will not happen. (The direct hot-toggle and the H3
+	// re-resolve above are idempotent and safe to have run.)
 	if overdue("planning") {
 		return
 	}

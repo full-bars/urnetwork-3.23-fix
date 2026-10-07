@@ -4285,7 +4285,11 @@ func provide(opts docopt.Opts) {
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
 	reloader.StartWatcher(ctx)
-	go connect.HandleError(func() { reloader.RunReloadWatchdog(ctx) })
+	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx) }, nil)
+	// A hot swap execs in place: the pid survives and the previous image's
+	// proxy.lock would read as held-by-a-live-holder. Clear it before the
+	// first reload so an escalated restart is not blocked by its own lock.
+	cleanStaleSelfProxyLock()
 	// Reconcile against the operator trim cap immediately at startup. The launch
 	// loop above already holds back the worst-graded proxies above the cap
 	// (startupTrimSelection); this reload confirms the cap, logs the result, and
