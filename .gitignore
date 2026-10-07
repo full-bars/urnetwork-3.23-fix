@@ -45,3 +45,11 @@ FINDINGS-*.md
 
 # local agent prompt (not a doc)
 787-docs-prompt.md
+
+# local smoke/rehearsal artifacts
+fake-release/
+stage-local/
+urnetwork-fake
+urnet-tools
+raw-*.jsonl
+live-*.err
