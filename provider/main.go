@@ -4285,6 +4285,7 @@ func provide(opts docopt.Opts) {
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
 	reloader.StartWatcher(ctx)
+	go connect.HandleError(func() { reloader.RunReloadWatchdog(ctx) })
 	// Reconcile against the operator trim cap immediately at startup. The launch
 	// loop above already holds back the worst-graded proxies above the cap
 	// (startupTrimSelection); this reload confirms the cap, logs the result, and

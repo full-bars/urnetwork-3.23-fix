@@ -9,6 +9,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -91,10 +92,26 @@ func acquireProxyLockAt(path string) (func(), error) {
 		}
 		return nil, err
 	}
-	fmt.Fprintf(f, "%d\n%d\n", os.Getpid(), time.Now().Unix())
+	content := fmt.Sprintf("%d\n%d\n", os.Getpid(), time.Now().Unix())
+	if _, err := f.WriteString(content); err != nil {
+		f.Close()
+		os.Remove(path)
+		return nil, err
+	}
 	f.Close()
+	// Release removes the lock ONLY while the file is still ours. A stale
+	// steal can replace it with a NEW holder's lock (isLockStale admits a
+	// live holder's lock once it ages past the PID-reuse bound), and an
+	// unconditional remove would delete THEIR lock and let a third acquirer
+	// in while they are still working.
 	var once sync.Once
-	return func() { once.Do(func() { os.Remove(path) }) }, nil
+	return func() {
+		once.Do(func() {
+			if current, err := os.ReadFile(path); err == nil && string(current) == content {
+				os.Remove(path)
+			}
+		})
+	}, nil
 }
 
 const proxyLockStaleAge = 5 * time.Minute
@@ -118,6 +135,47 @@ var writeReloadTriggerDebounce = 30 * time.Second
 // tests can shrink it and finish in milliseconds instead of blocking on the
 // real interval.
 var drainPollInterval = 5 * time.Second
+
+// reloadSlotTimeout bounds how long a new reload waits for an in-flight
+// reload to release its slot before skipping. This replaced an unbounded
+// r.mu.Lock() wait: a reload that stalls mid-body used to block every future
+// trigger silently and forever (observed on a starved box: 13h, see the LA7
+// incident) because the file-lock auto-steal never frees the in-process
+// mutex. Vars (not consts) so tests can shrink them.
+var reloadSlotTimeout = 10 * time.Minute
+
+// reloadSlotPollInterval is the poll cadence while waiting for the slot.
+var reloadSlotPollInterval = 250 * time.Millisecond
+
+// reloadHardLimit bounds a single reload's runtime. The reload body checks it
+// at phase boundaries and aborts cleanly; RunReloadWatchdog escalates when a
+// reload overruns it. A healthy-box reload — even for a many-thousand-proxy
+// fleet — completes in seconds to a couple of minutes; overrunning this means
+// the box is pathological (thrashing) or the goroutine is stuck.
+var reloadHardLimit = 20 * time.Minute
+
+// reloadWatchdogInterval is how often the reload watchdog checks for an
+// overrunning reload.
+var reloadWatchdogInterval = 30 * time.Second
+
+// reloadWatchdogReFire bounds how often one overrunning episode asks for a
+// hot restart. The hotswap decline ledger throttles repeats further; this
+// just bounds our asks.
+var reloadWatchdogReFire = 5 * time.Minute
+
+// reloadOverdueAction is the reload watchdog's escalation when a reload has
+// held the slot past reloadHardLimit. Default: ask for a hot restart — the
+// only recovery from a goroutine that is truly stuck — gated on the
+// hot_restart control key. Overridable for tests.
+var reloadOverdueAction = func() error {
+	if !hotRestartEnabled() {
+		return fmt.Errorf("hot restart disabled (hot_restart=off)")
+	}
+	if hotSwapTrigger == nil {
+		return fmt.Errorf("hot swap trigger not installed")
+	}
+	return hotSwapTrigger()
+}
 
 var lastReloadTriggerTime struct {
 	sync.Mutex
@@ -210,8 +268,14 @@ func isLockStale(data []byte) bool {
 // number and calls reload(). reload() is serialized by mu so two reloads never
 // overlap.
 type ProxyReloader struct {
-	mu        sync.Mutex // serializes reloads
-	cancelMap map[string]context.CancelFunc
+	mu sync.Mutex // serializes reloads
+	// reloadActive/reloadStartedAt track the in-flight reload for
+	// RunReloadWatchdog. reloadStartedAt is set immediately after the slot is
+	// acquired and reloadActive is cleared before r.mu is released, so the
+	// watchdog never sees "active" while the slot is free.
+	reloadActive    atomic.Bool
+	reloadStartedAt atomic.Int64 // unix nanos
+	cancelMap       map[string]context.CancelFunc
 	// runningAuth records the settings each running proxy was launched with.
 	// The reloader diffs the desired set by address only, so without this it
 	// cannot tell whether a running proxy's credentials still match the
@@ -541,6 +605,73 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 	})
 }
 
+// acquireReloadSlot takes r.mu, waiting up to reloadSlotTimeout for an
+// in-flight reload to finish. It returns false when the slot never freed, so
+// the caller can skip instead of blocking forever.
+func (r *ProxyReloader) acquireReloadSlot() bool {
+	deadline := time.Now().Add(reloadSlotTimeout)
+	for {
+		if r.mu.TryLock() {
+			return true
+		}
+		if time.Now().After(deadline) {
+			return false
+		}
+		time.Sleep(reloadSlotPollInterval)
+	}
+}
+
+// RunReloadWatchdog watches for a reload holding the slot past
+// reloadHardLimit and escalates: a loud record (ramlog + events.log) and a
+// hot-restart request through reloadOverdueAction (gated on hot_restart).
+// This is the backstop for the case the reload body cannot handle itself —
+// a goroutine stuck inside a call that never returns. Without it, one stuck
+// reload stalls every future trigger and every proxy-pool maintenance path
+// for as long as the process lives.
+func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
+	ticker := time.NewTicker(reloadWatchdogInterval)
+	defer ticker.Stop()
+	var lastFired time.Time
+	var episodeStart int64
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+		if !r.reloadActive.Load() {
+			episodeStart = 0
+			continue
+		}
+		started := r.reloadStartedAt.Load()
+		if started <= 0 {
+			continue
+		}
+		held := time.Since(time.Unix(0, started))
+		if held < reloadHardLimit {
+			continue
+		}
+		// Fire once per episode, then at most once per reloadWatchdogReFire
+		// while the same reload stays overdue. The hotswap decline ledger
+		// throttles repeats further.
+		if episodeStart == started && time.Since(lastFired) < reloadWatchdogReFire {
+			continue
+		}
+		episodeStart = started
+		lastFired = time.Now()
+		critLog("%s", fmt.Sprintf("[proxy] reload watchdog: reload overdue %v (hard limit %v) — escalating to hot restart",
+			held.Round(time.Second), reloadHardLimit))
+		tlog("🚨 [proxy] reload watchdog: reload overdue %v — attempting hot restart\n", held.Round(time.Second))
+		go func() {
+			if err := reloadOverdueAction(); err != nil {
+				tlog("🚨 [proxy] reload watchdog: hot restart unavailable: %v — operator action needed (urnet-tools restart)\n", err)
+			} else {
+				tlog("🚨 [proxy] reload watchdog: hot restart requested\n")
+			}
+		}()
+	}
+}
+
 // reload diffs the proxy source against the currently running set and applies
 // the difference: cancels goroutines for removed proxies, starts goroutines for
 // added proxies (staggered), and rewrites proxy.state. Untouched proxies are
@@ -576,8 +707,36 @@ func (r *ProxyReloader) reload() {
 		pendingCrit = append(pendingCrit, func() { critLog("%s", fmt.Sprintf(format, args...)) })
 	}
 
-	r.mu.Lock()
+	if !r.acquireReloadSlot() {
+		held := "unknown"
+		if started := r.reloadStartedAt.Load(); started > 0 {
+			held = time.Since(time.Unix(0, started)).Round(time.Second).String()
+		}
+		tlog("[proxy] reload skipped: a previous reload has held the slot for %s (slot wait limit %v) — RunReloadWatchdog escalates if it is stuck\n", held, reloadSlotTimeout)
+		return
+	}
 	defer r.mu.Unlock()
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(time.Now().UnixNano())
+	// Cleared before the slot is released (defers run LIFO): the watchdog
+	// must never see active=true while the slot is free.
+	defer r.reloadActive.Store(false)
+	slotAcquiredAt := time.Now()
+
+	// overdue reports when this reload has run past reloadHardLimit so the
+	// caller can abort at the next phase boundary; the watchdog is the hard
+	// backstop for a goroutine that never reaches another check.
+	overdue := func(phase string) bool {
+		if time.Since(slotAcquiredAt) < reloadHardLimit {
+			return false
+		}
+		tlog("🚨 [proxy] reload aborted at %s after %v (hard limit %v): state left as-is, next trigger retries\n",
+			phase, time.Since(slotAcquiredAt).Round(time.Second), reloadHardLimit)
+		return true
+	}
+	if overdue("start") {
+		return
+	}
 
 	lockAcqStart := time.Now()
 	lockRelease, err := acquireProxyLockWithRetry()
@@ -1102,6 +1261,10 @@ func (r *ProxyReloader) reload() {
 					Reason: fmt.Sprintf("shed %d worst-graded running, held %d additions", shedCount, dropped)})
 			})
 		}
+	}
+
+	if overdue("planning") {
+		return
 	}
 
 	// Remove proxies: cancel immediately if idle, or drain gracefully if active.
