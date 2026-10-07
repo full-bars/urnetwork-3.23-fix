@@ -74,48 +74,83 @@ ramlog_since_last_start() {
   awk '/--- provider restarted at/{buf=""} {buf=buf $0 "\n"} END{printf "%s", buf}' "$RAMLOG" 2>/dev/null
 }
 
-# ramlog_mark: count of "--- provider restarted at" delimiters in the RAM log
-# right now. restart_provider snapshots this BEFORE its restart; the RAM-log
-# fallback in wait_client_id only reads the log once the count exceeds that
-# snapshot, so a stale block from an earlier RAM-logged start can never
-# satisfy a wait, while a fresh block is read as soon as it appears (even if
-# it appeared before the wait call).
+# ramlog_mark: the timestamp of the newest "--- provider restarted at" line in
+# the RAM log (empty when the log has no delimiter yet). Identity, not count:
+# the provider trims the log down to its newest two-thirds once it passes 5MB
+# (provider/shmlog_linux.go), so the count can go DOWN mid-run and a
+# count-based mark would then never be exceeded again -- every later wait in
+# RAM-log mode would false-fail. The RFC3339 timestamp is unique per start
+# (format: provider/shmlog_linux.go) and survives trims of the oldest content.
 ramlog_mark() {
-  local c
-  c=$(grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true)
-  echo "${c:-0}"
+  grep -- "--- provider restarted at" "$RAMLOG" 2>/dev/null | tail -1 \
+    | grep -oE '[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}(Z|[+-][0-9]{2}:[0-9]{2})' | tail -1
 }
 
-# ramlog_gate_open: the wait_client_id freshness predicate. True when the RAM
-# log's delimiter count exceeds the pre-restart mark, i.e. a start block newer
-# than the last restart exists and is safe to read. Exposed for the gate
-# self-test.
+# ramlog_mark_snapshot: ramlog_mark with the no-delimiter case normalized to
+# the literal "-", so a caller can record "there was no delimiter yet" and the
+# gate still opens on the first delimiter to appear. An EMPTY RAMLOG_MARK
+# means "no snapshot was taken" and wait_client_id re-snapshots at wait start.
+ramlog_mark_snapshot() {
+  local m
+  m=$(ramlog_mark)
+  [ -n "$m" ] || m="-"
+  printf '%s' "$m"
+}
+
+# ramlog_gate_open: the wait_client_id freshness predicate. True when the log
+# carries a delimiter timestamp that differs from the pre-restart snapshot
+# (the "-" sentinel matches the first delimiter to appear). An empty current
+# mark (no delimiter in the log) never opens the gate.
 ramlog_gate_open() {
   local cur
   cur=$(ramlog_mark)
-  case "$cur" in ''|*[!0-9]*) cur=0;; esac
-  [ "$cur" -gt "${1:-0}" ]
+  [ -n "$cur" ] && [ "$cur" != "${1:-}" ]
 }
 # gate_selftest: provider-free check of the RAM-log freshness predicate against
 # a fake log. Catches the class of bug where the base mark is snapshotted at
-# wait start instead of before the restart, and where block isolation breaks.
+# wait start instead of before the restart, where block isolation breaks, and
+# where a trim of the oldest content sticks the gate closed. Failures route
+# through t1bad: a broken gate is the false-pass class this harness exists to
+# kill, so it must block the run, not just print.
 gate_selftest() {
-  local tf saved="$RAMLOG" m1 m2 blk
-  tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX)
-  { echo '--- provider restarted at T1 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
+  local tf saved="$RAMLOG" m1 m2 m3 blk cid gf=0
+  tf=$(mktemp /tmp/shakedown-gate-selftest.XXXXXX) || true
+  if [ -z "$tf" ] || [ ! -f "$tf" ]; then
+    t1bad "SELF-TEST-FAIL: mktemp failed; gate selftest could not run"
+    return
+  fi
+  # No delimiter yet: no mark, gate stays closed, snapshot normalizes to "-".
+  : > "$tf"
   RAMLOG="$tf"
-  m1=$(ramlog_mark); m1=${m1:-0}
-  [ "$m1" = "1" ] || bad "SELF-TEST-FAIL: ramlog_mark counted $m1, want 1"
+  [ -z "$(ramlog_mark)" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark returned '$(ramlog_mark)' on a delimiter-free log"; gf=1; }
+  [ "$(ramlog_mark_snapshot)" = "-" ] || { t1bad "SELF-TEST-FAIL: snapshot on a delimiter-free log is '$(ramlog_mark_snapshot)', want '-'"; gf=1; }
+  if ramlog_gate_open "$(ramlog_mark_snapshot)"; then t1bad "SELF-TEST-FAIL: gate open on a delimiter-free log"; gf=1; fi
+  { echo '--- provider restarted at 2026-01-01T00:00:01Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
+  m1=$(ramlog_mark)
+  [ -n "$m1" ] || { t1bad "SELF-TEST-FAIL: ramlog_mark found no timestamp on a delimiter line"; gf=1; }
   blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
-  [ "$blk" = "1" ] || bad "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1"
-  if ramlog_gate_open "$m1"; then bad "SELF-TEST-FAIL: gate open with base == current count ($m1) -- stale blocks could satisfy a wait"; fi
-  { echo '--- provider restarted at T2 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000002 (new)'; } >> "$tf"
-  m2=$(ramlog_mark); m2=${m2:-0}
-  ramlog_gate_open "$m1" || bad "SELF-TEST-FAIL: gate stayed closed after a new delimiter ($m1 -> $m2)"
-  blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
-  [ "$blk" = "1" ] || bad "SELF-TEST-FAIL: ramlog_since_last_start did not isolate the newest block ($blk lines)"
+  [ "$blk" = "1" ] || { t1bad "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1"; gf=1; }
+  if ramlog_gate_open "$m1"; then t1bad "SELF-TEST-FAIL: gate open with base == current mark ($m1) -- stale blocks could satisfy a wait"; gf=1; fi
+  # wait_client_id's extraction pipeline must read this block's id.
+  cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+  [ "$cid" = "00000000-0000-0000-0000-000000000001" ] || { t1bad "SELF-TEST-FAIL: RAM-log client_id extraction returned '$cid', want ...0001"; gf=1; }
+  { echo '--- provider restarted at 2026-01-01T00:00:02Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000002 (new)'; } >> "$tf"
+  m2=$(ramlog_mark)
+  ramlog_gate_open "$m1" || { t1bad "SELF-TEST-FAIL: gate stayed closed after a new delimiter ($m1 -> $m2)"; gf=1; }
+  cid=$(ramlog_since_last_start | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
+  [ "$cid" = "00000000-0000-0000-0000-000000000002" ] || { t1bad "SELF-TEST-FAIL: newest-block extraction returned '$cid', want ...0002"; gf=1; }
+  # Trim regression: dropping the OLDEST block (the provider trims the log's
+  # oldest third at 5MB) must not move the newest mark or open the gate; a
+  # count-based mark fell below its own snapshot here and stuck closed.
+  sed -i '/2026-01-01T00:00:01Z/d' "$tf"
+  m3=$(ramlog_mark)
+  [ "$m3" = "$m2" ] || { t1bad "SELF-TEST-FAIL: mark moved after an old-block trim ('$m3', want '$m2')"; gf=1; }
+  if ramlog_gate_open "$m2"; then t1bad "SELF-TEST-FAIL: gate open after an old-block trim with no new delimiter"; gf=1; fi
+  { echo '--- provider restarted at 2026-01-01T00:00:03Z ---'; echo 'client_id: 00000000-0000-0000-0000-000000000003 (new)'; } >> "$tf"
+  ramlog_gate_open "$m2" || { t1bad "SELF-TEST-FAIL: gate stayed closed after a post-trim start"; gf=1; }
   rm -f "$tf"
   RAMLOG="$saved"
+  [ "$gf" = "0" ] && ok "gate self-test: RAM-log freshness predicate verified (identity gate, trim-safe)"
 }
 
 # journal_line_count: total journal lines (snapshot marker for polling).
@@ -128,25 +163,26 @@ journal_line_count() { j | wc -l; }
 # Also reads the RAM log's current start: under URNETWORK_RAMLOGS=1 or the
 # lowmem/eco profiles the journal stays empty, so a journal-only wait would
 # never succeed. The RAM fallback is FRESHNESS-GATED against the PRE-RESTART
-# delimiter count: restart_provider RETURNS that count as data and every call
+# delimiter mark: restart_provider RETURNS that mark as data and every call
 # site stores it in RAMLOG_MARK (a variable assigned inside the function would
 # die with its command-substitution subshell). The log persists across
 # sections (nothing deletes /dev/shm/urnetwork.log), so a stale block from an
 # earlier RAM-logged start would otherwise satisfy the very first poll and
 # false-pass a restart that never completed. The fallback may only read once
-# the delimiter count exceeds RAMLOG_MARK; a provider that is not RAM-logging
-# never adds one, so the fallback stays inert for it and the journal governs.
-# With RAMLOG_MARK empty (no restart_provider has run yet), the fallback
-# reverts to snapshot-at-wait-start -- the legacy lenient semantics; assign
-# RAMLOG_MARK before any raw start that a ramlog-mode wait follows.
+# the newest delimiter differs from RAMLOG_MARK; a provider that is not
+# RAM-logging never writes one, so the fallback stays inert for it and the
+# journal governs. RAMLOG_MARK "-" means no delimiter existed at snapshot
+# time (the first delimiter to appear opens the gate); an empty RAMLOG_MARK
+# means no snapshot was taken and the fallback re-snapshots at wait start --
+# the legacy lenient semantics, so assign RAMLOG_MARK before any raw start
+# that a ramlog-mode wait follows.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
   local end=$(( $(date +%s) + max_wait ))
   local base_delims
   base_delims="${RAMLOG_MARK:-}"
-  case "$base_delims" in ''|*[!0-9]*) base_delims=$(ramlog_mark);; esac
-  case "$base_delims" in ''|*[!0-9]*) base_delims=0;; esac
+  [ -n "$base_delims" ] || base_delims=$(ramlog_mark)
   while [ "$(date +%s)" -lt "$end" ]; do
     local cid
     cid=$(j | awk -v n="$after_lines" 'NR > n' | grep -oE "client_id: [0-9a-f-]+ \((new|reused)\)" | tail -1 | awk '{print $2}')
@@ -180,7 +216,7 @@ markers_snapshot() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]
 # whole job via the CI watchdog and reports nothing; bounded, the caller's
 # own wait_client_id/assertion fails and the report says which check broke.
 restart_provider() {
-  # Returns the pre-restart RAM-log delimiter count and journal line count as
+  # Returns the pre-restart RAM-log delimiter mark and journal line count as
   # DATA ("<ramlog_mark> <journal_mark>"): a variable assigned in here would
   # die with this function's command-substitution subshell at every call site.
   # Callers store it as:
@@ -189,9 +225,10 @@ restart_provider() {
   # block written by THIS restart can satisfy a wait (a stale block from an
   # earlier RAM-logged section cannot, and a fresh block is read even if it
   # lands before the wait call -- synchronous restarts routinely finish first).
+  # The mark is a delimiter timestamp, never a count: a count drops when the
+  # provider trims the RAM log, see the ramlog_mark note.
   local m
-  m=$(ramlog_mark)
-  m=${m:-0}
+  m=$(ramlog_mark_snapshot)
   echo "$m $(journal_line_count)"
   # systemctl/timeout messages must never join the DATA line above: the
   # caller parses "<ramlog_mark> <journal_mark>" from this function stdout.
@@ -296,6 +333,10 @@ printf '200\n' > /home/urnet/.urnetwork/proxy_url_max
 printf '10m\n' > /home/urnet/.urnetwork/proxy_url_refresh
 chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/jwt
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
+# Snapshot the RAM-log delimiter mark BEFORE this start: a ramlog-mode wait
+# after it must accept the block this start writes even when the block lands
+# before wait_client_id runs.
+RAMLOG_MARK=$(ramlog_mark_snapshot)
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
 # MUST-FIX 8: poll for client_id instead of sleep 8. The provider
 # runs a synchronous up-to-1GB O_SYNC disk audit at provide start (10-60s on
@@ -1051,8 +1092,7 @@ U_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) system
 # the CI job watchdog kills the whole run instead of failing this one check.
 U1_T0=$(date +%s)
 U1_MARK=$(journal_line_count)
-RAMLOG_MARK=$(ramlog_mark)
-RAMLOG_MARK=${RAMLOG_MARK:-0}
+RAMLOG_MARK=$(ramlog_mark_snapshot)
 timeout 120 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 U1_ACTIVE=0
 for i in $(seq 1 30); do
@@ -1221,7 +1261,7 @@ elif echo "$V2_OUT" | grep -q "cannot be migrated automatically"; then
 elif echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$V2_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
   ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify)"
 else
-  echo "$V2_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+  echo "$V2_OUT" | tail -25 | sed 's/^/    | /' | tee -a "$REPORT"
   bad "V2: expected a unit-type self-heal, an explicit un-migratable note, or a clean unit-type decline; none appeared in the update output"
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
@@ -1284,7 +1324,7 @@ echo "$V3_OUT" | grep -iE "hotswap|zero-downtime" | tee -a "$REPORT"
 if echo "$V3_OUT" | grep -qi "triggered zero-downtime HotSwap handoff"; then
   ok "V3: urnet-tools triggered the zero-downtime HotSwap handoff (SIGUSR2 sent)"
 else
-  echo "$V3_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+  echo "$V3_OUT" | tail -25 | sed 's/^/    | /' | tee -a "$REPORT"
   bad "V3: urnet-tools did NOT trigger the hotswap under Type=notify with a stamped >=31 running binary (see decline/error above)"
 fi
 if [ "$V3_RC" -eq 0 ]; then
@@ -1305,9 +1345,10 @@ V3_POLL_END=$(( $(date +%s) + 60 ))
 while [ "$(date +%s)" -lt "$V3_POLL_END" ]; do
   V3_PID_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)
   if [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ]; then break; fi
-  # MAINPID= is sent only after the takeover ACK; if the journal shows the ACK
-  # the handoff is done even if this poll has not seen the new pid yet.
-  if j_full | awk -v n="$V3_MARK" 'NR>n' | grep -q "confirmed active takeover (ACK received)"; then break; fi
+  # The takeover ACK is logged BEFORE the parent sends MAINPID= to systemd
+  # (provider/hotswap.go), so its presence must NOT end this poll: breaking on
+  # it can leave V3_PID_AFTER at the old pid and false-fail a real handoff.
+  # The ACK itself is asserted separately after this loop.
   sleep 2
 done
 if [ -n "$V3_PID_BEFORE" ] && [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_BEFORE" != "$V3_PID_AFTER" ]; then
@@ -1365,10 +1406,15 @@ if [ "$V_REMAIN" -gt 1 ]; then
   bad "V: hotswap parent drain did not finish within 60s ($V_REMAIN provider processes remain) -- drain should end within HotSwapDrainTimeout (30s)"
   # A stuck drain would make the re-pin refuse with "2 providers found" and
   # bury the real cause; clear the stuck parent so the re-pin tests what it
-  # says it tests.
-  V_STUCK=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
-  [ -n "$V_STUCK" ] && kill -9 "$V_STUCK" 2>/dev/null || true
+  # says it tests. Target exactly the retiring parent pid sampled before the
+  # handoff: the parent can exit between the count above and the kill, and
+  # `pgrep | head -1` would then return the healthy new provider.
+  if [ -n "$V3_PID_BEFORE" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_PID_BEFORE"; then
+    kill -9 "$V3_PID_BEFORE" 2>/dev/null || true
+  fi
   sleep 2
+elif [ "$V_REMAIN" -eq 0 ]; then
+  bad "V: no provider process survived the hotswap drain -- provider vanished"
 else
   ok "V: hotswap parent drained cleanly within 60s"
 fi
@@ -1443,6 +1489,9 @@ for corrupt in truncated invalid-json literal-null; do
   esac
   chown urnet:urnet /home/urnet/.urnetwork/pending_overrides.json
   W3_MARK=$(journal_line_count)
+  # Snapshot the RAM-log mark per iteration: a stale block from the previous
+  # iteration must not satisfy this iteration's wait if this start fails.
+  RAMLOG_MARK=$(ramlog_mark_snapshot)
   timeout 90 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service
   W3_RC=$?
   if [ "$W3_RC" -eq 124 ]; then
@@ -1625,8 +1674,7 @@ EOF
   echo "  applying MemoryMax=$MEMLIMIT (systemd reports: $X_APPLIED)" | tee -a "$REPORT"
   X_OOM_BEFORE=$(journalctl -k --no-pager 2>/dev/null | grep -ci "out of memory")
   X_MARK=$(journal_line_count)
-  RAMLOG_MARK=$(ramlog_mark)
-  RAMLOG_MARK=${RAMLOG_MARK:-0}
+  RAMLOG_MARK=$(ramlog_mark_snapshot)
   timeout 150 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
   X_RESTART_RC=$?
   if [ "$X_RESTART_RC" -eq 124 ]; then
@@ -1672,8 +1720,7 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 # (process alive + control socket reachable) so the check never depends on the
 # journal.
 X_MARK2=$(journal_line_count)
-RAMLOG_MARK=$(ramlog_mark)
-RAMLOG_MARK=${RAMLOG_MARK:-0}
+RAMLOG_MARK=$(ramlog_mark_snapshot)
 timeout 150 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 X_CID2=$(wait_client_id "$X_MARK2" 150)   # resolved from the RAM log under lowmem
 PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
@@ -1710,9 +1757,6 @@ if [ "$X_MEMORYMAX_AFTER" = "$X_ORIG_MEMORYMAX" ] || [ "$X_MEMORYMAX_AFTER" = "i
 else
   bad "X: MemoryMax still constrained after cleanup ($X_MEMORYMAX_AFTER, want infinity/$X_ORIG_MEMORYMAX)"
 fi
-# Clear the mark so no later bare wait can treat X's lowmem delimiter as
-# fresh; restart_provider refreshes it before every subsequent restart anyway.
-RAMLOG_MARK=""
 
 # ---------- Y. Large proxy list ----------
 section "Y. Large proxy list (thousands of entries)"
