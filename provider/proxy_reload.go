@@ -1554,6 +1554,14 @@ func (r *ProxyReloader) reload() {
 
 	// Persist the new state snapshot. proxyStateMu prevents the heartbeat
 	// goroutine from racing this write and resurrecting removed proxies.
+	//
+	// This runs under r.mu by design: the slot must not free until the
+	// post-reload state is on disk, and an fsync cannot be made cancellable
+	// portably. If the filesystem stalls here past reloadHardLimit (a
+	// thrashing disk), the reload watchdog is the bound — it escalates to a
+	// hot restart, the only way to shed a goroutine stuck in a syscall.
+	// Skipping the write instead would drop the prune and ID bookkeeping
+	// this pass just computed.
 	proxyStateMu.Lock()
 	if diskState, err := readProxyState(); err == nil {
 		for addr, entry := range r.state.Proxies {
