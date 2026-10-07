@@ -1210,7 +1210,8 @@ func (r *ProxyReloader) reload() {
 	// the end of this function (readability contract); kept as variables so
 	// the plan/apply split is unchanged. The direct transport lives in the
 	// running map but is not a proxy, so the count excludes it, like the
-	// trim receipt's.
+	// trim receipt's. The trim section below reuses this count instead of
+	// re-walking the map.
 	reloadRunning := 0
 	for addr := range running {
 		if addr != directProxyKey {
@@ -1318,12 +1319,7 @@ func (r *ProxyReloader) reload() {
 	trimCapNow, trimSource, trimErr := effectiveTrimCapSource()
 	// The direct transport is in the running map but is never trimmed, so the
 	// counts reported below exclude it, like the cap does.
-	runningProxies := 0
-	for a := range running {
-		if a != directProxyKey {
-			runningProxies++
-		}
-	}
+	runningProxies := reloadRunning
 	autoNote := ""
 	switch trimSource {
 	case trimCapOOM:
@@ -1374,17 +1370,17 @@ func (r *ProxyReloader) reload() {
 			removedSet[a] = true
 		}
 		shedCount := 0
-		// Count running proxies excluding direct (managed by the hot-toggle
-		// block above, not the trim logic). Including it would cause direct
-		// to be shed as the worst-graded proxy on every reload when the cap
-		// binds, creating a restart flap (finding #3).
-		runningNonDirect := 0
+		// runningNonDirect excludes direct (managed by the hot-toggle block
+		// above, not the trim logic). Including it would cause direct to be
+		// shed as the worst-graded proxy on every reload when the cap binds,
+		// creating a restart flap. The count was computed once above as
+		// reloadRunning; this loop only builds the shed list.
+		runningNonDirect := reloadRunning
 		rlist := make([]string, 0, len(running))
 		for a := range running {
 			if a == directProxyKey {
 				continue
 			}
-			runningNonDirect++
 			if !removedSet[a] {
 				rlist = append(rlist, a)
 			}
