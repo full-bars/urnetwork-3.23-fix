@@ -148,6 +148,65 @@ if command -v rc-service > /dev/null 2>&1; then
     fi
 fi
 
+# --- service control that works on BOTH backends --------------------------
+# Every toggle (ramlogs, lowmode, ecomode, turbomode, automode, hotrestart) and
+# the lifecycle verbs end in "restart the provider". That call was hardcoded to
+# `systemctl --user`, which does not exist on an OpenRC host, so the command
+# appeared to succeed while the service kept running the old configuration.
+# These helpers dispatch on the detected backend instead.
+#
+# A stopped OpenRC service is named plainly: rc-service refuses to "restart"
+# something that is not running, so restart is modelled as stop-then-start when
+# the service is down (which is also what a user means by it).
+urnetwork_service_restart ()
+{
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        rc-service urnetwork restart 2>/dev/null && return 0
+        # Not running: rc-service restart fails on a stopped service.
+        rc-service urnetwork start 2>/dev/null && return 0
+        return 1
+    fi
+    urnetwork_service_restart
+}
+
+urnetwork_service_start ()
+{
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        rc-service urnetwork start
+        return $?
+    fi
+    systemctl --user start urnetwork.service
+}
+
+urnetwork_service_stop ()
+{
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        rc-service urnetwork stop
+        return $?
+    fi
+    systemctl --user stop urnetwork.service
+}
+
+urnetwork_service_is_active ()
+{
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        rc-service urnetwork status 2>/dev/null | grep -q started
+        return $?
+    fi
+    systemctl --user is-active --quiet urnetwork.service
+}
+
+# urnetwork_service_restart_hint prints the command a user should run, for the
+# informational messages that tell someone how to apply a change by hand.
+urnetwork_service_restart_hint ()
+{
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        echo "rc-service urnetwork restart"
+    else
+        echo "systemctl --user restart urnetwork.service"
+    fi
+}
+
 pr_err ()
 {
     argv0="$me"
@@ -340,7 +399,16 @@ install_downloader ()
 # with no terminal to answer it would hang the install.
 openrc_prompt_auth ()
 {
-    if [ ! -t 0 ] || [ ! -t 1 ]; then
+    # The interactive reads go through /dev/tty, NOT stdin. Under the documented
+    # `curl ... | sh` one-liner stdin IS the installer script: a plain `read`
+    # would consume the script's own text, and a `-t 0` guard would skip the
+    # prompt in exactly the case it was written for. /dev/tty is the user's
+    # terminal no matter how stdin arrived.
+    #
+    # With no terminal at all (CI, a bare pipe, a cron job) the prompt is
+    # impossible, so fall back to printing the command to run later.
+    openrc_tty=/dev/tty
+    if [ ! -c "$openrc_tty" ] || ! { true < "$openrc_tty"; } 2>/dev/null; then
         printf "Authenticate:          \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
         return 0
     fi
@@ -355,12 +423,12 @@ openrc_prompt_auth ()
     printf "Authenticate now?      The provider needs an auth code to run (from <https://ur.io>).\n"
     printf "                      Press Enter to skip and do it later.\n"
     printf "> "
-    read -r openrc_auth_answer || openrc_auth_answer=""
+    read -r openrc_auth_answer < "$openrc_tty" || openrc_auth_answer=""
 
     case "$openrc_auth_answer" in
         [Yy]*)
             printf "Auth code: "
-            read -r openrc_code || openrc_code=""
+            read -r openrc_code < "$openrc_tty" || openrc_code=""
             if [ -z "$openrc_code" ]; then
                 printf "No code entered; skipping. Authenticate later with:\n"
                 printf "                      \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
@@ -389,11 +457,21 @@ install_json_parser ()
 
     pr_info "Neither 'jq' nor 'python3' found; installing a JSON parser..."
 
-    # A package manager needs root. Without it we cannot install anything,
-    # and the caller's error message is the useful thing to show.
+    # A package manager needs root. On the OpenRC path the install is run AS
+    # the service user (that is what makes the tree user-owned and keeps root
+    # out of it), so the common case is "not root" even on a box where root is
+    # available. Try sudo (non-interactive) before giving up, otherwise a user
+    # following the installer's own printed instructions hits a dead end on a
+    # perfectly capable machine.
+    SUDO=""
     if [ "$(id -u)" -ne 0 ]; then
-        pr_info "Not running as root; cannot install a JSON parser automatically."
-        return 1
+        if command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1; then
+            SUDO="sudo"
+            pr_info "Not root; using passwordless sudo to install the JSON parser."
+        else
+            pr_info "Not running as root; cannot install a JSON parser automatically."
+            return 1
+        fi
     fi
 
     install_id=""
@@ -404,25 +482,25 @@ install_json_parser ()
 
     case "$install_id" in
         arch)
-            pacman -Sy --noconfirm jq || pacman -Sy --noconfirm python || true
+            $SUDO pacman -Sy --noconfirm jq || pacman -Sy --noconfirm python || true
             ;;
         debian|ubuntu|linuxmint)
-            apt-get update && apt-get install -y jq || apt-get install -y python3 || true
+            $SUDO apt-get update && apt-get install -y jq || apt-get install -y python3 || true
             ;;
         fedora|rhel|centos|rocky|almalinux|amzn)
-            dnf install -y jq || dnf install -y python3 || true
+            $SUDO dnf install -y jq || dnf install -y python3 || true
             ;;
         alpine)
             # community may be absent from a minimal image's repositories; the
             # install still lands (python3 is in main) and the parser is fine.
-            apk add --no-cache jq || apk add --no-cache python3 || true
+            $SUDO apk add --no-cache jq || apk add --no-cache python3 || true
             ;;
         opensuse*|sles)
-            zypper install -y jq || zypper install -y python3 || true
+            $SUDO zypper install -y jq || zypper install -y python3 || true
             ;;
         *)
             pr_warn "Unsupported distro ID '%s'; attempting 'jq' then 'python3' by name." "${install_id:-unknown}"
-            command -v apk > /dev/null && { apk add --no-cache jq || apk add --no-cache python3 || true; }
+            command -v apk > /dev/null && { $SUDO apk add --no-cache jq || $SUDO apk add --no-cache python3 || true; }
             ;;
     esac
 
@@ -694,7 +772,7 @@ show_version ()
 
     if [ "$stale" -eq 1 ]; then
         pr_warn "A newer/different binary is installed on disk than the one currently running."
-        pr_warn "Restart the service to apply it: systemctl --user restart urnetwork.service"
+        pr_warn "Restart the service to apply it: %s" "$(urnetwork_service_restart_hint)"
     fi
 
     api_url="$api_base/releases/latest"
@@ -837,7 +915,7 @@ stop_systemd_units ()
         if [ "$(systemctl --user is-active urnetwork.service)" = "active" ]; then
             if [ "$operation" = "update" ] && [ "$FORCE" != "1" ]; then
                 pr_info "urnetwork.service is running — binary will be updated on disk."
-                pr_info "Restart the service when convenient to apply the update: systemctl --user restart urnetwork.service"
+                pr_info "Restart the service when convenient to apply the update: %s" "$(urnetwork_service_restart_hint)"
                 systemd_units_stopped=0
 
                 systemctl --user disable --now urnetwork-update.timer || {
@@ -1349,30 +1427,28 @@ EOF
         return 0
     fi
 
-    if [ "$(id -u)" -ne 0 ]; then
-        pr_warn "Installing a system service needs root."
-        pr_info "To finish, run these commands:"
-        pr_info "    sudo cp %s %s" "$openrc_staged" "$openrc_initd_file"
-        pr_info "    sudo chmod +x %s" "$openrc_initd_file"
-        pr_info "    sudo rc-update add urnetwork default"
-        pr_info "    sudo rc-service urnetwork start"
-        return 0
-    fi
-
-    # PRIVILEGE BOUNDARY. The weekly auto-update runs as ROOT from busybox
-    # crond and execs the urnet-tools that sits beside the provider binary. That
-    # tool must therefore NOT be writable by the service user: the account
-    # running the internet-facing relay could otherwise replace the tool (or
-    # rename a parent directory it owns and recreate the path) and get code
-    # execution as root at the next tick.
-    #
-    # The chown that used to be here handed the whole install tree to
-    # $openrc_user. It bought nothing: under OpenRC `urnet-tools update` runs as
-    # root anyway, because `rc-service restart` requires root, so the service
-    # user never needs to replace its own binary. The binaries stay root-owned
-    # and world-readable/executable, which is all the supervised process needs.
-    # Only the STATE directory under the user's home is user-owned, and the user
-    # already owns their home.
+    # openrc_finalize_root_paths sets the ownership and permissions the OpenRC
+# service depends on, and creates the log targets.
+#
+# PRIVILEGE BOUNDARY. The weekly auto-update runs as ROOT from busybox crond and
+# execs the urnet-tools that sits beside the provider binary. That tool must
+# therefore NOT be writable by the service user: the account running the
+# internet-facing relay could otherwise replace the tool (or rename a parent
+# directory it owns and recreate the path) and get code execution as root at the
+# next tick.
+#
+# The chown that used to be here handed the whole install tree to
+# $openrc_user. It bought nothing: under OpenRC `urnet-tools update` runs as
+# root anyway, because `rc-service restart` requires root, so the service user
+# never needs to replace its own binary. The binaries stay root-owned and
+# world-readable/executable, which is all the supervised process needs. Only the
+# STATE directory under the user's home is user-owned, and the user already owns
+# their home.
+#
+# Called from BOTH install paths (already-root, and the sudo-escalated one) so
+# the shipped state is identical either way.
+openrc_finalize_root_paths ()
+{
     case "$install_path" in
         "$openrc_home"/*)
             chown -R "root:root" "$install_path" 2>/dev/null || pr_warn "could not set root ownership on %s" "$install_path"
@@ -1390,6 +1466,44 @@ EOF
     : > /var/log/urnetwork.err 2>/dev/null || pr_warn "could not create /var/log/urnetwork.err"
     chown root:root /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
     chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+}
+
+# The four privileged steps (install the unit, enable the runlevel, start)
+    # are the SAME four commands we used to print for the operator to paste.
+    # Requiring them by hand made a first-run install a two-stage ritual for no
+    # security gain: the tree is root-owned either way, and the user consented
+    # to a system service by running the installer at all. So when the installer
+    # CAN elevate - already root, or under a sudo that works non-interactively
+    # (the usual `curl ... | sudo sh` shape) - it does the work itself and says
+    # what it did.
+    #
+    # Where it cannot elevate (a bare `su - urnet` with no sudo on the box) the
+    # exact commands are still printed, so that path is never a dead end.
+    if [ "$(id -u)" -ne 0 ]; then
+        if command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1; then
+            pr_info "Completing the service setup with sudo."
+            if sudo cp "$openrc_staged" "$openrc_initd_file" \
+               && sudo chmod 755 "$openrc_initd_file" \
+               && sudo rc-update add urnetwork default \
+               && sudo rc-service urnetwork start; then
+                pr_info "Service urnetwork installed, enabled and started."
+                # Re-apply the ownership/log steps below now that the unit
+                # exists, so the shipped state matches the root path exactly.
+                openrc_finalize_root_paths
+                return 0
+            fi
+            pr_err "The sudo service setup failed; finishing by hand."
+        fi
+        pr_warn "Installing a system service needs root, and sudo could not run non-interactively."
+        pr_info "To finish, run these commands:"
+        pr_info "    sudo cp %s %s" "$openrc_staged" "$openrc_initd_file"
+        pr_info "    sudo chmod +x %s" "$openrc_initd_file"
+        pr_info "    sudo rc-update add urnetwork default"
+        pr_info "    sudo rc-service urnetwork start"
+        return 0
+    fi
+
+    openrc_finalize_root_paths
 
     if ! cp "$openrc_staged" "$openrc_initd_file"; then
         pr_err "Failed to install %s" "$openrc_initd_file"
@@ -1576,11 +1690,12 @@ download_asset ()
         pr_warn "curl failed to download asset, trying wget fallback..."
     fi
 
-    # Try wget fallback. Flag support is probed: BusyBox wget rejects GNU-only
-    # options outright, which would otherwise abort the download before any
-    # network attempt.
+    # Try wget fallback. BusyBox wget REJECTS GNU-only options outright (it
+    # spells the connect timeout -T, not --connect-timeout), so probing for
+    # GNU flags and then passing them aborted the download before any network
+    # attempt was made. wget_retry_download passes only portable flags.
     if command -v wget > /dev/null; then
-        if wget_download "$url" "$output"; then
+        if wget_retry_download "$url" "$output"; then
             return 0
         fi
     fi
@@ -2339,9 +2454,9 @@ toggle_auto_start ()
 
 do_start ()
 {
-    if ! systemctl --user is-active --quiet urnetwork.service; then
+    if ! urnetwork_service_is_active; then
 		pr_info "Starting urnetwork.service"
-		systemctl --user start urnetwork.service || { pr_err "Failed to start urnetwork.service"; exit 1; }
+		urnetwork_service_start || { pr_err "Failed to start urnetwork.service"; exit 1; }
     else
 		pr_info "Service urnetwork.service is already active"
 		exit 1
@@ -2350,9 +2465,9 @@ do_start ()
 
 do_stop ()
 {
-    if systemctl --user is-active --quiet urnetwork.service; then
+    if urnetwork_service_is_active; then
 		pr_info "Stopping urnetwork.service"
-		systemctl --user stop urnetwork.service || { pr_err "Failed to stop urnetwork.service"; exit 1; }
+		urnetwork_service_stop || { pr_err "Failed to stop urnetwork.service"; exit 1; }
     else
 		pr_info "Service urnetwork.service is not active"
 		exit 1
@@ -2391,12 +2506,19 @@ do_restart ()
 {
     confirm_restart
     pr_info "Restarting urnetwork.service..."
-    systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+    urnetwork_service_restart || { pr_err "Failed to restart urnetwork.service"; exit 1; }
     pr_info "Service successfully restarted."
 }
 
 show_status ()
 {
+	if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+		rc-service urnetwork status
+		# rc-service status is one line; show where the logs are, since that is
+		# the next thing anyone wants after reading it.
+		pr_info "Logs: /var/log/urnetwork.log (or: urnet-tools logs)"
+		return 0
+	fi
 	systemctl --user status urnetwork.service
 }
 
@@ -2440,6 +2562,22 @@ show_logs ()
         else
             tail -n 1000 -f /dev/shm/urnetwork.log
         fi
+    elif [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        # OpenRC: supervise-daemon redirects the provider's stdout/stderr to the
+        # root-owned files named in the unit's output_log/error_log. There is no
+        # journal and no /proc/<pid>/fd/1 to fall back on, so read the file -
+        # which also works while the service is stopped.
+        if [ "$mode" = "dump" ]; then
+            cat /var/log/urnetwork.log > "$HOME/urlogs.txt" 2>/dev/null
+            pr_info "Logs successfully dumped to $HOME/urlogs.txt"
+            exit 0
+        fi
+        if [ ! -f /var/log/urnetwork.log ]; then
+            pr_err "Log file not found (/var/log/urnetwork.log). Has the service ever started?"
+            exit 1
+        fi
+        pr_info "Streaming from /var/log/urnetwork.log (OpenRC service urnetwork)"
+        tail -n 1000 -f /var/log/urnetwork.log
     else
         if [ "$mode" = "dump" ]; then
             journalctl --user -u urnetwork.service > "$HOME/urlogs.txt"
@@ -2662,14 +2800,14 @@ toggle_ramlogs ()
             confirm_restart "Enabling RAM logging requires restarting the URNetwork provider."
             pr_info "Enabling RAM logging..."
             queue_pending_override "ramlogs" "on"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "RAM logging enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling RAM logging requires restarting the URNetwork provider."
             pr_info "Disabling RAM logging..."
             queue_pending_override "ramlogs" "off"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "RAM logging disabled and service restarted."
             ;;
         "")
@@ -2729,7 +2867,7 @@ toggle_lowmode ()
             queue_pending_override "profile" "lowmem"
             queue_pending_override "gomemlimit" "${gomem_mib}MiB"
             queue_pending_override "gogc" "50"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Lowmode enabled and service restarted."
             ;;
         off)
@@ -2738,7 +2876,7 @@ toggle_lowmode ()
             queue_pending_clear "profile"
             queue_pending_clear "gomemlimit"
             queue_pending_clear "gogc"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Lowmode disabled and service restarted."
             ;;
         "")
@@ -2766,14 +2904,14 @@ toggle_hotrestart ()
             confirm_restart "Enabling hot-restart requires restarting the URNetwork provider."
             pr_info "Enabling hot-restart..."
             queue_pending_override "hot_restart" "on"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Hot-restart enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling hot-restart requires restarting the URNetwork provider."
             pr_info "Disabling hot-restart..."
             queue_pending_override "hot_restart" "off"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Hot-restart disabled and service restarted."
             ;;
         "")
@@ -2804,7 +2942,7 @@ toggle_ecomode ()
             queue_pending_override "profile" "eco"
             queue_pending_override "gomemlimit" "${gomem_mib}MiB"
             queue_pending_override "gogc" "50"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Eco mode enabled and service restarted."
             ;;
         off)
@@ -2813,7 +2951,7 @@ toggle_ecomode ()
             queue_pending_clear "profile"
             queue_pending_clear "gomemlimit"
             queue_pending_clear "gogc"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Eco mode disabled and service restarted."
             ;;
         "")
@@ -2841,14 +2979,14 @@ toggle_automode ()
             confirm_restart "Enabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Enabling auto-tune profile..."
             queue_pending_override "profile" "auto"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Auto-tune enabled and service restarted."
             ;;
         off)
             confirm_restart "Disabling auto-tune profile requires restarting the URNetwork provider."
             pr_info "Disabling auto-tune profile..."
             queue_pending_clear "profile"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Auto-tune disabled and service restarted."
             ;;
         "")
@@ -2874,14 +3012,14 @@ toggle_turbomode ()
             confirm_restart "Enabling turbo mode requires restarting the URNetwork provider."
             pr_info "Enabling turbo %s..." "$mode"
             queue_pending_override "profile" "turbo-${mode}"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Turbo %s enabled and service restarted." "$mode"
             ;;
         off)
             confirm_restart "Disabling turbo mode requires restarting the URNetwork provider."
             pr_info "Disabling turbo mode..."
             queue_pending_clear "profile"
-            systemctl --user restart urnetwork.service
+            urnetwork_service_restart
             pr_info "Turbo mode disabled and service restarted."
             ;;
         "")
@@ -3020,12 +3158,12 @@ do_report ()
         off)
             pr_info "Removing report URL (takes effect on next provider restart)..."
             queue_pending_clear "report_url"
-            pr_info "Report URL removed. Restart provider to apply: systemctl --user restart urnetwork.service"
+            pr_info "Report URL removed. Restart provider to apply: %s" "$(urnetwork_service_restart_hint)"
             ;;
         *)
             pr_info "Setting report URL to %s (takes effect on next provider restart)..." "$mode"
             queue_pending_override "report_url" "$mode"
-            pr_info "Report URL set to %s. Restart provider to apply: systemctl --user restart urnetwork.service" "$mode"
+            pr_info "Report URL set to %s. Restart provider to apply: %s" "$mode" "$(urnetwork_service_restart_hint)"
             ;;
     esac
 }
@@ -3491,20 +3629,49 @@ fs.file-max = 2097152
 fs.inotify.max_user_watches = 524288
 fs.inotify.max_user_instances = 512
 EOF
-        sysctl --system >/dev/null 2>&1 || pr_warn "Warning: some sysctl settings could not be applied."
+        # BusyBox sysctl has no --system (that is a procps/GNU flag), so on
+        # Alpine --system failed silently and the settings only took effect at
+        # the next boot. Apply the file we just wrote instead: -p FILE is
+        # supported by both BusyBox and procps. Fall back to --system for the
+        # case where a host has procps and reads other drop-ins too.
+        if sysctl -p "$sysctl_conf" >/dev/null 2>&1; then
+            pr_info "sysctl settings applied."
+        elif sysctl --system >/dev/null 2>&1; then
+            pr_info "sysctl settings applied (system-wide)."
+        else
+            pr_warn "Warning: some sysctl settings could not be applied (they will apply at next boot)."
+        fi
     fi
 
-    # 4. Apply Ulimits (Systemd)
+    # 4. Apply Ulimits — backend-aware.
+    #
+    # systemd takes them from a drop-in (LimitNOFILE=). OpenRC has no drop-ins:
+    # the equivalent is rc_ulimit, read from /etc/conf.d/<service> which
+    # openrc-run sources automatically. Writing the systemd file on an OpenRC
+    # host was silently useless — the service never saw the limit.
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        conf_d="/etc/conf.d/urnetwork"
+        mkdir -p /etc/conf.d
+        if [ -f "$conf_d" ] && grep -q '^rc_ulimit=' "$conf_d"; then
+            sed -i "s|^rc_ulimit=.*|rc_ulimit=\"-n $ulimit_val\"|" "$conf_d"
+        else
+            # Preserve anything already there (a user's own settings) and append.
+            printf '\n# Added by urnet-tools optimize: open files limit for the provider\nrc_ulimit="-n %s"\n' "$ulimit_val" >> "$conf_d"
+        fi
+        chmod 0644 "$conf_d"
+        pr_info "Ulimit %s written to %s (rc_ulimit)." "$ulimit_val" "$conf_d"
+        override_file=""   # nothing else may try to use it
+    else
+        # Ensure everything in the home folder touched by root is restored to user ownership
+        if [ -d "$actual_home/.urnetwork" ]; then
+            chown -R "$actual_user":"$actual_user" "$actual_home/.urnetwork"
+        fi
 
-    # Ensure everything in the home folder touched by root is restored to user ownership
-    if [ -d "$actual_home/.urnetwork" ]; then
-        chown -R "$actual_user":"$actual_user" "$actual_home/.urnetwork"
+        override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
+        mkdir -p "$override_dir"
+        chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null
+        override_file="$override_dir/override.conf"
     fi
-
-    override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
-    mkdir -p "$override_dir"
-    chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null
-    override_file="$override_dir/override.conf"
 
     # 5. Disk Benchmark
     pr_info "Running disk benchmark (1GB sync test)..."
@@ -3524,28 +3691,46 @@ EOF
         fi
     fi
 
-    # Update ulimits in override
-    if [ ! -f "$override_file" ]; then
-        printf "[Service]\n" > "$override_file"
-    fi
+    # Update ulimits in the systemd drop-in (skipped when the OpenRC rc_ulimit
+    # path above already handled it).
+    if [ -n "$override_file" ]; then
+        if [ ! -f "$override_file" ]; then
+            printf "[Service]\n" > "$override_file"
+        fi
 
-    if ! grep -q "LimitNOFILE=" "$override_file"; then
-        sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"
-    else
-        sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
+        if ! grep -q "LimitNOFILE=" "$override_file"; then
+            sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"
+        else
+            sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
+        fi
+        chown "$actual_user":"$actual_user" "$override_file"
     fi
-    chown "$actual_user":"$actual_user" "$override_file"
 
     pr_info "Optimization applied successfully."
-    pr_info "Restarting URnetwork service to apply ulimits..."
 
-    # Run as the actual user to access their systemd bus
-    sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload
-    sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
+    if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
+        # OpenRC: restart through rc-service as root. rc_ulimit is read by
+        # openrc-run at start, so the restart is what binds the new limit.
+        pr_info "Restarting the urnetwork service to apply ulimits..."
+        if rc-service urnetwork restart >/dev/null 2>&1 || rc-service urnetwork start >/dev/null 2>&1; then
+            pr_info "Service restarted with the new limits."
+        else
+            pr_warn "Could not restart the service; run: rc-service urnetwork restart"
+        fi
+        # No lingering equivalent exists (and none is needed): OpenRC has no
+        # per-user service manager, and the service lives in the default
+        # runlevel, which starts at boot with no login session.
+    else
+        pr_info "Restarting URnetwork service to apply ulimits..."
 
-    # Enable lingering for the user so services persist after logout
-    if command -v loginctl > /dev/null; then
-        loginctl enable-linger "$actual_user" 2>/dev/null && pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+        # Run as the actual user to access their systemd bus
+        sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload
+        sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
+
+        # Enable lingering for the user so services persist after logout
+        if command -v loginctl > /dev/null; then
+            loginctl enable-linger "$actual_user" 2>/dev/null && pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+        fi
     fi
 }
 
@@ -3722,7 +3907,7 @@ do_session ()
                         ;;
                     [Yy]* | "")
                         pr_info "Restarting urnetwork.service..."
-                        systemctl --user restart urnetwork.service || { pr_err "Failed to restart urnetwork.service"; exit 1; }
+                        urnetwork_service_restart || { pr_err "Failed to restart urnetwork.service"; exit 1; }
                         pr_info "Service restarted with new session."
                         break
                         ;;
