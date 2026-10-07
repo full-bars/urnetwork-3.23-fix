@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"os"
 	"strings"
 	"testing"
 )
@@ -9,6 +10,31 @@ import (
 // The installer in scripts/Provider_Install_FreeBSD.sh carries its own copy of
 // this template (a shell script cannot call into Go), so these assertions are
 // about the Go-side renderer and the two must be kept in step by hand.
+// The rc.d script the Go side emits is duplicated in the shell installer, and
+// the two can drift. This test WRITES the rendered script to a file so the
+// FreeBSD CI job can run it through `sh -n` on a real kernel.
+//
+// It writes a file rather than t.Log-ing the script: a go test log line is
+// prefixed with "    file_test.go:NN: ", and that prefix is not valid shell —
+// stripping it is guesswork, and getting it wrong would make the CI parse
+// check assert against a mangled script.
+func TestRenderBSDServiceScriptDumpsTemplate(t *testing.T) {
+	script := renderBSDServiceScript("urnetwork", "/usr/local/bin/urnetwork", "tester", "/home/tester")
+	if strings.TrimSpace(script) == "" {
+		t.Fatal("renderBSDServiceScript returned an empty script")
+	}
+	// -test.run with a file path is the only way to get the exact bytes out
+	// of a compiled test binary; the path comes from the caller in CI.
+	out := os.Getenv("URN_RC_DUMP")
+	if out == "" {
+		t.Skip("URN_RC_DUMP not set; nothing to dump")
+	}
+	if err := os.WriteFile(out, []byte(script), 0o644); err != nil {
+		t.Fatalf("write rendered rc.d: %v", err)
+	}
+	t.Logf("wrote %d bytes of rendered rc.d to %s", len(script), out)
+}
+
 func TestRenderBSDServiceScriptShape(t *testing.T) {
 	script := renderBSDServiceScript("urnetwork", "/usr/local/bin/urnetwork", "tester", "/home/tester")
 
