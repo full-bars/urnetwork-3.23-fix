@@ -136,7 +136,7 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
 ```
 
-If your antivirus blocks that one-liner, download the script and run it from disk in two steps instead (both lines in PowerShell):
+If Windows Defender blocks that one-liner, download the script, review it, and run it from disk in two steps instead (both lines in PowerShell):
 
 ```powershell
 irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
