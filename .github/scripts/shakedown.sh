@@ -81,6 +81,25 @@ ramlog_since_last_start() {
 # satisfy a wait, while a fresh block is read as soon as it appears (even if
 # it appeared before the wait call).
 ramlog_mark() { grep -c -- "--- provider restarted at" "$RAMLOG" 2>/dev/null || true; }
+# gate_selftest: provider-free check of the RAM-log freshness predicate against
+# a fake log. Catches the class of bug where the base mark is snapshotted at
+# wait start instead of before the restart, and where block isolation breaks.
+gate_selftest() {
+  local tf=/tmp/shakedown-gate-selftest.log saved="$RAMLOG" m1 m2 blk
+  { echo '--- provider restarted at T1 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000001 (new)'; } > "$tf"
+  RAMLOG="$tf"
+  m1=$(ramlog_mark); m1=${m1:-0}
+  [ "$m1" = "1" ] || echo "SELF-TEST-FAIL: ramlog_mark counted $m1, want 1" | tee -a "$REPORT"
+  blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
+  [ "$blk" = "1" ] || echo "SELF-TEST-FAIL: ramlog_since_last_start found $blk client_id lines, want 1" | tee -a "$REPORT"
+  { echo '--- provider restarted at T2 ---'; echo 'client_id: 00000000-0000-0000-0000-000000000002 (new)'; } >> "$tf"
+  m2=$(ramlog_mark); m2=${m2:-0}
+  [ "$m2" -gt "$m1" ] || echo "SELF-TEST-FAIL: gate would not open on a new delimiter ($m1 -> $m2)" | tee -a "$REPORT"
+  blk=$(ramlog_since_last_start | grep -c "client_id:"); blk=${blk:-0}
+  [ "$blk" = "1" ] || echo "SELF-TEST-FAIL: ramlog_since_last_start did not isolate the newest block ($blk lines)" | tee -a "$REPORT"
+  rm -f "$tf"
+  RAMLOG="$saved"
+}
 
 # journal_line_count: total journal lines (snapshot marker for polling).
 journal_line_count() { j | wc -l; }
@@ -92,13 +111,14 @@ journal_line_count() { j | wc -l; }
 # Also reads the RAM log's current start: under URNETWORK_RAMLOGS=1 or the
 # lowmem/eco profiles the journal stays empty, so a journal-only wait would
 # never succeed. The RAM fallback is FRESHNESS-GATED against the PRE-RESTART
-# delimiter count (restart_provider sets RAMLOG_MARK before it restarts): the
-# log persists across sections (nothing deletes /dev/shm/urnetwork.log), so a
-# stale block from an earlier RAM-logged start would otherwise satisfy the
-# very first poll and false-pass a restart that never completed. The fallback
-# may only read once the delimiter count exceeds RAMLOG_MARK; a provider that
-# is not RAM-logging never adds one, so the fallback stays inert for it and
-# the journal governs.
+# delimiter count: restart_provider RETURNS that count as data and every call
+# site stores it in RAMLOG_MARK (a variable assigned inside the function would
+# die with its command-substitution subshell). The log persists across
+# sections (nothing deletes /dev/shm/urnetwork.log), so a stale block from an
+# earlier RAM-logged start would otherwise satisfy the very first poll and
+# false-pass a restart that never completed. The fallback may only read once
+# the delimiter count exceeds RAMLOG_MARK; a provider that is not RAM-logging
+# never adds one, so the fallback stays inert for it and the journal governs.
 # Returns the client_id, or empty after max_wait.
 wait_client_id() {
   local after_lines="${1:-0}" max_wait="${2:-120}"
@@ -142,18 +162,24 @@ markers_snapshot() { j | awk -v n="$1" 'NR > n' | grep -oE "client_id: [0-9a-f-]
 # whole job via the CI watchdog and reports nothing; bounded, the caller's
 # own wait_client_id/assertion fails and the report says which check broke.
 restart_provider() {
-  # Snapshot the RAM-log delimiter count BEFORE the restart: wait_client_id's
-  # RAM fallback compares against this, so only a start block written by THIS
-  # restart can satisfy a wait (a stale block from an earlier RAM-logged
-  # section cannot, and a fresh block is read even if it lands before the
-  # wait call -- synchronous restarts routinely finish before it).
-  RAMLOG_MARK=$(ramlog_mark)
-  RAMLOG_MARK=${RAMLOG_MARK:-0}
-  echo $(journal_line_count)
+  # Returns the pre-restart RAM-log delimiter count and journal line count as
+  # DATA ("<ramlog_mark> <journal_mark>"): a variable assigned in here would
+  # die with this function's command-substitution subshell at every call site.
+  # Callers store it as:
+  #   __RP_OUT=<this call>; RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
+  # wait_client_id's RAM fallback compares against RAMLOG_MARK, so only a start
+  # block written by THIS restart can satisfy a wait (a stale block from an
+  # earlier RAM-logged section cannot, and a fresh block is read even if it
+  # lands before the wait call -- synchronous restarts routinely finish first).
+  local m
+  m=$(ramlog_mark)
+  m=${m:-0}
+  echo "$m $(journal_line_count)"
   timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service
 }
 
 echo "SHAKEDOWN START $(date -u +%FT%TZ)" > "$REPORT"
+gate_selftest
 # MUST-FIX 10: EXPECTED_VERSION comes from the workflow (GITHUB_REF_NAME for
 # tag-triggered runs, latest release for manual). Derive the base for the
 # version greps; align the fresh install to it so tag runs test THE TAG.
@@ -355,7 +381,7 @@ fi
 # MUST-FIX 4: the background fetcher reads sources ONCE at process start.
 # Restart the unit so the periodic fetch->probe->grade->admit loop is alive
 # (without this, only the one-shot CLI fetch ran and the loop was dead).
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "restart unit (fetcher picks up sources; client_id ${CID:0:12}…)" || bad "restart unit (no client_id)"
 run_check "both sources registered" urnet-tools summary 2>&1
@@ -487,7 +513,7 @@ N_BEFORE=$(wc -l < "$CIDS_BEFORE")
 
 # 1) hot-restart must REUSE identities: ids logged after the restart come back
 #    marked (reused) and overlap the pre-restart set.
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 wait_client_id "$MARK" 120 >/dev/null
 # wait_client_id returns on the FIRST id; settle so several proxies have
 # re-authed and the set comparison has more than one sample to work with.
@@ -505,7 +531,7 @@ fi
 # 2) Clear the persisted client-JWT cache, restart -> ids must mint NEW, and
 #    none may carry over from the previous set.
 rm -f /home/urnet/.urnetwork/.client_jwts.json
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 wait_client_id "$MARK" 120 >/dev/null
 sleep 20
 cids_since "$MARK" > "$CIDS_FRESH"
@@ -564,7 +590,7 @@ Environment="URNETWORK_HOT_RESTART=0"
 EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 # Wait for the provider to come back up before reading /proc; the returned id
 # is not the assertion here, the /proc environ check below is.
 wait_client_id "$MARK" 120 >/dev/null
@@ -585,7 +611,7 @@ L_SNAP_OFF=$(mktemp); L_SNAP_ON=$(mktemp)
 # 1) Toggle OFF + cleared cache: every identity must be freshly minted, and
 #    nothing may be reused.
 rm -f /home/urnet/.urnetwork/.client_jwts.json
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 wait_client_id "$MARK" 120 >/dev/null
 # wait_client_id returns on the FIRST id; settle so several proxies have
 # re-authed and the marker counts have more than one sample.
@@ -607,7 +633,7 @@ fi
 #    the toggle back ON must reuse those very ids.
 rm -f "$OVERRIDE_DIR/override.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 wait_client_id "$MARK" 120 >/dev/null
 sleep 20
 markers_snapshot "$MARK" > "$L_SNAP_ON"
@@ -708,7 +734,7 @@ RestartSec=10
 EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "Q: restart with 4 divergent drop-ins (client_id ${CID:0:12}…)" || bad "Q: restart with 4 divergent drop-ins produced no client_id"
 PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
@@ -758,7 +784,7 @@ r_assert_env() {
 r_restart() {
   runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
   local mark cid
-  mark=$(restart_provider)
+  __RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; mark=${__RP_OUT##* }
   cid=$(wait_client_id "$mark" 120)
   [ -n "$cid" ] || bad "R: restart after $1 produced no client_id"
 }
@@ -873,7 +899,7 @@ Environment="GOTRACEBACK=all"
 EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "S: seeded non-default settings and restarted (client_id ${CID:0:12}…)" || bad "S: seed restart produced no client_id"
 
@@ -922,7 +948,7 @@ fi
 # markers are gone (restore actually worked, not assumed).
 rm -f "$OVERRIDE_DIR/override.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "S: cleanup restart ok" || bad "S: cleanup restart produced no client_id"
 PROC_PID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
@@ -979,7 +1005,7 @@ if [ -n "$BIN_VER_REPINNED" ] && echo "$BIN_VER_REPINNED" | grep -qF "$EXPECTED_
 else
   t1bad "T: re-pin to $EXPECTED_BASE failed after fetchLatestRelease exercise (got $BIN_VER_REPINNED) -- later sections would test the wrong binary"
 fi
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "T: provider healthy on $EXPECTED_BASE after re-pin (client_id ${CID:0:12}…)" || bad "T: no client_id after re-pin restart"
 
@@ -1056,7 +1082,7 @@ if grep -q "api.bringyour.com" /etc/hosts; then
 else
   ok "U3: /etc/hosts outage block removed"
 fi
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID_U3=$(wait_client_id "$MARK" 120)
 [ -n "$CID_U3" ] && ok "U3: provider recovered after unblocking (client_id ${CID_U3:0:12}…)" || bad "U3: provider did not recover after unblocking api.bringyour.com"
 
@@ -1068,7 +1094,7 @@ CID_U3=$(wait_client_id "$MARK" 120)
 # property under test.
 rm -f "$OVERRIDE_DIR/notify.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "U: cleanup restart ok" || bad "U: cleanup restart produced no client_id"
 U_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
@@ -1129,7 +1155,7 @@ fi
 [ "$V1_RC" -eq 0 ] && ok "V1: update completed after the migration (exit 0)" || bad "V1: update did not complete after the migration (exit $V1_RC)"
 BIN_VER_V1=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "$BIN_VER_V1" | grep -qF "$V_BASE_A" && ok "V1: update landed on $V_BASE_A ($BIN_VER_V1)" || bad "V1: binary is $BIN_VER_V1 after the update, want $V_BASE_A"
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID_V1=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V1" ] && ok "V1: provider healthy after the migration restart (client_id ${CID_V1:0:12}…)" || bad "V1: no client_id after V1"
 
@@ -1164,8 +1190,13 @@ if echo "$V2_OUT" | grep -qiE "migrated .* to Type=notify"; then
 elif echo "$V2_OUT" | grep -q "Provider_Install_Linux.sh" && echo "$V2_OUT" | grep -qi "zero-downtime hotswap unavailable"; then
   ok "V2: urnet-tools declined hotswap in its OWN pre-flight, citing UNIT TYPE (ErrHotSwapUnitNotNotify)"
 else
-  echo "$V2_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
-  bad "V2: expected the unit-type self-heal (migration to Type=notify) or a clean unit-type decline; neither appeared in the update output"
+  V2_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
+  if [ "$V2_TYPE_AFTER" = "notify" ]; then
+    ok "V2: unit type self-healed to Type=notify (update message not matched; effective Type confirms)"
+  else
+    echo "$V2_OUT" | tail -8 | sed 's/^/    | /' | tee -a "$REPORT"
+    bad "V2: expected the unit-type self-heal (migration to Type=notify) or a clean unit-type decline; neither appeared (effective Type '$V2_TYPE_AFTER')"
+  fi
 fi
 sleep 3   # let any provider-side tlog line reach the journal, if present
 if j_full | awk -v n="$V2_MARK" 'NR>n' | grep -q "Running under systemd without Type=notify (NOTIFY_SOCKET unset)"; then
@@ -1186,7 +1217,7 @@ else
 fi
 BIN_VER_V2=$(/home/urnet/.local/share/urnetwork-provider/bin/urnetwork --version 2>&1 | grep -m1 -oE "v3\.23\.0-fix\.[0-9.]+" || true)
 echo "$BIN_VER_V2" | grep -qF "$V_BASE_B" && ok "V2: fallback restart landed on $V_BASE_B ($BIN_VER_V2)" || bad "V2: binary is $BIN_VER_V2 after fallback restart, want $V_BASE_B"
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID_V2=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V2" ] && ok "V2: provider healthy after unit-type decline+fallback restart (client_id ${CID_V2:0:12}…)" || bad "V2: no client_id after V2"
 
@@ -1206,13 +1237,13 @@ TimeoutStartSec=0
 EOF
 chown -R urnet:urnet /home/urnet/.config
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID_V3PRE=$(wait_client_id "$MARK" 120)
 [ -n "$CID_V3PRE" ] || bad "V3: pre-engage restart under Type=notify produced no client_id"
 V3_TYPE=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
 [ "$V3_TYPE" = "notify" ] && ok "V3: unit is Type=notify ahead of the engage test" || bad "V3: unit Type is '$V3_TYPE', want notify"
 V3_PROCID=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
-if [ -n "$V3_PROCID" ] && tr '\0' '\n' < /proc/$V3_PROCID/environ | grep -q '^NOTIFY_SOCKET='; then
+if [ -n "$V3_PROCID" ] && [ -r "/proc/$V3_PROCID/environ" ] && tr '\0' '\n' < /proc/$V3_PROCID/environ | grep -q '^NOTIFY_SOCKET='; then
   ok "V3: running provider carries NOTIFY_SOCKET (started under Type=notify) -- hotswap can engage"
 else
   bad "V3: running provider has no NOTIFY_SOCKET -- the handoff cannot engage from this state"
@@ -1240,17 +1271,24 @@ fi
 # After a hotswap the retiring parent keeps draining for up to
 # HotSwapDrainTimeout (~30s), and `pgrep | head -1` returns the OLDEST pid --
 # the parent -- so both samples read the parent and the transition looks like
-# a no-op. The systemd MainPID is the handoff target; use it as the new-process
-# signal.
-V3_PID_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)
-if [ -n "$V3_PID_BEFORE" ] && [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_BEFORE" != "$V3_PID_AFTER" ]; then
+# a no-op. The systemd MainPID is the handoff target, but it updates only once
+# systemd processes the takeover notify, so poll it (bounded) rather than
+# sampling once.
+V3_PID_AFTER=""
+V3_POLL_END=$(( $(date +%s) + 20 ))
+while [ "$(date +%s)" -lt "$V3_POLL_END" ]; do
+  V3_PID_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MainPID --value urnetwork.service 2>/dev/null)
+  if [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_AFTER" != "$V3_PID_BEFORE" ]; then break; fi
+  sleep 2
+done
+if [ -n "$V3_PID_BEFORE" ] && [ -n "$V3_PID_AFTER" ] && [ "$V3_PID_AFTER" != "0" ] && [ "$V3_PID_BEFORE" != "$V3_PID_AFTER" ]; then
   ok "V3: main PID CHANGED ($V3_PID_BEFORE -> $V3_PID_AFTER) -- a real handoff"
 else
   bad "V3: main PID did not change (before=$V3_PID_BEFORE after=$V3_PID_AFTER) -- hotswap did not engage"
 fi
 V3_MAINPID="$V3_PID_AFTER"
-if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ "$V3_MAINPID" != "$V3_PID_BEFORE" ] && tr '\0' '\n' < "/proc/$V3_MAINPID/environ" 2>/dev/null | grep -q '^NOTIFY_SOCKET='; then
-  ok "V3: systemd MainPID $V3_MAINPID is the new process and carries NOTIFY_SOCKET (handoff target runs under Type=notify)"
+if [ -n "$V3_MAINPID" ] && [ "$V3_MAINPID" != "0" ] && [ "$V3_MAINPID" != "$V3_PID_BEFORE" ] && pgrep -u urnet -f 'urnetwork provide' | grep -qx "$V3_MAINPID" && [ -r "/proc/$V3_MAINPID/environ" ] && tr '\0' '\n' < "/proc/$V3_MAINPID/environ" | grep -q '^NOTIFY_SOCKET='; then
+  ok "V3: systemd MainPID $V3_MAINPID is a live provider process and carries NOTIFY_SOCKET (handoff target runs under Type=notify)"
 else
   bad "V3: systemd MainPID '$V3_MAINPID' does not look like the new notify-capable process (before=$V3_PID_BEFORE)"
 fi
@@ -1293,8 +1331,10 @@ runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --use
 # refusal.
 V_DRAIN_END=$(( $(date +%s) + 60 ))
 while [ "$(pgrep -u urnet -f 'urnetwork provide' | wc -l)" -gt 1 ] && [ "$(date +%s)" -lt "$V_DRAIN_END" ]; do sleep 3; done
+V_REMAIN=$(pgrep -u urnet -f 'urnetwork provide' | wc -l)
+[ "$V_REMAIN" -gt 1 ] && bad "V: hotswap parent drain did not finish within 60s ($V_REMAIN provider processes remain) -- drain should end within HotSwapDrainTimeout (30s)"
 run_check "V: re-pin to $EXPECTED_VERSION after the hotswap battery" timeout 300 urnet-tools update --tag "$EXPECTED_VERSION" -f 2>&1
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "V: cleanup restart ok" || bad "V: cleanup restart produced no client_id"
 V_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
@@ -1329,7 +1369,7 @@ else
   bad "W1 (T1): pending_overrides.json round-trip failed or file is not valid JSON"
 fi
 rm -f /tmp/w1.expected /tmp/w1.out
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W1: provider started fine after consuming the escaped value" || bad "W1: provider did not start after consuming the escaped value"
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && bad "W1: pending_overrides.json not consumed/removed after start" || ok "W1: pending_overrides.json consumed on start"
@@ -1348,7 +1388,7 @@ if runuser -u urnet -- test -r /home/urnet/.urnetwork/pending_overrides.json; th
 else
   bad "W2 (T2): urnet CANNOT read the queue file written as root ($Q_OWNER)"
 fi
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W2: provider started and consumed the root-queued override" || bad "W2: provider did not start after root-queued override"
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && bad "W2: root-queued override not consumed" || ok "W2: root-queued override consumed on start"
@@ -1387,7 +1427,7 @@ if [ -n "$W4_PID_BEFORE" ]; then
   sleep 2
 fi
 [ -S /home/urnet/.urnetwork/provider.sock ] && echo "  provider.sock is stale (process gone, socket file remains)" | tee -a "$REPORT"
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 W4_PID_AFTER=$(pgrep -u urnet -f 'urnetwork provide' | head -1)
 if [ -n "$CID" ] && [ -n "$W4_PID_AFTER" ] && [ "$W4_PID_AFTER" != "$W4_PID_BEFORE" ]; then
@@ -1418,7 +1458,7 @@ else
   bad "W5 (T5): concurrent 'set' calls lost an update or corrupted the queue file"
 fi
 rm -f /tmp/w5-*.out /home/urnet/.urnetwork/pending_overrides.json
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W5: provider healthy after concurrent-writer test" || bad "W5: provider not healthy after concurrent-writer test"
 
@@ -1451,7 +1491,7 @@ rm -f /home/urnet/.urnetwork/pending_overrides.json
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && bad "W7 (T7): setup failed, queue file still present" || ok "W7 (T7): confirmed queue file absent before the toggle"
 run_check "W7 (T7): set on a provider with no queue file yet" urnet-tools set -y node-name "fresh-state-w7" 2>&1
 [ -f /home/urnet/.urnetwork/pending_overrides.json ] && ok "W7 (T7): pending_overrides.json CREATED by the toggle (not assumed pre-existing)" || bad "W7 (T7): pending_overrides.json was not created"
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W7: provider started and applied the fresh-state toggle" || bad "W7: provider did not start after the fresh-state toggle"
 
@@ -1515,7 +1555,7 @@ done
 # the installed binary, so it is not necessarily "simple").
 rm -f "$OVERRIDE_DIR/w8-type.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "W: cleanup restart ok after failure injection battery" || bad "W: cleanup restart produced no client_id"
 W_TYPE_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p Type --value urnetwork.service 2>/dev/null)
@@ -1622,7 +1662,7 @@ fi
 # later section may inherit it.
 rm -f "$OVERRIDE_DIR/memtest.conf"
 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user daemon-reload
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID=$(wait_client_id "$MARK" 120)
 [ -n "$CID" ] && ok "X: cleanup restart ok" || bad "X: cleanup restart produced no client_id"
 X_MEMORYMAX_AFTER=$(runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user show -p MemoryMax --value urnetwork.service 2>/dev/null)
@@ -1631,6 +1671,9 @@ if [ "$X_MEMORYMAX_AFTER" = "$X_ORIG_MEMORYMAX" ] || [ "$X_MEMORYMAX_AFTER" = "i
 else
   bad "X: MemoryMax still constrained after cleanup ($X_MEMORYMAX_AFTER, want infinity/$X_ORIG_MEMORYMAX)"
 fi
+# Clear the mark so no later bare wait can treat X's lowmem delimiter as
+# fresh; restart_provider refreshes it before every subsequent restart anyway.
+RAMLOG_MARK=""
 
 # ---------- Y. Large proxy list ----------
 section "Y. Large proxy list (thousands of entries)"
@@ -1808,7 +1851,7 @@ section "PHASE 2 START: long observation window"
 # restart below resets StartedAt, and NO further restarts happen until the
 # remove-dead call at the end (~110m in). Seed the blackhole NOW so the
 # reaper has the whole window to accumulate failed cycles.
-MARK=$(restart_provider)
+__RP_OUT=$(restart_provider); RAMLOG_MARK=${__RP_OUT%% *}; MARK=${__RP_OUT##* }
 CID_P2=$(wait_client_id "$MARK" 120)
 [ -n "$CID_P2" ] && ok "Phase 2 final restart (client_id ${CID_P2:0:12}…, uptime clock reset)" || bad "Phase 2 restart produced no client_id"
 printf '192.0.2.1:9\n8.8.8.8:443\n' > /tmp/rd-proxies.txt
