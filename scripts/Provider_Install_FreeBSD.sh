@@ -103,13 +103,23 @@ enable_service() {
 # into the file.
 
 write_rc_script() {
-    write_rc_script_body > "$rc_script"
+    write_rc_script_body "${1:-${SUDO_USER:-$USER}}" > "$rc_script"
     chmod 755 "$rc_script"
 }
 
-# write_rc_script_body emits the rc.d script on stdout so it can be piped to
-# `sudo tee` without a second copy of the template drifting.
+# write_rc_script_body [user] emits the rc.d script on stdout so it can be piped
+# to `sudo tee` without a second copy of the template drifting.
+#
+# $1 is the account the provider runs as. It defaults to the invoking user, but
+# the caller must pass the resolved SUDO_USER-derived name: under sudo, $USER is
+# commonly "root", and a service that runs the internet-facing relay as root is
+# exactly what this must not produce.
+#
+# Paths are quoted in every command that interpolates them, because an install
+# under a home directory containing a space would otherwise break `cd` and
+# `su -c` at boot.
 write_rc_script_body() {
+    run_user="${1:-${SUDO_USER:-$USER}}"
     cat <<RCSCRIPT
 #!/bin/sh
 #
@@ -119,7 +129,7 @@ write_rc_script_body() {
 #
 # rc.conf knobs:
 #   ${service_name}_enable="YES"   start at boot (set by urnet-tools auto-start)
-#   ${service_name}_user="$USER"   run as this user
+#   ${service_name}_user="$run_user"   run as this user
 #   ${service_name}_flags=""       extra flags for the provider
 
 . /etc/rc.subr
@@ -128,13 +138,13 @@ name="$service_name"
 rcvar=${service_name}_enable
 
 : \$${service_name}_enable="NO"
-: \$${service_name}_user="$USER"
+: \$${service_name}_user="$run_user"
 : \$${service_name}_flags=""
 
 load_rc_config \$name
 
 : \${${service_name}_enable:="NO"}
-: \${${service_name}_user:="$USER"}
+: \${${service_name}_user:="$run_user"}
 : \${${service_name}_flags:=""}
 
 start_cmd="${service_name}_start"
@@ -142,19 +152,196 @@ stop_cmd="${service_name}_stop"
 
 ${service_name}_start()
 {
-    cd $HOME || return 1
+    cd "$HOME" || return 1
     echo "Starting $service_name."
-    su -m \${${service_name}_user} -c "$provider_bin provide \$${service_name}_flags"
+    su -m \${${service_name}_user} -c "'$provider_bin' provide \$${service_name}_flags"
 }
 
 ${service_name}_stop()
 {
     echo "Stopping $service_name."
-    pkill -TERM -f $provider_bin
+    # Match the provider's own exec name, not the whole command line: a
+    # -f pattern containing the binary path also matches urnet-tools, cron and
+    # anything else that merely mentions the path, so stopping the service
+    # would kill unrelated processes.
+    pkill -TERM -x "$(basename "$provider_bin")" 2>/dev/null || \
+        pkill -TERM -f "^$provider_bin provide"
 }
 
 run_rc_command "\$1"
 RCSCRIPT
+}
+
+do_install() {
+    version="${1:-latest}"
+
+    if [ "$version" = "latest" ]; then
+        release_url="$github_api/releases/latest"
+    else
+        release_url="$github_api/releases/tags/$version"
+    fi
+
+    pr_info "Fetching release info..."
+    release_json="$(curl -fsSL "$release_url" 2>/dev/null)"
+    tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
+
+    # GitHub API failed or rate-limited: for an explicit version we can trust
+    # the caller's tag directly; for "latest" fall back to the dl.fullbars.xyz
+    # Worker, which mirrors GitHub's latest-release tag at the edge.
+    if [ -z "$tag" ]; then
+        if [ "$version" != "latest" ]; then
+            tag="$version"
+        else
+            pr_warn "Trying dl.fullbars.xyz fallback..."
+            tag="$(curl -fsSL "https://dl.fullbars.xyz/latest-version" 2>/dev/null | tr -d '[:space:]')"
+        fi
+    fi
+
+    if [ -z "$tag" ]; then
+        pr_err "Could not fetch release info from %s" "$release_url"
+        exit 1
+    fi
+
+    arch="$(uname -m)"
+    case "$arch" in
+        amd64|x86_64)  goarch="amd64" ;;
+        arm64|aarch64) goarch="arm64" ;;
+        *)             pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
+    esac
+
+    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    pr_info "Downloading %s..." "$tarball_url"
+
+    tmpdir="$(mktemp -d)"
+    if ! curl -fsSL "$tarball_url" -o "$tmpdir/provider.tar.gz"; then
+        pr_warn "Primary download failed, trying GitHub mirror..."
+        if ! curl -fsSL "$mirror_url" -o "$tmpdir/provider.tar.gz"; then
+            pr_err "Failed to download from both primary and mirror"
+            rm -rf "$tmpdir"
+            exit 1
+        fi
+    fi
+
+    tar -xzf "$tmpdir/provider.tar.gz" -C "$tmpdir" || {
+        pr_err "Extract failed"
+        rm -rf "$tmpdir"
+        exit 1
+    }
+
+    provider_src="$tmpdir/freebsd/$goarch/provider"
+    if [ ! -f "$provider_src" ]; then
+        pr_err "FreeBSD/%s binary not found in release tarball" "$goarch"
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+
+    mkdir -p "$install_path/bin"
+    cp "$provider_src" "$provider_bin" || { pr_err "Failed to install binary"; rm -rf "$tmpdir"; exit 1; }
+    chmod 755 "$provider_bin"
+
+    echo "$tag" > "$install_path/version"
+
+    # Install the tool: the Go urnet-tools binary shipped as a release asset,
+    # digest-verified; fall back to this shell script for releases that
+    # predate the Go asset.
+    tool_asset="urnet-tools-freebsd-$goarch"
+    tool_digest=""
+    if command -v jq > /dev/null 2>&1; then
+        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | jq -r --arg a "$tool_asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://' || true)"
+    elif command -v python3 > /dev/null 2>&1; then
+        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((a.get("digest","").replace("sha256:","") for a in d.get("assets",[]) if a.get("name")==sys.argv[1]), ""))' "$tool_asset" 2>/dev/null || true)"
+    fi
+
+    if [ -n "$tool_digest" ]; then
+        if curl -fsSL "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" -o "$tmpdir/$tool_asset" 2>/dev/null; then
+            # FreeBSD ships sha256(1); fall back to openssl where it is absent.
+            if command -v sha256 > /dev/null 2>&1; then
+                actual="$(sha256 -q "$tmpdir/$tool_asset")"
+            elif command -v openssl > /dev/null 2>&1; then
+                actual="$(openssl dgst -sha256 "$tmpdir/$tool_asset" | awk '{print $NF}')"
+            else
+                actual=""
+            fi
+            if [ -n "$actual" ] && [ "$actual" = "$tool_digest" ]; then
+                mv -f "$tmpdir/$tool_asset" "$install_path/bin/urnet-tools"
+                chmod 755 "$install_path/bin/urnet-tools"
+            else
+                pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
+                curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+                chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+            fi
+        else
+            pr_warn "urnet-tools download failed, falling back to shell wrapper"
+            curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+            chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+        fi
+    else
+        curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$install_path/bin/urnet-tools" 2>/dev/null || true
+        chmod 755 "$install_path/bin/urnet-tools" 2>/dev/null || true
+    fi
+
+    # The rc.d script and rc.conf are ROOT-owned, but the provider itself must
+    # NOT run as root: under `sudo`, $USER is often "root", which would install
+    # a service that runs the internet-facing relay as root. SUDO_USER is the
+    # account that actually invoked sudo; fall back to $USER when it is unset
+    # (a plain root login).
+    service_user="${SUDO_USER:-$USER}"
+    if [ "$service_user" = "root" ] && [ -n "${SUDO_USER:-}" ]; then
+        service_user="$SUDO_USER"
+    fi
+
+    if [ "$(id -u)" != "0" ]; then
+        pr_info "Installing the rc.d service requires root; re-running that step with sudo..."
+        if command -v sudo > /dev/null 2>&1; then
+            sudo mkdir -p "$(dirname "$rc_script")"
+            sudo tee "$rc_script" > /dev/null <<RCSCRIPT
+$(write_rc_script_body "$service_user")
+RCSCRIPT
+            sudo chmod 755 "$rc_script"
+            sudo sysrc "$service_name"_enable=YES
+            sudo sysrc "$service_name"_user="$service_user"
+        else
+            pr_warn "sudo not found. Install the service manually:"
+            pr_warn "  sudo mkdir -p /usr/local/etc/rc.d"
+            pr_warn "  sudo %s install-service" "$me"
+        fi
+    else
+        mkdir -p "$(dirname "$rc_script")"
+        write_rc_script_body "$service_user" > "$rc_script"
+        chmod 755 "$rc_script"
+        sysrc "$service_name"_enable=YES
+        sysrc "$service_name"_user="$service_user"
+    fi
+
+    unload_service
+    load_service
+
+    if ! echo "$PATH" | tr ':' '\n' | grep -qxF "$install_path/bin"; then
+        shell_rc="$HOME/.profile"
+        case "$SHELL" in
+            */zsh)  shell_rc="$HOME/.zshrc" ;;
+            */bash) shell_rc="$HOME/.bash_profile" ;;
+            */tcsh) shell_rc="$HOME/.cshrc" ;;
+        esac
+        if [ -n "$shell_rc" ]; then
+            case "$SHELL" in
+                */tcsh) echo "setenv PATH $install_path/bin:\$PATH" >> "$shell_rc" ;;
+                *)      echo "export PATH=\"$install_path/bin:\$PATH\"" >> "$shell_rc" ;;
+            esac
+            pr_info "Added %s to PATH in %s" "$install_path/bin" "$shell_rc"
+        fi
+    fi
+
+    rm -rf "$tmpdir"
+
+    pr_info "URnetwork provider %s installed" "$tag"
+    pr_info "  Binary:  %s" "$provider_bin"
+    pr_info "  Service: %s" "$rc_script"
+    pr_info "  Data:    %s" "$state_dir"
+    pr_info ""
+    pr_info "Commands:  urnet-tools start|stop|restart|status|hot-restart|session|proxy"
+    pr_info "Restart your terminal or run 'hash -r' for urnet-tools to be found"
 }
 
 do_install_service() {
@@ -162,11 +349,15 @@ do_install_service() {
         pr_err "install-service needs root: sudo %s install-service" "$me"
         exit 1
     fi
+    # Under sudo, $USER is usually "root"; SUDO_USER is who actually invoked
+    # it. Running the provider as root because a bootstrap was run with sudo
+    # would be a privilege escalation the operator never asked for.
+    service_user="${SUDO_USER:-$USER}"
     mkdir -p "$(dirname "$rc_script")"
-    write_rc_script
+    write_rc_script "$service_user"
     sysrc "$service_name"_enable=YES
-    sysrc "$service_name"_user="$USER"
-    pr_info "Service installed at %s" "$rc_script"
+    sysrc "$service_name"_user="$service_user"
+    pr_info "Service installed at %s (runs as %s)" "$rc_script" "$service_user"
 }
 
 # --- runtime commands ---

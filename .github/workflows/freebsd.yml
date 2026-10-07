@@ -14,6 +14,9 @@ on:
 # pull request, so a branch-scoped push would only duplicate the pull_request
 # run. cancel-in-progress supersedes rapid pushes to a PR rather than stacking
 # them; main's runs finish.
+permissions:
+  contents: read
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
@@ -28,6 +31,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # The job only reads the repository; a persisted token in .git/config
+          # would otherwise be available to every step, including the ones that
+          # exec into the VM.
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -306,9 +314,16 @@ jobs:
               '  return 0;' \
               '}' > /tmp/xucred_test.c
             if command -v cc >/dev/null 2>&1; then
-              cc -o /tmp/xucred_test /tmp/xucred_test.c && /tmp/xucred_test || echo "NOTE: LOCAL_PEERCRED test failed"
+              # Hard failure: peercred_freebsd.go depends on this option, and a
+              # silent note here would leave the control socket relying on file
+              # permissions with nothing reporting it.
+              if ! { cc -o /tmp/xucred_test /tmp/xucred_test.c && /tmp/xucred_test; }; then
+                echo "FATAL: LOCAL_PEERCRED is not available on this kernel"
+                exit 1
+              fi
             else
-              echo "NOTE: no cc on the image; LOCAL_PEERCRED asserted by headers only"
+              echo "FATAL: no cc on the image, cannot verify LOCAL_PEERCRED"
+              exit 1
             fi
 
             echo "=== provider actually starts under a real kernel ==="
@@ -320,7 +335,7 @@ jobs:
 
       - name: Go test suite on FreeBSD (native toolchain)
         id: gotest
-        uses: vmactions/freebsd-vm@v1
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
         with:
           release: "14.5"
           mem: 6144

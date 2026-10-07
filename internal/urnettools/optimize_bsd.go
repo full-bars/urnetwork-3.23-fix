@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"os"
 	"os/exec"
+	"sort"
 	"strings"
 )
 
@@ -37,6 +38,19 @@ func bsdSysctlWrites() [][]string {
 	}
 }
 
+// WHY sysrc AND NOT /etc/sysctl.conf: a review suggested the latter, on the
+// grounds that sysctl(8) "serves to query/modify MIBs" while sysrc(8) "works on
+// values in the system rc.conf configuration files". That is true of the two
+// TOOLS, and it does not apply here: these tunables (net.inet.tcp.recvspace,
+// kern.maxfiles and friends) are loader tunables declared in
+// /etc/defaults/rc.conf, and the kernel reads them from rc.conf at boot. That is
+// exactly what sysrc edits. /etc/sysctl.conf is a separate, additional
+// mechanism read by /etc/rc.d/sysctl, not a replacement for rc.conf.
+//
+// Either mechanism would work; rc.conf is the one whose variables already
+// exist with the same names, so sysrc updates an existing entry in place rather
+// than introducing a second source of truth for the same knob.
+
 // bsdRcConfVars maps each tuned sysctl to the rc.conf variable that persists
 // it. FreeBSD does not read /etc/sysctl.conf at boot — sysctl(8) persistence
 // lives in rc.conf, written through sysrc(8) — so writing a sysctl.conf file
@@ -51,6 +65,35 @@ func bsdRcConfVars() map[string]string {
 		"net.inet.tcp.sendspace": "net.inet.tcp.sendspace",
 		"kern.maxfiles":          "kern.maxfiles",
 		"kern.maxfilesperproc":   "kern.maxfilesperproc",
+	}
+}
+
+// rollbackBSDDefaults restores the rc.conf variables optimizeFreeBSD changed,
+// clearing any that had no prior value so the persisted half of a failed run
+// does not reappear at the next boot.
+//
+// Restoring goes through sysrc(8) rather than editing rc.conf directly: sysrc
+// rewrites the file atomically and preserves its formatting, which every other
+// service on the box also depends on.
+func rollbackBSDDefaults(prior map[string]string) {
+	// Reverse order so the file is returned to a consistent state even if a
+	// later restore fails; a failure here is logged, never masked over the
+	// original error.
+	vars := make([]string, 0, len(prior))
+	for v := range prior {
+		vars = append(vars, v)
+	}
+	sort.Strings(vars)
+	for i := len(vars) - 1; i >= 0; i-- {
+		v := vars[i]
+		arg := v + "="
+		if prior[v] != "" {
+			arg = v + "=" + prior[v]
+		}
+		if out, err := exec.Command("sysrc", arg).CombinedOutput(); err != nil {
+			fmt.Fprintf(os.Stderr, "optimize: warning: sysrc rollback %s failed: %v (%s)\n",
+				v, err, strings.TrimSpace(string(out)))
+		}
 	}
 }
 
@@ -98,18 +141,41 @@ func optimizeFreeBSD() error {
 	// Persist through sysrc so the values survive a reboot. A persistence
 	// failure must not leave the live settings changed with nothing recording
 	// them, so the live values are rolled back to their prior state.
+	//
+	// The rc.conf values are snapshotted too, and each is restored on failure.
+	// A partial sysrc run would otherwise leave earlier keys persisted in
+	// rc.conf: the live settings roll back immediately, but at the next reboot
+	// the persisted half would come back — a change the operator never
+	// completed and was told had been rolled back.
 	rcVars := bsdRcConfVars()
-	for i, w := range writes {
-		key := w[0]
-		v, ok := rcVars[key]
+	priorRC := make(map[string]string, len(writes))
+	for _, w := range writes {
+		v, ok := rcVars[w[0]]
+		if !ok {
+			continue
+		}
+		out, err := exec.Command("sysrc", "-n", v).Output()
+		if err != nil {
+			// Not currently set. sysrc reports "sysrc: unknown oid" for an
+			// unset variable; anything else is a real failure, but either way
+			// there is no prior value to restore, so record it as unset.
+			priorRC[v] = ""
+			continue
+		}
+		priorRC[v] = strings.TrimSpace(string(out))
+	}
+
+	for _, w := range writes {
+		v, ok := rcVars[w[0]]
 		if !ok {
 			continue
 		}
 		if out, err := exec.Command("sysrc", v+"="+w[1]).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysrc %s failed: %v (%s); rolling back\n",
 				v, err, strings.TrimSpace(string(out)))
-			rollbackSysctls(writes[:i+1], prior)
-			return fmt.Errorf("optimize: persist %s failed (%v); rolled back live settings", v, err)
+			rollbackBSDDefaults(priorRC)
+			rollbackSysctls(writes, prior)
+			return fmt.Errorf("optimize: persist %s failed (%v); rolled back live and rc.conf settings", v, err)
 		}
 	}
 

@@ -21,17 +21,22 @@ func TestVerifyPeerCredentialsAcceptsSameUID(t *testing.T) {
 	}
 	defer ln.Close()
 
-	done := make(chan struct{})
+	// Two separate channels: `release` is closed exactly once by the test to
+	// let the client exit, while a failed dial must not close it — the test's
+	// deferred close would then panic on an already-closed channel and hide the
+	// real failure. A failed dial instead closes the listener, which unblocks
+	// Accept so the test cannot hang.
+	release := make(chan struct{})
 	go func() {
 		c, err := net.Dial("unix", path)
 		if err != nil {
-			close(done)
+			ln.Close() // unblock Accept rather than leaving it hanging
 			return
 		}
 		defer c.Close()
-		<-done
+		<-release
 	}()
-	defer close(done)
+	defer close(release)
 
 	conn, err := ln.Accept()
 	if err != nil {

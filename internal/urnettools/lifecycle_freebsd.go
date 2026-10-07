@@ -97,10 +97,6 @@ func cleanupLifecycle(p Provider) {
 	_ = removeBSDUpdateCron(p)
 }
 
-// bsdCronMarker tags every line this tool writes so a schedule change can
-// remove its own lines without touching anything else in the crontab.
-const bsdCronMarker = "# urnet-tools auto-update"
-
 // bsdLogDir is where the unattended update log is written: the provider's state
 // dir, which the invoking user owns. It falls back to /var/tmp only when the
 // home cannot be resolved, since /var/tmp is world-writable.
@@ -124,7 +120,7 @@ func writeBSDUpdateCron(p Provider, line string) error {
 	}
 	kept := make([]string, 0, len(existing)+1)
 	for _, l := range existing {
-		if !strings.Contains(l, bsdCronMarker+" "+service) {
+		if !matchBSDCronLine(l, service) {
 			kept = append(kept, l)
 		}
 	}
@@ -142,7 +138,7 @@ func removeBSDUpdateCron(p Provider) error {
 	}
 	kept := make([]string, 0, len(existing))
 	for _, l := range existing {
-		if strings.Contains(l, bsdCronMarker+" "+service) {
+		if matchBSDCronLine(l, service) {
 			continue
 		}
 		kept = append(kept, l)

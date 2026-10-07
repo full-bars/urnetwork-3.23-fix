@@ -48,15 +48,20 @@ stop_cmd="%[1]s_stop"
 
 %[1]s_start()
 {
-    cd %[3]s || return 1
+    cd "%[3]s" || return 1
     echo "Starting %[1]s."
-    su -m ${%[1]s_user} -c "%[4]s provide $%[1]s_flags"
+    su -m ${%[1]s_user} -c "'%[4]s' provide $%[1]s_flags"
 }
 
 %[1]s_stop()
 {
     echo "Stopping %[1]s."
-    pkill -TERM -f %[4]s
+    # Match the provider's own exec name, not the whole command line: a -f
+    # pattern containing the binary path also matches urnet-tools, cron and
+    # anything else that merely mentions the path, so stopping the service
+    # would kill unrelated processes.
+    pkill -TERM -x "$(basename "%[4]s")" 2>/dev/null || \
+        pkill -TERM -f "^%[4]s provide"
 }
 
 run_rc_command "$1"
