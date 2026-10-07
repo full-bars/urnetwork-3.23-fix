@@ -75,6 +75,18 @@ type Provider struct {
 	NetworkID string
 	// JWTExpires is the JWT exp claim (zero when absent/unparseable).
 	JWTExpires time.Time
+
+	// Supervisor names the init system that owns a STOPPED provider: "openrc"
+	// when the service was found from /etc/init.d/urnetwork, "systemd" when it
+	// came from a unit. Empty means the provider was seen as a running process
+	// with no owning unit, i.e. a bare/manual launch.
+	//
+	// This exists because Unit == "" is overloaded: it means both "bare
+	// process" and, before this field, would have had to double for "the
+	// OpenRC service". Cleanup and routing must not confuse the two — the
+	// difference decides whether `uninstall` may remove the system service,
+	// which must never happen for an unrelated bare provider.
+	Supervisor string
 }
 
 // netLabel returns the provider's network identity for display, or

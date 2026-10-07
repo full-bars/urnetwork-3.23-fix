@@ -1741,13 +1741,33 @@ func runProfitHeartbeat(ctx context.Context) {
 		var billable uint64
 		var clients int64
 		var serving int
-		for _, p := range bw {
+		// directUp tracks the native [direct] identity separately. It is a
+		// real transport that earns, but it is NOT a proxy: counting it in
+		// proxies_up made a direct-only box read as "1 proxy up, earning",
+		// which is the number an operator (or an alert keyed on proxies_up)
+		// would take at face value. Report true proxies only, and say which
+		// mode the node is in via mode=.
+		directUp := false
+		for addr, p := range bw {
 			billable += p.BillableRx.Load() + p.BillableTx.Load()
 			pc := p.Clients.Load()
 			clients += pc
+			if isDirectAddr(addr) {
+				directUp = true
+				if pc > 0 {
+					serving++
+				}
+				continue
+			}
 			if pc > 0 {
 				serving++
 			}
+		}
+		// proxiesUp counted the direct identity too; subtract it so the field
+		// means "proxies actually running".
+		proxiesOnly := proxiesUp
+		if directUp && proxiesOnly > 0 {
+			proxiesOnly--
 		}
 
 		now := time.Now()
@@ -1787,7 +1807,7 @@ func runProfitHeartbeat(ctx context.Context) {
 			if earning {
 				status = "yes"
 			}
-			idle := proxiesUp - serving
+			idle := proxiesOnly - serving
 			if idle < 0 {
 				idle = 0
 			}
@@ -1795,7 +1815,9 @@ func runProfitHeartbeat(ctx context.Context) {
 			// quiet provider mid-ramp reports reason=warmup rather than a
 			// false "idle"/"no_traffic". Mirrors paceMonitor's done threshold.
 			warmup := len(connecting) >= 5
-			reason := earningReason(earning, proxiesUp, clients, warmup)
+			reason := earningReason(earning, proxiesOnly, clients, warmup)
+			mode := earningMode(directUp, proxiesOnly)
+			modeNote := profitModeNote(mode, proxiesOnly)
 			profitEmoji := ""
 			if status == "yes" {
 				profitEmoji = "💰 "
@@ -1809,8 +1831,12 @@ func runProfitHeartbeat(ctx context.Context) {
 				}
 				contractFields = fmt.Sprintf(" contracts=%d denied=%d avg_util=%d%%", acquired, denied, avgUtil)
 			}
-			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s\n",
-				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle, contractFields)
+			// mode= is the stable, greppable field (direct|proxies|mixed);
+			// modeNote is a human tail that only appears when there is
+			// something non-obvious to say, so a healthy earning pool stays a
+			// clean one-line record.
+			tlog("%s[profit] earning=%s reason=%s mode=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s%s\n",
+				profitEmoji, status, reason, mode, clients, fmtRate(float64(delta)/elapsed), proxiesOnly, serving, idle, contractFields, modeNote)
 			lastLogTime = now
 		}
 	}
@@ -3729,7 +3755,7 @@ func provide(opts docopt.Opts) {
 		platformSettings := platformTransportSettingsFor(proxySettings, isNative)
 		if platformSettings.EnableH3 {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
-				onOff(resolveH3(globalControlState)))
+				onOff(resolveH3Setting(globalControlState, currentProxyResolution())))
 		}
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.

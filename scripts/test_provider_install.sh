@@ -465,6 +465,118 @@ else
     test_openrc_uninstall_missing_dir_still_tears_down_service
 fi
 
+# --- TEST: portable wget flags (BusyBox portability) ---
+# The installer used to pass GNU-only wget flags unconditionally. BusyBox wget
+# rejects --connect-timeout (it spells that -T SEC) and may lack
+# --retry-connrefused, so on Alpine every download died with "unrecognized
+# option" before reaching the network. An intermediate revision then "fixed"
+# that by probing the real binary per flag, which could stall for minutes on GNU
+# wget and wrote index.html into the cwd when something listened on port 80.
+#
+# These tests pin the CURRENT contract: only flags both implementations accept,
+# and retries in the shell. A fake wget records the argv so the assertions are
+# about what we actually pass — the real BusyBox behavior is covered by the
+# container smoke, which runs the installer for real.
+test_wget_passes_only_portable_flags() {
+    local fakebin tmpd argv_out
+    tmpd="$(mktemp -d)"
+    fakebin="$tmpd/bin"
+    mkdir -p "$fakebin"
+
+    # Records argv, then behaves like a successful download.
+    cat > "$fakebin/wget" <<'WGETEOF'
+#!/bin/sh
+echo "ARGV: $*" >> "$WGET_ARGV_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-O" ]; then out="$arg"; fi
+    prev="$arg"
+done
+[ -n "$out" ] && : > "$out"
+exit 0
+WGETEOF
+    chmod +x "$fakebin/wget"
+
+    WGET_ARGV_LOG="$tmpd/argv.log" PATH="$fakebin:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        wget_retry_download "https://example.invalid/x.tar.gz" "'"$tmpd"'/out.bin"
+    ' >/dev/null 2>&1
+
+    argv_out="$(cat "$tmpd/argv.log" 2>/dev/null)"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--connect-timeout')" "must not pass GNU-only --connect-timeout"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--retry-connrefused')" "must not pass --retry-connrefused"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--tries')" "retries belong in the shell, not in wget flags"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--waitretry')" "must not pass --waitretry"
+    assert_eq "1" "$(echo "$argv_out" | grep -c -- '-T 10')" "must pass the portable -T 10"
+    rm -rf "$tmpd"
+}
+
+# The probe-free design must never touch the network to decide flags: only the
+# FORCE_IPV4 path reads wget --help, and it must use the GNU spelling.
+test_wget_v4_flag_is_help_gated() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+
+    # No --inet4-only in help => no -4 flag even when FORCE_IPV4 is set.
+    cat > "$tmpd/wget" <<'WGETEOF'
+#!/bin/sh
+echo "no inet4 here"
+exit 0
+WGETEOF
+    chmod +x "$tmpd/wget"
+
+    out="$(PATH="$tmpd:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        FORCE_IPV4=1
+        wget_common_opts
+    ' 2>/dev/null)"
+    assert_eq "0" "$(echo "$out" | grep -c -- '-4')" "no -4 when wget advertises no inet4-only support"
+    assert_eq "1" "$(echo "$out" | grep -c -- '-T 10')" "-T 10 always present"
+
+    # --inet4-only advertised => the flag is used.
+    cat > "$tmpd/wget" <<'WGETEOF'
+#!/bin/sh
+echo "  --inet4-only    Use IPv4 only"
+exit 0
+WGETEOF
+    chmod +x "$tmpd/wget"
+    out="$(PATH="$tmpd:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        FORCE_IPV4=1
+        wget_common_opts
+    ' 2>/dev/null)"
+    assert_eq "1" "$(echo "$out" | grep -c -- '--inet4-only')" "--inet4-only used when advertised"
+    rm -rf "$tmpd"
+}
+
+# A failing download must be retried by the shell loop, then give up.
+test_wget_retries_then_gives_up() {
+    local fakebin tmpd count
+    tmpd="$(mktemp -d)"
+    fakebin="$tmpd/bin"
+    mkdir -p "$fakebin"
+
+    cat > "$fakebin/wget" <<'WGETEOF'
+#!/bin/sh
+echo "x" >> "$WGET_COUNT_FILE"
+exit 1
+WGETEOF
+    chmod +x "$fakebin/wget"
+
+    count="$(WGET_COUNT_FILE="$tmpd/count" PATH="$fakebin:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        wget_retry_download "https://example.invalid/x" "'"$tmpd"'/out.bin" || echo FAILED
+    ' 2>/dev/null)"
+    assert_eq "3" "$(cat "$tmpd/count" | wc -l | tr -d ' ')" "exactly 3 attempts before giving up"
+    assert_eq "1" "$(echo "$count" | grep -c 'FAILED')" "reports failure after retries exhausted"
+    rm -rf "$tmpd"
+}
+
+test_wget_passes_only_portable_flags
+test_wget_v4_flag_is_help_gated
+test_wget_retries_then_gives_up
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"

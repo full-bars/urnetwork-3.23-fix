@@ -177,16 +177,21 @@ var systemdTimerDisableFn = func(args ...string) error {
 // cleanupLifecycle on Unix disables the auto-update timer. The unit disable
 // in cmdUninstall handles the service, but the <unit>-update.timer would
 // keep firing for a provider that is gone (heavyweight review S7). On an
-// OpenRC host there is no systemd timer: the service, its rc-update entry,
-// the init script and the periodic auto-update entry are cleaned instead.
+// OpenRC host the cleanup is TARGET-AWARE: the service artifacts are removed
+// only when the uninstall targets the service's own supervised provider (or
+// no service exists at all, in which case only the periodic entry — which is
+// not service-bound — is swept). Uninstalling a bare provider while the
+// service is installed must leave the service untouched.
 func cleanupLifecycle(p Provider) {
 	if openrcActive() {
-		// The periodic auto-update entry can exist without the init script
-		// (auto-update does not require the service), so it is swept
-		// whenever OpenRC is active; the service cleanup only when installed.
-		openrcCleanupCronEntries()
-		if openrcServiceInstalled() {
-			openrcCleanupService()
+		switch {
+		case p.Unit == "" && providerSupervisedByOpenRCFn(p):
+			// The service's own supervised provider: full cleanup.
+			openrcCleanup()
+		case !openrcServiceInstalled():
+			// No service exists; the periodic auto-update entry (not
+			// service-bound) still must not outlive the install.
+			openrcCleanupCronEntries()
 		}
 		// Fall through: a provider that ALSO has a systemd unit (migration
 		// edge) must still get that unit's timer disabled below. The normal

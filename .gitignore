@@ -35,3 +35,10 @@ review-egg-dsflash-v2.md
 fake-provider
 cov.html
 cov.out
+
+# local review artifacts (Sonnet/Gemini advisor output, raw streams)
+ADVICE-*.md
+ADVICE-REQUEST.md
+raw-advice.jsonl
+live-advice.log
+FINDINGS-*.md

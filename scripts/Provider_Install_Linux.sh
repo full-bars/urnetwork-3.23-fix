@@ -100,7 +100,19 @@ has_openrc=0
 no_modify_bashrc=0
 update_timer_oncalendar="Sun *-*-* 00:00:00 UTC"
 
-api_base="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
+# Release endpoints. Overridable so a test harness can serve the build under
+# test (a branch build, a staged release) instead of whatever happens to be
+# published — without that, any automated run of this installer exercises the
+# last PUBLISHED release, never the code being changed.
+#
+# SECURITY: these redirect the entire trust chain, digests included, because the
+# asset digests are read from the same API. That is the same exposure as
+# URNET_INSTALL_URL above. A hostile environment can therefore make the install
+# succeed against attacker-chosen binaries. This is a testing/CI seam, not a
+# user-facing feature; do not document it.
+api_base="${URNET_API_BASE:-https://api.github.com/repos/full-bars/urnetwork-3.23-fix}"
+urnet_dl_base="${URNET_DL_BASE:-https://dl.fullbars.xyz}"
+urnet_github_dl_base="${URNET_MIRROR_BASE:-https://github.com/full-bars/urnetwork-3.23-fix/releases/download}"
 
 install_path="$HOME/.local/share/urnetwork-provider"
 install_path_explicit=0
@@ -261,6 +273,168 @@ except (json.JSONDecodeError, KeyError):
     echo "$digest" | sed 's/^sha256://'
 }
 
+# install_downloader makes sure curl or wget exists, preferring curl (better
+# progress output, timeouts and retry semantics that BusyBox wget lacks).
+# A minimal host may ship neither — Alpine's busybox provides wget, but a slim
+# or distroless-style image may not, and the install used to abort there.
+# Returns 0 when a downloader is available afterwards, 1 otherwise.
+install_downloader ()
+{
+    command -v curl > /dev/null && return 0
+    command -v wget > /dev/null && return 0
+
+    if [ "$(id -u)" -ne 0 ]; then
+        pr_info "Not running as root; cannot install a downloader automatically."
+        return 1
+    fi
+
+    dl_id=""
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        dl_id="$ID"
+    fi
+
+    case "$dl_id" in
+        arch)          pacman -Sy --noconfirm curl || true ;;
+        debian|ubuntu|linuxmint) apt-get update && apt-get install -y curl || true ;;
+        fedora|rhel|centos|rocky|almalinux|amzn) dnf install -y curl || true ;;
+        alpine)        apk add --no-cache curl || true ;;
+        opensuse*|sles) zypper install -y curl || true ;;
+        *)
+            pr_warn "Unsupported distro ID '%s'; attempting 'curl' by name." "${dl_id:-unknown}"
+            command -v apk > /dev/null && apk add --no-cache curl || true
+            ;;
+    esac
+
+    command -v curl > /dev/null && return 0
+    command -v wget > /dev/null && return 0
+    return 1
+}
+
+# install_json_parser makes sure a JSON parser is available, installing one
+# when neither is present. jq is preferred (small, packaged everywhere, and the
+# primary path in every helper below); python3 is the fallback. A minimal host
+# — an Alpine base image, a slim container — has neither, and the install used
+# to abort there instead of simply installing what it needs.
+#
+# Returns 0 when jq or python3 is available afterwards, 1 otherwise (unknown
+# package manager, or every install attempt failed). Never exits: callers
+# decide how loudly to complain.
+# openrc_prompt_auth offers to authenticate the freshly installed provider, so a
+# first-time OpenRC user never has to discover the auth step themselves.
+#
+# WHY IT MATTERS HERE SPECIFICALLY. Under systemd the provider runs as the
+# invoking user, so `urnetwork auth` writes the JWT to that same user's home and
+# everything lines up. Under OpenRC the service runs as the dedicated
+# $openrc_user, so an auth run as root would write /root/.urnetwork/jwt where the
+# service cannot read it — the provider would start, find no credential, and fail
+# with nothing pointing at the cause. Running the auth AS $openrc_user (via
+# `su -s /bin/sh`, BusyBox-safe: no `-l`, no /bin/bash dependency) makes the
+# kernel set HOME and the credentials land in the right place with the right
+# owner. That is the same privilege-drop the tool uses internally, done here so
+# the first-run path is one command instead of three.
+#
+# The code is read from stdin and never passed as an argv element, so it does not
+# appear in `ps` output. Non-interactive runs (no TTY, piped `curl | sh`) skip the
+# prompt entirely and fall back to printing the manual command, because a prompt
+# with no terminal to answer it would hang the install.
+openrc_prompt_auth ()
+{
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        printf "Authenticate:          \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
+        return 0
+    fi
+
+    # Already authenticated as the service user? Nothing to ask.
+    if [ -s "$openrc_home/.urnetwork/jwt" ]; then
+        printf "Auth:                  already authenticated for \e[1m%s\e[0m\n" "$openrc_user"
+        return 0
+    fi
+
+    printf "\n"
+    printf "Authenticate now?      The provider needs an auth code to run (from <https://ur.io>).\n"
+    printf "                      Press Enter to skip and do it later.\n"
+    printf "> "
+    read -r openrc_auth_answer || openrc_auth_answer=""
+
+    case "$openrc_auth_answer" in
+        [Yy]*)
+            printf "Auth code: "
+            read -r openrc_code || openrc_code=""
+            if [ -z "$openrc_code" ]; then
+                printf "No code entered; skipping. Authenticate later with:\n"
+                printf "                      \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
+                return 0
+            fi
+            printf "Authenticating as \e[1m%s\e[0m...\n" "$openrc_user"
+            # Feed the code on stdin so it never appears in the process list.
+            if printf '%s\n' "$openrc_code" | su -s /bin/sh "$openrc_user" -c "urnetwork auth"; then
+                printf "\e[1;32mAuthenticated.\e[0m Start the service below.\n"
+            else
+                printf "\e[1;33mAuthentication did not complete.\e[0m You can retry with:\n"
+                printf "                      \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
+            fi
+            ;;
+        *)
+            printf "Skipped. Authenticate later with:\n"
+            printf "                      \e[1msu -s /bin/sh %s -c 'urnetwork auth <code>'\e[0m\n" "$openrc_user"
+            ;;
+    esac
+}
+
+install_json_parser ()
+{
+    command -v jq > /dev/null && return 0
+    command -v python3 > /dev/null && return 0
+
+    pr_info "Neither 'jq' nor 'python3' found; installing a JSON parser..."
+
+    # A package manager needs root. Without it we cannot install anything,
+    # and the caller's error message is the useful thing to show.
+    if [ "$(id -u)" -ne 0 ]; then
+        pr_info "Not running as root; cannot install a JSON parser automatically."
+        return 1
+    fi
+
+    install_id=""
+    if [ -f /etc/os-release ]; then
+        . /etc/os-release
+        install_id="$ID"
+    fi
+
+    case "$install_id" in
+        arch)
+            pacman -Sy --noconfirm jq || pacman -Sy --noconfirm python || true
+            ;;
+        debian|ubuntu|linuxmint)
+            apt-get update && apt-get install -y jq || apt-get install -y python3 || true
+            ;;
+        fedora|rhel|centos|rocky|almalinux|amzn)
+            dnf install -y jq || dnf install -y python3 || true
+            ;;
+        alpine)
+            # community may be absent from a minimal image's repositories; the
+            # install still lands (python3 is in main) and the parser is fine.
+            apk add --no-cache jq || apk add --no-cache python3 || true
+            ;;
+        opensuse*|sles)
+            zypper install -y jq || zypper install -y python3 || true
+            ;;
+        *)
+            pr_warn "Unsupported distro ID '%s'; attempting 'jq' then 'python3' by name." "${install_id:-unknown}"
+            command -v apk > /dev/null && { apk add --no-cache jq || apk add --no-cache python3 || true; }
+            ;;
+    esac
+
+    if command -v jq > /dev/null; then
+        return 0
+    fi
+    if command -v python3 > /dev/null; then
+        return 0
+    fi
+    return 1
+}
+
 # verify_sha256_file checks a file's sha256 against the expected hex digest.
 # Returns 0 on match, 1 on mismatch/missing tools.
 verify_sha256_file ()
@@ -344,22 +518,77 @@ network_fetch ()
         fi
     fi
 
-    # Try wget fallback
+    # Try wget fallback. Portable flags only (see wget_common_opts).
     if command -v wget > /dev/null; then
-        # --tries=3: retry up to 3 times
-        # --waitretry=2: wait 2 seconds between retries
-        # --retry-connrefused: retry even if connection is refused
-        opts="--connect-timeout=10 --tries=3 --waitretry=2 --retry-connrefused -qO-"
-        if [ "$FORCE_IPV4" -eq 1 ]; then
-            opts="-4 $opts"
-        fi
-        
-        if result=$(wget $opts "$url" 2>/dev/null); then
+        if result=$(wget_retry_fetch "$url"); then
             printf "%s" "$result"
             return 0
         fi
     fi
 
+    return 1
+}
+
+# wget_common_opts returns flags every wget implementation accepts.
+#
+# BusyBox wget is not GNU wget. It rejects GNU-only options outright:
+# --connect-timeout is unknown (it spells the timeout -T SEC), and
+# --retry-connrefused may be absent depending on how BusyBox was built.
+# Passing an option it does not know makes it exit non-zero with
+# "unrecognized option" BEFORE any network attempt, which silently broke
+# every download on Alpine and Alpine-derived images (and wrote an index.html
+# into the working directory whenever something was listening on port 80).
+#
+# So: no capability probing at all. -T is understood by both implementations and
+# is the documented spelling on each; retries are done in the shell, which works
+# the same everywhere. Earlier revisions probed the real binary per flag, which
+# could stall for minutes on GNU wget (--retry-connrefused makes a refused
+# connection transient and it then retries ~20 times) and had the side effect
+# above. Static, portable flags cannot fail that way.
+wget_common_opts ()
+{
+    wopts="-T 10"
+    # -4 is not universal; --inet4-only is the GNU spelling and BusyBox
+    # recognises neither, so only pass it when the help text says so. Checking
+    # help text has no network side effects (unlike probing with a real fetch).
+    if [ "$FORCE_IPV4" -eq 1 ] && wget --help 2>&1 | grep -q -- '--inet4-only'; then
+        wopts="$wopts --inet4-only"
+    fi
+    echo "$wopts"
+}
+
+# wget_retry_download URL OUTPUT — wget with shell-level retries.
+wget_retry_download ()
+{
+    wr_url="$1"
+    wr_out="$2"
+    wr_opts="$(wget_common_opts)"
+    wr_n=0
+    while [ "$wr_n" -lt 3 ]; do
+        # shellcheck disable=SC2086  # wr_opts is intentionally word-split flags
+        if wget $wr_opts -O "$wr_out" "$wr_url"; then
+            return 0
+        fi
+        wr_n=$((wr_n + 1))
+        [ "$wr_n" -lt 3 ] && sleep 2
+    done
+    return 1
+}
+
+# wget_retry_fetch URL — same, to stdout.
+wget_retry_fetch ()
+{
+    wf_url="$1"
+    wf_opts="$(wget_common_opts)"
+    wf_n=0
+    while [ "$wf_n" -lt 3 ]; do
+        # shellcheck disable=SC2086  # wf_opts is intentionally word-split flags
+        if wget $wf_opts -qO- "$wf_url"; then
+            return 0
+        fi
+        wf_n=$((wf_n + 1))
+        [ "$wf_n" -lt 3 ] && sleep 2
+    done
     return 1
 }
 
@@ -482,7 +711,7 @@ show_version ()
     fi
 
     if [ -z "$latest_version" ]; then
-        if latest_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+        if latest_version="$(network_fetch "$urnet_dl_base/latest-version" 2>/dev/null)"; then
             latest_version="$(printf "%s" "$latest_version" | tr -d '[:space:]')"
         fi
     fi
@@ -930,15 +1159,20 @@ openrc_maybe_redirect_install_path ()
 # openrc_pause_update_entry / openrc_restore_update_entry: move the periodic
 # auto-update entry out of the queue while the installer swaps binaries, so a
 # scheduled `urnet-tools update -f` cannot race the install (the systemd path
-# disables its timer for the same reason). The .installer-paused suffix is
-# restored by the next install run even if this one dies mid-way, and the
-# restore scans every queue so leftovers self-heal.
+# disables its timer for the same reason). busybox run-parts executes a merely
+# renamed file, so the pause ALSO drops the executable bit — without it the
+# entry would still fire during the swap this pause exists to protect. The
+# .installer-paused suffix is restored by the next install run even if this one
+# dies mid-way (a failed restore leaves the file non-executable, i.e. inert),
+# and the restore scans every queue so leftovers self-heal.
 openrc_pause_update_entry ()
 {
     [ "$(id -u)" -eq 0 ] || return 0
     for d in daily weekly monthly; do
         if [ -f "/etc/periodic/$d/urnetwork-update" ]; then
-            mv "/etc/periodic/$d/urnetwork-update" "/etc/periodic/$d/urnetwork-update.installer-paused" 2>/dev/null || true
+            if mv "/etc/periodic/$d/urnetwork-update" "/etc/periodic/$d/urnetwork-update.installer-paused" 2>/dev/null; then
+                chmod 644 "/etc/periodic/$d/urnetwork-update.installer-paused" 2>/dev/null || true
+            fi
         fi
     done
     return 0
@@ -949,7 +1183,12 @@ openrc_restore_update_entry ()
     [ "$(id -u)" -eq 0 ] || return 0
     for d in daily weekly monthly; do
         if [ -f "/etc/periodic/$d/urnetwork-update.installer-paused" ]; then
-            mv "/etc/periodic/$d/urnetwork-update.installer-paused" "/etc/periodic/$d/urnetwork-update" 2>/dev/null || pr_warn "could not re-enable the auto-update entry in /etc/periodic/%s" "$d"
+            if mv "/etc/periodic/$d/urnetwork-update.installer-paused" "/etc/periodic/$d/urnetwork-update" 2>/dev/null; then
+                chmod 755 "/etc/periodic/$d/urnetwork-update" 2>/dev/null || true
+            else
+                chmod 644 "/etc/periodic/$d/urnetwork-update.installer-paused" 2>/dev/null || true
+                pr_warn "could not re-enable the auto-update entry in /etc/periodic/%s" "$d"
+            fi
         fi
     done
     return 0
@@ -1070,8 +1309,14 @@ command_user="$openrc_user"
 supervisor="supervise-daemon"
 respawn_delay=5
 respawn_max=0
-output_log="$openrc_home/urnetwork.log"
-error_log="$openrc_home/urnetwork.err"
+# Logs live under /var/log, root-owned, NOT in the service user's home.
+# supervise-daemon opens these paths before dropping privileges, so a symlink
+# planted in a user-writable home would aim a root append at an arbitrary file.
+# /var/log is also the OpenRC convention, and it makes `urnet-tools logs` able
+# to tail the file directly even when the service is stopped (a provider with no
+# live process has no /proc/<pid>/fd/1 to read).
+output_log="/var/log/urnetwork.log"
+error_log="/var/log/urnetwork.err"
 
 depend() {
     use net
@@ -1114,14 +1359,37 @@ EOF
         return 0
     fi
 
-    # The service runs as $openrc_user: hand it the install tree when it lives
-    # under that user's home, so the supervised process can execute the binary
-    # and `urnet-tools update` (run by that user) can replace it.
+    # PRIVILEGE BOUNDARY. The weekly auto-update runs as ROOT from busybox
+    # crond and execs the urnet-tools that sits beside the provider binary. That
+    # tool must therefore NOT be writable by the service user: the account
+    # running the internet-facing relay could otherwise replace the tool (or
+    # rename a parent directory it owns and recreate the path) and get code
+    # execution as root at the next tick.
+    #
+    # The chown that used to be here handed the whole install tree to
+    # $openrc_user. It bought nothing: under OpenRC `urnet-tools update` runs as
+    # root anyway, because `rc-service restart` requires root, so the service
+    # user never needs to replace its own binary. The binaries stay root-owned
+    # and world-readable/executable, which is all the supervised process needs.
+    # Only the STATE directory under the user's home is user-owned, and the user
+    # already owns their home.
     case "$install_path" in
         "$openrc_home"/*)
-            chown -R "$openrc_user" "$install_path" 2>/dev/null || pr_warn "could not chown %s to %s" "$install_path" "$openrc_user"
+            chown -R "root:root" "$install_path" 2>/dev/null || pr_warn "could not set root ownership on %s" "$install_path"
+            chmod -R a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
+            # The provider writes only under its own state dir; make sure it
+            # exists and is owned by the service user.
+            mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
+            chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
             ;;
     esac
+
+    # Create the log targets root-owned and not group/world writable, so the
+    # paths supervise-daemon opens cannot be pre-empted by the service user.
+    : > /var/log/urnetwork.log 2>/dev/null || pr_warn "could not create /var/log/urnetwork.log"
+    : > /var/log/urnetwork.err 2>/dev/null || pr_warn "could not create /var/log/urnetwork.err"
+    chown root:root /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+    chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
 
     if ! cp "$openrc_staged" "$openrc_initd_file"; then
         pr_err "Failed to install %s" "$openrc_initd_file"
@@ -1308,22 +1576,11 @@ download_asset ()
         pr_warn "curl failed to download asset, trying wget fallback..."
     fi
 
-    # Try wget fallback
+    # Try wget fallback. Flag support is probed: BusyBox wget rejects GNU-only
+    # options outright, which would otherwise abort the download before any
+    # network attempt.
     if command -v wget > /dev/null; then
-        # --tries=3: retry up to 3 times
-        # --waitretry=2: wait 2 seconds between retries
-        # --retry-connrefused: retry even if connection is refused on modern wget
-        opts="--connect-timeout=10 --tries=3 --waitretry=2"
-        if [ "$FORCE_IPV4" -eq 1 ]; then
-            opts="-4 $opts"
-        fi
-        
-        # Check if wget supports --retry-connrefused
-        if wget --help | grep -q "retry-connrefused"; then
-            opts="$opts --retry-connrefused"
-        fi
-
-        if wget $opts -O "$output" "$url"; then
+        if wget_download "$url" "$output"; then
             return 0
         fi
     fi
@@ -1354,12 +1611,17 @@ do_install ()
 
     # Dependency Check
     if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
-        pr_err "Neither 'curl' nor 'wget' is available. One of these is required for downloads."
-        exit 1
+        pr_info "Neither 'curl' nor 'wget' found; installing a downloader..."
+        install_downloader || {
+            pr_err "Neither 'curl' nor 'wget' is available, and neither could be installed."
+            pr_err "Install one manually (for example 'apt-get install curl' or 'apk add curl') and re-run."
+            exit 1
+        }
     fi
 
-    if ! command -v jq > /dev/null && ! command -v python3 > /dev/null; then
-        pr_err "Neither 'jq' nor 'python3' is available. One of these is required for JSON parsing."
+    if ! install_json_parser; then
+        pr_err "Neither 'jq' nor 'python3' is available, and neither could be installed."
+        pr_err "Install one manually (for example 'apt-get install jq' or 'apk add jq') and re-run."
         exit 1
     fi
 
@@ -1538,7 +1800,7 @@ do_install ()
 
     # Fallback: try dl.fullbars.xyz latest-version endpoint
     if [ -z "$version_to_install" ]; then
-        if worker_version="$(network_fetch "https://dl.fullbars.xyz/latest-version" 2>/dev/null)"; then
+        if worker_version="$(network_fetch "$urnet_dl_base/latest-version" 2>/dev/null)"; then
             version_to_install="$(printf "%s" "$worker_version" | tr -d '[:space:]')"
         fi
     fi
@@ -1601,8 +1863,8 @@ do_install ()
         pr_err "Could not resolve 'latest' tag to a specific version. GitHub API might be unreachable."
         exit 1
     fi
-    dl_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    dl_url="$urnet_dl_base/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    mirror_url="$urnet_github_dl_base/$tag/urnetwork-provider-$tag.tar.gz"
     
     pr_info "Downloading: %s" "$dl_url"
     
@@ -1689,8 +1951,8 @@ do_install ()
     tool_installed=0
     if [ -n "$tag" ] && [ "$tag" != "latest" ]; then
         tool_asset="urnet-tools-linux-$arch"
-        tool_dl_url="https://dl.fullbars.xyz/releases/download/$tag/$tool_asset"
-        tool_mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset"
+        tool_dl_url="$urnet_dl_base/releases/download/$tag/$tool_asset"
+        tool_mirror_url="$urnet_github_dl_base/$tag/$tool_asset"
 
         # Resolve the digest from the release API. Empty digest = the release
         # predates tool assets (or the asset is missing) → fall back to shell.
@@ -1810,8 +2072,16 @@ do_install ()
             printf " - Scaling: Accordion TCP window scaling (4KB idle -> 1MB active).\n"
             printf "\n"
             printf "Reload shell:          \e[1msource ~/.bashrc\e[0m           # or restart your terminal\n"
-            printf "First run:             \e[1murnetwork auth\e[0m             # auth code can be found at <https://ur.io>\n"
-            printf "Start:                 \e[1murnetwork provide\e[0m          # in foreground\n"
+            # Only suggest the bare `urnetwork auth` / `urnetwork provide`
+            # commands when the provider really will run as the invoking user.
+            # Under OpenRC the service runs as the dedicated $openrc_user, so
+            # running either as root would write the JWT to the wrong home
+            # (invisible to the service) and start a SECOND provider as root.
+            # The OpenRC block below prints the correct service-user commands.
+            if [ "$has_openrc" -eq 0 ]; then
+                printf "First run:             \e[1murnetwork auth\e[0m             # auth code can be found at <https://ur.io>\n"
+                printf "Start:                 \e[1murnetwork provide\e[0m          # in foreground\n"
+            fi
 
             if [ "$has_systemd" -eq 1 ]; then
                 printf "Start service:         \e[1msystemctl --user start urnetwork\e[0m\n"
@@ -1827,7 +2097,8 @@ do_install ()
             fi
 
             if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
-                if [ "$(id -u)" -eq 0 ] && id "$openrc_user" > /dev/null 2>&1; then
+                if [ "$(id -u)" -eq 0 ] && id "$openrc_user" > /dev/null 2>&1 && [ -f "$openrc_initd_file" ]; then
+                    openrc_prompt_auth
                     printf "Start service:         \e[1mrc-service urnetwork start\e[0m\n"
                     printf "Disable service:       \e[1mrc-update del urnetwork default && rc-service urnetwork stop\e[0m\n"
                     printf "Enable auto-updates:   \e[1murnet-tools auto-update weekly\e[0m    # needs busybox crond\n"

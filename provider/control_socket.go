@@ -1283,20 +1283,34 @@ func applyPersistedRuntimeTuning(state *controlState) {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
 	}
-	// h3_datagram has no environment default, so an unset key means off.
-	datagramValue, _ := state.get("h3_datagram")
+	// h3_datagram / h3_datagram_send have no environment default, so an unset key
+	// previously meant off. On a settled direct-only node they now default on for
+	// the same reason h3 does (one identity, one extra socket, quiet H1
+	// fallback); a pooled node keeps off. An explicit persisted key still wins.
+	res := currentProxyResolution()
+	directOnly := directOnlyDatagramDefault(res)
+	datagramValue, datagramSet := state.get("h3_datagram")
+	if !datagramSet && directOnly {
+		datagramValue = "on"
+	}
 	if err := applyLiveSideEffect("h3_datagram", onOff(strings.EqualFold(datagramValue, "on"))); err != nil {
 		tlog("[control] failed to apply h3_datagram: %s\n", err)
 	}
-	// h3_datagram_send has no environment default either: unset means off.
-	sendValue, _ := state.get("h3_datagram_send")
+	sendValue, sendSet := state.get("h3_datagram_send")
+	if !sendSet && directOnly {
+		sendValue = "on"
+	}
 	if err := applyLiveSideEffect("h3_datagram_send", onOff(strings.EqualFold(sendValue, "on"))); err != nil {
 		tlog("[control] failed to apply h3_datagram_send: %s\n", err)
 	}
-	// h3 is replayed in BOTH directions, falling back to URNETWORK_H3 when the
-	// key was never set: a persisted off must beat the env var, and an unset key
-	// must not leave the gate at its zero value when the env var asks for H3.
-	if err := applyLiveSideEffect("h3", onOff(resolveH3(state))); err != nil {
+	// h3 is replayed in BOTH directions, falling back to the startup default
+	// when the key was never set: a persisted off must beat the env var and the
+	// direct-only default, and an unset key must not leave the gate at its zero
+	// value. On a settled direct-only node the default flips h3 ON — one
+	// identity means one extra socket for a transport that falls back to H1
+	// quietly — so a lean direct box gets H3 without the operator configuring
+	// anything. A pooled node keeps the off default.
+	if err := applyLiveSideEffect("h3", onOff(resolveH3Setting(state, currentProxyResolution()))); err != nil {
 		tlog("[control] failed to apply h3: %s\n", err)
 	}
 	if v, ok := state.get("smart_dialer"); ok && strings.EqualFold(v, "on") {

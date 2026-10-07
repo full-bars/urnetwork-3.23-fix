@@ -346,6 +346,15 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	if !p.Running || p.PID <= 0 {
 		return fmt.Errorf("provider %s is not running (cannot hot-swap)", providerLabel(p))
 	}
+	// A direct `urnet-tools hotswap` must decline on OpenRC for the same reason
+	// the update path does: supervise-daemon has no sd_notify MainPID handoff,
+	// so the in-process successor cannot take over the service. Without this
+	// gate the trigger fires anyway and can leave an orphaned successor process
+	// beside the supervised one. The update path already checks in
+	// hotSwapPreflight and hotSwapUnitOK; the direct command bypassed both.
+	if err := openrcHotSwapDecline(p); err != nil {
+		return err
+	}
 	ok, err := confirmGate("zero-downtime hot-swap "+providerLabel(p), p, force, dryRun)
 	if err != nil {
 		return err
