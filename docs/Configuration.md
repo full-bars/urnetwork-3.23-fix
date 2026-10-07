@@ -229,6 +229,23 @@ These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicte
 - The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
 - An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending persisted earnings, then ascending lifetime traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
 
+### Swap-thrash watchdog
+
+Memory pressure alone does not mean the box is thrashing. The watchdog watches for the signs that it is: PSI memory `full` (tasks stalled on memory), swap activity (`pswpout`/`pswpin` rates), page refaults, and direct reclaim. It keeps one state, `calm -> under-pressure -> thrashing -> critical`, and acts in steps:
+
+- **Freeze growth** first: no new pool admissions while the condition holds. Nothing is lost yet.
+- If the condition persists, the watchdog **restarts the provider** in a supervised way: the process exits with status 75 and the service manager restarts it. This is the only automatic restart the watchdog performs. It is capped at 3 restarts per 24 hours with a growing backoff (30m, 2h, 6h), skipped while a hot-swap is draining, and it refuses to act when the swap belongs to another process on the box.
+- A restart leaves a **thrash cap** (`~/.urnetwork/thrash_cap.json`): the next start begins with a smaller pool so it fits in RAM, and the cap expires 24 hours after the last restart.
+
+The supervised restart needs a service unit that restarts on exit status 75. The shipped units use `Restart=on-failure`, which covers it. If you override the unit with a drop-in, use `Restart=on-failure` or `Restart=always`, and keep 75 out of `RestartPreventExitStatus`; the installer warns when a drop-in weakens this.
+
+All of this rides the existing self-heal switch (`URNETWORK_SELF_HEAL=1` or `urnet-tools self-heal on`). Off means off for actions: with self-heal off, the watchdog still senses and logs, so you can watch it work, but it never restarts anything.
+
+Where to look:
+- `urnet-tools status`'s live block prints the current reading as one sentence (the `summary` field the provider persists to `~/.urnetwork/pressure_status`).
+- `~/.urnetwork/thrash_status` carries the machine-readable state for tooling.
+- Log lines start with `[proxy][thrash]`.
+
 ### Proxy audit
 
 The paid and file proxies you supply are graded A to F by a probe from this box. With proxy audit **on**, the audit engine uses that grade to rest proxies that are proven junk, so their slots are not wasted. With proxy audit **off** it only watches and logs what it would have done, so you can see its judgement before you let it act. It also stays in observe mode when hot restart is off, because every relaunch would then mint a new client identity.
