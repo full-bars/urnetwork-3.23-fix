@@ -930,11 +930,16 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 // Extracted so the dispatch itself is unit-testable without running the
 // (root-requiring, host-mutating) implementations.
 func optimizeFor(goos string) func() error {
-	if goos == "windows" {
+	switch goos {
+	case "windows":
 		return optimizeWindows
-	}
-	if goos == "darwin" {
+	case "darwin":
 		return optimizeDarwin
+	case "freebsd":
+		// FreeBSD shares no tunable name with Linux: routing this to
+		// optimizeLinux wrote net.core.rmem_max and /etc/sysctl.d, neither of
+		// which exists here, so it reported success while changing nothing.
+		return optimizeFreeBSD
 	}
 	return optimizeLinux
 }
