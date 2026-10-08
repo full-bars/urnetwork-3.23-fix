@@ -665,7 +665,7 @@ func (self *PlatformTransport) h3Auxiliary() bool {
 // auth. An auxiliary H3 authenticating must not clear failures H1 recorded: H1
 // is the health signal, so only it may reset the state.
 func (self *PlatformTransport) noteAuthSuccess() {
-	if self.h3Auxiliary() {
+	if self.h3Gated() {
 		return
 	}
 	noteBackendSuccess()
@@ -1495,7 +1495,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			if self.ctx.Err() == nil {
 				counters.connectFailures.Add(1)
 				// an auxiliary H3 (opt-in, beside H1) is not a health signal
-				if !self.h3Auxiliary() {
+				if !self.h3Gated() {
 					noteBackendFailure()
 					if idx, ok := self.proxyIndex(); ok {
 						RecordProxyAuthFailure(idx, err)
@@ -1525,12 +1525,16 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			} else {
 				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
 			}
+			var pulse <-chan struct{}
+			if !self.h3Gated() {
+				pulse = Pulse()
+			}
 			select {
 			case <-self.ctx.Done():
 				return
 			case <-time.After(authErrBackoff):
 				continue
-			case <-Pulse():
+			case <-pulse:
 				authErrBackoff = 0
 				self.clientStrategy.ResetHealth()
 				continue
@@ -1679,13 +1683,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			atomic.AddInt64(&activeProxyConnections, 1)
 			// an auxiliary H3 is not the identity health signal: its connects and
 			// drops must not mark it up, down or dropped while H1 says if it is healthy
-			if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
+			if idx, ok := self.proxyIndex(); ok && !self.h3Gated() {
 				markProxyUp(idx)
 			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
-				if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
+				if idx, ok := self.proxyIndex(); ok && !self.h3Gated() {
 					markProxyDown(idx)
 					RecordProxyTransportDrop(idx, nil)
 				}

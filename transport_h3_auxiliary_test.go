@@ -164,20 +164,23 @@ func TestSoleH3FailureStillCountsAsABackendAndProxyFailure(t *testing.T) {
 // An auxiliary H3 that authenticates must not clear the failures H1 recorded,
 // or a healthy H3 would hide an H1 outage. The sole H3 (and H1) still clear.
 func TestAuxiliaryH3AuthSuccessDoesNotClearBackendFailures(t *testing.T) {
-	switchH3Gate(t, true)
 	resetBackendDegraded()
 	t.Cleanup(resetBackendDegraded)
 
 	for _, c := range []struct {
-		name  string
-		mode  TransportMode
-		h3    bool
-		clear bool
+		name   string
+		mode   TransportMode
+		h3     bool
+		gateOn bool
+		clear  bool
 	}{
-		{"auxiliary h3", TransportModeAuto, true, false},
-		{"h1 in auto without h3", TransportModeAuto, false, true},
-		{"sole h3", TransportModeH3, false, true},
+		{"auxiliary h3 gate on", TransportModeAuto, true, true, false},
+		{"auxiliary h3 gate off", TransportModeAuto, true, false, false},
+		{"h1 in auto without h3", TransportModeAuto, false, true, true},
+		{"sole h3 gate on", TransportModeH3, false, true, true},
+		{"sole h3 gate off", TransportModeH3, false, false, true},
 	} {
+		switchH3Gate(t, c.gateOn)
 		resetBackendDegraded()
 		noteBackendFailure()
 		noteBackendFailure()
@@ -292,3 +295,199 @@ func TestGateOffDoesNotDialAndGateOnStartsDialing(t *testing.T) {
 	cancel()
 	<-done
 }
+
+// With the gate open when a dial starts but turned off before the failure is
+// recorded, an auxiliary H3 connect failure must not call noteBackendFailure or
+// RecordProxyAuthFailure: the transport is auxiliary regardless of whether the
+// operator switch was flipped while the dial was in flight.
+func TestAuxiliaryH3FailureWithSwitchOffDoesNotRecordFailure(t *testing.T) {
+	resetBackendDegraded()
+	ResetProxyHealthForTesting()
+	t.Cleanup(ResetProxyHealthForTesting)
+	t.Cleanup(resetBackendDegraded)
+	RegisterProxy(0, "direct", "direct")
+
+	transport, cancel := newClosedPortTransport(t, TransportModeAuto, true)
+	// Give a comfortable handshake timeout so the test can flip the switch
+	// while the dial is in flight.
+	transport.settings.QuicConnectTimeout = 150 * time.Millisecond
+	transport.settings.QuicHandshakeTimeout = 150 * time.Millisecond
+	transport.settings.ReconnectTimeout = 500 * time.Millisecond
+	done := make(chan struct{})
+	beforeAttempts := TransportModeStats().H3Attempts
+	beforeFailures := TransportModeStats().H3ConnectFailures
+
+	go func() {
+		defer close(done)
+		transport.runH3(TransportModeH3, 0, 1)
+	}()
+
+	// Wait for the dial attempt to start.
+	deadline := time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3Attempts == beforeAttempts && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if TransportModeStats().H3Attempts == beforeAttempts {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for H3 dial attempt to start")
+	}
+
+	// Turn the switch off while the dial is in flight.
+	SetH3Enabled(false)
+
+	// Wait for the in-flight dial to fail.
+	deadline = time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3ConnectFailures == beforeFailures && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if TransportModeStats().H3ConnectFailures == beforeFailures {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for H3 dial failure to be recorded")
+	}
+
+	cancel()
+	<-done
+
+	if got := backendFails(); got != 0 {
+		t.Fatalf("auxiliary H3 connect failure with switch turned off was counted as %d backend failures", got)
+	}
+	if got := proxyFailureTotal(0); got != 0 {
+		t.Fatalf("auxiliary H3 connect failure with switch turned off was recorded as %d proxy failures", got)
+	}
+}
+
+// Explicit H3 target mode is the sole transport and keeps full accounting
+// even when the runtime switch is off.
+func TestExplicitH3TargetModeStillRecordsFailures(t *testing.T) {
+	switchH3Gate(t, false)
+	resetBackendDegraded()
+	ResetProxyHealthForTesting()
+	t.Cleanup(ResetProxyHealthForTesting)
+	t.Cleanup(resetBackendDegraded)
+	RegisterProxy(0, "direct", "direct")
+
+	transport, cancel := newClosedPortTransport(t, TransportModeH3, false)
+	transport.settings.QuicConnectTimeout = 100 * time.Millisecond
+	transport.settings.QuicHandshakeTimeout = 100 * time.Millisecond
+	transport.settings.ReconnectTimeout = 20 * time.Millisecond
+	done := make(chan struct{})
+	beforeFailures := TransportModeStats().H3ConnectFailures
+
+	go func() {
+		defer close(done)
+		transport.runH3(TransportModeH3, 0, 1)
+	}()
+
+	deadline := time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3ConnectFailures == beforeFailures && time.Now().Before(deadline) {
+		time.Sleep(10 * time.Millisecond)
+	}
+	if TransportModeStats().H3ConnectFailures == beforeFailures {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for explicit H3 dial failure")
+	}
+
+	cancel()
+	<-done
+
+	if backendFails() == 0 {
+		t.Fatal("explicit H3 target mode failures must count as backend failures")
+	}
+	if proxyFailureTotal(0) <= 0 {
+		t.Fatal("explicit H3 target mode failures must be recorded against the proxy")
+	}
+}
+
+// A global Pulse must not reset the backoff timer of an auxiliary H3 transport,
+// preventing a thundering herd across proxies.
+func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
+	switchH3Gate(t, true)
+	transport, cancel := newClosedPortTransport(t, TransportModeAuto, true)
+	transport.settings.QuicConnectTimeout = 50 * time.Millisecond
+	transport.settings.QuicHandshakeTimeout = 50 * time.Millisecond
+	transport.settings.ReconnectTimeout = 1 * time.Second
+	done := make(chan struct{})
+	beforeFailures := TransportModeStats().H3ConnectFailures
+
+	go func() {
+		defer close(done)
+		transport.runH3(TransportModeH3, 0, 1)
+	}()
+
+	// Wait for the first attempt to fail and enter backoff.
+	deadline := time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3ConnectFailures == beforeFailures && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if TransportModeStats().H3ConnectFailures == beforeFailures {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for first H3 connect failure")
+	}
+
+	attemptsAfterFirstFail := TransportModeStats().H3Attempts
+
+	// Trigger a global Pulse while in backoff.
+	TriggerPulse()
+
+	// Wait a short duration: auxiliary H3 must not wake up or retry immediately.
+	time.Sleep(150 * time.Millisecond)
+	if got := TransportModeStats().H3Attempts; got != attemptsAfterFirstFail {
+		cancel()
+		<-done
+		t.Fatalf("Pulse triggered premature retry on auxiliary H3: attempts=%d, want %d", got, attemptsAfterFirstFail)
+	}
+
+	cancel()
+	<-done
+}
+
+// A global Pulse must still wake and reset the backoff for non-auxiliary transports.
+func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
+	switchH3Gate(t, true)
+	transport, cancel := newClosedPortTransport(t, TransportModeH3, false)
+	transport.settings.QuicConnectTimeout = 50 * time.Millisecond
+	transport.settings.QuicHandshakeTimeout = 50 * time.Millisecond
+	// Long backoff so it won't retry on its own during the test.
+	transport.settings.ReconnectTimeout = 10 * time.Second
+	done := make(chan struct{})
+	beforeFailures := TransportModeStats().H3ConnectFailures
+
+	go func() {
+		defer close(done)
+		transport.runH3(TransportModeH3, 0, 1)
+	}()
+
+	// Wait for the first attempt to fail and enter backoff.
+	deadline := time.Now().Add(3 * time.Second)
+	for TransportModeStats().H3ConnectFailures == beforeFailures && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if TransportModeStats().H3ConnectFailures == beforeFailures {
+		cancel()
+		<-done
+		t.Fatal("timed out waiting for first H3 connect failure")
+	}
+
+	attemptsAfterFirstFail := TransportModeStats().H3Attempts
+
+	// Trigger a global Pulse while in backoff: non-auxiliary H3 must wake and retry.
+	TriggerPulse()
+
+	deadline = time.Now().Add(2 * time.Second)
+	for TransportModeStats().H3Attempts == attemptsAfterFirstFail && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+	if TransportModeStats().H3Attempts == attemptsAfterFirstFail {
+		cancel()
+		<-done
+		t.Fatal("expected Pulse to wake non-auxiliary H3 and trigger retry")
+	}
+
+	cancel()
+	<-done
+}
+
