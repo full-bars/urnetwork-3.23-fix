@@ -263,6 +263,10 @@ func TestStreamLogFile_FollowsTruncate(t *testing.T) {
 	}
 	appendLine(t, logPath, "after\n")
 	f.waitFor("after\n")
+
+	if got, want := f.out.String(), "a long first line of text\nafter\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
 }
 
 // A line appended after the tail was printed and before following starts must
@@ -281,6 +285,61 @@ func TestStreamLogFile_LineAppendedBetweenTailAndFollowIsDelivered(t *testing.T)
 	f := startFollower(t, logPath, 2)
 	f.waitFor("three\n")
 	if got, want := f.out.String(), "one\ntwo\nthree\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// The pre-switch drain is what delivers a line written to the old file after the
+// follower last read it but before it opens the new one. The hook writes that
+// line inside exactly that window, so removing the drain loses it.
+func TestStreamLogFile_PreSwitchDrainDeliversLateOldLine(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	if err := os.WriteFile(logPath, []byte("line 1\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	var once sync.Once
+	streamLogFileBeforeSwitch = func() {
+		once.Do(func() { appendLine(t, logPath+".1", "late old\n") })
+	}
+	t.Cleanup(func() { streamLogFileBeforeSwitch = func() {} })
+
+	f := startFollower(t, logPath, 1)
+	f.waitFor("line 1")
+	if err := os.Rename(logPath, logPath+".1"); err != nil {
+		t.Fatal(err)
+	}
+	appendLine(t, logPath, "head of new\n")
+	f.waitFor("head of new")
+
+	if got, want := f.out.String(), "line 1\nlate old\nhead of new\n"; got != want {
+		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// If the path stat claims a different file while the path still names the same
+// one, the follower must not restart from the top and print the log twice.
+func TestStreamLogFile_SpuriousDifferentStatDoesNotReprint(t *testing.T) {
+	dir := t.TempDir()
+	logPath := filepath.Join(dir, "test.log")
+	otherPath := filepath.Join(dir, "other.log")
+	if err := os.WriteFile(logPath, []byte("one\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(otherPath, []byte("x\n"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	statFollowPath = func(string) (os.FileInfo, error) { return os.Stat(otherPath) }
+	t.Cleanup(func() { statFollowPath = os.Stat })
+
+	f := startFollower(t, logPath, 1)
+	f.waitFor("one")
+	// let several polls pass with the spurious stat in effect
+	time.Sleep(600 * time.Millisecond)
+	appendLine(t, logPath, "two\n")
+	f.waitFor("two")
+
+	if got, want := f.out.String(), "one\ntwo\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }

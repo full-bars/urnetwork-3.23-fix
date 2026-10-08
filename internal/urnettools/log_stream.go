@@ -14,6 +14,16 @@ import (
 // It is a no-op outside tests, which use it to append a line in that gap.
 var streamLogFileAfterTail = func() {}
 
+// streamLogFileBeforeSwitch runs once the follower has decided the path names a
+// different file, before it opens that file. No-op outside tests, which use it
+// to write to the old file in that window.
+var streamLogFileBeforeSwitch = func() {}
+
+// statFollowPath stats the followed path. A variable so a test can make the
+// path look like a different file, which on Windows happens when the file id of
+// an unchanged file cannot be loaded for a moment.
+var statFollowPath = os.Stat
+
 // streamLogFile reads the last n lines of a file, writes them to out, and follows
 // the file for newly appended content until ctx is cancelled or os.Interrupt is received.
 // Designed to replace external 'tail -f' invocations cross-platform.
@@ -54,8 +64,11 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 					return wErr
 				}
 			}
-			if err != nil {
+			if err == io.EOF {
 				return nil
+			}
+			if err != nil {
+				return err
 			}
 		}
 	}
@@ -86,9 +99,18 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 			// open the new one first, then read whatever the old one received
 			// in the meantime, then switch. If the path is gone or cannot be
 			// opened yet, keep the old handle and look again next tick.
-			if pathInfo, statErr := os.Stat(path); statErr == nil && !os.SameFile(fi, pathInfo) {
+			if pathInfo, statErr := statFollowPath(path); statErr == nil && !os.SameFile(fi, pathInfo) {
+				streamLogFileBeforeSwitch()
 				next, openErr := openFollowFile(path)
 				if openErr != nil {
+					continue
+				}
+				// os.SameFile on a path stat can say "different" for an unchanged
+				// file (Windows loads the file id lazily and a failed load makes
+				// it false). Compare the handles instead: switching onto the same
+				// file would restart at offset 0 and print the whole log again.
+				if nextInfo, nextErr := next.Stat(); nextErr != nil || os.SameFile(fi, nextInfo) {
+					next.Close()
 					continue
 				}
 				if err := drain(); err != nil {
