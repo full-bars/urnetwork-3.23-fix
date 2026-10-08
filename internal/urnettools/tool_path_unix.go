@@ -113,6 +113,37 @@ func ensureToolOnPath() {
 	}
 	srcDir := filepath.Dir(exe)
 
+	const sysDir = "/usr/local/bin"
+	// OpenRC: root's PATH must keep pointing at the root-owned staged libexec
+	// tool, never at the install-tree binary. The installer stages that copy
+	// deliberately (a root-executed binary must not be reachable through a
+	// path the service user can influence), and an update run from the tree
+	// must not repoint the link back there. When the staged copy exists, use
+	// it as the source for the system-wide links. The user's ~/.local/bin
+	// still points at the running binary's dir (that is the operator's own
+	// session tool, not a root-executed path).
+	if staged := openrcStagedRootToolPath(); staged != "" {
+		if home, err := os.UserHomeDir(); err == nil && home != "" {
+			dir := filepath.Join(home, ".local", "bin")
+			if changed, err := linkToolsIntoDir(dir, srcDir); err != nil {
+				fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", dir, err)
+			} else if len(changed) > 0 {
+				fmt.Printf("linked %v into %s so shells without ~/.bashrc find them\n", changed, dir)
+			}
+		}
+		stagedDir := filepath.Dir(staged)
+		if os.Geteuid() == 0 {
+			if changed, err := linkToolsIntoDir(sysDir, stagedDir); err != nil {
+				fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", sysDir, err)
+			} else if len(changed) > 0 {
+				fmt.Printf("linked %v into %s\n", changed, sysDir)
+			}
+		} else if changed := sudoLinkTools(sysDir, stagedDir); len(changed) > 0 {
+			fmt.Printf("linked %v into %s so root and other users find them\n", changed, sysDir)
+		}
+		return
+	}
+
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		dir := filepath.Join(home, ".local", "bin")
 		if changed, err := linkToolsIntoDir(dir, srcDir); err != nil {
@@ -121,7 +152,6 @@ func ensureToolOnPath() {
 			fmt.Printf("linked %v into %s so shells without ~/.bashrc find them\n", changed, dir)
 		}
 	}
-	const sysDir = "/usr/local/bin"
 	if os.Geteuid() == 0 {
 		if changed, err := linkToolsIntoDir(sysDir, srcDir); err != nil {
 			fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", sysDir, err)

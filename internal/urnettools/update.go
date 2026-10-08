@@ -922,7 +922,24 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// the running image of the unit we just restarted, and
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
+					//
+					// EXCEPT under OpenRC: providerVersion's fallback EXECS the
+					// image as root, and the running image there is a binary the
+					// service user may have influenced between the restart and
+					// this verify (they own the process, and until this session's
+					// installBinary fix the tree binary itself was chowned to
+					// them after every update). Exec'ing a possibly
+					// user-controlled file as root is exactly the escalation the
+					// root-owned tree exists to prevent. The read-only variant
+					// (buildinfo + raw stamp scan, no exec) can't be a
+					// root-privilege escalation by construction. Any loss of
+					// verification fidelity is the price of not exec'ing a
+					// binary we do not own: fail closed on an unknown version
+					// rather than run it.
 					procVersion := verifyProviderVersionFn(procExe)
+					if rp.Supervisor == "openrc" || providerSupervisedByOpenRCFn(rp) {
+						procVersion = providerVersionReadOnly(procExe)
+					}
 					if procVersion == cfg.Tag {
 						// Report the image's real path, not the /proc
 						// handle the version was read through.
@@ -1254,7 +1271,15 @@ func installBinary(src, dst, user string) error {
 		os.Remove(newPath)
 		return err
 	}
-	if user != "" && os.Geteuid() == 0 {
+	// Under the root-owned OpenRC layout the binary must STAY root-owned:
+	// chowning it to the service user would hand the file itself to an
+	// unprivileged account that root later executes (update-time version
+	// verify, the next `sudo urnet-tools update`). The service user only
+	// needs read+exec, which the 0755 above already delivers. The chown
+	// exists for the user-session (systemd) layout, where the binary lives
+	// in the user's own tree and must be theirs to replace via updates run
+	// without root.
+	if user != "" && os.Geteuid() == 0 && !openrcTreeOwnedByRoot(dst) {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
 			tmpFile.Close()

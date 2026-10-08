@@ -589,6 +589,35 @@ func openrcRouteAutoUpdate(interval string, rest []string, dryRun bool) (bool, e
 // scripts/Provider_Install_Linux.sh.
 const openrcRootToolPath = "/usr/local/libexec/urnetwork/urnet-tools"
 
+// openrcInstallRoot is the ROOT-OWNED OpenRC install tree. It must match
+// openrc_install_root in scripts/Provider_Install_Linux.sh. The tree lives
+// here — NOT under the service user's home — so root-executed code (the
+// weekly cron entry, sudo urnet-tools update) never reaches a binary through
+// a user-writable ancestor. A tree under /home/<user> is renameable aside by
+// its owner, and root-owned files cannot defend a path whose ancestor is
+// user-writable.
+const openrcInstallRoot = "/usr/local/lib/urnetwork-provider"
+
+// openrcTreeOwnedByRoot reports whether a binary path lives under the
+// root-owned OpenRC layout. installBinary consults this before chowning a
+// freshly swapped binary to the service user: chowning a file in the
+// root-owned tree would hand the file itself to the service user, who could
+// then chmod it writable and plant arbitrary code at a path root later
+// executes (the update-time version verify, the next sudo update). The whole
+// point of the root-owned tree is that root owns every file in it; the
+// service user only ever needs read+exec (0755), which root ownership
+// delivers.
+func openrcTreeOwnedByRoot(path string) bool {
+	return strings.HasPrefix(path, openrcInstallRoot+"/") ||
+		path == openrcInstallRoot ||
+		strings.HasPrefix(path, openrcRootToolPath)
+}
+
+// openrcStagedRootToolPath returns the root-owned staged tool path on Linux,
+// or "" elsewhere. platform-crossing callers (tool_path_unix.go compiled for
+// darwin too) use this instead of the linux-only const.
+func openrcStagedRootToolPath() string { return openrcRootToolPath }
+
 // openrcUpdateToolPath picks the binary the PERIODIC CRON ENTRY will execute.
 //
 // SECURITY: that entry runs as ROOT. Anything it executes must live somewhere
@@ -721,12 +750,20 @@ func openrcUpdateCronScript(toolPath string) string {
 		"# component from the root down before exec'ing; refuse loudly otherwise.\n" +
 		"tool=" + shellQuoteSingle(toolPath) + "\n" +
 		"dir=$(dirname \"$tool\")\n" +
+		// dirname never progresses for a bare name (dirname utool = "."), so
+		// guard against the loop spinning forever on a tool path without a
+		// directory component.
+		"prev=\n" +
 		"while [ \"$dir\" != \"/\" ] && [ -n \"$dir\" ]; do\n" +
-		"\tif [ ! -d \"$dir\" ]; then\n" +
-		"\t\techo \"urnetwork-update: refusing to run: $dir is missing\" >&2; exit 1\n" +
-		"\tfi\n" +
-		"\towner=$(stat -c %u \"$dir\" 2>/dev/null)\n" +
-		"\tmode=$(stat -c %a \"$dir\" 2>/dev/null)\n" +
+		"	if [ \"$dir\" = \"$prev\" ]; then\n" +
+		"		echo \"urnetwork-update: refusing to run $tool: cannot resolve a directory for it\" >&2; exit 1\n" +
+		"	fi\n" +
+		"	prev=\"$dir\"\n" +
+		"	if [ ! -d \"$dir\" ]; then\n" +
+		"		echo \"urnetwork-update: refusing to run: $dir is missing\" >&2; exit 1\n" +
+		"	fi\n" +
+		"	owner=$(stat -c %u \"$dir\" 2>/dev/null)\n" +
+		"	mode=$(stat -c %a \"$dir\" 2>/dev/null)\n" +
 		"\tif [ \"$owner\" != \"0\" ] || [ \"$((0$mode & 022))\" -ne 0 ]; then\n" +
 		"\t\techo \"urnetwork-update: refusing to run $tool: $dir is writable by a non-root user (owner=$owner mode=$mode)\" >&2\n" +
 		"\t\texit 1\n" +

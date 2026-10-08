@@ -46,6 +46,16 @@ const openrcServiceName = "urnetwork"
 // every release that builds those targets.
 func openrcTailServiceLogs(_ Provider, _ int) (bool, error) { return false, nil }
 
+// openrcTreeOwnedByRoot is the off-Linux no-op. There is no OpenRC tree away
+// from Linux, so no install destination can fall under it; installBinary
+// therefore keeps its chown-to-user behaviour on windows and darwin, which
+// is exactly what the session-service update path wants there.
+func openrcTreeOwnedByRoot(string) bool { return false }
+
+// openrcStagedRootToolPath is the off-Linux no-op (see openrc.go); no staged
+// root tool exists away from Linux.
+func openrcStagedRootToolPath() string { return "" }
+
 // providerSupervisedByOpenRCFn reports whether a provider process is
 // supervised by OpenRC's supervise-daemon; off Linux there is no OpenRC, so
 // it is always false. A var to mirror the Linux seam.

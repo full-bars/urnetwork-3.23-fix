@@ -9,6 +9,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 // openrcTestRig stubs the OpenRC backend's seams so routing tests exercise
@@ -1148,6 +1149,11 @@ func TestOpenRCStartWorksWithStoppedServiceDiscovered(t *testing.T) {
 // euid==0 and built its tree under /root, so on CI it never ran at all and the
 // bug class it was written for (B1: `755` parsed as decimal against octal 022)
 // had no guard at all.
+//
+// The fake stat's %u answer is fixed at 0 (root), which is the legitimate
+// owner; per-case modes drive the mode check. Owner!=0 is its own guard branch
+// and is exercised by a dedicated case below, because the shim must be able to
+// answer both questions the script asks.
 func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
 	binDir := t.TempDir()
 	// The fake stat answers for every path, so the walk up to "/" sees the
@@ -1158,7 +1164,7 @@ func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
 	script := "#!/bin/sh\n" +
 		"case \"$1\" in\n" +
 		"  -c) case \"$2\" in\n" +
-		"        %u) echo 0 ;;\n" +
+		"        %u) cat \"$FAKE_STAT_OWNER\" ;;\n" +
 		"        %a) cat \"$FAKE_STAT_MODE\" ;;\n" +
 		"      esac ;;\n" +
 		"esac\n"
@@ -1169,6 +1175,10 @@ func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
 	if err := os.WriteFile(modeFile, []byte("755\n"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	ownerFile := filepath.Join(binDir, "owner")
+	if err := os.WriteFile(ownerFile, []byte("0\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	dir := t.TempDir()
 	tool := filepath.Join(dir, "urnet-tools")
@@ -1176,34 +1186,74 @@ func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
 		t.Fatal(err)
 	}
 
+	runGuard := func(t *testing.T, mode, owner string) (string, error) {
+		t.Helper()
+		if err := os.WriteFile(modeFile, []byte(mode+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(ownerFile, []byte(owner+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("sh", "-c", openrcUpdateCronScript(tool))
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+":"+os.Getenv("PATH"),
+			"FAKE_STAT_MODE="+modeFile,
+			"FAKE_STAT_OWNER="+ownerFile,
+		)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
 	for _, tc := range []struct {
-		name string
-		mode string
-		safe bool
+		name  string
+		mode  string
+		owner string
+		safe  bool
 	}{
 		// 755 is the mode the installer actually creates. It is the case B1
 		// broke: decimal 755 & octal 022 = 18, so the guard refused it.
-		{"0755", "755", true},
-		{"0700", "700", true},
-		{"0750", "750", true},
-		{"0775", "775", false},
-		{"0777", "777", false},
+		{"0755 root", "755", "0", true},
+		{"0700 root", "700", "0", true},
+		{"0750 root", "750", "0", true},
+		{"0775 root", "775", "0", false},
+		{"0777 root", "777", "0", false},
+		// owner!=0 is refused regardless of mode: the whole ancestor walk
+		// exists because root-owned files cannot defend user-writable paths.
+		{"0755 non-root owner", "755", "1000", false},
+		{"0700 non-root owner", "700", "1000", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := os.WriteFile(modeFile, []byte(tc.mode+"\n"), 0o644); err != nil {
-				t.Fatal(err)
-			}
-			cmd := exec.Command("sh", "-c", openrcUpdateCronScript(tool))
-			cmd.Env = append(os.Environ(),
-				"PATH="+binDir+":"+os.Getenv("PATH"),
-				"FAKE_STAT_MODE="+modeFile,
-			)
-			out, err := cmd.CombinedOutput()
+			out, err := runGuard(t, tc.mode, tc.owner)
 			if (err == nil) != tc.safe {
-				t.Fatalf("mode %s: safe=%v but guard returned %v: %s", tc.mode, tc.safe, err, out)
+				t.Fatalf("mode %s owner %s: safe=%v but guard returned %v: %s", tc.mode, tc.owner, tc.safe, err, out)
 			}
 		})
 	}
+
+	// A tool path with no directory component (dirname never progresses) must
+	// terminate quickly with a refusal, not spin forever.
+	t.Run("bare tool name refused", func(t *testing.T) {
+		cmd := exec.Command("sh", "-c", openrcUpdateCronScript("urnet-tools"))
+		cmd.Env = append(os.Environ(),
+			"PATH="+binDir+":"+os.Getenv("PATH"),
+			"FAKE_STAT_MODE="+modeFile,
+			"FAKE_STAT_OWNER="+ownerFile,
+		)
+		done := make(chan error, 1)
+		if err := cmd.Start(); err != nil {
+			t.Fatal(err)
+		}
+		go func() { done <- cmd.Wait() }()
+		select {
+		case err := <-done:
+			if err == nil {
+				t.Fatal("bare tool name: guard should refuse, returned success")
+			}
+		case <-time.After(5 * time.Second):
+			cmd.Process.Kill()
+			t.Fatal("bare tool name: guard did not terminate within 5s (infinite loop)")
+		}
+	})
 }
 
 func TestCmdLogsOpenRCTarget(t *testing.T) {
