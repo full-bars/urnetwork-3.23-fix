@@ -250,9 +250,38 @@ func pressureSummaryLine(stateDir string) string {
 	if err := json.Unmarshal(b, &st); err != nil {
 		return ""
 	}
-	// Normalize internal whitespace (newlines, tabs, runs of spaces) so a
-	// corrupted or hand-edited file cannot break the live block's layout.
-	return strings.Join(strings.Fields(st.Summary), " ")
+	return sanitizeSummary(strings.Join(strings.Fields(st.Summary), " "))
+}
+
+// sanitizeSummary keeps a persisted sentence fit for display: whitespace is
+// already collapsed by the caller; here control runes are dropped (a planted
+// or corrupt file must not dump escape sequences into a possibly-root
+// terminal -- the read is already no-follow, this is content hygiene) and
+// the result is capped at 200 runes with an ellipsis.
+func sanitizeSummary(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	n := 0
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == 0x1b { // ESC: drop the whole escape sequence
+			i++
+			for i < len(runes) && !((runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= 'a' && runes[i] <= 'z')) {
+				i++
+			}
+			continue
+		}
+		if r < 32 || r == 127 || (r >= 128 && r < 160) {
+			continue
+		}
+		if n >= 200 {
+			b.WriteString("...")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // printProviderSummary prints one compact row per provider, fetching the

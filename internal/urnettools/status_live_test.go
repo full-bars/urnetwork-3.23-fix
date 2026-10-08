@@ -154,6 +154,21 @@ func TestPressureSummaryLine(t *testing.T) {
 	if got := pressureSummaryLine(dir); got != "line1 line2" {
 		t.Fatalf("embedded newlines must normalize to spaces, got %q", got)
 	}
+	// Control runes are dropped: a planted file must not dump escape
+	// sequences into a possibly-root terminal.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("{\"summary\":\"calm\\u001b[31mred\\u001b[0m\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "calmred" {
+		t.Fatalf("escape sequences must be stripped, got %q", got)
+	}
+	// The sentence is capped to a sane display bound.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"`+strings.Repeat("x", 250)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); len([]rune(got)) > 203 {
+		t.Fatalf("the summary must be capped, got %d runes", len([]rune(got)))
+	}
 	// A directory at the name is refused like any other non-regular file.
 	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
 		t.Fatal(err)

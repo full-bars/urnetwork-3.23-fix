@@ -259,12 +259,37 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	// number. Older providers that never wrote the file keep the bare score.
 	pressureSegs := []string{fmt.Sprintf("%.2f", s.Pressure)}
 	if pressureSummary != "" {
-		// Split on the sentence's clause separator so wrapRow can fold a long
-		// summary onto continuation lines instead of hard-overflowing the
-		// terminal (the sentence runs 75-110+ chars, wider than 80 columns).
-		pressureSegs = strings.Split(pressureSummary, "; ")
+		// Fold the sentence's few non-ASCII runes on plain terminals: the
+		// provider writes an em dash in elevated sentences, and TERM=dumb
+		// output must stay <= 127 runes per the block's contract.
+		if o.ASCII {
+			pressureSummary = strings.Map(func(r rune) rune {
+				switch r {
+				case '—', '–':
+					return '-'
+				case '‘', '’':
+					return '\''
+				case '“', '”':
+					return '"'
+				case '…':
+					return '.'
+				case 0xA0: // no-break space
+					return ' '
+				}
+				if r > 127 {
+					return '?'
+				}
+				return r
+			}, pressureSummary)
+		}
+		// Split into word segments so wrapRow can fold a long summary at any
+		// word boundary instead of hard-overflowing the terminal (sentences
+		// run 75-110+ chars, wider than 80 columns, and a single clause can
+		// too). The words re-join with single spaces, so wide terminals see
+		// the exact same sentence.
+		pressureSegs = strings.Fields(pressureSummary)
 	}
-	emit(liveRow{label: "pressure", sep: "; ", segs: pressureSegs})
+	emit(liveRow{label: "pressure", sep: " ", segs: pressureSegs})
 
 	if label, text, ok := s.whyRow(); ok {
 		emit(liveRow{label: label, segs: []string{text}})

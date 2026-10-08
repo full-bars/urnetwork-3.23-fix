@@ -140,6 +140,21 @@ func TestRenderLiveBlockDumbTerminal(t *testing.T) {
 	assertGolden(t, "live_dumb", out)
 }
 
+func TestRenderLiveBlockDumbTerminalWithSummary(t *testing.T) {
+	// The summary sentence carries an em dash in its elevated form; a dumb
+	// terminal must still get ASCII-only output.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	out := renderLiveBlock(s, liveOpts{ASCII: true, Width: 100}, "memory pressure 0.21 — system calm; heap at 33% of its soft limit")
+	for _, r := range out {
+		if r > 127 {
+			t.Fatalf("non-ascii rune %q on an ascii terminal:\n%s", r, out)
+		}
+	}
+	if !strings.Contains(out, "memory pressure 0.21 - system calm") {
+		t.Fatalf("the em dash must fold to '-':\n%s", out)
+	}
+}
+
 func TestLiveOptsFromEnvColorNeedsTTY(t *testing.T) {
 	t.Setenv("NO_COLOR", "")
 	t.Setenv("TERM", "xterm")
