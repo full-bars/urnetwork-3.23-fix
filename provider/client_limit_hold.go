@@ -24,6 +24,10 @@ type clientLimitHoldEntry struct {
 	stop chan struct{}
 }
 
+// clientLimitHoldWatchers counts live persist watchers, so a reset can wait
+// until none can write any more.
+var clientLimitHoldWatchers sync.WaitGroup
+
 var clientLimitHolds = struct {
 	sync.Mutex
 	m map[string]*clientLimitHoldEntry
@@ -55,33 +59,49 @@ func clientLimitHoldFor(clientId connect.Id, now time.Time) *connect.ClientLimit
 func clientLimitHoldWithContext(ctx context.Context, clientId connect.Id, now time.Time) *connect.ClientLimitBackoff {
 	key := clientId.String()
 
+	// The hold file is read before the registry lock is taken, so 500 proxies
+	// starting together do not serialize their disk reads behind one mutex. A
+	// reference to an entry that already exists skips the read entirely.
 	clientLimitHolds.Lock()
-	if clientLimitHolds.m == nil {
-		clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
-	}
 	entry, ok := clientLimitHolds.m[key]
 	if ok {
 		entry.refs += 1
+		clientLimitHolds.Unlock()
 	} else {
-		entry = &clientLimitHoldEntry{
-			b:    connect.NewClientLimitBackoff(),
-			refs: 1,
-			stop: make(chan struct{}),
-		}
-		clientLimitHolds.m[key] = entry
+		clientLimitHolds.Unlock()
 
+		var restoreUnix int64
 		if path, err := clientLimitHoldPath(); err == nil {
 			file := make(clientLimitHoldFile)
 			if oomReadJSON(path, &file) {
 				if retryUnix, ok := file[key]; ok && retryUnix > now.Unix() {
-					entry.b.Restore(time.Unix(retryUnix, 0))
+					restoreUnix = retryUnix
 				}
 			}
 		}
 
-		go runClientLimitHoldPersistWatcher(key, entry.b, entry.stop)
+		clientLimitHolds.Lock()
+		if clientLimitHolds.m == nil {
+			clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
+		}
+		if entry, ok = clientLimitHolds.m[key]; ok {
+			// another caller created it while the file was being read
+			entry.refs += 1
+		} else {
+			entry = &clientLimitHoldEntry{
+				b:    connect.NewClientLimitBackoff(),
+				refs: 1,
+				stop: make(chan struct{}),
+			}
+			if restoreUnix != 0 {
+				entry.b.Restore(time.Unix(restoreUnix, 0))
+			}
+			clientLimitHolds.m[key] = entry
+			clientLimitHoldWatchers.Add(1)
+			go runClientLimitHoldPersistWatcher(key, entry.b, entry.stop)
+		}
+		clientLimitHolds.Unlock()
 	}
-	clientLimitHolds.Unlock()
 
 	if done := ctx.Done(); done != nil {
 		go func() {
@@ -93,8 +113,9 @@ func clientLimitHoldWithContext(ctx context.Context, clientId connect.Id, now ti
 	return entry.b
 }
 
-// releaseClientLimitHold drops one reference. The last one stops the watcher
-// and flushes a standing hold to disk before the entry disappears.
+// releaseClientLimitHold drops one reference. The last one removes the entry
+// and stops its watcher, which writes the standing hold once more before it
+// exits so a replacement restores it. No I/O happens under the registry lock.
 func releaseClientLimitHold(key string, entry *clientLimitHoldEntry) {
 	clientLimitHolds.Lock()
 	entry.refs -= 1
@@ -106,15 +127,15 @@ func releaseClientLimitHold(key string, entry *clientLimitHoldEntry) {
 
 	if last {
 		close(entry.stop)
-		_ = persistClientLimitHold(key, entry.b.Status(), time.Now())
 	}
 }
 
 // runClientLimitHoldPersistWatcher writes the hold to disk when it starts,
 // changes or ends. It writes nothing while the hold has never been in force, so
-// a fleet of idle clients does not rewrite the shared file at startup. It
-// returns when stop closes.
+// a fleet of idle clients does not rewrite the shared file at startup. When
+// stop closes it writes a standing hold once more and returns.
 func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBackoff, stop <-chan struct{}) {
+	defer clientLimitHoldWatchers.Done()
 	persisted := false
 	for {
 		st, ch := b.Get()
@@ -124,6 +145,10 @@ func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBac
 		}
 		select {
 		case <-stop:
+			// the hold may have changed after the read above
+			if st := b.Status(); st.Exceeded || persisted {
+				_ = persistClientLimitHold(clientId, st, time.Now())
+			}
 			return
 		case <-ch:
 		}
@@ -217,11 +242,12 @@ func flushClientLimitHolds() {
 
 func resetClientLimitHoldsForTest() {
 	clientLimitHolds.Lock()
-	defer clientLimitHolds.Unlock()
 	for _, entry := range clientLimitHolds.m {
 		close(entry.stop)
 	}
 	clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
+	clientLimitHolds.Unlock()
+	clientLimitHoldWatchers.Wait()
 }
 
 // provideIntentEnabled reports whether provider intent declaration is enabled.

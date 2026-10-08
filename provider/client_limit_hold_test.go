@@ -16,8 +16,7 @@ import (
 // fresh registry B loads; X exceeded with identical RetryTime; Y not held;
 // load at RetryTime+1s prunes X.
 func TestClientLimitHoldSurvivesRestart(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	t0 := time.Now().Truncate(time.Second)
 	retryTime := t0.Add(15 * time.Minute)
@@ -61,8 +60,7 @@ func TestClientLimitHoldSurvivesRestart(t *testing.T) {
 
 // 16. TestClientLimitHoldMergeKeepsLater (parent and candidate writers).
 func TestClientLimitHoldMergeKeepsLater(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	t0 := time.Unix(1700000000, 0)
 	idX := connect.NewId().String()
@@ -115,8 +113,7 @@ func TestClientLimitHoldMergeKeepsLater(t *testing.T) {
 
 // 17. TestClientLimitHoldCorruptFileReadsEmpty
 func TestClientLimitHoldCorruptFileReadsEmpty(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	path, err := clientLimitHoldPath()
 	if err != nil {
@@ -202,6 +199,16 @@ func TestAuthClientArgsProvideIntentJSON(t *testing.T) {
 	}
 }
 
+// setupClientLimitHoldTest isolates one test: its own HOME, an empty registry,
+// and a cleanup that stops every watcher before the temp dir goes away.
+func setupClientLimitHoldTest(t *testing.T) {
+	t.Helper()
+	dir := t.TempDir()
+	t.Setenv("HOME", dir)
+	resetClientLimitHoldsForTest()
+	t.Cleanup(resetClientLimitHoldsForTest)
+}
+
 func clientLimitHoldCount() int {
 	clientLimitHolds.Lock()
 	defer clientLimitHolds.Unlock()
@@ -224,8 +231,7 @@ func waitFor(t *testing.T, what string, ok func() bool) {
 // user is gone, whatever the number of distinct client ids seen over the life
 // of the process.
 func TestClientLimitHoldReleasedWhenContextEnds(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	const n = 50
 	cancels := make([]context.CancelFunc, 0, n)
@@ -247,8 +253,7 @@ func TestClientLimitHoldReleasedWhenContextEnds(t *testing.T) {
 // until the LAST user ends, so the first user ending does not strip the
 // replacement of its persistence.
 func TestClientLimitHoldSharedUntilLastUserEnds(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	id := connect.NewId()
 	ctx1, cancel1 := context.WithCancel(context.Background())
@@ -271,8 +276,7 @@ func TestClientLimitHoldSharedUntilLastUserEnds(t *testing.T) {
 // A standing hold is flushed when the last user ends, and a later instance of
 // the same client restores it, so a proxy reload does not forget a hold.
 func TestClientLimitHoldFlushedOnRelease(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	id := connect.NewId()
 	retry := time.Now().Add(10 * time.Minute).Truncate(time.Second)
@@ -281,6 +285,14 @@ func TestClientLimitHoldFlushedOnRelease(t *testing.T) {
 	b.Restore(retry)
 	cancel()
 	waitFor(t, "entry released", func() bool { return clientLimitHoldCount() == 0 })
+	waitFor(t, "hold written to disk", func() bool {
+		path, err := clientLimitHoldPath()
+		if err != nil {
+			return false
+		}
+		file := make(clientLimitHoldFile)
+		return oomReadJSON(path, &file) && file[id.String()] == retry.Unix()
+	})
 
 	b2 := clientLimitHoldFor(id, time.Now())
 	st := b2.Status()
@@ -291,8 +303,7 @@ func TestClientLimitHoldFlushedOnRelease(t *testing.T) {
 
 // Clients that were never held must not touch the shared file.
 func TestClientLimitHoldIdleClientsWriteNothing(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	resetClientLimitHoldsForTest()
+	setupClientLimitHoldTest(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
