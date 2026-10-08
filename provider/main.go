@@ -3795,7 +3795,7 @@ func provide(opts docopt.Opts) {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
 				onOff(resolveH3Setting(globalControlState, currentProxyResolution())))
 		}
-		platformSettings.ClientLimitBackoff = clientLimitHoldFor(clientId, time.Now())
+		platformSettings.ClientLimitBackoff = clientLimitHoldWithContext(proxyCtx, clientId, time.Now())
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).

@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -198,5 +199,112 @@ func TestAuthClientArgsProvideIntentJSON(t *testing.T) {
 	}
 	if strings.Contains(string(bytesFalse), "provide_intent") {
 		t.Fatalf("expected provide_intent omitted when false in %s", string(bytesFalse))
+	}
+}
+
+func clientLimitHoldCount() int {
+	clientLimitHolds.Lock()
+	defer clientLimitHolds.Unlock()
+	return len(clientLimitHolds.m)
+}
+
+func waitFor(t *testing.T, what string, ok func() bool) {
+	t.Helper()
+	deadline := time.Now().Add(5 * time.Second)
+	for time.Now().Before(deadline) {
+		if ok() {
+			return
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+	t.Fatalf("timed out waiting for %s", what)
+}
+
+// The registry must not keep an entry or a watcher for a client whose last
+// user is gone, whatever the number of distinct client ids seen over the life
+// of the process.
+func TestClientLimitHoldReleasedWhenContextEnds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resetClientLimitHoldsForTest()
+
+	const n = 50
+	cancels := make([]context.CancelFunc, 0, n)
+	for i := 0; i < n; i += 1 {
+		ctx, cancel := context.WithCancel(context.Background())
+		cancels = append(cancels, cancel)
+		clientLimitHoldWithContext(ctx, connect.NewId(), time.Now())
+	}
+	if got := clientLimitHoldCount(); got != n {
+		t.Fatalf("entries = %d, want %d", got, n)
+	}
+	for _, cancel := range cancels {
+		cancel()
+	}
+	waitFor(t, "all entries released", func() bool { return clientLimitHoldCount() == 0 })
+}
+
+// A replacement for the same client id shares the hold, and the entry stays
+// until the LAST user ends, so the first user ending does not strip the
+// replacement of its persistence.
+func TestClientLimitHoldSharedUntilLastUserEnds(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resetClientLimitHoldsForTest()
+
+	id := connect.NewId()
+	ctx1, cancel1 := context.WithCancel(context.Background())
+	ctx2, cancel2 := context.WithCancel(context.Background())
+	defer cancel2()
+	b1 := clientLimitHoldWithContext(ctx1, id, time.Now())
+	b2 := clientLimitHoldWithContext(ctx2, id, time.Now())
+	if b1 != b2 {
+		t.Fatal("the same client id must share one hold")
+	}
+	cancel1()
+	time.Sleep(50 * time.Millisecond)
+	if got := clientLimitHoldCount(); got != 1 {
+		t.Fatalf("entry dropped while a user remains: entries = %d", got)
+	}
+	cancel2()
+	waitFor(t, "entry released after last user", func() bool { return clientLimitHoldCount() == 0 })
+}
+
+// A standing hold is flushed when the last user ends, and a later instance of
+// the same client restores it, so a proxy reload does not forget a hold.
+func TestClientLimitHoldFlushedOnRelease(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resetClientLimitHoldsForTest()
+
+	id := connect.NewId()
+	retry := time.Now().Add(10 * time.Minute).Truncate(time.Second)
+	ctx, cancel := context.WithCancel(context.Background())
+	b := clientLimitHoldWithContext(ctx, id, time.Now())
+	b.Restore(retry)
+	cancel()
+	waitFor(t, "entry released", func() bool { return clientLimitHoldCount() == 0 })
+
+	b2 := clientLimitHoldFor(id, time.Now())
+	st := b2.Status()
+	if !st.Exceeded || !st.RetryTime.Equal(retry) {
+		t.Fatalf("hold not restored after release: %+v, want retry %v", st, retry)
+	}
+}
+
+// Clients that were never held must not touch the shared file.
+func TestClientLimitHoldIdleClientsWriteNothing(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	resetClientLimitHoldsForTest()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	for i := 0; i < 20; i += 1 {
+		clientLimitHoldWithContext(ctx, connect.NewId(), time.Now())
+	}
+	time.Sleep(100 * time.Millisecond)
+	path, err := clientLimitHoldPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(path); !os.IsNotExist(err) {
+		t.Fatalf("idle clients wrote %s (err=%v)", path, err)
 	}
 }

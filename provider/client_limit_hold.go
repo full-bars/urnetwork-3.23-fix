@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"sync"
@@ -14,11 +15,20 @@ const clientLimitHoldFileName = "client_limit_hold.json"
 // clientLimitHoldFile maps client id string to retry unix timestamp.
 type clientLimitHoldFile map[string]int64
 
+// clientLimitHoldEntry is one client's hold, shared by every user of that
+// client id. The persist watcher lives only while refs > 0, so a proxy that is
+// removed or reloaded does not leave a goroutine and a map entry behind.
+type clientLimitHoldEntry struct {
+	b    *connect.ClientLimitBackoff
+	refs int
+	stop chan struct{}
+}
+
 var clientLimitHolds = struct {
 	sync.Mutex
-	m map[string]*connect.ClientLimitBackoff
+	m map[string]*clientLimitHoldEntry
 }{
-	m: make(map[string]*connect.ClientLimitBackoff),
+	m: make(map[string]*clientLimitHoldEntry),
 }
 
 // clientLimitHoldPath returns the path to client_limit_hold.json in oomCapDir().
@@ -30,44 +40,93 @@ func clientLimitHoldPath() (string, error) {
 	return filepath.Join(dir, clientLimitHoldFileName), nil
 }
 
-// clientLimitHoldFor returns the registered ClientLimitBackoff for clientId,
-// restoring from disk on first creation and starting a persist watcher.
+// clientLimitHoldFor returns the shared ClientLimitBackoff for clientId with no
+// lifetime: the caller never releases it. Production callers use
+// clientLimitHoldWithContext.
 func clientLimitHoldFor(clientId connect.Id, now time.Time) *connect.ClientLimitBackoff {
+	return clientLimitHoldWithContext(context.Background(), clientId, now)
+}
+
+// clientLimitHoldWithContext returns the shared ClientLimitBackoff for
+// clientId, restoring a standing hold from disk on first creation and starting
+// its persist watcher. The caller holds one reference until ctx ends; when the
+// last reference goes the watcher stops, the standing hold is flushed to disk
+// and the entry is removed, so a replacement restores it.
+func clientLimitHoldWithContext(ctx context.Context, clientId connect.Id, now time.Time) *connect.ClientLimitBackoff {
 	key := clientId.String()
 
 	clientLimitHolds.Lock()
-	defer clientLimitHolds.Unlock()
-
 	if clientLimitHolds.m == nil {
-		clientLimitHolds.m = make(map[string]*connect.ClientLimitBackoff)
+		clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
 	}
+	entry, ok := clientLimitHolds.m[key]
+	if ok {
+		entry.refs += 1
+	} else {
+		entry = &clientLimitHoldEntry{
+			b:    connect.NewClientLimitBackoff(),
+			refs: 1,
+			stop: make(chan struct{}),
+		}
+		clientLimitHolds.m[key] = entry
 
-	if b, ok := clientLimitHolds.m[key]; ok {
-		return b
-	}
-
-	b := connect.NewClientLimitBackoff()
-	clientLimitHolds.m[key] = b
-
-	if path, err := clientLimitHoldPath(); err == nil {
-		file := make(clientLimitHoldFile)
-		if oomReadJSON(path, &file) {
-			if retryUnix, ok := file[key]; ok && retryUnix > now.Unix() {
-				b.Restore(time.Unix(retryUnix, 0))
+		if path, err := clientLimitHoldPath(); err == nil {
+			file := make(clientLimitHoldFile)
+			if oomReadJSON(path, &file) {
+				if retryUnix, ok := file[key]; ok && retryUnix > now.Unix() {
+					entry.b.Restore(time.Unix(retryUnix, 0))
+				}
 			}
 		}
+
+		go runClientLimitHoldPersistWatcher(key, entry.b, entry.stop)
+	}
+	clientLimitHolds.Unlock()
+
+	if done := ctx.Done(); done != nil {
+		go func() {
+			<-done
+			releaseClientLimitHold(key, entry)
+		}()
 	}
 
-	go runClientLimitHoldPersistWatcher(key, b)
-
-	return b
+	return entry.b
 }
 
-func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBackoff) {
+// releaseClientLimitHold drops one reference. The last one stops the watcher
+// and flushes a standing hold to disk before the entry disappears.
+func releaseClientLimitHold(key string, entry *clientLimitHoldEntry) {
+	clientLimitHolds.Lock()
+	entry.refs -= 1
+	last := entry.refs <= 0 && clientLimitHolds.m[key] == entry
+	if last {
+		delete(clientLimitHolds.m, key)
+	}
+	clientLimitHolds.Unlock()
+
+	if last {
+		close(entry.stop)
+		_ = persistClientLimitHold(key, entry.b.Status(), time.Now())
+	}
+}
+
+// runClientLimitHoldPersistWatcher writes the hold to disk when it starts,
+// changes or ends. It writes nothing while the hold has never been in force, so
+// a fleet of idle clients does not rewrite the shared file at startup. It
+// returns when stop closes.
+func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBackoff, stop <-chan struct{}) {
+	persisted := false
 	for {
 		st, ch := b.Get()
-		_ = persistClientLimitHold(clientId, st, time.Now())
-		<-ch
+		if st.Exceeded || persisted {
+			_ = persistClientLimitHold(clientId, st, time.Now())
+			persisted = st.Exceeded
+		}
+		select {
+		case <-stop:
+			return
+		case <-ch:
+		}
 	}
 }
 
@@ -130,9 +189,9 @@ func reloadClientLimitHolds(now time.Time) {
 	clientLimitHolds.Lock()
 	defer clientLimitHolds.Unlock()
 
-	for clientId, b := range clientLimitHolds.m {
+	for clientId, entry := range clientLimitHolds.m {
 		if retryUnix, ok := file[clientId]; ok && retryUnix > now.Unix() {
-			b.Restore(time.Unix(retryUnix, 0))
+			entry.b.Restore(time.Unix(retryUnix, 0))
 		}
 	}
 }
@@ -145,8 +204,8 @@ func flushClientLimitHolds() {
 		st connect.ClientLimitStatus
 	}
 	var snaps []snapshot
-	for id, b := range clientLimitHolds.m {
-		snaps = append(snaps, snapshot{id: id, st: b.Status()})
+	for id, entry := range clientLimitHolds.m {
+		snaps = append(snaps, snapshot{id: id, st: entry.b.Status()})
 	}
 	clientLimitHolds.Unlock()
 
@@ -159,7 +218,10 @@ func flushClientLimitHolds() {
 func resetClientLimitHoldsForTest() {
 	clientLimitHolds.Lock()
 	defer clientLimitHolds.Unlock()
-	clientLimitHolds.m = make(map[string]*connect.ClientLimitBackoff)
+	for _, entry := range clientLimitHolds.m {
+		close(entry.stop)
+	}
+	clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
 }
 
 // provideIntentEnabled reports whether provider intent declaration is enabled.
