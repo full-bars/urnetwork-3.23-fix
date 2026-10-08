@@ -514,6 +514,26 @@ jobs:
         with:
           name: urnet-docker-windows-arm64
           path: release_tmp/windows/arm64/
+      - name: Download provider freebsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-freebsd-amd64
+          path: release_tmp/freebsd/amd64/
+      - name: Download provider freebsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-freebsd-arm64
+          path: release_tmp/freebsd/arm64/
+      - name: Download urnet-tools freebsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-freebsd-amd64
+          path: release_tmp/freebsd/amd64/
+      - name: Download urnet-tools freebsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-freebsd-arm64
+          path: release_tmp/freebsd/arm64/
 
       - name: VirusTotal scan of release binaries
         env:
@@ -556,7 +576,11 @@ jobs:
             release_tmp/darwin/amd64/urnet-docker \
             release_tmp/darwin/arm64/urnet-docker \
             release_tmp/windows/amd64/urnet-docker \
-            release_tmp/windows/arm64/urnet-docker
+            release_tmp/windows/arm64/urnet-docker \
+            release_tmp/freebsd/amd64/provider \
+            release_tmp/freebsd/arm64/provider \
+            release_tmp/freebsd/amd64/urnet-tools \
+            release_tmp/freebsd/arm64/urnet-tools
           # Non-blocking: a FAIL here does NOT cancel the release. It exits
           # non-zero so the job is red, and the comment step below still runs
           # (if: always()) to surface the verdict on the release.

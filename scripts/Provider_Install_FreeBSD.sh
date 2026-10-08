@@ -152,10 +152,14 @@ restart_service() {
 }
 
 service_running() {
-    # Status reads the pidfile and is fine unprivileged; only start/stop need
-    # root. The script must exist first, or `service` errors on a fresh box.
+    # The script must exist first, or `service` errors on a fresh box.
     [ -x "/usr/local/etc/rc.d/$service_name" ] || return 1
-    service "$service_name" onestatus >/dev/null 2>&1
+    # Through priv: the rc.d status check runs `kill -0` on the provider pid,
+    # and for an invoking user whose uid differs from the service user that
+    # returns EPERM, so an unprivileged status would report "not running" while
+    # the provider is up. On update that would skip the restart and leave the
+    # old binary running.
+    priv service "$service_name" onestatus >/dev/null 2>&1
 }
 
 # set_rc_conf_default KEY VALUE sets an rc.conf variable only when it is not

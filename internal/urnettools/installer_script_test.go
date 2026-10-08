@@ -91,10 +91,12 @@ func TestFreeBSDResolveServiceUserNeverEmpty(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
-	start := strings.Index(script, "resolve_service_user() {")
-	rest := script[start:]
-	end := strings.Index(rest, "\n}\n")
-	fn := rest[:end+2]
+	// Guarded extraction: a raw Index would slice from -1 and panic the whole
+	// package run if the function is renamed, instead of failing this test.
+	fn := extractShellFunc(t, script, "resolve_service_user")
+	if fn == "" {
+		t.Fatal("could not extract resolve_service_user from the FreeBSD installer")
+	}
 
 	cmd := exec.Command("/bin/sh", "-c", fn+"; resolve_service_user")
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
