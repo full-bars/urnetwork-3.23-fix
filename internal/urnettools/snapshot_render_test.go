@@ -142,9 +142,10 @@ func TestRenderLiveBlockDumbTerminal(t *testing.T) {
 
 func TestRenderLiveBlockDumbTerminalWithSummary(t *testing.T) {
 	// The summary sentence carries an em dash in its elevated form; a dumb
-	// terminal must still get ASCII-only output.
+	// terminal must still get ASCII-only output, with the few fancy runes
+	// folded to their ASCII lookalikes.
 	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
-	out := renderLiveBlock(s, liveOpts{ASCII: true, Width: 100}, "memory pressure 0.21 — system calm; heap at 33% of its soft limit")
+	out := renderLiveBlock(s, liveOpts{ASCII: true, Width: 100}, "memory pressure 0.21 — system calm; heap at 33% of its soft limit; “note”… it’s fine")
 	for _, r := range out {
 		if r > 127 {
 			t.Fatalf("non-ascii rune %q on an ascii terminal:\n%s", r, out)
@@ -152,6 +153,19 @@ func TestRenderLiveBlockDumbTerminalWithSummary(t *testing.T) {
 	}
 	if !strings.Contains(out, "memory pressure 0.21 - system calm") {
 		t.Fatalf("the em dash must fold to '-':\n%s", out)
+	}
+	if !strings.Contains(out, "\"note\".") || !strings.Contains(out, "it's") {
+		t.Fatalf("curly quotes and the ellipsis must fold:\n%s", out)
+	}
+}
+
+func TestRenderLiveBlockWhitespaceSummaryFallsBack(t *testing.T) {
+	// A whitespace-only summary must not render an empty pressure row: the
+	// bare score stays.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	out := renderLiveBlock(s, liveOpts{Width: 80}, "   ")
+	if !strings.Contains(out, "0.21") {
+		t.Fatalf("a whitespace-only summary must keep the bare score:\n%s", out)
 	}
 }
 

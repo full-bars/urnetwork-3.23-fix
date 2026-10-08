@@ -169,6 +169,13 @@ func TestPressureSummaryLine(t *testing.T) {
 	if got := pressureSummaryLine(dir); len([]rune(got)) > 203 {
 		t.Fatalf("the summary must be capped, got %d runes", len([]rune(got)))
 	}
+	// The cap counts RUNES, not bytes: multi-byte runes still cap at 200.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"`+strings.Repeat("界", 250)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); len([]rune(got)) > 203 {
+		t.Fatalf("the cap must count runes, got %d runes", len([]rune(got)))
+	}
 	// A directory at the name is refused like any other non-regular file.
 	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
 		t.Fatal(err)

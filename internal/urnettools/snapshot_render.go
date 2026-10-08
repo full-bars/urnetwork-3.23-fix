@@ -288,6 +288,11 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 		// too). The words re-join with single spaces, so wide terminals see
 		// the exact same sentence.
 		pressureSegs = strings.Fields(pressureSummary)
+		if len(pressureSegs) == 0 {
+			// Defensive: a whitespace-only summary must fall back to the
+			// score instead of rendering an empty pressure row.
+			pressureSegs = []string{fmt.Sprintf("%.2f", s.Pressure)}
+		}
 	}
 	emit(liveRow{label: "pressure", sep: " ", segs: pressureSegs})
 
