@@ -77,6 +77,14 @@ var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the
 // so the operator-facing decline text is identical on both paths and no
 // caller can gate on a bool and lose the reason.
 func hotSwapPreflight(p Provider) error {
+	// OpenRC supervision is checked FIRST: it is the dominant, upgrade-proof
+	// blocker (no sd_notify handoff), so a supervised provider always records
+	// reason="openrc" rather than a version or unit-type reason that an
+	// operator action could not fix. It also short-circuits before the
+	// running-image version read.
+	if err := openrcHotSwapDecline(p); err != nil {
+		return err
+	}
 	if !hotSwapVersionOK(p) {
 		return ErrHotSwapNotSupported
 	}
@@ -277,8 +285,22 @@ var processNotifySocketFunc = processNotifySocket
 // hand the main PID over with.
 var ErrHotSwapNeedsRestart = errors.New("zero-downtime hotswap unavailable: the running provider was started before its systemd unit became Type=notify, so it has no notify socket; this update uses a service restart, and updates after it can hot swap")
 
+// ErrHotSwapOpenRC is returned when the running provider is supervised by
+// OpenRC's supervise-daemon. There is no sd_notify MainPID handoff, so an
+// in-process baton handoff would orphan the successor while supervise-daemon
+// respawns a second provider; the update uses a stop/start service restart
+// instead. This is the documented OpenRC trade (issue #786).
+var ErrHotSwapOpenRC = errors.New("zero-downtime hotswap unavailable: the provider is supervised by OpenRC's supervise-daemon, which has no sd_notify MainPID handoff; this update uses a stop/start service restart")
+
 func hotSwapUnitOK(p Provider) error {
 	if p.Unit == "" {
+		// A provider with no systemd unit that IS supervised by OpenRC must
+		// not hand off in-process (see openrcHotSwapDecline). Any other
+		// unitless provider (e.g. the Docker PID-1 in-place execve path)
+		// keeps working here unconditionally.
+		if err := openrcHotSwapDecline(p); err != nil {
+			return err
+		}
 		return nil
 	}
 	typ, err := unitTypeFunc(p)
@@ -323,6 +345,15 @@ func cmdHotswap(args []string, force, dryRun bool) error {
 	}
 	if !p.Running || p.PID <= 0 {
 		return fmt.Errorf("provider %s is not running (cannot hot-swap)", providerLabel(p))
+	}
+	// A direct `urnet-tools hotswap` must decline on OpenRC for the same reason
+	// the update path does: supervise-daemon has no sd_notify MainPID handoff,
+	// so the in-process successor cannot take over the service. Without this
+	// gate the trigger fires anyway and can leave an orphaned successor process
+	// beside the supervised one. The update path already checks in
+	// hotSwapPreflight and hotSwapUnitOK; the direct command bypassed both.
+	if err := openrcHotSwapDecline(p); err != nil {
+		return err
 	}
 	ok, err := confirmGate("zero-downtime hot-swap "+providerLabel(p), p, force, dryRun)
 	if err != nil {

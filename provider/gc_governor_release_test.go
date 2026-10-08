@@ -36,7 +36,7 @@ func TestGCSelfHealOffTickReleasesTightenedLevel(t *testing.T) {
 	if state.currentGOGC != 100 {
 		t.Fatalf("release must restore the baseline GOGC, got %d", state.currentGOGC)
 	}
-	if !strings.Contains(logs.String(), "[proxy][pressure] gcGovernor") {
+	if !strings.Contains(logs.String(), "Memory governor:") {
 		t.Fatalf("level changes must be logged, got:\n%s", logs.String())
 	}
 	if gcTightening.Load() {
@@ -57,7 +57,7 @@ func TestGCSubtickTightenIsLogged(t *testing.T) {
 	if state.level != 2 {
 		t.Fatalf("0.85 heap should reach level 2, got %d", state.level)
 	}
-	if !strings.Contains(out, "[proxy][pressure] gcGovernor hard_gogc25") {
+	if !strings.Contains(out, "gcGovernor hard_gogc25") {
 		t.Fatalf("subtick tighten not logged, got:\n%s", out)
 	}
 }

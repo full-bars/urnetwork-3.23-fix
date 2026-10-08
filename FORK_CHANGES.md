@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.32.9
+**Current Version**: v3.23.0-fix.32.10
 
 ---
 
@@ -1751,7 +1751,7 @@ The glog→Logger interface migration (#65, PR #69, 2026-06-15) added a wrapper 
 
 ## 70. Code Review Findings — Reaper Lock, Heartbeat, Hub Regressions (PR #225)
 
-**Purpose**: Fixes for critical bugs found in a comprehensive code review audit conducted by Opus. Covers provider reliability, data integrity, and hub infrastructure.
+**Purpose**: Fixes for critical bugs found in a comprehensive code review audit. Covers provider reliability, data integrity, and hub infrastructure.
 
 ### 70a. Reaper Lock Fix (proxy_url_source.go)
 
@@ -2325,7 +2325,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 **Fix**:
 - Status server: `ReadHeaderTimeout: 10s`, `IdleTimeout: 120s`, matching the hub's configuration (`hub/main.go`); `WriteTimeout` deliberately unset so the SSE stream is not killed.
 - `hub-join`: one shared `http.Client{Timeout: 30s}`, both POSTs replaced, `signal.NotifyContext` so Ctrl-C aborts a wedged join; the previously-discarded KE2 response decode error is now checked and reported as a parse error instead of a confusing hex failure two lines later.
-- #321 (same-night hotfix): CodeRabbit test-gen landed after #317 merged and generated `pake_handlers_test.go` against the pre-#317 `doHubJoin(hubURL)` signature, breaking the hub test package build on `main`; all call sites updated to the context signature.
+- #321 (same-night hotfix): automated test-gen landed after #317 merged and generated `pake_handlers_test.go` against the pre-#317 `doHubJoin(hubURL)` signature, breaking the hub test package build on `main`; all call sites updated to the context signature.
 
 **Files Modified**: `provider/main.go`, `hub/pake_handlers.go`, `hub/pake_handlers_test.go`
 
@@ -2832,7 +2832,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - Builder stage copies `go.mod`/`go.sum` and runs `go mod download` first as a separate cacheable layer, so dependency downloads are only invalidated when the module manifests change, not on every source edit.
 - Expanded `.dockerignore` to keep docs, res, and scratch files out of the build context.
 
-**Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, CodeRabbit) green.
+**Verified**: unit tests pin the metric shape (including unknown-size pools), error buffer, rate limiting, and trim path; race-clean under `-race`; full CI (test-and-lint, build-and-push, automated review) green.
 
 **How to Identify in New Upstream**: `profiling.go` (loopback diagnostics) does not exist upstream. `message_pool.go`'s `EnhancedMetrics`/`globalPoolMetrics` and `error_tracking.go` are fork-only. The `URNETWORK_PPROF` env var and the `/metrics/pool` + `/metrics/errors` routes on the loopback listener are fork additions.
 
@@ -3041,9 +3041,9 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ---
 
-## 142. Pelican Egg CodeRabbit Fixes (PR #482)
+## 142. Pelican Egg Review Fixes (PR #482)
 
-**Purpose**: Address 3 actionable CodeRabbit findings from PR #480 (Pelican egg support).
+**Purpose**: Address 3 actionable review findings from PR #480 (Pelican egg support).
 
 **Files Modified**: `docker/scripts/test_pelican_gates.sh`, `pelican/README.md`, `pelican/egg-urnetwork-323fix.json`.
 
@@ -3093,7 +3093,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 
 ## 145. urnet-tools Update Verification Hardening (PR #486)
 
-**Purpose**: Harden the `do_update()` function against race conditions and edge cases identified by DeepSeek V4 Pro review.
+**Purpose**: Harden the `do_update()` function against race conditions and edge cases identified by an external review.
 
 **Files Modified**: `cmd/urnet-tools/main.go` (or equivalent shell script).
 
@@ -3610,7 +3610,7 @@ The engine already contained a working H3 platform transport that `Auto` mode ne
 - **H3 bytes count into total** (PR #746): the H3 UDP socket bypasses the byte counting TCP connections get. It is wrapped in a conn that credits the identity's total, and the wrapper implements `ReadBatch` because quic-go reads through a path that unwraps the file descriptor and bypasses an ordinary wrapper; it also keeps satisfying `OOBCapablePacketConn` so ECN, the DF bit and batching are not lost. Billable is counted at the IP layer and is unaffected.
 
 > [!NOTE]
-> When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the CodeRabbit-driven accounting fixes must travel with it.
+> When porting to another line: `sn` already runs H3 through its own SOCKS5 UDP relay and has none of this auxiliary accounting. `meso-miner` shares `transport.go` with this line, so the change would apply there, and the review-driven accounting fixes must travel with it.
 
 ## 182. v32.9: H3 Switches On Live and Carries Datagrams (PR #751, #752, #753, #757, #761, #762, #763, #764, #765)
 
@@ -3660,3 +3660,53 @@ Corrections to the proxy source and pool handling, plus one CI change.
 - **A corrupt `proxy_url.json` keeps its configuration** (PR #758): quarantine used to restart from an empty state, so the sources, the permanent blacklist, the exclude patterns and the degraded-cleanup threshold went with the cache. None of them is cache and nothing else records them. The replacement state now starts from the last configuration that parsed, with an empty cache.
 - **A pool whose source went empty stops** (PR #756): an unreadable `proxy_url.json` makes the desired set unknown, not empty. The empty-source branch now applies the same source-based protection as the removal pass. It stops the proxies a source that went empty used to supply, keeps url-sourced and unrecorded proxies, keeps only unknown-desired proxies, and stops calling a deliberate no-source configuration `retrying`. Pool reuse is judged on the interval and requires sustained growth.
 - **Smoke runs are serialized** (PR #760): the smoke runs are serialized so the test account's sign-in limit is not tripped.
+
+## 186. v32.9: Download Worker Resolves the Latest Version Without the GitHub API (PR #768)
+
+The `/latest-version` endpoint on the download worker exists so a client can find the newest release even when its own GitHub API call was rate-limited. It resolved that tag through the same API, which allows 60 anonymous requests per hour per source IP. Cloudflare Workers egress from shared addresses, so the budget stayed exhausted and the endpoint answered 502 for every caller, including the clients it was built to help. The batch reads the tag from the `/releases/latest` redirect instead, which needs no token and is not subject to the API rate limit, and keeps the API as a fallback that uses `GITHUB_TOKEN` when that secret is set.
+
+**Files Modified**: `workers/dl-fullbars/src/index.js`, `releases/`, `CHANGELOG.md`.
+
+- **The latest tag is read from the `/releases/latest` redirect** (PR #768): the redirect carries the tag in its final URL, so no token is needed and the shared-egress rate limit does not apply. The GitHub API stays as a fallback, and a set `GITHUB_TOKEN` raises that path's ceiling from 60 to 5000 requests per hour. The worker must be deployed with `wrangler deploy` in `workers/dl-fullbars/` for the fix to take effect. The `meso-miner` copy ships with its own release (PR #168).
+
+## 187. v32.10: Stage-1 Probe Sampling Fix and a Read-Only Direct-Path Grade (PR #769, #771, #772, #773, #774, #775, #776)
+
+The stage-1 table probe drew a contiguous block of the destination table, which is grouped by theme. Destination failures are correlated inside a theme, so one refused region failed the whole pass. The score then swung between A and F as the rotation moved between regions, although the proxy never changed. The probe now samples a fixed, content-keyed permutation of the table. A confirmation floor gates both the early abort and the final verdict. The batch also adds a read-only grade for the box's own direct path. An operator can then tell a bad proxy from a bad box. That grade writes to its own state file and never into `proxy.state`.
+
+**Files Modified**: `provider/proxy_table_probe.go`, `provider/proxy_grade_paid.go`, `provider/proxy_url_source.go`, `provider/proxy_grade_summary.go`, `provider/important_log.go`, `provider/main.go`, `provider/sn.go`, `provider/sn_fleet.go`, `provider/proxy_health_log.go`, `provider/node_snapshot.go`, `internal/urnettools/snapshot_render.go`, `internal/urnettools/top_view.go`, `docs/Configuration.md`, `docs/Project-Structure.md`, `docs/Proxy-URL-Sources.md`, `LOG_REFERENCE.md`, `PROJECT_STRUCTURE.md`, `releases/`, `CHANGELOG.md`.
+
+**Files Added**: `provider/proxy_spread_sampler.go`, `provider/proxy_direct_grade.go`, `verify_wire.go`.
+
+- **The stage-1 probe no longer condemns a proxy on a clustered sample** (PR #775): `provider/proxy_spread_sampler.go` draws blocks of a fixed permutation of the host table, ordered by `fnv64a(hostname)`. One block spans many themes. The contiguous-block math is mirrored exactly. Blocks stay disjoint, the table is still walked in order, and the dial count does not change. `use_spread_order=false` restores the contiguous sampler byte for byte. That is the A/B lever for measuring the change.
+- **A confirmation floor gates the verdict** (PR #775): `min_confirm_dials` floors the ATTEMPTED dials a below-bar pass must accumulate before the abort may convict it. The same floor refuses a verdict to a pass that runs out of block below it. The paid grader defaults the floor to 6. The URL admission path and the reaper zero it, so their dial profile does not change. `-1` is the explicit force-off on the paid path.
+- **A read-only direct-path grade** (PR #776): `provider/proxy_direct_grade.go` samples the same table with the same sampler. It dials each host at port 443 from the box's own egress. The result is written to `~/.urnetwork/direct_grade.json` and never into `proxy.state`, so no consumer can act on it. It runs on the reaper tick, gated on the table probe and the direct transport. It emits `[proxy][grade] direct:` on a tier change.
+- **The proxy-health down bucket is `dropped`** (PR #769): the live status and the `top` view no longer reuse `degraded` for the was-up-now-down bucket. Labels and wording only.
+- **The sn pin is advanced and head bind/unbind move to the fleet binding** (PR #771): `provider/sn_fleet.go` and `verify_wire.go` carry the release-1.0 many-to-one dual-signed fleet binding. They also carry the `/verify` message suite. The commands keep their names and their offline-print and on-chain submit shape. The flags follow the new model.
+- **The metrics and profile documentation is corrected** (PR #772, #773, #774): the metrics port is `9100` (next free up to `9103`). The endpoint is off by default, and `URNETWORK_METRICS` is a bind address. The docs describe the `monitoring/` bundle that ships.
+
+> [!NOTE]
+> When porting to another line: the probe sampler and the direct grade live in `provider/`. `sn` and `meso-miner` share `proxy_table_probe.go`. Any port of the stage-1 probe must carry the spread sampler and the confirmation floor. The direct grade has no consumer. It ports without a data-model change.
+
+---
+
+## 188. Combined TCP-Segment + TLS-Record ClientHello Fragmentation Dialer (PR #792)
+
+**Purpose**: Defeat reassembling censorship middleboxes (russia's tspu class) that reassemble either TLS-record fragmentation or TCP segmentation alone but not both (foci 2025, foci-2025-0016). Port of upstream `urnetwork/connect` commit `3fd67304`, adapted to the fork's `net_resilient.go` structure.
+
+**Files Modified**: `net_resilient.go`, `net_http.go`, `LOG_REFERENCE.md`
+
+**Files Added**: `net_resilient_combined_test.go`
+
+**Change**:
+- New dialer `fragment+segment` (priority 50, minimumWeight 0.25) beside `fragment` / `reorder` / `fragment+reorder`, behind the existing `ExposeServerHostNames && ExposeServerIps` gate. Every fragmented ClientHello record is cut a second time across two TCP segments at an interior byte boundary (`writeRecordMaybeSegmented`, cut at `len/2`, `combinedSegmentMinLen = 2`), so no TLS record lands whole in one segment and a single-method reassembler cannot stitch the hello.
+- No raw sockets needed: the write boundaries are the segmentation, so the mode works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux).
+- `TCP_NODELAY` is set in the plain-fragment TCP branch while segment is on, so the two writes leave as two segments instead of coalescing.
+- Fail closed: a failed or short first half never writes the second; the layer disables, the buffer drops and the socket closes, exactly like the fragment path.
+- Back-compat: `NewResilientTlsConn` / `NewResilientDialTlsContext` keep their signatures as wrappers; `NewResilientDialTlsContextWithSegment` is the new exported constructor. The fork hardening (`ttlControl`, `writeFragmentsAlternatingTtl`, `writeBlocksAlternatingTtl`, `failConnection`, the `Off()` drain) is untouched, and the smart dialer picks the new dialer up generically.
+- Upstream parity: the ttl-unreadable fallback writes the hello whole, unsegmented, on both sides, and the new dialer (reorder=false) never reaches it.
+
+**How to Identify in New Upstream**:
+- `net_resilient.go`: `writeRecordMaybeSegmented`, `combinedSegmentMinLen`, the `segment` field on `ResilientTlsConn`
+- `net_http.go`: the `fragment+segment` dialer registration
+
+**Status**: parity-mirrored to meso-miner (PR #183).

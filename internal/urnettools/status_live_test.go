@@ -74,6 +74,126 @@ func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	}
 }
 
+func TestStatusShowsPersistedPressureSummary(t *testing.T) {
+	dir := t.TempDir()
+	summary := "system calm (pressure 0.21); heap at 33% of its soft limit; 981 MB RAM free"
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"),
+		[]byte(`{"summary":"`+summary+`","thrash_state":"calm"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	p := Provider{User: "u", StateDir: dir, Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, summary) {
+		t.Fatalf("status must print the persisted summary sentence:\n%s", out)
+	}
+}
+
+func TestStatusFallsBackToBarePressureScore(t *testing.T) {
+	// No pressure_status file (older provider / monitor stopped): the live
+	// block still shows the score row, unchanged.
+	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus(nil); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(out, "system calm") {
+		t.Fatalf("no summary must not be invented:\n%s", out)
+	}
+	if !strings.Contains(out, "0.21") {
+		t.Fatalf("the bare score row must remain:\n%s", out)
+	}
+}
+
+func TestPressureSummaryLine(t *testing.T) {
+	dir := t.TempDir()
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a missing file must render nothing, got %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"  hello calm  "}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "hello calm" {
+		t.Fatalf("summary trimmed, got %q", got)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("garbage must render nothing, got %q", got)
+	}
+	// A symlink planted at the name must not be followed: status can run as
+	// root against a provider-owned state dir (the assertion is skipped where
+	// the platform cannot create symlinks, e.g. unprivileged Windows).
+	if err := os.Symlink("/etc/hostname", filepath.Join(dir, "pressure_status")); err == nil {
+		if got := pressureSummaryLine(dir); got != "" {
+			t.Fatalf("a symlinked pressure_status must render nothing, got %q", got)
+		}
+		if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// JSON without the summary key renders nothing.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"thrash_state":"calm"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a summary-less file must render nothing, got %q", got)
+	}
+	// Embedded newlines are normalized to single spaces so a corrupted or
+	// hand-edited file cannot break the live block's line layout.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("{\"summary\":\"line1\\nline2\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "line1 line2" {
+		t.Fatalf("embedded newlines must normalize to spaces, got %q", got)
+	}
+	// Control runes are dropped: a planted file must not dump escape
+	// sequences into a possibly-root terminal.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("{\"summary\":\"calm\\u001b[31mred\\u001b[0m\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "calmred" {
+		t.Fatalf("escape sequences must be stripped, got %q", got)
+	}
+	// The sentence is capped to a sane display bound.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"`+strings.Repeat("x", 250)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); len([]rune(got)) > 203 {
+		t.Fatalf("the summary must be capped, got %d runes", len([]rune(got)))
+	}
+	// The cap counts RUNES, not bytes: multi-byte runes still cap at 200.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"summary":"`+strings.Repeat("界", 250)+`"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); len([]rune(got)) > 203 {
+		t.Fatalf("the cap must count runes, got %d runes", len([]rune(got)))
+	}
+	// A directory at the name is refused like any other non-regular file.
+	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "pressure_status"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a directory must render nothing, got %q", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(""); got != "" {
+		t.Fatalf("an empty state dir must render nothing, got %q", got)
+	}
+}
+
 func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, nil, true)

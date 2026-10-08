@@ -1,0 +1,462 @@
+name: FreeBSD verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'releases/**'
+  workflow_dispatch:
+
+# Same reasoning as unix-lifecycle: every feature/* branch reaches CI through a
+# pull request, so a branch-scoped push would only duplicate the pull_request
+# run. cancel-in-progress supersedes rapid pushes to a PR rather than stacking
+# them; main's runs finish.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  freebsd-runtime:
+    name: urnet-tools + provider on FreeBSD (real kernel)
+    # The action boots a QEMU VM on the runner. runs-on stays ubuntu-latest
+    # even for other arches — that is the action's documented requirement.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The job only reads the repository; a persisted token in .git/config
+          # would otherwise be available to every step, including the ones that
+          # exec into the VM.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Build FreeBSD binaries on the runner (cross)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+        run: |
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o out/urnet-tools ./cmd/urnet-tools/ && \
+               GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go build -o out/provider ./provider/; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
+          file out/urnet-tools out/provider
+
+      - name: Build FreeBSD test binaries on the runner
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+        run: |
+          set -e
+          # Pre-compile the test binaries for freebsd/amd64. They are then run
+          # INSIDE the VM, so the real FreeBSD code paths execute against a
+          # real kernel without needing a Go toolchain in the image.
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/root.test .
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/provider.test ./provider
+          GOOS=freebsd GOARCH=amd64 CGO_ENABLED=0 go test -c -o out/urnettools.test ./internal/urnettools
+          ls -la out/
+
+      - name: Run on a real FreeBSD kernel
+        id: freebsd
+        # Pinned by commit SHA: `@v1` is a mutable tag, so a third-party change
+        # would silently alter what this job verifies. Bump deliberately.
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        with:
+          release: "14.5"
+          mem: 4096
+          cpu: 2
+          sync: rsync
+          prepare: |
+            # procstat is base FreeBSD (procstat(1) is in the base system, not a
+            # package). Do NOT pkg-install it: on a stock image there is no
+            # matching package, the install fails, and a `|| true` here hides
+            # that — which then breaks every procstat check downstream.
+            command -v procstat >/dev/null 2>&1 || {
+              echo "FATAL: procstat not present in the base image"
+              exit 1
+            }
+          run: |
+            echo "=== kernel ==="
+            freebsd-version
+            uname -a
+
+            # The provider's docopt usage has NO version subcommand, so
+            # `provider --version` prints usage and exits 1. Use `help`, which
+            # is a real pattern and exits 0 — this proves the FreeBSD binary
+            # actually LOADS AND RUNS, which is the claim being made.
+            echo "=== binaries link and run natively ==="
+            ./out/urnet-tools --version
+            ./out/provider help > /dev/null
+            echo "provider help exit=$?"
+
+            # --- the reason this workflow exists -------------------------------
+            # Each check below asserts a syscall/shell behavior that is
+            # impossible to verify by cross-compiling on Linux: what procstat
+            # actually prints, what LOCAL_PEERCRED returns, whether sysrc and
+            # rc.d do what the Go code assumes.
+
+            echo "=== procstat output shape (discovery parser contract) ==="
+            # `-a` is required: bare `procstat -b` prints usage and exits
+            # non-zero. Probing it that way is what hid the same bug in
+            # discoverProcesses for a whole review cycle.
+            procstat -a -b | head -5
+            echo "--- credentials ---"
+            procstat -a -s | head -5
+
+            # --- live process discovery ---------------------------------------
+            # The kernel-reported PATH is what discovery matches on, so the
+            # stand-in must be a long-running binary whose path has a provider
+            # basename. `provider --help`/`--version` exit immediately and
+            # would leave nothing to parse; the real `provide` needs network
+            # and auth and exits on a bare box. A copy of /bin/sleep renamed to
+            # a provider name gives a deterministic long-lived process with no
+            # network, no auth and no startup race.
+            echo "=== live process discovery ==="
+            mkdir -p /tmp/ci/bin
+            cp /bin/sleep /tmp/ci/bin/urnetwork
+            cp /bin/sleep /tmp/ci/bin/notaprovider
+            chmod 755 /tmp/ci/bin/urnetwork /tmp/ci/bin/notaprovider
+            /tmp/ci/bin/urnetwork 600 &
+            spid=$!
+            /tmp/ci/bin/notaprovider 600 &
+            npid=$!
+            sleep 2
+
+            echo "--- procstat -b for the provider-named pid $spid ---"
+            if ! procstat -b "$spid"; then
+              echo "FATAL: procstat -b could not report pid $spid"
+              exit 1
+            fi
+            echo "--- procstat -s for the provider-named pid $spid ---"
+            if ! procstat -s "$spid"; then
+              echo "FATAL: procstat -s could not report pid $spid"
+              exit 1
+            fi
+            # EUID/RUID are columns 3 and 4 of the documented
+            # "PID COMM EUID RUID ..." layout. If that layout changes, the
+            # discovery parsers silently attribute providers to the wrong user,
+            # so assert the column parses as a non-empty uid rather than
+            # printing it and moving on.
+            euid="$(procstat -s "$spid" 2>/dev/null | awk 'NR==2 {print $3}')"
+            case "$euid" in
+              ''|*[!0-9]*)
+                echo "FATAL: could not parse EUID column (got '$euid'); procstat -s layout changed"
+                procstat -s "$spid" || true
+                exit 1
+                ;;
+            esac
+            echo "EUID parsed OK: $euid"
+
+            echo "=== the tool discovers a LIVE provider process ==="
+            # Assert on the PID, not on the word "urnetwork": discoverProcesses
+            # falls back to the standard install location when nothing is
+            # running, so printing any row at all proves nothing. A row carrying
+            # this exact live PID is the only real proof the procstat parsers
+            # agree with the kernel.
+            ./out/urnet-tools providers > /tmp/providers.out 2>&1 || true
+            cat /tmp/providers.out
+            if grep -q "$spid" /tmp/providers.out; then
+              echo "DISCOVERY OK: live pid $spid found"
+            else
+              echo "FATAL: discovery did not report the live pid $spid"
+              echo "--- procstat -a -b (all) for comparison ---"
+              procstat -a -b | head -20 || true
+              exit 1
+            fi
+
+            # The negative case: a live process that is NOT a provider must not
+            # be reported. Without this, isProviderArg could match anything and
+            # the test would still pass.
+            if grep -q "$npid" /tmp/providers.out; then
+              echo "FATAL: discovery reported non-provider pid $npid as a provider"
+              exit 1
+            fi
+            echo "NEGATIVE OK: non-provider pid $npid correctly ignored"
+
+            kill "$spid" "$npid" 2>/dev/null || true
+
+            echo "=== FreeBSD tuning keys exist (optimize_bsd.go contract) ==="
+            # Hard assertion: optimize_bsd.go writes exactly these names. If a
+            # key does not exist, `optimize` applies nothing while reporting
+            # success — the precise failure this workflow exists to catch.
+            #
+            # The list is derived from the Go source so the two cannot drift:
+            # a key added to bsdSysctlWrites() is checked here automatically,
+            # and a key REMOVED from it stops being checked instead of
+            # silently going unverified.
+            keys="$(sed -n '/^func bsdSysctlWrites/,/^}/p' internal/urnettools/optimize_bsd.go \
+                   | grep -oE '"(net|kern)\.[a-z._]+"' | tr -d '"' | sort -u)"
+            if [ -z "$keys" ]; then
+              echo "FATAL: could not extract the tuning key list from optimize_bsd.go"
+              exit 1
+            fi
+            echo "keys the code writes:"; echo "$keys" | sed 's/^/  /'
+            for k in $keys; do
+              v="$(sysctl -n "$k" 2>/dev/null || true)"
+              if [ -z "$v" ]; then
+                echo "FATAL: tuning key $k does not exist on this kernel"
+                exit 1
+              fi
+              printf '%-34s = %s\n' "$k" "$v"
+            done
+            # Host-memory keys the Go code reads.
+            for k in hw.physmem vm.stats.vm.v_free_count vm.stats.vm.v_inactive_count; do
+              v="$(sysctl -n "$k" 2>/dev/null || true)"
+              if [ -z "$v" ]; then
+                echo "FATAL: memory key $k does not exist; sysmem_freebsd.go would fall back"
+                exit 1
+              fi
+              printf '%-34s = %s\n' "$k" "$v"
+            done
+            # Swap accounting comes from swapinfo(8), not a sysctl: FreeBSD has
+            # vm.swap_total but no vm.swap_used. Verify the TOOL is present and
+            # that its output has the columns the parser reads.
+            if ! command -v swapinfo >/dev/null 2>&1; then
+              echo "FATAL: swapinfo missing; the memory pressure sensor cannot read swap usage"
+              exit 1
+            fi
+            echo "swapinfo OK"
+            echo "vm.swap_total = $(sysctl -n vm.swap_total 2>/dev/null || echo absent)"
+            echo "--- swapinfo -k (what parseSwapinfo reads) ---"
+            swapinfo -k || { echo "FATAL: swapinfo -k failed"; exit 1; }
+            echo "--- linux-only keys must NOT resolve here ---"
+            for k in net.core.rmem_max fs.file-max net.netfilter.nf_conntrack_max; do
+              printf '%-34s = %s\n' "$k" "$(sysctl -n "$k" 2>/dev/null || echo 'absent (expected)')"
+            done
+            echo "--- sysrc present for persistence? ---"
+            if ! command -v sysrc >/dev/null 2>&1; then
+              echo "FATAL: sysrc missing; setAutoStart cannot write rc.conf"
+              exit 1
+            fi
+            echo "sysrc OK"
+
+            echo "=== rc.d + crontab present for lifecycle ==="
+            for f in /etc/rc.subr; do
+              if [ ! -f "$f" ]; then
+                echo "FATAL: $f missing; the rc.d script cannot run"
+                exit 1
+              fi
+              echo "$f OK"
+            done
+            for c in service crontab; do
+              if ! command -v "$c" >/dev/null 2>&1; then
+                echo "FATAL: $c missing; lifecycle commands cannot work"
+                exit 1
+              fi
+              echo "$c OK"
+            done
+
+            echo "=== generated rc.d script is valid shell ==="
+            # Render the template the Go code actually emits and parse THAT.
+            # `sh -n` on the urnet-tools binary would be meaningless — it is an
+            # ELF executable, not a script. The template is duplicated between
+            # renderBSDServiceScript and the shell installer, so both are
+            # checked here: the Go one via its own output, the shell one by
+            # sourcing the installer's template emitter.
+            sh -n ./scripts/Provider_Install_FreeBSD.sh && echo "installer SYNTAX OK"
+
+            # Drive the Go renderer and parse what it emits. The test writes
+            # the script to a FILE (not t.Log, whose "    file_test.go:NN: "
+            # prefix is not valid shell) and the path comes from the env.
+            if [ -x ./out/urnettools.test ]; then
+              rm -f /tmp/rendered_rc.sh
+              (
+                cd internal/urnettools || exit 1
+                URN_RC_DUMP=/tmp/rendered_rc.sh ../../out/urnettools.test \
+                  -test.run 'TestRenderBSDServiceScriptDumpsTemplate' 2>&1 | tail -5
+              ) || exit 1
+              if [ ! -s /tmp/rendered_rc.sh ]; then
+                echo "FATAL: the Go renderer produced no rc.d script to parse"
+                exit 1
+              fi
+              if sh -n /tmp/rendered_rc.sh; then
+                echo "RENDERED rc.d SYNTAX OK"
+              else
+                echo "FATAL: the Go-rendered rc.d script is not valid shell"
+                cat /tmp/rendered_rc.sh
+                exit 1
+              fi
+            fi
+
+            echo "=== LOCAL_PEERCRED availability (control socket check) ==="
+            # peercred_freebsd.go compiles against unix.GetsockoptXucred; this
+            # proves the option exists on this kernel rather than only in the
+            # headers the binary was compiled against.
+            # NOTE: no heredoc here on purpose — these run blocks execute with
+            # sh in the VM, and a heredoc inside a YAML block scalar is a reliable
+            # way to corrupt the script.
+            printf '%s\n' \
+              '#include <sys/types.h>' \
+              '#include <sys/socket.h>' \
+              '#include <sys/un.h>' \
+              '#include <sys/ucred.h>' \
+              '#include <stdio.h>' \
+              '#include <unistd.h>' \
+              'int main(void) {' \
+              '  int sv[2];' \
+              '  if (socketpair(AF_LOCAL, SOCK_STREAM, 0, sv) != 0) { perror("socketpair"); return 1; }' \
+              '  struct xucred xc; socklen_t len = sizeof(xc);' \
+              '  if (getsockopt(sv[1], SOL_LOCAL, LOCAL_PEERCRED, &xc, &len) != 0) { perror("LOCAL_PEERCRED"); return 1; }' \
+              '  if (xc.cr_version != XUCRED_VERSION) { printf("LOCAL_PEERCRED: unexpected cr_version %d\\n", xc.cr_version); return 1; }' \
+              '  printf("LOCAL_PEERCRED ok: cr_version=%u cr_uid=%u\\n", xc.cr_version, xc.cr_uid);' \
+              '  return 0;' \
+              '}' > /tmp/xucred_test.c
+            if command -v cc >/dev/null 2>&1; then
+              # Hard failure: peercred_freebsd.go depends on this option, and a
+              # silent note here would leave the control socket relying on file
+              # permissions with nothing reporting it.
+              if ! { cc -o /tmp/xucred_test /tmp/xucred_test.c && /tmp/xucred_test; }; then
+                echo "FATAL: LOCAL_PEERCRED is not available on this kernel"
+                exit 1
+              fi
+            else
+              echo "FATAL: no cc on the image, cannot verify LOCAL_PEERCRED"
+              exit 1
+            fi
+
+            echo "=== rc.d service end-to-end: start, status, duplicate guard, log, stop ==="
+            # Runs the REAL shipped template (extracted from the installer, the
+            # same way the parity test does) against a stand-in that writes
+            # output, on the real kernel. This is the only check that can see
+            # daemon(8) log plumbing, the pidfile contract and the rc.subr
+            # status wiring; syntax checks cannot.
+            # NOTE: no heredocs here (YAML block scalar), printf builds the files.
+            mkdir -p /tmp/ci/bin
+            printf '%s\n' '#!/bin/sh' 'echo "standin stdout: $*"' 'echo "standin stderr" >&2' 'exec sleep 120' > /tmp/ci/bin/urnetwork
+            chmod 755 /tmp/ci/bin/urnetwork
+            chmod 755 /tmp/ci /tmp/ci/bin
+            { awk '{print} /^RCSCRIPT$/{exit}' scripts/Provider_Install_FreeBSD.sh; printf '%s\n' '}' 'service_name="urnettest"' 'provider_bin="/tmp/ci/bin/urnetwork"' 'write_rc_script_body "nobody" > /tmp/ci/urnettest'; } > /tmp/ci/rcgen.sh
+            sh /tmp/ci/rcgen.sh || { echo "FATAL: could not render the rc.d script from the installer"; exit 1; }
+            sh -n /tmp/ci/urnettest || { echo "FATAL: rendered rc.d is not valid shell"; exit 1; }
+            install -m 755 /tmp/ci/urnettest /usr/local/etc/rc.d/urnettest
+            service urnettest onestart || { echo "FATAL: onestart failed"; exit 1; }
+            sleep 2
+            service urnettest onestatus || { echo "FATAL: onestatus says not running after a successful start"; exit 1; }
+            pid1="$(cat /var/run/urnettest.pid 2>/dev/null)"
+            [ -n "$pid1" ] || { echo "FATAL: no pidfile after start"; exit 1; }
+            service urnettest onestart
+            pid2="$(cat /var/run/urnettest.pid 2>/dev/null)"
+            [ "$pid1" = "$pid2" ] || { echo "FATAL: a second start replaced the running provider (pid $pid1 -> $pid2)"; exit 1; }
+            if [ ! -s /var/log/urnettest/stdout.log ]; then
+              echo "FATAL: the provider log is empty; daemon(8) is discarding output"
+              exit 1
+            fi
+            echo "log captured: $(wc -c < /var/log/urnettest/stdout.log) bytes"
+            t0="$(date +%s)"
+            service urnettest onestop || { echo "FATAL: onestop failed"; exit 1; }
+            t1="$(date +%s)"
+            [ $((t1 - t0)) -le 5 ] || { echo "FATAL: stop took $((t1 - t0))s (expected <= 5)"; exit 1; }
+            if service urnettest onestatus; then
+              echo "FATAL: onestatus still reports running after stop"
+              exit 1
+            fi
+            rm -f /usr/local/etc/rc.d/urnettest /var/run/urnettest.pid
+            rm -rf /var/log/urnettest
+            echo "rc.d end-to-end OK"
+
+            echo "=== optimize applies safely and leaves TCP working ==="
+            # The tuning raises the TCP socket-buffer defaults; without raising
+            # kern.ipc.maxsockbuf first, sbreserve refuses them and creating a
+            # socket fails with ENOBUFS. Run the real command, then prove a
+            # socket still works.
+            ./out/urnet-tools optimize -f || { echo "FATAL: optimize failed"; exit 1; }
+            printf 'kern.ipc.maxsockbuf = %s\n' "$(sysctl -n kern.ipc.maxsockbuf)"
+            printf 'net.inet.tcp.recvspace = %s\n' "$(sysctl -n net.inet.tcp.recvspace)"
+            grep -q 'kern.ipc.maxsockbuf' /etc/sysctl.conf || { echo "FATAL: optimize did not persist kern.ipc.maxsockbuf"; exit 1; }
+            (nc -l 127.0.0.1 19999 >/dev/null 2>&1 &)
+            sleep 1
+            if ! nc -z 127.0.0.1 19999; then
+              echo "FATAL: TCP socket creation fails after optimize (ENOBUFS from sbreserve)"
+              exit 1
+            fi
+            pkill -f 'nc -l 127.0.0.1 19999' 2>/dev/null || true
+            echo "optimize + TCP loopback OK"
+
+      - name: Go test suite on FreeBSD (native toolchain)
+        id: gotest
+        uses: vmactions/freebsd-vm@c46abacb49f09938ca4e1702d15d836285d694cc # v1
+        with:
+          release: "14.5"
+          mem: 6144
+          cpu: 2
+          sync: rsync
+          prepare: |
+            # pkg/go are needed to run the real test suite on the kernel. These
+            # DO exist as packages; unlike procstat (base system) they must be
+            # installed, and a failed install here must fail the job rather than
+            # be swallowed by `|| true` — a missing compiler silently turns
+            # this job into a no-op that always passes.
+            # jq is needed by the digest-lookup test (and by the installer on
+            # a real box); it is a package, not base, so install it here.
+            pkg install -y go bash jq || {
+              echo "FATAL: failed to install the Go toolchain on the VM"
+              exit 1
+            }
+            command -v go >/dev/null 2>&1 || {
+              echo "FATAL: go still not on PATH after pkg install"
+              exit 1
+            }
+            go version
+          run: |
+            echo "=== run the FreeBSD-tagged Go tests ==="
+            # These are REAL compiled test binaries built for freebsd/amd64 on
+            # the runner. They execute the actual FreeBSD code paths —
+            # HostMemoryAvailableBytes, verifyPeerCredentials, the procstat
+            # parsers — against this kernel. A broken implementation fails here
+            # instead of shipping to a user's box.
+            #
+            # The action already cd'd us into $GITHUB_WORKSPACE and synced the
+            # tree, so `out/` and the package dirs are relative to cwd.
+            # Run each binary from its own package dir so any relative
+            # testdata path resolves the way it does locally.
+            #
+            # PIPELINE EXIT STATUS: `cmd | tail` returns TAIL's status, never
+            # the test binary's, so a `|| failures=1` after the pipe would never
+            # fire and the job would go green on a failing test. Write each
+            # binary's output to a file, then check the status separately.
+            failures=0
+
+            cd provider || exit 1
+            ../out/provider.test -test.v -test.run 'TestVerifyPeerCredentials' > /tmp/t1.log 2>&1 || failures=1
+            tail -30 /tmp/t1.log
+            echo "--- provider peercred tests done ---"
+
+            cd .. || exit 1
+            out/root.test -test.v -test.run 'TestFreeBSDHostMemory|TestHostMemoryReaders|TestEffectiveRAMLimit' > /tmp/t2.log 2>&1 || failures=1
+            tail -30 /tmp/t2.log
+            echo "--- root sysmem tests done ---"
+
+            cd internal/urnettools || exit 1
+            ../../out/urnettools.test -test.v -test.run 'TestRenderBSD|TestBSDTemplateParity|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl|TestFreeBSD|TestEffectiveBSDValue|TestBSDSysctlWritesRaisesSockbufFirst|TestTarRelPath|TestOptimizeForDispatch' > /tmp/t3.log 2>&1 || failures=1
+            tail -40 /tmp/t3.log
+            echo "--- urnettools bsd tests done ---"
+
+            if [ "$failures" -ne 0 ]; then
+              echo "FATAL: a FreeBSD Go test binary failed"
+              exit 1
+            fi
+            echo "ALL FREEBSD GO TESTS PASSED"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "FreeBSD runtime verification finished."
+          echo "Review the step log above for the authoritative result:"
+          echo "  - procstat output shape"
+          echo "  - sysctl key presence for host memory and tuning"
+          echo "  - rc.subr / service / crontab / sysrc availability"
+          echo "  - LOCAL_PEERCRED availability"

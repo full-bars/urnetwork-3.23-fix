@@ -38,6 +38,140 @@ urnet-tools proxy refresh
 
 > Full proxy-loading walkthrough (including Windows): [Adding Proxies](Adding-Proxies.md).
 
+> [!NOTE]
+> **Alpine Linux (OpenRC)?** The command above is the same, but the installer takes a different path and the service is a system service, not a user service. Follow [Alpine Linux (OpenRC)](#-alpine-linux-openrc) instead of the systemd notes on this page.
+
+## 🏔️ Alpine Linux (OpenRC)
+
+Alpine and other OpenRC distributions are supported. The installer detects OpenRC on its own, so there is nothing new to type: the install command is the one every other Linux uses. This section walks through a first install from a root shell, which is how Alpine starts out.
+
+### Before you start
+
+You need a root shell and a regular account for the provider to run as. OpenRC has no per-user service manager, so the provider runs as a system service under a dedicated, unprivileged user. The installer expects that user to exist and uses `urnet` by default.
+
+```sh
+adduser -D urnet
+apk add --no-cache curl
+```
+
+`adduser -D urnet` creates the `urnet` user with a home directory and no password. If the user does not exist when you install, the installer still downloads the files but does **not** install the service, and prints the commands to finish. To run the provider under a different account, set `URNET_OPENRC_USER=<name>` for the install command.
+
+### Install
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/install.sh | sh
+```
+
+### What the installer does on Alpine, and why
+
+| What it does | Why |
+|---|---|
+| Installs the provider and `urnet-tools` under `/usr/local/lib/urnetwork-provider`, owned by root and readable by everyone. Only the state dir (`/home/urnet/.urnetwork`) lives in the service user's home, because the provider must write it. | The scheduled auto-update runs as root, and `sudo urnet-tools update` is the documented upgrade path. Root-owned files do not defend a path whose ANCESTOR a user can rewrite — a tree under `/home/urnet` could be renamed aside and replaced with the service user's own binary, which root would then execute. Keeping the tree off any user-writable path makes that impossible by construction. |
+| Writes the service script `/etc/init.d/urnetwork` and runs `rc-update add urnetwork default`. | The `default` runlevel is what OpenRC starts at boot, so the provider comes back after a reboot with nobody logged in. |
+| Runs the provider under `supervise-daemon` as the `urnet` user. | The provider drops root, and `supervise-daemon` restarts it after a crash with a five-second delay, increasing by five seconds per restart up to 60 seconds, with a limit of 10 restarts per hour. |
+| Sends the provider's output to `/var/log/urnetwork.log` (stdout) and `/var/log/urnetwork.err` (stderr), both owned by the service user; `/var/log` remains root-owned. | `supervise-daemon` opens these files after dropping privileges, so the service user must be able to write them. Because the log is a plain file, `urnet-tools logs` can read it even while the service is stopped. |
+| Keeps the provider's state, including the login token, in `/home/urnet/.urnetwork`. | The provider reads its credentials from the home directory of the user it runs as. |
+
+The installer does not start the service. It finishes by printing the commands for the next two steps.
+
+> [!NOTE]
+> OpenRC has no equivalent of systemd's `enable-linger`, and none is needed: a service in the `default` runlevel starts at boot whether or not anyone logs in.
+
+### Authenticate
+
+The provider needs an auth code from <https://ur.io>, and the login token it produces has to land in the `urnet` user's home, not root's. A token written to `/root/.urnetwork` is invisible to the service, which would start and then have no credentials.
+
+Run the authentication as the service user:
+
+```sh
+su -s /bin/sh urnet -c 'urnetwork auth <code>'
+```
+
+The installer prints this exact command when it finishes. When you run it in an interactive terminal it can also offer to do this step for you: answer `y`, enter the code, and the installer runs the authentication as `urnet`. The prompt is read from the terminal device itself, not from standard input, so it works for the one-line `curl ... | sh` form as well — the script arriving on standard input does not take the terminal away. Where there is no terminal at all (a provisioning script, a CI job, a cron entry) the prompt is skipped and the command is printed instead. If the prompt was skipped, or the authentication did not complete, run the command above at any time. Auth codes are single-use, so fetch a new one if a code was already submitted.
+
+### Start and verify
+
+```sh
+rc-service urnetwork start
+rc-service urnetwork status
+```
+
+`status` should report `started`. To see what the provider is doing:
+
+```sh
+urnet-tools logs
+tail -f /var/log/urnetwork.log
+```
+
+`urnet-tools logs` follows the same file. If the service does not stay up, read `/var/log/urnetwork.err` as well as the main log. If you have not authenticated yet, go back to [Authenticate](#authenticate).
+
+A node with no proxy list configured serves traffic directly from the box's own address. The `[profit]` line in the log says so with `mode=direct`; see the [Log Reference](../LOG_REFERENCE.md#-profit-heartbeat-323-fix).
+
+To add proxies, see [Adding Proxies](Adding-Proxies.md).
+
+### Stop, disable, and uninstall
+
+Stop the provider now (it starts again at the next boot):
+
+```sh
+rc-service urnetwork stop
+```
+
+Stop it and keep it from starting at boot:
+
+```sh
+rc-service urnetwork stop
+rc-update del urnetwork default
+```
+
+Turn boot start back on later:
+
+```sh
+rc-update add urnetwork default
+rc-service urnetwork start
+```
+
+Uninstall, as root:
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
+```
+
+This stops the service, removes `/etc/init.d/urnetwork`, its `default` runlevel entry and any auto-update entry, and deletes the install directory. It also deletes `/home/urnet/.urnetwork`, which holds the login token, so you would need a new auth code to install again. It leaves two things behind: the `urnet` user and the log files. Remove them if you want a clean slate:
+
+```sh
+deluser urnet
+rm -f /var/log/urnetwork.log /var/log/urnetwork.err
+```
+
+### Updates and auto-update
+
+Updating is a root action on OpenRC, the same way `systemctl restart` is for a system service under systemd. Restarting an OpenRC service needs root, and so does replacing the root-owned binaries, so run the update from a root shell:
+
+```sh
+urnet-tools update
+```
+
+To have it run on a schedule, turn on auto-update as root. On OpenRC it is a busybox `crond` entry, not a systemd timer:
+
+```sh
+urnet-tools auto-update weekly
+```
+
+The interval can be `daily`, `weekly` or `monthly`, and `urnet-tools auto-update off` removes it. The entry only fires while `crond` is running. If `urnet-tools` reports that `crond` is not installed or not started, run:
+
+```sh
+apk add busybox-openrc
+rc-update add crond default
+rc-service crond start
+```
+
+### Limitations
+
+- **Updates need root.** Every update restarts the service and replaces root-owned files, so run `urnet-tools update` from a root shell. There is no rootless update path on OpenRC.
+- **No zero-downtime hotswap.** `supervise-daemon` cannot hand its supervised process over to a new one, so `urnet-tools update` stops the provider and starts it again, with a brief gap in service. See [HotSwap on OpenRC](HotSwap.md#not-available-under-openrc-alpine).
+- **Several providers on one box.** `urnet-tools stop` and `restart` ask you to name the target when other providers run beside the service. See [OpenRC command parity](urnet-tools-go.md#openrc-alpine-command-parity).
+
 ## 🍎 macOS Installation
 
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
@@ -126,13 +260,39 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 Install via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
+
+Windows Defender may flag this one-liner. See the note below.
+
+> [!NOTE]
+> Windows Defender may flag the Windows install one-liner, and it may flag the downloaded
+> binaries. What we see are machine-learning heuristics (the `!ml` suffix), not signatures;
+> for the binaries we publish they are false positives. Recent release pages record the scan
+> results for the published binaries. If Defender blocks the one-liner, download the script,
+> review it, and run it from disk instead. If Defender quarantines an extracted binary,
+> allow it from Windows Security > Virus & threat protection > Protection history. Both lines
+> go in PowerShell:
+>
+> ```powershell
+> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+> ```
+
+<details>
+<summary>The detections you may see, and what each one means</summary>
+
+- `Trojan:Script/Wacatac.B!ml`, `Trojan:Script/Wacatac.C!ml`: Defender's machine-learning label for the PowerShell installer script fetching and extracting a remote payload.
+- `Trojan:Win32/Wacatac.B!ml`, `Trojan:Win32/Wacatac.C!ml`: Defender's machine-learning label for files whose shape looks like a packed trojan. Our Go binaries are stripped, statically linked and unsigned, which reads as a packed payload. The B and C variants are different model generations, so one binary can be flagged under more than one name. `Trojan:Win32/Execution.A!ml` is another label from the same family on some builds.
+- `Trojan:Win32/Commando.A!ml`: fires on the download-and-run command line itself (the `irm ... | iex` one-liner), not on the installed files. Fetching a remote script and piping it into execution reads as a trojan-downloader pattern to the model.
+- `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for scheduled-task activity. The installer registers Task Scheduler tasks — a weekly update task (on `latest` installs) and, if you accept auto-start, a logon task so the provider starts at login — and a behavioural model cannot tell that apart from persistence malware.
+
+</details>
 
 Uninstall via PowerShell (no admin required):
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
+irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex
 ```
 
 ### What gets installed
@@ -142,7 +302,7 @@ powershell -c "irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex"
 | Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
 | Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
-| Startup (optional) | `%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup\urnetwork.lnk` |
+| Startup (optional) | Task Scheduler logon task `urnetwork-autostart` |
 | PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
 
 ### Post-install commands
@@ -191,7 +351,7 @@ Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tool
 .\Provider_Install_Win32.ps1
 ```
 
-This registers the PATH entry and optional startup shortcut — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
+This registers the PATH entry and optional Task Scheduler logon task — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
 
 > [!TIP]
 > The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.

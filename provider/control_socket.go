@@ -880,11 +880,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: true, Value: "shutting down"}
 
 	case "hotswap":
-		if hotSwapTrigger == nil {
+		hotSwap := getHotSwapTrigger()
+		if hotSwap == nil {
 			return controlResponse{OK: false, Error: "hotswap trigger not available"}
 		}
 		go func() {
-			if err := hotSwapTrigger(); err != nil {
+			if err := hotSwap(); err != nil {
 				tlog("[hotswap] background handoff failed: %v\n", err)
 			}
 		}()
@@ -1028,11 +1029,16 @@ func applyLiveSideEffect(key, value string) error {
 				importantLogf("%s\n", line)
 			}
 		} else if oomCapMode() == oomCapOn {
-			if cap, source, err := effectiveTrimCapSource(); err == nil && source == trimCapOOM {
+			if cap, source, err := effectiveTrimCapSource(); err == nil && (source == trimCapOOM || source == trimCapThrash) {
 				running := runningProxyCountForPressure()
 				shed := max(0, running-cap)
-				importantLogf("[oomcap] mode on: enforcing cap %d, this sheds about %d of %d running proxies on the next reload\n",
-					cap, shed, running)
+				importantLogf("[oomcap] mode on: enforcing automatic cap %d (%s), this sheds about %d of %d running proxies on the next reload\n",
+					cap, source, shed, running)
+			} else if autoCap, autoSource := automaticTrimCapSource(); autoCap > 0 {
+				// An operator cap tighter than the automatic one masks it in
+				// the effective source, but the automatic cap still stands;
+				// claiming none is standing here would be false.
+				importantLogf("[oomcap] mode on: automatic cap %d (%s) is standing, but the operator trim cap is the effective limit\n", autoCap, autoSource)
 			} else {
 				importantLogf("[oomcap] mode on: no automatic cap is standing, so the pool is not trimmed by it until an OOM kill sets one\n")
 			}
@@ -1241,8 +1247,26 @@ func listenOrWait(addr string, wait time.Duration) (net.Listener, error) {
 // that calls runHotSwapParentHandoff with the live ctx/cancel/opts. The
 // control socket's "hotswap" command calls this instead of duplicating the
 // startup scope. Nil when not set (e.g. tests that don't wire the full
-// startup path).
-var hotSwapTrigger func() error
+// startup path). Guarded by hotSwapTriggerMu: the promoted candidate's ack
+// path can re-arm it after takeover while other goroutines read it.
+var (
+	hotSwapTriggerMu sync.RWMutex
+	hotSwapTrigger   func() error
+)
+
+// setHotSwapTrigger stores the hot-swap trigger function, safe for concurrent use.
+func setHotSwapTrigger(fn func() error) {
+	hotSwapTriggerMu.Lock()
+	defer hotSwapTriggerMu.Unlock()
+	hotSwapTrigger = fn
+}
+
+// getHotSwapTrigger returns the current hot-swap trigger function (nil if unset).
+func getHotSwapTrigger() func() error {
+	hotSwapTriggerMu.RLock()
+	defer hotSwapTriggerMu.RUnlock()
+	return hotSwapTrigger
+}
 
 func applyPersistedRuntimeTuning(state *controlState) {
 	if v, ok := state.get("gomemlimit"); ok && v != "" && !strings.EqualFold(v, "off") {
@@ -1264,20 +1288,34 @@ func applyPersistedRuntimeTuning(state *controlState) {
 			tlog("[control] failed to apply persisted metrics=on: %s\n", err)
 		}
 	}
-	// h3_datagram has no environment default, so an unset key means off.
-	datagramValue, _ := state.get("h3_datagram")
+	// h3_datagram / h3_datagram_send have no environment default, so an unset key
+	// previously meant off. On a settled direct-only node they now default on for
+	// the same reason h3 does (one identity, one extra socket, quiet H1
+	// fallback); a pooled node keeps off. An explicit persisted key still wins.
+	res := currentProxyResolution()
+	directOnly := directOnlyDatagramDefault(res)
+	datagramValue, datagramSet := state.get("h3_datagram")
+	if !datagramSet && directOnly {
+		datagramValue = "on"
+	}
 	if err := applyLiveSideEffect("h3_datagram", onOff(strings.EqualFold(datagramValue, "on"))); err != nil {
 		tlog("[control] failed to apply h3_datagram: %s\n", err)
 	}
-	// h3_datagram_send has no environment default either: unset means off.
-	sendValue, _ := state.get("h3_datagram_send")
+	sendValue, sendSet := state.get("h3_datagram_send")
+	if !sendSet && directOnly {
+		sendValue = "on"
+	}
 	if err := applyLiveSideEffect("h3_datagram_send", onOff(strings.EqualFold(sendValue, "on"))); err != nil {
 		tlog("[control] failed to apply h3_datagram_send: %s\n", err)
 	}
-	// h3 is replayed in BOTH directions, falling back to URNETWORK_H3 when the
-	// key was never set: a persisted off must beat the env var, and an unset key
-	// must not leave the gate at its zero value when the env var asks for H3.
-	if err := applyLiveSideEffect("h3", onOff(resolveH3(state))); err != nil {
+	// h3 is replayed in BOTH directions, falling back to the startup default
+	// when the key was never set: a persisted off must beat the env var and the
+	// direct-only default, and an unset key must not leave the gate at its zero
+	// value. On a settled direct-only node the default flips h3 ON — one
+	// identity means one extra socket for a transport that falls back to H1
+	// quietly — so a lean direct box gets H3 without the operator configuring
+	// anything. A pooled node keeps the off default.
+	if err := applyLiveSideEffect("h3", onOff(resolveH3Setting(state, currentProxyResolution()))); err != nil {
 		tlog("[control] failed to apply h3: %s\n", err)
 	}
 	if v, ok := state.get("smart_dialer"); ok && strings.EqualFold(v, "on") {

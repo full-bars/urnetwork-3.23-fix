@@ -883,6 +883,8 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	}
 
 	pidChanged := false
+	missReported := false
+	notReadyReported := false
 	for i := 0; i < maxIterations; i++ {
 		// Adaptive sleep: poll every 2s while waiting for the restart to
 		// land (old PID still alive), then every 3s once a new PID appears
@@ -894,9 +896,11 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		verifySleepFn(time.Duration(sleepSec) * time.Second)
 
 		providers := verifyDiscoverFn()
+		matched := false
 		for _, rp := range providers {
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
+				matched = true
 				// Track whether the PID changed — a new PID means the
 				// restart landed — just waiting for version match.
 				if rp.PID != oldPID && !pidChanged {
@@ -918,7 +922,24 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// the running image of the unit we just restarted, and
 					// providerVersion's --version fallback is gated behind
 					// isRecognizedExecutable.
+					//
+					// EXCEPT under OpenRC: providerVersion's fallback EXECS the
+					// image as root, and the running image there is a binary the
+					// service user may have influenced between the restart and
+					// this verify (they own the process, and until this session's
+					// installBinary fix the tree binary itself was chowned to
+					// them after every update). Exec'ing a possibly
+					// user-controlled file as root is exactly the escalation the
+					// root-owned tree exists to prevent. The read-only variant
+					// (buildinfo + raw stamp scan, no exec) can't be a
+					// root-privilege escalation by construction. Any loss of
+					// verification fidelity is the price of not exec'ing a
+					// binary we do not own: fail closed on an unknown version
+					// rather than run it.
 					procVersion := verifyProviderVersionFn(procExe)
+					if rp.Supervisor == "openrc" || providerSupervisedByOpenRCFn(rp) {
+						procVersion = providerVersionReadOnly(procExe)
+					}
 					if procVersion == cfg.Tag {
 						// Report the image's real path, not the /proc
 						// handle the version was read through.
@@ -941,7 +962,50 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if i > 0 && i%5 == 0 {
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
+				} else if i > 0 && i%5 == 0 {
+					// A ready entry exists but its running image could
+					// not be read (e.g. the process exited between
+					// discovery and the read). Without this the
+					// iteration prints nothing at all — the same silent
+					// wait these diagnostics exist to remove.
+					fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
 				}
+			}
+		}
+
+		if !matched {
+			// No entry satisfies the full readiness predicate. Two cases
+			// used to be indistinguishable here — and silent for the whole
+			// wait window: the state dir is missing from discovery entirely
+			// (a state-dir mismatch), or its entry is present but not ready
+			// (typically the stale pre-restart process, whose swapped-out
+			// binary reads as binaryDeleted). Report each case once, then a
+			// bounded heartbeat so a long wait stays visible.
+			notReady := make([]string, 0, 1)
+			for _, rp := range providers {
+				if rp.StateDir == p.StateDir && rp.StateDir != "" {
+					notReady = append(notReady, fmt.Sprintf("pid %d, binaryDeleted=%t", rp.PID, rp.BinaryDeleted))
+				}
+			}
+			if len(notReady) > 0 {
+				if !notReadyReported {
+					notReadyReported = true
+					fmt.Printf("verify: provider entry for state dir %q present but not ready (%s) — restart has not landed\n", p.StateDir, strings.Join(notReady, "; "))
+				}
+			} else if !missReported {
+				missReported = true
+				dirs := make([]string, 0, len(providers))
+				for _, rp := range providers {
+					dirs = append(dirs, fmt.Sprintf("%q", rp.StateDir))
+				}
+				seen := "(none)"
+				if len(dirs) > 0 {
+					seen = strings.Join(dirs, ", ")
+				}
+				fmt.Printf("verify: no provider entry matches state dir %q; discovery sees: %s\n", p.StateDir, seen)
+			}
+			if i > 0 && i%5 == 0 {
+				fmt.Printf("verify: no matching provider yet (iteration %d/%d; discovery sees %d provider(s))\n", i+1, maxIterations, len(providers))
 			}
 		}
 
@@ -1008,6 +1072,18 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	if runtime.GOOS == "freebsd" {
+		// rc.d owns the service on FreeBSD; systemd never exists there. Without
+		// this branch an update swaps the binary and then fails to restart,
+		// leaving the old image running and the new one on disk.
+		return bsdServiceControl(p, "restart")
+	}
+	// OpenRC host: when the running provider is the process supervise-daemon
+	// supervises, restart the service through rc-service (this is the
+	// update flow's stop/start path — HotSwap declines under OpenRC).
+	if handled, err := openrcRestartService(p); handled {
+		return err
+	}
 	if p.Unit != "" {
 		// Determine the unit's real scope up front (isUserUnit checks whether
 		// a systemd system unit file exists). A user-owned unit MUST be
@@ -1123,6 +1199,13 @@ func tarRelPath(goos, arch string) string {
 	if goos == "windows" {
 		return path.Join("windows", arch, "provider.exe")
 	}
+	if goos == "freebsd" {
+		// The universal tarball ships freebsd/<arch>/provider. Without this
+		// case the fallthrough installs the LINUX ELF on a FreeBSD box, where
+		// isRecognizedExecutable accepts it as a valid ELF and the wrong-asset
+		// guard never fires.
+		return path.Join("freebsd", arch, "provider")
+	}
 	return path.Join("linux", arch, "provider")
 }
 
@@ -1201,7 +1284,15 @@ func installBinary(src, dst, user string) error {
 		os.Remove(newPath)
 		return err
 	}
-	if user != "" && os.Geteuid() == 0 {
+	// Under the root-owned OpenRC layout the binary must STAY root-owned:
+	// chowning it to the service user would hand the file itself to an
+	// unprivileged account that root later executes (update-time version
+	// verify, the next `sudo urnet-tools update`). The service user only
+	// needs read+exec, which the 0755 above already delivers. The chown
+	// exists for the user-session (systemd) layout, where the binary lives
+	// in the user's own tree and must be theirs to replace via updates run
+	// without root.
+	if user != "" && os.Geteuid() == 0 && !openrcTreeOwnedByRoot(dst) {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
 			tmpFile.Close()
@@ -1524,11 +1615,16 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	if err != nil {
 		// Can't determine type — skip migration rather than block
 		// the update. The systemctl call can fail when the user bus
-		// is unreachable or systemctl is missing.
+		// is unreachable or systemctl is missing. Report the skip so
+		// the update log shows which restart path was taken.
+		fmt.Printf("unit migration skipped: cannot read %s unit type: %v\n", p.Unit, err)
 		return false, nil
 	}
 	if typ != "simple" {
-		return false, nil // already notify, oneshot, or other type
+		// Already notify, oneshot, or other type — nothing to migrate.
+		// Report the skip for the same reason.
+		fmt.Printf("unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
+		return false, nil
 	}
 
 	// Resolve the unit file's on-disk path via FragmentPath.

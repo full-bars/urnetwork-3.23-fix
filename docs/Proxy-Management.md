@@ -212,7 +212,7 @@ docker exec -it urfix proxy-health                   # Docker
 >
 > **When to investigate:** A proxy that has never connected stays `connecting` for one full hourly pulse cycle (~65 minutes); only after that does it fall back to `dead`. If a proxy is *still* `dead` after that window, it's a real problem (bad credentials, unreachable address). But in the first hour, `connecting` labels are normal and expected.
 >
-> **Pro tip:** Once a proxy successfully connects even once, it's permanently marked as "ever connected." If it drops later, it shows as `degraded` (not `dead`), giving you a clear signal about which proxies worked before vs. which never worked at all.
+> **Pro tip:** Once a proxy successfully connects even once, it's permanently marked as "ever connected." If it drops later, it shows as `DROPPED` (not `NEVER UP`), a plain "was up, now down" signal that separates the proxies that worked before from the ones that never worked at all.
 
 ### 📈 Proxy Traffic
 View a sorted report of cumulative bandwidth per proxy, broken down by billable vs. total traffic, along with the number of active NAT sessions currently multiplexed through each proxy.

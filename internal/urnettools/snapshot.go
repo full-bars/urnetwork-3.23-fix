@@ -225,7 +225,63 @@ func printLiveBlock(p Provider) {
 		return
 	}
 	fmt.Println()
-	fmt.Print(renderLiveBlock(snap, statusLiveOpts()))
+	fmt.Print(renderLiveBlock(snap, statusLiveOpts(), pressureSummaryLine(p.StateDir)))
+}
+
+// pressureSummaryLine reads the provider's persisted one-sentence pressure
+// summary so `status` can show plain language, not just the score. Best
+// effort: a missing or unreadable file (an older provider, or its monitor
+// stopped) simply renders nothing.
+//
+// The read goes through readStateFileNoFollow: status may run with elevated
+// privileges against a state dir the provider user owns, and a symlink
+// planted at pressure_status must not be followed into an arbitrary file.
+func pressureSummaryLine(stateDir string) string {
+	if stateDir == "" {
+		return ""
+	}
+	b, err := readStateFileNoFollow(stateDir, "pressure_status")
+	if err != nil {
+		return ""
+	}
+	var st struct {
+		Summary string `json:"summary"`
+	}
+	if err := json.Unmarshal(b, &st); err != nil {
+		return ""
+	}
+	return sanitizeSummary(strings.Join(strings.Fields(st.Summary), " "))
+}
+
+// sanitizeSummary keeps a persisted sentence fit for display: whitespace is
+// already collapsed by the caller; here control runes are dropped (a planted
+// or corrupt file must not dump escape sequences into a possibly-root
+// terminal -- the read is already no-follow, this is content hygiene) and
+// the result is capped at 200 runes with an ellipsis.
+func sanitizeSummary(s string) string {
+	runes := []rune(s)
+	var b strings.Builder
+	n := 0
+	for i := 0; i < len(runes); i++ {
+		r := runes[i]
+		if r == 0x1b { // ESC: drop the whole escape sequence
+			i++
+			for i < len(runes) && !((runes[i] >= 'A' && runes[i] <= 'Z') || (runes[i] >= 'a' && runes[i] <= 'z')) {
+				i++
+			}
+			continue
+		}
+		if r < 32 || r == 127 || (r >= 128 && r < 160) {
+			continue
+		}
+		if n >= 200 {
+			b.WriteString("...")
+			break
+		}
+		b.WriteRune(r)
+		n++
+	}
+	return b.String()
 }
 
 // printProviderSummary prints one compact row per provider, fetching the

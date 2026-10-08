@@ -475,6 +475,8 @@ A proxy that passes MiTM checking can still be useless, so a second gate measure
 - **pass bar 0.6**: anything below it is never spawned. The **preferred bar of 0.9 is recorded and clamped but gates nothing** in this tree; the only bar that decides admission is the pass bar.
 - **Sample width 12 by default**, growing to a maximum of 36, and the growth happens **only for borderline candidates** (a score within 0.15 of the pass bar). A clearly good or clearly dead proxy is settled at the small width, so probe bandwidth is spent in proportion to uncertainty rather than on every proxy. `min_sample_width` defaults to 0, so the start-small staging path is off unless an operator sets it.
 - Successive sweeps use a **disjoint-block rotation**, so consecutive passes at the same width land on non-overlapping strides and genuinely new hosts rather than re-dialing the same ones
+- **Each block is drawn from a content-keyed spread of the table** (`use_spread_order`, default on). The probe samples a fixed permutation of the 127-host table. It orders the table by the hash of each hostname, not by row position. Consecutive rows share a theme, and a failure inside a theme is correlated. An old block could then fail as a group. The proxy could swing between A and F although its capability never changed. A spread block spans many themes at the same dial count. Set `use_spread_order` to false to restore the consecutive-row sampler.
+- **A confirmation floor** (`min_confirm_dials`, default 0) is the fewest dials a below-bar pass must attempt before it may convict a proxy. The floor gates both the early abort and the final verdict. A pass that runs out of block below the floor keeps the previous grade. The paid grader uses 6; the URL admission path and the reaper use 0. `-1` forces the floor off on the paid path.
 
 The two stages are separate jobs. **Stage 0** is liveness: the three-stage check above decides only whether the proxy is alive and honest, and says nothing about quality. **Stage 1** is the table probe above, and it is what produces the A to F grade that decides admission order.
 
@@ -485,6 +487,7 @@ Nothing is graded once and trusted forever.
 - **The fetch cycle probes new addresses only.** Re-probing everything every cycle would be both slow and a suspicious traffic pattern, and would be especially bad on a large box.
 - **The URL reaper** ticks every 5 minutes, works to a stale window that scales from 3 hours down to 1 hour under memory pressure, and spends a budget of 32 grade refreshes per cycle, oldest first. Under pressure the window shortens, so refreshes happen more often.
 - **The paid and file grader** runs on a wider window, 6 hours down to 3 under pressure, skips proxies that earned recently, and force-probes anything not checked in 24 hours.
+- **The direct path is graded too, read-only.** The provider samples the same table from its own egress address. It writes the result to `~/.urnetwork/direct_grade.json`, never into `proxy.state`. It logs `[proxy][grade] direct: <tier> (score x.xx, n/m)` when the tier changes. The periodic grade summary carries a `direct:` line. The other states are `direct: off` (the direct transport is disabled) and `direct: (ungraded)` (no grade yet). `direct: (stale)` means the last grade is older than three reaper ticks. Nothing acts on this grade. It separates a bad proxy from a bad box.
 - **Below-bar entries are never spawned**, so a proxy that decays is not merely ignored, it stops carrying traffic.
 
 The net effect is that a proxy holds its place only by continuing to pass. The A to F funnel admits the best first on every fill, and the re-grading keeps re-ordering the pool against reality rather than against a snapshot from days ago.
@@ -589,19 +592,19 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 
 ```
 | 2026-08-04T00:12:03Z | RECOVERED | proxy[47]  | 1.2.3.4:8080     | after=3m12s |
-| 2026-08-04T00:12:03Z | DEGRADED  | proxy[49]  | 5.6.7.8:1081     |             |
-| 2026-08-04T00:12:03Z | DEAD      | proxy[112] | 45.3.32.184:1081 |             |
+| 2026-08-04T00:12:03Z | DROPPED   | proxy[49]  | 5.6.7.8:1081     |             |
+| 2026-08-04T00:12:03Z | NEVER UP  | proxy[112] | 45.3.32.184:1081 |             |
 ```
 
 | Field | Meaning |
 |---|---|
 | Timestamp | RFC3339 UTC. |
 | `RECOVERED` | A proxy that was down came back up. `after=` shows how long it was down (only when a `downSince` was recorded). |
-| `DEGRADED` | A proxy that was up went down (worked before, now not). |
-| `DEAD` | A proxy that never connected within a full pulse cycle. Emitted **once per proxy** (the `deadLogged` latch) prevents repeat rows for the same proxy. |
+| `DROPPED` | A proxy that was up went down (worked before, now not). |
+| `NEVER UP` | A proxy that never connected within a full pulse cycle. Emitted **once per proxy** (the `deadLogged` latch) prevents repeat rows for the same proxy. |
 
 > [!IMPORTANT]
-> `DEAD` rows were unreachable before the connecting-state bound shipped (the `!connecting` gate could never pass for a never-up proxy, so the path was latently dead). A fleet that has never seen `DEAD` rows will start seeing them for proxies that genuinely never connected within 65 minutes. This is a fixed latent bug; the rows are diagnostics only and nothing alerts on them.
+> `NEVER UP` rows were unreachable before the connecting-state bound shipped (the `!connecting` gate could never pass for a never-up proxy, so the path was latently dead). A fleet that has never seen `NEVER UP` rows will start seeing them for proxies that genuinely never connected within 65 minutes. This is a fixed latent bug; the rows are diagnostics only and nothing alerts on them.
 
 ### ⏱️ Hourly Pulse Marker
 
@@ -636,7 +639,7 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | Field | Meaning |
 |---|---|
 | `proxy[N] (ip:port)` | The SOCKS5 proxy used to reach the platform. Absent when using the direct path. |
-| `[fragment]` / `[reorder]` / `[fragment+reorder]` / `[direct]` | DPI bypass strategy used for this outbound call (see below). |
+| `[fragment]` / `[reorder]` / `[fragment+reorder]` / `[fragment+segment]` / `[direct]` | DPI bypass strategy used for this outbound call (see below). |
 | `success=N` | Cumulative provider API/WebSocket calls that succeeded through this route since last reset. |
 | `error=N` | Cumulative failures. A healthy error rate is under ~10% of successes. |
 | `clients=N` | **Independent metric.** Number of end-user relay sessions currently routing through this proxy via LocalUserNat. Zero is normal when no users are assigned. |
@@ -652,6 +655,7 @@ The provider tries multiple strategies for its outbound connections to avoid DPI
 | `fragment` | Splits the TLS ClientHello across multiple TCP segments so stateful DPI cannot read the SNI hostname. Highest priority; no throughput cost. |
 | `reorder` | Sends TLS fragments out of order to confuse stateless DPI inspectors. |
 | `fragment+reorder` | Both techniques combined. |
+| `fragment+segment` | Record fragmentation plus a second cut of every fragmented record across two TCP segments at an interior byte. The pair defeats middleboxes that reassemble either layer alone, and needs no raw sockets, so it also works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux). |
 
 The selector tracks per-strategy success rates and prefers whichever is most reliable. When errors accumulate on one strategy, it rotates to the next.
 
@@ -739,8 +743,10 @@ Emitted on the earning tick only while transit traffic is actively flowing (sile
 ## 💰 Profit Heartbeat (3.23-fix)
 
 ```
-[profit] earning=yes reason=- clients=4 rate=2.1 MB/s proxies_up=12 serving=3 idle=9
-[profit] earning=no reason=idle clients=0 rate=0 B/s proxies_up=12 serving=0 idle=12
+[profit] earning=yes reason=- mode=proxies clients=4 rate=2.1 MB/s proxies_up=12 serving=3 idle=9
+[profit] earning=no reason=idle mode=proxies clients=0 rate=0 B/s proxies_up=12 serving=0 idle=12
+[profit] earning=yes reason=- mode=direct clients=2 rate=1.4 MB/s proxies_up=0 serving=0 idle=0 (direct mode, no proxies configured)
+[profit] earning=no reason=no_proxies mode=none clients=0 rate=0 B/s proxies_up=0 serving=0 idle=0
 ```
 
 A fast, focused answer to **"are we earning right now, and if not, why?"**, emitted by `runProfitHeartbeat` every **15 seconds** — independent of the 5-minute `[health]`/`[traffic]` heartbeat. It uses `ProxyHealthSnapshot`, so it never disturbs the health heartbeat's dead/recovered baseline. It folds the headline earning signal into one greppable line so it survives even a tiny in-RAM log window.
@@ -748,10 +754,11 @@ A fast, focused answer to **"are we earning right now, and if not, why?"**, emit
 | Field | Meaning |
 |---|---|
 | `earning` | `yes` if billable bytes moved in the last interval, else `no`. |
-| `reason` | Why not earning (`-` while earning): `warmup` (still ramping up), `no_proxies` (none up), `idle` (proxies up but no clients matched), `no_traffic` (clients present but no billable bytes moved). |
+| `reason` | Why not earning (`-` while earning): `warmup` (still ramping up), `no_proxies` (neither proxies nor direct transport up), `idle` (a transport is up but no clients matched), `no_traffic` (clients present but no billable bytes moved). |
+| `mode` | The transport shape of the node: `direct` (the node's own address only, no proxies up), `proxies` (proxies up with the direct transport down or disabled), `mixed` (both up), or `none` (neither direct nor any proxy is up). The line can end with a short note, for example `(direct mode, no proxies configured)`, when there is something non-obvious to say. Alert on `mode=` and the numeric fields, not on the note. |
 | `clients` | End-user relay sessions active across all proxies right now. |
 | `rate` | Aggregate billable throughput since the previous tick. |
-| `proxies_up` | Proxies whose platform transport is currently live. |
+| `proxies_up` | Real proxies whose platform transport is currently live. The direct transport is not counted, so a direct-only node reports `proxies_up=0` with `mode=direct` and `earning=yes` when it is carrying traffic. |
 | `serving` | Of those, how many are carrying at least one client. |
 | `idle` | Up proxies carrying no clients (`proxies_up - serving`). |
 

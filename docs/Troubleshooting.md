@@ -12,7 +12,7 @@
 | Memory ballooning / OOM kills | High proxy count without memory profile | Set `URNETWORK_PROFILE=auto` or `eco`; enable `URNETWORK_SELF_HEAL=1`. |
 | Exit code `52` on `proxy refresh` | 8-hour warmup threshold not met | Run `urnet-tools proxy refresh --force` to bypass warmup gate. |
 | Disk space exhaustion | Unrotated logs filling `/var/log` or root | Enable `URNETWORK_RAMLOGS=1` or set `--log-opt max-size=10m --log-opt max-file=3`. |
-| Proxies marked `DEAD` or `DEGRADED` | Target proxy failure or connection drop | Run `urnet-tools proxy health` and prune with `urnet-tools proxy remove-dead`. |
+| Proxies marked `NEVER UP` or `DROPPED` | Target proxy failure or connection drop | Run `urnet-tools proxy health` and prune with `urnet-tools proxy remove-dead`. |
 | `urnet-tools hotswap` restarts instead of handing off | Unit is `Type=simple`, not `Type=notify` | Expected on any node installed before v3.23.0-fix.31.0. The update still applies via restart. See [HotSwap declines on an existing node](#5-hotswap-declines-on-an-existing-node). |
 | A setting from `urnet-tools set` seems not to apply | Change was queued, rejected, or applied only on restart | Check the provider log for `⚙️ [control]` / `❌ [control]`. See [Confirming a settings change](#6-confirming-a-settings-change). |
 | `status` shows a running PID but no control socket | Startup failure, or a second provider for the same OS user | The socket is the liveness signal, not the PID. Check the log for a startup error and `urnet-tools providers --all` for a collision. |

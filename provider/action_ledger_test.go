@@ -269,7 +269,7 @@ func TestReloadTrimCountsExcludeTheDirectTransport(t *testing.T) {
 		t.Fatal(err)
 	}
 	out := captureTlog(t, func() { r.reload() })
-	if !strings.Contains(out, "received: cap=1 (was none); 3 running, 3 desired") {
+	if !strings.Contains(out, "received: limiting this provider to 1 running proxies (was none); 3 running now, 3 desired") {
 		t.Fatalf("receipt must count 3 proxies, not 3 plus direct:\n%s", out)
 	}
 	dir, _ := oomCapDir()

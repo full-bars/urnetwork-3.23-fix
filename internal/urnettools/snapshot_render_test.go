@@ -39,12 +39,27 @@ func sameGolden(got string, want []byte) bool {
 
 func TestRenderLiveBlockFlowing(t *testing.T) {
 	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
-	assertGolden(t, "live_flowing", renderLiveBlock(s, liveOpts{Color: true}))
+	assertGolden(t, "live_flowing", renderLiveBlock(s, liveOpts{Color: true}, ""))
+}
+
+func TestRenderLiveBlockShowsPersistedPressureSummary(t *testing.T) {
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	summary := "system calm (pressure 0.21); heap at 33% of its soft limit; 981 MB RAM free"
+	out := renderLiveBlock(s, liveOpts{}, summary)
+	if !strings.Contains(out, summary) {
+		t.Fatalf("the pressure row must carry the persisted summary sentence:\n%s", out)
+	}
+	// Without a summary (older provider, monitor stopped) the bare score
+	// renders exactly as before.
+	plain := renderLiveBlock(s, liveOpts{}, "")
+	if !strings.Contains(plain, "0.21") || strings.Contains(plain, "system calm") {
+		t.Fatalf("without a summary the bare score must render:\n%s", plain)
+	}
 }
 
 func TestRenderLiveBlockIdleWithHint(t *testing.T) {
 	s := loadSnapshotFixture(t, "node_snapshot_v1_idle_minimal.json")
-	assertGolden(t, "live_idle_hint", renderLiveBlock(s, liveOpts{Color: true}))
+	assertGolden(t, "live_idle_hint", renderLiveBlock(s, liveOpts{Color: true}, ""))
 }
 
 func TestRenderLiveBlockMinimalOptionals(t *testing.T) {
@@ -52,7 +67,7 @@ func TestRenderLiveBlockMinimalOptionals(t *testing.T) {
 	s.PreviousVersion = nil
 	s.Resources.MemLimitBytes, s.Resources.RSSBytes = nil, nil
 	s.Resources.OpenFDs, s.Resources.FDLimit = nil, nil
-	out := renderLiveBlock(s, liveOpts{})
+	out := renderLiveBlock(s, liveOpts{}, "")
 	for _, bad := range []string{"limit", "RSS", "fds", " to "} {
 		if strings.Contains(out, bad) {
 			t.Fatalf("omitted field %q leaked into output:\n%s", bad, out)
@@ -67,13 +82,30 @@ func TestRenderLiveBlockNarrow80(t *testing.T) {
 		s.Rate.HistoryBps = append(s.Rate.HistoryBps, s.Rate.HistoryBps...)
 	}
 	s.Rate.HistoryBps = s.Rate.HistoryBps[:60]
-	out := renderLiveBlock(s, liveOpts{Width: 80})
+	out := renderLiveBlock(s, liveOpts{Width: 80}, "")
 	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 		if n := len([]rune(ln)); n > 80 {
 			t.Fatalf("line is %d columns, want <= 80: %q", n, ln)
 		}
 	}
 	assertGolden(t, "live_narrow_80", out)
+}
+
+func TestRenderLiveBlockNarrow80WithSummary(t *testing.T) {
+	// The persisted summary sentence runs 75-110+ chars; split at clause
+	// boundaries it must fold onto indented continuation lines, never
+	// hard-overflow the terminal.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	summary := "system calm (pressure 0.21); heap at 33% of its soft limit; 981 MB RAM free; 14% swap committed"
+	out := renderLiveBlock(s, liveOpts{Width: 80}, summary)
+	if !strings.Contains(out, "system calm") {
+		t.Fatalf("the summary sentence must render:\n%s", out)
+	}
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if n := len([]rune(ln)); n > 80 {
+			t.Fatalf("line is %d columns, want <= 80: %q", n, ln)
+		}
+	}
 }
 
 func TestRenderLiveBlockNoColor(t *testing.T) {
@@ -84,7 +116,7 @@ func TestRenderLiveBlockNoColor(t *testing.T) {
 	if o.Color || o.ASCII {
 		t.Fatalf("NO_COLOR opts = %+v; want no color, unicode sparkline", o)
 	}
-	out := renderLiveBlock(s, o)
+	out := renderLiveBlock(s, o, "")
 	if strings.Contains(out, "\x1b") {
 		t.Fatalf("NO_COLOR output contains an escape: %q", out)
 	}
@@ -99,13 +131,42 @@ func TestRenderLiveBlockDumbTerminal(t *testing.T) {
 	if o.Color || !o.ASCII {
 		t.Fatalf("TERM=dumb opts = %+v; want plain, ascii", o)
 	}
-	out := renderLiveBlock(s, o)
+	out := renderLiveBlock(s, o, "")
 	for _, r := range out {
 		if r > 127 {
 			t.Fatalf("non-ascii rune %q on a dumb terminal:\n%s", r, out)
 		}
 	}
 	assertGolden(t, "live_dumb", out)
+}
+
+func TestRenderLiveBlockDumbTerminalWithSummary(t *testing.T) {
+	// The summary sentence carries an em dash in its elevated form; a dumb
+	// terminal must still get ASCII-only output, with the few fancy runes
+	// folded to their ASCII lookalikes.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	out := renderLiveBlock(s, liveOpts{ASCII: true, Width: 100}, "memory pressure 0.21 — system calm; heap at 33% of its soft limit; “note”… it’s fine")
+	for _, r := range out {
+		if r > 127 {
+			t.Fatalf("non-ascii rune %q on an ascii terminal:\n%s", r, out)
+		}
+	}
+	if !strings.Contains(out, "memory pressure 0.21 - system calm") {
+		t.Fatalf("the em dash must fold to '-':\n%s", out)
+	}
+	if !strings.Contains(out, "\"note\".") || !strings.Contains(out, "it's") {
+		t.Fatalf("curly quotes and the ellipsis must fold:\n%s", out)
+	}
+}
+
+func TestRenderLiveBlockWhitespaceSummaryFallsBack(t *testing.T) {
+	// A whitespace-only summary must not render an empty pressure row: the
+	// bare score stays.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	out := renderLiveBlock(s, liveOpts{Width: 80}, "   ")
+	if !strings.Contains(out, "0.21") {
+		t.Fatalf("a whitespace-only summary must keep the bare score:\n%s", out)
+	}
 }
 
 func TestLiveOptsFromEnvColorNeedsTTY(t *testing.T) {
@@ -127,17 +188,17 @@ func TestRenderLiveBlockStatesAndFlags(t *testing.T) {
 	}
 	for _, c := range cases {
 		s.State = c.state
-		out := renderLiveBlock(s, liveOpts{Color: true})
+		out := renderLiveBlock(s, liveOpts{Color: true}, "")
 		if !strings.Contains(out, c.code+strings.ToUpper(c.state)+"\x1b[0m") {
 			t.Errorf("state %s not painted %q:\n%s", c.state, c.code, out)
 		}
 	}
 	s.State = "flowing"
-	if strings.Contains(renderLiveBlock(s, liveOpts{}), "RESTART PENDING") {
+	if strings.Contains(renderLiveBlock(s, liveOpts{}, ""), "RESTART PENDING") {
 		t.Error("RESTART PENDING shown when not pending")
 	}
 	s.RestartPending = true
-	first := strings.SplitN(renderLiveBlock(s, liveOpts{}), "\n", 2)[0]
+	first := strings.SplitN(renderLiveBlock(s, liveOpts{}, ""), "\n", 2)[0]
 	if !strings.Contains(first, "FLOWING") || !strings.HasSuffix(first, "RESTART PENDING") {
 		t.Errorf("header = %q; want state then RESTART PENDING flag", first)
 	}
@@ -145,11 +206,11 @@ func TestRenderLiveBlockStatesAndFlags(t *testing.T) {
 
 func TestRenderLiveBlockIdleHintOnlyWhenIdle(t *testing.T) {
 	s := loadSnapshotFixture(t, "node_snapshot_v1_idle_minimal.json")
-	if !strings.Contains(renderLiveBlock(s, liveOpts{}), "why idle") {
+	if !strings.Contains(renderLiveBlock(s, liveOpts{}, ""), "why idle") {
 		t.Fatal("idle node lost its hint")
 	}
 	s.State = "degraded" // hint present but state is not idle
-	if strings.Contains(renderLiveBlock(s, liveOpts{}), "why idle") {
+	if strings.Contains(renderLiveBlock(s, liveOpts{}, ""), "why idle") {
 		t.Fatal("hint shown for a non-idle state")
 	}
 }
@@ -232,26 +293,26 @@ func TestRenderLiveBlockStateReason(t *testing.T) {
 	reason := "startup stuck: resolving proxies for 6 min"
 
 	s.State, s.StateReason, s.IdleHint = "degraded", &reason, nil
-	out := renderLiveBlock(s, liveOpts{})
+	out := renderLiveBlock(s, liveOpts{}, "")
 	if !strings.Contains(out, "why degraded") || !strings.Contains(out, reason) {
 		t.Fatalf("degraded node lost its reason:\n%s", out)
 	}
 
 	starting := "resolving proxies (3 min)"
 	s.State, s.StateReason = "starting", &starting
-	if out := renderLiveBlock(s, liveOpts{}); !strings.Contains(out, "why starting") || !strings.Contains(out, starting) {
+	if out := renderLiveBlock(s, liveOpts{}, ""); !strings.Contains(out, "why starting") || !strings.Contains(out, starting) {
 		t.Fatalf("starting node lost its reason:\n%s", out)
 	}
 
 	// Flowing never shows a why row, even if a stale reason is present.
 	s.State = "flowing"
-	if out := renderLiveBlock(s, liveOpts{}); strings.Contains(out, "why ") {
+	if out := renderLiveBlock(s, liveOpts{}, ""); strings.Contains(out, "why ") {
 		t.Fatalf("flowing node shows a why row:\n%s", out)
 	}
 
 	// A provider that predates the field renders exactly as before.
 	s.State, s.StateReason = "degraded", nil
-	if out := renderLiveBlock(s, liveOpts{}); strings.Contains(out, "why ") {
+	if out := renderLiveBlock(s, liveOpts{}, ""); strings.Contains(out, "why ") {
 		t.Fatalf("degraded node with no reason shows a why row:\n%s", out)
 	}
 }

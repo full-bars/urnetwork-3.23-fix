@@ -88,6 +88,18 @@ func runPaidProxyGradeOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	if probeCfg.MinSampleWidth <= 0 || probeCfg.MinSampleWidth >= probeCfg.SampleWidth {
 		probeCfg.MinSampleWidth = 6
 	}
+	// Paid only: a sub-bar pass must accumulate MinConfirmDials ATTEMPTED dials
+	// before the abort may convict it. With the staged base width of 6 this
+	// makes a region-deny cluster dial its whole block instead of sealing an F
+	// from the first three correlated failures. URL admission keeps 0.
+	// Default the floor to the staged base width. Only an UNSET (0) floor takes
+	// the paid default; an explicit value is never clobbered, and the documented
+	// kill switch works here too — the loader accepts -1 as "force off even on
+	// paid", which reaches this branch as a negative and is passed through.
+	if probeCfg.MinConfirmDials == 0 {
+		probeCfg.MinConfirmDials = 6
+	}
+	clampConfirmFloor(&probeCfg)
 	if !probeCfg.Enabled {
 		// Kill switch: stage-1 table probing is off globally. Paid
 		// grading must be a full skip too — the operator turned the

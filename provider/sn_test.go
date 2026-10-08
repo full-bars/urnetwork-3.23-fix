@@ -1,13 +1,8 @@
 package main
 
 import (
-	"bytes"
-	"crypto/ed25519"
-	"crypto/rand"
 	"strings"
 	"testing"
-
-	"github.com/ethereum/go-ethereum/common"
 )
 
 func TestParseBytes32Arg(t *testing.T) {
@@ -226,99 +221,9 @@ func TestParseEvmAddressArg_UppercasePrefix(t *testing.T) {
 	}
 }
 
-// fixedEvmAddress builds a deterministic common.Address for use as the
-// `registrant` argument in snSignBindHead tests.
-func fixedEvmAddress(b byte) common.Address {
-	var out common.Address
-	for i := range out {
-		out[i] = b
-	}
-	return out
-}
-
 func fixedBytes32(b byte) (out [32]byte) {
 	for i := range out {
 		out[i] = b
 	}
 	return out
-}
-
-func TestSnSignBindHead_FieldsCopiedAndSignatureVerifies(t *testing.T) {
-	pub, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("ed25519.GenerateKey: %s", err)
-	}
-
-	registrant := fixedEvmAddress(0xAB)
-	hotkey := fixedBytes32(0xCD)
-	digest := fixedBytes32(0xEF)
-
-	intent := snSignBindHead(priv, registrant, hotkey, digest)
-
-	if intent.hotkey != hotkey {
-		t.Errorf("intent.hotkey = %x; want %x", intent.hotkey, hotkey)
-	}
-	if intent.digest != digest {
-		t.Errorf("intent.digest = %x; want %x", intent.digest, digest)
-	}
-	if intent.registrant != registrant {
-		t.Errorf("intent.registrant = %x; want %x", intent.registrant, registrant)
-	}
-	if !bytes.Equal(intent.clientId[:], pub) {
-		t.Errorf("intent.clientId = %x; want the ed25519 public key %x", intent.clientId, pub)
-	}
-	if len(intent.clientIdSig) != ed25519.SignatureSize {
-		t.Fatalf("intent.clientIdSig length = %d; want %d", len(intent.clientIdSig), ed25519.SignatureSize)
-	}
-	if !ed25519.Verify(pub, digest[:], intent.clientIdSig) {
-		t.Error("intent.clientIdSig does not verify against digest with the signing key's public key")
-	}
-}
-
-func TestSnSignBindHead_SignatureIsBoundToDigest(t *testing.T) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("ed25519.GenerateKey: %s", err)
-	}
-
-	registrant := fixedEvmAddress(0x01)
-	hotkey := fixedBytes32(0x02)
-	digestA := fixedBytes32(0xAA)
-	digestB := fixedBytes32(0xBB)
-
-	intentA := snSignBindHead(priv, registrant, hotkey, digestA)
-	intentB := snSignBindHead(priv, registrant, hotkey, digestB)
-
-	if bytes.Equal(intentA.clientIdSig, intentB.clientIdSig) {
-		t.Error("signatures over two different digests must differ")
-	}
-
-	// A signature minted for digestA must not verify against digestB: this
-	// is the property bindHead relies on to prove the provider's identity
-	// key actually signed *this* on-chain headBindDigest, not a replay of
-	// a signature captured for a different one.
-	pub := priv.Public().(ed25519.PublicKey)
-	if ed25519.Verify(pub, digestB[:], intentA.clientIdSig) {
-		t.Error("intentA's signature unexpectedly verifies against digestB")
-	}
-}
-
-func TestSnSignBindHead_DeterministicForSameInputs(t *testing.T) {
-	_, priv, err := ed25519.GenerateKey(rand.Reader)
-	if err != nil {
-		t.Fatalf("ed25519.GenerateKey: %s", err)
-	}
-
-	registrant := fixedEvmAddress(0x03)
-	hotkey := fixedBytes32(0x04)
-	digest := fixedBytes32(0x05)
-
-	intent1 := snSignBindHead(priv, registrant, hotkey, digest)
-	intent2 := snSignBindHead(priv, registrant, hotkey, digest)
-
-	// ed25519.Sign is deterministic (no per-call randomness): same key +
-	// same message must reproduce the same signature every call.
-	if !bytes.Equal(intent1.clientIdSig, intent2.clientIdSig) {
-		t.Error("snSignBindHead produced different signatures for identical inputs")
-	}
 }

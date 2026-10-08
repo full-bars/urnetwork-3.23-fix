@@ -22,7 +22,7 @@ You need:
 |--------|----------|-----------------|
 | **Systemd** (Linux native) | Dedicated servers, maximum performance | Automatic on crash, manual for config changes |
 | **launchd** (macOS native) | Mac desktops/servers | Automatic on crash via `KeepAlive`; no auto-update yet |
-| **Native Windows service** | Windows desktops/servers | Starts at login (Startup entry); auto-update on by default |
+| **Native Windows service** | Windows desktops/servers | Starts at login (Task Scheduler logon task); auto-update on by default |
 | **Docker** | Containers, easy migration, isolated environment, any OS with Docker | Automatic with `--restart unless-stopped` |
 
 ---
@@ -133,13 +133,39 @@ Logs live at `~/Library/Logs/com.urnetwork.provider/stdout.log` and `stderr.log`
 ### 1. Install
 
 ```powershell
-powershell -c "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
+
+Windows Defender may flag this one-liner. See the note below.
+
+> [!NOTE]
+> Windows Defender may flag the Windows install one-liner, and it may flag the downloaded
+> binaries. What we see are machine-learning heuristics (the `!ml` suffix), not signatures;
+> for the binaries we publish they are false positives. Recent release pages record the scan
+> results for the published binaries. If Defender blocks the one-liner, download the script,
+> review it, and run it from disk instead. If Defender quarantines an extracted binary,
+> allow it from Windows Security > Virus & threat protection > Protection history. Both lines
+> go in PowerShell:
+>
+> ```powershell
+> irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+> powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
+> ```
+
+<details>
+<summary>The detections you may see, and what each one means</summary>
+
+- `Trojan:Script/Wacatac.B!ml`, `Trojan:Script/Wacatac.C!ml`: Defender's machine-learning label for the PowerShell installer script fetching and extracting a remote payload.
+- `Trojan:Win32/Wacatac.B!ml`, `Trojan:Win32/Wacatac.C!ml`: Defender's machine-learning label for files whose shape looks like a packed trojan. Our Go binaries are stripped, statically linked and unsigned, which reads as a packed payload. The B and C variants are different model generations, so one binary can be flagged under more than one name. `Trojan:Win32/Execution.A!ml` is another label from the same family on some builds.
+- `Trojan:Win32/Commando.A!ml`: fires on the download-and-run command line itself (the `irm ... | iex` one-liner), not on the installed files. Fetching a remote script and piping it into execution reads as a trojan-downloader pattern to the model.
+- `Trojan:Win32/Bearfoos.A!ml`: a behavioural label for scheduled-task activity. The installer registers Task Scheduler tasks — a weekly update task (on `latest` installs) and, if you accept auto-start, a logon task so the provider starts at login — and a behavioural model cannot tell that apart from persistence malware.
+
+</details>
 
 No admin rights required. This installs:
 - The provider binary at `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe`
 - The `urnet-tools` Go management binary (v3.23.0-fix.27.0+; the legacy `urnet-tools.ps1` wrapper has been retired)
-- A Startup shortcut so the provider launches on login
+- A Task Scheduler logon task so the provider launches on login (registered when you accept auto-start)
 - Configuration directory at `%USERPROFILE%\.urnetwork\`
 
 ### 2. Authenticate
@@ -256,7 +282,7 @@ These work across all platforms via the Go `urnet-tools` binary (or on Docker vi
 | `urnet-tools proxy summary` | Fleet summary: source breakdown (file/URL/internal), health state, URL feed cache |
 | `urnet-tools proxy traffic` | Live proxy traffic snapshot and max age |
 | `urnet-tools status` | Provider process status and uptime |
-| `urnet-tools proxy health` | Per-proxy up/degraded/dead status |
+| `urnet-tools proxy health` | Per-proxy up, dropped, and never-up status |
 
 ---
 
@@ -293,7 +319,7 @@ Set these before starting the provider — `export VAR=value` on Linux/macOS, `$
 urnet-tools proxy health
 ```
 
-Shows how many proxies are up, degraded, or dead, with lifetime recovery/loss counts.
+Shows how many proxies are up, dropped, or never-up, with lifetime recovery/loss counts.
 
 ---
 

@@ -224,7 +224,7 @@ func TestDeriveIdleHint(t *testing.T) {
 		want    string
 	}{
 		{"no proxies wins", SnapshotProxies{}, wave, "no proxies configured"},
-		{"all dead or connecting", SnapshotProxies{Connecting: 12, Dead: 46}, wave, "all 58 proxies dead or connecting"},
+		{"all dead or connecting", SnapshotProxies{Connecting: 12, Dead: 46}, wave, "all 58 proxies down or connecting"},
 		{"lone connection connecting", SnapshotProxies{Connecting: 1}, wave, "the only connection is dead or connecting"},
 		{"lone connection dead", SnapshotProxies{Dead: 1}, wave, "the only connection is dead or connecting"},
 

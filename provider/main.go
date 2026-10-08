@@ -931,9 +931,9 @@ Usage:
     provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
-    provider bind-head --hotkey=<hex> --registrant=<registrant> --contract=<contract> [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
-    provider unbind-head --hotkey=<hex> [--contract=<contract>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [-v...]
     provider proxy auth add [<key>] <proxy_user> <proxy_password> [-f]
     provider proxy auth remove [<key>] [--all]
@@ -985,11 +985,19 @@ Options:
                                      and submit the transaction (via --rpc); without it, the ready-to-submit
                                      calldata is printed for the offline/air-gapped snclaim path.
     --dry-run                        Build and sign the extrinsic but do not submit.
-    --hotkey=<hex>                   Head-tier miner hotkey as a 0x-optional 32-byte hex account id.
-    --registrant=<registrant>        The EVM address that will submit bindHead via snclaim (0x, 20 bytes).
-                                     The head-bind digest is bound to this address, so it MUST equal the
-                                     snclaim sender, whose mirror must be the hotkey's on-chain coldkey.
-    --contract=<contract>            STSubnet proxy contract address (0x, 20 bytes).
+    --manifest=<file>                Fleet manifest JSON (schema/chain_id/netuid/coordinator/fleet_id/
+                                     hotkey/generation/members). Required by bind-head and unbind-head;
+                                     the manifest is the single source for the fleet identity.
+    --hotkey_seed_file=<file>        sr25519 hotkey seed file (raw or hex 32 bytes). Required by
+                                     bind-head: the fleet binding is dual-signed, and this key must
+                                     match the manifest hotkey.
+    --client_id=<hex16>              The provider's 16-byte client_id (hex). Defaults to the client_id in
+                                     the provider's client JWT store (the "direct" entry).
+    --client_seed_file=<file>        Ed25519 client seed file (raw or hex 32 bytes) overriding the
+                                     provider's own client key for the binding/revoke signature.
+    --valid_from_epoch=<n>           First epoch the fleet binding is valid (bind-head).
+    --valid_to_epoch=<n>             Last epoch the fleet binding is valid (bind-head).
+    --effective_epoch=<n>            Epoch at which the fleet revoke takes effect (unbind-head).
     <key>                            Authentication key
     <proxy_user>                     SOCKS5 user
     <proxy_password>                 SOCKS5 password
@@ -1106,13 +1114,18 @@ func auth(opts docopt.Opts) {
 	urNetworkDir := filepath.Join(home, ".urnetwork")
 	jwtPath := filepath.Join(urNetworkDir, "jwt")
 
+	// ONE buffered reader for the whole command. A bufio.Reader reads a whole
+	// chunk from the pipe, not just the one line it returns, so a second reader
+	// created later sees only EOF - which is exactly how the auth code that
+	// followed the overwrite answer on the same pipe was being lost.
+	stdinReader := bufio.NewReader(os.Stdin)
+
 	if _, err := os.Stat(jwtPath); !errors.Is(err, os.ErrNotExist) {
 		// jwt exists
 		if force, _ := opts.Bool("-f"); !force {
 			fmt.Printf("%s exists. Overwrite? [yN]\n", jwtPath)
 
-			reader := bufio.NewReader(os.Stdin)
-			confirm, _ := reader.ReadString('\n')
+			confirm, _ := stdinReader.ReadString('\n')
 			if strings.ToLower(strings.TrimSpace(confirm)) != "y" {
 				return
 			}
@@ -1201,7 +1214,18 @@ func auth(opts docopt.Opts) {
 			fmt.Print("Enter auth code: ")
 			authCodeBytes, err := term.ReadPassword(int(syscall.Stdin))
 			if err != nil {
-				panic(err)
+				// Not a terminal: the code arrived on a pipe or a redirect.
+				// term.ReadPassword needs a TTY (it ioctls to suppress echo),
+				// and the old code PANICKED here, so every scripted auth -
+				// the OpenRC installer's prompt, `urnetwork auth <<<code`,
+				// any provisioning automation - crashed instead of working.
+				// Read one plain line instead; there is no echo to suppress
+				// on a pipe anyway.
+				line, readErr := stdinReader.ReadString('\n')
+				if line == "" && readErr != nil {
+					shmLogFatal(14, "could not read the auth code from stdin: %v", readErr)
+				}
+				authCodeBytes = []byte(line)
 			}
 			authCode = strings.TrimSpace(string(authCodeBytes))
 			fmt.Printf("\n")
@@ -1677,20 +1701,50 @@ func sumLastN(deltas []uint64, n int) uint64 {
 // operator can distinguish "no demand" from "no proxies" from "still warming
 // up" without cross-referencing other lines. Returns "-" while earning. The
 // checks are ordered most-fundamental first: a healthy earning provider needs
-// proxies up, clients matched to them, and bytes actually moving.
-func earningReason(earning bool, proxiesUp int, clients int64, warmup bool) string {
+// a live transport, matched clients, and bytes actually moving.
+func earningReason(earning bool, proxiesUp int, clients int64, warmup bool, directUp bool) string {
 	switch {
 	case earning:
 		return "-"
 	case warmup:
 		return "warmup"
-	case proxiesUp == 0:
+	case proxiesUp == 0 && !directUp:
 		return "no_proxies"
 	case clients == 0:
 		return "idle"
 	default:
 		return "no_traffic"
 	}
+}
+
+// profitTransportCounts keeps native transport traffic separate from proxy counts.
+func profitTransportCounts(proxiesUp int, bw map[string]*connect.ProxyBandwidth, health map[string]connect.ProxyHealthStatus) (billable uint64, clients int64, serving, proxiesOnly int, directUp bool) {
+	// directUp tracks the native [direct] identity separately. It is a
+	// real transport that earns, but it is NOT a proxy: counting it in
+	// proxies_up made a direct-only box read as "1 proxy up, earning",
+	// which is the number an operator (or an alert keyed on proxies_up)
+	// would take at face value. Report true proxies only, and say which
+	// mode the node is in via mode=.
+	directUp = health[directProxyKey].Health == "up"
+	for addr, p := range bw {
+		billable += p.BillableRx.Load() + p.BillableTx.Load()
+		pc := p.Clients.Load()
+		clients += pc
+		if isDirectAddr(addr) {
+			continue
+		}
+		if pc > 0 {
+			serving++
+		}
+	}
+	// proxiesUp counted the direct identity too; subtract it so the field
+	// means "proxies actually running".
+	proxiesOnly = proxiesUp
+	if directUp && proxiesOnly > 0 {
+		proxiesOnly--
+	}
+
+	return
 }
 
 // profitIdleLogInterval caps how often a non-earning [profit] line is
@@ -1730,17 +1784,7 @@ func runProfitHeartbeat(ctx context.Context) {
 
 		proxiesUp, _, _, bw, connecting := connect.ProxyHealthSnapshot()
 
-		var billable uint64
-		var clients int64
-		var serving int
-		for _, p := range bw {
-			billable += p.BillableRx.Load() + p.BillableTx.Load()
-			pc := p.Clients.Load()
-			clients += pc
-			if pc > 0 {
-				serving++
-			}
-		}
+		billable, clients, serving, proxiesOnly, directUp := profitTransportCounts(proxiesUp, bw, connect.ProxyHealthByKey())
 
 		now := time.Now()
 		if !prevSet {
@@ -1779,7 +1823,7 @@ func runProfitHeartbeat(ctx context.Context) {
 			if earning {
 				status = "yes"
 			}
-			idle := proxiesUp - serving
+			idle := proxiesOnly - serving
 			if idle < 0 {
 				idle = 0
 			}
@@ -1787,7 +1831,9 @@ func runProfitHeartbeat(ctx context.Context) {
 			// quiet provider mid-ramp reports reason=warmup rather than a
 			// false "idle"/"no_traffic". Mirrors paceMonitor's done threshold.
 			warmup := len(connecting) >= 5
-			reason := earningReason(earning, proxiesUp, clients, warmup)
+			reason := earningReason(earning, proxiesOnly, clients, warmup, directUp)
+			mode := earningMode(directUp, proxiesOnly)
+			modeNote := profitModeNote(mode, proxiesOnly)
 			profitEmoji := ""
 			if status == "yes" {
 				profitEmoji = "💰 "
@@ -1801,8 +1847,12 @@ func runProfitHeartbeat(ctx context.Context) {
 				}
 				contractFields = fmt.Sprintf(" contracts=%d denied=%d avg_util=%d%%", acquired, denied, avgUtil)
 			}
-			tlog("%s[profit] earning=%s reason=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s\n",
-				profitEmoji, status, reason, clients, fmtRate(float64(delta)/elapsed), proxiesUp, serving, idle, contractFields)
+			// mode= is the stable, greppable field (direct|proxies|mixed|none);
+			// modeNote is a human tail that only appears when there is
+			// something non-obvious to say, so a healthy earning pool stays a
+			// clean one-line record.
+			tlog("%s[profit] earning=%s reason=%s mode=%s clients=%d rate=%s proxies_up=%d serving=%d idle=%d%s%s\n",
+				profitEmoji, status, reason, mode, clients, fmtRate(float64(delta)/elapsed), proxiesOnly, serving, idle, contractFields, modeNote)
 			lastLogTime = now
 		}
 	}
@@ -1915,6 +1965,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 	// deadConfirmDelay gates confirmed-dead event logging until one pulse cycle has
 	// elapsed, so the startup ramp is not recorded as dead.
 	const deadConfirmDelay = 65 * time.Minute
+
+	// healthVerdictAttentionDownPct: how much of the pool may be down before
+	// the plain-sentence health verdict reads "needs attention" (percent).
+	const healthVerdictAttentionDownPct = 10
 
 	// per-proxy byte counts from the previous tick, used to compute rates.
 	prevTick := map[string]trafficBytes{}
@@ -2203,6 +2257,29 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		}
 		tlog("[earn] proxies_up=%d serving=%d idle=%d clients=%d\n",
 			report.Up, serving, idle, totalClients)
+
+		// Plain-sentence verdict (readability contract): one line, checked in
+		// severity order. "earning" means traffic RIGHT NOW (serving > 0),
+		// not billable-today, so a box that is quiet after the midnight reset
+		// reads idle rather than unhealthy.
+		totalProxies := report.Up + down
+		switch {
+		case uptime < deadConfirmDelay:
+			tlog("❤️ [health] Verdict: starting up — %d of %d proxies up so far; failures are not judged until the first %s have passed.\n",
+				report.Up, totalProxies, roundDur(deadConfirmDelay))
+		case report.Up == 0:
+			tlog("❤️ [health] Verdict: down — none of the %d proxies is up; nothing can earn.\n", totalProxies)
+		case down == 0 && serving > 0:
+			tlog("❤️ [health] Verdict: healthy — all %d proxies up and earning, nothing needs attention.\n", totalProxies)
+		case down == 0:
+			tlog("❤️ [health] Verdict: healthy but idle — all %d proxies up, no customer traffic right now.\n", totalProxies)
+		case down*100 >= totalProxies*healthVerdictAttentionDownPct:
+			tlog("❤️ [health] Verdict: needs attention — only %d of %d proxies up, %d down (%d dead, %d failing).\n",
+				report.Up, totalProxies, down, len(report.Dead), len(report.Degraded))
+		default:
+			tlog("❤️ [health] Verdict: mostly healthy — %d of %d proxies up, %d down (%d dead, %d failing); see the lists above.\n",
+				report.Up, totalProxies, down, len(report.Dead), len(report.Degraded))
+		}
 
 		// See desiredAddressesForHistoryPruning for why this isn't just
 		// currently-registered health entries.
@@ -2887,9 +2964,9 @@ func provide(opts docopt.Opts) {
 		// Wire the control socket "hotswap" command so urnet-tools can
 		// trigger a handoff on any platform (including Windows, which has
 		// no SIGUSR2).
-		hotSwapTrigger = func() error {
+		setHotSwapTrigger(func() error {
 			return runHotSwapParentHandoff(ctx, cancel, opts)
-		}
+		})
 	}
 
 	// Drain buffered retention events before exit so a shutdown racing the
@@ -3721,7 +3798,7 @@ func provide(opts docopt.Opts) {
 		platformSettings := platformTransportSettingsFor(proxySettings, isNative)
 		if platformSettings.EnableH3 {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",
-				onOff(resolveH3(globalControlState)))
+				onOff(resolveH3Setting(globalControlState, currentProxyResolution())))
 		}
 		platformTransport := connect.NewPlatformTransport(proxyCtx, clientStrategy, connectClient.RouteManager(), connectUrl, auth, platformSettings)
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
@@ -3752,9 +3829,9 @@ func provide(opts docopt.Opts) {
 				_ = hotSwapIPC.Close()
 				// Now that takeover is complete and process is live, arm signal listener for future hotswaps
 				startHotSwapSignalListener(ctx, cancel, opts)
-				hotSwapTrigger = func() error {
+				setHotSwapTrigger(func() error {
 					return runHotSwapParentHandoff(ctx, cancel, opts)
-				}
+				})
 
 				// Wait for the parent to actually release the control socket before
 				// reloading state and binding our own. The parent only closes it when
@@ -4276,7 +4353,12 @@ func provide(opts docopt.Opts) {
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
+	// A hot swap execs in place: the pid survives and the previous image's
+	// proxy.lock would read as held-by-a-live-holder. Clear it before any
+	// reload path (watcher, watchdog, first reload) can observe it.
+	cleanStaleSelfProxyLock()
 	reloader.StartWatcher(ctx)
+	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx) }, nil)
 	// Reconcile against the operator trim cap immediately at startup. The launch
 	// loop above already holds back the worst-graded proxies above the cap
 	// (startupTrimSelection); this reload confirms the cap, logs the result, and
@@ -4290,6 +4372,9 @@ func provide(opts docopt.Opts) {
 	// Paid/file-list proxy grading: rides the reaper ticker cadence, grades
 	// non-URL proxies read-only on the 1-3h stale sweep (design note).
 	go connect.HandleError(func() { runPaidProxyGrader(ctx, apiProbeHost, apiProbePort) })
+	// Direct-path (native local-IP) health grade: read-only visibility into the
+	// box's own route, persisted to its own file so no consumer can act on it.
+	go connect.HandleError(func() { runDirectGrader(ctx) })
 	// Periodic A-F grade summary of the RUNNING proxy set (design 2026-08-09):
 	// running/per-source/changes/scores lines (important + disk + grades.log)
 	// and a ramlog-only next-probe countdown. Pure-read, never probes.
@@ -4300,6 +4385,12 @@ func provide(opts docopt.Opts) {
 	// good (and leaving the last pressure score, GOGC and memory budget in force).
 	go superviseLoop(ctx, "pressure_monitor", func() { runPressureMonitor(ctx, selfHealEnabled) }, nil)
 	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
+	// Thrash watchdog: senses swap-thrash independently of the pressure
+	// score, holds the freeze-growth rung, and (gated on self-heal,
+	// supervision, attribution and the anti-loop cap) restarts the
+	// provider. onFail releases the freeze rung so a dead loop cannot
+	// hold the pool flat forever.
+	go superviseLoop(ctx, "thrash_watchdog", func() { runThrashWatchdog(ctx, selfHealEnabled) }, func() { thrashFreeze.Store(false) })
 	go superviseLoop(ctx, "degraded_proxy_reaper", func() { runDegradedProxyReaper(ctx, proxyCancelMap, &proxyCancelMu) }, nil)
 	// Proxy audit: parks proven-junk paid/file proxies when proxy audit is on
 	// (`urnet-tools proxy audit on`), and only logs would-park otherwise. Also

@@ -39,10 +39,3 @@ func verifyPeerCredentials(conn *net.UnixConn) error {
 	}
 	return nil
 }
-
-// peerAllowed reports whether a peer UID may use the control socket: the
-// provider's own UID or root. verifyPeerCredentials delegates here so the
-// decision is testable without connecting as another user.
-func peerAllowed(peerUID, providerUID uint32) bool {
-	return peerUID == providerUID || peerUID == 0
-}

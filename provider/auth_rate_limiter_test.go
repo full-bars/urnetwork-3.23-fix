@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
@@ -319,5 +320,28 @@ func TestAuthRateLimiter_UnlimitedEnvVar(t *testing.T) {
 	err := l.Wait(ctx)
 	if err != nil {
 		t.Fatalf("Wait should return nil when URNETWORK_AUTH_UNLIMITED=true, got %v", err)
+	}
+}
+
+// The rate-change lines must state each rate once: the sentence carries it in
+// human units, and a second machine-style restatement of the same numbers
+// reads as noise (the pair used to report the change twice).
+func TestAuthRateLimiter_LogLinesStateTheRateOnce(t *testing.T) {
+	l := newAuthRateLimiter(1, 10, 15)
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+
+	cut := captureTlog(t, func() { l.ReportResult(errors.New("429 Too Many Requests")) })
+	if n := strings.Count(cut, "5.00"); n != 1 {
+		t.Fatalf("the cut line must state the new rate once, got %d:\n%s", n, cut)
+	}
+
+	l.lastAdjustedAt = time.Now().Add(-authRateAdjustCooldown - time.Second)
+	increase := captureTlog(t, func() {
+		for i := 0; i < authRateIncreaseThreshold; i++ {
+			l.ReportResult(nil)
+		}
+	})
+	if n := strings.Count(increase, "6.00"); n != 1 {
+		t.Fatalf("the increase line must state the new rate once, got %d:\n%s", n, increase)
 	}
 }

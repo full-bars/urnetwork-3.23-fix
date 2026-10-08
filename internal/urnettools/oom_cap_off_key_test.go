@@ -31,6 +31,16 @@ func TestOOMCapOffIsSentAsAValueNotAClear(t *testing.T) {
 		}
 	}
 
+	// baseline (32.8) and h3 (32.9) joined the list for the same reason:
+	// clearing each reverts to a default that is not off (baseline reverts to
+	// on) or to an environment variable that may be on (h3 follows
+	// URNETWORK_H3), so `set <key> off` must travel as the value "off".
+	for _, k := range []string{"baseline", "h3"} {
+		if treatsOffAsClear(k) {
+			t.Errorf("%s must send off as a value: clearing it does not stop the feature", k)
+		}
+	}
+
 	// Keys with no meaningful off value still take the clear path, unchanged.
 	for _, k := range []string{"node_name", "profile", "gomemlimit"} {
 		if !treatsOffAsClear(k) {

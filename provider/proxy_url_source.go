@@ -494,6 +494,10 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 	// must count once, matching admittedByTier.
 	countedGrade := map[string]bool{}
 	probeCfg := resolveProxyTableProbeConfig()
+	// The confirmation floor is a PAID-only concept. The admission gate and the
+	// reaper must keep their exact dial profile, so zero it explicitly here
+	// rather than relying on nobody setting the global key.
+	probeCfg.MinConfirmDials = 0
 	tlog("[proxy][url] stage-1 table probe config: %s\n", describeProxyTableProbeConfig(probeCfg))
 	// Advance the rotation once per FETCH CYCLE (not once per source URL):
 	// with N sources, the same address probed from two sources in one cycle
@@ -974,6 +978,10 @@ func runURLProxyReaperOnce(ctx context.Context, apiHost string, apiPort uint16) 
 	// stale cadence (~6h), giving live proxies a few re-probe chances a
 	// day without hammering them every fetch cycle.
 	probeCfg := resolveProxyTableProbeConfig()
+	// The confirmation floor is a PAID-only concept. The admission gate and the
+	// reaper must keep their exact dial profile, so zero it explicitly here
+	// rather than relying on nobody setting the global key.
+	probeCfg.MinConfirmDials = 0
 	type probeResultEntry struct {
 		addr       string
 		result     probeResult

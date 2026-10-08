@@ -410,7 +410,7 @@ The load will prompt for the passphrase, check the network_id against the curren
 
 ## 🩺 Viewing Proxy Health
 
-You can view the full list of dead and degraded proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
+You can view the full list of never-up and dropped proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
 
 - Persistent (always): `docker exec -it <container> proxy-health`
 - Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
@@ -581,25 +581,30 @@ volumes:
 
 ---
 
-### 📊 Prometheus + Grafana Monitoring Bundle (v3.23.0-fix.31.2)
+### 📊 Prometheus + Grafana monitoring bundle
 
-As of v31.2, a `docker-compose.monitoring.yml` file is included in the repository for a ready-made Prometheus + Grafana stack that scrapes the provider's built-in `/metrics` endpoint on port `9091`:
+The repository ships a ready-made Prometheus + Grafana stack in the `monitoring/` directory. It scrapes each provider's built-in `/metrics` endpoint and draws one fleet dashboard. It is a separate stack from the provider compose file, so it can run on the same host or on any machine that can reach the providers.
+
+Set it up once, then start it:
 
 ```bash
-# Start the provider + monitoring stack together
-docker compose -f docker-compose.yml -f docker-compose.monitoring.yml up -d
+cd monitoring
+./setup.sh                            # create .env and an empty target list
+./setup.sh 100.64.0.10:9100=node-1    # add a provider (repeat for more)
+docker compose up -d
 ```
 
-This brings up:
-- **Prometheus** — configured to scrape `http://urnetwork:9091/metrics` at a 15s interval
-- **Grafana** — pre-loaded with a provider dashboard (default login `admin` / `admin`)
+What comes up:
+
+- **Prometheus** on `127.0.0.1:9090` (set `PROMETHEUS_PORT` to change it). It reads its targets from `monitoring/prometheus/targets/providers.yml` and picks up edits within a minute. The scrape interval is 30 seconds.
+- **Grafana** on port `3000` (set `GRAFANA_PORT`, and bind it with `GRAFANA_BIND`). The admin password is the random one `setup.sh` wrote to `monitoring/.env`.
+
+Each target is the host address and the port that reaches the provider. On bare metal, `urnet-tools metrics status` prints that address. Inside a container it prints the wildcard instead, because the provider listens on every interface of its own network namespace, so use the host address and the host-published port. Turn metrics on inside a container with `docker exec urnetwork urnet-tools metrics on`, or set `URNETWORK_METRICS=:9100` to listen on every interface at start.
 
 > [!TIP]
-> If you run multiple provider containers, update the Prometheus scrape targets in `docker-compose.monitoring.yml` to point at each container's metrics port. Each container needs a unique host-side port mapping (e.g. `-p 9091:9091` on the first, `-p 9092:9091` on the second).
+> For several provider containers on one host, publish each on its own host port (for example `-p 100.64.0.10:9101:9100`) and add that host port as the target. Each container binds its own internal `9100`, so the port only moves up to `9103` when several processes share one network namespace, as on bare metal. Never expose the metrics endpoint on a public address: it lists every proxy address and its traffic.
 
-The metrics endpoint is enabled by default — no environment variables are needed. To disable it on a specific container, add `-e URNETWORK_METRICS=0`.
-
-See also the [Configuration](Configuration.md#-monitoring--telemetry) reference for the full list of telemetry variables.
+See [Monitoring](Monitoring.md) for the full setup, the metric list and the alert rules. The [Configuration](Configuration.md#-monitoring--telemetry) reference lists the telemetry variables.
 
 ## 🐦 Pelican Panel
 
