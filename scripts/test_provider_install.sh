@@ -607,6 +607,25 @@ test_sanitize_restart_dropins_effective_statuses() {
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
     assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an empty Restart= keeps the weakened value in force"
 
+    # A list reset in a LATER drop-in clears an earlier file's 75 (systemd
+    # merges across files; the effective scan must too).
+    printf '[Service]\nRestart=on-success\n' > "$d/weaken.conf"
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ.conf"
+    printf '[Service]\nSuccessExitStatus=\n' > "$d/20-reset.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a cross-file empty SuccessExitStatus re-arms the on-success warning"
+
+    # Only *.conf files are scanned; backups and notes with Restart=no are
+    # not drop-ins.
+    rm -f "$d/10-succ.conf" "$d/20-reset.conf"
+    printf '[Service]\nRestart=no\n' > "$d/10-backup.conf.bak"
+    printf '[Service]\nRestart=no\n' > "$d/README.txt"
+    printf '[Service]\nRestart=on-failure\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "non-.conf files are ignored"
+
     rm -rf "$tmp"
 }
 test_sanitize_restart_dropins_effective_statuses
