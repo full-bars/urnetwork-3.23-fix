@@ -999,8 +999,8 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	// (Restart=no, Restart=on-success, or a policy that excludes status 75)
 	// leaves the provider dead after a restart attempt — provider unit
 	// overrides must restart on exit 75.
-	if os.Getenv("INVOCATION_ID") == "" && os.Getenv("NOTIFY_SOCKET") == "" {
-		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd), so a self-exit would not be restarted; not restarting")
+	if !thrashRestartable() {
+		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd or OpenRC), so a self-exit would not be restarted; not restarting")
 	}
 	st := readThrashCapState()
 	allowed, code, reason, n := thrashCapEscalationAllowed(st, now)
@@ -1318,6 +1318,10 @@ func runThrashWatchdog(ctx context.Context, selfHealEnabled bool) {
 
 // thrashRestartable reports whether a supervised restart is possible at all
 // (used by the critical-state log line).
+//
+// systemd marks its children with INVOCATION_ID or NOTIFY_SOCKET. OpenRC's
+// supervise-daemon sets neither, so the shipped init script exports
+// URNETWORK_INIT=openrc; supervise-daemon respawns on any exit status.
 func thrashRestartable() bool {
-	return os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != ""
+	return os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != "" || os.Getenv("URNETWORK_INIT") == "openrc"
 }

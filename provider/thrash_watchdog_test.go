@@ -1015,3 +1015,32 @@ func TestThrashRecoveryReportKeyedToRestartRecency(t *testing.T) {
 		}
 	}
 }
+
+// TestThrashRestartableDetectsEverySupervisor pins which environments count as
+// "a service manager will restart a self-exit": systemd (INVOCATION_ID or
+// NOTIFY_SOCKET) and OpenRC, whose supervise-daemon sets neither and so relies
+// on the init script exporting URNETWORK_INIT=openrc.
+func TestThrashRestartableDetectsEverySupervisor(t *testing.T) {
+	cases := []struct {
+		name               string
+		invocation, notify string
+		initMarker         string
+		want               bool
+	}{
+		{"bare process", "", "", "", false},
+		{"systemd invocation", "abc", "", "", true},
+		{"systemd notify", "", "/run/notify", "", true},
+		{"openrc marker", "", "", "openrc", true},
+		{"unknown marker", "", "", "runit", false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			t.Setenv("INVOCATION_ID", c.invocation)
+			t.Setenv("NOTIFY_SOCKET", c.notify)
+			t.Setenv("URNETWORK_INIT", c.initMarker)
+			if got := thrashRestartable(); got != c.want {
+				t.Fatalf("thrashRestartable() = %v, want %v", got, c.want)
+			}
+		})
+	}
+}

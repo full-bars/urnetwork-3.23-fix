@@ -417,6 +417,8 @@ test_openrc_staged_script_and_nonroot_output() {
     assert_eq "1" "$([ -x "$staged" ] && echo 1 || echo 0)" "install_openrc_units stages an executable service script"
     assert_eq "1" "$(grep -c '^supervisor="supervise-daemon"$' "$staged")" "staged script uses supervise-daemon"
     assert_eq "1" "$(grep -c '^command_args="provide"$' "$staged")" "staged script runs the provider with 'provide'"
+    assert_eq "1" "$(grep -c '^export URNETWORK_INIT=openrc$' "$staged")" "staged script marks the provider as OpenRC-supervised (no INVOCATION_ID there)"
+    assert_eq "1" "$(grep -c '^retry="TERM/[0-9]*/KILL/[0-9]*"$' "$staged")" "staged script has a TERM then KILL stop schedule"
     assert_eq "1" "$(grep -c "^command_user=\"$me\"\$" "$staged")" "staged script runs as the service user"
     assert_eq "1" "$(grep -c "^command=\"$tmpd/install/bin/urnetwork\"\$" "$staged")" "staged script points at the installed provider binary"
     assert_eq "1" "$(grep -c '^respawn_delay=5$' "$staged")" "staged script respawns with a delay"
