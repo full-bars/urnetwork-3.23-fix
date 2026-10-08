@@ -278,11 +278,11 @@ func TestEgressSecurityPolicyDpi(t *testing.T) {
 		t.Fatalf("tls on 8443 -> %v, want allow", r)
 	}
 
-	// a privileged destination port (<1024) is allowed without inspection; even a BitTorrent
-	// handshake (an incident on a high port) passes
+	// with InspectPrivilegedSignatures, a BitTorrent handshake on privileged port 443
+	// is detected as an incident
 	r, _ = policy.Inspect(protocol.ProvideMode_Public, dmcaPath(IpProtocolTcp, 41005, 443, false), btHandshake())
-	if r != SecurityPolicyResultAllow {
-		t.Fatalf("bittorrent handshake on privileged port 443 -> %v, want allow", r)
+	if r != SecurityPolicyResultIncident {
+		t.Fatalf("bittorrent handshake on privileged port 443 -> %v, want incident", r)
 	}
 
 	// known bittorrent port -> drop without payload

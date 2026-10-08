@@ -4,6 +4,7 @@ go 1.27.0
 
 require (
 	github.com/Microsoft/go-winio v0.6.2
+	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1
 	github.com/docopt/docopt-go v0.0.0-20180111231733-ee0de3bc6815
 	github.com/ethereum/go-ethereum v1.17.4
 	github.com/gdamore/tcell/v2 v2.13.10
@@ -47,7 +48,6 @@ require (
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/decred/base58 v1.0.4 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
-	github.com/decred/dcrd/dcrec/secp256k1/v4 v4.4.1 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
 	github.com/fjl/jsonw v0.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
