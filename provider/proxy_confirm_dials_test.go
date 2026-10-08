@@ -203,7 +203,14 @@ func TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor(t *testing.T
 	cfg.MinConfirmDials = 6
 	cfg.TargetTimeout = 300 * time.Millisecond
 
-	pass := tableProbePassCounter.Load()
+	// Pin to a pass whose sampled base and growth blocks contain no literal-IP
+	// targets (1.1.1.1, 8.8.8.8, 9.9.9.9). resolveProbeTarget resolves literal
+	// IPs directly via net.ParseIP without consulting probeDNSCache, so an IP
+	// literal in base[0] or growth[0] cannot be made unresolvable via
+	// probeDNSCache.fail and would be dialed anyway, pushing Total to 6.
+	pass := tableProbePassConfirmGateUndecidable(addr, cfg)
+	tableProbePassCounter.Store(pass)
+
 	base := sampleProbeHosts(tableProbeSeed(addr, pass), cfg.MinSampleWidth, true)
 	// seed the first 6 growth hosts unresolvable, covering any shortfall sizing
 	growth := disjointGrowthHosts(addr, pass, cfg.MinSampleWidth, 6, true)
@@ -241,6 +248,38 @@ func TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor(t *testing.T
 		t.Errorf("a pass that ran out of block at Total=%d (< floor %d) must NOT be convicted",
 			res.Total, cfg.MinConfirmDials)
 	}
+}
+
+// tableProbePassConfirmGateUndecidable returns the first pass >= 0 whose sampled
+// base and growth blocks for address contain no literal-IP target (1.1.1.1, 8.8.8.8,
+// 9.9.9.9). resolveProbeTarget resolves literal IPs directly via net.ParseIP without
+// consulting probeDNSCache, so a seeded fail in probeDNSCache can never make an IP
+// literal unresolvable.
+func tableProbePassConfirmGateUndecidable(address string, cfg proxyTableProbeConfig) uint64 {
+	for pass := uint64(0); pass < 128; pass++ {
+		base := sampleProbeHosts(tableProbeSeed(address, pass), cfg.MinSampleWidth, cfg.UseSpreadOrder)
+		growth := disjointGrowthHosts(address, pass, cfg.MinSampleWidth, 6, cfg.UseSpreadOrder)
+		hasLiteral := false
+		for _, h := range base {
+			if net.ParseIP(h) != nil {
+				hasLiteral = true
+				break
+			}
+		}
+		if hasLiteral {
+			continue
+		}
+		for _, h := range growth {
+			if net.ParseIP(h) != nil {
+				hasLiteral = true
+				break
+			}
+		}
+		if !hasLiteral {
+			return pass
+		}
+	}
+	return 0
 }
 
 // TestClampConfirmFloor_BoundsAnUnreachableFloor: with growth disabled
