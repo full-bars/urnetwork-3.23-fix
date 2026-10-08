@@ -727,7 +727,7 @@ func openrcUpdateCronScript(toolPath string) string {
 		"\tfi\n" +
 		"\towner=$(stat -c %u \"$dir\" 2>/dev/null)\n" +
 		"\tmode=$(stat -c %a \"$dir\" 2>/dev/null)\n" +
-		"\tif [ \"$owner\" != \"0\" ] || [ \"$(($mode & 022))\" -ne 0 ]; then\n" +
+		"\tif [ \"$owner\" != \"0\" ] || [ \"$((0$mode & 022))\" -ne 0 ]; then\n" +
 		"\t\techo \"urnetwork-update: refusing to run $tool: $dir is writable by a non-root user (owner=$owner mode=$mode)\" >&2\n" +
 		"\t\texit 1\n" +
 		"\tfi\n" +

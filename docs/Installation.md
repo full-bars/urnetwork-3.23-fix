@@ -68,8 +68,8 @@ curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 |---|---|
 | Installs the provider and `urnet-tools` under `/home/urnet/.local/share/urnetwork-provider`. Both are owned by root and readable by everyone. | The scheduled auto-update runs as root. If the service user could modify the tool root runs, a compromise of the provider would become a root compromise at the next update. |
 | Writes the service script `/etc/init.d/urnetwork` and runs `rc-update add urnetwork default`. | The `default` runlevel is what OpenRC starts at boot, so the provider comes back after a reboot with nobody logged in. |
-| Runs the provider under `supervise-daemon` as the `urnet` user. | The provider drops root, and `supervise-daemon` restarts it five seconds after a crash, with no limit on restarts. |
-| Sends the provider's output to `/var/log/urnetwork.log` (stdout) and `/var/log/urnetwork.err` (stderr), both owned by root. | These files are opened before privileges are dropped, so they live outside the service user's home. Because the log is a plain file, `urnet-tools logs` can read it even while the service is stopped. |
+| Runs the provider under `supervise-daemon` as the `urnet` user. | The provider drops root, and `supervise-daemon` restarts it after a crash with a five-second delay, increasing by five seconds per restart up to 60 seconds, with a limit of 10 restarts per hour. |
+| Sends the provider's output to `/var/log/urnetwork.log` (stdout) and `/var/log/urnetwork.err` (stderr), both owned by the service user; `/var/log` remains root-owned. | `supervise-daemon` opens these files after dropping privileges, so the service user must be able to write them. Because the log is a plain file, `urnet-tools logs` can read it even while the service is stopped. |
 | Keeps the provider's state, including the login token, in `/home/urnet/.urnetwork`. | The provider reads its credentials from the home directory of the user it runs as. |
 
 The installer does not start the service. It finishes by printing the commands for the next two steps.

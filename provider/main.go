@@ -1701,20 +1701,50 @@ func sumLastN(deltas []uint64, n int) uint64 {
 // operator can distinguish "no demand" from "no proxies" from "still warming
 // up" without cross-referencing other lines. Returns "-" while earning. The
 // checks are ordered most-fundamental first: a healthy earning provider needs
-// proxies up, clients matched to them, and bytes actually moving.
-func earningReason(earning bool, proxiesUp int, clients int64, warmup bool) string {
+// a live transport, matched clients, and bytes actually moving.
+func earningReason(earning bool, proxiesUp int, clients int64, warmup bool, directUp bool) string {
 	switch {
 	case earning:
 		return "-"
 	case warmup:
 		return "warmup"
-	case proxiesUp == 0:
+	case proxiesUp == 0 && !directUp:
 		return "no_proxies"
 	case clients == 0:
 		return "idle"
 	default:
 		return "no_traffic"
 	}
+}
+
+// profitTransportCounts keeps native transport traffic separate from proxy counts.
+func profitTransportCounts(proxiesUp int, bw map[string]*connect.ProxyBandwidth, health map[string]connect.ProxyHealthStatus) (billable uint64, clients int64, serving, proxiesOnly int, directUp bool) {
+	// directUp tracks the native [direct] identity separately. It is a
+	// real transport that earns, but it is NOT a proxy: counting it in
+	// proxies_up made a direct-only box read as "1 proxy up, earning",
+	// which is the number an operator (or an alert keyed on proxies_up)
+	// would take at face value. Report true proxies only, and say which
+	// mode the node is in via mode=.
+	directUp = health[directProxyKey].Health == "up"
+	for addr, p := range bw {
+		billable += p.BillableRx.Load() + p.BillableTx.Load()
+		pc := p.Clients.Load()
+		clients += pc
+		if isDirectAddr(addr) {
+			continue
+		}
+		if pc > 0 {
+			serving++
+		}
+	}
+	// proxiesUp counted the direct identity too; subtract it so the field
+	// means "proxies actually running".
+	proxiesOnly = proxiesUp
+	if directUp && proxiesOnly > 0 {
+		proxiesOnly--
+	}
+
+	return
 }
 
 // profitIdleLogInterval caps how often a non-earning [profit] line is
@@ -1754,37 +1784,7 @@ func runProfitHeartbeat(ctx context.Context) {
 
 		proxiesUp, _, _, bw, connecting := connect.ProxyHealthSnapshot()
 
-		var billable uint64
-		var clients int64
-		var serving int
-		// directUp tracks the native [direct] identity separately. It is a
-		// real transport that earns, but it is NOT a proxy: counting it in
-		// proxies_up made a direct-only box read as "1 proxy up, earning",
-		// which is the number an operator (or an alert keyed on proxies_up)
-		// would take at face value. Report true proxies only, and say which
-		// mode the node is in via mode=.
-		directUp := false
-		for addr, p := range bw {
-			billable += p.BillableRx.Load() + p.BillableTx.Load()
-			pc := p.Clients.Load()
-			clients += pc
-			if isDirectAddr(addr) {
-				directUp = true
-				if pc > 0 {
-					serving++
-				}
-				continue
-			}
-			if pc > 0 {
-				serving++
-			}
-		}
-		// proxiesUp counted the direct identity too; subtract it so the field
-		// means "proxies actually running".
-		proxiesOnly := proxiesUp
-		if directUp && proxiesOnly > 0 {
-			proxiesOnly--
-		}
+		billable, clients, serving, proxiesOnly, directUp := profitTransportCounts(proxiesUp, bw, connect.ProxyHealthByKey())
 
 		now := time.Now()
 		if !prevSet {
@@ -1831,7 +1831,7 @@ func runProfitHeartbeat(ctx context.Context) {
 			// quiet provider mid-ramp reports reason=warmup rather than a
 			// false "idle"/"no_traffic". Mirrors paceMonitor's done threshold.
 			warmup := len(connecting) >= 5
-			reason := earningReason(earning, proxiesOnly, clients, warmup)
+			reason := earningReason(earning, proxiesOnly, clients, warmup, directUp)
 			mode := earningMode(directUp, proxiesOnly)
 			modeNote := profitModeNote(mode, proxiesOnly)
 			profitEmoji := ""
@@ -1847,7 +1847,7 @@ func runProfitHeartbeat(ctx context.Context) {
 				}
 				contractFields = fmt.Sprintf(" contracts=%d denied=%d avg_util=%d%%", acquired, denied, avgUtil)
 			}
-			// mode= is the stable, greppable field (direct|proxies|mixed);
+			// mode= is the stable, greppable field (direct|proxies|mixed|none);
 			// modeNote is a human tail that only appears when there is
 			// something non-obvious to say, so a healthy earning pool stays a
 			// clean one-line record.

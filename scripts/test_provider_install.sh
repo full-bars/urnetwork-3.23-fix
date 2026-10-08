@@ -398,10 +398,9 @@ test_remove_tool_links_only_removes_our_links
 # replaces pr_info/pr_warn/pr_err with no-ops at shell scope, which would
 # silently empty the captured output.
 test_openrc_staged_script_and_nonroot_output() {
-    local tmpd me out staged expected_home
+    local tmpd me out staged
     tmpd="$(mktemp -d)"
     me="$(id -un)"
-    expected_home="$(openrc_user="$me"; openrc_user_home)"
     out="$(
         PT_INSTALL="$tmpd/install" PT_ME="$me" PT_INITD="$tmpd/init.d-urnetwork" bash -c '
             . /tmp/urnet_provider_lib.sh
@@ -410,6 +409,7 @@ test_openrc_staged_script_and_nonroot_output() {
             openrc_user="$PT_ME"
             openrc_initd_file="$PT_INITD"
             urnet_install_url="https://example.invalid/install.sh"
+            sudo() { return 1; }
             install_openrc_units
         '
     )"
@@ -420,7 +420,8 @@ test_openrc_staged_script_and_nonroot_output() {
     assert_eq "1" "$(grep -c "^command_user=\"$me\"\$" "$staged")" "staged script runs as the service user"
     assert_eq "1" "$(grep -c "^command=\"$tmpd/install/bin/urnetwork\"\$" "$staged")" "staged script points at the installed provider binary"
     assert_eq "1" "$(grep -c '^respawn_delay=5$' "$staged")" "staged script respawns with a delay"
-    assert_eq "1" "$(grep -c "^output_log=\"$expected_home/urnetwork.log\"\$" "$staged")" "logs live under the service user's home"
+    assert_eq "1" "$(grep -c '^output_log="/var/log/urnetwork.log"$' "$staged")" "stdout log lives under /var/log"
+    assert_eq "1" "$(grep -c '^error_log="/var/log/urnetwork.err"$' "$staged")" "stderr log lives under /var/log"
     assert_eq "1" "$(echo "$out" | grep -c "sudo cp $staged")" "non-root output prints the exact sudo cp command"
     assert_eq "1" "$(echo "$out" | grep -c 'sudo chmod +x')" "non-root output prints the sudo chmod command"
     assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-update add urnetwork default')" "non-root output prints the rc-update command"
@@ -576,6 +577,104 @@ WGETEOF
 test_wget_passes_only_portable_flags
 test_wget_v4_flag_is_help_gated
 test_wget_retries_then_gives_up
+
+# Run the real finalization functions against a redirected filesystem, with
+# sudo recording each privileged operation. No host services or logs are touched.
+test_openrc_sudo_finalizes_before_start() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/log" "$tmpd/logrotate"
+    printf 'existing stdout\n' > "$tmpd/log/urnetwork.log"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    sed -e "s|/var/log|$tmpd/log|g" -e "s|/etc/logrotate.d|$tmpd/logrotate|g" \
+        /tmp/urnet_provider_lib.sh > "$tmpd/lib.sh"
+    out="$(PT_ROOT="$tmpd" bash -c '
+        . "$PT_ROOT/lib.sh"
+        install_path="$PT_ROOT/home/install"
+        openrc_home="$PT_ROOT/home"
+        openrc_user=testuser
+        openrc_initd_file="$PT_ROOT/initd"
+        openrc_root_tool_dir="$PT_ROOT/root-tool"
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        openrc_user_home() { echo "$PT_ROOT/home"; }
+        id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+        sudo() {
+            echo "$*" >> "$PT_ROOT/privileged"
+            case "$1" in
+                -n|chown|rc-update) return 0 ;;
+                id) echo 0 ;;
+                rc-service)
+                    test -x "$openrc_root_tool_path" &&
+                    test -f "$PT_ROOT/log/urnetwork.err" &&
+                    test "$(cat "$PT_ROOT/log/urnetwork.log")" = "existing stdout" &&
+                    echo STARTED
+                    ;;
+                *) "$@" ;;
+            esac
+        }
+        install_openrc_units
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c '^STARTED$')" "sudo finalizes and stages the tool before service start"
+    assert_eq "existing stdout" "$(cat "$tmpd/log/urnetwork.log")" "finalization preserves existing logs"
+    assert_eq "1" "$(grep -c "^touch $tmpd/log/urnetwork.err$" "$tmpd/privileged")" "missing log creation uses sudo"
+    assert_eq "0" "$(grep -c "^touch $tmpd/log/urnetwork.log$" "$tmpd/privileged" || true)" "existing log is not recreated"
+    assert_eq "1" "$(grep -c "^cp $tmpd/home/install/bin/urnet-tools $tmpd/root-tool/urnet-tools$" "$tmpd/privileged")" "root tool staging uses sudo"
+    assert_eq "1" "$(grep -c "^chown -R root:root $tmpd/home/install$" "$tmpd/privileged")" "install ownership uses sudo"
+    rm -rf "$tmpd"
+}
+test_openrc_sudo_finalizes_before_start
+
+test_service_restart_systemd_fallback() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=0
+        systemctl() { echo "systemctl $*"; }
+        urnetwork_service_restart
+    ')"
+    assert_eq "systemctl --user restart urnetwork.service" "$out" "non-OpenRC restart dispatches to systemctl"
+}
+test_service_restart_systemd_fallback
+
+test_json_parser_package_commands_use_sudo() {
+    local tmpd distro calls expected manager
+    tmpd="$(mktemp -d)"
+    for distro in arch debian fedora alpine opensuse; do
+        printf 'ID=%s\n' "$distro" > "$tmpd/os-release"
+        sed "s|/etc/os-release|$tmpd/os-release|g" /tmp/urnet_provider_lib.sh > "$tmpd/lib.sh"
+        calls="$(PT_LIB="$tmpd/lib.sh" bash -c '
+            . "$PT_LIB"
+            id() { echo 1000; }
+            command() {
+                case "$*" in "-v jq"|"-v python3") return 1;; esac
+                builtin command "$@"
+            }
+            sudo() {
+                [ "$1" = -n ] && return 0
+                echo "sudo $*"
+                case "$*" in *jq) return 1;; esac
+            }
+            pacman() { echo UNPRIVILEGED; }
+            apt-get() { echo UNPRIVILEGED; }
+            dnf() { echo UNPRIVILEGED; }
+            apk() { echo UNPRIVILEGED; }
+            zypper() { echo UNPRIVILEGED; }
+            pr_info() { :; }
+            install_json_parser || :
+        ')"
+        case "$distro" in
+            arch) manager=pacman; expected=2 ;;
+            debian) manager=apt-get; expected=3 ;;
+            fedora) manager=dnf; expected=2 ;;
+            alpine) manager=apk; expected=2 ;;
+            opensuse) manager=zypper; expected=2 ;;
+        esac
+        assert_eq "$expected" "$(echo "$calls" | grep -c "^sudo $manager ")" "$distro elevates all package commands including fallback"
+        assert_eq "0" "$(echo "$calls" | grep -c UNPRIVILEGED || true)" "$distro has no unprivileged package calls"
+    done
+    rm -rf "$tmpd"
+}
+test_json_parser_package_commands_use_sudo
 
 echo "======================================"
 if [ $FAILS -eq 0 ]; then

@@ -24,12 +24,12 @@ func isDirectAddr(addr string) bool {
 }
 
 // earningMode names the transport shape a provider is running, for the
-// [profit] line's mode= field. Three real states, all reachable:
+// [profit] line's mode= field. Four live transport states:
 //
-//	direct  — the native identity only, no proxies configured
-//	proxies — a proxy pool, direct off (DISABLE_DIRECT_IP=1 or the direct
-//	          toggle, provider/direct.go isDirectEnabled)
-//	mixed   — both
+//	direct  — the native identity is up, no proxies are up
+//	proxies — proxies are up, the direct transport is down or disabled
+//	mixed   — both are up
+//	none    — neither direct nor any proxy is up
 //
 // The distinction matters because a direct-only node earns real billable
 // traffic, so earning=yes is correct, but it is not running any proxies. An
@@ -41,8 +41,10 @@ func earningMode(directUp bool, proxiesUp int) string {
 		return "mixed"
 	case hasProxies:
 		return "proxies"
-	default:
+	case directUp:
 		return "direct"
+	default:
+		return "none"
 	}
 }
 

@@ -185,7 +185,7 @@ var systemdTimerDisableFn = func(args ...string) error {
 func cleanupLifecycle(p Provider) {
 	if openrcActive() {
 		switch {
-		case p.Unit == "" && providerSupervisedByOpenRCFn(p):
+		case p.Unit == "" && (p.Supervisor == "openrc" || providerSupervisedByOpenRCFn(p)):
 			// The service's own supervised provider: full cleanup.
 			openrcCleanup()
 		case !openrcServiceInstalled():

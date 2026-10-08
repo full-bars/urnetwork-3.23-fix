@@ -67,8 +67,8 @@ func directOnlyDatagramDefault(resolution int32) bool {
 	return autoEnableH3 && resolution == proxyResolutionZeroValid
 }
 
-// applyDirectOnlyH3Defaults turns the H3 transport family on for a node that
-// has just settled as direct-only, unless the operator set any of those keys.
+// applyDirectOnlyH3Defaults reapplies the H3 transport defaults when a node
+// enters or leaves direct-only resolution, unless the operator set those keys.
 //
 // WHY THIS EXISTS SEPARATELY FROM THE STARTUP PATH. The startup control replay
 // runs before the first proxy reload, so at that moment the resolution state is
@@ -77,12 +77,9 @@ func directOnlyDatagramDefault(resolution int32) bool {
 // "direct-only" is a fact.
 //
 // Precedence is unchanged: an explicit control key (persisted "off" included)
-// always wins. Only unset keys are filled in, and only when the resolution
-// state says direct-only, so a pooled node is never touched.
+// always wins. Only unset keys are updated using the current resolution.
 func applyDirectOnlyH3Defaults() {
-	if !directOnlyH3Defaults(currentProxyResolution()) {
-		return
-	}
+	resolution := currentProxyResolution()
 	state := globalControlState
 	if state == nil {
 		return
@@ -92,10 +89,14 @@ func applyDirectOnlyH3Defaults() {
 			// Operator set it (either value): leave it alone.
 			continue
 		}
-		if err := applyLiveSideEffect(key, "on"); err != nil {
-			tlog("[t]h3 default on for direct-only node: failed to apply %s: %s\n", key, err)
+		value := onOff(directOnlyDatagramDefault(resolution))
+		if key == "h3" {
+			value = onOff(defaultH3Setting(state, resolution))
+		}
+		if err := applyLiveSideEffect(key, value); err != nil {
+			tlog("[t]h3 default: failed to apply %s=%s: %s\n", key, value, err)
 			continue
 		}
-		tlog("[t]h3 default on for direct-only node: applied %s=on\n", key)
+		tlog("[t]h3 default: applied %s=%s\n", key, value)
 	}
 }

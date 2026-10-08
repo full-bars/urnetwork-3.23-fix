@@ -24,10 +24,26 @@ func TestEarningReason(t *testing.T) {
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
-			if got := earningReason(c.earning, c.proxiesUp, c.clients, c.warmup); got != c.want {
+			if got := earningReason(c.earning, c.proxiesUp, c.clients, c.warmup, false); got != c.want {
 				t.Fatalf("earningReason(earning=%v up=%d clients=%d warmup=%v) = %q, want %q",
 					c.earning, c.proxiesUp, c.clients, c.warmup, got, c.want)
 			}
 		})
+	}
+}
+
+func TestEarningReasonDirectOnly(t *testing.T) {
+	for _, tc := range []struct {
+		earning bool
+		clients int64
+		warmup  bool
+		want    string
+	}{
+		{false, 2, false, "no_traffic"}, {false, 0, false, "idle"},
+		{false, 2, true, "warmup"}, {true, 2, false, "-"},
+	} {
+		if got := earningReason(tc.earning, 0, tc.clients, tc.warmup, true); got != tc.want {
+			t.Errorf("earningReason(%+v, directUp=true) = %q", tc, got)
+		}
 	}
 }

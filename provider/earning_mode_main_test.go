@@ -1,8 +1,11 @@
 package main
 
-import "testing"
+import (
+	connect "github.com/urnetwork/connect"
+	"testing"
+)
 
-// TestEarningMode pins the three real transport shapes. All are reachable:
+// TestEarningMode pins the four live transport states. All are reachable:
 // direct can be turned off entirely (isDirectEnabled honours
 // DISABLE_DIRECT_IP=1), so "proxies" is a genuine state and not a placeholder.
 func TestEarningMode(t *testing.T) {
@@ -15,7 +18,7 @@ func TestEarningMode(t *testing.T) {
 		{"direct only", true, 0, "direct"},
 		{"pool only", false, 12, "proxies"},
 		{"both", true, 12, "mixed"},
-		{"neither yet", false, 0, "direct"},
+		{"neither up", false, 0, "none"},
 	}
 	for _, tc := range cases {
 		if got := earningMode(tc.directUp, tc.proxiesUp); got != tc.want {
@@ -70,5 +73,28 @@ func TestProfitModeNote(t *testing.T) {
 			t.Errorf("profitModeNote(%q, %d) = %q, want %q",
 				tc.mode, tc.proxiesUp, got, tc.want)
 		}
+	}
+}
+
+func TestProfitTransportCounts(t *testing.T) {
+	direct := &connect.ProxyBandwidth{}
+	direct.Clients.Store(2)
+	direct.BillableRx.Store(42)
+	proxy := &connect.ProxyBandwidth{}
+	bw := map[string]*connect.ProxyBandwidth{"proxy[0] (direct)": direct, "proxy[1] (proxy)": proxy}
+	for _, tc := range []struct {
+		health   string
+		up       int
+		directUp bool
+	}{
+		{"up", 2, true}, {"dead", 1, false}, {"connecting", 1, false}, {"degraded", 1, false},
+	} {
+		t.Run(tc.health, func(t *testing.T) {
+			health := map[string]connect.ProxyHealthStatus{directProxyKey: {Health: tc.health}}
+			billable, clients, serving, proxies, directUp := profitTransportCounts(tc.up, bw, health)
+			if billable != 42 || clients != 2 || serving != 0 || proxies != 1 || directUp != tc.directUp {
+				t.Fatalf("got bytes=%d clients=%d serving=%d proxies=%d direct=%v", billable, clients, serving, proxies, directUp)
+			}
+		})
 	}
 }

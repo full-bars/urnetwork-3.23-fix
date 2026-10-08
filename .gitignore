@@ -50,6 +50,6 @@ FINDINGS-*.md
 fake-release/
 stage-local/
 urnetwork-fake
-urnet-tools
+/urnet-tools
 raw-*.jsonl
 live-*.err

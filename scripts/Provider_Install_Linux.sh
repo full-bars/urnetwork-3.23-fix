@@ -166,7 +166,7 @@ urnetwork_service_restart ()
         rc-service urnetwork start 2>/dev/null && return 0
         return 1
     fi
-    urnetwork_service_restart
+    systemctl --user restart urnetwork.service
 }
 
 urnetwork_service_start ()
@@ -482,21 +482,21 @@ install_json_parser ()
 
     case "$install_id" in
         arch)
-            $SUDO pacman -Sy --noconfirm jq || pacman -Sy --noconfirm python || true
+            $SUDO pacman -Sy --noconfirm jq || $SUDO pacman -Sy --noconfirm python || true
             ;;
         debian|ubuntu|linuxmint)
-            $SUDO apt-get update && apt-get install -y jq || apt-get install -y python3 || true
+            $SUDO apt-get update && $SUDO apt-get install -y jq || $SUDO apt-get install -y python3 || true
             ;;
         fedora|rhel|centos|rocky|almalinux|amzn)
-            $SUDO dnf install -y jq || dnf install -y python3 || true
+            $SUDO dnf install -y jq || $SUDO dnf install -y python3 || true
             ;;
         alpine)
             # community may be absent from a minimal image's repositories; the
             # install still lands (python3 is in main) and the parser is fine.
-            $SUDO apk add --no-cache jq || apk add --no-cache python3 || true
+            $SUDO apk add --no-cache jq || $SUDO apk add --no-cache python3 || true
             ;;
         opensuse*|sles)
-            $SUDO zypper install -y jq || zypper install -y python3 || true
+            $SUDO zypper install -y jq || $SUDO zypper install -y python3 || true
             ;;
         *)
             pr_warn "Unsupported distro ID '%s'; attempting 'jq' then 'python3' by name." "${install_id:-unknown}"
@@ -1344,8 +1344,125 @@ stop_openrc_units ()
     fi
 }
 
+# openrc_finalize_root_paths sets the ownership and permissions the OpenRC
+# service depends on, and creates the log targets.
+#
+# PRIVILEGE BOUNDARY. The weekly auto-update runs as ROOT from busybox crond and
+# execs the urnet-tools that sits beside the provider binary. That tool must
+# therefore NOT be writable by the service user: the account running the
+# internet-facing relay could otherwise replace the tool (or rename a parent
+# directory it owns and recreate the path) and get code execution as root at the
+# next tick.
+#
+# The chown that used to be here handed the whole install tree to
+# $openrc_user. It bought nothing: under OpenRC `urnet-tools update` runs as
+# root anyway, because `rc-service restart` requires root, so the service user
+# never needs to replace its own binary. The binaries stay root-owned and
+# world-readable/executable, which is all the supervised process needs. Only the
+# STATE directory under the user's home is user-owned, and the user already owns
+# their home.
+#
+# Called from BOTH install paths (already-root, and the sudo-escalated one).
+# SUDO prefixes every privileged operation, including tool staging and logrotate
+# writes, so this also works when the installer is piped into a POSIX shell.
+# openrc_stage_root_owned_tool copies urnet-tools to a ROOT-ONLY location.
+#
+# Why this exists (security): the weekly auto-update runs as ROOT from busybox
+# crond and EXECUTES this binary. Under the default OpenRC layout the install
+# tree sits in the service user's home, and chowning the tree root:root does NOT
+# make it safe - the user owns /home/urnet, so they can rename .local aside and
+# recreate the path with their own urnet-tools, and root executes it at the next
+# tick. Root-owned files cannot defend a path whose ANCESTOR is user-writable.
+# The tool root runs therefore lives under /usr/local/libexec, where no path
+# component is writable by a non-root user.
+#
+# The tool self-updates (selfUpdateTool replaces the running executable), so a
+# root-run update keeps this copy current.
+openrc_root_tool_dir=/usr/local/libexec/urnetwork
+openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+
+openrc_stage_root_owned_tool ()
+{
+    [ "$(${SUDO:-} id -u)" -eq 0 ] || return 1
+    [ -f "$install_path/bin/urnet-tools" ] || return 1
+    ${SUDO:-} mkdir -p "$openrc_root_tool_dir" 2>/dev/null || return 1
+    ${SUDO:-} chown root:root "$openrc_root_tool_dir" 2>/dev/null || true
+    ${SUDO:-} chmod 0755 "$openrc_root_tool_dir" 2>/dev/null || true
+    if ${SUDO:-} cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path" 2>/dev/null; then
+        ${SUDO:-} chown root:root "$openrc_root_tool_path" 2>/dev/null || true
+        ${SUDO:-} chmod 0755 "$openrc_root_tool_path" 2>/dev/null || true
+        return 0
+    fi
+    return 1
+}
+
+openrc_finalize_root_paths ()
+{
+    case "$install_path" in
+        "$openrc_home"/*)
+            ${SUDO:-} chown -R "root:root" "$install_path" 2>/dev/null || pr_warn "could not set root ownership on %s" "$install_path"
+            ${SUDO:-} chmod -R a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
+            # The provider writes only under its own state dir; make sure it
+            # exists and is owned by the service user.
+            ${SUDO:-} mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
+            ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
+            ;;
+    esac
+
+    # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
+    #
+    # Ownership matters here and was wrong at first: supervise-daemon opens
+    # output_log/error_log AFTER dropping to command_user, so a root-owned 0644
+    # file cannot be opened by the service user and the child dies before exec -
+    # silently, with both logs empty. Root-owning the files looked safer and
+    # broke the service.
+    #
+    # Handing the FILES to the service user is still safe, because the safety
+    # property is the DIRECTORY: /var/log is root-owned and not writable by the
+    # service user, so they cannot create, rename or replace a name in it - a
+    # symlink planted there is impossible. All they can do is write the log file
+    # they were given, which is what a log is for.
+    ${SUDO:-} mkdir -p /var/log 2>/dev/null || true
+    for openrc_log in /var/log/urnetwork.log /var/log/urnetwork.err; do
+        if [ ! -e "$openrc_log" ]; then
+            ${SUDO:-} touch "$openrc_log" 2>/dev/null || pr_warn "could not create %s" "$openrc_log"
+        fi
+    done
+    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+
+    # Stage the root-owned tool the weekly cron will execute (see the function
+    # comment: root must never exec anything reachable through a user-writable
+    # directory).
+    if openrc_stage_root_owned_tool; then
+        pr_info "Staged the auto-update tool at %s (root-owned)." "$openrc_root_tool_path"
+    fi
+
+    # Rotate them. A provider that crash-loops (or one simply busy enough)
+    # writes to these without limit, and Alpine boxes are often small VPS with a
+    # couple of GB of root filesystem - filling /var/log bricks the host, not
+    # just the provider. Alpine ships busybox logrotate via the `logrotate`
+    # package, but the rule is harmless to install even before that package
+    # exists, so write it unconditionally.
+    if [ -d /etc/logrotate.d ]; then
+        ${SUDO:-} tee /etc/logrotate.d/urnetwork > /dev/null <<'ROTATE'
+/var/log/urnetwork.log /var/log/urnetwork.err {
+    weekly
+    rotate 4
+    size 10M
+    missingok
+    notifempty
+    copytruncate
+    compress
+    delaycompress
+}
+ROTATE
+        ${SUDO:-} chmod 0644 /etc/logrotate.d/urnetwork 2>/dev/null || true
+    fi
+}
+
 # install_openrc_units: write the openrc-run service script (supervise-daemon,
-# command_user = the service user, output/error logs under its home) and
+# command_user = the service user, output/error logs under /var/log) and
 # either install it as root or print the exact sudo commands to finish. The
 # script is always staged inside the install dir so a non-root operator has a
 # concrete file to copy.
@@ -1373,7 +1490,8 @@ install_openrc_units ()
 # URnetwork Provider — OpenRC service (written by Provider_Install_Linux.sh)
 #
 # supervise-daemon keeps the provider running and respawns it on exit
-# (respawn_delay=5s, unlimited respawns). command_user makes the provider run
+# (5s initial delay, 5s backoff steps up to 60s, at most 10 restarts/hour).
+# command_user makes the provider run
 # as '$openrc_user' with HOME=$openrc_home, so its state lives in
 # $openrc_home/.urnetwork.
 #
@@ -1402,7 +1520,7 @@ respawn_period=3600
 # because the safety property is the DIRECTORY: /var/log is root-owned, so the
 # service user cannot create or replace a name in it (a planted symlink is
 # impossible) - they can only write the file they were given.
-# /var/log is also the OpenRC convention, and it makes `urnet-tools logs` able
+# /var/log is also the OpenRC convention, and it makes \`urnet-tools logs\` able
 # to tail the file directly even when the service is stopped (a provider with no
 # live process has no /proc/<pid>/fd/1 to read).
 output_log="/var/log/urnetwork.log"
@@ -1439,121 +1557,8 @@ EOF
         return 0
     fi
 
-    # openrc_finalize_root_paths sets the ownership and permissions the OpenRC
-# service depends on, and creates the log targets.
-#
-# PRIVILEGE BOUNDARY. The weekly auto-update runs as ROOT from busybox crond and
-# execs the urnet-tools that sits beside the provider binary. That tool must
-# therefore NOT be writable by the service user: the account running the
-# internet-facing relay could otherwise replace the tool (or rename a parent
-# directory it owns and recreate the path) and get code execution as root at the
-# next tick.
-#
-# The chown that used to be here handed the whole install tree to
-# $openrc_user. It bought nothing: under OpenRC `urnet-tools update` runs as
-# root anyway, because `rc-service restart` requires root, so the service user
-# never needs to replace its own binary. The binaries stay root-owned and
-# world-readable/executable, which is all the supervised process needs. Only the
-# STATE directory under the user's home is user-owned, and the user already owns
-# their home.
-#
-# Called from BOTH install paths (already-root, and the sudo-escalated one) so
-# the shipped state is identical either way.
-# openrc_stage_root_owned_tool copies urnet-tools to a ROOT-ONLY location.
-#
-# Why this exists (security): the weekly auto-update runs as ROOT from busybox
-# crond and EXECUTES this binary. Under the default OpenRC layout the install
-# tree sits in the service user's home, and chowning the tree root:root does NOT
-# make it safe - the user owns /home/urnet, so they can rename .local aside and
-# recreate the path with their own urnet-tools, and root executes it at the next
-# tick. Root-owned files cannot defend a path whose ANCESTOR is user-writable.
-# The tool root runs therefore lives under /usr/local/libexec, where no path
-# component is writable by a non-root user.
-#
-# The tool self-updates (selfUpdateTool replaces the running executable), so a
-# root-run update keeps this copy current.
-openrc_root_tool_dir=/usr/local/libexec/urnetwork
-openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
-
-openrc_stage_root_owned_tool ()
-{
-    [ "$(id -u)" -eq 0 ] || return 1
-    [ -f "$install_path/bin/urnet-tools" ] || return 1
-    mkdir -p "$openrc_root_tool_dir" 2>/dev/null || return 1
-    chown root:root "$openrc_root_tool_dir" 2>/dev/null || true
-    chmod 0755 "$openrc_root_tool_dir" 2>/dev/null || true
-    if cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path" 2>/dev/null; then
-        chown root:root "$openrc_root_tool_path" 2>/dev/null || true
-        chmod 0755 "$openrc_root_tool_path" 2>/dev/null || true
-        return 0
-    fi
-    return 1
-}
-
-openrc_finalize_root_paths ()
-{
-    case "$install_path" in
-        "$openrc_home"/*)
-            chown -R "root:root" "$install_path" 2>/dev/null || pr_warn "could not set root ownership on %s" "$install_path"
-            chmod -R a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
-            # The provider writes only under its own state dir; make sure it
-            # exists and is owned by the service user.
-            mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
-            chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
-            ;;
-    esac
-
-    # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
-    #
-    # Ownership matters here and was wrong at first: supervise-daemon opens
-    # output_log/error_log AFTER dropping to command_user, so a root-owned 0644
-    # file cannot be opened by the service user and the child dies before exec -
-    # silently, with both logs empty. Root-owning the files looked safer and
-    # broke the service.
-    #
-    # Handing the FILES to the service user is still safe, because the safety
-    # property is the DIRECTORY: /var/log is root-owned and not writable by the
-    # service user, so they cannot create, rename or replace a name in it - a
-    # symlink planted there is impossible. All they can do is write the log file
-    # they were given, which is what a log is for.
-    mkdir -p /var/log 2>/dev/null || true
-    : > /var/log/urnetwork.log 2>/dev/null || pr_warn "could not create /var/log/urnetwork.log"
-    : > /var/log/urnetwork.err 2>/dev/null || pr_warn "could not create /var/log/urnetwork.err"
-    chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
-    chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
-
-    # Stage the root-owned tool the weekly cron will execute (see the function
-    # comment: root must never exec anything reachable through a user-writable
-    # directory).
-    if openrc_stage_root_owned_tool; then
-        pr_info "Staged the auto-update tool at %s (root-owned)." "$openrc_root_tool_path"
-    fi
-
-    # Rotate them. A provider that crash-loops (or one simply busy enough)
-    # writes to these without limit, and Alpine boxes are often small VPS with a
-    # couple of GB of root filesystem - filling /var/log bricks the host, not
-    # just the provider. Alpine ships busybox logrotate via the `logrotate`
-    # package, but the rule is harmless to install even before that package
-    # exists, so write it unconditionally.
-    if [ -d /etc/logrotate.d ]; then
-        cat > /etc/logrotate.d/urnetwork <<'ROTATE'
-/var/log/urnetwork.log /var/log/urnetwork.err {
-    weekly
-    rotate 4
-    size 10M
-    missingok
-    notifempty
-    copytruncate
-    compress
-    delaycompress
-}
-ROTATE
-        chmod 0644 /etc/logrotate.d/urnetwork 2>/dev/null || true
-    fi
-}
-
-# The four privileged steps (install the unit, enable the runlevel, start)
-    # are the SAME four commands we used to print for the operator to paste.
+    # The privileged steps (install, enable, finalize paths, start)
+    # prepare the service before starting it.
     # Requiring them by hand made a first-run install a two-stage ritual for no
     # security gain: the tree is root-owned either way, and the user consented
     # to a system service by running the installer at all. So when the installer
@@ -1569,11 +1574,9 @@ ROTATE
             if sudo cp "$openrc_staged" "$openrc_initd_file" \
                && sudo chmod 755 "$openrc_initd_file" \
                && sudo rc-update add urnetwork default \
+               && SUDO=sudo openrc_finalize_root_paths \
                && sudo rc-service urnetwork start; then
                 pr_info "Service urnetwork installed, enabled and started."
-                # Re-apply the ownership/log steps below now that the unit
-                # exists, so the shipped state matches the root path exactly.
-                openrc_finalize_root_paths
                 return 0
             fi
             pr_err "The sudo service setup failed; finishing by hand."

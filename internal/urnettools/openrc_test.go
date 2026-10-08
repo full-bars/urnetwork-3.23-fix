@@ -793,6 +793,17 @@ func TestOpenRCCleanupTargetAware(t *testing.T) {
 		}
 	})
 
+	t.Run("stopped OpenRC provider: full cleanup", func(t *testing.T) {
+		rig := newOpenRCTestRig(t, true, true)
+		cleanupLifecycle(Provider{Supervisor: "openrc"})
+		if rig.ran() != 2 {
+			t.Fatalf("stopped service cleanup ran %d commands, want 2", rig.ran())
+		}
+		if _, err := os.Stat(openrcInitScriptPath); !os.IsNotExist(err) {
+			t.Fatalf("service script remains: %v", err)
+		}
+	})
+
 	t.Run("bare provider with the service installed: leave the service alone", func(t *testing.T) {
 		rig := newOpenRCTestRig(t, true, true)
 		providerSupervisedByOpenRCFn = func(p Provider) bool { return false }
@@ -1121,5 +1132,75 @@ func TestOpenRCStartWorksWithStoppedServiceDiscovered(t *testing.T) {
 	}
 	if handled, err := openrcRouteLifecycle("restart", nil, true, false); !handled || err != nil {
 		t.Fatalf("running service: handled=%v err=%v, want true,nil", handled, err)
+	}
+}
+
+// Run this test as root to exercise real stat output and shell arithmetic on
+// an entirely root-owned path. /tmp cannot be used: its mode is intentionally unsafe.
+func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
+	if os.Geteuid() != 0 {
+		t.Skip("requires root for a root-owned temporary tree")
+	}
+	dir, err := os.MkdirTemp("/root", "urnetwork-guard-")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.RemoveAll(dir) })
+	tool := filepath.Join(dir, "urnet-tools")
+	if err := os.WriteFile(tool, []byte("#!/bin/sh\n[ \"$*\" = 'update -f' ]\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, tc := range []struct {
+		name string
+		mode os.FileMode
+		safe bool
+	}{
+		{"0755", 0o755, true}, {"0700", 0o700, true}, {"0750", 0o750, true},
+		{"0775", 0o775, false}, {"0777", 0o777, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if err := os.Chmod(dir, tc.mode); err != nil {
+				t.Fatal(err)
+			}
+			out, err := exec.Command("sh", "-c", openrcUpdateCronScript(tool)).CombinedOutput()
+			if (err == nil) != tc.safe {
+				t.Fatalf("safe=%v: guard returned %v: %s", tc.safe, err, out)
+			}
+		})
+	}
+}
+
+func TestCmdLogsOpenRCTarget(t *testing.T) {
+	oldProcesses, oldStopped := discoverProcessesFn, discoverStoppedFn
+	t.Cleanup(func() { discoverProcessesFn, discoverStoppedFn = oldProcesses, oldStopped })
+	for _, tc := range []struct {
+		name       string
+		provider   Provider
+		supervised bool
+		want       string
+	}{
+		{"stopped service", Provider{Supervisor: "openrc"}, false, "OpenRC service"},
+		{"live service", Provider{PID: 4242}, true, "OpenRC service"},
+		{"bare provider", Provider{}, false, "no systemd unit"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			newOpenRCTestRig(t, true, true)
+			// Point both logs at nonexistent fixture paths so the service route returns
+			// its diagnostic without starting tail or reading real service logs.
+			missing := filepath.Join(t.TempDir(), "missing")
+			content := "output_log=" + shellQuoteSingle(missing) + "\nerror_log=" + shellQuoteSingle(missing) + "\n"
+			if err := os.WriteFile(openrcInitScriptPath, []byte(content), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			p := tc.provider
+			p.User = currentUserName()
+			p.StateDir = t.TempDir()
+			discoverProcessesFn = func() []Provider { return []Provider{p} }
+			discoverStoppedFn = func([]Provider) []Provider { return nil }
+			providerSupervisedByOpenRCFn = func(Provider) bool { return tc.supervised }
+			if err := cmdLogs(nil); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("cmdLogs = %v, want %q", err, tc.want)
+			}
+		})
 	}
 }
