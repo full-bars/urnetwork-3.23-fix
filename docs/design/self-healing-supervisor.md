@@ -104,15 +104,14 @@ only after sustained calm).
   escalation: a zero-downtime hot-swap (`runHotSwapParentHandoff`, 30s connection drain,
   NOTIFY_SOCKET-gated), which works on systemd, Docker (in-place `execve`) and Windows
   (named-pipe handoff) — existing proxies and client traffic stay live and earning.
-- f. ESCAPE (heaviest): hotswap/restart the provider; remember the condition (a "thrash
-  cap" in the oom-cap pattern: start leaner next time, relax after clean windows). The
-  thrash responder's form of this rung is a COLD, service-manager-restarted exit with
-  status 75 (systemd-only). That is a different action from rung e by design: severe
-  swap thrash is exactly when spawning a child next to the parent is unsafe, so it
-  cannot hand off - it exits, and the unit restarts it. e preserves live traffic; f
-  accepts the drop because memory exhaustion leaves no safe zero-downtime option. Keep
-  them distinct and never rebrand the reload watchdog's escalation as an exit-75
-  restart.
+- f. ESCAPE (heaviest): the cold escape - the provider exits with status 75 and the
+  service manager restarts it, remembering the condition (a "thrash cap" in the
+  oom-cap pattern: start leaner next time, relax after clean windows). This is a
+  deliberately different action from rung e: severe swap thrash is exactly when
+  spawning a child next to the parent is unsafe, so it cannot hand off - it drops the
+  traffic because memory exhaustion leaves no safe zero-downtime option, and it is
+  systemd-only by that dependency. Keep the two distinct and never rebrand the reload
+  watchdog's escalation as an exit-75 restart.
 
 ## 5. Status and config surfaces
 
