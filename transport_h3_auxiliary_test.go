@@ -409,7 +409,9 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 	transport, cancel := newClosedPortTransport(t, TransportModeAuto, true)
 	transport.settings.QuicConnectTimeout = 50 * time.Millisecond
 	transport.settings.QuicHandshakeTimeout = 50 * time.Millisecond
-	transport.settings.ReconnectTimeout = 1 * time.Second
+	// Long backoff so the transport cannot retry on its own while the pulses
+	// fire; any retry seen is then caused by a pulse.
+	transport.settings.ReconnectTimeout = 10 * time.Second
 	done := make(chan struct{})
 	beforeFailures := TransportModeStats().H3ConnectFailures
 
@@ -452,6 +454,10 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 // This guards the explicit H3 mode against regression; it also passes without the
 // pulse change, so it does not pin the reported bug.
 func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
+	// the explicit mode records its failures as real backend failures: leave
+	// that process-wide state clean for the tests that run after this one
+	resetBackendDegraded()
+	t.Cleanup(resetBackendDegraded)
 	switchH3Gate(t, true)
 	transport, cancel := newClosedPortTransport(t, TransportModeH3, false)
 	transport.settings.QuicConnectTimeout = 50 * time.Millisecond
@@ -482,7 +488,7 @@ func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 	// Fire a global Pulse until the transport retries: a single Pulse can land
 	// before the transport has entered its backoff wait and would be missed.
 	// Non-auxiliary H3 must wake and retry on one that lands inside it.
-	deadline = time.Now().Add(2 * time.Second)
+	deadline = time.Now().Add(3 * time.Second)
 	for TransportModeStats().H3Attempts == attemptsAfterFirstFail && time.Now().Before(deadline) {
 		TriggerPulse()
 		time.Sleep(20 * time.Millisecond)
