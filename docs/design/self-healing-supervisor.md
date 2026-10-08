@@ -11,12 +11,12 @@ or could not see the problem:
 |---|---|---|---|
 | Pressure self-heal (`resource_pressure.go`) | one composite score: PSI mem/cpu/io `some avg60`, MemAvailable, load/core, goroutines (per-proxy), heap fraction of soft limit, FD fraction — worst component wins, asymmetric EWMA, emergency pins | URL pacing 1x-8x, probe concurrency down to 1, cleanup+reaper cadence 6h->1h, AIMD pool sizing, adaptive GC (single owner) | does not drive audit; cannot restart anything; blind to swap I/O and to a wedged component |
 | Proxy audit | grade <= 0.4 on two consecutive passes | parks junk proxies (reversible, backoff 6h->7d) | silently depends on hot-restart being armed; observe-only otherwise |
-| Cleanup job + reaper | cadence 6h (`cleanup-scope`) | sweeps dead proxies, refreshes stale grades | separate loop, no shared budget |
+| Cleanup job + reaper | cadence 6h (`cleanup-interval`; `cleanup-scope` selects what it cleans: none/url/all) | sweeps dead proxies, refreshes stale grades | separate loop, no shared budget |
 | Trim cap + OOM cap | manual trim; kernel OOM kill | caps the pool ("tighter wins") | two cap systems reconciling by min(); no relation to the pressure score |
 | Hot-restart / HotSwap | explicit update, or manual | zero-downtime restart (SIGUSR2, NOTIFY_SOCKET-gated, 30s drain) | nothing else coordinates with it; audit depends on it |
 | Unit-type convergence | every update | rewrites unit Type= to match the binary (config-drift self-heal) | one more independent reconciler |
 | Reload watchdog (in flight) | reload stuck past a bound | escalation into hot-restart machinery (zero-downtime hot-swap, gated on `hotRestartEnabled()`, default on) | risks becoming another silo unless folded in |
-| Thrash responder (proposed) | swap thrash (PSI full + pswpout + refaults) | freeze growth -> shed -> escape+remember | same risk: another loop unless folded in |
+| Thrash responder (phase 2a, shipped) | swap thrash (PSI full + pswpout + refaults) | freeze growth -> escape+remember (it sheds nothing itself; rung d owns shedding) | another loop unless folded in |
 | Backend outage watcher | backend degraded probes | logs + webhook (observer) | observer only; fine as-is |
 
 Since this doc was written, phase 2a shipped: the thrash watchdog merged together with the readable-log pass, using this doc's state names and the shared action ledger. Reality check against principle 1: the pressure monitor, the thrash watchdog and the reload watchdog currently run three independent tickers; the pressure monitor and the thrash watchdog share /proc and cgroup sources, while the reload watchdog only reads in-memory atomics. "One supervisor loop" therefore means collapsing three live loops into one, not relocating code - the single biggest cost of the fold-in. Gate reality check: the reload watchdog's escalation fires whenever hot-restart is armed (default on), entirely independent of the self-heal switch - see principle 5.
@@ -43,6 +43,11 @@ Since this doc was written, phase 2a shipped: the thrash watchdog merged togethe
    self-heal switch would silently disarm stuck-reload protection on every default node.
    The fold-in must keep these two gate domains distinct and document which rungs belong
    to which (the reload-watchdog escalation stays armed when hot-restart is armed).
+   Rung-to-gate map: rungs a-d are self-heal-domain actuators and therefore opt-in;
+   rung c additionally needs `proxy_audit` on, because audit is its detection input.
+   Rung e is a self-heal-domain action that calls the hot-swap machinery, so it also
+   needs hot-restart armed (the mechanism gate). Rung f is the thrash watchdog's
+   supervised restart, self-heal-gated as shipped.
 
 ## 3. Sensors (one sample, shared)
 
@@ -81,8 +86,11 @@ only after sustained calm).
   h3=all held ~500 carriers, the largest single memory consumer; backing it off should
   free memory while keeping every identity — measure before adding as a rung).
 - c. PARK (zero IP loss, reversible): the audit's park action (worst-first, backoff
-  ladder, 24h budget) becomes the standard "stop wasting on junk" rung, no longer gated
-  behind a separate hot-restart precondition decision.
+  ladder, 24h budget) becomes the standard "stop wasting on junk" rung. Its acting gate
+  moves to the self-heal switch (opt-in), with detection still under `proxy_audit`, so
+  acting requires `proxy_audit` on AND `self_heal` on. This retires the accidental
+  coupling to `hotRestartEnabled()` (default on): park actions stop happening by
+  default, a deliberate behavior change to call out in the release notes.
 - d. SHED (bounded IP loss): the last resort for sustained heavy pressure only: the
   smallest step that relieves, worst-first (dead/degraded earn nothing), with a floor
   (never below N proxies), hysteresis, and reversible re-admission. Trim cap and OOM cap
@@ -111,10 +119,13 @@ only after sustained calm).
 - `urnet-tools self-heal status` (extended): state, score and components, active budgets,
   parked count, shed history, hotswap availability, recent ledger entries. The CLI
   command is `self-heal`; on disk the state lives in `pressure_status` and
-  `thrash_status` (no `self_heal`-named status file exists; `proxy_self_heal` is an
-  unrelated marker) - so the name stays, `heal` was the working title and no rename is
-  planned. A fold-in task: consolidate the two status files into one supervisor status
-  document. `urnet-tools status` already prints the persisted sentence.
+  `thrash_status` (no `self_heal`-named status file exists; `~/.urnetwork/proxy_self_heal`
+  is the config toggle marker that `urnet-tools self-heal on|off` writes) - so the name
+  stays, `heal` was the working title and no rename is planned. A fold-in task:
+  consolidate the two status files into one supervisor status document and surface the
+  persisted human summary sentence; `urnet-tools status` prints only a raw pressure
+  float today, so exposing the sentence is a planned enhancement, not an existing
+  capability.
 - One config block for budgets/floors; existing keys keep working. Audit/trim/OOM-cap
   keys become ladder parameters rather than separate engines.
 
@@ -141,7 +152,8 @@ What remains, concretely:
    loop as a portable core with Linux-only thrash sensors behind a build-tagged driver
    (the `thrash_watchdog_stub.go` pattern).
 3. Wrap audit as the park rung: the concrete first task is the acting gate. Audit's
-   acting mode depends on `hotRestartEnabled()` today; moving it under the supervisor is
+   acting mode rides `hotRestartEnabled()` today; per rung c it moves to `proxy_audit`
+   (detection) plus the self-heal switch (action), and moving it under the supervisor is
    this step's whole content.
 4. Wrap pacing/AIMD/trim as ladder rungs one at a time, each behind a flag, each with
    its own tests.
