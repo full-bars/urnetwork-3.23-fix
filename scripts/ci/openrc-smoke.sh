@@ -328,11 +328,18 @@ fi
 # what automation uses to state its intent up front.
 # set -e is active: capture the failure inside the if, not as a bare assignment
 # (a failing command substitution there aborts the whole script).
-if RESTART_OUT=$(timeout 60 "$TOOLS" restart -f 2>&1); then
+# Output goes to a TEMP FILE, never a $() pipe: a daemonized descendant
+# (supervise-daemon) inherits the pipe's write end, so even after `timeout`
+# kills the direct child the command substitution waits forever for EOF and
+# the step hangs past the job's own timeout. This was the smoke's CI hang.
+RESTART_TMP=$(mktemp)
+if timeout 60 "$TOOLS" restart -f >"$RESTART_TMP" 2>&1; then
   RESTART_RC=0
 else
   RESTART_RC=$?
 fi
+RESTART_OUT=$(cat "$RESTART_TMP" 2>/dev/null)
+rm -f "$RESTART_TMP"
 if [ "$RESTART_RC" -eq 0 ]; then
   ok "urnet-tools restart -f returned success"
 else
@@ -346,8 +353,14 @@ else
   fail "service down after restart"
 fi
 
-if STOP_OUT=$(timeout 60 "$TOOLS" stop -f 2>&1); then STOP_RC=0; else STOP_RC=$?; fi
-if START_OUT=$(timeout 60 "$TOOLS" start -f 2>&1); then START_RC=0; else START_RC=$?; fi
+STOP_TMP=$(mktemp)
+if timeout 60 "$TOOLS" stop -f >"$STOP_TMP" 2>&1; then STOP_RC=0; else STOP_RC=$?; fi
+STOP_OUT=$(cat "$STOP_TMP" 2>/dev/null)
+rm -f "$STOP_TMP"
+START_TMP=$(mktemp)
+if timeout 60 "$TOOLS" start -f >"$START_TMP" 2>&1; then START_RC=0; else START_RC=$?; fi
+START_OUT=$(cat "$START_TMP" 2>/dev/null)
+rm -f "$START_TMP"
 if [ "$STOP_RC" -eq 0 ] && [ "$START_RC" -eq 0 ]; then
   ok "stop then start both routed through rc-service"
 else
@@ -392,7 +405,10 @@ fi
 # The cron entry must reference the root-owned tool and carry the guard.
 # Use the ROOT-OWNED tool explicitly: that is the one the cron entry will run,
 # and exercising it proves the staged copy is functional, not just present.
-AU_OUT=$(timeout 45 "$ROOT_TOOL" auto-update weekly 2>&1) && AU_OK=1 || AU_OK=0
+AU_TMP=$(mktemp)
+if timeout 45 "$ROOT_TOOL" auto-update weekly >"$AU_TMP" 2>&1; then AU_OK=1; else AU_OK=0; fi
+AU_OUT=$(cat "$AU_TMP" 2>/dev/null)
+rm -f "$AU_TMP"
 if [ "$AU_OK" = "1" ]; then
   ENTRY=""
   for f in /etc/periodic/weekly/urnetwork-update /etc/periodic/daily/urnetwork-update /etc/periodic/monthly/urnetwork-update; do

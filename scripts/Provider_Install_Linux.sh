@@ -1731,6 +1731,22 @@ respawn_period=3600
 output_log="/var/log/urnetwork.log"
 error_log="/var/log/urnetwork.err"
 
+# supervise-daemon --stop busy-loops FOREVER when the pidfile is empty
+# (OpenRC 0.63: an unparsed pid becomes 0, kill(0,0) probes the caller's own
+# process group, which is always alive, so the wait never ends). stop on an
+# already-stopped, never-started, or crashed-clean service must be a no-op,
+# not a hang. Stop of a live service is bounded by respawn_max and the
+# normal signal path; the pidfile check below is the guard for everything
+# else.
+stop() {
+    if [ ! -s /var/run/supervise-urnetwork.pid ]; then
+        ebegin "Stopping urnetwork (already stopped)"
+        eend 0
+        return 0
+    fi
+    default_stop
+}
+
 depend() {
     use net
     after firewall
