@@ -163,6 +163,41 @@ jobs:
           path: /tmp/openrc-smoke.log
           if-no-files-found: warn
 
+  # The urnet-tools binary ships for windows and macOS as well as linux, and
+  # the OpenRC backend is linux-only by construction (//go:build !linux stubs in
+  # openrc_other.go). Every Linux-only symbol that a SHARED call site reaches
+  # must therefore also exist as an off-linux stub, or the windows/darwin
+  # release build breaks while linux CI stays green. That is exactly how the
+  # openrcTailServiceLogs / openrcServiceName gap reached main: both are called
+  # from platform-neutral files (legacy_cmds.go, restart_escalation.go), so
+  # nothing on a linux-only workflow noticed.
+  #
+  # `go vet` rather than `go build` on purpose: it type-checks the package AND
+  # its test files, which build alone would not catch.
+  cross-build:
+    name: urnet-tools cross-build (${{ matrix.goos }})
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    strategy:
+      fail-fast: false
+      matrix:
+        goos: [windows, darwin]
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27"
+
+      - name: Vet urnettools for ${{ matrix.goos }}
+        run: |
+          set -euo pipefail
+          GOOS=${{ matrix.goos }} GOARCH=amd64 go vet ./internal/urnettools/
+          GOOS=${{ matrix.goos }} GOARCH=amd64 go build -o /dev/null ./cmd/urnet-tools
+          echo "${{ matrix.goos }} cross-build OK"
+
   lint-shell:
     name: Installer shell lint
     runs-on: ubuntu-latest

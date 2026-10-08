@@ -29,6 +29,23 @@ func openrcHotSwapDecline(_ Provider) error { return nil }
 
 func renderOpenRCStatus() error { return nil }
 
+// openrcServiceName mirrors the Linux constant. It is a NAME, not behaviour:
+// restart_escalation.go interpolates it into operator-facing guidance, and
+// that call site is reachable on every platform (the escalation is decided
+// from the discovered Provider, not from GOOS). Declaring it const keeps the
+// shared wording identical without dragging the Linux logic along. Off Linux
+// the string is never passed to rc-service, because every routing helper
+// above declines first.
+const openrcServiceName = "urnetwork"
+
+// openrcTailServiceLogs is the off-Linux no-op. The `handled` return stays
+// false so cmdLogs falls through to the normal per-platform log handling
+// instead of reporting a service that does not exist here. Linux declares
+// this in openrc.go; without this stub the shared cmdLogs call site
+// (legacy_cmds.go) fails to compile for windows and darwin, which breaks
+// every release that builds those targets.
+func openrcTailServiceLogs(_ Provider, _ int) (bool, error) { return false, nil }
+
 // providerSupervisedByOpenRCFn reports whether a provider process is
 // supervised by OpenRC's supervise-daemon; off Linux there is no OpenRC, so
 // it is always false. A var to mirror the Linux seam.

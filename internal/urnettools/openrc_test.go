@@ -1135,36 +1135,72 @@ func TestOpenRCStartWorksWithStoppedServiceDiscovered(t *testing.T) {
 	}
 }
 
-// Run this test as root to exercise real stat output and shell arithmetic on
-// an entirely root-owned path. /tmp cannot be used: its mode is intentionally unsafe.
+// TestOpenRCCronGuardRootOwnedTree executes the generated auto-update entry
+// and asserts which directory modes the root-ownership guard accepts.
+//
+// It runs as an ORDINARY user on purpose. The guard's logic is pure shell
+// arithmetic over `stat -c %u` / `stat -c %a`, so the real question is not
+// "can this process own a root-owned directory" but "does the generated
+// `$((0$mode & 022))` evaluate an octal string as octal". A fake `stat` on
+// PATH answers for the ownership and mode questions, which is exactly what
+// the guard reads, and lets the test run everywhere — including GitHub
+// Actions runners, which are non-root. The previous version skipped unless
+// euid==0 and built its tree under /root, so on CI it never ran at all and the
+// bug class it was written for (B1: `755` parsed as decimal against octal 022)
+// had no guard at all.
 func TestOpenRCCronGuardRootOwnedTree(t *testing.T) {
-	if os.Geteuid() != 0 {
-		t.Skip("requires root for a root-owned temporary tree")
-	}
-	dir, err := os.MkdirTemp("/root", "urnetwork-guard-")
-	if err != nil {
+	binDir := t.TempDir()
+	// The fake stat answers for every path, so the walk up to "/" sees the
+	// same owner/mode for each component. `mode` is rewritten per case below
+	// through the FAKE_STAT_MODE file, which keeps the shim a plain shell
+	// script with no per-case arguments.
+	fakeStat := filepath.Join(binDir, "stat")
+	script := "#!/bin/sh\n" +
+		"case \"$1\" in\n" +
+		"  -c) case \"$2\" in\n" +
+		"        %u) echo 0 ;;\n" +
+		"        %a) cat \"$FAKE_STAT_MODE\" ;;\n" +
+		"      esac ;;\n" +
+		"esac\n"
+	if err := os.WriteFile(fakeStat, []byte(script), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	modeFile := filepath.Join(binDir, "mode")
+	if err := os.WriteFile(modeFile, []byte("755\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+
+	dir := t.TempDir()
 	tool := filepath.Join(dir, "urnet-tools")
 	if err := os.WriteFile(tool, []byte("#!/bin/sh\n[ \"$*\" = 'update -f' ]\n"), 0o755); err != nil {
 		t.Fatal(err)
 	}
+
 	for _, tc := range []struct {
 		name string
-		mode os.FileMode
+		mode string
 		safe bool
 	}{
-		{"0755", 0o755, true}, {"0700", 0o700, true}, {"0750", 0o750, true},
-		{"0775", 0o775, false}, {"0777", 0o777, false},
+		// 755 is the mode the installer actually creates. It is the case B1
+		// broke: decimal 755 & octal 022 = 18, so the guard refused it.
+		{"0755", "755", true},
+		{"0700", "700", true},
+		{"0750", "750", true},
+		{"0775", "775", false},
+		{"0777", "777", false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if err := os.Chmod(dir, tc.mode); err != nil {
+			if err := os.WriteFile(modeFile, []byte(tc.mode+"\n"), 0o644); err != nil {
 				t.Fatal(err)
 			}
-			out, err := exec.Command("sh", "-c", openrcUpdateCronScript(tool)).CombinedOutput()
+			cmd := exec.Command("sh", "-c", openrcUpdateCronScript(tool))
+			cmd.Env = append(os.Environ(),
+				"PATH="+binDir+":"+os.Getenv("PATH"),
+				"FAKE_STAT_MODE="+modeFile,
+			)
+			out, err := cmd.CombinedOutput()
 			if (err == nil) != tc.safe {
-				t.Fatalf("safe=%v: guard returned %v: %s", tc.safe, err, out)
+				t.Fatalf("mode %s: safe=%v but guard returned %v: %s", tc.mode, tc.safe, err, out)
 			}
 		})
 	}
