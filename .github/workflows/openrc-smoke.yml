@@ -49,6 +49,15 @@ jobs:
       - name: Build urnet-tools and the fake provider
         env:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+          # Build for the matrix arch, not the runner's arch: the smoke stages
+          # the tarball under linux/<binarch> and the installer inside the
+          # container asks for the arch IT runs as (from `arch`/uname -m),
+          # so the binaries must match the container platform. This was the
+          # arm64-leg failure: the runner is amd64, the build was amd64, the
+          # tarball was labelled arm64, and the container's uname -m -> amd64
+          # lookup found nothing ("Provider binary was not found in the
+          # tarball").
+          GOARCH: ${{ matrix.binarch }}
         run: |
           set -euo pipefail
           for attempt in 1 2 3; do
@@ -87,9 +96,10 @@ jobs:
           # extracts and then reads $workdir/linux/$arch/provider, so the path
           # inside the archive must be exactly that or the install fails with
           # "Provider binary was not found in the tarball".
-          # The installer derives `arch` from `uname -m` and only normalizes
-          # aarch64 -> arm64, so x86_64 stays x86_64. The archive path must use
-          # that same string or the lookup misses.
+          # The installer derives `arch` from `arch`/uname -m and normalizes
+          # it (x86_64 -> amd64, aarch64 -> arm64, see get_arch in
+          # Provider_Install_Linux.sh). The archive path must use that same
+          # string or the lookup misses.
           TARCH="${{ matrix.binarch }}"
           STAGE="$PWD/stage"
           mkdir -p "$STAGE/linux/$TARCH"
@@ -130,6 +140,12 @@ jobs:
           echo "fake release staged under $ROOT:"
           find "$ROOT" -type f | sed "s|^$PWD/|  |"
 
+      - name: Set up QEMU for the arm64 leg
+        # The runner is amd64; the arm64 matrix leg runs an arm64 container,
+        # which needs binfmt_misc registration to execute under the kernel.
+        # amd64 is a no-op pass-through.
+        uses: docker/setup-qemu-action@v3
+
       - name: Install and exercise the service on a stripped Alpine
         # `docker run` on the HOST runner, deliberately NOT the `container:`
         # job key. Using container: would execute this inside Alpine's own musl
@@ -149,6 +165,7 @@ jobs:
           set -euo pipefail
           docker run --rm \
             --cap-add SYS_PTRACE \
+            --platform linux/${{ matrix.binarch }} \
             -e CI_TAG="$CI_TAG" \
             -v "$PWD/fake-release:/srv/fake-release:ro" \
             -v "$PWD/scripts/ci/openrc-smoke.sh:/srv/smoke.sh:ro" \
