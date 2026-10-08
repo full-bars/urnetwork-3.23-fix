@@ -359,7 +359,8 @@ func TestAuxiliaryH3FailureWithSwitchOffDoesNotRecordFailure(t *testing.T) {
 }
 
 // Explicit H3 target mode is the sole transport and keeps full accounting
-// even when the runtime switch is off.
+// even when the runtime switch is off. This guards the explicit mode against
+// regression; it also passes on the code before this change.
 func TestExplicitH3TargetModeStillRecordsFailures(t *testing.T) {
 	switchH3Gate(t, false)
 	resetBackendDegraded()
@@ -430,11 +431,13 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 
 	attemptsAfterFirstFail := TransportModeStats().H3Attempts
 
-	// Trigger a global Pulse while in backoff.
-	TriggerPulse()
-
-	// Wait a short duration: auxiliary H3 must not wake up or retry immediately.
-	time.Sleep(150 * time.Millisecond)
+	// Fire a global Pulse repeatedly while in backoff, so at least one lands
+	// after the transport has entered its backoff wait. Auxiliary H3 must not
+	// wake up or retry immediately on any of them.
+	for end := time.Now().Add(150 * time.Millisecond); time.Now().Before(end); {
+		TriggerPulse()
+		time.Sleep(20 * time.Millisecond)
+	}
 	if got := TransportModeStats().H3Attempts; got != attemptsAfterFirstFail {
 		cancel()
 		<-done
@@ -446,6 +449,8 @@ func TestPulseDoesNotResetAuxiliaryH3Backoff(t *testing.T) {
 }
 
 // A global Pulse must still wake and reset the backoff for non-auxiliary transports.
+// This guards the explicit H3 mode against regression; it also passes without the
+// pulse change, so it does not pin the reported bug.
 func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 	switchH3Gate(t, true)
 	transport, cancel := newClosedPortTransport(t, TransportModeH3, false)
@@ -474,12 +479,13 @@ func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 
 	attemptsAfterFirstFail := TransportModeStats().H3Attempts
 
-	// Trigger a global Pulse while in backoff: non-auxiliary H3 must wake and retry.
-	TriggerPulse()
-
+	// Fire a global Pulse until the transport retries: a single Pulse can land
+	// before the transport has entered its backoff wait and would be missed.
+	// Non-auxiliary H3 must wake and retry on one that lands inside it.
 	deadline = time.Now().Add(2 * time.Second)
 	for TransportModeStats().H3Attempts == attemptsAfterFirstFail && time.Now().Before(deadline) {
-		time.Sleep(5 * time.Millisecond)
+		TriggerPulse()
+		time.Sleep(20 * time.Millisecond)
 	}
 	if TransportModeStats().H3Attempts == attemptsAfterFirstFail {
 		cancel()
@@ -490,4 +496,3 @@ func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 	cancel()
 	<-done
 }
-
