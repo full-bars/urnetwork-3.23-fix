@@ -235,9 +235,9 @@ Memory pressure alone does not mean the box is thrashing. The watchdog watches f
 
 - **Freeze growth** first: no new pool admissions while the condition holds. Nothing is lost yet.
 - If the condition persists, the watchdog **restarts the provider** in a supervised way: the process exits with status 75 and the service manager restarts it. This is the only automatic restart the watchdog performs. It is capped at 3 restarts per 24 hours with a growing backoff (30m, 2h, 6h), skipped while a hot-swap is draining, and it refuses to act when the swap belongs to another process on the box.
-- A restart leaves a **thrash cap** (`~/.urnetwork/thrash_cap.json`): the next start begins with a smaller pool so it fits in RAM, and the cap expires 24 hours after the last restart.
+- A restart leaves a **thrash cap** (`~/.urnetwork/thrash_cap.json`): the next start begins with a smaller pool so it fits in RAM — about 60% of what was running before the restart, at least one proxy — and the cap expires 24 hours after the last restart. Nothing running before the restart sets no new cap (there is nothing to protect).
 
-The supervised restart needs a service unit that restarts on exit status 75. The shipped units use `Restart=on-failure`, which covers it. If you override the unit with a drop-in, use `Restart=on-failure` or `Restart=always`, and keep 75 out of `RestartPreventExitStatus`; the installer warns when a drop-in weakens this.
+The supervised restart needs a service unit that restarts on exit status 75. The shipped units use `Restart=on-failure`, which covers it. If you override the unit with a drop-in, use `Restart=on-failure` or `Restart=always`, keep 75 (or its name `TEMPFAIL`) out of `RestartPreventExitStatus`, and do not mark 75 a success in `SuccessExitStatus` — under `Restart=on-failure` systemd would then treat the watchdog exit as a clean stop. The installer warns when a drop-in weakens any of this.
 
 All of this rides the existing self-heal switch (`URNETWORK_SELF_HEAL=1` or `urnet-tools self-heal on`). Off means off for actions: with self-heal off, the watchdog still senses and logs, so you can watch it work, but it never restarts anything.
 
