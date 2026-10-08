@@ -660,11 +660,15 @@ sanitize_restart_dropins ()
 
     for f in "$dropin_dir"/*.conf; do
         [ -f "$f" ] || continue
-        if grep -Eq '^Restart=(yes|true|1)[[:space:]]*$' "$f"; then
+        if grep -Eq '^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$' "$f"; then
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
-            sed -i -E 's/^Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
+            sed -i -E 's/^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
         fi
         while IFS= read -r line; do
+            # systemd accepts directives indented inside [Service], so strip
+            # leading whitespace before matching; comment lines start with a
+            # hash and are left untouched by the strip.
+            line="${line#"${line%%[![:space:]]*}"}"
             case "$line" in
                 'Restart='*)
                     value="${line#Restart=}"

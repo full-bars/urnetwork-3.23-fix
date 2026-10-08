@@ -541,6 +541,36 @@ test_sanitize_restart_dropins_effective_statuses() {
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
     assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an overridden Restart=no stays silent"
 
+    # Tab-delimited statuses on one line are inspected like spaces.
+    printf '[Service]\nRestartPreventExitStatus=1\t75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "a tab-delimited 75 warns"
+
+    # Superstrings (175, 750) must not match exit status 75.
+    printf '[Service]\nRestartPreventExitStatus=175 750\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "superstring statuses stay silent"
+
+    # Indented directives are accepted by systemd and must be checked too.
+    printf '[Service]\nRestart=on-failure\n  RestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "an indented RestartPreventExitStatus=75 warns"
+
+    printf '[Service]\n  Restart=no\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an indented Restart=no warns"
+
+    printf '[Service]\n  Restart=yes\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'Repairing invalid' "$out")" "an indented Restart=yes is repaired"
+    assert_eq "0" "$(grep -c 'swap-thrash recovery' "$out")" "a repaired indented line does not warn about exit 75"
+    assert_eq "Restart=on-failure" "$(grep -E '^Restart=' "$d/weaken.conf")" "the repair rewrites the indented value"
+
     rm -rf "$tmp"
 }
 test_sanitize_restart_dropins_effective_statuses
