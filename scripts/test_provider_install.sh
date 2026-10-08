@@ -502,6 +502,45 @@ test_sanitize_restart_dropins_effective_statuses() {
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
     assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "a cross-file SuccessExitStatus + Restart=on-failure combo warns"
 
+    # Isolate the remaining cases from the cross-file files above.
+    rm -f "$d/10-onfail.conf" "$d/20-always.conf" "$d/10-succ.conf" "$d/20-restart.conf"
+
+    # on-success stops being a problem once SuccessExitStatus marks 75 a
+    # success: systemd classifies the exit as clean and restarts on it.
+    printf '[Service]\nRestart=on-success\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "on-success with SuccessExitStatus=75 stays silent"
+
+    # Plain on-success is still a problem: 75 exits as a failure, so no restart.
+    printf '[Service]\nRestart=on-success\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "plain on-success warns"
+
+    # ...also when the success marking lives in a different drop-in.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ2.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "on-success + SuccessExitStatus=75 in another file stays silent"
+    rm -f "$d/10-succ2.conf"
+
+    # RestartPreventExitStatus beats Restart=always, so the advice must not
+    # suggest always as an escape.
+    printf '[Service]\nRestart=always\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'under every Restart' "$out")" "the rpes warning says it applies under every policy"
+
+    # A weakened value a lexicographically later drop-in overrides is not
+    # the effective policy, so it stays silent.
+    rm -f "$d/weaken.conf"
+    printf '[Service]\nRestart=no\n' > "$d/10-no.conf"
+    printf '[Service]\nRestart=always\n' > "$d/20-always2.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an overridden Restart=no stays silent"
+
     rm -rf "$tmp"
 }
 test_sanitize_restart_dropins_effective_statuses

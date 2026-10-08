@@ -625,14 +625,16 @@ stop_systemd_units ()
 #
 # A VALID policy can still be wrong for THIS service: the provider's
 # swap-thrash watchdog performs its supervised restart by exiting with
-# status 75, and only `always` and `on-failure` restart on that exit;
-# `no`, `on-success`, `on-abnormal`, `on-watchdog` and `on-abort` all
-# leave the service stopped after a detected thrash. A
-# RestartPreventExitStatus that lists 75 has the same effect, and so does
-# SuccessExitStatus that lists 75 under `Restart=on-failure`: systemd then
-# counts the watchdog exit as a clean stop and never restarts. Those are
-# warned about, never rewritten: the policy is the operator's choice, but
-# the consequence is otherwise silent.
+# status 75, and `always` and `on-failure` restart on that exit while
+# `no`, `on-abnormal`, `on-watchdog` and `on-abort` never do. `on-success`
+# only restarts on a clean exit, so it is a problem too UNLESS
+# SuccessExitStatus marks 75 (TEMPFAIL) a success: then systemd classifies
+# the watchdog exit as clean and restarts on it. A RestartPreventExitStatus
+# that lists 75 blocks the restart under EVERY policy, `always` included,
+# and SuccessExitStatus that lists 75 under `Restart=on-failure` makes
+# systemd count the watchdog exit as a clean stop and never restart. Those
+# are warned about, never rewritten: the policy is the operator's choice,
+# but the consequence is otherwise silent.
 #
 # The exit-status checks read the EFFECTIVE drop-in configuration the way
 # systemd merges it: drop-ins apply in lexicographic order, the last valid
@@ -640,7 +642,9 @@ stop_systemd_units ()
 # accumulate across directives, an empty value resetting the list
 # (systemd.service(5)). A combination spread over two files, the symbolic
 # TEMPFAIL name, or 75 on a repeated directive line therefore cannot slip
-# past the warnings.
+# past the warnings, and a weakened value a later drop-in overrides is not
+# warned about at all -- only the policy that actually wins can break the
+# recovery.
 sanitize_restart_dropins ()
 {
     dropin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
@@ -659,9 +663,6 @@ sanitize_restart_dropins ()
         if grep -Eq '^Restart=(yes|true|1)[[:space:]]*$' "$f"; then
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
             sed -i -E 's/^Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
-        fi
-        if grep -Eq '^Restart=(no|on-success|on-abnormal|on-watchdog|on-abort)[[:space:]]*$' "$f"; then
-            pr_warn "%s sets a restart policy that will not restart the provider's swap-thrash recovery (that recovery exits with status 75). Use Restart=on-failure or Restart=always." "$f"
         fi
         while IFS= read -r line; do
             case "$line" in
@@ -720,12 +721,22 @@ sanitize_restart_dropins ()
         done < "$f"
     done
 
-    # Effective-configuration warnings (never a rewrite).
+    # Effective-policy warnings (never a rewrite). Only the policy that
+    # actually wins is warned about: a weakened value a later drop-in
+    # overrides is not a problem, and on-success stops being one once
+    # SuccessExitStatus marks 75 a success (systemd restarts on it then).
+    case " no on-success on-abnormal on-watchdog on-abort " in
+        *" $eff_restart "*)
+            if [ "$eff_restart" != "on-success" ] || [ -z "$succ_75_file" ]; then
+                pr_warn "%s sets a restart policy that will not restart the provider's swap-thrash recovery (that recovery exits with status 75). Use Restart=on-failure or Restart=always." "$eff_restart_file"
+            fi
+            ;;
+    esac
     if [ -n "$succ_75_file" ] && [ "$eff_restart" = "on-failure" ]; then
         pr_warn "%s marks exit status 75 (TEMPFAIL) as a success; under Restart=on-failure systemd then treats the swap-thrash watchdog exit as a clean stop and will not restart the provider. Remove 75 from SuccessExitStatus, or use Restart=always." "$succ_75_file"
     fi
     if [ -n "$rpes_75_file" ]; then
-        pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. Remove 75 (or TEMPFAIL) from RestartPreventExitStatus, or use Restart=always." "$rpes_75_file"
+        pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. This applies under every Restart= policy, including Restart=always; remove 75 (or TEMPFAIL) from RestartPreventExitStatus, or reset the list with an empty RestartPreventExitStatus= line." "$rpes_75_file"
     fi
 }
 
