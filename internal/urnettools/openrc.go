@@ -12,6 +12,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // This file is the OpenRC lifecycle backend: on hosts where OpenRC is the
@@ -922,8 +923,38 @@ func openrcRestartService(p Provider) (bool, error) {
 	if err := openrcRunFn(openrcServiceArgv("restart")...); err != nil {
 		return true, fmt.Errorf("rc-service %s restart: %w%s", openrcServiceName, err, openrcElevationHint())
 	}
+	// rc-service reports success even when the old provider survived its stop
+	// (a hung or SIGTERM-ignoring process), and the restart then runs a second
+	// provider with the same identity and state. Confirm the old pid is gone.
+	if err := openrcWaitOldGone(p.PID); err != nil {
+		return true, err
+	}
 	fmt.Printf("restarted %s (OpenRC service)\n", openrcServiceName)
 	return true, nil
+}
+
+// openrcProcessAliveFn and openrcOldGoneWait are variables so tests can drive
+// the post-restart check without a real process or real time.
+var (
+	openrcProcessAliveFn = processAlive
+	openrcOldGoneWait    = 5 * time.Second
+	openrcOldGoneStep    = 200 * time.Millisecond
+)
+
+// openrcWaitOldGone waits up to openrcOldGoneWait for the pre-restart provider
+// pid to exit and returns an error naming it if it never does.
+func openrcWaitOldGone(oldPid int) error {
+	if oldPid <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(openrcOldGoneWait)
+	for openrcProcessAliveFn(oldPid) {
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("rc-service %s restart reported success but the previous provider (pid %d) is still running, so two providers may now share one identity and state; stop pid %d and re-check with 'urnet-tools status'", openrcServiceName, oldPid, oldPid)
+		}
+		time.Sleep(openrcOldGoneStep)
+	}
+	return nil
 }
 
 // openrcHotSwapDecline returns a clean decline when the running provider is

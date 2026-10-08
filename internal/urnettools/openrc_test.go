@@ -29,7 +29,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	oldPeriodic, oldExecutable := openrcPeriodicBaseDir, openrcExecutableFn
 	oldDiscover := discoverSystemdFn
 	oldSupervised := providerSupervisedByOpenRCFn
+	oldAliveFn := openrcProcessAliveFn
 	t.Cleanup(func() {
+		openrcProcessAliveFn = oldAliveFn
 		openrcProbeFn, systemdRunningFn = oldProbe, oldSystemd
 		openrcInitScriptPath, openrcRunFn, openrcToolPathFn = oldInit, oldRun, oldToolPath
 		openrcPeriodicBaseDir, openrcExecutableFn = oldPeriodic, oldExecutable
@@ -44,6 +46,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	// process when it has a pid (the production check reads /proc/<pid>);
 	// tests that need a bare provider override this.
 	providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID > 0 }
+	// No test provider pid is a real process: the post-restart check must not
+	// depend on whatever happens to run on the host.
+	openrcProcessAliveFn = func(int) bool { return false }
 
 	dir := t.TempDir()
 	openrcInitScriptPath = filepath.Join(dir, "urnetwork")
@@ -1288,5 +1293,39 @@ func TestCmdLogsOpenRCTarget(t *testing.T) {
 				t.Fatalf("cmdLogs = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A restart that rc-service reports as successful while the old provider is
+// still running must fail loudly: two providers would share one identity.
+func TestOpenRCRestartFailsWhenOldProviderSurvives(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	oldAlive, oldWait, oldStep := openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep
+	t.Cleanup(func() { openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep = oldAlive, oldWait, oldStep })
+	openrcOldGoneWait, openrcOldGoneStep = 30*time.Millisecond, 5*time.Millisecond
+	openrcProcessAliveFn = func(pid int) bool { return pid == 4242 }
+
+	handled, err := openrcRestartService(Provider{PID: 4242})
+	if !handled || err == nil || !strings.Contains(err.Error(), "pid 4242") || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("restart with a surviving old provider = (%v, %v), want a handled error naming pid 4242", handled, err)
+	}
+}
+
+// The old provider exiting during the wait is the normal slow-stop case and
+// must not be an error.
+func TestOpenRCRestartAcceptsOldProviderExitingDuringWait(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	oldAlive, oldWait, oldStep := openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep
+	t.Cleanup(func() { openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep = oldAlive, oldWait, oldStep })
+	openrcOldGoneWait, openrcOldGoneStep = time.Second, 5*time.Millisecond
+	polls := 0
+	openrcProcessAliveFn = func(int) bool { polls++; return polls < 4 }
+
+	handled, err := openrcRestartService(Provider{PID: 4242})
+	if !handled || err != nil {
+		t.Fatalf("restart = (%v, %v), want handled without error", handled, err)
+	}
+	if polls < 4 {
+		t.Fatalf("polled %d times, want the wait to keep polling until the pid is gone", polls)
 	}
 }
