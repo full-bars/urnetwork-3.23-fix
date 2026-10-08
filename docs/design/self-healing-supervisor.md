@@ -29,7 +29,7 @@ Gate reality check: the reload watchdog's escalation fires whenever hot-restart 
 
 1. Pure decision step and isolated reload watchdog. The supervisor decision engine does no I/O. Sensors run in a dedicated goroutine and publish timestamped immutable snapshots. The reload-wedge detector stays its own supervised goroutine. It checks in-memory atomics only. This isolates reload stall detection from sensor panics, disk stalls, or blocking lock operations.
 2. Lock freedom and two-way mutual exclusion. The decision loop never takes the reload mutex, the proxy lock, or any lock a wedge can hold. Status file, critLog, and ledger writes are asynchronous and bounded by timeouts so disk stalls never block decision loops. Two-way mutual exclusion protects hot-swap (rung e) and cold escape (rung f): rung e holds `hotSwapLock` throughout handoff, and rung f holds `hotSwapLock` until process exit. If `hotSwapLock` is already held, duplicate triggers return a distinct error instead of nil. The core loop never iterates proxies: proxy operations remain O(1) in the supervisor core.
-3. IP-preserving by default. More running proxies means more earnings. Tiers a-c lose zero identities. Shedding (rung d) is bounded, floored, worst-first, and reversible. Shedding requires two independent signals rather than acting on a composite pressure score alone.
+3. IP-preserving by default. More running proxies means more earnings. Rungs a to c2 lose zero identities. Shedding (rung d) is bounded, floored, worst-first, and reversible. Shedding requires two independent signals rather than acting on a composite pressure score alone.
 4. Durable bounded accounting. Every action is recorded in the ledger with reason and outcome. Every action is bounded by global budgets and hysteresis. Rung e has its own persisted daily budget file and backoff schedule, preventing infinite hot-swap churn.
 5. Gate separations and observed versus actuating split. Off means actuating score is zero. The supervisor continuously computes an observed score for status and telemetry. When self-heal is disabled, the actuating score published to consumers is strictly 0. Consumers read only the actuating score. Process-wedge defense remains independent: reload-watchdog escalation is gated on `hotRestartEnabled()` (default on).
 6. Fail-neutral and fail-open failure policy. If sensor streams stop or become stale, state decays to unknown. Costly rungs (shed, park, restart) stop at once; cheap reversible rungs (freeze growth, slow probes, tighter GC) hold for a bounded time and then lift (tiered fail-open). If the supervisor loop crashes, recovery hooks reset actuators to neutral (actuating score 0, memory budget full, baseline GOGC, thrashFreeze false). Sensor readings above 1.05 are treated as unavailable (neutral tick). A restart never rests on one sensor: rung f needs two independent signals to agree, and its persisted cap bounds any restart loop.
@@ -45,7 +45,7 @@ The supervisor unifies memory and host pressure sensing while keeping stuck-relo
 |---|---|---|---|---|
 | Host memory pressure (`some avg60`) | `/proc/pressure/memory` | 30s | Pressure monitor | Component omitted from composite score; fallback to memory headroom |
 | Cgroup memory pressure (`full total` deltas) | Unit cgroup `memory.pressure` cumulative `total=` microseconds | 30s | Thrash detector | Neutral tick; blind for 90s: state decays to unknown, costly rungs stop, cheap rungs hold up to 10m (tiered fail-open) |
-| Swap activity | `/proc/vmstat` (`pswpin`/`pswpout`) and unit `memory.stat` (`pswpout`, `workingset_refault_anon`) | 30s | Thrash detector | Uncorroborated path; stricter PSI-only bar applies |
+| Swap activity | `/proc/vmstat` (`pswpin`/`pswpout`) and unit `memory.stat` (`pswpout`, `workingset_refault_anon`) | 30s | Thrash detector | Absent: host `MemAvailable` below the headroom low threshold becomes the second signal for rung f. With neither, rung f does not fire. (The shipped code accepts a stricter PSI-only bar; the supervisor does not for restarts.) |
 | Live heap fraction | Go runtime `ReadMemStats` vs soft limit | 10s GC subtick, 30s main tick | GC governor | Maintain baseline GOGC; do not tighten |
 | Proxy pool size | In-memory atomic `lastRunningProxyCount` | 5m pool controller, on demand | Pool controller, Thrash cap | Fall back to configured floor |
 | Reload duration | In-process atomic timestamp `reloadStartedAt` | 30s | Reload watchdog goroutine | No action; reload treated as healthy |
@@ -73,7 +73,7 @@ If the sensor goroutine crashes, hangs, or stops producing snapshots, the superv
 
 The supervisor enforces a staleness bound of 90 seconds (3 sample ticks). If no fresh snapshot arrives within 90 seconds:
 - The supervisor decays state to `unknown` and logs a single warning line.
-- Costly rungs stop immediately: shed, park, and both restart rungs (e and f). Without data there is no justification for losing an IP or restarting.
+- Costly rungs stop immediately: park, recycle, shed, and both restart rungs (e and f). Without data there is no justification for losing an IP or restarting.
 - Cheap reversible rungs (freeze growth, slow probes, tighter GC) keep holding for up to 10 more minutes (`sensorBlindCheapHold`), then lift. This avoids both a stuck brake and dropping all protection the moment one sensor blinks.
 - `thrashFreeze` follows the cheap-rung timer, so it can no longer stay true forever.
 
@@ -105,17 +105,17 @@ States: calm -> under-pressure -> thrashing -> critical -> unknown (hysteresis: 
 - a. FREEZE (zero IP loss): pause admissions and URL probing; stop pool growth. Engaged from under-pressure upward.
 - b. SHRINK OURSELVES (zero IP loss): URL pacing, probe concurrency down to 1, adaptive GC tightening, and background work pauses. The single GC governor retains its 10s subtick to respond rapidly to heap spikes. Narrowing H3 carriers remains an experimental candidate for future memory relief.
 - c. PARK (zero IP loss, reversible): proxy audit park action (worst-first, backoff ladder, 24h budget). Moves under the supervisor. Detection requires `proxy_audit` enabled. Acting requires both `proxy_audit` and `self_heal` enabled. This decouples parking from `hotRestartEnabled()`.
+- c2. RECYCLE (brief blip, IP preserved): restart the one subsystem attributed as the runaway, without restarting the process. Each subsystem registers a `Recycle()` that cancels its own context and rebuilds it, plus a `Cost()` estimate. Identities served by that subsystem blip briefly and keep their IPs; everything else is untouched. First candidates: the H3 carriers (confirmed memory hog) and the reload goroutine (has wedged before). A subsystem may register only if it owns a cancellable context and releases its goroutines on cancel (Go cannot kill a goroutine). After a recycle the supervisor checks, within `recycleVerifyWindow`, that the offending metric fell by at least `recycleMinImprovement`. If not, it records a miss and escalates to the next rung that applies to the cause: shed (d) when the cause is memory pressure, or the hot-swap handoff (e, subject to its veto and budget) when the cause is a wedged component. It never recycles the same subsystem more than `recycleMaxPerHour` times. Recycle does not shrink a heap that has already grown; only a new process returns that memory to the OS, which is why rung e remains the backstop.
 - d. SHED (bounded IP loss): last resort under sustained heavy pressure. Smallest step that relieves, worst-first (dead, degraded, lowest earnings), with a floor (never below configured minimum), hysteresis, and reversible re-admission. Trim cap and OOM cap become budget inputs to this rung.
   - Two independent signals rule: shedding loses earning identities and must not rely on the composite pressure score alone. The composite score can read 1.00 on a healthy node or 0.00 during swap storms. Shedding requires a concrete signal (host `MemAvailable` below headroom low threshold) PLUS a second independent confirming signal (elevated PSI full or sustained refault and swap rate).
-- d2. RECYCLE (brief blip, IP preserved): restart the one subsystem attributed as the runaway, without restarting the process. Each subsystem registers a `Recycle()` that cancels its own context and rebuilds it, plus a `Cost()` estimate. Identities served by that subsystem blip briefly and keep their IPs; everything else is untouched. First candidates: the H3 carriers (confirmed memory hog) and the reload goroutine (has wedged before). A subsystem may register only if it owns a cancellable context and releases its goroutines on cancel (Go cannot kill a goroutine). After a recycle the supervisor checks, within `recycleVerifyWindow`, that the offending metric fell by at least `recycleMinImprovement`. If not, it records a miss and escalates (to e, subject to its veto and budget). It never recycles the same subsystem more than `recycleMaxPerHour` times. Recycle does not shrink a heap that has already grown; only a new process returns that memory to the OS, which is why rung e remains the backstop.
-- e. HOT-SWAP HANDOFF (zero-downtime): starts a fresh copy of the whole process, hands live connections to it, and retires the old one. It is a whole-process handoff, not a component restart (that is rung d2). Calls the hot-swap machinery (`runHotSwapParentHandoff`, 30s connection drain).
+- e. HOT-SWAP HANDOFF (zero-downtime): starts a fresh copy of the whole process, hands live connections to it, and retires the old one. It is a whole-process handoff, not a component restart (that is rung c2). Calls the hot-swap machinery (`runHotSwapParentHandoff`, 30s connection drain).
   - Thrash veto rule: the hot-swap handoff requires thrash state strictly below `thrashing`. Spawning a child process beside a heavily swapped parent causes memory exhaustion. If the node is thrashing or critical, rung e is vetoed. If vetoed while self-heal is off, an alert is logged.
-  - Persisted daily budget with backoff: rung e has its own persisted budget file (`hotswap_cap.json`), mirroring `thrash_cap.json`. It permits at most 3 restarts per rolling 24 hours with escalating backoff (30m after first, 2h after second). Every attempt is written to the action ledger. If the budget is exhausted, an alert is logged. If self-heal is on and memory permits, escalation hands off to rung f.
+  - Persisted daily budget with backoff: rung e has its own persisted budget file (`hotswap_cap.json`), mirroring `thrash_cap.json`. It permits at most 3 restarts per rolling 24 hours with escalating backoff (30m after first, 2h after second). Every attempt is written to the action ledger. If the budget is exhausted, an alert is logged. Rung f takes over only when memory thrashing is confirmed by two signals (see 3.5); otherwise an alert is logged.
   - Two-way mutual exclusion: rung e holds `hotSwapLock` throughout handoff. Duplicate triggers return a distinct error rather than nil, ensuring callers never log a false success. Rung f cannot start while rung e holds `hotSwapLock`.
 - f. ESCAPE (cold restart exit 75): cold escape for severe memory thrashing. The provider exits with status 75, and the service supervisor restarts it.
   - Requires thrash state `thrashing` or `critical`, confirmed by two independent signals (see 3.5).
   - Holds `hotSwapLock` until process exit, ensuring no concurrent hot-swap can start during persist or ledger writes.
-  - Persisted daily budget (`thrash_cap.json`): hard ceiling of 3 escapes per rolling 24 hours, backoff schedule of 30m then 2h.
+  - Persisted daily budget (`thrash_cap.json`): hard ceiling of 3 escapes per rolling 24 hours, backoff schedule of 30m then 2h (a 6h step is defined in `thrash_cap.go` but unreachable at a cap of 3).
 
 ### 4.2 Init system detection and policy
 
@@ -125,23 +125,23 @@ The supervisor detects the active init system and adapts restart policies accord
 |---|---|---|---|
 | systemd | `INVOCATION_ID != ""` or `NOTIFY_SOCKET != ""` | Fully supported via sd_notify MainPID handoff | Fully supported; exits 75; service restarts under `Restart=on-failure` or `Restart=always` |
 | OpenRC | To confirm: `RC_SVCNAME` or `/run/openrc` (neither is checked in the code today, and whether `supervise-daemon` passes `RC_SVCNAME` to the child is unverified) | To confirm: no sd_notify handoff, so the hot-swap path needs checking on OpenRC | Likely supported; `supervise-daemon` respawns on non-zero exit (`respawn_max=10`, `respawn_period=3600`) |
-| Docker | `/.dockerenv` exists or container cgroup | Supported in-place via execve or handoff | Supported; entrypoint loop (`func_start_provider`) restarts on non-zero exit |
+| Docker | `/.dockerenv` exists or container cgroup | To confirm: hot-swap inside a container | Inert today: the gate needs `INVOCATION_ID` or `NOTIFY_SOCKET`, which containers never set, and `start_stable.sh` counts exit 75 as a crash (three crashes clear the JWT and re-login). Needs a container-aware gate and scripts that treat 75 as a planned restart |
 | Windows | `runtime.GOOS == "windows"` | Supported via named-pipe handoff | Disabled; rung f is Linux-only; Task Scheduler handles auto-start on logon |
 
 Notes on OpenRC and Docker:
 - OpenRC: the shipped OpenRC service file configures `supervise-daemon` with `respawn_max=10` per 3600s. It respawns the binary on any non-zero exit. The shipped check in `thrash_watchdog.go` checked only `INVOCATION_ID` and `NOTIFY_SOCKET`, making rung f inert on OpenRC. The supervisor explicitly supports OpenRC service detection.
-- Docker: container entrypoint scripts (`start_stable.sh`, `pelican_panel.sh`) wrap provider execution in a `while :; do` loop. When the provider exits with status 75, the shell loop logs the crash and restarts the binary. Container restart policies (`restart: unless-stopped`) provide additional host-level safety.
+- Docker: sensing works (the watchdog reads the container's own cgroup pressure on cgroup v2 hosts), but the exit-75 escape does nothing. To enable it: (1) the gate recognizes a container (`/.dockerenv` or an explicit env), and (2) `start_stable.sh` and `pelican_panel.sh` treat exit 75 as a planned restart that does not count toward the crash counter that clears the JWT. The same scripts exist in meso-miner and sn, so the change ships to all three.
 
 ### 4.3 Failure policy
 
-When the supervisor loop panics, encounters unrecoverable sensor errors, or terminates unexpectedly, it must fail neutral and fail open:
+When the supervisor loop panics or terminates unexpectedly, it must fail neutral and fail open. A sensor that merely goes quiet is not a loop failure: it follows the tiered decay in 3.4 (costly rungs stop at once, cheap rungs hold up to `sensorBlindCheapHold`).
 - Actuating score is immediately reset to 0.0.
 - Connection memory budget is reset to full (0).
 - Adaptive GC governor is reset to baseline GOGC (for example 100), releasing GC tightening.
 - `thrashFreeze` is cleared to false, allowing pool growth.
 - Both status files (`pressure_status` and `thrash_status`) are updated with neutral or unknown state.
 - Loop supervision restarts the loop with backoff (1s base, 5m max).
-- All ladder rungs fail open: the supervisor never leaves a node pinned in a degraded, parked, or shed state when monitoring is down.
+- After a loop crash all ladder rungs fail open: the supervisor never leaves a node pinned in a degraded, parked, or shed state while its own loop is down.
 
 ### 4.4 Constants and tunables
 
@@ -150,7 +150,7 @@ When the supervisor loop panics, encounters unrecoverable sensor errors, or term
 | `pressureSampleInterval` | 30s | Pressure sensing | Main pressure sampling cadence |
 | `thrashSampleInterval` | 30s | Thrash sensing | Thrash counter delta cadence |
 | `thrashSustain` | 3m | Escalation | Sustained mild thrash required for thrashing state |
-| `thrashSevereSustain` | 90s | Escalation | Sustained severe thrash (>= 50% full) for thrashing state |
+| `thrashSevereSustain` | 90s | Escalation | Sustained severe thrash (>= 25% full, `thrashSevereFrac`) for thrashing state |
 | `thrashCalmRelax` | 5m | State recovery | Sustained calm required to step down one state |
 | `thrashCriticalAfter` | 15m | Escalation | Continuous thrashing before declaring critical state |
 | `thrashRetryInterval` | 10m | Escalation | Minimum interval between denied restart attempts |
@@ -168,19 +168,21 @@ When the supervisor loop panics, encounters unrecoverable sensor errors, or term
 | `loopHealthyRun` | 10m | Loop supervision | Run duration required to reset supervisor backoff |
 | `sensorStalenessTimeout` | 90s | Fault detection | Missing sensor updates before decaying to unknown and stopping costly rungs |
 | `sensorBlindCheapHold` | 10m | Fault detection | How long cheap reversible rungs keep holding after sensors go blind |
-| `recycleVerifyWindow` | 5m | Rung d2 | Time after a recycle to confirm the offending metric fell |
-| `recycleMinImprovement` | 20% | Rung d2 | Minimum drop that counts as a successful recycle |
-| `recycleMaxPerHour` | 2 | Rung d2 | Cap per subsystem so a bad recycle cannot loop |
+| `recycleVerifyWindow` | 5m | Rung c2 | Time after a recycle to confirm the offending metric fell |
+| `recycleMinImprovement` | 20% | Rung c2 | Minimum drop that counts as a successful recycle |
+| `recycleMaxPerHour` | 2 | Rung c2 | Cap per subsystem so a bad recycle cannot loop |
 | `sensorPlausibilityMax` | 1.05 | Sensor validation | Delta fraction ceiling above which reading is rejected |
 | `thrashPersistTimeout` | 5s | I/O bound | Bounded timeout for anti-loop state persistence |
 | `thrashLedgerTimeout` | 2s | I/O bound | Bounded timeout for action ledger writes |
+
+Proposals, not yet in code: `hotswapMaxRestarts24h`, `hotswapRestartBackoff`, `sensorStalenessTimeout`, `sensorBlindCheapHold`, `sensorPlausibilityMax`, `recycleVerifyWindow`, `recycleMinImprovement`, `recycleMaxPerHour`. The names `nowFn`, `hotswap_cap.json`, `Recycle()`, `Cost()`, `subsys` table and the `urnet_subsystem_*` and `urnet_heal_*` metrics also do not exist yet. Every other constant above is the shipped value and is pinned by the parity tests.
 
 ### 4.5 Attribution: which subsystem is the runaway
 
 The supervisor names the offender with data, using the existing metrics system as its only source (`provider/node_internals.go` and the Prometheus registry behind `/metrics`). It adds no second sampler.
 
 1. Totals: the cheap `internals` read (runtime/metrics, about 18us at 95k goroutines, cached 100ms). This is the same read `urnet-tools top` uses, so the supervisor and operators see identical numbers.
-2. Goroutines per subsystem: the cached goroutine profile grouped by function (`goroutineGroupsTTL` 5s, about 80ms of CPU and a brief pause at 95k goroutines). A maintained table maps function name prefixes to subsystem names (for example `transport.(*PlatformTransport).runH3` to `h3`). No change to where goroutines are started. The supervisor only asks for a fresh profile when pressure is rising, and shares the cache with `top`, so it never adds a second profile.
+2. Goroutines per subsystem: the cached goroutine profile grouped by function (`goroutineGroupsTTL` 5s, about 80ms of CPU and a brief pause at 95k goroutines). A maintained table maps function name prefixes to subsystem names (for example `connect.(*PlatformTransport).runH3` to `h3`). No change to where goroutines are started. The supervisor only asks for a fresh profile when pressure is rising, and shares the cache with `top`, so it never adds a second profile.
 3. Resources per subsystem: counters the code already keeps (live connections, H3 attempts and connects, buffer and queue bytes, sockets) read from the same registry that `/metrics` exports. New counters are added to that registry, never to a private structure.
 4. Heap per subsystem: one on-demand heap profile when pressure is rising, cached like the goroutine profile, grouped by the same function table and diffed against a baseline stored when the box was last calm.
 5. Counterfactual: every recycle writes before and after values to the action ledger. Over time the supervisor learns which subsystems' recycles actually help and prefers those.
@@ -203,8 +205,8 @@ Examples of the required lines:
 - `[heal] Restart budget used (3 of 3 in 24 hours). Not restarting again. This box needs more memory or fewer proxies; see self-heal status.`
 - `[heal] The memory sensors have gone quiet for 90 seconds. Stopping any action that costs an IP or restarts the process. Pool growth stays paused for up to 10 more minutes, then resumes.`
 - `[heal] A reading of 140% memory stall is not possible, so it was ignored (sensor glitch).`
-- `[h3] H3 was requested for 3400 proxies but only 610 fit. Measured cost is 118 KiB per connection on this box and the memory headroom floor was reached. Running 610. Lower the setting or add memory to run more.`
-- `[h3] Memory is tight, so H3 is being dropped for 80 proxies first. They keep working over H1. H3 will return slowly once memory has been calm for 15 minutes.`
+- (planned with the H3 Stage B work, not normative until then) `[h3] H3 was requested for 3400 proxies but only 610 fit. Measured cost is 118 KiB per connection on this box and the memory headroom floor was reached. Running 610. Lower the setting or add memory to run more.`
+- (planned with the H3 Stage B work, not normative until then) `[h3] Memory is tight, so H3 is being dropped for 80 proxies first. They keep working over H1. H3 will return slowly once memory has been calm for 15 minutes.`
 
 ## 5. Status and config surfaces
 
@@ -222,7 +224,8 @@ What remains, concretely:
 2. Collapse loops: merge pressure monitor and thrash watchdog tickers into one sensing and decision loop. Build the loop as a portable core with Linux-only thrash sensors behind build tags.
 3. Wrap audit as the park rung: move audit acting mode under self-heal, retaining detection under `proxy_audit`.
 4. Wrap pacing, AIMD, and trim as ladder rungs one at a time behind individual flags.
-5. Only then consider changing defaults (still opt-in).
+5. Add the recycle rung (c2) once the attribution counters exist, starting with the H3 carriers and the reload goroutine.
+6. Only then consider changing defaults (still opt-in).
 
 Invariants the fold-in must preserve:
 
@@ -246,7 +249,7 @@ Invariants the fold-in must preserve:
 
 ## 8. Implementation order
 
-The implementation proceeds in 9 sequential steps:
+The implementation proceeds in 10 sequential steps:
 
 1. Amend design doc for H1-H4 and M1-M3.
 2. Add behavior-parity tests for existing loops and thresholds without refactoring.
@@ -255,9 +258,9 @@ The implementation proceeds in 9 sequential steps:
 5. Implement rung e persisted daily budget, thrash state veto, and exclusive actuation token.
 6. Merge pressure and thrash sensing and decision logic into the supervisor core, keeping reload detector in its own supervised goroutine.
 7. Implement tiered sensor staleness decay, plausibility checks, and rung f corroboration.
-8a. Add the function-prefix to subsystem table over the existing goroutine profile, the per-subsystem gauges in the existing Prometheus registry, and the recycle interface; register H3 carriers and the reload goroutine first, then verify others one at a time.
-8. Move proxy audit acting gate under self-heal with release note callout.
-9. Fold in shrink, park, and shed rungs one at a time behind individual flags, canaried sequentially.
+8. Add the function-prefix to subsystem table over the existing goroutine profile, the per-subsystem gauges in the existing Prometheus registry, and the recycle interface; register H3 carriers and the reload goroutine first, then verify others one at a time.
+9. Move proxy audit acting gate under self-heal with release note callout.
+10. Fold in the shrink, park, recycle, and shed rungs one at a time behind individual flags, canaried sequentially.
 
 ## 9. Required tests
 
@@ -282,7 +285,7 @@ New tests required for the implementation pull request:
 - A recycled subsystem releases its goroutines (live count returns to baseline) and keeps its identities' IPs.
 - A recycle that does not improve the metric is recorded as a miss and escalates; `recycleMaxPerHour` stops a loop.
 - A subsystem missing from the function table or without counters is reported as unattributed and never recycled.
-- Every line in section 4.6 is emitted exactly once per state change with the documented wording, appears in LOG_REFERENCE.md, and is not repeated on every tick.
+- Every `[heal]` line in section 4.6 is emitted exactly once per state change with the documented wording, appears in LOG_REFERENCE.md, and is not repeated on every tick.
 - The per-subsystem gauges in `/metrics` match the values the supervisor acted on.
 - Failed or panicked merged loop resets all actuators to neutral (actuating score 0, memory budget full, baseline GOGC, thrashFreeze false).
 - Stub build compiles and behaves sanely on non-Linux platforms (Darwin, Windows, FreeBSD).
