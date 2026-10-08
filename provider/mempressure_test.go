@@ -72,3 +72,27 @@ func TestMemPressureSwapFracMapping(t *testing.T) {
 		t.Errorf("swap-derived percent should raise psi_mem, comps=%v", comps)
 	}
 }
+
+// The mapping must never fall as swap use rises. Clamping at a full device
+// instead of at the ramp point made the reading climb past psiRampHi and then
+// drop back to it once the device filled, so a host under more pressure
+// reported less of it.
+func TestMemPressureSwapFracIsMonotonic(t *testing.T) {
+	const steps = 1000
+	prev := 0.0
+	for i := 0; i <= steps; i++ {
+		frac := float64(i) / steps
+		got := memPressurePercentFromSwapFrac(frac)
+		if got < prev {
+			t.Fatalf("pressure fell as swap use rose: frac %.3f gave %v after %v", frac, got, prev)
+		}
+		if got > psiRampHi {
+			t.Fatalf("frac %.3f reported %v, above the top of the ramp %v", frac, got, psiRampHi)
+		}
+		prev = got
+	}
+	// Once saturated it must stay saturated rather than resume rising or fall.
+	if v := memPressurePercentFromSwapFrac(0.5); v != psiRampHi {
+		t.Errorf("frac past the ramp point must stay at psiRampHi, got %v", v)
+	}
+}

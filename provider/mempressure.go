@@ -42,8 +42,9 @@ func memPressurePercentFromMacLevel(level uint32) float64 {
 // Swap is a lagging indicator: a host only faults pages out once it is already
 // under real pressure, so the curve is mapped so that a swap fraction that
 // still looks modest (25%) already scores like the middle of the psi_mem ramp.
-// A host that has swapped at all is a host that was short of memory. Hitting
-// the full swap device pins the component at 1.
+// A host that has swapped at all is a host that was short of memory, so the
+// ramp saturates at swapFracRampFull rather than at a completely full device:
+// past that point more swap use adds no information.
 //
 // A zero or negative fraction is not a reading and scores 0: a provider that
 // has not faulted anything must not be told it is under pressure.
@@ -51,7 +52,12 @@ func memPressurePercentFromSwapFrac(frac float64) float64 {
 	if frac <= 0 {
 		return 0
 	}
-	if frac >= 1 {
+	// Saturate at the ramp point, not at a full device: the ramp already pins
+	// psi_mem at swapFracRampFull, so extrapolating past it produced readings
+	// far above psiRampHi (about 238 at 99% swap) and then dropped back to
+	// psiRampHi once the device filled, which made the signal fall as the host
+	// got worse.
+	if frac >= swapFracRampFull {
 		return psiRampHi
 	}
 	// 0 -> 0 and 25% -> psiRampHi, linear between. psiRampLo is unused here
