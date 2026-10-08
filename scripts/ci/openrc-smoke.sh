@@ -144,10 +144,15 @@ fi
 
 # When the installer runs as the SERVICE USER it cannot write /etc/init.d, so
 # it stages the script and prints the root commands to finish. That split is
-# deliberate: the install tree stays owned by the service user, and only the
-# four privileged lines are root. The smoke performs exactly those lines, so
-# the test covers the whole documented flow rather than a truncated half of it.
-STAGED="/home/$SVC_USER/.local/share/urnetwork-provider/urnetwork.openrc"
+# deliberate: the tree itself is root-owned, and only the four privileged
+# lines plus the ownership finalization are root. The smoke performs exactly
+# those lines, so the test covers the whole documented flow rather than a
+# truncated half of it.
+# The OpenRC install tree is root-owned and lives OUTSIDE the service user's
+# home, so root-executed code (the cron entry, sudo urnet-tools update) can
+# never reach it through a user-writable ancestor.
+INSTALL_ROOT=/usr/local/lib/urnetwork-provider
+STAGED="$INSTALL_ROOT/urnetwork.openrc"
 if [ -f "$STAGED" ] && [ ! -f /etc/init.d/urnetwork ]; then
   say "completing the root half of the install"
   cp "$STAGED" /etc/init.d/urnetwork
@@ -240,9 +245,9 @@ else
   echo "   --- /var/log/urnetwork.log ---"
   tail -15 /var/log/urnetwork.log 2>/dev/null | sed 's/^/     /' || echo "     (empty)"
   echo "   --- can the service user exec the binary? ---"
-  su -s /bin/sh "$SVC_USER" -c "test -x /home/$SVC_USER/.local/share/urnetwork-provider/bin/urnetwork && echo yes || echo no" 2>&1 | sed 's/^/     /'
+  su -s /bin/sh "$SVC_USER" -c "test -x $INSTALL_ROOT/bin/urnetwork && echo yes || echo no" 2>&1 | sed 's/^/     /'
   echo "   --- direct run as the service user (5s cap) ---"
-  su -s /bin/sh "$SVC_USER" -c "timeout 5 /home/$SVC_USER/.local/share/urnetwork-provider/bin/urnetwork provide" 2>&1 | head -6 | sed 's/^/     /'
+  su -s /bin/sh "$SVC_USER" -c "timeout 5 $INSTALL_ROOT/bin/urnetwork provide" 2>&1 | head -6 | sed 's/^/     /'
 fi
 
 # --- discovery: the whole point of the OpenRC backend -----------------------

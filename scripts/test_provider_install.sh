@@ -624,6 +624,138 @@ test_openrc_sudo_finalizes_before_start() {
 }
 test_openrc_sudo_finalizes_before_start
 
+# B2: root's PATH must not resolve urnet-tools through the install tree on
+# OpenRC. The symlink is only as safe as its target's whole ancestor chain, so
+# the /usr/local/bin copy points at the root-owned staged libexec tool instead.
+test_openrc_root_path_uses_staged_root_tool() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    # The staged copy must actually exist for the redirect to apply; the
+    # installer stages it during finalization.
+    mkdir -p "$tmpd/libexec"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/libexec/urnet-tools"
+    out="$(PT_ROOT="$tmpd" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_root_tool_dir="$PT_ROOT/libexec"
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        link_tools_into_dir() { echo "LINK dir=$1 src=$2"; return 0; }
+        ensure_tools_on_path /nonexistent/install
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'LINK dir=/usr/local/bin src=.*/libexec')" \
+        "root PATH links urnet-tools at the root-owned staged tool, not the install tree"
+    rm -rf "$tmpd"
+}
+test_openrc_root_path_uses_staged_root_tool
+
+# B2 (counter-case): on systemd, or when no staged copy exists, the link must
+# still point into the install tree. Guards against the OpenRC redirect
+# leaking into the normal path.
+test_root_path_keeps_install_tree_off_openrc() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=0
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_root_tool_dir=/usr/local/libexec/urnetwork
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        link_tools_into_dir() { echo "LINK dir=$1 src=$2"; return 0; }
+        ensure_tools_on_path /home/user/install
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'LINK dir=/usr/local/bin src=/home/user/install/bin')" \
+        "off OpenRC, root PATH keeps pointing at the install tree"
+}
+test_root_path_keeps_install_tree_off_openrc
+
+# B3: the OpenRC install tree must not land in the service user's home. A tree
+# under /home/<user> has a user-writable ancestor, and root-executed code
+# (the cron entry, sudo urnet-tools update) reachable through it is the
+# escalation this move removes.
+test_openrc_install_tree_is_root_owned_location() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=0
+        install_path="$HOME/.local/share/urnetwork-provider"
+        openrc_user_home() { echo /home/urnet; }
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "install_path=$install_path"
+    ')"
+    assert_eq "0" "$(echo "$out" | grep -c 'install_path=/home/urnet')" \
+        "the OpenRC install tree is never placed in the service user's home"
+    assert_eq "1" "$(echo "$out" | grep -c 'install_path=/usr/local/lib/urnetwork-provider')" \
+        "the OpenRC install tree lands in a root-owned location"
+}
+test_openrc_install_tree_is_root_owned_location
+
+# B3 (escape hatch): an explicit -i/--install path is the operator's decision
+# and must survive untouched, as must a non-root run.
+test_openrc_install_path_respects_explicit_choice() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=1
+        install_path=/opt/mine
+        openrc_user_home() { echo /home/urnet; }
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "explicit=$install_path"
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'explicit=/opt/mine')" \
+        "an explicit --install path is not overridden on OpenRC"
+
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=0
+        install_path=/home/klets/.local/share/urnetwork-provider
+        openrc_user_home() { echo /home/klets; }
+        id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "nonroot=$install_path"
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'nonroot=/home/klets/.local/share/urnetwork-provider')" \
+        "an unprivileged run keeps its own install path on OpenRC"
+}
+test_openrc_install_path_respects_explicit_choice
+
+# B3: the state dir is the one thing that stays in the user's home, and the
+# installer must not change ownership THROUGH a symlink planted there. A
+# pre-planted .urnetwork -> /etc would otherwise hand /etc to the service user.
+test_openrc_refuses_symlinked_state_dir() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/victim"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    ln -s "$tmpd/victim" "$tmpd/home/.urnetwork"
+    out="$(PT_ROOT="$tmpd" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_ROOT/home/install"
+            openrc_home="$PT_ROOT/home"
+            openrc_user=testuser
+            openrc_initd_file="$PT_ROOT/initd"
+            openrc_root_tool_dir="$PT_ROOT/root-tool"
+            openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+            openrc_user_home() { echo "$PT_ROOT/home"; }
+            id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+            sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
+            openrc_finalize_root_paths
+        ' 2>&1)"
+        assert_eq "1" "$(echo "$out" | grep -c 'is a symlink; refusing to change ownership through it')" \
+            "a symlinked state dir is reported instead of silently followed"
+        assert_eq "0" "$(grep -c "chown testuser $tmpd/home/.urnetwork" "$tmpd/privileged" 2>/dev/null || echo 0)" \
+            "ownership is never changed through the planted symlink"
+    rm -rf "$tmpd"
+}
+test_openrc_refuses_symlinked_state_dir
+
 test_service_restart_systemd_fallback() {
     local out
     out="$(bash -c '
