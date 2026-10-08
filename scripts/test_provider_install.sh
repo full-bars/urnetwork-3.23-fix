@@ -745,16 +745,50 @@ test_openrc_refuses_symlinked_state_dir() {
             openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
             openrc_user_home() { echo "$PT_ROOT/home"; }
             id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+            # The shim below stands in for real sudo; feed it to SUDO the same
+            # way install_json_parser would, since we are not going through
+            # that path here.
+            SUDO=sudo
             sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
             openrc_finalize_root_paths
         ' 2>&1)"
-        assert_eq "1" "$(echo "$out" | grep -c 'is a symlink; refusing to change ownership through it')" \
-            "a symlinked state dir is reported instead of silently followed"
-        assert_eq "0" "$(grep -c "chown testuser $tmpd/home/.urnetwork" "$tmpd/privileged" 2>/dev/null || echo 0)" \
-            "ownership is never changed through the planted symlink"
+        assert_eq "1" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
+        "a symlinked state dir is reported instead of silently followed"
+    assert_eq "0" "$(grep -c "chown testuser $tmpd/home/.urnetwork" "$tmpd/privileged" 2>/dev/null || true)" \
+        "ownership is never changed through the planted symlink"
     rm -rf "$tmpd"
 }
 test_openrc_refuses_symlinked_state_dir
+
+# F6: a symlink pointing INSIDE the service user's home is a legitimate
+# relocation — follow it and chown only the target inside the home.
+test_openrc_follows_inhome_state_dir_symlink() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/home/statedata"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    ln -s "$tmpd/home/statedata" "$tmpd/home/.urnetwork"
+    out="$(PT_ROOT="$tmpd" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_ROOT/home/install"
+            openrc_home="$PT_ROOT/home"
+            openrc_user=testuser
+            openrc_initd_file="$PT_ROOT/initd"
+            openrc_root_tool_dir="$PT_ROOT/root-tool"
+            openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+            openrc_user_home() { echo "$PT_ROOT/home"; }
+            id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+            SUDO=sudo
+            sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
+            openrc_finalize_root_paths
+        ' 2>&1)"
+    assert_eq "0" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
+        "an in-home relocation is not treated as a planted symlink"
+    assert_eq "1" "$(grep -c "chown testuser $tmpd/home/statedata" "$tmpd/privileged" 2>/dev/null || echo 0)" \
+        "the in-home target is chowned to the service user"
+    rm -rf "$tmpd"
+}
+test_openrc_follows_inhome_state_dir_symlink
 
 test_service_restart_systemd_fallback() {
     local out

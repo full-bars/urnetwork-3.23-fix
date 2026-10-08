@@ -1021,11 +1021,9 @@ ensure_tools_on_path ()
     # into the install tree. A symlink is only as trustworthy as its target's
     # whole ancestor chain: /usr/local/bin/urnet-tools ->
     # <install tree>/urnet-tools is root-executed code reachable through a
-    # path the service user can rename aside and replace. The tree itself is
-    # root-owned now, so both would work — but the staged libexec copy is the
-    # one the cron entry already validates, and pointing root's PATH at the
-    # same file the guard walks means there is a single root-owned binary
-    # rather than two that can drift.
+    # path the service user can rename aside and replace. The staged copy is
+    # the one the cron entry already validates, so there is a single
+    # root-owned binary rather than two that can drift.
     #
     # The staged copy is required, not optional: falling back to the install
     # tree here would silently reintroduce the shape this change removes. The
@@ -1033,27 +1031,51 @@ ensure_tools_on_path ()
     # hole, but it is the drift the paragraph above exists to avoid, so a
     # missing staged copy is reported rather than papered over.
     #
-    # urnetwork itself keeps pointing at the install tree under OpenRC: the
-    # service runs THAT binary as the service user, and a root-owned libexec
-    # copy of the provider would be a second image to keep in sync for no
-    # gain.
-    local root_src="$src"
+    # urnet-tools and urtop come from the staged root-owned directory;
+    # urnetwork comes from the install tree, because that is the only place
+    # the provider binary lives (a second root-owned copy of the PROVIDER
+    # would be a second image to keep in sync for no gain) and the service
+    # user — not root — is who runs it. link_tools_into_dir links every name
+    # from one source, so the two sources need two passes, each only touching
+    # the names its source actually holds.
+    local root_has_openrc=0
     if [ "$has_openrc" -eq 1 ]; then
         if [ -e "$openrc_root_tool_path" ]; then
-            root_src="$openrc_root_tool_dir"
+            root_has_openrc=1
         else
-            pr_warn "the staged root-owned tool %s is missing; root PATH will point into the install tree instead" \
-                "$openrc_root_tool_path"
+            pr_err "error: the staged root-owned tool %s is missing; not linking root's PATH to the install tree" "$openrc_root_tool_path"
         fi
     fi
 
+    if [ "$root_has_openrc" -eq 1 ]; then
+        # Tools under OpenRC: both from the root-owned libexec dir.
+        if [ "$(id -u)" -eq 0 ]; then
+            link_tools_into_dir /usr/local/bin "$openrc_root_tool_dir" || pr_err "warning: could not link the tools into /usr/local/bin"
+            # urnetwork only exists in the install tree; link it on its own.
+            link_tools_into_dir /usr/local/bin "$src" || pr_err "warning: could not link urnetwork into /usr/local/bin"
+        elif command -v sudo > /dev/null 2>&1 && sudo -n true 2> /dev/null; then
+            if link_tools_into_dir /usr/local/bin "$openrc_root_tool_dir" sudo -n; then
+                pr_info "Linked urnet-tools and urtop into /usr/local/bin (root-owned staging, works for root)"
+            else
+                pr_err "warning: could not link the tools into /usr/local/bin"
+            fi
+            if ! link_tools_into_dir /usr/local/bin "$src" sudo -n; then
+                pr_err "warning: could not link urnetwork into /usr/local/bin"
+            fi
+        else
+            pr_info "root cannot find urnet-tools yet. Run once: sudo ln -sfn %s/urnet-tools /usr/local/bin/urnet-tools" "$openrc_root_tool_dir"
+        fi
+        return 0
+    fi
+
+    # Non-OpenRC (systemd and friends): everything from the install tree.
     # Root installs write it directly; otherwise use passwordless sudo when it
     # exists, and tell the operator the one command when it does not (an
     # unprivileged installer cannot do more).
     if [ "$(id -u)" -eq 0 ]; then
-        link_tools_into_dir /usr/local/bin "$root_src" || pr_err "warning: could not link the tools into /usr/local/bin"
+        link_tools_into_dir /usr/local/bin "$src" || pr_err "warning: could not link the tools into /usr/local/bin"
     elif command -v sudo > /dev/null 2>&1 && sudo -n true 2> /dev/null; then
-        if link_tools_into_dir /usr/local/bin "$root_src" sudo -n; then
+        if link_tools_into_dir /usr/local/bin "$src" sudo -n; then
             pr_info "Linked urnet-tools, urnetwork and urtop into /usr/local/bin (works for root)"
         else
             pr_err "warning: could not link the tools into /usr/local/bin"
@@ -1106,18 +1128,34 @@ remove_path_block ()
     awk '/# == urnetwork-provider start/ { pr=1 } pr == 0 { print } /# == urnetwork-provider end/ { pr=0 }' "$file" > "$file.new" && mv "$file.new" "$file"
 }
 
-# remove_tool_links INSTALL_PATH: remove only symlinks that point into our install.
+# remove_tool_links INSTALL_PATH: remove only symlinks that point into our
+# install. Under OpenRC this ALSO covers the root-owned staging dir
+# (/usr/local/libexec/urnetwork) and urtop, which never points anywhere in the
+# install tree.
 remove_tool_links ()
 {
     local src="$1/bin" dir name t
     for dir in "$HOME/.local/bin" /usr/local/bin; do
-        for name in urnet-tools urnetwork; do
+        for name in urnet-tools urnetwork urtop; do
             [ -L "$dir/$name" ] || continue
-            t="$(readlink "$dir/$name")"
-            [ "$t" = "$src/$name" ] || continue
-            rm -f "$dir/$name" 2> /dev/null || { command -v sudo > /dev/null 2>&1 && sudo -n rm -f "$dir/$name" 2> /dev/null; } || true
+            t="$(readlink "$dir/$name" 2>/dev/null)"
+            # match the install tree, or the OpenRC root-owned staging dir
+            case "$t" in
+                "$src/$name"|"$openrc_root_tool_dir"/*)
+                    rm -f "$dir/$name" 2> /dev/null || { command -v sudo > /dev/null 2>&1 && sudo -n rm -f "$dir/$name" 2> /dev/null; } || true
+                    ;;
+            esac
         done
     done
+
+    # The staged root tool and its dir are ours when installed; remove them
+    # on uninstall. Harmless no-op unless staging happened.
+    if [ -n "$openrc_root_tool_dir" ]; then
+        rm -f "$openrc_root_tool_dir/urnet-tools" 2> /dev/null \
+            || { command -v sudo > /dev/null 2>&1 && sudo -n rm -f "$openrc_root_tool_dir/urnet-tools" 2>/dev/null; } || true
+        rmdir "$openrc_root_tool_dir" 2>/dev/null \
+            || { command -v sudo > /dev/null 2>&1 && sudo -n rmdir "$openrc_root_tool_dir" 2>/dev/null; } || true
+    fi
 }
 
 install_systemd_units ()
@@ -1276,19 +1314,52 @@ openrc_maybe_redirect_install_path ()
     [ "$install_path_explicit" -eq 0 ] || return 0
 
     # Migrate an older OpenRC install out of the service user's home. Run as
-    # root (or via sudo) and refuse to continue on failure: leaving the new
-    # tree in place while the old one still holds the binaries would leave two
-    # installs and an ambiguous `urnet-tools` on PATH. Best-effort only when
-    # the old tree is absent, which is the normal first-install case.
+    # root (or via sudo). The migration is idempotent so an interrupted run
+    # completes on the next invocation: a leftover legacy tree is removed
+    # whenever the new tree already exists (the copy direction is one-way —
+    # the new tree is authoritative once present), and a missing new tree
+    # triggers the copy. Skipped entirely during uninstall: there the legacy
+    # location is cleaned by do_uninstall itself, and copying a tree just to
+    # delete it seconds later is pointless.
+    #
+    # The legacy tree is NOT moved by dereferencing: it lives in the service
+    # user's home, so the tree itself AND every ancestor component down from
+    # the home can be a planted symlink (e.g. .local/share/urnetwork-provider
+    # -> /etc). `cp -a` follows such a link and copies the host directory's
+    # CONTENTS (shadow files, keys) into the root-owned tree as regular files
+    # — an info leak. Refuse the migration outright when any component is a
+    # symlink: prefer a fresh install over a copied /etc.
     openrc_legacy_home="$(openrc_user_home)"
-    if [ -n "$openrc_legacy_home" ] && [ -d "$openrc_legacy_home/.local/share/urnetwork-provider" ]; then
-        if [ ! -d "$openrc_install_root" ]; then
+    if [ "$openrc_migrating" -eq 1 ] \
+        && [ -n "$openrc_legacy_home" ] \
+        && [ -e "$openrc_legacy_home/.local/share/urnetwork-provider" ]; then
+        openrc_legacy_ok=1
+        openrc_legacy_p="$openrc_legacy_home/.local/share/urnetwork-provider"
+        while [ "$openrc_legacy_p" != "/" ] && [ -n "$openrc_legacy_p" ]; do
+            if [ -L "$openrc_legacy_p" ]; then
+                openrc_legacy_ok=0
+                break
+            fi
+            openrc_legacy_p="$(dirname "$openrc_legacy_p")"
+        done
+        if [ "$openrc_legacy_ok" -ne 1 ]; then
+            pr_warn "the previous install at %s is a symlink; refusing to migrate it (a fresh install will be placed at %s)" \
+                "$openrc_legacy_home/.local/share/urnetwork-provider" "$openrc_install_root"
+        elif [ ! -d "$openrc_install_root" ]; then
             pr_info "Moving the existing OpenRC install out of %s into %s" \
                 "$openrc_legacy_home/.local/share/urnetwork-provider" "$openrc_install_root"
             ${SUDO:-} mkdir -p "$openrc_install_root" 2>/dev/null \
                 && ${SUDO:-} cp -a "$openrc_legacy_home/.local/share/urnetwork-provider/." "$openrc_install_root/" 2>/dev/null \
                 && ${SUDO:-} rm -rf "$openrc_legacy_home/.local/share/urnetwork-provider" 2>/dev/null \
                 || pr_warn "could not move the old install tree; continuing with the new location"
+        else
+            # New tree present (previous migration completed or partially):
+            # drop the legacy tree now. This also covers the interrupted run
+            # that copied but failed to remove.
+            pr_info "Removing the legacy OpenRC install at %s (already relocated)" \
+                "$openrc_legacy_home/.local/share/urnetwork-provider"
+            ${SUDO:-} rm -rf "$openrc_legacy_home/.local/share/urnetwork-provider" 2>/dev/null \
+                || pr_warn "could not remove the legacy install tree at %s" "$openrc_legacy_home/.local/share/urnetwork-provider"
         fi
     fi
 
@@ -1431,11 +1502,13 @@ stop_openrc_units ()
 # openrc_stage_root_owned_tool copies urnet-tools to a ROOT-ONLY location.
 #
 # Why this exists (security): the weekly auto-update runs as ROOT from busybox
-# crond and EXECUTES this binary. Under the default OpenRC layout the install
-# tree sits in the service user's home, and chowning the tree root:root does NOT
-# make it safe - the user owns /home/urnet, so they can rename .local aside and
-# recreate the path with their own urnet-tools, and root executes it at the next
-# tick. Root-owned files cannot defend a path whose ANCESTOR is user-writable.
+# crond and EXECUTES this binary. The OpenRC install tree is root-owned and
+# lives at $openrc_install_root (no user-writable ancestor), so the tree
+# itself is defended by construction — but this staged copy under
+# /usr/local/libexec is the single tool path root runs, deliberately separate
+# from the install tree's own copy of urnet-tools. Root executable code must
+# not be reachable through any path a non-root user can influence; the staged
+# copy lives under a path where root ownership of every component holds.
 # openrc_root_tool_dir: where the auto-update tool copy root executes lives.
 # The tool root runs therefore lives under /usr/local/libexec, where no path
 # component is writable by a non-root user.
@@ -1472,19 +1545,66 @@ openrc_finalize_root_paths ()
     # The install tree is root-owned whatever path it sits on, and under the
     # OpenRC default (/usr/local/lib/urnetwork-provider) it no longer has a
     # user-writable ancestor, so this is the step that makes root ownership
-    # load-bearing rather than cosmetic. chown -h-free and chmod a+rX keep the
+    # load-bearing rather than cosmetic. chmod a+rX keeps the
     # provider readable while the service user runs it as a non-root process.
-    ${SUDO:-} chown -R "root:root" "$install_path" 2>/dev/null || pr_warn "could not set root ownership on %s" "$install_path"
-    ${SUDO:-} chmod -R a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
+    #
+    # SYMLINKS ARE STRIPPED BEFORE THE RECURSIVE PERMISSIONS, never copied
+    # through: chown -R / chmod -R dereference symlinks, so a link planted in
+    # a legacy tree (the migration path copies from a user-writable home where
+    # the service user could plant one) would let this step rewrite ARBITRARY
+    # host files — e.g. chmod -R a+rX on a link pointing at /etc/shadow.
+    # The install tree is built by this installer and must contain no
+    # symlinks by construction, so deleting any that appear is fail-closed.
+    if ${SUDO:-} find "$install_path" -type l -delete 2>/dev/null; then
+        :
+    else
+        pr_warn "could not strip symlinks from %s" "$install_path"
+    fi
+    # These two are the security property of the whole layout; a failure must
+    # stop the install, not warn-and-continue into a service whose tree the
+    # service user can modify.
+    if ! ${SUDO:-} chown -R "root:root" "$install_path" 2>/dev/null; then
+        pr_err "could not set root ownership on %s; refusing to install the service" "$install_path"
+        return 1
+    fi
+    # go-w: mkdir -p inherits the caller's umask, which on a 002 system
+    # leaves group/other writable — root-owned files do not help if the
+    # service user can rename entries inside a o+w directory. a+rX keeps
+    # everything readable/executable so the service user can still run the
+    # provider. The root dir is pinned 0755, not mode-dependent.
+    ${SUDO:-} chmod -R go-w,a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
+    ${SUDO:-} chmod 0755 "$install_path" 2>/dev/null || pr_warn "could not set mode on %s" "$install_path"
 
-    # The STATE dir is the one thing that must stay in the service user's
-    # home — the provider writes its JWT and live state there. Create it
-    # without following a symlink: `mkdir -p` on a planted .urnetwork ->
-    # /etc would succeed, and the chown below would hand /etc to the service
-    # user. chown -h on the symlink itself is refused outright.
+    # The STATE dir is the one thing that must stay somewhere the service
+    # user can write — the provider writes its JWT and live state there.
+    # Default placement is the service user's home, and the installer is
+    # responsible for making sure that dir exists and is owned by them.
+    #
+    # A pre-existing SYMLINK needs careful handling rather than refusal:
+    #  - if it points INSIDE the service user's own home, follow it (a
+    #    legitimate relocation, e.g. a separate filesystem mounted in the
+    #    home) and chown the target — chown -h on the link is impossible to
+    #    race because the link is in the user's own writable home anyway,
+    #    which is the whole reason the default tree move happened;
+    #  - if it points OUTSIDE the home (e.g. /etc), refuse loudly: chowning
+    #    through it would hand a system directory to the service user. This
+    #    is the planted-symlink escalation.
     if [ -L "$openrc_home/.urnetwork" ]; then
-        pr_warn "%s/.urnetwork is a symlink; refusing to change ownership through it" "$openrc_home"
-        pr_warn "remove it and re-run the installer if this is unexpected"
+        openrc_state_target="$(readlink -f "$openrc_home/.urnetwork" 2>/dev/null || true)"
+        case "$openrc_state_target" in
+            "$openrc_home"/*)
+                ${SUDO:-} mkdir -p "$openrc_state_target" 2>/dev/null || true
+                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" 2>/dev/null || true
+                ;;
+            *)
+                if [ -z "$openrc_state_target" ]; then
+                    pr_warn "%s/.urnetwork is a DANGEROUS symlink (unresolvable); refusing to change ownership through it" "$openrc_home"
+                else
+                    pr_warn "%s/.urnetwork points OUTSIDE the home (%s) — refusing to change ownership through it" "$openrc_home" "$openrc_state_target"
+                fi
+                pr_warn "remove the symlink and re-run the installer, or chown the target yourself"
+                ;;
+        esac
     else
         ${SUDO:-} mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
         ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
@@ -1556,12 +1676,16 @@ install_openrc_units ()
     # failed install run) before anything can return early.
     openrc_restore_update_entry
 
+    # A path warning is only meaningful when the install did NOT land in a
+    # root-owned or service-user-owned location: the OpenRC default
+    # (/usr/local/lib/urnetwork-provider) and an install under the service
+    # user's home are both fine, but an arbitrary -i path that neither the
+    # service user can read nor root owns breaks the service.
     case "$install_path" in
-        "$openrc_home"/*) ;;
+        "$openrc_install_root"|"$openrc_install_root"/*|"$openrc_home"/*) ;;
         *)
             pr_warn "This install is at %s but the service runs as '%s' (%s)." "$install_path" "$openrc_user" "$openrc_home"
-            pr_warn "For a working service, install as that user: su - %s -c 'curl -fSsL %s | sh'" "$openrc_user" "$urnet_install_url"
-            pr_warn "(or set URNET_OPENRC_USER to the account that owns %s)" "$install_path"
+            pr_warn "The tree must be readable by the service user; if this is not deliberate, reinstall with the default location."
             ;;
     esac
 
@@ -1885,6 +2009,7 @@ do_install ()
     # An explicit -i/--install path always wins. do_uninstall resolves the
     # same path through the same helper.
     openrc_path_before="$install_path"
+    openrc_migrating=1
     openrc_maybe_redirect_install_path
     if [ "$install_path" != "$openrc_path_before" ]; then
         pr_info "OpenRC service user '%s': installing under %s" "$openrc_user" "$install_path"
@@ -2436,8 +2561,11 @@ do_uninstall ()
     done
 
     # Resolve the same path the install used: on an OpenRC host a root install
-    # lands under the service user's home (see do_install), so a root uninstall
-    # must look there too.
+    # lands in the root-owned location (see do_install), so a root uninstall
+    # must look there too. openrc_migrating stays 0 here so the redirect does
+    # NOT migrate a legacy tree — uninstalling should never copy the old tree
+    # into the new location just to delete it seconds later.
+    openrc_migrating=0
     openrc_maybe_redirect_install_path
 
     if [ ! -d "$install_path" ]; then
