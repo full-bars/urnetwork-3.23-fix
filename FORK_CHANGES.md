@@ -3698,15 +3698,15 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files Added**: `net_resilient_combined_test.go`
 
 **Change**:
-- New dialer `fragment+segment` (priority 50, minimumWeight 0.25) beside `fragment` / `reorder` / `fragment+reorder`, behind the existing `ExposeServerHostNames && ExposeServerIps` gate. Every fragmented ClientHello record is cut a second time across two TCP segments at an interior byte boundary (`writeRecordMaybeSegmented`, cut at `len/2`, `combinedSegmentMinLen = 2`), so no TLS record lands whole in one segment and a single-method reassembler cannot stitch the hello.
-- No raw sockets needed: the write boundaries are the segmentation, so the mode works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux).
-- `TCP_NODELAY` is set in the plain-fragment TCP branch while segment is on, so the two writes leave as two segments instead of coalescing.
+- New dialer `fragment+segment` (priority 50, minimumWeight 0.25) beside `fragment` / `reorder` / `fragment+reorder`, behind the existing `ExposeServerHostNames && ExposeServerIps` gate for direct connections only (not behind a SOCKS proxy). Every fragmented ClientHello record is cut a second time across two TCP segments at an interior byte boundary (`writeRecordMaybeSegmented`, cut at `len/2`, `combinedSegmentMinLen = 2`), so no TLS record lands whole in one segment and a single-method reassembler cannot stitch the hello. The segment cut is best effort.
+- No raw sockets needed: the write boundaries are the segmentation on a direct connection, so the mode works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux).
+- `TCP_NODELAY` is set in the plain-fragment TCP branch while segment is on, so the two writes leave as two segments instead of coalescing. Segmentation is best effort because the kernel may still merge small writes.
 - Fail closed: a failed or short first half never writes the second; the layer disables, the buffer drops and the socket closes, exactly like the fragment path.
 - Back-compat: `NewResilientTlsConn` / `NewResilientDialTlsContext` keep their signatures as wrappers; `NewResilientDialTlsContextWithSegment` is the new exported constructor. The fork hardening (`ttlControl`, `writeFragmentsAlternatingTtl`, `writeBlocksAlternatingTtl`, `failConnection`, the `Off()` drain) is untouched, and the smart dialer picks the new dialer up generically.
 - Upstream parity: the ttl-unreadable fallback writes the hello whole, unsegmented, on both sides, and the new dialer (reorder=false) never reaches it.
 
 **How to Identify in New Upstream**:
 - `net_resilient.go`: `writeRecordMaybeSegmented`, `combinedSegmentMinLen`, the `segment` field on `ResilientTlsConn`
-- `net_http.go`: the `fragment+segment` dialer registration
+- `net_http.go`: the `fragment+segment` dialer registration (direct connections only)
 
 **Status**: parity-mirrored to meso-miner (PR #183).

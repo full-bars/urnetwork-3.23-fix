@@ -639,7 +639,7 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | Field | Meaning |
 |---|---|
 | `proxy[N] (ip:port)` | The SOCKS5 proxy used to reach the platform. Absent when using the direct path. |
-| `[fragment]` / `[reorder]` / `[fragment+reorder]` / `[fragment+segment]` / `[direct]` | DPI bypass strategy used for this outbound call (see below). |
+| `[fragment]` / `[reorder]` / `[fragment+reorder]` / `[fragment+segment]` / `[direct]` | DPI bypass strategy used for this outbound call (see below). `fragment+segment` is registered only for direct connections (not behind a SOCKS proxy), and the segment cut is best effort. |
 | `success=N` | Cumulative provider API/WebSocket calls that succeeded through this route since last reset. |
 | `error=N` | Cumulative failures. A healthy error rate is under ~10% of successes. |
 | `clients=N` | **Independent metric.** Number of end-user relay sessions currently routing through this proxy via LocalUserNat. Zero is normal when no users are assigned. |
@@ -655,7 +655,7 @@ The provider tries multiple strategies for its outbound connections to avoid DPI
 | `fragment` | Splits the TLS ClientHello across multiple TCP segments so stateful DPI cannot read the SNI hostname. Highest priority; no throughput cost. |
 | `reorder` | Sends TLS fragments out of order to confuse stateless DPI inspectors. |
 | `fragment+reorder` | Both techniques combined. |
-| `fragment+segment` | Record fragmentation plus a second cut of every fragmented record across two TCP segments at an interior byte. The pair defeats middleboxes that reassemble either layer alone, and needs no raw sockets, so it also works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux). |
+| `fragment+segment` | Record fragmentation plus a second cut of every fragmented record across two TCP segments at an interior byte. Registered only for direct connections (not behind a SOCKS proxy). The segment cut is best effort. The pair defeats middleboxes that reassemble either layer alone, and needs no raw sockets, so it also works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux). |
 
 The selector tracks per-strategy success rates and prefers whichever is most reliable. When errors accumulate on one strategy, it rotates to the next.
 
