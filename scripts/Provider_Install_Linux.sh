@@ -664,14 +664,18 @@ sanitize_restart_dropins ()
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
             sed -i -E 's/^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
         fi
-        while IFS= read -r line; do
-            # systemd accepts directives indented inside [Service], so strip
-            # leading whitespace before matching; comment lines start with a
-            # hash and are left untouched by the strip.
+        while IFS= read -r line || [ -n "$line" ]; do
+            # systemd strips whitespace from lines and values, so normalize
+            # both ends of the line (also absorbing CRLF endings) and of the
+            # Restart= value before matching; comment lines start with a
+            # hash and are untouched by the strips.
             line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
             case "$line" in
                 'Restart='*)
                     value="${line#Restart=}"
+                    value="${value#"${value%%[![:space:]]*}"}"
+                    value="${value%"${value##*[![:space:]]}"}"
                     case "$value" in
                         *[![:space:]]*)
                             case " no always on-success on-failure on-abnormal on-watchdog on-abort " in

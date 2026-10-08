@@ -571,6 +571,37 @@ test_sanitize_restart_dropins_effective_statuses() {
     assert_eq "0" "$(grep -c 'swap-thrash recovery' "$out")" "a repaired indented line does not warn about exit 75"
     assert_eq "Restart=on-failure" "$(grep -E '^Restart=' "$d/weaken.conf")" "the repair rewrites the indented value"
 
+    # A final line without a trailing newline must still be read (read
+    # returns 1 at EOF with $line populated).
+    printf '[Service]\nRestart=no' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a missing trailing newline still warns"
+
+    # Padding around the value is stripped by systemd and must be tolerated.
+    printf '[Service]\nRestart=no \n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a trailing space after the value still warns"
+
+    printf '[Service]\nRestart= no\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a space after the equals still warns"
+
+    # CRLF endings (Windows-edited drop-ins) are tolerated.
+    printf '[Service]\r\nRestart=no\r\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "CRLF line endings still warn"
+
+    # An empty Restart= resets to systemd's default (no) and is a weakened
+    # policy like any other.
+    printf '[Service]\nRestart=always\nRestart=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an empty Restart= resets to no and warns"
+
     rm -rf "$tmp"
 }
 test_sanitize_restart_dropins_effective_statuses

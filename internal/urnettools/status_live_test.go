@@ -154,6 +154,19 @@ func TestPressureSummaryLine(t *testing.T) {
 	if got := pressureSummaryLine(dir); got != "line1 line2" {
 		t.Fatalf("embedded newlines must normalize to spaces, got %q", got)
 	}
+	// A directory at the name is refused like any other non-regular file.
+	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(dir, "pressure_status"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a directory must render nothing, got %q", got)
+	}
+	if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+		t.Fatal(err)
+	}
 	if got := pressureSummaryLine(""); got != "" {
 		t.Fatalf("an empty state dir must render nothing, got %q", got)
 	}
