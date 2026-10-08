@@ -145,7 +145,10 @@ func wrapRow(r liveRow, width int) []string {
 
 // renderLiveBlock draws the live section of `urnet-tools status`. Every line
 // ends in a newline; the block starts with a header, no leading blank line.
-func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
+// pressureSummary, when non-empty, is the provider's persisted one-sentence
+// pressure summary: it replaces the bare score in the pressure row (the
+// sentence carries the score too).
+func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string {
 	var b strings.Builder
 	state := strings.ToUpper(s.State)
 	if state == "" {
@@ -251,7 +254,47 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts) string {
 		emit(liveRow{label: "memory", sep: ", ", segs: mem})
 	}
 
-	emit(liveRow{label: "pressure", segs: []string{fmt.Sprintf("%.2f", s.Pressure)}})
+	// Plain language first: when the provider persists its summary sentence
+	// (every monitor tick), the row shows the sentence instead of the raw
+	// number. Older providers that never wrote the file keep the bare score.
+	pressureSegs := []string{fmt.Sprintf("%.2f", s.Pressure)}
+	if pressureSummary != "" {
+		// Fold the sentence's few non-ASCII runes on plain terminals: the
+		// provider writes an em dash in elevated sentences, and TERM=dumb
+		// output must stay <= 127 runes per the block's contract.
+		if o.ASCII {
+			pressureSummary = strings.Map(func(r rune) rune {
+				switch r {
+				case '—', '–':
+					return '-'
+				case '‘', '’':
+					return '\''
+				case '“', '”':
+					return '"'
+				case '…':
+					return '.'
+				case 0xA0: // no-break space
+					return ' '
+				}
+				if r > 127 {
+					return '?'
+				}
+				return r
+			}, pressureSummary)
+		}
+		// Split into word segments so wrapRow can fold a long summary at any
+		// word boundary instead of hard-overflowing the terminal (sentences
+		// run 75-110+ chars, wider than 80 columns, and a single clause can
+		// too). The words re-join with single spaces, so wide terminals see
+		// the exact same sentence.
+		pressureSegs = strings.Fields(pressureSummary)
+		if len(pressureSegs) == 0 {
+			// Defensive: a whitespace-only summary must fall back to the
+			// score instead of rendering an empty pressure row.
+			pressureSegs = []string{fmt.Sprintf("%.2f", s.Pressure)}
+		}
+	}
+	emit(liveRow{label: "pressure", sep: " ", segs: pressureSegs})
 
 	if label, text, ok := s.whyRow(); ok {
 		emit(liveRow{label: label, segs: []string{text}})

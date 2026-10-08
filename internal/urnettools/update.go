@@ -1072,6 +1072,12 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	if runtime.GOOS == "freebsd" {
+		// rc.d owns the service on FreeBSD; systemd never exists there. Without
+		// this branch an update swaps the binary and then fails to restart,
+		// leaving the old image running and the new one on disk.
+		return bsdServiceControl(p, "restart")
+	}
 	// OpenRC host: when the running provider is the process supervise-daemon
 	// supervises, restart the service through rc-service (this is the
 	// update flow's stop/start path — HotSwap declines under OpenRC).
@@ -1192,6 +1198,13 @@ func verifySHA256(path, want string) error {
 func tarRelPath(goos, arch string) string {
 	if goos == "windows" {
 		return path.Join("windows", arch, "provider.exe")
+	}
+	if goos == "freebsd" {
+		// The universal tarball ships freebsd/<arch>/provider. Without this
+		// case the fallthrough installs the LINUX ELF on a FreeBSD box, where
+		// isRecognizedExecutable accepts it as a valid ELF and the wrong-asset
+		// guard never fires.
+		return path.Join("freebsd", arch, "provider")
 	}
 	return path.Join("linux", arch, "provider")
 }

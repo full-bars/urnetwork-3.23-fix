@@ -39,3 +39,60 @@ func TestPSIMemFromHostLevelScores(t *testing.T) {
 		t.Fatalf("warn level should raise psi_mem, comps=%v", comps)
 	}
 }
+
+func TestMemPressureSwapFracMapping(t *testing.T) {
+	for _, frac := range []float64{0, -0.5, -1} {
+		if v := memPressurePercentFromSwapFrac(frac); v != 0 {
+			t.Errorf("no swap in use (frac %v) must report 0, got %v", frac, v)
+		}
+	}
+	// A quarter of the swap device in use already scores at the top of the
+	// ramp: swap use is lagging, so a modest figure still means real pressure.
+	if s := normalizeRamp(memPressurePercentFromSwapFrac(swapFracRampFull), psiRampLo, psiRampHi); s != 1 {
+		t.Errorf("frac %v must pin psi_mem at 1, got %v", swapFracRampFull, s)
+	}
+	// Halfway to that point must land strictly inside the ramp, not at either
+	// end, or the component would snap from 0 to 1 with no middle.
+	mid := swapFracRampFull / 2
+	s := normalizeRamp(memPressurePercentFromSwapFrac(mid), psiRampLo, psiRampHi)
+	if s <= 0 || s >= 1 {
+		t.Errorf("frac %v must score strictly between 0 and 1, got %v", mid, s)
+	}
+	// Beyond the device size the reading is meaningless; clamp rather than
+	// extrapolate past the top of the ramp.
+	for _, frac := range []float64{1, 1.5, 100} {
+		if v := memPressurePercentFromSwapFrac(frac); v != psiRampHi {
+			t.Errorf("frac %v must clamp to psiRampHi (%v), got %v", frac, psiRampHi, v)
+		}
+	}
+	// The swap-derived percent must feed the component the same way a PSI
+	// reading does, since that is the path the collector takes when PSI is
+	// unavailable.
+	if _, comps := computePressure(pressureSample{PSIMem: memPressurePercentFromSwapFrac(mid)}); comps["psi_mem"] <= 0 {
+		t.Errorf("swap-derived percent should raise psi_mem, comps=%v", comps)
+	}
+}
+
+// The mapping must never fall as swap use rises. Clamping at a full device
+// instead of at the ramp point made the reading climb past psiRampHi and then
+// drop back to it once the device filled, so a host under more pressure
+// reported less of it.
+func TestMemPressureSwapFracIsMonotonic(t *testing.T) {
+	const steps = 1000
+	prev := 0.0
+	for i := 0; i <= steps; i++ {
+		frac := float64(i) / steps
+		got := memPressurePercentFromSwapFrac(frac)
+		if got < prev {
+			t.Fatalf("pressure fell as swap use rose: frac %.3f gave %v after %v", frac, got, prev)
+		}
+		if got > psiRampHi {
+			t.Fatalf("frac %.3f reported %v, above the top of the ramp %v", frac, got, psiRampHi)
+		}
+		prev = got
+	}
+	// Once saturated it must stay saturated rather than resume rising or fall.
+	if v := memPressurePercentFromSwapFrac(0.5); v != psiRampHi {
+		t.Errorf("frac past the ramp point must stay at psiRampHi, got %v", v)
+	}
+}
