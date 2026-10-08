@@ -285,6 +285,12 @@ func logsUnitlessProvider(p Provider, lines int) error {
 		return fmt.Errorf("provider %s runs outside systemd with its output discarded (%s) — there is no log stream to show. Restart it under a systemd unit (or with a RAMLOGS/eco profile) to capture logs", providerLabel(p), dest)
 	}
 	fmt.Printf("Streaming stdout of pid %d (%s, %d lines) — provider %s\n", p.PID, dest, lines, providerLabel(p))
+	if runtime.GOOS == "windows" {
+		return streamLogFile(nil, fdPath, lines, os.Stdout)
+	}
+	if _, err := exec.LookPath("tail"); err != nil {
+		return streamLogFile(nil, fdPath, lines, os.Stdout)
+	}
 	cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", fdPath)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
@@ -485,6 +491,12 @@ func cmdLogs(args []string) error {
 			ramPath = "/dev/shm/urnetwork.log"
 		}
 		fmt.Printf("Streaming from RAM disk (%s, %d lines) — provider %s\n", ramPath, lines, providerLabel(p))
+		if runtime.GOOS == "windows" {
+			return streamLogFile(nil, ramPath, lines, os.Stdout)
+		}
+		if _, err := exec.LookPath("tail"); err != nil {
+			return streamLogFile(nil, ramPath, lines, os.Stdout)
+		}
 		cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", ramPath)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
@@ -1218,6 +1230,12 @@ func cmdProxyHealthTarget(p Provider) error {
 	}
 	if _, err := os.Stat(logf); err == nil {
 		fmt.Printf("Streaming proxy health events (%s). Ctrl-C to stop.\n", logf)
+		if runtime.GOOS == "windows" {
+			return streamLogFile(nil, logf, 20, os.Stdout)
+		}
+		if _, err := exec.LookPath("tail"); err != nil {
+			return streamLogFile(nil, logf, 20, os.Stdout)
+		}
 		cmd := exec.Command("tail", "-n", "20", "-f", logf)
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
