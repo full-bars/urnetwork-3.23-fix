@@ -15,11 +15,11 @@ or could not see the problem:
 | Trim cap + OOM cap | manual trim; kernel OOM kill | caps the pool ("tighter wins") | two cap systems reconciling by min(); no relation to the pressure score |
 | Hot-restart / HotSwap | explicit update, or manual | zero-downtime restart (SIGUSR2, NOTIFY_SOCKET-gated, 30s drain) | nothing else coordinates with it; audit depends on it |
 | Unit-type convergence | every update | rewrites unit Type= to match the binary (config-drift self-heal) | one more independent reconciler |
-| Reload watchdog (in flight) | reload stuck past a bound | escalation into hot-restart machinery | risks becoming another silo unless folded in |
+| Reload watchdog (in flight) | reload stuck past a bound | escalation into hot-restart machinery (zero-downtime hot-swap, gated on `hotRestartEnabled()`, default on) | risks becoming another silo unless folded in |
 | Thrash responder (proposed) | swap thrash (PSI full + pswpout + refaults) | freeze growth -> shed -> escape+remember | same risk: another loop unless folded in |
 | Backend outage watcher | backend degraded probes | logs + webhook (observer) | observer only; fine as-is |
 
-Since this doc was written, phase 2a shipped: the thrash watchdog merged together with the readable-log pass, using this doc's state names and the shared action ledger. Reality check against principle 1: the pressure monitor, the thrash watchdog and the reload watchdog currently run three independent tickers with overlapping /proc and cgroup reads. "One supervisor loop" therefore means collapsing three live loops into one, not relocating code - the single biggest cost of the fold-in.
+Since this doc was written, phase 2a shipped: the thrash watchdog merged together with the readable-log pass, using this doc's state names and the shared action ledger. Reality check against principle 1: the pressure monitor, the thrash watchdog and the reload watchdog currently run three independent tickers; the pressure monitor and the thrash watchdog share /proc and cgroup sources, while the reload watchdog only reads in-memory atomics. "One supervisor loop" therefore means collapsing three live loops into one, not relocating code - the single biggest cost of the fold-in. Gate reality check: the reload watchdog's escalation fires whenever hot-restart is armed (default on), entirely independent of the self-heal switch - see principle 5.
 
 ## 2. Principles
 
@@ -34,15 +34,25 @@ Since this doc was written, phase 2a shipped: the thrash watchdog merged togethe
    lose zero identities; shedding is bounded, floored, worst-first, and reversible.
 4. Every action is recorded with reason and outcome (reuse the existing action-ledger /
    audit-ring pattern), and every action is bounded by global budgets and hysteresis.
-5. Off means off for actions: with self-heal disabled, no actuator fires and behavior is
-   exactly as today. Sensing, logging and status stay visible (the shipped thrash
-   watchdog works this way), so an operator can watch the system without arming it.
+5. Gate separations stay as shipped. Resource-pressure and thrash-mitigation actuators
+   are gated on the opt-in self-heal switch: off means off for actions, while sensing,
+   logging and status stay visible (the shipped thrash watchdog works this way), so an
+   operator can watch the system without arming it. Process-wedge watchdogs that defend
+   availability are a separate domain: the reload watchdog today fires whenever
+   `hotRestartEnabled()` is true (default on), and folding it under a default-off
+   self-heal switch would silently disarm stuck-reload protection on every default node.
+   The fold-in must keep these two gate domains distinct and document which rungs belong
+   to which (the reload-watchdog escalation stays armed when hot-restart is armed).
 
 ## 3. Sensors (one sample, shared)
 
 Extend the existing 30s pressure sample (`resource_pressure.go`) with:
 
-- PSI memory `full avg60` (all tasks stalled) in addition to `some` — the thrash signal.
+- PSI memory `full`: the cumulative `total=` microseconds computed over the ACTUAL
+  elapsed wall time between samples, as `thrashRates` does - NOT `avg60`. A
+  swapped-out ticker can slip 90s+ between samples, and any fixed-window average then
+  distorts; the delta-over-wall-clock math survives that. `full` is the thrash signal;
+  `some` remains the pressure system's.
 - Swap ACTIVITY: `/proc/vmstat` pswpin/pswpout rates, cgroup `memory.stat` pswpout, and
   `workingset_refault_anon` (our own pages being re-fetched is direct thrash evidence).
   Swap usage alone is NOT thrash and must not trigger actions.
@@ -50,6 +60,15 @@ Extend the existing 30s pressure sample (`resource_pressure.go`) with:
   detected.
 
 Keep worst-component-wins, EWMA, and emergency pins as today.
+
+Platforms: the pressure monitor and the reload watchdog already compile and run on
+Linux, Windows and macOS (memory notification objects on Windows,
+`kern.memorystatus_vm_pressure_level` on macOS); only the thrash detection (`/proc` and
+cgroup reads) is Linux-only. Structure the supervisor as a portable core - ticker,
+state transitions, budgets, action dispatch - with OS-specific sensor drivers (the
+existing `thrash_watchdog_stub.go` pattern), so Windows and macOS keep pressure
+management and reload-watchdog monitoring. `thrashing` and `critical` are Linux states;
+`under-pressure` and `calm` are portable.
 
 ## 4. State and escalation ladder (ordered by "who loses an IP")
 
@@ -67,24 +86,35 @@ only after sustained calm).
 - d. SHED (bounded IP loss): the last resort for sustained heavy pressure only: the
   smallest step that relieves, worst-first (dead/degraded earn nothing), with a floor
   (never below N proxies), hysteresis, and reversible re-admission. Trim cap and OOM cap
-  become this rung's budget inputs instead of parallel cap systems. There is no code
-  precedent for this rung today - it is greenfield, unlike rung c, which wraps the
-  audit's existing park action.
+  become this rung's budget inputs instead of parallel cap systems. The shed machinery
+  already exists in the pool controller (`selectURLProxiesToShed` worst-first: dead ->
+  degraded -> lowest earnings; `shedPoolToTarget` with floor bounds; `applyShedBackoff`
+  1h re-admission; `runPoolController` hysteresis); this rung integrates those parts
+  into the ladder rather than building new logic.
 - e. COMPONENT RESTART: restart the wedged component without the whole process (the
-  target to build toward; today both watchdogs go straight to a full restart).
+  target to build toward). The closest shipped actuator is the reload watchdog's
+  escalation: a zero-downtime hot-swap (`runHotSwapParentHandoff`, 30s connection drain,
+  NOTIFY_SOCKET-gated), which works on systemd, Docker (in-place `execve`) and Windows
+  (named-pipe handoff) — existing proxies and client traffic stay live and earning.
 - f. ESCAPE (heaviest): hotswap/restart the provider; remember the condition (a "thrash
-  cap" in the oom-cap pattern: start leaner next time, relax after clean windows).
-
-Until a component-restart actuator narrower than a process restart exists, e and f are
-the same action with different callers; treat them as one rung.
+  cap" in the oom-cap pattern: start leaner next time, relax after clean windows). The
+  thrash responder's form of this rung is a COLD, service-manager-restarted exit with
+  status 75 (systemd-only). That is a different action from rung e by design: severe
+  swap thrash is exactly when spawning a child next to the parent is unsafe, so it
+  cannot hand off - it exits, and the unit restarts it. e preserves live traffic; f
+  accepts the drop because memory exhaustion leaves no safe zero-downtime option. Keep
+  them distinct and never rebrand the reload watchdog's escalation as an exit-75
+  restart.
 
 ## 5. Status and config surfaces
 
 - `urnet-tools self-heal status` (extended): state, score and components, active budgets,
-  parked count, shed history, hotswap availability, recent ledger entries. The shipped
-  surface is already `self-heal` (CLI and status file), so the name stays; `heal` was the
-  working title and no rename is planned. `urnet-tools status` also prints the current
-  reading as one sentence.
+  parked count, shed history, hotswap availability, recent ledger entries. The CLI
+  command is `self-heal`; on disk the state lives in `pressure_status` and
+  `thrash_status` (no `self_heal`-named status file exists; `proxy_self_heal` is an
+  unrelated marker) - so the name stays, `heal` was the working title and no rename is
+  planned. A fold-in task: consolidate the two status files into one supervisor status
+  document. `urnet-tools status` already prints the persisted sentence.
 - One config block for budgets/floors; existing keys keep working. Audit/trim/OOM-cap
   keys become ladder parameters rather than separate engines.
 
@@ -101,11 +131,15 @@ What remains, concretely:
 1. Fold the thrash responder in: close to a relocation - it already speaks the
    supervisor's state names and ledger format. The reload watchdog is the larger half of
    this step: its own ticker, no `thrashStateT`-style states, and no ledger writes at
-   all; its state and ledger support must be built, not moved. Split the work accordingly.
+   all; its state and ledger support must be built, not moved. It also stays on its own
+   gate (hot-restart armed), per principle 5 - do not subordinate it to self-heal.
+   Split the work accordingly.
 2. Collapse the loops: "one supervisor loop" means merging the pressure monitor, the
-   thrash watchdog and the reload watchdog - three independent tickers reading
-   overlapping /proc and cgroup sources - into one. Size this as a refactor, not a
-   relocation; it is the biggest single lift in the fold-in.
+   thrash watchdog and the reload watchdog - three independent tickers, of which the
+   first two read overlapping /proc and cgroup sources - into one. Size this as a
+   refactor, not a relocation; it is the biggest single lift in the fold-in. Build the
+   loop as a portable core with Linux-only thrash sensors behind a build-tagged driver
+   (the `thrash_watchdog_stub.go` pattern).
 3. Wrap audit as the park rung: the concrete first task is the acting gate. Audit's
    acting mode depends on `hotRestartEnabled()` today; moving it under the supervisor is
    this step's whole content.
@@ -117,11 +151,17 @@ Invariants the fold-in must preserve (easy to drop in a refactor):
 
 - the hotswap-concurrency guard (`thrashHotSwapBusy`): never restart while a hot-swap is
   draining or mid-handoff;
-- the exit-75 restart contract: the restart actuator exits 75, and the unit's restart
-  policy must restart on it (`Restart=on-failure` or `always`; the installer warns about
-  drop-ins that weaken this);
+- the exit-75 restart contract (thrash rung only): the restart actuator exits 75, and
+  the unit's restart policy must restart on it (`Restart=on-failure` or `always`; the
+  installer warns about drop-ins that weaken this);
+- gate separation: reload-watchdog escalation stays gated on hot-restart (default on),
+  never folded under the opt-in self-heal switch (principle 5);
 - attribution: never restart for swap owned by another process;
-- off-means-off for actions (sensing and logging stay visible).
+- off-means-off for ACTIONS in the self-heal domain (sensing and logging stay visible);
+- durable anti-loop persistence: never restart if writing the escalation record
+  (`thrash_cap.json`) fails or times out - alert instead (`persist-failed`); enforce the
+  24h restart ceiling (3 escapes) and the growing backoff so the service cannot trip
+  systemd's restart burst limits.
 
 ## 7. Open questions
 
@@ -139,3 +179,6 @@ Invariants the fold-in must preserve (easy to drop in a refactor):
 - OpenRC and Docker deployments have no systemd exit-75 restart; the restart rung is
   inert there by construction - document the actuator's per-init behavior when the
   supervisor ships.
+- The cold-escape exit-75 actuator and the zero-downtime hot-swap both exist; confirm
+  the supervisor's arbitration prefers hot-swap whenever the failure mode is a wedge
+  (not memory exhaustion), so escapes do not needlessly drop traffic.
