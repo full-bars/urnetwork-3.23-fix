@@ -1,7 +1,11 @@
 package urnettools
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -78,8 +82,29 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	// -u makes daemon set HOME/USER/SHELL for the target user, so the state dir
 	// lands in that user's home rather than root's. It also replaces the old
 	// `su -m`, which kept the caller's HOME.
-	if !strings.Contains(script, `-u \${urnetwork_user}`) {
+	//
+	// The rc.conf knobs MUST appear unescaped: a backslash inside the
+	// generated file makes sh pass the literal text ${urnetwork_user} as an
+	// argument instead of expanding it, so daemon -u and chown would both get
+	// a junk user and the provider would fail to start. The escaping is only
+	// needed inside the installer's heredoc, which is where the value is
+	// consumed at render time.
+	if !strings.Contains(script, `-u ${urnetwork_user}`) {
 		t.Error("script does not run the provider as the rc.conf user via daemon -u")
+	}
+	if strings.Contains(script, `\${urnetwork_user}`) {
+		t.Error("script escapes ${urnetwork_user}; sh would pass it literally, not expand it")
+	}
+	if !strings.Contains(script, `chown ${urnetwork_user} "$logdir"`) {
+		t.Error("script does not chown the log dir to the rc.conf user")
+	}
+	// $flags must reach the provider expanded, not as a literal ${...} or a
+	// bare backslash followed by the value.
+	if !strings.Contains(script, `provide $urnetwork_flags`) {
+		t.Error("script does not pass the rc.conf flags to provide")
+	}
+	if strings.Contains(script, `\$urnetwork_flags`) {
+		t.Error("script escapes $urnetwork_flags; the provider would receive a literal")
 	}
 	// `su -m` appears in the explanatory comment, so assert on executable
 	// lines only — a comment mentioning a mechanism is not that mechanism.
@@ -141,4 +166,153 @@ func TestBSDRcServiceNameFromBinary(t *testing.T) {
 			t.Errorf("bsdRcServiceName(%q) = %q, want %q", c.binary, got, c.want)
 		}
 	}
+}
+
+// The rc.d script exists in two copies: the Go renderer above and the heredoc
+// in scripts/Provider_Install_FreeBSD.sh. Nothing compared them, so a fix
+// landed in one and left the other shipping a broken service — twice. This
+// renders BOTH with the same inputs and compares them line for line.
+//
+// Both are rendered for real: the Go side through the renderer itself, the
+// shell side by executing the extracted write_rc_script_body with the same
+// service, binary and user. Comparison drops comments and joins line
+// continuations, which are the only permitted differences.
+func TestBSDTemplateParity(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("the rc.d template is not a Windows artifact")
+	}
+
+	goScript := renderBSDServiceScript("urnetwork", "/usr/local/bin/urnetwork", "tester", "/home/tester")
+
+	shScript, err := renderInstallerRcdTemplate(t, "urnetwork", "/usr/local/bin/urnetwork", "tester")
+	if err != nil {
+		t.Fatalf("render the installer copy: %v", err)
+	}
+
+	ng := normaliseTokens(comparableRcdLines(goScript))
+	nsh := normaliseTokens(comparableRcdLines(shScript))
+	if len(ng) != len(nsh) {
+		t.Errorf("template length differs: Go renderer has %d lines, installer %d\n%s",
+			len(ng), len(nsh), strings.Join(dumpLines(ng, nsh), "\n"))
+		return
+	}
+	for i := range ng {
+		if ng[i] != nsh[i] {
+			t.Errorf("line %d differs between the two copies:\n  Go:       %q\n  installer: %q\n%s",
+				i+1, ng[i], nsh[i], strings.Join(dumpLines(ng[min(i, len(ng)-1):], nsh[min(i, len(nsh)-1):]), "\n"))
+			return
+		}
+	}
+}
+
+// renderInstallerRcdTemplate executes the installer's write_rc_script_body with
+// the given values and returns what it writes to stdout. The function is
+// extracted verbatim from the shipped script rather than copied, so the test
+// tracks the file instead of drifting from it.
+func renderInstallerRcdTemplate(t *testing.T, service, binary, user string) (string, error) {
+	t.Helper()
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		return "", err
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+
+	start := strings.Index(script, "write_rc_script_body() {")
+	if start < 0 {
+		return "", errors.New("write_rc_script_body is missing from the FreeBSD installer")
+	}
+	// The heredoc body contains column-0 braces, so the function cannot be cut
+	// at the first "}": its real end is the RCSCRIPT delimiter.
+	rest := script[start:]
+	end := strings.Index(rest, "\nRCSCRIPT\n}")
+	if end < 0 {
+		return "", errors.New("could not find the end of write_rc_script_body")
+	}
+	fn := rest[:end+len("\nRCSCRIPT\n}")]
+
+	// The whole prefix of the installer is included so every variable the
+	// template interpolates is defined exactly as it is in a real install.
+	dir := t.TempDir()
+	full := dir + "/installer.sh"
+	if err := os.WriteFile(full, []byte(script[:start]+fn+`
+service_name="`+service+`"
+provider_bin="`+binary+`"
+write_rc_script_body "`+user+`"
+`), 0o755); err != nil {
+		return "", err
+	}
+	out, err := exec.Command("/bin/sh", full).CombinedOutput()
+	if err != nil {
+		return "", fmt.Errorf("%w: %s", err, out)
+	}
+	// Rendering must be silent: a stray $(cat ...) or similar running at
+	// render time prints to stderr and produces empty expansions.
+	return string(out), nil
+}
+
+// comparableRcdLines reduces a rendered rc.d script to the lines that carry
+// behaviour: comments are dropped and `\`-continuations are joined, because
+// the two copies legitimately differ in how they wrap the daemon invocation.
+func comparableRcdLines(script string) []string {
+	var out []string
+	pending := ""
+	flush := func() {
+		if pending != "" {
+			out = append(out, pending)
+			pending = ""
+		}
+	}
+	for _, raw := range strings.Split(script, "\n") {
+		line := strings.TrimSpace(raw)
+		if line == "" || strings.HasPrefix(line, "#") {
+			continue
+		}
+		// `pkill -x "$(basename "$bin")"` is written literally in the Go
+		// copy and expanded by the unquoted heredoc in the shell copy, so the
+		// two differ in text but not in behaviour. Both must kill the same
+		// basename, which the shapes asserted above already pin.
+		if i := strings.Index(line, "pkill -TERM -x "); i >= 0 {
+			line = `pkill -TERM -x <basename>`
+		}
+		// Join `\` continuations: the installer heredoc is unquoted, so the
+		// backslash is consumed at render time and its copy arrives as one
+		// long line. That is a rendering artifact, not a behavioural
+		// difference, and it must not be reported as drift.
+		if strings.HasSuffix(line, "\\") {
+			// The heredoc collapses a continuation into the whitespace around
+			// it, so the joined text can contain runs of spaces. Keep the
+			// token list and let the join happen on a clean boundary.
+			pending += strings.TrimSuffix(line, "\\") + " "
+			continue
+		}
+		pending += line
+		flush()
+	}
+	flush()
+	return out
+}
+
+// normaliseTokens collapses internal whitespace runs so continuation joining
+// cannot glue two words together or leave ragged spacing. Comparing field
+// lists rather than raw strings keeps a formatting difference from reading as
+// behavioural drift, while any change to a flag, path or variable still fails.
+func normaliseTokens(lines []string) []string {
+	out := make([]string, len(lines))
+	for i, l := range lines {
+		out[i] = strings.Join(strings.Fields(l), " ")
+	}
+	return out
+}
+
+func dumpLines(a, b []string) []string {
+	var out []string
+	for i := range a {
+		if i < len(b) {
+			out = append(out, fmt.Sprintf("    context %q vs %q", a[i], b[i]))
+			if i >= 4 {
+				break
+			}
+		}
+	}
+	return out
 }

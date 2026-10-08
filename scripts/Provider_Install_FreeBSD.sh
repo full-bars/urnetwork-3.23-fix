@@ -217,10 +217,10 @@ logdir="/var/log/$service_name"
 
 ${service_name}_start()
 {
-    mkdir -p "$logdir"
-    chown \${${service_name}_user} "$logdir"
+    mkdir -p "\$logdir"
+    chown \${${service_name}_user} "\$logdir"
     echo "Starting $service_name."
-    $daemon -f -t $service_name -p "$pidfile" -o "$logdir/stdout.log" -m 0 \
+    \$daemon -f -t $service_name -p "\$pidfile" -o "\$logdir/stdout.log" -m 0 \
         -u \${${service_name}_user} \
         "$provider_bin" provide \$${service_name}_flags
 }
@@ -231,16 +231,16 @@ ${service_name}_stop()
     # Signal the CHILD, whose pid the pidfile holds. A "-f" pattern on the
     # binary path would also match urnet-tools, cron and anything else that
     # merely mentions the path, so the pidfile is the precise handle.
-    if [ -f "$pidfile" ]; then
-        pid="$(cat "$pidfile")"
-        kill "$pid" 2>/dev/null || true
+    if [ -f "\$pidfile" ]; then
+        pid="\$(cat "\$pidfile")"
+        kill "\$pid" 2>/dev/null || true
         for _ in 1 2 3 4 5 6 7 8 9 10; do
-            [ -f "$pidfile" ] || break
+            [ -f "\$pidfile" ] || break
             sleep 1
         done
     fi
     pkill -TERM -x "$(basename "$provider_bin")" 2>/dev/null || true
-    rm -f "$pidfile"
+    rm -f "\$pidfile"
 }
 
 run_rc_command "\$1"

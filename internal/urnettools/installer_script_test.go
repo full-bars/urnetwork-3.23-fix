@@ -64,9 +64,8 @@ func TestFreeBSDResolveServiceUserPrecedence(t *testing.T) {
 		{"override beats sudo", []string{"SERVICE_USER_OVERRIDE=bob", "SUDO_USER=alice"}, "bob"},
 	} {
 		t.Run(c.name, func(t *testing.T) {
-			out, err := exec.Command("/bin/sh", "-c", fn+"; resolve_service_user").CombinedOutput()
-			// env must be set on the command, not the test process
-			_ = out
+			// env is set on the command, not inherited from the test process,
+			// so each branch is exercised deterministically.
 			cmd := exec.Command("/bin/sh", "-c", fn+"; resolve_service_user")
 			cmd.Env = append([]string{"PATH=/usr/bin:/bin"}, c.env...)
 			got, err := cmd.CombinedOutput()

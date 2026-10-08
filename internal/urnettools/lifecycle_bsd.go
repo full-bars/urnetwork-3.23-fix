@@ -63,11 +63,11 @@ logdir="/var/log/%[1]s"
 %[1]s_start()
 {
     mkdir -p "$logdir"
-    chown \${%[1]s_user} "$logdir"
+    chown ${%[1]s_user} "$logdir"
     echo "Starting %[1]s."
     $daemon -f -t %[1]s -p "$pidfile" -o "$logdir/stdout.log" -m 0 \
-        -u \${%[1]s_user} \
-        "%[4]s" provide \$${%[1]s_flags}
+        -u ${%[1]s_user} \
+        "%[4]s" provide $%[1]s_flags
 }
 
 %[1]s_stop()
