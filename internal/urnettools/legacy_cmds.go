@@ -313,9 +313,6 @@ func logsUnitlessProvider(p Provider, lines int) error {
 		return fmt.Errorf("provider %s runs outside systemd with its output discarded (%s) — there is no log stream to show. Restart it under a systemd unit (or with a RAMLOGS/eco profile) to capture logs", providerLabel(p), dest)
 	}
 	fmt.Printf("Streaming stdout of pid %d (%s, %d lines) — provider %s\n", p.PID, dest, lines, providerLabel(p))
-	if runtime.GOOS == "windows" {
-		return streamLogFile(nil, fdPath, lines, os.Stdout)
-	}
 	if _, err := exec.LookPath("tail"); err != nil {
 		return streamLogFile(nil, fdPath, lines, os.Stdout)
 	}

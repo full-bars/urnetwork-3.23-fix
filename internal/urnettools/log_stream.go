@@ -1,19 +1,27 @@
 package urnettools
 
 import (
+	"bytes"
 	"context"
-	"fmt"
 	"io"
 	"os"
 	"os/signal"
-	"strings"
 	"syscall"
 	"time"
 )
 
+// streamLogFileAfterTail runs between printing the tail and starting to follow.
+// It is a no-op outside tests, which use it to append a line in that gap.
+var streamLogFileAfterTail = func() {}
+
 // streamLogFile reads the last n lines of a file, writes them to out, and follows
 // the file for newly appended content until ctx is cancelled or os.Interrupt is received.
 // Designed to replace external 'tail -f' invocations cross-platform.
+//
+// It follows the PATH, not just the open file: if the path starts naming a
+// different file (the log was rotated or replaced) it finishes the old file and
+// then follows the new one from its start. A truncated file is followed from its
+// start. If the path is briefly missing it keeps the old file and looks again.
 func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error {
 	f, err := openFollowFile(path)
 	if err != nil {
@@ -21,10 +29,11 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 	}
 	defer func() { f.Close() }()
 
-	printTailLines(f, n, out)
-
-	offset, err := f.Seek(0, io.SeekEnd)
-	if err != nil {
+	// follow from exactly where the tail stopped reading, so a line appended
+	// while the tail was being written is not skipped
+	offset := printTailLines(f, n, out)
+	streamLogFileAfterTail()
+	if _, err := f.Seek(offset, io.SeekStart); err != nil {
 		return err
 	}
 
@@ -73,14 +82,18 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 			if err := drain(); err != nil {
 				return err
 			}
-			// The path may now name a different file (rotation: the log was
-			// renamed away and a new one created). Finish the old file above,
-			// then follow the new one from its start. If the path is gone or
-			// cannot be opened yet, keep the old handle and look again next tick.
+			// The path may now name a different file (rotation). If it does,
+			// open the new one first, then read whatever the old one received
+			// in the meantime, then switch. If the path is gone or cannot be
+			// opened yet, keep the old handle and look again next tick.
 			if pathInfo, statErr := os.Stat(path); statErr == nil && !os.SameFile(fi, pathInfo) {
 				next, openErr := openFollowFile(path)
 				if openErr != nil {
 					continue
+				}
+				if err := drain(); err != nil {
+					next.Close()
+					return err
 				}
 				f.Close()
 				f = next
@@ -93,46 +106,60 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 	}
 }
 
-// printTailLines reads up to the last n lines from f and writes them to out.
-func printTailLines(f *os.File, n int, out io.Writer) {
-	if n <= 0 {
-		return
-	}
+// printTailLines writes the last n lines of f to out exactly as they are in the
+// file (an unfinished last line stays unfinished, so what is appended later
+// continues it) and returns the offset it read up to. A non-positive n writes
+// nothing and returns the current size.
+func printTailLines(f *os.File, n int, out io.Writer) int64 {
 	fi, err := f.Stat()
-	if err != nil || fi.Size() == 0 {
-		return
+	if err != nil {
+		return 0
+	}
+	size := fi.Size()
+	if n <= 0 || size == 0 {
+		return size
 	}
 
 	const maxTailBytes = 64 * 1024
-	readSize := fi.Size()
+	readSize := size
 	var startOffset int64
 	if readSize > maxTailBytes {
 		readSize = maxTailBytes
-		startOffset = fi.Size() - maxTailBytes
+		startOffset = size - maxTailBytes
 	}
 
 	buf := make([]byte, readSize)
 	nr, err := f.ReadAt(buf, startOffset)
 	if err != nil && err != io.EOF {
-		return
+		return startOffset + int64(nr)
 	}
 	buf = buf[:nr]
+	end := startOffset + int64(nr)
 
-	lines := strings.Split(string(buf), "\n")
-	hasTrailingNewline := len(lines) > 0 && lines[len(lines)-1] == ""
-	if hasTrailingNewline {
-		lines = lines[:len(lines)-1]
+	// the bytes before the n-th newline counted from the end are not part of the tail
+	body := buf
+	if len(body) > 0 && body[len(body)-1] == '\n' {
+		body = body[:len(body)-1]
 	}
-
-	if startOffset > 0 && len(lines) > 0 {
-		lines = lines[1:]
+	start := 0
+	count := 0
+	for i := len(body) - 1; i >= 0; i-- {
+		if body[i] == '\n' {
+			count++
+			if count == n {
+				start = i + 1
+				break
+			}
+		}
 	}
-
-	if len(lines) > n {
-		lines = lines[len(lines)-n:]
+	// a window that starts mid-file begins with a partial line: drop it
+	if count < n && startOffset > 0 {
+		i := bytes.IndexByte(buf, '\n')
+		if i < 0 {
+			return end
+		}
+		start = i + 1
 	}
-
-	for _, line := range lines {
-		fmt.Fprintln(out, line)
-	}
+	out.Write(buf[start:])
+	return end
 }

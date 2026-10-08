@@ -16,7 +16,7 @@ import (
 func openFollowFile(path string) (*os.File, error) {
 	name, err := syscall.UTF16PtrFromString(path)
 	if err != nil {
-		return nil, err
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}
 	handle, err := syscall.CreateFile(
 		name,
