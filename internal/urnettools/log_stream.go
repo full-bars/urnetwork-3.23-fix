@@ -15,11 +15,11 @@ import (
 // the file for newly appended content until ctx is cancelled or os.Interrupt is received.
 // Designed to replace external 'tail -f' invocations cross-platform.
 func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error {
-	f, err := os.Open(path)
+	f, err := openFollowFile(path)
 	if err != nil {
 		return err
 	}
-	defer f.Close()
+	defer func() { f.Close() }()
 
 	printTailLines(f, n, out)
 
@@ -35,6 +35,22 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 	}
 
 	buf := make([]byte, 4096)
+	// drain copies everything currently readable from the open file to out.
+	drain := func() error {
+		for {
+			nr, err := f.Read(buf)
+			if nr > 0 {
+				offset += int64(nr)
+				if _, wErr := out.Write(buf[:nr]); wErr != nil {
+					return wErr
+				}
+			}
+			if err != nil {
+				return nil
+			}
+		}
+	}
+
 	ticker := time.NewTicker(150 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -48,22 +64,29 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 				return err
 			}
 			if fi.Size() < offset {
-				// File truncated or rotated: seek back to 0.
+				// File truncated: seek back to 0.
 				offset = 0
 				if _, err := f.Seek(0, io.SeekStart); err != nil {
 					return err
 				}
 			}
-			for {
-				nr, err := f.Read(buf)
-				if nr > 0 {
-					offset += int64(nr)
-					if _, wErr := out.Write(buf[:nr]); wErr != nil {
-						return wErr
-					}
+			if err := drain(); err != nil {
+				return err
+			}
+			// The path may now name a different file (rotation: the log was
+			// renamed away and a new one created). Finish the old file above,
+			// then follow the new one from its start. If the path is gone or
+			// cannot be opened yet, keep the old handle and look again next tick.
+			if pathInfo, statErr := os.Stat(path); statErr == nil && !os.SameFile(fi, pathInfo) {
+				next, openErr := openFollowFile(path)
+				if openErr != nil {
+					continue
 				}
-				if err != nil {
-					break
+				f.Close()
+				f = next
+				offset = 0
+				if err := drain(); err != nil {
+					return err
 				}
 			}
 		}
