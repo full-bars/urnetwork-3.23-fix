@@ -616,24 +616,140 @@ stop_systemd_units ()
 # (a common mistake by analogy to other tools' boolean restart flags). An
 # invalid value isn't an error systemd surfaces loudly: it logs a parse
 # warning on every daemon-reload/start and silently ignores that one line,
-# falling back to the base unit's `Restart=no`, which leaves the service
-# with zero crash-restart protection. urnet-tools has never written a
-# drop-in like this itself, but a stray/manually-created one persists
-# across installs and updates since nothing else in this script scans
-# urnetwork.service.d for foreign files -- only override.conf is managed
-# by override_set_env/override_rm_env.
+# leaving whatever value the merge chain had in force before it. urnet-tools
+# has never written a drop-in like this itself, but a stray/manually-created
+# one persists across installs and updates since nothing else in this script
+# scans urnetwork.service.d for foreign files -- only override.conf is
+# managed by override_set_env/override_rm_env.
+#
+# A VALID policy can still be wrong for THIS service: the provider's
+# swap-thrash watchdog performs its supervised restart by exiting with
+# status 75, and `always` and `on-failure` restart on that exit while
+# `no`, `on-abnormal`, `on-watchdog` and `on-abort` never do. `on-success`
+# only restarts on a clean exit, so it is a problem too UNLESS
+# SuccessExitStatus marks 75 (TEMPFAIL) a success: then systemd classifies
+# the watchdog exit as clean and restarts on it. A RestartPreventExitStatus
+# that lists 75 blocks the restart under EVERY policy, `always` included,
+# and SuccessExitStatus that lists 75 under `Restart=on-failure` makes
+# systemd count the watchdog exit as a clean stop and never restart. Those
+# are warned about, never rewritten: the policy is the operator's choice,
+# but the consequence is otherwise silent.
+#
+# The exit-status checks read the EFFECTIVE drop-in configuration the way
+# systemd merges it: drop-ins apply in lexicographic order, the last valid
+# `Restart=` wins, and SuccessExitStatus= / RestartPreventExitStatus=
+# accumulate across directives, an empty value resetting the list
+# (systemd.service(5)). A combination spread over two files, the symbolic
+# TEMPFAIL name, or 75 on a repeated directive line therefore cannot slip
+# past the warnings, and a weakened value a later drop-in overrides is not
+# warned about at all -- only the policy that actually wins can break the
+# recovery.
 sanitize_restart_dropins ()
 {
     dropin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
     [ -d "$dropin_dir" ] || return 0
 
+    # Effective state across the whole drop-in set, seeded with the shipped
+    # unit's policy. *_75_file remembers which file last put 75 (or TEMPFAIL,
+    # its symbolic name) into the respective list, so the warning can name it.
+    eff_restart="on-failure"
+    eff_restart_file="the shipped unit"
+    rpes_75_file=""
+    succ_75_file=""
+
     for f in "$dropin_dir"/*.conf; do
         [ -f "$f" ] || continue
-        if grep -Eq '^Restart=(yes|true|1)[[:space:]]*$' "$f"; then
+        if grep -Eq '^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$' "$f"; then
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
-            sed -i -E 's/^Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
+            sed -i -E 's/^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
         fi
+        while IFS= read -r line || [ -n "$line" ]; do
+            # systemd strips whitespace from lines and values, so normalize
+            # both ends of the line (also absorbing CRLF endings) and of the
+            # Restart= value before matching; comment lines start with a
+            # hash and are untouched by the strips.
+            line="${line#"${line%%[![:space:]]*}"}"
+            line="${line%"${line##*[![:space:]]}"}"
+            case "$line" in
+                'Restart='*)
+                    value="${line#Restart=}"
+                    value="${value#"${value%%[![:space:]]*}"}"
+                    value="${value%"${value##*[![:space:]]}"}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            # The value is a valid policy word; record it as
+                            # the effective restart policy.
+                            case " no always on-success on-failure on-abnormal on-watchdog on-abort " in
+                                *" $value "*)
+                                    eff_restart="$value"
+                                    eff_restart_file="$f"
+                                    ;;
+                            esac
+                            ;;
+                        # An empty or whitespace-only Restart= is a parse
+                        # error: systemd logs and ignores the assignment, so
+                        # the last valid value stays in force.
+                        *)
+                            ;;
+                    esac
+                    ;;
+                'SuccessExitStatus='*)
+                    value="${line#SuccessExitStatus=}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            set -f
+                            for token in $value; do
+                                case "$token" in
+                                    75|TEMPFAIL) succ_75_file="$f" ;;
+                                esac
+                            done
+                            set +f
+                            ;;
+                        # An empty directive resets the accumulated list.
+                        *)
+                            succ_75_file=""
+                            ;;
+                    esac
+                    ;;
+                'RestartPreventExitStatus='*)
+                    value="${line#RestartPreventExitStatus=}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            set -f
+                            for token in $value; do
+                                case "$token" in
+                                    75|TEMPFAIL) rpes_75_file="$f" ;;
+                                esac
+                            done
+                            set +f
+                            ;;
+                        # An empty directive resets the accumulated list.
+                        *)
+                            rpes_75_file=""
+                            ;;
+                    esac
+                    ;;
+            esac
+        done < "$f"
     done
+
+    # Effective-policy warnings (never a rewrite). Only the policy that
+    # actually wins is warned about: a weakened value a later drop-in
+    # overrides is not a problem, and on-success stops being one once
+    # SuccessExitStatus marks 75 a success (systemd restarts on it then).
+    case " no on-success on-abnormal on-watchdog on-abort " in
+        *" $eff_restart "*)
+            if [ "$eff_restart" != "on-success" ] || [ -z "$succ_75_file" ]; then
+                pr_warn "%s sets a restart policy that will not restart the provider's swap-thrash recovery (that recovery exits with status 75). Use Restart=on-failure or Restart=always." "$eff_restart_file"
+            fi
+            ;;
+    esac
+    if [ -n "$succ_75_file" ] && [ "$eff_restart" = "on-failure" ]; then
+        pr_warn "%s marks exit status 75 (TEMPFAIL) as a success; under Restart=on-failure systemd then treats the swap-thrash watchdog exit as a clean stop and will not restart the provider. Remove 75 from SuccessExitStatus, or use Restart=always." "$succ_75_file"
+    fi
+    if [ -n "$rpes_75_file" ]; then
+        pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. This applies under every Restart= policy, including Restart=always; remove 75 (or TEMPFAIL) from RestartPreventExitStatus, or reset the list with an empty RestartPreventExitStatus= line." "$rpes_75_file"
+    fi
 }
 
 # ---- PATH setup ---------------------------------------------------------

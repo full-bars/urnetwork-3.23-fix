@@ -389,6 +389,247 @@ test_remove_tool_links_only_removes_our_links() {
 }
 test_remove_tool_links_only_removes_our_links
 
+test_sanitize_restart_dropins_flags_weakened_policies() {
+    local tmp d out
+    tmp="$(mktemp -d)"
+    d="$tmp/systemd/user/urnetwork.service.d"
+    mkdir -p "$d"
+    out="$tmp/warns.txt"
+
+    # A valid-but-weakened policy: Restart=no never restarts the exit-75 recovery.
+    printf '[Service]\nRestart=no\n' > "$d/weaken.conf"
+    : > "$out"
+    pr_warn() { printf '%s ' "$@" >> "$out"; printf '\n' >> "$out"; }
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "Restart=no drop-in warns about the exit-75 recovery restart"
+
+    # on-failure is correct and stays silent.
+    printf '[Service]\nRestart=on-failure\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "Restart=on-failure stays silent"
+
+    # Blocking exit 75 has the same effect as a weakened policy.
+    printf '[Service]\nRestart=on-failure\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "RestartPreventExitStatus=75 warns"
+
+    # The invalid-value repair still wins, and a repaired drop-in does not
+    # also warn about exit 75 (the value now restarts on it).
+    printf '[Service]\nRestart=yes\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'Repairing invalid' "$out")" "Restart=yes is still repaired"
+    assert_eq "0" "$(grep -c 'swap-thrash recovery' "$out")" "a repaired drop-in does not also warn about exit 75"
+    assert_eq "Restart=on-failure" "$(grep -E '^Restart=' "$d/weaken.conf")" "the repair rewrites the value"
+
+    rm -rf "$tmp"
+}
+test_sanitize_restart_dropins_flags_weakened_policies
+
+test_sanitize_restart_dropins_effective_statuses() {
+    local tmp d out
+    tmp="$(mktemp -d)"
+    d="$tmp/systemd/user/urnetwork.service.d"
+    mkdir -p "$d"
+    out="$tmp/warns.txt"
+    pr_warn() { printf '%s ' "$@" >> "$out"; printf '\n' >> "$out"; }
+
+    # 75 spelled as its symbolic name is still 75.
+    printf '[Service]\nRestart=on-failure\nRestartPreventExitStatus=TEMPFAIL\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "RestartPreventExitStatus=TEMPFAIL warns"
+
+    # A repeated directive is merged: a later 75 cannot hide behind the
+    # newline the old line-scan left in front of it.
+    printf '[Service]\nRestartPreventExitStatus=143\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "75 on a repeated directive line warns"
+
+    # Multiple statuses on one line are all inspected.
+    printf '[Service]\nRestartPreventExitStatus=1 6 75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "75 among space-separated statuses warns"
+
+    # An unrelated exclusion stays silent.
+    printf '[Service]\nRestartPreventExitStatus=143\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an unrelated RestartPreventExitStatus stays silent"
+
+    # An empty directive resets the accumulated list, as systemd merges it.
+    printf '[Service]\nRestartPreventExitStatus=75\nRestartPreventExitStatus=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an empty RestartPreventExitStatus resets the accumulated list"
+
+    # SuccessExitStatus=75 silently defeats the shipped Restart=on-failure.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "SuccessExitStatus=75 under the shipped on-failure policy warns"
+
+    # TEMPFAIL is the symbolic name of 75 in SuccessExitStatus as well.
+    printf '[Service]\nSuccessExitStatus=TEMPFAIL\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "SuccessExitStatus=TEMPFAIL warns"
+
+    # Restart=always restarts the watchdog no matter how the exit is marked.
+    printf '[Service]\nRestart=always\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "SuccessExitStatus=75 with Restart=always stays silent"
+
+    # The effective combination can span files: a later Restart=always
+    # drop-in overrides an earlier on-failure one and keeps it safe.
+    rm -f "$d/weaken.conf"
+    printf '[Service]\nRestart=on-failure\nSuccessExitStatus=75\n' > "$d/10-onfail.conf"
+    printf '[Service]\nRestart=always\n' > "$d/20-always.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "a later Restart=always drop-in keeps the combo silent"
+
+    # ...and the reverse: SuccessExitStatus in one file, on-failure in a
+    # later one, is a combo no per-file scan could catch.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ.conf"
+    printf '[Service]\nRestart=on-failure\n' > "$d/20-restart.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "a cross-file SuccessExitStatus + Restart=on-failure combo warns"
+
+    # Isolate the remaining cases from the cross-file files above.
+    rm -f "$d/10-onfail.conf" "$d/20-always.conf" "$d/10-succ.conf" "$d/20-restart.conf"
+
+    # on-success stops being a problem once SuccessExitStatus marks 75 a
+    # success: systemd classifies the exit as clean and restarts on it.
+    printf '[Service]\nRestart=on-success\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "on-success with SuccessExitStatus=75 stays silent"
+
+    # Plain on-success is still a problem: 75 exits as a failure, so no restart.
+    printf '[Service]\nRestart=on-success\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "plain on-success warns"
+
+    # ...also when the success marking lives in a different drop-in.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ2.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "on-success + SuccessExitStatus=75 in another file stays silent"
+    rm -f "$d/10-succ2.conf"
+
+    # RestartPreventExitStatus beats Restart=always, so the advice must not
+    # suggest always as an escape.
+    printf '[Service]\nRestart=always\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'under every Restart' "$out")" "the rpes warning says it applies under every policy"
+
+    # A weakened value a lexicographically later drop-in overrides is not
+    # the effective policy, so it stays silent.
+    rm -f "$d/weaken.conf"
+    printf '[Service]\nRestart=no\n' > "$d/10-no.conf"
+    printf '[Service]\nRestart=always\n' > "$d/20-always2.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an overridden Restart=no stays silent"
+
+    # Tab-delimited statuses on one line are inspected like spaces.
+    printf '[Service]\nRestartPreventExitStatus=1\t75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "a tab-delimited 75 warns"
+
+    # Superstrings (175, 750) must not match exit status 75.
+    printf '[Service]\nRestartPreventExitStatus=175 750\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "superstring statuses stay silent"
+
+    # Indented directives are accepted by systemd and must be checked too.
+    printf '[Service]\nRestart=on-failure\n  RestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "an indented RestartPreventExitStatus=75 warns"
+
+    printf '[Service]\n  Restart=no\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an indented Restart=no warns"
+
+    printf '[Service]\n  Restart=yes\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'Repairing invalid' "$out")" "an indented Restart=yes is repaired"
+    assert_eq "0" "$(grep -c 'swap-thrash recovery' "$out")" "a repaired indented line does not warn about exit 75"
+    assert_eq "Restart=on-failure" "$(grep -E '^Restart=' "$d/weaken.conf")" "the repair rewrites the indented value"
+
+    # A final line without a trailing newline must still be read (read
+    # returns 1 at EOF with $line populated).
+    printf '[Service]\nRestart=no' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a missing trailing newline still warns"
+
+    # Padding around the value is stripped by systemd and must be tolerated.
+    printf '[Service]\nRestart=no \n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a trailing space after the value still warns"
+
+    printf '[Service]\nRestart= no\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a space after the equals still warns"
+
+    # CRLF endings (Windows-edited drop-ins) are tolerated.
+    printf '[Service]\r\nRestart=no\r\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "CRLF line endings still warn"
+
+    # An empty Restart= is a parse error systemd ignores: the last valid
+    # value stands, and the effective-policy warning follows that value.
+    printf '[Service]\nRestart=always\nRestart=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "a trailing empty Restart= is ignored (always stands)"
+
+    printf '[Service]\nRestart=no\nRestart=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an empty Restart= keeps the weakened value in force"
+
+    # A list reset in a LATER drop-in clears an earlier file's 75 (systemd
+    # merges across files; the effective scan must too).
+    printf '[Service]\nRestart=on-success\n' > "$d/weaken.conf"
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ.conf"
+    printf '[Service]\nSuccessExitStatus=\n' > "$d/20-reset.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "a cross-file empty SuccessExitStatus re-arms the on-success warning"
+
+    # Only *.conf files are scanned; backups and notes with Restart=no are
+    # not drop-ins.
+    rm -f "$d/10-succ.conf" "$d/20-reset.conf"
+    printf '[Service]\nRestart=no\n' > "$d/10-backup.conf.bak"
+    printf '[Service]\nRestart=no\n' > "$d/README.txt"
+    printf '[Service]\nRestart=on-failure\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "non-.conf files are ignored"
+
+    rm -rf "$tmp"
+}
+test_sanitize_restart_dropins_effective_statuses
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"
