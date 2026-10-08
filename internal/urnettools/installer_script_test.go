@@ -3,6 +3,7 @@ package urnettools
 import (
 	"os"
 	"os/exec"
+	"runtime"
 	"strings"
 	"testing"
 )
@@ -35,6 +36,7 @@ func TestInstallerScriptDoInstallBodyNotDuplicated(t *testing.T) {
 // as root. These cases EXECUTE the real function from the script (extracted
 // verbatim, not re-implemented) with each precedence branch.
 func TestFreeBSDResolveServiceUserPrecedence(t *testing.T) {
+	skipWithoutPOSIXShell(t)
 	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -83,6 +85,7 @@ func TestFreeBSDResolveServiceUserPrecedence(t *testing.T) {
 // never come back as an empty string, which would render an rc.d script with
 // an empty user= and silently start the provider as root.
 func TestFreeBSDResolveServiceUserNeverEmpty(t *testing.T) {
+	skipWithoutPOSIXShell(t)
 	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -141,6 +144,7 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 // reporting success. These cases run the real expression out of the shipped
 // installer against the JSON shapes the releases API actually returns.
 func TestFreeBSDToolDigestLookup(t *testing.T) {
+	skipWithoutPOSIXShell(t)
 	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
 	if err != nil {
 		t.Fatal(err)
@@ -212,5 +216,20 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+// skipWithoutPOSIXShell skips tests that execute the FreeBSD installer with
+// /bin/sh. The suite also runs on Windows, where that binary does not exist,
+// so without this the test fails on a platform it was never meant to
+// exercise. The FreeBSD check runs these against a real kernel and the Linux
+// lifecycle check runs them under /bin/sh.
+func skipWithoutPOSIXShell(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("requires /bin/sh; this suite also runs on Windows")
+	}
+	if _, err := exec.LookPath("/bin/sh"); err != nil {
+		t.Skipf("no /bin/sh on this host: %v", err)
 	}
 }
