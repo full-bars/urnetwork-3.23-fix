@@ -139,6 +139,21 @@ func TestPressureSummaryLine(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
+	// JSON without the summary key renders nothing.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte(`{"thrash_state":"calm"}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "" {
+		t.Fatalf("a summary-less file must render nothing, got %q", got)
+	}
+	// Embedded newlines are normalized to single spaces so a corrupted or
+	// hand-edited file cannot break the live block's line layout.
+	if err := os.WriteFile(filepath.Join(dir, "pressure_status"), []byte("{\"summary\":\"line1\\nline2\"}"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := pressureSummaryLine(dir); got != "line1 line2" {
+		t.Fatalf("embedded newlines must normalize to spaces, got %q", got)
+	}
 	if got := pressureSummaryLine(""); got != "" {
 		t.Fatalf("an empty state dir must render nothing, got %q", got)
 	}

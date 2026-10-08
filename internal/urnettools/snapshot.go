@@ -250,7 +250,9 @@ func pressureSummaryLine(stateDir string) string {
 	if err := json.Unmarshal(b, &st); err != nil {
 		return ""
 	}
-	return strings.TrimSpace(st.Summary)
+	// Normalize internal whitespace (newlines, tabs, runs of spaces) so a
+	// corrupted or hand-edited file cannot break the live block's layout.
+	return strings.Join(strings.Fields(st.Summary), " ")
 }
 
 // printProviderSummary prints one compact row per provider, fetching the

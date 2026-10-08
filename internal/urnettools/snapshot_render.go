@@ -257,11 +257,14 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	// Plain language first: when the provider persists its summary sentence
 	// (every monitor tick), the row shows the sentence instead of the raw
 	// number. Older providers that never wrote the file keep the bare score.
-	pressureText := fmt.Sprintf("%.2f", s.Pressure)
+	pressureSegs := []string{fmt.Sprintf("%.2f", s.Pressure)}
 	if pressureSummary != "" {
-		pressureText = pressureSummary
+		// Split on the sentence's clause separator so wrapRow can fold a long
+		// summary onto continuation lines instead of hard-overflowing the
+		// terminal (the sentence runs 75-110+ chars, wider than 80 columns).
+		pressureSegs = strings.Split(pressureSummary, "; ")
 	}
-	emit(liveRow{label: "pressure", segs: []string{pressureText}})
+	emit(liveRow{label: "pressure", sep: "; ", segs: pressureSegs})
 
 	if label, text, ok := s.whyRow(); ok {
 		emit(liveRow{label: label, segs: []string{text}})

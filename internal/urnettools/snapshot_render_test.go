@@ -91,6 +91,23 @@ func TestRenderLiveBlockNarrow80(t *testing.T) {
 	assertGolden(t, "live_narrow_80", out)
 }
 
+func TestRenderLiveBlockNarrow80WithSummary(t *testing.T) {
+	// The persisted summary sentence runs 75-110+ chars; split at clause
+	// boundaries it must fold onto indented continuation lines, never
+	// hard-overflow the terminal.
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	summary := "system calm (pressure 0.21); heap at 33% of its soft limit; 981 MB RAM free; 14% swap committed"
+	out := renderLiveBlock(s, liveOpts{Width: 80}, summary)
+	if !strings.Contains(out, "system calm") {
+		t.Fatalf("the summary sentence must render:\n%s", out)
+	}
+	for _, ln := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if n := len([]rune(ln)); n > 80 {
+			t.Fatalf("line is %d columns, want <= 80: %q", n, ln)
+		}
+	}
+}
+
 func TestRenderLiveBlockNoColor(t *testing.T) {
 	t.Setenv("NO_COLOR", "1")
 	t.Setenv("TERM", "xterm-256color")
