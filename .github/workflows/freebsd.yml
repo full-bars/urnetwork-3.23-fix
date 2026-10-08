@@ -400,7 +400,9 @@ jobs:
             # installed, and a failed install here must fail the job rather than
             # be swallowed by `|| true` — a missing compiler silently turns
             # this job into a no-op that always passes.
-            pkg install -y go bash || {
+            # jq is needed by the digest-lookup test (and by the installer on
+            # a real box); it is a package, not base, so install it here.
+            pkg install -y go bash jq || {
               echo "FATAL: failed to install the Go toolchain on the VM"
               exit 1
             }

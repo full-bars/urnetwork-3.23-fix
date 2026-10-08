@@ -237,12 +237,31 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		{"bare hex", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"` + hex64 + `"}]}`, hex64},
 	}
 
+	// jq and python3 are PACKAGES on FreeBSD, not base system: the FreeBSD CI
+	// VM has neither unless installed. Skip a path whose tool is absent (and
+	// skip the whole test when both are) rather than failing on the host's
+	// package set — but never skip SILENTLY for a missing marker, which is a
+	// real drift and must fail.
+	haveJq := false
+	if _, err := exec.LookPath("jq"); err == nil {
+		haveJq = true
+	}
+	havePy := false
+	if _, err := exec.LookPath("python3"); err == nil {
+		havePy = true
+	}
+	if !haveJq && !havePy {
+		t.Skip("neither jq nor python3 on this host; cannot execute the digest expressions")
+	}
+
 	// jq path: the expression is embedded in single quotes in the shell.
 	// A missing marker is a FAILURE, not a skip: the previous version wrapped
 	// this in `if found {`, so adding one space to the expression made every
 	// jq subtest vanish while the test reported success (mutation-proved).
 	jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '")
-	if jqStart < 0 {
+	if !haveJq {
+		t.Log("jq not installed here; exercising only the python path")
+	} else if jqStart < 0 {
 		t.Error("could not find the jq digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
 		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
@@ -269,7 +288,9 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 
 	// python path; same rule: a missing marker fails rather than skips.
 	pyStart := strings.Index(block, "python3 -c '")
-	if pyStart < 0 {
+	if !havePy {
+		t.Log("python3 not installed here; exercising only the jq path")
+	} else if pyStart < 0 {
 		t.Error("could not find the python digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
 		py := block[pyStart+len("python3 -c '"):]
