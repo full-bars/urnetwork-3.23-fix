@@ -128,6 +128,17 @@ func TestPressureSummaryLine(t *testing.T) {
 	if got := pressureSummaryLine(dir); got != "" {
 		t.Fatalf("garbage must render nothing, got %q", got)
 	}
+	// A symlink planted at the name must not be followed: status can run as
+	// root against a provider-owned state dir (the assertion is skipped where
+	// the platform cannot create symlinks, e.g. unprivileged Windows).
+	if err := os.Symlink("/etc/hostname", filepath.Join(dir, "pressure_status")); err == nil {
+		if got := pressureSummaryLine(dir); got != "" {
+			t.Fatalf("a symlinked pressure_status must render nothing, got %q", got)
+		}
+		if err := os.Remove(filepath.Join(dir, "pressure_status")); err != nil {
+			t.Fatal(err)
+		}
+	}
 	if got := pressureSummaryLine(""); got != "" {
 		t.Fatalf("an empty state dir must render nothing, got %q", got)
 	}

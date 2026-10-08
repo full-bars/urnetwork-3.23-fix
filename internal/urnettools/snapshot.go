@@ -232,11 +232,15 @@ func printLiveBlock(p Provider) {
 // summary so `status` can show plain language, not just the score. Best
 // effort: a missing or unreadable file (an older provider, or its monitor
 // stopped) simply renders nothing.
+//
+// The read goes through readStateFileNoFollow: status may run with elevated
+// privileges against a state dir the provider user owns, and a symlink
+// planted at pressure_status must not be followed into an arbitrary file.
 func pressureSummaryLine(stateDir string) string {
 	if stateDir == "" {
 		return ""
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir, "pressure_status"))
+	b, err := readStateFileNoFollow(stateDir, "pressure_status")
 	if err != nil {
 		return ""
 	}
