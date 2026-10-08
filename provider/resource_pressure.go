@@ -24,9 +24,11 @@ import (
 // below are properties of the metrics themselves (e.g. "a box stalled on
 // memory 60% of the time is exhausted") — they are NOT per-server capacity
 // tuning, which is exactly what this system exists to eliminate.
-const (
-	pressureSampleInterval = 30 * time.Second
+// pressureSampleInterval is how often the pressure loop takes a full sample. A
+// variable so tests can drive the real loop in milliseconds.
+var pressureSampleInterval = 30 * time.Second
 
+const (
 	// PSI `some avgXX` is "% of wall time at least one task stalled on this
 	// resource". 10% = noticeable contention, 60% = severe. Same meaning on
 	// any core count — PSI is self-normalizing.
@@ -321,6 +323,16 @@ func runningProxyCountForPressure() int {
 		n--
 	}
 	return n
+}
+
+// publishSelfHealOffPressure is what the pressure loop does on a tick while
+// self-heal is off: every consumer reads a zero score, which they all treat as
+// "do not act", and the connection memory budget returns to full so connections
+// opened now do not keep the reduced buffers of an earlier pressure episode.
+func publishSelfHealOffPressure() {
+	setPressure(0)
+	setPressureNoCPU(0)
+	applyPressureMemoryBudget(0)
 }
 
 // collectPressureSample reads every sensor, recording errors per-sensor so
@@ -914,12 +926,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		if !resolveSelfHealEnabled(selfHealEnabled) {
 			smoothed = 0
 			smoothedNoCPU = 0
-			setPressure(0)
-			setPressureNoCPU(0)
-			// Reset the connection memory budget to full so connections
-			// opened after self-healing is disabled don't keep the reduced
-			// buffers from an earlier pressure episode.
-			applyPressureMemoryBudget(0)
+			publishSelfHealOffPressure()
 			// The GC governor is independent of self-heal: keep giving it the
 			// full host+heap view so a tightened level can release.
 			if gcAdaptiveEnabled() {
