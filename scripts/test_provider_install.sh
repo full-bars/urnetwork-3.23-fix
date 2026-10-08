@@ -428,6 +428,84 @@ test_sanitize_restart_dropins_flags_weakened_policies() {
 }
 test_sanitize_restart_dropins_flags_weakened_policies
 
+test_sanitize_restart_dropins_effective_statuses() {
+    local tmp d out
+    tmp="$(mktemp -d)"
+    d="$tmp/systemd/user/urnetwork.service.d"
+    mkdir -p "$d"
+    out="$tmp/warns.txt"
+    pr_warn() { printf '%s ' "$@" >> "$out"; printf '\n' >> "$out"; }
+
+    # 75 spelled as its symbolic name is still 75.
+    printf '[Service]\nRestart=on-failure\nRestartPreventExitStatus=TEMPFAIL\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "RestartPreventExitStatus=TEMPFAIL warns"
+
+    # A repeated directive is merged: a later 75 cannot hide behind the
+    # newline the old line-scan left in front of it.
+    printf '[Service]\nRestartPreventExitStatus=143\nRestartPreventExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "75 on a repeated directive line warns"
+
+    # Multiple statuses on one line are all inspected.
+    printf '[Service]\nRestartPreventExitStatus=1 6 75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'RestartPreventExitStatus' "$out")" "75 among space-separated statuses warns"
+
+    # An unrelated exclusion stays silent.
+    printf '[Service]\nRestartPreventExitStatus=143\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an unrelated RestartPreventExitStatus stays silent"
+
+    # An empty directive resets the accumulated list, as systemd merges it.
+    printf '[Service]\nRestartPreventExitStatus=75\nRestartPreventExitStatus=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "an empty RestartPreventExitStatus resets the accumulated list"
+
+    # SuccessExitStatus=75 silently defeats the shipped Restart=on-failure.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "SuccessExitStatus=75 under the shipped on-failure policy warns"
+
+    # TEMPFAIL is the symbolic name of 75 in SuccessExitStatus as well.
+    printf '[Service]\nSuccessExitStatus=TEMPFAIL\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "SuccessExitStatus=TEMPFAIL warns"
+
+    # Restart=always restarts the watchdog no matter how the exit is marked.
+    printf '[Service]\nRestart=always\nSuccessExitStatus=75\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "SuccessExitStatus=75 with Restart=always stays silent"
+
+    # The effective combination can span files: a later Restart=always
+    # drop-in overrides an earlier on-failure one and keeps it safe.
+    rm -f "$d/weaken.conf"
+    printf '[Service]\nRestart=on-failure\nSuccessExitStatus=75\n' > "$d/10-onfail.conf"
+    printf '[Service]\nRestart=always\n' > "$d/20-always.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "a later Restart=always drop-in keeps the combo silent"
+
+    # ...and the reverse: SuccessExitStatus in one file, on-failure in a
+    # later one, is a combo no per-file scan could catch.
+    printf '[Service]\nSuccessExitStatus=75\n' > "$d/10-succ.conf"
+    printf '[Service]\nRestart=on-failure\n' > "$d/20-restart.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'SuccessExitStatus' "$out")" "a cross-file SuccessExitStatus + Restart=on-failure combo warns"
+
+    rm -rf "$tmp"
+}
+test_sanitize_restart_dropins_effective_statuses
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"

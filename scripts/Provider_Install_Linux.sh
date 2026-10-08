@@ -628,13 +628,31 @@ stop_systemd_units ()
 # status 75, and only `always` and `on-failure` restart on that exit;
 # `no`, `on-success`, `on-abnormal`, `on-watchdog` and `on-abort` all
 # leave the service stopped after a detected thrash. A
-# RestartPreventExitStatus that lists 75 has the same effect. Those are
+# RestartPreventExitStatus that lists 75 has the same effect, and so does
+# SuccessExitStatus that lists 75 under `Restart=on-failure`: systemd then
+# counts the watchdog exit as a clean stop and never restarts. Those are
 # warned about, never rewritten: the policy is the operator's choice, but
 # the consequence is otherwise silent.
+#
+# The exit-status checks read the EFFECTIVE drop-in configuration the way
+# systemd merges it: drop-ins apply in lexicographic order, the last valid
+# `Restart=` wins, and SuccessExitStatus= / RestartPreventExitStatus=
+# accumulate across directives, an empty value resetting the list
+# (systemd.service(5)). A combination spread over two files, the symbolic
+# TEMPFAIL name, or 75 on a repeated directive line therefore cannot slip
+# past the warnings.
 sanitize_restart_dropins ()
 {
     dropin_dir="${XDG_CONFIG_HOME:-$HOME/.config}/systemd/user/urnetwork.service.d"
     [ -d "$dropin_dir" ] || return 0
+
+    # Effective state across the whole drop-in set, seeded with the shipped
+    # unit's policy. *_75_file remembers which file last put 75 (or TEMPFAIL,
+    # its symbolic name) into the respective list, so the warning can name it.
+    eff_restart="on-failure"
+    eff_restart_file="the shipped unit"
+    rpes_75_file=""
+    succ_75_file=""
 
     for f in "$dropin_dir"/*.conf; do
         [ -f "$f" ] || continue
@@ -645,15 +663,70 @@ sanitize_restart_dropins ()
         if grep -Eq '^Restart=(no|on-success|on-abnormal|on-watchdog|on-abort)[[:space:]]*$' "$f"; then
             pr_warn "%s sets a restart policy that will not restart the provider's swap-thrash recovery (that recovery exits with status 75). Use Restart=on-failure or Restart=always." "$f"
         fi
-        if grep -Eq '^RestartPreventExitStatus=' "$f"; then
-            rpes="$(grep -E '^RestartPreventExitStatus=' "$f" | sed -E 's/^[^=]*=//')"
-            case " $rpes " in
-                *" 75 "*)
-                    pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. Remove 75 from RestartPreventExitStatus." "$f"
+        while IFS= read -r line; do
+            case "$line" in
+                'Restart='*)
+                    value="${line#Restart=}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            case " no always on-success on-failure on-abnormal on-watchdog on-abort " in
+                                *" $value "*)
+                                    eff_restart="$value"
+                                    eff_restart_file="$f"
+                                    ;;
+                            esac
+                            ;;
+                        # An empty or whitespace-only Restart= resets the
+                        # value to systemd's default (no).
+                        *)
+                            eff_restart="no"
+                            eff_restart_file="$f"
+                            ;;
+                    esac
+                    ;;
+                'SuccessExitStatus='*)
+                    value="${line#SuccessExitStatus=}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            for token in $value; do
+                                case "$token" in
+                                    75|TEMPFAIL) succ_75_file="$f" ;;
+                                esac
+                            done
+                            ;;
+                        # An empty directive resets the accumulated list.
+                        *)
+                            succ_75_file=""
+                            ;;
+                    esac
+                    ;;
+                'RestartPreventExitStatus='*)
+                    value="${line#RestartPreventExitStatus=}"
+                    case "$value" in
+                        *[![:space:]]*)
+                            for token in $value; do
+                                case "$token" in
+                                    75|TEMPFAIL) rpes_75_file="$f" ;;
+                                esac
+                            done
+                            ;;
+                        # An empty directive resets the accumulated list.
+                        *)
+                            rpes_75_file=""
+                            ;;
+                    esac
                     ;;
             esac
-        fi
+        done < "$f"
     done
+
+    # Effective-configuration warnings (never a rewrite).
+    if [ -n "$succ_75_file" ] && [ "$eff_restart" = "on-failure" ]; then
+        pr_warn "%s marks exit status 75 (TEMPFAIL) as a success; under Restart=on-failure systemd then treats the swap-thrash watchdog exit as a clean stop and will not restart the provider. Remove 75 from SuccessExitStatus, or use Restart=always." "$succ_75_file"
+    fi
+    if [ -n "$rpes_75_file" ]; then
+        pr_warn "%s prevents restart on exit status 75, which the provider's swap-thrash recovery uses. Remove 75 (or TEMPFAIL) from RestartPreventExitStatus, or use Restart=always." "$rpes_75_file"
+    fi
 }
 
 # ---- PATH setup ---------------------------------------------------------
