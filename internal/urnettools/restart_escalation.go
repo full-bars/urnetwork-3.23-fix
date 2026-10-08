@@ -62,6 +62,9 @@ func isAuthRestartFailure(err error) bool {
 // sudoAvailableFn reports whether passwordless sudo works for this user
 // (`sudo -n true`). Var seam for tests.
 var sudoAvailableFn = func() bool {
+	if runtime.GOOS == "windows" {
+		return false
+	}
 	out, err := exec.Command("sudo", "-n", "true").CombinedOutput()
 	if err != nil {
 		_ = out
