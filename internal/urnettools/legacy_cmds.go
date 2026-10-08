@@ -166,6 +166,15 @@ func cmdStart(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdStartWindows(p, force, dryRun)
 	}
+	if runtime.GOOS == "freebsd" {
+		fmt.Printf("starting %s...\n", providerLabel(p))
+		if err := bsdServiceControl(p, "start"); err != nil {
+			fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
+			return err
+		}
+		fmt.Printf("started %s\n", providerLabel(p))
+		return nil
+	}
 	fmt.Printf("starting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "start"); err != nil {
 		fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
@@ -185,6 +194,17 @@ func cmdStop(args []string, force, dryRun bool) error {
 	}
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, force, dryRun)
+	}
+	if runtime.GOOS == "freebsd" {
+		// rc.d, not systemd: go through the service so the provider drains
+		// under its own stop semantics rather than being signalled directly.
+		fmt.Printf("stopping %s...\n", providerLabel(p))
+		if err := bsdServiceControl(p, "stop"); err != nil {
+			fmt.Printf("FAILED to stop %s: %v\n", providerLabel(p), err)
+			return err
+		}
+		fmt.Printf("stopped %s\n", providerLabel(p))
+		return nil
 	}
 	if p.Unit == "" {
 		return stopUnitlessProvider(p, force)
@@ -308,6 +328,15 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	recordRestartReason(p, restartReasonManual)
 	if runtime.GOOS == "windows" {
 		return cmdRestartWindows(p, force, dryRun)
+	}
+	if runtime.GOOS == "freebsd" {
+		fmt.Printf("restarting %s...\n", providerLabel(p))
+		if err := bsdServiceControl(p, "restart"); err != nil {
+			fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)
+			return err
+		}
+		fmt.Printf("restarted %s\n", providerLabel(p))
+		return nil
 	}
 	fmt.Printf("restarting %s...\n", providerLabel(p))
 	if err := unitCommand(p, "restart"); err != nil {
@@ -930,11 +959,16 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 // Extracted so the dispatch itself is unit-testable without running the
 // (root-requiring, host-mutating) implementations.
 func optimizeFor(goos string) func() error {
-	if goos == "windows" {
+	switch goos {
+	case "windows":
 		return optimizeWindows
-	}
-	if goos == "darwin" {
+	case "darwin":
 		return optimizeDarwin
+	case "freebsd":
+		// FreeBSD shares no tunable name with Linux: routing this to
+		// optimizeLinux wrote net.core.rmem_max and /etc/sysctl.d, neither of
+		// which exists here, so it reported success while changing nothing.
+		return optimizeFreeBSD
 	}
 	return optimizeLinux
 }
