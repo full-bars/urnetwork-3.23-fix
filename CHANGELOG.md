@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **The combined TCP-segment + TLS-record fragmentation dialer** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/792>): a new `fragment+segment` dialer cuts every fragmented ClientHello record a second time, across two TCP segments at an interior byte, so a middlebox that reassembles either layer alone cannot stitch the hello. It needs no raw sockets, so it works where the ttl reorder technique cannot (non-root Android, iOS network extension, non-Linux). It registers at the resilient tier (priority 50) beside `fragment` / `reorder` / `fragment+reorder`, fails closed exactly like the fragment path, and changes no existing dialer's behavior. Port of upstream `3fd67304`.
+
 ## [v3.23.0-fix.32.10]
 
 ### Added
