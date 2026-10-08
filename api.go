@@ -234,6 +234,7 @@ type AuthNetworkClientArgs struct {
 	SourceClientId *Id    `json:"source_client_id,omitempty"`
 	Description    string `json:"description"`
 	DeviceSpec     string `json:"device_spec"`
+	ProvideIntent  bool   `json:"provide_intent,omitempty"`
 }
 
 type AuthNetworkClientResult struct {

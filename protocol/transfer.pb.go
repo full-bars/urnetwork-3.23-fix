@@ -847,8 +847,10 @@ type Auth struct {
 	// set by the server only when it accepts the offered envelope version and
 	// both QUIC endpoints negotiated RFC 9221 DATAGRAM support.
 	H3DatagramAcceptedVersion uint32 `protobuf:"varint,5,opt,name=h3_datagram_accepted_version,json=h3DatagramAcceptedVersion,proto3" json:"h3_datagram_accepted_version,omitempty"`
-	unknownFields             protoimpl.UnknownFields
-	sizeCache                 protoimpl.SizeCache
+	// 6 is upstream ip_family, not ported. Do not reuse.
+	ProvideIntent bool `protobuf:"varint,7,opt,name=provide_intent,json=provideIntent,proto3" json:"provide_intent,omitempty"`
+	unknownFields protoimpl.UnknownFields
+	sizeCache     protoimpl.SizeCache
 }
 
 func (x *Auth) Reset() {
@@ -914,6 +916,13 @@ func (x *Auth) GetH3DatagramAcceptedVersion() uint32 {
 		return x.H3DatagramAcceptedVersion
 	}
 	return 0
+}
+
+func (x *Auth) GetProvideIntent() bool {
+	if x != nil {
+		return x.ProvideIntent
+	}
+	return false
 }
 
 type Provide struct {
@@ -2491,7 +2500,7 @@ const file_transfer_proto_rawDesc = "" +
 	"\x03tag\x18\x04 \x01(\v2\x0e.bringyour.TagH\x00R\x03tag\x88\x01\x01B\x06\n" +
 	"\x04_tag\"\"\n" +
 	"\x03Tag\x12\x1b\n" +
-	"\tsend_time\x18\x01 \x01(\x04R\bsendTime\"\xd0\x01\n" +
+	"\tsend_time\x18\x01 \x01(\x04R\bsendTime\"\xf7\x01\n" +
 	"\x04Auth\x12\x15\n" +
 	"\x06by_jwt\x18\x01 \x01(\tR\x05byJwt\x12\x1f\n" +
 	"\vapp_version\x18\x02 \x01(\tR\n" +
@@ -2499,7 +2508,8 @@ const file_transfer_proto_rawDesc = "" +
 	"\vinstance_id\x18\x03 \x01(\fR\n" +
 	"instanceId\x12.\n" +
 	"\x13h3_datagram_version\x18\x04 \x01(\rR\x11h3DatagramVersion\x12?\n" +
-	"\x1ch3_datagram_accepted_version\x18\x05 \x01(\rR\x19h3DatagramAcceptedVersion\"4\n" +
+	"\x1ch3_datagram_accepted_version\x18\x05 \x01(\rR\x19h3DatagramAcceptedVersion\x12%\n" +
+	"\x0eprovide_intent\x18\a \x01(\bR\rprovideIntent\"4\n" +
 	"\aProvide\x12)\n" +
 	"\x04keys\x18\x01 \x03(\v2\x15.bringyour.ProvideKeyR\x04keys\"f\n" +
 	"\n" +

@@ -229,6 +229,7 @@ type TransportControl = byte
 const (
 	TransportControlSpeedStart TransportControl = 1
 	TransportControlSpeedStop  TransportControl = 2
+	TransportControlClose      TransportControl = 3
 )
 
 type TransportMode string
@@ -247,8 +248,9 @@ const (
 type ClientAuth struct {
 	ByJwt string
 	// ClientId Id
-	InstanceId Id
-	AppVersion string
+	InstanceId    Id
+	AppVersion    string
+	ProvideIntent bool
 }
 
 func (self *ClientAuth) ClientId() (Id, error) {
@@ -314,6 +316,9 @@ type PlatformTransportSettings struct {
 	// sendRouteObserverForTest, when set, is called with the send route of each
 	// H3 connection once it is registered, so a test can push messages into it.
 	sendRouteObserverForTest func(send chan []byte)
+
+	ClientLimitBackoff     *ClientLimitBackoff
+	clientLimitHoldForTest func()
 }
 
 func DefaultPlatformTransportSettings() *PlatformTransportSettings {
@@ -379,6 +384,8 @@ type PlatformTransport struct {
 	// separated from its notification, and so re-electing the same mode does
 	// not wake the election loop's own watchers
 	mode *MonitorValue[TransportMode]
+
+	clientLimitBackoff *ClientLimitBackoff
 }
 
 func NewPlatformTransportWithDefaults(
@@ -453,9 +460,37 @@ func NewPlatformTransportWithTargetMode(
 		targetMode:           targetMode,
 		mode:                 NewMonitorValue[TransportMode](TransportModeNone),
 	}
+	transport.clientLimitBackoff = settings.ClientLimitBackoff
+	if transport.clientLimitBackoff == nil {
+		transport.clientLimitBackoff = NewClientLimitBackoff()
+	}
 	transport.auth.Store(auth)
 	go HandleError(transport.run, cancel)
 	return transport
+}
+
+// ClientLimitBackoff returns the transport client limit hold.
+func (self *PlatformTransport) ClientLimitBackoff() *ClientLimitBackoff {
+	return self.clientLimitBackoff
+}
+
+// waitClientLimitHold parks a mode runner while a client limit hold is in force.
+// False means the transport is closing.
+func (self *PlatformTransport) waitClientLimitHold() bool {
+	for {
+		clientLimitStatus, clientLimitNotify := self.clientLimitHold()
+		if !clientLimitStatus.Exceeded {
+			return true
+		}
+		if self.settings.clientLimitHoldForTest != nil {
+			self.settings.clientLimitHoldForTest()
+		}
+		select {
+		case <-self.ctx.Done():
+			return false
+		case <-clientLimitNotify:
+		}
+	}
 }
 
 // the auth is used on future connections
@@ -727,14 +762,21 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			}
 		}()
 
+		if !self.waitClientLimitHold() {
+			return
+		}
+		auth := self.getAuth()
+		clientLimitResetGeneration := self.clientLimitResetGeneration()
+
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 		connect := func() (*websocket.Conn, error) {
 			header := http.Header{}
 			if self.settings.V2H1Auth {
-				header.Add("Authorization", fmt.Sprintf("Bearer %s", self.getAuth().ByJwt))
-				header.Add("X-UR-AppVersion", self.getAuth().AppVersion)
-				header.Add("X-UR-InstanceId", self.getAuth().InstanceId.String())
+				header.Add("Authorization", fmt.Sprintf("Bearer %s", auth.ByJwt))
+				header.Add("X-UR-AppVersion", auth.AppVersion)
+				header.Add("X-UR-InstanceId", auth.InstanceId.String())
 				header.Add("X-UR-TransportVersion", fmt.Sprintf("%d", TransportVersion))
+				applyProvideIntentHeader(header, *auth)
 			}
 
 			ws, _, err := self.clientStrategy.WsDialContext(self.ctx, self.platformUrl, header)
@@ -759,9 +801,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 			if !self.settings.V2H1Auth {
 				authBytes, err := EncodeFrame(&protocol.Auth{
-					ByJwt:      self.getAuth().ByJwt,
-					AppVersion: self.getAuth().AppVersion,
-					InstanceId: self.getAuth().InstanceId.Bytes(),
+					ByJwt:         auth.ByJwt,
+					AppVersion:    auth.AppVersion,
+					InstanceId:    auth.InstanceId.Bytes(),
+					ProvideIntent: auth.ProvideIntent,
 				}, self.settings.ProtocolVersion)
 				if err != nil {
 					return nil, err
@@ -808,6 +851,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			ws, err = connect()
 		}
 		if err != nil {
+			if isClientLimitCloseError(err) {
+				self.noteClientLimitClose(TransportModeH1, auth.ProvideIntent, clientLimitResetGeneration)
+				continue
+			}
 			// a canceled dial is local teardown — this transport or its owner
 			// shutting down mid-connect — not a backend signal, and not a
 			// fault of the proxy being dialed. Without this carve-out, closing
@@ -855,6 +902,13 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 			handleCtx, handleCancel := context.WithCancel(self.ctx)
 			defer handleCancel()
+
+			go HandleError(func() {
+				self.runClientLimitWatch(handleCtx, func() {
+					handleCancel()
+					ws.Close()
+				})
+			}, handleCancel)
 
 			var readCounter atomic.Uint64
 			var writeCounter atomic.Uint64
@@ -1095,6 +1149,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 					messageType, r, err := ws.NextReader()
 					if err != nil {
 						self.log.V(2).Infof("[tr]%s<- error = %s\n", clientId, err)
+						if isClientLimitCloseError(err) {
+							self.noteClientLimitClose(TransportModeH1, auth.ProvideIntent, clientLimitResetGeneration)
+						}
 						return
 					}
 
@@ -1132,6 +1189,13 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 										MessagePoolReturn(message)
 									case controlSend <- message:
 									}
+								case TransportControlClose:
+									reason, _ := transportCloseReason(message)
+									MessagePoolReturn(message)
+									if reason == TransportCloseReasonClientLimitExceeded {
+										self.noteClientLimitClose(TransportModeH1, auth.ProvideIntent, clientLimitResetGeneration)
+									}
+									return
 								default:
 									MessagePoolReturn(message)
 								}
@@ -1280,6 +1344,12 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			}
 		}()
 
+		if !self.waitClientLimitHold() {
+			return
+		}
+		auth := self.getAuth()
+		clientLimitResetGeneration := self.clientLimitResetGeneration()
+
 		reconnect := NewReconnect(self.settings.ReconnectTimeout)
 
 		connect := func() (*h3ConnStream, error) {
@@ -1409,11 +1479,11 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// Mirrors runH1, which rebuilds the frame inside its connect
 			// closure. The echo verification below compares against the same
 			// per-attempt bytes, so the snapshot is consistent.
-			auth := self.getAuth()
 			authMessage := &protocol.Auth{
-				ByJwt:      auth.ByJwt,
-				AppVersion: auth.AppVersion,
-				InstanceId: auth.InstanceId.Bytes(),
+				ByJwt:         auth.ByJwt,
+				AppVersion:    auth.AppVersion,
+				InstanceId:    auth.InstanceId.Bytes(),
+				ProvideIntent: auth.ProvideIntent,
 			}
 			SetH3DatagramAuthOffer(authMessage, offerDatagrams)
 			authBytes, err := EncodeFrame(authMessage, self.settings.ProtocolVersion)
@@ -1487,6 +1557,10 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			connStream, err = connect()
 		}
 		if err != nil {
+			if isClientLimitCloseError(err) {
+				self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+				continue
+			}
 			// a canceled dial is local teardown — this transport or its owner
 			// shutting down mid-connect — not a backend signal, and not a
 			// fault of the proxy being dialed. See runH1 for why the burst
@@ -1552,13 +1626,25 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			// release the socket and the quic transport after the connection,
 			// otherwise every reconnect leaks one udp fd, its read goroutine
 			// and the transport state
-			defer connStream.close()
+			defer func() {
+				if isClientLimitCloseError(context.Cause(conn.Context())) {
+					self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+				}
+				connStream.close()
+			}()
 
 			self.setModeAvailable(ptMode, true)
 			defer self.setModeAvailable(ptMode, false)
 
 			handleCtx, handleCancel := context.WithCancel(self.ctx)
 			defer handleCancel()
+
+			go HandleError(func() {
+				self.runClientLimitWatch(handleCtx, func() {
+					handleCancel()
+					conn.CloseWithError(0, "client limit")
+				})
+			}, handleCancel)
 
 			framer := NewFramer(self.settings.FramerSettings)
 
@@ -2005,6 +2091,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					message, err := framer.Read(stream)
 					if err != nil {
 						self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
+						if isClientLimitCloseError(err) {
+							self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+						}
 						return
 					}
 					readCounter.Add(1)
@@ -2061,6 +2150,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						datagram, err := conn.ReceiveDatagram(handleCtx)
 						if err != nil {
 							// the context ended or the connection closed
+							if isClientLimitCloseError(err) {
+								self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+							}
 							return
 						}
 						message := datagramReassembler.Accept(datagram, time.Now())

@@ -165,6 +165,9 @@ message Auth {
     // set by the server only when it accepts the offered envelope version and
     // both QUIC endpoints negotiated RFC 9221 DATAGRAM support.
     uint32 h3_datagram_accepted_version = 5;
+
+    // 6 is upstream ip_family, not ported. Do not reuse.
+    bool provide_intent = 7;
 }
 
 
