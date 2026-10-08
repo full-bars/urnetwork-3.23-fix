@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	quic "github.com/quic-go/quic-go"
 )
 
 // switchH3Gate sets the runtime gate for one test and restores it after. The
@@ -400,6 +402,187 @@ func TestExplicitH3TargetModeStillRecordsFailures(t *testing.T) {
 	if proxyFailureTotal(0) <= 0 {
 		t.Fatal("explicit H3 target mode failures must be recorded against the proxy")
 	}
+}
+
+// Turning the H3 switch off while an auxiliary connection is live tears the
+// connection down, but because the transport is auxiliary it must not mark the
+// proxy down or record a transport drop. An explicit H3 transport that drops
+// while H3 is enabled does mark the proxy down, confirming the control path.
+func TestAuxiliaryH3SwitchOffWhileLiveDoesNotMarkProxyDown(t *testing.T) {
+	t.Run("auxiliary connection switch off does not mark proxy down", func(t *testing.T) {
+		resetBackendDegraded()
+		ResetProxyHealthForTesting()
+		t.Cleanup(ResetProxyHealthForTesting)
+		t.Cleanup(resetBackendDegraded)
+		switchH3Gate(t, true)
+
+		RegisterProxy(0, "direct", "direct")
+		markProxyUp(0)
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		t.Cleanup(cancel)
+
+		server := startH3TestServer(t, ctx, true, nil)
+
+		transportCtx, transportCancel := context.WithCancel(ctx)
+		transport := newH3DatagramTestTransport(transportCtx, transportCancel, server.port)
+		transport.targetMode = TransportModeAuto
+		transport.settings.EnableH3 = true
+		transport.settings.ReconnectTimeout = 10 * time.Second
+
+		connected := make(chan struct{})
+		transport.settings.sendRouteObserverForTest = func(send chan []byte) {
+			select {
+			case <-connected:
+			default:
+				close(connected)
+			}
+		}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			transport.runH3(TransportModeH3, 0, 1)
+		}()
+		t.Cleanup(func() {
+			transportCancel()
+			<-done
+		})
+
+		select {
+		case <-connected:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for auxiliary H3 transport to connect")
+		}
+
+		proxyHealthMu.Lock()
+		initialUp := proxyHealthByIndex[0].currentlyUp
+		proxyHealthMu.Unlock()
+		if !initialUp {
+			t.Fatal("expected proxy 0 to be currently up before switch off")
+		}
+
+		// Turn H3 off while the connection is live.
+		SetH3Enabled(false)
+
+		// Wait for the connection to tear down.
+		deadline := time.Now().Add(5 * time.Second)
+		for ActiveProxyConnections() > 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if ActiveProxyConnections() != 0 {
+			t.Fatal("timed out waiting for live connection to close after gate switch off")
+		}
+
+		transportCancel()
+		<-done
+
+		proxyHealthMu.Lock()
+		h := proxyHealthByIndex[0]
+		proxyHealthMu.Unlock()
+
+		if !h.currentlyUp || !h.downSince.IsZero() {
+			t.Fatalf("auxiliary H3 switch off marked proxy down: currentlyUp=%v downSince=%v", h.currentlyUp, h.downSince)
+		}
+		if drops := h.failures.TransportDrops.Load(); drops != 0 {
+			t.Fatalf("auxiliary H3 switch off recorded %d transport drops, want 0", drops)
+		}
+	})
+
+	t.Run("control failure with H3 enabled marks proxy down", func(t *testing.T) {
+		resetBackendDegraded()
+		ResetProxyHealthForTesting()
+		t.Cleanup(ResetProxyHealthForTesting)
+		t.Cleanup(resetBackendDegraded)
+		switchH3Gate(t, true)
+
+		RegisterProxy(0, "direct", "direct")
+
+		ctx, cancel := context.WithTimeout(t.Context(), 10*time.Second)
+		t.Cleanup(cancel)
+
+		serverConnChan := make(chan *quic.Conn, 1)
+		server := startH3TestServer(t, ctx, true, func(_ context.Context, conn *quic.Conn, _ *quic.Stream, _ *Framer, _ bool) {
+			select {
+			case serverConnChan <- conn:
+			default:
+			}
+		})
+
+		transportCtx, transportCancel := context.WithCancel(ctx)
+		transport := newH3DatagramTestTransport(transportCtx, transportCancel, server.port)
+		transport.targetMode = TransportModeH3
+		transport.settings.EnableH3 = false
+		transport.settings.ReconnectTimeout = 10 * time.Second
+
+		connected := make(chan struct{})
+		transport.settings.sendRouteObserverForTest = func(send chan []byte) {
+			select {
+			case <-connected:
+			default:
+				close(connected)
+			}
+		}
+
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			transport.runH3(TransportModeH3, 0, 1)
+		}()
+		t.Cleanup(func() {
+			transportCancel()
+			<-done
+		})
+
+		select {
+		case <-connected:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for explicit H3 transport to connect")
+		}
+
+		var serverConn *quic.Conn
+		select {
+		case serverConn = <-serverConnChan:
+		case <-time.After(5 * time.Second):
+			t.Fatal("timed out waiting for server connection")
+		}
+
+		proxyHealthMu.Lock()
+		initialUp := proxyHealthByIndex[0].currentlyUp
+		proxyHealthMu.Unlock()
+		if !initialUp {
+			t.Fatal("expected explicit H3 connection to mark proxy up")
+		}
+
+		// The live connection fails with H3 still enabled.
+		serverConn.CloseWithError(1, "connection dropped")
+
+		// Wait for the connection to tear down and mark proxy down.
+		deadline := time.Now().Add(5 * time.Second)
+		for ActiveProxyConnections() > 0 && time.Now().Before(deadline) {
+			time.Sleep(5 * time.Millisecond)
+		}
+		if ActiveProxyConnections() != 0 {
+			t.Fatal("timed out waiting for live connection to drop")
+		}
+
+		transportCancel()
+		<-done
+
+		proxyHealthMu.Lock()
+		h := proxyHealthByIndex[0]
+		proxyHealthMu.Unlock()
+
+		if h.currentlyUp {
+			t.Fatal("expected proxy to be marked down after explicit H3 connection failure")
+		}
+		if h.downSince.IsZero() {
+			t.Fatal("expected downSince to be stamped after explicit H3 connection failure")
+		}
+		if drops := h.failures.TransportDrops.Load(); drops == 0 {
+			t.Fatal("expected RecordProxyTransportDrop to be recorded for explicit H3 connection failure")
+		}
+	})
 }
 
 // A global Pulse must not reset the backoff timer of an auxiliary H3 transport,
