@@ -595,12 +595,17 @@ test_sanitize_restart_dropins_effective_statuses() {
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
     assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "CRLF line endings still warn"
 
-    # An empty Restart= resets to systemd's default (no) and is a weakened
-    # policy like any other.
+    # An empty Restart= is a parse error systemd ignores: the last valid
+    # value stands, and the effective-policy warning follows that value.
     printf '[Service]\nRestart=always\nRestart=\n' > "$d/weaken.conf"
     : > "$out"
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
-    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an empty Restart= resets to no and warns"
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "a trailing empty Restart= is ignored (always stands)"
+
+    printf '[Service]\nRestart=no\nRestart=\n' > "$d/weaken.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(grep -c 'swap-thrash recovery' "$out")" "an empty Restart= keeps the weakened value in force"
 
     rm -rf "$tmp"
 }

@@ -616,12 +616,11 @@ stop_systemd_units ()
 # (a common mistake by analogy to other tools' boolean restart flags). An
 # invalid value isn't an error systemd surfaces loudly: it logs a parse
 # warning on every daemon-reload/start and silently ignores that one line,
-# falling back to the base unit's `Restart=no`, which leaves the service
-# with zero crash-restart protection. urnet-tools has never written a
-# drop-in like this itself, but a stray/manually-created one persists
-# across installs and updates since nothing else in this script scans
-# urnetwork.service.d for foreign files -- only override.conf is managed
-# by override_set_env/override_rm_env.
+# leaving whatever value the merge chain had in force before it. urnet-tools
+# has never written a drop-in like this itself, but a stray/manually-created
+# one persists across installs and updates since nothing else in this script
+# scans urnetwork.service.d for foreign files -- only override.conf is
+# managed by override_set_env/override_rm_env.
 #
 # A VALID policy can still be wrong for THIS service: the provider's
 # swap-thrash watchdog performs its supervised restart by exiting with
@@ -678,6 +677,8 @@ sanitize_restart_dropins ()
                     value="${value%"${value##*[![:space:]]}"}"
                     case "$value" in
                         *[![:space:]]*)
+                            # The value is a valid policy word; record it as
+                            # the effective restart policy.
                             case " no always on-success on-failure on-abnormal on-watchdog on-abort " in
                                 *" $value "*)
                                     eff_restart="$value"
@@ -685,11 +686,10 @@ sanitize_restart_dropins ()
                                     ;;
                             esac
                             ;;
-                        # An empty or whitespace-only Restart= resets the
-                        # value to systemd's default (no).
+                        # An empty or whitespace-only Restart= is a parse
+                        # error: systemd logs and ignores the assignment, so
+                        # the last valid value stays in force.
                         *)
-                            eff_restart="no"
-                            eff_restart_file="$f"
                             ;;
                     esac
                     ;;
@@ -697,11 +697,13 @@ sanitize_restart_dropins ()
                     value="${line#SuccessExitStatus=}"
                     case "$value" in
                         *[![:space:]]*)
+                            set -f
                             for token in $value; do
                                 case "$token" in
                                     75|TEMPFAIL) succ_75_file="$f" ;;
                                 esac
                             done
+                            set +f
                             ;;
                         # An empty directive resets the accumulated list.
                         *)
@@ -713,11 +715,13 @@ sanitize_restart_dropins ()
                     value="${line#RestartPreventExitStatus=}"
                     case "$value" in
                         *[![:space:]]*)
+                            set -f
                             for token in $value; do
                                 case "$token" in
                                     75|TEMPFAIL) rpes_75_file="$f" ;;
                                 esac
                             done
+                            set +f
                             ;;
                         # An empty directive resets the accumulated list.
                         *)
