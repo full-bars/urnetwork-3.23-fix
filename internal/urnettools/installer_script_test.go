@@ -102,8 +102,21 @@ func TestFreeBSDResolveServiceUserNeverEmpty(t *testing.T) {
 	if err != nil {
 		t.Fatalf("resolve_service_user failed: %v (%s)", err, got)
 	}
-	if strings.TrimSpace(string(got)) == "" {
-		t.Error("resolve_service_user returned empty; the service would run as root")
+	resolved := strings.TrimSpace(string(got))
+	if resolved == "" {
+		t.Fatal("resolve_service_user returned empty; the rc script would render an empty user")
+	}
+	// With no sudo parent, no override and no login tty, the answer must be
+	// this process's own user (the `id -un` step). An earlier version asserted
+	// only non-emptiness, which `id -un` cannot violate, so the test could
+	// never fail (mutation-proved: deleting the logname branch did not matter,
+	// and neither would mis-resolving the fallthrough).
+	want, err := exec.Command("id", "-un").Output()
+	if err != nil {
+		t.Fatalf("id -un: %v", err)
+	}
+	if resolved != strings.TrimSpace(string(want)) {
+		t.Errorf("resolve_service_user = %q, want the current user %q", resolved, strings.TrimSpace(string(want)))
 	}
 }
 
@@ -116,26 +129,77 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
 
-	if !strings.Contains(script, `mv -f "$staged" "$provider_bin"`) {
-		t.Error("installer does not rename the staged binary into place")
+	body := extractShellFunc(t, script, "do_install")
+	if body == "" {
+		t.Fatal("could not extract do_install from the installer")
 	}
-	for _, line := range strings.Split(script, "\n") {
+	// Executable lines only: a commented-out `mv -f` satisfied the old
+	// string check while the live code copied (mutation-proved).
+	var execLines []string
+	for _, line := range strings.Split(body, "\n") {
 		trimmed := strings.TrimSpace(line)
-		if strings.HasPrefix(trimmed, "#") {
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
 			continue
 		}
-		if strings.Contains(trimmed, `cp "$provider_src" "$provider_bin"`) {
-			t.Errorf("installer copies onto the target directly (ETXTBSY on update): %q", trimmed)
+		execLines = append(execLines, trimmed)
+	}
+
+	stagedRename, refusalIdx, firstFetch := -1, -1, -1
+	for i, line := range execLines {
+		switch {
+		case strings.Contains(line, `mv -f "$staged" "$provider_bin"`):
+			stagedRename = i
+		case strings.Contains(line, `if [ "$service_user" = "root" ]; then`):
+			if refusalIdx < 0 {
+				refusalIdx = i
+			}
+		case strings.Contains(line, "curl -fsSL") && firstFetch < 0:
+			firstFetch = i
+		}
+		// Any copy whose destination is the live binary is the ETXTBSY bug,
+		// whatever flags it carries (`cp -f`, `cp -p`, quoted variants).
+		if strings.Contains(line, "cp ") && strings.Contains(line, `"$provider_bin"`) {
+			t.Errorf("do_install copies onto the live binary (ETXTBSY on update): %q", line)
 		}
 	}
-	// A genuine root login must refuse rather than install a root service.
-	if !strings.Contains(script, `if [ "$service_user" = "root" ]; then`) {
-		t.Error("installer has no refusal for a root service user")
+	if stagedRename < 0 {
+		t.Error("do_install does not rename the staged binary into place")
+	}
+	// The refusal must be INSIDE do_install and BEFORE any download. Checking
+	// the whole file passed even when the refusal was deleted from do_install,
+	// because do_install_service carries the same line (mutation-proved).
+	if refusalIdx < 0 {
+		t.Error("do_install has no refusal for a root service user")
+	} else if firstFetch >= 0 && refusalIdx > firstFetch {
+		t.Error("do_install downloads before refusing a root service user; the refusal must come first")
 	}
 	// Under sudo the files land root-owned; the service user must own them.
-	if !strings.Contains(script, `chown -R "$service_user" "$install_path"`) {
-		t.Error("installer does not hand the install directory to the service user")
+	if !strings.Contains(body, `chown -R "$service_user" "$install_path"`) {
+		t.Error("do_install does not hand the install directory to the service user")
 	}
+	// The service must not be started when a failure to start would be
+	// reported as success: the start/restart outcome is checked.
+	if !strings.Contains(body, "Failed to start the service") {
+		t.Error("do_install does not fail when the service fails to start")
+	}
+}
+
+// extractShellFunc returns the body of a top-level shell function, from its
+// definition line to the closing brace at column 0. Used so assertions can
+// target ONE function instead of the whole file, which is how a string present
+// in a sibling function satisfied a check about do_install.
+func extractShellFunc(t *testing.T, script, name string) string {
+	t.Helper()
+	start := strings.Index(script, name+"() {")
+	if start < 0 {
+		return ""
+	}
+	rest := script[start:]
+	end := strings.Index(rest, "\n}\n")
+	if end < 0 {
+		return ""
+	}
+	return rest[:end+2]
 }
 
 // A release asset with no digest must read as ABSENT. jq prints the string
@@ -174,7 +238,13 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	}
 
 	// jq path: the expression is embedded in single quotes in the shell.
-	if jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '"); jqStart >= 0 {
+	// A missing marker is a FAILURE, not a skip: the previous version wrapped
+	// this in `if found {`, so adding one space to the expression made every
+	// jq subtest vanish while the test reported success (mutation-proved).
+	jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '")
+	if jqStart < 0 {
+		t.Error("could not find the jq digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
+	} else {
 		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
 		if end := strings.Index(expr, "' 2>/dev/null"); end >= 0 {
 			expr = expr[:end]
@@ -197,11 +267,17 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		}
 	}
 
-	// python path
-	if pyStart := strings.Index(block, "python3 -c '"); pyStart >= 0 {
+	// python path; same rule: a missing marker fails rather than skips.
+	pyStart := strings.Index(block, "python3 -c '")
+	if pyStart < 0 {
+		t.Error("could not find the python digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
+	} else {
 		py := block[pyStart+len("python3 -c '"):]
-		if end := strings.Index(py, "' \"$tool_asset\""); end >= 0 {
-			py = py[:end]
+		pyEnd := strings.Index(py, "' \"$tool_asset\"")
+		if pyEnd < 0 {
+			t.Error("could not find the end of the python digest expression; the marker moved")
+		} else {
+			py = py[:pyEnd]
 			for _, c := range cases {
 				t.Run("py/"+c.name, func(t *testing.T) {
 					cmd := exec.Command("python3", "-c", py, "urnet-tools-freebsd-amd64")

@@ -328,12 +328,63 @@ jobs:
               exit 1
             fi
 
-            echo "=== provider actually starts under a real kernel ==="
-            # The end-to-end claim: the binary runs, not just links.
-            if [ -f "$HOME/.urnetwork/jwt" ]; then
-              echo "state dir and jwt present"
-              ls -la "$HOME/.urnetwork" || true
+            echo "=== rc.d service end-to-end: start, status, duplicate guard, log, stop ==="
+            # Runs the REAL shipped template (extracted from the installer, the
+            # same way the parity test does) against a stand-in that writes
+            # output, on the real kernel. This is the only check that can see
+            # daemon(8) log plumbing, the pidfile contract and the rc.subr
+            # status wiring; syntax checks cannot.
+            # NOTE: no heredocs here (YAML block scalar), printf builds the files.
+            mkdir -p /tmp/ci/bin
+            printf '%s\n' '#!/bin/sh' 'echo "standin stdout: $*"' 'echo "standin stderr" >&2' 'exec sleep 120' > /tmp/ci/bin/urnetwork
+            chmod 755 /tmp/ci/bin/urnetwork
+            chmod 755 /tmp/ci /tmp/ci/bin
+            { awk '{print} /^RCSCRIPT$/{exit}' scripts/Provider_Install_FreeBSD.sh; printf '%s\n' '}' 'service_name="urnettest"' 'provider_bin="/tmp/ci/bin/urnetwork"' 'write_rc_script_body "nobody" > /tmp/ci/urnettest'; } > /tmp/ci/rcgen.sh
+            sh /tmp/ci/rcgen.sh || { echo "FATAL: could not render the rc.d script from the installer"; exit 1; }
+            sh -n /tmp/ci/urnettest || { echo "FATAL: rendered rc.d is not valid shell"; exit 1; }
+            install -m 755 /tmp/ci/urnettest /usr/local/etc/rc.d/urnettest
+            service urnettest onestart || { echo "FATAL: onestart failed"; exit 1; }
+            sleep 2
+            service urnettest onestatus || { echo "FATAL: onestatus says not running after a successful start"; exit 1; }
+            pid1="$(cat /var/run/urnettest.pid 2>/dev/null)"
+            [ -n "$pid1" ] || { echo "FATAL: no pidfile after start"; exit 1; }
+            service urnettest onestart
+            pid2="$(cat /var/run/urnettest.pid 2>/dev/null)"
+            [ "$pid1" = "$pid2" ] || { echo "FATAL: a second start replaced the running provider (pid $pid1 -> $pid2)"; exit 1; }
+            if [ ! -s /var/log/urnettest/stdout.log ]; then
+              echo "FATAL: the provider log is empty; daemon(8) is discarding output"
+              exit 1
             fi
+            echo "log captured: $(wc -c < /var/log/urnettest/stdout.log) bytes"
+            t0="$(date +%s)"
+            service urnettest onestop || { echo "FATAL: onestop failed"; exit 1; }
+            t1="$(date +%s)"
+            [ $((t1 - t0)) -le 5 ] || { echo "FATAL: stop took $((t1 - t0))s (expected <= 5)"; exit 1; }
+            if service urnettest onestatus; then
+              echo "FATAL: onestatus still reports running after stop"
+              exit 1
+            fi
+            rm -f /usr/local/etc/rc.d/urnettest /var/run/urnettest.pid
+            rm -rf /var/log/urnettest
+            echo "rc.d end-to-end OK"
+
+            echo "=== optimize applies safely and leaves TCP working ==="
+            # The tuning raises the TCP socket-buffer defaults; without raising
+            # kern.ipc.maxsockbuf first, sbreserve refuses them and creating a
+            # socket fails with ENOBUFS. Run the real command, then prove a
+            # socket still works.
+            ./out/urnet-tools optimize -f || { echo "FATAL: optimize failed"; exit 1; }
+            printf 'kern.ipc.maxsockbuf = %s\n' "$(sysctl -n kern.ipc.maxsockbuf)"
+            printf 'net.inet.tcp.recvspace = %s\n' "$(sysctl -n net.inet.tcp.recvspace)"
+            grep -q 'kern.ipc.maxsockbuf' /etc/sysctl.conf || { echo "FATAL: optimize did not persist kern.ipc.maxsockbuf"; exit 1; }
+            (nc -l 127.0.0.1 19999 >/dev/null 2>&1 &)
+            sleep 1
+            if ! nc -z 127.0.0.1 19999; then
+              echo "FATAL: TCP socket creation fails after optimize (ENOBUFS from sbreserve)"
+              exit 1
+            fi
+            pkill -f 'nc -l 127.0.0.1 19999' 2>/dev/null || true
+            echo "optimize + TCP loopback OK"
 
       - name: Go test suite on FreeBSD (native toolchain)
         id: gotest
@@ -388,7 +439,7 @@ jobs:
             echo "--- root sysmem tests done ---"
 
             cd internal/urnettools || exit 1
-            ../../out/urnettools.test -test.v -test.run 'TestRenderBSD|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl' > /tmp/t3.log 2>&1 || failures=1
+            ../../out/urnettools.test -test.v -test.run 'TestRenderBSD|TestBSDTemplateParity|TestBSDRcServiceName|TestParseProcstat|TestParseUIDField|TestBSDSysctl|TestFreeBSD|TestEffectiveBSDValue|TestBSDSysctlWritesRaisesSockbufFirst|TestTarRelPath|TestOptimizeForDispatch' > /tmp/t3.log 2>&1 || failures=1
             tail -40 /tmp/t3.log
             echo "--- urnettools bsd tests done ---"
 

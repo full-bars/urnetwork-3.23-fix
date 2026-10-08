@@ -76,8 +76,29 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `-p "$pidfile"`) {
 		t.Error("script does not pass the child pidfile to daemon")
 	}
-	if !strings.Contains(script, `kill "$pid"`) {
+	if !strings.Contains(script, `kill "$_pid"`) {
 		t.Error("script does not stop the provider through its pidfile")
+	}
+	// status must be wired explicitly: rc.subr only registers a status action
+	// when procname/command or status_cmd is set, and this script sets neither
+	// of the first two (verified against libexec/rc/rc.subr on stable/14).
+	if !strings.Contains(script, `status_cmd="urnetwork_status"`) {
+		t.Error("script does not define status_cmd; `service urnetwork onestatus` cannot work without it")
+	}
+	if !strings.Contains(script, `urnetwork_running_pid`) {
+		t.Error("script has no pidfile-based running check; start/status cannot be reliable")
+	}
+	// daemon(8) defaults to sending both streams to -o. A mask of 0 sends
+	// neither, which silently discards everything the provider logs.
+	if strings.Contains(script, "-m 0") {
+		t.Error("script passes -m 0 to daemon; that discards all provider output")
+	}
+	if !strings.Contains(script, `$daemon -f -t urnetwork -p "$pidfile" -o "$logdir/stdout.log"`) {
+		t.Error("script does not start daemon with the pidfile and log file")
+	}
+	// Starting a second copy on top of a live one must be refused.
+	if !strings.Contains(script, "not starting a second copy") {
+		t.Error("script has no duplicate-start guard")
 	}
 	// -u makes daemon set HOME/USER/SHELL for the target user, so the state dir
 	// lands in that user's home rather than root's. It also replaces the old
@@ -158,8 +179,14 @@ func TestBSDRcServiceNameFromBinary(t *testing.T) {
 	for _, c := range []struct{ binary, want string }{
 		{"/usr/local/bin/urnetwork", "urnetwork"},
 		{"/usr/local/bin/urnetwork_beta", "urnetwork_beta"},
-		{"/usr/local/bin/urnet-provider", "urnet-provider"},
+		// A hyphen is not valid in a shell variable name, and rc.conf IS
+		// shell: `urnet-provider_enable=YES` is a line every boot fails to
+		// source and sysrc still writes. Map to underscore instead.
+		{"/usr/local/bin/urnet-provider", "urnet_provider"},
 		{"/usr/local/bin/provider", "provider"},
+		// A shell variable name cannot start with a digit either.
+		{"/usr/local/bin/2fast", "_2fast"},
+		{"/usr/local/bin/urnet.work", "urnet_work"},
 		{"", "urnetwork"},
 	} {
 		if got := bsdRcServiceName(c.binary); got != c.want {

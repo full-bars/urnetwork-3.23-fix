@@ -91,6 +91,15 @@ user_home() {
     printf '%s\n' "${_h:-$HOME}"
 }
 
+# user_shell prints the login shell of a user from the passwd database. The
+# invoking user's $SHELL is not the service user's shell, and writing a bash
+# fragment into a tcsh rc file is worse than not writing one.
+user_shell() {
+    _s="$(getent passwd "$1" 2>/dev/null | cut -d: -f7)"
+    [ -n "$_s" ] || _s="$(pw usershow "$1" 2>/dev/null | cut -d: -f10)"
+    printf '%s\n' "${_s:-/bin/sh}"
+}
+
 # --- paths ---
 #
 # The binary lives in the SAME location the Go tool's discovery fallback looks
@@ -114,27 +123,53 @@ github_raw="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/
 
 # --- rc.d ---
 
+# priv runs a command as root, through sudo when we are not already root.
+# rc.d start/stop need it (the script's own mkdir/chown and `daemon -u`
+# require root), and a non-root run that fails silently is how an install
+# could report success with nothing running.
+priv() {
+    if [ "$(id -u)" = "0" ]; then
+        "$@"
+    elif command -v sudo > /dev/null 2>&1; then
+        sudo "$@"
+    else
+        pr_err "root is required to run: %s" "$*"
+        pr_err "install sudo (pkg install sudo) or re-run as root"
+        return 1
+    fi
+}
+
 load_service() {
-    service "$service_name" start 2>/dev/null
+    priv service "$service_name" start
 }
 
 unload_service() {
-    service "$service_name" stop 2>/dev/null
+    priv service "$service_name" stop
 }
 
 restart_service() {
-    service "$service_name" restart 2>/dev/null
+    priv service "$service_name" restart
 }
 
 service_running() {
+    # Status reads the pidfile and is fine unprivileged; only start/stop need
+    # root. The script must exist first, or `service` errors on a fresh box.
+    [ -x "/usr/local/etc/rc.d/$service_name" ] || return 1
     service "$service_name" onestatus >/dev/null 2>&1
 }
 
-enable_service() {
-    # sysrc is the supported editor for rc.conf: it rewrites the file
-    # atomically and preserves formatting, which every other service on the
-    # box also depends on. A direct append to /etc/rc.conf cannot.
-    sysrc "$service_name"_enable=YES 2>/dev/null
+# set_rc_conf_default KEY VALUE sets an rc.conf variable only when it is not
+# already set. sysrc is the supported editor for rc.conf (atomic, preserves
+# formatting). Setting unconditionally would clobber an operator's explicit
+# choice on every update: an operator who disabled auto-start would find it
+# re-enabled, and a custom _user would be overwritten.
+set_rc_conf_default() {
+    _key="$1"
+    _val="$2"
+    _cur="$(sysrc -n "$_key" 2>/dev/null || true)"
+    if [ -z "$_cur" ]; then
+        priv sysrc "$_key=$_val"
+    fi
 }
 
 # install_wrapper_tool downloads this script as the urnet-tools stand-in.
@@ -182,15 +217,14 @@ write_rc_script_body() {
 #   ${service_name}_enable="YES"   start at boot (set by urnet-tools auto-start)
 #   ${service_name}_user="$run_user"   run as this user
 #   ${service_name}_flags=""       extra flags for the provider
+#
+# To run at boot:
+#   sysrc ${service_name}_enable=YES
 
 . /etc/rc.subr
 
 name="$service_name"
 rcvar=${service_name}_enable
-
-: \$${service_name}_enable="NO"
-: \$${service_name}_user="$run_user"
-: \$${service_name}_flags=""
 
 load_rc_config \$name
 
@@ -200,6 +234,7 @@ load_rc_config \$name
 
 start_cmd="${service_name}_start"
 stop_cmd="${service_name}_stop"
+status_cmd="${service_name}_status"
 
 # The provider is long-lived, so start it through daemon(8). Running it in the
 # foreground would make "service $service_name start" never return AND stall the
@@ -208,39 +243,75 @@ stop_cmd="${service_name}_stop"
 # daemon(8) also settles two things a bare "su -m ... &" would not:
 #   - -u sets HOME, USER and SHELL for the target user, so the provider's state
 #     dir lands in that user's home rather than root's.
-#   - -p writes the child pid through pidfile(3), which is what gives
-#     "service $service_name onestatus" something real to check. Without it
-#     status always reports "not running" and every start launches a duplicate.
+#   - -p writes the child pid through pidfile(3), giving stop and status a
+#     precise handle on the provider process.
+#
+# No -m flag: daemon(8) defaults to sending BOTH stdout and stderr to the -o
+# file. A mask of 0 (the previous value) plumbed neither, so the log stayed
+# empty and the provider ran with its output discarded.
+#
+# rc.subr's own status/start pid logic is not used here: it keys off
+# procname/command, and this script sets neither, so rc_pid would always be
+# empty (start would launch duplicates, status would always report stopped).
+# The pidfile is checked directly instead.
 daemon="/usr/sbin/daemon"
 pidfile="/var/run/$service_name.pid"
 logdir="/var/log/$service_name"
 
+${service_name}_running_pid()
+{
+    [ -f "\$pidfile" ] || return 1
+    _pid="\$(cat "\$pidfile" 2>/dev/null)"
+    [ -n "\$_pid" ] || return 1
+    kill -0 "\$_pid" 2>/dev/null || return 1
+    echo "\$_pid"
+}
+
 ${service_name}_start()
 {
+    if _pid="\$(\${name}_running_pid)"; then
+        echo "$service_name is already running as pid \$_pid; not starting a second copy."
+        return 0
+    fi
+    rm -f "\$pidfile"
     mkdir -p "\$logdir"
     chown \${${service_name}_user} "\$logdir"
     echo "Starting $service_name."
-    \$daemon -f -t $service_name -p "\$pidfile" -o "\$logdir/stdout.log" -m 0 \
-        -u \${${service_name}_user} \
+    \$daemon -f -t $service_name -p "\$pidfile" -o "\$logdir/stdout.log" \\
+        -u \${${service_name}_user} \\
         "$provider_bin" provide \$${service_name}_flags
 }
 
 ${service_name}_stop()
 {
     echo "Stopping $service_name."
-    # Signal the CHILD, whose pid the pidfile holds. A "-f" pattern on the
-    # binary path would also match urnet-tools, cron and anything else that
-    # merely mentions the path, so the pidfile is the precise handle.
-    if [ -f "\$pidfile" ]; then
-        pid="\$(cat "\$pidfile")"
-        kill "\$pid" 2>/dev/null || true
-        for _ in 1 2 3 4 5 6 7 8 9 10; do
-            [ -f "\$pidfile" ] || break
-            sleep 1
-        done
+    if ! _pid="\$(\${name}_running_pid)"; then
+        echo "$service_name is not running."
+        rm -f "\$pidfile"
+        return 0
     fi
-    pkill -TERM -x "$(basename "$provider_bin")" 2>/dev/null || true
+    kill "\$_pid" 2>/dev/null || true
+    _n=0
+    while [ "\$_n" -lt 30 ]; do
+        kill -0 "\$_pid" 2>/dev/null || break
+        sleep 1
+        _n=\$((_n + 1))
+    done
+    if kill -0 "\$_pid" 2>/dev/null; then
+        echo "$service_name did not exit within 30s; sending SIGKILL."
+        kill -9 "\$_pid" 2>/dev/null || true
+    fi
     rm -f "\$pidfile"
+}
+
+${service_name}_status()
+{
+    if _pid="\$(\${name}_running_pid)"; then
+        echo "$service_name is running as pid \$_pid."
+        return 0
+    fi
+    echo "$service_name is not running."
+    return 1
 }
 
 run_rc_command "\$1"
@@ -414,8 +485,9 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 $(write_rc_script_body "$service_user")
 RCSCRIPT
             sudo chmod 755 "$rc_script"
-            sudo sysrc "$service_name"_enable=YES
-            sudo sysrc "$service_name"_user="$service_user"
+            # Only when unset: an operator's explicit enable/user survives an update.
+            set_rc_conf_default "${service_name}_enable" YES
+            set_rc_conf_default "${service_name}_user" "$service_user"
         else
             pr_warn "sudo not found. Install the service manually:"
             pr_warn "  sudo mkdir -p /usr/local/etc/rc.d"
@@ -425,25 +497,40 @@ RCSCRIPT
         mkdir -p "$(dirname "$rc_script")"
         write_rc_script_body "$service_user" > "$rc_script"
         chmod 755 "$rc_script"
-        sysrc "$service_name"_enable=YES
-        sysrc "$service_name"_user="$service_user"
+        # Only when unset: an operator's explicit enable/user survives an update.
+        set_rc_conf_default "${service_name}_enable" YES
+        set_rc_conf_default "${service_name}_user" "$service_user"
     fi
 
-    unload_service
-    load_service
+    # Start policy: a fresh install starts the service; an update restarts it
+    # only if it was already running, so a deliberately stopped provider is not
+    # resurrected by an unattended `update` from cron. Failures are fatal —
+    # reporting "installed" for a service that did not start is a false green.
+    if service_running; then
+        restart_service || { pr_err "Failed to restart the service after install"; exit 1; }
+    elif [ "${UPDATING:-0}" != "1" ]; then
+        load_service || { pr_err "Failed to start the service"; exit 1; }
+    else
+        pr_info "Service is not running; leaving it stopped (run '%s start' when ready)" "$me"
+    fi
 
-    if ! echo "$PATH" | tr ':' '\n' | grep -qxF "$install_path/bin"; then
-        shell_rc="$HOME/.profile"
-        case "$SHELL" in
-            */zsh)  shell_rc="$HOME/.zshrc" ;;
-            */bash) shell_rc="$HOME/.bash_profile" ;;
-            */tcsh) shell_rc="$HOME/.cshrc" ;;
+    # PATH hint goes into the SERVICE user's shell rc, once. Under sudo $HOME
+    # is root's, and root's PATH never contains the service user's bin dir, so
+    # the old check re-appended a duplicate line on every install and update.
+    if [ "${UPDATING:-0}" != "1" ]; then
+        _shell="$(user_shell "$service_user")"
+        shell_rc="$service_home/.profile"
+        case "$_shell" in
+            */zsh)  shell_rc="$service_home/.zshrc" ;;
+            */bash) shell_rc="$service_home/.bash_profile" ;;
+            */tcsh) shell_rc="$service_home/.cshrc" ;;
         esac
-        if [ -n "$shell_rc" ]; then
-            case "$SHELL" in
-                */tcsh) echo "setenv PATH $install_path/bin:\$PATH" >> "$shell_rc" ;;
-                *)      echo "export PATH=\"$install_path/bin:\$PATH\"" >> "$shell_rc" ;;
+        if ! grep -qsF "$install_path/bin" "$shell_rc" 2>/dev/null; then
+            case "$_shell" in
+                */tcsh) printf '%s\n' "setenv PATH $install_path/bin:\$PATH" >> "$shell_rc" ;;
+                *)      printf '%s\n' "export PATH=\"$install_path/bin:\$PATH\"" >> "$shell_rc" ;;
             esac
+            chown "$service_user" "$shell_rc" 2>/dev/null || true
             pr_info "Added %s to PATH in %s" "$install_path/bin" "$shell_rc"
         fi
     fi
@@ -485,15 +572,23 @@ do_install_service() {
 do_start() {
     if service_running; then
         pr_info "Provider is already running"
-        return
+        return 0
     fi
-    load_service
-    pr_info "Provider started"
+    if load_service; then
+        pr_info "Provider started"
+    else
+        pr_err "Failed to start the provider"
+        exit 1
+    fi
 }
 
 do_stop() {
-    unload_service
-    pr_info "Provider stopped"
+    if unload_service; then
+        pr_info "Provider stopped"
+    else
+        pr_err "Failed to stop the provider"
+        exit 1
+    fi
 }
 
 do_restart() {
@@ -505,8 +600,12 @@ do_restart() {
             *) pr_info "Aborted."; exit 0 ;;
         esac
     fi
-    restart_service
-    pr_info "Provider restarted"
+    if restart_service; then
+        pr_info "Provider restarted"
+    else
+        pr_err "Failed to restart the provider"
+        exit 1
+    fi
 }
 
 do_status() {
@@ -528,6 +627,9 @@ do_version() {
 
 do_update() {
     version="${1:-latest}"
+    # Tells do_install to restart (not start) the service and to leave the
+    # operator's rc.conf choices and shell rc alone.
+    UPDATING=1
     do_install "$version"
     pr_info "Update complete."
 }

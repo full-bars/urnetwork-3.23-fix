@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -101,5 +102,65 @@ func TestValidateBSDConfValueRejectsNonNumeric(t *testing.T) {
 		if err := validateBSDConfValue("net.inet.tcp.recvspace", good); err != nil {
 			t.Errorf("value %q must be accepted: %v", good, err)
 		}
+	}
+}
+
+// Every key in bsdSysctlWrites raises a limit, so an already-higher current
+// value must survive: writing the target unconditionally LOWERED a larger
+// site default (a 500k kern.maxfiles becoming 200k), live and at boot.
+func TestEffectiveBSDValueNeverLowers(t *testing.T) {
+	cases := []struct{ current, target, want string }{
+		{"65536", "4194304", "4194304"},   // raise
+		{"8388608", "4194304", "8388608"}, // already higher: keep it
+		{"200000", "200000", "200000"},    // equal
+		{"", "200000", "200000"},          // unreadable falls back to target
+		{"garbage", "200000", "200000"},   // non-numeric falls back to target
+		{" 999 ", "1", "999"},             // whitespace tolerated
+	}
+	for _, c := range cases {
+		if got := effectiveBSDValue(c.current, c.target); got != c.want {
+			t.Errorf("effectiveBSDValue(%q, %q) = %q, want %q", c.current, c.target, got, c.want)
+		}
+	}
+}
+
+// The socket-buffer ceiling must be written before the TCP spaces that depend
+// on it: tcp_attach reserves the space, and sbreserve refuses anything above
+// sb_max_adj (derived from kern.ipc.maxsockbuf). Order is the fix.
+func TestBSDSysctlWritesRaisesSockbufFirst(t *testing.T) {
+	writes := bsdSysctlWrites()
+	idx := map[string]int{}
+	for i, w := range writes {
+		idx[w[0]] = i
+	}
+	maxsockbuf, ok := idx["kern.ipc.maxsockbuf"]
+	if !ok {
+		t.Fatal("kern.ipc.maxsockbuf is not in the write list; the TCP spaces can exceed the default cap and break every new socket")
+	}
+	for _, k := range []string{"net.inet.tcp.recvspace", "net.inet.tcp.sendspace"} {
+		if i, ok := idx[k]; !ok {
+			t.Errorf("%s missing from the write list", k)
+		} else if i < maxsockbuf {
+			t.Errorf("%s is written before kern.ipc.maxsockbuf; the ceiling must be raised first", k)
+		}
+	}
+	// The ceiling must actually cover the TCP spaces, with the ~0.889 factor
+	// sb_max_adj applies (MCLBYTES/(MSIZE+MCLBYTES)): 4 MiB of space needs
+	// more than 4.5 MiB of maxsockbuf.
+	var sockbufTarget, tcpTarget float64
+	for _, w := range writes {
+		switch w[0] {
+		case "kern.ipc.maxsockbuf":
+			sockbufTarget, _ = strconv.ParseFloat(w[1], 64)
+		case "net.inet.tcp.recvspace", "net.inet.tcp.sendspace":
+			v, _ := strconv.ParseFloat(w[1], 64)
+			if v > tcpTarget {
+				tcpTarget = v
+			}
+		}
+	}
+	if sockbufTarget*0.889 < tcpTarget {
+		t.Errorf("kern.ipc.maxsockbuf target %v does not cover the TCP space target %v (sb_max_adj is ~0.889 of maxsockbuf)",
+			sockbufTarget, tcpTarget)
 	}
 }

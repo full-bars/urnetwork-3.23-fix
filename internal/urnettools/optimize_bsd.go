@@ -5,6 +5,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -28,6 +29,15 @@ import (
 // job, and an unverified key in this list is worse than no key.
 func bsdSysctlWrites() [][]string {
 	return [][]string{
+		// Socket buffer ceiling FIRST, and it is load-bearing: tcp_attach
+		// reserves the default send/receive space through soreserve(), whose
+		// sbreserve() refuses any value above sb_max_adj (about
+		// kern.ipc.maxsockbuf scaled by MCLBYTES/(MSIZE+MCLBYTES)). Setting the
+		// TCP defaults to 4 MiB while maxsockbuf stayed at its ~2 MiB default
+		// makes every new TCP socket fail with ENOBUFS — and because these are
+		// persisted, that state would survive the reboot. Order matters: the
+		// ceiling is raised before the values that depend on it.
+		{"kern.ipc.maxsockbuf", "16777216"},
 		// Socket buffers for the UDP/WebRTC and TCP transfer paths.
 		{"net.inet.tcp.recvspace", "4194304"},
 		{"net.inet.tcp.sendspace", "4194304"},
@@ -36,6 +46,25 @@ func bsdSysctlWrites() [][]string {
 		{"kern.maxfiles", "200000"},
 		{"kern.maxfilesperproc", "100000"},
 	}
+}
+
+// effectiveBSDValue returns the value to apply for one tuning key.
+//
+// Every key here RAISES a limit, so a host whose current value is already
+// higher must keep it: writing the target unconditionally would LOWER a
+// larger site default (a 500k kern.maxfiles becoming 200k) both live and at
+// boot, which is the opposite of tuning. Non-numeric readings fall back to
+// the target so a caller that could not parse still gets a sane value.
+func effectiveBSDValue(current, target string) string {
+	cur, cerr := strconv.ParseInt(strings.TrimSpace(current), 10, 64)
+	tgt, terr := strconv.ParseInt(strings.TrimSpace(target), 10, 64)
+	if cerr != nil || terr != nil {
+		return target
+	}
+	if cur > tgt {
+		return strings.TrimSpace(current)
+	}
+	return target
 }
 
 // WHY /etc/sysctl.conf AND NOT sysrc(8): FreeBSD persists runtime sysctl
@@ -183,6 +212,14 @@ func optimizeFreeBSD() error {
 		prior[w[0]] = strings.TrimSpace(string(out))
 	}
 
+	// Apply max(current, target) per key so an already-higher site value is
+	// never lowered. The slice keeps bsdSysctlWrites order (maxsockbuf before
+	// the TCP spaces it must cover).
+	effective := make([][]string, 0, len(writes))
+	for _, w := range writes {
+		effective = append(effective, []string{w[0], effectiveBSDValue(prior[w[0]], w[1])})
+	}
+
 	// Snapshot the boot file too, so a persist failure restores it exactly. The
 	// bytes are the source of truth, not a re-render: re-rendering would lose
 	// entries this tool does not manage.
@@ -192,23 +229,23 @@ func optimizeFreeBSD() error {
 	}
 
 	applied := 0
-	for _, w := range writes {
+	for _, w := range effective {
 		if out, err := exec.Command("sysctl", "-w", w[0]+"="+w[1]).CombinedOutput(); err != nil {
 			fmt.Fprintf(os.Stderr, "optimize: warning: sysctl -w %s failed: %v (%s); rolling back\n",
 				w[0], err, strings.TrimSpace(string(out)))
-			rollbackSysctls(writes[:applied], prior)
+			rollbackSysctls(effective[:applied], prior)
 			return fmt.Errorf("optimize: live apply of %s failed: %w", w[0], err)
 		}
 		applied++
 	}
 
-	newConf, err := upsertBSDConfLines(confBefore, writes)
+	newConf, err := upsertBSDConfLines(confBefore, effective)
 	if err != nil {
 		// The file is untouched at this point, so only the live values need
 		// reverting — but they must be, or the box runs tuned until reboot.
 		fmt.Fprintf(os.Stderr, "optimize: warning: rendering %s failed: %v; rolling back\n",
 			bsdSysctlConfPath, err)
-		rollbackSysctls(writes, prior)
+		rollbackSysctls(effective, prior)
 		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live settings",
 			bsdSysctlConfPath, err)
 	}
@@ -216,7 +253,7 @@ func optimizeFreeBSD() error {
 		fmt.Fprintf(os.Stderr, "optimize: warning: writing %s failed: %v; rolling back\n",
 			bsdSysctlConfPath, err)
 		rollbackBSDConf(confBefore, confExisted)
-		rollbackSysctls(writes, prior)
+		rollbackSysctls(effective, prior)
 		return fmt.Errorf("optimize: persist %s failed (%v); rolled back live and boot settings",
 			bsdSysctlConfPath, err)
 	}

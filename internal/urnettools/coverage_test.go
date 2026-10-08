@@ -165,6 +165,14 @@ func TestTarRelPath(t *testing.T) {
 	if strings.ContainsRune(tarRelPath("windows", "amd64"), '\\') {
 		t.Errorf("tarRelPath must never emit backslashes, got %q", tarRelPath("windows", "amd64"))
 	}
+	// FreeBSD ships freebsd/<arch>/provider in the universal tarball. Without
+	// this case the update path extracts the LINUX ELF, isRecognizedExecutable
+	// accepts it, and the box ends up with a binary that will not start.
+	for _, arch := range []string{"amd64", "arm64"} {
+		if got, want := tarRelPath("freebsd", arch), "freebsd/"+arch+"/provider"; got != want {
+			t.Errorf("tarRelPath(freebsd, %s) = %q, want %q", arch, got, want)
+		}
+	}
 }
 
 // TestOptimizeForDispatch covers the platform dispatch in cmdOptimize:
@@ -188,11 +196,13 @@ func TestOptimizeForDispatch(t *testing.T) {
 	}
 	// FreeBSD likewise: it shares no tunable name with Linux (no
 	// net.core.rmem_max, no /etc/sysctl.d), so the Linux path there reported
-	// success while tuning nothing. Its persistence target is rc.conf.
-	if runtime.GOOS == "freebsd" {
-		if got, want := fnPtr(optimizeFor("freebsd")), fnPtr(optimizeFreeBSD); got != want {
-			t.Errorf("optimizeFor(freebsd) did not dispatch to optimizeFreeBSD")
-		}
+	// success while tuning nothing. Its persistence target is sysctl.conf.
+	//
+	// No runtime.GOOS guard: optimizeFreeBSD is built on every platform, and
+	// guarding it meant the assertion only ran on a FreeBSD host — the
+	// freebsd->linux mutation passed unnoticed on Linux CI.
+	if got, want := fnPtr(optimizeFor("freebsd")), fnPtr(optimizeFreeBSD); got != want {
+		t.Errorf("optimizeFor(freebsd) did not dispatch to optimizeFreeBSD")
 	}
 	// Unknown GOOSes still fall back to the Linux path rather than erroring.
 	if got, want := fnPtr(optimizeFor("plan9")), fnPtr(optimizeLinux); got != want {
