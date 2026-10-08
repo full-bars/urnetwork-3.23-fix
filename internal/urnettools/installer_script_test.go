@@ -134,3 +134,83 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 		t.Error("installer does not hand the install directory to the service user")
 	}
 }
+
+// A release asset with no digest must read as ABSENT. jq prints the string
+// "null" for a missing or null field, which passed the non-empty test and then
+// failed the comparison, so every install fell back to the shell wrapper while
+// reporting success. These cases run the real expression out of the shipped
+// installer against the JSON shapes the releases API actually returns.
+func TestFreeBSDToolDigestLookup(t *testing.T) {
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	i := strings.Index(script, `tool_digest="$(printf`)
+	j := strings.Index(script, `if [ -n "$tool_digest" ]`)
+	if i < 0 || j < 0 || j <= i {
+		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
+	}
+	block := script[i:j]
+
+	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	cases := []struct {
+		name string
+		json string
+		want string
+	}{
+		{"digest field absent", `{"assets":[{"name":"urnet-tools-freebsd-amd64"}]}`, ""},
+		{"digest explicitly null", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":null}]}`, ""},
+		{"digest empty string", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":""}]}`, ""},
+		{"not a hex digest", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"deadbeef"}]}`, ""},
+		{"different algorithm", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha512:` + hex64 + `"}]}`, ""},
+		{"other asset matched", `{"assets":[{"name":"urnet-tools-linux-amd64","digest":"sha256:` + hex64 + `"}]}`, ""},
+		{"real sha256", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:` + hex64 + `"}]}`, hex64},
+		{"bare hex", `{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"` + hex64 + `"}]}`, hex64},
+	}
+
+	// jq path: the expression is embedded in single quotes in the shell.
+	if jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '"); jqStart >= 0 {
+		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
+		if end := strings.Index(expr, "' 2>/dev/null"); end >= 0 {
+			expr = expr[:end]
+			for _, c := range cases {
+				t.Run("jq/"+c.name, func(t *testing.T) {
+					// jq reads the release JSON on stdin, so it must be wired:
+					// Output() alone would leave it with no input and it would
+					// quietly return nothing for every case.
+					cmd := exec.Command("jq", "-r", "--arg", "a", "urnet-tools-freebsd-amd64", expr)
+					cmd.Stdin = strings.NewReader(c.json)
+					out, err := cmd.Output()
+					if err != nil {
+						t.Fatalf("jq failed: %v", err)
+					}
+					if got := strings.TrimSpace(string(out)); got != c.want {
+						t.Errorf("got %q, want %q", got, c.want)
+					}
+				})
+			}
+		}
+	}
+
+	// python path
+	if pyStart := strings.Index(block, "python3 -c '"); pyStart >= 0 {
+		py := block[pyStart+len("python3 -c '"):]
+		if end := strings.Index(py, "' \"$tool_asset\""); end >= 0 {
+			py = py[:end]
+			for _, c := range cases {
+				t.Run("py/"+c.name, func(t *testing.T) {
+					cmd := exec.Command("python3", "-c", py, "urnet-tools-freebsd-amd64")
+					cmd.Stdin = strings.NewReader(c.json)
+					out, err := cmd.Output()
+					if err != nil {
+						t.Fatalf("python failed: %v", err)
+					}
+					if got := strings.TrimSpace(string(out)); got != c.want {
+						t.Errorf("got %q, want %q", got, c.want)
+					}
+				})
+			}
+		}
+	}
+}

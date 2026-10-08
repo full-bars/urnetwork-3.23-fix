@@ -339,11 +339,36 @@ do_install() {
     # digest-verified; fall back to this shell script for releases that
     # predate the Go asset.
     tool_asset="urnet-tools-freebsd-$goarch"
+    # A release asset with no digest must read as ABSENT, not as the four
+    # characters "null". jq prints the string null for a missing or null field,
+    # which passed the -n test below and then failed the comparison, so every
+    # install silently fell back to the shell wrapper while reporting success.
+    # Select the asset first and require a real hex digest, so an unknown
+    # digest means "cannot verify" and takes the same deliberate path.
     tool_digest=""
+    release_json="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null)"
     if command -v jq > /dev/null 2>&1; then
-        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | jq -r --arg a "$tool_asset" '.assets[] | select(.name == $a) | .digest' 2>/dev/null | sed 's/^sha256://' || true)"
+        tool_digest="$(printf '%s' "$release_json" | jq -r --arg a "$tool_asset" '
+            (.assets[]? | select(.name == $a) | .digest)
+            | select(type == "string")
+            | sub("^sha256:"; "")
+            | select(test("^[0-9a-fA-F]{64}$"))
+        ' 2>/dev/null || true)"
     elif command -v python3 > /dev/null 2>&1; then
-        tool_digest="$(curl -fsSL "$github_api/releases/tags/$tag" 2>/dev/null | python3 -c 'import sys,json; d=json.load(sys.stdin); print(next((a.get("digest","").replace("sha256:","") for a in d.get("assets",[]) if a.get("name")==sys.argv[1]), ""))' "$tool_asset" 2>/dev/null || true)"
+        tool_digest="$(printf '%s' "$release_json" | python3 -c '
+import sys, json, re
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+val = ""
+for asset in doc.get("assets", []):
+    if asset.get("name") == sys.argv[1]:
+        val = asset.get("digest") or ""
+        break
+val = val.replace("sha256:", "")
+print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
+' "$tool_asset" 2>/dev/null || true)"
     fi
 
     if [ -n "$tool_digest" ]; then
