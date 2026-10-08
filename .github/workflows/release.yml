@@ -290,14 +290,20 @@ jobs:
           # the universal tarball and for a urnet-tools-freebsd-<arch> asset, so
           # both must exist or every install fails with "binary not found in
           # release tarball".
-          for arch in amd64 arm64; do
-            cp "provider_tmp/freebsd/$arch/provider" "release_tmp/freebsd/$arch/provider"
-            cp "tool_tmp/freebsd/$arch/urnet-tools" "tool_tmp/urnet-tools-freebsd-$arch"
-          done
+          #
+          # The provider needs no copy: download-artifact already placed it at
+          # release_tmp/freebsd/<arch>/provider, the same place every other OS
+          # lands. Only the tool binary has to be stamped at the workspace
+          # ROOT, because the release upload globs "urnet-tools-*" from there;
+          # anything left nested under tool_tmp/ is silently not published.
           # NOTE: these copies are deliberately NOT suppressed with || true —
           # a missing/renamed tool artifact must fail the release BEFORE it
           # publishes, not ship a release that breaks installers + self-update
           # (verified 2026-08-12 review).
+          for arch in amd64 arm64; do
+            test -f "release_tmp/freebsd/$arch/provider"
+            cp "tool_tmp/freebsd/$arch/urnet-tools" "urnet-tools-freebsd-$arch"
+          done
 
       - name: Create provider tarballs
         run: |
