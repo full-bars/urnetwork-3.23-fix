@@ -4,6 +4,7 @@ package urnettools
 
 import (
 	"fmt"
+	"os"
 	"os/exec"
 	"syscall"
 )
@@ -48,6 +49,16 @@ func cmdStartWindows(p Provider, force, dryRun bool) error {
 		// runners). Without it the parent's job object terminates the
 		// provider on CLI exit even with DETACHED_PROCESS.
 		CreationFlags: detachedProcess | createNewProcessGrp | createNoWindow | createBreakawayFromJob,
+	}
+	// Ensure the provider's state directory exists before launching.
+	// On a fresh install or clean profile, %USERPROFILE%\.urnetwork does
+	// not exist yet; setting cmd.Dir to a nonexistent directory causes
+	// Windows CreateProcess to fail immediately with Win32 error 267
+	// (ERROR_DIRECTORY_NAME / "The directory name is invalid.").
+	if p.StateDir != "" {
+		if err := os.MkdirAll(p.StateDir, 0755); err != nil {
+			return fmt.Errorf("start provider: create state dir %s: %w", p.StateDir, err)
+		}
 	}
 	cmd.Dir = p.StateDir
 	if err := cmd.Start(); err != nil {
