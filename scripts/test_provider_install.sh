@@ -389,6 +389,458 @@ test_remove_tool_links_only_removes_our_links() {
 }
 test_remove_tool_links_only_removes_our_links
 
+# --- OpenRC installer branch -------------------------------------------------
+# The CI runner is not root, so these pin the STAGED service script's content
+# and the exact sudo commands a non-root operator is told to run; the root
+# install path is covered by the container smoke (root-only).
+#
+# Both run in a FRESH bash that re-sources the library: an earlier test
+# replaces pr_info/pr_warn/pr_err with no-ops at shell scope, which would
+# silently empty the captured output.
+test_openrc_staged_script_and_nonroot_output() {
+    local tmpd me out staged
+    tmpd="$(mktemp -d)"
+    me="$(id -un)"
+    out="$(
+        PT_INSTALL="$tmpd/install" PT_ME="$me" PT_INITD="$tmpd/init.d-urnetwork" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_INSTALL"
+            mkdir -p "$install_path"
+            openrc_user="$PT_ME"
+            openrc_initd_file="$PT_INITD"
+            urnet_install_url="https://example.invalid/install.sh"
+            sudo() { return 1; }
+            install_openrc_units
+        '
+    )"
+    staged="$tmpd/install/urnetwork.openrc"
+    assert_eq "1" "$([ -x "$staged" ] && echo 1 || echo 0)" "install_openrc_units stages an executable service script"
+    assert_eq "1" "$(grep -c '^supervisor="supervise-daemon"$' "$staged")" "staged script uses supervise-daemon"
+    assert_eq "1" "$(grep -c '^command_args="provide"$' "$staged")" "staged script runs the provider with 'provide'"
+    assert_eq "1" "$(grep -c "^command_user=\"$me\"\$" "$staged")" "staged script runs as the service user"
+    assert_eq "1" "$(grep -c "^command=\"$tmpd/install/bin/urnetwork\"\$" "$staged")" "staged script points at the installed provider binary"
+    assert_eq "1" "$(grep -c '^respawn_delay=5$' "$staged")" "staged script respawns with a delay"
+    assert_eq "1" "$(grep -c '^output_log="/var/log/urnetwork.log"$' "$staged")" "stdout log lives under /var/log"
+    assert_eq "1" "$(grep -c '^error_log="/var/log/urnetwork.err"$' "$staged")" "stderr log lives under /var/log"
+    assert_eq "1" "$(echo "$out" | grep -c "sudo cp $staged")" "non-root output prints the exact sudo cp command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo chmod +x')" "non-root output prints the sudo chmod command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-update add urnetwork default')" "non-root output prints the rc-update command"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-service urnetwork start')" "non-root output prints the start command"
+    rm -rf "$tmpd"
+}
+# OpenRC installer tests require a non-root runner: as root, the root branch
+# of install_openrc_units would touch /etc (rc-update) and abort the suite.
+if [ "$(id -u)" -eq 0 ]; then
+    echo "⊘ SKIP: OpenRC installer tests need a non-root runner"
+else
+    test_openrc_staged_script_and_nonroot_output
+fi
+
+# A missing install directory must not leave the OpenRC service installed: the
+# teardown runs before the "directory not found" bailout (non-root prints the
+# sudo commands; root does the work — root covered by the container smoke).
+test_openrc_uninstall_missing_dir_still_tears_down_service() {
+    local tmpd me out
+    tmpd="$(mktemp -d)"
+    me="$(id -un)"
+    out="$(
+        PT_MISSING="$tmpd/missing" PT_ME="$me" PT_INITD="$tmpd/init.d-urnetwork" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_MISSING"
+            install_path_explicit=1
+            openrc_user="$PT_ME"
+            openrc_initd_file="$PT_INITD"
+            has_systemd=0
+            has_openrc=1
+            do_uninstall 2>&1 || true
+        '
+    )" || true
+    assert_eq "1" "$(echo "$out" | grep -c "removing the OpenRC service anyway")" "missing-dir uninstall still runs the OpenRC teardown"
+    assert_eq "1" "$(echo "$out" | grep -c 'sudo rc-update del urnetwork default')" "missing-dir uninstall prints the rc-update command"
+    assert_eq "1" "$(echo "$out" | grep -c "could not be found")" "missing-dir uninstall still reports the missing directory"
+    rm -rf "$tmpd"
+}
+if [ "$(id -u)" -eq 0 ]; then
+    echo "⊘ SKIP: OpenRC installer tests need a non-root runner"
+else
+    test_openrc_uninstall_missing_dir_still_tears_down_service
+fi
+
+# --- TEST: portable wget flags (BusyBox portability) ---
+# The installer used to pass GNU-only wget flags unconditionally. BusyBox wget
+# rejects --connect-timeout (it spells that -T SEC) and may lack
+# --retry-connrefused, so on Alpine every download died with "unrecognized
+# option" before reaching the network. An intermediate revision then "fixed"
+# that by probing the real binary per flag, which could stall for minutes on GNU
+# wget and wrote index.html into the cwd when something listened on port 80.
+#
+# These tests pin the CURRENT contract: only flags both implementations accept,
+# and retries in the shell. A fake wget records the argv so the assertions are
+# about what we actually pass — the real BusyBox behavior is covered by the
+# container smoke, which runs the installer for real.
+test_wget_passes_only_portable_flags() {
+    local fakebin tmpd argv_out
+    tmpd="$(mktemp -d)"
+    fakebin="$tmpd/bin"
+    mkdir -p "$fakebin"
+
+    # Records argv, then behaves like a successful download.
+    cat > "$fakebin/wget" <<'WGETEOF'
+#!/bin/sh
+echo "ARGV: $*" >> "$WGET_ARGV_LOG"
+out=""
+prev=""
+for arg in "$@"; do
+    if [ "$prev" = "-O" ]; then out="$arg"; fi
+    prev="$arg"
+done
+[ -n "$out" ] && : > "$out"
+exit 0
+WGETEOF
+    chmod +x "$fakebin/wget"
+
+    WGET_ARGV_LOG="$tmpd/argv.log" PATH="$fakebin:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        wget_retry_download "https://example.invalid/x.tar.gz" "'"$tmpd"'/out.bin"
+    ' >/dev/null 2>&1
+
+    argv_out="$(cat "$tmpd/argv.log" 2>/dev/null)"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--connect-timeout')" "must not pass GNU-only --connect-timeout"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--retry-connrefused')" "must not pass --retry-connrefused"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--tries')" "retries belong in the shell, not in wget flags"
+    assert_eq "0" "$(echo "$argv_out" | grep -c -- '--waitretry')" "must not pass --waitretry"
+    assert_eq "1" "$(echo "$argv_out" | grep -c -- '-T 10')" "must pass the portable -T 10"
+    rm -rf "$tmpd"
+}
+
+# The probe-free design must never touch the network to decide flags: only the
+# FORCE_IPV4 path reads wget --help, and it must use the GNU spelling.
+test_wget_v4_flag_is_help_gated() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+
+    # No --inet4-only in help => no -4 flag even when FORCE_IPV4 is set.
+    cat > "$tmpd/wget" <<'WGETEOF'
+#!/bin/sh
+echo "no inet4 here"
+exit 0
+WGETEOF
+    chmod +x "$tmpd/wget"
+
+    out="$(PATH="$tmpd:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        FORCE_IPV4=1
+        wget_common_opts
+    ' 2>/dev/null)"
+    assert_eq "0" "$(echo "$out" | grep -c -- '-4')" "no -4 when wget advertises no inet4-only support"
+    assert_eq "1" "$(echo "$out" | grep -c -- '-T 10')" "-T 10 always present"
+
+    # --inet4-only advertised => the flag is used.
+    cat > "$tmpd/wget" <<'WGETEOF'
+#!/bin/sh
+echo "  --inet4-only    Use IPv4 only"
+exit 0
+WGETEOF
+    chmod +x "$tmpd/wget"
+    out="$(PATH="$tmpd:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        FORCE_IPV4=1
+        wget_common_opts
+    ' 2>/dev/null)"
+    assert_eq "1" "$(echo "$out" | grep -c -- '--inet4-only')" "--inet4-only used when advertised"
+    rm -rf "$tmpd"
+}
+
+# A failing download must be retried by the shell loop, then give up.
+test_wget_retries_then_gives_up() {
+    local fakebin tmpd count
+    tmpd="$(mktemp -d)"
+    fakebin="$tmpd/bin"
+    mkdir -p "$fakebin"
+
+    cat > "$fakebin/wget" <<'WGETEOF'
+#!/bin/sh
+echo "x" >> "$WGET_COUNT_FILE"
+exit 1
+WGETEOF
+    chmod +x "$fakebin/wget"
+
+    count="$(WGET_COUNT_FILE="$tmpd/count" PATH="$fakebin:$PATH" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        wget_retry_download "https://example.invalid/x" "'"$tmpd"'/out.bin" || echo FAILED
+    ' 2>/dev/null)"
+    assert_eq "3" "$(cat "$tmpd/count" | wc -l | tr -d ' ')" "exactly 3 attempts before giving up"
+    assert_eq "1" "$(echo "$count" | grep -c 'FAILED')" "reports failure after retries exhausted"
+    rm -rf "$tmpd"
+}
+
+test_wget_passes_only_portable_flags
+test_wget_v4_flag_is_help_gated
+test_wget_retries_then_gives_up
+
+# Run the real finalization functions against a redirected filesystem, with
+# sudo recording each privileged operation. No host services or logs are touched.
+test_openrc_sudo_finalizes_before_start() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/log" "$tmpd/logrotate"
+    printf 'existing stdout\n' > "$tmpd/log/urnetwork.log"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    sed -e "s|/var/log|$tmpd/log|g" -e "s|/etc/logrotate.d|$tmpd/logrotate|g" \
+        /tmp/urnet_provider_lib.sh > "$tmpd/lib.sh"
+    out="$(PT_ROOT="$tmpd" bash -c '
+        . "$PT_ROOT/lib.sh"
+        install_path="$PT_ROOT/home/install"
+        openrc_home="$PT_ROOT/home"
+        openrc_user=testuser
+        openrc_initd_file="$PT_ROOT/initd"
+        openrc_root_tool_dir="$PT_ROOT/root-tool"
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        openrc_user_home() { echo "$PT_ROOT/home"; }
+        id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+        sudo() {
+            echo "$*" >> "$PT_ROOT/privileged"
+            case "$1" in
+                -n|chown|rc-update) return 0 ;;
+                id) echo 0 ;;
+                rc-service)
+                    test -x "$openrc_root_tool_path" &&
+                    test -f "$PT_ROOT/log/urnetwork.err" &&
+                    test "$(cat "$PT_ROOT/log/urnetwork.log")" = "existing stdout" &&
+                    echo STARTED
+                    ;;
+                *) "$@" ;;
+            esac
+        }
+        install_openrc_units
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c '^STARTED$')" "sudo finalizes and stages the tool before service start"
+    assert_eq "existing stdout" "$(cat "$tmpd/log/urnetwork.log")" "finalization preserves existing logs"
+    assert_eq "1" "$(grep -c "^touch $tmpd/log/urnetwork.err$" "$tmpd/privileged")" "missing log creation uses sudo"
+    assert_eq "0" "$(grep -c "^touch $tmpd/log/urnetwork.log$" "$tmpd/privileged" || true)" "existing log is not recreated"
+    assert_eq "1" "$(grep -c "^cp $tmpd/home/install/bin/urnet-tools $tmpd/root-tool/urnet-tools$" "$tmpd/privileged")" "root tool staging uses sudo"
+    assert_eq "1" "$(grep -c "^chown -R root:root $tmpd/home/install$" "$tmpd/privileged")" "install ownership uses sudo"
+    rm -rf "$tmpd"
+}
+test_openrc_sudo_finalizes_before_start
+
+# B2: root's PATH must not resolve urnet-tools through the install tree on
+# OpenRC. The symlink is only as safe as its target's whole ancestor chain, so
+# the /usr/local/bin copy points at the root-owned staged libexec tool instead.
+test_openrc_root_path_uses_staged_root_tool() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    # The staged copy must actually exist for the redirect to apply; the
+    # installer stages it during finalization.
+    mkdir -p "$tmpd/libexec"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/libexec/urnet-tools"
+    out="$(PT_ROOT="$tmpd" bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_root_tool_dir="$PT_ROOT/libexec"
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        link_tools_into_dir() { echo "LINK dir=$1 src=$2"; return 0; }
+        ensure_tools_on_path /nonexistent/install
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'LINK dir=/usr/local/bin src=.*/libexec')" \
+        "root PATH links urnet-tools at the root-owned staged tool, not the install tree"
+    rm -rf "$tmpd"
+}
+test_openrc_root_path_uses_staged_root_tool
+
+# B2 (counter-case): on systemd, or when no staged copy exists, the link must
+# still point into the install tree. Guards against the OpenRC redirect
+# leaking into the normal path.
+test_root_path_keeps_install_tree_off_openrc() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=0
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_root_tool_dir=/usr/local/libexec/urnetwork
+        openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+        link_tools_into_dir() { echo "LINK dir=$1 src=$2"; return 0; }
+        ensure_tools_on_path /home/user/install
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'LINK dir=/usr/local/bin src=/home/user/install/bin')" \
+        "off OpenRC, root PATH keeps pointing at the install tree"
+}
+test_root_path_keeps_install_tree_off_openrc
+
+# B3: the OpenRC install tree must not land in the service user's home. A tree
+# under /home/<user> has a user-writable ancestor, and root-executed code
+# (the cron entry, sudo urnet-tools update) reachable through it is the
+# escalation this move removes.
+test_openrc_install_tree_is_root_owned_location() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=0
+        install_path="$HOME/.local/share/urnetwork-provider"
+        openrc_user_home() { echo /home/urnet; }
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "install_path=$install_path"
+    ')"
+    assert_eq "0" "$(echo "$out" | grep -c 'install_path=/home/urnet')" \
+        "the OpenRC install tree is never placed in the service user's home"
+    assert_eq "1" "$(echo "$out" | grep -c 'install_path=/usr/local/lib/urnetwork-provider')" \
+        "the OpenRC install tree lands in a root-owned location"
+}
+test_openrc_install_tree_is_root_owned_location
+
+# B3 (escape hatch): an explicit -i/--install path is the operator's decision
+# and must survive untouched, as must a non-root run.
+test_openrc_install_path_respects_explicit_choice() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=1
+        install_path=/opt/mine
+        openrc_user_home() { echo /home/urnet; }
+        id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "explicit=$install_path"
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'explicit=/opt/mine')" \
+        "an explicit --install path is not overridden on OpenRC"
+
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=1
+        has_systemd=0
+        install_path_explicit=0
+        install_path=/home/klets/.local/share/urnetwork-provider
+        openrc_user_home() { echo /home/klets; }
+        id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+        openrc_maybe_redirect_install_path
+        echo "nonroot=$install_path"
+    ')"
+    assert_eq "1" "$(echo "$out" | grep -c 'nonroot=/home/klets/.local/share/urnetwork-provider')" \
+        "an unprivileged run keeps its own install path on OpenRC"
+}
+test_openrc_install_path_respects_explicit_choice
+
+# B3: the state dir is the one thing that stays in the user's home, and the
+# installer must not change ownership THROUGH a symlink planted there. A
+# pre-planted .urnetwork -> /etc would otherwise hand /etc to the service user.
+test_openrc_refuses_symlinked_state_dir() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/victim"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    ln -s "$tmpd/victim" "$tmpd/home/.urnetwork"
+    out="$(PT_ROOT="$tmpd" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_ROOT/home/install"
+            openrc_home="$PT_ROOT/home"
+            openrc_user=testuser
+            openrc_initd_file="$PT_ROOT/initd"
+            openrc_root_tool_dir="$PT_ROOT/root-tool"
+            openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+            openrc_user_home() { echo "$PT_ROOT/home"; }
+            id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+            # The shim below stands in for real sudo; feed it to SUDO the same
+            # way install_json_parser would, since we are not going through
+            # that path here.
+            SUDO=sudo
+            sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
+            openrc_finalize_root_paths
+        ' 2>&1)"
+        assert_eq "1" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
+        "a symlinked state dir is reported instead of silently followed"
+    assert_eq "0" "$(grep -c "chown testuser $tmpd/home/.urnetwork" "$tmpd/privileged" 2>/dev/null || true)" \
+        "ownership is never changed through the planted symlink"
+    rm -rf "$tmpd"
+}
+test_openrc_refuses_symlinked_state_dir
+
+# F6: a symlink pointing INSIDE the service user's home is a legitimate
+# relocation — follow it and chown only the target inside the home.
+test_openrc_follows_inhome_state_dir_symlink() {
+    local tmpd out
+    tmpd="$(mktemp -d)"
+    mkdir -p "$tmpd/home/install/bin" "$tmpd/home/statedata"
+    printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
+    ln -s "$tmpd/home/statedata" "$tmpd/home/.urnetwork"
+    out="$(PT_ROOT="$tmpd" bash -c '
+            . /tmp/urnet_provider_lib.sh
+            install_path="$PT_ROOT/home/install"
+            openrc_home="$PT_ROOT/home"
+            openrc_user=testuser
+            openrc_initd_file="$PT_ROOT/initd"
+            openrc_root_tool_dir="$PT_ROOT/root-tool"
+            openrc_root_tool_path="$openrc_root_tool_dir/urnet-tools"
+            openrc_user_home() { echo "$PT_ROOT/home"; }
+            id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+            SUDO=sudo
+            sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
+            openrc_finalize_root_paths
+        ' 2>&1)"
+    assert_eq "0" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
+        "an in-home relocation is not treated as a planted symlink"
+    assert_eq "1" "$(grep -c "chown testuser $tmpd/home/statedata" "$tmpd/privileged" 2>/dev/null || echo 0)" \
+        "the in-home target is chowned to the service user"
+    rm -rf "$tmpd"
+}
+test_openrc_follows_inhome_state_dir_symlink
+
+test_service_restart_systemd_fallback() {
+    local out
+    out="$(bash -c '
+        . /tmp/urnet_provider_lib.sh
+        has_openrc=0
+        systemctl() { echo "systemctl $*"; }
+        urnetwork_service_restart
+    ')"
+    assert_eq "systemctl --user restart urnetwork.service" "$out" "non-OpenRC restart dispatches to systemctl"
+}
+test_service_restart_systemd_fallback
+
+test_json_parser_package_commands_use_sudo() {
+    local tmpd distro calls expected manager
+    tmpd="$(mktemp -d)"
+    for distro in arch debian fedora alpine opensuse; do
+        printf 'ID=%s\n' "$distro" > "$tmpd/os-release"
+        sed "s|/etc/os-release|$tmpd/os-release|g" /tmp/urnet_provider_lib.sh > "$tmpd/lib.sh"
+        calls="$(PT_LIB="$tmpd/lib.sh" bash -c '
+            . "$PT_LIB"
+            id() { echo 1000; }
+            command() {
+                case "$*" in "-v jq"|"-v python3") return 1;; esac
+                builtin command "$@"
+            }
+            sudo() {
+                [ "$1" = -n ] && return 0
+                echo "sudo $*"
+                case "$*" in *jq) return 1;; esac
+            }
+            pacman() { echo UNPRIVILEGED; }
+            apt-get() { echo UNPRIVILEGED; }
+            dnf() { echo UNPRIVILEGED; }
+            apk() { echo UNPRIVILEGED; }
+            zypper() { echo UNPRIVILEGED; }
+            pr_info() { :; }
+            install_json_parser || :
+        ')"
+        case "$distro" in
+            arch) manager=pacman; expected=2 ;;
+            debian) manager=apt-get; expected=3 ;;
+            fedora) manager=dnf; expected=2 ;;
+            alpine) manager=apk; expected=2 ;;
+            opensuse) manager=zypper; expected=2 ;;
+        esac
+        assert_eq "$expected" "$(echo "$calls" | grep -c "^sudo $manager ")" "$distro elevates all package commands including fallback"
+        assert_eq "0" "$(echo "$calls" | grep -c UNPRIVILEGED || true)" "$distro has no unprivileged package calls"
+    done
+    rm -rf "$tmpd"
+}
+test_json_parser_package_commands_use_sudo
 test_sanitize_restart_dropins_flags_weakened_policies() {
     local tmp d out
     tmp="$(mktemp -d)"

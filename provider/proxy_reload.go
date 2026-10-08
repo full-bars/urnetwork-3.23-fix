@@ -1090,6 +1090,8 @@ func (r *ProxyReloader) reload() {
 			setProxyResolutionStatus(proxyResolutionNoSource, "direct transport disabled and no proxy source configured")
 		} else {
 			tlog("[proxy] reload: 0 proxies; direct-only (no proxy source configured) — settled\n")
+			// applyDirectOnlyH3Defaults is NOT called here: setProxyResolutionStatus
+			// owns it, and fires it on the transition into ZeroValid only.
 			setProxyResolutionStatus(proxyResolutionZeroValid, "direct-only providing; no proxy source configured")
 		}
 		// A source that was configured and has now gone empty is NOT a reason to

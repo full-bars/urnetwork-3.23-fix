@@ -49,6 +49,13 @@ const (
 	proxyResolutionNoSource  int32 = 5 // no proxy source configured and the direct transport is off: nothing is served
 )
 
+// currentProxyResolution exposes the settled proxy-resolution state to the
+// transport default logic (direct-only H3 opt-in). Exposed as a function so the
+// atomic is not read directly from other files.
+func currentProxyResolution() int32 {
+	return proxyResolutionStatus.Load()
+}
+
 // Status severity bands for the live/configured proxy ratio. The exact
 // percentage always renders alongside the word so the scale reads
 // continuously; a node with 40% live and one with 9% live are both
@@ -62,18 +69,26 @@ const (
 // setProxyResolutionStatus records the outcome of a proxy resolution attempt
 // and refreshes the systemd STATUS= line.
 func setProxyResolutionStatus(status int32, reason string) {
+	prev := proxyResolutionStatus.Load()
 	proxyResolutionStatus.Store(status)
 	if reason != "" {
 		proxyResolutionReason.Store(reason)
 	}
 	reportProxyStatusToSystemd()
+	// Direct-only H3 defaults depend on this status becoming ZeroValid, so the
+	// re-apply belongs here — the one choke point every path goes through — and
+	// fires only on transitions into or out of it. Without the guard it would re-run on
+	// every settled reload (the 30s reload loop), spamming the control log with
+	// "applied h3_datagram=on (was on)" once a minute forever.
+	if (status == proxyResolutionZeroValid) != (prev == proxyResolutionZeroValid) {
+		applyDirectOnlyH3Defaults()
+	}
 }
 
 // setProxyResolutionOK marks resolution as successful (called when proxies
 // are found). Clears any stale failure/rejection state.
 func setProxyResolutionOK() {
-	proxyResolutionStatus.Store(proxyResolutionOK)
-	reportProxyStatusToSystemd()
+	setProxyResolutionStatus(proxyResolutionOK, "")
 }
 
 // getProxyResolutionReason returns the stored reason string.

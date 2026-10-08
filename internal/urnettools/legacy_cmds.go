@@ -153,6 +153,11 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
+	// OpenRC hosts have no systemd unit: start the service through
+	// rc-service instead (detection-based, never GOOS-based).
+	if handled, err := openrcRouteLifecycle("start", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("start", args, force, dryRun)
 	if err != nil {
 		return err
@@ -184,6 +189,9 @@ func cmdStart(args []string, force, dryRun bool) error {
 	return nil
 }
 func cmdStop(args []string, force, dryRun bool) error {
+	if handled, err := openrcRouteLifecycle("stop", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("stop", args, force, dryRun)
 	if err != nil {
 		return err
@@ -313,6 +321,9 @@ func logsUnitlessProvider(p Provider, lines int) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
+	if handled, err := openrcRouteLifecycle("restart", args, force, dryRun); handled {
+		return err
+	}
 	p, err := selectLifecycleTarget("restart", args, force, dryRun)
 	if err != nil {
 		return err
@@ -518,6 +529,17 @@ func cmdLogs(args []string) error {
 		cmd.Stdout = os.Stdout
 		cmd.Stderr = os.Stderr
 		return cmd.Run()
+	}
+	// OpenRC: supervise-daemon redirects the provider's stdout/stderr to
+	// service-user-owned files under /var/log, so tailing the FILE is both more robust
+	// and the only thing that works when the service is stopped (a stopped
+	// provider has no /proc/<pid>/fd/1 to read). It also avoids the
+	// cross-uid read that /proc/<pid>/fd/1 needs. Checked before the unitless
+	// path below, which would otherwise tail the fd.
+	if p.Unit == "" && (p.Supervisor == "openrc" || providerSupervisedByOpenRCFn(p)) {
+		if handled, err := openrcTailServiceLogs(p, lines); handled {
+			return err
+		}
 	}
 	// No systemd unit but the provider is a live process: the process's own
 	// stdout is the only possible log stream. Windows has no /proc and is

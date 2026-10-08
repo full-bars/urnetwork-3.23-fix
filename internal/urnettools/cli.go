@@ -242,7 +242,7 @@ Proxy Management [target]:
 Maintenance [target]:
   reinstall                       🔧  reinstall provider
   uninstall                       🗑   uninstall provider
-  auto-update <on|off>            ⏰  manage auto-update schedule
+  auto-update <daily|weekly|monthly|off>  ⏰  manage auto-update schedule
   auto-start <on|off>             ▶   toggle auto-start on login
 
 Providers are identified three ways (use any; the = form works too,
@@ -610,7 +610,12 @@ func renderStatusBase(p Provider) error {
 		renderStatusPanel(p)
 		return nil
 	}
-	if err := renderSystemctlStatus(p); err == nil {
+	// OpenRC host: show the supervisor's view only when the resolved target
+	// IS the service's supervised process (or no process was resolved); the
+	// table below carries the live control-socket view either way.
+	if openrcActive() && openrcServiceInstalled() && p.Unit == "" && (p.PID == 0 || providerSupervisedByOpenRCFn(p)) {
+		_ = renderOpenRCStatus()
+	} else if err := renderSystemctlStatus(p); err == nil {
 		return nil
 	} else if p.Unit != "" {
 		// Weird: unit set but systemctl failed; surface it.

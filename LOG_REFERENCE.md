@@ -743,8 +743,10 @@ Emitted on the earning tick only while transit traffic is actively flowing (sile
 ## 💰 Profit Heartbeat (3.23-fix)
 
 ```
-[profit] earning=yes reason=- clients=4 rate=2.1 MB/s proxies_up=12 serving=3 idle=9
-[profit] earning=no reason=idle clients=0 rate=0 B/s proxies_up=12 serving=0 idle=12
+[profit] earning=yes reason=- mode=proxies clients=4 rate=2.1 MB/s proxies_up=12 serving=3 idle=9
+[profit] earning=no reason=idle mode=proxies clients=0 rate=0 B/s proxies_up=12 serving=0 idle=12
+[profit] earning=yes reason=- mode=direct clients=2 rate=1.4 MB/s proxies_up=0 serving=0 idle=0 (direct mode, no proxies configured)
+[profit] earning=no reason=no_proxies mode=none clients=0 rate=0 B/s proxies_up=0 serving=0 idle=0
 ```
 
 A fast, focused answer to **"are we earning right now, and if not, why?"**, emitted by `runProfitHeartbeat` every **15 seconds** — independent of the 5-minute `[health]`/`[traffic]` heartbeat. It uses `ProxyHealthSnapshot`, so it never disturbs the health heartbeat's dead/recovered baseline. It folds the headline earning signal into one greppable line so it survives even a tiny in-RAM log window.
@@ -752,10 +754,11 @@ A fast, focused answer to **"are we earning right now, and if not, why?"**, emit
 | Field | Meaning |
 |---|---|
 | `earning` | `yes` if billable bytes moved in the last interval, else `no`. |
-| `reason` | Why not earning (`-` while earning): `warmup` (still ramping up), `no_proxies` (none up), `idle` (proxies up but no clients matched), `no_traffic` (clients present but no billable bytes moved). |
+| `reason` | Why not earning (`-` while earning): `warmup` (still ramping up), `no_proxies` (neither proxies nor direct transport up), `idle` (a transport is up but no clients matched), `no_traffic` (clients present but no billable bytes moved). |
+| `mode` | The transport shape of the node: `direct` (the node's own address only, no proxies up), `proxies` (proxies up with the direct transport down or disabled), `mixed` (both up), or `none` (neither direct nor any proxy is up). The line can end with a short note, for example `(direct mode, no proxies configured)`, when there is something non-obvious to say. Alert on `mode=` and the numeric fields, not on the note. |
 | `clients` | End-user relay sessions active across all proxies right now. |
 | `rate` | Aggregate billable throughput since the previous tick. |
-| `proxies_up` | Proxies whose platform transport is currently live. |
+| `proxies_up` | Real proxies whose platform transport is currently live. The direct transport is not counted, so a direct-only node reports `proxies_up=0` with `mode=direct` and `earning=yes` when it is carrying traffic. |
 | `serving` | Of those, how many are carrying at least one client. |
 | `idle` | Up proxies carrying no clients (`proxies_up - serving`). |
 

@@ -400,7 +400,16 @@ func narrowToAccessible(providers []Provider) []Provider {
 // attached Unit field).
 func discoverStopped(running []Provider) []Provider {
 	attachUnits(running)
-	return discoverSystemdUnits(running)
+	out := discoverSystemdUnits(running)
+	// A stopped OpenRC service is invisible to both process scan and systemd
+	// unit scan, so it is discovered from its init script. Without this, every
+	// command that selects a target (auth, update, uninstall, set, logs) fails
+	// with "no providers found" on a fresh install — the service is stopped and
+	// unauthenticated by definition at that point.
+	if p, ok := discoverOpenRCService(running); ok {
+		out = append(out, p)
+	}
+	return out
 }
 
 // attachUnits assigns a systemd unit name to each running provider by
