@@ -27,18 +27,26 @@ import (
 //
 // failOnWrite, when positive, makes that (1-based) Write return failErr after
 // accepting none of its bytes, so a test can accept the first half of a cut
-// record and refuse the second.
+// record and refuse the second. shortOnWrite, when positive, makes that
+// (1-based) Write accept only shortN bytes and report success (n < len,
+// err == nil) — a short write, which writeRecord must convert to
+// io.ErrShortWrite.
 type segmentRecordingConn struct {
-	segments    [][]byte
-	failOnWrite int
-	failErr     error
-	closed      bool
+	segments     [][]byte
+	failOnWrite  int
+	failErr      error
+	shortOnWrite int
+	shortN       int
+	closed       bool
 }
 
 func (self *segmentRecordingConn) Write(b []byte) (int, error) {
 	self.segments = append(self.segments, slices.Clone(b))
 	if 0 < self.failOnWrite && len(self.segments) == self.failOnWrite {
 		return 0, self.failErr
+	}
+	if 0 < self.shortOnWrite && len(self.segments) == self.shortOnWrite {
+		return self.shortN, nil
 	}
 	return len(b), nil
 }
@@ -173,6 +181,7 @@ func TestWriteRecordMaybeSegmentedGeometry(t *testing.T) {
 		{"odd", true, 13, []int{6, 7}},
 		{"min", true, combinedSegmentMinLen, []int{1, 1}},
 		{"belowMin", true, combinedSegmentMinLen - 1, []int{1}},
+		{"empty", true, 0, []int{0}},
 		{"segmentOff", false, 13, []int{13}},
 	}
 	for _, tc := range cases {
@@ -367,6 +376,15 @@ func TestResilientCombinedFirstHalfFailureSkipsSecond(t *testing.T) {
 	if len(conn.segments) != 1 {
 		t.Fatalf("conn saw %d writes, want 1: the second half must never be written after a first-half failure", len(conn.segments))
 	}
+	if rconn.enabled {
+		t.Fatal("layer still enabled after a failed first half")
+	}
+	if len(rconn.buffer) != 0 {
+		t.Fatalf("buffer not dropped after a failed first half: %d bytes", len(rconn.buffer))
+	}
+	if !conn.closed {
+		t.Fatal("underlying connection not closed after a failed first half")
+	}
 }
 
 func tcpNoDelay(t *testing.T, conn *net.TCPConn) bool {
@@ -429,5 +447,78 @@ func TestNewResilientDialTlsContextConstructorsBackCompat(t *testing.T) {
 	}
 	if NewResilientDialTlsContextWithSegment(settings, true, false, true) == nil {
 		t.Fatal("NewResilientDialTlsContextWithSegment returned nil")
+	}
+}
+
+// TestResilientCombinedShortWriteFailsClosed covers the other half of the
+// write contract: a write that accepts some bytes but reports fewer than it
+// was given (n < len, err == nil) is a short write. writeRecord must convert
+// it to io.ErrShortWrite and fail the connection exactly like an explicit
+// error — the wire now disagrees with the buffer, so a retry would append to
+// a corrupt stream. Both halves of a cut record are exercised.
+func TestResilientCombinedShortWriteFailsClosed(t *testing.T) {
+	record := buildClientHelloRecord(t)
+	for _, half := range []string{"firstHalf", "secondHalf"} {
+		t.Run(half, func(t *testing.T) {
+			shortOn := 1
+			if half == "secondHalf" {
+				shortOn = 2
+			}
+			conn := &segmentRecordingConn{shortOnWrite: shortOn, shortN: 1}
+			rconn := newResilientTlsConn(conn, true, false, true)
+
+			_, err := rconn.Write(record)
+			if !errors.Is(err, io.ErrShortWrite) {
+				t.Fatalf("write error = %v, want %v", err, io.ErrShortWrite)
+			}
+			if len(conn.segments) != shortOn {
+				t.Fatalf("conn saw %d writes, want %d: nothing may follow a short write", len(conn.segments), shortOn)
+			}
+			if rconn.enabled {
+				t.Fatal("layer still enabled after a short write")
+			}
+			if len(rconn.buffer) != 0 {
+				t.Fatalf("buffer not dropped after a short write: %d bytes", len(rconn.buffer))
+			}
+			if !conn.closed {
+				t.Fatal("underlying connection not closed after a short write")
+			}
+		})
+	}
+}
+
+// TestClientStrategyRegistersFragmentSegmentDialer pins the strategy wiring:
+// the combined dialer joins the race at the resilient tier when the resilient
+// gate is on, with the upstream-exact priority and weight floor, and stays
+// out when resilient is disabled.
+func TestClientStrategyRegistersFragmentSegmentDialer(t *testing.T) {
+	settings := DefaultClientStrategySettings()
+	if !settings.EnableResilient || !settings.ExposeServerHostNames || !settings.ExposeServerIps {
+		t.Fatalf("defaults changed: resilient=%v hostNames=%v ips=%v — this test pins the enabling defaults", settings.EnableResilient, settings.ExposeServerHostNames, settings.ExposeServerIps)
+	}
+	strategy := NewClientStrategy(t.Context(), settings)
+	found := false
+	for dialer := range strategy.dialers {
+		if dialer.description != "fragment+segment" {
+			continue
+		}
+		found = true
+		if dialer.priority != 50 {
+			t.Fatalf("fragment+segment priority = %d, want 50", dialer.priority)
+		}
+		if dialer.minimumWeight != 0.25 {
+			t.Fatalf("fragment+segment minimumWeight = %v, want 0.25", dialer.minimumWeight)
+		}
+	}
+	if !found {
+		t.Fatal("fragment+segment not registered in the strategy dialers")
+	}
+
+	settings.EnableResilient = false
+	strategy = NewClientStrategy(t.Context(), settings)
+	for dialer := range strategy.dialers {
+		if dialer.description == "fragment+segment" {
+			t.Fatal("fragment+segment registered while resilient is disabled")
+		}
 	}
 }
