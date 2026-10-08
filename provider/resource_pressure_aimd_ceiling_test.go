@@ -2,6 +2,7 @@ package main
 
 import (
 	"slices"
+	"strings"
 	"testing"
 	"time"
 )
@@ -194,5 +195,35 @@ func TestPaidRunningCountCountsOnlyRunningPaid(t *testing.T) {
 	}
 	if got := paidRunningCount(state, nil); got != 0 {
 		t.Fatalf("paidRunningCount with nothing running = %d, want 0", got)
+	}
+}
+
+// The lowered-target line must not blame a cap change for a cache-tracking
+// cut: aimdStep's grow branch catches the target down to cacheSize plus the
+// increment when the pool lags far behind, and blaming a cap sends an
+// operator chasing a cause that never existed.
+func TestAimdMoveMessageAttributesCause(t *testing.T) {
+	msg := aimdMoveMessage(1000, 100+aimdIncrement, 100, 0.1)
+	if !strings.Contains(msg, "only 100 proxies are cached") || !strings.Contains(msg, "follows the live pool") {
+		t.Fatalf("a cache-tracking cut must say so: %q", msg)
+	}
+	if strings.Contains(msg, "cap or ceiling") {
+		t.Fatalf("a cache-tracking cut must not blame a cap or ceiling: %q", msg)
+	}
+	// A genuine cap or ceiling cut keeps its original attribution.
+	if plain := aimdMoveMessage(1000, 700, 900, 0.5); !strings.Contains(plain, "cap or ceiling lowered") {
+		t.Fatalf("a cap cut keeps its wording: %q", plain)
+	}
+	// A pressure shrink keeps its wording too.
+	if shrink := aimdMoveMessage(1000, 500, 1000, 0.9); !strings.Contains(shrink, "pressure has been high") {
+		t.Fatalf("a pressure shrink keeps its wording: %q", shrink)
+	}
+	// And a low-pressure raise keeps its wording.
+	if grow := aimdMoveMessage(100, 100+aimdIncrement, 100, 0.1); !strings.Contains(grow, "pressure is low") {
+		t.Fatalf("a low-pressure raise keeps its wording: %q", grow)
+	}
+	// A raise at mid pressure is attributed to a cap or ceiling change.
+	if capRaise := aimdMoveMessage(100, 140, 100, 0.5); !strings.Contains(capRaise, "a cap or ceiling changed") {
+		t.Fatalf("a mid-pressure raise keeps its wording: %q", capRaise)
 	}
 }

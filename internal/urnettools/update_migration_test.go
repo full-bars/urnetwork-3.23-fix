@@ -429,3 +429,45 @@ func TestRewriteUnitContent_NoServiceSectionOrOtherTypeUntouched(t *testing.T) {
 		}
 	}
 }
+
+// TestMigrateUnitToNotify_LogsSkipReason pins the operator-visible output of
+// both skip paths, so a future edit cannot silently drop the diagnostics the
+// update flow relies on.
+func TestMigrateUnitToNotify_LogsSkipReason(t *testing.T) {
+	p := Provider{Unit: "urnetwork.service", User: "testuser"}
+
+	t.Run("UnitTypeQueryFailure", func(t *testing.T) {
+		setupMigrateMocks(t, migrateTestDeps{unitTypeErr: os.ErrPermission})
+		out := captureStdout(t, func() {
+			migrated, err := migrateUnitToNotify(p)
+			if err != nil {
+				t.Errorf("expected nil error, got %v", err)
+			}
+			if migrated {
+				t.Error("expected migrated=false when the unit type cannot be read")
+			}
+		})
+		if !strings.Contains(out, "unit migration skipped: cannot read urnetwork.service unit type:") {
+			t.Errorf("expected the unit-type query failure to be logged, got: %q", out)
+		}
+		if !strings.Contains(out, "permission denied") {
+			t.Errorf("expected the underlying error in the log, got: %q", out)
+		}
+	})
+
+	t.Run("NotSimpleType", func(t *testing.T) {
+		setupMigrateMocks(t, migrateTestDeps{unitType: "notify"})
+		out := captureStdout(t, func() {
+			migrated, err := migrateUnitToNotify(p)
+			if err != nil {
+				t.Errorf("expected nil error, got %v", err)
+			}
+			if migrated {
+				t.Error("expected migrated=false when the unit is not Type=simple")
+			}
+		})
+		if !strings.Contains(out, "unit migration skipped: urnetwork.service is Type=notify, not simple") {
+			t.Errorf("expected the non-simple Type= to be logged, got: %q", out)
+		}
+	})
+}
