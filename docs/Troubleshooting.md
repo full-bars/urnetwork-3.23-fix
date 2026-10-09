@@ -219,7 +219,7 @@ These come from `provider claim`, `provider wallet set` and `provide --wallet`. 
 | `pass only one of --store-client, --provider-jwt and --legacy-coldkey` | Give exactly one credential flag. |
 | `no client "<key>" in <path> (N identities) ...` | The store has no identity under that key. Keys are in `~/.urnetwork/.client_jwts.json`. |
 | `N identities in <path> share the address "<addr>" ...` | Several proxy accounts at one gateway each hold an identity, so a bare address is ambiguous. Pass the full key as `--store-client=$'<addr>\x1f<user>'`. |
-| `the network jwt has expired; run `provider auth` again, then retry` | `--legacy-coldkey` sends the network token, and it is past its expiry. Run `provider auth` and retry. |
+| ``the network jwt has expired; run `provider auth` again, then retry`` | `--legacy-coldkey` sends the network token, and it is past its expiry. Run `provider auth` and retry. |
 | `claim: the platform refused: <message>` | The platform answered the claim with an error, for example `No claimable epoch.`. The command exits 1 with no stack trace. |
 | `<source> does not name a client (is it the network token?) ...` | The token is the network token. Claim needs a client token. |
 | `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |

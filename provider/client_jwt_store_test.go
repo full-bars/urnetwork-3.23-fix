@@ -189,3 +189,41 @@ func TestClientJWTStoreAnyNetworkID(t *testing.T) {
 		t.Fatalf("AnyNetworkID() with conflicting networks = %q, want empty (ambiguous)", got)
 	}
 }
+
+// Find is what lets an operator type a bare proxy address for a credentialed
+// identity; its rules are exact key first, then a unique "address\x1f..." match,
+// and never a guess between several.
+func TestClientJWTStoreFind(t *testing.T) {
+	store := newClientJWTStore(filepath.Join(t.TempDir(), ".client_jwts.json"))
+	put := func(key string) {
+		if err := store.Put(key, clientJWTEntry{ByClientJWT: "jwt-" + key}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	put("10.0.0.1:1080\x1falice")
+	put("10.0.0.2:1080\x1fbob")
+	put("10.0.0.2:1080\x1fcarol")
+	put("10.0.0.3:1080")
+	put("10.0.0.3:1080\x1fdave")
+	put("direct")
+
+	if key, entry, cands := store.Find("direct"); key != "direct" || entry.ByClientJWT != "jwt-direct" || cands != nil {
+		t.Fatalf("exact key: %q %+v %v", key, entry, cands)
+	}
+	if key, _, cands := store.Find("10.0.0.1:1080"); key != "10.0.0.1:1080\x1falice" || cands != nil {
+		t.Fatalf("a unique credentialed match must resolve, got %q %v", key, cands)
+	}
+	if key, entry, cands := store.Find("10.0.0.2:1080"); key != "" || entry.ByClientJWT != "" || len(cands) != 2 {
+		t.Fatalf("a shared address must return both candidates and no entry, got %q %+v %v", key, entry, cands)
+	}
+	if key, _, _ := store.Find("10.0.0.3:1080"); key != "10.0.0.3:1080" {
+		t.Fatalf("an exact bare key must win over credentialed siblings, got %q", key)
+	}
+	if key, entry, cands := store.Find("10.0.0.9:1080"); key != "" || entry.ByClientJWT != "" || cands != nil {
+		t.Fatalf("no match must be all zero, got %q %+v %v", key, entry, cands)
+	}
+	// a prefix of an address must not match another address
+	if key, _, cands := store.Find("10.0.0.1:108"); key != "" || cands != nil {
+		t.Fatalf("a partial address must not match, got %q %v", key, cands)
+	}
+}

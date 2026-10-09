@@ -173,3 +173,14 @@ func TestResolveClaimCredentialStoreClientMatchesCredentialedAddress(t *testing.
 		t.Fatalf("exact bare key must win: cred=%+v err=%v", cred, err)
 	}
 }
+
+// A stored identity whose token is empty exists: the error must say the token
+// is empty, not that there is no such client.
+func TestResolveClaimCredentialStoreClientWithEmptyTokenSaysSo(t *testing.T) {
+	claimTestHome(t)
+	claimTestStore(t, map[string]string{"direct": ""})
+	_, err := resolveClaimCredential(docopt.Opts{"--store-client": "direct"})
+	if err == nil || !strings.Contains(err.Error(), "is empty") || strings.Contains(err.Error(), "no client") {
+		t.Fatalf("an existing identity with an empty token must report an empty token, got %v", err)
+	}
+}

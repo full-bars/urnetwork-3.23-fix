@@ -60,11 +60,11 @@ func resolveClaimCredential(opts docopt.Opts) (*claimCredential, error) {
 			return nil, err
 		}
 		store := newClientJWTStore(path)
-		_, entry, candidates := store.Find(storeKey)
+		resolved, entry, candidates := store.Find(storeKey)
 		if 1 < len(candidates) {
 			return nil, fmt.Errorf("%d identities in %s share the address %q, one per proxy account. Pass the full key, the address then \\x1f then the user, e.g. --store-client=$'%s\\x1f<user>'", len(candidates), path, storeKey, storeKey)
 		}
-		if entry.ByClientJWT == "" && len(candidates) == 0 {
+		if resolved == "" && len(candidates) == 0 {
 			return nil, fmt.Errorf("no client %q in %s (%d identities). The key is the proxy address the identity was minted for, or \"direct\"", storeKey, path, store.Count())
 		}
 		return clientClaimCredential(entry.ByClientJWT, "client token from the identity store")
