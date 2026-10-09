@@ -103,21 +103,23 @@ func homeForUser(user string) string {
 		}
 		return ""
 	}
+	// The account database wins over $HOME even for the invoking user: under
+	// sudo with HOME preserved, $HOME is the caller's home, not the account's.
+	if u, err := osuser.Lookup(user); err == nil && u.HomeDir != "" {
+		return u.HomeDir
+	}
+	if out, err := exec.Command("getent", "passwd", user).Output(); err == nil {
+		fields := strings.Split(strings.TrimSpace(string(out)), ":")
+		if len(fields) >= 6 && fields[5] != "" {
+			return fields[5]
+		}
+	}
+	// Last resort for the invoking user where neither source resolves it (a
+	// cgo-less macOS build has no passwd entry and no getent).
 	if user == currentUserName() {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			return home
 		}
-	}
-	if u, err := osuser.Lookup(user); err == nil && u.HomeDir != "" {
-		return u.HomeDir
-	}
-	out, err := exec.Command("getent", "passwd", user).Output()
-	if err != nil {
-		return ""
-	}
-	fields := strings.Split(strings.TrimSpace(string(out)), ":")
-	if len(fields) >= 6 {
-		return fields[5]
 	}
 	return ""
 }
