@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"sync"
@@ -609,3 +610,73 @@ type fakeError struct{ msg string }
 func (e *fakeError) Error() string { return e.msg }
 
 var errFakeRenew = &fakeError{msg: "fake renewal failure"}
+
+// A renewal that fails without a verdict (timeout, dropped connection, HTTP
+// failure) says nothing about the identity, so provideAuth must keep it and
+// return an error for the caller's backoff, not mint a new client.
+func TestProvideAuthKeepsIdentityOnTransientRenewalFailure(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		jwtExp time.Duration
+		claims bool
+	}{
+		{"expired stored token", -time.Hour, true},
+		{"stored token without client_id", time.Hour, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			home, restoreHome := withHome(t)
+			defer restoreHome()
+			writeAccountJWT(t, home, map[string]interface{}{
+				"client_id":  testClientId,
+				"network_id": "net-1",
+			})
+			restoreStore := withGlobalStore(t, filepath.Join(t.TempDir(), "store.json"))
+			defer restoreStore()
+
+			claims := map[string]interface{}{"exp": float64(time.Now().Add(tc.jwtExp).Unix())}
+			if tc.claims {
+				claims["client_id"] = testClientId
+			}
+			entry := clientJWTEntry{
+				ByClientJWT: createFakeJWTWithClaims(claims),
+				ClientID:    testClientId,
+				NetworkID:   "net-1",
+				MintedAt:    time.Now().Add(-25 * time.Hour),
+			}
+			_ = globalClientJWTStore.Put("direct", entry)
+
+			origFn := renewClientJWTFn
+			defer func() { renewClientJWTFn = origFn }()
+			renewClientJWTFn = func(_ context.Context, _, _ string, _ connect.Id, _ string, _ *connect.ClientStrategy) (string, error) {
+				return "", &renewalTransientError{errFakeRenew}
+			}
+			t.Setenv("URNETWORK_HOT_RESTART", "1")
+
+			// No recover: a fall-through into the mint path dials the API and
+			// panics with a nil context, which is the failure under test.
+			_, _, reused, err := provideAuth(nil, nil, "", docopt.Opts{}, "node", "direct")
+			if err == nil || !isRenewalTransient(err) {
+				t.Fatalf("provideAuth err = %v, want a deferred transient renewal error", err)
+			}
+			if reused {
+				t.Fatal("a failed renewal must not report the identity as reused")
+			}
+			stored, ok := globalClientJWTStore.Get("direct")
+			if !ok || stored.ByClientJWT != entry.ByClientJWT || stored.ClientID != entry.ClientID {
+				t.Fatalf("the stored identity must be left untouched, got %+v ok=%v", stored, ok)
+			}
+		})
+	}
+}
+
+func TestIsRenewalTransientOnlyForUnverdictedFailures(t *testing.T) {
+	if !isRenewalTransient(&renewalTransientError{errFakeRenew}) {
+		t.Fatal("a marked error must classify as transient")
+	}
+	if !isRenewalTransient(fmt.Errorf("wrapped: %w", &renewalTransientError{errFakeRenew})) {
+		t.Fatal("a wrapped marked error must classify as transient")
+	}
+	if isRenewalTransient(errFakeRenew) {
+		t.Fatal("an unmarked error is a verdict and must not classify as transient")
+	}
+}
