@@ -102,7 +102,9 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 		// match is the fallback that rescues an otherwise-ambiguous encrypted flow.
 		// Enforcement of each verdict honors the detector settings (log-only,
 		// drop/report toggles), applied by result().
-		switch v := self.dmca.classify(ipPath, payload); v {
+		v, reason, decidedNow := self.dmca.classifyDetailed(ipPath, payload)
+		recordDpiDecision(ipPath, reason, decidedNow)
+		switch v {
 		case dmcaBittorrent:
 			return self.dmca.result(v), nil
 		case dmcaDropEncrypted:

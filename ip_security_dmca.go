@@ -355,14 +355,14 @@ func (self *dmcaFlowState) advance(
 		if containsBittorrentSignature(rest) {
 			return self.setTerminal(dmcaBittorrent, SecurityPolicyReasonBittorrent)
 		}
-		return self.allowAppStandard(reason, settings)
+		return self.allowAppStandard(ipPath, reason, settings)
 	}
 	if self.appCandidate.kind != appCandidateNone {
 		candidate := self.appCandidate
 		self.appCandidate = appCandidate{}
 		reason, ok := app.confirm(&candidate, ipPath, payload)
 		if ok {
-			return self.allowAppStandard(reason, settings)
+			return self.allowAppStandard(ipPath, reason, settings)
 		}
 		if reason == SecurityPolicyReasonInspecting {
 			// a WhatsApp stream prefix that continues in the next segment
@@ -383,7 +383,7 @@ func (self *dmcaFlowState) advance(
 		// exception the allow is not terminal at once: like an application
 		// standard it keeps the BitTorrent signatures above in force for the
 		// rest of the inspection budget.
-		return self.allowAppStandard(SecurityPolicyReasonAllowMessaging, settings)
+		return self.allowAppStandard(ipPath, SecurityPolicyReasonAllowMessaging, settings)
 	}
 	if header, ok := web.rtpHeader(ipPath, payload); ok && self.observeRtp(header) {
 		// RTP/SRTP needs coherent headers from multiple packets before it is trusted;
@@ -427,7 +427,13 @@ func (self *dmcaFlowState) advance(
 // allowAppStandard allows the flow for an application standard. The allow is
 // terminal once the inspection budget is spent; until then the flow keeps
 // checking the BitTorrent signatures.
-func (self *dmcaFlowState) allowAppStandard(reason SecurityPolicyReason, settings *DmcaSecurityPolicySettings) (dmcaVerdict, SecurityPolicyReason, bool) {
+func (self *dmcaFlowState) allowAppStandard(ipPath *IpPath, reason SecurityPolicyReason, settings *DmcaSecurityPolicySettings) (dmcaVerdict, SecurityPolicyReason, bool) {
+	if self.appReason == SecurityPolicyReasonUnknown {
+		// counted here, not at the terminal verdict: the allow only becomes
+		// terminal once the inspection budget is spent, which a short flow never
+		// reaches
+		recordDpiAppAdmit(ipPath, reason)
+	}
 	self.appReason = reason
 	if settings.InspectionPacketBudget <= self.inspectedPackets {
 		return self.setTerminal(dmcaAllow, reason)
