@@ -522,3 +522,43 @@ func TestClientStrategyRegistersFragmentSegmentDialer(t *testing.T) {
 		}
 	}
 }
+
+func registeredDialerDescriptions(strategy *ClientStrategy) []string {
+	var descriptions []string
+	for dialer := range strategy.dialers {
+		descriptions = append(descriptions, dialer.description)
+	}
+	slices.Sort(descriptions)
+	return descriptions
+}
+
+func TestClientStrategyDialersWithProxy(t *testing.T) {
+	settings := DefaultClientStrategySettings()
+	settings.EnableNormal = true
+	settings.EnableResilient = true
+	settings.ProxySettings = &ProxySettings{
+		Network: "tcp",
+		Address: "127.0.0.1:1080",
+	}
+
+	strategy := NewClientStrategy(t.Context(), settings)
+	got := registeredDialerDescriptions(strategy)
+	want := []string{"fragment", "fragment+reorder", "normal", "reorder"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("registered dialers with proxy = %v, want %v", got, want)
+	}
+}
+
+func TestClientStrategyDialersDirect(t *testing.T) {
+	settings := DefaultClientStrategySettings()
+	settings.EnableNormal = true
+	settings.EnableResilient = true
+	settings.ProxySettings = nil
+
+	strategy := NewClientStrategy(t.Context(), settings)
+	got := registeredDialerDescriptions(strategy)
+	want := []string{"fragment", "fragment+reorder", "fragment+segment", "normal", "reorder"}
+	if !slices.Equal(got, want) {
+		t.Fatalf("registered dialers direct (nil proxy) = %v, want %v", got, want)
+	}
+}
