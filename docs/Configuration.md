@@ -249,7 +249,7 @@ A provider heading into a memory spiral stops answering within minutes: pprof ti
 
 | Trigger | When |
 |---|---|
-| `goroutine-growth` | at least 20,000 goroutines and 1.5 times the lowest count of the last 30 minutes (needs 10 minutes of history) |
+| `goroutine-growth` | at least 20,000 goroutines and 1.5 times the lowest count of the last 30 minutes (needs 10 minutes of history, and is not judged during the first 45 minutes after a start, while the proxies are still authenticating and the count climbs on its own) |
 | `heap-near-limit` | heap at 90% of its soft limit |
 | `heap-over-limit` | heap at 120% of its soft limit (heap profile and numbers only: the goroutine profile allocates a record per goroutine and is left out once the heap is past its limit) |
 
