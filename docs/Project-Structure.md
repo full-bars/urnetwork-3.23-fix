@@ -18,6 +18,8 @@ urnetwork-3.23-fix/
 │   ├── proxy_benchmark.go        # Optional per-proxy SOCKS5 latency probes
 │   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
+│   ├── claim_credential.go       # `provider claim` credential choice (store client, client jwt file, legacy coldkey)
+│   ├── thrash_watchdog.go        # Swap-thrash watchdog, supervised exit-75 restart, container opt-in
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
 │   ├── direct.go                 # Dynamic direct native connection controller
@@ -96,6 +98,8 @@ urnetwork-3.23-fix/
 │   ├── autopilot.go             # autopilot log: timeline of capacity decisions (OOM cap, trim)
 │   ├── baseline.go              # baseline show/mark/compare: this box's own record
 │   ├── internals.go             # Internals snapshot for the `top` panel (transport split)
+│   ├── log_stream.go            # Native log follower: last lines, then follow; rotation and truncation aware
+│   ├── log_follow_open_*.go     # Per-OS open for the follower (Windows: FILE_SHARE_DELETE, paths over MAX_PATH)
 │   ├── lifecycle_start_windows.go   # Windows provider start (schtasks/detached)
 │   ├── lifecycle_stop_windows.go    # Windows provider stop (socket shutdown + TerminateProcess)
 │   ├── lifecycle_restart_windows.go # Windows provider restart (HotSwap fallback)

@@ -9,9 +9,11 @@ package main
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -1013,5 +1015,310 @@ func TestThrashRecoveryReportKeyedToRestartRecency(t *testing.T) {
 		if strings.Contains(l, "Thrash cleared by the restart") {
 			t.Fatalf("a stale restarts-ring entry must NOT claim a restart outcome: %q", l)
 		}
+	}
+}
+
+func TestThrashSupervisorKind(t *testing.T) {
+	tests := []struct {
+		name         string
+		env          map[string]string
+		files        map[string]bool
+		wantKind     string
+		wantRestarts bool
+	}{
+		{
+			name:         "systemd vars invocation",
+			env:          map[string]string{"INVOCATION_ID": "systemd-u123"},
+			wantKind:     "systemd",
+			wantRestarts: true,
+		},
+		{
+			name:         "systemd vars notify socket",
+			env:          map[string]string{"NOTIFY_SOCKET": "/run/systemd/notify"},
+			wantKind:     "systemd",
+			wantRestarts: true,
+		},
+		{
+			name:         "dockerenv without ack",
+			files:        map[string]bool{"/.dockerenv": true},
+			wantKind:     "docker",
+			wantRestarts: false,
+		},
+		{
+			name:         "dockerenv with ack",
+			files:        map[string]bool{"/.dockerenv": true},
+			env:          map[string]string{"URNETWORK_EXIT75_OK": "1"},
+			wantKind:     "docker",
+			wantRestarts: true,
+		},
+		{
+			name:         "URNETWORK_CONTAINER=1 without ack",
+			env:          map[string]string{"URNETWORK_CONTAINER": "1"},
+			wantKind:     "docker",
+			wantRestarts: false,
+		},
+		{
+			name:         "URNETWORK_CONTAINER=1 with ack",
+			env:          map[string]string{"URNETWORK_CONTAINER": "1", "URNETWORK_EXIT75_OK": "1"},
+			wantKind:     "docker",
+			wantRestarts: true,
+		},
+		{
+			name:         "an unknown init marker is not a supervisor",
+			env:          map[string]string{"URNETWORK_INIT": "openrc"},
+			wantKind:     "none",
+			wantRestarts: false,
+		},
+		{
+			name:         "none",
+			env:          map[string]string{},
+			wantKind:     "none",
+			wantRestarts: false,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			envFn := func(k string) string {
+				if tc.env != nil {
+					return tc.env[k]
+				}
+				return ""
+			}
+			fileFn := func(p string) bool {
+				if tc.files != nil {
+					return tc.files[p]
+				}
+				return false
+			}
+			gotKind, gotRestarts := thrashSupervisorKind(envFn, fileFn)
+			if gotKind != tc.wantKind || gotRestarts != tc.wantRestarts {
+				t.Errorf("thrashSupervisorKind() = (%q, %v), want (%q, %v)",
+					gotKind, gotRestarts, tc.wantKind, tc.wantRestarts)
+			}
+		})
+	}
+}
+
+func TestThrashExitGateContainer(t *testing.T) {
+	setupHarness := func(t *testing.T, env map[string]string, fileExists func(string) bool, checkWritable func() error) (exitCalled func() bool, exitCode func() int) {
+		home := withTempHome(t)
+		if err := globalControlState.set("proxy_self_heal", "on"); err == nil {
+			t.Cleanup(func() { _ = globalControlState.clear("proxy_self_heal") })
+		}
+		if err := os.MkdirAll(filepath.Join(home, ".urnetwork"), 0o700); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(filepath.Join(home, ".urnetwork", "proxy_self_heal"), []byte("on\n"), 0o600); err != nil {
+			t.Fatalf("write override: %v", err)
+		}
+		ResetHotSwapStateForTest()
+		t.Cleanup(ResetHotSwapStateForTest)
+		restore := shrinkThrashDurations()
+		t.Cleanup(restore)
+
+		prevEnv := thrashEnvFn
+		prevFile := thrashFileExistsFn
+		prevWritable := thrashCheckCapDirWritableFn
+		prevExit := thrashExitFn
+		prevRead := thrashReadFn
+		t.Cleanup(func() {
+			thrashEnvFn = prevEnv
+			thrashFileExistsFn = prevFile
+			thrashCheckCapDirWritableFn = prevWritable
+			thrashExitFn = prevExit
+			thrashReadFn = prevRead
+		})
+
+		if env != nil {
+			thrashEnvFn = func(k string) string { return env[k] }
+		} else {
+			thrashEnvFn = func(string) string { return "" }
+		}
+		if fileExists != nil {
+			thrashFileExistsFn = fileExists
+		} else {
+			thrashFileExistsFn = func(string) bool { return false }
+		}
+		if checkWritable != nil {
+			thrashCheckCapDirWritableFn = checkWritable
+		}
+
+		calls := 0
+		var psiFull, swapIn uint64
+		thrashReadFn = func() thrashRead {
+			calls++
+			if calls == 1 {
+				return thrashRead{psiSomeOK: true, psiFullOK: true, psiSomeUnit: true, psiUnit: true, swapOK: true, swapUnit: true, ramAvailOK: true, ramAvailMiB: 500}
+			}
+			psiFull += 50_000_000
+			swapIn += 100_000
+			return thrashRead{
+				psiSomeTotal: psiFull, psiFullTotal: psiFull,
+				psiSomeOK: true, psiFullOK: true, psiSomeUnit: true, psiUnit: true,
+				swapIn: swapIn, swapOut: swapIn, swapOK: true, swapUnit: true,
+				unitSwapMiB: 3000, unitSwapOK: true,
+				hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300, hostSwapOK: true,
+				heapFrac: 3.1, heapUsedMiB: 2100, heapLimitMiB: 680, heapOK: true,
+				ramAvailMiB: 82, ramAvailOK: true,
+			}
+		}
+
+		var called atomic.Bool
+		var code atomic.Int32
+		code.Store(-1)
+		thrashExitFn = func(c int) {
+			code.Store(int32(c))
+			called.Store(true)
+		}
+
+		return called.Load, func() int { return int(code.Load()) }
+	}
+
+	t.Run("container without ack leaves exitFn uncalled and returns no-supervisor", func(t *testing.T) {
+		exitCalled, _ := setupHarness(t, map[string]string{"URNETWORK_CONTAINER": "1"}, nil, nil)
+
+		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
+		rdUnit := thrashRead{unitSwapOK: true, unitSwapMiB: 3000, hostSwapOK: true, hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300}
+		esc := thrashEscalate(time.Now(), rt, rdUnit, true, "unit", 0.9, true)
+		if esc.Code != "no-supervisor" || esc.Action != "alert" {
+			t.Fatalf("thrashEscalate got (%s, %s), want (alert, no-supervisor)", esc.Action, esc.Code)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		runThrashWatchdog(ctx, true)
+
+		if exitCalled() {
+			t.Fatal("thrashExitFn was called for container without ack")
+		}
+	})
+
+	t.Run("dockerenv without ack leaves exitFn uncalled and returns no-supervisor", func(t *testing.T) {
+		dockerFile := func(p string) bool { return p == "/.dockerenv" }
+		exitCalled, _ := setupHarness(t, nil, dockerFile, nil)
+
+		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
+		rdUnit := thrashRead{unitSwapOK: true, unitSwapMiB: 3000, hostSwapOK: true, hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300}
+		esc := thrashEscalate(time.Now(), rt, rdUnit, true, "unit", 0.9, true)
+		if esc.Code != "no-supervisor" || esc.Action != "alert" {
+			t.Fatalf("thrashEscalate got (%s, %s), want (alert, no-supervisor)", esc.Action, esc.Code)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		runThrashWatchdog(ctx, true)
+
+		if exitCalled() {
+			t.Fatal("thrashExitFn was called for /.dockerenv without ack")
+		}
+	})
+
+	t.Run("container with ack but unwritable cap dir refuses with persist-failed", func(t *testing.T) {
+		exitCalled, _ := setupHarness(t, map[string]string{
+			"URNETWORK_CONTAINER": "1",
+			"URNETWORK_EXIT75_OK": "1",
+		}, nil, func() error {
+			return errors.New("state dir read-only")
+		})
+
+		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
+		rdUnit := thrashRead{unitSwapOK: true, unitSwapMiB: 3000, hostSwapOK: true, hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300}
+		esc := thrashEscalate(time.Now(), rt, rdUnit, true, "unit", 0.9, true)
+		if esc.Code != "persist-failed" || esc.Action != "alert" {
+			t.Fatalf("thrashEscalate got (%s, %s), want (alert, persist-failed)", esc.Action, esc.Code)
+		}
+
+		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		defer cancel()
+		runThrashWatchdog(ctx, true)
+
+		if exitCalled() {
+			t.Fatal("thrashExitFn was called when cap dir is not writable")
+		}
+	})
+
+	t.Run("container with ack and writable cap dir calls exitFn 75", func(t *testing.T) {
+		exitCalled, exitCode := setupHarness(t, map[string]string{
+			"URNETWORK_CONTAINER": "1",
+			"URNETWORK_EXIT75_OK": "1",
+		}, nil, nil)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			runThrashWatchdog(ctx, true)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Fatal("watchdog timed out waiting for escalation")
+		}
+
+		if !exitCalled() {
+			t.Fatal("thrashExitFn was not called for container with ack and writable cap dir")
+		}
+		if exitCode() != thrashExitCode {
+			t.Fatalf("exit code = %d, want thrashExitCode (%d)", exitCode(), thrashExitCode)
+		}
+		if st := readThrashCapState(); len(st.Restarts) == 0 {
+			t.Fatal("thrash cap state must record the restart")
+		}
+	})
+
+	t.Run("dockerenv with ack and writable cap dir calls exitFn 75", func(t *testing.T) {
+		dockerFile := func(p string) bool { return p == "/.dockerenv" }
+		exitCalled, exitCode := setupHarness(t, map[string]string{
+			"URNETWORK_EXIT75_OK": "1",
+		}, dockerFile, nil)
+
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			runThrashWatchdog(ctx, true)
+			close(done)
+		}()
+
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			t.Fatal("watchdog timed out waiting for escalation")
+		}
+
+		if !exitCalled() {
+			t.Fatal("thrashExitFn was not called for dockerenv with ack and writable cap dir")
+		}
+		if exitCode() != thrashExitCode {
+			t.Fatalf("exit code = %d, want thrashExitCode (%d)", exitCode(), thrashExitCode)
+		}
+	})
+}
+
+// A hung volume must not stall the watchdog: the probe is bounded by the same
+// timeout as the cap write and a timeout is a failed probe.
+func TestThrashCapDirWritableBoundedTimesOut(t *testing.T) {
+	prevProbe, prevTimeout := thrashCheckCapDirWritableFn, thrashPersistTimeout
+	t.Cleanup(func() { thrashCheckCapDirWritableFn, thrashPersistTimeout = prevProbe, prevTimeout })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	thrashCheckCapDirWritableFn = func() error { <-release; return nil }
+	thrashPersistTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	err := thrashCapDirWritableBounded()
+	if err == nil {
+		t.Fatal("a probe that never returns must fail")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("the probe was not bounded: took %v", time.Since(start))
+	}
+
+	thrashCheckCapDirWritableFn = func() error { return nil }
+	if err := thrashCapDirWritableBounded(); err != nil {
+		t.Fatalf("a healthy probe must pass: %v", err)
 	}
 }

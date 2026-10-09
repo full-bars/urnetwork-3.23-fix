@@ -34,7 +34,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
-| `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. |
+| `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
 ### Restored Provider & Session Commands (v3.23.0-fix.30.4+)

@@ -3698,15 +3698,93 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files Added**: `net_resilient_combined_test.go`
 
 **Change**:
-- New dialer `fragment+segment` (priority 50, minimumWeight 0.25) beside `fragment` / `reorder` / `fragment+reorder`, behind the existing `ExposeServerHostNames && ExposeServerIps` gate. Every fragmented ClientHello record is cut a second time across two TCP segments at an interior byte boundary (`writeRecordMaybeSegmented`, cut at `len/2`, `combinedSegmentMinLen = 2`), so no TLS record lands whole in one segment and a single-method reassembler cannot stitch the hello.
-- No raw sockets needed: the write boundaries are the segmentation, so the mode works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux).
-- `TCP_NODELAY` is set in the plain-fragment TCP branch while segment is on, so the two writes leave as two segments instead of coalescing.
+- New dialer `fragment+segment` (priority 50, minimumWeight 0.25) beside `fragment` / `reorder` / `fragment+reorder`, behind the existing `ExposeServerHostNames && ExposeServerIps` gate for direct connections only (not behind a SOCKS proxy). Every fragmented ClientHello record is cut a second time across two TCP segments at an interior byte boundary (`writeRecordMaybeSegmented`, cut at `len/2`, `combinedSegmentMinLen = 2`), so no TLS record lands whole in one segment and a single-method reassembler cannot stitch the hello. The segment cut is best effort.
+- No raw sockets needed: the write boundaries are the segmentation on a direct connection, so the mode works where the ttl technique cannot (non-root Android, iOS network extension, non-Linux).
+- `TCP_NODELAY` is set in the plain-fragment TCP branch while segment is on, so the two writes leave as two segments instead of coalescing. Segmentation is best effort because the kernel may still merge small writes.
 - Fail closed: a failed or short first half never writes the second; the layer disables, the buffer drops and the socket closes, exactly like the fragment path.
 - Back-compat: `NewResilientTlsConn` / `NewResilientDialTlsContext` keep their signatures as wrappers; `NewResilientDialTlsContextWithSegment` is the new exported constructor. The fork hardening (`ttlControl`, `writeFragmentsAlternatingTtl`, `writeBlocksAlternatingTtl`, `failConnection`, the `Off()` drain) is untouched, and the smart dialer picks the new dialer up generically.
 - Upstream parity: the ttl-unreadable fallback writes the hello whole, unsegmented, on both sides, and the new dialer (reorder=false) never reaches it.
 
 **How to Identify in New Upstream**:
 - `net_resilient.go`: `writeRecordMaybeSegmented`, `combinedSegmentMinLen`, the `segment` field on `ResilientTlsConn`
-- `net_http.go`: the `fragment+segment` dialer registration
+- `net_http.go`: the `fragment+segment` dialer registration (direct connections only)
 
 **Status**: parity-mirrored to meso-miner (PR #183).
+
+---
+
+## 189. Claim Authenticates With a Client Token, Renewal Keeps the Identity (PR #802)
+
+**Purpose**: The platform looks a payout claim up by the client in the token. A network token carries no client, so `provider claim` could only ever read an epoch with no provider artifact. Separately, a stored client token whose renewal failed for a transient reason was replaced by a brand new client, abandoning the old client id and its history.
+
+**Files Modified**: `provider/main.go`, `provider/sn.go`, `provider/client_jwt_store.go`, `api_verify.go`, `docs/Bittensor-Operations.md`
+
+**Files Added**: `provider/claim_credential.go`, `provider/claim_credential_test.go`, `api_sn_claim_result_test.go`, `api_sn_pool_claim_url_test.go`
+
+**Change**:
+- `provider claim` takes exactly one of `--store-client=<key>`, `--provider-jwt=<path>` or `--legacy-coldkey=<ss58>` (network token plus a `legacy_coldkey` query parameter, only for an epoch with no provider artifact). With none it refuses. A token with no client id and an expired token are refused locally. Tokens and proxy keys are never printed.
+- `SnPoolClaimResult` carries the server's `error` object. The server answers a refused claim as HTTP 200 with that object and no claim fields, so without the field the message was dropped.
+- `renewClientJWT` marks a renewal that failed without a platform verdict as `renewalTransientError`: a transport error, a 5xx, a 408, a 429 or a cancelled context. `provideAuth` keeps the identity at both fall-through sites and returns the error for the caller's backoff. A definite answer (`Client does not exist.`, a mismatched client id, a permanent 4xx) still mints a fresh client. The status is read from the `<code> <text>: <body>` prefix that `httpErrorFromResponse` puts on every non-200 answer.
+
+**How to Identify in New Upstream**:
+- `provider/claim_credential.go` (`resolveClaimCredential`) and the `legacy_coldkey` handling in `api_verify.go`
+- `renewalTransientError`, `isRenewalTransient` and `renewalHTTPRefusal` in `provider/main.go`
+
+**Status**: ported to meso-miner (its PR #190). `sn` carries the renewal half (its PR #82). Its claim still authenticates with the network token, and its signed wallet flow is a separate change.
+
+---
+
+## 190. The Unsigned Network Wallet Request Is Refused Unless Allowed (PR #804)
+
+**Purpose**: The platform is moving wallet binding to a signed consent (one coldkey signature delegated to a hotkey). Whether it still accepts the unsigned `POST /sn/wallet` is a server-side policy this binary cannot see, so the request is no longer sent by default.
+
+**Files Modified**: `provider/main.go`, `provider/sn.go`, `docs/Bittensor-Operations.md`
+
+**Files Added**: `provider/legacy_wallet_gate_test.go`
+
+**Change**:
+- `legacyNetworkWalletGate` is called from `provider wallet set` (exit 1 on refusal) and `provide --wallet` (prints the refusal and keeps providing). `--legacy-network-wallet` sends the unsigned request anyway.
+- The signed flow is deliberately not linked into this binary. It needs the `sn` build's `crv4` package, which requires a patched Substrate client, and it would put hotkey seed handling on every fleet node. It is a one-time action per network.
+
+**How to Identify in New Upstream**: `legacyNetworkWalletGate` in `provider/sn.go` and its two call sites.
+
+**Status**: ported to meso-miner (its PR #192). Not applicable to `sn`, which ships the signed flow.
+
+---
+
+## 191. A Container Can Opt In to the Exit 75 Restart (PR #803)
+
+**Purpose**: The thrash watchdog's self-restart exits with status 75 and was allowed only under systemd, so in a container it always declined. A container may now opt in, safely.
+
+**Files Modified**: `provider/thrash_watchdog.go`, `docker/scripts/start_stable.sh`, `docker/scripts/start_nightly.sh`, `docker/scripts/start_jwt.sh`, `docker/scripts/pelican_panel.sh`, `docker/scripts/test_update_verify.sh`, `.github/workflows/build.yml`, `docs/Configuration.md`
+
+**Files Added**: `docker/scripts/test_exit75_restart.sh`
+
+**Change**:
+- `thrashSupervisorKind` is the one decision used by both the exit gate and the critical-state log line. systemd (`INVOCATION_ID` or `NOTIFY_SOCKET`) restarts on 75. A container (`/.dockerenv` or `URNETWORK_CONTAINER=1`) does only with `URNETWORK_EXIT75_OK=1`.
+- Before exiting in a container the watchdog proves the state directory holding `thrash_cap.json` can be written and read back, otherwise the escalation is refused as `persist-failed`. The probe runs in a goroutine bounded by `thrashPersistTimeout`.
+- The start scripts treat exit 75 as a planned restart (5 second sleep, failure counter and JWT untouched). `start_update.sh` and the JWT-mode function of `pelican_panel.sh` have no restart loop and are untouched.
+
+**How to Identify in New Upstream**: `thrashSupervisorKind` and `thrashCapDirWritableBounded` in `provider/thrash_watchdog.go`; the `-eq 75` block in each start script.
+
+**Status**: ported to meso-miner (its PR #191) and `sn` (its PR #84). Nothing sets `URNETWORK_EXIT75_OK` by default.
+
+---
+
+## 192. urnet-tools Runs Natively on Windows and Follows Rotated Logs (PR #795)
+
+**Purpose**: `urnet-tools` shelled out to Unix tools on Windows (`tail`, `sudo`) and a clean Windows profile could not start the provider.
+
+**Files Modified**: `internal/urnettools/legacy_cmds.go`, `internal/urnettools/lifecycle_start_windows.go`, `internal/urnettools/proxy.go`, `internal/urnettools/restart_escalation.go`, `internal/urnettools/select_multi.go`
+
+**Files Added**: `internal/urnettools/log_stream.go`, `internal/urnettools/log_follow_open_unix.go`, `internal/urnettools/log_follow_open_windows.go`, and tests for each
+
+**Change**:
+- `streamLogFile` prints the last lines and then follows. It is the log view on Windows and the fallback wherever `tail` is missing. It reads from exactly where the tail stopped, so no line is skipped, and each line appears once.
+- On Windows the log is opened with `FILE_SHARE_DELETE` through `syscall.CreateFile`, so a rotation, a clear or an update is not blocked. Paths longer than `MAX_PATH` get the `\\?\` prefix, which `CreateFile` does not add the way `os.Open` does.
+- If the path starts naming a different file, the follower drains the old one and follows the new one from its start. A truncated log restarts from its start. A tail window that starts exactly on a line boundary keeps its first line.
+- `homeForUser` resolves the account home from the account database (`os/user`, then `getent`) before `$HOME`, which is only the last resort for the invoking user. The state directory is created before the provider is launched on Windows, and the sudo checks are skipped there.
+
+**How to Identify in New Upstream**: `internal/urnettools/log_stream.go` and `openFollowFile`.
+
+**Status**: ported to meso-miner (its PR #185) and `sn` (its PR #79); the two follow-up fixes (tail window, long paths) are on the `port/windows-log-follow-leftovers` branches. A live `urnet-tools proxy health` run against a Windows provider has not been done.

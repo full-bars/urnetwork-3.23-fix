@@ -50,6 +50,7 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 | 20 | The proxy file specified with `--proxy_file` cannot be read. Check the path and file permissions. |
 | 21 | The proxy file is empty or contains no valid `ip:port:user:pass` lines. |
 | 78 | The JWT is expired or invalid. The startup script intercepts this code, deletes the stale JWT, and re-authenticates automatically. |
+| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds, and only when `URNETWORK_EXIT75_OK=1` allowed the watchdog to exit at all. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
 
 ### logs
 
@@ -90,7 +91,8 @@ If your container exits unexpectedly:
 3. **Read the ramlogs**: `docker exec <name> logs`
 4. **Exit 0** means a clean shutdown (SIGTERM or manual stop).
 5. **Exit 78** means the JWT expired (the script attempted automatic re-authentication). Verify `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` are set correctly.
-6. **All other non-zero codes** indicate a configuration or environment problem. The fatal message describes the specific issue.
+6. **Exit 75** is the thrash watchdog's planned restart, not a fault. The start scripts restart the provider after 5 seconds and leave the JWT alone.
+7. **All other non-zero codes** indicate a configuration or environment problem. The fatal message describes the specific issue.
 
 ### Fatal messages always write to both logs and stderr
 
@@ -204,3 +206,19 @@ urnet-tools providers --all # as root, to rule out a same-user collision
 > `urnet-tools` performs for you, because buffer sizing is fixed at startup and
 > ramlogs is a live stdout redirect. Reads (`get`) are deliberately not logged,
 > since `urnet-tools status` polls them on every invocation.
+
+---
+
+## 7. Claim and Wallet Messages
+
+These come from `provider claim`, `provider wallet set` and `provide --wallet`. None of them prints a token.
+
+| Message | Meaning and fix |
+|---------|-----------------|
+| `claim needs the login of a client that served traffic: pass --store-client=<key> ...` | `provider claim` needs a credential. A node holds hundreds of identities and only one that served traffic has a payout. Pass `--store-client=<key>` (the proxy address the identity was minted for, or `direct`), `--provider-jwt=<file>`, or `--legacy-coldkey=<coldkey_ss58>` for an epoch without a provider artifact. |
+| `pass only one of --store-client, --provider-jwt and --legacy-coldkey` | Give exactly one credential flag. |
+| `no client "<key>" in <path> (N identities) ...` | The store has no identity under that key. Keys are in `~/.urnetwork/.client_jwts.json`. |
+| `<source> does not name a client (is it the network token?) ...` | The token is the network token. Claim needs a client token. |
+| `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |
+| `No claimable epoch.` | The platform's own answer: there is nothing to claim for that epoch with that client. Try another identity that served traffic, or another `--epoch`. |
+| `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Set the wallet in the URnetwork app or web account, or add `--legacy-network-wallet` to send the unsigned request anyway. `provide --wallet` prints this and keeps providing. |
