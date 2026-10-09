@@ -213,7 +213,8 @@ func startHotSwapSignalListener(ctx context.Context, cancel context.CancelFunc, 
 func notifySystemdMainPID(pid int) error { return nil }
 
 // notifySystemdReady is a no-op on Windows (no systemd).
-func notifySystemdReady() error { return nil }
+func notifySystemdReady() error    { return nil }
+func notifySystemdWatchdog() error { return nil }
 
 // notifySystemdStatus is a no-op on Windows (no systemd).
 func notifySystemdStatus(text string) error { return nil }

@@ -231,6 +231,30 @@ These combine into a single smoothed pressure score in `[0, 1]`. A self-inflicte
 - The dead-proxy cleanup job and the reaper's stale re-probe window both run *more* often under pressure (6h → 1h and 3h → 1h respectively) — cleanup and the reaper shed load, so pressure is exactly when they should run harder, not less
 - An AIMD pool controller adjusts a persisted `TargetPoolSize` (stored in `proxy_url.json`) every 5 minutes: +25 proxies when calm, ×0.7 after two consecutive high-pressure samples (floor 50, capped by `PROXY_URL_MAX`). Shrinks evict the worst URL-sourced proxies first (dead, then degraded tiers, then healthy ones by ascending persisted earnings, then ascending lifetime traffic) with a 1h re-admission backoff. This learned target only caps admission while self-heal is enabled.
 
+### systemd watchdog (stalled provider)
+
+Everything above runs inside the provider. When the process is alive but too starved to run its own loops (a heap far over its limit on a small box leaves the garbage collector using most of the CPU), nothing in-process can rescue it, and systemd sees a running unit. The provider can hand that judgement to systemd: it sends `WATCHDOG=1` only while its pressure monitor keeps ticking, and systemd restarts a unit that goes quiet. It is off until the unit sets `WatchdogSec=`, which needs the notify unit that `urnet-tools update` migrates to (`Type=notify`, `NotifyAccess=all`). A drop-in is enough:
+
+```ini
+# ~/.config/systemd/user/urnetwork.service.d/watchdog.conf  (system units: /etc/systemd/system/urnetwork.service.d/)
+[Service]
+WatchdogSec=1200
+```
+
+Then `systemctl --user daemon-reload && systemctl --user restart urnetwork.service`. The ping is withheld after 10 minutes without a tick, so systemd restarts a stalled provider between 10 and 30 minutes after the stall starts. The feed starts as soon as the provider reports ready, and until the pressure monitor has ticked once (it starts after the proxy list is loaded) startup gets a 30 minute grace, so a big list is not mistaken for a stall. That is deliberately slow: a long garbage collection pause or a briefly loaded box must never cost a restart. Before systemd acts, the provider records a lean start cap exactly as a thrash restart does (about 60% of the proxies that were running, counted in the same 3 per 24 hours ring), so the next start does not walk back into the same spiral. A cap already in force is kept, not cut again, so repeated stalls cannot compound down to one proxy, and the same ring and backoff as a thrash restart apply: once the day's restarts are spent, or inside the re-arm wait after one, the provider keeps feeding the watchdog and logs that the budget is spent, so a stall that recurs cannot restart the node for ever. The switch is the self-heal switch like everything else here: with self-heal off the provider keeps feeding the watchdog and only logs that it would have withheld the ping, because off means off for automatic restarts. If the stall resolves itself before systemd acts, the lean start cap it wrote is taken back out (and the restart ring entry with it). Keep `WatchdogSec` well above how long the provider takes to come up (the 20 minutes above does); the unit also needs `NotifyAccess=main` or `all`, which the notify unit has, and the provider says so in `events.log` if `WatchdogSec=` is set without it. Do not set `WatchdogSec=` on a unit whose binary predates this change: it never pings and systemd would restart it every interval.
+
+### Incident capture (evidence before a stall)
+
+A provider heading into a memory spiral stops answering within minutes: pprof times out, the log ring floods, the status files freeze, and by the time anyone looks the evidence of what piled up is gone. So the provider watches two cheap numbers every 10 seconds, its goroutine count and its heap against the soft limit, and when either shows the build-up it writes profiles to disk while it can still run:
+
+| Trigger | When |
+|---|---|
+| `goroutine-growth` | at least 20,000 goroutines and 1.5 times the lowest count of the last 30 minutes (needs 10 minutes of history) |
+| `heap-near-limit` | heap at 90% of its soft limit |
+| `heap-over-limit` | heap at 120% of its soft limit (heap profile and numbers only: the goroutine profile allocates a record per goroutine and is left out once the heap is past its limit) |
+
+Each capture is a directory under `~/.urnetwork/incidents/<UTC time>-<trigger>/` with `summary.txt` (the 15 biggest goroutine stacks and how many goroutines share each, which is usually the whole answer to "what piled up"), `goroutines.txt` (the full grouped profile), `heap.pb.gz` (open it with `go tool pprof`) and `meta.txt`. A trigger repeats at most once per 30 minutes, captures are at least a minute apart, there are at most 6 a day, and the newest 8 directories are kept. It writes to disk only, never to the ramlog, and the profiles briefly pause the program while they are read (the heap profile and the numbers are cheap; the goroutine profile costs more the more goroutines there are). `URNETWORK_INCIDENT_CAPTURE=0` turns it off. The line `[incident] <trigger>: ...` in `~/.urnetwork/events.log` says when one was taken.
+
 ### Swap-thrash watchdog
 
 Memory pressure alone does not mean the box is thrashing. The watchdog watches for the signs that it is: PSI memory `full` (tasks stalled on memory), swap activity (`pswpout`/`pswpin` rates), page refaults, and direct reclaim. It keeps one state, `calm -> under-pressure -> thrashing -> critical`, and acts in steps:
@@ -242,6 +266,8 @@ Memory pressure alone does not mean the box is thrashing. The watchdog watches f
 The supervised restart needs a service unit that restarts on exit status 75. The shipped units use `Restart=on-failure`, which covers it. If you override the unit with a drop-in, use `Restart=on-failure` or `Restart=always`, keep 75 (or its name `TEMPFAIL`) out of `RestartPreventExitStatus`, and do not mark 75 a success in `SuccessExitStatus` — under `Restart=on-failure` systemd would then treat the watchdog exit as a clean stop. The installer warns when a drop-in weakens any of this.
 
 **In a container** the restart is off unless you opt in. The watchdog exits only when it can be sure something restarts it, so a container with neither systemd nor the ack logs a `no-supervisor` alert and keeps running. To opt in, run with a restart policy that restarts on exit (`restart: unless-stopped` or `always`, or the shipped start scripts, which restart on exit 75 after 5 seconds) and set `URNETWORK_EXIT75_OK=1`. A container is recognised by `/.dockerenv`, or by `URNETWORK_CONTAINER=1` on runtimes without that file (Podman, Kubernetes). Before exiting, the watchdog proves that `~/.urnetwork` can be written and read back within a short timeout. If it cannot, it logs a `persist-failed` alert and does not restart, because a self-exit without its throttle record could loop. Keep `~/.urnetwork` on a persistent volume so the 3 restarts per 24 hours ceiling survives the restart.
+
+**A heap running away.** PSI can still read calm in the minutes before a spiral: the runtime pins a core on garbage collection, part of the heap swaps out, and soon the process is too starved to run any responder. So a heap at least 1.4 times its soft limit on a box with little free RAM (under a tenth of the box, never under 256 MiB) counts as severe on its own clock, 90 seconds, whatever PSI says. It needs both readings; a box that cannot say how much RAM is free is never judged on the heap alone.
 
 All of this rides the existing self-heal switch (`URNETWORK_SELF_HEAL=1` or `urnet-tools self-heal on`). Off means off for actions: with self-heal off, the watchdog still senses and logs, so you can watch it work, but it never restarts anything.
 

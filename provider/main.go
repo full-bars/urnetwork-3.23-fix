@@ -3066,6 +3066,9 @@ func provide(opts docopt.Opts) {
 			tlog("[systemd] READY=1 notify failed: %s\n", err)
 		}
 		reportProxyStatusToSystemd()
+		// systemd's watchdog runs from here: feed it through the whole of
+		// startup, not only once the proxy list is loaded.
+		startLivenessWatchdog(ctx)
 	}
 
 	// Exit-visibility: log what triggered the shutdown. The wrapped cancel
@@ -3918,6 +3921,7 @@ func provide(opts docopt.Opts) {
 				}
 			}
 			_ = notifySystemdReady()
+			startLivenessWatchdog(ctx)
 		})
 		// unregSocketCloser must stay registered for the provider's lifetime (or
 		// until a later HotSwap explicitly closes it): it guards the promoted
@@ -4394,6 +4398,14 @@ func provide(opts docopt.Opts) {
 	// Supervised: a panic restarts the loop with backoff instead of ending it for
 	// good (and leaving the last pressure score, GOGC and memory budget in force).
 	go superviseLoop(ctx, "pressure_monitor", func() { runPressureMonitor(ctx, selfHealEnabled) }, nil)
+	// systemd watchdog feed: inert unless the unit sets WatchdogSec=. Pings only
+	// while the pressure monitor keeps ticking, so a process that is alive but
+	// stalled (a GC death spiral on a small box) is restarted by systemd.
+	// Evidence capture: goroutine and heap profiles to ~/.urnetwork/incidents/ when
+	// the build-up of a stall shows, while the process can still write them.
+	if incidentCaptureEnabled() {
+		go superviseLoop(ctx, "incident_capture", func() { runIncidentCapture(ctx) }, nil)
+	}
 	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
 	// Thrash watchdog: senses swap-thrash independently of the pressure
 	// score, holds the freeze-growth rung, and (gated on self-heal,

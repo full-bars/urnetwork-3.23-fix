@@ -1067,6 +1067,17 @@ The watchdog watches memory pressure and swap and moves between four states: `ca
 ⚠️ [client-limit] could not persist the hold: <error>
 ⚠️ [client-limit] could not write the standing hold before exit: <error>
 ⚠️ [client-limit] client_limit_hold.json is not valid JSON, replacing it
+## 🩺 Liveness (`[liveness]`)
+
+Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.md#systemd-watchdog-stalled-provider)). These lines go to `~/.urnetwork/events.log`, not the ramlog, because the ramlog reader may be the thing that is starved.
+
+```text
+🚨 [liveness] no progress for 10m0s: withholding the systemd watchdog ping, so systemd will restart the provider
+[liveness] the next start is capped at 300 proxies (60% of what was running)
+[liveness] progress resumed; the systemd watchdog is being fed again
+[liveness] the lean start cap was removed again: progress resumed before systemd acted
+[liveness] no progress for 10m0s, but self-heal is off, so the systemd watchdog is still being fed (it would otherwise be withheld and systemd would restart the provider)
+⚠️ [liveness] WATCHDOG_USEC is set but NOTIFY_SOCKET is not: the unit needs NotifyAccess=main or all, or systemd will restart the provider every 20m0s
 ```
 
 | Message | Meaning |
@@ -1109,6 +1120,25 @@ A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` 
 🛑 [jwt-store] identity for 203.0.113.9:1080 renewed successfully — revocation watcher standing down
 ⚠️ [jwt-renew] proxy[7] 203.0.113.9:1080: cannot read account JWT: <error>
 [proxy][identity] 203.0.113.9:1080 split into 3 identities on adoption; 203.0.113.9:1080 (user us***rA) kept id=7 and history, the rest start fresh
+| `no progress for 10m0s: withholding the systemd watchdog ping` | The pressure monitor has not ticked for 10 minutes, so the process is alive but not making progress. The ping stops and systemd restarts the unit once `WatchdogSec` runs out. Once per episode. |
+| `the next start is capped at N proxies` | Written at the same moment, so the restart begins with about 60% of what was running instead of the same load. It counts in the thrash restart ring (3 per 24 hours). |
+| `progress resumed` | The monitor ticked again before systemd acted (a very long pause, not a stall). Pings resume and the lean start cap written at the stall is removed again (`the lean start cap was removed again`). |
+| `but self-heal is off, so the systemd watchdog is still being fed` | The same stall with self-heal off: nothing is withheld or recorded, so systemd does not restart the provider. Turn self-heal on to let the watchdog act. |
+| `but the restart budget is spent (...), so the systemd watchdog is still being fed` | The same stall inside the thrash restart ring's limits (3 per 24 hours, with a 30 minute and a 2 hour re-arm wait): nothing is withheld, so systemd does not restart the provider again yet. |
+| `WATCHDOG_USEC is set but NOTIFY_SOCKET is not` | The unit sets `WatchdogSec=` without a notify socket (`NotifyAccess=none`), so no ping can reach systemd and it will restart the provider every interval whatever it does. Fix the unit. |
+
+The thrash watchdog also has a heap rule: a heap at least 1.4 times its soft limit on a box with little free RAM counts as severe after 90 seconds even while PSI reads calm. It shows up as the usual `[thrash]` and `[memory]` lines.
+
+---
+
+## 📸 Incident Capture (`[incident]`)
+
+Goroutine and heap profiles taken on the way into a stall (see [Configuration](docs/Configuration.md#incident-capture-evidence-before-a-stall)). The line goes to `~/.urnetwork/events.log`.
+
+```text
+[incident] goroutine-growth: 38700 goroutines, heap at 58% of its limit; profiles in /home/user/.urnetwork/incidents/20261009T174600Z-goroutine-growth
+[incident] heap-near-limit: 61100 goroutines, heap at 94% of its limit; profiles in /home/user/.urnetwork/incidents/20261009T175200Z-heap-near-limit
+[incident] capture for heap-over-limit failed: <error>
 ```
 
 | Message | Meaning |
@@ -1292,3 +1322,5 @@ These explain a proxy that is not signing in. Per-attempt `[t]auth error` lines 
 | `client_limit_hold.json is not valid JSON, replacing it` | The saved holds were unreadable and are replaced. At worst one more kick per client. |
 
 An older platform never sends the close, so these lines never appear against it. `URNETWORK_PROVIDE_INTENT=0` stops the provider declaring an intent; a kick is still held.
+| `<trigger>: N goroutines, heap at P% of its limit; profiles in <dir>` | The build-up showed, and `summary.txt`, `goroutines.txt`, `heap.pb.gz` and `meta.txt` were written to `<dir>`. Open `summary.txt` first: the stack with the most goroutines is what piled up. |
+| `capture for <trigger> failed` | The profiles could not be written (disk full, read-only state directory). The provider carries on. |
