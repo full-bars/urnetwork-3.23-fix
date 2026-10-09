@@ -1824,6 +1824,15 @@ command="$install_path/bin/urnetwork"
 command_args="provide"
 command_user="$openrc_user"
 supervisor="supervise-daemon"
+# supervise-daemon sets neither INVOCATION_ID nor NOTIFY_SOCKET, so without this
+# marker the provider cannot tell it is supervised and refuses the thrash
+# watchdog's supervised restart (exit 75).
+export URNETWORK_INIT=openrc
+# Stop schedule. Without retry= a provider that is hung or ignores SIGTERM
+# survives \`rc-service stop\` (which still reports success), and the next start
+# then runs a second provider with the same identity and state. TERM first with
+# room for the 30s connection drain, then KILL.
+retry="TERM/40/KILL/5"
 # Crash handling. respawn_max=0 means UNLIMITED, which turns a binary that
 # cannot start (bad download, corrupt state, missing interface) into a 5-second
 # restart loop that floods /var/log forever and never tells anyone. The systemd

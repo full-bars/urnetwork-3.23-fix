@@ -29,7 +29,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	oldPeriodic, oldExecutable := openrcPeriodicBaseDir, openrcExecutableFn
 	oldDiscover := discoverSystemdFn
 	oldSupervised := providerSupervisedByOpenRCFn
+	oldAliveFn := openrcProcessAliveFn
 	t.Cleanup(func() {
+		openrcProcessAliveFn = oldAliveFn
 		openrcProbeFn, systemdRunningFn = oldProbe, oldSystemd
 		openrcInitScriptPath, openrcRunFn, openrcToolPathFn = oldInit, oldRun, oldToolPath
 		openrcPeriodicBaseDir, openrcExecutableFn = oldPeriodic, oldExecutable
@@ -44,6 +46,9 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	// process when it has a pid (the production check reads /proc/<pid>);
 	// tests that need a bare provider override this.
 	providerSupervisedByOpenRCFn = func(p Provider) bool { return p.PID > 0 }
+	// No test provider pid is a real process: the post-restart check must not
+	// depend on whatever happens to run on the host.
+	openrcProcessAliveFn = func(int) bool { return false }
 
 	dir := t.TempDir()
 	openrcInitScriptPath = filepath.Join(dir, "urnetwork")
@@ -1288,5 +1293,93 @@ func TestCmdLogsOpenRCTarget(t *testing.T) {
 				t.Fatalf("cmdLogs = %v, want %q", err, tc.want)
 			}
 		})
+	}
+}
+
+// A restart that rc-service reports as successful while the old provider is
+// still running must fail loudly: two providers would share one identity.
+func TestOpenRCRestartFailsWhenOldProviderSurvives(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	oldAlive, oldWait, oldStep := openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep
+	t.Cleanup(func() { openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep = oldAlive, oldWait, oldStep })
+	openrcOldGoneWait, openrcOldGoneStep = 30*time.Millisecond, 5*time.Millisecond
+	openrcProcessAliveFn = func(pid int) bool { return pid == 4242 }
+
+	handled, err := openrcRestartService(Provider{PID: 4242})
+	if !handled || err == nil || !strings.Contains(err.Error(), "pid 4242") || !strings.Contains(err.Error(), "still running") {
+		t.Fatalf("restart with a surviving old provider = (%v, %v), want a handled error naming pid 4242", handled, err)
+	}
+}
+
+// The old provider exiting during the wait is the normal slow-stop case and
+// must not be an error.
+func TestOpenRCRestartAcceptsOldProviderExitingDuringWait(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	oldAlive, oldWait, oldStep := openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep
+	t.Cleanup(func() { openrcProcessAliveFn, openrcOldGoneWait, openrcOldGoneStep = oldAlive, oldWait, oldStep })
+	openrcOldGoneWait, openrcOldGoneStep = time.Second, 5*time.Millisecond
+	polls := 0
+	openrcProcessAliveFn = func(int) bool { polls++; return polls < 4 }
+
+	handled, err := openrcRestartService(Provider{PID: 4242})
+	if !handled || err != nil {
+		t.Fatalf("restart = (%v, %v), want handled without error", handled, err)
+	}
+	if polls < 4 {
+		t.Fatalf("polled %d times, want the wait to keep polling until the pid is gone", polls)
+	}
+}
+
+// An init script written before the thrash restart and the stop schedule
+// shipped keeps running without either until the installer is rerun, and a
+// binary update alone never rewrites it. The update says so.
+func TestOpenrcInitScriptStaleReason(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("#!/sbin/openrc-run\ncommand=/x\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || !strings.Contains(got, "retry=") || !strings.Contains(got, "URNETWORK_INIT") {
+		t.Fatalf("an old script must name both missing parts, got %q", got)
+	}
+
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=openrc\nretry=\"TERM/40/KILL/5\"\n")
+	if got := openrcInitScriptStaleReason(path); got != "" {
+		t.Fatalf("a current script is not stale, got %q", got)
+	}
+
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=openrc\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || strings.Contains(got, "URNETWORK_INIT") {
+		t.Fatalf("only the stop schedule is missing here, got %q", got)
+	}
+
+	if got := openrcInitScriptStaleReason(filepath.Join(dir, "missing")); got != "" {
+		t.Fatalf("an unreadable script is not reported as stale, got %q", got)
+	}
+}
+
+// The check looks at real directives: quoting is fine, a commented-out line is
+// not a directive.
+func TestOpenrcInitScriptStaleReasonReadsDirectivesNotText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=\"openrc\"\n  retry='TERM/40/KILL/5'\n")
+	if got := openrcInitScriptStaleReason(path); got != "" {
+		t.Fatalf("quoted and indented directives are current, got %q", got)
+	}
+	write("#!/sbin/openrc-run\n# export URNETWORK_INIT=openrc\n#retry=TERM/40/KILL/5\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || !strings.Contains(got, "URNETWORK_INIT") || !strings.Contains(got, "retry=") {
+		t.Fatalf("commented-out directives are not directives, got %q", got)
 	}
 }

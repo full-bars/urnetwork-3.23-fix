@@ -1007,7 +1007,7 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 		if kind == "docker" {
 			return thrashEscalationAlert("no-supervisor", "running in a container without URNETWORK_EXIT75_OK=1, so a self-exit would not be restarted; not restarting")
 		}
-		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd), so a self-exit would not be restarted; not restarting")
+		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd or OpenRC), so a self-exit would not be restarted; not restarting")
 	}
 	if kind == "docker" {
 		if err := thrashCapDirWritableBounded(); err != nil {
@@ -1330,6 +1330,10 @@ func runThrashWatchdog(ctx context.Context, selfHealEnabled bool) {
 
 // thrashRestartable reports whether a supervised restart is possible at all
 // (used by the critical-state log line).
+//
+// systemd marks its children with INVOCATION_ID or NOTIFY_SOCKET. OpenRC's
+// supervise-daemon sets neither, so the shipped init script exports
+// URNETWORK_INIT=openrc; supervise-daemon respawns on any exit status.
 func thrashRestartable() bool {
 	_, restarts := thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
 	return restarts
@@ -1390,9 +1394,8 @@ func defaultThrashCheckCapDirWritable() error {
 
 // thrashSupervisorKind inspects environment variables and the filesystem to
 // identify the active supervisor and report whether it will restart the
-// provider on an exit status of 75. Returns "systemd", "docker", or "none".
-// OpenRC is not recognised: nothing in this tree marks it, so it stays "none"
-// exactly as before.
+// provider on an exit status of 75. Returns "systemd", "openrc", "docker", or
+// "none".
 func thrashSupervisorKind(env func(string) string, fileExists func(string) bool) (kind string, restartsOn75 bool) {
 	if env == nil {
 		env = os.Getenv
@@ -1402,6 +1405,12 @@ func thrashSupervisorKind(env func(string) string, fileExists func(string) bool)
 	}
 	if env("INVOCATION_ID") != "" || env("NOTIFY_SOCKET") != "" {
 		return "systemd", true
+	}
+	// OpenRC's supervise-daemon sets neither variable, so the shipped init
+	// script exports URNETWORK_INIT=openrc; supervise-daemon respawns on any
+	// exit status (measured: 0, 1 and 75 behave the same).
+	if env("URNETWORK_INIT") == "openrc" {
+		return "openrc", true
 	}
 	if fileExists("/.dockerenv") || env("URNETWORK_CONTAINER") == "1" {
 		return "docker", env("URNETWORK_EXIT75_OK") == "1"

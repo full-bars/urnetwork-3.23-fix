@@ -1039,6 +1039,25 @@ func TestThrashSupervisorKind(t *testing.T) {
 			wantRestarts: true,
 		},
 		{
+			name:         "openrc marker",
+			env:          map[string]string{"URNETWORK_INIT": "openrc"},
+			wantKind:     "openrc",
+			wantRestarts: true,
+		},
+		{
+			name:         "unknown init marker is not a supervisor",
+			env:          map[string]string{"URNETWORK_INIT": "runit"},
+			wantKind:     "none",
+			wantRestarts: false,
+		},
+		{
+			name:         "openrc marker beats a container probe",
+			env:          map[string]string{"URNETWORK_INIT": "openrc"},
+			files:        map[string]bool{"/.dockerenv": true},
+			wantKind:     "openrc",
+			wantRestarts: true,
+		},
+		{
 			name:         "dockerenv without ack",
 			files:        map[string]bool{"/.dockerenv": true},
 			wantKind:     "docker",
@@ -1062,12 +1081,6 @@ func TestThrashSupervisorKind(t *testing.T) {
 			env:          map[string]string{"URNETWORK_CONTAINER": "1", "URNETWORK_EXIT75_OK": "1"},
 			wantKind:     "docker",
 			wantRestarts: true,
-		},
-		{
-			name:         "an unknown init marker is not a supervisor",
-			env:          map[string]string{"URNETWORK_INIT": "openrc"},
-			wantKind:     "none",
-			wantRestarts: false,
 		},
 		{
 			name:         "none",

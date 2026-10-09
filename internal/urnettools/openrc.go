@@ -10,8 +10,10 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // This file is the OpenRC lifecycle backend: on hosts where OpenRC is the
@@ -918,12 +920,45 @@ func openrcRestartService(p Provider) (bool, error) {
 	if !providerSupervisedByOpenRCFn(p) {
 		return false, nil
 	}
+	if reason := openrcInitScriptStaleReason(openrcInitScriptPath); reason != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s %s; rerun the installer to refresh it (a binary update does not rewrite it)\n", openrcInitScriptPath, reason)
+	}
 	fmt.Printf("restarting %s (OpenRC service, pid %d)...\n", openrcServiceName, p.PID)
 	if err := openrcRunFn(openrcServiceArgv("restart")...); err != nil {
 		return true, fmt.Errorf("rc-service %s restart: %w%s", openrcServiceName, err, openrcElevationHint())
 	}
+	// rc-service reports success even when the old provider survived its stop
+	// (a hung or SIGTERM-ignoring process), and the restart then runs a second
+	// provider with the same identity and state. Confirm the old pid is gone.
+	if err := openrcWaitOldGone(p.PID); err != nil {
+		return true, err
+	}
 	fmt.Printf("restarted %s (OpenRC service)\n", openrcServiceName)
 	return true, nil
+}
+
+// openrcProcessAliveFn and openrcOldGoneWait are variables so tests can drive
+// the post-restart check without a real process or real time.
+var (
+	openrcProcessAliveFn = processAlive
+	openrcOldGoneWait    = 5 * time.Second
+	openrcOldGoneStep    = 200 * time.Millisecond
+)
+
+// openrcWaitOldGone waits up to openrcOldGoneWait for the pre-restart provider
+// pid to exit and returns an error naming it if it never does.
+func openrcWaitOldGone(oldPid int) error {
+	if oldPid <= 0 {
+		return nil
+	}
+	deadline := time.Now().Add(openrcOldGoneWait)
+	for openrcProcessAliveFn(oldPid) {
+		if !time.Now().Before(deadline) {
+			return fmt.Errorf("rc-service %s restart reported success but the previous provider (pid %d) is still running, so two providers may now share one identity and state; stop pid %d and re-check with 'urnet-tools status'", openrcServiceName, oldPid, oldPid)
+		}
+		time.Sleep(openrcOldGoneStep)
+	}
+	return nil
 }
 
 // openrcHotSwapDecline returns a clean decline when the running provider is
@@ -947,4 +982,34 @@ func openrcHotSwapDecline(p Provider) error {
 func renderOpenRCStatus() error {
 	_ = openrcRunFn(openrcServiceArgv("status")...)
 	return nil
+}
+
+var (
+	// real directives only: a line that starts with the directive, quoted or not,
+	// not a comment that mentions it
+	openrcInitMarkerRe = regexp.MustCompile(`(?m)^\s*export\s+URNETWORK_INIT=["']?openrc["']?\s*$`)
+	openrcRetryRe      = regexp.MustCompile(`(?m)^\s*retry=`)
+)
+
+// openrcInitScriptStaleReason says what an installed init script lacks that
+// the current installer writes: the URNETWORK_INIT marker that lets the thrash
+// watchdog restart under supervise-daemon, and the retry= stop schedule that
+// ends a hung provider. Empty when the script has both or cannot be read.
+func openrcInitScriptStaleReason(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	script := string(b)
+	var missing []string
+	if !openrcInitMarkerRe.MatchString(script) {
+		missing = append(missing, "the URNETWORK_INIT=openrc marker (the thrash restart stays off)")
+	}
+	if !openrcRetryRe.MatchString(script) {
+		missing = append(missing, "a retry= stop schedule (a hung provider is never killed)")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "predates this release and lacks " + strings.Join(missing, " and ")
 }
