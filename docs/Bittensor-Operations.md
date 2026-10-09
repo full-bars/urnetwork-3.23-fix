@@ -55,13 +55,15 @@ Returns `{}` on success.
 provider wallet set 5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5
 ```
 
+`provider wallet set` and `provide --wallet=<coldkey>` send the unsigned network wallet request, which the platform may refuse under its signed wallet rules. Without `--legacy-network-wallet` they do not send it: `wallet set` exits 1, and `provide` logs the refusal and keeps providing. Set the wallet in the URnetwork app or web account, or add `--legacy-network-wallet` to send the unsigned request anyway.
+
 ### Method 3: Docker Deployments
 Pass your coldkey directly via `docker-compose.yml` or container flags:
 ```yaml
 services:
   provider:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.30.9
-    command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"]
+    command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5", "--legacy-network-wallet"]
     volumes:
       - ur_config_1:/home/urnet/.urnetwork
 ```
