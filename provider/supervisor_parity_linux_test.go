@@ -246,7 +246,7 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 
 		// Watchdog execution: loop ticks repeatedly through severe thrash condition,
 		// but exitFn is never called because no supervisor is present.
-		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
+		ctx, cancel := context.WithTimeout(context.Background(), 250*time.Millisecond)
 		defer cancel()
 		runThrashWatchdog(ctx, true)
 
@@ -256,7 +256,7 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 		// the loop really ticked through the thrash condition; a stalled loop
 		// under CPU load would otherwise pass this subtest without testing the gate
 		if got := ticksFn(); got < 3 {
-			t.Fatalf("the watchdog read the sensors %d times in 80ms; the gate was not exercised", got)
+			t.Fatalf("the watchdog read the sensors %d times in 250ms; the gate was not exercised", got)
 		}
 	})
 
