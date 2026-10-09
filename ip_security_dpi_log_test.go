@@ -5,6 +5,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 )
 
 func TestDpiDecisionCountsFlowsOnceUnderTheirReason(t *testing.T) {
@@ -66,5 +67,29 @@ func TestDpiAdmitReasonsCoverEveryAppStandard(t *testing.T) {
 		if strings.HasPrefix(reason.String(), "allow-app-standard:") && !isDpiAdmitReason(reason) {
 			t.Fatalf("%s is an application standard but not logged as an admit", reason)
 		}
+	}
+}
+
+func TestDpiPacketsCountedAndSummaryEmitsOnPacketVolume(t *testing.T) {
+	resetDpiLogForTest()
+	t.Cleanup(resetDpiLogForTest)
+
+	path := &IpPath{Protocol: IpProtocolTcp, DestinationPort: 443}
+	for i := 0; i < 4095; i++ {
+		recordDpiDecision(path, SecurityPolicyReasonAllowPrivileged, false)
+	}
+	if n := dpiPackets[SecurityPolicyReasonAllowPrivileged].Load(); n != 4095 {
+		t.Fatalf("privileged packets = %d, want 4095", n)
+	}
+	if got := dpiSummaryString(); got != "none" {
+		t.Fatalf("undecided packets must not count as flows, got %q", got)
+	}
+	if got := dpiPacketString(); got != "allow-privileged=4095" {
+		t.Fatalf("packet summary = %q", got)
+	}
+	// the 4096th packet reads the clock and emits the summary (throttle open at start)
+	recordDpiDecision(path, SecurityPolicyReasonAllowPrivileged, false)
+	if ok, _ := dpiSummary.Allow(time.Now()); ok {
+		t.Fatal("the summary should already have been emitted by the 4096th packet")
 	}
 }
