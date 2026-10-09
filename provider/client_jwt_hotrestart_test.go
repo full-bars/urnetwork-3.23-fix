@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"sync"
@@ -679,4 +681,53 @@ func TestIsRenewalTransientOnlyForUnverdictedFailures(t *testing.T) {
 	if isRenewalTransient(errFakeRenew) {
 		t.Fatal("an unmarked error is a verdict and must not classify as transient")
 	}
+}
+
+func renewTestApi(t *testing.T, handler http.HandlerFunc) string {
+	t.Helper()
+	server := httptest.NewServer(handler)
+	t.Cleanup(server.Close)
+	return server.URL
+}
+
+func TestRenewClientJWTClassifiesFailures(t *testing.T) {
+	clientId := connect.NewId()
+
+	t.Run("an HTTP failure carries no verdict", func(t *testing.T) {
+		url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "boom", http.StatusInternalServerError)
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := renewClientJWT(ctx, url, "account-jwt", clientId, "d", nil)
+		if err == nil || !isRenewalTransient(err) {
+			t.Fatalf("an HTTP 500 must be transient, got %v", err)
+		}
+	})
+
+	t.Run("a cancelled context carries no verdict", func(t *testing.T) {
+		url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
+		ctx, cancel := context.WithCancel(context.Background())
+		cancel()
+		_, err := renewClientJWT(ctx, url, "account-jwt", clientId, "d", nil)
+		if err == nil || !isRenewalTransient(err) {
+			t.Fatalf("a cancelled context must be transient, got %v", err)
+		}
+	})
+
+	t.Run("Client does not exist is a verdict", func(t *testing.T) {
+		url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"error":{"message":"Client does not exist."}}`))
+		})
+		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+		defer cancel()
+		_, err := renewClientJWT(ctx, url, "account-jwt", clientId, "d", nil)
+		if err == nil {
+			t.Fatal("a refused renewal must error")
+		}
+		if isRenewalTransient(err) {
+			t.Fatalf("the platform's answer is a verdict and must not be transient: %v", err)
+		}
+	})
 }
