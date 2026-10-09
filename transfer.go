@@ -26,10 +26,11 @@ import (
 )
 
 var (
-	dropErrLogThrottle   = newLogThrottle(time.Minute)
-	pingLogThrottle      = newLogThrottle(5 * time.Minute)
-	pingErrLogThrottle   = newLogThrottle(5 * time.Minute)
-	auditSendErrThrottle = newLogThrottle(time.Minute)
+	dropErrLogThrottle         = newLogThrottle(time.Minute)
+	pingLogThrottle            = newLogThrottle(5 * time.Minute)
+	pingErrLogThrottle         = newLogThrottle(5 * time.Minute)
+	auditSendErrThrottle       = newLogThrottle(time.Minute)
+	contractExpiredLogThrottle = newLogThrottle(time.Minute)
 )
 
 /*
@@ -3185,6 +3186,14 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 				return false
 			}
 
+			if nextSendContract.expired() {
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) taken contract already expired %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
+				}
+				self.client.ContractManager().CloseContract(nextSendContract.contractId, 0, 0)
+				return false
+			}
+
 			// note `update(0)` will use `MinMessageByteCount` byte count
 			// the min message byte count is used to avoid spam
 			if nextSendContract.update(0) && nextSendContract.update(messageByteCount) {
@@ -3283,7 +3292,11 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 
 		if self.sendContract != nil {
 			// there should be a queued up contract
-			if traceNextContract(min(self.sendBufferSettings.CreateContractTimeout, retryInterval())) {
+			initialWait := min(self.sendBufferSettings.CreateContractTimeout, retryInterval())
+			if self.sendContract.expired() {
+				initialWait = 0
+			}
+			if traceNextContract(initialWait) {
 				return true
 			}
 		}
@@ -5199,7 +5212,7 @@ func (self *ReceiveSequence) Run() {
 				if self.nextSequenceNumber == item.sequenceNumber {
 					// this item is the head of sequence
 					if err := self.registerContracts(item); err != nil {
-						self.log.Errorf("[r]%s<-%s s(%s) exit could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+						self.logRegisterContractsError("exit", err)
 						return
 					}
 					if self.updateContract(item) {
@@ -5381,7 +5394,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 			self.nextSequenceNumber = self.nextSequenceNumber + 1
 
 			if err := self.registerContracts(item); err != nil {
-				self.log.Errorf("[r]%s<-%s s(%s) ack could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+				self.logRegisterContractsError("ack", err)
 				return false, err
 			}
 			if self.updateContract(item) {
@@ -5589,7 +5602,7 @@ func (self *ReceiveSequence) receiveNack(receivePack *ReceivePack) (bool, error)
 	}
 
 	if err := self.registerContracts(item); err != nil {
-		self.log.Errorf("[r]%s<-%s s(%s) nack could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, err)
+		self.logRegisterContractsError("nack", err)
 		return false, err
 	}
 
@@ -5719,6 +5732,20 @@ func (self *ReceiveSequence) deliverEncryptedControlFrames(frames []*protocol.Fr
 	return passthrough
 }
 
+func (self *ReceiveSequence) logRegisterContractsError(contextStr string, err error) {
+	if errors.Is(err, errContractExpired) {
+		if ok, suppressed := contractExpiredLogThrottle.Allow(time.Now()); ok {
+			if suppressed > 0 {
+				self.log.Infof("[r]%s<-%s s(%s) %s could not register contracts = %s (%d suppressed)\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err, suppressed)
+			} else {
+				self.log.Infof("[r]%s<-%s s(%s) %s could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err)
+			}
+		}
+	} else {
+		self.log.Errorf("[r]%s<-%s s(%s) %s could not register contracts = %s\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, contextStr, err)
+	}
+}
+
 func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 	if item.contractFrame == nil {
 		return nil
@@ -5765,7 +5792,19 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 		return err
 	}
 
+	if nextReceiveContract.expired() {
+		if nextReceiveContract.expiredClockSkewSuspect() {
+			if ok, _ := contractClockSkewLogThrottle.Allow(time.Now()); ok {
+				self.log.Errorf("[r]%s<-%s s(%s) contract %s arrived long past its signed deadline (%s); if this repeats check the system clock\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, nextReceiveContract.contractId, nextReceiveContract.expiredError())
+			}
+		}
+		return nextReceiveContract.expiredError()
+	}
+
 	if err := self.setContract(nextReceiveContract); err != nil {
+		if errors.Is(err, errContractExpired) {
+			return err
+		}
 		// the next contract has already been used
 		// bad contract
 		// close sequence
@@ -5779,12 +5818,21 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 }
 
 func (self *ReceiveSequence) setContract(nextReceiveContract *sequenceContract) error {
+	if nextReceiveContract.expired() {
+		return errContractExpired
+	}
 	// contract already set
 	if self.receiveContract != nil && self.receiveContract.contractId == nextReceiveContract.contractId {
+		if self.receiveContract.expired() {
+			return errContractExpired
+		}
 		return nil
 	}
 
 	if receiveContract, ok := self.openReceiveContracts[nextReceiveContract.contractId]; ok {
+		if receiveContract.expired() {
+			return errContractExpired
+		}
 		// switch to the current contract
 		self.receiveContract = receiveContract
 		return nil
@@ -5826,12 +5874,22 @@ func (self *ReceiveSequence) updateContract(item *receiveItem) bool {
 	// always use a contract if present
 	// the sender may send contracts even if `receiveNoContract` is set locally
 	if item.contractId != nil {
-		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok && receiveContract.update(item.messageByteCount) {
+		if receiveContract, ok := self.openReceiveContracts[*item.contractId]; ok {
+			if receiveContract.expired() {
+				return false
+			}
+			if receiveContract.update(item.messageByteCount) {
+				return true
+			}
+		}
+	} else if self.receiveContract != nil {
+		if self.receiveContract.expired() {
+			return false
+		}
+		if self.receiveContract.update(item.messageByteCount) {
+			item.contractId = &self.receiveContract.contractId
 			return true
 		}
-	} else if self.receiveContract != nil && self.receiveContract.update(item.messageByteCount) {
-		item.contractId = &self.receiveContract.contractId
-		return true
 	}
 	// `receiveNoContract` is a mutual configuration
 	// both sides must configure themselves to require no contract from each other
@@ -6196,6 +6254,7 @@ type sequenceContract struct {
 	transferByteCount          ByteCount
 	effectiveTransferByteCount ByteCount
 	provideMode                protocol.ProvideMode
+	expirationTimeUnixMilli    *int64
 
 	minUpdateByteCount ByteCount
 
@@ -6279,7 +6338,7 @@ func newSequenceContract(log Logger, tag string, contract *protocol.Contract, mi
 		destinationClientKeySignedTlsCertificate = contract.DestinationClientKeySignedTlsCertificate
 	}
 
-	return &sequenceContract{
+	c := &sequenceContract{
 		log:                                      log,
 		localId:                                  NewId(),
 		tag:                                      tag,
@@ -6295,10 +6354,18 @@ func newSequenceContract(log Logger, tag string, contract *protocol.Contract, mi
 		provideTlsCertificate:                    provideTlsCertificate,
 		destinationClientPublicKey:               destinationClientPublicKey,
 		destinationClientKeySignedTlsCertificate: destinationClientKeySignedTlsCertificate,
-	}, nil
+	}
+	if v := storedContract.ExpirationTimeUnixMilli; v != nil {
+		d := *v
+		c.expirationTimeUnixMilli = &d
+	}
+	return c, nil
 }
 
 func (self *sequenceContract) update(byteCount ByteCount) bool {
+	if self.expired() {
+		return false
+	}
 	effectiveByteCount := max(self.minUpdateByteCount, byteCount)
 
 	if self.effectiveTransferByteCount < self.ackedByteCount+self.unackedByteCount+effectiveByteCount {

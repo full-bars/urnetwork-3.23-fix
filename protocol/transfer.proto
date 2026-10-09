@@ -395,6 +395,10 @@ message StoredContract {
     // session's trusted-peer-cert set.
     bytes destination_client_key_signed_tls_certificate = 9;
 
+    // 10 roles, 11 principal: used upstream, do not reuse.
+    // Absolute admission deadline, inside the platform-signed bytes. Missing = legacy, no limit.
+    optional int64 expiration_time_unix_milli = 12;
+
     // FIXME companion contract id
 }
 

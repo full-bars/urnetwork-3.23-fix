@@ -267,7 +267,8 @@ type ContractManagerSettings struct {
 	OriginContractLinger time.Duration
 
 	// expire queued contracts that no sequence has taken within this window.
-	// Bounds destinationContracts growth from orphans. <= 0 disables expiry.
+	// Bounds destinationContracts growth from orphans. <= 0 disables enqueue-age
+	// expiry; signed absolute deadlines always apply.
 	ContractQueueExpireTimeout time.Duration
 
 	ProtocolVersion int
@@ -573,6 +574,12 @@ func (self *ContractManager) providePing() {
 // escrow is released rather than timing out server-side.
 func (self *ContractManager) expireQueuedContracts() {
 	timeout := self.settings.ContractQueueExpireTimeout
+	// Absolute deadlines still retire idle reservations when enqueue-age
+	// expiry is disabled. Poll independently enforces the exact deadline.
+	interval := time.Minute
+	if 0 < timeout {
+		interval = max(time.Nanosecond, min(interval, timeout/2))
+	}
 
 	finalFlush := func() {
 		pending := []*protocol.Contract{}
@@ -594,13 +601,6 @@ func (self *ContractManager) expireQueuedContracts() {
 	}
 
 	for {
-		// when expiry is disabled the nil tick channel blocks forever and
-		// the loop only exits on shutdown
-		var tick <-chan time.Time
-		if 0 < timeout {
-			tick = time.After(timeout / 2)
-		}
-
 		select {
 		case <-self.ctx.Done():
 			finalFlush()
@@ -608,10 +608,13 @@ func (self *ContractManager) expireQueuedContracts() {
 		case <-self.client.Done():
 			finalFlush()
 			return
-		case <-tick:
+		case <-time.After(interval):
 		}
 
-		minEnqueueTime := time.Now().Add(-timeout)
+		var minEnqueueTime time.Time
+		if 0 < timeout {
+			minEnqueueTime = time.Now().Add(-timeout)
+		}
 		expired := []*protocol.Contract{}
 		func() {
 			self.mutex.Lock()
@@ -1548,8 +1551,9 @@ func (self *ContractManager) closeContractQueueWithForceRemove(contractKey Contr
 // queuedContract wraps a contract with its arrival time so stale entries
 // can be expired (see ContractQueueExpireTimeout).
 type queuedContract struct {
-	contract    *protocol.Contract
-	enqueueTime time.Time
+	contract                *protocol.Contract
+	enqueueTime             time.Time
+	expirationTimeUnixMilli *int64
 }
 
 type contractQueue struct {
@@ -1591,13 +1595,14 @@ func (self *contractQueue) Close() {
 }
 
 // Poll returns one queued contract, never one enqueued before
-// minEnqueueTime — stale entries are removed and returned as expired for
-// the caller to close. A zero minEnqueueTime expires nothing.
+// minEnqueueTime or past its signed deadline - stale entries are removed and
+// returned as expired for the caller to close. A zero minEnqueueTime disables
+// enqueue-age expiry; signed absolute deadlines always apply.
 func (self *contractQueue) Poll(minEnqueueTime time.Time) (*protocol.Contract, []*protocol.Contract) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	expired := self.expireWithLock(minEnqueueTime)
+	expired := self.expireWithLockAt(minEnqueueTime, time.Now().UnixMilli())
 
 	// choose arbitrarily
 	for contractId, qc := range self.contracts {
@@ -1607,15 +1612,13 @@ func (self *contractQueue) Poll(minEnqueueTime time.Time) (*protocol.Contract, [
 	return nil, expired
 }
 
-// expireWithLock removes and returns all contracts enqueued before minEnqueueTime.
+// expireWithLockAt removes and returns all contracts enqueued before minEnqueueTime
+// or past their signed deadline.
 // Must be called with self.mutex held.
-func (self *contractQueue) expireWithLock(minEnqueueTime time.Time) []*protocol.Contract {
-	if minEnqueueTime.IsZero() {
-		return nil
-	}
+func (self *contractQueue) expireWithLockAt(minEnqueueTime time.Time, nowMilli int64) []*protocol.Contract {
 	var expired []*protocol.Contract
 	for contractId, qc := range self.contracts {
-		if qc.enqueueTime.Before(minEnqueueTime) {
+		if (!minEnqueueTime.IsZero() && qc.enqueueTime.Before(minEnqueueTime)) || contractExpiredAt(qc.expirationTimeUnixMilli, nowMilli) {
 			expired = append(expired, qc.contract)
 			delete(self.contracts, contractId)
 		}
@@ -1623,11 +1626,12 @@ func (self *contractQueue) expireWithLock(minEnqueueTime time.Time) []*protocol.
 	return expired
 }
 
-// Expire removes and returns all contracts enqueued before minEnqueueTime.
+// Expire removes and returns all contracts enqueued before minEnqueueTime
+// or past their signed deadline. Signed absolute deadlines always apply.
 func (self *contractQueue) Expire(minEnqueueTime time.Time) []*protocol.Contract {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
-	return self.expireWithLock(minEnqueueTime)
+	return self.expireWithLockAt(minEnqueueTime, time.Now().UnixMilli())
 }
 
 func (self *contractQueue) Add(contract *protocol.Contract, storedContract *protocol.StoredContract) error {
@@ -1639,17 +1643,31 @@ func (self *contractQueue) Add(contract *protocol.Contract, storedContract *prot
 		return err
 	}
 
+	var expirationTimeUnixMilli *int64
+	if v := storedContract.ExpirationTimeUnixMilli; v != nil {
+		d := *v
+		expirationTimeUnixMilli = &d
+	}
+
 	// update contract if present
 	if _, ok := self.contracts[contractId]; ok {
 		self.log.V(2).Infof("[contract]add update existing %s\n", contractId)
-		self.contracts[contractId] = &queuedContract{contract: contract, enqueueTime: time.Now()}
+		self.contracts[contractId] = &queuedContract{
+			contract:                contract,
+			enqueueTime:             time.Now(),
+			expirationTimeUnixMilli: expirationTimeUnixMilli,
+		}
 		self.updateMonitor.NotifyAll()
 	} else if !self.trackUsedContracts || !self.usedContractIds[contractId] {
 		self.log.V(2).Infof("[contract]add %s\n", contractId)
 		if self.trackUsedContracts {
 			self.usedContractIds[contractId] = true
 		}
-		self.contracts[contractId] = &queuedContract{contract: contract, enqueueTime: time.Now()}
+		self.contracts[contractId] = &queuedContract{
+			contract:                contract,
+			enqueueTime:             time.Now(),
+			expirationTimeUnixMilli: expirationTimeUnixMilli,
+		}
 		self.updateMonitor.NotifyAll()
 	} else {
 		self.log.V(2).Infof("[contract]add already used %s\n", contractId)
