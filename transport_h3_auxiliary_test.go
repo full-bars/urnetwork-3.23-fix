@@ -2,6 +2,7 @@ package connect
 
 import (
 	"context"
+	"net"
 	"testing"
 	"time"
 
@@ -684,4 +685,73 @@ func TestPulseResetsNonAuxiliaryH3Backoff(t *testing.T) {
 
 	cancel()
 	<-done
+}
+
+// A zero reconnect timeout (an unconfigured settings struct) must not turn a
+// failing auxiliary H3 into a tight dial loop.
+func TestNextH3BackoffHasAPositiveFloor(t *testing.T) {
+	got := nextH3Backoff(0, 0, h3AuxiliaryMaxBackoff)
+	if got <= 0 {
+		t.Fatalf("a zero base produced a %v wait", got)
+	}
+	if next := nextH3Backoff(got, 0, h3AuxiliaryMaxBackoff); next <= got {
+		t.Fatalf("a zero base does not grow: %v then %v", got, next)
+	}
+}
+
+// Dials that fail together must not retry together: the wait is spread around
+// the doubled value, never below 80% of it and never above 120%.
+func TestJitteredH3WaitSpreadsRetries(t *testing.T) {
+	base := 5 * time.Second
+	low, high := base, base
+	distinct := map[time.Duration]bool{}
+	for i := 0; i < 500; i++ {
+		w := jitteredH3Wait(base)
+		distinct[w] = true
+		low, high = min(low, w), max(high, w)
+	}
+	if low < base*8/10 || high > base*12/10 {
+		t.Fatalf("jitter left the 80%%..120%% band: %v..%v", low, high)
+	}
+	if len(distinct) < 100 {
+		t.Fatalf("only %d distinct waits in 500 draws, retries would still synchronize", len(distinct))
+	}
+	if w := jitteredH3Wait(0); w != 0 {
+		t.Fatalf("a zero wait must stay zero, got %v", w)
+	}
+}
+
+// Switching the gate while an auxiliary H3 sleeps in its failure backoff wakes
+// it: it does not sit out up to ten minutes on a gate that has changed.
+func TestAuxiliaryH3BackoffWakesOnGateChange(t *testing.T) {
+	switchH3Gate(t, true)
+	ctx, cancel := context.WithTimeout(t.Context(), 30*time.Second)
+	defer cancel()
+
+	// nothing listens on this port, so every dial fails
+	udp, err := net.ListenUDP("udp", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	port := udp.LocalAddr().(*net.UDPAddr).Port
+	udp.Close()
+
+	transportCtx, transportCancel := context.WithCancel(ctx)
+	transport := newH3DatagramTestTransport(transportCtx, transportCancel, port)
+	transport.settings.ReconnectTimeout = time.Hour
+	transport.targetMode = TransportModeAuto
+	before := TransportModeStats().H3ConnectFailures
+	done := make(chan struct{})
+	go func() { defer close(done); transport.runH3(TransportModeH3, 0, 1) }()
+	defer func() { transportCancel(); <-done }()
+
+	waitFor(t, "the first dial to fail", func() bool {
+		return TransportModeStats().H3ConnectFailures > before
+	})
+	failures := TransportModeStats().H3ConnectFailures
+	SetH3Enabled(false)
+	SetH3Enabled(true)
+	waitFor(t, "a redial after the gate changed", func() bool {
+		return TransportModeStats().H3ConnectFailures > failures
+	})
 }
