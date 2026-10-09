@@ -4953,8 +4953,8 @@ func newProviderAuthClientArgsForRenewal(description string, clientId connect.Id
 }
 
 // renewalTransientError marks a renewal that failed before the platform gave a
-// verdict on the identity: a dropped connection, a timeout, an HTTP failure or
-// a cancelled context. It says nothing about whether the client still exists,
+// verdict on the identity: a dropped connection, a timeout, a 5xx/408/429 answer
+// or a cancelled context. It says nothing about whether the client still exists,
 // so the caller must retry rather than throw the identity away by minting a new
 // one. A verdict ("Client does not exist.", a refusal, a mismatched client id)
 // is a plain error and still falls through to a fresh mint.
@@ -4994,7 +4994,13 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 	case result = <-channel:
 	}
 	if result.Error != nil {
-		return "", &renewalTransientError{fmt.Errorf("auth-client renewal api error: %w", result.Error)}
+		apiErr := fmt.Errorf("auth-client renewal api error: %w", result.Error)
+		if renewalHTTPRefusal(result.Error) {
+			// the platform answered with a permanent refusal (4xx other than
+			// 408/429): that is a verdict, not an outage
+			return "", apiErr
+		}
+		return "", &renewalTransientError{apiErr}
 	}
 	if result.Result == nil {
 		return "", fmt.Errorf("empty result from auth-client renewal API")
@@ -5016,6 +5022,23 @@ func renewClientJWT(ctx context.Context, apiUrl, byJwt string, clientId connect.
 		return "", fmt.Errorf("renewal returned client_id %q, want %q — refusing to swap", got, clientId.String())
 	}
 	return result.Result.ByClientJwt, nil
+}
+
+// renewalHTTPRefusal reports whether err is a non-200 HTTP answer that is a
+// permanent refusal: a 4xx other than 408 (request timeout) and 429 (rate
+// limited), which say "try again" rather than "no". Transport errors and 5xx
+// carry no verdict. The status is read from the "<code> <text>: <body>" prefix
+// that httpErrorFromResponse puts on every non-200 answer.
+func renewalHTTPRefusal(err error) bool {
+	msg := err.Error()
+	if len(msg) < 4 || msg[3] != ' ' {
+		return false
+	}
+	code, convErr := strconv.Atoi(msg[:3])
+	if convErr != nil {
+		return false
+	}
+	return 400 <= code && code < 500 && code != http.StatusRequestTimeout && code != http.StatusTooManyRequests
 }
 
 // renewClientJWTFn is the injectable renewal entry point. It defaults to the

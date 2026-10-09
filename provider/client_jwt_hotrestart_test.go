@@ -705,6 +705,39 @@ func TestRenewClientJWTClassifiesFailures(t *testing.T) {
 		}
 	})
 
+	for _, code := range []int{http.StatusRequestTimeout, http.StatusTooManyRequests, http.StatusBadGateway, http.StatusServiceUnavailable} {
+		code := code
+		t.Run(fmt.Sprintf("HTTP %d carries no verdict", code), func(t *testing.T) {
+			url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "try later", code)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			_, err := renewClientJWT(ctx, url, "account-jwt", clientId, "d", nil)
+			if err == nil || !isRenewalTransient(err) {
+				t.Fatalf("HTTP %d must be transient, got %v", code, err)
+			}
+		})
+	}
+
+	for _, code := range []int{http.StatusBadRequest, http.StatusUnauthorized, http.StatusForbidden, http.StatusNotFound} {
+		code := code
+		t.Run(fmt.Sprintf("HTTP %d is a verdict", code), func(t *testing.T) {
+			url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) {
+				http.Error(w, "refused", code)
+			})
+			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			_, err := renewClientJWT(ctx, url, "account-jwt", clientId, "d", nil)
+			if err == nil {
+				t.Fatalf("HTTP %d must error", code)
+			}
+			if isRenewalTransient(err) {
+				t.Fatalf("a permanent HTTP %d refusal is a verdict and must not be transient: %v", code, err)
+			}
+		})
+	}
+
 	t.Run("a cancelled context carries no verdict", func(t *testing.T) {
 		url := renewTestApi(t, func(w http.ResponseWriter, r *http.Request) { <-r.Context().Done() })
 		ctx, cancel := context.WithCancel(context.Background())

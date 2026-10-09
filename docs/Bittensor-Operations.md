@@ -135,10 +135,21 @@ Subnet 25 uses cryptographic Merkle tree payout roots committed on-chain at the 
 3. **Dispute / Finalization**: Payout root is locked on-chain (`finalize_block`).
 4. **Claim Window**: Verified claims become redeemable.
 
+### Claim credential (required)
+`provider claim` authenticates with the login of a client that served traffic, because only such a client has a payout. Pass exactly one of:
+
+| Flag | Credential |
+|---|---|
+| `--store-client=<key>` | The client token of one identity in `~/.urnetwork/.client_jwts.json`. The key is a proxy address or `direct`. Pick an identity that served traffic. |
+| `--provider-jwt=<path>` | A client token in a file. |
+| `--legacy-coldkey=<coldkey_ss58>` | The network token plus this coldkey. Only for an epoch without a provider artifact. |
+
+The network token alone is refused, and so is an expired client token (start the provider so it renews, or pass a fresher file). A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
+
 ### Workflow 1: Air-Gapped / Offline Calldata (Recommended)
 Generates ABI-encoded calldata and cryptographic inclusion proofs without exposing private keys on the provider host:
 ```bash
-provider claim --epoch=1053
+provider claim --store-client=direct --epoch=1053
 ```
 Output yields ready-to-submit calldata compatible with `snclaim` or web3 wallets.
 
@@ -146,6 +157,7 @@ Output yields ready-to-submit calldata compatible with `snclaim` or web3 wallets
 Submit the claim transaction directly with a local private key file and RPC endpoint:
 ```bash
 provider claim \
+  --store-client=direct \
   --epoch=1053 \
   --rpc=https://rpc.subtensor.network \
   --key_file=/path/to/coldkey_evm.key
@@ -154,7 +166,7 @@ provider claim \
 ### Dry Run Verification
 Simulate verification and root matching without broadcasting transactions:
 ```bash
-provider claim --epoch=1053 --rpc=https://rpc.subtensor.network --dry-run
+provider claim --store-client=direct --epoch=1053 --rpc=https://rpc.subtensor.network --dry-run
 ```
 
 ---

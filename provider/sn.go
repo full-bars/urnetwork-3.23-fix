@@ -198,6 +198,10 @@ func claim(opts docopt.Opts) {
 		panic(err)
 	}
 
+	if poolClaim.Error != nil {
+		panic(fmt.Errorf("%s", poolClaim.Error.Message))
+	}
+
 	// decode and sanity-check the claim fields
 	if len(poolClaim.NoId) == 0 {
 		panic(fmt.Errorf("claim has no no_id"))

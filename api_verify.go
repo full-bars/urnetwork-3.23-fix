@@ -127,20 +127,27 @@ func (self *BringYourApi) snPoolClaimUrl(args *SnPoolClaimArgs) string {
 	return url
 }
 
+type SnPoolClaimError struct {
+	Message string `json:"message"`
+}
+
 // SnPoolClaimResult is the caller's merkle pool-payout claim for an epoch
 // (sn/PLAN.md §5): everything needed to call `claim` on the subnet contract.
 // `NoId`, `Coldkey`, `PayoutRoot`, and each `Proof` element are raw 32-byte
 // values (base64 in JSON); `ContractAddress` is the 0x-hex EVM address.
 type SnPoolClaimResult struct {
-	Epoch           uint64   `json:"epoch"`
-	NoId            []byte   `json:"no_id"`
-	Coldkey         []byte   `json:"coldkey"`
-	ShareBps        int      `json:"share_bps"`
-	Proof           [][]byte `json:"proof"`
-	PayoutRoot      []byte   `json:"payout_root"`
-	ContractAddress string   `json:"contract_address"`
-	ChainId         uint64   `json:"chain_id"`
-	ClaimOpenBlock  uint64   `json:"claim_open_block"`
+	// Error is the platform's refusal ("No claimable epoch."), which the
+	// server sends as HTTP 200 with an error object and no claim fields.
+	Error           *SnPoolClaimError `json:"error,omitempty"`
+	Epoch           uint64            `json:"epoch"`
+	NoId            []byte            `json:"no_id"`
+	Coldkey         []byte            `json:"coldkey"`
+	ShareBps        int               `json:"share_bps"`
+	Proof           [][]byte          `json:"proof"`
+	PayoutRoot      []byte            `json:"payout_root"`
+	ContractAddress string            `json:"contract_address"`
+	ChainId         uint64            `json:"chain_id"`
+	ClaimOpenBlock  uint64            `json:"claim_open_block"`
 }
 
 // SnPoolClaim fetches the caller network's pool claim for an epoch via the
