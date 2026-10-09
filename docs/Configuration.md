@@ -93,6 +93,8 @@ Quick jump:
 | `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
 | `URNETWORK_PROXY_HEALTH_DIR` | `<home>/.urnetwork` | Directory for persistent `proxy_health.state` and `proxy_traffic.state` files (Docker: `/root/.urnetwork`). |
+| `URNETWORK_EXIT75_OK` | unset | Set to `1` in a container whose supervisor restarts the provider on exit status 75 (Docker `restart: unless-stopped`/`always`, or the shipped start scripts, which treat 75 as a planned restart). Lets the thrash watchdog escalate with a self-exit in a container; without it the watchdog only alerts ("no-supervisor"). Before exiting it checks that `~/.urnetwork` is writable, and the 24h restart ceiling still applies. Not needed under systemd. |
+| `URNETWORK_CONTAINER` | unset | Set to `1` to mark the process as containerized when `/.dockerenv` is absent (Podman, Kubernetes and other runtimes). Only used together with `URNETWORK_EXIT75_OK`. |
 | `URNETWORK_CONTAINER_NAME` | `<container-id>` | Container name used in copy-paste `docker exec <name> tail -f` hints for RAM logs. |
 | `WARP_HOST` | `<hostname>` | Override the host string reported by the warp status endpoint. Diagnostic only. |
 
