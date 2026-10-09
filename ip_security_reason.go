@@ -4,10 +4,10 @@ package connect
 // static CFAA layer, the privileged-port skip, a positive standard, the RTP
 // probation, the plaintext/budget allowances, or the encrypted heuristic.
 //
-// Reasons are local diagnostics only. The statistics keyed by reason use the
-// port-only destination (version, protocol, port) regardless of the collector's
-// includeIp setting, are bounded exactly like the result statistics, and are
-// never sent off the device. Nothing on the wire changes.
+// Reasons are local diagnostics only: they feed the [security][dpi] log lines
+// (ip_security_dpi_log.go), which carry ports and protocols and never an
+// address, and nothing about them is sent off the device. Nothing on the wire
+// changes.
 
 type SecurityPolicyReason int
 
@@ -132,15 +132,4 @@ func (self SecurityPolicyReason) String() string {
 	default:
 		return "unknown"
 	}
-}
-
-// SecurityPolicyReasonStats maps a reason to its per-port packet counts.
-type SecurityPolicyReasonStats = map[SecurityPolicyReason]map[SecurityDestination]uint64
-
-// securityDecision carries the reason for one inspected packet and whether
-// this packet moved its flow from inspecting to a terminal verdict.
-type securityDecision struct {
-	reason SecurityPolicyReason
-	// the flow's terminal verdict was reached by this packet
-	decidedNow bool
 }

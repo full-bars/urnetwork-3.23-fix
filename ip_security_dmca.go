@@ -326,7 +326,11 @@ func (self *dmcaFlowState) advance(
 	}
 	if self.appReason != SecurityPolicyReasonUnknown {
 		// allowed by an application standard: the BitTorrent signatures above keep
-		// precedence for the rest of the budget, then the allow becomes terminal
+		// precedence for the rest of the budget, at any offset, then the allow
+		// becomes terminal
+		if anyOffsetBittorrentMarker(b) {
+			return self.setTerminal(dmcaBittorrent, SecurityPolicyReasonBittorrent)
+		}
 		if settings.InspectionPacketBudget <= self.inspectedPackets {
 			return self.setTerminal(dmcaAllow, self.appReason)
 		}
@@ -334,9 +338,10 @@ func (self *dmcaFlowState) advance(
 	}
 	if isSanctionedGamingEndpoint(settings.Gaming, ipPath) {
 		// Provider prefix + transport + documented remote port is sufficient
-		// evidence for the Steam exception. The positive BitTorrent checks above
-		// intentionally retain precedence.
-		return self.setTerminal(dmcaAllow, SecurityPolicyReasonAllowGaming)
+		// evidence for the Steam exception. The BitTorrent checks keep precedence:
+		// like an application standard the allow is not terminal until the
+		// inspection budget is spent, and every packet is scanned at any offset.
+		return self.allowAppStandard(ipPath, b, SecurityPolicyReasonAllowGaming, settings)
 	}
 	if reason, ok := web.matchReason(ipPath, payload); ok {
 		// A sanctioned web/communication standard. Full framing is evaluated over
@@ -355,14 +360,14 @@ func (self *dmcaFlowState) advance(
 		if containsBittorrentSignature(rest) {
 			return self.setTerminal(dmcaBittorrent, SecurityPolicyReasonBittorrent)
 		}
-		return self.allowAppStandard(ipPath, reason, settings)
+		return self.allowAppStandard(ipPath, b, reason, settings)
 	}
 	if self.appCandidate.kind != appCandidateNone {
 		candidate := self.appCandidate
 		self.appCandidate = appCandidate{}
 		reason, ok := app.confirm(&candidate, ipPath, payload)
 		if ok {
-			return self.allowAppStandard(ipPath, reason, settings)
+			return self.allowAppStandard(ipPath, b, reason, settings)
 		}
 		if reason == SecurityPolicyReasonInspecting {
 			// a WhatsApp stream prefix that continues in the next segment
@@ -371,6 +376,9 @@ func (self *dmcaFlowState) advance(
 		// a failed candidate is judged normally below (or reopens one)
 	}
 	if candidate, ok := app.open(ipPath, payload, 1 == self.inspectedPackets); ok {
+		if anyOffsetBittorrentMarker(b) {
+			return self.setTerminal(dmcaBittorrent, SecurityPolicyReasonBittorrent)
+		}
 		// The opening packet of a two-packet standard consumes budget but is not
 		// counted as encrypted: the next packet confirms it or is judged normally.
 		// A random flow whose blob happens to match an opener leaks one packet.
@@ -383,7 +391,7 @@ func (self *dmcaFlowState) advance(
 		// exception the allow is not terminal at once: like an application
 		// standard it keeps the BitTorrent signatures above in force for the
 		// rest of the inspection budget.
-		return self.allowAppStandard(ipPath, SecurityPolicyReasonAllowMessaging, settings)
+		return self.allowAppStandard(ipPath, b, SecurityPolicyReasonAllowMessaging, settings)
 	}
 	if header, ok := web.rtpHeader(ipPath, payload); ok && self.observeRtp(header) {
 		// RTP/SRTP needs coherent headers from multiple packets before it is trusted;
@@ -427,7 +435,11 @@ func (self *dmcaFlowState) advance(
 // allowAppStandard allows the flow for an application standard. The allow is
 // terminal once the inspection budget is spent; until then the flow keeps
 // checking the BitTorrent signatures.
-func (self *dmcaFlowState) allowAppStandard(ipPath *IpPath, reason SecurityPolicyReason, settings *DmcaSecurityPolicySettings) (dmcaVerdict, SecurityPolicyReason, bool) {
+func (self *dmcaFlowState) allowAppStandard(ipPath *IpPath, b []byte, reason SecurityPolicyReason, settings *DmcaSecurityPolicySettings) (dmcaVerdict, SecurityPolicyReason, bool) {
+	// no admit path may let a BitTorrent payload through behind a forged header
+	if anyOffsetBittorrentMarker(b) {
+		return self.setTerminal(dmcaBittorrent, SecurityPolicyReasonBittorrent)
+	}
 	if self.appReason == SecurityPolicyReasonUnknown {
 		// counted here, not at the terminal verdict: the allow only becomes
 		// terminal once the inspection budget is spent, which a short flow never

@@ -671,10 +671,27 @@ func whatsAppNoise(b []byte) (int, bool) {
 // containsBittorrentSignature checks bytes carried after a recognized
 // application header for every BitTorrent signature regardless of transport,
 // so no BitTorrent payload can ride behind an application standard's header.
+//
+// containsBittorrentSignature tests prefixes of the slice it is given, so on
+// its own it cannot see a payload that starts one byte later. Admit paths use
+// anyOffsetBittorrentMarker as well.
 func containsBittorrentSignature(b []byte) bool {
 	return hasBittorrentHandshake(b) ||
 		hasHttpTrackerRequest(b) ||
 		isDhtKrpc(b) ||
 		isUdpTrackerConnect(b) ||
 		utpV1CarriesHandshake(b)
+}
+
+// anyOffsetBittorrentMarker reports the unambiguous BitTorrent markers at ANY
+// offset of the bounded payload: the 20 byte peer-wire handshake string, an
+// info_hash query parameter, and the 8 byte UDP tracker connect magic. A
+// forged application header in front of a BitTorrent payload hides it from the
+// offset-0 signatures, so every admit path (and every later packet of an
+// admitted flow) runs this. The weaker structural signatures (DHT, uTP) stay
+// prefix-only: at arbitrary offsets they would match ciphertext.
+func anyOffsetBittorrentMarker(b []byte) bool {
+	return bytes.Contains(b, bittorrentHandshakePrefix) ||
+		bytes.Contains(b, []byte("info_hash=")) ||
+		bytes.Contains(b, udpTrackerConnectMagic)
 }

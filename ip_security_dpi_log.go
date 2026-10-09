@@ -95,6 +95,7 @@ func countDpiFlow(ipPath *IpPath, reason SecurityPolicyReason) {
 func isDpiAppAdmitReason(reason SecurityPolicyReason) bool {
 	switch reason {
 	case SecurityPolicyReasonAllowMessaging,
+		SecurityPolicyReasonAllowGaming,
 		SecurityPolicyReasonAllowWireGuard,
 		SecurityPolicyReasonAllowOpenVpn,
 		SecurityPolicyReasonAllowRtmp,

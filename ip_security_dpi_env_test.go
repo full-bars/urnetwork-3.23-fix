@@ -2,6 +2,8 @@ package connect
 
 import (
 	"os"
+	"reflect"
+	"sort"
 	"testing"
 )
 
@@ -49,5 +51,40 @@ func TestDpiProductionDefaults(t *testing.T) {
 	}
 	if DpiPrivilegedBtEnabled() {
 		t.Fatal("privileged-port BitTorrent check must default off")
+	}
+}
+
+// URNETWORK_DPI_ADMITS=off must restore the previous verdicts through every
+// default constructor. A detector added later as another optional setting
+// would silently escape the switch, so the set of optional detector fields on
+// the DMCA settings is pinned: adding one fails this test until the switch
+// covers it.
+func TestDpiAdmitsOffCoversEveryDefaultConstructor(t *testing.T) {
+	t.Setenv("URNETWORK_DPI_ADMITS", "off")
+	resetDpiAdmitsEnvForTest()
+	t.Cleanup(resetDpiAdmitsEnvForTest)
+
+	dmca := DefaultDmcaSecurityPolicySettings()
+	if dmca.App != nil || dmca.Gaming != nil || dmca.Messaging != nil {
+		t.Fatalf("DMCA settings keep a detector with admits off: app=%v gaming=%v messaging=%v", dmca.App, dmca.Gaming, dmca.Messaging)
+	}
+	web := DefaultWebStandardSettings()
+	if web.Turn || web.Rtp || web.Rtcp {
+		t.Fatalf("web standard settings keep an admit with admits off: turn=%t rtp=%t rtcp=%t", web.Turn, web.Rtp, web.Rtcp)
+	}
+	if DefaultCfaaSecurityPolicySettings().AllowTelegramCalls {
+		t.Fatal("CFAA settings keep the Telegram call exception with admits off")
+	}
+
+	optional := []string{}
+	typ := reflect.TypeOf(DmcaSecurityPolicySettings{})
+	for i := 0; i < typ.NumField(); i++ {
+		if typ.Field(i).Type.Kind() == reflect.Ptr {
+			optional = append(optional, typ.Field(i).Name)
+		}
+	}
+	sort.Strings(optional)
+	if want := []string{"App", "Gaming", "Messaging"}; !reflect.DeepEqual(optional, want) {
+		t.Fatalf("optional detector fields on DmcaSecurityPolicySettings = %v, want %v: wire the new one into applyDpiAdmitsEnvToDmca and update this list", optional, want)
 	}
 }

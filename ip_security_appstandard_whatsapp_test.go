@@ -457,8 +457,6 @@ func TestWhatsAppNoisePorts(t *testing.T) {
 			t.Fatalf("443 packet %d = %v %v, want allow", i, r, err)
 		}
 	}
-	// Reason stats collection is deferred on this fork branch (see SPEC.md).
-	t.Skip("needs reason stats")
 }
 
 // End to end through the policy a provider runs, to an address outside Meta's
