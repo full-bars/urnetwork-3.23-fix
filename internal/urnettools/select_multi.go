@@ -48,6 +48,9 @@ func resolvedExecutablePath() string {
 // passed through so the sudo password prompt and any output reach the user.
 func elevateSelf(args []string) error {
 	exe := resolvedExecutablePath()
+	if runtime.GOOS == "windows" {
+		return fmt.Errorf("operation requires administrator privileges; please run your terminal as Administrator: %s %s", exe, strings.Join(args, " "))
+	}
 	sudo, err := exec.LookPath("sudo")
 	if err != nil {
 		return fmt.Errorf("operation requires root, but sudo is unavailable; run directly: sudo %s %s", exe, strings.Join(args, " "))
