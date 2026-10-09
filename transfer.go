@@ -5793,7 +5793,12 @@ func (self *ReceiveSequence) registerContracts(item *receiveItem) error {
 	}
 
 	if nextReceiveContract.expired() {
-		return errContractExpired
+		if nextReceiveContract.expiredClockSkewSuspect() {
+			if ok, _ := contractClockSkewLogThrottle.Allow(time.Now()); ok {
+				self.log.Errorf("[r]%s<-%s s(%s) contract %s arrived long past its signed deadline (%s); if this repeats check the system clock\n", self.client.ClientTag(), self.source.SourceId, self.source.StreamId, nextReceiveContract.contractId, nextReceiveContract.expiredError())
+			}
+		}
+		return nextReceiveContract.expiredError()
 	}
 
 	if err := self.setContract(nextReceiveContract); err != nil {

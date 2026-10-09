@@ -644,3 +644,50 @@ func TestContractExpirationSendCreateIssuedImmediatelyWhenExpired(t *testing.T) 
 		}
 	})
 }
+
+func TestContractExpiredByAndWrappedError(t *testing.T) {
+	deadline := int64(1_000_000)
+	if d := contractExpiredBy(nil, 5_000_000); d != 0 {
+		t.Fatalf("no deadline: got %s, want 0", d)
+	}
+	if d := contractExpiredBy(&deadline, deadline-1); d != 0 {
+		t.Fatalf("unexpired: got %s, want 0", d)
+	}
+	if d := contractExpiredBy(&deadline, deadline+90_000); d != 90*time.Second {
+		t.Fatalf("expired: got %s, want 90s", d)
+	}
+
+	past := time.Now().Add(-10 * time.Minute).UnixMilli()
+	late := &sequenceContract{expirationTimeUnixMilli: &past}
+	if !late.expiredClockSkewSuspect() {
+		t.Fatal("a contract 10 minutes past its deadline should be flagged as a clock-skew suspect")
+	}
+	if err := late.expiredError(); !errors.Is(err, errContractExpired) {
+		t.Fatalf("expiredError must wrap errContractExpired, got %v", err)
+	}
+	recent := time.Now().Add(-2 * time.Second).UnixMilli()
+	slow := &sequenceContract{expirationTimeUnixMilli: &recent}
+	if slow.expiredClockSkewSuspect() {
+		t.Fatal("a contract 2 seconds past its deadline is an ordinary expiry")
+	}
+}
+
+// Many contracts retired at once must all come back from one expire call and
+// leave the queue empty, so a node with many proxies does not leak or re-poll.
+func TestContractExpirationMassExpiryDrainsQueueOnce(t *testing.T) {
+	q := &contractQueue{contracts: map[Id]*queuedContract{}}
+	past := time.Now().Add(-time.Second).UnixMilli()
+	const n = 2000
+	for i := 0; i < n; i++ {
+		q.contracts[NewId()] = &queuedContract{contract: &protocol.Contract{}, enqueueTime: time.Now(), expirationTimeUnixMilli: &past}
+	}
+	if got := q.Expire(time.Time{}); len(got) != n {
+		t.Fatalf("expired %d of %d", len(got), n)
+	}
+	if len(q.contracts) != 0 {
+		t.Fatalf("%d contracts left after expiry", len(q.contracts))
+	}
+	if got := q.Expire(time.Time{}); len(got) != 0 {
+		t.Fatalf("second expire returned %d", len(got))
+	}
+}
