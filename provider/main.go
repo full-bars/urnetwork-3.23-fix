@@ -4406,7 +4406,7 @@ func provide(opts docopt.Opts) {
 		go superviseLoop(ctx, "incident_capture", func() { runIncidentCapture(ctx) }, nil)
 	}
 	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
-		go superviseLoop(ctx, "liveness_watchdog", func() { runSdWatchdog(ctx) }, nil)
+		go superviseLoop(ctx, "liveness_watchdog", func() { runSdWatchdog(ctx, func() bool { return resolveSelfHealEnabled(selfHealEnabled) }) }, nil)
 	}
 	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
 	// Thrash watchdog: senses swap-thrash independently of the pressure

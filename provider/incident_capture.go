@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
+	"runtime/metrics"
 	"runtime/pprof"
 	"sort"
 	"strings"
@@ -197,11 +198,25 @@ func captureIncident(now time.Time, reason string, s incidentSample) (string, er
 		return dir, err
 	}
 
-	var ms runtime.MemStats
-	runtime.ReadMemStats(&ms)
-	meta := fmt.Sprintf("time=%s\nreason=%s\ngoroutines=%d\nheap_frac=%.3f\nheap_alloc_mib=%d\nheap_inuse_mib=%d\nsys_mib=%d\nnum_gc=%d\ngc_cpu_fraction=%.3f\nversion=%s\n",
+	// runtime/metrics, not ReadMemStats: ReadMemStats stops the world, and a
+	// second pause on top of the goroutine profile is exactly what a starved
+	// process cannot afford.
+	samples := []metrics.Sample{
+		{Name: "/memory/classes/heap/objects:bytes"},
+		{Name: "/memory/classes/heap/in-use:bytes"},
+		{Name: "/memory/classes/total:bytes"},
+		{Name: "/gc/cycles/total:gc-cycles"},
+	}
+	metrics.Read(samples)
+	value := func(i int) uint64 {
+		if samples[i].Value.Kind() == metrics.KindUint64 {
+			return samples[i].Value.Uint64()
+		}
+		return 0
+	}
+	meta := fmt.Sprintf("time=%s\nreason=%s\ngoroutines=%d\nheap_frac=%.3f\nheap_objects_mib=%d\nheap_inuse_mib=%d\nsys_mib=%d\ngc_cycles=%d\nversion=%s\n",
 		now.UTC().Format(time.RFC3339), reason, s.goroutines, s.heapFrac,
-		ms.HeapAlloc>>20, ms.HeapInuse>>20, ms.Sys>>20, ms.NumGC, ms.GCCPUFraction, Version)
+		value(0)>>20, value(1)>>20, value(2)>>20, value(3), Version)
 	if err := writeFileSynced(filepath.Join(dir, "meta.txt"), []byte(meta)); err != nil {
 		return dir, err
 	}

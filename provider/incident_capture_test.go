@@ -81,8 +81,8 @@ func TestIncidentTrackerHeapRulesAndCooldowns(t *testing.T) {
 			captures++
 		}
 	}
-	if captures == 0 || captures > incidentMaxPerDay {
-		t.Fatalf("captured %d times within a day, want between 1 and %d", captures, incidentMaxPerDay)
+	if captures != incidentMaxPerDay {
+		t.Fatalf("captured %d times within a day, want exactly the ceiling of %d (every allowed capture happens, none beyond)", captures, incidentMaxPerDay)
 	}
 }
 

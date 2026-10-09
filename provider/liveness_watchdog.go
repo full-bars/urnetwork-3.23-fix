@@ -81,10 +81,15 @@ func sdWatchdogInterval(getenv func(string) string) (time.Duration, bool) {
 	return max(interval, time.Second), true
 }
 
-// runSdWatchdogLoop pings on every tick while progress is fresh and withholds
-// the ping, logging once per episode (and running onStall once), while it is not.
-func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *livenessProgress, staleAfter time.Duration, ping func() error, logf func(string, ...any), onStall func()) {
+// runSdWatchdogLoop pings on every tick while progress is fresh. While it is
+// not, it withholds the ping, logs once per episode and runs onStall once; the
+// undo onStall returns runs if progress resumes before systemd acts. When acting
+// reports false (self-heal is off) nothing is withheld or recorded: the ping
+// keeps flowing and the line says what would have happened, because off means
+// off for automatic restarts.
+func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *livenessProgress, staleAfter time.Duration, ping func() error, logf func(string, ...any), acting func() bool, onStall func() func()) {
 	stalled := false
+	var undo func()
 	for {
 		select {
 		case <-ctx.Done():
@@ -94,7 +99,19 @@ func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *liv
 		if progress.fresh(staleAfter) {
 			if stalled {
 				stalled = false
+				if undo != nil {
+					undo()
+					undo = nil
+				}
 				logf("[liveness] progress resumed; the systemd watchdog is being fed again\n")
+			}
+			_ = ping()
+			continue
+		}
+		if !acting() {
+			if !stalled {
+				stalled = true
+				logf("[liveness] no progress for %s, but self-heal is off, so the systemd watchdog is still being fed (it would otherwise be withheld and systemd would restart the provider)\n", staleAfter)
 			}
 			_ = ping()
 			continue
@@ -103,7 +120,7 @@ func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *liv
 			stalled = true
 			logf("🚨 [liveness] no progress for %s: withholding the systemd watchdog ping, so systemd will restart the provider\n", staleAfter)
 			if onStall != nil {
-				onStall()
+				undo = onStall()
 			}
 		}
 	}
@@ -112,9 +129,17 @@ func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *liv
 // runSdWatchdog starts the watchdog when systemd asked for one. It logs through
 // the disk event log, not the ramlog pipe: the ramlog reader may be the thing
 // that is starved, and a log call that blocks must not stop the ping decision.
-func runSdWatchdog(ctx context.Context) {
+// acting says whether automatic restarts are allowed (the self-heal switch).
+func runSdWatchdog(ctx context.Context, acting func() bool) {
 	interval, ok := sdWatchdogInterval(os.Getenv)
 	if !ok {
+		return
+	}
+	if os.Getenv("NOTIFY_SOCKET") == "" {
+		// WatchdogSec= is set but systemd gave this process no notify socket
+		// (NotifyAccess=none), so no ping can ever reach it and systemd will
+		// restart the unit every interval whatever this process does.
+		critLog("⚠️ [liveness] WATCHDOG_USEC is set but NOTIFY_SOCKET is not: the unit needs NotifyAccess=main or all, or systemd will restart the provider every %s\n", interval*3)
 		return
 	}
 	// start from a clean slate: the startup time is progress
@@ -122,7 +147,7 @@ func runSdWatchdog(ctx context.Context) {
 	_ = notifySystemdWatchdog() // first feed right away
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	runSdWatchdogLoop(ctx, ticker.C, processLiveness, livenessStaleAfter, notifySystemdWatchdog, critLog, recordLivenessStall)
+	runSdWatchdogLoop(ctx, ticker.C, processLiveness, livenessStaleAfter, notifySystemdWatchdog, critLog, acting, recordLivenessStall)
 }
 
 // recordLivenessStall leaves the next start leaner before systemd restarts a
@@ -131,8 +156,11 @@ func runSdWatchdog(ctx context.Context) {
 // it, so it is recorded exactly like a thrash escape: a cap of a fraction of
 // what was running, and an entry in the anti-loop ring that the daily ceiling
 // counts. The write is bounded; a blocked lock must not delay the decision.
-func recordLivenessStall() {
+// The returned undo restores the previous state, for a stall that resolves
+// itself before systemd acts: that must not leave a cap or spend the daily ring.
+func recordLivenessStall() func() {
 	now := time.Now()
+	prev := readThrashCapState()
 	cap := thrashCapForNextStart(int(lastRunningProxyCount.Load()))
 	done := make(chan error, 1)
 	go func() { done <- recordThrashEscalation(cap, now) }()
@@ -140,12 +168,24 @@ func recordLivenessStall() {
 	case err := <-done:
 		if err != nil {
 			critLog("[liveness] could not record the lean start cap: %v\n", err)
-			return
+			return nil
 		}
 		if cap > 0 {
 			critLog("[liveness] the next start is capped at %d proxies (60%% of what was running)\n", cap)
 		}
 	case <-time.After(livenessRecordTimeout):
 		critLog("[liveness] timed out recording the lean start cap\n")
+		return nil
+	}
+	return func() {
+		path, err := thrashCapPath()
+		if err != nil {
+			return
+		}
+		if err := oomWriteJSON(path, prev); err != nil {
+			critLog("[liveness] could not restore the start cap after progress resumed: %v\n", err)
+			return
+		}
+		critLog("[liveness] the lean start cap was removed again: progress resumed before systemd acted\n")
 	}
 }
