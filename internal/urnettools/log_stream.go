@@ -150,13 +150,28 @@ func printTailLines(f *os.File, n int, out io.Writer) int64 {
 		startOffset = size - maxTailBytes
 	}
 
-	buf := make([]byte, readSize)
-	nr, err := f.ReadAt(buf, startOffset)
+	// For a window that starts mid-file, also read the byte just before it: if
+	// that byte is a newline the window starts exactly on a line boundary and
+	// its first line is complete, not a fragment to drop.
+	readFrom := startOffset
+	if startOffset > 0 {
+		readFrom = startOffset - 1
+	}
+	buf := make([]byte, readSize+(startOffset-readFrom))
+	nr, err := f.ReadAt(buf, readFrom)
 	if err != nil && err != io.EOF {
-		return startOffset + int64(nr)
+		return readFrom + int64(nr)
 	}
 	buf = buf[:nr]
-	end := startOffset + int64(nr)
+	end := readFrom + int64(nr)
+	startsOnLine := false
+	if startOffset > 0 {
+		if len(buf) == 0 {
+			return end
+		}
+		startsOnLine = buf[0] == '\n'
+		buf = buf[1:]
+	}
 
 	// the bytes before the n-th newline counted from the end are not part of the tail
 	body := buf
@@ -175,7 +190,7 @@ func printTailLines(f *os.File, n int, out io.Writer) int64 {
 		}
 	}
 	// a window that starts mid-file begins with a partial line: drop it
-	if count < n && startOffset > 0 {
+	if count < n && startOffset > 0 && !startsOnLine {
 		i := bytes.IndexByte(buf, '\n')
 		if i < 0 {
 			return end

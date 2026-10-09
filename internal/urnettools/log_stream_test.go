@@ -177,6 +177,63 @@ func TestPrintTailLines_ReturnsWhereItStoppedReading(t *testing.T) {
 	}
 }
 
+// When the 64 KiB tail window starts exactly at the start of a line, that first
+// line is complete and must be printed; only a window that starts inside a line
+// begins with a partial one.
+func TestPrintTailLines_WindowStartingOnALineBoundaryKeepsItsFirstLine(t *testing.T) {
+	line := strings.Repeat("x", 63) + "\n" // 64 bytes
+	var content strings.Builder
+	content.WriteString("junk\n") // 5 bytes, so the window starts at offset 5
+	for i := 0; i < 1024; i++ {   // 1024 * 64 = 64 KiB exactly
+		content.WriteString(line)
+	}
+	logPath := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(logPath, []byte(content.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var out bytes.Buffer
+	printTailLines(f, 5000, &out) // more lines than the window can hold
+	if got, want := strings.Count(out.String(), "\n"), 1024; got != want {
+		t.Fatalf("printed %d lines, want all %d complete lines of the window", got, want)
+	}
+	if strings.Contains(out.String(), "junk") {
+		t.Fatal("the line before the window must not be printed")
+	}
+}
+
+// A window that starts inside a line drops that partial line.
+func TestPrintTailLines_WindowStartingMidLineDropsThePartialLine(t *testing.T) {
+	long := strings.Repeat("q", 99) + "\n" // 100 bytes; the window cuts into it
+	line := strings.Repeat("y", 63) + "\n" // 64 bytes
+	var content strings.Builder
+	content.WriteString(long)
+	for i := 0; i < 1023; i++ { // 1023 * 64 = 65472; the window reaches 64 bytes into `long`
+		content.WriteString(line)
+	}
+	logPath := filepath.Join(t.TempDir(), "test.log")
+	if err := os.WriteFile(logPath, []byte(content.String()), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(logPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	var out bytes.Buffer
+	printTailLines(f, 5000, &out)
+	if strings.Contains(out.String(), "q") {
+		t.Fatal("the partial first line leaked into the tail")
+	}
+	if got, want := strings.Count(out.String(), "\n"), 1023; got != want {
+		t.Fatalf("printed %d lines, want %d", got, want)
+	}
+}
+
 // A rename of the followed log must not be blocked by the follower. On Windows
 // this fails with ERROR_SHARING_VIOLATION unless the file was opened with
 // FILE_SHARE_DELETE; on other systems it passes without the fix too, so it only
