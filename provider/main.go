@@ -4397,6 +4397,12 @@ func provide(opts docopt.Opts) {
 	// Supervised: a panic restarts the loop with backoff instead of ending it for
 	// good (and leaving the last pressure score, GOGC and memory budget in force).
 	go superviseLoop(ctx, "pressure_monitor", func() { runPressureMonitor(ctx, selfHealEnabled) }, nil)
+	// systemd watchdog feed: inert unless the unit sets WatchdogSec=. Pings only
+	// while the pressure monitor keeps ticking, so a process that is alive but
+	// stalled (a GC death spiral on a small box) is restarted by systemd.
+	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
+		go superviseLoop(ctx, "liveness_watchdog", func() { runSdWatchdog(ctx) }, nil)
+	}
 	go superviseLoop(ctx, "pool_controller", func() { runPoolController(ctx, proxyURLMax, selfHealEnabled) }, nil)
 	// Thrash watchdog: senses swap-thrash independently of the pressure
 	// score, holds the freeze-growth rung, and (gated on self-heal,

@@ -1322,3 +1322,47 @@ func TestThrashCapDirWritableBoundedTimesOut(t *testing.T) {
 		t.Fatalf("a healthy probe must pass: %v", err)
 	}
 }
+
+// A heap far over its soft limit on a box with little free RAM is a spiral in
+// the making: the runtime pins a core on collection, part of the heap swaps out,
+// and within minutes the process is too starved to run any responder. PSI can
+// still read calm in that window (the stalls have not started), so the heap and
+// the free RAM alone have to count, on the severe clock.
+func TestThrashMachineHeapRunawayEscalatesAtNinetySeconds(t *testing.T) {
+	runaway := thrashRead{heapOK: true, heapFrac: 1.5, ramAvailOK: true, ramAvailMiB: 119, ramTotalOK: true, ramTotalMiB: 1969}
+	calmPSI := thrashRates{fullFrac: 0.0006, fullOK: true}
+
+	m := &thrashMachine{state: thrashCalm, stateSince: thrashT0}
+	if st := m.step(thrashT0, calmPSI, runaway); st.cur != thrashUnderPressure {
+		t.Fatalf("t0: want under-pressure, got %v", st.cur)
+	}
+	if st := m.step(thrashT0.Add(80*time.Second), calmPSI, runaway); st.cur != thrashUnderPressure {
+		t.Fatalf("t+80s: want under-pressure, got %v", st.cur)
+	}
+	if st := m.step(thrashT0.Add(91*time.Second), calmPSI, runaway); st.cur != thrashThrashing {
+		t.Fatalf("t+91s: want thrashing, got %v", st.cur)
+	}
+
+	// it must not need PSI at all
+	m2 := &thrashMachine{state: thrashCalm, stateSince: thrashT0}
+	m2.step(thrashT0, thrashRates{}, runaway)
+	if st := m2.step(thrashT0.Add(91*time.Second), thrashRates{}, runaway); st.cur != thrashThrashing {
+		t.Fatalf("no PSI: want thrashing from the heap alone, got %v", st.cur)
+	}
+}
+
+func TestThrashMachineHeapOverLimitWithRoomToSpareIsNotARunaway(t *testing.T) {
+	calmPSI := thrashRates{fullFrac: 0.0006, fullOK: true}
+	for name, rd := range map[string]thrashRead{
+		"plenty of free RAM":    {heapOK: true, heapFrac: 1.5, ramAvailOK: true, ramAvailMiB: 4000, ramTotalOK: true, ramTotalMiB: 16000},
+		"heap only mildly over": {heapOK: true, heapFrac: 1.2, ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969},
+		"free RAM unreadable":   {heapOK: true, heapFrac: 1.6},
+		"heap unreadable":       {ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969},
+	} {
+		m := &thrashMachine{state: thrashCalm, stateSince: thrashT0}
+		m.step(thrashT0, calmPSI, rd)
+		if st := m.step(thrashT0.Add(10*time.Minute), calmPSI, rd); st.cur != thrashCalm {
+			t.Fatalf("%s: want calm, got %v", name, st.cur)
+		}
+	}
+}

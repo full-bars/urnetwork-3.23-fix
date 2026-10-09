@@ -893,6 +893,10 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			}
 			continue
 		case <-fullTicker.C:
+			// Proof that this loop got its tick: the systemd watchdog ping
+			// depends on it (liveness_watchdog.go). A stalled process never
+			// reaches here, so the ping stops.
+			noteLivenessProgress()
 			// Track the peak running count and heartbeat for the OOM-aware start
 			// cap. It runs whether or not self-heal is on: it is bookkeeping, not
 			// an actuator.

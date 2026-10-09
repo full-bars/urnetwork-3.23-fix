@@ -254,6 +254,15 @@ func notifySystemdStatus(text string) error {
 	return nil
 }
 
+// notifySystemdWatchdog sends WATCHDOG=1, which restarts the watchdog timer of a
+// unit that sets WatchdogSec=. It is a no-op without a notify socket.
+func notifySystemdWatchdog() error {
+	if err := sdNotify("WATCHDOG=1\n"); err != nil && !errors.Is(err, ErrNoNotifySocket) {
+		return err
+	}
+	return nil
+}
+
 // execInPlace replaces the current process image in-place via syscall.Exec (execve)
 // with an automatic retry loop if the Linux kernel returns ETXTBSY (F-17).
 func execInPlace(exe string, args []string, env []string) error {

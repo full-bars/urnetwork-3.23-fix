@@ -656,12 +656,41 @@ type thrashStep struct {
 	cond bool
 }
 
+const (
+	// thrashHeapRunawayFrac is how far over its soft limit the live heap may be,
+	// with the box short of free RAM, before the heap alone counts as severe.
+	thrashHeapRunawayFrac = 1.4
+	// thrashHeapRunawayAvailFrac and thrashHeapRunawayAvailFloorMiB define "short
+	// of free RAM": under a tenth of the box, and never under 256 MiB.
+	thrashHeapRunawayAvailFrac     = 0.10
+	thrashHeapRunawayAvailFloorMiB = 256
+)
+
+// thrashHeapRunaway reports a heap well over its soft limit on a box short of
+// free RAM. It exists because the spiral it names starves every responder
+// within minutes while PSI still reads calm: the stalls start after the heap has
+// already run away. Both inputs must be readable; a box that cannot say how
+// much RAM is free is never judged on the heap alone.
+func thrashHeapRunaway(rd thrashRead) bool {
+	if !rd.heapOK || rd.heapFrac < thrashHeapRunawayFrac || !rd.ramAvailOK {
+		return false
+	}
+	low := int64(thrashHeapRunawayAvailFloorMiB)
+	if rd.ramTotalOK {
+		if tenth := int64(float64(rd.ramTotalMiB) * thrashHeapRunawayAvailFrac); tenth > low {
+			low = tenth
+		}
+	}
+	return rd.ramAvailMiB < low
+}
+
 // step advances the machine. Pure except for the machine's own bookkeeping:
 // all time comes from now, so tests drive it with a fake clock.
 func (m *thrashMachine) step(now time.Time, rt thrashRates, rd thrashRead) thrashStep {
 	prev := m.state
 
-	if !rt.fullOK {
+	heapRunaway := thrashHeapRunaway(rd)
+	if !rt.fullOK && !heapRunaway {
 		// PSI full unavailable (fresh baseline, source flip, unreadable): a
 		// NEUTRAL tick. Hold every clock and the state — a fake readable zero
 		// here used to read as calm and reset the sustain clocks, defeating
@@ -669,7 +698,7 @@ func (m *thrashMachine) step(now time.Time, rt thrashRates, rd thrashRead) thras
 		return thrashStep{prev: prev, cur: m.state, changed: false, cond: false}
 	}
 
-	severe := rt.fullOK && rt.fullFrac >= thrashSevereFrac
+	severe := rt.fullOK && rt.fullFrac >= thrashSevereFrac || heapRunaway
 	swapCorr := rt.swapOK && (rt.swapInPS+rt.swapOutPS) >= thrashSwapCorroboratePS
 	refCorr := rt.refaultOK && rt.refaultPS >= thrashRefaultCorroboratePS
 	pgCorr := rt.pgscanOK && rt.pgscanPS >= thrashPgscanCorroboratePS

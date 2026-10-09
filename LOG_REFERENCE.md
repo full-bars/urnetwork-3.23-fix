@@ -1039,3 +1039,23 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+
+---
+
+## 🩺 Liveness (`[liveness]`)
+
+Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.md#systemd-watchdog-stalled-provider)). These lines go to `~/.urnetwork/events.log`, not the ramlog, because the ramlog reader may be the thing that is starved.
+
+```text
+🚨 [liveness] no progress for 10m0s: withholding the systemd watchdog ping, so systemd will restart the provider
+[liveness] the next start is capped at 300 proxies (60% of what was running)
+[liveness] progress resumed; the systemd watchdog is being fed again
+```
+
+| Message | Meaning |
+|---|---|
+| `no progress for 10m0s: withholding the systemd watchdog ping` | The pressure monitor has not ticked for 10 minutes, so the process is alive but not making progress. The ping stops and systemd restarts the unit once `WatchdogSec` runs out. Once per episode. |
+| `the next start is capped at N proxies` | Written at the same moment, so the restart begins with about 60% of what was running instead of the same load. It counts in the thrash restart ring (3 per 24 hours). |
+| `progress resumed` | The monitor ticked again before systemd acted (a very long pause, not a stall). Pings resume; the cap stays until it expires. |
+
+The thrash watchdog also has a heap rule: a heap at least 1.4 times its soft limit on a box with little free RAM counts as severe after 90 seconds even while PSI reads calm. It shows up as the usual `[thrash]` and `[memory]` lines.
