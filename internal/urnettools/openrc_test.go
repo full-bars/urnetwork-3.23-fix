@@ -1329,3 +1329,36 @@ func TestOpenRCRestartAcceptsOldProviderExitingDuringWait(t *testing.T) {
 		t.Fatalf("polled %d times, want the wait to keep polling until the pid is gone", polls)
 	}
 }
+
+// An init script written before the thrash restart and the stop schedule
+// shipped keeps running without either until the installer is rerun, and a
+// binary update alone never rewrites it. The update says so.
+func TestOpenrcInitScriptStaleReason(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("#!/sbin/openrc-run\ncommand=/x\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || !strings.Contains(got, "retry=") || !strings.Contains(got, "URNETWORK_INIT") {
+		t.Fatalf("an old script must name both missing parts, got %q", got)
+	}
+
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=openrc\nretry=\"TERM/40/KILL/5\"\n")
+	if got := openrcInitScriptStaleReason(path); got != "" {
+		t.Fatalf("a current script is not stale, got %q", got)
+	}
+
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=openrc\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || strings.Contains(got, "URNETWORK_INIT") {
+		t.Fatalf("only the stop schedule is missing here, got %q", got)
+	}
+
+	if got := openrcInitScriptStaleReason(filepath.Join(dir, "missing")); got != "" {
+		t.Fatalf("an unreadable script is not reported as stale, got %q", got)
+	}
+}

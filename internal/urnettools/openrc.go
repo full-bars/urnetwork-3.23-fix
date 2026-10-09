@@ -919,6 +919,9 @@ func openrcRestartService(p Provider) (bool, error) {
 	if !providerSupervisedByOpenRCFn(p) {
 		return false, nil
 	}
+	if reason := openrcInitScriptStaleReason(openrcInitScriptPath); reason != "" {
+		fmt.Fprintf(os.Stderr, "warning: %s %s; rerun the installer to refresh it (a binary update does not rewrite it)\n", openrcInitScriptPath, reason)
+	}
 	fmt.Printf("restarting %s (OpenRC service, pid %d)...\n", openrcServiceName, p.PID)
 	if err := openrcRunFn(openrcServiceArgv("restart")...); err != nil {
 		return true, fmt.Errorf("rc-service %s restart: %w%s", openrcServiceName, err, openrcElevationHint())
@@ -978,4 +981,27 @@ func openrcHotSwapDecline(p Provider) error {
 func renderOpenRCStatus() error {
 	_ = openrcRunFn(openrcServiceArgv("status")...)
 	return nil
+}
+
+// openrcInitScriptStaleReason says what an installed init script lacks that
+// the current installer writes: the URNETWORK_INIT marker that lets the thrash
+// watchdog restart under supervise-daemon, and the retry= stop schedule that
+// ends a hung provider. Empty when the script has both or cannot be read.
+func openrcInitScriptStaleReason(path string) string {
+	b, err := os.ReadFile(path)
+	if err != nil {
+		return ""
+	}
+	script := string(b)
+	var missing []string
+	if !strings.Contains(script, "URNETWORK_INIT=openrc") {
+		missing = append(missing, "the URNETWORK_INIT=openrc marker (the thrash restart stays off)")
+	}
+	if !strings.Contains(script, "retry=") {
+		missing = append(missing, "a retry= stop schedule (a hung provider is never killed)")
+	}
+	if len(missing) == 0 {
+		return ""
+	}
+	return "predates this release and lacks " + strings.Join(missing, " and ")
 }
