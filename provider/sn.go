@@ -218,7 +218,9 @@ func claim(opts docopt.Opts) {
 	}
 
 	if poolClaim.Error != nil {
-		panic(fmt.Errorf("%s", poolClaim.Error.Message))
+		// a platform refusal is an answer, not a crash: no goroutine trace
+		fmt.Printf("claim: the platform refused: %s\n", poolClaim.Error.Message)
+		os.Exit(1)
 	}
 
 	// decode and sanity-check the claim fields

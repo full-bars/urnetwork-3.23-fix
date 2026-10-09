@@ -124,3 +124,52 @@ func TestResolveClaimCredentialLegacyColdkey(t *testing.T) {
 		t.Fatal("an invalid coldkey must be refused before any request")
 	}
 }
+
+func TestResolveClaimCredentialLegacyColdkeyRefusesExpiredNetworkToken(t *testing.T) {
+	home := claimTestHome(t)
+	expired := claimTestJwt(t, gojwt.MapClaims{"network_id": "n", "exp": time.Now().Add(-time.Hour).Unix()})
+	if err := os.WriteFile(filepath.Join(home, ".urnetwork", "jwt"), []byte(expired), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_, err := resolveClaimCredential(docopt.Opts{"--legacy-coldkey": "5GrwvaEF5zXb26Fz9rcQpDWS57CtERHpNehXCPcNoHGKutQY"})
+	if err == nil || !strings.Contains(err.Error(), "expired") {
+		t.Fatalf("an expired network token must be refused locally, got %v", err)
+	}
+}
+
+func TestResolveClaimCredentialStoreClientMatchesCredentialedAddress(t *testing.T) {
+	claimTestHome(t)
+	good := claimTestJwt(t, gojwt.MapClaims{"client_id": "abc", "exp": time.Now().Add(time.Hour).Unix()})
+	other := claimTestJwt(t, gojwt.MapClaims{"client_id": "def", "exp": time.Now().Add(time.Hour).Unix()})
+	claimTestStore(t, map[string]string{
+		"10.0.0.1:1080\x1falice": good,
+		"10.0.0.2:1080\x1fbob":   good,
+		"10.0.0.2:1080\x1fcarol": other,
+		"10.0.0.3:1080":          other,
+		"10.0.0.3:1080\x1fdave":  good,
+	})
+
+	// a bare address resolves to its single credentialed identity
+	cred, err := resolveClaimCredential(docopt.Opts{"--store-client": "10.0.0.1:1080"})
+	if err != nil || cred.ByJwt != good {
+		t.Fatalf("unique address match: cred=%+v err=%v", cred, err)
+	}
+	// the full key still works
+	cred, err = resolveClaimCredential(docopt.Opts{"--store-client": "10.0.0.2:1080\x1fcarol"})
+	if err != nil || cred.ByJwt != other {
+		t.Fatalf("full key: cred=%+v err=%v", cred, err)
+	}
+	// an address shared by two accounts is ambiguous and must not guess
+	_, err = resolveClaimCredential(docopt.Opts{"--store-client": "10.0.0.2:1080"})
+	if err == nil || !strings.Contains(err.Error(), "2 identities") {
+		t.Fatalf("shared address must be refused as ambiguous, got %v", err)
+	}
+	if strings.Contains(err.Error(), "alice") || strings.Contains(err.Error(), "bob") || strings.Contains(err.Error(), "carol") {
+		t.Fatalf("the refusal must not echo proxy usernames: %v", err)
+	}
+	// an exact bare key wins over credentialed siblings
+	cred, err = resolveClaimCredential(docopt.Opts{"--store-client": "10.0.0.3:1080"})
+	if err != nil || cred.ByJwt != other {
+		t.Fatalf("exact bare key must win: cred=%+v err=%v", cred, err)
+	}
+}
