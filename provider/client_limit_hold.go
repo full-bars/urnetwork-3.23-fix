@@ -6,6 +6,7 @@ import (
 	"os"
 	"path/filepath"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -28,6 +29,12 @@ type clientLimitHoldEntry struct {
 // clientLimitHoldWatchers counts live persist watchers, so a reset can wait
 // until none can write any more.
 var clientLimitHoldWatchers sync.WaitGroup
+
+// clientLimitHoldDraining counts the watchers that have been told to stop and
+// have not finished their final write yet. settleClientLimitHolds waits for
+// these, and only these: a live watcher runs until its entry is released and is
+// not something an exit can wait for.
+var clientLimitHoldDraining atomic.Int64
 
 var clientLimitHolds = struct {
 	sync.Mutex
@@ -123,6 +130,9 @@ func releaseClientLimitHold(key string, entry *clientLimitHoldEntry) {
 	last := entry.refs <= 0 && clientLimitHolds.m[key] == entry
 	if last {
 		delete(clientLimitHolds.m, key)
+		// counted while the lock is still held, so settle always finds the entry
+		// either registered or draining, never in between
+		clientLimitHoldDraining.Add(1)
 	}
 	clientLimitHolds.Unlock()
 
@@ -148,6 +158,7 @@ func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBac
 		}
 		select {
 		case <-stop:
+			defer clientLimitHoldDraining.Add(-1)
 			// the hold may have changed after the read above
 			if st := b.Status(); st.Exceeded || persisted {
 				if err := persistClientLimitHold(clientId, st, time.Now()); err != nil {
@@ -228,7 +239,8 @@ func readClientLimitHoldFileForUpdate(path string) (clientLimitHoldFile, error) 
 // exits or a HotSwap parent hands over. The persist watchers write on every
 // change, but they run asynchronously, so a stop right after a kick could beat
 // them. It writes the holds of every live entry, then waits (bounded) for the
-// watchers that are finishing a final write.
+// watchers that are already finishing a final write; live watchers are not
+// waited for.
 func settleClientLimitHolds(timeout time.Duration) {
 	clientLimitHolds.Lock()
 	type snapshot struct {
@@ -250,20 +262,18 @@ func settleClientLimitHolds(timeout time.Duration) {
 		}
 	}
 
-	done := make(chan struct{})
-	go func() {
-		clientLimitHoldWatchers.Wait()
-		close(done)
-	}()
-	select {
-	case <-done:
-	case <-time.After(timeout):
+	// polled, not a WaitGroup: entries are released concurrently, and a WaitGroup
+	// must not see an Add race with its Wait
+	deadline := time.Now().Add(timeout)
+	for clientLimitHoldDraining.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
 	}
 }
 
 func resetClientLimitHoldsForTest() {
 	clientLimitHolds.Lock()
 	for _, entry := range clientLimitHolds.m {
+		clientLimitHoldDraining.Add(1)
 		close(entry.stop)
 	}
 	clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)

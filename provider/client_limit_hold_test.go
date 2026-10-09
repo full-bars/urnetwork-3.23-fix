@@ -384,7 +384,9 @@ func TestPersistClientLimitHoldReplacesCorruptFile(t *testing.T) {
 }
 
 // settleClientLimitHolds writes the standing holds of live entries before the
-// process exits, so a SIGTERM that lands right after a kick keeps the hold.
+// process exits, so a SIGTERM that lands right after a kick keeps the hold. The
+// persist watcher also writes on its own, so the test removes what the watcher
+// wrote: whatever is on disk afterwards came from settle.
 func TestSettleClientLimitHoldsWritesStandingHold(t *testing.T) {
 	setupClientLimitHoldTest(t)
 	id := connect.NewId()
@@ -392,14 +394,48 @@ func TestSettleClientLimitHoldsWritesStandingHold(t *testing.T) {
 	retry := time.Now().Add(12 * time.Minute).Truncate(time.Second)
 	b.Restore(retry)
 
-	settleClientLimitHolds(2 * time.Second)
-
 	path, err := clientLimitHoldPath()
 	if err != nil {
 		t.Fatal(err)
 	}
+	waitFor(t, "the watcher to write the hold", func() bool {
+		var file clientLimitHoldFile
+		return oomReadJSON(path, &file) && file[id.String()] == retry.Unix()
+	})
+	if err := os.Remove(path); err != nil {
+		t.Fatal(err)
+	}
+
+	start := time.Now()
+	settleClientLimitHolds(2 * time.Second)
+	// live watchers keep running by design: settle must not wait for them
+	if took := time.Since(start); took > time.Second {
+		t.Fatalf("settle waited %v on watchers that are not stopping", took)
+	}
+
 	var file clientLimitHoldFile
 	if !oomReadJSON(path, &file) || file[id.String()] != retry.Unix() {
 		t.Fatalf("the standing hold was not on disk after settle: %v", file)
 	}
+}
+
+// A watcher that is already finishing (its entry was released) is waited for,
+// so its final write is not cut off by the exit.
+func TestSettleClientLimitHoldsWaitsForAFinishingWatcher(t *testing.T) {
+	setupClientLimitHoldTest(t)
+	id := connect.NewId()
+	ctx, cancel := context.WithCancel(context.Background())
+	b := clientLimitHoldWithContext(ctx, id, time.Now())
+	retry := time.Now().Add(9 * time.Minute).Truncate(time.Second)
+	b.Restore(retry)
+	cancel() // the last reference goes: the watcher stops and writes once more
+
+	settleClientLimitHolds(2 * time.Second)
+
+	path, _ := clientLimitHoldPath()
+	var file clientLimitHoldFile
+	if !oomReadJSON(path, &file) || file[id.String()] != retry.Unix() {
+		t.Fatalf("the finishing watcher's final write was lost: %v", file)
+	}
+	waitFor(t, "the released entry to be gone", func() bool { return clientLimitHoldCount() == 0 })
 }
