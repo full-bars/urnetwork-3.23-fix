@@ -1039,3 +1039,240 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+
+---
+
+## 🌡️ Swap-Thrash Watchdog (`[memory]`, `[proxy][thrash]`, `[thrash]`)
+
+The watchdog watches memory pressure and swap and moves between four states: `calm`, `under-pressure`, `thrashing` and `critical`. The sentences with a leading emoji and `[memory]` are written for the operator and are mirrored to `~/.urnetwork/events.log`; the `[proxy][thrash]` lines are the machine detail that goes with a state change. See [Configuration](docs/Configuration.md) for the switches and the restart cap.
+
+```text
+[proxy][thrash] monitor started, signals: psi-mem(unit), swap-activity(unit), refaults, pgscan_direct, unit-swap, swap-total, ram, ram-total, heap (unavailable: <none or names>)
+[proxy][thrash] memory pressure rising: <rates and sizes>
+🚨 [memory] The box is out of RAM and thrashing swap — memory is currently stalled ~42% of the time, it is swapping ~18 MB/s, and 1.1 GiB (87% of all swap in use) belongs to this provider. Heap is 1.3x its limit.
+🚨 [memory] The box is thrashing swap, but the memory belongs to another process: this provider holds 80 MiB of the 2.1 GiB swapped (4%). Not restarting.
+🚨 [memory] The box may be thrashing swap but the memory cannot be attributed to this provider (no per-unit swap counters, PSI reads are host-wide). Not restarting; check the box by hand.
+[thrash] still thrashing 15m0s after onset (<rates and sizes>); restart capability: true
+🚨 [memory] This will not recover on its own. Restarting the provider now (restart 1 of max 3 per day) with the proxy cap reduced 2001 -> 1200 so the next run fits in RAM.
+[thrash] detected but NOT restarting: <reason>
+[thrash] swap is 96% full (1.9 GiB of 2.0 GiB used) — the box is nearly out of memory entirely
+✅ [memory] Thrash cleared: 640 MiB RAM free, 410 MiB swap in use, memory stalls 3%.
+✅ [memory] Thrash cleared by the restart: 1.2 GiB RAM free, 90 MiB swap in use, memory stalls 1%.
+```
+
+| Message | Meaning |
+|---|---|
+| `[proxy][thrash] monitor started, signals: ...` | Once at start. Lists the pressure signals this box can read. `(unit)` means the reading is for this provider's own cgroup, `(host)` that only the whole host is readable (then ownership of swap cannot be told). Signals that are missing are named after `unavailable:`; the watchdog works with what remains. |
+| `⚠️ [memory] Thrash watch is INERT on this box` | No memory-pressure signal is readable at all (no PSI, no swap counters). Nothing can be detected or answered here. It is logged once at start. |
+| `[proxy][thrash] memory pressure rising` | The state left `calm` for `under-pressure`. From here the pool stops growing (the freeze rung). Nothing is restarted or shed. |
+| `[proxy][thrash] memory pressure settling` / `pressure easing (critical -> thrashing)` | The state stepped down. The detail repeats the rates that held it up. |
+| `🚨 [memory] The box is out of RAM and thrashing swap` | Onset of `thrashing`, and the swap belongs to this provider. It states how stalled memory is, how fast the box swaps, how much swap this provider holds, and the heap against its limit when known. |
+| `🚨 [memory] ... belongs to another process ... Not restarting.` | The box is thrashing but another process holds most of the swap. Restarting the provider would not help, so it does not. |
+| `🚨 [memory] ... cannot be attributed to this provider` | The host has no per-unit swap counters, so ownership cannot be told. It does not restart. Look at the box by hand. |
+| `⚠️ [memory] The program's heap is Nx its size limit ... and the machine is swapping` | Early warning, once per episode, before thrashing sets in: the Go heap is over `GOMEMLIMIT` while swap traffic is real. If the heap keeps growing the box will start thrashing. |
+| `[thrash] still thrashing ... restart capability: true\|false` | Thrashing held for 15 minutes, so the state became `critical`. `restart capability` says whether a supervisor exists that would bring the provider back (systemd, or a container with the exit 75 opt-in). |
+| `🚨 [memory] This will not recover on its own. Restarting ...` | The provider exits with status 75 so its supervisor restarts it. At most 3 restarts per 24 hours, and an attempt is made at most every 10 minutes while thrashing holds. A restart leaves a cap so the next start is leaner; the line says the proxy count change, or `without a proxy cap change`. |
+| `[thrash] detected but NOT restarting: <reason>` | Thrashing was detected and a restart was refused. The reason says why: `self-heal is off`, `a hot-swap is draining or mid-handoff`, `the swap belongs to another process`, `the swap cannot be attributed to this provider`, `not running under a service supervisor` (or a container without `URNETWORK_EXIT75_OK=1`), the 24-hour restart cap reached, or the state directory holding `thrash_cap.json` not writable. It logs once per reason code until the code changes. |
+| `[thrash] swap is N% full` | Swap passed 95% used: out-of-memory is close. Logged once per episode, re-armed when swap falls below 90%. |
+| `✅ [memory] Thrash cleared` | The state left `thrashing` for a calmer one. Free RAM, swap in use and the stall share follow. |
+| `✅ [memory] Thrash cleared by the restart` | After a watchdog restart, the first calm reading five minutes or more after start. Logged once per process life. |
+
+> [!NOTE]
+> The watchdog itself is switched by the self-heal switch. With self-heal off it senses and logs but never restarts anything. The current state is also written to `~/.urnetwork/thrash_status`, and every restart or refusal is appended to `~/.urnetwork/autopilot.jsonl`.
+
+---
+
+## 🔥 Hot Restart and the Identity Store (`[hot-restart]`, `[jwt-store]`, `[jwt-renew]`, `[proxy][identity]`)
+
+A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` so a restart reuses the same client id instead of minting a new one and losing that identity's history. These lines say what happened to those logins.
+
+```text
+🔥 [hot-restart] loaded 812 stored identities; carrying forward all 812
+🔥 [hot-restart] loaded 830 stored identities (18 pruned as stale >30d); carrying forward 812
+🔥 [hot-restart] no stored client identities found; all proxies will mint fresh on first auth
+🔥 [hot-restart] 203.0.113.9:1080: stored client JWT expired, renewed identity 019e2d83-3118-5186-995f-aabe3b2dcf0b
+🔥 [hot-restart] 203.0.113.9:1080: network_id mismatch (stored="..." current="...", have_current=true), minting fresh
+⚠️ [jwt-store] corrupt /home/user/.urnetwork/.client_jwts.json, starting fresh: <error>
+📸 [jwt-store] snapshot saved to <path> (812 entries)
+⚠️ [jwt-store] snapshot to <path> failed: <error>
+⚠️ [jwt-store] failed to prune old backup <path>: <error>
+⚠️ [jwt-store] reused client identity for 203.0.113.9:1080 never authenticated after 5 transport auth failures — evicted, will mint fresh on next retry/restart
+🛑 [jwt-store] identity for 203.0.113.9:1080 renewed successfully — revocation watcher standing down
+⚠️ [jwt-renew] proxy[7] 203.0.113.9:1080: cannot read account JWT: <error>
+[proxy][identity] 203.0.113.9:1080 split into 3 identities on adoption; 203.0.113.9:1080 (user us***rA) kept id=7 and history, the rest start fresh
+```
+
+| Message | Meaning |
+|---|---|
+| `[hot-restart] loaded N stored identities` | Once at start. `carrying forward` is how many will be reused. Entries for proxies that have not reconnected in 30 days are pruned and counted. |
+| `[hot-restart] no stored client identities found` | An empty store: every proxy mints a fresh identity on its first sign-in. Expected on a first start, a warning after a restart. |
+| `[hot-restart] <key>: stored client JWT expired, renewed identity <id>` | The saved login had aged out and was renewed under the same client id. The identity and its history survive. |
+| `[hot-restart] <key>: network_id mismatch ... minting fresh` | The saved login belongs to a different network (for example after switching accounts), so it is not reused. |
+| `[jwt-store] corrupt ..., starting fresh` | The store file could not be read. A snapshot of the unreadable bytes is taken first (the `snapshot saved` line), then every proxy mints fresh. |
+| `[jwt-store] snapshot saved` / `snapshot ... failed` / `failed to prune old backup` | Pre-restart copies of the store. Failures are warnings only and do not stop the provider. At most 10 snapshots are kept. |
+| `[jwt-store] reused client identity ... never authenticated ... evicted` | A reused login failed transport authentication repeatedly without ever succeeding, which is how a revoked identity looks. It is removed so the next attempt mints a fresh one. |
+| `[jwt-store] identity ... renewed successfully — revocation watcher standing down` | The eviction watch ended because the login renewed fine: no eviction. |
+| `[jwt-store] failed to evict possibly-revoked identity` | The eviction itself failed (disk error). The login stays and is retried. |
+| `[jwt-renew] ... cannot read account JWT` | A renewal could not run because the account token in `~/.urnetwork/jwt` is unreadable. Run `provider auth` again. |
+| `[proxy][identity] ... split into N identities on adoption` | Older state was stored under a bare address, and several proxy accounts now share that address. Exactly one identity (the smallest key) inherits the history; the others start fresh. Earnings and slow-retry state use the same rule, with `earnings for ...` or `slow-retry state for ...` in the line. |
+
+---
+
+## 🔁 Hot Swap Handoff (`[hotswap]`, `[hotswap-heal]`)
+
+The happy path of a hot swap is shown in [HotSwap](docs/HotSwap.md#what-you-will-see). These are the other lines. The rule behind all the abort lines: **the live provider is kept**. A failed handoff leaves the old process serving.
+
+```text
+⚡ [hotswap] Initiating zero-downtime handoff (live parent PID 4121, binary /home/user/.local/share/urnetwork-provider/bin/urnetwork)...
+⚡ [hotswap] Running image was unlinked on disk; launching the install path <path> instead.
+⚡ [hotswap] Candidate PID 4377 confirmed active takeover (ACK received)!
+⚡ [hotswap] Parent PID 4121 entering graceful stream drain (max 30s)...
+⚡ [hotswap] Graceful drain complete -> parent PID 4121 exiting cleanly.
+⚡ [hotswap] Canary verification confirmed by parent (PID 4121) -> exiting cleanly for PID 1 takeover
+⚡ [hotswap] Docker container detected: candidate pre-flight verified -> preparing in-place execve
+⚡ [hotswap] Executing in-place syscall.Exec (container stays up)...
+⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff
+⚡ [hotswap] systemd updated: MAINPID=4377
+❌ [hotswap] Candidate failed pre-flight or disconnected: <error>. Aborting handoff; live provider retained.
+❌ [hotswap] Candidate pre-flight failed (<stage>: <message>). Aborting handoff; live provider retained.
+❌ [hotswap] Candidate timed out during pre-flight (>20s). Aborting handoff; live provider retained.
+❌ [hotswap] Failed to send TAKEOVER: <error>. Aborting handoff; live provider retained.
+❌ [hotswap] Candidate failed active takeover (<error>). Aborting handoff; live provider retained.
+❌ [hotswap] Candidate takeover ACK timed out (>1m0s). Aborting handoff; live provider retained.
+⚠️ [hotswap] Candidate process exited unexpectedly during parent drain!
+⚠️ [hotswap] Hot-swap already in progress; ignoring duplicate trigger
+⚠️ [hotswap] Process is already draining; ignoring trigger
+⚠️ [hotswap] Canary did not exit within 5s; terminating canary
+⚠️ [hotswap] Running under systemd without Type=notify (NOTIFY_SOCKET unset). MainPID update skipped.
+⚠️ [hotswap-heal] Candidate binary <path> missing execute permission; auto-healing chmod 0755...
+⚠️ [hotswap-heal] Repairing permissions on <path> (0600)
+⚡ [hotswap-heal] IPv4 fallback dial to <addr> succeeded on attempt 2
+⚠️ [hotswap-heal] syscall.Exec hit ETXTBSY (attempt 1/3); retrying after 150ms...
+```
+
+| Message | Meaning |
+|---|---|
+| `Running image was unlinked on disk; launching the install path` | An update replaced the binary file while the provider ran. The new process starts from the install path, not from the deleted image. |
+| `... Aborting handoff; live provider retained` (six variants) | The candidate failed or disconnected at a stage (pre-flight, takeover send, takeover acknowledgement) or ran out of time (pre-flight 20 seconds, acknowledgement 60 seconds). The old provider keeps serving. Nothing is lost; run the update again once the cause is fixed. The parentheses carry the stage and the cause. |
+| `Candidate process exited unexpectedly during parent drain!` | The candidate process ended while the parent was still draining its streams (the drain lasts up to 30 seconds). Check that the unit is still running the provider. |
+| `Hot-swap already in progress` / `Process is already draining` | A second trigger arrived during a swap. It is ignored. |
+| `Docker container detected ... in-place execve` | In a container the process is replaced in place (`syscall.Exec`), so the container stays up. |
+| `Windows detected ... baton handoff` | The Windows variant of the same handoff. |
+| `Canary did not exit within 5s; terminating canary` | The pre-flight canary stuck around and was killed. Informational unless pre-flight also failed. |
+| `Running under systemd without Type=notify` | The unit does not accept a MainPID update, so systemd keeps the old PID. Use the shipped unit (`Type=notify`). |
+| `[hotswap-heal] ...` | The updater repaired a fixable problem on its own: a missing execute bit, a file with wrong permissions, a pre-flight check of the API host that failed over IPv6 and succeeded over IPv4 (it tries up to 3 times), or a transient `ETXTBSY` while the new binary was still being written (up to 3 attempts, 150 ms longer each time). |
+
+---
+
+## 🛡️ Payload Inspection (`[security][dpi]`)
+
+The egress policy inspects flows and decides each once. These lines report it without ever logging an address: only reasons, protocols and ports. The application-standard admits (WireGuard, OpenVPN, RTMP, WhatsApp, Ethereum, RakNet and similar) are on by default; `URNETWORK_DPI_ADMITS=off` restores the older verdicts, and `URNETWORK_DPI_PRIVILEGED_BT=1` adds BitTorrent signature drops on privileged ports.
+
+```text
+[security] dpi configuration URNETWORK_DPI_ADMITS="" (admits=true) URNETWORK_DPI_PRIVILEGED_BT="" (privileged_bt=false)
+[security][dpi] first admit reason=allow-app-standard:wireguard proto=udp dst_port=51820
+[security][dpi] dropped flow reason=drop-encrypted proto=tcp dst_port=8443 (12 more since the last sample)
+[security][dpi] since start (1h4m0s) flows decided: allow-app-standard:wireguard=31 drop-encrypted=212 | packets: allow-privileged=45056 allow-web-standard:tls=9800
+```
+
+| Message | Meaning |
+|---|---|
+| `[security] dpi configuration` | Once at start: the two switches as given and as applied. |
+| `first admit reason=...` | The first flow admitted under each application-standard reason, once per process. It proves that admit rule fired. |
+| `dropped flow reason=... (N more since the last sample)` | A sample of dropped flows (`drop-encrypted` or `bittorrent`), at most one a minute; N counts the ones not shown. |
+| `since start (...) flows decided: ... \| packets: ...` | A cumulative summary, at most every five minutes. The five-minute throttle is checked every 4096 inspected packets, and again whenever a flow is counted, so a node with no traffic at all stays quiet but a flow that is still undecided can trigger the line. `flows decided` counts a flow once under the reason that settled it. `packets` counts every inspected packet under the reason it was handled with, including flows still undecided. `allow-privileged` is traffic to a privileged port (below 1024) that was allowed without signature inspection (BitTorrent checks on those ports are opt-in). `flows decided: none` with only `allow-privileged` packets means every inspected packet went to such a port, so the app-standard admits had nothing to do. |
+
+Reason names you will see: `allow-privileged`, `allow-gaming`, `allow-web-standard:tls\|dtls\|quic\|stun\|turn\|rtcp`, `allow-rtp`, `allow-http`, `allow-plaintext`, `allow-budget`, `allow-uninspected`, `allow-messaging`, `allow-app-standard:wireguard\|openvpn\|rtmp\|levin\|raknet\|ethereum-discv4\|ethereum-rlpx\|whatsapp`, `drop-encrypted`, `bittorrent`, `inspecting` (not decided yet), plus the address-policy reasons `network`, `not-public`, `cfaa-drop-ip`, `cfaa-drop-port` and `cfaa-allow`.
+
+---
+
+## 🔍 Proxy Audit (`[proxy][audit]`)
+
+It is switched on by `urnet-tools proxy audit on` (a live override), by the `~/.urnetwork/proxy_audit` file, or by `URNETWORK_PROXY_AUDIT=1` at start, in that order of precedence. Parking also needs hot restart (on by default): with hot restart off the audit only observes, even when it is switched on, because every relaunch would mint a fresh client identity. When it only observes it logs `would-park` and parks nothing. It parks proxies that grade as proven junk for a while and releases them later. Parked proxies are resting, not failing. See [Proxy Management](docs/Proxy-Management.md#-automated-proxy-audit--quality-enforcement).
+
+```text
+[proxy][audit] would-park 203.0.113.9:1080 score=0.31
+[proxy][audit] parked 203.0.113.9:1080 score=0.31 until=2026-10-10T04:00:00Z
+[proxy][audit] restored 203.0.113.9:1080
+[proxy][audit] released 203.0.113.9:1080 (no longer in the paid proxy list)
+[proxy][audit] paused: the paid proxy list is unreadable or empty, so proxy audit cannot tell which proxies it may park; parking nothing until it can
+[proxy][audit] resumed after 4m0s
+[proxy][audit] correlated failure: a large share of fresh grades came back bad at once; treating this pass as a box-level problem and parking nothing
+[proxy][audit] too few proxies could be evaluated from this box; parking nothing
+✓ [proxy][audit] released parked proxy 203.0.113.9:1080 via control socket
+✓ [proxy][audit] released all 14 parked proxies via control socket
+✓ [proxy][audit] cleared backoff for proxy 203.0.113.9:1080 via control socket (was not parked)
+```
+
+| Message | Meaning |
+|---|---|
+| `would-park` | Observe-only mode: this proxy would have been parked. Logged once per proxy until it changes. |
+| `parked ... until=` | The proxy was stopped and given a backoff until that time. It keeps its state. |
+| `restored` | A parked proxy's backoff ended and it is still on your list, so it runs again. |
+| `released ... (no longer in the paid proxy list)` | A parked proxy was removed from your list, so its park was dropped. |
+| `paused` / `resumed after` | The paid list could not be read, which is how the audit knows what it may park. It parks nothing until the list is back. |
+| `correlated failure` / `too few proxies could be evaluated` | The pass looked like a problem with the box (many bad grades at once, or too few probes) rather than with the proxies, so it parked nothing. This is the safety working, not a fault. |
+| `... via control socket` | An operator `urnet-tools proxy audit release` took effect. |
+| `warn: could not mark parked proxies` / `warn: state write failed` | The audit could not save its state. It continues, but parks may not survive a restart. |
+
+---
+
+## 🔂 Sign-in Retry and Rate Lines (`[proxy][slow-retry]`, `[proxy][init]`, `[proxy][authrate]`)
+
+These explain a proxy that is not signing in. Per-attempt `[t]auth error` lines are described above; these are the summaries.
+
+```text
+[proxy][slow-retry] proxy[41] (203.0.113.9:1080) auth slow after 4 attempts (Timeout.); retrying in 10m0s (not counted as a drop)
+[proxy][init] proxy[41] (203.0.113.9:1080) auth still failing after 6 cycles (<cause>); retrying in 1h0m0s
+[proxy][authrate] The API pushed back (<reason>), so this provider is slowing its own sign-in attempts from 200.00 to 100.00 per second.
+[proxy][authrate] Sign-in attempts are held at the minimum of 20.00 per second; the API is still pushing back (latest trigger: <reason>).
+[proxy][authrate] Sign-in attempts are at the maximum of 200.00 per second and the API is happy (latest trigger: <reason>).
+```
+
+| Message | Meaning |
+|---|---|
+| `[proxy][slow-retry] ... auth slow ... (not counted as a drop)` | Sign-in kept timing out or being refused in a way that looks like a slow path, not a bad proxy. It waits longer and tries again, and the proxy is not counted as dropped. `proxy[0] (direct)` is the box's own address. |
+| `[proxy][init] ... auth still failing after N cycles` | Genuine failures across several cycles. It keeps retrying with a growing delay; the line is the progress marker, not a give-up. |
+| `[proxy][authrate] The API pushed back` | The platform's responses told the provider to slow down, so it lowered its own sign-in rate: the rate halves on each pushback, grows by 1 per second after 20 consecutive good results, and stays between 20 and 200 per second. This protects the whole fleet from piling on during an API incident. |
+| `held at the minimum` / `at the maximum` | A heartbeat, at most once a minute, saying the rate is pinned at its floor (API still struggling) or ceiling (API fine). |
+| `[proxy][slow-retry] ERROR: corrupt state file` / `could not persist state` | The slow-retry clock could not be read or saved. It starts fresh; the proxies simply retry from their first delay. |
+
+---
+
+## 🧰 Maintenance and Process Lines
+
+```text
+[proxy][cleanup] automatically removed 6 dead/inactive/degraded proxies (scope=url, degraded_threshold=6h0m0s)
+[proxy][cleanup] warning: could not read proxy.state: <error>
+[proxy-quality] dropped 12 under-performing proxies (kept best 1800 of 2012)
+[hourly-maintenance] reconnecting stalled transports: down=14 dead=9 degraded=5 connecting=3
+[proxy][supervisor] loop reload_watchdog ended unexpectedly, restarting in 5s
+❤️ [health][pool][leak] tag=0 caller=ip.go:812 leaked=1840 returned=97.10% (95.30% reused)
+[turbo] profile=turbo-v8 window=8MiB resendQueue=16MiB
+[no-direct] providing on direct/local IP is disabled; using proxy list only
+[mem] memory limit: cannot detect effective RAM; leaving unset
+[session] applying staged session from /home/user/.urnetwork/.session-staging
+[session] staged session applied
+[profile] enabling diagnostics on 127.0.0.1:6060 (loopback only): /debug/pprof/*, /metrics/pool, /metrics/errors, /metrics
+[profile] 127.0.0.1:6060 is held by the hotswap parent; retrying until it exits
+[profile] diagnostics enabled on 127.0.0.1:6060 (hotswap parent released it)
+[profile] gave up enabling diagnostics on 127.0.0.1:6060 after 1m30s: <error>
+⚠️ [persist] quarantined corrupt <path> → <path>.corrupt.1760000000
+[provider] shutting down: main context cancelled
+[provider] exiting
+```
+
+| Message | Meaning |
+|---|---|
+| `[proxy][cleanup] automatically removed N ...` | The URL-source reaper removed proxies that stayed dead, inactive or degraded past the threshold from `proxy_url.json`. `scope` is `url` (only URL-sourced) or `all`. |
+| `[proxy-quality] dropped N under-performing proxies` | The degraded-proxy reaper ranks degraded proxies by lifetime contribution (traffic and contracts acquired) and released the worst ones, keeping the best. |
+| `[hourly-maintenance] reconnecting stalled transports` | Once an hour the provider nudges transports that are down, dead, degraded or still connecting to reconnect without a restart. The counts are the health snapshot at that moment. |
+| `[proxy][supervisor] loop X ended unexpectedly, restarting` | A supervised background loop (`reload_watchdog`, `pressure_monitor`, `pool_controller`, `thrash_watchdog`, `degraded_proxy_reaper`) exited and the supervisor restarted it after a backoff. One line is fine; a stream of them names a loop that keeps failing. |
+| `[health][pool][leak] tag=... caller=...` | With a pool verdict of `watch` or `leak`, the three call sites holding the most buffers. A hint for where to look, printed next to the `[health][pool]` line. |
+| `[turbo] profile=...` | The turbo profile in effect and the transfer window and resend queue it set. |
+| `[no-direct] ...` | Providing on the box's own address is switched off, so only the proxy list serves traffic. |
+| `[mem] memory limit: cannot detect effective RAM` | The soft memory limit could not be set because neither cgroup nor host RAM could be read. The provider runs without one. |
+| `[session] applying staged session ... applied` | A session bundle restored with `urnet-tools session load` waits in `~/.urnetwork/.session-staging` and is moved into place at the next start. `could not read staging dir`, `skip staged ...: not a regular file` and `rename ... failed` mean part of it was not applied. |
+| `[profile] ...` | The loopback diagnostics server (`URNETWORK_PPROF`). During a hot swap the old process holds the port, so the new one retries for up to 90 seconds. |
+| `[persist] quarantined corrupt` | A state file failed to parse. It was renamed to `<name>.corrupt.<unix-time>` and the provider continues with fresh state. Keep the file if you want to inspect it. |
+| `[provider] shutting down` / `exiting` | Orderly stop after a signal. The shutdown cause is also written to `~/.urnetwork/events.log`. |

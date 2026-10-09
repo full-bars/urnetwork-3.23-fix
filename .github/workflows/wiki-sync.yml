@@ -6,6 +6,7 @@ on:
       - main
     paths:
       - 'docs/**'
+      - 'LOG_REFERENCE.md'
   workflow_dispatch:
 
 permissions:
@@ -37,6 +38,12 @@ jobs:
             if [ -f "main-repo/docs/urnet-tools-go.md" ]; then
               cp -v main-repo/docs/urnet-tools-go.md wiki-repo/urnet-tools-Go.md
             fi
+            # The log reference lives at the repo root so the README and the
+            # docs can link to it; the wiki is flat, so publish it as
+            # Log-Message-Reference and point every link at the wiki page names.
+            cp -v main-repo/LOG_REFERENCE.md wiki-repo/Log-Message-Reference.md
+            sed -E -i 's#\]\(docs/([A-Za-z0-9_-]+)\.md#](\1#g' wiki-repo/Log-Message-Reference.md
+            sed -i 's#\.\./LOG_REFERENCE\.md#Log-Message-Reference#g' wiki-repo/*.md
             cd wiki-repo
             git config user.name "github-actions[bot]"
             git config user.email "github-actions[bot]@users.noreply.github.com"
