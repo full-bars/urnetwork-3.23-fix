@@ -898,7 +898,7 @@ Usage:
     provider provide [--port=<port>]
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
-        [--wallet=<coldkey_ss58>]
+        [--wallet=<coldkey_ss58> [--legacy-network-wallet]]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
         [--file=<file>]
@@ -914,7 +914,7 @@ Usage:
     	[--port=<port>]
         [--api_url=<api_url>]
         [--connect_url=<connect_url>]
-        [--wallet=<coldkey_ss58>]
+        [--wallet=<coldkey_ss58> [--legacy-network-wallet]]
         [--max-memory=<mem>]
         [--proxy_file=<proxy_file>]
         [--file=<file>]
@@ -922,7 +922,7 @@ Usage:
         [--url=<url>...]
         [--URL=<URL>...]
         [-v...]
-    provider wallet set <coldkey_ss58>
+    provider wallet set <coldkey_ss58> [--legacy-network-wallet]
         [--api_url=<api_url>]
         [-v...]
     provider sn-status [--json]
@@ -975,6 +975,8 @@ Options:
     -p --port=<port>                 Status server port [default: 0].
     --max-memory=<mem>               Set the maximum amount of memory in bytes, or the suffixes b, kib, mib, gib may be used [This is a soft limit].
     --wallet=<coldkey_ss58>          Also set the subnet claim wallet at startup, same as provider wallet set.
+    --legacy-network-wallet          Allow the unsigned network wallet request (provider wallet set, provide --wallet).
+                                     Without it both refuse: set the wallet with the signed flow of the sn provider build.
                                      A failure is logged and does not block providing.
     <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
     --store-client=<key>             claim: use the client token of this identity from the store
@@ -3086,10 +3088,16 @@ func provide(opts docopt.Opts) {
 	// providing — the wallet may already be set from a previous run, and
 	// the call can be retried any time with `provider wallet set`.
 	if coldkeySs58, walletErr := opts.String("--wallet"); walletErr == nil && coldkeySs58 != "" {
-		walletClientStrategy := connect.NewClientStrategyWithDefaults(ctx)
-		if err := snSetWallet(ctx, walletClientStrategy, apiUrl, coldkeySs58); err != nil {
+		legacyNetwork, _ := opts.Bool("--legacy-network-wallet")
+		if err := legacyNetworkWalletGate(legacyNetwork, "provide --wallet"); err != nil {
 			fmt.Printf("subnet wallet not set: %s\n", err)
-			fmt.Printf("continuing to provide. Retry with: provider wallet set <coldkey_ss58>\n")
+			fmt.Printf("continuing to provide.\n")
+		} else {
+			walletClientStrategy := connect.NewClientStrategyWithDefaults(ctx)
+			if err := snSetWallet(ctx, walletClientStrategy, apiUrl, coldkeySs58); err != nil {
+				fmt.Printf("subnet wallet not set: %s\n", err)
+				fmt.Printf("continuing to provide. Retry with: provider wallet set <coldkey_ss58> --legacy-network-wallet\n")
+			}
 		}
 	}
 

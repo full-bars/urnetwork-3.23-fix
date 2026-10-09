@@ -90,8 +90,28 @@ func snSetWallet(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	return nil
 }
 
+// legacyNetworkWalletGate refuses the unsigned network wallet request unless the
+// operator opted in. The platform now binds an earning wallet through a signed
+// consent (one coldkey signature, delegated to a hotkey), and an unsigned
+// request is refused or ignored for epochs under those rules. That signed flow
+// needs the sn provider build's crv4 and hotkeywallet packages, which this fleet
+// binary does not link (they pull in a patched Substrate client), and it is a
+// one-time per-network action, so it is run from one trusted machine with the sn
+// build and never needs a hotkey seed on a fleet node.
+func legacyNetworkWalletGate(legacyNetwork bool, via string) error {
+	if legacyNetwork {
+		return nil
+	}
+	return fmt.Errorf("%s sends the unsigned network wallet request, which the platform no longer accepts under the signed wallet rules; set the wallet once with `provider wallet hotkey set` from the sn provider build, or pass --legacy-network-wallet to send it anyway", via)
+}
+
 // walletSet implements `provider wallet set <coldkey_ss58>`.
 func walletSet(opts docopt.Opts) {
+	legacyNetwork, _ := opts.Bool("--legacy-network-wallet")
+	if err := legacyNetworkWalletGate(legacyNetwork, "provider wallet set"); err != nil {
+		fmt.Printf("subnet wallet not set: %s\n", err)
+		os.Exit(1)
+	}
 	apiUrl, err := resolveApiUrl(opts)
 	if err != nil {
 		fmt.Printf("network config error: %s\n", err)
