@@ -152,12 +152,14 @@ func claim(opts docopt.Opts) {
 		fmt.Printf("note: --dry-run has no effect without --key_file; claim only verifies\n")
 	}
 
-	byJwt, err := readNetworkJwt()
+	credential, err := resolveClaimCredential(opts)
 	if err != nil {
-		panic(err)
+		fmt.Printf("claim: %s\n", err)
+		os.Exit(1)
 	}
+	fmt.Printf("claim: using the %s\n", credential.Source)
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
-	api.SetByJwt(byJwt)
+	api.SetByJwt(credential.ByJwt)
 
 	var rpcUrls []string
 	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
@@ -189,10 +191,15 @@ func claim(opts docopt.Opts) {
 	}
 
 	poolClaim, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{
-		Epoch: epoch,
+		Epoch:         epoch,
+		LegacyColdkey: credential.LegacyColdkey,
 	})
 	if err != nil {
 		panic(err)
+	}
+
+	if poolClaim.Error != nil {
+		panic(fmt.Errorf("%s", poolClaim.Error.Message))
 	}
 
 	// decode and sanity-check the claim fields

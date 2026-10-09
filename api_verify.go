@@ -12,6 +12,7 @@ package connect
 
 import (
 	"fmt"
+	neturl "net/url"
 )
 
 type VerifyKeysCallback ApiCallback[*VerifyKeysResult]
@@ -111,6 +112,23 @@ type SnPoolClaimCallback ApiCallback[*SnPoolClaimResult]
 // Sent as the `epoch` query parameter of `GET /sn/pool/claim`.
 type SnPoolClaimArgs struct {
 	Epoch uint64 `json:"epoch"`
+	// LegacyColdkey is an explicit ss58 coldkey for a network-JWT read of an
+	// epoch that has no provider artifact. Sent as `legacy_coldkey`. Empty for
+	// the normal client-JWT claim.
+	LegacyColdkey string `json:"legacy_coldkey,omitempty"`
+}
+
+// snPoolClaimUrl builds the `GET /sn/pool/claim` url for args.
+func (self *BringYourApi) snPoolClaimUrl(args *SnPoolClaimArgs) string {
+	url := fmt.Sprintf("%s/sn/pool/claim?epoch=%d", self.apiUrl, args.Epoch)
+	if args.LegacyColdkey != "" {
+		url += "&legacy_coldkey=" + neturl.QueryEscape(args.LegacyColdkey)
+	}
+	return url
+}
+
+type SnPoolClaimError struct {
+	Message string `json:"message"`
 }
 
 // SnPoolClaimResult is the caller's merkle pool-payout claim for an epoch
@@ -118,15 +136,18 @@ type SnPoolClaimArgs struct {
 // `NoId`, `Coldkey`, `PayoutRoot`, and each `Proof` element are raw 32-byte
 // values (base64 in JSON); `ContractAddress` is the 0x-hex EVM address.
 type SnPoolClaimResult struct {
-	Epoch           uint64   `json:"epoch"`
-	NoId            []byte   `json:"no_id"`
-	Coldkey         []byte   `json:"coldkey"`
-	ShareBps        int      `json:"share_bps"`
-	Proof           [][]byte `json:"proof"`
-	PayoutRoot      []byte   `json:"payout_root"`
-	ContractAddress string   `json:"contract_address"`
-	ChainId         uint64   `json:"chain_id"`
-	ClaimOpenBlock  uint64   `json:"claim_open_block"`
+	// Error is the platform's refusal ("No claimable epoch."), which the
+	// server sends as HTTP 200 with an error object and no claim fields.
+	Error           *SnPoolClaimError `json:"error,omitempty"`
+	Epoch           uint64            `json:"epoch"`
+	NoId            []byte            `json:"no_id"`
+	Coldkey         []byte            `json:"coldkey"`
+	ShareBps        int               `json:"share_bps"`
+	Proof           [][]byte          `json:"proof"`
+	PayoutRoot      []byte            `json:"payout_root"`
+	ContractAddress string            `json:"contract_address"`
+	ChainId         uint64            `json:"chain_id"`
+	ClaimOpenBlock  uint64            `json:"claim_open_block"`
 }
 
 // SnPoolClaim fetches the caller network's pool claim for an epoch via the
@@ -136,7 +157,7 @@ func (self *BringYourApi) SnPoolClaim(snPoolClaim *SnPoolClaimArgs, callback SnP
 		HttpGetWithStrategy(
 			self.ctx,
 			self.clientStrategy,
-			fmt.Sprintf("%s/sn/pool/claim?epoch=%d", self.apiUrl, snPoolClaim.Epoch),
+			self.snPoolClaimUrl(snPoolClaim),
 			self.ByJwt(),
 			&SnPoolClaimResult{},
 			callback,
@@ -148,7 +169,7 @@ func (self *BringYourApi) SnPoolClaimSync(snPoolClaim *SnPoolClaimArgs) (*SnPool
 	return HttpGetWithStrategy(
 		self.ctx,
 		self.clientStrategy,
-		fmt.Sprintf("%s/sn/pool/claim?epoch=%d", self.apiUrl, snPoolClaim.Epoch),
+		self.snPoolClaimUrl(snPoolClaim),
 		self.ByJwt(),
 		&SnPoolClaimResult{},
 		NewNoopApiCallback[*SnPoolClaimResult](),
