@@ -696,7 +696,7 @@ const h3BackoffJitter = 0.2
 
 // nextH3Backoff doubles the wait between failed attempts up to ceiling.
 func nextH3Backoff(current time.Duration, base time.Duration, ceiling time.Duration) time.Duration {
-	base = max(base, h3BackoffFloor)
+	base = min(max(base, h3BackoffFloor), ceiling)
 	if current < base {
 		return base
 	}
@@ -1550,7 +1550,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 				// jittered, and cut short if the gate changes: a switch-off
 				// must park the transport now, not after the sleep
 				wait = jitteredH3Wait(authErrBackoff)
-				_, gateChanged = h3GateWatch()
+				var on bool
+				on, gateChanged = h3GateWatch()
+				if !on {
+					// switched off while the dial was in flight: park now, there is
+					// no later change to wake a sleep that started after it
+					authErrBackoff = 0
+					continue
+				}
 			} else {
 				pulse = Pulse()
 			}
@@ -1560,6 +1567,9 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			case <-time.After(wait):
 				continue
 			case <-gateChanged:
+				// an operator toggle starts over: a transport woken by it must not
+				// carry the multi-minute backoff into its next failure
+				authErrBackoff = 0
 				continue
 			case <-pulse:
 				authErrBackoff = 0

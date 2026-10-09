@@ -749,9 +749,25 @@ func TestAuxiliaryH3BackoffWakesOnGateChange(t *testing.T) {
 		return TransportModeStats().H3ConnectFailures > before
 	})
 	failures := TransportModeStats().H3ConnectFailures
-	SetH3Enabled(false)
-	SetH3Enabled(true)
+	// The failure counter moves before the loop reaches its backoff wait, so a
+	// single toggle can land before the wait is armed and be missed. Toggling on
+	// every poll catches the wait whenever it arms.
 	waitFor(t, "a redial after the gate changed", func() bool {
+		SetH3Enabled(false)
+		SetH3Enabled(true)
 		return TransportModeStats().H3ConnectFailures > failures
 	})
+}
+
+func TestNextH3BackoffNeverExceedsTheCeiling(t *testing.T) {
+	// a reconnect timeout above the ceiling must not escape it
+	if got := nextH3Backoff(0, time.Hour, h3AuxiliaryMaxBackoff); got != h3AuxiliaryMaxBackoff {
+		t.Fatalf("a base over the ceiling must clamp to it, got %v", got)
+	}
+	// and a ceiling under the floor must not make the wait oscillate
+	a := nextH3Backoff(0, 5*time.Second, 500*time.Millisecond)
+	b := nextH3Backoff(a, 5*time.Second, 500*time.Millisecond)
+	if a != 500*time.Millisecond || b != a {
+		t.Fatalf("a ceiling under the floor must hold steady, got %v then %v", a, b)
+	}
 }
