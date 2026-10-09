@@ -653,3 +653,21 @@ Under Pelican (`PELICAN=yes`), the self-update checks in `start_nightly.sh` and 
 ### Testing
 
 The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` for egg JSON structure, variable contracts, and PELICAN-gate behavior; `docker/scripts/test_pelican_smoke.sh` for a full boot smoke test against a fake provider binary). For a real-panel import walkthrough and log output to expect, see `pelican/README.md`.
+
+## Letting the Thrash Watchdog Restart the Container's Provider
+
+The swap-thrash watchdog ([details](Configuration.md#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container that is allowed only when you opt in, because only you know that the container restarts the provider afterwards:
+
+```yaml
+services:
+  provider:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    restart: unless-stopped
+    environment:
+      URNETWORK_SELF_HEAL: "1"
+      URNETWORK_EXIT75_OK: "1"
+    volumes:
+      - ur_config_1:/root/.urnetwork   # the thrash cap and its 24h ceiling live here
+```
+
+The start scripts (`start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of the Pelican egg) treat exit 75 as a planned restart: they wait 5 seconds, restart the provider and leave the JWT alone. Without `URNETWORK_EXIT75_OK=1` the watchdog logs `no-supervisor` and never exits. Without a writable, persistent `~/.urnetwork` it logs `persist-failed` and never exits. On runtimes that do not create `/.dockerenv` (Podman, Kubernetes) also set `URNETWORK_CONTAINER=1`.

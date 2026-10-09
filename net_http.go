@@ -339,24 +339,26 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 				settings:       settings,
 			}
 
-			// fragment+segment: the combined mode (tls-record AND tcp-segment
-			// fragmentation). A reassembling middlebox that defeats either
-			// single method does not stitch the pair; no raw sockets, so it
-			// also works where reorder cannot (iOS network extension,
-			// non-root Android). See ResilientTlsConn.segment.
-			dialer4 := &clientDialer{
-				log:            loggerOrDefault(settings.Log),
-				description:    "fragment+segment",
-				minimumWeight:  0.25,
-				priority:       50,
-				dialTlsContext: NewResilientDialTlsContextWithSegment(&settings.ConnectSettings, true, false, true),
-				settings:       settings,
-			}
-
 			dialers[dialer1] = true
 			dialers[dialer2] = true
 			dialers[dialer3] = true
-			dialers[dialer4] = true
+
+			// fragment+segment: the combined mode cuts at the TLS record
+			// layer (which survives a proxy) and at the TCP segment layer
+			// (which only works on a direct connection); behind a proxy it
+			// would equal "fragment", so it is not registered there, which
+			// also saves a dial per reconnect round.
+			if settings.ProxySettings == nil {
+				dialer4 := &clientDialer{
+					log:            loggerOrDefault(settings.Log),
+					description:    "fragment+segment",
+					minimumWeight:  0.25,
+					priority:       50,
+					dialTlsContext: NewResilientDialTlsContextWithSegment(&settings.ConnectSettings, true, false, true),
+					settings:       settings,
+				}
+				dialers[dialer4] = true
+			}
 		}
 	}
 	// FIXME

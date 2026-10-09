@@ -479,7 +479,9 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 
 								if self.segment {
 									// the two writes of a record must leave as two segments: without
-									// NODELAY Nagle may coalesce them and erase the cut
+									// NODELAY Nagle may coalesce them and erase the cut. The segmentation
+									// is best effort: Go already enables TCP_NODELAY, and the kernel may
+									// still merge small writes.
 									tcpConn.SetNoDelay(true)
 								}
 
@@ -543,7 +545,8 @@ func (self *ResilientTlsConn) Write(b []byte) (int, error) {
 							if self.fragment {
 								// no SetNoDelay here: a generic net.Conn exposes no socket option
 								// and there are no raw sockets on this path. The write boundaries
-								// are the segmentation.
+								// are the segmentation only when the conn is the socket itself;
+								// behind a proxy the proxy re-segments.
 								record := tlsHeader.reconstruct(handshakeBytes[0:split])
 								if err := self.writeRecordMaybeSegmented(self.conn, record); err != nil {
 									return 0, err

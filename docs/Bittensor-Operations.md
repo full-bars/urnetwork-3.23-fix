@@ -49,11 +49,16 @@ curl -s -X POST "https://api.bringyour.com/sn/wallet" \
 ```
 Returns `{}` on success.
 
+> [!NOTE]
+> This is the same unsigned request that `provider wallet set` sends. The platform is moving wallet binding to a signed consent, and whether it still accepts the unsigned request is a server-side policy. If it is refused, set the wallet in the URnetwork app or web account.
+
 ### Method 2: Host / Bare-Metal CLI
 ```bash
 # Register coldkey for the local provider
 provider wallet set 5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5
 ```
+
+`provider wallet set` and `provide --wallet=<coldkey>` send the unsigned network wallet request, which the platform may refuse under its signed wallet rules. Without `--legacy-network-wallet` they do not send it: `wallet set` exits 1, and `provide` logs the refusal and keeps providing. Set the wallet in the URnetwork app or web account, or add `--legacy-network-wallet` to send the unsigned request anyway.
 
 ### Method 3: Docker Deployments
 Pass your coldkey directly via `docker-compose.yml` or container flags:
@@ -61,7 +66,7 @@ Pass your coldkey directly via `docker-compose.yml` or container flags:
 services:
   provider:
     image: ghcr.io/full-bars/urnetwork-3.23-fix:v3.23.0-fix.30.9
-    command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5"]
+    command: ["provide", "--wallet=5FjfHgd4K3H5Vge2igPtBYyWRbRKdgH84roTCnWwwtNgAhU5", "--legacy-network-wallet"]
     volumes:
       - ur_config_1:/home/urnet/.urnetwork
 ```
@@ -135,10 +140,21 @@ Subnet 25 uses cryptographic Merkle tree payout roots committed on-chain at the 
 3. **Dispute / Finalization**: Payout root is locked on-chain (`finalize_block`).
 4. **Claim Window**: Verified claims become redeemable.
 
+### Claim credential (required)
+`provider claim` authenticates with the login of a client that served traffic, because only such a client has a payout. Pass exactly one of:
+
+| Flag | Credential |
+|---|---|
+| `--store-client=<key>` | The client token of one identity in `~/.urnetwork/.client_jwts.json`. The key is a proxy address or `direct`. Pick an identity that served traffic. |
+| `--provider-jwt=<path>` | A client token in a file. |
+| `--legacy-coldkey=<coldkey_ss58>` | The network token plus this coldkey. Only for an epoch without a provider artifact. |
+
+The network token alone is refused, and so is an expired client token (start the provider so it renews, or pass a fresher file). A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
+
 ### Workflow 1: Air-Gapped / Offline Calldata (Recommended)
 Generates ABI-encoded calldata and cryptographic inclusion proofs without exposing private keys on the provider host:
 ```bash
-provider claim --epoch=1053
+provider claim --store-client=direct --epoch=1053
 ```
 Output yields ready-to-submit calldata compatible with `snclaim` or web3 wallets.
 
@@ -146,6 +162,7 @@ Output yields ready-to-submit calldata compatible with `snclaim` or web3 wallets
 Submit the claim transaction directly with a local private key file and RPC endpoint:
 ```bash
 provider claim \
+  --store-client=direct \
   --epoch=1053 \
   --rpc=https://rpc.subtensor.network \
   --key_file=/path/to/coldkey_evm.key
@@ -154,7 +171,7 @@ provider claim \
 ### Dry Run Verification
 Simulate verification and root matching without broadcasting transactions:
 ```bash
-provider claim --epoch=1053 --rpc=https://rpc.subtensor.network --dry-run
+provider claim --store-client=direct --epoch=1053 --rpc=https://rpc.subtensor.network --dry-run
 ```
 
 ---

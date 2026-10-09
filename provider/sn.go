@@ -90,8 +90,27 @@ func snSetWallet(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	return nil
 }
 
+// legacyNetworkWalletGate refuses the unsigned network wallet request unless the
+// operator opted in. The platform is moving wallet binding to a signed consent
+// (one coldkey signature, delegated to a hotkey), and whether it still accepts
+// an unsigned request is a server-side policy this binary cannot see, so the
+// request is sent only on an explicit opt-in. The signed flow needs packages
+// (crv4, hotkeywallet) that this fleet binary does not link; it is a one-time
+// per-network action and never needs a hotkey seed on a fleet node.
+func legacyNetworkWalletGate(legacyNetwork bool, via string) error {
+	if legacyNetwork {
+		return nil
+	}
+	return fmt.Errorf("%s sends the unsigned network wallet request, which the platform may refuse under its signed wallet rules; set the wallet in the URnetwork app or web account, or pass --legacy-network-wallet to send the unsigned request anyway", via)
+}
+
 // walletSet implements `provider wallet set <coldkey_ss58>`.
 func walletSet(opts docopt.Opts) {
+	legacyNetwork, _ := opts.Bool("--legacy-network-wallet")
+	if err := legacyNetworkWalletGate(legacyNetwork, "provider wallet set"); err != nil {
+		fmt.Printf("subnet wallet not set: %s\n", err)
+		os.Exit(1)
+	}
 	apiUrl, err := resolveApiUrl(opts)
 	if err != nil {
 		fmt.Printf("network config error: %s\n", err)
@@ -152,12 +171,14 @@ func claim(opts docopt.Opts) {
 		fmt.Printf("note: --dry-run has no effect without --key_file; claim only verifies\n")
 	}
 
-	byJwt, err := readNetworkJwt()
+	credential, err := resolveClaimCredential(opts)
 	if err != nil {
-		panic(err)
+		fmt.Printf("claim: %s\n", err)
+		os.Exit(1)
 	}
+	fmt.Printf("claim: using the %s\n", credential.Source)
 	api := connect.NewBringYourApi(ctx, clientStrategy, apiUrl)
-	api.SetByJwt(byJwt)
+	api.SetByJwt(credential.ByJwt)
 
 	var rpcUrls []string
 	if rpcAny, ok := opts["--rpc"]; ok && rpcAny != nil {
@@ -189,10 +210,15 @@ func claim(opts docopt.Opts) {
 	}
 
 	poolClaim, err := api.SnPoolClaimSync(&connect.SnPoolClaimArgs{
-		Epoch: epoch,
+		Epoch:         epoch,
+		LegacyColdkey: credential.LegacyColdkey,
 	})
 	if err != nil {
 		panic(err)
+	}
+
+	if poolClaim.Error != nil {
+		panic(fmt.Errorf("%s", poolClaim.Error.Message))
 	}
 
 	// decode and sanity-check the claim fields

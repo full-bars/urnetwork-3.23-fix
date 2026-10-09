@@ -416,3 +416,11 @@ func (s *clientJWTStore) AdoptLegacy(desired []*connect.ProxySettings) (adopted,
 	}
 	return adopted, split
 }
+
+// Count returns how many identities the store holds.
+func (s *clientJWTStore) Count() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	return len(s.entries)
+}
