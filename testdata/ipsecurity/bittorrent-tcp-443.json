@@ -8,5 +8,6 @@
     "13426974546f7272656e742070726f746f636f6c00000000000000003759ac5ce5fca457aeb572c0b7b2775617113d522d5858303030302df1f792b54e1af802564f7787"
   ],
   "expect_before": "allow",
-  "expect_after": "incident"
+  "expect_after": "incident",
+  "note": "Verdicts after the first packets assume URNETWORK_DPI_PRIVILEGED_BT=1; with the production default (off) a privileged destination port is allowed without inspection."
 }

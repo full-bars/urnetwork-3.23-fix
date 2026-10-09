@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"os"
 	"reflect"
 	"sort"
@@ -86,5 +87,31 @@ func TestDpiAdmitsOffCoversEveryDefaultConstructor(t *testing.T) {
 	sort.Strings(optional)
 	if want := []string{"App", "Gaming", "Messaging"}; !reflect.DeepEqual(optional, want) {
 		t.Fatalf("optional detector fields on DmcaSecurityPolicySettings = %v, want %v: wire the new one into applyDpiAdmitsEnvToDmca and update this list", optional, want)
+	}
+}
+
+// The detector tests opt in to the privileged-port BitTorrent check for the
+// whole binary (see init), so the production default needs its own proof: with
+// nothing set, BitTorrent on a privileged port is allowed without inspection, as
+// before this change, and with URNETWORK_DPI_PRIVILEGED_BT=1 it is an incident.
+func TestPrivilegedPortBittorrentFollowsTheSwitch(t *testing.T) {
+	t.Cleanup(resetDpiAdmitsEnvForTest)
+	for _, name := range []string{"bittorrent-tcp-443", "bittorrent-tcp-80", "dht-udp-443"} {
+		fixture := loadSecurityFixture(t, "testdata/ipsecurity/"+name+".json")
+		for _, tc := range []struct {
+			value string
+			want  SecurityPolicyResult
+		}{
+			{"", SecurityPolicyResultAllow},
+			{"1", SecurityPolicyResultIncident},
+		} {
+			t.Setenv("URNETWORK_DPI_PRIVILEGED_BT", tc.value)
+			resetDpiAdmitsEnvForTest()
+			policy := DefaultSecurityPolicy(context.Background())
+			results := replayFixture(t, policy, fixture, 49000)
+			if last := results[len(results)-1]; last != tc.want {
+				t.Fatalf("%s with URNETWORK_DPI_PRIVILEGED_BT=%q: last verdict %v, want %v", name, tc.value, last, tc.want)
+			}
+		}
 	}
 }
