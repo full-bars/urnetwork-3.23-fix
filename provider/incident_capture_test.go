@@ -189,13 +189,13 @@ func TestCaptureIncidentReportsAFailedHeapProfileWrite(t *testing.T) {
 // ramp. The growth rule needs a baseline taken after the ramp.
 func TestIncidentTrackerIgnoresTheStartupRamp(t *testing.T) {
 	tr := newIncidentTracker()
-	if r := feedIncident(tr, incidentT0, 15, 13900, 0.5); r != "" {
+	// 12 minutes at the post-restart floor, then a climb to 21k by minute 40
+	if r := feedIncident(tr, incidentT0, 12, 10000, 0.5); r != "" {
 		t.Fatal(r)
 	}
-	// 40 minutes of a steady climb to 21k: the startup ramp
-	for i := 0; i < 40*6; i++ {
-		g := 13900 + (21000-13900)*i/(40*6)
-		if r, ok := tr.observe(incidentSample{at: incidentT0.Add(15*time.Minute + time.Duration(i)*10*time.Second), goroutines: g, heapFrac: 0.55}); ok {
+	for i := 0; i < 28*6; i++ {
+		g := 10000 + (21000-10000)*i/(28*6)
+		if r, ok := tr.observe(incidentSample{at: incidentT0.Add(12*time.Minute + time.Duration(i)*10*time.Second), goroutines: g, heapFrac: 0.55}); ok {
 			t.Fatalf("the startup ramp captured as %q at sample %d (%d goroutines)", r, i, g)
 		}
 	}
