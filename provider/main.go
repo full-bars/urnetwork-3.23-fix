@@ -975,9 +975,9 @@ Options:
     -p --port=<port>                 Status server port [default: 0].
     --max-memory=<mem>               Set the maximum amount of memory in bytes, or the suffixes b, kib, mib, gib may be used [This is a soft limit].
     --wallet=<coldkey_ss58>          Also set the subnet claim wallet at startup, same as provider wallet set.
-    --legacy-network-wallet          Allow the unsigned network wallet request (provider wallet set, provide --wallet).
-                                     Without it both refuse: set the wallet with the signed flow of the sn provider build.
                                      A failure is logged and does not block providing.
+    --legacy-network-wallet          Allow the unsigned network wallet request (provider wallet set, provide --wallet).
+                                     Without it both refuse: set the wallet in the URnetwork app or web account.
     <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
     --store-client=<key>             claim: use the client token of this identity from the store
                                      (~/.urnetwork/.client_jwts.json; the key is a proxy address or "direct").
