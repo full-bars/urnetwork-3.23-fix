@@ -1096,7 +1096,7 @@ A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` 
 📸 [jwt-store] snapshot saved to <path> (812 entries)
 ⚠️ [jwt-store] snapshot to <path> failed: <error>
 ⚠️ [jwt-store] failed to prune old backup <path>: <error>
-⚠️ [jwt-store] reused client identity for 203.0.113.9:1080 never authenticated after 3 transport auth failures — evicted, will mint fresh on next retry/restart
+⚠️ [jwt-store] reused client identity for 203.0.113.9:1080 never authenticated after 5 transport auth failures — evicted, will mint fresh on next retry/restart
 🛑 [jwt-store] identity for 203.0.113.9:1080 renewed successfully — revocation watcher standing down
 ⚠️ [jwt-renew] proxy[7] 203.0.113.9:1080: cannot read account JWT: <error>
 [proxy][identity] 203.0.113.9:1080 split into 3 identities on adoption; 203.0.113.9:1080|userA kept id=7 and history, the rest start fresh
@@ -1179,7 +1179,7 @@ The egress policy inspects flows and decides each once. These lines report it wi
 | `[security] dpi configuration` | Once at start: the two switches as given and as applied. |
 | `first admit reason=...` | The first flow admitted under each application-standard reason, once per process. It proves that admit rule fired. |
 | `dropped flow reason=... (N more since the last sample)` | A sample of dropped flows (`drop-encrypted` or `bittorrent`), at most one a minute; N counts the ones not shown. |
-| `since start (...) flows decided: ... \| packets: ...` | A cumulative summary, at most every five minutes, written by whichever flow decides next, so a quiet node stays quiet. `flows decided` counts a flow once under the reason that settled it. `packets` counts every inspected packet under the reason it was handled with, including flows still undecided. `allow-privileged` is traffic to a privileged port (below 1024) that was allowed without signature inspection (BitTorrent checks on those ports are opt-in). `flows decided: none` with only `allow-privileged` packets means every inspected packet went to such a port, so the app-standard admits had nothing to do. |
+| `since start (...) flows decided: ... \| packets: ...` | A cumulative summary, at most every five minutes. The five-minute throttle is checked every 4096 inspected packets, and again whenever a flow is counted, so a node with no traffic at all stays quiet but a flow that is still undecided can trigger the line. `flows decided` counts a flow once under the reason that settled it. `packets` counts every inspected packet under the reason it was handled with, including flows still undecided. `allow-privileged` is traffic to a privileged port (below 1024) that was allowed without signature inspection (BitTorrent checks on those ports are opt-in). `flows decided: none` with only `allow-privileged` packets means every inspected packet went to such a port, so the app-standard admits had nothing to do. |
 
 Reason names you will see: `allow-privileged`, `allow-gaming`, `allow-web-standard:tls\|dtls\|quic\|stun\|turn\|rtcp`, `allow-rtp`, `allow-http`, `allow-plaintext`, `allow-budget`, `allow-uninspected`, `allow-messaging`, `allow-app-standard:wireguard\|openvpn\|rtmp\|levin\|raknet\|ethereum-discv4\|ethereum-rlpx\|whatsapp`, `drop-encrypted`, `bittorrent`, `inspecting` (not decided yet), plus the address-policy reasons `network`, `not-public`, `cfaa-drop-ip`, `cfaa-drop-port` and `cfaa-allow`.
 
@@ -1187,7 +1187,7 @@ Reason names you will see: `allow-privileged`, `allow-gaming`, `allow-web-standa
 
 ## 🔍 Proxy Audit (`[proxy][audit]`)
 
-Active only with `URNETWORK_PROXY_AUDIT=1` or `urnet-tools proxy audit on`; otherwise it observes. It parks proxies that grade as proven junk for a while and releases them later. Parked proxies are resting, not failing. See [Proxy Management](docs/Proxy-Management.md#-automated-proxy-audit--quality-enforcement).
+It is switched on by `urnet-tools proxy audit on` (a live override), by the `~/.urnetwork/proxy_audit` file, or by `URNETWORK_PROXY_AUDIT=1` at start, in that order of precedence. Parking also needs hot restart (on by default): with hot restart off the audit only observes, even when it is switched on, because every relaunch would mint a fresh client identity. When it only observes it logs `would-park` and parks nothing. It parks proxies that grade as proven junk for a while and releases them later. Parked proxies are resting, not failing. See [Proxy Management](docs/Proxy-Management.md#-automated-proxy-audit--quality-enforcement).
 
 ```text
 [proxy][audit] would-park 203.0.113.9:1080 score=0.31
@@ -1223,16 +1223,16 @@ These explain a proxy that is not signing in. Per-attempt `[t]auth error` lines 
 ```text
 [proxy][slow-retry] proxy[41] (203.0.113.9:1080) auth slow after 4 attempts (Timeout.); retrying in 10m0s (not counted as a drop)
 [proxy][init] proxy[41] (203.0.113.9:1080) auth still failing after 6 cycles (<cause>); retrying in 1h0m0s
-[proxy][authrate] The API pushed back (<reason>), so this provider is slowing its own sign-in attempts from 4.00 to 2.00 per second.
-[proxy][authrate] Sign-in attempts are held at the minimum of 0.25 per second; the API is still pushing back (latest trigger: <reason>).
-[proxy][authrate] Sign-in attempts are at the maximum of 4.00 per second and the API is happy (latest trigger: <reason>).
+[proxy][authrate] The API pushed back (<reason>), so this provider is slowing its own sign-in attempts from 200.00 to 100.00 per second.
+[proxy][authrate] Sign-in attempts are held at the minimum of 20.00 per second; the API is still pushing back (latest trigger: <reason>).
+[proxy][authrate] Sign-in attempts are at the maximum of 200.00 per second and the API is happy (latest trigger: <reason>).
 ```
 
 | Message | Meaning |
 |---|---|
 | `[proxy][slow-retry] ... auth slow ... (not counted as a drop)` | Sign-in kept timing out or being refused in a way that looks like a slow path, not a bad proxy. It waits longer and tries again, and the proxy is not counted as dropped. `proxy[0] (direct)` is the box's own address. |
 | `[proxy][init] ... auth still failing after N cycles` | Genuine failures across several cycles. It keeps retrying with a growing delay; the line is the progress marker, not a give-up. |
-| `[proxy][authrate] The API pushed back` | The platform's responses told the provider to slow down, so it lowered its own sign-in rate. This protects the whole fleet from piling on during an API incident. |
+| `[proxy][authrate] The API pushed back` | The platform's responses told the provider to slow down, so it lowered its own sign-in rate: the rate halves on each pushback, grows by 1 per second after 20 consecutive good results, and stays between 20 and 200 per second. This protects the whole fleet from piling on during an API incident. |
 | `held at the minimum` / `at the maximum` | A heartbeat, at most once a minute, saying the rate is pinned at its floor (API still struggling) or ceiling (API fine). |
 | `[proxy][slow-retry] ERROR: corrupt state file` / `could not persist state` | The slow-retry clock could not be read or saved. It starts fresh; the proxies simply retry from their first delay. |
 
