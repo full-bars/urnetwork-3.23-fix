@@ -5,12 +5,10 @@ import (
 	"testing"
 )
 
-// The detector tests exercise the application-standard admits and the
-// privileged-port signature check, which production leaves off by default. Opt
-// in for the whole test binary; tests that check the production default clear
-// the variables themselves.
+// The detector tests exercise the privileged-port signature check, which
+// production leaves off by default. Opt in for the whole test binary; tests that
+// check the production default clear the variable themselves.
 func init() {
-	os.Setenv("URNETWORK_DPI_ADMITS", "on")
 	os.Setenv("URNETWORK_DPI_PRIVILEGED_BT", "1")
 }
 
@@ -19,12 +17,12 @@ func TestDpiEnvOptIn(t *testing.T) {
 		admits, privileged     string
 		wantAdmits, wantPrivBt bool
 	}{
-		{"", "", false, false},
+		{"", "", true, false},
 		{"off", "0", false, false},
 		{"on", "", true, false},
-		{"ON", "1", true, true},
-		{"", "1", false, true},
-		{"true", "true", false, false},
+		{"OFF", "1", false, true},
+		{"", "1", true, true},
+		{"false", "true", true, false},
 	}
 	t.Cleanup(resetDpiAdmitsEnvForTest)
 	for _, c := range cases {
@@ -37,5 +35,19 @@ func TestDpiEnvOptIn(t *testing.T) {
 		if got := DpiPrivilegedBtEnabled(); got != c.wantPrivBt {
 			t.Fatalf("PRIVILEGED_BT=%q: got %t, want %t", c.privileged, got, c.wantPrivBt)
 		}
+	}
+}
+
+// The production default with nothing set: admits on, privileged check off.
+func TestDpiProductionDefaults(t *testing.T) {
+	t.Setenv("URNETWORK_DPI_ADMITS", "")
+	t.Setenv("URNETWORK_DPI_PRIVILEGED_BT", "")
+	resetDpiAdmitsEnvForTest()
+	t.Cleanup(resetDpiAdmitsEnvForTest)
+	if !DpiAdmitsEnabled() {
+		t.Fatal("application-standard admits must default on")
+	}
+	if DpiPrivilegedBtEnabled() {
+		t.Fatal("privileged-port BitTorrent check must default off")
 	}
 }

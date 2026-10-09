@@ -265,16 +265,16 @@ func TestDmcaAppStandardZeroAllocs(t *testing.T) {
 	})
 }
 
-func TestDpiDefaultsRestorePrePortVerdicts(t *testing.T) {
+func TestDpiAdmitsOffRestoresPrePortVerdicts(t *testing.T) {
 	// Pre-port policy settings: no App, Gaming, or Messaging; WebStandard Turn/Rtp/Rtcp disabled;
 	// CFAA AllowTelegramCalls disabled; InspectPrivilegedSignatures disabled.
-	// The production default: neither variable set.
-	t.Setenv("URNETWORK_DPI_ADMITS", "")
+	// The kill switch: ADMITS=off with the privileged check unset.
+	t.Setenv("URNETWORK_DPI_ADMITS", "off")
 	t.Setenv("URNETWORK_DPI_PRIVILEGED_BT", "")
 	resetDpiAdmitsEnvForTest()
 	t.Cleanup(resetDpiAdmitsEnvForTest)
 	if DpiAdmitsEnabled() || DpiPrivilegedBtEnabled() {
-		t.Fatalf("DPI admits and privileged BT must default off, got admits=%t privileged_bt=%t", DpiAdmitsEnabled(), DpiPrivilegedBtEnabled())
+		t.Fatalf("ADMITS=off must disable admits and the privileged check must default off, got admits=%t privileged_bt=%t", DpiAdmitsEnabled(), DpiPrivilegedBtEnabled())
 	}
 
 	ctx := context.Background()

@@ -10,19 +10,22 @@ import (
 
 var (
 	dpiAdmitsEnvOnce sync.Once
-	// Both default OFF: enabling the application-standard admits and the
-	// privileged-port signature check changes what a production provider drops.
-	// Roll them out per node with URNETWORK_DPI_ADMITS=on and
-	// URNETWORK_DPI_PRIVILEGED_BT=1.
-	dpiAdmitsEnabled       = false
+	// The application-standard admits default ON: they let WireGuard, OpenVPN,
+	// WhatsApp, Ethereum, RakNet, RTMP and the like through instead of the
+	// encrypted-traffic heuristic dropping them. URNETWORK_DPI_ADMITS=off
+	// restores the old verdicts.
+	//
+	// The privileged-port BitTorrent check defaults OFF: it only adds drops, on
+	// the busiest ports. Opt in with URNETWORK_DPI_PRIVILEGED_BT=1.
+	dpiAdmitsEnabled       = true
 	dpiPrivilegedBtEnabled = false
 )
 
 func initDpiAdmitsEnv() {
 	dpiAdmitsEnvOnce.Do(func() {
 		rawAdmits := os.Getenv("URNETWORK_DPI_ADMITS")
-		if strings.EqualFold(rawAdmits, "on") {
-			dpiAdmitsEnabled = true
+		if strings.EqualFold(rawAdmits, "off") {
+			dpiAdmitsEnabled = false
 		}
 		rawPrivBt := os.Getenv("URNETWORK_DPI_PRIVILEGED_BT")
 		if rawPrivBt == "1" {
@@ -52,7 +55,7 @@ func DpiPrivilegedBtEnabled() bool {
 
 func resetDpiAdmitsEnvForTest() {
 	dpiAdmitsEnvOnce = sync.Once{}
-	dpiAdmitsEnabled = false
+	dpiAdmitsEnabled = true
 	dpiPrivilegedBtEnabled = false
 }
 
