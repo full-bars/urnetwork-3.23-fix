@@ -143,15 +143,24 @@ func TestReloadOverdueActionIgnoresThrashStateToday(t *testing.T) {
 	}
 }
 
-// T5: The exit-75 escape is inert unless INVOCATION_ID or NOTIFY_SOCKET is set.
-// Uses t.Setenv and the thrashExitFn seam to assert:
+// T5: With no container opt-in, the exit-75 escape is inert unless INVOCATION_ID
+// or NOTIFY_SOCKET is set. (A container that sets URNETWORK_EXIT75_OK=1 is a
+// supervisor too; that path is covered by the thrash watchdog tests.) Uses
+// t.Setenv and the thrashExitFn seam to assert:
 // neither set means thrashExitFn is not called;
 // either set means the path proceeds to call it with thrashExitCode.
+// The host must not leak in: a Docker CI runner has /.dockerenv, so the
+// container probe is stubbed out along with its environment switches.
 func TestThrashExitGateNeedsInitSystem(t *testing.T) {
-	setupWatchdogEnv := func(t *testing.T, invocationID, notifySocket string) (func() bool, func() int) {
+	setupWatchdogEnv := func(t *testing.T, invocationID, notifySocket string) (exited func() bool, code func() int, ticks func() int) {
 		home := withTempHome(t)
 		t.Setenv("INVOCATION_ID", invocationID)
 		t.Setenv("NOTIFY_SOCKET", notifySocket)
+		t.Setenv("URNETWORK_CONTAINER", "")
+		t.Setenv("URNETWORK_EXIT75_OK", "")
+		prevFileExists := thrashFileExistsFn
+		thrashFileExistsFn = func(string) bool { return false }
+		t.Cleanup(func() { thrashFileExistsFn = prevFileExists })
 
 		if err := globalControlState.set("proxy_self_heal", "on"); err == nil {
 			t.Cleanup(func() { _ = globalControlState.clear("proxy_self_heal") })
@@ -168,12 +177,11 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 		restore := shrinkThrashDurations()
 		t.Cleanup(restore)
 
-		calls := 0
+		var calls atomic.Int32
 		var psiFull, swapIn uint64
 		prevRead := thrashReadFn
 		thrashReadFn = func() thrashRead {
-			calls++
-			if calls == 1 {
+			if calls.Add(1) == 1 {
 				return thrashRead{psiSomeOK: true, psiFullOK: true, psiSomeUnit: true, psiUnit: true, swapOK: true, swapUnit: true, ramAvailOK: true, ramAvailMiB: 500}
 			}
 			psiFull += 50_000_000
@@ -200,11 +208,32 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 		}
 		t.Cleanup(func() { thrashExitFn = prevExit })
 
-		return func() bool { return exitCalled.Load() }, func() int { return int(exitCode.Load()) }
+		return func() bool { return exitCalled.Load() }, func() int { return int(exitCode.Load()) }, func() int { return int(calls.Load()) }
+	}
+
+	// runUntilExit runs the watchdog and returns when it exits by itself. On a
+	// timeout it cancels the loop and waits for it to stop before failing, so a
+	// stray tick cannot run against the globals the cleanup restores.
+	runUntilExit := func(t *testing.T) {
+		t.Helper()
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			runThrashWatchdog(ctx, true)
+			close(done)
+		}()
+		select {
+		case <-done:
+		case <-time.After(4 * time.Second):
+			cancel()
+			<-done
+			t.Fatal("watchdog timed out waiting for escalation")
+		}
 	}
 
 	t.Run("neither set leaves exitFn uncalled", func(t *testing.T) {
-		calledFn, _ := setupWatchdogEnv(t, "", "")
+		calledFn, _, ticksFn := setupWatchdogEnv(t, "", "")
 
 		// Direct check on thrashEscalate logic:
 		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
@@ -224,24 +253,17 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 		if calledFn() {
 			t.Fatalf("thrashExitFn was called when neither INVOCATION_ID nor NOTIFY_SOCKET set")
 		}
+		// the loop really ticked through the thrash condition; a stalled loop
+		// under CPU load would otherwise pass this subtest without testing the gate
+		if got := ticksFn(); got < 3 {
+			t.Fatalf("the watchdog read the sensors %d times in 80ms; the gate was not exercised", got)
+		}
 	})
 
 	t.Run("INVOCATION_ID set calls exitFn with thrashExitCode", func(t *testing.T) {
-		calledFn, codeFn := setupWatchdogEnv(t, "test-supervisor-inv", "")
+		calledFn, codeFn, _ := setupWatchdogEnv(t, "test-supervisor-inv", "")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		done := make(chan struct{})
-		go func() {
-			runThrashWatchdog(ctx, true)
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(4 * time.Second):
-			t.Fatal("watchdog timed out waiting for escalation")
-		}
+		runUntilExit(t)
 
 		if !calledFn() {
 			t.Fatalf("thrashExitFn was not called when INVOCATION_ID was set")
@@ -252,21 +274,9 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 	})
 
 	t.Run("NOTIFY_SOCKET set calls exitFn with thrashExitCode", func(t *testing.T) {
-		calledFn, codeFn := setupWatchdogEnv(t, "", "/run/systemd/notify/test.sock")
+		calledFn, codeFn, _ := setupWatchdogEnv(t, "", "/run/systemd/notify/test.sock")
 
-		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		done := make(chan struct{})
-		go func() {
-			runThrashWatchdog(ctx, true)
-			close(done)
-		}()
-
-		select {
-		case <-done:
-		case <-time.After(4 * time.Second):
-			t.Fatal("watchdog timed out waiting for escalation")
-		}
+		runUntilExit(t)
 
 		if !calledFn() {
 			t.Fatalf("thrashExitFn was not called when NOTIFY_SOCKET was set")
