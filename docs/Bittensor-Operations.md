@@ -49,6 +49,9 @@ curl -s -X POST "https://api.bringyour.com/sn/wallet" \
 ```
 Returns `{}` on success.
 
+> [!NOTE]
+> This is the same unsigned request that `provider wallet set` sends. The platform is moving wallet binding to a signed consent, and whether it still accepts the unsigned request is a server-side policy. If it is refused, set the wallet in the URnetwork app or web account.
+
 ### Method 2: Host / Bare-Metal CLI
 ```bash
 # Register coldkey for the local provider
