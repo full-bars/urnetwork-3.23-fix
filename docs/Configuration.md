@@ -241,6 +241,8 @@ Memory pressure alone does not mean the box is thrashing. The watchdog watches f
 
 The supervised restart needs a service unit that restarts on exit status 75. The shipped units use `Restart=on-failure`, which covers it. If you override the unit with a drop-in, use `Restart=on-failure` or `Restart=always`, keep 75 (or its name `TEMPFAIL`) out of `RestartPreventExitStatus`, and do not mark 75 a success in `SuccessExitStatus` — under `Restart=on-failure` systemd would then treat the watchdog exit as a clean stop. The installer warns when a drop-in weakens any of this.
 
+**In a container** the restart is off unless you opt in. The watchdog exits only when it can be sure something restarts it, so a container with neither systemd nor the ack logs a `no-supervisor` alert and keeps running. To opt in, run with a restart policy that restarts on exit (`restart: unless-stopped` or `always`, or the shipped start scripts, which restart on exit 75 after 5 seconds) and set `URNETWORK_EXIT75_OK=1`. A container is recognised by `/.dockerenv`, or by `URNETWORK_CONTAINER=1` on runtimes without that file (Podman, Kubernetes). Before exiting, the watchdog proves that `~/.urnetwork` can be written and read back within a short timeout. If it cannot, it logs a `persist-failed` alert and does not restart, because a self-exit without its throttle record could loop. Keep `~/.urnetwork` on a persistent volume so the 3 restarts per 24 hours ceiling survives the restart.
+
 All of this rides the existing self-heal switch (`URNETWORK_SELF_HEAL=1` or `urnet-tools self-heal on`). Off means off for actions: with self-heal off, the watchdog still senses and logs, so you can watch it work, but it never restarts anything.
 
 Where to look:
