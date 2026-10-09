@@ -26,6 +26,9 @@ urnetwork-3.23-fix/
 │   ├── proxy_match.go                # Pattern-based proxy removal (proxy remove --match)
 │   ├── contract_metrics.go           # Fleet-wide per-proxy contract history tracking
 │   ├── client_jwt_hotrestart.go      # Client JWT renew + identity snapshot across hot restarts
+│   ├── claim_credential.go           # `provider claim` credential choice (store client, client jwt file, legacy coldkey)
+│   ├── sn.go                         # Subnet commands (wallet set + unsigned-request gate, claim, bind-head)
+│   ├── thrash_watchdog.go            # Swap-thrash watchdog, supervised exit-75 restart, container opt-in
 │   ├── doh_cache.go                  # Persistent DNS-over-HTTPS cache with server-score persistence
 │   ├── net_http_doh.go               # DNS-over-HTTPS resolver (server scoring, serve-stale)
 │   ├── bandwidth_reporter.go         # Pushes periodic JSON telemetry to a configurable report URL
@@ -66,6 +69,8 @@ urnetwork-3.23-fix/
 │       ├── exec_timeout.go           # bounded subprocess helper
 │       ├── fsync_unix.go / _other.go # cross-platform fsync + file-ownership helpers
 │       ├── restart_escalation.go     # staged-tool restart routing
+│       ├── log_stream.go             # native log follower (tail + follow, rotation and truncation aware)
+│       ├── log_follow_open_*.go      # per-OS open for the follower (Windows: delete sharing, long paths)
 │       ├── restore_delegate.go       # set/fast-auth state-dir chown
 │       ├── autopilot.go              # autopilot log: timeline of capacity decisions (OOM cap, trim)
 │       ├── internals.go              # Internals snapshot for the `top` panel (goroutines, heap, transport split)

@@ -207,6 +207,9 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Multi-provider boxes | One provider per host, no targeting | One provider per OS user, with `providers` / `providers --all` inventory and cross-user `sudo` self-elevation |
 | Session migration | None | `session save` / `session load` exports identity + proxy state as an encrypted bundle for cross-machine transfer |
 | Subnet 25 telemetry | None | `sn-status` command with STSubnet operations guide, wallet registration, and head-fleet tiering docs |
+| Subnet 25 claims | Network token only | `provider claim` takes an explicit client credential (`--store-client`, `--provider-jwt` or `--legacy-coldkey`), and a failed renewal no longer replaces a client identity |
+| Memory-thrash recovery | None | Swap-thrash watchdog with a supervised exit-75 restart; containers opt in with `URNETWORK_EXIT75_OK=1` |
+| Windows operations | Not provided | `urnet-tools` runs natively on Windows: no `tail`, `sudo` or WSL, and its log follower survives rotation |
 
 ---
 

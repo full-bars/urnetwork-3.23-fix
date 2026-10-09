@@ -136,6 +136,12 @@ func_start_provider(){
             log " [INFO] UrNetwork exited cleanly."
             break
         fi
+        if [ "$code" -eq 75 ]; then
+            log "[INFO] UrNetwork requested planned restart (exit 75); restarting in 5s."
+            failures=0
+            sleep 5
+            continue
+        fi
         failures=$((failures+1))
         log "[WARN] UrNetwork crashed (#$failures; code=$code)"
         if [ "$failures" -ge 3 ]; then
