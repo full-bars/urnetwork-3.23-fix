@@ -1059,3 +1059,20 @@ Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.
 | `progress resumed` | The monitor ticked again before systemd acted (a very long pause, not a stall). Pings resume; the cap stays until it expires. |
 
 The thrash watchdog also has a heap rule: a heap at least 1.4 times its soft limit on a box with little free RAM counts as severe after 90 seconds even while PSI reads calm. It shows up as the usual `[thrash]` and `[memory]` lines.
+
+---
+
+## 📸 Incident Capture (`[incident]`)
+
+Goroutine and heap profiles taken on the way into a stall (see [Configuration](docs/Configuration.md#incident-capture-evidence-before-a-stall)). The line goes to `~/.urnetwork/events.log`.
+
+```text
+[incident] goroutine-growth: 38700 goroutines, heap at 58% of its limit; profiles in /home/user/.urnetwork/incidents/20261009T174600Z-goroutine-growth
+[incident] heap-near-limit: 61100 goroutines, heap at 94% of its limit; profiles in /home/user/.urnetwork/incidents/20261009T175200Z-heap-near-limit
+[incident] capture for heap-over-limit failed: <error>
+```
+
+| Message | Meaning |
+|---|---|
+| `<trigger>: N goroutines, heap at P% of its limit; profiles in <dir>` | The build-up showed, and `summary.txt`, `goroutines.txt`, `heap.pb.gz` and `meta.txt` were written to `<dir>`. Open `summary.txt` first: the stack with the most goroutines is what piled up. |
+| `capture for <trigger> failed` | The profiles could not be written (disk full, read-only state directory). The provider carries on. |

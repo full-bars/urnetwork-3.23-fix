@@ -243,6 +243,18 @@ WatchdogSec=1200
 
 Then `systemctl --user daemon-reload && systemctl --user restart urnetwork.service`. The ping is withheld after 10 minutes without a tick, so systemd restarts a stalled provider between 10 and 30 minutes after the stall starts. That is deliberately slow: a long garbage collection pause or a briefly loaded box must never cost a restart. Before systemd acts, the provider records a lean start cap exactly as a thrash restart does (about 60% of the proxies that were running, counted in the same 3 per 24 hours ring), so the next start does not walk back into the same spiral. Do not set `WatchdogSec=` on a unit whose binary predates this change: it never pings and systemd would restart it every interval.
 
+### Incident capture (evidence before a stall)
+
+A provider heading into a memory spiral stops answering within minutes: pprof times out, the log ring floods, the status files freeze, and by the time anyone looks the evidence of what piled up is gone. So the provider watches two cheap numbers every 10 seconds, its goroutine count and its heap against the soft limit, and when either shows the build-up it writes profiles to disk while it can still run:
+
+| Trigger | When |
+|---|---|
+| `goroutine-growth` | at least 20,000 goroutines and 1.5 times the lowest count of the last 30 minutes (needs 10 minutes of history) |
+| `heap-near-limit` | heap at 90% of its soft limit |
+| `heap-over-limit` | heap at 120% of its soft limit |
+
+Each capture is a directory under `~/.urnetwork/incidents/<UTC time>-<trigger>/` with `summary.txt` (the 15 biggest goroutine stacks and how many goroutines share each, which is usually the whole answer to "what piled up"), `goroutines.txt` (the full grouped profile), `heap.pb.gz` (open it with `go tool pprof`) and `meta.txt`. A trigger repeats at most once per 30 minutes, captures are at least a minute apart, there are at most 6 a day, and the newest 8 directories are kept. It writes to disk only, never to the ramlog, and takes a brief pause of the order of 100 ms to read the profiles. `URNETWORK_INCIDENT_CAPTURE=0` turns it off. The line `[incident] <trigger>: ...` in `~/.urnetwork/events.log` says when one was taken.
+
 ### Swap-thrash watchdog
 
 Memory pressure alone does not mean the box is thrashing. The watchdog watches for the signs that it is: PSI memory `full` (tasks stalled on memory), swap activity (`pswpout`/`pswpin` rates), page refaults, and direct reclaim. It keeps one state, `calm -> under-pressure -> thrashing -> critical`, and acts in steps:

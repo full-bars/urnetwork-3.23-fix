@@ -30,6 +30,10 @@ import (
 // that a wedged process is replaced in well under an hour.
 const livenessStaleAfter = 10 * time.Minute
 
+// livenessRecordTimeout bounds the lean-cap write: a blocked lock must not
+// delay the watchdog's decision.
+const livenessRecordTimeout = 5 * time.Second
+
 // livenessProgress records when the process last proved it can make progress.
 type livenessProgress struct {
 	nowFn func() time.Time
@@ -141,7 +145,7 @@ func recordLivenessStall() {
 		if cap > 0 {
 			critLog("[liveness] the next start is capped at %d proxies (60%% of what was running)\n", cap)
 		}
-	case <-time.After(thrashPersistTimeout):
+	case <-time.After(livenessRecordTimeout):
 		critLog("[liveness] timed out recording the lean start cap\n")
 	}
 }

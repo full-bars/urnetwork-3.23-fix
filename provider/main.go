@@ -4400,6 +4400,11 @@ func provide(opts docopt.Opts) {
 	// systemd watchdog feed: inert unless the unit sets WatchdogSec=. Pings only
 	// while the pressure monitor keeps ticking, so a process that is alive but
 	// stalled (a GC death spiral on a small box) is restarted by systemd.
+	// Evidence capture: goroutine and heap profiles to ~/.urnetwork/incidents/ when
+	// the build-up of a stall shows, while the process can still write them.
+	if incidentCaptureEnabled() {
+		go superviseLoop(ctx, "incident_capture", func() { runIncidentCapture(ctx) }, nil)
+	}
 	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
 		go superviseLoop(ctx, "liveness_watchdog", func() { runSdWatchdog(ctx) }, nil)
 	}
