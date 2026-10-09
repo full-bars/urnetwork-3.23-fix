@@ -159,3 +159,26 @@ func TestCaptureIncidentSkipsTheGoroutineProfileWhenTheHeapIsOverTheLimit(t *tes
 		t.Fatalf("meta.txt must say the goroutine profile was skipped: %s", meta)
 	}
 }
+
+// A profile write that fails must be reported. The capture used to drop the
+// WriteTo error, so a full disk left an empty heap.pb.gz while the log still
+// reported a usable profile.
+func TestCaptureIncidentReportsAFailedHeapProfileWrite(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork", "incidents", incidentT0.UTC().Format("20060102T150405Z")+"-goroutine-growth")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// a write to /dev/full fails with ENOSPC, the same way a full disk does.
+	// check the device first: symlink does not inspect the target, so a platform
+	// without /dev/full would otherwise fail at open and pass for the wrong reason
+	if _, err := os.Stat("/dev/full"); err != nil {
+		t.Skipf("no /dev/full to write against here: %v", err)
+	}
+	if err := os.Symlink("/dev/full", filepath.Join(dir, "heap.pb.gz")); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := captureIncident(incidentT0, "goroutine-growth", incidentSample{goroutines: 61000, heapFrac: 0.94}); err == nil {
+		t.Fatal("a failed heap profile write must be reported, not swallowed")
+	}
+}

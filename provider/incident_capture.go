@@ -184,7 +184,10 @@ func captureIncident(now time.Time, reason string, s incidentSample) (string, er
 	} else {
 		var goroutines strings.Builder
 		if p := pprof.Lookup("goroutine"); p != nil {
-			_ = p.WriteTo(&goroutines, 1) // grouped by stack: small, and the counts are the point
+			// a dropped write would leave an empty profile that reads as complete
+			if err := p.WriteTo(&goroutines, 1); err != nil { // grouped by stack: small, and the counts are the point
+				return dir, err
+			}
 		}
 		if err := writeFileSynced(filepath.Join(dir, "goroutines.txt"), []byte(goroutines.String())); err != nil {
 			return dir, err
@@ -199,9 +202,15 @@ func captureIncident(now time.Time, reason string, s incidentSample) (string, er
 		return dir, err
 	}
 	if p := pprof.Lookup("heap"); p != nil {
-		_ = p.WriteTo(heap, 0)
+		if err := p.WriteTo(heap, 0); err != nil {
+			heap.Close()
+			return dir, err
+		}
 	}
-	_ = heap.Sync()
+	if err := heap.Sync(); err != nil {
+		heap.Close()
+		return dir, err
+	}
 	if err := heap.Close(); err != nil {
 		return dir, err
 	}
