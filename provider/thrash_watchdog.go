@@ -70,7 +70,10 @@ var (
 	thrashNowFn = time.Now
 	// thrashExitFn is the process exit used for the supervised restart; a test
 	// seam, production always os.Exit.
-	thrashExitFn = os.Exit
+	thrashExitFn                = os.Exit
+	thrashEnvFn                 = os.Getenv
+	thrashFileExistsFn          = defaultFileExists
+	thrashCheckCapDirWritableFn = defaultThrashCheckCapDirWritable
 	// thrashPersistTimeout bounds the anti-loop state write: a blocked flock
 	// must abort the escalation (alert), never stall the loop or exit without
 	// the record.
@@ -997,10 +1000,19 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	// restart policy must also restart on exit status 75. The shipped units
 	// use Restart=on-failure, which covers it; an operator override
 	// (Restart=no, Restart=on-success, or a policy that excludes status 75)
-	// leaves the provider dead after a restart attempt — provider unit
+	// leaves the provider dead after a restart attempt; provider unit
 	// overrides must restart on exit 75.
-	if os.Getenv("INVOCATION_ID") == "" && os.Getenv("NOTIFY_SOCKET") == "" {
+	kind, restartsOn75 := thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
+	if !restartsOn75 {
+		if kind == "docker" {
+			return thrashEscalationAlert("no-supervisor", "running in a container without URNETWORK_EXIT75_OK=1, so a self-exit would not be restarted; not restarting")
+		}
 		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd), so a self-exit would not be restarted; not restarting")
+	}
+	if kind == "docker" {
+		if err := thrashCheckCapDirWritableFn(); err != nil {
+			return thrashEscalationAlert("persist-failed", fmt.Sprintf("state directory holding thrash_cap.json is not writable (%v); not restarting, to avoid an unthrottled restart loop", err))
+		}
 	}
 	st := readThrashCapState()
 	allowed, code, reason, n := thrashCapEscalationAllowed(st, now)
@@ -1319,5 +1331,64 @@ func runThrashWatchdog(ctx context.Context, selfHealEnabled bool) {
 // thrashRestartable reports whether a supervised restart is possible at all
 // (used by the critical-state log line).
 func thrashRestartable() bool {
-	return os.Getenv("INVOCATION_ID") != "" || os.Getenv("NOTIFY_SOCKET") != ""
+	_, restarts := thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
+	return restarts
+}
+
+func defaultFileExists(p string) bool {
+	_, err := os.Stat(p)
+	return err == nil
+}
+
+func defaultThrashCheckCapDirWritable() error {
+	dir, err := oomCapDir()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	f, err := os.CreateTemp(dir, ".thrash_cap_persist_probe_*")
+	if err != nil {
+		return err
+	}
+	name := f.Name()
+	defer os.Remove(name)
+	probeData := []byte("persistent-check")
+	if _, err := f.Write(probeData); err != nil {
+		_ = f.Close()
+		return err
+	}
+	if err := f.Close(); err != nil {
+		return err
+	}
+	readBack, err := os.ReadFile(name)
+	if err != nil {
+		return err
+	}
+	if string(readBack) != string(probeData) {
+		return errors.New("readback content mismatch")
+	}
+	return nil
+}
+
+// thrashSupervisorKind inspects environment variables and the filesystem to
+// identify the active supervisor and report whether it will restart the
+// provider on an exit status of 75. Returns "systemd", "docker", or "none".
+// OpenRC is not recognised: nothing in this tree marks it, so it stays "none"
+// exactly as before.
+func thrashSupervisorKind(env func(string) string, fileExists func(string) bool) (kind string, restartsOn75 bool) {
+	if env == nil {
+		env = os.Getenv
+	}
+	if fileExists == nil {
+		fileExists = defaultFileExists
+	}
+	if env("INVOCATION_ID") != "" || env("NOTIFY_SOCKET") != "" {
+		return "systemd", true
+	}
+	if fileExists("/.dockerenv") || env("URNETWORK_CONTAINER") == "1" {
+		return "docker", env("URNETWORK_EXIT75_OK") == "1"
+	}
+	return "none", false
 }

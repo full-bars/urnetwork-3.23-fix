@@ -307,6 +307,11 @@ jobs:
           chmod +x docker/scripts/test_pelican_gates.sh
           ./docker/scripts/test_pelican_gates.sh
 
+      - name: Docker exit 75 restart tests
+        run: |
+          chmod +x docker/scripts/test_exit75_restart.sh
+          ./docker/scripts/test_exit75_restart.sh
+
       - name: Shellcheck docker scripts (error severity)
         run: |
           # Error-severity gate over every docker script. Pre-existing
