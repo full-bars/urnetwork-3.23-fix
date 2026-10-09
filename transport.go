@@ -700,7 +700,7 @@ func (self *PlatformTransport) h3Auxiliary() bool {
 // auth. An auxiliary H3 authenticating must not clear failures H1 recorded: H1
 // is the health signal, so only it may reset the state.
 func (self *PlatformTransport) noteAuthSuccess() {
-	if self.h3Auxiliary() {
+	if self.h3Gated() {
 		return
 	}
 	noteBackendSuccess()
@@ -722,12 +722,30 @@ func (self *PlatformTransport) drainsWhenInactive(activeMode TransportMode, ptMo
 // ceiling the sole transport uses.
 const h3AuxiliaryMaxBackoff = 10 * time.Minute
 
-// nextH3Backoff doubles the wait between failed attempts up to max.
-func nextH3Backoff(current time.Duration, base time.Duration, max time.Duration) time.Duration {
-	if current == 0 {
+// h3BackoffFloor is the shortest wait an auxiliary H3 takes between failed
+// attempts, so an unset reconnect timeout cannot make it a tight dial loop.
+const h3BackoffFloor = time.Second
+
+// h3BackoffJitter is the share of the wait that is spread randomly either way.
+const h3BackoffJitter = 0.2
+
+// nextH3Backoff doubles the wait between failed attempts up to ceiling.
+func nextH3Backoff(current time.Duration, base time.Duration, ceiling time.Duration) time.Duration {
+	base = min(max(base, h3BackoffFloor), ceiling)
+	if current < base {
 		return base
 	}
-	return min(current*2, max)
+	return min(current*2, ceiling)
+}
+
+// jitteredH3Wait spreads d by +-h3BackoffJitter. Auxiliary H3 dials fail together
+// when a network filters UDP or after a fleet-wide start, and plain doubling
+// keeps them retrying in lockstep waves; the spread desynchronizes them.
+func jitteredH3Wait(d time.Duration) time.Duration {
+	if d <= 0 {
+		return 0
+	}
+	return d + time.Duration((mathrand.Float64()*2-1)*h3BackoffJitter*float64(d))
 }
 
 func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
@@ -1569,14 +1587,14 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			if self.ctx.Err() == nil {
 				counters.connectFailures.Add(1)
 				// an auxiliary H3 (opt-in, beside H1) is not a health signal
-				if !self.h3Auxiliary() {
+				if !self.h3Gated() {
 					noteBackendFailure()
 					if idx, ok := self.proxyIndex(); ok {
 						RecordProxyAuthFailure(idx, err)
 					}
 				}
 			}
-			if self.h3Auxiliary() {
+			if self.h3Gated() {
 				// an auxiliary H3 that cannot connect is "unavailable", not an
 				// auth error: say so once, then only at verbose levels
 				if !h3UnavailableLogged {
@@ -1592,19 +1610,42 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
 				}
 			}
-			if self.h3Auxiliary() {
+			if self.h3Gated() {
 				authErrBackoff = nextH3Backoff(authErrBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
 			} else if authErrBackoff == 0 {
 				authErrBackoff = self.settings.ReconnectTimeout
 			} else {
 				authErrBackoff = min(authErrBackoff*2, 60*time.Second)
 			}
+			var pulse <-chan struct{}
+			var gateChanged <-chan struct{}
+			wait := authErrBackoff
+			if self.h3Gated() {
+				// jittered, and cut short if the gate changes: a switch-off
+				// must park the transport now, not after the sleep
+				wait = jitteredH3Wait(authErrBackoff)
+				var on bool
+				on, gateChanged = h3GateWatch()
+				if !on {
+					// switched off while the dial was in flight: park now, there is
+					// no later change to wake a sleep that started after it
+					authErrBackoff = 0
+					continue
+				}
+			} else {
+				pulse = Pulse()
+			}
 			select {
 			case <-self.ctx.Done():
 				return
-			case <-time.After(authErrBackoff):
+			case <-time.After(wait):
 				continue
-			case <-Pulse():
+			case <-gateChanged:
+				// an operator toggle starts over: a transport woken by it must not
+				// carry the multi-minute backoff into its next failure
+				authErrBackoff = 0
+				continue
+			case <-pulse:
 				authErrBackoff = 0
 				self.clientStrategy.ResetHealth()
 				continue
@@ -1774,13 +1815,13 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 			atomic.AddInt64(&activeProxyConnections, 1)
 			// an auxiliary H3 is not the identity health signal: its connects and
 			// drops must not mark it up, down or dropped while H1 says if it is healthy
-			if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
+			if idx, ok := self.proxyIndex(); ok && !self.h3Gated() {
 				markProxyUp(idx)
 			}
 
 			defer func() {
 				atomic.AddInt64(&activeProxyConnections, -1)
-				if idx, ok := self.proxyIndex(); ok && !self.h3Auxiliary() {
+				if idx, ok := self.proxyIndex(); ok && !self.h3Gated() {
 					markProxyDown(idx)
 					RecordProxyTransportDrop(idx, nil)
 				}
