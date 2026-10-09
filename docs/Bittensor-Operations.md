@@ -145,11 +145,11 @@ Subnet 25 uses cryptographic Merkle tree payout roots committed on-chain at the 
 
 | Flag | Credential |
 |---|---|
-| `--store-client=<key>` | The client token of one identity in `~/.urnetwork/.client_jwts.json`. The key is a proxy address or `direct`. Pick an identity that served traffic. |
+| `--store-client=<key>` | The client token of one identity in `~/.urnetwork/.client_jwts.json`. The key is a proxy address or `direct`. A bare address also finds the single credentialed identity at that address; when several proxy accounts share it the command refuses and asks for the full key (`address`, a `\x1f` byte, then the user). Pick an identity that served traffic. |
 | `--provider-jwt=<path>` | A client token in a file. |
 | `--legacy-coldkey=<coldkey_ss58>` | The network token plus this coldkey. Only for an epoch without a provider artifact. |
 
-The network token alone is refused, and so is an expired client token (start the provider so it renews, or pass a fresher file). A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
+The network token alone is refused, and so is an expired client token or (with `--legacy-coldkey`) an expired network token (start the provider so it renews, or pass a fresher file). A command with no credential flag exits 1 and names these options. The examples below show `--store-client=direct`; substitute your own credential flag.
 
 ### Workflow 1: Air-Gapped / Offline Calldata (Recommended)
 Generates ABI-encoded calldata and cryptographic inclusion proofs without exposing private keys on the provider host:

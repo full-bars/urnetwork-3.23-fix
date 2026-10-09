@@ -60,8 +60,11 @@ func resolveClaimCredential(opts docopt.Opts) (*claimCredential, error) {
 			return nil, err
 		}
 		store := newClientJWTStore(path)
-		entry, ok := store.Get(storeKey)
-		if !ok {
+		resolved, entry, candidates := store.Find(storeKey)
+		if 1 < len(candidates) {
+			return nil, fmt.Errorf("%d identities in %s share the address %q, one per proxy account. Pass the full key, the address then \\x1f then the user, e.g. --store-client=$'%s\\x1f<user>'", len(candidates), path, storeKey, storeKey)
+		}
+		if resolved == "" && len(candidates) == 0 {
 			return nil, fmt.Errorf("no client %q in %s (%d identities). The key is the proxy address the identity was minted for, or \"direct\"", storeKey, path, store.Count())
 		}
 		return clientClaimCredential(entry.ByClientJWT, "client token from the identity store")
@@ -73,6 +76,9 @@ func resolveClaimCredential(opts docopt.Opts) (*claimCredential, error) {
 		byJwt, err := readNetworkJwt()
 		if err != nil {
 			return nil, err
+		}
+		if err := validateJWTExpiry(byJwt); err != nil {
+			return nil, errors.New("the network jwt has expired; run `provider auth` again, then retry")
 		}
 		if jwtContainsClientId(byJwt) {
 			return nil, errors.New("the network jwt unexpectedly names a client; --legacy-coldkey needs the account (network) token")

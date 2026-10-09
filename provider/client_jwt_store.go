@@ -7,6 +7,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -200,6 +201,33 @@ func (s *clientJWTStore) Get(key string) (clientJWTEntry, bool) {
 	s.loadLocked()
 	entry, ok := s.entries[key]
 	return entry, ok
+}
+
+// Find resolves a user-typed key to a stored entry. An exact key wins. A bare
+// proxy address also matches the credentialed identities at that address (their
+// keys are address + "\x1f" + user, which an operator cannot be expected to
+// type), so it resolves when exactly one identity lives there. It returns the
+// resolved key and entry; with no match both are zero, and with several matches
+// it returns them all (sorted) in candidates and no entry, so the caller can
+// refuse rather than guess an identity.
+func (s *clientJWTStore) Find(key string) (resolved string, entry clientJWTEntry, candidates []string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.loadLocked()
+	if e, ok := s.entries[key]; ok {
+		return key, e, nil
+	}
+	prefix := key + "\x1f"
+	for k := range s.entries {
+		if strings.HasPrefix(k, prefix) {
+			candidates = append(candidates, k)
+		}
+	}
+	sort.Strings(candidates)
+	if len(candidates) == 1 {
+		return candidates[0], s.entries[candidates[0]], nil
+	}
+	return "", clientJWTEntry{}, candidates
 }
 
 // Put records entry for key and flushes the store to disk immediately.

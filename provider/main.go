@@ -981,6 +981,7 @@ Options:
     <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
     --store-client=<key>             claim: use the client token of this identity from the store
                                      (~/.urnetwork/.client_jwts.json; the key is a proxy address or "direct").
+                                     A bare address also finds the one credentialed identity there.
                                      Pick a client that served traffic.
     --provider-jwt=<path>            claim: use the client token in this file.
     --legacy-coldkey=<coldkey_ss58>  claim: network token plus this coldkey, only for an epoch without a provider artifact.
