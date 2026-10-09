@@ -1010,7 +1010,7 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd), so a self-exit would not be restarted; not restarting")
 	}
 	if kind == "docker" {
-		if err := thrashCheckCapDirWritableFn(); err != nil {
+		if err := thrashCapDirWritableBounded(); err != nil {
 			return thrashEscalationAlert("persist-failed", fmt.Sprintf("state directory holding thrash_cap.json is not writable (%v); not restarting, to avoid an unthrottled restart loop", err))
 		}
 	}
@@ -1338,6 +1338,21 @@ func thrashRestartable() bool {
 func defaultFileExists(p string) bool {
 	_, err := os.Stat(p)
 	return err == nil
+}
+
+// thrashCapDirWritableBounded runs the writability probe in a goroutine with
+// the same bounded wait as the cap write, so a hung volume aborts the
+// escalation (alert) instead of stalling the watchdog loop (rule 1: the
+// watchdog never blocks on I/O it does not own).
+func thrashCapDirWritableBounded() error {
+	done := make(chan error, 1)
+	go func() { done <- thrashCheckCapDirWritableFn() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(thrashPersistTimeout):
+		return errors.New("timed out probing the state directory")
+	}
 }
 
 func defaultThrashCheckCapDirWritable() error {

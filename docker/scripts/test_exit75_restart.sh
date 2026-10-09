@@ -71,6 +71,8 @@ case "$1" in
 esac
 STUB_EOF
     chmod +x "$test_dir/app/urnetwork_amd64_stable"
+    # start_nightly.sh runs the _nightly binary
+    cp "$test_dir/app/urnetwork_amd64_stable" "$test_dir/app/urnetwork_amd64_nightly"
 
     local runner="$test_dir/runner.sh"
     {
@@ -128,6 +130,36 @@ t "pelican_panel.sh (1,1,1): logs clearing JWT message" \
     grep -qi "clearing JWT" "$out4/out.log"
 t "pelican_panel.sh (1,1,1): JWT file was removed" \
     sh -c "[ ! -f '$out4/home/.urnetwork/jwt' ]"
+
+# 5. start_nightly.sh: same contract as start_stable.sh
+out5="$(run_test_case start_nightly.sh "75 75 75 0")"
+t "start_nightly.sh (75,75,75,0): JWT file intact" \
+    test -f "$out5/home/.urnetwork/jwt"
+t "start_nightly.sh (75,75,75,0): never logs clearing JWT" \
+    sh -c "! grep -qi 'clearing JWT' '$out5/out.log'"
+t "start_nightly.sh (75,75,75,0): logs planned restart" \
+    grep -qi "planned restart" "$out5/out.log"
+out6="$(run_test_case start_nightly.sh "1 1 1")"
+t "start_nightly.sh (1,1,1): logs clearing JWT message" \
+    grep -qi "clearing JWT" "$out6/out.log"
+t "start_nightly.sh (1,1,1): JWT file was removed" \
+    sh -c "[ ! -f '$out6/home/.urnetwork/jwt' ]"
+
+# 6. start_jwt.sh: 75 is planned (JWT intact, logged as a planned restart); a
+# generic crash never deletes the JWT in this script (shared-volume safety), so
+# the contrast is the log line: 75 is never counted as a crash.
+out7="$(run_test_case start_jwt.sh "75 75 75 0")"
+t "start_jwt.sh (75,75,75,0): JWT file intact" \
+    test -f "$out7/home/.urnetwork/jwt"
+t "start_jwt.sh (75,75,75,0): logs planned restart" \
+    grep -qi "planned restart" "$out7/out.log"
+t "start_jwt.sh (75,75,75,0): never counts a crash" \
+    sh -c "! grep -qi 'crashed' '$out7/out.log'"
+out8="$(run_test_case start_jwt.sh "1 1 1")"
+t "start_jwt.sh (1,1,1): counts crashes" \
+    grep -qi "crashed (#3" "$out8/out.log"
+t "start_jwt.sh (1,1,1): JWT file preserved" \
+    test -f "$out8/home/.urnetwork/jwt"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

@@ -1297,3 +1297,28 @@ func TestThrashExitGateContainer(t *testing.T) {
 		}
 	})
 }
+
+// A hung volume must not stall the watchdog: the probe is bounded by the same
+// timeout as the cap write and a timeout is a failed probe.
+func TestThrashCapDirWritableBoundedTimesOut(t *testing.T) {
+	prevProbe, prevTimeout := thrashCheckCapDirWritableFn, thrashPersistTimeout
+	t.Cleanup(func() { thrashCheckCapDirWritableFn, thrashPersistTimeout = prevProbe, prevTimeout })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	thrashCheckCapDirWritableFn = func() error { <-release; return nil }
+	thrashPersistTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	err := thrashCapDirWritableBounded()
+	if err == nil {
+		t.Fatal("a probe that never returns must fail")
+	}
+	if time.Since(start) > 2*time.Second {
+		t.Fatalf("the probe was not bounded: took %v", time.Since(start))
+	}
+
+	thrashCheckCapDirWritableFn = func() error { return nil }
+	if err := thrashCapDirWritableBounded(); err != nil {
+		t.Fatalf("a healthy probe must pass: %v", err)
+	}
+}
