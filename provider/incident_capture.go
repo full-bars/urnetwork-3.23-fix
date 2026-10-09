@@ -31,6 +31,11 @@ const (
 	// incidentMinHistory is how much history a goroutine baseline needs; a young
 	// process has no baseline to grow from.
 	incidentMinHistory = 10 * time.Minute
+	// incidentStartupRamp: after a start the goroutine count climbs for a while
+	// as the proxies authenticate (14k to 21k over 40 minutes on the canary), so
+	// the growth rule does not judge against a baseline taken inside the ramp.
+	// The heap rules have no such delay.
+	incidentStartupRamp = 45 * time.Minute
 	// incidentGrowthRatio over the window's lowest count, and never under the
 	// absolute floor, is a build-up. 1.5x of a steady 23k was a normal day on the
 	// canary that stalled; 38k, then 61k, was the way into the spiral.
@@ -54,6 +59,7 @@ type incidentSample struct {
 
 // incidentTracker is the pure decision: feed it samples, it says when to capture.
 type incidentTracker struct {
+	first        time.Time // the first sample seen: when this process started sampling
 	samples      []incidentSample
 	lastByReason map[string]time.Time
 	last         time.Time
@@ -66,6 +72,9 @@ func newIncidentTracker() *incidentTracker {
 
 // observe records the sample and reports whether to capture now, and why.
 func (self *incidentTracker) observe(s incidentSample) (string, bool) {
+	if self.first.IsZero() {
+		self.first = s.at
+	}
 	cutoff := s.at.Add(-incidentWindow)
 	keep := self.samples[:0]
 	for _, old := range self.samples {
@@ -112,6 +121,9 @@ func (self *incidentTracker) observe(s incidentSample) (string, bool) {
 
 func (self *incidentTracker) goroutineGrowth(s incidentSample) bool {
 	if s.goroutines < incidentGoroutineMin || len(self.samples) < 2 {
+		return false
+	}
+	if s.at.Sub(self.first) < incidentStartupRamp {
 		return false
 	}
 	oldest := self.samples[0].at

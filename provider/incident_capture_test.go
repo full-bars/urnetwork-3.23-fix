@@ -24,10 +24,10 @@ func feedIncident(tr *incidentTracker, start time.Time, minutes int, goroutines 
 // process can still run, not after it has been starved.
 func TestIncidentTrackerFiresOnGoroutineGrowthBeforeTheHeapRunsAway(t *testing.T) {
 	tr := newIncidentTracker()
-	if r := feedIncident(tr, incidentT0, 30, 23000, 0.55); r != "" {
+	if r := feedIncident(tr, incidentT0, 50, 23000, 0.55); r != "" {
 		t.Fatalf("a steady 23k goroutines must not capture, got %q", r)
 	}
-	r := feedIncident(tr, incidentT0.Add(30*time.Minute), 10, 38700, 0.58)
+	r := feedIncident(tr, incidentT0.Add(50*time.Minute), 10, 38700, 0.58)
 	if r != "goroutine-growth" {
 		t.Fatalf("23k -> 38.7k (1.7x the 30 minute floor) must capture as goroutine-growth, got %q", r)
 	}
@@ -180,5 +180,29 @@ func TestCaptureIncidentReportsAFailedHeapProfileWrite(t *testing.T) {
 	}
 	if _, err := captureIncident(incidentT0, "goroutine-growth", incidentSample{goroutines: 61000, heapFrac: 0.94}); err == nil {
 		t.Fatal("a failed heap profile write must be reported, not swallowed")
+	}
+}
+
+// After a restart the goroutine count climbs as the proxies authenticate: from
+// ~14k at the start to ~21k within 40 minutes on the canary, which is 1.5x of
+// the window's lowest count and tripped a capture that was only the normal
+// ramp. The growth rule needs a baseline taken after the ramp.
+func TestIncidentTrackerIgnoresTheStartupRamp(t *testing.T) {
+	tr := newIncidentTracker()
+	// 12 minutes at the post-restart floor, then a climb to 21k by minute 40
+	if r := feedIncident(tr, incidentT0, 12, 10000, 0.5); r != "" {
+		t.Fatal(r)
+	}
+	for i := 0; i < 28*6; i++ {
+		g := 10000 + (21000-10000)*i/(28*6)
+		if r, ok := tr.observe(incidentSample{at: incidentT0.Add(12*time.Minute + time.Duration(i)*10*time.Second), goroutines: g, heapFrac: 0.55}); ok {
+			t.Fatalf("the startup ramp captured as %q at sample %d (%d goroutines)", r, i, g)
+		}
+	}
+	// well after the ramp a real build-up still captures
+	later := incidentT0.Add(2 * time.Hour)
+	feedIncident(tr, later, 35, 21000, 0.55)
+	if r := feedIncident(tr, later.Add(35*time.Minute), 10, 40000, 0.6); r != "goroutine-growth" {
+		t.Fatalf("a real build-up after the ramp must still capture, got %q", r)
 	}
 }
