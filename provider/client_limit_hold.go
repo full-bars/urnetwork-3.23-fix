@@ -1,0 +1,302 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"os"
+	"path/filepath"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/urnetwork/connect"
+)
+
+const clientLimitHoldFileName = "client_limit_hold.json"
+
+// clientLimitHoldFile maps client id string to retry unix timestamp.
+type clientLimitHoldFile map[string]int64
+
+// clientLimitHoldEntry is one client's hold, shared by every user of that
+// client id. The persist watcher lives only while refs > 0, so a proxy that is
+// removed or reloaded does not leave a goroutine and a map entry behind.
+type clientLimitHoldEntry struct {
+	b    *connect.ClientLimitBackoff
+	refs int
+	stop chan struct{}
+}
+
+// clientLimitHoldWatchers counts live persist watchers, so a reset can wait
+// until none can write any more.
+var clientLimitHoldWatchers sync.WaitGroup
+
+// clientLimitHoldDraining counts the watchers that have been told to stop and
+// have not finished their final write yet. settleClientLimitHolds waits for
+// these, and only these: a live watcher runs until its entry is released and is
+// not something an exit can wait for.
+var clientLimitHoldDraining atomic.Int64
+
+var clientLimitHolds = struct {
+	sync.Mutex
+	m map[string]*clientLimitHoldEntry
+}{
+	m: make(map[string]*clientLimitHoldEntry),
+}
+
+// clientLimitHoldPath returns the path to client_limit_hold.json in oomCapDir().
+func clientLimitHoldPath() (string, error) {
+	dir, err := oomCapDir()
+	if err != nil {
+		return "", err
+	}
+	return filepath.Join(dir, clientLimitHoldFileName), nil
+}
+
+// clientLimitHoldFor returns the shared ClientLimitBackoff for clientId with no
+// lifetime: the caller never releases it. Production callers use
+// clientLimitHoldWithContext.
+func clientLimitHoldFor(clientId connect.Id, now time.Time) *connect.ClientLimitBackoff {
+	return clientLimitHoldWithContext(context.Background(), clientId, now)
+}
+
+// clientLimitHoldWithContext returns the shared ClientLimitBackoff for
+// clientId, restoring a standing hold from disk on first creation and starting
+// its persist watcher. The caller holds one reference until ctx ends; when the
+// last reference goes the watcher stops, the standing hold is flushed to disk
+// and the entry is removed, so a replacement restores it.
+func clientLimitHoldWithContext(ctx context.Context, clientId connect.Id, now time.Time) *connect.ClientLimitBackoff {
+	key := clientId.String()
+
+	// The hold file is read before the registry lock is taken, so 500 proxies
+	// starting together do not serialize their disk reads behind one mutex. A
+	// reference to an entry that already exists skips the read entirely.
+	clientLimitHolds.Lock()
+	entry, ok := clientLimitHolds.m[key]
+	if ok {
+		entry.refs += 1
+		clientLimitHolds.Unlock()
+	} else {
+		clientLimitHolds.Unlock()
+
+		var restoreUnix int64
+		if path, err := clientLimitHoldPath(); err == nil {
+			file := make(clientLimitHoldFile)
+			if oomReadJSON(path, &file) {
+				if retryUnix, ok := file[key]; ok && retryUnix > now.Unix() {
+					restoreUnix = retryUnix
+				}
+			}
+		}
+
+		clientLimitHolds.Lock()
+		if clientLimitHolds.m == nil {
+			clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
+		}
+		if entry, ok = clientLimitHolds.m[key]; ok {
+			// another caller created it while the file was being read
+			entry.refs += 1
+		} else {
+			entry = &clientLimitHoldEntry{
+				b:    connect.NewClientLimitBackoff(),
+				refs: 1,
+				stop: make(chan struct{}),
+			}
+			if restoreUnix != 0 {
+				entry.b.Restore(time.Unix(restoreUnix, 0))
+			}
+			clientLimitHolds.m[key] = entry
+			clientLimitHoldWatchers.Add(1)
+			go runClientLimitHoldPersistWatcher(key, entry.b, entry.stop)
+		}
+		clientLimitHolds.Unlock()
+	}
+
+	if done := ctx.Done(); done != nil {
+		go func() {
+			<-done
+			releaseClientLimitHold(key, entry)
+		}()
+	}
+
+	return entry.b
+}
+
+// releaseClientLimitHold drops one reference. The last one removes the entry
+// and stops its watcher, which writes the standing hold once more before it
+// exits so a replacement restores it. No I/O happens under the registry lock.
+func releaseClientLimitHold(key string, entry *clientLimitHoldEntry) {
+	clientLimitHolds.Lock()
+	entry.refs -= 1
+	last := entry.refs <= 0 && clientLimitHolds.m[key] == entry
+	if last {
+		delete(clientLimitHolds.m, key)
+		// counted while the lock is still held, so settle always finds the entry
+		// either registered or draining, never in between
+		clientLimitHoldDraining.Add(1)
+	}
+	clientLimitHolds.Unlock()
+
+	if last {
+		close(entry.stop)
+	}
+}
+
+// runClientLimitHoldPersistWatcher writes the hold to disk when it starts,
+// changes or ends. It writes nothing while the hold has never been in force, so
+// a fleet of idle clients does not rewrite the shared file at startup. When
+// stop closes it writes a standing hold once more and returns.
+func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBackoff, stop <-chan struct{}) {
+	defer clientLimitHoldWatchers.Done()
+	persisted := false
+	for {
+		st, ch := b.Get()
+		if st.Exceeded || persisted {
+			if err := persistClientLimitHold(clientId, st, time.Now()); err != nil {
+				tlog("⚠️ [client-limit] could not persist the hold: %v\n", err)
+			}
+			persisted = st.Exceeded
+		}
+		select {
+		case <-stop:
+			defer clientLimitHoldDraining.Add(-1)
+			// the hold may have changed after the read above
+			if st := b.Status(); st.Exceeded || persisted {
+				if err := persistClientLimitHold(clientId, st, time.Now()); err != nil {
+					tlog("⚠️ [client-limit] could not persist the hold: %v\n", err)
+				}
+			}
+			return
+		case <-ch:
+		}
+	}
+}
+
+// persistClientLimitHold persists the hold status of clientId to client_limit_hold.json.
+// Under JWT store lock: prunes expired entries, updates clientId (keeping max retry time
+// if already exceeded, or deleting if not exceeded), and writes atomically.
+func persistClientLimitHold(clientId string, st connect.ClientLimitStatus, now time.Time) error {
+	path, err := clientLimitHoldPath()
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return err
+	}
+
+	release, err := acquireJWTStoreLock(path)
+	if err != nil {
+		return err
+	}
+	defer release()
+
+	file, err := readClientLimitHoldFileForUpdate(path)
+	if err != nil {
+		return err
+	}
+
+	// prune expired entries
+	for k, retryUnix := range file {
+		if retryUnix <= now.Unix() {
+			delete(file, k)
+		}
+	}
+
+	if st.Exceeded {
+		retryUnix := st.RetryTime.Unix()
+		if existing, ok := file[clientId]; ok && existing > retryUnix {
+			retryUnix = existing
+		}
+		file[clientId] = retryUnix
+	} else {
+		delete(file, clientId)
+	}
+
+	return oomWriteJSONLocked(path, file)
+}
+
+// readClientLimitHoldFileForUpdate reads the hold file for a read-modify-write.
+// A missing file is an empty one, and a file that reads but is not valid JSON
+// cannot be recovered, so it is replaced. Any other read failure (EIO, EACCES)
+// is returned: writing from an empty map then would wipe the standing holds of
+// every other client on a transient error.
+func readClientLimitHoldFileForUpdate(path string) (clientLimitHoldFile, error) {
+	file := make(clientLimitHoldFile)
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return file, nil
+		}
+		return nil, err
+	}
+	if json.Unmarshal(b, &file) != nil || file == nil {
+		tlog("⚠️ [client-limit] %s is not valid JSON, replacing it\n", filepath.Base(path))
+		return make(clientLimitHoldFile), nil
+	}
+	return file, nil
+}
+
+// settleClientLimitHolds makes the standing holds durable before the process
+// exits or a HotSwap parent hands over. The persist watchers write on every
+// change, but they run asynchronously, so a stop right after a kick could beat
+// them. It writes the holds of every live entry, then waits (bounded) for the
+// watchers that are already finishing a final write; live watchers are not
+// waited for.
+func settleClientLimitHolds(timeout time.Duration) {
+	clientLimitHolds.Lock()
+	type snapshot struct {
+		id string
+		st connect.ClientLimitStatus
+	}
+	var snaps []snapshot
+	for id, entry := range clientLimitHolds.m {
+		if st := entry.b.Status(); st.Exceeded {
+			snaps = append(snaps, snapshot{id: id, st: st})
+		}
+	}
+	clientLimitHolds.Unlock()
+
+	now := time.Now()
+	for _, snap := range snaps {
+		if err := persistClientLimitHold(snap.id, snap.st, now); err != nil {
+			tlog("⚠️ [client-limit] could not write the standing hold before exit: %v\n", err)
+		}
+	}
+
+	// polled, not a WaitGroup: entries are released concurrently, and a WaitGroup
+	// must not see an Add race with its Wait
+	deadline := time.Now().Add(timeout)
+	for clientLimitHoldDraining.Load() > 0 && time.Now().Before(deadline) {
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+func resetClientLimitHoldsForTest() {
+	clientLimitHolds.Lock()
+	for _, entry := range clientLimitHolds.m {
+		clientLimitHoldDraining.Add(1)
+		close(entry.stop)
+	}
+	clientLimitHolds.m = make(map[string]*clientLimitHoldEntry)
+	clientLimitHolds.Unlock()
+	clientLimitHoldWatchers.Wait()
+}
+
+// provideIntentEnabled reports whether provider intent declaration is enabled.
+// Default on; URNETWORK_PROVIDE_INTENT=0 disables.
+func provideIntentEnabled() bool {
+	if os.Getenv("URNETWORK_PROVIDE_INTENT") == "0" {
+		return false
+	}
+	return true
+}
+
+// newProviderClientAuth builds a ClientAuth declaring provide intent according
+// to provideIntentEnabled().
+func newProviderClientAuth(byClientJwt string, instanceId connect.Id) *connect.ClientAuth {
+	return &connect.ClientAuth{
+		ByJwt:         byClientJwt,
+		InstanceId:    instanceId,
+		AppVersion:    RequireVersion(),
+		ProvideIntent: provideIntentEnabled(),
+	}
+}

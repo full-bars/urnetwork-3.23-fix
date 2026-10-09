@@ -165,6 +165,7 @@ func AcceptH3DatagramAuthOffer(
 		AppVersion:        auth.AppVersion,
 		InstanceId:        bytes.Clone(auth.InstanceId),
 		H3DatagramVersion: auth.H3DatagramVersion,
+		ProvideIntent:     auth.ProvideIntent,
 	}
 	if accepted {
 		response.H3DatagramAcceptedVersion = H3DatagramProtocolVersion
