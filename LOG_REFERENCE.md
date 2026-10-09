@@ -1099,7 +1099,7 @@ A provider keeps one client login per proxy in `~/.urnetwork/.client_jwts.json` 
 ⚠️ [jwt-store] reused client identity for 203.0.113.9:1080 never authenticated after 5 transport auth failures — evicted, will mint fresh on next retry/restart
 🛑 [jwt-store] identity for 203.0.113.9:1080 renewed successfully — revocation watcher standing down
 ⚠️ [jwt-renew] proxy[7] 203.0.113.9:1080: cannot read account JWT: <error>
-[proxy][identity] 203.0.113.9:1080 split into 3 identities on adoption; 203.0.113.9:1080|userA kept id=7 and history, the rest start fresh
+[proxy][identity] 203.0.113.9:1080 split into 3 identities on adoption; 203.0.113.9:1080 (user us***rA) kept id=7 and history, the rest start fresh
 ```
 
 | Message | Meaning |
@@ -1133,6 +1133,7 @@ The happy path of a hot swap is shown in [HotSwap](docs/HotSwap.md#what-you-will
 ⚡ [hotswap] Executing in-place syscall.Exec (container stays up)...
 ⚡ [hotswap] Windows detected: candidate pre-flight verified -> baton handoff
 ⚡ [hotswap] systemd updated: MAINPID=4377
+❌ [hotswap] Candidate failed pre-flight or disconnected: <error>. Aborting handoff; live provider retained.
 ❌ [hotswap] Candidate pre-flight failed (<stage>: <message>). Aborting handoff; live provider retained.
 ❌ [hotswap] Candidate timed out during pre-flight (>20s). Aborting handoff; live provider retained.
 ❌ [hotswap] Failed to send TAKEOVER: <error>. Aborting handoff; live provider retained.
@@ -1152,7 +1153,7 @@ The happy path of a hot swap is shown in [HotSwap](docs/HotSwap.md#what-you-will
 | Message | Meaning |
 |---|---|
 | `Running image was unlinked on disk; launching the install path` | An update replaced the binary file while the provider ran. The new process starts from the install path, not from the deleted image. |
-| `... Aborting handoff; live provider retained` (five variants) | The candidate failed at a stage (pre-flight, takeover send, takeover acknowledgement) or ran out of time (pre-flight 20 seconds, acknowledgement 60 seconds). The old provider keeps serving. Nothing is lost; run the update again once the cause is fixed. The parentheses carry the stage and the cause. |
+| `... Aborting handoff; live provider retained` (six variants) | The candidate failed or disconnected at a stage (pre-flight, takeover send, takeover acknowledgement) or ran out of time (pre-flight 20 seconds, acknowledgement 60 seconds). The old provider keeps serving. Nothing is lost; run the update again once the cause is fixed. The parentheses carry the stage and the cause. |
 | `Candidate process exited unexpectedly during parent drain!` | The candidate process ended while the parent was still draining its streams (the drain lasts up to 30 seconds). Check that the unit is still running the provider. |
 | `Hot-swap already in progress` / `Process is already draining` | A second trigger arrived during a swap. It is ignored. |
 | `Docker container detected ... in-place execve` | In a container the process is replaced in place (`syscall.Exec`), so the container stays up. |
