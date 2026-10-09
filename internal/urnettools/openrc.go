@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -983,6 +984,13 @@ func renderOpenRCStatus() error {
 	return nil
 }
 
+var (
+	// real directives only: a line that starts with the directive, quoted or not,
+	// not a comment that mentions it
+	openrcInitMarkerRe = regexp.MustCompile(`(?m)^\s*export\s+URNETWORK_INIT=["']?openrc["']?\s*$`)
+	openrcRetryRe      = regexp.MustCompile(`(?m)^\s*retry=`)
+)
+
 // openrcInitScriptStaleReason says what an installed init script lacks that
 // the current installer writes: the URNETWORK_INIT marker that lets the thrash
 // watchdog restart under supervise-daemon, and the retry= stop schedule that
@@ -994,10 +1002,10 @@ func openrcInitScriptStaleReason(path string) string {
 	}
 	script := string(b)
 	var missing []string
-	if !strings.Contains(script, "URNETWORK_INIT=openrc") {
+	if !openrcInitMarkerRe.MatchString(script) {
 		missing = append(missing, "the URNETWORK_INIT=openrc marker (the thrash restart stays off)")
 	}
-	if !strings.Contains(script, "retry=") {
+	if !openrcRetryRe.MatchString(script) {
 		missing = append(missing, "a retry= stop schedule (a hung provider is never killed)")
 	}
 	if len(missing) == 0 {

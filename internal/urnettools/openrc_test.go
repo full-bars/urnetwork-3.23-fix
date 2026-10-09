@@ -1362,3 +1362,24 @@ func TestOpenrcInitScriptStaleReason(t *testing.T) {
 		t.Fatalf("an unreadable script is not reported as stale, got %q", got)
 	}
 }
+
+// The check looks at real directives: quoting is fine, a commented-out line is
+// not a directive.
+func TestOpenrcInitScriptStaleReasonReadsDirectivesNotText(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "urnetwork")
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write("#!/sbin/openrc-run\nexport URNETWORK_INIT=\"openrc\"\n  retry='TERM/40/KILL/5'\n")
+	if got := openrcInitScriptStaleReason(path); got != "" {
+		t.Fatalf("quoted and indented directives are current, got %q", got)
+	}
+	write("#!/sbin/openrc-run\n# export URNETWORK_INIT=openrc\n#retry=TERM/40/KILL/5\n")
+	if got := openrcInitScriptStaleReason(path); got == "" || !strings.Contains(got, "URNETWORK_INIT") || !strings.Contains(got, "retry=") {
+		t.Fatalf("commented-out directives are not directives, got %q", got)
+	}
+}
