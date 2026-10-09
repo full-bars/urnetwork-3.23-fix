@@ -9,20 +9,24 @@ import (
 )
 
 var (
-	dpiAdmitsEnvOnce       sync.Once
-	dpiAdmitsEnabled       = true
-	dpiPrivilegedBtEnabled = true
+	dpiAdmitsEnvOnce sync.Once
+	// Both default OFF: enabling the application-standard admits and the
+	// privileged-port signature check changes what a production provider drops.
+	// Roll them out per node with URNETWORK_DPI_ADMITS=on and
+	// URNETWORK_DPI_PRIVILEGED_BT=1.
+	dpiAdmitsEnabled       = false
+	dpiPrivilegedBtEnabled = false
 )
 
 func initDpiAdmitsEnv() {
 	dpiAdmitsEnvOnce.Do(func() {
 		rawAdmits := os.Getenv("URNETWORK_DPI_ADMITS")
-		if strings.EqualFold(rawAdmits, "off") {
-			dpiAdmitsEnabled = false
+		if strings.EqualFold(rawAdmits, "on") {
+			dpiAdmitsEnabled = true
 		}
 		rawPrivBt := os.Getenv("URNETWORK_DPI_PRIVILEGED_BT")
-		if rawPrivBt == "0" {
-			dpiPrivilegedBtEnabled = false
+		if rawPrivBt == "1" {
+			dpiPrivilegedBtEnabled = true
 		}
 		glog.Infof(
 			"[security] dpi configuration URNETWORK_DPI_ADMITS=%q (admits=%t) URNETWORK_DPI_PRIVILEGED_BT=%q (privileged_bt=%t)",
@@ -48,8 +52,8 @@ func DpiPrivilegedBtEnabled() bool {
 
 func resetDpiAdmitsEnvForTest() {
 	dpiAdmitsEnvOnce = sync.Once{}
-	dpiAdmitsEnabled = true
-	dpiPrivilegedBtEnabled = true
+	dpiAdmitsEnabled = false
+	dpiPrivilegedBtEnabled = false
 }
 
 func applyDpiAdmitsEnvToDmca(settings *DmcaSecurityPolicySettings) {

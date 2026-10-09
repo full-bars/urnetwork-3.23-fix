@@ -59,7 +59,7 @@ func (p *upstreamTestPolicyImpl) inspectIngressDirect(provideMode protocol.Provi
 	return SecurityPolicyResultAllow, nil
 }
 
-func (p *upstreamTestPolicyImpl) RefreshEgress(_ *IpPath) {}
+func (p *upstreamTestPolicyImpl) RefreshEgress(_ *IpPath)  {}
 func (p *upstreamTestPolicyImpl) RefreshIngress(_ *IpPath) {}
 
 func (p *upstreamTestPolicyImpl) Testing_FlowCount() int {
@@ -229,4 +229,3 @@ func cfaaVerdictName(v cfaaVerdict) string {
 		return "unknown"
 	}
 }
-

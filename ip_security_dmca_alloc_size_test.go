@@ -14,8 +14,11 @@ import (
 func TestDmcaFlowStateStructSize(t *testing.T) {
 	size := unsafe.Sizeof(dmcaFlowState{})
 	t.Logf("unsafe.Sizeof(dmcaFlowState{}): %d bytes", size)
-	if size == 0 {
-		t.Fatal("dmcaFlowState size cannot be zero")
+	// 184 bytes today (104 before the application-standard state). Every
+	// tracked flow carries one, up to MaxFlows, so growth must be deliberate.
+	const maxFlowStateBytes = 192
+	if maxFlowStateBytes < size {
+		t.Fatalf("dmcaFlowState is %d bytes, ceiling %d", size, maxFlowStateBytes)
 	}
 }
 
@@ -57,6 +60,13 @@ func TestDmcaPerFlowMemoryBytes(t *testing.T) {
 	if detector.Testing_FlowCount() != flowCount {
 		t.Fatalf("expected %d tracked flows, got %d", flowCount, detector.Testing_FlowCount())
 	}
+	// ~307 bytes/flow measured (state plus map entry); the ceiling leaves room
+	// for GC noise but catches a doubling.
+	const maxPerFlowBytes = 600
+	if maxPerFlowBytes < perFlowBytes {
+		t.Fatalf("per-flow heap %d bytes, ceiling %d", perFlowBytes, maxPerFlowBytes)
+	}
+	runtime.KeepAlive(detector)
 }
 
 func BenchmarkDmcaPerFlowBytes(b *testing.B) {
@@ -255,19 +265,23 @@ func TestDmcaAppStandardZeroAllocs(t *testing.T) {
 	})
 }
 
-func TestDpiAdmitsKillSwitchRestoresPrePortVerdicts(t *testing.T) {
+func TestDpiDefaultsRestorePrePortVerdicts(t *testing.T) {
 	// Pre-port policy settings: no App, Gaming, or Messaging; WebStandard Turn/Rtp/Rtcp disabled;
 	// CFAA AllowTelegramCalls disabled; InspectPrivilegedSignatures disabled.
-	t.Setenv("URNETWORK_DPI_ADMITS", "off")
-	t.Setenv("URNETWORK_DPI_PRIVILEGED_BT", "0")
+	// The production default: neither variable set.
+	t.Setenv("URNETWORK_DPI_ADMITS", "")
+	t.Setenv("URNETWORK_DPI_PRIVILEGED_BT", "")
 	resetDpiAdmitsEnvForTest()
 	t.Cleanup(resetDpiAdmitsEnvForTest)
+	if DpiAdmitsEnabled() || DpiPrivilegedBtEnabled() {
+		t.Fatalf("DPI admits and privileged BT must default off, got admits=%t privileged_bt=%t", DpiAdmitsEnabled(), DpiPrivilegedBtEnabled())
+	}
 
 	ctx := context.Background()
 	policy := DefaultSecurityPolicy(ctx)
 
 	// 1. Privileged port 443 BitTorrent handshake: pre-port was allowed without inspection;
-	// with URNETWORK_DPI_PRIVILEGED_BT=0, it remains allowed (restores pre-change behavior).
+	// with URNETWORK_DPI_PRIVILEGED_BT unset, it remains allowed (restores pre-change behavior).
 	btPath := dmcaPath(IpProtocolTcp, 43001, 443, false)
 	r, err := policy.InspectEgress(protocol.ProvideMode_Public, btPath, btHandshake())
 	if err != nil || r != SecurityPolicyResultAllow {
@@ -318,5 +332,37 @@ func TestDpiAdmitsKillSwitchRestoresPrePortVerdicts(t *testing.T) {
 	btResults := replayFixture(t, policy, btHighFixture, 43300)
 	if btResults[len(btResults)-1] != SecurityPolicyResultIncident {
 		t.Fatalf("bittorrent-tcp-51413 with ADMITS=off got %v, want Incident", btResults[len(btResults)-1])
+	}
+}
+
+// The privileged-port signature check runs on every packet to a port below
+// 1024 when URNETWORK_DPI_PRIVILEGED_BT=1, which is most TLS and HTTP traffic.
+func BenchmarkDmcaPrivilegedPortSignatureCheck(b *testing.B) {
+	for _, enabled := range []bool{false, true} {
+		name := "off"
+		if enabled {
+			name = "on"
+		}
+		b.Run(name, func(b *testing.B) {
+			settings := DefaultDmcaSecurityPolicySettings()
+			settings.InspectPrivilegedSignatures = enabled
+			detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+			path := &IpPath{
+				Version:         4,
+				Protocol:        IpProtocolTcp,
+				SourceIp:        net.IPv4(10, 0, 0, 1).To16(),
+				SourcePort:      41001,
+				DestinationIp:   net.IPv4(198, 51, 100, 1).To16(),
+				DestinationPort: 443,
+			}
+			payload := make([]byte, 1400)
+			payload[0], payload[1], payload[2] = 0x17, 0x03, 0x03
+			b.SetBytes(int64(len(payload)))
+			b.ReportAllocs()
+			b.ResetTimer()
+			for i := 0; i < b.N; i++ {
+				detector.classify(path, payload)
+			}
+		})
 	}
 }
