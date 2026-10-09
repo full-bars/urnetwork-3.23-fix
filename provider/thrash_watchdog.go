@@ -1346,7 +1346,8 @@ func defaultFileExists(p string) bool {
 // watchdog never blocks on I/O it does not own).
 func thrashCapDirWritableBounded() error {
 	done := make(chan error, 1)
-	go func() { done <- thrashCheckCapDirWritableFn() }()
+	probe := thrashCheckCapDirWritableFn // read here, not in the goroutine
+	go func() { done <- probe() }()
 	select {
 	case err := <-done:
 		return err
