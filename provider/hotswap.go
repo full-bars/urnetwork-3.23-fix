@@ -274,6 +274,8 @@ func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session 
 			return
 		}
 		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
+		// a kick during the drain must reach the candidate through the hold file
+		settleClientLimitHolds(2 * time.Second)
 		exitFunc(0)
 	}()
 }

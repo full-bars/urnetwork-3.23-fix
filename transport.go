@@ -1623,12 +1623,21 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 		stream := connStream.stream
 
 		c := func() {
+			// one close can be seen by the stream reader, the datagram reader and the
+			// cleanup below; each sighting would re-roll the hold jitter, so only the
+			// first starts the hold
+			var clientLimitNoted atomic.Bool
+			noteClientLimitOnce := func() {
+				if clientLimitNoted.CompareAndSwap(false, true) {
+					self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+				}
+			}
 			// release the socket and the quic transport after the connection,
 			// otherwise every reconnect leaks one udp fd, its read goroutine
 			// and the transport state
 			defer func() {
 				if isClientLimitCloseError(context.Cause(conn.Context())) {
-					self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+					noteClientLimitOnce()
 				}
 				connStream.close()
 			}()
@@ -2092,7 +2101,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 					if err != nil {
 						self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
 						if isClientLimitCloseError(err) {
-							self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+							noteClientLimitOnce()
 						}
 						return
 					}
@@ -2151,7 +2160,7 @@ func (self *PlatformTransport) runH3(ptMode TransportMode, initialTimeout time.D
 						if err != nil {
 							// the context ended or the connection closed
 							if isClientLimitCloseError(err) {
-								self.noteClientLimitClose(ptMode, auth.ProvideIntent, clientLimitResetGeneration)
+								noteClientLimitOnce()
 							}
 							return
 						}

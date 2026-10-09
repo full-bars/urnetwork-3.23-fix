@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"os"
 	"path/filepath"
 	"sync"
@@ -140,14 +141,18 @@ func runClientLimitHoldPersistWatcher(clientId string, b *connect.ClientLimitBac
 	for {
 		st, ch := b.Get()
 		if st.Exceeded || persisted {
-			_ = persistClientLimitHold(clientId, st, time.Now())
+			if err := persistClientLimitHold(clientId, st, time.Now()); err != nil {
+				tlog("⚠️ [client-limit] could not persist the hold: %v\n", err)
+			}
 			persisted = st.Exceeded
 		}
 		select {
 		case <-stop:
 			// the hold may have changed after the read above
 			if st := b.Status(); st.Exceeded || persisted {
-				_ = persistClientLimitHold(clientId, st, time.Now())
+				if err := persistClientLimitHold(clientId, st, time.Now()); err != nil {
+					tlog("⚠️ [client-limit] could not persist the hold: %v\n", err)
+				}
 			}
 			return
 		case <-ch:
@@ -173,10 +178,9 @@ func persistClientLimitHold(clientId string, st connect.ClientLimitStatus, now t
 	}
 	defer release()
 
-	file := make(clientLimitHoldFile)
-	_ = oomReadJSON(path, &file)
-	if file == nil {
-		file = make(clientLimitHoldFile)
+	file, err := readClientLimitHoldFileForUpdate(path)
+	if err != nil {
+		return err
 	}
 
 	// prune expired entries
@@ -199,30 +203,33 @@ func persistClientLimitHold(clientId string, st connect.ClientLimitStatus, now t
 	return oomWriteJSONLocked(path, file)
 }
 
-// reloadClientLimitHolds restores every registered backoff from file.
-func reloadClientLimitHolds(now time.Time) {
-	path, err := clientLimitHoldPath()
-	if err != nil {
-		return
-	}
-
+// readClientLimitHoldFileForUpdate reads the hold file for a read-modify-write.
+// A missing file is an empty one, and a file that reads but is not valid JSON
+// cannot be recovered, so it is replaced. Any other read failure (EIO, EACCES)
+// is returned: writing from an empty map then would wipe the standing holds of
+// every other client on a transient error.
+func readClientLimitHoldFileForUpdate(path string) (clientLimitHoldFile, error) {
 	file := make(clientLimitHoldFile)
-	if !oomReadJSON(path, &file) || file == nil {
-		return
-	}
-
-	clientLimitHolds.Lock()
-	defer clientLimitHolds.Unlock()
-
-	for clientId, entry := range clientLimitHolds.m {
-		if retryUnix, ok := file[clientId]; ok && retryUnix > now.Unix() {
-			entry.b.Restore(time.Unix(retryUnix, 0))
+	b, err := os.ReadFile(path)
+	if err != nil {
+		if os.IsNotExist(err) {
+			return file, nil
 		}
+		return nil, err
 	}
+	if json.Unmarshal(b, &file) != nil || file == nil {
+		tlog("⚠️ [client-limit] %s is not valid JSON, replacing it\n", filepath.Base(path))
+		return make(clientLimitHoldFile), nil
+	}
+	return file, nil
 }
 
-// flushClientLimitHolds writes standing holds to disk synchronously before exit.
-func flushClientLimitHolds() {
+// settleClientLimitHolds makes the standing holds durable before the process
+// exits or a HotSwap parent hands over. The persist watchers write on every
+// change, but they run asynchronously, so a stop right after a kick could beat
+// them. It writes the holds of every live entry, then waits (bounded) for the
+// watchers that are finishing a final write.
+func settleClientLimitHolds(timeout time.Duration) {
 	clientLimitHolds.Lock()
 	type snapshot struct {
 		id string
@@ -230,13 +237,27 @@ func flushClientLimitHolds() {
 	}
 	var snaps []snapshot
 	for id, entry := range clientLimitHolds.m {
-		snaps = append(snaps, snapshot{id: id, st: entry.b.Status()})
+		if st := entry.b.Status(); st.Exceeded {
+			snaps = append(snaps, snapshot{id: id, st: st})
+		}
 	}
 	clientLimitHolds.Unlock()
 
 	now := time.Now()
 	for _, snap := range snaps {
-		_ = persistClientLimitHold(snap.id, snap.st, now)
+		if err := persistClientLimitHold(snap.id, snap.st, now); err != nil {
+			tlog("⚠️ [client-limit] could not write the standing hold before exit: %v\n", err)
+		}
+	}
+
+	done := make(chan struct{})
+	go func() {
+		clientLimitHoldWatchers.Wait()
+		close(done)
+	}()
+	select {
+	case <-done:
+	case <-time.After(timeout):
 	}
 }
 

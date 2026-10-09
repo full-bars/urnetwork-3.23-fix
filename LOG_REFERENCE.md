@@ -1038,3 +1038,26 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+
+---
+
+## 🚧 Client Limit Hold (`[t]` close lines, `[client-limit]`)
+
+```text
+[t]h3 connection closed by the platform: client limit exceeded; dials hold until 2026-10-09T13:45:00Z
+[t]h1 connection closed by the platform: client limit exceeded for a provide intent the client no longer declares; redialing with the current one
+[t]client limit hold: closing connection
+⚠️ [client-limit] could not persist the hold: <error>
+⚠️ [client-limit] could not write the standing hold before exit: <error>
+⚠️ [client-limit] client_limit_hold.json is not valid JSON, replacing it
+```
+
+| Message | Meaning |
+|---|---|
+| `connection closed by the platform: client limit exceeded; dials hold until <time>` | The platform closed this connection (close code 4001) because the network has more clients than it allows. Every transport of this client stops dialing until the time shown, 15 to 20 minutes from the close, instead of reconnecting into the same refusal. It is a normal, bounded wait and not a fault; the proxy is not counted as failed. |
+| `... for a provide intent the client no longer declares; redialing with the current one` | The close answered a connection dialed under an older declaration, so no hold starts and the transport dials again with the current one. |
+| `client limit hold: closing connection` | A hold is in force, so a connection that was still open (a sibling transport of the same client) is closed rather than kept. |
+| `could not persist the hold` / `before exit` | The hold could not be written to `~/.urnetwork/client_limit_hold.json`. The hold still applies in this process, but a restart would not remember it and may be kicked once more. |
+| `client_limit_hold.json is not valid JSON, replacing it` | The saved holds were unreadable and are replaced. At worst one more kick per client. |
+
+An older platform never sends the close, so these lines never appear against it. `URNETWORK_PROVIDE_INTENT=0` stops the provider declaring an intent; a kick is still held.

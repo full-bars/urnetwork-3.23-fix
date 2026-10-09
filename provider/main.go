@@ -4483,6 +4483,8 @@ func provide(opts docopt.Opts) {
 		defer cancel()
 		metricsServer.Shutdown(ctx)
 	}
+	// a kick just before the stop must survive the restart that follows
+	settleClientLimitHolds(2 * time.Second)
 	markCleanShutdown()
 	// Explicitly clean up the control socket before os.Exit(0) since
 	// Go defers do not run on os.Exit. Without this, provider.sock is

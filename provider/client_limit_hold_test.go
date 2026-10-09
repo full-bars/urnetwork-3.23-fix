@@ -14,7 +14,8 @@ import (
 
 // 15. TestClientLimitHoldSurvivesRestart: registry A notes hold for X at t0;
 // fresh registry B loads; X exceeded with identical RetryTime; Y not held;
-// load at RetryTime+1s prunes X.
+// a load at RetryTime+1s no longer sees X as held (expired entries are ignored
+// on load and pruned from the file by the next persist).
 func TestClientLimitHoldSurvivesRestart(t *testing.T) {
 	setupClientLimitHoldTest(t)
 
@@ -50,7 +51,7 @@ func TestClientLimitHoldSurvivesRestart(t *testing.T) {
 		t.Fatalf("expected Y not held, got %+v", stY)
 	}
 
-	// Load at RetryTime+1s prunes X
+	// A load at RetryTime+1s ignores the expired X
 	resetClientLimitHoldsForTest()
 	bXExpired := clientLimitHoldFor(idX, retryTime.Add(time.Second))
 	if stExpired := bXExpired.Status(); stExpired.Exceeded {
@@ -317,5 +318,88 @@ func TestClientLimitHoldIdleClientsWriteNothing(t *testing.T) {
 	}
 	if _, err := os.Stat(path); !os.IsNotExist(err) {
 		t.Fatalf("idle clients wrote %s (err=%v)", path, err)
+	}
+}
+
+// A read failure that is not "file missing" or "file corrupt" must not turn
+// into a write from an empty map: that would wipe the standing holds of every
+// other client. Unreadable here means chmod 000, which a root test run bypasses.
+func TestPersistClientLimitHoldKeepsOtherHoldsOnReadError(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("root reads a chmod 000 file")
+	}
+	setupClientLimitHoldTest(t)
+	path, err := clientLimitHoldPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	other := connect.NewId().String()
+	if err := persistClientLimitHold(other, connect.ClientLimitStatus{Exceeded: true, RetryTime: now.Add(10 * time.Minute)}, now); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Chmod(path, 0); err != nil {
+		t.Fatal(err)
+	}
+	mine := connect.NewId().String()
+	err = persistClientLimitHold(mine, connect.ClientLimitStatus{Exceeded: true, RetryTime: now.Add(15 * time.Minute)}, now)
+	if err == nil {
+		t.Fatal("a read error must fail the persist, not rewrite the file from an empty map")
+	}
+	if err := os.Chmod(path, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	var file clientLimitHoldFile
+	if !oomReadJSON(path, &file) {
+		t.Fatal("the hold file was damaged")
+	}
+	if _, ok := file[other]; !ok {
+		t.Fatalf("the other client's standing hold was wiped: %v", file)
+	}
+}
+
+// A file that reads fine but is not valid JSON cannot be recovered, so the next
+// persist replaces it rather than failing forever.
+func TestPersistClientLimitHoldReplacesCorruptFile(t *testing.T) {
+	setupClientLimitHoldTest(t)
+	path, err := clientLimitHoldPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("{not json"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().Truncate(time.Second)
+	id := connect.NewId().String()
+	if err := persistClientLimitHold(id, connect.ClientLimitStatus{Exceeded: true, RetryTime: now.Add(time.Minute)}, now); err != nil {
+		t.Fatalf("a corrupt file must be replaced, got %v", err)
+	}
+	var file clientLimitHoldFile
+	if !oomReadJSON(path, &file) || file[id] == 0 {
+		t.Fatalf("the hold was not written over the corrupt file: %v", file)
+	}
+}
+
+// settleClientLimitHolds writes the standing holds of live entries before the
+// process exits, so a SIGTERM that lands right after a kick keeps the hold.
+func TestSettleClientLimitHoldsWritesStandingHold(t *testing.T) {
+	setupClientLimitHoldTest(t)
+	id := connect.NewId()
+	b := clientLimitHoldFor(id, time.Now())
+	retry := time.Now().Add(12 * time.Minute).Truncate(time.Second)
+	b.Restore(retry)
+
+	settleClientLimitHolds(2 * time.Second)
+
+	path, err := clientLimitHoldPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var file clientLimitHoldFile
+	if !oomReadJSON(path, &file) || file[id.String()] != retry.Unix() {
+		t.Fatalf("the standing hold was not on disk after settle: %v", file)
 	}
 }
