@@ -928,7 +928,7 @@ Usage:
     provider sn-status [--json]
         [--api_url=<api_url>]
         [-v...]
-    provider claim [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+    provider claim [--store-client=<key> | --provider-jwt=<path> | --legacy-coldkey=<coldkey_ss58>] [--epoch=<epoch>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
         [--api_url=<api_url>]
         [-v...]
     provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
@@ -977,6 +977,11 @@ Options:
     --wallet=<coldkey_ss58>          Also set the subnet claim wallet at startup, same as provider wallet set.
                                      A failure is logged and does not block providing.
     <coldkey_ss58>                   Subnet claim wallet: an ss58 coldkey address (prefix 42).
+    --store-client=<key>             claim: use the client token of this identity from the store
+                                     (~/.urnetwork/.client_jwts.json; the key is a proxy address or "direct").
+                                     Pick a client that served traffic.
+    --provider-jwt=<path>            claim: use the client token in this file.
+    --legacy-coldkey=<coldkey_ss58>  claim: network token plus this coldkey, only for an epoch without a provider artifact.
     --epoch=<epoch>                  Epoch to fetch the subnet pool claim for. Defaults to the last
                                      finalized epoch, which is the epoch before the current one.
     --rpc=<rpc_url>                  EVM json-rpc endpoint used to check the payout root on-chain.
