@@ -3187,8 +3187,8 @@ func (self *SendSequence) updateContract(messageByteCount ByteCount) bool {
 			}
 
 			if nextSendContract.expired() {
-				if self.log.V(1).Enabled() {
-					self.log.V(1).Infof("[s]%s->%s...%s s(%s) taken contract already expired %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof("[s]%s->%s...%s s(%s) taken contract already expired %s\n", self.client.ClientTag(), self.intermediaryIds, self.destination.DestinationId, self.destination.StreamId, nextSendContract.contractId)
 				}
 				self.client.ContractManager().CloseContract(nextSendContract.contractId, 0, 0)
 				return false
