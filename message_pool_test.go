@@ -143,20 +143,56 @@ func TestMessagePoolShardRouting(t *testing.T) {
 	assert.Equal(t, shard2.count, before2+1)
 }
 
+// reserveUnusedPoolTag returns a debug tag that no call site holds yet and keeps
+// call sites registered later off it. The shards' per-tag counters are global
+// to the test binary, and with debug tags on every call site is stamped with a
+// hash-derived tag in 1..255, so a hard-coded tag can collide with a real call
+// site and see its returns (CI saw 1025 where 1 was expected).
+func reserveUnusedPoolTag(t *testing.T) uint8 {
+	t.Helper()
+	debugStateLock.Lock()
+	defer debugStateLock.Unlock()
+	for tag := 255; 1 <= tag; tag-- {
+		if _, used := tagCallers[uint8(tag)]; !used {
+			reserved := uint8(tag)
+			tagCallers[reserved] = map[string]bool{"message_pool_test reserved": true}
+			t.Cleanup(func() {
+				debugStateLock.Lock()
+				defer debugStateLock.Unlock()
+				delete(tagCallers, reserved)
+			})
+			return reserved
+		}
+	}
+	t.Skip("all pool tags are in use")
+	return 0
+}
+
 func TestMessagePoolShardWithTag(t *testing.T) {
+	tag := reserveUnusedPoolTag(t)
+
 	pools := orderedMessagePools()
 	pool := pools[0]
 
-	m, _ := MessagePoolGetDetailedWithTag(pool.size, 42)
+	m, _ := MessagePoolGetDetailedWithTag(pool.size, tag)
 	full := m[:cap(m)]
 
 	shardIndex := int(full[pool.size+12])
+	shard := pool.shard(shardIndex)
+
+	// Counters left by other tests on this tag (for example the explicit
+	// 1..16 range in the concurrency test) are not this test's: count the delta.
+	returnedTagCount := func() uint64 {
+		shard.mutex.Lock()
+		defer shard.mutex.Unlock()
+		return shard.returnedTags[tag]
+	}
+	before := returnedTagCount()
 
 	r := MessagePoolReturn(m)
 	assert.Equal(t, r, true)
 
-	shard := pool.shard(shardIndex)
-	assert.Equal(t, shard.returnedTags[42], uint64(1))
+	assert.Equal(t, returnedTagCount()-before, uint64(1))
 }
 
 func TestMessagePoolShardRoundRobin(t *testing.T) {
