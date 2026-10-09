@@ -134,3 +134,28 @@ func TestGoroutineSummaryRanksTheBiggestStacksFirst(t *testing.T) {
 		t.Fatalf("stacks must be ordered by size: %q", out)
 	}
 }
+
+// At heap-over-limit the box is already past what it can afford: the heap
+// profile and the numbers are written, the allocation-heavy goroutine profile is
+// not (the earlier growth and near-limit captures carry it).
+func TestCaptureIncidentSkipsTheGoroutineProfileWhenTheHeapIsOverTheLimit(t *testing.T) {
+	withTempHome(t)
+	dir, err := captureIncident(incidentT0, "heap-over-limit", incidentSample{goroutines: 61000, heapFrac: 1.5})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, name := range []string{"goroutines.txt", "summary.txt"} {
+		if _, err := os.Stat(filepath.Join(dir, name)); err == nil {
+			t.Fatalf("%s must not be written at heap-over-limit", name)
+		}
+	}
+	for _, name := range []string{"heap.pb.gz", "meta.txt"} {
+		if st, err := os.Stat(filepath.Join(dir, name)); err != nil || st.Size() == 0 {
+			t.Fatalf("%s must still be written: %v", name, err)
+		}
+	}
+	meta, _ := os.ReadFile(filepath.Join(dir, "meta.txt"))
+	if !strings.Contains(string(meta), "goroutine_profile=skipped") {
+		t.Fatalf("meta.txt must say the goroutine profile was skipped: %s", meta)
+	}
+}

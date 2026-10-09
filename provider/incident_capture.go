@@ -175,15 +175,23 @@ func captureIncident(now time.Time, reason string, s incidentSample) (string, er
 		return "", err
 	}
 
-	var goroutines strings.Builder
-	if p := pprof.Lookup("goroutine"); p != nil {
-		_ = p.WriteTo(&goroutines, 1) // grouped by stack: small, and the counts are the point
-	}
-	if err := writeFileSynced(filepath.Join(dir, "goroutines.txt"), []byte(goroutines.String())); err != nil {
-		return dir, err
-	}
-	if err := writeFileSynced(filepath.Join(dir, "summary.txt"), []byte(summarizeGoroutineProfile(goroutines.String(), 15))); err != nil {
-		return dir, err
+	// The goroutine profile allocates a record per goroutine (tens of MiB at 60k)
+	// and stops the world; past the heap limit the box cannot afford that, and
+	// the growth and near-limit captures before it carry the same answer.
+	goroutineProfile := "written"
+	if reason == "heap-over-limit" {
+		goroutineProfile = "skipped"
+	} else {
+		var goroutines strings.Builder
+		if p := pprof.Lookup("goroutine"); p != nil {
+			_ = p.WriteTo(&goroutines, 1) // grouped by stack: small, and the counts are the point
+		}
+		if err := writeFileSynced(filepath.Join(dir, "goroutines.txt"), []byte(goroutines.String())); err != nil {
+			return dir, err
+		}
+		if err := writeFileSynced(filepath.Join(dir, "summary.txt"), []byte(summarizeGoroutineProfile(goroutines.String(), 15))); err != nil {
+			return dir, err
+		}
 	}
 
 	heap, err := os.OpenFile(filepath.Join(dir, "heap.pb.gz"), os.O_WRONLY|os.O_CREATE|os.O_TRUNC, 0o600)
@@ -214,7 +222,7 @@ func captureIncident(now time.Time, reason string, s incidentSample) (string, er
 		}
 		return 0
 	}
-	meta := fmt.Sprintf("time=%s\nreason=%s\ngoroutines=%d\nheap_frac=%.3f\nheap_objects_mib=%d\nheap_inuse_mib=%d\nsys_mib=%d\ngc_cycles=%d\nversion=%s\n",
+	meta := fmt.Sprintf("goroutine_profile="+goroutineProfile+"\ntime=%s\nreason=%s\ngoroutines=%d\nheap_frac=%.3f\nheap_objects_mib=%d\nheap_inuse_mib=%d\nsys_mib=%d\ngc_cycles=%d\nversion=%s\n",
 		now.UTC().Format(time.RFC3339), reason, s.goroutines, s.heapFrac,
 		value(0)>>20, value(1)>>20, value(2)>>20, value(3), Version)
 	if err := writeFileSynced(filepath.Join(dir, "meta.txt"), []byte(meta)); err != nil {

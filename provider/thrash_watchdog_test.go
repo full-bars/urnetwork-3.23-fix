@@ -1366,3 +1366,77 @@ func TestThrashMachineHeapOverLimitWithRoomToSpareIsNotARunaway(t *testing.T) {
 		}
 	}
 }
+
+// On a box where PSI cannot be read, the heap rule is the only thing moving the
+// machine. When the heap recovers, the machine must relax and release the
+// freeze like any other, not hold its state for the rest of the process life
+// (which would freeze pool growth for days, and let one later sample be read as
+// a long-standing severe condition).
+func TestThrashMachineHeapRunawayWithoutPSIRelaxesWhenTheHeapRecovers(t *testing.T) {
+	runaway := thrashRead{heapOK: true, heapFrac: 1.6, ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969}
+	healthy := thrashRead{heapOK: true, heapFrac: 0.5, ramAvailOK: true, ramAvailMiB: 900, ramTotalOK: true, ramTotalMiB: 1969}
+	noPSI := thrashRates{} // fullOK false: PSI unreadable on this box
+
+	m := &thrashMachine{state: thrashCalm, stateSince: thrashT0}
+	m.step(thrashT0, noPSI, runaway)
+	if st := m.step(thrashT0.Add(91*time.Second), noPSI, runaway); st.cur != thrashThrashing {
+		t.Fatalf("runaway for 91s without PSI: want thrashing, got %v", st.cur)
+	}
+
+	// the heap recovers; PSI is still unreadable
+	var cur thrashStateT
+	for i := 1; i <= 14; i++ {
+		cur = m.step(thrashT0.Add(91*time.Second+time.Duration(i)*time.Minute), noPSI, healthy).cur
+	}
+	if cur != thrashCalm {
+		t.Fatalf("after 14 minutes of a healthy heap the machine must be calm again, got %v", cur)
+	}
+
+	// hours later one runaway sample is a fresh start, not a continuation
+	later := thrashT0.Add(5 * time.Hour)
+	if st := m.step(later, noPSI, runaway); st.cur != thrashUnderPressure {
+		t.Fatalf("one runaway sample after hours of calm must only be under-pressure, got %v", st.cur)
+	}
+}
+
+// A PSI box that blinks (fullOK false for a tick) while the heap is fine must
+// keep holding its clocks: the neutral tick exists for exactly that.
+func TestThrashMachinePSIBlinkStillHoldsPSIDrivenClocks(t *testing.T) {
+	m := &thrashMachine{state: thrashCalm, stateSince: thrashT0}
+	severe := thrashRates{fullFrac: 0.30, fullOK: true}
+	healthyHeap := thrashRead{heapOK: true, heapFrac: 0.5, ramAvailOK: true, ramAvailMiB: 900, ramTotalOK: true, ramTotalMiB: 1969}
+	m.step(thrashT0, severe, healthyHeap)
+	m.step(thrashT0.Add(60*time.Second), thrashRates{}, healthyHeap) // PSI blinks
+	if st := m.step(thrashT0.Add(91*time.Second), severe, healthyHeap); st.cur != thrashThrashing {
+		t.Fatalf("the severe clock must survive a PSI blink, got %v", st.cur)
+	}
+}
+
+// A heap-runaway episode that reaches the restart gate must go through the same
+// attribution, supervisor and ring checks as a PSI-driven one.
+func TestThrashHeapRunawayStillNeedsAttributionToRestart(t *testing.T) {
+	rt := thrashRates{}
+	rd := thrashRead{heapOK: true, heapFrac: 1.6, ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969}
+	esc := thrashEscalate(time.Now(), rt, rd, true, "unknown", 0, false)
+	if esc.Action == "restart" {
+		t.Fatalf("an unattributable runaway must alert, never restart blind, got %+v", esc)
+	}
+}
+
+// A restart driven by the heap rule must not read as a swap storm with "0%
+// stalled": the incident trail has to say what happened.
+func TestThrashOnsetMessageNamesAHeapRunaway(t *testing.T) {
+	rd := thrashRead{heapOK: true, heapFrac: 1.6, heapUsedMiB: 1500, heapLimitMiB: 945, ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969, unitSwapOK: true, unitSwapMiB: 700}
+	msg := thrashOnsetMsg(thrashRates{fullFrac: 0.0006, fullOK: true}, rd, 0.8, true)
+	if !strings.Contains(msg, "heap") || !strings.Contains(msg, "1.6x") || strings.Contains(msg, "stalled ~0%") {
+		t.Fatalf("a heap runaway must be described as one: %q", msg)
+	}
+	if got := thrashRestartReason(thrashRates{fullFrac: 0.0006, fullOK: true}, rd); !strings.Contains(got, "heap runaway") {
+		t.Fatalf("the ledger reason must say heap runaway, got %q", got)
+	}
+	// a plain swap storm keeps its wording
+	storm := thrashRead{heapOK: true, heapFrac: 0.7, ramAvailOK: true, ramAvailMiB: 100, ramTotalOK: true, ramTotalMiB: 1969}
+	if got := thrashRestartReason(thrashRates{fullFrac: 0.4, fullOK: true, swapOK: true, swapInPS: 5000}, storm); !strings.Contains(got, "swap thrash") {
+		t.Fatalf("a swap storm keeps the swap wording, got %q", got)
+	}
+}

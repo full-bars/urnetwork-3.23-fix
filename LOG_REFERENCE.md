@@ -1061,6 +1061,7 @@ Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.
 | `the next start is capped at N proxies` | Written at the same moment, so the restart begins with about 60% of what was running instead of the same load. It counts in the thrash restart ring (3 per 24 hours). |
 | `progress resumed` | The monitor ticked again before systemd acted (a very long pause, not a stall). Pings resume and the lean start cap written at the stall is removed again (`the lean start cap was removed again`). |
 | `but self-heal is off, so the systemd watchdog is still being fed` | The same stall with self-heal off: nothing is withheld or recorded, so systemd does not restart the provider. Turn self-heal on to let the watchdog act. |
+| `but the restart budget is spent (...), so the systemd watchdog is still being fed` | The same stall inside the thrash restart ring's limits (3 per 24 hours, with a 30 minute and a 2 hour re-arm wait): nothing is withheld, so systemd does not restart the provider again yet. |
 | `WATCHDOG_USEC is set but NOTIFY_SOCKET is not` | The unit sets `WatchdogSec=` without a notify socket (`NotifyAccess=none`), so no ping can reach systemd and it will restart the provider every interval whatever it does. Fix the unit. |
 
 The thrash watchdog also has a heap rule: a heap at least 1.4 times its soft limit on a box with little free RAM counts as severe after 90 seconds even while PSI reads calm. It shows up as the usual `[thrash]` and `[memory]` lines.

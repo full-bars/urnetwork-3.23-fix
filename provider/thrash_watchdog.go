@@ -643,6 +643,9 @@ type thrashMachine struct {
 	lastAttempt    time.Time // throttles escalation attempts
 	heapWarned     bool
 	swapCritWarned bool
+	// heapDriven: the standing condition rests on the heap rule alone, so a
+	// healthy heap ends it even while PSI is unreadable.
+	heapDriven bool
 }
 
 // thrashStep is one machine advance.
@@ -690,12 +693,19 @@ func (m *thrashMachine) step(now time.Time, rt thrashRates, rd thrashRead) thras
 	prev := m.state
 
 	heapRunaway := thrashHeapRunaway(rd)
+	heapReadable := rd.heapOK && rd.ramAvailOK
 	if !rt.fullOK && !heapRunaway {
-		// PSI full unavailable (fresh baseline, source flip, unreadable): a
-		// NEUTRAL tick. Hold every clock and the state — a fake readable zero
-		// here used to read as calm and reset the sustain clocks, defeating
-		// detection exactly when sources flap.
-		return thrashStep{prev: prev, cur: m.state, changed: false, cond: false}
+		// A tick that only the heap rule was driving, now with a readable healthy
+		// heap, is a real calm reading: on a box without PSI nothing else would
+		// ever move the machine again, and the clocks and the freeze it set would
+		// hold for the life of the process.
+		if !(m.heapDriven && heapReadable) {
+			// PSI full unavailable (fresh baseline, source flip, unreadable): a
+			// NEUTRAL tick. Hold every clock and the state — a fake readable zero
+			// here used to read as calm and reset the sustain clocks, defeating
+			// detection exactly when sources flap.
+			return thrashStep{prev: prev, cur: m.state, changed: false, cond: false}
+		}
 	}
 
 	severe := rt.fullOK && rt.fullFrac >= thrashSevereFrac || heapRunaway
@@ -718,6 +728,12 @@ func (m *thrashMachine) step(now time.Time, rt thrashRates, rd thrashRead) thras
 	// corroboration when available, and a stricter PSI-only bar when nothing
 	// corroborates (never AND with an unavailable signal).
 	thrashCond := severe || (mild && corr) || (!corrAvail && strict)
+	if thrashCond {
+		// the standing condition rests on the heap rule alone when PSI gives no
+		// reason of its own for it
+		psiSevere := rt.fullOK && rt.fullFrac >= thrashSevereFrac
+		m.heapDriven = !(psiSevere || (mild && corr) || (!corrAvail && strict))
+	}
 
 	if thrashCond {
 		if m.worseSince.IsZero() {
@@ -786,6 +802,9 @@ func (m *thrashMachine) step(now time.Time, rt thrashRates, rd thrashRead) thras
 			m.thrashSince = now
 		}
 	}
+	if m.state == thrashCalm {
+		m.heapDriven = false
+	}
 	return thrashStep{prev: prev, cur: m.state, changed: prev != m.state, condDur: condDur, cond: thrashCond}
 }
 
@@ -818,7 +837,32 @@ func thrashAttribution(rd thrashRead) (attr string, share float64, shareOK bool)
 // Messages (human-readable output is a hard requirement: no decoding)
 // ---------------------------------------------------------------------------
 
+// thrashRestartReason is the ledger reason for a restart: a heap runaway says so
+// instead of reading as a swap storm with no stalls.
+func thrashRestartReason(rt thrashRates, rd thrashRead) string {
+	if thrashHeapRunaway(rd) && !(rt.fullOK && rt.fullFrac >= thrashSevereFrac) {
+		return fmt.Sprintf("heap runaway: %.1fx its soft limit with %s RAM free", rd.heapFrac, fmtMiBHuman(rd.ramAvailMiB))
+	}
+	stall := 0.0
+	if v, ok := thrashStallFrac(rt); ok {
+		stall = v
+	}
+	swapClause := "swap activity unreadable"
+	if rt.swapOK {
+		swapClause = "swapping " + fmtSwapMBs(rt.swapInPS+rt.swapOutPS)
+	}
+	return fmt.Sprintf("swap thrash: %.0f%% of wall time stalled on memory, %s", stall*100, swapClause)
+}
+
 func thrashOnsetMsg(rt thrashRates, rd thrashRead, share float64, shareOK bool) string {
+	if thrashHeapRunaway(rd) && !(rt.fullOK && rt.fullFrac >= thrashSevereFrac) {
+		held := "an unmeasurable amount of the swap"
+		if rd.unitSwapOK {
+			held = fmtMiBHuman(rd.unitSwapMiB) + " of swap"
+		}
+		return fmt.Sprintf("🚨 [memory] The program's heap has run away: %.1fx its size limit (%s of %s) with only %s RAM free, and %s belongs to this provider. Memory is not stalling yet, but the box is about to.",
+			rd.heapFrac, fmtMiBHuman(rd.heapUsedMiB), fmtMiBHuman(rd.heapLimitMiB), fmtMiBHuman(rd.ramAvailMiB), held)
+	}
 	stallTxt := "memory is stalling"
 	if stall, ok := thrashStallFrac(rt); ok {
 		stallTxt = fmt.Sprintf("memory is currently stalled ~%.0f%% of the time", stall*100)
@@ -1066,14 +1110,6 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	if persistErr != nil {
 		return thrashEscalationAlert("persist-failed", fmt.Sprintf("cannot persist the anti-loop restart record (%v); not restarting, to avoid an unthrottled restart loop", persistErr))
 	}
-	stall := 0.0
-	if v, ok := thrashStallFrac(rt); ok {
-		stall = v
-	}
-	swapClause := "swap activity unreadable"
-	if rt.swapOK {
-		swapClause = "swapping " + fmtSwapMBs(rt.swapInPS+rt.swapOutPS)
-	}
 	// Ledger: fire-and-forget but bounded, same reasoning as the cap write.
 	ledgerDone := make(chan struct{})
 	go func() {
@@ -1083,7 +1119,7 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 			From:   running,
 			To:     cap,
 			Mode:   "on",
-			Reason: fmt.Sprintf("swap thrash: %.0f%% of wall time stalled on memory, %s", stall*100, swapClause),
+			Reason: thrashRestartReason(rt, rd),
 		})
 		close(ledgerDone)
 	}()
