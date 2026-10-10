@@ -143,9 +143,9 @@ func TestReloadOverdueActionIgnoresThrashStateToday(t *testing.T) {
 	}
 }
 
-// T5: With no container opt-in, the exit-75 escape is inert unless INVOCATION_ID
-// or NOTIFY_SOCKET is set. (A container that sets URNETWORK_EXIT75_OK=1 is a
-// supervisor too; that path is covered by the thrash watchdog tests.) Uses
+// T5: On a host with no container marker, the exit-75 escape is inert unless
+// INVOCATION_ID or NOTIFY_SOCKET is set. (A container is a supervisor on its own
+// now; that path is covered by the thrash watchdog tests.) Uses
 // t.Setenv and the thrashExitFn seam to assert:
 // neither set means thrashExitFn is not called;
 // either set means the path proceeds to call it with thrashExitCode.
@@ -157,7 +157,6 @@ func TestThrashExitGateNeedsInitSystem(t *testing.T) {
 		t.Setenv("INVOCATION_ID", invocationID)
 		t.Setenv("NOTIFY_SOCKET", notifySocket)
 		t.Setenv("URNETWORK_CONTAINER", "")
-		t.Setenv("URNETWORK_EXIT75_OK", "")
 		prevFileExists := thrashFileExistsFn
 		thrashFileExistsFn = func(string) bool { return false }
 		t.Cleanup(func() { thrashFileExistsFn = prevFileExists })

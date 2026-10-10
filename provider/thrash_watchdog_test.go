@@ -1058,27 +1058,21 @@ func TestThrashSupervisorKind(t *testing.T) {
 			wantRestarts: true,
 		},
 		{
-			name:         "dockerenv without ack",
+			name:         "dockerenv is a supervisor with no opt-in",
 			files:        map[string]bool{"/.dockerenv": true},
-			wantKind:     "docker",
-			wantRestarts: false,
-		},
-		{
-			name:         "dockerenv with ack",
-			files:        map[string]bool{"/.dockerenv": true},
-			env:          map[string]string{"URNETWORK_EXIT75_OK": "1"},
 			wantKind:     "docker",
 			wantRestarts: true,
 		},
 		{
-			name:         "URNETWORK_CONTAINER=1 without ack",
+			name:         "URNETWORK_CONTAINER=1 is a supervisor with no opt-in",
 			env:          map[string]string{"URNETWORK_CONTAINER": "1"},
 			wantKind:     "docker",
-			wantRestarts: false,
+			wantRestarts: true,
 		},
 		{
-			name:         "URNETWORK_CONTAINER=1 with ack",
-			env:          map[string]string{"URNETWORK_CONTAINER": "1", "URNETWORK_EXIT75_OK": "1"},
+			name:         "the retired exit-75 ack changes nothing",
+			files:        map[string]bool{"/.dockerenv": true},
+			env:          map[string]string{"URNETWORK_EXIT75_OK": "1"},
 			wantKind:     "docker",
 			wantRestarts: true,
 		},
@@ -1188,50 +1182,8 @@ func TestThrashExitGateContainer(t *testing.T) {
 		return called.Load, func() int { return int(code.Load()) }
 	}
 
-	t.Run("container without ack leaves exitFn uncalled and returns no-supervisor", func(t *testing.T) {
-		exitCalled, _ := setupHarness(t, map[string]string{"URNETWORK_CONTAINER": "1"}, nil, nil)
-
-		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
-		rdUnit := thrashRead{unitSwapOK: true, unitSwapMiB: 3000, hostSwapOK: true, hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300}
-		esc := thrashEscalate(time.Now(), rt, rdUnit, true, "unit", 0.9, true)
-		if esc.Code != "no-supervisor" || esc.Action != "alert" {
-			t.Fatalf("thrashEscalate got (%s, %s), want (alert, no-supervisor)", esc.Action, esc.Code)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-		defer cancel()
-		runThrashWatchdog(ctx, true)
-
-		if exitCalled() {
-			t.Fatal("thrashExitFn was called for container without ack")
-		}
-	})
-
-	t.Run("dockerenv without ack leaves exitFn uncalled and returns no-supervisor", func(t *testing.T) {
-		dockerFile := func(p string) bool { return p == "/.dockerenv" }
-		exitCalled, _ := setupHarness(t, nil, dockerFile, nil)
-
-		rt := thrashRates{fullFrac: 0.5, fullOK: true, swapOK: true, swapInPS: 500, swapOutPS: 500}
-		rdUnit := thrashRead{unitSwapOK: true, unitSwapMiB: 3000, hostSwapOK: true, hostSwapUsedMiB: 3300, hostSwapTotalMiB: 3300}
-		esc := thrashEscalate(time.Now(), rt, rdUnit, true, "unit", 0.9, true)
-		if esc.Code != "no-supervisor" || esc.Action != "alert" {
-			t.Fatalf("thrashEscalate got (%s, %s), want (alert, no-supervisor)", esc.Action, esc.Code)
-		}
-
-		ctx, cancel := context.WithTimeout(context.Background(), 80*time.Millisecond)
-		defer cancel()
-		runThrashWatchdog(ctx, true)
-
-		if exitCalled() {
-			t.Fatal("thrashExitFn was called for /.dockerenv without ack")
-		}
-	})
-
-	t.Run("container with ack but unwritable cap dir refuses with persist-failed", func(t *testing.T) {
-		exitCalled, _ := setupHarness(t, map[string]string{
-			"URNETWORK_CONTAINER": "1",
-			"URNETWORK_EXIT75_OK": "1",
-		}, nil, func() error {
+	t.Run("container with an unwritable cap dir refuses with persist-failed", func(t *testing.T) {
+		exitCalled, _ := setupHarness(t, map[string]string{"URNETWORK_CONTAINER": "1"}, nil, func() error {
 			return errors.New("state dir read-only")
 		})
 
@@ -1251,11 +1203,8 @@ func TestThrashExitGateContainer(t *testing.T) {
 		}
 	})
 
-	t.Run("container with ack and writable cap dir calls exitFn 75", func(t *testing.T) {
-		exitCalled, exitCode := setupHarness(t, map[string]string{
-			"URNETWORK_CONTAINER": "1",
-			"URNETWORK_EXIT75_OK": "1",
-		}, nil, nil)
+	t.Run("container with a writable cap dir calls exitFn 75", func(t *testing.T) {
+		exitCalled, exitCode := setupHarness(t, map[string]string{"URNETWORK_CONTAINER": "1"}, nil, nil)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1272,7 +1221,7 @@ func TestThrashExitGateContainer(t *testing.T) {
 		}
 
 		if !exitCalled() {
-			t.Fatal("thrashExitFn was not called for container with ack and writable cap dir")
+			t.Fatal("thrashExitFn was not called for a container with a writable cap dir")
 		}
 		if exitCode() != thrashExitCode {
 			t.Fatalf("exit code = %d, want thrashExitCode (%d)", exitCode(), thrashExitCode)
@@ -1282,11 +1231,9 @@ func TestThrashExitGateContainer(t *testing.T) {
 		}
 	})
 
-	t.Run("dockerenv with ack and writable cap dir calls exitFn 75", func(t *testing.T) {
+	t.Run("dockerenv with a writable cap dir calls exitFn 75", func(t *testing.T) {
 		dockerFile := func(p string) bool { return p == "/.dockerenv" }
-		exitCalled, exitCode := setupHarness(t, map[string]string{
-			"URNETWORK_EXIT75_OK": "1",
-		}, dockerFile, nil)
+		exitCalled, exitCode := setupHarness(t, nil, dockerFile, nil)
 
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
@@ -1303,7 +1250,7 @@ func TestThrashExitGateContainer(t *testing.T) {
 		}
 
 		if !exitCalled() {
-			t.Fatal("thrashExitFn was not called for dockerenv with ack and writable cap dir")
+			t.Fatal("thrashExitFn was not called for dockerenv with a writable cap dir")
 		}
 		if exitCode() != thrashExitCode {
 			t.Fatalf("exit code = %d, want thrashExitCode (%d)", exitCode(), thrashExitCode)
