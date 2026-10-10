@@ -44,20 +44,20 @@ const livenessStartupGrace = 30 * time.Minute
 
 // livenessProgress records when the process last proved it can make progress.
 type livenessProgress struct {
-	nowFn  func() time.Time
+	clock  func() time.Time
 	nano   atomic.Int64
 	ticked atomic.Bool
 }
 
-func newLivenessProgress(nowFn func() time.Time) *livenessProgress {
-	l := &livenessProgress{nowFn: nowFn}
+func newLivenessProgress(clock func() time.Time) *livenessProgress {
+	l := &livenessProgress{clock: clock}
 	l.note() // starting up is progress
 	return l
 }
 
 // note records progress now without claiming the progress loop has ticked.
 func (self *livenessProgress) note() {
-	self.nano.Store(self.nowFn().UnixNano())
+	self.nano.Store(self.clock().UnixNano())
 }
 
 // tick records a tick of the progress loop. After the first one the strict
@@ -74,7 +74,7 @@ func (self *livenessProgress) fresh(staleAfter time.Duration) bool {
 	if !self.ticked.Load() {
 		limit = max(limit, livenessStartupGrace)
 	}
-	return self.nowFn().Sub(time.Unix(0, self.nano.Load())) <= limit
+	return self.clock().Sub(time.Unix(0, self.nano.Load())) <= limit
 }
 
 // processLiveness is the one the pressure monitor feeds.

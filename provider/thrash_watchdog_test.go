@@ -1400,3 +1400,26 @@ func TestThrashOnsetMessageNamesAHeapRunaway(t *testing.T) {
 		t.Fatalf("a swap storm keeps the swap wording, got %q", got)
 	}
 }
+
+// thrashNowFn must be an alias of the shared nowFn seam, delegating at call
+// time: overriding nowFn reaches the alias, and stubbing the alias directly
+// still works without disturbing nowFn.
+func TestThrashNowFnFollowsNowFn(t *testing.T) {
+	oldNow, oldThrash := nowFn, thrashNowFn
+	t.Cleanup(func() { nowFn, thrashNowFn = oldNow, oldThrash })
+
+	viaNow := time.Unix(1_700_000_000, 0)
+	nowFn = func() time.Time { return viaNow }
+	if got := thrashNowFn(); !got.Equal(viaNow) {
+		t.Fatalf("thrashNowFn() = %v after overriding nowFn, want %v: the alias must delegate at call time", got, viaNow)
+	}
+
+	direct := time.Unix(1_800_000_000, 0)
+	thrashNowFn = func() time.Time { return direct }
+	if got := thrashNowFn(); !got.Equal(direct) {
+		t.Fatalf("thrashNowFn() = %v after a direct stub, want %v", got, direct)
+	}
+	if got := nowFn(); !got.Equal(viaNow) {
+		t.Fatalf("nowFn() = %v after stubbing the alias, want %v undisturbed", got, viaNow)
+	}
+}

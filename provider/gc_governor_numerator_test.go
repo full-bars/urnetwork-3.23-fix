@@ -2,6 +2,7 @@ package main
 
 import (
 	"runtime/debug"
+	"sync/atomic"
 	"testing"
 	"time"
 )
@@ -136,5 +137,73 @@ func TestSampleHeapFracComesFromTheSharedNumerator(t *testing.T) {
 	heapFracFn = func() float64 { return 0.7777 }
 	if got := collectPressureSample().HeapFrac; got != 0.7777 {
 		t.Fatalf("sample HeapFrac = %v, want the shared numerator's 0.7777", got)
+	}
+}
+
+// The FreeOSMemory cooldown must read the single nowFn seam: advancing a fake
+// clock past gcFreeOSMemoryMinInterval lets the next critical entry fire,
+// with no real waiting. gcNow is an alias that must delegate at call time,
+// not capture the time.Now it was initialized with.
+func TestNowFnSeamDrivesGCGovernor(t *testing.T) {
+	restoreGCProcessState(t)
+
+	oldFree := gcFreeOSMemory
+	var calls atomic.Int32
+	gcFreeOSMemory = func() { calls.Add(1) }
+	t.Cleanup(func() { gcFreeOSMemory = oldFree })
+
+	var fakeNano atomic.Int64
+	fakeNano.Store(time.Now().UnixNano())
+	oldNow := nowFn
+	nowFn = func() time.Time { return time.Unix(0, fakeNano.Load()) }
+	t.Cleanup(func() { nowFn = oldNow })
+
+	st := &gcGovernorState{baselineGOGC: 100, currentGOGC: 100, level: 3}
+	applyGCLevel(st)
+	if calls.Load() != 1 {
+		t.Fatalf("first critical entry: calls = %d, want 1", calls.Load())
+	}
+
+	// Re-entering critical inside the interval must not fire again.
+	fakeNano.Add(int64(time.Minute))
+	st.level = 2
+	applyGCLevel(st)
+	st.level = 3
+	applyGCLevel(st)
+	if calls.Load() != 1 {
+		t.Fatalf("re-entry within gcFreeOSMemoryMinInterval: calls = %d, want 1", calls.Load())
+	}
+
+	// Past the interval on the seam clock, the next critical entry fires.
+	fakeNano.Add(int64(gcFreeOSMemoryMinInterval))
+	st.level = 2
+	applyGCLevel(st)
+	st.level = 3
+	applyGCLevel(st)
+	if calls.Load() != 2 {
+		t.Fatalf("re-entry past gcFreeOSMemoryMinInterval: calls = %d, want 2 (the nowFn seam must drive the rate limit)", calls.Load())
+	}
+}
+
+// gcNow must be an alias of the shared nowFn seam, delegating at call time:
+// overriding nowFn reaches the alias, and stubbing the alias directly still
+// works without disturbing nowFn. Mirror of TestThrashNowFnFollowsNowFn.
+func TestGCNowFollowsNowFn(t *testing.T) {
+	oldNow, oldGC := nowFn, gcNow
+	t.Cleanup(func() { nowFn, gcNow = oldNow, oldGC })
+
+	viaNow := time.Unix(1_700_000_000, 0)
+	nowFn = func() time.Time { return viaNow }
+	if got := gcNow(); !got.Equal(viaNow) {
+		t.Fatalf("gcNow() = %v after overriding nowFn, want %v: the alias must delegate at call time", got, viaNow)
+	}
+
+	direct := time.Unix(1_800_000_000, 0)
+	gcNow = func() time.Time { return direct }
+	if got := gcNow(); !got.Equal(direct) {
+		t.Fatalf("gcNow() = %v after a direct stub, want %v", got, direct)
+	}
+	if got := nowFn(); !got.Equal(viaNow) {
+		t.Fatalf("nowFn() = %v after stubbing the alias, want %v undisturbed", got, viaNow)
 	}
 }

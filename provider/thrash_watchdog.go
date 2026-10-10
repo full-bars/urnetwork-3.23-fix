@@ -67,7 +67,17 @@ var (
 	// it reports the previous restart's outcome.
 	thrashRecoveryCheckAfter = 5 * time.Minute
 
-	thrashNowFn = time.Now
+	// nowFn is the supervisor clock seam (design doc 3.6,
+	// docs/design/self-healing-supervisor.md). Phase 1 routes the thrash
+	// watchdog, gc governor, reload watchdog and the pool controller's
+	// ceiling reads through it; the remaining supervisor readers (liveness,
+	// oom cap, supervise loop, shed backoff) migrate in later phases.
+	// Non-Linux builds declare the same var in thrash_watchdog_stub.go.
+	nowFn = time.Now
+	// thrashNowFn is an alias of nowFn: it delegates at call time (never a
+	// by-value copy), so overriding nowFn drives it while a test can still
+	// stub thrashNowFn directly.
+	thrashNowFn = func() time.Time { return nowFn() }
 	// thrashExitFn is the process exit used for the supervised restart; a test
 	// seam, production always os.Exit.
 	thrashExitFn                = os.Exit

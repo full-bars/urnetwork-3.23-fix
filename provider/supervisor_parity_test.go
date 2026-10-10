@@ -15,6 +15,7 @@ func TestSupervisorParityConstants(t *testing.T) {
 	}{
 		{"pressureSampleInterval", pressureSampleInterval, 30 * time.Second},
 		{"gcSubtickInterval", gcSubtickInterval, 10 * time.Second},
+		{"gcFreeOSMemoryMinInterval", gcFreeOSMemoryMinInterval, 5 * time.Minute},
 		{"reloadSlotTimeout", reloadSlotTimeout, 10 * time.Minute},
 		{"reloadHardLimit", reloadHardLimit, 20 * time.Minute},
 		{"reloadWatchdogInterval", reloadWatchdogInterval, 30 * time.Second},
