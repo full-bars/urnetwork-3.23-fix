@@ -749,6 +749,31 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 	}
 }
 
+// reloadOverdueDecide is the reload watchdog's per-tick decision, pure: given
+// the tick clock, the published reload state and the loop's carried throttle
+// state it reports whether this tick must escalate and how long the reload
+// has held the slot. No I/O and no atomics: RunReloadWatchdog reads the
+// state, carries episodeStart and lastFired, and performs the escalation.
+func reloadOverdueDecide(now time.Time, startedAt int64, active bool, lastFired time.Time, episodeStart int64) (fire bool, held time.Duration) {
+	if !active {
+		return false, 0
+	}
+	if startedAt <= 0 {
+		return false, 0
+	}
+	held = now.Sub(time.Unix(0, startedAt))
+	if held < reloadHardLimit {
+		return false, held
+	}
+	// Fire once per episode, then at most once per reloadWatchdogReFire while
+	// the same reload stays overdue. The hotswap decline ledger throttles
+	// repeats further.
+	if episodeStart == startedAt && now.Sub(lastFired) < reloadWatchdogReFire {
+		return false, held
+	}
+	return true, held
+}
+
 // RunReloadWatchdog watches for a reload holding the slot past
 // reloadHardLimit and escalates: a loud record (ramlog + events.log) and a
 // hot-restart request through reloadOverdueAction (gated on hot_restart).
@@ -778,22 +803,21 @@ func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context, now func() time.T
 		case <-ticker.C:
 		}
 		if !r.reloadActive.Load() {
+			// End of an episode: the throttle state resets, nothing else.
 			episodeStart = 0
 			continue
 		}
 		started := r.reloadStartedAt.Load()
 		if started <= 0 {
+			// No live timestamp: nothing to compare. Like the old loop, do
+			// not read the clock on this tick.
 			continue
 		}
 		t := now()
-		held := t.Sub(time.Unix(0, started))
-		if held < reloadHardLimit {
-			continue
-		}
-		// Fire once per episode, then at most once per reloadWatchdogReFire
-		// while the same reload stays overdue. The hotswap decline ledger
-		// throttles repeats further.
-		if episodeStart == started && t.Sub(lastFired) < reloadWatchdogReFire {
+		// The loop keeps its own guards above; the pure step re-states them
+		// so a direct caller can never decide on a stale or absent timestamp.
+		fire, held := reloadOverdueDecide(t, started, true, lastFired, episodeStart)
+		if !fire {
 			continue
 		}
 		episodeStart = started

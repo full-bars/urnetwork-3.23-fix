@@ -337,8 +337,11 @@ func publishSelfHealOffPressure() {
 
 // collectPressureSample reads every sensor, recording errors per-sensor so
 // one missing source (PSI on old kernels, everything on Windows/macOS)
-// never blanks the others. Self-signals always work.
-func collectPressureSample() pressureSample {
+// never blanks the others. Self-signals always work. It is a var so a test
+// can script samples into runPressureMonitor.
+var collectPressureSample = livePressureSample
+
+func livePressureSample() pressureSample {
 	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: runningProxyCountForPressure(), Cores: effectiveCores()}
 
 	if v, err := readPSI("memory"); err == nil {
@@ -826,6 +829,57 @@ func gcSelfHealOffTick(heapFrac float64, hostAvail int64, psiCPU float64, state 
 	logGCGovernorChange(prev, state)
 }
 
+// pressureState carries the pressure monitor's smoothing state between ticks:
+// the two smoothed scores and the regime the change-only log line last
+// reported.
+type pressureState struct {
+	smoothed      float64
+	smoothedNoCPU float64
+	lastRegime    int
+}
+
+// pressureActions is what one pure decision asks the loop to actuate: the
+// CPU-excluded companion score to publish, whether the regime crossed a
+// bucket boundary (the loop logs on change), and the component breakdown the
+// loop needs for the GC veto, the status file and the log line, so the sensor
+// math runs once per tick.
+type pressureActions struct {
+	publishNoCPU  float64
+	regimeChanged bool
+	comps         map[string]float64
+}
+
+// pressureDecide is the pure decision step of runPressureMonitor: it folds one
+// raw sample into the smoothed score and its CPU-excluded companion (an
+// emergency pin at 1.0, otherwise the asymmetric EWMA), derives the regime and
+// reports what the loop should publish and log. No I/O: the caller samples,
+// actuates and logs.
+func pressureDecide(prev pressureState, s pressureSample) (smoothed float64, regime int, actions pressureActions) {
+	raw, comps := computePressure(s)
+	if raw >= 1.0 {
+		smoothed = 1.0 // emergency pin bypasses the slow rise
+	} else {
+		smoothed = ewmaUpdate(prev.smoothed, raw)
+	}
+	// CPU-excluded companion score for growth outside the shrink regime. The
+	// main score remains authoritative for emergency pins and shrink decisions;
+	// CPU pressure can still shrink the pool, but CPU pressure alone does not
+	// block regrowth after the full score leaves that regime.
+	rawNoCPU := scoreExcludingCPU(comps)
+	var noCPU float64
+	if rawNoCPU >= 1.0 {
+		noCPU = 1.0
+	} else {
+		noCPU = ewmaUpdate(prev.smoothedNoCPU, rawNoCPU)
+	}
+	regime = pressureRegime(smoothed)
+	return smoothed, regime, pressureActions{
+		publishNoCPU:  noCPU,
+		regimeChanged: regime != prev.lastRegime,
+		comps:         comps,
+	}
+}
+
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
 // the score, publishes it, and logs on regime changes. When self-heal is
 // off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
@@ -884,9 +938,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 
 	var headroom headroomTracker
 	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
-	var smoothed float64
-	var smoothedNoCPU float64
-	lastRegime := 0
+	var prev pressureState
 	fullTicker := time.NewTicker(pressureSampleInterval)
 	defer fullTicker.Stop()
 	subTicker := time.NewTicker(gcSubtickInterval)
@@ -934,8 +986,8 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		}
 
 		if !resolveSelfHealEnabled(selfHealEnabled) {
-			smoothed = 0
-			smoothedNoCPU = 0
+			prev.smoothed = 0
+			prev.smoothedNoCPU = 0
 			publishSelfHealOffPressure()
 			// The GC governor is independent of self-heal: keep giving it the
 			// full host+heap view so a tightened level can release.
@@ -945,25 +997,12 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			continue
 		}
 		sample := collectPressureSample()
-		raw, comps := computePressure(sample)
-		if raw >= 1.0 {
-			smoothed = 1.0 // emergency pin bypasses the slow rise
-		} else {
-			smoothed = ewmaUpdate(smoothed, raw)
-		}
+		smoothed, regime, acts := pressureDecide(prev, sample)
+		prev.smoothed = smoothed
+		prev.smoothedNoCPU = acts.publishNoCPU
 		setPressure(smoothed)
-
-		// CPU-excluded companion score for the grow gate. The main score's
-		// emergency pins are heap/goroutine conditions, and those saturate
-		// their own components to 1.0, so the loop alone carries emergencies;
-		// a saturated psi_cpu alone no longer blocks growth (scoring fix).
-		rawNoCPU := scoreExcludingCPU(comps)
-		if rawNoCPU >= 1.0 {
-			smoothedNoCPU = 1.0
-		} else {
-			smoothedNoCPU = ewmaUpdate(smoothedNoCPU, rawNoCPU)
-		}
-		setPressureNoCPU(smoothedNoCPU)
+		setPressureNoCPU(acts.publishNoCPU)
+		comps := acts.comps
 
 		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
 		prevGOGC := gcState.currentGOGC
@@ -979,7 +1018,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		applyPressureMemoryBudget(smoothed)
 
 		writePressureStatus(smoothed, comps, &gcState)
-		if r := pressureRegime(smoothed); r != lastRegime {
+		if acts.regimeChanged {
 			// Plain words first, machine counters in the trailing paren
 			// (operator-log readability contract); never an empty "()".
 			if compsTxt := formatComponents(comps); compsTxt != "" {
@@ -987,7 +1026,7 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			} else {
 				tlog("🧯 [proxy][pressure] %s\n", pressureSummaryOf(smoothed, comps))
 			}
-			lastRegime = r
+			prev.lastRegime = regime
 		}
 	}
 }
