@@ -155,8 +155,9 @@ var livenessStartOnce sync.Once
 // startLivenessWatchdog starts the stall defense once, as early as the provider
 // is ready (not after the proxy list is loaded): systemd's watchdog timer runs
 // from the start, and the loop has to be feeding it through the whole of
-// startup. Under OpenRC there is no timer to feed, but the same detection runs
-// with a self-exit as its action (see runOpenRcLivenessWatchdog).
+// startup. Where there is no timer to feed (OpenRC's supervise-daemon, a
+// container's start script) the same detection runs with a self-exit as its
+// action (see runSelfExitLivenessWatchdog).
 func startLivenessWatchdog(ctx context.Context) {
 	if !livenessApplies() {
 		return
@@ -168,13 +169,14 @@ func startLivenessWatchdog(ctx context.Context) {
 
 // livenessApplies reports whether this process runs the stall detection at all:
 // under systemd when the unit sets WatchdogSec= (there is a ping to withhold),
-// or under OpenRC's supervise-daemon, which has no watchdog of its own and so
-// can only be asked for a restart by the provider exiting.
+// or under a supervisor with no watchdog of its own, which can only be asked
+// for a restart by the provider exiting (OpenRC's supervise-daemon, a
+// container's start script).
 func livenessApplies() bool {
 	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
 		return true
 	}
-	return livenessUnderOpenRc()
+	return livenessUnderSelfExitSupervisor()
 }
 
 // livenessGate says whether a stall may be acted on: self-heal must be on, and
@@ -200,11 +202,11 @@ func runSdWatchdog(ctx context.Context, gate func(episodeStart bool) (bool, stri
 	interval, ok := sdWatchdogInterval(os.Getenv)
 	if !ok {
 		// No systemd watchdog. Under a supervisor that restarts on exit 75 but
-		// has no watchdog of its own (OpenRC's supervise-daemon), the same
-		// stall detection still protects the box: its action is a self-exit
-		// instead of a withheld ping.
+		// has no watchdog of its own (OpenRC's supervise-daemon, a container's
+		// start script), the same stall detection still protects the box: its
+		// action is a self-exit instead of a withheld ping.
 		if livenessApplies() {
-			runOpenRcLivenessWatchdog(ctx, gate)
+			runSelfExitLivenessWatchdog(ctx, gate)
 		}
 		return
 	}
