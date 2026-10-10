@@ -57,35 +57,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 #### OpenRC (Alpine) command parity
 
-On a host where OpenRC is the running init system and the installer's `urnetwork` service exists, the lifecycle commands act on that service. The backend is chosen at run time by looking at the running init system, never by operating system. A host where systemd is running keeps the systemd behavior even if OpenRC is installed beside it. The install walkthrough is in [Installation: Alpine Linux (OpenRC)](Installation.md#-alpine-linux-openrc).
-
-| Command | What it runs on OpenRC |
-|---|---|
-| `start` | `rc-service urnetwork start` |
-| `stop` | `rc-service urnetwork stop` |
-| `restart` | `rc-service urnetwork restart`, behind the usual confirm gate (`-f` skips the prompt) |
-| `auto-start on` / `off` | `rc-update add urnetwork default` / `rc-update del urnetwork default` |
-| `auto-update daily\|weekly\|monthly` / `off` | A busybox `crond` entry in `/etc/periodic/<interval>/urnetwork-update` that runs `urnet-tools update -f`. There is no systemd timer. `off` removes it from every interval. |
-| `logs [N]` | Follows the service's log file, `/var/log/urnetwork.log` (the file named by `output_log` in `/etc/init.d/urnetwork`), falling back to the error log. |
-| `status` | Prints `rc-service urnetwork status`, then the usual table with the live control-socket view. |
-| `uninstall` | When it targets the service's provider: stops the service, runs `rc-update del`, removes `/etc/init.d/urnetwork` and clears the auto-update entry. |
-
-`auto-update` only fires while `crond` is running. If it is not, the command still writes the entry and prints a note with the commands to enable `crond`.
-
-These commands need root, because they change a system service. Run as an ordinary user, a failing command adds a hint to re-run as root.
-
-`update` also restarts the service, with a stop/start instead of a HotSwap. See [HotSwap](HotSwap.md#not-available-under-openrc-alpine).
-
-**Ambiguity is refused on purpose.** `start` is not gated. But a `stop` or `restart` with no selector, on a box where the service runs beside another provider, is refused rather than acted on. Stopping only the service would leave the other provider running while the tool reported success. Name the target with `--user`, `--unit` or `--state-dir` (the selectors in [Targeting & Selectors](#-targeting--selectors)):
-
-```text
-N providers found on this box, specify a target: [alice (pid 4242)]
-  urnet-tools stop --user <user>          # a specific provider
-  urnet-tools stop --unit urnetwork       # the OpenRC service
-  urnet-tools providers             # list what was found
-```
-
-`N` is the provider count the tool reports, and the bracketed list names the providers that are not the service's own (here, `alice`'s). `restart` prints the same message with `restart` in the example commands. A selector that matches the service's own provider, such as `--unit urnetwork` or `--user urnet`, goes straight to `rc-service`.
+On a host where OpenRC is the running init system, the lifecycle commands (`start`, `stop`, `restart`, `auto-start`, `auto-update`, `logs`, `status`, `uninstall`) act on the installer's `urnetwork` service. The command table, the multi-provider selector rules and the root requirement are on the [Alpine Linux (OpenRC)](OpenRC.md#urnet-tools-command-parity) page.
 
 ### Proxy Management Commands
 
