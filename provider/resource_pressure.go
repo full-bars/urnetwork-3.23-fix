@@ -439,7 +439,11 @@ const gcFreeOSMemoryMinInterval = 5 * time.Minute
 // Seams for tests.
 var (
 	gcFreeOSMemory = debug.FreeOSMemory
-	gcNow          = time.Now
+	// gcNow is an alias of the shared nowFn seam (declared in
+	// thrash_watchdog.go on Linux and thrash_watchdog_stub.go elsewhere): it
+	// delegates at call time so overriding nowFn drives it, while a test may
+	// still stub gcNow directly.
+	gcNow = func() time.Time { return nowFn() }
 )
 
 // gcTightening is true while the governor is actively tightening (level>0).
@@ -917,7 +921,9 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			// neither the OOM peak nor the headroom log's proxy count is
 			// off by one on a direct-only or direct+proxies node.
 			proxyCount := runningProxyCountForPressure()
-			oomCapUpdatePeak(proxyCount, time.Now())
+			// oomCapUpdatePeak writes run.marker under HOME even with the kill
+			// switch off, so fake-clock tests driving this loop need withTempHome.
+			oomCapUpdatePeak(proxyCount, nowFn())
 			lastRunningProxyCount.Store(int64(proxyCount))
 			// Real free memory, independent of the pressure score and of
 			// self-heal: log when the box gets short and when it recovers.
@@ -1485,7 +1491,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 			}
 		}
 		next := aimdStep(target, cacheSize, effectivePressure,
-			combineCeilings(resolveProxyURLMax(configuredMax), ceilingMemory.effective(time.Now())))
+			combineCeilings(resolveProxyURLMax(configuredMax), ceilingMemory.effective(nowFn())))
 		// An operator trim cap overrides the AIMD operating point: never grow
 		// the URL pool target above what the running-proxy cap leaves after paid
 		// proxies (they fight otherwise, burning fetch/probe work on proxies that
@@ -1506,7 +1512,7 @@ func runPoolController(ctx context.Context, configuredMax int, selfHealEnabled b
 
 		if pressure > aimdShrinkAbove {
 			// Remember where pressure hit so regrowth stops short of it.
-			ceilingMemory.record(ceilingHit(target, cacheSize), time.Now())
+			ceilingMemory.record(ceilingHit(target, cacheSize), nowFn())
 			shedPoolToTarget(next)
 			highSamples = 0 // one cut per sustained-high episode; re-arm
 		}
@@ -1535,7 +1541,7 @@ func shedPoolToTarget(target int) {
 	// Per-proxy traffic for last-resort ranking, keyed by proxy identity to
 	// match state.Proxies.
 	traffic := runningProxyEarnings()
-	now := time.Now()
+	now := nowFn()
 	earnings := make(map[string]float64, len(state.Proxies))
 	for addr, e := range state.Proxies {
 		if e.Source == "url" {
@@ -1548,6 +1554,8 @@ func shedPoolToTarget(target int) {
 		if state.Proxies[addr].Health == "up" {
 			tlog("🧯 [proxy][pressure] shedding HEALTHY proxy %s (last resort, pool over target)\n", proxyKeyDisplay(addr))
 		}
+		// Backoff readers (URL source, rotation, reconnect) still read the
+		// wall clock; the stamp moves to the seam with them in a later phase.
 		applyShedBackoff(addr, time.Now())
 	}
 	if err := removeDeadProxies(state, map[string][]string{"url": shed}); err != nil {

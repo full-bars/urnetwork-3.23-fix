@@ -756,7 +756,17 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 // a goroutine stuck inside a call that never returns. Without it, one stuck
 // reload stalls every future trigger and every proxy-pool maintenance path
 // for as long as the process lives.
-func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
+//
+// now is the clock seam: production passes a live delegator over nowFn and
+// nil falls back to the live seam. The overdue comparison, the re-fire
+// throttle and the last-fired stamp all read through it, so a test can step
+// a fake clock past reloadHardLimit without waiting.
+func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context, now func() time.Time) {
+	if now == nil {
+		// A nil clock would panic this ticker loop on its first overdue
+		// check; fall back to the live seam.
+		now = func() time.Time { return nowFn() }
+	}
 	ticker := time.NewTicker(reloadWatchdogInterval)
 	defer ticker.Stop()
 	var lastFired time.Time
@@ -775,18 +785,19 @@ func (r *ProxyReloader) RunReloadWatchdog(ctx context.Context) {
 		if started <= 0 {
 			continue
 		}
-		held := time.Since(time.Unix(0, started))
+		t := now()
+		held := t.Sub(time.Unix(0, started))
 		if held < reloadHardLimit {
 			continue
 		}
 		// Fire once per episode, then at most once per reloadWatchdogReFire
 		// while the same reload stays overdue. The hotswap decline ledger
 		// throttles repeats further.
-		if episodeStart == started && time.Since(lastFired) < reloadWatchdogReFire {
+		if episodeStart == started && t.Sub(lastFired) < reloadWatchdogReFire {
 			continue
 		}
 		episodeStart = started
-		lastFired = time.Now()
+		lastFired = t
 		// tlog is a cheap in-memory write and goes out immediately; the
 		// fsyncing critLog record is written inside the action goroutine so
 		// a thrashing disk or a busy critLogMu cannot stall this ticker

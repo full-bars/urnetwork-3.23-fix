@@ -4372,7 +4372,7 @@ func provide(opts docopt.Opts) {
 	// reload path (watcher, watchdog, first reload) can observe it.
 	cleanStaleSelfProxyLock()
 	reloader.StartWatcher(ctx)
-	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx) }, nil)
+	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx, func() time.Time { return nowFn() }) }, nil)
 	// Reconcile against the operator trim cap immediately at startup. The launch
 	// loop above already holds back the worst-graded proxies above the cap
 	// (startupTrimSelection); this reload confirms the cap, logs the result, and

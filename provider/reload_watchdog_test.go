@@ -110,7 +110,7 @@ func TestReloadWatchdogEscalatesOnOverdueReload(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -139,7 +139,7 @@ func TestReloadWatchdogQuietWhenNoReloadActive(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 	time.Sleep(50 * time.Millisecond)
 	cancel()
@@ -285,7 +285,7 @@ func TestReloadWatchdogIgnoresStaleOrMissingTimestamp(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 	time.Sleep(60 * time.Millisecond)
 	// A fresh reload starts: recent timestamp, still no fire.
@@ -317,7 +317,7 @@ func TestReloadWatchdogRefireIsThrottled(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 	// Wait for the first re-fire (throttled), then a short observation
 	// window: a fixed sleep flakes under CI contention, so the lower bound
@@ -429,7 +429,7 @@ func TestReloadWatchdogRefiresForANewEpisode(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 
 	deadline := time.Now().Add(10 * time.Second)
@@ -480,7 +480,7 @@ func TestReloadWatchdogReportsFailedEscalation(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		r.RunReloadWatchdog(ctx)
+		r.RunReloadWatchdog(ctx, nil)
 	}()
 	deadline := time.Now().Add(10 * time.Second)
 	for calls.Load() == 0 && time.Now().Before(deadline) {
@@ -630,5 +630,127 @@ func TestCleanStaleSelfProxyLock(t *testing.T) {
 	cleanStaleSelfProxyLock()
 	if _, err := os.Stat(path); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("an old self lock must be removed, stat err = %v", err)
+	}
+}
+
+// The nowFn seam must drive the reload watchdog's overdue decision: a fake
+// clock already past reloadHardLimit (20m) fires the escalation even though
+// the real clock says the reload just started, and nothing has to wait. Then
+// moving the fake clock past reloadWatchdogReFire fires the throttled
+// re-fire, proving held, throttle and last-fired all read the seam.
+func TestNowFnSeamDrivesReloadWatchdog(t *testing.T) {
+	oldInterval := reloadWatchdogInterval
+	reloadWatchdogInterval = 5 * time.Millisecond
+	t.Cleanup(func() { reloadWatchdogInterval = oldInterval })
+	withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return nil }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	// The fake clock sits in the future: a decision that read the real clock
+	// would compute a negative held duration and never fire.
+	var fakeNano atomic.Int64
+	start := time.Now().Add(30 * time.Minute)
+	fakeNano.Store(start.UnixNano())
+	oldNow := nowFn
+	nowFn = func() time.Time { return time.Unix(0, fakeNano.Load()) }
+	t.Cleanup(func() { nowFn = oldNow })
+
+	r := &ProxyReloader{}
+	r.reloadActive.Store(true)
+	// 21 minutes on the fake clock: one minute past the 20m reloadHardLimit.
+	r.reloadStartedAt.Store(start.Add(-21 * time.Minute).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx, nil)
+	}()
+
+	waitCalls := func(want int32) bool {
+		deadline := time.Now().Add(10 * time.Second)
+		for calls.Load() < want {
+			if time.Now().After(deadline) {
+				return false
+			}
+			time.Sleep(2 * time.Millisecond)
+		}
+		return true
+	}
+
+	// The escalation fires driven by the fake clock alone.
+	firstFired := waitCalls(1)
+	waitWatchdogActionIdle(t, r)
+	// With the fake clock standing still, the re-fire throttle must hold for
+	// the next ticks (~30ms at a 5ms cadence).
+	settled := calls.Load()
+	time.Sleep(30 * time.Millisecond)
+	refires := calls.Load() - settled
+	// Moving the fake clock past reloadWatchdogReFire lifts the throttle.
+	var refired bool
+	if firstFired {
+		fakeNano.Add(int64(reloadWatchdogReFire + time.Minute))
+		refired = waitCalls(settled + 1)
+	}
+	cancel()
+	<-done
+	waitWatchdogActionIdle(t, r)
+
+	if !firstFired {
+		t.Fatal("the overdue escalation never fired although the seam clock is past reloadHardLimit")
+	}
+	if refires != 0 {
+		t.Fatalf("re-fire throttle ignored the seam: %d escalation(s) inside reloadWatchdogReFire", refires)
+	}
+	if !refired {
+		t.Fatal("the re-fire never fired after the fake clock moved past reloadWatchdogReFire")
+	}
+}
+
+// A nil clock must not panic the watchdog: the guard falls back to the live
+// nowFn seam, so a fake clock still drives the overdue escalation through a
+// nil parameter.
+func TestReloadWatchdogNilClockFallsBackToTheSeam(t *testing.T) {
+	oldInterval := reloadWatchdogInterval
+	reloadWatchdogInterval = 5 * time.Millisecond
+	t.Cleanup(func() { reloadWatchdogInterval = oldInterval })
+	withTempHome(t)
+
+	oldAction := reloadOverdueAction
+	var calls atomic.Int32
+	reloadOverdueAction = func() error { calls.Add(1); return nil }
+	t.Cleanup(func() { reloadOverdueAction = oldAction })
+
+	var fakeNano atomic.Int64
+	start := time.Now().Add(30 * time.Minute)
+	fakeNano.Store(start.UnixNano())
+	oldNow := nowFn
+	nowFn = func() time.Time { return time.Unix(0, fakeNano.Load()) }
+	t.Cleanup(func() { nowFn = oldNow })
+
+	r := &ProxyReloader{}
+	r.reloadActive.Store(true)
+	r.reloadStartedAt.Store(start.Add(-21 * time.Minute).UnixNano())
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.RunReloadWatchdog(ctx, nil)
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for calls.Load() == 0 && time.Now().Before(deadline) {
+		time.Sleep(2 * time.Millisecond)
+	}
+	cancel()
+	<-done
+	waitWatchdogActionIdle(t, r)
+
+	if calls.Load() == 0 {
+		t.Fatal("a nil clock must fall back to the live seam and still fire the overdue escalation")
 	}
 }
