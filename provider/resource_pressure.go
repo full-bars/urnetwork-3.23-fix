@@ -858,10 +858,10 @@ func pressureDecide(prev pressureState, s pressureSample) (smoothed float64, reg
 	} else {
 		smoothed = ewmaUpdate(prev.smoothed, raw)
 	}
-	// CPU-excluded companion score for the grow gate. The main score's
-	// emergency pins are heap/goroutine conditions, and those saturate their
-	// own components to 1.0, so the main score alone carries emergencies; a
-	// saturated psi_cpu alone no longer blocks growth (scoring fix).
+	// CPU-excluded companion score for growth outside the shrink regime. The
+	// main score remains authoritative for emergency pins and shrink decisions;
+	// CPU pressure can still shrink the pool, but CPU pressure alone does not
+	// block regrowth after the full score leaves that regime.
 	rawNoCPU := scoreExcludingCPU(comps)
 	var noCPU float64
 	if rawNoCPU >= 1.0 {
