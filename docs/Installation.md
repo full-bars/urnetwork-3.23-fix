@@ -40,8 +40,8 @@ urnet-tools proxy refresh
 
 ## 🧭 Other Platforms (Quick install)
 
-- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See [Alpine Linux (OpenRC)](OpenRC.md).
-- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See [FreeBSD](FreeBSD.md).
+- **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/OpenRC).
+- **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/FreeBSD).
 
 ## 🍎 macOS Installation
 
