@@ -50,7 +50,7 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 | 20 | The proxy file specified with `--proxy_file` cannot be read. Check the path and file permissions. |
 | 21 | The proxy file is empty or contains no valid `ip:port:user:pass` lines. |
 | 78 | The JWT is expired or invalid. The startup script intercepts this code, deletes the stale JWT, and re-authenticates automatically. |
-| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds, and only when `URNETWORK_EXIT75_OK=1` allowed the watchdog to exit at all. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
+| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds. See [Swap-thrash watchdog](Configuration.md#swap-thrash-watchdog). |
 
 ### logs
 

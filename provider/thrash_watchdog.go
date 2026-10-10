@@ -1077,10 +1077,7 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	// overrides must restart on exit 75.
 	kind, restartsOn75 := thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
 	if !restartsOn75 {
-		if kind == "docker" {
-			return thrashEscalationAlert("no-supervisor", "running in a container without URNETWORK_EXIT75_OK=1, so a self-exit would not be restarted; not restarting")
-		}
-		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd or OpenRC), so a self-exit would not be restarted; not restarting")
+		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting")
 	}
 	if kind == "docker" {
 		if err := thrashCapDirWritableBounded(); err != nil {
@@ -1477,8 +1474,12 @@ func thrashSupervisorKind(env func(string) string, fileExists func(string) bool)
 	if env("URNETWORK_INIT") == "openrc" {
 		return "openrc", true
 	}
+	// A container's start script (the shipped image's entrypoint) treats exit
+	// 75 as a planned restart and loops, so a container is a supervisor with no
+	// opt-in. The writable-state-dir guard below still applies: without a
+	// durable restart record a self-exit could loop without its throttle.
 	if fileExists("/.dockerenv") || env("URNETWORK_CONTAINER") == "1" {
-		return "docker", env("URNETWORK_EXIT75_OK") == "1"
+		return "docker", true
 	}
 	return "none", false
 }

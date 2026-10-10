@@ -28,7 +28,7 @@ urnetwork-3.23-fix/
 │   ├── client_jwt_hotrestart.go      # Client JWT renew + identity snapshot across hot restarts
 │   ├── claim_credential.go           # `provider claim` credential choice (store client, client jwt file, legacy coldkey)
 │   ├── sn.go                         # Subnet commands (wallet set + unsigned-request gate, claim, bind-head)
-│   ├── thrash_watchdog.go            # Swap-thrash watchdog, supervised exit-75 restart, container opt-in
+│   ├── thrash_watchdog.go            # Swap-thrash watchdog, supervised exit-75 restart
 │   ├── doh_cache.go                  # Persistent DNS-over-HTTPS cache with server-score persistence
 │   ├── net_http_doh.go               # DNS-over-HTTPS resolver (server scoring, serve-stale)
 │   ├── bandwidth_reporter.go         # Pushes periodic JSON telemetry to a configurable report URL

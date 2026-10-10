@@ -19,7 +19,7 @@ urnetwork-3.23-fix/
 │   ├── bandwidth_reporter.go     # Posts bandwidth metrics to configured fleet target
 │   ├── proxy_id.go               # Stable proxy identity across reloads
 │   ├── claim_credential.go       # `provider claim` credential choice (store client, client jwt file, legacy coldkey)
-│   ├── thrash_watchdog.go        # Swap-thrash watchdog, supervised exit-75 restart, container opt-in
+│   ├── thrash_watchdog.go        # Swap-thrash watchdog, supervised exit-75 restart
 │   ├── shmlog_linux.go           # Linux shared-memory log ring buffer
 │   ├── shmlog_fallback.go        # Fallback for non-Linux builds
 │   ├── direct.go                 # Dynamic direct native connection controller

@@ -3761,13 +3761,13 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files Added**: `docker/scripts/test_exit75_restart.sh`
 
 **Change**:
-- `thrashSupervisorKind` is the one decision used by both the exit gate and the critical-state log line. systemd (`INVOCATION_ID` or `NOTIFY_SOCKET`) restarts on 75. A container (`/.dockerenv` or `URNETWORK_CONTAINER=1`) does only with `URNETWORK_EXIT75_OK=1`.
+- `thrashSupervisorKind` is the one decision used by both the exit gate and the critical-state log line. systemd (`INVOCATION_ID` or `NOTIFY_SOCKET`) restarts on 75. A container (`/.dockerenv` or `URNETWORK_CONTAINER=1`) also restarts on 75, with no opt-in: its start script treats 75 as a planned restart.
 - Before exiting in a container the watchdog proves the state directory holding `thrash_cap.json` can be written and read back, otherwise the escalation is refused as `persist-failed`. The probe runs in a goroutine bounded by `thrashPersistTimeout`.
 - The start scripts treat exit 75 as a planned restart (5 second sleep, failure counter and JWT untouched). `start_update.sh` and the JWT-mode function of `pelican_panel.sh` have no restart loop and are untouched.
 
 **How to Identify in New Upstream**: `thrashSupervisorKind` and `thrashCapDirWritableBounded` in `provider/thrash_watchdog.go`; the `-eq 75` block in each start script.
 
-**Status**: ported to meso-miner (its PR #191) and `sn` (its PR #84). Nothing sets `URNETWORK_EXIT75_OK` by default.
+**Status**: ported to meso-miner (its PR #191) and `sn` (its PR #84). The container opt-in (`URNETWORK_EXIT75_OK`) was removed again: a container counts as a supervisor on its own, and self-heal is the one switch.
 
 ---
 
