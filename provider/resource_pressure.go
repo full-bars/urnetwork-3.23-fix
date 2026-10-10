@@ -90,10 +90,12 @@ const (
 	ewmaAlphaDecay = 0.1
 )
 
-// globalPressure holds the current smoothed score as float64 bits. Zero
-// (its natural initial value) means "no pressure" — when the monitor isn't
-// running (self-heal off), every consumer sees 0 and behaves exactly like
-// the pre-pressure code.
+// globalPressure holds the current smoothed score as float64 bits: the
+// ACTUATING value, the only one consumers may read. Zero (its natural
+// initial value) means "no pressure" when the monitor isn't running
+// (self-heal off), every consumer sees 0 and behaves exactly like the
+// pre-pressure code. The observed reading lives beside it in
+// globalObservedPressure.
 var globalPressure atomic.Uint64
 
 func currentPressure() float64 { return math.Float64frombits(globalPressure.Load()) }
@@ -106,6 +108,31 @@ var globalPressureNoCPU atomic.Uint64
 
 func currentPressureNoCPU() float64 { return math.Float64frombits(globalPressureNoCPU.Load()) }
 func setPressureNoCPU(v float64)    { globalPressureNoCPU.Store(math.Float64bits(v)) }
+
+// globalObservedPressure holds the OBSERVED score: what the sensors see,
+// recorded every tick whether or not self-heal is on (the actuating value
+// above is strictly 0 while self-heal is off, per design doc 3.2).
+// writePressureStatus is currently its only production reader; other status
+// and telemetry surfaces still read the actuating score, and actuators must
+// not read it.
+var globalObservedPressure atomic.Uint64
+
+func observedPressureForStatus() float64 { return math.Float64frombits(globalObservedPressure.Load()) }
+func setObservedPressure(v float64)      { globalObservedPressure.Store(math.Float64bits(v)) }
+
+// globalObservedPressureNoCPU mirrors globalObservedPressure with the psi_cpu
+// component excluded; the observed/actuating split applies to both reads
+// (design doc 3.2).
+var globalObservedPressureNoCPU atomic.Uint64
+
+func observedPressureNoCPUForStatus() float64 {
+	return math.Float64frombits(globalObservedPressureNoCPU.Load())
+}
+func setObservedPressureNoCPU(v float64) { globalObservedPressureNoCPU.Store(math.Float64bits(v)) }
+
+// lastStatusTarget caches the last successfully read target pool size so the
+// status writer can stay free of lock sleeps when the proxy lock is contended.
+var lastStatusTarget atomic.Int64
 
 // lastRunningProxyCount mirrors the pressure monitor's last running-proxy
 // sample as an atomic: the thrash watchdog's escalation path needs the count
@@ -329,6 +356,8 @@ func runningProxyCountForPressure() int {
 // self-heal is off: every consumer reads a zero score, which they all treat as
 // "do not act", and the connection memory budget returns to full so connections
 // opened now do not keep the reduced buffers of an earlier pressure episode.
+// Only the actuating values are touched here; the observed score is recorded
+// separately (setObservedPressure) so status stays live.
 func publishSelfHealOffPressure() {
 	setPressure(0)
 	setPressureNoCPU(0)
@@ -882,8 +911,9 @@ func pressureDecide(prev pressureState, s pressureSample) (smoothed float64, reg
 
 // runPressureMonitor samples sensors every pressureSampleInterval, smooths
 // the score, publishes it, and logs on regime changes. When self-heal is
-// off it publishes 0 and idles (cheap tick, no sensor reads), so toggling
-// on at runtime starts sensing within one interval.
+// off it publishes 0 to consumers but keeps reading the sensors for the
+// observed score, which only status surfaces read (design doc 3.2), so
+// toggling on at runtime starts actuating within one interval.
 //
 // It also owns the single GC writer (consolidated adaptive GC): a 10s heap
 // subtick reacts to heap spikes faster than the 30s sweep, and the full
@@ -933,12 +963,21 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	// GOGC as its baseline.
 	defer func() {
 		resetPressureActuators(&gcState, debug.SetGCPercent)
+		// Symmetry with the actuating reset: nothing may read a dead
+		// monitor's observed value after exit.
+		setObservedPressure(0)
+		setObservedPressureNoCPU(0)
 		clearPressureStatus()
 	}()
 
 	var headroom headroomTracker
 	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
 	var prev pressureState
+	// prevObserved carries the observed score's smoothing state separately
+	// from prev, so switching self-heal on still starts the actuating rise
+	// from zero (prev is reset on every self-heal-off tick, exactly as
+	// before) while the observed reading keeps its own history.
+	var prevObserved pressureState
 	fullTicker := time.NewTicker(pressureSampleInterval)
 	defer fullTicker.Stop()
 	subTicker := time.NewTicker(gcSubtickInterval)
@@ -989,11 +1028,25 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 			prev.smoothed = 0
 			prev.smoothedNoCPU = 0
 			publishSelfHealOffPressure()
+			// Observed score: the sensors keep being read while actuators
+			// read zero, and the status file keeps carrying the live reading
+			// (design doc 3.2). It is computed through the same pure decision
+			// as the actuating score, on its own smoothing state; the regime
+			// it returns is discarded and prevObserved.lastRegime is
+			// intentionally not maintained (the off path logs no regimes).
+			sample := collectPressureSample()
+			obsSmoothed, _, obsActs := pressureDecide(prevObserved, sample)
+			prevObserved.smoothed = obsSmoothed
+			prevObserved.smoothedNoCPU = obsActs.publishNoCPU
+			setObservedPressure(obsSmoothed)
+			setObservedPressureNoCPU(obsActs.publishNoCPU)
 			// The GC governor is independent of self-heal: keep giving it the
 			// full host+heap view so a tightened level can release.
 			if gcAdaptiveEnabled() {
 				gcSelfHealOffTick(heapFracFn(), hostAvailMiB(), cpuVetoSignal(), &gcState)
 			}
+			// Write after the GC tick so gc_state and heap_frac are current.
+			writePressureStatus(0, obsActs.comps, &gcState)
 			continue
 		}
 		sample := collectPressureSample()
@@ -1002,6 +1055,16 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 		prev.smoothedNoCPU = acts.publishNoCPU
 		setPressure(smoothed)
 		setPressureNoCPU(acts.publishNoCPU)
+		// While self-heal is on, the observed score equals the actuating one
+		// by definition (design doc 3.2); the observed state tracks the same
+		// values so a toggle OFF continues the reading without a jump. A
+		// toggle OFF->ON re-equalizes observed with the actuating rise, so
+		// the status can dip once right after enabling (the actuating value
+		// must restart from zero for neutrality).
+		prevObserved.smoothed = smoothed
+		prevObserved.smoothedNoCPU = acts.publishNoCPU
+		setObservedPressure(smoothed)
+		setObservedPressureNoCPU(acts.publishNoCPU)
 		comps := acts.comps
 
 		// Consolidated GC governor: merge heap + host-RAM, tighter wins.
@@ -1074,21 +1137,36 @@ func formatComponents(comps map[string]float64) string {
 }
 
 // writePressureStatus persists the current score for `urnet-tools self-heal
-// status` and debugging, plus the adaptive-GC governor state. Best-effort;
-// failures are silent (status is advisory, the atomic is the source of truth).
+// status` and debugging, plus the adaptive-GC governor state. The "score"
+// field is the actuating value; "observed_score" is what the sensors see,
+// which stays live while self-heal is off (design doc 3.2: observed for
+// status only). This writer is the only reader of the observed accessor,
+// and TestConsumerCallSitesReadActuatingPressure pins that no consumer
+// reads it. Best-effort; failures are silent (status is advisory, the
+// atomic is the source of truth).
 func writePressureStatus(score float64, comps map[string]float64, gcState *gcGovernorState) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return
 	}
 	var target int
-	release, err := acquireProxyLockWithRetry()
-	if err == nil {
+	// Status is advisory and this writer runs on the monitor goroutine that
+	// also owns the GC subtick, so never sleep on the proxy lock: one try,
+	// and on contention fall back to the last target read (the decision step
+	// never waits on a flock).
+	if release, err := acquireProxyLock(); err == nil {
 		if state, err := readProxyURLState(); err == nil {
 			target = state.TargetPoolSize
+			lastStatusTarget.Store(int64(target))
 		}
 		release()
+	} else {
+		target = int(lastStatusTarget.Load())
 	}
+	// The observed reading is what the operator-facing summary describes:
+	// when self-heal is on it equals score, and when off it is the only
+	// live reading there is.
+	observed := observedPressureForStatus()
 	// Thrash fields + a plain-language summary: nothing here needs decoding.
 	var psiFull any
 	if v, ok := thrashPSIFullForStatus(); ok {
@@ -1099,16 +1177,17 @@ func writePressureStatus(score float64, comps map[string]float64, gcState *gcGov
 		swapIO = v
 	}
 	payload, err := json.Marshal(map[string]any{
-		"score":        score,
-		"components":   comps,
-		"target_pool":  target,
-		"gc_state":     gcStateNameOf(gcState),
-		"heap_frac":    gcState.lastHeapFrac,
-		"thrash_state": thrashStateName(),
-		"psi_mem_full": psiFull,
-		"swap_io_rate": swapIO,
-		"summary":      pressureSummaryOf(score, comps),
-		"updated":      time.Now().UTC().Format(time.RFC3339),
+		"score":          score,
+		"observed_score": observed,
+		"components":     comps,
+		"target_pool":    target,
+		"gc_state":       gcStateNameOf(gcState),
+		"heap_frac":      gcState.lastHeapFrac,
+		"thrash_state":   thrashStateName(),
+		"psi_mem_full":   psiFull,
+		"swap_io_rate":   swapIO,
+		"summary":        pressureSummaryOf(observed, comps),
+		"updated":        time.Now().UTC().Format(time.RFC3339),
 	})
 	if err != nil {
 		return
