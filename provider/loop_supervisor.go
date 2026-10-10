@@ -154,6 +154,7 @@ func supervisedLoopMetrics() string {
 // freezing the last (possibly emergency) reading in force.
 func resetPressureActuators(state *gcGovernorState, setGC func(int) int) {
 	setPressure(0)
+	setPressureNoCPU(0)
 	applyPressureMemoryBudget(0)
 	gcTightening.Store(false)
 	if state != nil {
