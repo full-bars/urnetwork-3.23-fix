@@ -1078,6 +1078,9 @@ Only on a unit that sets `WatchdogSec=` (see [Configuration](docs/Configuration.
 [liveness] the lean start cap was removed again: progress resumed before systemd acted
 [liveness] no progress for 10m0s, but self-heal is off, so the systemd watchdog is still being fed (it would otherwise be withheld and systemd would restart the provider)
 ⚠️ [liveness] WATCHDOG_USEC is set but NOTIFY_SOCKET is not: the unit needs NotifyAccess=main or all, or systemd will restart the provider every 20m0s
+🚨 [liveness] no progress for 10m0s: exiting 75 so supervise-daemon restarts the provider
+[liveness] no progress for 10m0s, but self-heal is off, so the provider keeps running (under OpenRC it would exit 75 and be restarted)
+[liveness] progress resumed; the OpenRC restart was not taken
 ```
 
 | Message | Meaning |

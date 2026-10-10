@@ -152,16 +152,29 @@ func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *liv
 
 var livenessStartOnce sync.Once
 
-// startLivenessWatchdog starts the feed once, as early as the provider is ready
-// (not after the proxy list is loaded): systemd's watchdog timer runs from the
-// start, and the loop has to be feeding it through the whole of startup.
+// startLivenessWatchdog starts the stall defense once, as early as the provider
+// is ready (not after the proxy list is loaded): systemd's watchdog timer runs
+// from the start, and the loop has to be feeding it through the whole of
+// startup. Under OpenRC there is no timer to feed, but the same detection runs
+// with a self-exit as its action (see runOpenRcLivenessWatchdog).
 func startLivenessWatchdog(ctx context.Context) {
-	if _, enabled := sdWatchdogInterval(os.Getenv); !enabled {
+	if !livenessApplies() {
 		return
 	}
 	livenessStartOnce.Do(func() {
 		go superviseLoop(ctx, "liveness_watchdog", func() { runSdWatchdog(ctx, livenessGate) }, nil)
 	})
+}
+
+// livenessApplies reports whether this process runs the stall detection at all:
+// under systemd when the unit sets WatchdogSec= (there is a ping to withhold),
+// or under OpenRC's supervise-daemon, which has no watchdog of its own and so
+// can only be asked for a restart by the provider exiting.
+func livenessApplies() bool {
+	if _, enabled := sdWatchdogInterval(os.Getenv); enabled {
+		return true
+	}
+	return livenessUnderOpenRc()
 }
 
 // livenessGate says whether a stall may be acted on: self-heal must be on, and
@@ -186,6 +199,13 @@ func livenessGate(episodeStart bool) (bool, string) {
 func runSdWatchdog(ctx context.Context, gate func(episodeStart bool) (bool, string)) {
 	interval, ok := sdWatchdogInterval(os.Getenv)
 	if !ok {
+		// No systemd watchdog. Under a supervisor that restarts on exit 75 but
+		// has no watchdog of its own (OpenRC's supervise-daemon), the same
+		// stall detection still protects the box: its action is a self-exit
+		// instead of a withheld ping.
+		if livenessApplies() {
+			runOpenRcLivenessWatchdog(ctx, gate)
+		}
 		return
 	}
 	if os.Getenv("NOTIFY_SOCKET") == "" {
