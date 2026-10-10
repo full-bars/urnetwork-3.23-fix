@@ -1063,21 +1063,58 @@ func thrashEscalationAlert(code, reason string) thrashEscalation {
 	return thrashEscalation{Action: "alert", Code: code, Reason: reason}
 }
 
-// thrashEscalate runs the full gate stack once. Pure aside from the cap file
-// write, the ledger entry and env reads; the caller owns the log + exit.
-func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool, attr string, share float64, shareOK bool) thrashEscalation {
-	if !resolveSelfHealEnabled(selfHeal) {
-		return thrashEscalationAlert("self-heal-off", "self-heal is off (URNETWORK_SELF_HEAL / proxy_self_heal), so no automatic restart runs; the operator must act")
+// escalationInputs is the full input set of the thrash escalation gate stack.
+// Every field is resolved by the caller (environment, control state, probe
+// results, the cap file) so escalationGates itself is pure decision math: no
+// I/O, no locks, no goroutines, no logging.
+type escalationInputs struct {
+	SelfHeal        bool    // resolved: control state, override file, URNETWORK_SELF_HEAL
+	HotSwapBusy     bool    // thrashHotSwapBusy(): draining flag, or hotSwapLock held
+	Attr            string  // thrashAttribution: "unit" | "other" | "unknown"
+	UnitSwapMiB     int64   // for the attributed-other reason text
+	HostSwapUsedMiB int64   // for the attributed-other reason text
+	Share           float64 // this provider's share of host swap, for the reason text
+	SupervisorKind  string  // thrashSupervisorKind: "systemd" | "openrc" | "docker" | "none"
+	RestartsOn75    bool    // thrashSupervisorKind's restart-on-75 answer
+	CapDirProbed    bool    // docker only: thrashCapDirWritableBounded has run
+	CapDirErr       error   // that probe's result (nil = the state dir round-trips)
+	CapState        thrashCapState
+	Now             time.Time
+}
+
+// escalationVerdict is the outcome of the pure gate stack. Action is "restart"
+// when every gate passed, "alert" (with Code and Reason) when one denied, or
+// "probe-capdir": an internal handshake meaning the stack reached the docker
+// state-dir check, whose probe writes a temp file and so can only run in the
+// caller; the caller runs it, fills CapDirProbed and CapDirErr, and evaluates
+// again. Restarts24h carries the cap ladder's count of escapes in the last 24
+// hours (0 whenever the ladder was not reached); the restart message and the
+// escalation record both need it.
+type escalationVerdict struct {
+	Action      string
+	Code        string
+	Reason      string
+	Restarts24h int
+}
+
+func escalationVerdictAlert(code, reason string) escalationVerdict {
+	return escalationVerdict{Action: "alert", Code: code, Reason: reason}
+}
+
+// escalationGates runs the thrash escalation gate stack once, purely.
+func escalationGates(in escalationInputs) escalationVerdict {
+	if !in.SelfHeal {
+		return escalationVerdictAlert("self-heal-off", "self-heal is off (URNETWORK_SELF_HEAL / proxy_self_heal), so no automatic restart runs; the operator must act")
 	}
-	if thrashHotSwapBusy() {
-		return thrashEscalationAlert("hotswap", "a hot-swap is draining or mid-handoff in this process; not restarting")
+	if in.HotSwapBusy {
+		return escalationVerdictAlert("hotswap", "a hot-swap is draining or mid-handoff in this process; not restarting")
 	}
-	switch attr {
+	switch in.Attr {
 	case "other":
-		return thrashEscalationAlert("attributed-other", fmt.Sprintf("the swap belongs to another process: this provider holds %s of %s swapped (%.0f%%); never restarting someone else's thrash",
-			fmtMiBHuman(rd.unitSwapMiB), fmtMiBHuman(rd.hostSwapUsedMiB), share*100))
+		return escalationVerdictAlert("attributed-other", fmt.Sprintf("the swap belongs to another process: this provider holds %s of %s swapped (%.0f%%); never restarting someone else's thrash",
+			fmtMiBHuman(in.UnitSwapMiB), fmtMiBHuman(in.HostSwapUsedMiB), in.Share*100))
 	case "unknown":
-		return thrashEscalationAlert("attributed-unknown", "the swap cannot be attributed to this provider and no per-unit PSI is readable; not restarting blind")
+		return escalationVerdictAlert("attributed-unknown", "the swap cannot be attributed to this provider and no per-unit PSI is readable; not restarting blind")
 	}
 	// A supervisor's presence is only half the restart contract: the unit's
 	// restart policy must also restart on exit status 75. The shipped units
@@ -1085,19 +1122,55 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	// (Restart=no, Restart=on-success, or a policy that excludes status 75)
 	// leaves the provider dead after a restart attempt; provider unit
 	// overrides must restart on exit 75.
-	kind, restartsOn75 := thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
-	if !restartsOn75 {
-		return thrashEscalationAlert("no-supervisor", "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting")
+	if !in.RestartsOn75 {
+		return escalationVerdictAlert("no-supervisor", "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting")
 	}
-	if kind == "docker" {
-		if err := thrashCapDirWritableBounded(); err != nil {
-			return thrashEscalationAlert("persist-failed", fmt.Sprintf("state directory holding thrash_cap.json is not writable (%v); not restarting, to avoid an unthrottled restart loop", err))
-		}
+	if in.SupervisorKind == "docker" && !in.CapDirProbed {
+		return escalationVerdict{Action: "probe-capdir"}
 	}
-	st := readThrashCapState()
-	allowed, code, reason, n := thrashCapEscalationAllowed(st, now)
+	if in.SupervisorKind == "docker" && in.CapDirErr != nil {
+		return escalationVerdictAlert("persist-failed", fmt.Sprintf("state directory holding thrash_cap.json is not writable (%v); not restarting, to avoid an unthrottled restart loop", in.CapDirErr))
+	}
+	allowed, code, reason, n := thrashCapEscalationAllowed(in.CapState, in.Now)
 	if !allowed {
-		return thrashEscalationAlert(code, reason)
+		return escalationVerdict{Action: "alert", Code: code, Reason: reason, Restarts24h: n}
+	}
+	return escalationVerdict{Action: "restart", Code: "restart", Restarts24h: n}
+}
+
+// thrashEscalate runs the full gate stack once and carries out the verdict.
+// The decision is the pure escalationGates; this wrapper owns the I/O around
+// it: resolving the inputs, the bounded state-dir probe, the cap file write
+// and the ledger entry (the caller owns the log and the exit).
+func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool, attr string, share float64, shareOK bool) thrashEscalation {
+	in := escalationInputs{
+		SelfHeal:        resolveSelfHealEnabled(selfHeal),
+		Attr:            attr,
+		UnitSwapMiB:     rd.unitSwapMiB,
+		HostSwapUsedMiB: rd.hostSwapUsedMiB,
+		Share:           share,
+		CapState:        readThrashCapState(),
+		Now:             now,
+	}
+	// The hot-swap probe takes hotSwapLock.TryLock, so resolve it only when
+	// the stack can read it: the old code short-circuited it behind the
+	// self-heal gate, and this keeps the self-heal-off path lock-free.
+	if in.SelfHeal {
+		in.HotSwapBusy = thrashHotSwapBusy()
+	}
+	in.SupervisorKind, in.RestartsOn75 = thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
+	verdict := escalationGates(in)
+	if verdict.Action == "probe-capdir" {
+		// The docker writability probe creates and removes a temp file in the
+		// state directory, so it runs only now that the pure stack has
+		// actually reached it; the stack is then evaluated again with the
+		// probe's result in hand.
+		in.CapDirProbed = true
+		in.CapDirErr = thrashCapDirWritableBounded()
+		verdict = escalationGates(in)
+	}
+	if verdict.Action != "restart" {
+		return thrashEscalationAlert(verdict.Code, verdict.Reason)
 	}
 	running := int(lastRunningProxyCount.Load())
 	cap := thrashCapForNextStart(running)
@@ -1137,10 +1210,10 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 	return thrashEscalation{
 		Action:   "restart",
 		Code:     "restart",
-		Msg:      thrashActionMsg(n+1, thrashMaxRestarts24h, running, cap),
+		Msg:      thrashActionMsg(verdict.Restarts24h+1, thrashMaxRestarts24h, running, cap),
 		Cap:      cap,
 		Running:  running,
-		Restarts: n + 1,
+		Restarts: verdict.Restarts24h + 1,
 	}
 }
 
