@@ -107,3 +107,52 @@ func TestSelfHealOffPublishesZeroPressure(t *testing.T) {
 		return currentPressure() == 0 && currentPressureNoCPU() == 0
 	})
 }
+
+// The pressure loop must carry its decision state across ticks: the pure
+// pressureDecide table cannot catch a dropped carry, so this drives the real
+// loop with scripted samples. A fixed raw score must lift the published value
+// above the first tick's ewma(0, raw) = raw/2; without the carry every tick
+// republishes raw/2 (a memoryless filter).
+func TestRunPressureMonitorCarriesDecisionState(t *testing.T) {
+	resetGlobalControlStateForTest()
+	t.Cleanup(resetGlobalControlStateForTest)
+	withTempHome(t)
+	t.Setenv(adaptiveGCDisableEnv, "off")
+	t.Setenv("URNETWORK_SELF_HEAL", "1")
+
+	origInterval := pressureSampleInterval
+	pressureSampleInterval = 5 * time.Millisecond
+	t.Cleanup(func() { pressureSampleInterval = origInterval })
+
+	origSample := collectPressureSample
+	// PSIMem 30 is raw 0.4 (pinned by TestPressureDecide's rise-from-zero row).
+	collectPressureSample = func() pressureSample { return pressureSample{PSIMem: 30} }
+	t.Cleanup(func() { collectPressureSample = origSample })
+
+	origPressure := currentPressure()
+	origPressureNoCPU := currentPressureNoCPU()
+	t.Cleanup(func() {
+		setPressure(origPressure)
+		setPressureNoCPU(origPressureNoCPU)
+	})
+
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runPressureMonitor(ctx, true)
+	}()
+	defer func() {
+		cancel()
+		<-done
+	}()
+
+	deadline := time.Now().Add(10 * time.Second)
+	for currentPressure() <= 0.25 || currentPressureNoCPU() <= 0.25 {
+		if time.Now().After(deadline) {
+			t.Fatalf("published pressure never climbed above the first-tick value: pressure=%v noCPU=%v (the loop is not carrying its smoothing state across ticks)",
+				currentPressure(), currentPressureNoCPU())
+		}
+		time.Sleep(time.Millisecond)
+	}
+}

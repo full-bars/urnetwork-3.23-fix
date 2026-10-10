@@ -337,8 +337,11 @@ func publishSelfHealOffPressure() {
 
 // collectPressureSample reads every sensor, recording errors per-sensor so
 // one missing source (PSI on old kernels, everything on Windows/macOS)
-// never blanks the others. Self-signals always work.
-func collectPressureSample() pressureSample {
+// never blanks the others. Self-signals always work. It is a var so a test
+// can script samples into runPressureMonitor.
+var collectPressureSample = livePressureSample
+
+func livePressureSample() pressureSample {
 	s := pressureSample{SensorErrs: map[string]error{}, Goroutines: runtime.NumGoroutine(), RunningProxies: runningProxyCountForPressure(), Cores: effectiveCores()}
 
 	if v, err := readPSI("memory"); err == nil {

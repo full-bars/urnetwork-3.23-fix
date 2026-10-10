@@ -13,11 +13,11 @@ import (
 )
 
 // Golden table for escalationGates. Every expected Action, Code and Reason
-// was captured from the pre-extraction thrashEscalate over the same inputs;
-// the extraction must not change one character of them. The capture was
-// re-run against base 529e666cb during review and every row reproduced
-// byte-identically; the two handshake rows (probe-needed) are new by
-// construction because the handshake did not exist before. Restarts24h is the
+// was captured from the pre-extraction thrashEscalate over the same inputs,
+// or derived and hand-verified against it; the extraction must not change
+// one character of them. The capture was re-run against base 529e666cb
+// during review and every captured row reproduced byte-identically; the
+// handshake rows are new by construction. Restarts24h is the
 // cap ladder's 24h count (0 whenever the ladder was not reached), which the
 // pre-extraction runs expose as esc.Restarts-1 on restarts and as the ladder
 // return in the rearm/cap-reached reasons.
@@ -168,6 +168,53 @@ func TestEscalationGates(t *testing.T) {
 			"openrc-restart",
 			in(func(i *escalationInputs) { i.SupervisorKind = "openrc" }),
 			escalationVerdict{Action: "restart", Code: "restart"},
+		},
+		{
+			// Multi-fault rows pin the gate ORDER: single-fault rows cannot
+			// (each trips only its own gate).
+			"order-self-heal-beats-all",
+			in(func(i *escalationInputs) {
+				i.SelfHeal = false
+				i.HotSwapBusy = true
+				i.Attr = "other"
+				i.SupervisorKind = "none"
+				i.RestartsOn75 = false
+			}),
+			escalationVerdict{Action: "alert", Code: "self-heal-off", Reason: "self-heal is off (URNETWORK_SELF_HEAL / proxy_self_heal), so no automatic restart runs; the operator must act"},
+		},
+		{
+			"order-hotswap-beats-attr-and-supervisor",
+			in(func(i *escalationInputs) {
+				i.HotSwapBusy = true
+				i.Attr = "other"
+				i.RestartsOn75 = false
+			}),
+			escalationVerdict{Action: "alert", Code: "hotswap", Reason: "a hot-swap is draining or mid-handoff in this process; not restarting"},
+		},
+		{
+			"order-attr-beats-supervisor",
+			in(func(i *escalationInputs) {
+				i.Attr = "unknown"
+				i.RestartsOn75 = false
+			}),
+			escalationVerdict{Action: "alert", Code: "attributed-unknown", Reason: "the swap cannot be attributed to this provider and no per-unit PSI is readable; not restarting blind"},
+		},
+		{
+			"order-supervisor-beats-probe",
+			in(func(i *escalationInputs) {
+				i.SupervisorKind = "docker"
+				i.RestartsOn75 = false
+				i.CapState = reachedState
+			}),
+			escalationVerdict{Action: "alert", Code: "no-supervisor", Reason: "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting"},
+		},
+		{
+			"order-no-probe-without-contract",
+			in(func(i *escalationInputs) {
+				i.SupervisorKind = "docker"
+				i.RestartsOn75 = false
+			}),
+			escalationVerdict{Action: "alert", Code: "no-supervisor", Reason: "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting"},
 		},
 	}
 

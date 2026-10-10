@@ -6,10 +6,10 @@ import (
 )
 
 // Golden table for reloadOverdueDecide. The fire/held outcomes replay the
-// states driven end to end through RunReloadWatchdog before the extraction
-// (capture pass: /tmp/mst/p2/reload-decide.pre-extraction.txt); the loop-level
-// behavior stays pinned by TestNowFnSeamDrivesReloadWatchdog and the
-// TestReloadWatchdog* family.
+// states driven end to end through RunReloadWatchdog before the extraction,
+// or are derived and hand-verified against it (the boundary, skew and
+// episode rows); the loop-level behavior stays pinned by
+// TestNowFnSeamDrivesReloadWatchdog and the TestReloadWatchdog* family.
 func TestReloadOverdueDecide(t *testing.T) {
 	oldLimit, oldReFire := reloadHardLimit, reloadWatchdogReFire
 	t.Cleanup(func() { reloadHardLimit, reloadWatchdogReFire = oldLimit, oldReFire })

@@ -1076,7 +1076,7 @@ type escalationInputs struct {
 	Share           float64 // this provider's share of host swap, for the reason text
 	SupervisorKind  string  // thrashSupervisorKind: "systemd" | "openrc" | "docker" | "none"
 	RestartsOn75    bool    // thrashSupervisorKind's restart-on-75 answer
-	CapDirProbed    bool    // docker only: thrashCapDirWritableBounded has run
+	CapDirProbed    bool    // docker only: zero until the caller has run the probe in response to probe-capdir
 	CapDirErr       error   // that probe's result (nil = the state dir round-trips)
 	CapState        thrashCapState
 	Now             time.Time
@@ -1096,6 +1096,10 @@ type escalationVerdict struct {
 	Reason      string
 	Restarts24h int
 }
+
+// escalationProbeCapDir is the internal handshake action: the stack reached
+// the docker state-dir check and only the caller can run its probe.
+const escalationProbeCapDir = "probe-capdir"
 
 func escalationVerdictAlert(code, reason string) escalationVerdict {
 	return escalationVerdict{Action: "alert", Code: code, Reason: reason}
@@ -1126,7 +1130,7 @@ func escalationGates(in escalationInputs) escalationVerdict {
 		return escalationVerdictAlert("no-supervisor", "not running under a service supervisor (systemd, OpenRC, or a container whose start script restarts on exit 75), so a self-exit would not be restarted; not restarting")
 	}
 	if in.SupervisorKind == "docker" && !in.CapDirProbed {
-		return escalationVerdict{Action: "probe-capdir"}
+		return escalationVerdict{Action: escalationProbeCapDir}
 	}
 	if in.SupervisorKind == "docker" && in.CapDirErr != nil {
 		return escalationVerdictAlert("persist-failed", fmt.Sprintf("state directory holding thrash_cap.json is not writable (%v); not restarting, to avoid an unthrottled restart loop", in.CapDirErr))
@@ -1152,15 +1156,18 @@ func thrashEscalate(now time.Time, rt thrashRates, rd thrashRead, selfHeal bool,
 		CapState:        readThrashCapState(),
 		Now:             now,
 	}
+	// CapState is read unbounded here, like the per-tick status read above;
+	// only the probe and the cap write are bounded.
+	//
 	// The hot-swap probe takes hotSwapLock.TryLock, so resolve it only when
-	// the stack can read it: the old code short-circuited it behind the
-	// self-heal gate, and this keeps the self-heal-off path lock-free.
+	// the stack can read it: this mirrors the old short-circuit, and the
+	// self-heal-off path never probes.
 	if in.SelfHeal {
 		in.HotSwapBusy = thrashHotSwapBusy()
 	}
 	in.SupervisorKind, in.RestartsOn75 = thrashSupervisorKind(thrashEnvFn, thrashFileExistsFn)
 	verdict := escalationGates(in)
-	if verdict.Action == "probe-capdir" {
+	if verdict.Action == escalationProbeCapDir {
 		// The docker writability probe creates and removes a temp file in the
 		// state directory, so it runs only now that the pure stack has
 		// actually reached it; the stack is then evaluated again with the

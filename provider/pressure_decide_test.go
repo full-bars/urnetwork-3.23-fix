@@ -1,15 +1,16 @@
 package main
 
 import (
+	"math"
 	"testing"
 )
 
 // Golden table for pressureDecide. Every expected value is the captured
 // output of the pre-extraction decision block of runPressureMonitor over the
-// same rows (capture pass: /tmp/mst/p2/pressure-decide.pre-extraction.txt);
-// the float literals are the captured shortest round-trip values and are
-// compared exactly, so any change in the smoothing, the emergency pins or the
-// regime buckets fails here.
+// same rows, or derived and hand-verified against it (the saturated-psi-cpu
+// and steady-zero rows); the float literals are the captured shortest
+// round-trip values and are compared with a small tolerance, so any change in
+// the smoothing, the emergency pins or the regime buckets fails here.
 func TestPressureDecide(t *testing.T) {
 	tests := []struct {
 		name         string
@@ -49,8 +50,11 @@ func TestPressureDecide(t *testing.T) {
 
 	for _, tt := range tests {
 		smoothed, regime, acts := pressureDecide(tt.prev, tt.sample)
-		if smoothed != tt.wantSmoothed || regime != tt.wantRegime ||
-			acts.publishNoCPU != tt.wantNoCPU || acts.regimeChanged != tt.wantChanged {
+		// Floats compare with a tolerance: on arm64/ppc64le/s390x the
+		// compiler may fuse the EWMA multiply-add, moving the last ulp.
+		// Regime and the change flag stay exact.
+		if math.Abs(smoothed-tt.wantSmoothed) > 1e-12 || regime != tt.wantRegime ||
+			math.Abs(acts.publishNoCPU-tt.wantNoCPU) > 1e-12 || acts.regimeChanged != tt.wantChanged {
 			t.Errorf("%s: pressureDecide() = (smoothed=%v, regime=%d, noCPU=%v, changed=%v), want (%v, %d, %v, %v)",
 				tt.name, smoothed, regime, acts.publishNoCPU, acts.regimeChanged,
 				tt.wantSmoothed, tt.wantRegime, tt.wantNoCPU, tt.wantChanged)
