@@ -26,6 +26,7 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 	t.Helper()
 	oldProbe, oldSystemd := openrcProbeFn, systemdRunningFn
 	oldInit, oldRun, oldToolPath := openrcInitScriptPath, openrcRunFn, openrcToolPathFn
+	oldEnabled := openrcServiceEnabledFn
 	oldPeriodic, oldExecutable := openrcPeriodicBaseDir, openrcExecutableFn
 	oldDiscover := discoverSystemdFn
 	oldSupervised := providerSupervisedByOpenRCFn
@@ -34,6 +35,7 @@ func newOpenRCTestRig(t *testing.T, active, installed bool) *openrcTestRig {
 		openrcProcessAliveFn = oldAliveFn
 		openrcProbeFn, systemdRunningFn = oldProbe, oldSystemd
 		openrcInitScriptPath, openrcRunFn, openrcToolPathFn = oldInit, oldRun, oldToolPath
+		openrcServiceEnabledFn = oldEnabled
 		openrcPeriodicBaseDir, openrcExecutableFn = oldPeriodic, oldExecutable
 		discoverSystemdFn = oldDiscover
 		providerSupervisedByOpenRCFn = oldSupervised
@@ -1381,5 +1383,165 @@ func TestOpenrcInitScriptStaleReasonReadsDirectivesNotText(t *testing.T) {
 	write("#!/sbin/openrc-run\n# export URNETWORK_INIT=openrc\n#retry=TERM/40/KILL/5\n")
 	if got := openrcInitScriptStaleReason(path); got == "" || !strings.Contains(got, "URNETWORK_INIT") || !strings.Contains(got, "retry=") {
 		t.Fatalf("commented-out directives are not directives, got %q", got)
+	}
+}
+
+// exitCode3 is the error rc-service returns for a stopped service.
+func exitCode3(t *testing.T) error {
+	t.Helper()
+	err := exec.Command("sh", "-c", "exit 3").Run()
+	if err == nil {
+		t.Fatal("sh -c 'exit 3' unexpectedly succeeded")
+	}
+	return err
+}
+
+// TestOpenRCStatusWarnsWhenStoppedButEnabled: a service that is enabled in the
+// default runlevel but is not running is a fault (it exited and did not come
+// back), so `status` must say so and name the next step. A bare rc-service
+// "stopped" line is not enough.
+func TestOpenRCStatusWarnsWhenStoppedButEnabled(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	openrcRunFn = func(args ...string) error { return exitCode3(t) }
+	openrcServiceEnabledFn = func() bool { return true }
+
+	out := captureStderr(t, func() { _ = renderOpenRCStatus() })
+	if !strings.Contains(out, "WARNING") || !strings.Contains(out, "NOT running") {
+		t.Fatalf("a stopped-but-enabled service must warn loudly, got:\n%s", out)
+	}
+	if !strings.Contains(out, "respawn_max=10") {
+		t.Errorf("the warning must name the likely cause, got:\n%s", out)
+	}
+	if !strings.Contains(out, "rc-service urnetwork start") {
+		t.Errorf("the warning must name the next step, got:\n%s", out)
+	}
+}
+
+// TestOpenRCStatusStoppedNotEnabled: a stopped service that is NOT enabled at
+// boot is an operator choice, not a fault; the message says how to start it and
+// must not cry fault.
+func TestOpenRCStatusStoppedNotEnabled(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	openrcRunFn = func(args ...string) error { return exitCode3(t) }
+	openrcServiceEnabledFn = func() bool { return false }
+
+	out := captureStderr(t, func() { _ = renderOpenRCStatus() })
+	if strings.Contains(out, "WARNING") {
+		t.Fatalf("a stopped service that is not enabled must not warn as a fault, got:\n%s", out)
+	}
+	if !strings.Contains(out, "is not enabled at boot") || !strings.Contains(out, "rc-service urnetwork start") {
+		t.Fatalf("the message must say it is not enabled and how to start it, got:\n%s", out)
+	}
+}
+
+// TestOpenRCStatusStartedSaysNothingExtra: a started service (exit 0) keeps
+// today's behavior exactly: rc-service's own output, nothing added.
+func TestOpenRCStatusStartedSaysNothingExtra(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	out := captureStderr(t, func() { _ = renderOpenRCStatus() })
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("a started service must add no stderr output, got:\n%s", out)
+	}
+}
+
+// TestOpenRCServiceEnabledParsesRcUpdate pins the rc-update parsing: only the
+// service name before the pipe counts, so a padded line or a name that merely
+// starts with "urnetwork" cannot claim the service is enabled.
+func TestOpenRCServiceEnabledParsesRcUpdate(t *testing.T) {
+	oldTool := openrcToolPathFn
+	t.Cleanup(func() { openrcToolPathFn = oldTool })
+
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "rc-update")
+	openrcToolPathFn = func(name string) string {
+		if name == "rc-update" {
+			return stub
+		}
+		return name
+	}
+	write := func(body string) {
+		t.Helper()
+		if err := os.WriteFile(stub, []byte("#!/bin/sh\ncat <<'EOF'\n"+body+"EOF\n"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	write("        acpid | default\n      urnetwork | default\n")
+	if !openrcServiceEnabled() {
+		t.Fatal("urnetwork in the default runlevel must report enabled")
+	}
+	write("        acpid | default\n")
+	if openrcServiceEnabled() {
+		t.Fatal("a runlevel without urnetwork must report not enabled")
+	}
+	write("   urnetwork-other | default\n")
+	if openrcServiceEnabled() {
+		t.Fatal("a longer name that merely prefixes urnetwork must not match")
+	}
+	write("# banner line with no delimiter at all\n        acpid | default\n")
+	if openrcServiceEnabled() {
+		t.Fatal("a line without the pipe delimiter must not match")
+	}
+}
+
+// TestOpenRCServiceEnabledFalseOnProbeError: an rc-update that runs and fails
+// (a non-zero exit, not a missing binary) also reports not-enabled.
+func TestOpenRCServiceEnabledFalseOnProbeError(t *testing.T) {
+	oldTool := openrcToolPathFn
+	t.Cleanup(func() { openrcToolPathFn = oldTool })
+
+	dir := t.TempDir()
+	stub := filepath.Join(dir, "rc-update")
+	if err := os.WriteFile(stub, []byte("#!/bin/sh\nexit 1\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	openrcToolPathFn = func(name string) string { return stub }
+	if openrcServiceEnabled() {
+		t.Fatal("a failing rc-update must report not enabled")
+	}
+}
+
+// TestOpenRCExitStatusClassification pins the exit-code reading: nil is 0, a
+// process exit carries its code, and a command that could not be started is -1
+// (not a service state at all, so the caller must not read it as stopped).
+func TestOpenRCExitStatusClassification(t *testing.T) {
+	if got := openrcExitStatus(nil); got != 0 {
+		t.Errorf("nil error = %d, want 0", got)
+	}
+	if got := openrcExitStatus(exitCode3(t)); got != 3 {
+		t.Errorf("exit 3 = %d, want 3", got)
+	}
+	errOne := exec.Command("sh", "-c", "exit 1").Run()
+	if got := openrcExitStatus(errOne); got != 1 {
+		t.Errorf("exit 1 = %d, want 1", got)
+	}
+	if got := openrcExitStatus(exec.ErrNotFound); got != -1 {
+		t.Errorf("a command that cannot start = %d, want -1", got)
+	}
+}
+
+// TestOpenRCServiceEnabledFalseOnProbeFailure: an rc-update that cannot run
+// reports not-enabled, so a broken probe never fabricates a fault warning.
+func TestOpenRCServiceEnabledFalseOnProbeFailure(t *testing.T) {
+	oldTool := openrcToolPathFn
+	t.Cleanup(func() { openrcToolPathFn = oldTool })
+	openrcToolPathFn = func(name string) string { return "/nonexistent/rc-update" }
+	if openrcServiceEnabled() {
+		t.Fatal("a failing rc-update probe must report not enabled")
+	}
+}
+
+// TestOpenRCStatusSilentOnOtherExitCodes: only the stopped code (3) keys the
+// fault message. A different non-zero code (a failed or unreadable status
+// check) is passed through silently rather than risking a false "it is not
+// running" for a service that may be fine.
+func TestOpenRCStatusSilentOnOtherExitCodes(t *testing.T) {
+	newOpenRCTestRig(t, true, true)
+	openrcRunFn = func(args ...string) error { return exec.Command("sh", "-c", "exit 1").Run() }
+	openrcServiceEnabledFn = func() bool { return true }
+
+	out := captureStderr(t, func() { _ = renderOpenRCStatus() })
+	if strings.TrimSpace(out) != "" {
+		t.Fatalf("a non-3 exit code must stay silent, got:\n%s", out)
 	}
 }

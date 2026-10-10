@@ -4,6 +4,7 @@ package urnettools
 
 import (
 	"bufio"
+	"context"
 	"errors"
 	"fmt"
 	"io/fs"
@@ -974,13 +975,82 @@ func openrcHotSwapDecline(p Provider) error {
 	return ErrHotSwapOpenRC
 }
 
+// openrcServiceEnabledFn reports whether the service is registered in the
+// default runlevel, i.e. meant to be running after a boot. Seam for tests.
+var openrcServiceEnabledFn = openrcServiceEnabled
+
+// openrcProbeTimeout bounds the rc-update probe. It is a fast local read, so
+// the bound only fires on a wedged or unresponsive OpenRC, and it is there so
+// `status` can never hang on the enable check.
+const openrcProbeTimeout = 5 * time.Second
+
+// openrcServiceEnabled reads the default runlevel from rc-update. Each enabled
+// service is printed as "<name> | default" (the first field is padded), so the
+// line must carry the pipe and the name before it must match exactly. A probe
+// that fails reports false: an UNKNOWN enable state must never be reported as
+// enabled, or a deliberately stopped service would be dressed up as a fault.
+func openrcServiceEnabled() bool {
+	ctx, cancel := context.WithTimeout(context.Background(), openrcProbeTimeout)
+	defer cancel()
+	out, err := exec.CommandContext(ctx, openrcToolPathFn("rc-update"), "show", "default").Output()
+	if err != nil {
+		return false
+	}
+	for _, line := range strings.Split(string(out), "\n") {
+		name, _, ok := strings.Cut(line, "|")
+		if !ok {
+			continue // a banner or notice without the pipe is not a runlevel row
+		}
+		if strings.TrimSpace(name) == openrcServiceName {
+			return true
+		}
+	}
+	return false
+}
+
+// openrcExitStatus returns the exit code of a runOpenRCCommand result: 0 for
+// nil, the process code for an ExitError, and -1 when the command could not be
+// started at all. A start failure is NOT "stopped": it must not be read as a
+// service fault.
+func openrcExitStatus(err error) int {
+	if err == nil {
+		return 0
+	}
+	var exitErr *exec.ExitError
+	if errors.As(err, &exitErr) {
+		return exitErr.ExitCode()
+	}
+	return -1
+}
+
 // renderOpenRCStatus prints the service's supervisor view for `urnet-tools
 // status` on an OpenRC host; the caller then falls through to the table,
-// which carries the live control-socket view. rc-service status exits 3 for
-// a stopped service (0 for started) — a normal state, not a failure — so the
-// exit code is deliberately ignored and the command's own output is the view.
+// which carries the live control-socket view.
+//
+// rc-service status exits 0 when the service is started and 3 when it is
+// stopped, and its output is passed through either way. Verified on OpenRC
+// 0.63: a service that never started, one that failed to start, and one whose
+// supervise-daemon exhausted its respawn limit all report "status: stopped"
+// with exit 3, so 3 is the code the fault keys on. The stopped case used
+// to read as a bare "stopped" whatever the reason. The two reasons differ and
+// only one is a fault: a service that is NOT enabled at boot was simply left
+// stopped by the operator, while one that IS enabled should be running, so it
+// exited and either failed to restart or exhausted supervise-daemon's
+// respawn limit (respawn_max=10, set by the installer's init script). The
+// second case is surfaced loudly with the next step, because the operator
+// running `status` is otherwise told nothing is wrong.
 func renderOpenRCStatus() error {
-	_ = openrcRunFn(openrcServiceArgv("status")...)
+	if openrcExitStatus(openrcRunFn(openrcServiceArgv("status")...)) != 3 {
+		return nil
+	}
+	if !openrcServiceEnabledFn() {
+		fmt.Fprintf(os.Stderr, "\nthe %s service is stopped and is not enabled at boot; start it with: sudo rc-service %s start\n", openrcServiceName, openrcServiceName)
+		return nil
+	}
+	fmt.Fprintf(os.Stderr, "\nWARNING: the %s service is enabled in the default runlevel but is NOT running.\n", openrcServiceName)
+	fmt.Fprintf(os.Stderr, "it exited and either failed to restart or exhausted supervise-daemon's respawn limit (respawn_max=10).\n")
+	fmt.Fprintf(os.Stderr, "  start it:      sudo rc-service %s start\n", openrcServiceName)
+	fmt.Fprintf(os.Stderr, "  if it recurs:  urnet-tools logs   and   rc-service %s status\n", openrcServiceName)
 	return nil
 }
 
