@@ -3539,6 +3539,14 @@ func (self *RemoteUserNatClient) ClientReceive(source TransferPath, frames []*pr
 
 			ipPath, err := ParseIpPath(packet)
 			if err == nil {
+				// keep the egress payload detector's flow clock fresh from the return
+				// direction (see RemoteUserNatProvider.refreshEgressFlow); the path
+				// here is parsed from the packet, so it is in the return orientation
+				if protocol.ProvideMode_Network != peer.ProvideMode {
+					if toucher, ok := self.securityPolicy.(dmcaIngressToucher); ok {
+						toucher.touchIngress(ipPath)
+					}
+				}
 				HandleError(func() {
 					self.receivePacketCallback(
 						source,

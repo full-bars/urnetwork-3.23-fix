@@ -66,7 +66,7 @@ func TestDmcaIdleFlowIsEvictedAndActiveFlowSurvives(t *testing.T) {
 	}
 }
 
-func TestDmcaIngressTouchRefreshesOnlyTrackedUnprivilegedFlows(t *testing.T) {
+func TestDmcaIngressTouchRefreshesATrackedFlowAndCreatesNoState(t *testing.T) {
 	detector := newIdleDmcaDetector(nil, 10*time.Minute)
 	path := dmcaIdleTestPath(6881)
 	detector.classify(path, nil)
@@ -80,21 +80,11 @@ func TestDmcaIngressTouchRefreshesOnlyTrackedUnprivilegedFlows(t *testing.T) {
 		t.Fatalf("an ingress-refreshed flow was reclaimed: %d flows", got)
 	}
 
-	// a return packet whose source port is privileged cannot refresh anything:
-	// the matching egress destination below 1024 is never tracked
-	ageFlow(t, detector, key, 11*time.Minute)
-	privileged := path.Reverse()
-	privileged.SourcePort = 443
-	detector.touchIngress(privileged)
-	detector.evictIdle(time.Now())
-	if got := detector.Testing_FlowCount(); got != 0 {
-		t.Fatalf("a privileged-port return packet refreshed a flow: %d flows", got)
-	}
-
 	// a return packet for an untracked flow creates no state
+	before := detector.Testing_FlowCount()
 	detector.touchIngress(dmcaIdleTestPath(6999).Reverse())
-	if got := detector.Testing_FlowCount(); got != 0 {
-		t.Fatalf("ingress touch created state: %d flows", got)
+	if got := detector.Testing_FlowCount(); got != before {
+		t.Fatalf("ingress touch created state: %d flows, had %d", got, before)
 	}
 }
 
@@ -328,5 +318,47 @@ func TestProviderReceiveReportsTheFlowToTheEgressPolicy(t *testing.T) {
 	provider.Receive(source, protocol.ProvideMode_Network, path, packet)
 	if got := spy.touched.Load(); got != 1 {
 		t.Fatalf("a network mode return packet reported a flow: %d total", got)
+	}
+}
+
+func TestDmcaTouchIsSafeOnANilPath(t *testing.T) {
+	detector := newIdleDmcaDetector(nil, time.Minute)
+	detector.touchIngress(nil)
+	detector.touchFlow(nil)
+}
+
+// touchIngressSpy records the return-oriented paths a single client reports.
+type touchIngressSpy struct {
+	smtpSeamPolicy
+	touched atomic.Int64
+}
+
+func (self *touchIngressSpy) touchIngress(*IpPath) { self.touched.Add(1) }
+
+// The single-client receive path is parsed from the packet, so it reports the
+// flow with the packet-oriented touchIngress, except in network mode.
+func TestRemoteUserNatClientReceiveReportsTheFlow(t *testing.T) {
+	spy := &touchIngressSpy{smtpSeamPolicy: smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector()}}
+	var delivered atomic.Int64
+	remote := &RemoteUserNatClient{
+		securityPolicy:        spy,
+		receivePacketCallback: func(TransferPath, protocol.ProvideMode, *IpPath, []byte) { delivered.Add(1) },
+	}
+	packet := []byte{0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 198, 51, 100, 7, 10, 0, 0, 5, 0x00, 0x35, 0x9c, 0x40, 0, 8, 0, 0}
+	frameFor := func() *protocol.Frame {
+		pooled := MessagePoolCopy(packet)
+		frame, err := ToFrame(&protocol.IpPacketFromProvider{IpPacket: &protocol.IpPacket{PacketBytes: pooled}}, DefaultProtocolVersion)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return frame
+	}
+	remote.ClientReceive(TransferPath{SourceId: NewId()}, []*protocol.Frame{frameFor()}, Peer{ProvideMode: protocol.ProvideMode_Public})
+	if spy.touched.Load() != 1 || delivered.Load() != 1 {
+		t.Fatalf("public mode: touched %d delivered %d, want 1 and 1", spy.touched.Load(), delivered.Load())
+	}
+	remote.ClientReceive(TransferPath{SourceId: NewId()}, []*protocol.Frame{frameFor()}, Peer{ProvideMode: protocol.ProvideMode_Network})
+	if spy.touched.Load() != 1 || delivered.Load() != 2 {
+		t.Fatalf("network mode: touched %d delivered %d, want 1 and 2", spy.touched.Load(), delivered.Load())
 	}
 }

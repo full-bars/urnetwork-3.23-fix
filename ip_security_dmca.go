@@ -530,11 +530,15 @@ func (self *dmcaDetector) run(ctx context.Context) {
 	if scanInterval < 5*time.Second {
 		scanInterval = 5 * time.Second
 	}
+	// a ticker, not time.After per iteration: a canceled scan must not leave a
+	// pending timer behind
+	ticker := time.NewTicker(scanInterval)
+	defer ticker.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
-		case <-time.After(scanInterval):
+		case <-ticker.C:
 			self.evictIdle(time.Now())
 		}
 	}
@@ -563,7 +567,7 @@ func (self *dmcaDetector) evictIdle(now time.Time) {
 // Received packets never create or classify state; they only keep an existing
 // flow from being reclaimed as idle.
 func (self *dmcaDetector) touchIngress(ipPath *IpPath) {
-	if !self.settings.Enabled {
+	if !self.settings.Enabled || ipPath == nil {
 		return
 	}
 	switch ipPath.Protocol {
@@ -584,7 +588,7 @@ func (self *dmcaDetector) touchIngress(ipPath *IpPath) {
 // it: the local user nat hands its receive callbacks the path of the sequence, not
 // of the return packet. Like touchIngress it never creates or classifies state.
 func (self *dmcaDetector) touchFlow(ipPath *IpPath) {
-	if !self.settings.Enabled {
+	if !self.settings.Enabled || ipPath == nil {
 		return
 	}
 	switch ipPath.Protocol {
