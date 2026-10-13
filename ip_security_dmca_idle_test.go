@@ -7,6 +7,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/protocol"
 )
 
 // a client->destination path for the dmca flow table (both ports unprivileged)
@@ -220,5 +222,111 @@ func BenchmarkDmcaTouchIngress(b *testing.B) {
 	b.ResetTimer()
 	for i := 0; i < b.N; i++ {
 		detector.touchIngress(ingress)
+	}
+}
+
+// The provider's return path hands over the path of the flow (client to server),
+// not of the return packet, so it must refresh the key as given. Reversing it, as
+// the packet-oriented touch does, would match nothing.
+func TestDmcaTouchFlowRefreshesInTheFlowsOwnOrientation(t *testing.T) {
+	detector := newIdleDmcaDetector(nil, 10*time.Minute)
+	path := dmcaIdleTestPath(6881)
+	detector.classify(path, nil)
+	key := path.ToIp6Path()
+
+	ageFlow(t, detector, key, 11*time.Minute)
+	detector.touchFlow(path)
+	detector.evictIdle(time.Now())
+	if got := detector.Testing_FlowCount(); got != 1 {
+		t.Fatalf("a flow refreshed in its own orientation was reclaimed: %d flows", got)
+	}
+
+	// the wrong orientation refreshes nothing, so the flow ages out
+	ageFlow(t, detector, key, 11*time.Minute)
+	detector.touchFlow(path.Reverse())
+	detector.evictIdle(time.Now())
+	if got := detector.Testing_FlowCount(); got != 0 {
+		t.Fatalf("a reversed path refreshed a flow: %d flows", got)
+	}
+
+	// no state is created, and a privileged destination is never tracked
+	detector.touchFlow(dmcaIdleTestPath(6999))
+	privileged := dmcaIdleTestPath(443)
+	detector.touchFlow(privileged)
+	if got := detector.Testing_FlowCount(); got != 0 {
+		t.Fatalf("touch created state: %d flows", got)
+	}
+}
+
+func TestProviderReturnPathKeepsALiveFlowFromBeingReclaimed(t *testing.T) {
+	detector := newIdleDmcaDetector(nil, 10*time.Minute)
+	provider := &RemoteUserNatProvider{securityPolicy: &egressSecurityPolicy{dmca: detector}}
+	path := dmcaIdleTestPath(6881)
+	detector.classify(path, nil)
+	key := path.ToIp6Path()
+
+	// a flow that is receiving but whose client has been silent
+	ageFlow(t, detector, key, 11*time.Minute)
+	provider.refreshEgressFlow(protocol.ProvideMode_Public, path)
+	detector.evictIdle(time.Now())
+	if got := detector.Testing_FlowCount(); got != 1 {
+		t.Fatalf("the return path did not keep the flow alive: %d flows", got)
+	}
+
+	// network mode never reaches the detector on the egress side, so it must not refresh
+	ageFlow(t, detector, key, 11*time.Minute)
+	provider.refreshEgressFlow(protocol.ProvideMode_Network, path)
+	detector.evictIdle(time.Now())
+	if got := detector.Testing_FlowCount(); got != 0 {
+		t.Fatalf("a network mode packet refreshed a flow: %d flows", got)
+	}
+
+	// a policy that cannot be refreshed, and a nil path, are ignored
+	(&RemoteUserNatProvider{securityPolicy: DefaultIngressSecurityPolicy()}).refreshEgressFlow(protocol.ProvideMode_Public, path)
+	provider.refreshEgressFlow(protocol.ProvideMode_Public, nil)
+}
+
+// touchSpyPolicy is a security policy that records which flows the provider's
+// return path reported.
+type touchSpyPolicy struct {
+	smtpSeamPolicy
+	touched atomic.Int64
+}
+
+func (self *touchSpyPolicy) touchFlow(*IpPath) { self.touched.Add(1) }
+
+// The provider's Receive is the return path of every relayed packet; it must
+// report the flow so the idle scan does not reclaim a live one.
+func TestProviderReceiveReportsTheFlowToTheEgressPolicy(t *testing.T) {
+	spy := &touchSpyPolicy{smtpSeamPolicy: smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector()}}
+	ctx, cancel := context.WithCancel(context.Background())
+	clientSettings := DefaultClientSettings()
+	clientSettings.SendBufferSettings.SequenceBufferSize = 0
+	clientSettings.SendBufferSettings.AckBufferSize = 0
+	clientSettings.ReceiveBufferSettings.SequenceBufferSize = 0
+	clientSettings.ForwardBufferSettings.SequenceBufferSize = 0
+	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
+	localUserNat := NewLocalUserNatWithDefaults(ctx, "touch-spy-provider-test", nil)
+	settings := DefaultRemoteUserNatProviderSettings()
+	settings.WriteTimeout = 10 * time.Millisecond
+	settings.EgressSecurityPolicyGenerator = func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy { return spy }
+	provider := NewRemoteUserNatProvider(client, localUserNat, nil, settings)
+	t.Cleanup(func() {
+		provider.Close()
+		localUserNat.Close()
+		client.Cancel()
+		cancel()
+	})
+
+	source := TransferPath{SourceId: NewId()} // a source mask, as the local user nat reports it
+	path := dmcaIdleTestPath(6881)
+	packet := []byte{0x45, 0, 0, 28, 0, 0, 0, 0, 64, 17, 0, 0, 198, 51, 100, 7, 10, 0, 0, 5, 0x1a, 0xe1, 0x9c, 0x40, 0, 8, 0, 0}
+	provider.Receive(source, protocol.ProvideMode_Public, path, packet)
+	if got := spy.touched.Load(); got != 1 {
+		t.Fatalf("a public mode return packet reported %d flows, want 1", got)
+	}
+	provider.Receive(source, protocol.ProvideMode_Network, path, packet)
+	if got := spy.touched.Load(); got != 1 {
+		t.Fatalf("a network mode return packet reported a flow: %d total", got)
 	}
 }

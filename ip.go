@@ -3130,6 +3130,8 @@ func (self *RemoteUserNatProvider) Receive(
 		return
 	}
 
+	self.refreshEgressFlow(provideMode, ipPath)
+
 	ipPacketFromProvider := &protocol.IpPacketFromProvider{
 		IpPacket: &protocol.IpPacket{
 			PacketBytes: MessagePoolShareReadOnly(packet),
@@ -3178,6 +3180,20 @@ func (self *RemoteUserNatProvider) Receive(
 		c()
 	}
 
+}
+
+// refreshEgressFlow keeps the egress payload detector's idle clock fresh from the
+// return direction: a flow that is receiving but whose client has not sent for a
+// while must not be reclaimed as idle, because a reclaimed flow restarts payload
+// inspection mid-stream. The path here is in the flow's own orientation. Network
+// mode packets bypass the detector on the egress side, so no flow exists for them.
+func (self *RemoteUserNatProvider) refreshEgressFlow(provideMode protocol.ProvideMode, ipPath *IpPath) {
+	if protocol.ProvideMode_Network == provideMode || ipPath == nil {
+		return
+	}
+	if toucher, ok := self.securityPolicy.(dmcaFlowToucher); ok {
+		toucher.touchFlow(ipPath)
+	}
 }
 
 // `connect.ReceiveFunction`

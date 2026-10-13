@@ -48,6 +48,12 @@ type dmcaIngressToucher interface {
 	touchIngress(ipPath *IpPath)
 }
 
+// dmcaFlowToucher is implemented by the egress security policy for callers that
+// hold the flow's own (client to server) path, as the provider's return path does.
+type dmcaFlowToucher interface {
+	touchFlow(ipPath *IpPath)
+}
+
 type egressSecurityPolicy struct {
 	stats *SecurityPolicyStatsCollector
 	cfaa  *cfaaDetector
@@ -88,6 +94,11 @@ func (self *egressSecurityPolicy) Stats() *SecurityPolicyStatsCollector {
 // whose traffic is (currently) one-directional is not reclaimed as idle.
 func (self *egressSecurityPolicy) touchIngress(ipPath *IpPath) {
 	self.dmca.touchIngress(ipPath)
+}
+
+// touchFlow is touchIngress for a path in the flow's own orientation.
+func (self *egressSecurityPolicy) touchFlow(ipPath *IpPath) {
+	self.dmca.touchFlow(ipPath)
 }
 
 func (self *egressSecurityPolicy) Inspect(provideMode protocol.ProvideMode, ipPath *IpPath, payload []byte) (SecurityPolicyResult, error) {

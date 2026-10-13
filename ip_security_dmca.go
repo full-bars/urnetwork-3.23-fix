@@ -576,7 +576,30 @@ func (self *dmcaDetector) touchIngress(ipPath *IpPath) {
 	if ipPath.SourcePort < 1024 {
 		return
 	}
-	key := dmcaEgressKeyForIngressPath(ipPath)
+	self.touchKey(dmcaEgressKeyForIngressPath(ipPath))
+}
+
+// touchFlow refreshes a tracked flow from a path already in the flow's own
+// (client to server) orientation, which is how the provider's return path reports
+// it: the local user nat hands its receive callbacks the path of the sequence, not
+// of the return packet. Like touchIngress it never creates or classifies state.
+func (self *dmcaDetector) touchFlow(ipPath *IpPath) {
+	if !self.settings.Enabled {
+		return
+	}
+	switch ipPath.Protocol {
+	case IpProtocolTcp, IpProtocolUdp:
+	default:
+		return
+	}
+	// mirror the privileged-port skip in classifyDetailed
+	if ipPath.DestinationPort < 1024 {
+		return
+	}
+	self.touchKey(ipPath.ToIp6Path())
+}
+
+func (self *dmcaDetector) touchKey(key Ip6Path) {
 	shard := self.shards[dmcaShardIndex(key)]
 	shard.mu.RLock()
 	st := shard.flows[key]
