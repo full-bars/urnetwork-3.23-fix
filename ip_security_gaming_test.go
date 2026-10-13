@@ -211,7 +211,7 @@ func TestSteamValveEndpointZeroAlloc(t *testing.T) {
 func TestDmcaSteamValveExceptionAndPrecedence(t *testing.T) {
 	t.Run("encrypted UDP allowed", func(t *testing.T) {
 		settings := DefaultDmcaSecurityPolicySettings()
-		detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+		detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 		path := steamTestPath(netip.MustParseAddr("155.133.224.1"), IpProtocolUdp, 27015, false)
 		payload := encryptedPayload(settings.MaxInspectionPayload)
 		if !payloadLooksEncrypted(payload, settings) {
@@ -227,7 +227,7 @@ func TestDmcaSteamValveExceptionAndPrecedence(t *testing.T) {
 
 	t.Run("encrypted IPv6 TCP allowed", func(t *testing.T) {
 		settings := DefaultDmcaSecurityPolicySettings()
-		detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+		detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 		syn := steamTestPath(netip.MustParseAddr("2602:801:f000::1"), IpProtocolTcp, 27050, true)
 		if verdict := detector.classify(syn, nil); verdict != dmcaInspecting {
 			t.Fatalf("Steam TCP SYN verdict = %d, want inspecting", verdict)
@@ -240,7 +240,7 @@ func TestDmcaSteamValveExceptionAndPrecedence(t *testing.T) {
 	})
 
 	t.Run("BitTorrent signature wins", func(t *testing.T) {
-		detector := newDmcaDetector(DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
+		detector := newDmcaDetector(nil, DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
 		path := steamTestPath(netip.MustParseAddr("155.133.224.1"), IpProtocolTcp, 27015, true)
 		if verdict := detector.classify(path, btHandshake()); verdict != dmcaBittorrent {
 			t.Fatalf("BitTorrent on Steam endpoint = %d, want bittorrent", verdict)
@@ -286,7 +286,7 @@ func TestDmcaSteamValveExceptionAndPrecedence(t *testing.T) {
 			if tt.configure != nil {
 				tt.configure(settings)
 			}
-			detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+			detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 			path := steamTestPath(netip.MustParseAddr(tt.address), IpProtocolUdp, tt.port, false)
 			var verdict dmcaVerdict
 			for i := 0; i < settings.EncryptedDecisionPackets; i++ {

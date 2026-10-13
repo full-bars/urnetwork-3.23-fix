@@ -84,7 +84,7 @@ func newSmtpSeamProviderWithClient(
 	localUserNat := NewLocalUserNatWithDefaults(ctx, "smtp-provider-test", nil)
 	settings := DefaultRemoteUserNatProviderSettings()
 	settings.WriteTimeout = 10 * time.Millisecond
-	settings.EgressSecurityPolicyGenerator = func(*SecurityPolicyStatsCollector) SecurityPolicy {
+	settings.EgressSecurityPolicyGenerator = func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy {
 		return policy
 	}
 	provider := NewRemoteUserNatProvider(client, localUserNat, nil, settings)
@@ -158,7 +158,7 @@ func newSmtpSeamMulti(
 		},
 	}
 	settings := DefaultMultiClientSettings()
-	settings.EgressSecurityPolicyGenerator = func(*SecurityPolicyStatsCollector) SecurityPolicy {
+	settings.EgressSecurityPolicyGenerator = func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy {
 		return policy
 	}
 	multi := NewRemoteUserNatMultiClient(

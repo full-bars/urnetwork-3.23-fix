@@ -15,7 +15,7 @@ func payloadWithBittorrentAt(n int, offset int) []byte {
 }
 
 func newBehindHeaderDetector() *dmcaDetector {
-	return newDmcaDetector(DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
+	return newDmcaDetector(nil, DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
 }
 
 func fixturePayloadsForTest(t *testing.T, name string) [][]byte {

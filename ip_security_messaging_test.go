@@ -202,7 +202,7 @@ func TestDmcaWhatsAppMetaExceptionAndPrecedence(t *testing.T) {
 	// encrypted TCP to Meta 5222 is allowed
 	for _, address := range []string{meta, metaTestAddress(t, 6, 0)} {
 		settings := DefaultDmcaSecurityPolicySettings()
-		detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+		detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 		payloads := [][]byte{}
 		for i := 0; i < settings.InspectionPacketBudget+2; i++ {
 			payloads = append(payloads, encryptedPayload(512))
@@ -218,14 +218,14 @@ func TestDmcaWhatsAppMetaExceptionAndPrecedence(t *testing.T) {
 	}
 
 	// a BitTorrent signature wins
-	detector := newDmcaDetector(DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
+	detector := newDmcaDetector(nil, DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
 	verdicts := dmcaTestTcpFlow(detector, whatsAppTestPath(meta, IpProtocolTcp, 5222, true), btHandshake())
 	if verdicts[0] != dmcaBittorrent {
 		t.Fatalf("BitTorrent on the Meta endpoint = %d, want bittorrent", verdicts[0])
 	}
 
 	// a BitTorrent signature after the allow still wins
-	detector = newDmcaDetector(DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
+	detector = newDmcaDetector(nil, DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
 	verdicts = dmcaTestTcpFlow(detector, whatsAppTestPath(meta, IpProtocolTcp, 5222, true), encryptedPayload(512), btHandshake())
 	if verdicts[0] != dmcaAllow || verdicts[1] != dmcaBittorrent {
 		t.Fatalf("allowed Meta flow carrying BitTorrent = %v, want allow then bittorrent", verdicts)
@@ -275,7 +275,7 @@ func TestDmcaWhatsAppMetaExceptionAndPrecedence(t *testing.T) {
 		if c.configure != nil {
 			c.configure(settings)
 		}
-		detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+		detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 		path := whatsAppTestPath(c.address, c.transport, c.port, c.transport == IpProtocolTcp)
 		if c.transport == IpProtocolTcp {
 			detector.classify(path, nil)

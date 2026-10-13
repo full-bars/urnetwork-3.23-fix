@@ -97,7 +97,7 @@ func newAppTestDetector(configure func(settings *DmcaSecurityPolicySettings)) *d
 	if configure != nil {
 		configure(settings)
 	}
-	return newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+	return newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 }
 
 // legacyDmcaSettings is the policy before IPSECURITY-UPDATE4: no application

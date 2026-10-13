@@ -25,6 +25,7 @@ package connect
 
 import (
 	"bytes"
+	"context"
 	"encoding/binary"
 	"math"
 	"math/bits"
@@ -126,6 +127,15 @@ type DmcaSecurityPolicySettings struct {
 	// MaxFlows bounds the total tracked flows for memory; the oldest are evicted
 	// first. 0 disables the bound.
 	MaxFlows int
+
+	// FlowTtl evicts a tracked flow after this much wall-clock time with no
+	// packet activity in either direction: every sent and received packet
+	// refreshes the flow's idle clock, so only genuinely idle flows are
+	// reclaimed. A scan goroutine on the detector performs the eviction
+	// (interval FlowTtl/4, at least 5s; it runs only when the detector was
+	// built with a context). 0 disables the scan, so flows then persist until
+	// MaxFlows capacity eviction.
+	FlowTtl time.Duration
 }
 
 func DefaultDmcaSecurityPolicySettings() *DmcaSecurityPolicySettings {
@@ -147,6 +157,7 @@ func DefaultDmcaSecurityPolicySettings() *DmcaSecurityPolicySettings {
 		EncryptedMaxPrintableFraction: 0.50,
 		EncryptedMinNormalizedEntropy: 0.85,
 		MaxFlows:                      65536,
+		FlowTtl:                       300 * time.Second,
 	}
 	applyDpiAdmitsEnvToDmca(settings)
 	return settings
@@ -469,6 +480,7 @@ type dmcaFlowShard struct {
 }
 
 type dmcaDetector struct {
+	runDone     chan struct{}
 	settings    *DmcaSecurityPolicySettings
 	web         *webStandardDetector
 	app         *appStandardDetector
@@ -476,7 +488,7 @@ type dmcaDetector struct {
 	shards      [dmcaFlowShards]*dmcaFlowShard
 }
 
-func newDmcaDetector(settings *DmcaSecurityPolicySettings, web *webStandardDetector) *dmcaDetector {
+func newDmcaDetector(ctx context.Context, settings *DmcaSecurityPolicySettings, web *webStandardDetector) *dmcaDetector {
 	perShardCap := 0
 	if 0 < settings.MaxFlows {
 		perShardCap = settings.MaxFlows / dmcaFlowShards
@@ -485,6 +497,7 @@ func newDmcaDetector(settings *DmcaSecurityPolicySettings, web *webStandardDetec
 		}
 	}
 	self := &dmcaDetector{
+		runDone:     make(chan struct{}),
 		settings:    settings,
 		web:         web,
 		app:         newAppStandardDetector(settings.App),
@@ -495,7 +508,107 @@ func newDmcaDetector(settings *DmcaSecurityPolicySettings, web *webStandardDetec
 			flows: map[Ip6Path]*dmcaFlowState{},
 		}
 	}
+	// reclaim flows idle past FlowTtl. The capacity eviction (evictWithLock)
+	// still bounds memory under load; this adds time-based reclamation when
+	// egress is quiet. Without a context there is nothing to tie the scan to,
+	// so it never starts (runDone is closed at once).
+	if ctx != nil && 0 < settings.FlowTtl {
+		go func() {
+			defer close(self.runDone)
+			self.run(ctx)
+		}()
+	} else {
+		close(self.runDone)
+	}
 	return self
+}
+
+// run periodically evicts flows whose last packet activity in either direction
+// is older than FlowTtl.
+func (self *dmcaDetector) run(ctx context.Context) {
+	scanInterval := self.settings.FlowTtl / 4
+	if scanInterval < 5*time.Second {
+		scanInterval = 5 * time.Second
+	}
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-time.After(scanInterval):
+			self.evictIdle(time.Now())
+		}
+	}
+}
+
+// evictIdle drops every tracked flow whose last activity is older than FlowTtl.
+func (self *dmcaDetector) evictIdle(now time.Time) {
+	ttl := self.settings.FlowTtl
+	if ttl <= 0 {
+		return
+	}
+	cutoff := now.Add(-ttl)
+	for _, shard := range self.shards {
+		shard.mu.Lock()
+		for key, st := range shard.flows {
+			if st.LastActivityTime().Before(cutoff) {
+				delete(shard.flows, key)
+			}
+		}
+		shard.mu.Unlock()
+	}
+}
+
+// touchIngress refreshes a tracked flow from a received (destination->client)
+// packet, reversing the 5-tuple to the egress key the flow is stored under.
+// Received packets never create or classify state; they only keep an existing
+// flow from being reclaimed as idle.
+func (self *dmcaDetector) touchIngress(ipPath *IpPath) {
+	if !self.settings.Enabled {
+		return
+	}
+	switch ipPath.Protocol {
+	case IpProtocolTcp, IpProtocolUdp:
+	default:
+		return
+	}
+	// the egress destination port is the ingress source port; mirror the
+	// privileged-port skip in classifyDetailed
+	if ipPath.SourcePort < 1024 {
+		return
+	}
+	key := dmcaEgressKeyForIngressPath(ipPath)
+	shard := self.shards[dmcaShardIndex(key)]
+	shard.mu.RLock()
+	st := shard.flows[key]
+	shard.mu.RUnlock()
+	if st != nil {
+		atomic.StoreInt64(&st.lastActivityUnixNanos, time.Now().UnixNano())
+	}
+}
+
+// dmcaEgressKeyForIngressPath builds the egress flow key for a received packet
+// without allocating: the key is the ingress 5-tuple with source and
+// destination swapped (the same key Reverse().ToIp6Path() would produce).
+func dmcaEgressKeyForIngressPath(ipPath *IpPath) Ip6Path {
+	var sourceIp [16]byte
+	if ipPath.DestinationIp != nil {
+		if ip6 := ipPath.DestinationIp.To16(); ip6 != nil {
+			sourceIp = [16]byte(ip6)
+		}
+	}
+	var destinationIp [16]byte
+	if ipPath.SourceIp != nil {
+		if ip6 := ipPath.SourceIp.To16(); ip6 != nil {
+			destinationIp = [16]byte(ip6)
+		}
+	}
+	return Ip6Path{
+		Protocol:        ipPath.Protocol,
+		SourceIp:        sourceIp,
+		SourcePort:      ipPath.DestinationPort,
+		DestinationIp:   destinationIp,
+		DestinationPort: ipPath.SourcePort,
+	}
 }
 
 func dmcaShardIndex(key Ip6Path) int {

@@ -104,7 +104,7 @@ func TestDmcaStateMachineHandshakeIncident(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	if r := d.inspect(dmcaPath(IpProtocolTcp, 40001, 51413, false), btHandshake()); r != SecurityPolicyResultIncident {
 		t.Fatalf("handshake -> %v, want incident", r)
 	}
@@ -115,7 +115,7 @@ func TestDmcaStateMachineEncryptedTcpDropped(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	path := dmcaPath(IpProtocolTcp, 40002, 50000, true)
 	if r := d.inspect(path, nil); r != SecurityPolicyResultAllow {
 		t.Fatalf("syn -> %v, want allow (inspecting)", r)
@@ -135,7 +135,7 @@ func TestDmcaStateMachineEncryptedTcpMidstreamAllowed(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	data := dmcaPath(IpProtocolTcp, 40003, 50000, false)
 	var last SecurityPolicyResult
 	for i := 0; i < settings.InspectionPacketBudget+1; i += 1 {
@@ -151,7 +151,7 @@ func TestDmcaStateMachineEncryptedUdpDropped(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	path := dmcaPath(IpProtocolUdp, 40004, 50000, false)
 	var last SecurityPolicyResult
 	for i := 0; i < settings.EncryptedDecisionPackets; i += 1 {
@@ -167,7 +167,7 @@ func TestDmcaStateMachineQuicAllowed(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	path := dmcaPath(IpProtocolUdp, 40005, 50000, false)
 	if r := d.inspect(path, quicInitial()); r != SecurityPolicyResultAllow {
 		t.Fatalf("quic initial -> %v, want allow", r)
@@ -183,7 +183,7 @@ func TestDmcaStateMachinePlaintextAllowed(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	web := newWebStandardDetector(DefaultWebStandardSettings())
 
-	d := newDmcaDetector(settings, web)
+	d := newDmcaDetector(nil, settings, web)
 	path := dmcaPath(IpProtocolUdp, 40006, 50000, false)
 	if r := d.inspect(path, []byte("PLAINTEXT GAME PROTOCOL HELLO v1 ............")); r != SecurityPolicyResultAllow {
 		t.Fatalf("plaintext -> %v, want allow", r)
@@ -197,7 +197,7 @@ func TestDmcaStateMachinePlaintextAllowed(t *testing.T) {
 // packets arrived.
 func TestDmcaRawHttpShortRequestAllowed(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
-	d := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+	d := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 	if r := d.inspect(dmcaPath(IpProtocolTcp, 40010, 40000, true), nil); r != SecurityPolicyResultAllow {
 		t.Fatalf("syn -> %v, want allow", r)
 	}
@@ -215,7 +215,7 @@ func TestDmcaRawHttpShortRequestAllowed(t *testing.T) {
 // TestDmcaHttpTrackerIsBittorrent: an HTTP-tracker GET (info_hash + /announce) is still
 // BitTorrent, not allowed as raw HTTP — the HTTP check runs after the BitTorrent signatures.
 func TestDmcaHttpTrackerIsBittorrent(t *testing.T) {
-	d := newDmcaDetector(DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
+	d := newDmcaDetector(nil, DefaultDmcaSecurityPolicySettings(), newWebStandardDetector(DefaultWebStandardSettings()))
 	tracker := []byte("GET /announce?info_hash=%01%02&peer_id=x HTTP/1.1\r\nHost: t\r\n\r\n")
 	if r := d.inspect(dmcaPath(IpProtocolTcp, 40012, 40000, false), tracker); r != SecurityPolicyResultIncident {
 		t.Fatalf("http tracker -> %v, want incident", r)

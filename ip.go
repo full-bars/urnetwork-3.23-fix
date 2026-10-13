@@ -3058,7 +3058,7 @@ type RemoteUserNatProviderSettings struct {
 
 	ProtocolVersion int
 
-	EgressSecurityPolicyGenerator func(*SecurityPolicyStatsCollector) SecurityPolicy
+	EgressSecurityPolicyGenerator func(context.Context, *SecurityPolicyStatsCollector) SecurityPolicy
 }
 
 type RemoteUserNatProvider struct {
@@ -3093,7 +3093,7 @@ func NewRemoteUserNatProvider(
 	userNatProvider := &RemoteUserNatProvider{
 		client:         client,
 		localUserNat:   localUserNat,
-		securityPolicy: settings.EgressSecurityPolicyGenerator(DefaultSecurityPolicyStatsCollector()),
+		securityPolicy: settings.EgressSecurityPolicyGenerator(client.Ctx(), DefaultSecurityPolicyStatsCollector()),
 		settings:       settings,
 		bw:             bw,
 	}
@@ -3388,7 +3388,7 @@ func NewRemoteUserNatClientWithClose(
 	userNatClient := &RemoteUserNatClient{
 		client:                client,
 		receivePacketCallback: receivePacketCallback,
-		securityPolicy:        DefaultEgressSecurityPolicy(),
+		securityPolicy:        DefaultEgressSecurityPolicyWithStats(client.Ctx(), DefaultSecurityPolicyStatsCollector()),
 		pathTable:             pathTable,
 		provideMode:           provideMode,
 		localUserNat:          localUserNat,

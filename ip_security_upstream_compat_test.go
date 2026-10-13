@@ -75,7 +75,7 @@ func DefaultSecurityPolicy(_ context.Context) upstreamTestPolicy {
 	webSettings := DefaultWebStandardSettings()
 	stats := DefaultSecurityPolicyStatsCollector()
 	cfaa := newCfaaDetector(cfaaSettings)
-	dmca := newDmcaDetector(dmcaSettings, newWebStandardDetector(webSettings))
+	dmca := newDmcaDetector(nil, dmcaSettings, newWebStandardDetector(webSettings))
 	return &upstreamTestPolicyImpl{
 		policy: &egressSecurityPolicy{
 			stats: stats,
@@ -92,7 +92,7 @@ func DefaultSecurityPolicyWithStats(_ context.Context, stats *SecurityPolicyStat
 	dmcaSettings := DefaultDmcaSecurityPolicySettings()
 	webSettings := DefaultWebStandardSettings()
 	cfaa := newCfaaDetector(cfaaSettings)
-	dmca := newDmcaDetector(dmcaSettings, newWebStandardDetector(webSettings))
+	dmca := newDmcaDetector(nil, dmcaSettings, newWebStandardDetector(webSettings))
 	return &upstreamTestPolicyImpl{
 		policy: &egressSecurityPolicy{
 			stats: stats,
@@ -112,7 +112,7 @@ func NewSecurityPolicy(
 	stats *SecurityPolicyStatsCollector,
 ) upstreamTestPolicy {
 	cfaa := newCfaaDetector(cfaaSettings)
-	dmca := newDmcaDetector(dmcaSettings, newWebStandardDetector(webSettings))
+	dmca := newDmcaDetector(nil, dmcaSettings, newWebStandardDetector(webSettings))
 	return &upstreamTestPolicyImpl{
 		policy: &egressSecurityPolicy{
 			stats: stats,

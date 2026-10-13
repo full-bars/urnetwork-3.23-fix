@@ -31,7 +31,7 @@ func TestDmcaPerFlowMemoryBytes(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	settings.MaxFlows = flowCount * 2
 	webSettings := DefaultWebStandardSettings()
-	detector := newDmcaDetector(settings, newWebStandardDetector(webSettings))
+	detector := newDmcaDetector(nil, settings, newWebStandardDetector(webSettings))
 
 	payload := []byte("GET / HTTP/1.1\r\nHost: example.com\r\n\r\n")
 	for i := 0; i < flowCount; i++ {
@@ -87,7 +87,7 @@ func BenchmarkDmcaPerFlowBytes(b *testing.B) {
 func TestDmcaAppStandardZeroAllocs(t *testing.T) {
 	settings := DefaultDmcaSecurityPolicySettings()
 	webSettings := DefaultWebStandardSettings()
-	detector := newDmcaDetector(settings, newWebStandardDetector(webSettings))
+	detector := newDmcaDetector(nil, settings, newWebStandardDetector(webSettings))
 
 	t.Run("decided flow", func(t *testing.T) {
 		path := &IpPath{
@@ -346,7 +346,7 @@ func BenchmarkDmcaPrivilegedPortSignatureCheck(b *testing.B) {
 		b.Run(name, func(b *testing.B) {
 			settings := DefaultDmcaSecurityPolicySettings()
 			settings.InspectPrivilegedSignatures = enabled
-			detector := newDmcaDetector(settings, newWebStandardDetector(DefaultWebStandardSettings()))
+			detector := newDmcaDetector(nil, settings, newWebStandardDetector(DefaultWebStandardSettings()))
 			path := &IpPath{
 				Version:         4,
 				Protocol:        IpProtocolTcp,

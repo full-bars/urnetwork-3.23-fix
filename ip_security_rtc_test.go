@@ -3,7 +3,7 @@ package connect
 import "testing"
 
 func newRtcTestDetector(settings *DmcaSecurityPolicySettings, webSettings *WebStandardSettings) *dmcaDetector {
-	return newDmcaDetector(settings, newWebStandardDetector(webSettings))
+	return newDmcaDetector(nil, settings, newWebStandardDetector(webSettings))
 }
 
 func TestDmcaStateMachineTurnChannelDataAllowed(t *testing.T) {
