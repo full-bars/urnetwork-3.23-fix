@@ -335,6 +335,20 @@ func redactProxyLine(line string) string {
 	if parts := strings.Fields(s); len(parts) == 2 {
 		s = parts[0]
 	}
+	// [v6]:port:cred → keep [v6]:port. The host's inner colons are not field
+	// separators, so split at the bracket and the port's colon instead of the
+	// first two colons.
+	if strings.HasPrefix(s, "[") {
+		if closeIdx := strings.Index(s, "]"); closeIdx > 0 {
+			rest := s[closeIdx+1:]
+			if strings.HasPrefix(rest, ":") {
+				if portEnd := strings.Index(rest[1:], ":"); portEnd >= 0 {
+					return s[:closeIdx+2+portEnd]
+				}
+			}
+		}
+		return s
+	}
 	// host:port:user:pass → keep the addr (first two colon-separated fields).
 	// Don't split on a third colon, since the tail is the credential we're hiding.
 	if parts := strings.SplitN(s, ":", 3); len(parts) >= 2 && validColonForm(s) {
