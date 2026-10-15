@@ -19,6 +19,9 @@ type NodeInternals struct {
 
 	Goroutines uint64 `json:"goroutines"`
 
+	StreamSequencesLive                 uint64 `json:"stream_sequences_live"`
+	StreamSequencesReapedTransportEnded uint64 `json:"stream_sequences_reaped_transport_ended"`
+
 	HeapObjectsBytes uint64 `json:"heap_objects_bytes"`
 	HeapStacksBytes  uint64 `json:"heap_stacks_bytes"`
 	HeapGoalBytes    uint64 `json:"heap_goal_bytes"`
