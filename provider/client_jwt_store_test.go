@@ -47,6 +47,10 @@ func TestClientJWTStorePutGetRoundtrip(t *testing.T) {
 	if err := store.Put("proxy-1", entry); err != nil {
 		t.Fatalf("Put failed: %v", err)
 	}
+	// Put is write-behind: durability needs the explicit flush.
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush failed: %v", err)
+	}
 
 	got, ok := store.Get("proxy-1")
 	if !ok {
@@ -85,6 +89,11 @@ func TestClientJWTStorePruneStaleEntries(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
+	// Put is write-behind: durability needs the explicit flush.
+	if err := store.Flush(); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(store.Close)
 
 	reloaded := newClientJWTStore(path)
 	if _, ok := reloaded.Get("stale-proxy"); ok {

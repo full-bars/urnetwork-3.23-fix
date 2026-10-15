@@ -849,10 +849,17 @@ func TestClientJWTStoreFlockExclusivity(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("Put 1 failed: %v", err)
 	}
+	// Put is write-behind: the cross-process merge can only preserve what is
+	// on disk, so flush before the second store reads.
+	if err := store.Flush(); err != nil {
+		t.Fatalf("Flush 1 failed: %v", err)
+	}
+	t.Cleanup(store.Close)
 
 	// Second store instance acquires its own lock (sequential, not concurrent in same process
 	// but verifies the lock file mechanism works and doesn't block)
 	store2 := newClientJWTStore(path)
+	t.Cleanup(store2.Close)
 	if err := store2.Put("proxy-2", clientJWTEntry{
 		ByClientJWT: "jwt2",
 		ClientID:    testClientId,

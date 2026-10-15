@@ -4097,6 +4097,8 @@ func provide(opts docopt.Opts) {
 	// before the warmth evaluation below reads them.
 	if globalClientJWTStore != nil {
 		globalClientJWTStore.AdoptLegacy(allProxySettings)
+		// write-behind: land any pending client JWTs before the process exits
+		defer globalClientJWTStore.Close()
 	}
 	// Load the per-proxy earnings history. It is loaded here rather than at
 	// package init so a test never picks up the real home directory's
