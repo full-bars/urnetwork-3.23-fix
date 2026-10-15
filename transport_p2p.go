@@ -126,6 +126,8 @@ func NewP2pTransport(
 func (self *P2pTransport) run() {
 	defer self.cancel()
 
+	streamMetrics.p2pStarted.Add(1)
+	defer streamMetrics.p2pStopped.Add(1)
 	self.client.log.Infof("[p2p]s(%s) %s transport starting peer=%s\n", self.streamId, self.peerType, self.peerId)
 	defer self.client.log.Infof("[p2p]s(%s) %s transport stopped peer=%s\n", self.streamId, self.peerType, self.peerId)
 
@@ -147,6 +149,7 @@ func (self *P2pTransport) run() {
 			return
 		}
 		if err != nil {
+			streamMetrics.p2pConnFailures.Add(1)
 			self.failureCount += 1
 			select {
 			case <-self.ctx.Done():

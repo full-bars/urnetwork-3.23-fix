@@ -108,6 +108,7 @@ func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 					return err
 				}
 
+				streamMetrics.openFrames.Add(1)
 				self.streamBuffer.OpenStream(sourceId, destinationId, streamId)
 				return nil
 			}
@@ -125,9 +126,11 @@ func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 					return err
 				}
 
+				streamMetrics.closeFrames.Add(1)
 				self.streamBuffer.CloseStream(streamId)
 
 			case *protocol.StreamReset:
+				streamMetrics.resetFrames.Add(1)
 				self.streamBuffer.ResetStreams()
 				for _, m := range v.Streams {
 					err := streamOpen(m)
@@ -246,19 +249,28 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
 
+		replaced := false
 		streamSequence, ok := self.streamSequences[streamSequenceId]
 		if ok {
 			if skip == nil || skip != streamSequence {
+				streamMetrics.openRequests[streamOpenExisting].Add(1)
 				return streamSequence
 			} else {
 				streamSequence.Cancel()
 				delete(self.streamSequences, streamSequenceId)
+				replaced = true
 			}
 		}
 
 		if streamSequenceByStreamId, ok := self.streamSequencesByStreamId[streamId]; ok {
 			streamSequenceByStreamId.Cancel()
 			delete(self.streamSequencesByStreamId, streamId)
+			replaced = true
+		}
+		if replaced {
+			streamMetrics.openRequests[streamOpenReplaced].Add(1)
+		} else {
+			streamMetrics.openRequests[streamOpenCreated].Add(1)
 		}
 
 		streamSequence = NewStreamSequence(self.ctx, self.streamManager, sourceId, destinationId, streamId, self.streamBufferSettings)
@@ -266,6 +278,9 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 		self.streamSequences[streamSequenceId] = streamSequence
 		self.streamSequencesByStreamId[streamId] = streamSequence
 		streamSequencesLive.Add(1)
+		kind := streamKindOf(sourceId, destinationId)
+		streamMetrics.opened[kind].Add(1)
+		startedAt := time.Now()
 		go HandleError(func() {
 			defer func() {
 				func() {
@@ -280,6 +295,12 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 						delete(self.streamSequencesByStreamId, streamId)
 					}
 					streamSequencesLive.Add(-1)
+					reason := streamEndCancelled
+					if streamSequence.endedByTransport.Load() {
+						reason = streamEndTransportEnded
+					}
+					streamMetrics.closed[kind][reason].Add(1)
+					streamMetrics.observeLifetime(kind, time.Since(startedAt))
 				}()
 				// the seam runs with the mutex released so a test hook can
 				// read the maps
@@ -340,6 +361,10 @@ type StreamSequence struct {
 	streamId      Id
 
 	idleCondition *IdleCondition
+
+	// endedByTransport is set when the sequence ended because its transport
+	// gave up, as opposed to a close, reset, replacement or shutdown.
+	endedByTransport atomic.Bool
 }
 
 func NewStreamSequence(
@@ -434,6 +459,7 @@ func (self *StreamSequence) Run() {
 			case <-self.ctx.Done():
 				// an external close, reset or replacement reaped it
 			default:
+				self.endedByTransport.Store(true)
 				streamSequencesReapedTransportEnded.Add(1)
 			}
 		}

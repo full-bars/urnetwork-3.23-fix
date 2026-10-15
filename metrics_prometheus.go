@@ -341,6 +341,8 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# TYPE urnet_stream_sequences_reaped_transport_ended_total counter\n")
 		fmt.Fprintf(&b, "urnet_stream_sequences_reaped_transport_ended_total %d\n", streamSequencesReapedTransportEnded.Load())
 
+		streamMetrics.writePrometheus(&b)
+
 		// --- Enhanced pool metrics ---
 		pool := EnhancedMetrics()
 		if poolLatency, ok := pool["pool_latency_ms"].(float64); ok {
