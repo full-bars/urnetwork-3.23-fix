@@ -29,6 +29,22 @@ const clientJWTMaxBackups = 10
 // evicting the pre-incident state the operator would need for recovery.
 const clientJWTSnapshotMinInterval = 5 * time.Minute
 
+// Write-behind flush defaults. Puts accumulate in memory and land on disk on
+// one of these: the interval tick, the dirty-entry threshold, an explicit
+// Flush, or Close. Vars (not consts) so tests can shorten them.
+//
+// clientJWTFlushInterval bounds the crash window in time: a crash loses at
+// most the Puts since the last tick. Each lost Put means that proxy re-runs
+// auth on the next start and mints a new client_id (the platform sees a new
+// identity), so keep the interval small; the cost it buys back is the whole
+// marshal+fsync+rename per Put, which at thousands of proxies was O(N)
+// writes at every startup.
+var clientJWTFlushInterval = 2 * time.Second
+
+// clientJWTFlushThreshold bounds the crash window in count as well: after
+// this many Puts since the last flush, a flush is kicked early.
+var clientJWTFlushThreshold = 128
+
 type clientJWTEntry struct {
 	ByClientJWT string    `json:"by_client_jwt"`
 	ClientID    string    `json:"client_id"`
@@ -49,10 +65,42 @@ type clientJWTStore struct {
 	// re-encodes and fsyncs the whole file, so callers that change many
 	// entries at once must batch them into a single flush.
 	flushes int
+
+	// write-behind: upserts and deletes not yet on disk. The flusher applies
+	// them with one read-merge-write-fsync cycle, so N Puts between flushes
+	// cost one rewrite of the file instead of N.
+	//
+	// flushInterval and flushThreshold are seeded from the package defaults
+	// at construction; tests set them per store so no shared variable is
+	// written while another store's flusher is live.
+	flushInterval  time.Duration
+	flushThreshold int
+	pendingUpserts map[string]clientJWTEntry
+	pendingDeletes map[string]struct{}
+	pendingCount   int
+	closed         bool
+
+	// flusher lifecycle. The goroutine starts lazily on the first change so a
+	// one-shot command that only reads never leaves one behind.
+	initFlusherOnce sync.Once
+	flusherDone     chan struct{}
+	flusherKick     chan struct{}
+
+	// flushObserverForTest, when set before the first change, receives one
+	// value after each successful flush. Tests use it as a deterministic
+	// barrier instead of polling.
+	flushObserverForTest chan struct{}
 }
 
 func newClientJWTStore(path string) *clientJWTStore {
-	return &clientJWTStore{path: path, entries: map[string]clientJWTEntry{}}
+	return &clientJWTStore{
+		path:           path,
+		entries:        map[string]clientJWTEntry{},
+		flushInterval:  clientJWTFlushInterval,
+		flushThreshold: clientJWTFlushThreshold,
+		pendingUpserts: map[string]clientJWTEntry{},
+		pendingDeletes: map[string]struct{}{},
+	}
 }
 
 // globalClientJWTStore is created lazily so init never panics on a missing
@@ -230,13 +278,123 @@ func (s *clientJWTStore) Find(key string) (resolved string, entry clientJWTEntry
 	return "", clientJWTEntry{}, candidates
 }
 
-// Put records entry for key and flushes the store to disk immediately.
+// Put records entry for key in memory and schedules it for the write-behind
+// flush (tick, threshold, Flush or Close). It no longer rewrites the file
+// itself; see clientJWTFlushInterval for the crash window that buys.
 func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	if s.closed {
+		return fmt.Errorf("client jwt store is closed")
+	}
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushLocked(key, entry, false)
+	s.pendingUpserts[key] = entry
+	delete(s.pendingDeletes, key)
+	s.pendingCount += 1
+	s.ensureFlusherLocked()
+	if s.pendingCount >= s.flushThreshold {
+		s.kickFlusherLocked()
+	}
+	return nil
+}
+
+// Flush applies every pending change to disk now (one read-merge-write-fsync
+// cycle). Callers that need the durable file before returning (shutdown, a
+// test that reloads) call this; Put and Delete alone do not guarantee it.
+func (s *clientJWTStore) Flush() error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.flushPendingLocked()
+}
+
+// Close finalizes the write-behind: a last flush, then the flusher goroutine
+// exits. Puts after Close fail. Safe to call more than once.
+func (s *clientJWTStore) Close() {
+	s.mu.Lock()
+	if s.closed {
+		s.mu.Unlock()
+		return
+	}
+	s.closed = true
+	if err := s.flushPendingLocked(); err != nil {
+		tlog("\u26a0\ufe0f [jwt-store] final write-behind flush failed: %v\n", err)
+	}
+	done := s.flusherDone
+	s.mu.Unlock()
+	if done != nil {
+		select {
+		case s.flusherKick <- struct{}{}:
+		default:
+		}
+		<-done
+	}
+}
+
+// flushPendingLocked applies the pending changes; the caller holds the mutex.
+func (s *clientJWTStore) flushPendingLocked() error {
+	if len(s.pendingUpserts) == 0 && len(s.pendingDeletes) == 0 {
+		return nil
+	}
+	upserts := make(map[string]clientJWTEntry, len(s.pendingUpserts))
+	for k, v := range s.pendingUpserts {
+		upserts[k] = v
+	}
+	deletes := make([]string, 0, len(s.pendingDeletes))
+	for k := range s.pendingDeletes {
+		deletes = append(deletes, k)
+	}
+	if err := s.flushBatchLocked(upserts, deletes); err != nil {
+		return err
+	}
+	s.pendingUpserts = map[string]clientJWTEntry{}
+	s.pendingDeletes = map[string]struct{}{}
+	s.pendingCount = 0
+	if s.flushObserverForTest != nil {
+		select {
+		case s.flushObserverForTest <- struct{}{}:
+		default:
+		}
+	}
+	return nil
+}
+
+func (s *clientJWTStore) ensureFlusherLocked() {
+	s.initFlusherOnce.Do(func() {
+		s.flusherDone = make(chan struct{})
+		s.flusherKick = make(chan struct{}, 1)
+		go s.runFlusher(s.flusherDone)
+	})
+}
+
+func (s *clientJWTStore) kickFlusherLocked() {
+	if s.flusherKick != nil {
+		select {
+		case s.flusherKick <- struct{}{}:
+		default:
+		}
+	}
+}
+
+func (s *clientJWTStore) runFlusher(done chan struct{}) {
+	defer close(done)
+	ticker := time.NewTicker(s.flushInterval)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ticker.C:
+		case <-s.flusherKick:
+		}
+		s.mu.Lock()
+		if s.closed {
+			s.mu.Unlock()
+			return
+		}
+		if err := s.flushPendingLocked(); err != nil {
+			tlog("\u26a0\ufe0f [jwt-store] write-behind flush failed: %v\n", err)
+		}
+		s.mu.Unlock()
+	}
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -273,7 +431,14 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushLocked(key, clientJWTEntry{}, true)
+	delete(s.pendingUpserts, key)
+	s.pendingDeletes[key] = struct{}{}
+	s.pendingCount += 1
+	s.ensureFlusherLocked()
+	if s.pendingCount >= s.flushThreshold {
+		s.kickFlusherLocked()
+	}
+	return nil
 }
 
 // flushLocked persists the single Put/Delete operation named by key

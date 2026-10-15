@@ -39,10 +39,16 @@ func claimTestStore(t *testing.T, entries map[string]string) {
 		t.Fatal(err)
 	}
 	store := newClientJWTStore(path)
+	t.Cleanup(store.Close)
 	for key, jwt := range entries {
 		if err := store.Put(key, clientJWTEntry{ByClientJWT: jwt, ClientID: "c-" + key, MintedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
+	}
+	// Put is write-behind: the on-disk store the resolver reads needs the
+	// explicit flush.
+	if err := store.Flush(); err != nil {
+		t.Fatal(err)
 	}
 }
 

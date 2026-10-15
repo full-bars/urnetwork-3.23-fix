@@ -603,7 +603,7 @@ func (ts *renewalTestServer) waitForRenewalRequest(t *testing.T, baseline int32)
 	}
 }
 
-func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
+func TestRunProxyJWTWatcherKeepsTheRenewalQueuedWhenStoreWritesFail(t *testing.T) {
 	// Read-only dir does not block writes for UID 0 (CI images often run as
 	// root, bypassing mode bits) — the Put-failure premise doesn't hold
 	// there, so skip rather than fail confusingly.
@@ -653,21 +653,25 @@ func TestRunProxyJWTWatcherRetriesOnStorePutFailure(t *testing.T) {
 	if err := ts.forceOob401(oob); err != nil {
 		t.Fatal(err)
 	}
-	// First renewNow: renewal runs, Put fails → counter must stay armed. Wait
-	// (adaptively) for the endpoint hit instead of a fixed sleep.
+	// First renewNow: renewal must run and complete even though the store
+	// currently rejects every write (Put is write-behind; the failure lands in
+	// the flusher, not the caller). Wait (adaptively) for the endpoint hit
+	// instead of a fixed sleep.
 	baseline := ts.totalRequests.Load()
 	renewNow <- struct{}{}
 	ts.waitForRenewalRequest(t, baseline)
-	first := ts.totalRequests.Load()
 
-	// Second renewNow: if the counter had been reset, nothing would fire
-	// (the exp check is disabled — currentJwt is empty on a broken store).
-	baseline = ts.totalRequests.Load()
-	renewNow <- struct{}{}
-	ts.waitForRenewalRequest(t, baseline)
-	second := ts.totalRequests.Load()
-	if second <= first {
-		t.Fatalf("401 counter was reset after a failed store write: requests %d -> %d — next 401 must re-trigger renewal", first, second)
+	// Nothing the renewal queued may be lost to the failed flushes: once the
+	// disk allows writes, an explicit flush must land the entry.
+	if err := os.Chmod(roDir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := brokenStore.Flush(); err != nil {
+		t.Fatalf("flush after the disk recovered: %v", err)
+	}
+	fresh := newClientJWTStore(roDir + "/client_jwts.json")
+	if entry, ok := fresh.Get("proxy"); !ok || entry.ClientID == "" {
+		t.Fatalf("the queued renewal was lost while the store rejected writes (entry=%+v ok=%v)", entry, ok)
 	}
 	cancel()
 	<-done
