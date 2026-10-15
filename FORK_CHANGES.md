@@ -3912,3 +3912,17 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files Added**: `.github/workflows/portable-core.yml`
 
 **Change**: A build and vet matrix over the supported operating systems, native Windows and macOS runs of the ip and wallet tests, and the same tests on the FreeBSD kernel.
+
+## 208. v33: Stream Sequence Lifetime and Operator Accounting
+
+**Files Modified**: `transfer_stream_manager.go`, `stream_metrics.go` (new), `metrics_prometheus.go`, `provider/node_internals.go`
+
+**Change**: A single-ended stream sequence now ends when its P2P transport ends. The transport's own context ending joins the sequence's wait, and the existing cleanup removes the sequence from both stream maps, instead of the sequence parking until a platform close or reset that may never arrive (the both-sides branch keeps its existing behavior; joining it is later scope). The same change lands operator accounting: live sequences by kind (`single`, `two_ended`), opened and closed counters by kind and reason, a lifetime histogram, stream-open request outcomes (`created`, `existing`, `replaced`), control-frame counts, and P2P transport started, stopped and connect-failure counters, plus `urnet_stream_sequences_live` and `urnet_stream_sequences_reaped_transport_ended_total`. The counts also appear in the `internals` control reply. Every counter moves on a stream or transport lifecycle event, never per packet.
+
+**Impact**: Sequences whose transport died are reaped at the rate transports give up instead of accumulating for the process lifetime. The metrics make the reap visible without a goroutine profile; the Monitoring page has the reading guide.
+
+## 209. v33: ICMP Echo Through Providers
+
+**Files Modified**: `ip_icmp.go`, `ip_icmp_gate.go`, `ip_icmp_egress_unix.go`, `ip_remote_multi_client.go`, `provider/main.go`
+
+**Change**: A tunnel client can ping through the provider, on by default. The echo request is parsed, goes through the same security and CFAA policy as UDP and TCP (private, loopback, link-local and special-use destinations are refused), and is sent from an unprivileged ICMP socket; the reply returns to the source and is never larger than the request. Flows are capped across the whole NAT (64 per client, 128 overall), idle flows are reaped after 60 s, and a failed or oversized send drops that packet and keeps the flow. A kernel that refuses unprivileged ICMP sockets (`net.ipv4.ping_group_range`) turns the feature off for that address family with one log line and affects no other traffic. `URNETWORK_ICMP=off` turns it off; the client send path stays off.

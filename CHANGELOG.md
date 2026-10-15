@@ -9,6 +9,8 @@
 - **Client dial-failure gates**: the multi-client consumes the provider's dial-failure answers (RST for refused, ICMP unreachable for fast failures). A provider that keeps failing dials is warned and the window moves on, but only when the strikes span at least two distinct destinations, so one dead address cannot get healthy providers warned. The forwarded unreachable is built over the flow's SYN sequence so a Linux or Android stack accepts it. A provider's own RST is not counted as a successful connect.
 - **An IPv6 flow keeps its shard behind an extension header**: an unfragmented extension chain hashes the ports at the transport header, like a plain packet.
 
+- **Stream sequence and P2P transport accounting**: `/metrics` now carries `urnet_stream_sequences_by_kind` (live sequences, `single` or `two_ended`), `urnet_stream_sequences_opened_total`, `urnet_stream_sequences_closed_total{kind,reason}`, `urnet_stream_sequence_lifetime_seconds` (how long sequences lived), `urnet_stream_open_requests_total{result}`, `urnet_stream_control_frames_total{type}` and `urnet_p2p_transports_started_total` / `urnet_p2p_transports_stopped_total` / `urnet_p2p_connect_failures_total`. The Monitoring page explains how to read them.
+
 - **Network wallet consent (`provider wallet challenge`, `provider wallet set`)**: the coldkey now signs the canonical prospective network consent, the statement release settlement pays, instead of the generic sign-in challenge (which is also a wallet login and is never paid). One signature covers every provider client of the network, current and future, and carries the earning-epoch interval (`--wallet-from-epoch`, `--wallet-through-epoch`; the default is the next epoch through 65,536 epochs). Every field of the statement is checked against the saved login, the epoch route and the coldkey before the key is loaded, the consent is retained before it is sent so a lost acknowledgement is answered by the identical original, and the server's receipt must name the same consent. Sign on your own machine; a fleet node needs nothing.
 
 - **`provider wallet status`**: shows what the server holds for the network, with a consent (provider, network or hotkey scope, its epochs, whether it is in effect or starts in N epochs, and its receipt) apart from a login-proof wallet, which release settlement does not pay.
@@ -19,6 +21,14 @@
 - The client send path (`RemoteUserNatClient` and the multi-client) forwards packets the SMTP guard does not govern. It treated the guard's "not applicable" verdict as a refusal and dropped all ordinary client traffic, which the `-short` CI never saw because the end-to-end echo tests skip there. Provider nodes were not affected: they use the receive-side path.
 - The seed file is read through the descriptor that was checked, closing a check-then-read swap window.
 - The receive path releases its scratch references after a committed-prefix scan.
+- A stream sequence no longer outlives its P2P transport: a single-ended sequence ends when its transport gives up on its own instead of parking until a platform close that may never arrive. `urnet_stream_sequences_live` and `urnet_stream_sequences_reaped_transport_ended_total` show the live and reaped counts in `/metrics`.
+- The network wallet consent journal's read-modify-write is locked, so concurrent wallet commands cannot lose an entry.
+- A transport pin is disabled only once its replacement is up, and upgrade routes are named by identity, not by dialer pointer.
+- The dual-stack group no longer stays on the legacy transport for a whole launch when the first IPv6 probe fails, concurrent stack changes are serialized, and the group's memory budget follows the transports the stack uses.
+- Dual-stack standby and pinned-down counters no longer stay on after a stack change or a group close.
+- Windows: refused and timed-out dials are recognised, and the seed file mode rule no longer rejects every seed.
+- A disabled transport's early session end is no longer treated as platform evidence.
+- The pre-release shakedown no longer hangs on `urnet-tools proxy health`, re-pins a pre-release target after its restore step, and clears systemd's start rate limit around the W3 restarts.
 
 ## [v3.23.0-fix.33.0-rc1]
 
