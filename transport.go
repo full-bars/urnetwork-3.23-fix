@@ -636,6 +636,20 @@ type PlatformTransportSettings struct {
 	// backoff after consecutive failed dials (see dialRetryAfter).
 	// Non-positive resolves to one minute.
 	ReconnectMaxTimeout time.Duration
+	// AuxCarrierGiveUpAfter parks an auxiliary carrier (the H3 fallback, the
+	// dns and dns-pump transports) for AuxCarrierParkWindow after this many
+	// consecutive failures, counted from failed connects and from sessions
+	// that died younger than AuxCarrierHealthyFloor. 0 (the default) leaves
+	// the established bounded backoff exactly as it is (transport_aux_giveup.go).
+	AuxCarrierGiveUpAfter int
+	// AuxCarrierParkWindow is how long a parked carrier waits before its next
+	// single probe. Bounded by design: a network change, an operator gate
+	// change or a process restart clears the park, and the primary path
+	// dropping is the case the carriers exist for.
+	AuxCarrierParkWindow time.Duration
+	// AuxCarrierHealthyFloor: a session that authenticated but died younger
+	// than this does not prove the carrier healthy and counts as a failure.
+	AuxCarrierHealthyFloor time.Duration
 
 	// MinConnectDelay time.Duration
 	// MaxConnectDelay time.Duration
@@ -777,6 +791,11 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		ModePreferences:           nil,
 		PinnedReconnectMaxTimeout: 5 * time.Minute,
 		ReconnectMaxTimeout:       60 * time.Second,
+		// Auxiliary-carrier give-up is implemented but DISABLED by default:
+		// 0 keeps today's behavior; a canary enables it via settings.
+		AuxCarrierGiveUpAfter:  0,
+		AuxCarrierParkWindow:   30 * time.Minute,
+		AuxCarrierHealthyFloor: 60 * time.Second,
 		// MinConnectDelay:      0,
 		// MaxConnectDelay:      1 * time.Second,
 		ProtocolVersion: DefaultProtocolVersion,
@@ -3101,6 +3120,7 @@ func (self *PlatformTransport) runH3(
 	// fork: an auxiliary H3 beside H1 (EnableH3 in Auto mode) keeps its own
 	// long backoff and never feeds the platform health signal (h3Auxiliary)
 	var auxBackoff time.Duration
+	var auxGiveUp auxCarrierGiveUp
 	h3UnavailableLogged := false
 	// fork: the same flap guard the H1 loop has
 	flaps := newFlapGuard(self.settings.FlapStableAfter, self.settings.ReconnectTimeout)
@@ -3390,6 +3410,9 @@ func (self *PlatformTransport) runH3(
 					// and never feeds the shared failure state or the proxy health
 					if gated {
 						auxBackoff = nextH3Backoff(auxBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
+						if self.settings.AuxCarrierGiveUpAfter > 0 {
+							auxGiveUp.recordFailure(time.Now(), self.settings.AuxCarrierGiveUpAfter, self.settings.AuxCarrierParkWindow)
+						}
 					} else {
 						self.noteDialFailure()
 						if idx, ok := self.proxyIndex(); ok && !self.pinned() {
@@ -3433,7 +3456,7 @@ func (self *PlatformTransport) runH3(
 					continue
 				}
 				gateChanged = notify
-				retryAfter = time.After(jitteredH3Wait(auxBackoff))
+				retryAfter = time.After(auxRetryWait(jitteredH3Wait(auxBackoff), auxGiveUp.waitUntil(time.Now())))
 			} else {
 				retryAfter = self.dialRetryAfter(reconnect)
 				pulse = Pulse()
@@ -3445,6 +3468,7 @@ func (self *PlatformTransport) runH3(
 				// network changed: retry now over the new path and take the
 				// reconnect fast path (see the h1 loop above)
 				self.noteKick()
+				auxGiveUp.clear()
 				hadConnection = true
 				continue
 			case <-retryAfter:
@@ -3453,6 +3477,7 @@ func (self *PlatformTransport) runH3(
 				// an operator toggle starts over: a transport woken by it must not
 				// carry the multi-minute backoff into its next failure
 				auxBackoff = 0
+				auxGiveUp.clear()
 				continue
 			case <-pulse:
 				// fork: spread the retries so the hour does not begin with a herd
@@ -4202,6 +4227,15 @@ func (self *PlatformTransport) runH3(
 		// held back so it cannot redial in a tight loop, but a young session of it
 		// is no evidence about the platform.
 		lived := time.Since(sessionStart)
+		if self.h3GatedFor(ptMode) {
+			// an auxiliary carrier is proven by a session that lived, not by a
+			// handshake: a young death counts toward the give-up run
+			if lived >= self.settings.AuxCarrierHealthyFloor {
+				auxGiveUp.recordHealthy()
+			} else if self.settings.AuxCarrierGiveUpAfter > 0 {
+				auxGiveUp.recordFailure(time.Now(), self.settings.AuxCarrierGiveUpAfter, self.settings.AuxCarrierParkWindow)
+			}
+		}
 		// a close the QUIC connection recorded (the platform's application error,
 		// an idle timeout) when no read or write error got there first
 		endCause.note(context.Cause(conn.Context()))
