@@ -314,9 +314,12 @@ type sendAckFrame struct {
 	sequenceId Id
 	selective  bool
 	tag        *protocol.Tag // nil when absent
+	// receive_window_byte_count=8, present only when receiveWindowSet
+	receiveWindowByteCount uint64
+	receiveWindowSet       bool
 }
 
-// sizeAck returns the encoded size of the Ack submessage body (fields 1-4).
+// sizeAck returns the encoded size of the Ack submessage body (fields 1-4, 8).
 func (m *sendAckFrame) sizeAck() int {
 	n := 0
 	// message_id=1, sequence_id=2 (always 16-byte bytes)
@@ -329,10 +332,13 @@ func (m *sendAckFrame) sizeAck() int {
 		tagBody := sizeTagBody(m.tag.SendTime)
 		n += protoSizeTag(4) + protoSizeVarint(uint64(tagBody)) + tagBody
 	}
+	if m.receiveWindowSet {
+		n += protoSizeTag(8) + protoSizeVarint(m.receiveWindowByteCount)
+	}
 	return n
 }
 
-// appendAck appends the Ack submessage body (fields 1-4) to b; the
+// appendAck appends the Ack submessage body (fields 1-4, 8) to b; the
 // enclosing TransferFrame field-5 tag and length prefix are written by
 // append, which sizes the submessage with sizeAck.
 func (m *sendAckFrame) appendAck(b []byte) []byte {
@@ -346,6 +352,10 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 		b = protoAppendTag(b, 4, protoWireBytes)
 		b = protoAppendVarint(b, uint64(sizeTagBody(m.tag.SendTime)))
 		b = appendTagBody(b, m.tag.SendTime)
+	}
+	if m.receiveWindowSet {
+		b = protoAppendTag(b, 8, protoWireVarint)
+		b = protoAppendVarint(b, m.receiveWindowByteCount)
 	}
 	return b
 }

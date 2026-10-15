@@ -4932,25 +4932,33 @@ func (self *ReceiveSequence) Run() {
 
 		writeAck := func(sendAck *sequenceAck) {
 			path := self.source.Reverse().AddSource(self.client.ClientId())
+			// every Ack states the receive hold capacity, starting with the
+			// first: the platform's capability probe classifies a provider as
+			// having resizable windows from the first Ack it sees
+			receiveWindow := self.receiveWindowAdvertisement()
 
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
 				// hand-rolled marshal of the hot Ack TransferFrame; wire-identical
 				// to the proto structs in the legacy branch (see frame_protobuf_test.go).
 				saf := sendAckFrame{
-					path:       path,
-					messageId:  sendAck.messageId,
-					sequenceId: self.sequenceId,
-					selective:  sendAck.selective,
-					tag:        sendAck.tag,
+					path:                   path,
+					messageId:              sendAck.messageId,
+					sequenceId:             self.sequenceId,
+					selective:              sendAck.selective,
+					tag:                    sendAck.tag,
+					receiveWindowByteCount: uint64(receiveWindow),
+					receiveWindowSet:       true,
 				}
 				transferFrameBytes = marshalSendAckTransferFrame(&saf)
 			} else {
+				receiveWindowByteCount := uint64(receiveWindow)
 				ack := &protocol.Ack{
-					MessageId:  sendAck.messageId.Bytes(),
-					SequenceId: self.sequenceId.Bytes(),
-					Selective:  sendAck.selective,
-					Tag:        sendAck.tag,
+					MessageId:              sendAck.messageId.Bytes(),
+					SequenceId:             self.sequenceId.Bytes(),
+					Selective:              sendAck.selective,
+					Tag:                    sendAck.tag,
+					ReceiveWindowByteCount: &receiveWindowByteCount,
 				}
 				ackBytes, _ := ProtoMarshal(ack)
 				defer MessagePoolReturn(ackBytes)
@@ -5476,6 +5484,20 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 // is sent as it crosses. One second-order cost: a tentative item gives the
 // sender no proving acknowledgement, so a gap just below the boundary
 // recovers on the paced resend rather than on gap recovery.
+// receiveWindowAdvertisement is the out-of-order hold capacity this receiver
+// advertises on its Acks (`Ack.receive_window_byte_count`): the capacity
+// measured from the delivered point, not the free space. It is the same
+// capacity that `commitHeldPrefix` and the receive queue enforce, so a sender
+// that keeps within it cannot force an eviction. Never negative; zero would
+// tell a sender the receiver can hold nothing.
+func (self *ReceiveSequence) receiveWindowAdvertisement() ByteCount {
+	window := self.receiveBufferSettings.ReceiveQueueMaxByteCount
+	if budget := self.receiveBufferSettings.ReceiveQueueBudget; budget != nil {
+		window = min(window, budget.TotalByteCount())
+	}
+	return max(0, window)
+}
+
 func (self *ReceiveSequence) commitHeldPrefix() {
 	capacity := self.receiveBufferSettings.ReceiveQueueMaxByteCount
 	frameByteCount := max(self.maxHeldByteCount, 1)

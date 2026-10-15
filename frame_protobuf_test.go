@@ -261,6 +261,10 @@ func buildEquivalentAckFrame(m *sendAckFrame) *protocol.TransferFrame {
 		Selective:  m.selective,
 		Tag:        m.tag,
 	}
+	if m.receiveWindowSet {
+		receiveWindowByteCount := m.receiveWindowByteCount
+		ack.ReceiveWindowByteCount = &receiveWindowByteCount
+	}
 	tf := &protocol.TransferFrame{
 		TransferPath: m.path.ToProtobuf(),
 	}
@@ -311,6 +315,29 @@ func TestAckCodecEdgeCases(t *testing.T) {
 			sequenceId: idA,
 			tag:        &protocol.Tag{SendTime: 0},
 		},
+		"receive window advertised": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			receiveWindowByteCount: 2_621_440,
+			receiveWindowSet:       true,
+		},
+		"receive window zero is a real value": {
+			path:             TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:        idC,
+			sequenceId:       idA,
+			selective:        true,
+			tag:              &protocol.Tag{SendTime: 1},
+			receiveWindowSet: true,
+		},
+		"receive window 16 MiB with tag": {
+			path:                   TransferPath{DestinationId: idA, SourceId: idB},
+			messageId:              idC,
+			sequenceId:             idA,
+			tag:                    &protocol.Tag{SendTime: 1_700_000_000_000},
+			receiveWindowByteCount: 16 << 20,
+			receiveWindowSet:       true,
+		},
 		"stream only path": {
 			path:       TransferPath{StreamId: idC},
 			messageId:  idC,
@@ -348,6 +375,10 @@ func TestAckCodecRandomized(t *testing.T) {
 			m.tag = &protocol.Tag{SendTime: mathrandv2.Uint64()}
 		case 1:
 			m.tag = &protocol.Tag{SendTime: 0}
+		}
+		if mathrandv2.IntN(2) == 0 {
+			m.receiveWindowSet = true
+			m.receiveWindowByteCount = mathrandv2.Uint64() >> uint(mathrandv2.IntN(64))
 		}
 		assertAckCodecMatches(t, m)
 	}

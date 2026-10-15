@@ -720,9 +720,17 @@ type Ack struct {
 	// all data buffered in the receiver is acked with `selective=true`. When released it is acked with `selective=false`
 	Selective bool `protobuf:"varint,3,opt,name=selective,proto3" json:"selective,omitempty"`
 	// from the `Pack` this responds to
-	Tag           *Tag `protobuf:"bytes,4,opt,name=tag,proto3,oneof" json:"tag,omitempty"`
-	unknownFields protoimpl.UnknownFields
-	sizeCache     protoimpl.SizeCache
+	Tag *Tag `protobuf:"bytes,4,opt,name=tag,proto3,oneof" json:"tag,omitempty"`
+	// What this receiver may hold out of order, measured from the delivered
+	// point: the hold's capacity, not its free space. A sender may not let its
+	// outstanding-from-delivered bytes exceed the latest advertised value.
+	// Absent is a legacy peer, which the sender treats as the shipping hold
+	// rather than as zero. Zero is a real value and means a receiver with no
+	// capacity at all, which is why this is optional. Same field number and
+	// meaning as upstream.
+	ReceiveWindowByteCount *uint64 `protobuf:"varint,8,opt,name=receive_window_byte_count,json=receiveWindowByteCount,proto3,oneof" json:"receive_window_byte_count,omitempty"`
+	unknownFields          protoimpl.UnknownFields
+	sizeCache              protoimpl.SizeCache
 }
 
 func (x *Ack) Reset() {
@@ -781,6 +789,13 @@ func (x *Ack) GetTag() *Tag {
 		return x.Tag
 	}
 	return nil
+}
+
+func (x *Ack) GetReceiveWindowByteCount() uint64 {
+	if x != nil && x.ReceiveWindowByteCount != nil {
+		return *x.ReceiveWindowByteCount
+	}
+	return 0
 }
 
 type Tag struct {
@@ -2481,15 +2496,17 @@ const file_transfer_proto_rawDesc = "" +
 	"\f_contract_id\"_\n" +
 	"\fFilteredPack\x12<\n" +
 	"\x0econtract_frame\x18\a \x01(\v2\x10.bringyour.FrameH\x00R\rcontractFrame\x88\x01\x01B\x11\n" +
-	"\x0f_contract_frame\"\x92\x01\n" +
+	"\x0f_contract_frame\"\xf0\x01\n" +
 	"\x03Ack\x12\x1d\n" +
 	"\n" +
 	"message_id\x18\x01 \x01(\fR\tmessageId\x12\x1f\n" +
 	"\vsequence_id\x18\x02 \x01(\fR\n" +
 	"sequenceId\x12\x1c\n" +
 	"\tselective\x18\x03 \x01(\bR\tselective\x12%\n" +
-	"\x03tag\x18\x04 \x01(\v2\x0e.bringyour.TagH\x00R\x03tag\x88\x01\x01B\x06\n" +
-	"\x04_tag\"\"\n" +
+	"\x03tag\x18\x04 \x01(\v2\x0e.bringyour.TagH\x00R\x03tag\x88\x01\x01\x12>\n" +
+	"\x19receive_window_byte_count\x18\b \x01(\x04H\x01R\x16receiveWindowByteCount\x88\x01\x01B\x06\n" +
+	"\x04_tagB\x1c\n" +
+	"\x1a_receive_window_byte_count\"\"\n" +
 	"\x03Tag\x12\x1b\n" +
 	"\tsend_time\x18\x01 \x01(\x04R\bsendTime\"\xd0\x01\n" +
 	"\x04Auth\x12\x15\n" +
