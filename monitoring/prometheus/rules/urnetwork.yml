@@ -1,8 +1,10 @@
 # Alert rules for URnetwork providers. Loaded by prometheus.yml (rule_files).
 #
-# Enabled rules: UrnetworkNodeDown, UrnetworkRestartLoop, and the backend outage
+# Enabled rules: UrnetworkNodeDown, UrnetworkRestartLoop, the backend outage
 # protection rules (UrnetworkBackendDegraded, UrnetworkFleetBackendDegraded,
-# UrnetworkReconnectBudgetHeld, UrnetworkResendAmplification).
+# UrnetworkReconnectBudgetHeld, UrnetworkResendAmplification), and the stream
+# and P2P rules (UrnetworkStreamTwoEndedHeld, UrnetworkStreamLongLived,
+# UrnetworkP2PConnectFailuresSustained).
 # The rules under "Optional rules" further down are commented out. Read the
 # note above each one, adjust the threshold to your fleet, then remove the
 # leading "# " to enable it. See docs/Monitoring.md.
@@ -144,6 +146,62 @@ groups:
             does NOT show which peer is not acknowledging, and a node with little
             traffic can briefly look amplified. See urnet_transfer_resend_deferred_total
             for what the retry budget is holding back.
+
+      # Stream sequences outliving their transport show up here.
+      #
+      # A provider that does not relay carries no two-ended bookkeeping: the
+      # kind exists for relay midpoints, so any steady two-ended count on such
+      # a node is a parked sequence. A provider that DOES relay holds these
+      # legitimately; scope this rule to the nodes that should not.
+      - alert: UrnetworkStreamTwoEndedHeld
+        expr: urnet_stream_sequences_by_kind{job="urnetwork", kind="two_ended"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} has held two-ended stream sequences for 30 minutes"
+          description: >-
+            {{ $labels.instance }} has reported two-ended stream sequences for
+            30 minutes. On a provider that does not relay this is the shape of
+            sequences parked after their transport ended. Check
+            urnet_stream_sequences_closed_total for the reason split, and
+            urnet_p2p_transports_started_total against stopped_total.
+
+      # Sequences living past an hour, at a sustained trickle.
+      #
+      # Healthy streams end with the connection that carried them, so the long
+      # buckets should stay near empty. 0.01/s is about 36 ended sequences an
+      # hour that lived over an hour; adjust to your fleet.
+      - alert: UrnetworkStreamLongLived
+        expr: (sum by (instance) (rate(urnet_stream_sequence_lifetime_seconds_bucket{job="urnetwork", le="+Inf"}[1h])) - sum by (instance) (rate(urnet_stream_sequence_lifetime_seconds_bucket{job="urnetwork", le="3600"}[1h]))) > 0.01
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} is ending streams that lived over an hour"
+          description: >-
+            {{ $labels.instance }} keeps observing sequence lifetimes above one
+            hour. This is the shape of a sequence that outlived its transport;
+            compare the two_ended live count and the closed reason split.
+
+      # P2P connection failures at a sustained rate.
+      #
+      # A slow trickle is peers going away, which is normal. 0.5/s sustained
+      # means a peer is unreachable and transports are retrying; adjust to
+      # your fleet.
+      - alert: UrnetworkP2PConnectFailuresSustained
+        expr: sum by (instance) (rate(urnet_p2p_connect_failures_total{job="urnetwork"}[10m])) > 0.5
+        for: 15m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} is failing P2P connects at a sustained rate"
+          description: >-
+            {{ $labels.instance }} has had P2P connection attempts return
+            errors at more than 0.5 per second for 15 minutes (attempts that
+            came up and then failed their readiness exchange are not counted). Check
+            urnet_p2p_transports_started_total minus stopped_total for stuck
+            transports, and the [p2p] log lines for the peer.
 
       # ---------------------------------------------------------------------
       # Optional rules. Commented out on purpose: they need thresholds that fit
