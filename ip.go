@@ -2073,24 +2073,13 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 		})
 		return sequence
 	}
-	sendItem := &TcpSendItem{
-		provideMode: provideMode,
-		tcp:         tcp,
-		ipPacket:    ipPacket,
-	}
 	if sequence := initSequence(); sequence == nil {
 		// initSequence already returns ipPacket to the pool itself on both
 		// of its nil-returning paths (RST-cancel, non-SYN drop) — freeing it
 		// again here would double-return a possibly still-shared buffer.
 		return false, nil
 	} else {
-		// send() only enqueues ipPacket into sendItems on success — free it
-		// here on every drop path or it leaks on backpressure.
-		success, err := sequence.send(sendItem, timeout)
-		if !success {
-			MessagePoolReturn(ipPacket)
-		}
-		return success, err
+		return sequence.sendOrApplyPureAck(provideMode, tcp, ipPacket, timeout)
 	}
 }
 
@@ -2115,6 +2104,16 @@ type TcpSequence struct {
 
 	sendMutex sync.Mutex
 	sendItems chan *TcpSendItem
+
+	// Direct pure-ACK path (see applyPureAckDirect). Both fields are guarded by
+	// ConnectionState.mutex. directAckReady is true only while the Run loop is
+	// live and has not consumed a FIN. receiveAckCond is the condition the
+	// socket reader waits on for window space.
+	directAckReady bool
+	receiveAckCond *sync.Cond
+	// Unix nanos of the last directly applied ACK. The Run loop reads it so
+	// the idle and scale-down timers still see ACK activity.
+	directAckNanos atomic.Int64
 
 	idleCondition *IdleCondition
 
@@ -2223,6 +2222,93 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 			return false, nil
 		}
 	}
+}
+
+// tcpPureAckDirectDisabled forces every packet through the ordered sendItems
+// queue. Test-only: it keeps the pre-optimization path reachable so
+// differential tests can compare both paths.
+var tcpPureAckDirectDisabled atomic.Bool
+
+// sendOrApplyPureAck delivers one parsed packet to the sequence. An
+// established pure ACK is applied directly; everything else is queued. It
+// owns ipPacket on every path: on success ownership moves to the sequence, on
+// failure the packet is returned to the pool here.
+func (self *TcpSequence) sendOrApplyPureAck(
+	provideMode protocol.ProvideMode,
+	tcp *parsedTcp,
+	ipPacket []byte,
+	timeout time.Duration,
+) (bool, error) {
+	if tcp.ack && !tcp.syn && !tcp.fin && !tcp.rst && len(tcp.payload) == 0 &&
+		!tcpPureAckDirectDisabled.Load() &&
+		self.applyPureAckDirect(tcp) {
+		MessagePoolReturn(ipPacket)
+		return true, nil
+	}
+	sendItem := &TcpSendItem{
+		provideMode: provideMode,
+		tcp:         tcp,
+		ipPacket:    ipPacket,
+	}
+	// send() only enqueues ipPacket into sendItems on success, free it
+	// here on every drop path or it leaks on backpressure.
+	success, err := self.send(sendItem, timeout)
+	if !success {
+		MessagePoolReturn(ipPacket)
+	}
+	return success, err
+}
+
+// applyAckWithLock applies the ack and window of an in-order packet. The Run
+// loop and the direct path share it so the two cannot diverge. The mutex must
+// be held. Returns true if the ack was applied.
+func (self *TcpSequence) applyAckWithLock(tcp *parsedTcp) bool {
+	// the window size can be adjusted at any time for the same receive seq number,
+	// e.g. ->0 then ->full on receiver full
+	if tcp.ack && self.receiveSeqAck <= tcp.ackNumber {
+		self.receiveWindowSize = uint32(tcp.windowSize) << self.receiveWindowScale
+		self.receiveSeqAck = tcp.ackNumber
+		self.updateTimestampRecentWithLock(tcp)
+		return true
+	}
+	return false
+}
+
+// applyPureAckDirect applies an established pure ACK without building a
+// TcpSendItem or crossing the sequence channel. It returns false, leaving the
+// packet with the caller for the ordered queue, unless it can prove the result
+// is identical to queued processing:
+//   - the Run loop is live and has not consumed a FIN;
+//   - nothing is queued ahead of it (so it cannot overtake an older item);
+//   - its seq equals the next expected peer seq (the Run loop drops any other
+//     seq as a retransmit, and a larger seq means payload is still in flight).
+func (self *TcpSequence) applyPureAckDirect(tcp *parsedTcp) bool {
+	self.sendMutex.Lock()
+	defer self.sendMutex.Unlock()
+
+	select {
+	case <-self.ctx.Done():
+		return false
+	default:
+	}
+	if 0 < len(self.sendItems) {
+		return false
+	}
+	if !self.idleCondition.UpdateOpen() {
+		return false
+	}
+	defer self.idleCondition.UpdateClose()
+
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	if !self.directAckReady || self.sendSeq != tcp.seq {
+		return false
+	}
+	self.directAckNanos.Store(time.Now().UnixNano())
+	if self.applyAckWithLock(tcp) {
+		self.receiveAckCond.Broadcast()
+	}
+	return true
 }
 
 func (self *TcpSequence) Run() {
@@ -2426,6 +2512,11 @@ func (self *TcpSequence) Run() {
 
 	receiveAckCond := sync.NewCond(&self.mutex)
 	ackCond := sync.NewCond(&self.mutex)
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		self.receiveAckCond = receiveAckCond
+	}()
 	defer func() {
 		self.mutex.Lock()
 		defer self.mutex.Unlock()
@@ -2771,6 +2862,16 @@ func (self *TcpSequence) Run() {
 	blockingByteCount := uint32(0)
 	lastActivityTime := time.Now()
 	fin := false
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		self.directAckReady = true
+	}()
+	defer func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+		self.directAckReady = false
+	}()
 	for sendIter := uint64(0); !fin; sendIter += 1 {
 		checkpointId := self.idleCondition.Checkpoint()
 		select {
@@ -2805,12 +2906,7 @@ func (self *TcpSequence) Run() {
 				} else if sendItem.tcp.ack {
 					// acks are reliably delivered (see above)
 					// we do not need to resend receive packets on missing acks
-					// note the window size can be be adjusted at any time for the same receive seq number,
-					// e.g. ->0 then ->full on receiver full
-					if self.receiveSeqAck <= sendItem.tcp.ackNumber {
-						self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
-						self.receiveSeqAck = sendItem.tcp.ackNumber
-						self.updateTimestampRecentWithLock(sendItem.tcp)
+					if self.applyAckWithLock(sendItem.tcp) {
 						receiveAckCond.Broadcast()
 					}
 				}
@@ -2828,6 +2924,9 @@ func (self *TcpSequence) Run() {
 					defer self.mutex.Unlock()
 
 					self.sendSeq += 1
+					// later ACKs are not applied (the loop exits below), so
+					// the direct path must stop too
+					self.directAckReady = false
 					ackCond.Broadcast()
 				}()
 			}
@@ -2887,10 +2986,20 @@ func (self *TcpSequence) Run() {
 			}
 
 		case <-time.After(self.tcpBufferSettings.ScaleDownTimeout):
+			// directly applied ACKs bypass this loop, so account for their
+			// activity as if they had been received here
+			directAckRecent := false
+			if nanos := self.directAckNanos.Load(); 0 < nanos {
+				directAckTime := time.Unix(0, nanos)
+				if lastActivityTime.Before(directAckTime) {
+					lastActivityTime = directAckTime
+				}
+				directAckRecent = time.Since(directAckTime) < self.tcpBufferSettings.ScaleDownTimeout
+			}
 			func() {
 				self.mutex.Lock()
 				defer self.mutex.Unlock()
-				if self.windowSize != self.tcpBufferSettings.MinWindowSize {
+				if !directAckRecent && self.windowSize != self.tcpBufferSettings.MinWindowSize {
 					self.log.V(1).Infof("[r%d]idle scale down window size %d -> %d\n", sendIter, self.windowSize, self.tcpBufferSettings.MinWindowSize)
 					self.windowSize = self.tcpBufferSettings.MinWindowSize
 					nonBlockingByteCount = uint32(0)
