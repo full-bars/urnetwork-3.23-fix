@@ -333,6 +333,14 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# TYPE urnet_goroutines gauge\n")
 		fmt.Fprintf(&b, "urnet_goroutines %d\n", runtime.NumGoroutine())
 
+		// --- Stream sequences ---
+		fmt.Fprintf(&b, "# HELP urnet_stream_sequences_live Number of live stream sequences.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_stream_sequences_live gauge\n")
+		fmt.Fprintf(&b, "urnet_stream_sequences_live %d\n", streamSequencesLive.Load())
+		fmt.Fprintf(&b, "# HELP urnet_stream_sequences_reaped_transport_ended_total Stream sequences reaped by their transport ending while the sequence was still live.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_stream_sequences_reaped_transport_ended_total counter\n")
+		fmt.Fprintf(&b, "urnet_stream_sequences_reaped_transport_ended_total %d\n", streamSequencesReapedTransportEnded.Load())
+
 		// --- Enhanced pool metrics ---
 		pool := EnhancedMetrics()
 		if poolLatency, ok := pool["pool_latency_ms"].(float64); ok {

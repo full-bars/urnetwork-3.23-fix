@@ -51,6 +51,12 @@ type NodeInternals struct {
 
 	Goroutines uint64 `json:"goroutines"`
 
+	// Streams: how many stream sequences are live, and how many were reaped
+	// because their transport ended while the sequence was still live. Both
+	// move only on a sequence open or exit, never per packet.
+	StreamSequencesLive                 uint64 `json:"stream_sequences_live"`
+	StreamSequencesReapedTransportEnded uint64 `json:"stream_sequences_reaped_transport_ended"`
+
 	HeapObjectsBytes uint64 `json:"heap_objects_bytes"`
 	HeapStacksBytes  uint64 `json:"heap_stacks_bytes"`
 	HeapGoalBytes    uint64 `json:"heap_goal_bytes"`
@@ -302,6 +308,8 @@ func readInternals(now time.Time, prev *internalsRaw) (*NodeInternals, *internal
 	}
 	raw := &internalsRaw{at: now, pauses: hist(7), sched: hist(8), gcCPU: f(9), totalCPU: f(10)}
 	applyInternalsDeltas(out, prev, raw)
+	out.StreamSequencesLive = connect.StreamSequencesLive()
+	out.StreamSequencesReapedTransportEnded = connect.StreamSequencesReapedTransportEnded()
 	return out, raw
 }
 

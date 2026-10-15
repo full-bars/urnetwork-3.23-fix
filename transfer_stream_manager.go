@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect/protocol"
@@ -149,6 +150,17 @@ type StreamBufferSettings struct {
 	WriteTimeout time.Duration
 
 	P2pTransportSettings *P2pTransportSettings
+
+	// Test seams. Nil in production.
+	//
+	// P2pTransportNewForTest replaces the real P2pTransport construction in
+	// StreamSequence.Run so a test can hand back transports whose context it
+	// controls and end one deterministically.
+	P2pTransportNewForTest func(sequence *StreamSequence) []*P2pTransport
+	// StreamSequenceReapedForTest runs after a StreamSequence exits and its
+	// stream map entries are removed, so a test can observe the reap without
+	// a timer.
+	StreamSequenceReapedForTest func(sequence *StreamSequence)
 }
 
 type streamSequenceId struct {
@@ -172,6 +184,29 @@ func newStreamSequenceId(sourceId *Id, destinationId *Id, streamId Id) streamSeq
 		streamSequenceId.HasDestination = true
 	}
 	return streamSequenceId
+}
+
+// streamSequencesLive is the number of live StreamSequences in this process.
+// It moves when a sequence is registered in a StreamBuffer and when its
+// goroutine exits and the maps are cleaned - never per packet.
+var streamSequencesLive atomic.Int64
+
+// streamSequencesReapedTransportEnded counts sequences that ended because
+// their transport's context ended while the sequence's own context was still
+// live: the transport gave up on its own rather than a close, reset or
+// replacement reaping it. Never touched per packet.
+var streamSequencesReapedTransportEnded atomic.Int64
+
+// StreamSequencesLive reports the live stream sequence count for the
+// provider's internals reply.
+func StreamSequencesLive() uint64 {
+	return uint64(streamSequencesLive.Load())
+}
+
+// StreamSequencesReapedTransportEnded reports how many sequences have been
+// reaped by their transport ending, for the provider's internals reply.
+func StreamSequencesReapedTransportEnded() uint64 {
+	return uint64(streamSequencesReapedTransportEnded.Load())
 }
 
 type StreamBuffer struct {
@@ -230,17 +265,26 @@ func (self *StreamBuffer) OpenStream(sourceId *Id, destinationId *Id, streamId I
 
 		self.streamSequences[streamSequenceId] = streamSequence
 		self.streamSequencesByStreamId[streamId] = streamSequence
+		streamSequencesLive.Add(1)
 		go HandleError(func() {
 			defer func() {
-				self.mutex.Lock()
-				defer self.mutex.Unlock()
-				streamSequence.Close()
-				// clean up
-				if streamSequence == self.streamSequences[streamSequenceId] {
-					delete(self.streamSequences, streamSequenceId)
-				}
-				if streamSequence == self.streamSequencesByStreamId[streamId] {
-					delete(self.streamSequencesByStreamId, streamId)
+				func() {
+					self.mutex.Lock()
+					defer self.mutex.Unlock()
+					streamSequence.Close()
+					// clean up
+					if streamSequence == self.streamSequences[streamSequenceId] {
+						delete(self.streamSequences, streamSequenceId)
+					}
+					if streamSequence == self.streamSequencesByStreamId[streamId] {
+						delete(self.streamSequencesByStreamId, streamId)
+					}
+					streamSequencesLive.Add(-1)
+				}()
+				// the seam runs with the mutex released so a test hook can
+				// read the maps
+				if reaped := self.streamBufferSettings.StreamSequenceReapedForTest; reaped != nil {
+					reaped(streamSequence)
 				}
 			}()
 			streamSequence.Run()
@@ -338,37 +382,62 @@ func (self *StreamSequence) Run() {
 	defer self.cancel()
 
 	if self.sourceId == nil || self.destinationId == nil {
-		clientRouteManager := self.streamManager.Client().RouteManager()
-
-		if self.sourceId != nil {
-			NewP2pTransport(
-				self.ctx,
-				self.streamManager.Client(),
-				self.streamManager.WebRtcManager(),
-				clientRouteManager,
-				clientRouteManager,
-				*self.sourceId,
-				self.streamId,
-				PeerTypeSource,
-				self.streamBufferSettings.P2pTransportSettings,
-			)
-		} else if self.destinationId != nil {
-			NewP2pTransport(
-				self.ctx,
-				self.streamManager.Client(),
-				self.streamManager.WebRtcManager(),
-				clientRouteManager,
-				clientRouteManager,
-				*self.destinationId,
-				self.streamId,
-				PeerTypeDestination,
-				self.streamBufferSettings.P2pTransportSettings,
-			)
+		var streamTransport *P2pTransport
+		if newForTest := self.streamBufferSettings.P2pTransportNewForTest; newForTest != nil {
+			if transports := newForTest(self); len(transports) > 0 {
+				streamTransport = transports[0]
+			}
 		} else {
-			// the stream must have one of source or destination
-			self.streamManager.Client().log.V(1).Infof("[sm] s(%s) missing source or destination.\n", self.streamId)
-			return
+			clientRouteManager := self.streamManager.Client().RouteManager()
+
+			if self.sourceId != nil {
+				streamTransport = NewP2pTransport(
+					self.ctx,
+					self.streamManager.Client(),
+					self.streamManager.WebRtcManager(),
+					clientRouteManager,
+					clientRouteManager,
+					*self.sourceId,
+					self.streamId,
+					PeerTypeSource,
+					self.streamBufferSettings.P2pTransportSettings,
+				)
+			} else if self.destinationId != nil {
+				streamTransport = NewP2pTransport(
+					self.ctx,
+					self.streamManager.Client(),
+					self.streamManager.WebRtcManager(),
+					clientRouteManager,
+					clientRouteManager,
+					*self.destinationId,
+					self.streamId,
+					PeerTypeDestination,
+					self.streamBufferSettings.P2pTransportSettings,
+				)
+			} else {
+				// the stream must have one of source or destination
+				self.streamManager.Client().log.V(1).Infof("[sm] s(%s) missing source or destination.\n", self.streamId)
+				return
+			}
 		}
+
+		// This transport is the sequence's only carrier. Its context is a
+		// child of self.ctx, so close, reset and replacement still cancel it
+		// first; and when the transport's run loop gives up it cancels
+		// itself, ending the sequence so the OpenStream cleanup drops it from
+		// the maps instead of parking until a close or reset that may never
+		// arrive. (The both-sides branch keeps parking on self.ctx alone;
+		// joining it is v33.1 scope.)
+		if streamTransport != nil {
+			<-streamTransport.ctx.Done()
+			select {
+			case <-self.ctx.Done():
+				// an external close, reset or replacement reaped it
+			default:
+				streamSequencesReapedTransportEnded.Add(1)
+			}
+		}
+		return
 	} else {
 		p2pToDestinationRouteManager := NewRouteManager(self.ctx, fmt.Sprintf("->s(%s)", self.streamId))
 		p2pToSourceRouteManager := NewRouteManager(self.ctx, fmt.Sprintf("<-s(%s)", self.streamId))
