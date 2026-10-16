@@ -52,7 +52,7 @@ func (p *upstreamTestPolicyImpl) inspectIngressDirect(provideMode protocol.Provi
 		return SecurityPolicyResultAllow, nil
 	}
 	if p.cfaa != nil && ipPath != nil {
-		if cfaaDrop == p.cfaa.inspect(ipPath.SourceIp, ipPath.SourcePort, ipPath.Protocol, ipPath.Version) {
+		if verdict := p.cfaa.inspect(ipPath.SourceIp, ipPath.SourcePort, ipPath.Protocol, ipPath.Version); verdict == cfaaDropIp || verdict == cfaaDropPort {
 			return SecurityPolicyResultDrop, nil
 		}
 	}
@@ -224,7 +224,7 @@ func cfaaVerdictName(v cfaaVerdict) string {
 		return "pass"
 	case cfaaAllow:
 		return "allow"
-	case cfaaDrop:
+	case cfaaDropIp, cfaaDropPort:
 		return "drop"
 	default:
 		return "unknown"

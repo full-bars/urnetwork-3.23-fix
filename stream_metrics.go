@@ -271,4 +271,5 @@ func (self *streamMetricsState) writePrometheus(b *strings.Builder) {
 	fmt.Fprintf(b, "urnet_dial_backoff_long_tier_entered_total %d\n", self.dialBackoffLongEntered.Load())
 
 	writeDmcaMetrics(b)
+	writeSecurityBlockMetrics(b)
 }

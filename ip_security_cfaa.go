@@ -9,7 +9,7 @@ package connect
 // drop" and "definitely allow, do not inspect further" from "no opinion, hand
 // to deep-packet inspection":
 //
-//   - cfaaDrop  -> blocked IP, or a known-abused / privileged-non-whitelisted
+//   - cfaaDropIp / cfaaDropPort -> blocked IP, or a known-abused or privileged-non-whitelisted
 //                  port. The packet is dropped outright.
 //   - cfaaAllow -> a structured/plaintext system protocol that must never be
 //                  entropy-dropped by the payload detector (NTP, IKE / wifi
@@ -26,16 +26,26 @@ import (
 	"net"
 )
 
+// cfaaVerdict is the static endpoint verdict. The drop verdicts are split by
+// cause so the enforcement path can report the reason:
+//   - cfaaDropIp   -> the destination/source is inside the blocked-ip table
+//   - cfaaDropPort -> a known-abused bittorrent port, plain dns over tcp,
+//     http over udp, or a privileged port the allow list does not cover
+//   - cfaaAllow    -> a structured/plaintext system protocol that must never be
+//     payload-inspected
+//   - cfaaPass     -> no static verdict; the caller proceeds to DPI (egress) or
+//     allows (ingress)
 type cfaaVerdict int
 
 const (
-	// cfaaPass means the static rules reached no verdict; the caller decides
-	// (egress hands the packet to the stateful detector, ingress allows it).
+	// cfaaPass means the static rules reached no verdict; the caller decides.
 	cfaaPass cfaaVerdict = iota
 	// cfaaAllow is a definitive allow that must skip payload inspection.
 	cfaaAllow
-	// cfaaDrop is a definitive drop.
-	cfaaDrop
+	// cfaaDropIp is a definitive drop from the blocked-ip table.
+	cfaaDropIp
+	// cfaaDropPort is a definitive drop from the port policy.
+	cfaaDropPort
 )
 
 // CfaaSecurityPolicySettings configures the static endpoint-reputation policy.
@@ -101,13 +111,13 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 	case 4:
 		if ip4 := ip.To4(); ip4 != nil {
 			if cfaaBlockedIp4(binary.BigEndian.Uint32(ip4)) {
-				return cfaaDrop
+				return cfaaDropIp
 			}
 		}
 	case 6:
 		if ip16 := ip.To16(); ip16 != nil {
 			if cfaaBlockedIp6([16]byte(ip16)) {
-				return cfaaDrop
+				return cfaaDropIp
 			}
 		}
 	}
@@ -130,7 +140,7 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 	switch {
 	case 6881 <= port && port <= 6889, port == 6969, port == 1337, port == 9337, port == 2710:
 		// bittorrent and unofficial bittorrent-related ports
-		return cfaaDrop
+		return cfaaDropPort
 	case port == 123, port == 500, port == 4500:
 		// apple system ports: ntp (123), wifi calling / ike+nat-t (500, 4500)
 		// see https://support.apple.com/en-us/103229
@@ -142,7 +152,7 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 		if protocol == IpProtocolUdp {
 			return cfaaAllow
 		}
-		return cfaaDrop
+		return cfaaDropPort
 	case port == 443, port == 853, port == 465, port == 993, port == 995,
 		port == smtpStartTlsPort && protocol == IpProtocolTcp:
 		// https/quic, dns over tls, and secure email -> downstream DPI
@@ -157,10 +167,10 @@ func (self *cfaaDetector) inspect(ip net.IP, port int, protocol IpProtocol, vers
 		if protocol == IpProtocolTcp {
 			return cfaaPass
 		}
-		return cfaaDrop
+		return cfaaDropPort
 	case port < 1024:
 		// other privileged ports are not permitted
-		return cfaaDrop
+		return cfaaDropPort
 	default:
 		// user / ephemeral ports: no static verdict, hand to DPI
 		return cfaaPass

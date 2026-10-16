@@ -98,17 +98,17 @@ func TestCfaaTelegramCallException(t *testing.T) {
 	}
 
 	detector := newCfaaDetector(DefaultCfaaSecurityPolicySettings())
-	if got := detector.inspect(net.ParseIP("91.108.13.1"), 596, IpProtocolUdp, 4); got != cfaaDrop {
+	if got := detector.inspect(net.ParseIP("91.108.13.1"), 596, IpProtocolUdp, 4); got != cfaaDropPort {
 		t.Fatalf("non-reflector privileged endpoint = %s, want drop", cfaaVerdictName(got))
 	}
 
 	settings := DefaultCfaaSecurityPolicySettings()
 	settings.AllowTelegramCalls = false
 	detector = newCfaaDetector(settings)
-	if got := detector.inspect(endpoint, 596, IpProtocolUdp, 4); got != cfaaDrop {
+	if got := detector.inspect(endpoint, 596, IpProtocolUdp, 4); got != cfaaDropPort {
 		t.Fatalf("disabled Telegram exception = %s, want privileged-port drop", cfaaVerdictName(got))
 	}
-	if got := detector.inspect(net.ParseIP("91.108.9.38"), 595, IpProtocolTcp, 4); got != cfaaDrop {
+	if got := detector.inspect(net.ParseIP("91.108.9.38"), 595, IpProtocolTcp, 4); got != cfaaDropPort {
 		t.Fatalf("disabled protocol-v12 fallback = %s, want privileged-port drop", cfaaVerdictName(got))
 	}
 }

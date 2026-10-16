@@ -35,10 +35,10 @@ func TestCfaaMappedIpv6DestinationIsJudgedByTheIpv4Blocklist(t *testing.T) {
 	// a user port, so only the reputation check can decide it
 	const port = 40000
 
-	if got := d.inspect(blocked, port, IpProtocolTcp, 4); got != cfaaDrop {
+	if got := d.inspect(blocked, port, IpProtocolTcp, 4); got != cfaaDropIp {
 		t.Fatalf("setup: the plain IPv4 form gave %v, want drop", got)
 	}
-	if got := d.inspect(mappedIpv6(blocked), port, IpProtocolTcp, 6); got != cfaaDrop {
+	if got := d.inspect(mappedIpv6(blocked), port, IpProtocolTcp, 6); got != cfaaDropIp {
 		t.Fatalf("the mapped IPv6 form of a blocked IPv4 address gave %v, want drop", got)
 	}
 }

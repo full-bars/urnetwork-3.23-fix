@@ -22,9 +22,9 @@ func TestForkCfaaSmtpPortClassification(t *testing.T) {
 		want     cfaaVerdict
 	}{
 		{"587 tcp pass", smtpStartTlsPort, IpProtocolTcp, 4, cfaaPass},
-		{"587 udp drop", smtpStartTlsPort, IpProtocolUdp, 4, cfaaDrop},
-		{"25 tcp drop", smtpLocalPort, IpProtocolTcp, 4, cfaaDrop},
-		{"25 udp drop", smtpLocalPort, IpProtocolUdp, 4, cfaaDrop},
+		{"587 udp drop", smtpStartTlsPort, IpProtocolUdp, 4, cfaaDropPort},
+		{"25 tcp drop", smtpLocalPort, IpProtocolTcp, 4, cfaaDropPort},
+		{"25 udp drop", smtpLocalPort, IpProtocolUdp, 4, cfaaDropPort},
 		{"465 tcp pass", smtpImplicitTlsPort, IpProtocolTcp, 4, cfaaPass},
 		{"993 tcp pass", 993, IpProtocolTcp, 4, cfaaPass},
 		{"995 tcp pass", 995, IpProtocolTcp, 4, cfaaPass},

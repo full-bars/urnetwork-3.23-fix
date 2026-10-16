@@ -166,8 +166,8 @@ func TestIcmpWireCfaaPortPolicy(t *testing.T) {
 	}
 	// the same identifiers on a privileged-adjacent tcp port still drop, so the
 	// branch really is the icmp one and not a weakened port policy
-	if verdict := detector.inspect(public, 1, IpProtocolTcp, 6); verdict != cfaaDrop {
-		t.Errorf("tcp port 1 got %v, want cfaaDrop", verdict)
+	if verdict := detector.inspect(public, 1, IpProtocolTcp, 6); verdict != cfaaDropPort {
+		t.Errorf("tcp port 1 got %v, want cfaaDropPort", verdict)
 	}
 }
 

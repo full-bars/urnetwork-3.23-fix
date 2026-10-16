@@ -105,6 +105,7 @@ func (self *egressSecurityPolicy) Inspect(provideMode protocol.ProvideMode, ipPa
 	result, err := self.inspect(provideMode, ipPath, payload)
 	if ipPath != nil {
 		self.stats.AddDestination(ipPath, result, 1)
+		securityDecisionAdd(secDirEgress, result)
 	}
 	return result, err
 }
@@ -115,12 +116,18 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 	}
 
 	if !isPublicUnicast(ipPath.DestinationIp) {
+		securityBlockedAdd(secDirEgress, secReasonNonPublicDestination, ipPath.Protocol)
 		return SecurityPolicyResultIncident, nil
 	}
 
 	// static endpoint reputation (blocked ips + port policy) on the destination
-	switch self.cfaa.inspect(ipPath.DestinationIp, ipPath.DestinationPort, ipPath.Protocol, ipPath.Version) {
-	case cfaaDrop:
+	switch verdict := self.cfaa.inspect(ipPath.DestinationIp, ipPath.DestinationPort, ipPath.Protocol, ipPath.Version); verdict {
+	case cfaaDropIp:
+		securityBlockedAdd(secDirEgress, secReasonBlockedIp, ipPath.Protocol)
+		return SecurityPolicyResultDrop, nil
+	case cfaaDropPort:
+		securityBlockedAdd(secDirEgress, secReasonBlockedPort, ipPath.Protocol)
+		securityBlockedPortAdd(secDirEgress, ipPath.Protocol, ipPath.DestinationPort)
 		return SecurityPolicyResultDrop, nil
 	case cfaaAllow:
 		return SecurityPolicyResultAllow, nil
@@ -132,19 +139,39 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 		// RTP/RTCP), or an exact provider-scoped gaming exception; that positive
 		// match is the fallback that rescues an otherwise-ambiguous encrypted flow.
 		// Enforcement of each verdict honors the detector settings (log-only,
-		// drop/report toggles), applied by result().
+		// drop/report toggles), applied by result(); dmcaOutcome reports the
+		// decided and enforced split to the block metrics.
 		v, reason, decidedNow := self.dmca.classifyDetailed(ipPath, payload)
 		recordDpiDecision(ipPath, reason, decidedNow)
 		switch v {
 		case dmcaBittorrent:
-			return self.dmca.result(v), nil
+			return self.dmcaOutcome(v, ipPath), nil
 		case dmcaDropEncrypted:
-			return self.dmca.result(v), nil
+			return self.dmcaOutcome(v, ipPath), nil
 		default:
 			// still inspecting, a sanctioned web standard, or benign plaintext
 			return SecurityPolicyResultAllow, nil
 		}
 	}
+}
+
+// dmcaOutcome maps a terminal dpi verdict through the detector settings and
+// moves the decided/enforced/blocked counters: decided once per terminal
+// classification, enforced and blocked only when the settings let it drop or
+// report. A downgraded verdict (log-only, report toggles off) stays decided.
+func (self *egressSecurityPolicy) dmcaOutcome(v dmcaVerdict, ipPath *IpPath) SecurityPolicyResult {
+	direction := secDirEgress
+	reason := secReasonDmcaBittorrent
+	if v == dmcaDropEncrypted {
+		reason = secReasonDmcaEncrypted
+	}
+	securityDecidedAdd(direction, reason, ipPath.Protocol)
+	result := self.dmca.result(v)
+	if result == SecurityPolicyResultDrop || result == SecurityPolicyResultIncident {
+		securityEnforcedAdd(direction, reason, ipPath.Protocol)
+		securityBlockedAdd(direction, reason, ipPath.Protocol)
+	}
+	return result
 }
 
 type ingressSecurityPolicy struct {
@@ -174,6 +201,7 @@ func (self *ingressSecurityPolicy) Stats() *SecurityPolicyStatsCollector {
 func (self *ingressSecurityPolicy) Inspect(provideMode protocol.ProvideMode, ipPath *IpPath, payload []byte) (SecurityPolicyResult, error) {
 	result, err := self.inspect(provideMode, ipPath)
 	self.stats.AddSource(ipPath, result, 1)
+	securityDecisionAdd(secDirIngress, result)
 	return result, err
 }
 
@@ -184,7 +212,13 @@ func (self *ingressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipP
 
 	// mirror the egress static drops (blocked ips + port policy), evaluated on the
 	// source endpoint
-	if cfaaDrop == self.cfaa.inspect(ipPath.SourceIp, ipPath.SourcePort, ipPath.Protocol, ipPath.Version) {
+	switch self.cfaa.inspect(ipPath.SourceIp, ipPath.SourcePort, ipPath.Protocol, ipPath.Version) {
+	case cfaaDropIp:
+		securityBlockedAdd(secDirIngress, secReasonBlockedIp, ipPath.Protocol)
+		return SecurityPolicyResultDrop, nil
+	case cfaaDropPort:
+		securityBlockedAdd(secDirIngress, secReasonBlockedPort, ipPath.Protocol)
+		securityBlockedPortAdd(secDirIngress, ipPath.Protocol, ipPath.SourcePort)
 		return SecurityPolicyResultDrop, nil
 	}
 	return SecurityPolicyResultAllow, nil
