@@ -13,13 +13,11 @@ Every provider therefore also keeps a small local record of its own behaviour in
 This is the no-setup alternative for the one question Prometheus does not answer: did that upgrade make this box worse? It is not a replacement for the fleet view, and it is not a time-series database. For a fleet, use the bundle below.
 
 
-## 1. Turn on metrics on each provider
+## 1. Metrics on each provider
 
-```bash
-urnet-tools metrics on
-```
+`/metrics` is **on by default**: the provider starts its listener at every startup unless `urnet-tools metrics off` is persisted, `URNETWORK_METRICS` names an address, or the process is a HotSwap candidate. The automatic bind is loopback plus the machine's Tailscale address, never a public interface.
 
-The command prints where the endpoint listens and what to give Prometheus:
+`urnet-tools metrics on` is still the explicit switch (and prints where the endpoint listens and what to give Prometheus):
 
 ```
 Metrics: on
@@ -28,14 +26,15 @@ Metrics: on
 Prometheus target: 100.64.0.10:9100
 ```
 
-The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again.
+Run `urnet-tools metrics status` at any time to see the addresses; `urnet-tools metrics off` turns the listener off, and the setting survives restarts and updates.
 
 ### Where the endpoint listens
 
 | Situation | Listens on |
 |---|---|
 | Bare metal or VM (default) | `127.0.0.1` plus this machine's Tailscale address, if it has one |
-| Docker container (default) | Every interface inside the container |
+| Docker container, all addresses private | Every interface inside the container |
+| Docker container sharing a publicly addressed network (for example `--network host` on an internet-facing host) | `127.0.0.1` plus the Tailscale address only |
 | `urnet-tools metrics listen <ip:port>` | Exactly that address |
 | `URNETWORK_METRICS=<ip:port>` set in the environment | Exactly that address (overrides everything above) |
 
@@ -65,8 +64,8 @@ docker exec urnetwork urnet-tools metrics on
 
 Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is `100.64.0.10:9100`. For several containers on one host, publish each on its own host port (`-p 100.64.0.10:9101:9100`) and use that port as the target.
 
-> [!WARNING]
-> With `--network host`, the container shares the host's interfaces, so the default binds every host interface, including public ones. Use `urnet-tools metrics listen <tailscale-ip>:9100` there.
+> [!NOTE]
+> The public-interface guard is enforced in code now: a container with `--network host` binds every interface only when every address it holds is private or unique-local; if any is publicly routable it stays on loopback and the Tailscale address. `urnet-tools metrics listen <address>:9100` still overrides everything.
 
 ## 2. Run the monitoring stack
 
@@ -306,6 +305,7 @@ Two line families appear while transports are being changed, and both are expect
 | `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted |
 | `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
 | `urnet_doh_failures_total` | counter | | DNS-over-HTTPS failures |
+| `urnet_tls_handshakes_total` | counter | `path`, `host`, `result` | Client TLS handshakes on the platform and API dial paths. `result` is `full`, `resumed` (resumed handshakes skip certificate verification) or `failed`; `path` names the dial strategy (`normal`, `normal_proxy`, the `resilient_*` modes); `host` is the target class (`api`, `connect`, `other`). 54 bounded series |
 | `urnet_sessions_pqe` | gauge | | Active post-quantum sessions |
 | `urnet_sessions_classical` | gauge | | Active classical sessions |
 | `urnet_sessions_opened_total` | counter | `encryption` | Sessions opened, lifetime |
@@ -346,6 +346,8 @@ Two line families appear while transports are being changed, and both are expect
 | `urnet_disk_write_mbps` | gauge | | Synchronous write speed measured by the startup disk benchmark, MB/s (auto profile only; absent until one has run) |
 | `urnet_disk_slow` | gauge | | 1 when the last disk benchmark judged the disk slow (under 50 MB/s) or it hung |
 | `urnet_disk_bench_age_seconds` | gauge | | Age of the last disk benchmark result |
+| `urnet_dial_backoff_long_tier_active` | gauge | | Identities currently waiting in the long dial backoff tier because their own path keeps failing |
+| `urnet_dial_backoff_long_tier_entered_total` | counter | | Times an identity's dial backoff entered the long tier |
 
 ### Reading the stream sequence and P2P transport series
 
@@ -358,3 +360,8 @@ Providers carry streams for their tunnel clients, and the P2P transports are the
 - `urnet_stream_control_frames_total`: what the platform asked for. `open` counts StreamOpen frames alone; a reset carries its own type and its stream entries surface in `open_requests` (`created` or `replaced`), so read open frames against the sum of `created`, `existing` and `replaced` while remembering that a reset adds requests without adding open frames.
 - `urnet_p2p_transports_started_total` minus `stopped_total` is the live transport count; in steady churn the pair should move almost evenly, and a growing gap means transports are not stopping. `urnet_p2p_connect_failures_total` (it counts attempts that returned an error; a connection that came up and then failed its readiness exchange is not counted) climbing at a fast steady rate means a peer is unreachable and the transport is retrying; a slow trickle is the normal cost of peers going away.
 - These counters are process-local: a restart resets them, so alert on rates and ratios, not absolute values. `urnet_stream_sequences_live` and `urnet_stream_sequences_reaped_transport_ended_total` are the same accounting for older dashboards.
+
+### Reading the handshake and backoff series
+
+- `urnet_tls_handshakes_total`: full handshakes are the expensive ones (certificate verification happens on each). A large `full` share from one `path` with few `failed` means that path is not taking its resumed-session cache; a rising `failed` share is the real connection problem. Resumed share per path is `sum(rate(urnet_tls_handshakes_total{result="resumed"}[5m])) by (path) / sum(rate(urnet_tls_handshakes_total[5m])) by (path)`.
+- `urnet_dial_backoff_long_tier_*`: `active` above zero is normal after trouble (an identity whose own path keeps failing is backed off at the long tier instead of burning the shared attempt budget). An `entered` rate that stays high while `active` is flat is ordinary churn; `active` growing across hours is a node whose paths keep failing.
