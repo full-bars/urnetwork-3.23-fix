@@ -814,8 +814,9 @@ func TestProfileAliasCanonicalization(t *testing.T) {
 
 func TestEveryControlKeyClassified(t *testing.T) {
 	restartOnly := map[string]bool{
-		"profile": true, // initGlog/SHMLogger one-shot at startup
-		"ramlogs": true, // stdout/stderr redirect irreversible
+		"profile":        true, // initGlog/SHMLogger one-shot at startup
+		"ramlogs":        true, // stdout/stderr redirect irreversible
+		"tcp_ack_direct": true, // read once at the provider start
 	}
 
 	for key := range controlKeys {
