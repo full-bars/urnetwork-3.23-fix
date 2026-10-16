@@ -196,28 +196,28 @@ func (self *streamMetricsState) liveByKind(kind streamKind) int64 {
 }
 
 func (self *streamMetricsState) writePrometheus(b *strings.Builder) {
-	fmt.Fprintf(b, "# HELP urnet_stream_sequences_by_kind Live stream sequences by kind (single: provider is one end; two_ended: provider relays).\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_sequences_by_kind gauge\n")
+	b.WriteString("# HELP urnet_stream_sequences_by_kind Live stream sequences by kind (single: provider is one end; two_ended: provider relays).\n")
+	b.WriteString("# TYPE urnet_stream_sequences_by_kind gauge\n")
 	for k := streamKind(0); k < streamKindCount; k += 1 {
 		fmt.Fprintf(b, "urnet_stream_sequences_by_kind{kind=%q} %d\n", streamKindNames[k], self.liveByKind(k))
 	}
 
-	fmt.Fprintf(b, "# HELP urnet_stream_sequences_opened_total Stream sequences started, by kind.\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_sequences_opened_total counter\n")
+	b.WriteString("# HELP urnet_stream_sequences_opened_total Stream sequences started, by kind.\n")
+	b.WriteString("# TYPE urnet_stream_sequences_opened_total counter\n")
 	for k := streamKind(0); k < streamKindCount; k += 1 {
 		fmt.Fprintf(b, "urnet_stream_sequences_opened_total{kind=%q} %d\n", streamKindNames[k], self.opened[k].Load())
 	}
 
-	fmt.Fprintf(b, "# HELP urnet_stream_sequences_closed_total Stream sequences ended, by kind and reason (transport_ended: its transport gave up; cancelled: close, reset, replacement or shutdown).\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_sequences_closed_total counter\n")
+	b.WriteString("# HELP urnet_stream_sequences_closed_total Stream sequences ended, by kind and reason (transport_ended: its transport gave up; cancelled: close, reset, replacement or shutdown).\n")
+	b.WriteString("# TYPE urnet_stream_sequences_closed_total counter\n")
 	for k := streamKind(0); k < streamKindCount; k += 1 {
 		for r := 0; r < streamEndReasonCount; r += 1 {
 			fmt.Fprintf(b, "urnet_stream_sequences_closed_total{kind=%q,reason=%q} %d\n", streamKindNames[k], streamEndReasonNames[r], self.closed[k][r].Load())
 		}
 	}
 
-	fmt.Fprintf(b, "# HELP urnet_stream_sequence_lifetime_seconds How long a stream sequence lived, observed when it ended.\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_sequence_lifetime_seconds histogram\n")
+	b.WriteString("# HELP urnet_stream_sequence_lifetime_seconds How long a stream sequence lived, observed when it ended.\n")
+	b.WriteString("# TYPE urnet_stream_sequence_lifetime_seconds histogram\n")
 	for k := streamKind(0); k < streamKindCount; k += 1 {
 		var cumulative int64
 		for i := 0; i < streamLifetimeBucketCount; i += 1 {
@@ -232,30 +232,30 @@ func (self *streamMetricsState) writePrometheus(b *strings.Builder) {
 		fmt.Fprintf(b, "urnet_stream_sequence_lifetime_seconds_count{kind=%q} %d\n", streamKindNames[k], self.lifetimeCount[k].Load())
 	}
 
-	fmt.Fprintf(b, "# HELP urnet_stream_open_requests_total Platform stream open requests by what the buffer did with them.\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_open_requests_total counter\n")
+	b.WriteString("# HELP urnet_stream_open_requests_total Platform stream open requests by what the buffer did with them.\n")
+	b.WriteString("# TYPE urnet_stream_open_requests_total counter\n")
 	for r := 0; r < streamOpenResultCount; r += 1 {
 		fmt.Fprintf(b, "urnet_stream_open_requests_total{result=%q} %d\n", streamOpenResultNames[r], self.openRequests[r].Load())
 	}
 
-	fmt.Fprintf(b, "# HELP urnet_stream_control_frames_total Stream control frames received from the platform.\n")
-	fmt.Fprintf(b, "# TYPE urnet_stream_control_frames_total counter\n")
+	b.WriteString("# HELP urnet_stream_control_frames_total Stream control frames received from the platform.\n")
+	b.WriteString("# TYPE urnet_stream_control_frames_total counter\n")
 	fmt.Fprintf(b, "urnet_stream_control_frames_total{type=\"open\"} %d\n", self.openFrames.Load())
 	fmt.Fprintf(b, "urnet_stream_control_frames_total{type=\"close\"} %d\n", self.closeFrames.Load())
 	fmt.Fprintf(b, "urnet_stream_control_frames_total{type=\"reset\"} %d\n", self.resetFrames.Load())
 
-	fmt.Fprintf(b, "# HELP urnet_p2p_transports_started_total P2P transports started.\n")
-	fmt.Fprintf(b, "# TYPE urnet_p2p_transports_started_total counter\n")
+	b.WriteString("# HELP urnet_p2p_transports_started_total P2P transports started.\n")
+	b.WriteString("# TYPE urnet_p2p_transports_started_total counter\n")
 	fmt.Fprintf(b, "urnet_p2p_transports_started_total %d\n", self.p2pStarted.Load())
-	fmt.Fprintf(b, "# HELP urnet_p2p_transports_stopped_total P2P transports stopped.\n")
-	fmt.Fprintf(b, "# TYPE urnet_p2p_transports_stopped_total counter\n")
+	b.WriteString("# HELP urnet_p2p_transports_stopped_total P2P transports stopped.\n")
+	b.WriteString("# TYPE urnet_p2p_transports_stopped_total counter\n")
 	fmt.Fprintf(b, "urnet_p2p_transports_stopped_total %d\n", self.p2pStopped.Load())
-	fmt.Fprintf(b, "# HELP urnet_p2p_connect_failures_total P2P connection attempts that returned an error (a connection that came up and then failed its readiness exchange is not counted).\n")
-	fmt.Fprintf(b, "# TYPE urnet_p2p_connect_failures_total counter\n")
+	b.WriteString("# HELP urnet_p2p_connect_failures_total P2P connection attempts that returned an error (a connection that came up and then failed its readiness exchange is not counted).\n")
+	b.WriteString("# TYPE urnet_p2p_connect_failures_total counter\n")
 	fmt.Fprintf(b, "urnet_p2p_connect_failures_total %d\n", self.p2pConnFailures.Load())
 
-	fmt.Fprintf(b, "# HELP urnet_tls_handshakes_total Client TLS handshakes on the platform and API dial paths, by dial path, target host class and result (resumed ones skip certificate verification).\n")
-	fmt.Fprintf(b, "# TYPE urnet_tls_handshakes_total counter\n")
+	b.WriteString("# HELP urnet_tls_handshakes_total Client TLS handshakes on the platform and API dial paths, by dial path, target host class and result (resumed ones skip certificate verification).\n")
+	b.WriteString("# TYPE urnet_tls_handshakes_total counter\n")
 	for p := 0; p < int(tlsPathCount); p += 1 {
 		for h := 0; h < tlsHostCount; h += 1 {
 			for r := 0; r < tlsResultCount; r += 1 {
@@ -263,10 +263,10 @@ func (self *streamMetricsState) writePrometheus(b *strings.Builder) {
 			}
 		}
 	}
-	fmt.Fprintf(b, "# HELP urnet_dial_backoff_long_tier_active Identities currently waiting in the long dial backoff tier because their own path keeps failing.\n")
-	fmt.Fprintf(b, "# TYPE urnet_dial_backoff_long_tier_active gauge\n")
+	b.WriteString("# HELP urnet_dial_backoff_long_tier_active Identities currently waiting in the long dial backoff tier because their own path keeps failing.\n")
+	b.WriteString("# TYPE urnet_dial_backoff_long_tier_active gauge\n")
 	fmt.Fprintf(b, "urnet_dial_backoff_long_tier_active %d\n", self.dialBackoffLongActive.Load())
-	fmt.Fprintf(b, "# HELP urnet_dial_backoff_long_tier_entered_total Times an identity's dial backoff entered the long tier.\n")
-	fmt.Fprintf(b, "# TYPE urnet_dial_backoff_long_tier_entered_total counter\n")
+	b.WriteString("# HELP urnet_dial_backoff_long_tier_entered_total Times an identity's dial backoff entered the long tier.\n")
+	b.WriteString("# TYPE urnet_dial_backoff_long_tier_entered_total counter\n")
 	fmt.Fprintf(b, "urnet_dial_backoff_long_tier_entered_total %d\n", self.dialBackoffLongEntered.Load())
 }
