@@ -1,0 +1,15 @@
+# provider claim-daemon-v2 --config (from sn 4ca8316e's
+# mainnet/claim-daemon-v2.example.yml). Replace each <...> placeholder with the
+# input the settlement-v2 launch docs name.
+schema_version: 2
+api_url: "<operator-api-url>"
+rpc:
+  - "<O2-evm-rpc-url>"
+chain_id: 964
+vault: "<vault2-address>"
+batcher: "<claim-batcher-address>"
+coldkeys:
+  - "<O22-coldkey-ss58>"
+key_file: "<O22-relayer-key-file>"
+state_dir: "<O22-state-dir>"
+poll_seconds: 30

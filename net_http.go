@@ -16,6 +16,7 @@ import (
 	"net/netip"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -1807,17 +1808,20 @@ func NewBlockingApiCallback[R any](ctx context.Context) (ApiCallback[R], chan Ap
 	return apiCallback, c
 }
 
-// httpErrorFromResponse builds an error from a non-200 response. Some
-// front-end proxies (nginx, Cloudflare) return an HTML error page as the
-// body instead of plain text or JSON; embedding that verbatim produces
-// multi-line, unreadable log spam at every call site that prints the error.
-// Collapse an HTML body down to a short descriptor instead.
+// httpErrorFromResponse builds a typed error from a non-200 response so a
+// caller can act on the status rather than string-matching. Some
+// front-end proxies answer with an HTML error page; embedding it verbatim
+// produced multi-line log spam, so html bodies are collapsed.
 func httpErrorFromResponse(status string, bodyBytes []byte) error {
-	body := strings.TrimSpace(string(bodyBytes))
-	if strings.HasPrefix(body, "<") {
-		return fmt.Errorf("%s: <html error page, %d bytes>", status, len(bodyBytes))
+	statusCode := 0
+	if i := strings.IndexByte(status, ' '); 0 < i {
+		statusCode, _ = strconv.Atoi(status[:i])
 	}
-	return fmt.Errorf("%s: %s", status, body)
+	return &HttpStatusError{
+		StatusCode: statusCode,
+		Status:     status,
+		Body:       bodyBytes,
+	}
 }
 
 func HttpPostWithStrategyRaw(

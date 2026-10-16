@@ -4,6 +4,7 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"os"
 
@@ -15,7 +16,12 @@ func claimDaemonCmd(opts docopt.Opts) {
 	os.Exit(1)
 }
 
+// claimDaemonV2Cmd implements `provider claim-daemon-v2 --config=<path>
+// [--v1-config=<path>] [--threshold-rao=<rao>] [--claim-now]`. The durable
+// volume declaration rides the context, as the sn miner's dispatch does.
 func claimDaemonV2Cmd(opts docopt.Opts) {
-	fmt.Println("claim-daemon-v2: not implemented yet")
-	os.Exit(1)
+	if err := runClaimDaemonV2Command(minerStorageContext(context.Background(), opts), opts); err != nil {
+		fmt.Printf("claim-daemon-v2: %s\n", err)
+		os.Exit(1)
+	}
 }
