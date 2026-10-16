@@ -151,6 +151,16 @@ type ClientStrategySettings struct {
 	// for gets and ws connects
 	ParallelBlockSize int
 
+	// SequentialDialHedge makes each round of parallelEvalErr dial the
+	// first-choice dialer alone and only start the rest after the earlier of
+	// its failure and this delay. Zero is off: the historical behavior, where
+	// the serial phase runs to completion and the parallel block follows. The
+	// provider opts in with URNETWORK_STRATEGY_SEQUENTIAL; the purpose is to
+	// stop a failing backend from being raced with several concurrent dials
+	// per attempt, each one a full TLS handshake on the resilient paths
+	// (measured about ten full handshakes a second on a heavy node).
+	SequentialDialHedge time.Duration
+
 	// the number of new profiles to add per expand
 	ExpandExtenderProfileCount int
 	ExtenderNetworks           []netip.Prefix
@@ -659,6 +669,13 @@ func (self *evalResult) Close() {
 	// }
 }
 
+// sequentialDialHedgeTimer is a seam for deterministic tests of the
+// sequential-dial hedge (see ClientStrategySettings.SequentialDialHedge);
+// production uses a real timer.
+var sequentialDialHedgeTimer = func(d time.Duration) *time.Timer {
+	return time.NewTimer(d)
+}
+
 func (self *ClientStrategy) parallelEval(ctx context.Context, eval func(ctx context.Context, dialer *clientDialer) *evalResult) *evalResult {
 	result, _ := self.parallelEvalErr(ctx, eval, false)
 	return result
@@ -790,11 +807,43 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 
 			// WeightedShuffle(serialDialers, dialerWeights)
 			sortDialersByHealth(serialDialers)
-			for _, dialer := range serialDialers {
+			for serialIter, dialer := range serialDialers {
 				select {
 				case <-handleCtx.Done():
 					return nil, finish()
 				default:
+				}
+
+				if serialIter == 0 && 0 < self.settings.SequentialDialHedge {
+					// dial the first choice alone; escalate to the rest on its
+					// failure, or after the hedge so a slow first choice cannot
+					// stall the attempt. The dial stays in flight and its
+					// eventual result is consumed by the block wait below
+					// (run() already noted the failure for the error record).
+					go HandleError(func() {
+						run(dialer)
+					})
+					hedgeTimer := sequentialDialHedgeTimer(self.settings.SequentialDialHedge)
+					select {
+					case <-handleCtx.Done():
+						hedgeTimer.Stop()
+						return nil, finish()
+					case result := <-out:
+						hedgeTimer.Stop()
+						if result != nil {
+							if result.err == nil || result.terminal {
+								self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
+								return result, nil
+							}
+							self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+							result.Close()
+						}
+					case <-hedgeTimer.C:
+						// still dialing: count it against the block wait and
+						// escalate
+						p += 1
+					}
+					continue
 				}
 
 				result := eval(handleCtx, dialer)

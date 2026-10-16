@@ -3117,6 +3117,7 @@ func provide(opts docopt.Opts) {
 
 	provideWithProxy := func(proxyCtx context.Context, proxySettings *connect.ProxySettings, isNative bool, isURLSourced bool) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
+		applyProviderStrategySequential(clientStrategySettings)
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
 		// Load previously-persisted long-lived identity material — the
