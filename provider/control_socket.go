@@ -329,7 +329,6 @@ var liveEffectKeys = map[string]bool{
 	"proxy_dead_cleanup_interval": true,
 	"node_name":                   true,
 	"hot_restart":                 true,
-	"tcp_ack_direct":              true,
 	"metrics":                     true,
 	"metrics_listen":              true,
 }

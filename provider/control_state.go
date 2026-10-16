@@ -97,6 +97,7 @@ type controlState struct {
 // including the very first one after a fresh-install `urnet-tools set`
 // queued while the provider wasn't running yet.
 var controlKeys = map[string]bool{
+	"tcp_ack_direct":              true,
 	"node_name":                   true,
 	"report_url":                  true,
 	"report_interval":             true,
