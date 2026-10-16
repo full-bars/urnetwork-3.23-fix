@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -503,10 +504,13 @@ type snapshotSources struct {
 
 // nodeSnapshotCollector samples the node once a second and builds snapshots.
 type nodeSnapshotCollector struct {
-	src     snapshotSources
-	rate    *rateSampler // billable bytes
-	traffic *rateSampler // total bytes
-	hist    *cumulativeHistory
+	src snapshotSources
+	// lastReadNano is the unix-nano time of the newest Get; the tick gate
+	// reads it to idle the pool walks (see snapshotLazyIdleAfter)
+	lastReadNano atomic.Int64
+	rate         *rateSampler // billable bytes
+	traffic      *rateSampler // total bytes
+	hist         *cumulativeHistory
 
 	mu       sync.Mutex
 	cached   *NodeSnapshot
@@ -528,6 +532,11 @@ func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
 // tick takes one rate sample and, when due, one counter sample.
 func (c *nodeSnapshotCollector) tick() {
 	now := c.src.now()
+	if snapshotLazyIdleAfter < now.Sub(time.Unix(0, c.lastReadNano.Load())) {
+		// nobody read a snapshot recently; the pool walks below are the
+		// point of this gate (see snapshotLazyIdleAfter)
+		return
+	}
 	// The counter reads walk the proxy pool; do them before taking the lock.
 	billable := c.src.billable()
 	var total map[string]uint64
@@ -561,10 +570,20 @@ func (c *nodeSnapshotCollector) run(ctx context.Context) {
 	}
 }
 
+// snapshotLazyIdleAfter stops the collector's pool walks when no snapshot has
+// been read for this long. The sampler used to run whether or not anyone was
+// watching (about 7.8 percent of a busy node's allocations, profile #3503:
+// readProxyBandwidth + ProxyHealthSnapshot every second); its real consumers
+// are the internals command and the 15-minute baseline line, so an idle
+// threshold of this order keeps every scrape cadence fully warm while an
+// unwatched node pays nothing. The next Get re-arms sampling.
+const snapshotLazyIdleAfter = 90 * time.Second
+
 // Get returns the current snapshot, reusing one built within the last second.
 // The result is shared: callers must not modify it.
 func (c *nodeSnapshotCollector) Get() *NodeSnapshot {
 	now := c.src.now()
+	c.lastReadNano.Store(now.UnixNano())
 	c.mu.Lock()
 	defer c.mu.Unlock()
 	if c.cached != nil && now.Sub(c.cachedAt) < snapshotCacheTTL && !now.Before(c.cachedAt) {

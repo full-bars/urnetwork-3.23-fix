@@ -359,6 +359,12 @@ type fakeSnapshotEnv struct {
 	reads       int
 }
 
+// armSnapshotCollector keeps a collector's tick gate open for tests that drive
+// ticks directly; production arms it through Get (see snapshotLazyIdleAfter).
+func armSnapshotCollector(c *nodeSnapshotCollector, env *fakeSnapshotEnv) {
+	c.lastReadNano.Store(env.now.UnixNano())
+}
+
 func (f *fakeSnapshotEnv) sources() snapshotSources {
 	return snapshotSources{
 		now:       func() time.Time { return f.now },
@@ -385,6 +391,7 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 func TestCollectorBuildsFlowingSnapshot(t *testing.T) {
 	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 3}, clients: 4, billable: map[string]uint64{"a": 0}}
 	c := newNodeSnapshotCollector(env.sources())
+	armSnapshotCollector(c, env)
 	for i := 0; i < 200; i++ {
 		env.now = env.now.Add(time.Second)
 		env.billable = map[string]uint64{"a": uint64(i) * 1_000_000}
@@ -436,11 +443,14 @@ func TestCollectorAuthFailingHintUsesHistory(t *testing.T) {
 	// A wave: the failures land inside the last minute, so auth is blamed.
 	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 2}, billable: map[string]uint64{}}
 	c := newNodeSnapshotCollector(env.sources())
+	armSnapshotCollector(c, env)
 	c.tick()
 	env.now = env.now.Add(150 * time.Second)
+	armSnapshotCollector(c, env)
 	c.tick()
 	env.now = env.now.Add(150 * time.Second) // 300s uptime, past starting
 	env.auth = 4
+	armSnapshotCollector(c, env)
 	c.tick()
 	snap := c.Get()
 	if snap.State != "idle" || snap.IdleHint != "auth failing: 4 failures in the last minute across 2 proxies" {
