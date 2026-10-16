@@ -1284,6 +1284,7 @@ func cmdDashboard(args []string) error {
 		{"fast_auth", "Fast Auth"},
 		{"proxy_self_heal", "Proxy Self-Heal"},
 		{"hot_restart", "Hot Restart"},
+		{"tcp_ack_direct", "Pure ACK Direct"},
 		{"report_url", "Report URL"},
 		{"report_interval", "Report Interval"},
 		{"proxy_url_max", "Max Proxies"},

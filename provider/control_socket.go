@@ -329,6 +329,7 @@ var liveEffectKeys = map[string]bool{
 	"proxy_dead_cleanup_interval": true,
 	"node_name":                   true,
 	"hot_restart":                 true,
+	"tcp_ack_direct":              true,
 	"metrics":                     true,
 	"metrics_listen":              true,
 }
@@ -399,6 +400,12 @@ func validateControlValue(key, value string) error {
 		case "on", "off", "1", "0", "true", "false", "yes", "no":
 		default:
 			return fmt.Errorf("hot_restart: must be on or off (got %q)", value)
+		}
+	case "tcp_ack_direct":
+		switch valLower {
+		case "on", "off", "1", "0", "true", "false", "yes", "no":
+		default:
+			return fmt.Errorf("tcp_ack_direct: must be on or off (got %q)", value)
 		}
 	case "ramlogs":
 		switch valLower {

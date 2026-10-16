@@ -540,6 +540,23 @@ func jwtContainsClientId(byJwt string) bool {
 	return hasClientId
 }
 
+// applyPersistedTcpAckDirect applies the persisted tcp_ack_direct control key
+// (urnet-tools tcp-ack-direct on|off) at provider startup, over the connect
+// library's URNETWORK_TCP_ACK_DIRECT environment default, which stays in
+// charge when the key has never been set.
+func applyPersistedTcpAckDirect() {
+	v, ok := globalControlState.get("tcp_ack_direct")
+	if !ok {
+		return
+	}
+	switch v {
+	case "off", "0", "false", "no":
+		connect.SetTcpAckDirectEnabled(false)
+	case "on", "1", "true", "yes":
+		connect.SetTcpAckDirectEnabled(true)
+	}
+}
+
 // hotRestartEnabled reports whether persisted client JWTs should be reused
 // across process restarts. Checks the control-socket state first (see
 // control_state.go — `urnet-tools hot-restart on|off`), then the
@@ -3863,6 +3880,7 @@ func provide(opts docopt.Opts) {
 					globalControlState.replaceAllWithMeta(reloaded.values, reloaded.meta)
 				}
 				mergePendingOverrides(globalControlState)
+				applyPersistedTcpAckDirect()
 				applyPersistedRuntimeTuning(globalControlState)
 
 				// The parent flushed its final audit entries before the
