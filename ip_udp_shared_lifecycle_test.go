@@ -103,6 +103,19 @@ func measureFlows(t *testing.T, shardCount int, flowCount int) int {
 	// pool-statistics loop among them); the deltas this test asserts are far
 	// larger than that drift.
 	awaitGoroutinesAtMost(t, baseline+4, "flows torn down")
+	// the readiness registrations must not outlive the flows (a stale byFd
+	// entry survives until an unrelated flow reuses the fd number)
+	if buffer.socketReadPoller != nil {
+		for shardIndex := range buffer.socketReadPoller.shards {
+			shard := &buffer.socketReadPoller.shards[shardIndex]
+			shard.mutex.RLock()
+			left := len(shard.byFd)
+			shard.mutex.RUnlock()
+			if left != 0 {
+				t.Fatalf("shard %d kept %d stale readiness registrations after teardown", shardIndex, left)
+			}
+		}
+	}
 	return live - baseline
 }
 

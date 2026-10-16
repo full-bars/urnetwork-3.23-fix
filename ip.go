@@ -1678,6 +1678,13 @@ func (self *UdpSequence) Run() {
 		// the buffer-level scan. This goroutine parks for the flow's life.
 		self.startSharedSocket()
 		<-self.ctx.Done()
+		// drop the readiness registration before the descriptor goes away:
+		// without this the shard's byFd keeps a stale entry until some other
+		// flow reuses the fd number (and a queued readiness event could fan
+		// out to a closed flow).
+		if self.socketReadPoller != nil {
+			self.socketReadPoller.unregister(self)
+		}
 		if self.sharedSocket != nil {
 			_ = self.sharedSocket.Close()
 			self.sharedSocket = nil
