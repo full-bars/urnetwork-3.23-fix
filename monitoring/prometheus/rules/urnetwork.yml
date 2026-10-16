@@ -4,7 +4,8 @@
 # protection rules (UrnetworkBackendDegraded, UrnetworkFleetBackendDegraded,
 # UrnetworkReconnectBudgetHeld, UrnetworkResendAmplification), and the stream
 # and P2P rules (UrnetworkStreamTwoEndedHeld, UrnetworkStreamLongLived,
-# UrnetworkP2PConnectFailuresSustained).
+# UrnetworkP2PConnectFailuresSustained), and the dial backoff rule
+# (UrnetworkDialLongBackoffGrowing).
 # The rules under "Optional rules" further down are commented out. Read the
 # note above each one, adjust the threshold to your fleet, then remove the
 # leading "# " to enable it. See docs/Monitoring.md.
@@ -202,6 +203,26 @@ groups:
             came up and then failed their readiness exchange are not counted). Check
             urnet_p2p_transports_started_total minus stopped_total for stuck
             transports, and the [p2p] log lines for the peer.
+
+      # Identities parked in the long dial backoff tier, growing.
+      #
+      # active above zero is normal after trouble: an identity whose own path
+      # keeps failing is backed off longer instead of burning the shared
+      # attempt budget. What the rule watches is the ENTRANCE rate staying up
+      # while identities are parked: 0.02/s is about 72 entries an hour;
+      # adjust to your fleet.
+      - alert: UrnetworkDialLongBackoffGrowing
+        expr: sum by (instance) (rate(urnet_dial_backoff_long_tier_entered_total{job="urnetwork"}[1h])) > 0.02 and urnet_dial_backoff_long_tier_active{job="urnetwork"} > 0
+        for: 30m
+        labels:
+          severity: warning
+        annotations:
+          summary: "URnetwork node {{ $labels.instance }} keeps entering the long dial backoff tier"
+          description: >-
+            {{ $labels.instance }} is entering the long dial backoff tier at a
+            sustained rate while identities are parked in it, which is a node
+            whose own paths keep failing. Check the transport counters and the
+            [govern] lines for what its identities cannot reach.
 
       # ---------------------------------------------------------------------
       # Optional rules. Commented out on purpose: they need thresholds that fit
