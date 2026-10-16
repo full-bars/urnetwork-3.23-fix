@@ -70,6 +70,9 @@ var (
 	tcpAckDirectAppliedCount atomic.Int64
 	tcpAckQueuedCount        atomic.Int64
 	tcpAckStaleIgnoredCount  atomic.Int64
+	// tcpAckBeyondSentCount counts pure acks whose ack field named bytes this
+	// sequence never sent: ignored, never applied, never a trip
+	tcpAckBeyondSentCount atomic.Int64
 	// the production self-check (see tcpAckSelfCheckWithLock): invariant
 	// violations and shadow disagreements must stay zero; the trip flag flips
 	// the process to the old queued path once, and the tripped gauge reports
@@ -104,6 +107,7 @@ func tripTcpAckDirect(logger Logger, reason string) {
 func noteTcpAckDirectApplied() { tcpAckDirectAppliedCount.Add(1) }
 func noteTcpAckQueued()        { tcpAckQueuedCount.Add(1) }
 func noteTcpAckStaleIgnored()  { tcpAckStaleIgnoredCount.Add(1) }
+func noteTcpAckBeyondSent()    { tcpAckBeyondSentCount.Add(1) }
 
 // writeTcpAckDirectMetrics renders the pure ack counters into the metrics
 // exposition (called by the stream metrics render).
@@ -117,6 +121,9 @@ func writeTcpAckDirectMetrics(b *strings.Builder) {
 	b.WriteString("# HELP urnet_tcp_ack_stale_ignored_total Ack or window updates ignored because they moved the greatest advertised edge backwards.\n")
 	b.WriteString("# TYPE urnet_tcp_ack_stale_ignored_total counter\n")
 	fmt.Fprintf(b, "urnet_tcp_ack_stale_ignored_total %d\n", tcpAckStaleIgnoredCount.Load())
+	b.WriteString("# HELP urnet_tcp_ack_beyond_sent_total Pure acks whose ack field named bytes this sequence never sent; ignored, not applied, not a trip.\n")
+	b.WriteString("# TYPE urnet_tcp_ack_beyond_sent_total counter\n")
+	fmt.Fprintf(b, "urnet_tcp_ack_beyond_sent_total %d\n", tcpAckBeyondSentCount.Load())
 	b.WriteString("# HELP urnet_tcp_ack_direct_tripped Whether the pure ack direct path tripped itself onto the old queued path after an invariant violation (1) or not (0).\n")
 	b.WriteString("# TYPE urnet_tcp_ack_direct_tripped gauge\n")
 	fmt.Fprintf(b, "urnet_tcp_ack_direct_tripped %d\n", tcpAckTripped.Load())

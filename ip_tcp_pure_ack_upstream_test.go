@@ -242,6 +242,9 @@ func TestTcpAckWraparound(t *testing.T) {
 	nearWrap := uint32(0xFFFFFF00)
 	h.feed(t, &parsedTcp{syn: true, seq: nearWrap, windowSize: 100})
 	h.waitEstablished(t)
+	// the peer may only ack bytes actually returned; the beyond-sent
+	// pre-check refuses the rest
+	h.advanceReturn(t, 8192)
 	// logically ahead of the wrap point: accepted as newer
 	h.feed(t, &parsedTcp{ack: true, seq: nearWrap + 1, ackNumber: nearWrap + 200, windowSize: 100})
 	s := h.settle(t, 0)
@@ -253,6 +256,25 @@ func TestTcpAckWraparound(t *testing.T) {
 	s = h.settle(t, 0)
 	if s.ReceiveSeqAck != nearWrap+200 {
 		t.Fatalf("older ack applied across the wrap: %+v", s)
+	}
+
+	// the advertised EDGE itself across the wrap: the edge value wraps past
+	// 2^32 while the serial comparison still treats it as the greatest
+	edgeAck := uint32(0xFFFFFF00)
+	h2 := newPureAckHarness(t)
+	h2.feed(t, &parsedTcp{syn: true, seq: edgeAck - 0x1000, windowSize: 100})
+	h2.waitEstablished(t)
+	h2.advanceReturn(t, 8192)
+	h2.feed(t, &parsedTcp{ack: true, seq: edgeAck - 0x1000 + 1, ackNumber: edgeAck, windowSize: 0x2000})
+	s = h2.settle(t, 0)
+	if s.WindowEnd != edgeAck+0x2000 || s.ReceiveWindow != 0x2000 {
+		t.Fatalf("the wrapping edge was not applied: %+v", s)
+	}
+	// a smaller edge just past the wrap is behind in serial terms: ignored
+	h2.feed(t, &parsedTcp{ack: true, seq: edgeAck - 0x1000 + 1, ackNumber: edgeAck + 0x1000, windowSize: 0x100})
+	s = h2.settle(t, 0)
+	if s.WindowEnd != edgeAck+0x2000 {
+		t.Fatalf("a post-wrap smaller edge shrank the window: %+v", s)
 	}
 }
 
@@ -351,6 +373,13 @@ func runAckScript(t *testing.T, direct bool, steps []*parsedTcp) semanticState {
 			delivered += len(tcp.payload)
 		}
 		h.feed(t, tcp)
+		if tcp.syn {
+			// wait until the run loop consumed the SYN (it resets the return
+			// sequence there), then give the scripted acks room; the shared
+			// apply refuses a beyond-sent ack
+			h.waitEstablished(t)
+			h.advanceReturn(t, 8192)
+		}
 		if stepIndex%50 == 49 {
 			h.settle(t, delivered)
 		}
@@ -411,9 +440,14 @@ func TestTcpAckDirectRandomInterleavings(t *testing.T) {
 				// a conformant zero-window closure: the ack advances to the
 				// edge the peer already advertised (a closure at a stale ack
 				// would be a shrink, which the models intentionally disagree
-				// on, so it must not appear in valid traffic)
-				ackNumber = edge
-				window = 0
+				// on, so it must not appear in valid traffic). only when the
+				// edge is still inside the return credit: closure and reopen
+				// otherwise feed each other and walk the ack past what the
+				// harness can legally ack
+				if edge <= pureAckIsn+returnBytes {
+					ackNumber = edge
+					window = 0
+				}
 			case 1:
 				window = uint16(100 + rng.Intn(500))
 			case 2:
@@ -561,17 +595,10 @@ func TestTcpAckDirectFallsBackToTheQueue(t *testing.T) {
 		{"syn flag", nil, &parsedTcp{syn: true, ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 1, windowSize: 100}},
 		{"fin flag", nil, &parsedTcp{ack: true, fin: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 1, windowSize: 100}},
 		{"rst flag", nil, &parsedTcp{ack: true, rst: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 1, windowSize: 100}},
-		{"ack beyond sent", nil, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 100000, windowSize: 100}},
 		{"ack behind acked", func(t *testing.T, h *pureAckHarness) {
 			h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 40, windowSize: 100})
 			h.settle(t, 0)
 		}, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 10, windowSize: 100}},
-		{"edge beyond maximum", func(t *testing.T, h *pureAckHarness) {
-			// the harness SYN negotiates no window scale; force one
-			h.seq.mutex.Lock()
-			h.seq.receiveWindowScale = 10
-			h.seq.mutex.Unlock()
-		}, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 1, windowSize: 0xFFFF}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -645,5 +672,149 @@ func TestTcpAckPoolOwnershipExactOnce(t *testing.T) {
 	}
 	if active < baseline {
 		t.Fatalf("double return: %d buffers under baseline", baseline-active)
+	}
+}
+
+// A peer window above our own MaxWindowSize is a legal client value (real
+// clients advertise 6-16 MiB): it must be applied and must never count as an
+// invariant violation or trip the process.
+func TestTcpAckPeerWindowAboveMaxDoesNotTrip(t *testing.T) {
+	withTcpAckDirect(t, true)
+	tcpAckTripped.Store(0)
+	t.Cleanup(func() { tcpAckTripped.Store(0) })
+	h := establishedHarness(t)
+	h.seq.mutex.Lock()
+	h.seq.tcpBufferSettings.MaxWindowSize = 4096
+	h.seq.mutex.Unlock()
+	_, _, _ = resetTcpAckCounters()
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 1, windowSize: 32768})
+	s := h.settle(t, 0)
+	if s.ReceiveWindow != 32768 {
+		t.Fatalf("the peer window was not applied: %+v", s)
+	}
+	if tcpAckTripped.Load() != 0 || tcpAckInvariantViolations.Load() != 0 {
+		t.Fatalf("a peer window above the local maximum tripped the process (tripped=%d violations=%d)",
+			tcpAckTripped.Load(), tcpAckInvariantViolations.Load())
+	}
+	if tcpAckDirectAppliedCount.Load() == 0 {
+		t.Fatal("the over-maximum peer window did not take the direct path")
+	}
+}
+
+// An ack beyond the bytes we sent is peer-controlled: it is ignored and
+// counted, never applied, never a trip.
+func TestTcpAckBeyondSentIgnoredNotTripped(t *testing.T) {
+	withTcpAckDirect(t, true)
+	tcpAckTripped.Store(0)
+	t.Cleanup(func() { tcpAckTripped.Store(0) })
+	h := establishedHarness(t)
+	before := h.state()
+	_, _, _ = resetTcpAckCounters()
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 100000, windowSize: 100})
+	s := h.settle(t, 0)
+	if s.ReceiveSeqAck != before.ReceiveSeqAck || s.ReceiveWindow != before.ReceiveWindow || s.WindowEnd != before.WindowEnd {
+		t.Fatalf("a beyond-sent ack moved state: %+v -> %+v", before, s)
+	}
+	if tcpAckBeyondSentCount.Load() == 0 {
+		t.Fatal("the beyond-sent ack was not counted")
+	}
+	if tcpAckTripped.Load() != 0 || tcpAckInvariantViolations.Load() != 0 {
+		t.Fatalf("a beyond-sent ack tripped the process (tripped=%d violations=%d)",
+			tcpAckTripped.Load(), tcpAckInvariantViolations.Load())
+	}
+}
+
+// An edge-shrinking zero window (ack X, window 0 after an earlier edge X+100)
+// is ignored: the edge never moves backwards, the sender keeps the window it
+// has, and a conformant closure at the edge plus a reopen wake a blocked
+// sender without spinning (the wait is a condition wait, not a loop).
+func TestTcpAckEdgeShrinkingZeroWindowNoSpin(t *testing.T) {
+	withTcpAckDirect(t, true)
+	h := establishedHarness(t)
+	x := pureAckIsn + 50
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: x, windowSize: 100})
+	h.settle(t, 0)
+	// the shrink attempt: ack X with window 0 below the edge X+100
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: x, windowSize: 0})
+	s := h.settle(t, 0)
+	if s.WindowEnd != x+100 || s.ReceiveWindow != 100 {
+		t.Fatalf("an edge-shrinking zero window moved the edge: %+v", s)
+	}
+	// the conformant closure at the edge, then a blocked sender wakes on the
+	// reopen
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: x + 100, windowSize: 0})
+	s = h.settle(t, 0)
+	if s.ReceiveWindow != 0 {
+		t.Fatalf("the closure at the edge did not close the window: %+v", s)
+	}
+	woken := make(chan struct{})
+	go func() {
+		h.seq.mutex.Lock()
+		defer h.seq.mutex.Unlock()
+		for h.seq.receiveWindowSize < 200 {
+			h.seq.receiveAckCondition().Wait()
+		}
+		close(woken)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: x + 100, windowSize: 200})
+	select {
+	case <-woken:
+	case <-time.After(2 * time.Second):
+		t.Fatal("the blocked sender was not woken by the reopen")
+	}
+}
+
+// The timestamp refreshes only when the update applied, in both the direct
+// and the queued path: a stale duplicate must not move it.
+func TestTcpAckTimestampOnlyOnAppliedUpdate(t *testing.T) {
+	withTcpAckDirect(t, true)
+	h := newPureAckHarness(t)
+	t0 := uint32(1000)
+	h.feed(t, &parsedTcp{syn: true, seq: pureAckIsn, windowSize: 100, enableTimestamp: true, timestampValue: t0})
+	h.waitEstablished(t)
+	h.advanceReturn(t, 4096)
+
+	t1 := t0 + 5000
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 50, windowSize: 100, enableTimestamp: true, timestampValue: t1})
+	h.settle(t, 0)
+	h.seq.mutex.Lock()
+	got := h.seq.timestampRecent
+	h.seq.mutex.Unlock()
+	if got != t1 {
+		t.Fatalf("an applied ack must refresh the timestamp: got %d want %d", got, t1)
+	}
+	// a stale ack (behind the acked point) with a newer timestamp: ignored,
+	// so the timestamp stays
+	h.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 10, windowSize: 50, enableTimestamp: true, timestampValue: t1 + 5000})
+	h.settle(t, 0)
+	h.seq.mutex.Lock()
+	got = h.seq.timestampRecent
+	h.seq.mutex.Unlock()
+	if got != t1 {
+		t.Fatalf("a stale ack refreshed the timestamp: got %d want %d", got, t1)
+	}
+
+	// the same shape through the queued path
+	withTcpAckDirect(t, false)
+	h2 := newPureAckHarness(t)
+	h2.feed(t, &parsedTcp{syn: true, seq: pureAckIsn, windowSize: 100, enableTimestamp: true, timestampValue: t0})
+	h2.waitEstablished(t)
+	h2.advanceReturn(t, 4096)
+	h2.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 50, windowSize: 100, enableTimestamp: true, timestampValue: t1})
+	h2.settle(t, 0)
+	h2.seq.mutex.Lock()
+	got = h2.seq.timestampRecent
+	h2.seq.mutex.Unlock()
+	if got != t1 {
+		t.Fatalf("queued: an applied ack must refresh the timestamp: got %d want %d", got, t1)
+	}
+	h2.feed(t, &parsedTcp{ack: true, seq: pureAckIsn + 1, ackNumber: pureAckIsn + 10, windowSize: 50, enableTimestamp: true, timestampValue: t1 + 5000})
+	h2.settle(t, 0)
+	h2.seq.mutex.Lock()
+	got = h2.seq.timestampRecent
+	h2.seq.mutex.Unlock()
+	if got != t1 {
+		t.Fatalf("queued: a stale ack refreshed the timestamp: got %d want %d", got, t1)
 	}
 }

@@ -2142,6 +2142,14 @@ func (self *TcpSequence) applySendAckWithLock(tcp *parsedTcp) (updated bool) {
 	if !tcp.ack {
 		return false
 	}
+	if 0 > int32(self.receiveSeq-tcp.ackNumber) {
+		// the peer is acking bytes this sequence never sent: the ack field is
+		// nonsense and its window is relative to it, so the whole update is
+		// ignored. Peers control this value, so it is a counted event, never
+		// an invariant violation and never a trip.
+		noteTcpAckBeyondSent()
+		return false
+	}
 	if !self.receiveWindowEndSet {
 		self.receiveWindowEnd = self.receiveSeqAck + self.receiveWindowSize
 		self.receiveWindowEndSet = true
@@ -2181,9 +2189,9 @@ func (self *TcpSequence) tcpAckSelfCheckWithLock(beforeAck, beforeEnd uint32, tc
 	} else if 0 > int32(self.receiveWindowEnd-beforeEnd) {
 		violation = "window edge moved backwards"
 	} else if 0 > int32(self.receiveSeq-self.receiveSeqAck) {
-		violation = "ack beyond the bytes sent"
-	} else if self.receiveWindowSize > self.tcpBufferSettings.MaxWindowSize {
-		violation = "window beyond the configured maximum"
+		// derived state only: the shared apply refuses to move the ack past
+		// receiveSeq, so a violation here is our own bug
+		violation = "derived ack beyond the bytes sent"
 	}
 	if violation != "" {
 		tcpAckInvariantViolations.Add(1)
@@ -2228,22 +2236,15 @@ func (self *TcpSequence) applyEstablishedPureAck(tcp *parsedTcp) bool {
 		self.mutex.Unlock()
 		return false
 	}
-	// an ack beyond the bytes actually sent must not initialize state
-	// directly; the queue rejects it the historical way
-	if 0 > int32(self.receiveSeq-tcp.ackNumber) {
-		self.mutex.Unlock()
-		return false
-	}
 	// an ack behind what is already acked is a stale duplicate: the queue
 	if 0 > int32(tcp.ackNumber-self.receiveSeqAck) {
 		self.mutex.Unlock()
 		return false
 	}
-	// a window edge beyond the configured maximum is not trusted directly
-	if uint32(tcp.windowSize)<<self.receiveWindowScale > self.tcpBufferSettings.MaxWindowSize {
-		self.mutex.Unlock()
-		return false
-	}
+	// note: an ack beyond the bytes sent and an over-maximum peer window are
+	// both peer-controlled values; neither gates here nor trips. The shared
+	// apply ignores a beyond-sent ack (counted) and applies any window the
+	// peer may legally advertise.
 	self.mutex.Unlock()
 
 	if !self.idleCondition.UpdateOpen() {
@@ -2252,9 +2253,11 @@ func (self *TcpSequence) applyEstablishedPureAck(tcp *parsedTcp) bool {
 	defer self.idleCondition.UpdateClose()
 
 	self.mutex.Lock()
-	self.updateTimestampRecentWithLock(tcp)
 	self.directAckNanos.Store(time.Now().UnixNano())
 	if self.applySendAckWithLock(tcp) {
+		// the timestamp refreshes only when the update applied, exactly as
+		// the run loop's queued branch does it
+		self.updateTimestampRecentWithLock(tcp)
 		self.receiveAckCondition().Broadcast()
 	}
 	self.mutex.Unlock()
