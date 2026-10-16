@@ -3268,11 +3268,21 @@ func DefaultRemoteUserNatProviderSettings() *RemoteUserNatProviderSettings {
 		WriteTimeout:                  30 * time.Second,
 		ProtocolVersion:               DefaultProtocolVersion,
 		EgressSecurityPolicyGenerator: DefaultEgressSecurityPolicyWithStats,
+		ReturnSendAbandonTimeout:      120 * time.Second,
 	}
 }
 
 type RemoteUserNatProviderSettings struct {
 	WriteTimeout time.Duration
+
+	// ReturnSendAbandonTimeout bounds how long the TCP returns of one source may
+	// go unadmitted by Transfer before the source is treated as unreachable and
+	// released (its send sequences and NAT flows are cancelled, as the
+	// dead-client sweeper does). Any admitted return of the source restarts the
+	// bound, so a slow live source is never released. Nothing is released while
+	// the backend is degraded, when no destination can get a contract. A
+	// non-positive value disables the release.
+	ReturnSendAbandonTimeout time.Duration
 
 	ProtocolVersion int
 
@@ -3307,6 +3317,16 @@ type RemoteUserNatProvider struct {
 	bw                *ProxyBandwidth
 	localUserNatUnsub func()
 	clientUnsub       func()
+
+	// sources whose TCP returns are currently unadmitted, keyed to the start of
+	// the earliest attempt since the source last had a return admitted
+	unadmittedMutex    sync.Mutex
+	unadmitted         map[Id]time.Time
+	unadmittedPrunedAt time.Time
+
+	returnSendForTest   func() bool
+	backendDegradedTest func() bool
+	releasedForTest     func(Id)
 }
 
 func NewRemoteUserNatProviderWithDefaults(
@@ -3398,13 +3418,22 @@ func (self *RemoteUserNatProvider) Receive(
 	// note udp is sent with ack because because otherwise the delivery reliability will mulitply with the egress
 	c := func() bool {
 		// ack := make(chan error)
-		sent := self.client.SendWithTimeout(
-			frame,
-			source.Reverse(),
-			func(err error) {},
-			self.settings.WriteTimeout,
-			opts...,
-		)
+		attemptStart := time.Now()
+		var sent bool
+		if self.returnSendForTest != nil {
+			sent = self.returnSendForTest()
+		} else {
+			sent = self.client.SendWithTimeout(
+				frame,
+				source.Reverse(),
+				func(err error) {},
+				self.settings.WriteTimeout,
+				opts...,
+			)
+		}
+		if ipPath.Protocol == IpProtocolTcp {
+			self.observeTcpReturn(source.SourceId, attemptStart, sent)
+		}
 		// if sent {
 		// 	self.client.log.Infof("[trace]provider return packet sent for %s\n", source.SourceId)
 		// }
@@ -3419,6 +3448,72 @@ func (self *RemoteUserNatProvider) Receive(
 		c()
 	}
 
+}
+
+// observeTcpReturn tracks Transfer admission of a source's socket-owned TCP
+// returns. An admitted return proves the source reachable and clears its
+// record. A source with no admission since the start of an attempt that is
+// ReturnSendAbandonTimeout old is released: a client that vanished mid-download
+// leaves flows whose returns never admit, and nothing else ends them. The
+// release is the dead-client sweeper's: cancel the source's send sequences and
+// NAT flows. A client that reconnects simply opens fresh flows.
+func (self *RemoteUserNatProvider) observeTcpReturn(sourceId Id, attemptStart time.Time, sent bool) {
+	abandonTimeout := self.settings.ReturnSendAbandonTimeout
+	if abandonTimeout <= 0 {
+		return
+	}
+	now := time.Now()
+	self.unadmittedMutex.Lock()
+	if sent {
+		delete(self.unadmitted, sourceId)
+		self.unadmittedMutex.Unlock()
+		return
+	}
+	if self.unadmitted == nil {
+		self.unadmitted = map[Id]time.Time{}
+	}
+	first, ok := self.unadmitted[sourceId]
+	if !ok || attemptStart.Before(first) {
+		first = attemptStart
+		self.unadmitted[sourceId] = first
+	}
+	// forget records of sources that stopped returning without being released
+	if 2*abandonTimeout <= now.Sub(self.unadmittedPrunedAt) {
+		self.unadmittedPrunedAt = now
+		for id, at := range self.unadmitted {
+			if 4*abandonTimeout <= now.Sub(at) {
+				delete(self.unadmitted, id)
+			}
+		}
+	}
+	release := abandonTimeout <= now.Sub(first) && self.client.ctx.Err() == nil
+	if release {
+		degraded := isBackendDegraded
+		if self.backendDegradedTest != nil {
+			degraded = self.backendDegradedTest
+		}
+		// While the backend is degraded no destination can get a contract, so the
+		// stall says nothing about the source. Keep the record: the release lands
+		// on the first failure after the backend recovers.
+		if degraded() {
+			release = false
+		}
+	}
+	if release {
+		delete(self.unadmitted, sourceId)
+	}
+	self.unadmittedMutex.Unlock()
+	if !release {
+		return
+	}
+	sequences := self.client.sendBuffer.CancelDestination(sourceId)
+	flows := self.localUserNat.CancelSource(sourceId)
+	if v := self.client.log.V(1); v.Enabled() {
+		v.Infof("[ip]released unreachable source %s: TCP returns unadmitted for %s, cancelled %d send sequences and %d NAT flows\n", sourceId, abandonTimeout, sequences, flows)
+	}
+	if self.releasedForTest != nil {
+		self.releasedForTest(sourceId)
+	}
 }
 
 // `connect.ReceiveFunction`
