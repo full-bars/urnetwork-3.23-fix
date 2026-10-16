@@ -287,3 +287,51 @@ func BenchmarkTcpPureAckQueued(b *testing.B) { benchPureAck(b, true) }
 func BenchmarkTcpPureAckDirect(b *testing.B) { benchPureAck(b, false) }
 
 var _ = io.EOF
+
+// After the Run loop consumes a FIN, the direct path must stop even while
+// the sequence is still live: later ACKs are not applied by the loop (it
+// exits), so applying them directly would touch state the ordered path
+// would leave alone.
+func TestTcpPureAckDirectStopsAfterPeerFinConsumed(t *testing.T) {
+	h := newPureAckHarness(t)
+	hookDone := make(chan struct{})
+	var nanoBefore, nanoAfter int64
+	var windowAfter uint32
+	tcpPureAckAfterFinConsumed = func(seq *TcpSequence) {
+		defer close(hookDone)
+		ackSeq := func() uint32 {
+			seq.mutex.Lock()
+			defer seq.mutex.Unlock()
+			return seq.sendSeq
+		}()
+		packet := &parsedTcp{ack: true, seq: ackSeq, ackNumber: ackSeq, windowSize: 222}
+		nanoBefore = seq.directAckNanos.Load()
+		_, _ = seq.sendOrApplyPureAck(protocol.ProvideMode_Network, packet, MessagePoolGet(64), time.Second)
+		nanoAfter = seq.directAckNanos.Load()
+		seq.mutex.Lock()
+		windowAfter = seq.receiveWindowSize
+		seq.mutex.Unlock()
+	}
+	t.Cleanup(func() { tcpPureAckAfterFinConsumed = nil })
+
+	h.feed(t, &parsedTcp{syn: true, seq: 1000, windowSize: 100})
+	h.waitReady(t)
+	h.feed(t, &parsedTcp{ack: true, fin: true, seq: 1001, ackNumber: 1001, windowSize: 100})
+
+	select {
+	case <-hookDone:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the Run loop never consumed the FIN")
+	}
+	if nanoAfter != nanoBefore {
+		t.Fatal("pure ack after the consumed FIN was applied directly")
+	}
+	if windowAfter == 222 {
+		t.Fatal("pure ack after the consumed FIN changed the receive window")
+	}
+	select {
+	case <-h.done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("sequence never stopped after the FIN")
+	}
+}

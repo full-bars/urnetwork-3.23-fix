@@ -2229,6 +2229,11 @@ func (self *TcpSequence) send(sendItem *TcpSendItem, timeout time.Duration) (boo
 // differential tests can compare both paths.
 var tcpPureAckDirectDisabled atomic.Bool
 
+// tcpPureAckAfterFinConsumed, when set by tests, runs on the Run loop right
+// after it consumes a FIN and stops the direct path. The window between the
+// FIN and the loop exit is not reachable from outside deterministically.
+var tcpPureAckAfterFinConsumed func(*TcpSequence)
+
 // sendOrApplyPureAck delivers one parsed packet to the sequence. An
 // established pure ACK is applied directly; everything else is queued. It
 // owns ipPacket on every path: on success ownership moves to the sequence, on
@@ -2929,6 +2934,9 @@ func (self *TcpSequence) Run() {
 					self.directAckReady = false
 					ackCond.Broadcast()
 				}()
+				if tcpPureAckAfterFinConsumed != nil {
+					tcpPureAckAfterFinConsumed(self)
+				}
 			}
 
 			payload := sendItem.tcp.payload
