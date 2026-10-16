@@ -2073,25 +2073,192 @@ func (self *TcpBuffer[BufferId]) tcpSend(
 		})
 		return sequence
 	}
-	sendItem := &TcpSendItem{
-		provideMode: provideMode,
-		tcp:         tcp,
-		ipPacket:    ipPacket,
-	}
 	if sequence := initSequence(); sequence == nil {
 		// initSequence already returns ipPacket to the pool itself on both
 		// of its nil-returning paths (RST-cancel, non-SYN drop) — freeing it
 		// again here would double-return a possibly still-shared buffer.
 		return false, nil
 	} else {
-		// send() only enqueues ipPacket into sendItems on success — free it
-		// here on every drop path or it leaks on backpressure.
-		success, err := sequence.send(sendItem, timeout)
-		if !success {
-			MessagePoolReturn(ipPacket)
-		}
-		return success, err
+		return sequence.sendOrApplyPureAck(provideMode, tcp, ipPacket, timeout)
 	}
+}
+
+// sendOrApplyPureAck delivers one parsed packet to the sequence. An
+// established pure ACK is applied directly (its acknowledgment/window update
+// has no sequence-space ordering dependency; see applyEstablishedPureAck);
+// everything else keeps the ordered queue. It owns ipPacket on every path: on
+// success ownership moves to the sequence, on failure the packet is returned
+// to the pool here.
+func (self *TcpSequence) sendOrApplyPureAck(
+	provideMode protocol.ProvideMode,
+	tcp *parsedTcp,
+	ipPacket []byte,
+	timeout time.Duration,
+) (bool, error) {
+	if tcp.ack && !tcp.syn && !tcp.fin && !tcp.rst && len(tcp.payload) == 0 {
+		if tcpAckDirectEnabled() && self.applyEstablishedPureAck(tcp) {
+			noteTcpAckDirectApplied()
+			MessagePoolReturn(ipPacket)
+			return true, nil
+		}
+		noteTcpAckQueued()
+	}
+	sendItem := &TcpSendItem{
+		provideMode: provideMode,
+		tcp:         tcp,
+		ipPacket:    ipPacket,
+	}
+	// send() only enqueues ipPacket into sendItems on success, free it
+	// here on every drop path or it leaks on backpressure.
+	success, err := self.send(sendItem, timeout)
+	if !success {
+		MessagePoolReturn(ipPacket)
+	}
+	return success, err
+}
+
+// receiveAckCondition returns the sequence's receive ack condition, creating
+// it lazily so the direct ack path can broadcast before the run loop starts.
+func (self *TcpSequence) receiveAckCondition() *sync.Cond {
+	self.receiveAckCondOnce.Do(func() {
+		self.receiveAckCond = sync.NewCond(&self.mutex)
+	})
+	return self.receiveAckCond
+}
+
+// applySendAckWithLock applies one packet's acknowledgment and window under
+// the commutative greatest-edge model, shared by the run loop and the direct
+// path so the two cannot diverge. The caller holds self.mutex. Returns true
+// when the state moved.
+//
+// Everything written here is a maximum: the ack number is the greatest seen,
+// the advertised edge (ack + scaled window) is the greatest seen, and the
+// window is derived from the two. Acks never move backwards and a receiver
+// never shrinks the advertised right edge (RFC 9293 3.8.6.2.1), so the
+// function is commutative and idempotent: any interleaving of direct,
+// queued, duplicated or reordered acks lands on the same state, and a repeat
+// of the same packet changes nothing. Nothing else is written.
+func (self *TcpSequence) applySendAckWithLock(tcp *parsedTcp) (updated bool) {
+	if !tcp.ack {
+		return false
+	}
+	if !self.receiveWindowEndSet {
+		self.receiveWindowEnd = self.receiveSeqAck + self.receiveWindowSize
+		self.receiveWindowEndSet = true
+	}
+	beforeAck, beforeEnd := self.receiveSeqAck, self.receiveWindowEnd
+	if 0 < int32(tcp.ackNumber-beforeAck) {
+		self.receiveSeqAck = tcp.ackNumber
+	}
+	receiveWindowEnd := tcp.ackNumber + (uint32(tcp.windowSize) << self.receiveWindowScale)
+	if 0 < int32(receiveWindowEnd-beforeEnd) {
+		self.receiveWindowEnd = receiveWindowEnd
+	}
+	if 0 < int32(self.receiveWindowEnd-self.receiveSeqAck) {
+		self.receiveWindowSize = self.receiveWindowEnd - self.receiveSeqAck
+	} else {
+		self.receiveWindowSize = 0
+	}
+	updated = beforeAck != self.receiveSeqAck || beforeEnd != self.receiveWindowEnd
+	if !updated {
+		noteTcpAckStaleIgnored()
+	}
+	self.tcpAckSelfCheckWithLock(beforeAck, beforeEnd, tcp)
+	return updated
+}
+
+// tcpAckSelfCheckWithLock runs after every shared apply: it verifies the
+// invariants the model promises (an ack or edge that went backwards, or an
+// ack beyond the bytes sent, is a bug, not a packet), counts violations and
+// trips the process to the old queued path on any of them, and on a 1 in
+// tcpAckShadowSampleRate sample compares the result with what the old
+// overwrite rule would have produced for an in-order packet, where the two
+// models must agree. The caller holds self.mutex.
+func (self *TcpSequence) tcpAckSelfCheckWithLock(beforeAck, beforeEnd uint32, tcp *parsedTcp) {
+	violation := ""
+	if 0 > int32(self.receiveSeqAck-beforeAck) {
+		violation = "ack moved backwards"
+	} else if 0 > int32(self.receiveWindowEnd-beforeEnd) {
+		violation = "window edge moved backwards"
+	} else if 0 > int32(self.receiveSeq-self.receiveSeqAck) {
+		violation = "ack beyond the bytes sent"
+	} else if self.receiveWindowSize > self.tcpBufferSettings.MaxWindowSize {
+		violation = "window beyond the configured maximum"
+	}
+	if violation != "" {
+		tcpAckInvariantViolations.Add(1)
+		tripTcpAckDirect(self.log, violation)
+		return
+	}
+	if !tcpAckShadowSampled() {
+		return
+	}
+	// in-order packets (newer ack and edge) must land on the same state
+	// under both models; reorders legitimately differ (that is the fix)
+	packetEnd := tcp.ackNumber + (uint32(tcp.windowSize) << self.receiveWindowScale)
+	if 0 <= int32(tcp.ackNumber-beforeAck) && 0 <= int32(packetEnd-beforeEnd) {
+		oldRuleWindow := uint32(tcp.windowSize) << self.receiveWindowScale
+		if tcp.ackNumber != self.receiveSeqAck || oldRuleWindow != self.receiveWindowSize {
+			tcpAckShadowDisagreements.Add(1)
+		}
+	}
+}
+
+// applyEstablishedPureAck applies an established pure ACK's acknowledgment
+// and window directly, without building a TcpSendItem or crossing the
+// sequence channel. It fails closed per packet: only the boring case is
+// applied here and everything unusual keeps the ordered queue (where the
+// same shared apply makes a stale packet a no-op anyway). The gates: the
+// flow is established, the context live, the run loop has not consumed a
+// FIN, the ack is not beyond the bytes this sequence sent, the ack is not
+// behind what is already acked, and the window edge is within the configured
+// maximum. The packet class filters (syn/fin/rst flags, payload) run in
+// sendOrApplyPureAck before this is called.
+func (self *TcpSequence) applyEstablishedPureAck(tcp *parsedTcp) bool {
+	self.sendMutex.Lock()
+	defer self.sendMutex.Unlock()
+
+	select {
+	case <-self.ctx.Done():
+		return false
+	default:
+	}
+	self.mutex.Lock()
+	if !self.established || self.ackDirectStopped {
+		self.mutex.Unlock()
+		return false
+	}
+	// an ack beyond the bytes actually sent must not initialize state
+	// directly; the queue rejects it the historical way
+	if 0 > int32(self.receiveSeq-tcp.ackNumber) {
+		self.mutex.Unlock()
+		return false
+	}
+	// an ack behind what is already acked is a stale duplicate: the queue
+	if 0 > int32(tcp.ackNumber-self.receiveSeqAck) {
+		self.mutex.Unlock()
+		return false
+	}
+	// a window edge beyond the configured maximum is not trusted directly
+	if uint32(tcp.windowSize)<<self.receiveWindowScale > self.tcpBufferSettings.MaxWindowSize {
+		self.mutex.Unlock()
+		return false
+	}
+	self.mutex.Unlock()
+
+	if !self.idleCondition.UpdateOpen() {
+		return false
+	}
+	defer self.idleCondition.UpdateClose()
+
+	self.mutex.Lock()
+	self.updateTimestampRecentWithLock(tcp)
+	self.directAckNanos.Store(time.Now().UnixNano())
+	if self.applySendAckWithLock(tcp) {
+		self.receiveAckCondition().Broadcast()
+	}
+	self.mutex.Unlock()
+	return true
 }
 
 /*
@@ -2309,6 +2476,9 @@ func (self *TcpSequence) Run() {
 					// this is arbitrary, and since there is no transport security risk back to sender is fine
 					self.receiveSeq = sendItem.tcp.seq
 					self.receiveSeqAck = sendItem.tcp.seq
+					self.receiveWindowEnd = self.receiveSeqAck + self.receiveWindowSize
+					self.receiveWindowEndSet = true
+					self.established = true
 
 					self.enableWindowScale = sendItem.tcp.enableWindowScale
 					self.receiveWindowScale = sendItem.tcp.windowScale
@@ -2424,7 +2594,7 @@ func (self *TcpSequence) Run() {
 		}
 	*/
 
-	receiveAckCond := sync.NewCond(&self.mutex)
+	receiveAckCond := self.receiveAckCondition()
 	ackCond := sync.NewCond(&self.mutex)
 	defer func() {
 		self.mutex.Lock()
@@ -2807,7 +2977,15 @@ func (self *TcpSequence) Run() {
 					// we do not need to resend receive packets on missing acks
 					// note the window size can be be adjusted at any time for the same receive seq number,
 					// e.g. ->0 then ->full on receiver full
-					if self.receiveSeqAck <= sendItem.tcp.ackNumber {
+					if tcpAckDirectEnabled() {
+						// the monotonic greatest-edge model, shared with the
+						// direct path (see applySendAckWithLock); switch off
+						// restores the overwrite rule below exactly
+						if self.applySendAckWithLock(sendItem.tcp) {
+							self.updateTimestampRecentWithLock(sendItem.tcp)
+							receiveAckCond.Broadcast()
+						}
+					} else if self.receiveSeqAck <= sendItem.tcp.ackNumber {
 						self.receiveWindowSize = uint32(sendItem.tcp.windowSize) << self.receiveWindowScale
 						self.receiveSeqAck = sendItem.tcp.ackNumber
 						self.updateTimestampRecentWithLock(sendItem.tcp)
@@ -2828,6 +3006,9 @@ func (self *TcpSequence) Run() {
 					defer self.mutex.Unlock()
 
 					self.sendSeq += 1
+					// later acks are not applied (the loop exits below), so
+					// the direct path must stop too
+					self.ackDirectStopped = true
 					ackCond.Broadcast()
 				}()
 			}
@@ -2949,18 +3130,37 @@ type ConnectionState struct {
 
 	mutex sync.Mutex
 
-	sendSeq            uint32
-	receiveSeq         uint32
-	receiveSeqAck      uint32
-	receiveWindowSize  uint32
-	receiveWindowScale uint32
-	enableWindowScale  bool
-	windowSize         uint32
-	windowScale        uint32
-	enableTimestamp    bool
-	timestampRecent    uint32
-	timestampOffset    uint32
-	peerMss            uint32
+	// established is set when the SYN initializes the flow; only an
+	// established sequence applies pure acks directly
+	established bool
+	// ackDirectStopped stops the direct ack path after the run loop has
+	// consumed a FIN: later acks are not applied by the loop (it exits), so
+	// they must not be applied directly either
+	ackDirectStopped bool
+	// directAckNanos is the newest directly applied ack, so the idle and
+	// scale-down timers stay honest
+	directAckNanos atomic.Int64
+
+	// receiveAckCond wakes the socket reader on send progress; it is created
+	// lazily because the direct ack path may broadcast before the run loop
+	// creates it
+	receiveAckCondOnce sync.Once
+	receiveAckCond     *sync.Cond
+
+	sendSeq             uint32
+	receiveSeq          uint32
+	receiveSeqAck       uint32
+	receiveWindowSize   uint32
+	receiveWindowEnd    uint32
+	receiveWindowEndSet bool
+	receiveWindowScale  uint32
+	enableWindowScale   bool
+	windowSize          uint32
+	windowScale         uint32
+	enableTimestamp     bool
+	timestampRecent     uint32
+	timestampOffset     uint32
+	peerMss             uint32
 	// Tests provide an exact timestamp without sleeping. Nil uses elapsed
 	// monotonic process time and is a production no-op.
 	timestampValueForTest func() uint32

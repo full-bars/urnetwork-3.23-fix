@@ -269,4 +269,6 @@ func (self *streamMetricsState) writePrometheus(b *strings.Builder) {
 	fmt.Fprintf(b, "# HELP urnet_dial_backoff_long_tier_entered_total Times an identity's dial backoff entered the long tier.\n")
 	fmt.Fprintf(b, "# TYPE urnet_dial_backoff_long_tier_entered_total counter\n")
 	fmt.Fprintf(b, "urnet_dial_backoff_long_tier_entered_total %d\n", self.dialBackoffLongEntered.Load())
+
+	writeTcpAckDirectMetrics(b)
 }
