@@ -153,7 +153,7 @@ func writeSecurityBlockMetrics(b *strings.Builder) {
 				secDirectionNames[direction], secResultNames[r], securityDecisionsTotal[direction][r].Load())
 		}
 	}
-	b.WriteString("# HELP urnet_security_blocked_total Enforced security-policy drops and incidents by direction, reason and protocol.\n")
+	b.WriteString("# HELP urnet_security_blocked_total Enforced security-policy drops and incidents by direction, reason and protocol; counted per packet.\n")
 	b.WriteString("# TYPE urnet_security_blocked_total counter\n")
 	for direction := range securityBlockedTotal {
 		for reason := range securityBlockedTotal[direction] {
@@ -175,7 +175,7 @@ func writeSecurityBlockMetrics(b *strings.Builder) {
 			}
 		}
 	}
-	b.WriteString("# HELP urnet_security_decided_total Terminal dmca classifications, before the detector settings decide enforcement.\n")
+	b.WriteString("# HELP urnet_security_decided_total Terminal dmca classifications, counted once per flow when the flow is newly decided, before the detector settings decide enforcement.\n")
 	b.WriteString("# TYPE urnet_security_decided_total counter\n")
 	for direction := range securityDecidedTotal {
 		for _, reason := range secDmcaReasonIndexes {
@@ -186,7 +186,7 @@ func writeSecurityBlockMetrics(b *strings.Builder) {
 			}
 		}
 	}
-	b.WriteString("# HELP urnet_security_enforced_total Of the terminal dmca classifications, how many were enforced as drop or incident; the remainder were downgraded by log-only or report settings.\n")
+	b.WriteString("# HELP urnet_security_enforced_total Of the terminal dmca classifications, how many were enforced as drop or incident, counted once per flow; the remainder were downgraded by log-only or report settings.\n")
 	b.WriteString("# TYPE urnet_security_enforced_total counter\n")
 	for direction := range securityEnforcedTotal {
 		for _, reason := range secDmcaReasonIndexes {

@@ -145,9 +145,9 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 		recordDpiDecision(ipPath, reason, decidedNow)
 		switch v {
 		case dmcaBittorrent:
-			return self.dmcaOutcome(v, ipPath), nil
+			return self.dmcaOutcome(v, ipPath, decidedNow), nil
 		case dmcaDropEncrypted:
-			return self.dmcaOutcome(v, ipPath), nil
+			return self.dmcaOutcome(v, ipPath, decidedNow), nil
 		default:
 			// still inspecting, a sanctioned web standard, or benign plaintext
 			return SecurityPolicyResultAllow, nil
@@ -156,19 +156,25 @@ func (self *egressSecurityPolicy) inspect(provideMode protocol.ProvideMode, ipPa
 }
 
 // dmcaOutcome maps a terminal dpi verdict through the detector settings and
-// moves the decided/enforced/blocked counters: decided once per terminal
-// classification, enforced and blocked only when the settings let it drop or
-// report. A downgraded verdict (log-only, report toggles off) stays decided.
-func (self *egressSecurityPolicy) dmcaOutcome(v dmcaVerdict, ipPath *IpPath) SecurityPolicyResult {
+// moves the counters: decided and enforced count once per flow, on the packet
+// where the flow is newly decided (decidedNow, the same signal the dpi log
+// uses); a flow that keeps dropping keeps incrementing only the packet-level
+// blocked counter. A downgraded verdict (log-only, report toggles off) stays
+// decided.
+func (self *egressSecurityPolicy) dmcaOutcome(v dmcaVerdict, ipPath *IpPath, decidedNow bool) SecurityPolicyResult {
 	direction := secDirEgress
 	reason := secReasonDmcaBittorrent
 	if v == dmcaDropEncrypted {
 		reason = secReasonDmcaEncrypted
 	}
-	securityDecidedAdd(direction, reason, ipPath.Protocol)
+	if decidedNow {
+		securityDecidedAdd(direction, reason, ipPath.Protocol)
+	}
 	result := self.dmca.result(v)
 	if result == SecurityPolicyResultDrop || result == SecurityPolicyResultIncident {
-		securityEnforcedAdd(direction, reason, ipPath.Protocol)
+		if decidedNow {
+			securityEnforcedAdd(direction, reason, ipPath.Protocol)
+		}
 		securityBlockedAdd(direction, reason, ipPath.Protocol)
 	}
 	return result

@@ -404,3 +404,37 @@ func TestSecurityBlockMetricsRenderIsWellFormed(t *testing.T) {
 		}
 	}
 }
+
+// A flow that keeps dropping counts decided and enforced once (per flow), while
+// the packet-level blocked counter follows the packets that drop. This pins the
+// review finding: the counters must not move on every packet of a flow that
+// already has a verdict.
+func TestSecurityBlockMetricsDmcaPerFlowCounting(t *testing.T) {
+	settings := DefaultDmcaSecurityPolicySettings()
+	policy := NewEgressSecurityPolicy(
+		nil,
+		DefaultCfaaSecurityPolicySettings(),
+		settings,
+		DefaultWebStandardSettings(),
+		DefaultSecurityPolicyStatsCollector(),
+	)
+	path := dmcaPath(IpProtocolTcp, 45001, 51413, false)
+	before := readSecMetrics()
+	if result, _ := policy.Inspect(protocol.ProvideMode_Public, path, btHandshake()); result != SecurityPolicyResultIncident {
+		t.Fatalf("first handshake packet = %v, want incident", result)
+	}
+	const extra = 5
+	for i := 0; i < extra; i++ {
+		if result, _ := policy.Inspect(protocol.ProvideMode_Public, path, btHandshake()); result != SecurityPolicyResultIncident {
+			t.Fatalf("repeated packet %d = %v, want incident", i, result)
+		}
+	}
+	var want secMetrics
+	for i := 0; i <= extra; i += 1 {
+		want.addDecision(secDirEgress, int(SecurityPolicyResultIncident))
+		want.addBlocked(secDirEgress, secReasonDmcaBittorrent, dmcaProtocolBucket(IpProtocolTcp))
+	}
+	want.addDecided(secDirEgress, secReasonDmcaBittorrent, dmcaProtocolBucket(IpProtocolTcp))
+	want.addEnforced(secDirEgress, secReasonDmcaBittorrent, dmcaProtocolBucket(IpProtocolTcp))
+	expectSecDelta(t, before, want)
+}
