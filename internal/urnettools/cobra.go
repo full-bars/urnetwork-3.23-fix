@@ -318,7 +318,7 @@ func newProvidersCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all"),
+	}), "List providers found on this box (systemd units and bare processes) with their JWT network identity. An unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); --all as root lists every user's. If no systemd providers exist but containers do, it says so and points at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all"),
 		helpFlag{Name: "all", Usage: "include providers owned by other OS users (run as root)"},
 	)
 }
@@ -328,7 +328,7 @@ func newStatusCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json"),
+	}), "Show detailed status for one provider: unit, binary, version, state dir, PID, running state, network identity, JWT expiry, and a live block with throughput, clients, proxies, uptime, last restart reason and memory when the provider answers. With several providers and no target it prints one compact row each; --json prints the raw snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json"),
 		helpFlag{Name: "json", Usage: "print the raw live snapshot as JSON"},
 	)
 }
@@ -338,7 +338,7 @@ func newTopCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
-	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop"),
+	}), "Open a live, full-screen view of one provider: throughput graphs for the last 10 minutes, current and average rates, clients, proxy pool, memory and recent events. It reads the control socket and changes nothing, so it is safe to leave open. Needs an interactive terminal; use status for scripts.\n\nKeys:\n  q, Esc, Ctrl-C   quit\n  Tab, Shift-Tab   switch provider\n  - / +            slower / faster refresh\n  w                zoom the graphs to the last 15 seconds\n  g                show where the provider's goroutines are parked\n  m                color theme and graph style (remembered)\n  ?                help\n\nA slow provider shows SLOW with the last data; a silent one shows DISCONNECTED with a countdown and resumes by itself. The snapshot refreshes at most once a second; --interval sets the graph and rate refresh period.", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop"),
 		helpFlag{Name: "interval", Value: "DURATION", Usage: "refresh period such as 500ms or 2s (default 1s, minimum 100ms)"},
 	)
 }
@@ -382,7 +382,7 @@ func newUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5"),
+	}), "Download and install the latest provider release: verify the sha256, swap the binary, restart the owning unit, and refresh the urnet-tools binary itself from the same release. With no target and several providers it prompts; --all updates every provider, --include/--exclude pick a subset, and --tag/--digest/--url pin a release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5"),
 		helpFlag{Name: "tag", Value: "TAG", Usage: "install the release `TAG` instead of the latest"},
 		helpFlag{Name: "digest", Value: "SHA256", Usage: "install an exact asset after verifying its sha256 `SHA256`"},
 		helpFlag{Name: "url", Value: "URL", Usage: "fetch the release asset from this `URL`"},
@@ -393,24 +393,7 @@ func newUpdateCmd() *cobra.Command {
 }
 
 func newIdleUpdateCmd() *cobra.Command {
-	long := `Wait for billable traffic to drop below a threshold before applying a provider update.
-
-Instead of updating immediately and severing active client connections mid-flight,
-idle-update continuously polls the provider's billable relay traffic rate. When traffic
-remains below --threshold for a sustained --window, it performs a 5-second verification
-pass and then downloads, verifies, and installs the update.
-
-A fallback --timeout ceiling ensures maintenance runs and automated scripts do not wait
-indefinitely if low-volume background traffic never fully ceases. When the timeout is
-reached, it logs a notice and proceeds with the update.
-
-Flags:
-  --threshold <bytes/s>   Max billable throughput to be considered idle (default: 5120 = 5 KiB/s)
-  --window <duration>     Duration traffic must stay quiet (default: 5m; e.g. 300, 5m, 10m; 0 = immediate)
-  --timeout <duration>    Maximum wait time before forcing the update (default: 30m; e.g. 1800, 30m, 1h; 0 = infinite)
-  --tag <version>         Pin to a specific release tag (e.g. v3.23.0-fix.30.9)
-  -f, --force             Skip interactive confirmation prompts
-  -n, --dry-run           Print the traffic wait plan and release target without modifying anything`
+	long := `Wait for billable traffic to drop below --threshold for a sustained --window before applying an update, so active client connections are not severed mid-flight. A --timeout ceiling forces the update when traffic never fully quiets: it logs a notice and proceeds. Pass --tag to pin a specific release.`
 
 	examples := `  # Wait for up to 30m for a 5-minute quiet window below 5 KiB/s:
   urnet-tools idle-update
@@ -508,7 +491,7 @@ func newSessionCmd() *cobra.Command {
 	cmd := &cobra.Command{
 		Use:                "session",
 		Short:              "export/import identity + proxy state",
-		Long:               "Export or import the targeted provider's identity and proxy state as a passphrase-encrypted bundle. 'session save' prompts twice for a passphrase with echo off and writes the file with owner-only permissions. 'session load' backs up the current identity first, refuses a bundle from a different account unless you pass --allow-different-account, and stages the new identity for the provider to pick up on restart.",
+		Long:               "Export or import the targeted provider's identity and proxy state as a passphrase-encrypted bundle. 'save' prompts twice with echo off and writes the file owner-only; 'load' backs up the current identity first, refuses a bundle from a different account unless --allow-different-account is passed, and stages the new identity for the provider's next restart.",
 		Example:            "  urnet-tools session save ~/urnet-session.enc           # Linux / macOS\n  urnet-tools session save C:\\Users\\<you>\\urnet-session.enc   # Windows (\\ or / separators)\n  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service --force",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -536,7 +519,7 @@ func newTurboCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("turbo", rest, force, dryRun)
 		})
-	}), "Show current throughput profile, or set it to v4/v8 to raise limits on a RAM-rich box (or off to clear). This sets the profile through the provider control socket (queued in pending_overrides.json if the provider is stopped) and restarts the provider unit, so it asks for a typed \"yes\" unless you pass -f/--force. Target a specific provider with --unit, --user, --network, or --network-id.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
+	}), "Show the current throughput profile, or set it to v4/v8 to raise limits on a RAM-rich box, or off to clear. Applied through the provider's control socket (queued when the provider is stopped) and followed by a provider restart, so it asks for a typed \"yes\" unless you pass -f/--force.", "  urnet-tools turbo v8\n  urnet-tools turbo off --unit urnetwork-native.service")
 }
 
 func newAutoCmd() *cobra.Command {
@@ -576,7 +559,7 @@ func newOptimizeCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdOptimize(rest, force, dryRun)
 		})
-	}), "Apply golden-fleet OS and kernel network limits to this host: socket buffers, file descriptor limit, ephemeral port range, and TIME_WAIT timeout on Linux, or the netsh and registry equivalents on Windows. This is host-wide, not per provider, so no target flag applies. It asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes), then prompts for sudo as needed on Linux and applies both the live settings and the reboot-persisted file. Run it as a normal user — it re-executes itself under sudo.", "  urnet-tools optimize\n  urnet-tools optimize --force")
+	}), "Apply the golden-fleet OS and kernel network limits to this host (host-wide, not per provider): socket buffers, file descriptor limit, ephemeral ports and TIME_WAIT on Linux, or the netsh and registry equivalents on Windows. It asks for a typed \"yes\" unless you pass -f/--force, then re-executes itself under sudo and applies both the live settings and the reboot-persisted file.", "  urnet-tools optimize\n  urnet-tools optimize --force")
 }
 
 func newHotswapCmd() *cobra.Command {
@@ -646,7 +629,7 @@ func newSetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "set",
 		Short:              "runtime tuning override",
-		Long:               "Read or write a runtime tuning override in the provider's state directory. Most keys apply live on the provider's next tick with no restart; profile and ramlogs only take effect on the next restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list the runtime override keys, their value domains and what each changes.",
+		Long:               "Read or write a runtime tuning override in the provider's state dir. Most keys apply on the provider's next tick with no restart; profile and ramlogs take effect on the next restart. No key lists every active override, a key alone shows its value, a key with a value sets it, and \"off\" clears it back to the startup default. Run 'set help' for the keys and their value domains.",
 		Example:            "  urnet-tools set help\n  urnet-tools set report-interval 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -868,11 +851,9 @@ func newSelfHealCmd() *cobra.Command {
 func newIPDetectCmd() *cobra.Command {
 	// cmdIPDetect has its own -h handling; building raw preserves it.
 	return &cobra.Command{
-		Use:   "show-ip",
-		Short: "show the public IP on the dashboard label",
-		Long: "Toggle or report whether the provider appends its public IP (fetched via ip.me) to the dashboard identity label set by `rename`. " +
-			"Run with on, off, or status (the default with no argument). When off, the provider reports only the node name without an IP unless URNETWORK_PUBLIC_IP is set. " +
-			"This controls what the dashboard displays, not which address the provider serves on; for that see `direct`.",
+		Use:     "show-ip",
+		Short:   "show the public IP on the dashboard label",
+		Long:    "Toggle or report whether the provider appends its public IP (fetched via ip.me) to the dashboard identity label set by 'rename'. This controls the dashboard display only, not which address the provider serves on; see 'direct' for that. When off, only the node name is reported unless URNETWORK_PUBLIC_IP is set.",
 		Example: "  urnet-tools show-ip status\n  urnet-tools show-ip off\n  urnet-tools show-ip on",
 		// ip-detect/ipdetect named the mechanism rather than the effect, and
 		// read as a diagnostic that would report the IP. Kept as aliases so
@@ -1253,7 +1234,7 @@ func newProfileCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "profile [auto|turbo-v4|turbo-v8|eco|lowmem]",
 		Short:              "show or set the memory/GC tuning profile",
-		Long:               "Show or set the provider's memory/GC tuning profile: auto sizes the box, turbo-v4 and turbo-v8 raise throughput on RAM-rich machines, eco GC-tunes for low RAM, and lowmem shrinks buffers for maximum savings. With no argument it prints the current value and the settable profiles. A change takes effect on the provider's next restart; turbo, eco and lowmode are the runtime-settable equivalents. Alias: profiles.",
+		Long:               "Show or set the provider's memory and GC tuning profile: auto sizes the box, turbo-v4 and turbo-v8 raise throughput on RAM-rich machines, eco tunes GC for low RAM, lowmem shrinks buffers for maximum savings. With no argument it prints the current value. Changes take effect on the provider's next restart; turbo, eco and lowmode are the runtime equivalents. Alias: profiles.",
 		Example:            "  urnet-tools profile\n  urnet-tools profile auto\n  urnet-tools profile lowmem --unit urnetwork-native.service",
 		Aliases:            []string{"profiles"},
 		DisableFlagParsing: true,

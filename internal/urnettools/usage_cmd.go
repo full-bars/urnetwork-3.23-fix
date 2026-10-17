@@ -15,15 +15,9 @@ import (
 // each hour) — no per-proxy enumeration, so it stays fast at any fleet size.
 func newUsageCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "usage",
-		Short: "show aggregate usage (billable vs control) across time spans",
-		Long: "Show the targeted provider's aggregate traffic usage as summary cards\n" +
-			"(billable vs control-plane split) and as day/hour/month time-series graphs.\n" +
-			"Reads the provider's persistent usage_history.jsonl, so lifetime spans survive\n" +
-			"restarts and updates.\n\n" +
-			"  urnet-tools usage            # summary cards (default)\n" +
-			"  urnet-tools usage graphs     # all three time-series\n" +
-			"  urnet-tools usage graph day  # single view: day | hour | month",
+		Use:                "usage",
+		Short:              "show aggregate usage (billable vs control) across time spans",
+		Long:               "Show the targeted provider's aggregate traffic usage as summary cards (billable vs control-plane split) and as day/hour/month time-series graphs. Reads the provider's persistent usage_history.jsonl, so lifetime spans survive restarts and updates.",
 		Example:            "  urnet-tools usage\n  urnet-tools usage graphs --unit mynetwork-provider\n  urnet-tools usage graph month --network mynetwork",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {

@@ -101,21 +101,21 @@ func newWalletCmd() *cobra.Command {
 	walletCmd := &cobra.Command{
 		Use:     "wallet",
 		Short:   "network wallet consent",
-		Long:    "Manage the network wallet consent: the coldkey release settlement pays. 'status' shows the stored consent, apart from any legacy login-proof wallet; 'challenge' fetches the exact consent statement to sign (signs nothing); 'set' submits a signature, or signs with a local coldkey seed file; 'sign' runs the browser signing helper, so the seed phrase never leaves your wallet extension. The consent is one signature covering every provider client of your network, current and future. A fleet node needs nothing: run the signing forms on your own workstation only.",
+		Long:    "Manage the network wallet consent that release settlement pays. 'status' shows the stored consent, 'challenge' fetches the statement to sign (signs nothing), 'set' submits a signature, and 'sign' runs the browser helper so the seed never leaves the extension. The consent covers every provider client of your network; a fleet node needs nothing, so run the signing forms on your own workstation.",
 		Example: "  urnet-tools wallet status\n  urnet-tools wallet challenge 5CvF...ss58\n  urnet-tools wallet sign 5CvF...ss58",
 	}
 	walletCmd.AddCommand(
 		newWalletSubCmd(
 			"status",
 			"show the network wallet consent",
-			"Show the network wallet consent stored for this provider's network: the consent coldkey, its epoch interval, and whether it is in effect now, still starts in an epoch, or ended. A legacy login-proof wallet (if any) is listed apart: it is not a consent and release settlement does not pay it. Read-only: delegates to the provider binary and sends nothing that changes state.",
+			"Show the network wallet consent stored for this network: the consent coldkey, its epoch interval, and whether it is in effect now, starts in an epoch, or ended. A legacy login-proof wallet, if any, is listed apart: it is not a consent and release settlement does not pay it. Read-only.",
 			"  urnet-tools wallet status\n  urnet-tools wallet status --unit urnetwork-native.service",
 			cmdWalletStatus,
 		),
 		withFlags(newWalletSubCmd(
 			"challenge <coldkey_ss58>",
 			"fetch the consent statement to sign",
-			"Fetch a fresh, verified consent statement for a coldkey from the platform. It signs nothing and changes nothing: it prints the exact message to sign and the epoch interval it covers (default: the next epoch through the full span), for the browser helper or any wallet that signs raw messages. Use --wallet-from-epoch/--wallet-through-epoch to pick an explicit interval; a mistaken interval cannot be undone.",
+			"Fetch a fresh consent statement for a coldkey from the platform. It signs nothing and changes nothing: it prints the exact message to sign and the epoch interval it covers (default: the next epoch through the full span). Use --wallet-from-epoch / --wallet-through-epoch for an explicit interval; a mistaken interval cannot be undone.",
 			"  urnet-tools wallet challenge 5CvF...ss58\n  urnet-tools wallet challenge 5CvF...ss58 --wallet-from-epoch 51 --wallet-through-epoch 65585",
 			cmdWalletChallenge,
 		),
@@ -125,7 +125,7 @@ func newWalletCmd() *cobra.Command {
 		withFlags(newWalletSubCmd(
 			"set <coldkey_ss58>",
 			"submit a signed consent (or legacy set)",
-			"Submit a signed network wallet consent for a coldkey: pass the message from 'wallet challenge' and its signature (--message with --signature), or sign with a local coldkey seed file (--coldkey_seed_file), which is FOR THE OPERATOR'S OWN WORKSTATION ONLY and never a fleet node: the tool refuses the seed-file form on a fleet member unless you pass --i-am-on-my-own-workstation. Without a proof this sends the legacy unsigned request, which the platform may refuse under its signed wallet rules. A later consent must start at a later epoch than the one before it.",
+			"Submit a signed consent for a coldkey: pass the message from 'wallet challenge' with its signature (--message/--signature), or sign with a local coldkey seed file (--coldkey_seed_file), which is FOR THE OPERATOR'S OWN WORKSTATION ONLY and never a fleet node: the tool refuses the seed-file form on a fleet member unless you pass --i-am-on-my-own-workstation. Without a proof it sends the legacy unsigned request, which the platform may refuse. A later consent must start at a later epoch.",
 			"  urnet-tools wallet sign 5CvF...ss58                 # browser signing, seed stays in the extension\n  urnet-tools wallet set 5CvF...ss58 --message=<text> --signature=0x<128 hex>\n  urnet-tools wallet set 5CvF...ss58 --coldkey_seed_file=~/coldkey  # OWN workstation only",
 			cmdWalletSet,
 		),
@@ -139,7 +139,7 @@ func newWalletCmd() *cobra.Command {
 		withFlags(newWalletSubCmd(
 			"sign [coldkey_ss58]",
 			"sign the consent in the browser",
-			"Serve one local page (127.0.0.1 only, 15 minutes, visible countdowns) where a wallet extension (Talisman, SubWallet, Polkadot{.js}, Nova, or any Polkadot signRaw extension) signs the consent statement, then submit the signature and verify the platform's receipt. Without an address you choose the account on the page. The seed phrase never leaves the extension. Run it on your own computer, never on a fleet node; the tool refuses on a fleet member unless you pass --i-am-on-my-own-workstation. Needs a browser with the extension on this machine; no extra tools.",
+			"Open a local signing page (127.0.0.1 only, 15 minutes, visible countdowns) where a wallet extension signs the consent statement, then submit the signature and verify the receipt; without an address you choose the account on the page. The seed phrase never leaves the extension, and the tool refuses to run on a fleet node unless you pass --i-am-on-my-own-workstation. Needs a browser with the extension on this machine.",
 			"  urnet-tools wallet sign 5CvF...ss58\n  urnet-tools wallet sign                       # choose the account on the page\n  urnet-tools wallet sign 5CvF...ss58 --no-open",
 			cmdWalletSign,
 		),

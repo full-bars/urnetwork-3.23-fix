@@ -18,7 +18,7 @@ func newDirectCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "direct [on|off]",
 		Short: "toggle providing on the machine's direct/local IP",
-		Long:  "Turn providing on the machine's direct/local IP address on or off. By default both the direct IP and the configured proxy list are used for providing. Running 'direct off' disables the direct IP — only proxies from --proxy_file / --proxy_url are used. The change takes effect immediately on a running provider (via reload) or on next start. Also settable at startup via DISABLE_DIRECT_IP=1 env var (cannot be toggled at runtime).",
+		Long:  "Turn providing on the machine's direct/local IP on or off. With 'off' only proxies from --proxy_file / --proxy_url are used. The change applies to a running provider immediately, or on next start, and can also be fixed at startup with DISABLE_DIRECT_IP=1 (which cannot be toggled at runtime).",
 		Example: `  urnet-tools direct off
   urnet-tools direct off --unit urnetwork-native.service
   urnet-tools direct on`,

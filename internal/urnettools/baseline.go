@@ -190,16 +190,9 @@ const (
 
 func newBaselineCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:   "baseline [show|mark|compare] [flags]",
-		Short: "Show this box's recorded baseline, and compare an upgrade against it",
-		Long: "A provider records a small local time series of how it behaved, so any " +
-			"upgrade can be judged against what the box did BEFORE it. Nothing external " +
-			"is involved: no Prometheus, no Grafana, no sampler over ssh.\n\n" +
-			"  show      the newest samples as a table\n" +
-			"  mark      annotate the timeline, for example just before an upgrade\n" +
-			"  compare   before and after the last upgrade, or between two marks\n\n" +
-			"The record lives in ~/.urnetwork/baseline.jsonl and holds counts and totals " +
-			"only: no proxy addresses, usernames or passwords.",
+		Use:                "baseline [show|mark|compare] [flags]",
+		Short:              "Show this box's recorded baseline, and compare an upgrade against it",
+		Long:               "Show this box's recorded behaviour over time, so an upgrade can be judged against what the box did before it. Nothing external is involved: no Prometheus, no Grafana, no sampler over ssh. The record lives in ~/.urnetwork/baseline.jsonl and holds counts and totals only: no proxy addresses, usernames or passwords.",
 		Example:            "  urnet-tools baseline show\n  urnet-tools baseline mark before-upgrade\n  urnet-tools baseline compare",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
