@@ -243,19 +243,23 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 }
 
 func newProvidersCmd() *cobra.Command {
-	return withHelp(newCobraCmd("providers [--all]", "list providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("providers [--all]", "list providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all")
+	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all"),
+		helpFlag{Name: "all", Usage: "include providers owned by other OS users (run as root)"},
+	)
 }
 
 func newStatusCmd() *cobra.Command {
-	return withHelp(newCobraCmd("status [target]", "detailed status of one provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("status [target]", "detailed status of one provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
+	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json"),
+		helpFlag{Name: "json", Usage: "print the raw live snapshot as JSON"},
+	)
 }
 
 func newTopCmd() *cobra.Command {
@@ -267,11 +271,13 @@ func newTopCmd() *cobra.Command {
 }
 
 func newSnStatusCmd() *cobra.Command {
-	return withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("sn-status [target]", "Subnet 25 node rank, coldkey & miner status", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSnStatus(rest)
 		})
-	}), "Show real-time Subnet 25 metrics: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json for machine-readable automation. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools sn-status\n  urnet-tools sn-status --json\n  urnet-tools sn-status --unit urnetwork-native.service")
+	}), "Show real-time Subnet 25 metrics: global network rank, billable bandwidth, registered Bittensor coldkey, Top 200 cutoff eligibility, contract clock, and payout share. Supports --json for machine-readable automation. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir.", "  urnet-tools sn-status\n  urnet-tools sn-status --json\n  urnet-tools sn-status --unit urnetwork-native.service"),
+		helpFlag{Name: "json", Shorthand: "j", Usage: "print machine-readable JSON"},
+	)
 }
 
 func newStartCmd() *cobra.Command {
@@ -299,11 +305,18 @@ func newRestartCmd() *cobra.Command {
 }
 
 func newUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5"),
+		helpFlag{Name: "tag", Value: "TAG", Usage: "install the release `TAG` instead of the latest"},
+		helpFlag{Name: "digest", Value: "SHA256", Usage: "install an exact asset after verifying its sha256 `SHA256`"},
+		helpFlag{Name: "url", Value: "URL", Usage: "fetch the release asset from this `URL`"},
+		helpFlag{Name: "include", Value: "LABELS", Usage: "update only providers matching these comma-separated `LABELS`"},
+		helpFlag{Name: "exclude", Value: "LABELS", Usage: "skip providers matching these comma-separated `LABELS`"},
+		helpFlag{Name: "all", Usage: "update every provider on this box without prompting"},
+	)
 }
 
 func newIdleUpdateCmd() *cobra.Command {
@@ -346,11 +359,15 @@ Flags:
 }
 
 func newSelfUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("self-update", "update this tool binary itself", []string{"selfupdate"}, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("self-update", "update this tool binary itself", []string{"selfupdate"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSelfUpdate(rest, force, dryRun)
 		})
-	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force")
+	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force"),
+		helpFlag{Name: "tag", Value: "TAG", Usage: "install the release `TAG` instead of the latest"},
+		helpFlag{Name: "digest", Value: "SHA256", Usage: "install an exact asset after verifying its sha256 `SHA256`"},
+		helpFlag{Name: "url", Value: "URL", Usage: "fetch the release asset from this `URL`"},
+	)
 }
 
 func newLogsCmd() *cobra.Command {
