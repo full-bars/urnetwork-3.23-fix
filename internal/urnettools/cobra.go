@@ -263,11 +263,13 @@ func newStatusCmd() *cobra.Command {
 }
 
 func newTopCmd() *cobra.Command {
-	return withHelp(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
-	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop")
+	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop"),
+		helpFlag{Name: "interval", Value: "DURATION", Usage: "refresh period such as 500ms or 2s (default 1s, minimum 100ms)"},
+	)
 }
 
 func newSnStatusCmd() *cobra.Command {
@@ -351,11 +353,16 @@ Flags:
   # Preview the wait parameters and target release without acting:
   urnet-tools idle-update --dry-run`
 
-	return withHelp(newCobraCmd("idle-update [target]", "wait for traffic lull before updating provider(s)", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("idle-update [target]", "wait for traffic lull before updating provider(s)", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdIdleUpdate(rest, force, dryRun)
 		})
-	}), long, examples)
+	}), long, examples),
+		helpFlag{Name: "threshold", Value: "RATE", Usage: "max billable throughput in bytes/s to count as idle (default 5120)"},
+		helpFlag{Name: "window", Value: "DURATION", Usage: "how long traffic must stay quiet, seconds or a duration such as 5m (default 5m, 0 = immediate)"},
+		helpFlag{Name: "timeout", Value: "DURATION", Usage: "give up waiting and update anyway, seconds or a duration such as 30m (default 30m, 0 = wait forever)"},
+		helpFlag{Name: "tag", Value: "TAG", Usage: "install the release `TAG` instead of the latest"},
+	)
 }
 
 func newSelfUpdateCmd() *cobra.Command {
@@ -595,7 +602,7 @@ func newAuthCmd() *cobra.Command {
 }
 
 func newChooseNetworkCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "choose-network",
 		Short:              "set API/connect endpoints",
 		Long:               "Set the API URL and connect URL the targeted provider uses, or clear that override with --reset to revert to the main network. This delegates to the provider binary's choose_network subcommand and streams its output.",
@@ -606,6 +613,9 @@ func newChooseNetworkCmd() *cobra.Command {
 			return cmdChooseNetwork(args)
 		},
 	}
+	return withFlags(cmd,
+		helpFlag{Name: "reset", Usage: "clear the endpoint override and revert to the main network"},
+	)
 }
 
 func newProxyCmd() *cobra.Command {
@@ -715,7 +725,7 @@ func newIPDetectCmd() *cobra.Command {
 }
 
 func newHistoryCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "history [limit] [--cursor <cursor>]",
 		Short:              "show command audit trail",
 		Long:               "Show this box's command audit trail: the urnet-tools commands run against a provider, newest last, with their outcome. Read-only: reads the provider's audit ring from its state dir; needs no root beyond the file's own permissions. --cursor continues a paged read from where the last page ended. Alias: audit.",
@@ -729,6 +739,9 @@ func newHistoryCmd() *cobra.Command {
 			return cmdHistory(args)
 		},
 	}
+	return withFlags(cmd,
+		helpFlag{Name: "cursor", Value: "CURSOR", Usage: "continue a paged read where the last page ended"},
+	)
 }
 
 func newMetricsCmd() *cobra.Command {

@@ -16,9 +16,11 @@ import (
 )
 
 func newConfigCmd() *cobra.Command {
-	return withHelp(newCobraCmd("config", "show all provider settings with source and age", nil, func(cmd *cobra.Command, args []string) error {
+	return withFlags(withHelp(newCobraCmd("config", "show all provider settings with source and age", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdConfig(args)
-	}), "Show all provider settings with their source and age from the control socket. Pass --json for raw JSON output.", "  urnet-tools config\n  urnet-tools config --json")
+	}), "Show all provider settings with their source and age from the control socket. Pass --json for raw JSON output.", "  urnet-tools config\n  urnet-tools config --json"),
+		helpFlag{Name: "json", Shorthand: "j", Usage: "print raw JSON output"},
+	)
 }
 
 func cmdConfig(args []string) error {
