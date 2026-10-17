@@ -25,80 +25,81 @@ Usage:
   urnet-tools [command]
 
 Core Commands:
-  start                   Start the provider
-  stop                    Stop the provider
-  restart [-y|-f]         Restart the provider (-y/-f to skip confirmation)
-  update                  Upgrade to the latest version
-  hotswap                 Swap provider process with no gap; proxies rebuild ~30s
-  self-update             Update this tool binary itself
-  status                  Show provider service status
-  top [--interval D]      Live full-screen view of a provider (also: urtop)
-  logs [target] [N]       Show recent logs, then follow (N lines, default 250)
-  dashboard               Status panel: state, settings, sources, warnings
-  history [limit]         Show the provider's command audit trail
-  autopilot log [limit]   Show the capacity decisions the provider made (OOM-aware cap, trim)
-  enforcement [history N] Show what the governors enforced (counts per day; or the newest N events)
-  baseline [show|mark|compare]  Show this box's recorded behaviour, and compare an upgrade
+  start                     Start the provider
+  stop                      Stop the provider
+  restart [-y|-f]           Restart the provider (-y/-f to skip confirmation)
+  update                    Upgrade to the latest version
+  hotswap [target]          Swap the provider process with no gap; proxies rebuild ~30s
+  self-update               Update this tool binary itself
+  status                    Show provider service status
+  top [--interval D]        Live, interactive full-screen view (also: urtop)
+  dashboard                 One-shot status panel; prints and exits
+  logs [target] [<N>]       Show recent logs, then follow (N lines, default 250)
+  history [<limit>]         Show the provider's command audit trail
+  autopilot <subcommand>    Capacity decisions the provider made (OOM-aware cap, trim)
+  enforcement <subcommand>  What the governors enforced: counts per day, or the newest events
+  baseline <subcommand>     This box's recorded behaviour; compare an upgrade
 
 Performance & Tuning:
-  turbo <v4|v8|off>       RAISE throughput limits for RAM-rich boxes
-  auto <on|off>           AUTO-TUNE detect hardware and pick best profile
-  eco <on|off>            ECO MODE GC-tuned for low-RAM systems
-  lowmode <on|off>        LOW-MEMORY reduced buffers for max RAM savings
-  ramlogs <on|off>        RAM LOGS zero disk I/O logging
-  optimize                Apply Golden Fleet OS/kernel limits
-  set [<k> [<v>|off]]     Show or change runtime tuning overrides
-  get [key] [target]      Show the current value of a runtime override (alias: show)
-  fast-auth [on|off]      Bypass auth rate limiter without restart
-  config [--json]         Show all provider settings with source and age
-  profile [<name>]        Show or set the memory/GC tuning profile
-  metrics [on|off|listen] Prometheus /metrics: status, toggle, listen address
-  smart-dialer [on|off]   Adapt transport choice to the network: skip DPI-circumvention cost when it is not needed
+  turbo <v4|v8|off>         Raise throughput limits for RAM-rich boxes
+  auto <on|off>             Detect hardware and pick the best-fit profile
+  eco <on|off>              GC-tuned for low-RAM systems
+  lowmode <on|off>          Reduced buffers for maximum RAM savings
+  ramlogs <on|off>          Zero disk I/O logging (RAM buffer)
+  optimize                  Apply the golden-fleet OS/kernel limits
+  set [<key> [<v>|off]]     Show or change runtime tuning overrides
+  get [key] [target]        Show the current value of a runtime override (alias: show)
+  fast-auth [on|off]        Bypass the auth rate limiter without a restart
+  config [--json]           Show all provider settings with source and age
+  profile [<profile>]       Show or set the memory/GC tuning profile
+  metrics <subcommand>      Prometheus /metrics: status, toggle, listen address
+  smart-dialer              Prefer the cheaper transport when it is enough
 
 Session & Identity:
-  session save <file>     Export identity + proxy state (encrypted)
-  session load <file>     Import identity + proxy state, then restart
-  auth [<code>]           Authenticate (omit for interactive paste)
-  sn-status [--json]      Subnet 25 node rank, coldkey & miner status
-  choose-network          Set API/connect endpoints
-  default                 Persist a default provider target for this box
-  rename <name>           Set dashboard display name (alias: set node-name)
+  session save <file>       Export identity + proxy state (encrypted)
+  session load <file>       Import identity + proxy state, then restart
+  auth [<code>]             Authenticate (omit for interactive paste)
+  sn-status [--json]        Subnet 25 node rank, coldkey and miner status
+  choose-network            Set API/connect endpoints
+  default <subcommand>      Persist, show or clear a default provider target
+  rename <name>             Set the dashboard display name (alias: set node-name)
 
 Proxy Management:
-  proxy add <file>        Bulk add proxies from a text file
-  proxy paste             Paste raw proxies from stdin, file, or URL
-  proxy clear             Remove all configured proxies
-  proxy remove            Remove proxies (by addr/match, or all)
-  proxy add-source <url>  Add a URL proxy source (fetched + cached)
+  proxy add <file>          Bulk add proxies from a text file
+  proxy paste               Paste raw proxies from stdin, a file, or a URL
+  proxy clear               Remove all configured proxies
+  proxy remove              Remove proxies (by address or match, or all)
+  proxy add-source <url>    Add a URL proxy source (fetched and cached)
   proxy remove-source <url> Remove a URL proxy source
-  proxy refresh [--force] Re-read configs and hot-reload proxies
-  proxy trim <N>          Hold running proxies at N, shed worst first
-  proxy health            Show dead/degraded proxies + live event log
-  proxy traffic           Real-time bandwidth & client session load
-  proxy ids               Client IDs for each proxy (from JWT store)
-  summary                 Fleet-style proxy summary (sources, health, counts)
-  proxy remove-dead       Prune dead/degraded/failing proxies interactively
-  self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
-  show-ip [on|off|status] Show public IP on the dashboard label (was: ip-detect)
-  direct [on|off]         Toggle providing on the machine's direct/local IP
-  usage [graph[s] <view>] Traffic accounting: billable vs control, time-series
+  proxy refresh             Re-read URL sources and hot-reload proxies
+  proxy trim <N>            Hold running proxies at N, shed the worst first
+  proxy health              Show dead/degraded proxies and the live event log
+  proxy traffic             Real-time bandwidth and client session load
+  proxy ids                 Client IDs for each proxy (from the JWT store)
+  proxy remove-dead         Prune dead, degraded and failing proxies
+  proxy audit [<action>]    Inspect or toggle the proxy quality audit
+  summary                   Fleet-style proxy summary (sources, health, counts)
+  self-heal [on|off]        Auto-regulate proxies (load gate and cleanup)
+  show-ip [<on|off|status>] Show the public IP on the dashboard label
+  direct [<on|off|status>]  Toggle providing on the machine's direct/local IP
+  usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
 
 Wallet Consent:
-  wallet status           Show the network wallet consent (read-only)
-  wallet challenge <ck>   Fetch the consent statement to sign (signs nothing)
-  wallet set <ck>         Submit a signed consent (--coldkey_seed_file: own workstation only)
-  wallet sign <ck>        Sign in the browser (Talisman); the seed never leaves the extension
+  wallet status             Show the network wallet consent (read-only)
+  wallet challenge <ck>     Fetch the consent statement to sign (signs nothing)
+  wallet set <ck>           Submit a signed consent (seed file: own workstation only)
+  wallet sign <ck>          Sign in the browser; the seed never leaves the extension
 
 Maintenance:
-  reinstall                     Reinstall provider
-  uninstall                     Uninstall provider
-  auto-update                   Manage auto-update (--interval daily|weekly|monthly)
-  auto-start                    Toggle auto-start on login
-  providers                     List all providers on this box
+  reinstall                 Reinstall the provider
+  uninstall                 Uninstall the provider
+  auto-update               Manage auto-update (--interval daily|weekly|monthly)
+  auto-start                Toggle auto-start on login
+  providers                 List all providers on this box
 
 Info:
-  version                       Print this tool's version
-  help <command>                Show help for a command
+  version                   Print this tool's version
+  help <command>            Show help for a command
 
 Targeting (used when the box runs more than one provider):
   --unit <unit>             systemd unit, e.g. urnetwork-native.service
@@ -108,12 +109,11 @@ Targeting (used when the box runs more than one provider):
   --state-dir <dir>         state dir
 
 Batch / safety flags:
-  -f, --force                 skip confirmation prompts ONLY (never picks providers)
-  -n, --dry-run               print the plan, change nothing
-  -h, --help                  show help (never executes)
+  -f, --force               skip confirmation prompts ONLY (never picks providers)
+  -n, --dry-run             print the plan, change nothing
+  -h, --help                show help (never executes)
 
-Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix
-`
+Need help? Email support@fullbars.xyz or visit https://github.com/full-bars/urnetwork-3.23-fix`
 
 // buildRootCmd creates the root Cobra command for urnet-tools.
 func buildRootCmd() *cobra.Command {

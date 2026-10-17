@@ -145,13 +145,15 @@ func TestLogsPlatformCheck(t *testing.T) {
 
 // The root help must describe what `logs` actually accepts: a target and an
 // optional line count. `all`, `dump` and `-i` were documented but never
-// implemented, and cmdLogs rejects them as unexpected arguments.
+// implemented, and cmdLogs rejects them as unexpected arguments. The
+// placeholder style is the normalized `<N>` from the same pass that gave
+// every page one positional style.
 func TestRootHelpLogsMatchesCommand(t *testing.T) {
 	if strings.Contains(rootHelpMenu, "logs [all|dump|-i]") {
 		t.Error("root help advertises logs modes (all|dump|-i) that cmdLogs does not implement")
 	}
-	if !helpMenuMentions("logs") || !strings.Contains(rootHelpMenu, "logs [target] [N]") {
-		t.Error("root help must list `logs [target] [N]`, matching the registered command")
+	if !helpMenuMentions("logs") || !strings.Contains(rootHelpMenu, "logs [target] [<N>]") {
+		t.Error("root help must list `logs [target] [<N>]`, matching the registered command")
 	}
 	if err := cmdLogs([]string{"dump"}); err == nil || !strings.Contains(err.Error(), "unexpected argument") {
 		t.Errorf("cmdLogs(dump) = %v, want an unexpected-argument error", err)
