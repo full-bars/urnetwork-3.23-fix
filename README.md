@@ -259,6 +259,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools session load <file>` | Import identity+proxy state, then restart |
 | `urnetwork choose_network <api_url> <connect_url>` | You run your own API/connect backend and want the provider to default to it |
 | `urnetwork choose_network --reset` | You want to clear a saved custom network and revert to the main network |
+| `urnetwork choose_network --show` | You want to see which network is in effect (the saved one or the main network); it warns when the saved URLs are unencrypted |
 
 > [!TIP]
 > `~/proxies.txt` and `/home/user/proxies.txt` are both valid straight path formats across all tools.

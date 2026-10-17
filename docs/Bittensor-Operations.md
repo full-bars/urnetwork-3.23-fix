@@ -142,7 +142,7 @@ Generates ABI-encoded calldata and cryptographic inclusion proofs without exposi
 ```bash
 provider claim --store-client=direct --epoch=1053
 ```
-Output yields ready-to-submit calldata compatible with `snclaim` or web3 wallets.
+Output yields ready-to-submit calldata for `provider snclaim submit --calldata=<hex>` (see [the low-level on-chain tool](#the-low-level-on-chain-tool-provider-snclaim) below) or for a web3 wallet.
 
 ### Workflow 2: Direct On-Chain Submission
 Submit the claim transaction directly with a local private key file and RPC endpoint:
@@ -159,6 +159,20 @@ Simulate verification and root matching without broadcasting transactions:
 ```bash
 provider claim --store-client=direct --epoch=1053 --rpc=https://rpc.subtensor.network --dry-run
 ```
+
+### The low-level on-chain tool (`provider snclaim`)
+`provider snclaim` is the settlement-vault submission tool that sn ships as a separate `snclaim` binary. It is built from the same library the claim daemons use, and it is reachable here as a subcommand instead of a second binary. Everything after `snclaim` is passed to it unchanged, so `provider snclaim --help` prints its own usage (which names its commands `snclaim ...`). `provider claim` and the claim daemons stay the normal way to claim; use `snclaim` when they do not fit.
+
+- `provider snclaim submit` signs and broadcasts a claim transaction, either from prepared calldata (`--calldata=<hex>`, for a key kept off the provider host) or from the claim fields (`--epoch`, `--no_id`, `--coldkey`, `--share_bps`, `--proof`).
+- `provider snclaim status` reads the state of one claim.
+- `provider snclaim v2 status`, `v2 claim` and `v2 check` are the settlement v2 counterparts.
+- `provider snclaim withdraw` retries a v1 claim whose payment was deferred because it was below the transfer minimum, no alpha price was available, or the runtime transfer failed. The v1 vault keeps such a claim as a credit for the coldkey, and anyone may retry it at any time. Payment always lands on the coldkey, and the key file you pass only pays gas. Only the v1 vault holds credit: the v2 vault pays a claim in full or reverts it, so `withdraw` takes `--vault=v1` and refuses anything else.
+
+```bash
+provider snclaim withdraw --vault=v1 --coldkey=<coldkey> --contract=<v1 vault address> --rpc=<evm rpc url> --key_file=<gas key file> --dry-run
+```
+
+Without `--dry-run` the transaction is sent. A withdrawal the vault would revert fails the preflight with the decoded reason, and a coldkey with no credit is refused before anything is signed.
 
 If claims should not wait for hand runs, run a daemon alongside the provider: [Bittensor claim daemons](Bittensor-Claim-Daemons.md).
 

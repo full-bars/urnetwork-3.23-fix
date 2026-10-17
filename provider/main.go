@@ -35,6 +35,7 @@ import (
 
 	gojwt "github.com/golang-jwt/jwt/v5"
 
+	"github.com/urfoundation/sn/miner/onchain"
 	"github.com/urnetwork/connect"
 	"github.com/urnetwork/connect/protocol"
 )
@@ -852,6 +853,18 @@ func main() {
 	// reachable entries (e.g. NixOS /run/current-system/sw/bin) survive.
 	if os.Getuid() == 0 {
 		sanitizeRootPath()
+	}
+
+	// `provider snclaim ...` hands the whole argument list to sn's on-chain
+	// submission library untouched. It has its own usage and flags, which this
+	// command's docopt would reject, so it runs before the banners, the logger
+	// and the parse: its output stays exactly what the sn `snclaim` tool prints.
+	if isSnclaimInvocation(os.Args) {
+		if Version != "" {
+			onchain.Version = Version
+		}
+		onchain.Run(os.Args[2:])
+		return
 	}
 
 	profile := os.Getenv("URNETWORK_PROFILE")
@@ -7434,6 +7447,8 @@ Usage:
     provider print-network-id <file>
     provider choose_network <api_url> [<connect_url>]
     provider choose_network --reset
+    provider choose_network --show
+    provider snclaim <snclaim_args>...
 
 Options:
     -h --help                        Show this help and exit.
@@ -7450,6 +7465,9 @@ Options:
                                      or a preset: main | beta.
     <connect_url>                    Connect URL to save as the chosen network (ws:// or wss://).
     --reset                          With choose_network, clear the saved network and revert to the main network.
+    --show                           With choose_network, print the network currently in effect and exit.
+    <snclaim_args>                   snclaim: everything after "snclaim" goes to the on-chain submission tool unchanged
+                                     (submit, status, withdraw, v2 status|claim|check). Run: provider snclaim --help
     --user_auth=<user_auth>	         Login with a username.
     --password=<password>            Login with a password. If --user_auth is used, you will be prompted for your
     				                 password anyways, if you don't specify it using this option.

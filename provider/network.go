@@ -17,6 +17,7 @@ import (
 	"os"
 	"path/filepath"
 	"strconv"
+	"strings"
 
 	"github.com/docopt/docopt-go"
 )
@@ -82,6 +83,13 @@ func readNetworkConfig() (cfg networkConfig, ok bool, err error) {
 	if err := json.Unmarshal(b, &cfg); err != nil {
 		return networkConfig{}, false, fmt.Errorf("parse %s: %w", p, err)
 	}
+	// A file that parses but does not name a network (`{}`, `null`, or a
+	// half-written one with a single field) is an error here rather than a
+	// config: returning it would hand an empty base URL to the api client and
+	// fail much further from the cause.
+	if cfg.ApiUrl == "" || cfg.ConnectUrl == "" {
+		return networkConfig{}, false, fmt.Errorf("%s: api_url and connect_url are both required", p)
+	}
 	return cfg, true, nil
 }
 
@@ -107,7 +115,10 @@ func writeNetworkConfig(apiUrl, connectUrl string) error {
 	if err != nil {
 		return err
 	}
-	return os.WriteFile(p, b, 0600)
+	// Through a temp file and a rename, so a crash or a full disk cannot leave
+	// a truncated network.json behind: every command now reads it, and a bad
+	// one stops them all (under a Restart=always unit, permanently).
+	return atomicWriteFile(p, b, 0600)
 }
 
 // resetNetworkConfig removes ~/.urnetwork/network.json. Removing a
@@ -190,4 +201,96 @@ func resolveAPIProbeHostPort() (string, uint16) {
 		apiUrl = cfg.ApiUrl
 	}
 	return apiProbeHostPort(apiUrl)
+}
+
+// urlScheme returns the scheme of rawUrl, or "" when it does not parse.
+func urlScheme(rawUrl string) string {
+	u, err := url.Parse(rawUrl)
+	if err != nil {
+		return ""
+	}
+	return u.Scheme
+}
+
+// insecureNetworkWarning returns a warning when the chosen network would
+// carry the provider's credentials in the clear, or "" when both URLs are
+// encrypted.
+//
+// The network jwt travels as an `Authorization: Bearer` header on every api
+// call, so a plaintext api_url puts it on the wire in the clear for anyone on
+// the path. The one-off --api_url flag has always allowed this, but a saved
+// network makes it persistent and invisible, which is why it is worth saying
+// out loud at the point it gets written down and whenever it is shown.
+func insecureNetworkWarning(apiUrl, connectUrl string) string {
+	insecure := []string{}
+	if urlScheme(apiUrl) == "http" {
+		insecure = append(insecure, "api_url uses http")
+	}
+	if urlScheme(connectUrl) == "ws" {
+		insecure = append(insecure, "connect_url uses ws")
+	}
+	if len(insecure) == 0 {
+		return ""
+	}
+	return fmt.Sprintf(
+		"warning: %s. Traffic to this network is unencrypted, including the provider's auth token, "+
+			"and is readable by anyone on the network path. Use https:// and wss:// unless this is a "+
+			"local test deployment.",
+		strings.Join(insecure, " and "),
+	)
+}
+
+// networkSwitchNotice warns that the credentials already in dir belong to the
+// previously selected network, or returns "" when there are none.
+//
+// The jwt is minted by one network's api and means nothing to another, so
+// after a switch `provider provide` fails with an auth error whose cause is
+// several steps removed from the message.
+func networkSwitchNotice(dir string) string {
+	if _, err := os.Stat(filepath.Join(dir, "jwt")); err != nil {
+		return ""
+	}
+	return fmt.Sprintf(
+		"note: the jwt in %s was issued by the previously selected network. "+
+			"Run `provider auth` against the new network before `provider provide`.",
+		dir,
+	)
+}
+
+// networkShowText is the text of `provider choose_network --show`: the saved
+// network, or the default one when none is saved, with the insecure-network
+// warning when it applies.
+func networkShowText() (string, error) {
+	cfg, ok, err := readNetworkConfig()
+	if err != nil {
+		return "", err
+	}
+	if !ok {
+		return fmt.Sprintf(
+			"no custom network saved; using the main network\n    api_url: %s\n    connect_url: %s\n",
+			DefaultApiUrl, DefaultConnectUrl,
+		), nil
+	}
+	p, err := networkConfigPath()
+	if err != nil {
+		return "", err
+	}
+	text := fmt.Sprintf(
+		"custom network saved at %s\n    api_url: %s\n    connect_url: %s\n",
+		p, cfg.ApiUrl, cfg.ConnectUrl,
+	)
+	if warning := insecureNetworkWarning(cfg.ApiUrl, cfg.ConnectUrl); warning != "" {
+		text += warning + "\n"
+	}
+	return text, nil
+}
+
+// networkSwitchNoticeForState is networkSwitchNotice for the provider state
+// directory that holds network.json.
+func networkSwitchNoticeForState() string {
+	p, err := networkConfigPath()
+	if err != nil {
+		return ""
+	}
+	return networkSwitchNotice(filepath.Dir(p))
 }
