@@ -231,6 +231,17 @@ var globalFlagMatrix = map[string]string{
 	"summary": "t", "usage": "t",
 	"providers": "s", "self-update": "s",
 	"wallet/status": "t", "wallet/challenge": "t", "wallet/set": "t", "wallet/sign": "t",
+	"proxy":     "ts",
+	"proxy/add": "ts", "proxy/paste": "ts", "proxy/clear": "ts", "proxy/remove": "ts",
+	"proxy/refresh": "ts", "proxy/add-source": "ts", "proxy/remove-source": "ts",
+	"proxy/health": "ts", "proxy/traffic": "ts", "proxy/ids": "ts",
+	"proxy/remove-dead": "ts", "proxy/trim": "ts", "proxy/audit": "ts",
+	"session/save": "ts", "session/load": "ts",
+	"metrics/status": "ts", "metrics/on": "ts", "metrics/off": "ts", "metrics/listen": "ts",
+	"default/set": "t", "default/show": "t", "default/clear": "t",
+	"baseline/show": "t", "baseline/mark": "t", "baseline/compare": "t",
+	"enforcement/summary": "t", "enforcement/history": "t",
+	"autopilot/log": "t",
 }
 
 // attachGlobalHelpFlags declares the shared flag sets on the commands that
@@ -247,8 +258,13 @@ func attachGlobalHelpFlags(root *cobra.Command) {
 			withSafetyFlags(sub)
 		}
 		for _, subsub := range sub.Commands() {
-			if globalFlagMatrix[sub.Name()+"/"+subsub.Name()] == "t" {
+			switch globalFlagMatrix[sub.Name()+"/"+subsub.Name()] {
+			case "ts":
+				withTargetAndSafetyFlags(subsub)
+			case "t":
 				withTargetFlags(subsub)
+			case "s":
+				withSafetyFlags(subsub)
 			}
 		}
 	}
@@ -278,6 +294,23 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 		return err
 	}
 	return handler(force, dryRun, rest)
+}
+
+// subPage builds a child page for a group command whose dispatcher takes the
+// raw subcommand args: the page prepends its own name and calls the same
+// dispatcher the parent uses, so behaviour is unchanged.
+func subPage(sub, use, short, long, example string, dispatch func([]string) error) *cobra.Command {
+	return withHelp(newCobraCmd(use, short, nil, func(cmd *cobra.Command, args []string) error {
+		return dispatch(append([]string{sub}, args...))
+	}), long, example)
+}
+
+// subPageTS is subPage for groups whose dispatcher also takes the -f/--force
+// and -n/--dry-run flags, routed through parseGlobal exactly like the parent.
+func subPageTS(sub, use, short, long, example string, dispatch func(force, dryRun bool, rest []string) error) *cobra.Command {
+	return withHelp(newCobraCmd(use, short, nil, func(cmd *cobra.Command, args []string) error {
+		return parseGlobal(append([]string{sub}, args...), dispatch)
+	}), long, example)
 }
 
 func newProvidersCmd() *cobra.Command {
@@ -449,9 +482,24 @@ func newVersionCmd() *cobra.Command {
 }
 
 func newDefaultCmd() *cobra.Command {
-	return withHelp(newCobraCmd("default", "persist a default provider target for this box", nil, func(cmd *cobra.Command, args []string) error {
+	defaultCmd := withHelp(newCobraCmd("default <subcommand>", "persist a default provider target for this box", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDefault(args)
 	}), "Persist, show, or clear a default provider target for this box, so later commands with no explicit target resolve to it on multi-provider boxes. 'default set' requires exactly one of --unit, --user, --network, --network-id, or --state-dir; the default is stored per user and is ignored automatically if it becomes stale or ambiguous.", "  urnet-tools default set --network mynetwork\n  urnet-tools default show\n  urnet-tools default clear")
+	defaultCmd.AddCommand(
+		subPage("set", "set", "persist a default provider target",
+			"Persist the default provider target for this box. Requires exactly one of --unit, --user, --network, --network-id, or --state-dir. The default is stored per user and ignored automatically when it becomes stale or ambiguous.",
+			"  urnet-tools default set --network mynetwork",
+			cmdDefault),
+		subPage("show", "show", "show the stored default target",
+			"Show the default provider target stored for this user, if any, and what it resolves to right now.",
+			"  urnet-tools default show",
+			cmdDefault),
+		subPage("clear", "clear", "clear the stored default target",
+			"Clear the stored default provider target for this user, so commands go back to requiring an explicit target on multi-provider boxes.",
+			"  urnet-tools default clear",
+			cmdDefault),
+	)
+	return defaultCmd
 }
 
 func newSessionCmd() *cobra.Command {
@@ -467,6 +515,17 @@ func newSessionCmd() *cobra.Command {
 			return cmdSession(args)
 		},
 	}
+	cmd.AddCommand(
+		subPage("save", "save <file>", "export identity and proxy state as an encrypted bundle",
+			"Write a passphrase-encrypted bundle of the targeted provider's identity and proxy state to <file>. The passphrase is prompted twice with echo off; the file is written owner-only.",
+			"  urnet-tools session save ~/urnet-session.enc\n  urnet-tools session save C:\\Users\\<you>\\urnet-session.enc",
+			cmdSession),
+		withFlags(subPage("load", "load <file>", "import identity and proxy state from an encrypted bundle",
+			"Import a session bundle into the targeted provider. The current identity is backed up first; a bundle from a different account is refused unless you pass --allow-different-account; the new identity is staged for the provider to pick up on restart.",
+			"  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service --force",
+			cmdSession),
+			helpFlag{Name: "allow-different-account", Usage: "accept a session bundle from a different account"}),
+	)
 	return withFlags(cmd,
 		helpFlag{Name: "allow-different-account", Usage: "accept a session bundle from a different account"},
 	)
@@ -663,26 +722,95 @@ func newChooseNetworkCmd() *cobra.Command {
 }
 
 func newProxyCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "proxy",
-		Short:              "Proxy Management",
-		Long:               "Manage proxies for a provider: add from a file, paste from stdin/file/URL, clear, remove, refresh, and inspect health and traffic.",
-		Example:            "  urnet-tools proxy add ~/proxies.txt           # Linux / macOS\n  urnet-tools proxy paste < proxies.txt         # Paste from stdin / pipe\n  urnet-tools proxy paste --file=~/proxies.txt  # Paste from file\n  urnet-tools proxy clear",
+	proxyDispatch := func(force, dryRun bool, rest []string) error {
+		return cmdProxy(rest, force, dryRun)
+	}
+	proxyCmd := &cobra.Command{
+		Use:                "proxy <subcommand>",
+		Short:              "manage the provider's proxies",
+		Long:               "Manage the targeted provider's proxies: add from a file, paste raw text, clear or remove entries, refresh URL sources, and inspect health, traffic and client IDs. Run 'urnet-tools proxy <subcommand> --help' for a subcommand's own page. The proxy summary is the top-level 'urnet-tools summary' command, not a proxy subcommand.",
+		Example:            "  urnet-tools proxy add ~/proxies.txt\n  urnet-tools proxy health --unit urnetwork-native.service\n  urnet-tools proxy trim 50",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			if len(args) == 0 {
-				return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | audit")
+			if len(args) == 0 || hasHelpFlag(args) || (len(args) == 1 && args[0] == "help") {
+				return cmd.Help()
 			}
-			for _, a := range args {
-				if a == "-h" || a == "--help" {
-					return cmdProxy(args, false, false)
-				}
-			}
-			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-				return cmdProxy(rest, force, dryRun)
-			})
+			return parseGlobal(args, proxyDispatch)
 		},
 	}
+	batchFlags := []helpFlag{
+		{Name: "all", Usage: "apply to every provider on the box"},
+		{Name: "include", Value: "A,B", Usage: "only providers whose label, user, unit or network matches one of these"},
+		{Name: "exclude", Value: "A,B", Usage: "skip providers whose label, user, unit or network matches one of these"},
+	}
+	proxyCmd.AddCommand(
+		withFlags(subPageTS("add", "add <file> [target]", "add proxies from a proxy file",
+			"Read a proxy file (host:port, or host:port:user:pass per line) and bulk-add its entries to the targeted provider. A file given with --file is the same as the positional path.",
+			"  urnet-tools proxy add ~/proxies.txt\n  urnet-tools proxy add ~/proxies.txt --unit urnetwork-native.service",
+			proxyDispatch),
+			helpFlag{Name: "file", Value: "PATH", Usage: "proxy `PATH` to add (the same as the positional path)"},
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("paste", "paste [target]", "paste raw proxies from stdin, a file, or a URL",
+			"Ingest raw proxy text from stdin (pipe it in), from --file, or from --url, normalize the common formats, and add the entries to the targeted provider.",
+			"  cat proxies.txt | urnet-tools proxy paste\n  urnet-tools proxy paste --file=~/proxies.txt\n  urnet-tools proxy paste --url=https://example.com/proxies.txt",
+			proxyDispatch),
+			helpFlag{Name: "file", Value: "PATH", Usage: "read the raw proxies from a file at `PATH`"},
+			helpFlag{Name: "url", Value: "URL", Usage: "read the raw proxies from `URL`"}),
+		withFlags(subPageTS("clear", "clear [target]", "remove every proxy",
+			"Remove all proxies from the targeted provider, unconditionally. Use remove for selective removal.",
+			"  urnet-tools proxy clear --unit urnetwork-native.service",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("remove", "remove [<proxy>...] [target]", "remove proxies by address, --match, or all",
+			"Remove specific proxies by address, or every proxy matching --match. With neither addresses nor --match this removes all proxies on the target, the same as clear.",
+			"  urnet-tools proxy remove 1.2.3.4:5555 --unit urnetwork-native.service\n  urnet-tools proxy remove --match=198.51 --unit urnetwork-native.service",
+			proxyDispatch),
+			helpFlag{Name: "match", Value: "PATTERN", Usage: "remove every proxy whose address contains the pattern"},
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("refresh", "refresh [target]", "re-read URL proxy sources now",
+			"Re-fetch the targeted provider's URL proxy sources and hot-reload the proxies without a restart.",
+			"  urnet-tools proxy refresh --unit urnetwork-native.service",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("add-source", "add-source <url> [target]", "add a URL proxy source",
+			"Add a URL proxy source to the targeted provider. The source is fetched now, cached, and refreshed on the provider's own schedule.",
+			"  urnet-tools proxy add-source https://example.com/proxies.txt --unit urnetwork-native.service",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("remove-source", "remove-source <url> [target]", "remove a URL proxy source",
+			"Remove a URL proxy source from the targeted provider, so it is no longer fetched or refreshed.",
+			"  urnet-tools proxy remove-source https://example.com/proxies.txt --unit urnetwork-native.service",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		subPageTS("health", "health [target]", "proxy health from the provider's state files",
+			"Show the targeted provider's proxy health from its state files: status counts and the newest health events. Single target, so run it once per provider.",
+			"  urnet-tools proxy health --unit urnetwork-native.service",
+			proxyDispatch),
+		subPageTS("traffic", "traffic [target]", "real-time bandwidth and client load",
+			"Show the targeted provider's per-proxy bandwidth and client session load from its state files, with the newest entries first.",
+			"  urnet-tools proxy traffic --unit urnetwork-native.service",
+			proxyDispatch),
+		subPageTS("ids", "ids [target]", "client ID per proxy from the JWT store",
+			"Show the client_id each proxy is serving from the targeted provider's JWT store. Useful to match a proxy address to the account it serves.",
+			"  urnet-tools proxy ids --unit urnetwork-native.service",
+			proxyDispatch),
+		withFlags(subPageTS("remove-dead", "remove-dead [target]", "prune dead, degraded and failing proxies",
+			"Walk the targeted provider's dead, degraded and failing proxies and remove the ones you confirm. Pass -n/--dry-run first to preview the list, or -f/--force to skip the confirmations.",
+			"  urnet-tools proxy remove-dead --unit urnetwork-native.service\n  urnet-tools proxy remove-dead -n",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("trim", "trim <N|off> [target]", "hold running proxies at N, shed the worst first",
+			"Hold the targeted provider at N running proxies, shedding the worst-graded (F to A) first, or pass off to clear the cap and let every proxy run again.",
+			"  urnet-tools proxy trim 50 --unit urnetwork-native.service\n  urnet-tools proxy trim off",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+		withFlags(subPageTS("audit", "audit [<action>] [target]", "inspect or toggle the proxy quality audit",
+			"Manage the automated proxy quality audit: status (the default) shows what it has parked and why, on and off toggle it on the fly, and release <proxy> (or release --all) unparks proxies it proved bad.",
+			"  urnet-tools proxy audit status\n  urnet-tools proxy audit on\n  urnet-tools proxy audit release 1.2.3.4:1080",
+			proxyDispatch),
+			batchFlags[0], batchFlags[1], batchFlags[2]),
+	)
+	return proxyCmd
 }
 
 func newReinstallCmd() *cobra.Command {
@@ -781,8 +909,11 @@ func newHistoryCmd() *cobra.Command {
 }
 
 func newMetricsCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:                "metrics [status|on|off|listen <ip:port|auto>]",
+	metricsDispatch := func(force, dryRun bool, rest []string) error {
+		return cmdMetrics(rest, dryRun)
+	}
+	metricsCmd := &cobra.Command{
+		Use:                "metrics <subcommand>",
 		Short:              "show, toggle, or move the Prometheus /metrics endpoint",
 		Long:               "Show, enable, disable, or move the provider's Prometheus /metrics endpoint. 'listen <ip:port|auto>' moves where it serves; 'auto' picks the listen address. Changes are applied to the running provider at its next tick, with no restart. Honors -n/--dry-run, which prints the plan and sends nothing.",
 		Example:            "  urnet-tools metrics\n  urnet-tools metrics on\n  urnet-tools metrics listen 0.0.0.0:9099",
@@ -794,11 +925,28 @@ func newMetricsCmd() *cobra.Command {
 			// M4: command used to force dryRun=false unconditionally, so
 			// `metrics on -n` applied the change. Route through the global
 			// flag parser so -n/--dry-run (and -f) are honored.
-			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-				return cmdMetrics(rest, dryRun)
-			})
+			return parseGlobal(args, metricsDispatch)
 		},
 	}
+	metricsCmd.AddCommand(
+		subPageTS("status", "status", "show whether /metrics is on and where",
+			"Show whether the provider's Prometheus /metrics endpoint is on, and the address to scrape when it is.",
+			"  urnet-tools metrics status --unit urnetwork-native.service",
+			metricsDispatch),
+		subPageTS("on", "on", "start the /metrics listener",
+			"Start the /metrics listener in the running provider and print the scrape address. Applied at the provider's next tick, with no restart.",
+			"  urnet-tools metrics on --unit urnetwork-native.service",
+			metricsDispatch),
+		subPageTS("off", "off", "stop the /metrics listener",
+			"Stop the /metrics listener in the running provider. Applied at the provider's next tick, with no restart.",
+			"  urnet-tools metrics off --unit urnetwork-native.service",
+			metricsDispatch),
+		subPageTS("listen", "listen <ip:port|auto>", "choose the /metrics listen address",
+			"Move the /metrics listener to a fixed ip:port, or pass auto to let the provider pick the address. Applied at the next tick and persisted.",
+			"  urnet-tools metrics listen 0.0.0.0:9099\n  urnet-tools metrics listen auto",
+			metricsDispatch),
+	)
+	return metricsCmd
 }
 
 // isTruthy returns true for any string representation that a human would

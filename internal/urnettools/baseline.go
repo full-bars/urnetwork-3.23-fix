@@ -209,10 +209,29 @@ func newBaselineCmd() *cobra.Command {
 			return cmdBaseline(args)
 		},
 	}
+	cmd.AddCommand(
+		withFlags(subPage("show", "show [target]", "show the newest rows of the behaviour record",
+			"Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. The default is 20 rows; pass -n followed by a count for more, at most 200. Reads the file directly, so it works on a box whose provider is stopped.",
+			"  urnet-tools baseline show\n  urnet-tools baseline show -n 50 --json",
+			cmdBaseline),
+			helpFlag{Name: "json", Usage: "print machine-readable JSON"}),
+		subPage("mark", "mark <label>", "annotate the timeline",
+			"Annotate this box's behaviour record with a label, for example just before an upgrade. A label is required: an unlabelled mark is a boundary compare cannot use. Goes through the control socket, so the provider stays the only writer, and it works while the recorder is off.",
+			"  urnet-tools baseline mark before-upgrade",
+			cmdBaseline),
+		withFlags(subPage("compare", "compare [target]", "compare the box across an upgrade",
+			"Compare this box's behaviour across an upgrade. With no arguments it splits at the most recent start whose version differs from the previous one. --from and --to take a mark label or a timestamp prefix; the first --skip-ramp after every start is excluded from both sides.",
+			"  urnet-tools baseline compare\n  urnet-tools baseline compare --skip-ramp 30m",
+			cmdBaseline),
+			helpFlag{Name: "from", Value: "MARK", Usage: "the start `MARK` for a comparison"},
+			helpFlag{Name: "to", Value: "MARK", Usage: "the end `MARK` for a comparison"},
+			helpFlag{Name: "skip-ramp", Value: "DURATION", Usage: "ignore the first `DURATION` after the upgrade"},
+			helpFlag{Name: "json", Usage: "print machine-readable JSON"}),
+	)
 	return withFlags(cmd,
-		helpFlag{Name: "from", Value: "MARK", Usage: "the start mark for a comparison"},
-		helpFlag{Name: "to", Value: "MARK", Usage: "the end mark for a comparison"},
-		helpFlag{Name: "skip-ramp", Value: "DURATION", Usage: "ignore the first DURATION after the upgrade"},
+		helpFlag{Name: "from", Value: "MARK", Usage: "the start `MARK` for a comparison"},
+		helpFlag{Name: "to", Value: "MARK", Usage: "the end `MARK` for a comparison"},
+		helpFlag{Name: "skip-ramp", Value: "DURATION", Usage: "ignore the first `DURATION` after the upgrade"},
 		helpFlag{Name: "json", Usage: "print machine-readable JSON"},
 	)
 }

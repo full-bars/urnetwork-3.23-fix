@@ -32,8 +32,8 @@ type ledgerRow struct {
 }
 
 func newAutopilotCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "autopilot log [limit] [target flags]",
+	autopilotCmd := &cobra.Command{
+		Use:   "autopilot <subcommand> [target flags]",
 		Short: "show the capacity decisions the provider made (OOM-aware cap, trim results)",
 		Long: "Show the newest capacity decisions the provider recorded: the OOM-aware start cap " +
 			"(shadow decisions are 'would' actions that were not enforced) and operator trim results, " +
@@ -48,6 +48,13 @@ func newAutopilotCmd() *cobra.Command {
 			return cmdAutopilot(args)
 		},
 	}
+	autopilotCmd.AddCommand(
+		subPage("log", "log [<limit>] [target]", "show the capacity decisions the provider made",
+			"Show the newest capacity decisions the provider recorded, newest last: the OOM-aware start cap (shadow decisions are 'would' actions that were not enforced) and operator trim results. Default 20 entries, at most 200. Also prints the oom-cap control value.",
+			"  urnet-tools autopilot log\n  urnet-tools autopilot log 50 --unit urnetwork-native.service",
+			cmdAutopilot),
+	)
+	return autopilotCmd
 }
 
 // parseAutopilotArgs extracts the subcommand ("log"), the limit and the target

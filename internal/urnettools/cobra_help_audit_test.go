@@ -105,7 +105,6 @@ var globalFlagText = map[string]bool{
 // that are not declared on their own page, with the reason. Keep this list
 // short and justified; the proxy subcommand pages will remove the proxy entry.
 var flagTextExemptions = map[string]string{
-	"proxy":  "the proxy subcommand pages (and their flags) land in a separate change; the parent page documents them in prose until then",
 	"direct": "the text names the provider binary's own launch flags (--proxy_file/--proxy_url), not flags this command accepts",
 }
 

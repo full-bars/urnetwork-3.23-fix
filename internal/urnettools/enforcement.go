@@ -42,8 +42,8 @@ type enforcementDaily struct {
 }
 
 func newEnforcementCmd() *cobra.Command {
-	return &cobra.Command{
-		Use:   "enforcement [summary|history [N]] [target flags]",
+	enforcementCmd := &cobra.Command{
+		Use:   "enforcement <subcommand> [target flags]",
 		Short: "show what the governors enforced on this box (counts per day, and the individual events)",
 		Long: "Show the durable record of what the governors did: releases of silent clients, " +
 			"connect budget cuts, attempt caps, memory holds and crash-loop starts. `summary` (the default) " +
@@ -60,6 +60,17 @@ func newEnforcementCmd() *cobra.Command {
 			return cmdEnforcement(args)
 		},
 	}
+	enforcementCmd.AddCommand(
+		subPage("summary", "summary [target]", "counts per kind and mode (the default)",
+			"Count the enforcement events per kind and mode for today, the last 7 and 30 UTC days, and since the log began. Mode 'shadow' means the governor only noted what it would have done.",
+			"  urnet-tools enforcement summary --unit urnetwork-native.service",
+			cmdEnforcement),
+		subPage("history", "history [<N>] [target]", "list the newest enforcement events",
+			"List the newest N enforcement events (default 20, at most 500), newest last. Releasing a silent client, a connect budget cut, an attempt cap, a memory hold and a crash-loop start all appear here; 'log' is an alias.",
+			"  urnet-tools enforcement history 50 --unit urnetwork-native.service",
+			cmdEnforcement),
+	)
+	return enforcementCmd
 }
 
 // parseEnforcementArgs returns the subcommand, the history limit and the target.

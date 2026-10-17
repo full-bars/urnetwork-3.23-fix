@@ -111,12 +111,15 @@ func TestRunProvidersEmptyBox(t *testing.T) {
 	}
 }
 
-// TestRunProxyNoSubcommand: `proxy` with no further args must error before
-// any targeting happens.
+// TestRunProxyNoSubcommand: bare `proxy` now shows the subcommand list (the
+// same pattern as urnet-docker proxy) instead of erroring, and an unknown
+// subcommand still errors without picking a target.
 func TestRunProxyNoSubcommand(t *testing.T) {
-	err := Run([]string{"proxy"})
-	if err == nil || !strings.Contains(err.Error(), "requires a subcommand") {
-		t.Errorf("Run([proxy]) = %v, want \"requires a subcommand\"", err)
+	if err := Run([]string{"proxy"}); err != nil {
+		t.Errorf("Run([proxy]) = %v, want the subcommand list page", err)
+	}
+	if err := Run([]string{"proxy", "definitely-not-a-subcommand"}); err == nil {
+		t.Error("Run([proxy bad-sub]) = nil, want an error")
 	}
 }
 
