@@ -142,13 +142,11 @@ func buildRootCmd() *cobra.Command {
 	// powershell) is registered, so `urnet-tools completion <shell>` works.
 	rootCmd.CompletionOptions.DisableDefaultCmd = false
 
-	rootCmd.PersistentFlags().String("unit", "", "systemd unit, e.g. urnetwork-native.service")
-	rootCmd.PersistentFlags().String("user", "", "OS user, e.g. urnet")
-	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. mynetwork")
-	rootCmd.PersistentFlags().String("network-id", "", "JWT network id")
-	rootCmd.PersistentFlags().String("state-dir", "", "state dir")
-	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip confirm prompts ONLY")
-	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "print the plan, change nothing")
+	// No persistent flags: every subcommand hand-parses its own flags with
+	// DisableFlagParsing, so cobra flags existed only to render an inherited
+	// "Global Flags" block on every page. Each command declares the flags it
+	// honors through attachGlobalHelpFlags below; the root page's curated
+	// menu documents the shared flags for readers.
 
 	rootCmd.AddCommand(
 		newProvidersCmd(),
@@ -213,7 +211,49 @@ func buildRootCmd() *cobra.Command {
 {{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
 	}
 
+	attachGlobalHelpFlags(rootCmd)
+
 	return rootCmd
+}
+
+// globalFlagMatrix records, per command, which shared flag sets its handler
+// honors: t = the targeting flags (--unit/--user/--network/--network-id/
+// --state-dir), s = the safety flags (-f/--force, -n/--dry-run). Derived from
+// the handlers: t where the chain parses targets, s where it parses the
+// global flags. Wallet subcommands are keyed "wallet/<name>".
+var globalFlagMatrix = map[string]string{
+	"auto": "ts", "auto-start": "ts", "auto-update": "ts", "eco": "ts", "get": "ts",
+	"hotswap": "ts", "idle-update": "ts", "logs": "ts", "lowmode": "ts", "metrics": "ts",
+	"optimize": "ts", "ramlogs": "ts", "reinstall": "ts", "rename": "ts", "restart": "ts",
+	"set": "ts", "smart-dialer": "ts", "sn-status": "ts", "start": "ts", "status": "ts",
+	"stop": "ts", "top": "ts", "turbo": "ts", "uninstall": "ts", "update": "ts",
+	"direct": "ts", "fast-auth": "ts", "session": "ts",
+	"auth": "t", "autopilot": "t", "baseline": "t", "choose-network": "t", "config": "t",
+	"dashboard": "t", "default": "t", "enforcement": "t", "history": "t", "profile": "t",
+	"summary": "t", "usage": "t",
+	"providers": "s", "self-update": "s",
+	"wallet/status": "t", "wallet/challenge": "t", "wallet/set": "t", "wallet/sign": "t",
+}
+
+// attachGlobalHelpFlags declares the shared flag sets on the commands that
+// honor them, so a page shows the flags it actually accepts instead of a
+// universal block.
+func attachGlobalHelpFlags(root *cobra.Command) {
+	for _, sub := range root.Commands() {
+		switch globalFlagMatrix[sub.Name()] {
+		case "ts":
+			withTargetAndSafetyFlags(sub)
+		case "t":
+			withTargetFlags(sub)
+		case "s":
+			withSafetyFlags(sub)
+		}
+		for _, subsub := range sub.Commands() {
+			if globalFlagMatrix[sub.Name()+"/"+subsub.Name()] == "t" {
+				withTargetFlags(subsub)
+			}
+		}
+	}
 }
 
 func newCobraCmd(use, short string, aliases []string, handler func(cmd *cobra.Command, args []string) error) *cobra.Command {

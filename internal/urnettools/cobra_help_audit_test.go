@@ -172,6 +172,26 @@ func TestHelpFlagDeclarationsMatchParsers(t *testing.T) {
 		{"auth", "", nil, true},
 	}
 
+	// The shared parsers own the global flag sets; verify the declarations
+	// against them once, here.
+	globalNames := map[string]bool{
+		"unit": true, "user": true, "network": true, "network-id": true,
+		"state-dir": true, "force": true, "dry-run": true,
+	}
+	sharedTarget := funcSource(t, "cli.go", "parseTargetFlagsInner")
+	for _, f := range targetHelpFlags {
+		if !strings.Contains(sharedTarget, `"`+"--"+strings.TrimLeft(f.Name, "-")+`"`) {
+			t.Errorf("shared target parser lacks --%s", f.Name)
+		}
+	}
+	sharedGlobal := funcSource(t, "cli.go", "parseGlobalFlags")
+	for _, f := range safetyHelpFlags {
+		if !strings.Contains(sharedGlobal, `"`+strings.TrimLeft(f.Name, "-")+`"`) &&
+			!strings.Contains(sharedGlobal, `--`+strings.TrimLeft(f.Name, "-")) {
+			t.Errorf("shared global parser lacks --%s", f.Name)
+		}
+	}
+
 	for _, c := range checks {
 		command := findCommandByPath(t, c.path)
 		if command == nil {
@@ -188,6 +208,9 @@ func TestHelpFlagDeclarationsMatchParsers(t *testing.T) {
 		}
 		body := funcSource(t, c.file, c.funcs...)
 		for name := range declared {
+			if globalNames[name] {
+				continue
+			}
 			if strings.Contains(body, `"`+name+`"`) || strings.Contains(body, `--`+name) {
 				continue
 			}

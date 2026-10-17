@@ -80,11 +80,52 @@ func withFlags(cmd *cobra.Command, flags ...helpFlag) *cobra.Command {
 	if cmd.Annotations == nil {
 		cmd.Annotations = map[string]string{}
 	}
-	encoded, err := json.Marshal(flags)
+	// Merge with anything a previous wrapper declared, so chaining
+	// withTargetFlags/withSafetyFlags/withFlags accumulates instead of
+	// clobbering.
+	existing := []helpFlag{}
+	if raw, ok := cmd.Annotations[helpFlagsAnnotationKey]; ok {
+		_ = json.Unmarshal([]byte(raw), &existing)
+	}
+	encoded, err := json.Marshal(append(existing, flags...))
 	if err == nil {
 		cmd.Annotations[helpFlagsAnnotationKey] = string(encoded)
 	}
 	return cmd
+}
+
+// targetHelpFlags are the provider-targeting flags the shared target parser
+// accepts for every targeting command (whoever parses, cobra never does).
+var targetHelpFlags = []helpFlag{
+	{Name: "unit", Value: "UNIT", Usage: "systemd `UNIT`, e.g. urnetwork-native.service"},
+	{Name: "user", Value: "USER", Usage: "OS `USER`, e.g. urnet"},
+	{Name: "network", Value: "NAME", Usage: "JWT network name `NAME` (account identity)"},
+	{Name: "network-id", Value: "ID", Usage: "JWT network id `ID` (true unique identity)"},
+	{Name: "state-dir", Value: "DIR", Usage: "provider state `DIR`"},
+}
+
+// safetyHelpFlags are the confirmation-safety flags the shared global parser
+// accepts (and the root page documents).
+var safetyHelpFlags = []helpFlag{
+	{Name: "force", Shorthand: "f", Usage: "skip confirmation prompts ONLY (never picks providers)"},
+	{Name: "dry-run", Shorthand: "n", Usage: "print the plan, change nothing"},
+}
+
+// withTargetFlags declares the targeting flags on a command that targets a
+// provider.
+func withTargetFlags(cmd *cobra.Command) *cobra.Command {
+	return withFlags(cmd, targetHelpFlags...)
+}
+
+// withSafetyFlags declares -f/--force and -n/--dry-run on a command that
+// honors them.
+func withSafetyFlags(cmd *cobra.Command) *cobra.Command {
+	return withFlags(cmd, safetyHelpFlags...)
+}
+
+// withTargetAndSafetyFlags declares both sets.
+func withTargetAndSafetyFlags(cmd *cobra.Command) *cobra.Command {
+	return withFlags(cmd, append(append([]helpFlag{}, targetHelpFlags...), safetyHelpFlags...)...)
 }
 
 // name returns the flag's name without dashes.
