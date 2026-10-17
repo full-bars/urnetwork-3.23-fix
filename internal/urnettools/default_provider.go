@@ -130,9 +130,12 @@ func cmdDefault(args []string) error {
 	}
 	switch args[0] {
 	case "set":
-		t, _, err := parseTargetFlagsLenient(args[1:])
+		t, rest, err := parseTargetFlagsLenient(args[1:])
 		if err != nil {
 			return err
+		}
+		if len(rest) > 0 {
+			return fmt.Errorf("default set: unexpected arguments: %v", rest)
 		}
 		if t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" {
 			return fmt.Errorf("default set requires a target selector (--unit/--user/--network/--network-id/--state-dir)")

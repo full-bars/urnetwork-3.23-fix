@@ -419,7 +419,7 @@ func newDefaultCmd() *cobra.Command {
 func newSessionCmd() *cobra.Command {
 	// cmdSession owns its rich help (save|load <file>, --allow-different-account);
 	// building raw here lets that help fire instead of Cobra's stub.
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "session",
 		Short:              "export/import identity + proxy state",
 		Long:               "Export or import the targeted provider's identity and proxy state as a passphrase-encrypted bundle. 'session save' prompts twice for a passphrase with echo off and writes the file with owner-only permissions. 'session load' backs up the current identity first, refuses a bundle from a different account unless you pass --allow-different-account, and stages the new identity for the provider to pick up on restart.",
@@ -429,6 +429,9 @@ func newSessionCmd() *cobra.Command {
 			return cmdSession(args)
 		},
 	}
+	return withFlags(cmd,
+		helpFlag{Name: "allow-different-account", Usage: "accept a session bundle from a different account"},
+	)
 }
 
 func newTurboCmd() *cobra.Command {

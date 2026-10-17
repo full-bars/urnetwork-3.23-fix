@@ -189,7 +189,7 @@ const (
 )
 
 func newBaselineCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:   "baseline [show|mark|compare] [flags]",
 		Short: "Show this box's recorded baseline, and compare an upgrade against it",
 		Long: "A provider records a small local time series of how it behaved, so any " +
@@ -209,6 +209,12 @@ func newBaselineCmd() *cobra.Command {
 			return cmdBaseline(args)
 		},
 	}
+	return withFlags(cmd,
+		helpFlag{Name: "from", Value: "MARK", Usage: "the start mark for a comparison"},
+		helpFlag{Name: "to", Value: "MARK", Usage: "the end mark for a comparison"},
+		helpFlag{Name: "skip-ramp", Value: "DURATION", Usage: "ignore the first DURATION after the upgrade"},
+		helpFlag{Name: "json", Usage: "print machine-readable JSON"},
+	)
 }
 
 // parseBaselineArgs splits the subcommand and its flags. The target flags are
