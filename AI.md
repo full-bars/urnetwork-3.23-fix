@@ -74,7 +74,7 @@ The Prometheus `/metrics` endpoint is the supported path for fleet-wide observab
 urnet-tools metrics on        # starts the metrics listener, prints the scrape address
 ```
 
-The `monitoring/` bundle ships a ready-made Prometheus + Grafana stack. See [docs/Monitoring.md](docs/Monitoring.md). The generic `report` command posts provider telemetry to any configured URL (`urnet-tools report <url>` or `URNETWORK_REPORT_URL`). The standalone hub dashboard was removed in v3.23.0-fix.32.0.
+The `monitoring/` bundle ships a ready-made Prometheus + Grafana stack. See [docs/Monitoring.md](docs/Monitoring.md). Per-provider telemetry can still be pointed at your own collector with `urnet-tools set report-url <url>` or the `URNETWORK_REPORT_URL` env var. The standalone hub dashboard was removed in v3.23.0-fix.32.0.
 
 ## Reference: All urnet-tools Commands
 
@@ -108,8 +108,8 @@ urnet-tools optimize               # apply Golden Fleet OS limits
 urnet-tools ramlogs on|off         # RAM-disk logging
 
 # Reporting & Metrics
-urnet-tools report <url>           # set the report URL (effective next tick)
-urnet-tools report off             # stop reporting
+urnet-tools set report-url <url>   # set the report URL (effective next tick)
+urnet-tools set report-url off     # stop reporting
 urnet-tools metrics on|off         # Prometheus /metrics listener
 
 # Maintenance

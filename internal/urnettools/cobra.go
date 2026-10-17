@@ -78,7 +78,6 @@ Proxy Management:
   proxy ids               Client IDs for each proxy (from JWT store)
   summary                 Fleet-style proxy summary (sources, health, counts)
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
-  report [<url>|off]      Set report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
   show-ip [on|off|status] Show public IP on the dashboard label (was: ip-detect)
   direct [on|off]         Toggle providing on the machine's direct/local IP
@@ -179,7 +178,6 @@ func buildRootCmd() *cobra.Command {
 		newProxyCmd(),
 		newDirectCmd(),
 		newUsageCmd(),
-		newReportCmd(),
 		newReinstallCmd(),
 		newUninstallCmd(),
 		newAutoUpdateCmd(),
@@ -685,14 +683,6 @@ func newProxyCmd() *cobra.Command {
 			})
 		},
 	}
-}
-
-func newReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report", "set report URL", nil, func(cmd *cobra.Command, args []string) error {
-		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-			return cmdReport(rest, dryRun, force)
-		})
-	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. Honors -n/--dry-run, which prints the plan and changes nothing.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
 }
 
 func newReinstallCmd() *cobra.Command {

@@ -335,7 +335,7 @@ docker exec -it <container> provider proxy summary
 ## 📡 Report URL (Deprecated)
 
 > [!WARNING]
-> **Deprecated (v31.3+):** Bandwidth hub reporting has been removed. The `report_url` file and `urnet-tools report` command are no longer functional. This section is retained for historical reference.
+> **Removed:** Hub bandwidth reporting was removed in v31.3+ and the `urnet-tools report` command (and its `urnet-docker report` counterpart) has since been removed from the tools. The `report_url` control key and `URNETWORK_REPORT_URL` remain. This section is retained for historical reference.
 
 Set or check the hub report URL at runtime without restarting. Uses `~/.urnetwork/report_url` inside the container:
 
@@ -352,9 +352,9 @@ docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/report_url"'
 
 Or use the Go `urnet-docker` binary (v3.23.0-fix.27.0+) which handles `docker exec` transparently — it discovers provider containers and delegates commands into them:
 ```sh
-urnet-docker report http://HUB_IP:8080
-urnet-docker report
-urnet-docker report off
+urnet-docker set report-url http://HUB_IP:8080
+urnet-docker set report-url
+urnet-docker set report-url off
 ```
 (The legacy PowerShell wrapper `urnet-tools.ps1` has been retired; the Go binary replaces it on every platform.)
 

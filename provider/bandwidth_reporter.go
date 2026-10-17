@@ -103,13 +103,13 @@ func reportURLOverridePath() (string, error) {
 
 // reportURLOverrideOff is the literal override-file content that force-
 // disables reporting, distinct from a blank file (which is a no-op that
-// falls back to envFallback — see resolveReportURL). This lets urnet-tools
-// report off turn reporting off for an already-running process without a
-// restart, the same way report set/link turn it on.
+// falls back to envFallback — see resolveReportURL). This lets
+// `urnet-tools set report-url off` turn reporting off for an already-running
+// process without a restart, the same way `set report-url` turns it on.
 const reportURLOverrideOff = "off"
 
 // resolveReportURL checks the control-socket state first (see
-// control_state.go — set live via `urnet-tools report set/off`), then falls
+// control_state.go — set live via `urnet-tools set report-url`), then falls
 // back to the legacy override file, then to envFallback. Re-resolved on
 // every call so a change takes effect on the reporter's next tick.
 // envFallback is the value captured from URNETWORK_REPORT_URL at startup,

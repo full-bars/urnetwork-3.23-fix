@@ -65,7 +65,6 @@ Config & Automation:
   direct [on|off]           Toggle providing on the machine's direct/local IP
   usage [graph[s] <view>]   Traffic accounting: billable vs control, time-series
   session save|load <file>  Export/import identity + proxy state (encrypted)
-  report <url>|off          Set report URL
   help <command>            Show help for a command
 
 Targeting (used when more than one container exists):
@@ -119,7 +118,6 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerAuthCmd(),
 		newDockerChooseNetworkCmd(),
 		newDockerSummaryCmd(),
-		newDockerReportCmd(),
 		newDockerUpdateCmd(),
 		newDockerIdleUpdateCmd(),
 		newDockerVersionCmd(),
@@ -211,12 +209,6 @@ func newDockerSummaryCmd() *cobra.Command {
 	return withHelp(newCobraCmd("summary [target]", "activity & performance summary", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerSummary(args)
 	}), "Show an activity and performance summary for the provider inside the targeted container.", "  urnet-docker summary --unit mynetwork-provider")
-}
-
-func newDockerReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report <url> [target]", "set report URL inside container", nil, func(cmd *cobra.Command, args []string) error {
-		return cmdDockerReport(args)
-	}), "Set the report URL used by the provider inside the targeted container, applied without a restart.", "  urnet-docker report https://report.example.com --unit mynetwork-provider")
 }
 
 func newDockerUpdateCmd() *cobra.Command {

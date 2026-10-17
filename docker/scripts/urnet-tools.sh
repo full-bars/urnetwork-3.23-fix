@@ -369,16 +369,6 @@ case "$operation" in
                 ;;
         esac
         ;;
-    report)
-        url="${1:-}"
-        if [ -z "$url" ]; then
-            echo "Usage: urnet-tools report <url>"
-            exit 1
-        fi
-        mkdir -p "$HOME/.urnetwork"
-        printf '%s\n' "$url" > "$HOME/.urnetwork/report_url"
-        echo "Report URL set to $url"
-        ;;
     -v|version)
         [ -x /usr/local/bin/provider ] && exec /usr/local/bin/provider -v || { echo "provider binary not found"; exit 1; }
         ;;

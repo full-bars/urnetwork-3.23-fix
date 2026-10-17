@@ -57,7 +57,7 @@ func runConfig(out io.Writer, args []string) error {
 			return err
 		}
 		// Managing another user's provider requires root; re-exec under sudo.
-		// Mirrors cmdStatus/cmdReport/cmdSet.
+		// Mirrors cmdStatus/cmdSet.
 		if elevated, err := maybeElevateForCrossUser("config", p, args, false, jsonMode); elevated {
 			return err
 		}
@@ -72,7 +72,7 @@ func runConfig(out io.Writer, args []string) error {
 	} else {
 		// No target flags — discover the sole accessible provider (or
 		// elevate to it if we are root + it belongs to another user).
-		// This mirrors cmdStatus/cmdReport so that `config` works the
+		// This mirrors cmdStatus/cmdSet so that `config` works the
 		// same way when run as root on a multi-user box.
 		// If discovery finds nothing, fall back to the default
 		// controlSocketPath() (HOME-based) — this preserves backward

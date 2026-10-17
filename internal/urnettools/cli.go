@@ -66,9 +66,7 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 
 // cmdSimpleDelegation handles the pass-through commands (summary):
 // resolve the targeted provider, then delegate the exact subcommand to that
-// provider's binary. report has a real implementation (see cmdReport)
-// because the provider binary has no report subcommand — delegating to it
-// printed the provider's auth usage and did nothing (gauntlet finding BUG-4).
+// provider's binary.
 func cmdSimpleDelegation(sub string, args []string) error {
 	t, rest, err := parseTargetFlagsLenient(args)
 	if err != nil {
@@ -94,89 +92,10 @@ func cmdSimpleDelegation(sub string, args []string) error {
 	return providerSubcommand(p, cmdArgs...)
 }
 
-// cmdReport implements `urnet-tools report <url> [target]`: it writes the
-// report URL override file (~/.urnetwork/report_url) in the provider's
-// state dir. The provider's bandwidth reporter re-reads that file every
-// tick, so the change takes effect without a restart. The provider binary
-// has NO report subcommand — delegating to it printed auth usage and did
-// nothing (gauntlet finding BUG-4).
-func cmdReport(args []string, dryRun, force bool) error {
-	t, rest, err := parseTargetFlagsLenient(args)
-	if err != nil {
-		return err
-	}
-	providers := Discover()
-	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
-	if err != nil {
-		return err
-	}
-	// Managing another user's provider requires root; re-exec under sudo.
-	// report is a mutating control-socket command, so it needs the same
-	// elevation as status/summary — without it, verifyPeerCredentials
-	// rejects the root-connected socket (BUG: "connection reset by peer").
-	// Elevation never applies to dry runs (they plan, they don't act).
-	if !dryRun {
-		if elevated, err := maybeElevateForCrossUser("report", p, args, force, false); elevated {
-			return err
-		}
-	}
-	if narrowed {
-		printNarrowedNote(len(providers), p, "report URL")
-	}
-	if len(rest) < 1 {
-		return fmt.Errorf("report requires a URL (use 'report off' to disable)")
-	}
-	url := rest[0]
-	if p.StateDir == "" {
-		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
-	}
-	if dryRun {
-		fmt.Printf("[dry-run] would set report URL for %s to %q\n", providerLabel(p), url)
-		return nil
-	}
-	// Mutating state change without a typed confirmation: every other
-	// state-write (set, tune, fast-auth) confirms. The provider's bandwidth
-	// reporter acts on this within a tick, so it is not read-only.
-	ok, err := confirmGate(fmt.Sprintf("set report URL for %s to %q", providerLabel(p), url), p, force, dryRun)
-	if err != nil {
-		return err
-	}
-	if !ok {
-		return nil // declined
-	}
-	if err := writeReportURL(p, url); err != nil {
-		return err
-	}
-	fmt.Printf("report URL for %s set to %q (effective on the reporter's next tick)\n", providerLabel(p), url)
-	return nil
-}
-
-// writeReportURL writes the report override via the provider's control
-// socket, falling back to pending_overrides.json when the provider is stopped.
-// For "off", clears the control-state so the provider stops reporting.
-func writeReportURL(p Provider, url string) error {
-	if p.StateDir == "" {
-		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
-	}
-	op := "set"
-	value := url
-	if url == "off" {
-		op = "clear"
-		value = ""
-	}
-	// applyControlOverride handles both the live socket path and the
-	// pending_overrides.json fallback when the provider is stopped — no
-	// need for a legacy file path.
-	if _, _, err := applyControlOverride(p, op, "report_url", value, false); err != nil {
-		return fmt.Errorf("set report_url: %v", err)
-	}
-	return nil
-}
-
-// parseDelegationArgs guards -h/--help for the pass-through commands
-// (summary, report) BEFORE any targeting runs: those commands
-// delegate to the provider binary, so without this guard `--help` would be
-// forwarded and the operation would actually run (the help-never-executes
+// parseDelegationArgs guards -h/--help for the pass-through command
+// (summary) BEFORE any targeting runs: it delegates to the provider binary,
+// so without this guard `--help` would be forwarded and the operation would
+// actually run (the help-never-executes
 // Returns errHelpShown when help was
 // printed; the caller must NOT proceed.
 func parseDelegationArgs(args []string) ([]string, error) {

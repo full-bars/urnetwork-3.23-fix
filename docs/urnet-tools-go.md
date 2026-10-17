@@ -96,7 +96,7 @@ The full flow, including where to run each form and what settlement pays, is in 
 ### Hub Command Family (removed)
 
 > [!WARNING]
-> **Removed (v31.3+):** The hub service, its dashboard and the whole `hub` command family were removed from `urnet-tools`. Nothing in the tool depends on them. What remains is per-provider bandwidth reporting: `urnet-tools report <url>` (or `set report-url <url>`) points one provider's bandwidth reporter at your own collector, and `report off` disables it. See "Configuration & Introspection" below.
+> **Removed (v31.3+):** The hub service, its dashboard and the whole `hub` command family were removed from `urnet-tools`. Nothing in the tool depends on them. What remains is per-provider bandwidth reporting: `urnet-tools set report-url <url>` points one provider's bandwidth reporter at your own collector, and `set report-url off` disables it. See "Configuration & Introspection" below.
 
 ### System & Performance Tuning
 
@@ -131,7 +131,7 @@ The billable rate is the **lifetime byte counter's delta divided by the time del
 Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
+| `set report-url <url\|off>` | Point one provider's bandwidth reporter at your own collector, or pass `off` to disable it. Live, effective on the reporter's next tick, no restart. |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
