@@ -432,7 +432,7 @@ func newSelfUpdateCmd() *cobra.Command {
 }
 
 func newLogsCmd() *cobra.Command {
-	return withHelp(newCobraCmd("logs [target] [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("logs [target] [<N>]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdLogs(rest)
 		})
@@ -489,7 +489,7 @@ func newSessionCmd() *cobra.Command {
 	// cmdSession owns its rich help (save|load <file>, --allow-different-account);
 	// building raw here lets that help fire instead of Cobra's stub.
 	cmd := &cobra.Command{
-		Use:                "session",
+		Use:                "session <subcommand>",
 		Short:              "export/import identity + proxy state",
 		Long:               "Export or import the targeted provider's identity and proxy state as a passphrase-encrypted bundle. 'save' prompts twice with echo off and writes the file owner-only; 'load' backs up the current identity first, refuses a bundle from a different account unless --allow-different-account is passed, and stages the new identity for the provider's next restart.",
 		Example:            "  urnet-tools session save ~/urnet-session.enc           # Linux / macOS\n  urnet-tools session save C:\\Users\\<you>\\urnet-session.enc   # Windows (\\ or / separators)\n  urnet-tools session load ~/urnet-session.enc --unit urnetwork-native.service --force",
@@ -515,7 +515,7 @@ func newSessionCmd() *cobra.Command {
 }
 
 func newTurboCmd() *cobra.Command {
-	return withHelp(newCobraCmd("turbo", "RAISE throughput limits for RAM-rich boxes", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("turbo <v4|v8|off>", "RAISE throughput limits for RAM-rich boxes", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("turbo", rest, force, dryRun)
 		})
@@ -523,7 +523,7 @@ func newTurboCmd() *cobra.Command {
 }
 
 func newAutoCmd() *cobra.Command {
-	return withHelp(newCobraCmd("auto", "AUTO-TUNE detect hardware and pick best profile", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("auto <on|off>", "AUTO-TUNE detect hardware and pick best profile", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("auto", rest, force, dryRun)
 		})
@@ -531,7 +531,7 @@ func newAutoCmd() *cobra.Command {
 }
 
 func newEcoCmd() *cobra.Command {
-	return withHelp(newCobraCmd("eco", "ECO MODE GC-tuned for low-RAM systems", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("eco <on|off>", "ECO MODE GC-tuned for low-RAM systems", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("eco", rest, force, dryRun)
 		})
@@ -539,7 +539,7 @@ func newEcoCmd() *cobra.Command {
 }
 
 func newLowmodeCmd() *cobra.Command {
-	return withHelp(newCobraCmd("lowmode", "LOW-MEMORY reduced buffers for max RAM savings", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("lowmode <on|off>", "LOW-MEMORY reduced buffers for max RAM savings", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("lowmode", rest, force, dryRun)
 		})
@@ -547,7 +547,7 @@ func newLowmodeCmd() *cobra.Command {
 }
 
 func newRamlogsCmd() *cobra.Command {
-	return withHelp(newCobraCmd("ramlogs", "RAM LOGS zero disk I/O logging", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("ramlogs <on|off>", "RAM LOGS zero disk I/O logging", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTune("ramlogs", rest, force, dryRun)
 		})
@@ -563,7 +563,7 @@ func newOptimizeCmd() *cobra.Command {
 }
 
 func newHotswapCmd() *cobra.Command {
-	return withHelp(newCobraCmd("hotswap", "swap the provider process with no service gap (proxies rebuild ~30s)", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("hotswap [target]", "swap the provider process with no service gap (proxies rebuild ~30s)", []string{"hot-swap"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdHotswap(rest, force, dryRun)
 		})
@@ -572,7 +572,7 @@ func newHotswapCmd() *cobra.Command {
 
 func newFastAuthCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "fast-auth",
+		Use:                "fast-auth [<on|off|status>]",
 		Short:              "manage the auth rate limiter",
 		Long:               "Manage the marker file that bypasses the provider's auth rate limiter. on writes the marker, off removes it, and status (the default) reports the current state without changing anything. Mutating actions ask for a typed \"yes\" unless you pass -f/--force.",
 		Example:            "  urnet-tools fast-auth status\n  urnet-tools fast-auth on --unit urnetwork-native.service\n  urnet-tools fast-auth off --force",
@@ -627,7 +627,7 @@ func cmdGet(args []string) error {
 
 func newSetCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "set",
+		Use:                "set [<key> [<value>|off]]",
 		Short:              "runtime tuning override",
 		Long:               "Read or write a runtime tuning override in the provider's state dir. Most keys apply on the provider's next tick with no restart; profile and ramlogs take effect on the next restart. No key lists every active override, a key alone shows its value, a key with a value sets it, and \"off\" clears it back to the startup default. Run 'set help' for the keys and their value domains.",
 		Example:            "  urnet-tools set help\n  urnet-tools set report-interval 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
@@ -673,7 +673,7 @@ func newRenameCmd() *cobra.Command {
 
 func newAuthCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:                "auth",
+		Use:                "auth [<code>]",
 		Short:              "authenticate",
 		Long:               "Authenticate the targeted provider against the URnetwork API by delegating to the provider binary's own auth subcommand. Pass an auth code, or omit it to use the provider's stored identity. Existing credentials are only overwritten with the provider's own -f flag, which passes through untouched.",
 		Example:            "  urnet-tools auth\n  urnet-tools auth ABCD1234 --unit urnetwork-native.service",
@@ -689,7 +689,7 @@ func newAuthCmd() *cobra.Command {
 
 func newChooseNetworkCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:                "choose-network",
+		Use:                "choose-network [<api_url> <connect_url>]",
 		Short:              "set API/connect endpoints",
 		Long:               "Set the API URL and connect URL the targeted provider uses, or clear that override with --reset to revert to the main network. This delegates to the provider binary's choose_network subcommand and streams its output.",
 		Example:            "  urnet-tools choose-network https://api.example.com wss://connect.example.com\n  urnet-tools choose-network --reset --unit urnetwork-native.service",
@@ -831,7 +831,7 @@ func newAutoStartCmd() *cobra.Command {
 func newSelfHealCmd() *cobra.Command {
 	// cmdSelfHeal has its own -h handling; building raw preserves it.
 	return &cobra.Command{
-		Use:                "self-heal",
+		Use:                "self-heal [<on|off|status>]",
 		Short:              "self heal",
 		Long:               "Toggle or report the provider's self-heal marker file, which enables its automatic proxy load-gate and cleanup. Run with on, off, or status (the default with no argument).",
 		Example:            "  urnet-tools self-heal status\n  urnet-tools self-heal on\n  urnet-tools self-heal off",
@@ -851,7 +851,7 @@ func newSelfHealCmd() *cobra.Command {
 func newIPDetectCmd() *cobra.Command {
 	// cmdIPDetect has its own -h handling; building raw preserves it.
 	return &cobra.Command{
-		Use:     "show-ip",
+		Use:     "show-ip [<on|off|status>]",
 		Short:   "show the public IP on the dashboard label",
 		Long:    "Toggle or report whether the provider appends its public IP (fetched via ip.me) to the dashboard identity label set by 'rename'. This controls the dashboard display only, not which address the provider serves on; see 'direct' for that. When off, only the node name is reported unless URNETWORK_PUBLIC_IP is set.",
 		Example: "  urnet-tools show-ip status\n  urnet-tools show-ip off\n  urnet-tools show-ip on",
@@ -871,7 +871,7 @@ func newIPDetectCmd() *cobra.Command {
 
 func newHistoryCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:                "history [limit] [--cursor <cursor>]",
+		Use:                "history [<limit>] [--cursor <cursor>]",
 		Short:              "show command audit trail",
 		Long:               "Show this box's command audit trail: the urnet-tools commands run against a provider, newest last, with their outcome. Read-only: reads the provider's audit ring from its state dir; needs no root beyond the file's own permissions. --cursor continues a paged read from where the last page ended. Alias: audit.",
 		Example:            "  urnet-tools history\n  urnet-tools history 50\n  urnet-tools history 50 --cursor <cursor>",
@@ -1123,7 +1123,7 @@ func cmdMetrics(args []string, dryRun bool) error {
 
 func newSmartDialerCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "smart-dialer [status|on|off]",
+		Use:                "smart-dialer [<status|on|off>]",
 		Short:              "show or toggle measured-cost transport preference (skip DPI-circumvention cost when the network does not need it)",
 		Long:               "Show or toggle the measured-cost transport preference: when the network does not need DPI circumvention, the provider prefers transport paths that avoid its cost. 'status' (the default) reports the current value; on and off change it. Applied to the running provider at its next tick, with no restart. Honors -n/--dry-run. Alias: smart_dialer.",
 		Example:            "  urnet-tools smart-dialer\n  urnet-tools smart-dialer on\n  urnet-tools smart-dialer off --unit urnetwork-native.service",
@@ -1232,7 +1232,7 @@ var profileDescriptions = map[string]string{
 
 func newProfileCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:                "profile [auto|turbo-v4|turbo-v8|eco|lowmem]",
+		Use:                "profile [<profile>]",
 		Short:              "show or set the memory/GC tuning profile",
 		Long:               "Show or set the provider's memory and GC tuning profile: auto sizes the box, turbo-v4 and turbo-v8 raise throughput on RAM-rich machines, eco tunes GC for low RAM, lowmem shrinks buffers for maximum savings. With no argument it prints the current value. Changes take effect on the provider's next restart; turbo, eco and lowmode are the runtime equivalents. Alias: profiles.",
 		Example:            "  urnet-tools profile\n  urnet-tools profile auto\n  urnet-tools profile lowmem --unit urnetwork-native.service",

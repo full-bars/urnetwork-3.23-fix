@@ -190,7 +190,7 @@ const (
 
 func newBaselineCmd() *cobra.Command {
 	cmd := &cobra.Command{
-		Use:                "baseline [show|mark|compare] [flags]",
+		Use:                "baseline <subcommand>",
 		Short:              "Show this box's recorded baseline, and compare an upgrade against it",
 		Long:               "Show this box's recorded behaviour over time, so an upgrade can be judged against what the box did before it. Nothing external is involved: no Prometheus, no Grafana, no sampler over ssh. The record lives in ~/.urnetwork/baseline.jsonl and holds counts and totals only: no proxy addresses, usernames or passwords.",
 		Example:            "  urnet-tools baseline show\n  urnet-tools baseline mark before-upgrade\n  urnet-tools baseline compare",

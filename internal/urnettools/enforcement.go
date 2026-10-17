@@ -43,7 +43,7 @@ type enforcementDaily struct {
 
 func newEnforcementCmd() *cobra.Command {
 	enforcementCmd := &cobra.Command{
-		Use:                "enforcement <subcommand> [target flags]",
+		Use:                "enforcement <subcommand>",
 		Short:              "show what the governors enforced on this box (counts per day, and the individual events)",
 		Long:               "Show the durable record of what the governors enforced: releases of silent clients, connect budget cuts, attempt caps, memory holds and crash-loop starts. Mode 'shadow' means the governor only noted what it would have done. The files live in the provider's state dir and survive restarts and reboots.",
 		Example:            "  urnet-tools enforcement summary\n  urnet-tools enforcement history 50",

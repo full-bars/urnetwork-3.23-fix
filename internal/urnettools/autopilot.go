@@ -33,7 +33,7 @@ type ledgerRow struct {
 
 func newAutopilotCmd() *cobra.Command {
 	autopilotCmd := &cobra.Command{
-		Use:   "autopilot <subcommand> [target flags]",
+		Use:   "autopilot <subcommand>",
 		Short: "show the capacity decisions the provider made (OOM-aware cap, trim results)",
 		Long: "Show the newest capacity decisions the provider recorded: the OOM-aware start cap " +
 			"(shadow decisions are 'would' actions that were not enforced) and operator trim results, " +
