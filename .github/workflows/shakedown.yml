@@ -43,7 +43,12 @@ jobs:
     # (up to 60 min on tag-triggered runs) + checkout/setup/mint time, so
     # 260 keeps the outer cap above the worst-case total.
     timeout-minutes: 260
-    # Two runs share the same gauntlet account server-side. Queue, never cancel.
+    # Own concurrency group: two runs of THIS workflow queue behind each other,
+    # never cancel. It no longer shares a group with docker-shakedown.yml; the
+    # two are independent and may run at the same time, because the proxy test
+    # list they both use is small. Reinstate a shared group only if simultaneous
+    # runs are ever observed producing false auth failures from the gauntlet
+    # account.
     concurrency:
       group: shakedown
       cancel-in-progress: false

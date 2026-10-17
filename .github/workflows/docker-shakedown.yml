@@ -35,13 +35,15 @@ jobs:
     # Sized for: asset wait (~60min) + image wait (~60min) + shakedown
     # (~55-70min) + headroom. Both waits are sequential in the same step.
     timeout-minutes: 210
-    # IMPORTANT: shares the concurrency group with shakedown.yml. Both mint
-    # a disposable JWT from the SAME gauntlet account server-side, and W1-W2
-    # here mint several MORE JWTs for the auth-mode matrix. Running either
-    # workflow concurrently with the other collides on that shared account
-    # and produces false auth failures. They must queue, never cancel.
+    # Own concurrency group: two runs of THIS workflow queue behind each other,
+    # never cancel. It no longer shares a group with shakedown.yml: the two are
+    # independent and may run at the same time. The shared lock cost a real
+    # ~30 min on the rc4 run, where this workflow waited on a group held by a
+    # run blocked on an image that never existed. Reinstate a shared group only
+    # if simultaneous runs are ever observed producing false auth failures from
+    # the gauntlet account.
     concurrency:
-      group: shakedown
+      group: docker-shakedown
       cancel-in-progress: false
     steps:
       - name: Checkout
