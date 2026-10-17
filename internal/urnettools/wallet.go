@@ -112,26 +112,42 @@ func newWalletCmd() *cobra.Command {
 			"  urnet-tools wallet status\n  urnet-tools wallet status --unit urnetwork-native.service",
 			cmdWalletStatus,
 		),
-		newWalletSubCmd(
+		withFlags(newWalletSubCmd(
 			"challenge <coldkey_ss58>",
 			"fetch the consent statement to sign",
 			"Fetch a fresh, verified consent statement for a coldkey from the platform. It signs nothing and changes nothing: it prints the exact message to sign and the epoch interval it covers (default: the next epoch through the full span), for the browser helper or any wallet that signs raw messages. Use --wallet-from-epoch/--wallet-through-epoch to pick an explicit interval; a mistaken interval cannot be undone.",
 			"  urnet-tools wallet challenge 5CvF...ss58\n  urnet-tools wallet challenge 5CvF...ss58 --wallet-from-epoch 51 --wallet-through-epoch 65585",
 			cmdWalletChallenge,
 		),
-		newWalletSubCmd(
+			helpFlag{Name: "wallet-from-epoch", Value: "EPOCH", Usage: "explicit first epoch of the consent interval"},
+			helpFlag{Name: "wallet-through-epoch", Value: "EPOCH", Usage: "explicit last epoch of the consent interval"},
+		),
+		withFlags(newWalletSubCmd(
 			"set <coldkey_ss58>",
 			"submit a signed consent (or legacy set)",
 			"Submit a signed network wallet consent for a coldkey: pass the message from 'wallet challenge' and its signature (--message with --signature), or sign with a local coldkey seed file (--coldkey_seed_file), which is FOR THE OPERATOR'S OWN WORKSTATION ONLY and never a fleet node: the tool refuses the seed-file form on a fleet member unless you pass --i-am-on-my-own-workstation. Without a proof this sends the legacy unsigned request, which the platform may refuse under its signed wallet rules. A later consent must start at a later epoch than the one before it.",
 			"  urnet-tools wallet sign 5CvF...ss58                 # browser signing, seed stays in the extension\n  urnet-tools wallet set 5CvF...ss58 --message=<text> --signature=0x<128 hex>\n  urnet-tools wallet set 5CvF...ss58 --coldkey_seed_file=~/coldkey  # OWN workstation only",
 			cmdWalletSet,
 		),
-		newWalletSubCmd(
+			helpFlag{Name: "message", Value: "TEXT", Usage: "the exact consent message from wallet challenge"},
+			helpFlag{Name: "signature", Value: "HEX", Usage: "the coldkey's signature over the message"},
+			helpFlag{Name: "coldkey_seed_file", Value: "PATH", Usage: "sign with a local coldkey seed (own workstation only, never a fleet node)"},
+			helpFlag{Name: "i-am-on-my-own-workstation", Usage: "confirm this is the operator's own workstation before seed signing"},
+			helpFlag{Name: "wallet-from-epoch", Value: "EPOCH", Usage: "explicit first epoch of the consent interval"},
+			helpFlag{Name: "wallet-through-epoch", Value: "EPOCH", Usage: "explicit last epoch of the consent interval"},
+		),
+		withFlags(newWalletSubCmd(
 			"sign [coldkey_ss58]",
 			"sign the consent in the browser",
 			"Serve one local page (127.0.0.1 only, 15 minutes, visible countdowns) where a wallet extension (Talisman, SubWallet, Polkadot{.js}, Nova, or any Polkadot signRaw extension) signs the consent statement, then submit the signature and verify the platform's receipt. Without an address you choose the account on the page. The seed phrase never leaves the extension. Run it on your own computer, never on a fleet node; the tool refuses on a fleet member unless you pass --i-am-on-my-own-workstation. Needs a browser with the extension on this machine; no extra tools.",
 			"  urnet-tools wallet sign 5CvF...ss58\n  urnet-tools wallet sign                       # choose the account on the page\n  urnet-tools wallet sign 5CvF...ss58 --no-open",
 			cmdWalletSign,
+		),
+			helpFlag{Name: "wallet-from-epoch", Value: "EPOCH", Usage: "explicit first epoch of the consent interval"},
+			helpFlag{Name: "wallet-through-epoch", Value: "EPOCH", Usage: "explicit last epoch of the consent interval"},
+			helpFlag{Name: "port", Value: "PORT", Usage: "local port for the signing page"},
+			helpFlag{Name: "no-open", Usage: "do not open a browser automatically"},
+			helpFlag{Name: "i-am-on-my-own-workstation", Usage: "confirm this is the operator's own workstation"},
 		),
 	)
 	return walletCmd

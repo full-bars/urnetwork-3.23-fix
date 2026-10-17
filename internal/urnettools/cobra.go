@@ -589,7 +589,7 @@ func newRenameCmd() *cobra.Command {
 }
 
 func newAuthCmd() *cobra.Command {
-	return &cobra.Command{
+	cmd := &cobra.Command{
 		Use:                "auth",
 		Short:              "authenticate",
 		Long:               "Authenticate the targeted provider against the URnetwork API by delegating to the provider binary's own auth subcommand. Pass an auth code, or omit it to use the provider's stored identity. Existing credentials are only overwritten with the provider's own -f flag, which passes through untouched.",
@@ -599,6 +599,9 @@ func newAuthCmd() *cobra.Command {
 			return cmdAuth(args)
 		},
 	}
+	return withFlags(cmd,
+		helpFlag{Name: "force", Shorthand: "f", Usage: "replace existing credentials (passed through to the provider's auth)"},
+	)
 }
 
 func newChooseNetworkCmd() *cobra.Command {
