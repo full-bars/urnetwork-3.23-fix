@@ -8,6 +8,7 @@ import (
 	"reflect"
 	"slices"
 	"sync"
+	"sync/atomic"
 	"time"
 	// "runtime/debug"
 
@@ -452,6 +453,19 @@ type MultiRouteSelector struct {
 	routeStats             map[Route]*RouteStats
 	routeActive            map[Route]bool
 	routeWeight            map[Route]float32
+
+	// Nil outside tests. Installed observers receive immutable route-state
+	// generations through atomic links, so publication never calls or waits on
+	// test code while holding the selector lock.
+	//
+	// Port note (v2026 engine -> 3.23 generation): the pinned engine publishes
+	// from updateActiveRoutesWithLock, which also rebuilds the immutable
+	// routeSnapshot the packet hot path reads. This generation builds no
+	// snapshots, so publishRouteStateLocked is the seam and it is called from
+	// the two places the active set can change here: updateTransportWithProperties
+	// and setActive. TestingPauseMultiRouteWriterSnapshot (a snapshot-writer
+	// seam) has no counterpart and is deliberately not ported.
+	testingRouteStateObservers map[*TestingMultiRouteWriterRouteStateObserver]bool
 }
 
 func NewMultiRouteSelector(ctx context.Context, clientTag string, log Logger, destination TransferPath, weightedRoutes bool) *MultiRouteSelector {
@@ -472,6 +486,197 @@ func NewMultiRouteSelector(ctx context.Context, clientTag string, log Logger, de
 		routeActive:            map[Route]bool{},
 		routeWeight:            map[Route]float32{},
 	}
+}
+
+// --- exact route-state observation (test seam, ported) ----------------------
+//
+// Port note (v2026 engine -> 3.23 generation): the observer machinery below is
+// the pinned engine's, byte-compatible in behavior: an opt-in, exact
+// generation stream that lets integration tests prove fast topology withdrawal
+// and promotion without ticker polling. The pinned engine's only other public
+// seam next to it, TestingPauseMultiRouteWriterSnapshot, pauses a snapshot
+// writer and has no counterpart in a generation without route snapshots, so it
+// is not ported.
+
+// TestingMultiRouteWriterRouteState identifies one exactly published selector
+// generation. Tests use the generation as a barrier so a stale matching count
+// from before a requested transition cannot satisfy a later readiness proof.
+type TestingMultiRouteWriterRouteState struct {
+	Generation         uint64
+	ActiveRouteCount   int
+	InactiveRouteCount int
+}
+
+// A node retains every test-observed generation until the observer closes.
+// Publication links the next immutable node before waking waiters.
+type testingMultiRouteWriterRouteStateNode struct {
+	state   TestingMultiRouteWriterRouteState
+	next    atomic.Pointer[testingMultiRouteWriterRouteStateNode]
+	changed chan struct{}
+}
+
+// TestingMultiRouteWriterRouteStateObserver is an opt-in, exact route-state
+// event stream. It has no production publisher or allocation when absent.
+// Snapshot, WaitAfter, and Close are safe to call concurrently.
+type TestingMultiRouteWriterRouteStateObserver struct {
+	selector       *MultiRouteSelector
+	head           *testingMultiRouteWriterRouteStateNode
+	tail           atomic.Pointer[testingMultiRouteWriterRouteStateNode]
+	nextGeneration atomic.Uint64
+	closed         atomic.Bool
+	closeOnce      sync.Once
+}
+
+// publishRouteStateLocked publishes one route-state generation to the
+// installed testing observers. It is called under the selector mutex at the
+// two seams where the active set can change in this generation. Production
+// selectors keep the observer map nil, so ordinary route publication performs
+// no observer allocation or call.
+func (self *MultiRouteSelector) publishRouteStateLocked() {
+	if len(self.testingRouteStateObservers) == 0 {
+		return
+	}
+	activeRouteCount := 0
+	inactiveRouteCount := 0
+	for _, routes := range self.transportRoutes {
+		for _, route := range routes {
+			if self.routeActive[route] {
+				activeRouteCount += 1
+			} else {
+				inactiveRouteCount += 1
+			}
+		}
+	}
+	for observer := range self.testingRouteStateObservers {
+		observer.publish(activeRouteCount, inactiveRouteCount)
+	}
+}
+
+// TestingObserveMultiRouteWriterRouteState installs an exact generation stream
+// at the selector publication seam. Production selectors keep the observer map
+// nil, so ordinary route publication performs no observer allocation or call.
+func TestingObserveMultiRouteWriterRouteState(
+	writer MultiRouteWriter,
+) *TestingMultiRouteWriterRouteStateObserver {
+	selector, ok := writer.(*MultiRouteSelector)
+	if !ok {
+		panic("unsupported multi-route writer")
+	}
+
+	selector.mutex.Lock()
+	activeRouteCount := 0
+	inactiveRouteCount := 0
+	for _, active := range selector.routeActive {
+		if active {
+			activeRouteCount += 1
+		} else {
+			inactiveRouteCount += 1
+		}
+	}
+	head := &testingMultiRouteWriterRouteStateNode{
+		state: TestingMultiRouteWriterRouteState{
+			Generation:         0,
+			ActiveRouteCount:   activeRouteCount,
+			InactiveRouteCount: inactiveRouteCount,
+		},
+		changed: make(chan struct{}),
+	}
+	observer := &TestingMultiRouteWriterRouteStateObserver{
+		selector: selector,
+		head:     head,
+	}
+	observer.tail.Store(head)
+	if selector.testingRouteStateObservers == nil {
+		selector.testingRouteStateObservers = map[*TestingMultiRouteWriterRouteStateObserver]bool{}
+	}
+	selector.testingRouteStateObservers[observer] = true
+	selector.mutex.Unlock()
+	return observer
+}
+
+// publish appends one immutable generation and wakes waiters after its link is
+// visible. The selector serializes publishers; atomics keep this nonblocking.
+func (self *TestingMultiRouteWriterRouteStateObserver) publish(
+	activeRouteCount int,
+	inactiveRouteCount int,
+) {
+	next := &testingMultiRouteWriterRouteStateNode{
+		state: TestingMultiRouteWriterRouteState{
+			Generation:         self.nextGeneration.Add(1),
+			ActiveRouteCount:   activeRouteCount,
+			InactiveRouteCount: inactiveRouteCount,
+		},
+		changed: make(chan struct{}),
+	}
+	previous := self.tail.Swap(next)
+	previous.next.Store(next)
+	close(previous.changed)
+}
+
+// Snapshot returns the latest immutable generation without consuming events.
+func (self *TestingMultiRouteWriterRouteStateObserver) Snapshot() TestingMultiRouteWriterRouteState {
+	return self.tail.Load().state
+}
+
+// WaitAfter returns the first generation newer than the supplied barrier.
+// Every intervening generation remains linked, so fast transitions cannot be
+// coalesced into the final state. Context cancellation bounds only liveness.
+func (self *TestingMultiRouteWriterRouteStateObserver) WaitAfter(
+	ctx context.Context,
+	generation uint64,
+) (TestingMultiRouteWriterRouteState, error) {
+	node := self.head
+	for {
+		if generation < node.state.Generation {
+			return node.state, nil
+		}
+		if next := node.next.Load(); next != nil {
+			node = next
+			continue
+		}
+		if self.closed.Load() {
+			return TestingMultiRouteWriterRouteState{}, errors.New("route-state observer closed")
+		}
+		select {
+		case <-ctx.Done():
+			return TestingMultiRouteWriterRouteState{}, ctx.Err()
+		case <-node.changed:
+		}
+	}
+}
+
+// WaitForActiveRouteCountAfter returns the first newer generation with the
+// requested active count. The barrier excludes an identical stale state.
+func (self *TestingMultiRouteWriterRouteStateObserver) WaitForActiveRouteCountAfter(
+	ctx context.Context,
+	generation uint64,
+	activeRouteCount int,
+) (TestingMultiRouteWriterRouteState, error) {
+	for {
+		state, err := self.WaitAfter(ctx, generation)
+		if err != nil {
+			return TestingMultiRouteWriterRouteState{}, err
+		}
+		if state.ActiveRouteCount == activeRouteCount {
+			return state, nil
+		}
+		generation = state.Generation
+	}
+}
+
+// Close removes the test publisher before waking any remaining waiter.
+func (self *TestingMultiRouteWriterRouteStateObserver) Close() {
+	self.closeOnce.Do(func() {
+		self.selector.mutex.Lock()
+		delete(self.selector.testingRouteStateObservers, self)
+		if len(self.selector.testingRouteStateObservers) == 0 {
+			self.selector.testingRouteStateObservers = nil
+		}
+		self.closed.Store(true)
+		tail := self.tail.Load()
+		self.selector.mutex.Unlock()
+		close(tail.changed)
+	})
 }
 
 func (self *MultiRouteSelector) unreliableForRoute(route Route) bool {
@@ -605,6 +810,7 @@ func (self *MultiRouteSelector) updateTransportWithProperties(
 	}
 
 	self.transportUpdate.NotifyAll()
+	self.publishRouteStateLocked()
 }
 
 // updateRouteWeights is called by updateTransport on weighted selectors
@@ -731,12 +937,17 @@ func (self *MultiRouteSelector) GetInactiveRoutes() []Route {
 }
 
 // setActive is called by Read, which marks a route inactive when it
-// observes the route's channel closed.
+// observes the route's channel closed. A change republishes the route-state
+// generation so an installed observer sees the withdrawal immediately; the
+// hot path that deactivated a closed route reloads on its next loop iteration.
 func (self *MultiRouteSelector) setActive(route Route, active bool) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
-	self.routeActive[route] = active
+	if current, ok := self.routeActive[route]; ok && current != active {
+		self.routeActive[route] = active
+		self.publishRouteStateLocked()
+	}
 }
 
 // updateSendStats is called once per frame delivered by WriteDetailed. The

@@ -121,6 +121,23 @@ type PlatformTransportSettings struct {
 	// it smoothes out the h3 transition to not start/stop h1 if h3 connects in this time
 	ModeInitialDelay time.Duration
 
+	// PlatformTransportBudget, H1BudgetByteCount, H3BudgetByteCount, and
+	// ModePreferences are the settings-only surface this generation adopts for
+	// PlatformTransportAutoEligibility (platform_transport_status.go) and the
+	// per-owner settings constructor (DefaultPlatformTransportSettingsWithMemoryTarget).
+	// The pinned v2026 engine also admits the transport against these; in this
+	// generation the transport swap that wires the reservations is a later
+	// slice, so nothing below the status view reads them yet.
+	PlatformTransportBudget *PlatformTransportBudget
+	// Non-positive carrier byte counts resolve to the memory-scaled defaults,
+	// like the pinned engine (H1MemoryReservationByteCount / defaultH3BudgetByteCount).
+	H1BudgetByteCount ByteCount
+	H3BudgetByteCount ByteCount
+	// ModePreferences configures which Auto modes the settings view considers
+	// enabled, and their priorities. Lower values are preferred. Nil selects
+	// DefaultTransportModePreferences.
+	ModePreferences map[TransportMode]int
+
 	// MinConnectDelay time.Duration
 	// MaxConnectDelay time.Duration
 
@@ -180,6 +197,15 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		TransportBufferSize:  16,
 		InactiveDrainTimeout: 30 * time.Second,
 		ModeInitialDelay:     2 * time.Second,
+		// Port note (v2026 engine -> 3.23 generation): the Auto policy and the
+		// carrier budget defaults are the pinned engine's. Only the status view
+		// reads them so far; the transport swap wires admission later. Without
+		// them a default settings value would report every Auto mode eligible
+		// for lack of a budget rather than because one fits.
+		ModePreferences:         DefaultTransportModePreferences(),
+		PlatformTransportBudget: DefaultPlatformTransportBudget(),
+		H1BudgetByteCount:       MemoryScaledByteCount(kib(512), kib(256)),
+		H3BudgetByteCount:       defaultH3BudgetByteCount(),
 		// MinConnectDelay:      0,
 		// MaxConnectDelay:      1 * time.Second,
 		ProtocolVersion: DefaultProtocolVersion,
@@ -211,6 +237,12 @@ type PlatformTransport struct {
 	auth atomic.Pointer[ClientAuth]
 
 	settings *PlatformTransportSettings
+
+	// modePreferences is the Auto policy this transport was constructed with,
+	// used by the status view (platform_transport_status.go) exactly as the
+	// pinned engine uses it. Nil (the default for a zero-value transport) means
+	// no DNS-family mode is configured.
+	modePreferences map[TransportMode]int
 
 	stateLock sync.Mutex
 	// notified when availableModes changes. availableModes is a map, so it

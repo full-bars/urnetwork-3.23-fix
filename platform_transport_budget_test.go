@@ -398,3 +398,157 @@ func TestPlatformTransportBudgetRejectsAlreadyCanceledClaim(t *testing.T) {
 		t.Fatalf("already-canceled claim remained registered: %+v", stats)
 	}
 }
+
+// --- ported from the pinned v2026 engine's platform_transport_budget_test.go ---
+// The pinned engine's other additions to this file exercise the transport
+// wiring (the budgetOnlyPlatformTransport helper and its full policy matrix,
+// CanMakeBeforeBreakFrom, the reservation fields on PlatformTransport, the
+// registerWithPriority handoff transitions, the runH3ModeForTest seam); this
+// generation has not swapped in that wiring, so they are left to that slice.
+// The three below are pure budget-API tests -- two budget-only, one settings
+// defaults only -- and are ported as is.
+
+func TestPlatformTransportBudgetAutoH3YieldClearsEitherHandoffEndpoint(t *testing.T) {
+	tests := []struct {
+		name     string
+		oldClass platformTransportBudgetClass
+		oldBytes ByteCount
+		newClass platformTransportBudgetClass
+		newBytes ByteCount
+		yieldOld bool
+	}{
+		{
+			name:     "auto H3 replacement",
+			oldClass: platformTransportBudgetH1,
+			oldBytes: 1,
+			newClass: platformTransportBudgetH3Auto,
+			newBytes: 4,
+		},
+		{
+			name:     "auto H3 previous carrier",
+			oldClass: platformTransportBudgetH3Auto,
+			oldBytes: 4,
+			newClass: platformTransportBudgetH1,
+			newBytes: 1,
+			yieldOld: true,
+		},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			budget := NewPlatformTransportBudget(4, 1)
+			old := budget.register(test.oldClass, test.oldBytes, true)
+			if !old.Acquire(t.Context()) {
+				t.Fatal("old reservation did not acquire")
+			}
+			next := budget.register(test.newClass, test.newBytes, true)
+			if !next.AllowHandoffFrom(old) || !next.Acquire(t.Context()) {
+				t.Fatal("bounded H1 handoff did not acquire")
+			}
+			if budget.Stats().ActiveHandoffCount != 1 {
+				t.Fatal("handoff was not active before yield")
+			}
+			toYield := next
+			if test.yieldOld {
+				toYield = old
+			}
+			if !toYield.Yield() {
+				t.Fatal("optional Auto H3 did not yield")
+			}
+			if stats := budget.Stats(); stats.ActiveHandoffCount != 0 ||
+				stats.PendingHandoffCount != 0 {
+				t.Fatalf("yield retained a stale budget handoff: %+v", stats)
+			}
+			old.Release()
+			next.Release()
+			stats := budget.Stats()
+			if stats.UsedByteCount != 0 || stats.UsedTransportCount != 0 ||
+				stats.ReservedByteCount != stats.ReleasedByteCount {
+				t.Fatalf("yield handoff leaked aggregate budget: %+v", stats)
+			}
+		})
+	}
+}
+
+func TestPlatformTransportBudgetDoesNotPreemptForUnresolvableSlotDeficit(t *testing.T) {
+	const h1Count = 16
+	budget := NewPlatformTransportBudget(24, h1Count)
+	h1Claims := make([]*platformTransportBudgetReservation, 0, h1Count)
+	for range h1Count {
+		h1 := budget.register(platformTransportBudgetH1, 1, true)
+		if !h1.Acquire(t.Context()) {
+			t.Fatal("initial H1 claim was not admitted")
+		}
+		h1Claims = append(h1Claims, h1)
+	}
+	h3 := budget.register(platformTransportBudgetH3Auto, 8, false)
+	if !h3.Acquire(t.Context()) {
+		t.Fatal("slotless Auto-H3 claim was not admitted")
+	}
+	blockedH1 := budget.register(platformTransportBudgetH1, 1, true)
+
+	budget.mutex.Lock()
+	blockedH1.requestPreemptionLocked()
+	preemptRequested := h3.preemptRequested
+	budget.mutex.Unlock()
+	if preemptRequested {
+		t.Fatal("slotless Auto-H3 was preempted even though it cannot free the required slot")
+	}
+	select {
+	case <-h3.PreemptNotify():
+		t.Fatal("slotless Auto-H3 received an unresolvable preemption request")
+	default:
+	}
+	if stats := budget.Stats(); stats.PreemptedH3Count != 0 {
+		t.Fatalf("unresolvable preemption count = %d, want 0", stats.PreemptedH3Count)
+	}
+
+	blockedH1.Release()
+	h3.Release()
+	for _, h1 := range h1Claims {
+		h1.Release()
+	}
+}
+
+// The default settings' carrier budget follows the process memory target, so
+// Auto keeps its H3 reservation on an iOS-sized target and runs H1 only on the
+// legacy low target.
+func TestPlatformTransportBudgetAutoModesFollowMemoryTarget(t *testing.T) {
+	tests := []struct {
+		name          string
+		memoryTarget  ByteCount
+		wantH3Acquire bool
+	}{
+		{name: "iOS target keeps full Auto", memoryTarget: mib(32), wantH3Acquire: true},
+		{name: "legacy low target runs H1 only", memoryTarget: mib(8), wantH3Acquire: false},
+	}
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			SetMemoryBudget(test.memoryTarget)
+			t.Cleanup(func() { SetMemoryBudget(0) })
+			settings := DefaultPlatformTransportSettings()
+			budget := settings.PlatformTransportBudget
+			h1 := budget.register(platformTransportBudgetH1, settings.H1BudgetByteCount, true)
+			h3 := budget.register(platformTransportBudgetH3, settings.H3BudgetByteCount, false)
+			if !h1.Acquire(t.Context()) {
+				t.Fatal("H1 did not acquire its Auto reservation")
+			}
+			defer h1.Release()
+
+			h3Ctx, cancelH3 := context.WithTimeout(t.Context(), 25*time.Millisecond)
+			defer cancelH3()
+			gotH3Acquire := h3.Acquire(h3Ctx)
+			if gotH3Acquire {
+				defer h3.Release()
+			}
+			if gotH3Acquire != test.wantH3Acquire {
+				t.Fatalf(
+					"H3 acquired=%t at memory target %d, want %t (budget=%+v)",
+					gotH3Acquire,
+					test.memoryTarget,
+					test.wantH3Acquire,
+					budget.Stats(),
+				)
+			}
+		})
+	}
+}
