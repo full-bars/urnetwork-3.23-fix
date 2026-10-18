@@ -211,25 +211,28 @@ func udpAddrFamily(udpAddr *net.UDPAddr) int {
 }
 
 // NewDirectClientStrategy builds the client strategy a family-pinned platform
-// transport dials with: the caller's settings without extenders or a proxy, so
-// every dial is direct and the observed remote family is the family the provider
-// actually has, and with the pin enforced below name resolution. Each pinned
-// transport owns one, which also gives it connect pacing independent of the
-// process-wide strategy.
+// transport dials with: the caller's settings without extenders, VLESS servers
+// or a proxy, so every dial is direct and the observed remote family is the
+// family the provider actually has, and with the pin enforced below name
+// resolution. Each pinned transport owns one, which also gives it connect
+// pacing independent of the process-wide strategy.
 //
 // The caller's settings are not mutated. An injected DialContextSettings
 // (headless hosts) is kept as the inner dial so a source-identity seam still
 // applies; a configured ProxySettings is dropped, because a pinned dial through
 // a proxy would prove the proxy's family, not the provider's. Extender discovery
-// is off, and the strategy refuses extenders a later `SetCustomExtenders` names
-// (`DisableManualExtenders`). fork: this tree has no VLESS servers or alt
-// carriers, so there is nothing further to drop than upstream does.
+// is off, and the strategy refuses extenders and VLESS servers a later
+// `SetCustomExtenders` or `SetVlessConfigs` names (`DisableManualExtenders`,
+// `DisableVless`).
 func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
 	direct := *settings
 	direct.ExpandExtenderProfileCount = 0
 	direct.MaxExtenderCount = 0
 	direct.DisableManualExtenders = true
 	direct.ConnectSettings.ProxySettings = nil
+	// a VLESS server would prove its own family, as a proxy would
+	direct.VlessConfigs = nil
+	direct.DisableVless = true
 
 	ipFamily = normalizeIpFamily(ipFamily)
 	if ipFamily != 0 {
