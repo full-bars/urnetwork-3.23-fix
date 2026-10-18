@@ -524,6 +524,8 @@ See [Monitoring](Monitoring.md) for the full setup, the metric list and the aler
 | `HOTKEY_SEED_FILE` | Optional | With `ALL_OPERATORS=1`: path to the 32-byte hotkey seed used by `--auto-register`. Mount the file read-only. |
 | `ALLOW_CLIENT_REGISTRATION` | Optional | `auto`, `Y` or `N`. `Y` always adds `--allow-client-registration`; `N` never does; `auto` adds it only when `/root/.urnetwork` has neither `.provider.key` nor an `operators/` directory (a fresh identity). |
 | `MAX_MEMORY` | Optional | Passed as `--max-memory=<mem>`, for example `2gib`. With `ALL_OPERATORS=1` the supervisor splits it across the operator children. |
+| `VERBOSE` | Optional | Provider log verbosity: `0` off, `1` adds `-v`, `2` adds `-vv` to `provide`. |
+| `PROVIDER_PORT` | Optional | Status server port, passed as `--port=<port>`. Unset means the binary default of no listening status server; `0` also disables it. |
 | `PROVIDER_ARGS` | Optional | Extra `provide` arguments appended verbatim and split on whitespace, for v33 flags without a dedicated variable (for example `--operators-url=... --operators-refresh=30m`). |
 
 ### 🧩 Multi-Operator Flags
@@ -539,9 +541,11 @@ The v33 operator flags can be set from the container environment. `docker/script
 | `ALLOW_CLIENT_REGISTRATION=N` | nothing |
 | `ALLOW_CLIENT_REGISTRATION=auto` | `--allow-client-registration` only when the state directory has no `.provider.key` and no `operators/` directory |
 | `MAX_MEMORY=2gib` | `--max-memory=2gib` |
+| `VERBOSE=2` | `-vv` (`0` adds nothing, `1` adds `-v`) |
+| `PROVIDER_PORT=8080` | `--port=8080` (`0` adds nothing: no status server) |
 | `PROVIDER_ARGS="--operators-url=..."` | the arguments, split on whitespace, appended last |
 
-`1`, `true`, `yes` and `on` are accepted for the two boolean variables, case-insensitively; `0`, `false`, `no` and `off` turn them off. `AUTO_REGISTER` and `HOTKEY_SEED_FILE` are refused when `ALL_OPERATORS` is off, because those flags exist only in the `provide --all-operators` usage. `PROVIDER_ARGS` applies to `provide` only and is split on whitespace, so an individual argument that contains spaces cannot be passed this way.
+`Y`, `1`, `true`, `yes` and `on` are accepted for the two boolean variables, case-insensitively; `N`, `0`, `false`, `no` and `off` turn them off. The `Y`/`N` spellings match techroy23/Docker-UrNetwork. `AUTO_REGISTER` and `HOTKEY_SEED_FILE` are refused when `ALL_OPERATORS` is off, because those flags exist only in the `provide --all-operators` usage. `PROVIDER_ARGS` applies to `provide` only and is split on whitespace, so an individual argument that contains spaces cannot be passed this way. `VERBOSE` and `PROVIDER_PORT` reject invalid values with an `[ERROR]` line and stop the start instead of passing a bad argument to the binary.
 
 Leave `AUTH` unset with `ALL_OPERATORS=1`. `AUTH=userpass` still makes the entrypoint require `USER_AUTH` and `PASSWORD`, and those are not used by the operator supervisor, which signs in per operator.
 
@@ -566,6 +570,28 @@ docker run -d \
 ```
 
 The first run with a fresh volume adds `--allow-client-registration` because `ALLOW_CLIENT_REGISTRATION=auto` sees no `.provider.key` and no `operators/` directory. Later runs do not add it. To add a new operator to an existing `operators/` tree, set `ALLOW_CLIENT_REGISTRATION=Y`.
+
+## 🔁 Migrating from techroy23/Docker-UrNetwork
+
+The techroy23/Docker-UrNetwork environment names are accepted unchanged. Their names map onto ours (or onto the same variable), and our names keep working and take precedence when both are set. The deliberate differences are called out in the Notes column.
+
+| Their variable | Ours | Notes |
+|---|---|---|
+| `AUTH` (`userpass` or `authcode`) | same | Already handled by the entrypoint: `userpass` starts the stable build, `authcode` the jwt build. Their `userpass` default is preserved when `USER_AUTH` and `PASSWORD` are set. |
+| `AUTHCODE` | same | Also accepted as the container argument. (`URNETWORK_AUTH_CODE` remains an alias.) |
+| `USER_AUTH`, `PASSWORD` | same | Required for `AUTH=userpass`, as on their image. |
+| `API_URL`, `CONNECT_URL` | `UR_API_URL`, `UR_CONNECT_URL` | Copied onto the `UR_` pair when ours are unset; ours win when both are set. Still both-or-neither. Applied once via `provider choose_network` and saved to `network.json`, not passed on every command. Ignored with a warning when `ALL_OPERATORS` is on, like their image. |
+| `MAX_MEMORY` | same | Passed as `--max-memory=<mem>`. |
+| `VERBOSE` | same | `0` off, `1` adds `-v`, `2` adds `-vv`. Their `y`/`yes`/`true`/`on`/`v`/`-v`/`vv`/`-vv` spellings are accepted too. Invalid values stop the start with an `[ERROR]` line. |
+| `PROVIDER_PORT` | same | Passed as `--port=<port>`; `0` disables the status server. Difference: their default is `8080`, ours is unset, which means no listening port; set `PROVIDER_PORT=8080` explicitly to keep a status endpoint. Our `--port` answers a small JSON with `version`, `status` and `host` fields, not their diagnostics JSON. |
+| `ALL_OPERATORS` | same | `Y`/`N` (and `1`/`true`/`yes`/`on`, `0`/`false`/`no`/`off`) are accepted. |
+| `AUTO_REGISTER` | same | `Y`/`N` accepted. Difference: ours refuses it with an `[ERROR]` line when `ALL_OPERATORS` is off; theirs warns and ignores it. |
+| `HOTKEY_SEED_FILE` | same | Same refusal note as `AUTO_REGISTER`. Their image ignores it silently without `ALL_OPERATORS`. |
+| `ALLOW_CLIENT_REGISTRATION` | same | `auto`, `Y` or `N`. |
+| `PROVIDER_ARGS` | same | Split on whitespace and appended to `provide`. Their README example `--adopt-legacy-provider-key` is not a flag in this binary; unknown flags are refused by the provider. |
+| `UPDATE_TIME` | none | Not honored. The nightly build self-updates at a fixed 12:00 America/Tijuana; the stable and jwt builds do not self-update. Update by pulling the image. |
+| `-v yourdata:/root/.urnetwork` | same path | Mount it unchanged. |
+| `-v /path/proxy.txt:/app/proxy.txt` | same path | Read the same way (`provider proxy add --proxy_file=/app/proxy.txt`). |
 
 ## 🏛️ Legacy Variables
 

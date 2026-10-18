@@ -1,8 +1,11 @@
 #!/bin/bash
 # test_provider_env.sh: verifies the mapping from the v33 operator environment
 # variables (ALL_OPERATORS, AUTO_REGISTER, HOTKEY_SEED_FILE,
-# ALLOW_CLIENT_REGISTRATION, MAX_MEMORY, PROVIDER_ARGS) to `provider provide`
-# flags, and that the Docker start scripts pass those flags to the binary.
+# ALLOW_CLIENT_REGISTRATION, MAX_MEMORY, VERBOSE, PROVIDER_PORT,
+# PROVIDER_ARGS) to `provider provide` flags, and that the Docker start
+# scripts pass those flags to the binary. Also verifies the
+# techroy23/Docker-UrNetwork compatibility aliases (API_URL/CONNECT_URL onto
+# UR_API_URL/UR_CONNECT_URL, and their verbosity and port spellings).
 # Offline only: a stub provider binary records its arguments.
 set -u
 
@@ -56,6 +59,8 @@ expect_flags "no variables: no flags" "" "$tmp/state"
 expect_flags "ALL_OPERATORS=1" "--all-operators" "$tmp/state" ALL_OPERATORS=1
 expect_flags "ALL_OPERATORS=true (case-insensitive)" "--all-operators" "$tmp/state" ALL_OPERATORS=TRUE
 expect_flags "ALL_OPERATORS=0 turns it off" "" "$tmp/state" ALL_OPERATORS=0
+expect_flags "ALL_OPERATORS=Y (techroy23 spelling)" "--all-operators" "$tmp/state" ALL_OPERATORS=Y
+expect_flags "ALL_OPERATORS=N turns it off (techroy23 spelling)" "" "$tmp/state" ALL_OPERATORS=N
 out="$(flags "$tmp/state" ALL_OPERATORS=maybe 2>&1)"; rc=$?
 t "ALL_OPERATORS=maybe fails" test "$rc" -ne 0
 t "ALL_OPERATORS=maybe names the variable" grep -q "ALL_OPERATORS must be" <<<"$out"
@@ -95,6 +100,9 @@ expect_flags "ALL_OPERATORS with hotkey seed, no auto-register" \
 expect_flags "ALL_OPERATORS with auto-register and hotkey seed" \
     $'--all-operators\n--auto-register\n--hotkey_seed_file=/run/secrets/hotkey' "$tmp/state" \
     ALL_OPERATORS=1 AUTO_REGISTER=1 HOTKEY_SEED_FILE=/run/secrets/hotkey
+expect_flags "ALL_OPERATORS=Y with AUTO_REGISTER=Y (techroy23 spellings)" \
+    $'--all-operators\n--auto-register\n--hotkey_seed_file=/run/secrets/hotkey' "$tmp/state" \
+    ALL_OPERATORS=Y AUTO_REGISTER=Y HOTKEY_SEED_FILE=/run/secrets/hotkey
 
 out="$(flags "$tmp/state" AUTO_REGISTER=1 2>&1)"; rc=$?
 t "AUTO_REGISTER without ALL_OPERATORS fails" test "$rc" -ne 0
@@ -120,18 +128,75 @@ out="$(flags "$tmp/state" MAX_MEMORY="2 gib" 2>&1)"; rc=$?
 t "MAX_MEMORY with whitespace fails" test "$rc" -ne 0
 t "MAX_MEMORY with whitespace names the cause" grep -q "MAX_MEMORY must not contain whitespace" <<<"$out"
 
+# --- VERBOSE (techroy23: 0 off, 1 = -v, 2 = -vv) -----------------------------
+expect_flags "VERBOSE=1 maps to -v" "-v" "$tmp/state" VERBOSE=1
+expect_flags "VERBOSE=2 maps to -vv" "-vv" "$tmp/state" VERBOSE=2
+expect_flags "VERBOSE=0 adds nothing" "" "$tmp/state" VERBOSE=0
+expect_flags "empty VERBOSE adds nothing" "" "$tmp/state" VERBOSE=
+expect_flags "VERBOSE=y maps to -v (techroy23 spelling)" "-v" "$tmp/state" VERBOSE=y
+expect_flags "VERBOSE=vv maps to -vv (techroy23 spelling)" "-vv" "$tmp/state" VERBOSE=vv
+
+out="$(flags "$tmp/state" VERBOSE=3 2>&1)"; rc=$?
+t "VERBOSE=3 fails" test "$rc" -ne 0
+t "VERBOSE=3 names the values" grep -q "VERBOSE must be 0" <<<"$out"
+
+# --- PROVIDER_PORT (techroy23: --port, 0 disables) ---------------------------
+expect_flags "PROVIDER_PORT=8080 maps to --port" "--port=8080" "$tmp/state" PROVIDER_PORT=8080
+expect_flags "PROVIDER_PORT=0 adds nothing (binary default)" "" "$tmp/state" PROVIDER_PORT=0
+expect_flags "empty PROVIDER_PORT adds nothing" "" "$tmp/state" PROVIDER_PORT=
+expect_flags "PROVIDER_PORT normalises leading zeros" "--port=8080" "$tmp/state" PROVIDER_PORT=08080
+
+out="$(flags "$tmp/state" PROVIDER_PORT=abc 2>&1)"; rc=$?
+t "PROVIDER_PORT=abc fails" test "$rc" -ne 0
+t "PROVIDER_PORT=abc names the cause" grep -q "PROVIDER_PORT must be a number" <<<"$out"
+
+out="$(flags "$tmp/state" PROVIDER_PORT=65536 2>&1)"; rc=$?
+t "PROVIDER_PORT out of range fails" test "$rc" -ne 0
+t "PROVIDER_PORT out of range names the range" grep -q "between 0 and 65535" <<<"$out"
+
 # --- PROVIDER_ARGS ----------------------------------------------------------
 expect_flags "PROVIDER_ARGS splits on whitespace" \
     $'--operators-url=https://example.test/ops.yml\n--operators-refresh=30m' "$tmp/state" \
     PROVIDER_ARGS="--operators-url=https://example.test/ops.yml --operators-refresh=30m"
 expect_flags "PROVIDER_ARGS does not glob" "--file=/tmp/*.txt" "$tmp/state" PROVIDER_ARGS="--file=/tmp/*.txt"
 
+# --- techroy23 API_URL/CONNECT_URL aliases ----------------------------------
+# Source the helper in a clean environment and print the aliased UR_ pair.
+alias_vars() {
+    env -i PATH="$PATH" HOME="$tmp/home" "$@" \
+        sh -c '. "$0"; printf "%s|%s" "${UR_API_URL:-}" "${UR_CONNECT_URL:-}"' "$HELPER"
+}
+
+got="$(alias_vars API_URL=https://api.example.test CONNECT_URL=wss://connect.example.test)"
+t "API_URL/CONNECT_URL alias onto UR_API_URL/UR_CONNECT_URL" \
+    test "$got" = "https://api.example.test|wss://connect.example.test"
+
+got="$(alias_vars API_URL=https://api.example.test)"
+t "only API_URL set leaves UR_CONNECT_URL empty (both-or-neither still enforced)" \
+    test "$got" = "https://api.example.test|"
+
+got="$(alias_vars API_URL=https://api.example.test UR_API_URL=https://api.ours.test)"
+t "UR_API_URL wins over API_URL" test "$got" = "https://api.ours.test|"
+
+got="$(alias_vars CONNECT_URL=wss://connect.example.test UR_CONNECT_URL=wss://connect.ours.test)"
+t "UR_CONNECT_URL wins over CONNECT_URL" test "$got" = "|wss://connect.ours.test"
+
+got="$(alias_vars API_URL=https://api.example.test CONNECT_URL=wss://connect.example.test ALL_OPERATORS=Y 2>/dev/null)"
+t "ALL_OPERATORS=Y ignores API_URL/CONNECT_URL" test "$got" = "|"
+
+alias_warn="$(alias_vars API_URL=https://api.example.test CONNECT_URL=wss://connect.example.test ALL_OPERATORS=Y 2>&1 >/dev/null)"
+t "ALL_OPERATORS=Y ignoring API_URL/CONNECT_URL says so" \
+    grep -q "ignoring API_URL/CONNECT_URL" <<<"$alias_warn"
+
+got="$(alias_vars UR_API_URL=https://api.ours.test UR_CONNECT_URL=wss://connect.ours.test)"
+t "UR_ names alone are untouched by the alias" test "$got" = "https://api.ours.test|wss://connect.ours.test"
+
 # --- Full combination and order --------------------------------------------
 expect_flags "all flags: exact order, PROVIDER_ARGS last" \
-    $'--all-operators\n--auto-register\n--hotkey_seed_file=/run/secrets/hotkey\n--max-memory=4gib\n--allow-client-registration\n--operators-url=https://example.test/ops.yml\n--operators-refresh=30m' \
+    $'--all-operators\n--auto-register\n--hotkey_seed_file=/run/secrets/hotkey\n--max-memory=4gib\n-vv\n--port=8080\n--allow-client-registration\n--operators-url=https://example.test/ops.yml\n--operators-refresh=30m' \
     "$fresh" \
-    ALL_OPERATORS=1 AUTO_REGISTER=1 HOTKEY_SEED_FILE=/run/secrets/hotkey \
-    MAX_MEMORY=4gib ALLOW_CLIENT_REGISTRATION=auto \
+    ALL_OPERATORS=Y AUTO_REGISTER=Y HOTKEY_SEED_FILE=/run/secrets/hotkey \
+    MAX_MEMORY=4gib VERBOSE=2 PROVIDER_PORT=8080 ALLOW_CLIENT_REGISTRATION=auto \
     PROVIDER_ARGS="--operators-url=https://example.test/ops.yml --operators-refresh=30m"
 
 # --- Start script wiring: the flags reach the provider binary --------------
@@ -222,6 +287,14 @@ t "start_nightly.sh: mapped flags reach provide" test "$(provide_args "$dir")" =
 # JWT: MAX_MEMORY only, legacy auth flow untouched.
 dir="$(run_provide_case start_jwt.sh MAX_MEMORY=1gib)"
 t "start_jwt.sh: mapped flags reach provide" test "$(provide_args "$dir")" = "--max-memory=1gib"
+
+# techroy23-style env: verbosity, port, memory and operator flags reach
+# provide through the real start script.
+dir="$(run_provide_case start_stable.sh \
+    VERBOSE=2 PROVIDER_PORT=8080 MAX_MEMORY=1gib \
+    ALL_OPERATORS=Y AUTO_REGISTER=Y HOTKEY_SEED_FILE=/run/secrets/hotkey)"
+want=$'--all-operators\n--auto-register\n--hotkey_seed_file=/run/secrets/hotkey\n--max-memory=1gib\n-vv\n--port=8080'
+t "start_stable.sh: techroy23 env maps to provide flags" test "$(provide_args "$dir")" = "$want"
 
 # Stable: ALLOW_CLIENT_REGISTRATION=auto on a fresh state dir.
 dir="$(run_provide_case start_stable.sh ALLOW_CLIENT_REGISTRATION=auto)"
