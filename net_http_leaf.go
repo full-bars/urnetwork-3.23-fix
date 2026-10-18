@@ -5,6 +5,10 @@ package connect
 // walked via the exposed HttpClient instead of upstream's dialer.Close(). No
 // production caller changes; merge when the L3 transport core lands.
 
+import (
+	"context"
+)
+
 // CloseIdleConnections closes every dialer's pooled HTTP connections and the
 // internal DoH resolver's, keeping the strategy usable.
 func (self *ClientStrategy) CloseIdleConnections() {
@@ -36,6 +40,24 @@ func (self *ClientStrategy) DohSettings() *DohSettings {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 	return self.dohSettings
+}
+
+// Builds a direct-only strategy from the settings this one was built with
+// (NewDirectClientStrategy, unpinned): no extender, VLESS server or proxy, so
+// a request reaches its destination from this host's own address. It takes the
+// DoH settings in force here, which a user's bootstrap DoH servers replace on
+// a running strategy (`SetInternalDohSettings`). The caller closes it.
+//
+// The extender client's direct reads -- the operator hint and its country
+// (net_extender_proximity.go, GetExtenderHint) -- build one per read: a
+// whitelist-only network answers no operator address through this host's own
+// path, and a read over it must not take the extender path it is trying to
+// place. Ported from the pin's net_http.go; this fork's strategy has no
+// baseSettings field, so the settings it was built with are the ones copied.
+func (self *ClientStrategy) newDirectClientStrategy(ctx context.Context) *ClientStrategy {
+	settings := *self.settings
+	settings.DohSettings = self.DohSettings()
+	return NewDirectClientStrategy(ctx, &settings, 0)
 }
 
 // SetInternalDohSettings replaces the DoH settings of a running strategy: the
