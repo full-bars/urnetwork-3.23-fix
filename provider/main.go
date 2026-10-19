@@ -3198,6 +3198,13 @@ func provide(opts docopt.Opts) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
+		if clientSettings.ContractManagerSettings != nil {
+			if proxySettings != nil {
+				clientSettings.ContractManagerSettings.ProxyDescription = fmt.Sprintf("proxy[%d] (%s)", proxySettings.Index, proxySettings.Address)
+			} else if isNative {
+				clientSettings.ContractManagerSettings.ProxyDescription = "proxy[0] (direct)"
+			}
+		}
 		// Load previously-persisted long-lived identity material — the
 		// Ed25519 client-key seed and the sequence-level TLS server
 		// cert + private key. Missing or invalid files are silently

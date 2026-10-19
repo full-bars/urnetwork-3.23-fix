@@ -35,3 +35,24 @@ func TestCloseContractLineKeepsItsTokens(t *testing.T) {
 		t.Fatalf("checkpoint line must not carry the close token: %q", checkpointed)
 	}
 }
+
+func TestCloseContractLineWithProxy(t *testing.T) {
+	destination := NewId()
+	proxyDesc := "proxy[15304] (216.26.234.33:1081)"
+
+	closed := closeContractLineWithProxy(false, 100, 200, 50, destination, proxyDesc)
+	if !strings.Contains(closed, "[contract] closed proxy[15304] (216.26.234.33:1081)") {
+		t.Fatalf("close line missing proxy: %q", closed)
+	}
+	if !strings.HasPrefix(closed, "🚪 ") {
+		t.Fatalf("marker must lead the line: %q", closed)
+	}
+
+	checkpointed := closeContractLineWithProxy(true, 100, 200, 50, destination, proxyDesc)
+	if !strings.Contains(checkpointed, "[contract] checkpointed proxy[15304] (216.26.234.33:1081)") {
+		t.Fatalf("checkpoint line missing proxy: %q", checkpointed)
+	}
+	if !strings.HasPrefix(checkpointed, "📍 ") {
+		t.Fatalf("checkpoint marker must lead the line: %q", checkpointed)
+	}
+}
