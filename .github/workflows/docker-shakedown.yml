@@ -35,13 +35,11 @@ jobs:
     # Sized for: asset wait (~60min) + image wait (~60min) + shakedown
     # (~55-70min) + headroom. Both waits are sequential in the same step.
     timeout-minutes: 210
-    # IMPORTANT: shares the concurrency group with shakedown.yml. Both mint
-    # a disposable JWT from the SAME gauntlet account server-side, and W1-W2
-    # here mint several MORE JWTs for the auth-mode matrix. Running either
-    # workflow concurrently with the other collides on that shared account
-    # and produces false auth failures. They must queue, never cancel.
+    # May run beside shakedown.yml; both mint from the same gauntlet
+    # account, so the mint step jitters and retries. One group per
+    # workflow/ref prevents duplicate runs of this workflow.
     concurrency:
-      group: shakedown
+      group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - name: Checkout
@@ -126,7 +124,20 @@ jobs:
             if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10; else echo "Build failed after 3 attempts"; exit 1; fi
           done
           mkdir -p /tmp/mint
-          HOME=/tmp/mint /tmp/provider auth --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          # Concurrent shakedown runs share the gauntlet account. Spread the
+          # sign-in burst and retry with backoff instead of serializing the
+          # whole workflow; the API budget is about 10 req/s.
+          sleep $((RANDOM % 30))
+          mint_ok=0
+          for mint_attempt in 1 2 3; do
+            rm -rf /tmp/mint
+            HOME=/tmp/mint /tmp/provider auth --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" --api_url=https://api.bringyour.com -f > /tmp/mint.log 2>&1 || true
+            grep -vE '^I[0-9]{4}' /tmp/mint.log || true
+            if [ -s /tmp/mint/.urnetwork/jwt ]; then mint_ok=1; break; fi
+            echo "JWT mint attempt ${mint_attempt} failed; retrying"
+            sleep $((mint_attempt * 10))
+          done
+          test "$mint_ok" = 1 || { echo "JWT mint failed after 3 attempts (verification required?)"; exit 1; }
           test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed (verification required?)"; exit 1; }
           cp /tmp/mint/.urnetwork/jwt /tmp/gauntlet.jwt
           # Same production-account refusal guard as shakedown.yml. Do NOT
