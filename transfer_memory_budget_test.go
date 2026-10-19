@@ -71,6 +71,28 @@ func TestTransferMemoryBudgetConcurrent(t *testing.T) {
 	AssertEqual(t, reserved, released)
 }
 
+// A standalone pool is not an exact hierarchy. Its unconditional Reserve and
+// Release are atomic adds and must not serialize unrelated queues on the root
+// admission lock.
+func TestTransferMemoryBudgetStandaloneReserveReleaseDoNotTakeAdmissionLock(t *testing.T) {
+	budget := NewTransferMemoryBudget(kib(64))
+	budget.admissionLock.Lock()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		budget.Reserve(1)
+		budget.Release(1)
+	}()
+	select {
+	case <-done:
+	case <-time.After(time.Second):
+		budget.admissionLock.Unlock()
+		t.Fatal("standalone reserve/release serialized on the admission lock")
+	}
+	budget.admissionLock.Unlock()
+	AssertEqual(t, budget.UsedByteCount(), ByteCount(0))
+}
+
 func TestTransferMemoryBudgetTryReserveExactConcurrentCeiling(t *testing.T) {
 	const reservationCount = 2
 	reservationSize := kib(8)

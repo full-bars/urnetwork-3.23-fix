@@ -26,7 +26,10 @@ import (
 // All methods are safe for concurrent use. Parent relationships are immutable.
 type TransferMemoryBudget struct {
 	// Exact admission and role-driven resize share one linearization boundary.
-	// A child uses its root's lock, never a second lock in the hierarchy.
+	// A child uses its root's lock, never a second lock in the hierarchy. A
+	// standalone pool (no parent and no children) has no hierarchy to
+	// linearize: its unconditional Reserve/Release are plain atomic adds and
+	// never take this lock, so unrelated queues do not serialize on it.
 	admissionLock  sync.Mutex
 	parent         *TransferMemoryBudget
 	root           *TransferMemoryBudget
@@ -215,22 +218,30 @@ func (self *TransferMemoryBudget) UsedByteCount() ByteCount {
 	return self.usedByteCount.Load()
 }
 
+// requiresAdmissionLock reports whether this pool belongs to an exact
+// hierarchy. A root with no parent and no children is the standalone legacy
+// pool: Reserve and Release are unconditional atomic adds, so forcing them
+// through the root lock would only add a shared serialization point.
+func (self *TransferMemoryBudget) requiresAdmissionLock() bool {
+	return self.parent != nil || self.root != nil || self.hasChildren.Load()
+}
+
 // Reserve preserves legacy standalone queue overdraft semantics. Hierarchies
 // require exact retained admission: callers must use TryReserve and handle
 // refusal before taking ownership. Reserve is permitted there only for an
 // already-proven fitting claim; violating that contract is a programming bug.
 func (self *TransferMemoryBudget) Reserve(byteCount ByteCount) {
+	if !self.requiresAdmissionLock() {
+		self.usedByteCount.Add(byteCount)
+		self.reservedByteCount.Add(byteCount)
+		return
+	}
 	root := self.admissionRoot()
 	root.admissionLock.Lock()
 	defer root.admissionLock.Unlock()
-	if self.root != nil || self.hasChildren.Load() {
-		if !self.tryReserveWithLock(byteCount) {
-			panic("TransferMemoryBudget.Reserve: exact hierarchy requires TryReserve")
-		}
-		return
+	if !self.tryReserveWithLock(byteCount) {
+		panic("TransferMemoryBudget.Reserve: exact hierarchy requires TryReserve")
 	}
-	self.usedByteCount.Add(byteCount)
-	self.reservedByteCount.Add(byteCount)
 }
 
 // TryReserve atomically reserves byteCount only when it fits within the
@@ -264,18 +275,28 @@ func (self *TransferMemoryBudget) tryReserveWithLock(byteCount ByteCount) bool {
 
 // Release returns bytes to the budget
 func (self *TransferMemoryBudget) Release(byteCount ByteCount) {
+	if !self.requiresAdmissionLock() {
+		self.releaseByteCount(byteCount)
+		self.notifyCapacityChanged()
+		return
+	}
 	root := self.admissionRoot()
 	root.admissionLock.Lock()
 	for budget := self; budget != nil; budget = budget.parent {
-		used := budget.usedByteCount.Add(-byteCount)
-		budget.releasedByteCount.Add(byteCount)
-		if used < 0 {
-			// Keep the accounting error observable rather than masking it.
-			DefaultLogger().Errorf("[tmb]release below zero (%d)", used)
-		}
+		budget.releaseByteCount(byteCount)
 	}
 	root.admissionLock.Unlock()
 	self.notifyCapacityChanged()
+}
+
+// releaseByteCount removes one claim's bytes from one level of the budget.
+func (self *TransferMemoryBudget) releaseByteCount(byteCount ByteCount) {
+	used := self.usedByteCount.Add(-byteCount)
+	self.releasedByteCount.Add(byteCount)
+	if used < 0 {
+		// Keep the accounting error observable rather than masking it.
+		DefaultLogger().Errorf("[tmb]release below zero (%d)", used)
+	}
 }
 
 // tryMoveReservation transfers an already-owned claim inside one immutable

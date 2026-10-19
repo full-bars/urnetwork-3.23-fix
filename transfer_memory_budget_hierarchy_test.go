@@ -123,6 +123,32 @@ func TestTransferMemoryBudgetHierarchyResizeSharesAdmissionBoundary(t *testing.T
 	AssertEqual(t, root.UsedByteCount(), ByteCount(0))
 }
 
+// A budget with a parent is exact admission and keeps the root lock even for
+// the legacy Reserve/Release paths.
+func TestTransferMemoryBudgetHierarchyReserveReleaseUseAdmissionLock(t *testing.T) {
+	root := NewTransferMemoryBudget(kib(64))
+	child := NewTransferMemoryBudgetWithParent(kib(64), root)
+	root.admissionLock.Lock()
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		close(started)
+		child.Reserve(1)
+		child.Release(1)
+		close(finished)
+	}()
+	<-started
+	select {
+	case <-finished:
+		root.admissionLock.Unlock()
+		t.Fatal("hierarchy reserve/release escaped the root admission lock")
+	case <-time.After(10 * time.Millisecond):
+	}
+	root.admissionLock.Unlock()
+	<-finished
+	AssertEqual(t, root.UsedByteCount(), ByteCount(0))
+}
+
 func TestTransferMemoryBudgetHierarchyIntrusiveSiblingWaiter(t *testing.T) {
 	root := NewTransferMemoryBudget(10)
 	left := NewTransferMemoryBudgetWithParent(10, root)
