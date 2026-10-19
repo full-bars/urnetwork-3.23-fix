@@ -2350,8 +2350,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		if err != nil {
 			self.familyNoteConnectFailed(TransportModeH1, err, time.Since(dialStart))
 		}
-		// fork: governor feed for every attempt, success or failure
-		if !self.pinned() {
+		// fork: governor feed for every attempt, success or failure. Local
+		// teardown is not a backend outcome, and a canceled dial's error can
+		// miss context.Canceled when it was snapshotted before the cancel.
+		if !self.pinned() && (err == nil || self.ctx.Err() == nil) {
 			connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
 		}
 		if err != nil {
@@ -3382,7 +3384,9 @@ func (self *PlatformTransport) runH3(
 		// connects; an auxiliary H3 beside H1 and a pinned transport are never a
 		// health signal. (H3 is UDP, so it never goes through a proxy and the
 		// attempt budget would exempt it as direct.)
-		if !self.h3GatedFor(ptMode) && !self.pinned() {
+		// Local teardown is not a backend outcome, and a canceled dial's error
+		// can miss context.Canceled when it was snapshotted before the cancel.
+		if !self.h3GatedFor(ptMode) && !self.pinned() && (err == nil || (ctx.Err() == nil && attemptCtx.Err() == nil)) {
 			connectGov.recordAttempt(classifyConnectError(err, nil), nil)
 		}
 		if err != nil {
