@@ -1,8 +1,17 @@
 # Changelog
 
-## [Unreleased]
+## [v3.23.0-fix.33.2]
 
-_Unreleased: the v33.1 batch. Not tagged, released, or deployed._
+Docker-only patch. The provider and urnet-tools binaries are identical to v3.23.0-fix.33.1. This release carries the two CI fixes that let the tag build an image: the Pelican check reads `func_check_update` where it lives now, and the provider test timeout is 900s so the `-race` package run fits.
+
+### Fixed
+
+- **The image workflow reads the shared entrypoint**: the Pelican egg check still grepped `start_nightly.sh` after the 33.1 consolidation moved `func_check_update` into `provider_common.sh`, so the image job failed before it could push.
+- **The provider test timeout fits the package**: 600s was below the provider package's runtime under `-race` on a CI runner; 900s.
+
+## [v3.23.0-fix.33.1]
+
+_Tagged 2026-10-19. The notes are in `releases/v3.23.0-fix.33.1.md`._
 
 ### Added
 
