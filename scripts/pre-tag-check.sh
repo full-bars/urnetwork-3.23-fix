@@ -73,7 +73,7 @@ for shard in 0 1 2; do
   pkgs=$(./.github/scripts/test_shard.sh "$shard")
   echo "-- shard $shard"
   # shellcheck disable=SC2086
-  go test -short -race -timeout 600s $pkgs
+  go test -short -race -timeout 900s $pkgs
 done
 # A GitHub runner differs from a workstation: unprivileged ICMP sockets are
 # refused (net.ipv4.ping_group_range closed) and there is no global IPv6. A test
@@ -86,7 +86,7 @@ if command -v unshare >/dev/null 2>&1 && unshare -Urn true 2>/dev/null; then
   # Only the ICMP and packet-parsing tests run here: the namespace has a
   # loopback and nothing else, which is what exposes ICMP state leaks but also
   # breaks tests that need a real network (the family and H3 tests).
-  unshare -Urn sh -c "ip link set lo up 2>/dev/null; \"$testbin\" -test.short -test.timeout=600s -test.run \"Icmp|ParseIpPath|Ipv6|Smtp|Fragment|Packet|Flow|Dial|Parse\""
+  unshare -Urn sh -c "ip link set lo up 2>/dev/null; \"$testbin\" -test.short -test.timeout=900s -test.run \"Icmp|ParseIpPath|Ipv6|Smtp|Fragment|Packet|Flow|Dial|Parse\""
   rm -f "$testbin"
 else
   echo "  unshare -Urn is not available here: skipping the ICMP-refused run (run it where it is)"

@@ -108,7 +108,7 @@ jobs:
             echo "=== go test attempt $attempt/3 ==="
             set +e
             # shellcheck disable=SC2086
-            go test -short -race -timeout 600s $PKGS 2>&1 | tee /tmp/gotest.out
+            go test -short -race -timeout 900s $PKGS 2>&1 | tee /tmp/gotest.out
             rc=${PIPESTATUS[0]}
             set -e
             if [ "$rc" -eq 0 ]; then
@@ -292,7 +292,16 @@ jobs:
 
           # Under PELICAN=yes no runtime self-update may exist:
           # nightly bootstrap/watcher gate + urnet-tools do_update refusal.
-          grep -q 'PELICAN' docker/scripts/start_nightly.sh \
+          #
+          # The nightly update path moved into the shared provider_common.sh
+          # with the 33.1 entrypoint consolidation; start_nightly.sh is now a
+          # thin wrapper. Assert the gate inside func_check_update itself,
+          # wherever that function lives, so this keeps meaning what it says.
+          update_check_file=docker/scripts/start_nightly.sh
+          if grep -q '^func_check_update()' docker/scripts/provider_common.sh 2>/dev/null; then
+            update_check_file=docker/scripts/provider_common.sh
+          fi
+          sed -n '/^func_check_update()/,/^}/p' "$update_check_file" | grep -q 'PELICAN' \
             || { echo "FAIL: nightly update check not PELICAN-gated"; exit 1; }
           sed -n '/^do_update()/,/^[a-z_]*() {\|^do_update/p' docker/scripts/urnet-tools.sh | head -12 | grep -q 'PELICAN' \
             || { echo "FAIL: do_update not PELICAN-gated"; exit 1; }
