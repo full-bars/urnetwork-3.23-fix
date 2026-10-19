@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/wlynxg/anet"
@@ -234,6 +235,14 @@ func controlFamilyDemote(family int) bool {
 
 	now := controlFamilyLedger.now()
 	entry := controlFamilyLedger.demoted[family]
+	if now.Before(entry.until) {
+		// A demotion is already live, so this dial started before it was
+		// applied. Counting it would multiply the backoff for one incident:
+		// the parallel hello races four dialers through the same path, and
+		// four strikes turn a five minute hold into forty.
+		controlFamilyLedger.mu.Unlock()
+		return true
+	}
 	entry.strikes += 1
 	backoff := controlFamilyDemotionBase << (entry.strikes - 1)
 	if backoff > controlFamilyDemotionMax || backoff <= 0 {
@@ -677,6 +686,17 @@ func isPathTimeout(err error) bool {
 		return netErr.Timeout()
 	}
 	return false
+}
+
+// isPathFailure reports whether err says this family's path cannot carry the
+// connection: a timeout, or an unreachable network or host. A cancellation, a
+// refusal, a DNS failure or a certificate failure says something else about
+// something else, and must not be read as evidence about the family.
+func isPathFailure(err error) bool {
+	if isPathTimeout(err) {
+		return true
+	}
+	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 // connFamily is 4, 6, or 0 when the connection has no usable remote address.

@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -475,7 +476,7 @@ func TestFamilyFallbackUndoesADemotionThatCannotConnect(t *testing.T) {
 		if resolved == "tcp4" {
 			// the device has no ipv4 route at all
 			return nil, &net.OpError{
-				Op: "dial", Net: "tcp4", Err: errors.New("connect: network is unreachable"),
+				Op: "dial", Net: "tcp4", Err: syscall.ENETUNREACH,
 			}
 		}
 		return &stubConn{remote: &net.TCPAddr{IP: net.ParseIP("2001:db8::1"), Port: 443}}, nil
@@ -515,7 +516,7 @@ func TestFamilyFallbackDoesNotUndoAForce(t *testing.T) {
 	defer SetControlIpFamilyPolicy(IpFamilyAuto)
 
 	attempts := 0
-	dialErr := errors.New("connect: network is unreachable")
+	dialErr := syscall.ENETUNREACH
 	dial := func(ctx context.Context, network string, addr string) (net.Conn, error) {
 		attempts += 1
 		return nil, dialErr
@@ -561,7 +562,7 @@ func TestFamilyFallbackRollsBackTheStrikeWhenTheRetryAlsoFails(t *testing.T) {
 			dial := func(ctx context.Context, network string, addr string) (net.Conn, error) {
 				if network == "tcp4" {
 					if test.retryDialErr {
-						return nil, errors.New("connect: network is unreachable")
+						return nil, syscall.ENETUNREACH
 					}
 					return &stubConn{remote: &net.TCPAddr{IP: net.ParseIP("192.0.2.1"), Port: 443}}, nil
 				}
