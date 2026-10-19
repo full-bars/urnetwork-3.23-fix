@@ -467,6 +467,8 @@ Monitors backend connectivity. It is designed to be conservative to avoid false 
 
 On by default (`URNETWORK_GOVERN`, see [Configuration](docs/Configuration.md#backend-outage-protection)). Every line starting with `[govern]` is also in the important log.
 
+With `URNETWORK_GOVERN=shadow` the governor observes and logs without delaying a connect, but it now restores the persisted learned baseline and keeps learning it, so `baseline` and `threshold` describe the same window enforce mode would judge. The outage restart marker remains enforce-only, because only enforce acts on it.
+
 ```
 [govern] ok window=60s attempts=732 (12.2/s) connected=673 died_young=9 good=97% baseline=91% threshold=20% socks=9 tls=0 upgrade=0 timeout_platform=9 timeout_silent=3 other=0 refused=0 dials/attempt=3.3 KB/attempt=4.8 failed_KB=71 would_hold=0 mode=enforce rate=200.0/s waiting=0
 [govern] DEGRADED (enforcing: connects run under a shared attempt budget) window=60s attempts=312 ...
