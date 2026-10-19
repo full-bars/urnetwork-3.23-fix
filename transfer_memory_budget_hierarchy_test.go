@@ -123,6 +123,32 @@ func TestTransferMemoryBudgetHierarchyResizeSharesAdmissionBoundary(t *testing.T
 	AssertEqual(t, root.UsedByteCount(), ByteCount(0))
 }
 
+// A budget with a parent is exact admission and keeps the root lock even for
+// the legacy Reserve/Release paths.
+func TestTransferMemoryBudgetHierarchyReserveReleaseUseAdmissionLock(t *testing.T) {
+	root := NewTransferMemoryBudget(kib(64))
+	child := NewTransferMemoryBudgetWithParent(kib(64), root)
+	root.admissionLock.Lock()
+	started := make(chan struct{})
+	finished := make(chan struct{})
+	go func() {
+		close(started)
+		child.Reserve(1)
+		child.Release(1)
+		close(finished)
+	}()
+	<-started
+	select {
+	case <-finished:
+		root.admissionLock.Unlock()
+		t.Fatal("hierarchy reserve/release escaped the root admission lock")
+	case <-time.After(10 * time.Millisecond):
+	}
+	root.admissionLock.Unlock()
+	<-finished
+	AssertEqual(t, root.UsedByteCount(), ByteCount(0))
+}
+
 func TestTransferMemoryBudgetHierarchyIntrusiveSiblingWaiter(t *testing.T) {
 	root := NewTransferMemoryBudget(10)
 	left := NewTransferMemoryBudgetWithParent(10, root)
@@ -141,6 +167,68 @@ func TestTransferMemoryBudgetHierarchyIntrusiveSiblingWaiter(t *testing.T) {
 	AssertEqual(t, right.TryReserve(10), true)
 	right.Release(10)
 	AssertEqual(t, root.capacityWaiterCount.Load(), int64(0))
+}
+
+// FIFO blocking is tracked per budget: a waiter held up by one child ceiling
+// must not stop a waiter on a sibling child that has capacity.
+func TestTransferMemoryBudgetHierarchyWaiterBlockingIsPerBudget(t *testing.T) {
+	root := NewTransferMemoryBudget(20)
+	left := NewTransferMemoryBudgetWithParent(10, root)
+	right := NewTransferMemoryBudgetWithParent(10, root)
+	AssertEqual(t, left.TryReserve(10), true)
+	AssertEqual(t, right.TryReserve(10), true)
+
+	leftWaiter := newTransferMemoryBudgetWaiter()
+	rightWaiter := newTransferMemoryBudgetWaiter()
+	defer leftWaiter.reset()
+	defer rightWaiter.reset()
+	leftNotify := leftWaiter.subscribe(left, 5)
+	rightNotify := rightWaiter.subscribe(right, 5)
+
+	// The release frees only the right ceiling. The left waiter is blocked at
+	// left, which the right waiter does not share.
+	right.Release(5)
+	select {
+	case <-leftNotify:
+		t.Fatal("left waiter woke without left capacity")
+	default:
+	}
+	select {
+	case <-rightNotify:
+	default:
+		t.Fatal("right waiter was blocked by the left ceiling")
+	}
+
+	left.Release(5)
+	select {
+	case <-leftNotify:
+	default:
+		t.Fatal("left waiter did not wake when its own ceiling freed")
+	}
+}
+
+// Reserve has no failure return and is used by legacy transfer queues, which
+// cannot handle refusal. A full exact hierarchy must therefore record the
+// excess as an overdraft instead of panicking the process.
+func TestTransferMemoryBudgetHierarchyReserveOverdraftsWithoutPanic(t *testing.T) {
+	root := NewTransferMemoryBudget(kib(8))
+	child := NewTransferMemoryBudgetWithParent(kib(8), root)
+	child.Reserve(kib(6))
+	child.Reserve(kib(6))
+	AssertEqual(t, child.UsedByteCount(), kib(12))
+	AssertEqual(t, root.UsedByteCount(), kib(12))
+
+	// A root that has children is a hierarchy too.
+	root.Reserve(kib(4))
+	AssertEqual(t, root.UsedByteCount(), kib(16))
+
+	child.Release(kib(12))
+	root.Release(kib(4))
+	for _, budget := range []*TransferMemoryBudget{root, child} {
+		stats := budget.Stats()
+		AssertEqual(t, stats.UsedByteCount, ByteCount(0))
+		AssertEqual(t, stats.ReservedByteCount, stats.ReleasedByteCount)
+	}
 }
 
 func TestTransferMemoryBudgetHierarchyRefusalDoesNotChargeAncestors(t *testing.T) {
