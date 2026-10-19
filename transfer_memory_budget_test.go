@@ -275,7 +275,9 @@ func TestTransferMemoryBudgetAdmissionReleaseWakesOnlyCapacityFit(t *testing.T) 
 	AssertEqual(t, budget.capacityWaiterCount.Load(), int64(waiterCount-2))
 }
 
-func TestTransferMemoryBudgetAdmissionReleaseSkipsIneligibleHead(t *testing.T) {
+// A later, smaller request must not consume capacity that an earlier request
+// still needs, or repeated small releases can starve the large one.
+func TestTransferMemoryBudgetAdmissionReleaseProtectsIneligibleHead(t *testing.T) {
 	budget := NewTransferMemoryBudget(10)
 	budget.Reserve(10)
 	largeWaiter := newTransferMemoryBudgetWaiter()
@@ -293,8 +295,8 @@ func TestTransferMemoryBudgetAdmissionReleaseSkipsIneligibleHead(t *testing.T) {
 	}
 	select {
 	case <-smallNotify:
+		t.Fatal("small admission consumed capacity the large one was waiting for")
 	default:
-		t.Fatal("eligible admission behind a large waiter was not woken")
 	}
 
 	budget.Release(5)
@@ -302,6 +304,113 @@ func TestTransferMemoryBudgetAdmissionReleaseSkipsIneligibleHead(t *testing.T) {
 	case <-largeNotify:
 	default:
 		t.Fatal("large admission was not woken when enough capacity accumulated")
+	}
+	// The large grant used the whole capacity snapshot, so the small request
+	// still waits for the next release.
+	select {
+	case <-smallNotify:
+		t.Fatal("small admission was woken twice from one capacity snapshot")
+	default:
+	}
+}
+
+// FIFO blocking must not stop multiple grants when capacity covers both: the
+// head is admitted first and the remaining capacity still wakes the rest.
+func TestTransferMemoryBudgetAdmissionReleaseGrantsEligibleSurplus(t *testing.T) {
+	budget := NewTransferMemoryBudget(20)
+	budget.Reserve(20)
+	largeWaiter := newTransferMemoryBudgetWaiter()
+	smallWaiter := newTransferMemoryBudgetWaiter()
+	defer largeWaiter.reset()
+	defer smallWaiter.reset()
+
+	largeNotify := largeWaiter.subscribe(budget, 8)
+	smallNotify := smallWaiter.subscribe(budget, 3)
+	budget.Release(11)
+	select {
+	case <-largeNotify:
+	default:
+		t.Fatal("large admission was not woken with enough capacity")
+	}
+	select {
+	case <-smallNotify:
+	default:
+		t.Fatal("eligible small admission behind a granted head was not woken")
+	}
+}
+
+// Small waiters that keep arriving behind a large one cannot take every
+// incremental release.
+func TestTransferMemoryBudgetAdmissionLargeWaiterNotStarvedBySmallWaiters(t *testing.T) {
+	budget := NewTransferMemoryBudget(10)
+	budget.Reserve(10)
+	largeWaiter := newTransferMemoryBudgetWaiter()
+	defer largeWaiter.reset()
+	largeNotify := largeWaiter.subscribe(budget, 8)
+	smallWaiters := make([]*transferMemoryBudgetWaiter, 3)
+	smallNotifies := make([]<-chan struct{}, len(smallWaiters))
+	for i := range smallWaiters {
+		smallWaiters[i] = newTransferMemoryBudgetWaiter()
+		defer smallWaiters[i].reset()
+		smallNotifies[i] = smallWaiters[i].subscribe(budget, 3)
+	}
+
+	// Each release fits a small waiter but not the large one. The small
+	// waiters must not consume them while the large waiter is first.
+	for i := 0; i < 2; i += 1 {
+		budget.Release(3)
+		for j, notify := range smallNotifies {
+			select {
+			case <-notify:
+				t.Fatalf("small waiter %d consumed release %d ahead of the large waiter", j, i)
+			default:
+			}
+		}
+		select {
+		case <-largeNotify:
+			t.Fatalf("large waiter woke on partial capacity %d", i)
+		default:
+		}
+	}
+
+	// The third release accumulates enough capacity for the large request.
+	budget.Release(3)
+	select {
+	case <-largeNotify:
+	default:
+		t.Fatal("large waiter was not woken once its whole request fit")
+	}
+	for j, notify := range smallNotifies {
+		select {
+		case <-notify:
+			t.Fatalf("small waiter %d was woken ahead of the large grant", j)
+		default:
+		}
+	}
+}
+
+// A request larger than an empty budget can never be admitted. It must not
+// hold every other waiter behind it while its owner times out or resets.
+func TestTransferMemoryBudgetAdmissionImpossibleWaiterDoesNotBlock(t *testing.T) {
+	budget := NewTransferMemoryBudget(10)
+	budget.Reserve(10)
+	impossibleWaiter := newTransferMemoryBudgetWaiter()
+	smallWaiter := newTransferMemoryBudgetWaiter()
+	defer impossibleWaiter.reset()
+	defer smallWaiter.reset()
+
+	impossibleNotify := impossibleWaiter.subscribe(budget, 20)
+	smallNotify := smallWaiter.subscribe(budget, 3)
+	budget.Release(3)
+	select {
+	case <-impossibleNotify:
+		t.Fatal("a request larger than the budget was woken")
+	default:
+	}
+	select {
+	case <-smallNotify:
+	default:
+		t.Fatal("an impossible request blocked a fitting waiter")
 	}
 }
 

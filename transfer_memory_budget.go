@@ -72,8 +72,8 @@ type TransferMemoryBudget struct {
 	// whose peer-connection admission generation (4740 lines against 1255 in
 	// this tree) has no counterpart here yet: the field would be a pointer
 	// with no writer and no reader. It is restored by the stage that ports
-	// peer-connection lifetime reservations. Every other line of this file is
-	// identical to the pinned file.
+	// peer-connection lifetime reservations. The rest of the file carries the
+	// pinned logic plus the local review fixes documented at each method.
 }
 
 // transferMemoryBudgetNotify is one capacity-notification generation. An
@@ -97,9 +97,11 @@ type transferMemoryBudgetWaiter struct {
 
 // transferMemoryBudgetWaitScratch is one budget's state within a notification
 // pass. The pass reuses a map of these on the root instead of allocating per
-// release.
+// release. blocked records that an earlier waiter in the pass is waiting on
+// this budget, so a later waiter may not take its capacity.
 type transferMemoryBudgetWaitScratch struct {
 	grantedByteCount ByteCount
+	blocked          bool
 }
 
 func newTransferMemoryBudgetWaiter() *transferMemoryBudgetWaiter {
@@ -151,7 +153,9 @@ func NewTransferMemoryBudget(totalByteCount ByteCount) *TransferMemoryBudget {
 // NewTransferMemoryBudgetWithParent creates an exact-admission child. Its
 // capacity is a ceiling, not an eager reservation: only live ownership is
 // charged to the child and every ancestor. Never reparent an existing pool,
-// because old generations may still own its reservations.
+// because old generations may still own its reservations. Attach children
+// before a pool is used concurrently: a root that has not yet gained a child
+// keeps its plain atomic Reserve/Release path.
 func NewTransferMemoryBudgetWithParent(totalByteCount ByteCount, parent *TransferMemoryBudget) *TransferMemoryBudget {
 	budget := NewTransferMemoryBudget(totalByteCount)
 	if parent != nil {
@@ -462,17 +466,19 @@ func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
 	self.capacityWaiterCount.Add(-1)
 }
 
-// notifyEligibleCapacityWaiters performs a bounded FIFO admission grant. It
-// scans past a large ineligible request so a smaller request cannot starve,
-// while subtracting each grant from a capacity snapshot prevents a release
-// for one receive window from waking every speculative P2P setup.
+// notifyEligibleCapacityWaiters grants capacity in FIFO order. A later waiter
+// may not consume capacity at a budget where an earlier waiter is already
+// waiting: otherwise a stream of small requests can take every incremental
+// release and starve a large one indefinitely. Blocking is tracked per budget,
+// so a waiter held up by one child ceiling does not stop a sibling child's
+// waiter. Each grant is subtracted from a per-budget capacity snapshot, so a
+// release does not wake every speculative P2P setup.
 func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 	self = self.admissionRoot()
 	if self.capacityWaiterCount.Load() == 0 {
 		return
 	}
-	availableByteCount := self.Available()
-	if availableByteCount <= 0 {
+	if self.Available() <= 0 {
 		return
 	}
 
@@ -482,34 +488,58 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 	// grants per ancestor as well as at the root so a broad root does not wake
 	// every setup behind a single newly freed child receive window. The map is
 	// retained and cleared between passes so a release does not allocate.
-	granted := self.capacityWaitScratch
-	if granted == nil {
-		granted = make(map[*TransferMemoryBudget]transferMemoryBudgetWaitScratch)
-		self.capacityWaitScratch = granted
+	scratch := self.capacityWaitScratch
+	if scratch == nil {
+		scratch = make(map[*TransferMemoryBudget]transferMemoryBudgetWaitScratch)
+		self.capacityWaitScratch = scratch
 	} else {
-		clear(granted)
+		clear(scratch)
 	}
 	// Do not let the root's scratch map keep a retired child budget alive.
-	defer clear(granted)
+	defer clear(scratch)
 	for waiter := self.capacityWaitHead; waiter != nil; {
 		nextWaiter := waiter.nextCapacityWaiter
-		eligible := waiter.requiredByteCount <= availableByteCount
-		for budget := waiter.budget; eligible && budget != nil; budget = budget.parent {
-			eligible = waiter.requiredByteCount <= max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-granted[budget].grantedByteCount)
+		requiredByteCount := max(0, waiter.requiredByteCount)
+		eligible := true
+		blocked := false
+		impossible := false
+		for budget := waiter.budget; budget != nil; budget = budget.parent {
+			state := scratch[budget]
+			if state.blocked {
+				blocked = true
+			}
+			totalByteCount := budget.totalByteCount.Load()
+			if totalByteCount < requiredByteCount {
+				// A request larger than an empty budget can never be admitted;
+				// it must not hold back waiters that can proceed.
+				impossible = true
+			}
+			if eligible && requiredByteCount > max(0, totalByteCount-budget.usedByteCount.Load()-state.grantedByteCount) {
+				eligible = false
+			}
 		}
-		if eligible {
+		switch {
+		case eligible && (!blocked || requiredByteCount == 0):
 			self.removeCapacityWaiterWithLock(waiter)
 			select {
 			case waiter.notify <- struct{}{}:
-				availableByteCount -= waiter.requiredByteCount
 				for budget := waiter.budget; budget != nil; budget = budget.parent {
-					state := granted[budget]
-					state.grantedByteCount += waiter.requiredByteCount
-					granted[budget] = state
+					state := scratch[budget]
+					state.grantedByteCount += requiredByteCount
+					scratch[budget] = state
 				}
 			default:
 				// A pending token means this waiter already has a grant. Do
 				// not charge it twice; continue looking for another waiter.
+			}
+		case !eligible && !blocked && !impossible:
+			// Hold later waiters at every level this request is waiting on.
+			for budget := waiter.budget; budget != nil; budget = budget.parent {
+				if requiredByteCount > max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-scratch[budget].grantedByteCount) {
+					state := scratch[budget]
+					state.blocked = true
+					scratch[budget] = state
+				}
 			}
 		}
 		waiter = nextWaiter
