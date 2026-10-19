@@ -169,6 +169,30 @@ func TestTransferMemoryBudgetHierarchyIntrusiveSiblingWaiter(t *testing.T) {
 	AssertEqual(t, root.capacityWaiterCount.Load(), int64(0))
 }
 
+// Reserve has no failure return and is used by legacy transfer queues, which
+// cannot handle refusal. A full exact hierarchy must therefore record the
+// excess as an overdraft instead of panicking the process.
+func TestTransferMemoryBudgetHierarchyReserveOverdraftsWithoutPanic(t *testing.T) {
+	root := NewTransferMemoryBudget(kib(8))
+	child := NewTransferMemoryBudgetWithParent(kib(8), root)
+	child.Reserve(kib(6))
+	child.Reserve(kib(6))
+	AssertEqual(t, child.UsedByteCount(), kib(12))
+	AssertEqual(t, root.UsedByteCount(), kib(12))
+
+	// A root that has children is a hierarchy too.
+	root.Reserve(kib(4))
+	AssertEqual(t, root.UsedByteCount(), kib(16))
+
+	child.Release(kib(12))
+	root.Release(kib(4))
+	for _, budget := range []*TransferMemoryBudget{root, child} {
+		stats := budget.Stats()
+		AssertEqual(t, stats.UsedByteCount, ByteCount(0))
+		AssertEqual(t, stats.ReservedByteCount, stats.ReleasedByteCount)
+	}
+}
+
 func TestTransferMemoryBudgetHierarchyRefusalDoesNotChargeAncestors(t *testing.T) {
 	root := NewTransferMemoryBudget(100)
 	group := NewTransferMemoryBudgetWithParent(10, root)

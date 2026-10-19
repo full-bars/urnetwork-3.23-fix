@@ -226,10 +226,11 @@ func (self *TransferMemoryBudget) requiresAdmissionLock() bool {
 	return self.parent != nil || self.root != nil || self.hasChildren.Load()
 }
 
-// Reserve preserves legacy standalone queue overdraft semantics. Hierarchies
-// require exact retained admission: callers must use TryReserve and handle
-// refusal before taking ownership. Reserve is permitted there only for an
-// already-proven fitting claim; violating that contract is a programming bug.
+// Reserve preserves legacy queue overdraft semantics. Exact hierarchies use
+// TryReserve for retained admission; a legacy queue still attached to one
+// cannot handle refusal, so a claim that does not fit is charged to every
+// ancestor as an overdraft instead of panicking. The excess stays bounded by
+// the caller's own growth step and remains visible in UsedByteCount.
 func (self *TransferMemoryBudget) Reserve(byteCount ByteCount) {
 	if !self.requiresAdmissionLock() {
 		self.usedByteCount.Add(byteCount)
@@ -239,8 +240,12 @@ func (self *TransferMemoryBudget) Reserve(byteCount ByteCount) {
 	root := self.admissionRoot()
 	root.admissionLock.Lock()
 	defer root.admissionLock.Unlock()
-	if !self.tryReserveWithLock(byteCount) {
-		panic("TransferMemoryBudget.Reserve: exact hierarchy requires TryReserve")
+	if self.tryReserveWithLock(byteCount) {
+		return
+	}
+	for budget := self; budget != nil; budget = budget.parent {
+		budget.usedByteCount.Add(byteCount)
+		budget.reservedByteCount.Add(byteCount)
 	}
 }
 
