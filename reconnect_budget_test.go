@@ -751,6 +751,42 @@ func TestGovernState_HealthyRestartStartsOpen(t *testing.T) {
 	}
 }
 
+// Shadow mode exists to show what enforce would decide, so it restores and
+// keeps the learned baseline too. The outage marker stays enforce-only: only
+// enforce changes behaviour from it.
+func TestGovernState_ShadowRestoresAndKeepsTheBaseline(t *testing.T) {
+	defer setGovernModeForTest(governShadow)()
+	previousGov, previousBudget := connectGov, connectBudget
+	defer func() {
+		connectGov, connectBudget = previousGov, previousBudget
+	}()
+	connectGov = newConnectGovernor(time.Now)
+	connectBudget = newReconnectBudget(connectGov, time.Now)
+	connectBudget.emit = func(string) {}
+
+	dir := t.TempDir()
+	baselinePath := dir + "/govern_baseline"
+	if err := os.WriteFile(baselinePath, []byte("0.30\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	markerPath := dir + "/govern_outage"
+	if err := os.WriteFile(markerPath, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	InitGovernState(markerPath)
+
+	if got := connectGov.snapshot().Baseline; got < 0.29 || 0.31 < got {
+		t.Fatalf("shadow restored baseline %.2f, want about 0.30", got)
+	}
+	if connectGov.baselinePath != baselinePath {
+		t.Fatalf("shadow baseline path = %q, want %q", connectGov.baselinePath, baselinePath)
+	}
+	if connectBudget.outageRecent(time.Hour) {
+		t.Fatal("shadow restored the outage marker, which changes behaviour")
+	}
+}
+
 func TestGovernState_MarkerClearsWhenTheBudgetReopens(t *testing.T) {
 	path := t.TempDir() + "/govern_outage"
 	h := newBudgetHarness()

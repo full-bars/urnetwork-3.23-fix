@@ -826,14 +826,19 @@ var backendDegradedNow = func() bool {
 // reads what the governor observed.
 func BackendDegraded() bool { return backendDegradedNow() }
 
-// InitGovernState tells the governor where to keep its outage marker and reads
-// the previous run's. Call once at startup. It does nothing unless the governor
-// is enforcing.
+// InitGovernState tells the governor where to keep its learned state and reads
+// the previous run's. Call once at startup. It does nothing when the governor is
+// off. Shadow restores and keeps the baseline too, so its verdict shows what
+// enforce would decide; the outage marker changes behaviour, so only enforce
+// restores that.
 func InitGovernState(markerPath string) {
-	if currentGovernMode() != governEnforce {
+	mode := currentGovernMode()
+	if mode == governOff {
 		return
 	}
-	connectBudget.restoreOutageMarker(markerPath, time.Now())
+	if mode == governEnforce {
+		connectBudget.restoreOutageMarker(markerPath, time.Now())
+	}
 	// the learned baseline lives beside the marker
 	connectGov.restoreBaseline(filepath.Join(filepath.Dir(markerPath), "govern_baseline"), time.Now())
 }
