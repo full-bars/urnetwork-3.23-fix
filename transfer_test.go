@@ -782,3 +782,27 @@ func TestSendEncryptedControlReturnsPoolBufferOnCancel(t *testing.T) {
 		t.Fatalf("pool bucket 2048 after %d cancel-path attempts unbalanced: taken_delta=%d returned_delta=%d (want equal; leak and double-return both fail here)", attempts, takenDelta, returnedDelta)
 	}
 }
+
+// The number a receiver puts on its acks: its hold, capped by the budget it may
+// borrow, so the sender never clamps to more than the receiver can honour.
+func TestReceiveWindowByteCount(t *testing.T) {
+	cases := []struct {
+		name   string
+		hold   ByteCount
+		budget *TransferMemoryBudget
+		want   uint64
+	}{
+		{"no budget advertises the hold", mib(2) + kib(512), nil, uint64(mib(2) + kib(512))},
+		{"budget above the hold keeps the hold", mib(2), NewTransferMemoryBudget(mib(8)), uint64(mib(2))},
+		{"budget below the hold caps it", mib(8), NewTransferMemoryBudget(mib(1)), uint64(mib(1))},
+		{"zero hold advertises zero", 0, nil, 0},
+		{"zero budget advertises zero", mib(4), NewTransferMemoryBudget(0), 0},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := receiveWindowByteCount(tc.hold, tc.budget); got != tc.want {
+				t.Fatalf("got %d, want %d", got, tc.want)
+			}
+		})
+	}
+}

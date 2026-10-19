@@ -314,6 +314,8 @@ type sendAckFrame struct {
 	sequenceId Id
 	selective  bool
 	tag        *protocol.Tag // nil when absent
+	// receive_window_byte_count (8), nil when this receiver does not advertise
+	windowByteCount *uint64
 }
 
 // sizeAck returns the encoded size of the Ack submessage body (fields 1-4).
@@ -328,6 +330,9 @@ func (m *sendAckFrame) sizeAck() int {
 	if m.tag != nil {
 		tagBody := sizeTagBody(m.tag.SendTime)
 		n += protoSizeTag(4) + protoSizeVarint(uint64(tagBody)) + tagBody
+	}
+	if m.windowByteCount != nil {
+		n += protoSizeTag(8) + protoSizeVarint(*m.windowByteCount)
 	}
 	return n
 }
@@ -346,6 +351,10 @@ func (m *sendAckFrame) appendAck(b []byte) []byte {
 		b = protoAppendTag(b, 4, protoWireBytes)
 		b = protoAppendVarint(b, uint64(sizeTagBody(m.tag.SendTime)))
 		b = appendTagBody(b, m.tag.SendTime)
+	}
+	if m.windowByteCount != nil {
+		b = protoAppendTag(b, 8, protoWireVarint)
+		b = protoAppendVarint(b, *m.windowByteCount)
 	}
 	return b
 }
@@ -697,6 +706,17 @@ func decodeAck(b []byte) (*protocol.Ack, bool) {
 				return nil, false
 			}
 			ack.Tag = tg
+		case 8: // receive_window_byte_count
+			if typ != protowire.VarintType {
+				return nil, false
+			}
+			v, vn := protowire.ConsumeVarint(b)
+			if vn < 0 {
+				return nil, false
+			}
+			b = b[vn:]
+			receiveWindowByteCount := v
+			ack.ReceiveWindowByteCount = &receiveWindowByteCount
 		default:
 			fn := protowire.ConsumeFieldValue(num, typ, b)
 			if fn < 0 {

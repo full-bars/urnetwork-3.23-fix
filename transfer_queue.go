@@ -99,6 +99,14 @@ func (self *transferQueue[T]) setBudget(budget *TransferMemoryBudget, minByteCou
 	self.minByteCount = minByteCount
 }
 
+// Budget is the shared budget this queue borrows from, nil when it does not
+// borrow.
+func (self *transferQueue[T]) Budget() *TransferMemoryBudget {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return self.budget
+}
+
 func (self *transferQueue[T]) updateByteCountWithLock(deltaByteCount ByteCount) {
 	self.byteCount += deltaByteCount
 	if self.budget != nil {

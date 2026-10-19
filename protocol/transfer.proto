@@ -135,6 +135,12 @@ message Ack {
 
     // from the `Pack` this responds to
     optional Tag tag = 4;
+
+    // what this receiver can still hold out of order, so the sender may clamp
+    // its window to it. Optional so an older peer's ack decodes as absent
+    // rather than as zero: absent is a legacy peer, zero is a receiver with no
+    // capacity at all.
+    optional uint64 receive_window_byte_count = 8;
 }
 
 

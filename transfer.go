@@ -5042,6 +5042,42 @@ func (self *ReceiveSequence) Pack(receivePack *ReceivePack, timeout time.Duratio
 	}
 }
 
+// receiveWindowByteCount is what a receiver with this hold and this borrowing
+// budget can still hold out of order. The hold is capped by the budget so the
+// number advertised is one the receiver can actually honour.
+func receiveWindowByteCount(hold ByteCount, budget *TransferMemoryBudget) uint64 {
+	if budget != nil {
+		hold = min(hold, budget.TotalByteCount())
+	}
+	return uint64(max(0, hold))
+}
+
+// receiveWindowAdvertisement is what this receiver can still hold out of order:
+// its configured hold, capped by the budget it is allowed to borrow. It rides
+// every acknowledgement as receive_window_byte_count so the sender can clamp
+// its own window to what will actually be accepted (THROUGHPUTFIX §37.3).
+// Without it a sender with a large window puts everything above the hold into
+// arrivals that are dropped on arrival, so one lost Pack costs a window of
+// retransmission. A sender that does not honour the field behaves as before.
+func (self *ReceiveSequence) receiveWindowAdvertisement() uint64 {
+	return receiveWindowByteCount(self.receiveBufferSettings.ReceiveQueueMaxByteCount, self.receiveQueue.Budget())
+}
+
+// newSendAckFrame builds the hot-path ack from the sequence's ack request and
+// the receiver's current window advertisement. It is the single construction
+// the send path uses, so the wire evidence the platform's modern provider gate
+// measures cannot drift from what is actually sent (TestModernProviderGate).
+func newSendAckFrame(sendAck *sequenceAck, sequenceId Id, path TransferPath, windowByteCount uint64) *sendAckFrame {
+	return &sendAckFrame{
+		path:            path,
+		messageId:       sendAck.messageId,
+		sequenceId:      sequenceId,
+		selective:       sendAck.selective,
+		tag:             sendAck.tag,
+		windowByteCount: &windowByteCount,
+	}
+}
+
 // Run is the sequence's main loop, started once per ReceiveSequence by
 // ReceiveBuffer.Pack and blocking until the sequence terminates. On exit the
 // deferred teardown closes the exit channel last, so WaitForExit returns
@@ -5115,25 +5151,23 @@ func (self *ReceiveSequence) Run() {
 
 		writeAck := func(sendAck *sequenceAck) {
 			path := self.source.Reverse().AddSource(self.client.ClientId())
+			// what this receiver can still hold out of order, on every ack so the
+			// peer can clamp its window to it (receive_window_byte_count)
+			receiveWindowByteCount := self.receiveWindowAdvertisement()
 
 			var transferFrameBytes []byte
 			if 2 <= self.receiveBufferSettings.ProtocolVersion {
 				// hand-rolled marshal of the hot Ack TransferFrame; wire-identical
 				// to the proto structs in the legacy branch (see frame_protobuf_test.go).
-				saf := sendAckFrame{
-					path:       path,
-					messageId:  sendAck.messageId,
-					sequenceId: self.sequenceId,
-					selective:  sendAck.selective,
-					tag:        sendAck.tag,
-				}
-				transferFrameBytes = marshalSendAckTransferFrame(&saf)
+				saf := newSendAckFrame(sendAck, self.sequenceId, path, receiveWindowByteCount)
+				transferFrameBytes = marshalSendAckTransferFrame(saf)
 			} else {
 				ack := &protocol.Ack{
-					MessageId:  sendAck.messageId.Bytes(),
-					SequenceId: self.sequenceId.Bytes(),
-					Selective:  sendAck.selective,
-					Tag:        sendAck.tag,
+					MessageId:              sendAck.messageId.Bytes(),
+					SequenceId:             self.sequenceId.Bytes(),
+					Selective:              sendAck.selective,
+					Tag:                    sendAck.tag,
+					ReceiveWindowByteCount: &receiveWindowByteCount,
 				}
 				ackBytes, _ := ProtoMarshal(ack)
 				defer MessagePoolReturn(ackBytes)
