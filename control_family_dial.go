@@ -184,13 +184,17 @@ func dialControlTlsWithFamilyFallback(
 		// second failure over the second family is not a family problem.
 		// Leaving the strike standing would narrow every control dial in the
 		// process onto a family that just failed outright.
-		controlFamilyUndemote(failed)
+		if ctx.Err() == nil && isPathFailure(retryErr) {
+			controlFamilyUndemote(failed)
+		}
 		return nil, err
 	}
 	retryTlsConn, retryErr := handshake(ctx, retryConn)
 	if retryErr != nil {
 		retryConn.Close()
-		controlFamilyUndemote(failed)
+		if ctx.Err() == nil && isPathFailure(retryErr) {
+			controlFamilyUndemote(failed)
+		}
 		return nil, err
 	}
 	return retryTlsConn, nil
@@ -260,6 +264,13 @@ func redialWithoutAContradictedDemotion(
 		return nil, dialErr
 	}
 	if ControlIpFamilyPolicy() != IpFamilyAuto {
+		return nil, dialErr
+	}
+	// Only a path failure on the narrowed family contradicts the demotion. A
+	// cancellation, an expired deadline, DNS, or a refusal says nothing about
+	// the family, and clearing the entry would send the next dial down the
+	// blackholed path for the full handshake bound again.
+	if ctx.Err() != nil || !isPathFailure(dialErr) {
 		return nil, dialErr
 	}
 	demoted := controlFamilyDemotedFamily()
