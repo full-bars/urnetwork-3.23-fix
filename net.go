@@ -385,6 +385,13 @@ type ConnectSettings struct {
 	DisableIpv6 bool
 }
 
+// dialUsesProxy reports whether DialContext will be the SOCKS path, in which
+// case a completed connection's remote address describes the hop to the proxy,
+// not the destination or the host's own route to it.
+func (self *ConnectSettings) dialUsesProxy() bool {
+	return self.DialContextSettings == nil && self.ProxySettings != nil
+}
+
 type DialContextSettings struct {
 	DialContext DialContextFunction
 	// PacketConnFactory, when set, supplies the packet conn for udp dials so a
