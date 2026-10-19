@@ -43,9 +43,11 @@ jobs:
     # (up to 60 min on tag-triggered runs) + checkout/setup/mint time, so
     # 260 keeps the outer cap above the worst-case total.
     timeout-minutes: 260
-    # Two runs share the same gauntlet account server-side. Queue, never cancel.
+    # May run beside docker-shakedown.yml; the mint step jitters and retries
+    # because both share the gauntlet account. One group per workflow/ref
+    # prevents duplicate runs of this workflow.
     concurrency:
-      group: shakedown
+      group: ${{ github.workflow }}-${{ github.ref }}
       cancel-in-progress: false
     steps:
       - name: Checkout
@@ -122,7 +124,20 @@ jobs:
             if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10; else echo "Build failed after 3 attempts"; exit 1; fi
           done
           mkdir -p /tmp/mint
-          HOME=/tmp/mint /tmp/provider auth --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
+          # Concurrent shakedown runs share the gauntlet account. Spread the
+          # sign-in burst and retry with backoff instead of serializing the
+          # whole workflow; the API budget is about 10 req/s.
+          sleep $((RANDOM % 30))
+          mint_ok=0
+          for mint_attempt in 1 2 3; do
+            rm -rf /tmp/mint
+            HOME=/tmp/mint /tmp/provider auth --user_auth="$GAUNTLET_USER" --password="$GAUNTLET_PW" --api_url=https://api.bringyour.com -f > /tmp/mint.log 2>&1 || true
+            grep -vE '^I[0-9]{4}' /tmp/mint.log || true
+            if [ -s /tmp/mint/.urnetwork/jwt ]; then mint_ok=1; break; fi
+            echo "JWT mint attempt ${mint_attempt} failed; retrying"
+            sleep $((mint_attempt * 10))
+          done
+          test "$mint_ok" = 1 || { echo "JWT mint failed after 3 attempts (verification required?)"; exit 1; }
           test -s /tmp/mint/.urnetwork/jwt || { echo "JWT mint failed (verification required?)"; exit 1; }
           cp /tmp/mint/.urnetwork/jwt /tmp/gauntlet.jwt
           python3 - << 'PY'
