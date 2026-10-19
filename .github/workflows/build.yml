@@ -140,6 +140,10 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v6
+        with:
+          # this job only runs tests: no step needs the token, so do not leave
+          # it in the credentials file the checkout writes for later steps
+          persist-credentials: false
 
       - name: Set up Go (native cache)
         uses: actions/setup-go@v5
