@@ -274,6 +274,11 @@ type ContractManagerSettings struct {
 	ProtocolVersion int
 
 	ContractStatsEpoch time.Duration
+
+	// ProxyDescription is a human-readable identifier for the proxy this
+	// manager's client runs behind (e.g. "proxy[15304] (216.26.234.33:1081)"
+	// or "proxy[0] (direct)"). When set, contract lifecycle logs include it.
+	ProxyDescription string
 }
 
 // ContractsEnabled is false before the enablement event time, while contracts
@@ -711,7 +716,12 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						}
 
 						self.contractStatus(contractStatus)
-						self.client.log.Infof("💚 [contract] acquired size=%s destination=%s\n",
+						proxyTag := ""
+						if self.settings != nil && self.settings.ProxyDescription != "" {
+							proxyTag = " " + self.settings.ProxyDescription
+						}
+						self.client.log.Infof("💚 [contract] acquired%s size=%s destination=%s\n",
+							proxyTag,
 							ByteCountHumanReadable(ByteCount(storedContract.GetTransferByteCount())),
 							contractKey.Destination.DestinationId)
 						atomic.AddUint64(&contractsAcquired, 1)
@@ -734,8 +744,12 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 			// frame skipped backoff tiers.
 			self.noteDenial(contractKey.Destination.DestinationId)
 		}
+		proxyTag := ""
+		if self.settings != nil && self.settings.ProxyDescription != "" {
+			proxyTag = " " + self.settings.ProxyDescription
+		}
 		for _, contractError := range contractErrors {
-			self.client.log.Infof("⛔ [contract] denied = %s destination=%s\n", contractError, contractKey.Destination.DestinationId)
+			self.client.log.Infof("⛔ [contract] denied%s = %s destination=%s\n", proxyTag, contractError, contractKey.Destination.DestinationId)
 			atomic.AddUint64(&contractsDenied, 1)
 			c := func() {
 				contractStatus := &ContractStatus{
@@ -1321,13 +1335,29 @@ func closeContractLine(
 	util float64,
 	destination Id,
 ) string {
+	return closeContractLineWithProxy(checkpoint, ackedByteCount, allottedByteCount, util, destination, "")
+}
+
+func closeContractLineWithProxy(
+	checkpoint bool,
+	ackedByteCount ByteCount,
+	allottedByteCount ByteCount,
+	util float64,
+	destination Id,
+	proxyDescription string,
+) string {
 	emoji, action := "🚪", "closed"
 	if checkpoint {
 		emoji, action = "📍", "checkpointed"
 	}
-	return fmt.Sprintf("%s [contract] %s acked=%s allotted=%s util=%.0f%% destination=%s",
+	proxyTag := ""
+	if proxyDescription != "" {
+		proxyTag = " " + proxyDescription
+	}
+	return fmt.Sprintf("%s [contract] %s%s acked=%s allotted=%s util=%.0f%% destination=%s",
 		emoji,
 		action,
+		proxyTag,
 		ByteCountHumanReadable(ackedByteCount),
 		ByteCountHumanReadable(allottedByteCount),
 		util,
@@ -1380,8 +1410,12 @@ func (self *ContractManager) CloseContractWithCheckpoint(
 		// The marker leads the line so the `[contract] closed` token stays
 		// contiguous: LOG_REFERENCE.md and the release notes both quote it, and
 		// anything matching it must keep working.
+		proxyDesc := ""
+		if self.settings != nil {
+			proxyDesc = self.settings.ProxyDescription
+		}
 		self.client.log.Infof("%s\n",
-			closeContractLine(checkpoint, ackedByteCount, allottedByteCount, util, contractKey.Destination.DestinationId))
+			closeContractLineWithProxy(checkpoint, ackedByteCount, allottedByteCount, util, contractKey.Destination.DestinationId, proxyDesc))
 		if !checkpoint {
 			atomic.AddUint64(&contractUtilSum, uint64(util))
 		}
