@@ -4068,8 +4068,10 @@ func (self *SendSequence) sendWithSetContract(
 			}
 		}
 	}
-	recordTransferFirstSend(len(item.transferFrameBytes))
 	if err == nil {
+		// a write that never reached the wire is not a first send; resends
+		// already record only on success
+		recordTransferFirstSend(len(item.transferFrameBytes))
 		// a write that never reached a carrier says nothing about the destination
 		self.noteYieldSend(len(item.transferFrameBytes))
 		self.observeCarrierWrite(item, disposition)
