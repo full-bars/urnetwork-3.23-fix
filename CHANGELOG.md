@@ -1,5 +1,19 @@
 # Changelog
 
+## [v3.23.0-fix.34.0-rc1]
+
+_Release candidate: the v2026 engine transplant plus the post-slice fixes. Notes: `releases/v3.23.0-fix.34.0-rc1.md`._
+
+### Fixed
+
+- **The governor restores its learned baseline in shadow mode**: `InitGovernState` returned early unless the mode was enforce, so a shadow process started every restart with no persisted baseline and judged windows against the plain 20% threshold. Shadow now restores the baseline and keeps learning it, so its `baseline` and `threshold` fields match the enforce decision. The outage restart marker stays enforce-only because only enforce acts on it.
+- **A local teardown is never governor evidence**: the H1 and H3 loops now skip `recordAttempt` when the attempt's local context has ended, matching the existing dial-failure carve-outs, so a cancelled dial is not counted as an early death.
+- **First-send counters require a successful write**: `recordTransferFirstSend` moved inside the success branch, so a write that never reached the wire no longer counts as a first send; the resend path already behaved this way.
+
+### Changed
+
+- **The standalone transfer budget is lock-free, and `Reserve` charges a hierarchy instead of panicking**: standalone reserve/release no longer take the root admission lock, an exact-equality hierarchy now charges its full amount rather than underflowing into a panic, the waiter grant scratch is reused across releases, and capacity waiters wake in FIFO order.
+
 ## [Unreleased]
 
 _Unreleased: the v33.1 batch. Not tagged, released, or deployed._
