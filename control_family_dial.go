@@ -99,6 +99,12 @@ func dialControlTlsWithFamilyFallback(
 	// ConnectSettings.DialContext, so name resolution below it requests only
 	// the pinned record type, and a Force that contradicts the pin surfaces
 	// there as the error the transport idles on.
+	// A dial that goes through a SOCKS proxy observes the PROXY's address
+	// family, not the destination's: connFamily reads the hop to the proxy,
+	// and a handshake timeout on that connection is the proxy or its upstream.
+	// The strike filter is not enough here, because a handshake failure is a
+	// plain timeout rather than a proxyDialError. No strike, no retry.
+	proxied := settings != nil && settings.dialUsesProxy()
 	pinnedFamily := pinnedIpFamilyFromContext(ctx)
 	if pinnedFamily != 0 {
 		narrowed, err := pinnedDialNetwork(network, pinnedFamily)
@@ -109,6 +115,9 @@ func dialControlTlsWithFamilyFallback(
 	}
 	conn, err := dial(ctx, network, addr)
 	if err != nil {
+		if proxied {
+			return nil, err
+		}
 		conn, err = redialWithoutAContradictedDemotion(ctx, network, addr, dial, err)
 		if err != nil {
 			return nil, err
@@ -137,9 +146,13 @@ func dialControlTlsWithFamilyFallback(
 	// its family is still evidence for the ledger the family-agnostic dials
 	// read: it is recorded (subject to the same guards) and not retried.
 	if pinnedFamily != 0 {
-		if isPathTimeout(err) && failed != 0 && ctx.Err() == nil && !isIPLiteralDialAddr(addr) {
+		if !proxied && isPathTimeout(err) && failed != 0 && ctx.Err() == nil && !isIPLiteralDialAddr(addr) {
 			recordControlFamilyStrike(failed, err)
 		}
+		return nil, err
+	}
+	// a proxied dial has nowhere family-specific to go
+	if proxied {
 		return nil, err
 	}
 	// only a family-agnostic dial has somewhere else to go
