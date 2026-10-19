@@ -54,6 +54,10 @@ type TransferMemoryBudget struct {
 	capacityWaitHead      *transferMemoryBudgetWaiter
 	capacityWaitTail      *transferMemoryBudgetWaiter
 	capacityWaiterCount   atomic.Int64
+	// capacityWaitScratch is reused across notification passes so a release
+	// does not allocate while waiters are registered. It is always empty
+	// between passes and guarded by capacityWaitStateLock.
+	capacityWaitScratch map[*TransferMemoryBudget]transferMemoryBudgetWaitScratch
 
 	// ADAPTATION (v2026-engine port, transfer layer, stage 1): the pinned file
 	// also ends this struct with
@@ -89,6 +93,13 @@ type transferMemoryBudgetWaiter struct {
 	previousCapacityWaiter *transferMemoryBudgetWaiter
 	nextCapacityWaiter     *transferMemoryBudgetWaiter
 	registered             bool
+}
+
+// transferMemoryBudgetWaitScratch is one budget's state within a notification
+// pass. The pass reuses a map of these on the root instead of allocating per
+// release.
+type transferMemoryBudgetWaitScratch struct {
+	grantedByteCount ByteCount
 }
 
 func newTransferMemoryBudgetWaiter() *transferMemoryBudgetWaiter {
@@ -456,6 +467,7 @@ func (self *TransferMemoryBudget) removeCapacityWaiterWithLock(
 // while subtracting each grant from a capacity snapshot prevents a release
 // for one receive window from waking every speculative P2P setup.
 func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
+	self = self.admissionRoot()
 	if self.capacityWaiterCount.Load() == 0 {
 		return
 	}
@@ -468,13 +480,22 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 	defer self.capacityWaitStateLock.Unlock()
 	// Only the uncommon intrusive-waiter path needs this scratch map. Track
 	// grants per ancestor as well as at the root so a broad root does not wake
-	// every setup behind a single newly freed child receive window.
-	granted := make(map[*TransferMemoryBudget]ByteCount)
+	// every setup behind a single newly freed child receive window. The map is
+	// retained and cleared between passes so a release does not allocate.
+	granted := self.capacityWaitScratch
+	if granted == nil {
+		granted = make(map[*TransferMemoryBudget]transferMemoryBudgetWaitScratch)
+		self.capacityWaitScratch = granted
+	} else {
+		clear(granted)
+	}
+	// Do not let the root's scratch map keep a retired child budget alive.
+	defer clear(granted)
 	for waiter := self.capacityWaitHead; waiter != nil; {
 		nextWaiter := waiter.nextCapacityWaiter
 		eligible := waiter.requiredByteCount <= availableByteCount
 		for budget := waiter.budget; eligible && budget != nil; budget = budget.parent {
-			eligible = waiter.requiredByteCount <= max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-granted[budget])
+			eligible = waiter.requiredByteCount <= max(0, budget.totalByteCount.Load()-budget.usedByteCount.Load()-granted[budget].grantedByteCount)
 		}
 		if eligible {
 			self.removeCapacityWaiterWithLock(waiter)
@@ -482,7 +503,9 @@ func (self *TransferMemoryBudget) notifyEligibleCapacityWaiters() {
 			case waiter.notify <- struct{}{}:
 				availableByteCount -= waiter.requiredByteCount
 				for budget := waiter.budget; budget != nil; budget = budget.parent {
-					granted[budget] += waiter.requiredByteCount
+					state := granted[budget]
+					state.grantedByteCount += waiter.requiredByteCount
+					granted[budget] = state
 				}
 			default:
 				// A pending token means this waiter already has a grant. Do

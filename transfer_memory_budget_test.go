@@ -362,6 +362,22 @@ func TestTransferMemoryBudgetAdmissionSubscribeResetDoesNotAllocate(t *testing.T
 	AssertEqual(t, allocCount, float64(0))
 }
 
+// Once a waiter is registered, a release must not allocate a fresh grant map
+// on every notification pass.
+func TestTransferMemoryBudgetReleaseWithWaiterDoesNotAllocate(t *testing.T) {
+	budget := NewTransferMemoryBudget(kib(64))
+	budget.Reserve(kib(64))
+	waiter := newTransferMemoryBudgetWaiter()
+	defer waiter.reset()
+
+	allocations := testing.AllocsPerRun(100, func() {
+		waiter.subscribe(budget, 1)
+		budget.Release(1)
+		budget.Reserve(1)
+	})
+	AssertEqual(t, allocations, float64(0))
+}
+
 func BenchmarkTransferMemoryBudgetReserveReleaseNoWaiter(b *testing.B) {
 	budget := NewTransferMemoryBudget(mib(1))
 	b.ReportAllocs()
