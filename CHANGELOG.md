@@ -1,5 +1,17 @@
 # Changelog
 
+## [v3.23.0-fix.34.0-rc2]
+
+_Release candidate superseding rc1 with the two changes that merged after rc1 was tagged. Notes: `releases/v3.23.0-fix.34.0-rc2.md`._
+
+### Fixed
+
+- **A proxied TLS handshake never strikes or retries a family**: `recordControlFamilyStrike` rejected a `proxyDialError`, but a handshake over a proxy fails with a plain timeout, so a proxied stall still demoted the proxy socket's family and then retried through the same proxy. The dial now checks `dialUsesProxy` at every decision: no family strike and no family retry for a proxied handshake, with two regression tests.
+
+### Changed
+
+- **CI enforces the modern-provider gate on every build**: `build.yml` runs `modern_provider_gate_test.go`, so a release cannot lose the PQ/window capability evidence without the build failing.
+
 ## [v3.23.0-fix.34.0-rc1]
 
 _Release candidate: the v2026 engine transplant plus the post-slice fixes. Notes: `releases/v3.23.0-fix.34.0-rc1.md`._
