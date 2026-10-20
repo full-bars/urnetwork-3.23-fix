@@ -217,8 +217,8 @@ emit:
 
 ```
 [health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
-[health][proxies] dead: proxy[112] (45.3.32.184:1081), proxy[266] (104.207.45.110:1081), proxy[497] (209.50.170.87:1081), proxy[902] (12.34.56.78:1081)
-[health][proxies] degraded: proxy[49] (209.50.167.49:1081), proxy[1037] (209.50.169.110:1081), proxy[660] (98.76.54.32:1081)
+[health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), proxy[497] (203.0.113.15:1081), proxy[902] (12.34.56.78:1081)
+[health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 Summary line fields:
@@ -289,13 +289,13 @@ heartbeat.** Answers "what is broken right now?" at any time without watching li
 ```
 # updated 2026-06-02T16:05:11Z  up=1193 down=7 dead=4 degraded=3
 # lifetime_recovered=51 lifetime_lost=39
-DEAD     proxy[112] (45.3.32.184:1081)
-DEAD     proxy[266] (104.207.45.110:1081)
-DEAD     proxy[497] (209.50.170.87:1081)
+DEAD     proxy[112] (203.0.113.11:1081)
+DEAD     proxy[266] (203.0.113.14:1081)
+DEAD     proxy[497] (203.0.113.15:1081)
 DEAD     proxy[902] (12.34.56.78:1081)
-DEGRADED proxy[49] (209.50.167.49:1081)
+DEGRADED proxy[49] (203.0.113.16:1081)
 DEGRADED proxy[660] (98.76.54.32:1081)
-DEGRADED proxy[1037] (209.50.169.110:1081)
+DEGRADED proxy[1037] (203.0.113.17:1081)
 ```
 Written via temp-file + rename so a reader never sees a half-written file. **Never
 truncated and no `(+N more)`** — the 50-entry display cap is a stdout-only concern;
@@ -307,9 +307,9 @@ have been problematic, and when?" One line per transition, sourced from
 `ProxyHealthHeartbeat`'s `NewlyDead` / `NewlyDegraded` / `Recovered` lists:
 
 ```
-2026-06-02T15:10:03Z DEAD      proxy[112] (45.3.32.184:1081)
-2026-06-02T15:10:03Z DEGRADED  proxy[49] (209.50.167.49:1081)
-2026-06-02T16:05:11Z RECOVERED proxy[49] (209.50.167.49:1081) after=55m8s
+2026-06-02T15:10:03Z DEAD      proxy[112] (203.0.113.11:1081)
+2026-06-02T15:10:03Z DEGRADED  proxy[49] (203.0.113.16:1081)
+2026-06-02T16:05:11Z RECOVERED proxy[49] (203.0.113.16:1081) after=55m8s
 ```
 Every transition is written in full — the event log is never list-truncated and
 never shows `(+N more)`. Rotation: when the file exceeds **20 MB**, rename it to
@@ -425,7 +425,7 @@ pulse tick (~60m) --> ProxyHealthSnapshot() (read-only) --> log [pulse] line
     semantics).
   - `ProxyHealthSnapshot` does not advance the baseline: two snapshots with no
     `mark*` in between, followed by a transitions call, still report the real delta.
-- **Live (Detroit `urtest`, ps1200 list):** deploy, wait for heartbeat, confirm
+- **Live (test node `urtest`, ps1200 list):** deploy, wait for heartbeat, confirm
   `up + down == list size`, `dead + degraded == down`, and that the formatted
   lines render with real indices/IPs. Watch across an hourly pulse: confirm the
   `[pulse]` line fires, then `recovered` climbs in the following heartbeat and

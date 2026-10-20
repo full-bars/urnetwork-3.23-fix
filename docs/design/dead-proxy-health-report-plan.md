@@ -1255,10 +1255,10 @@ gh run watch "$(gh run list --branch feature/dead-proxy-health-report --event wo
 
 Expected: build succeeds and pushes `ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report`.
 
-- [ ] **Step 4: Deploy to the Detroit test node**
+- [ ] **Step 4: Deploy to the test node**
 
 ```bash
-ssh -o StrictHostKeyChecking=no user@100.116.23.13 'docker pull ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report && docker stop urtest && docker rm urtest && docker run -d --name urtest --restart unless-stopped -p 9001:8080 --cap-add CAP_NET_ADMIN --cap-add CAP_NET_RAW --sysctl net.ipv4.ip_forward=1 -e ENABLE_VNSTAT=true -e URNETWORK_RAMLOGS=1 -e URNETWORK_PROFILE=auto -e BUILD=jwt -v /home/user/ur-docker/config:/root/.urnetwork -v /home/user/ps1200_combined.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report'
+ssh -o StrictHostKeyChecking=no user@192.0.2.13 'docker pull ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report && docker stop urtest && docker rm urtest && docker run -d --name urtest --restart unless-stopped -p 9001:8080 --cap-add CAP_NET_ADMIN --cap-add CAP_NET_RAW --sysctl net.ipv4.ip_forward=1 -e ENABLE_VNSTAT=true -e URNETWORK_RAMLOGS=1 -e URNETWORK_PROFILE=auto -e BUILD=jwt -v /home/user/ur-docker/config:/root/.urnetwork -v /home/user/ps1200_combined.txt:/app/proxy.txt ghcr.io/full-bars/urnetwork-3.23-fix:feature-dead-proxy-health-report'
 ```
 
 - [ ] **Step 5: Verify the heartbeat output**
@@ -1266,7 +1266,7 @@ ssh -o StrictHostKeyChecking=no user@100.116.23.13 'docker pull ghcr.io/full-bar
 After the first heartbeat (~5 min), check the live log:
 
 ```bash
-ssh user@100.116.23.13 'grep -a "\[health\]\[proxies\]" /dev/shm/urnetwork.log | tail -3'
+ssh user@192.0.2.13 'grep -a "\[health\]\[proxies\]" /dev/shm/urnetwork.log | tail -3'
 ```
 
 Expected: a summary line where `up + down == 1200` (list size) and `dead + degraded == down`, plus `dead:`/`degraded:` detail lines.
@@ -1274,8 +1274,8 @@ Expected: a summary line where `up + down == 1200` (list size) and `dead + degra
 - [ ] **Step 6: Verify the persistent files + Docker command**
 
 ```bash
-ssh user@100.116.23.13 'docker exec urtest sh -c "ls -la /root/.urnetwork/proxy_health.* ; head -5 /root/.urnetwork/proxy_health.state"'
-ssh user@100.116.23.13 'docker exec urtest proxy-health' # Ctrl-C after confirming output (interactive tail)
+ssh user@192.0.2.13 'docker exec urtest sh -c "ls -la /root/.urnetwork/proxy_health.* ; head -5 /root/.urnetwork/proxy_health.state"'
+ssh user@192.0.2.13 'docker exec urtest proxy-health' # Ctrl-C after confirming output (interactive tail)
 ```
 
 Expected: `proxy_health.state` lists the complete dead/degraded set with no `(+N more)`; `proxy-health` prints the snapshot.
@@ -1285,8 +1285,8 @@ Expected: `proxy_health.state` lists the complete dead/degraded set with no `(+N
 After an hourly pulse, confirm a `[pulse]` line appears and `recovered` climbs / `lifetime_recovered` accumulates in the next heartbeat, and that `proxy_health.log` has `RECOVERED`/`DEGRADED` (and `DEAD` after ~65 min) lines.
 
 ```bash
-ssh user@100.116.23.13 'grep -aE "\[pulse\]" /dev/shm/urnetwork.log | tail -2'
-ssh user@100.116.23.13 'docker exec urtest tail -20 /root/.urnetwork/proxy_health.log'
+ssh user@192.0.2.13 'grep -aE "\[pulse\]" /dev/shm/urnetwork.log | tail -2'
+ssh user@192.0.2.13 'docker exec urtest tail -20 /root/.urnetwork/proxy_health.log'
 ```
 
 ---

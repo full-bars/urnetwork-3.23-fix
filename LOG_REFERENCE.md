@@ -100,7 +100,7 @@ the daemon rather than trusting the CLI's exit code.
 ```
 ⚙️ [control] set profile=v8 (was unset)
 ⚙️ [control] cleared profile (was v4)
-[metrics] started Prometheus /metrics on 192.200.0.5:9100
+[metrics] started Prometheus /metrics on 100.64.0.10:9100
 [metrics] stopped Prometheus /metrics
 ```
 
@@ -228,7 +228,7 @@ It judges the **trend of outstanding buffers** (`t - r`) over the last 10 dumps,
 - `c=` growing rapidly between checks — pool is being depleted under load
 
 **Examples from the fleet:**
-- Detroit test server (1000 proxies, early): `c=320`, `99.99% reuse` — pool nearly perfectly sized
+- Test server (1000 proxies, early): `c=320`, `99.99% reuse` — pool nearly perfectly sized
 - Production server (long-running): `c=20087`, `98.76% reuse` — higher allocation pressure, still healthy
 - Another production server: `c=7195`, `99.28% reuse` — moderate, normal for busy deployments
 
@@ -662,8 +662,8 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 
 ```
 [health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
-[health][proxies] dead: proxy[112] (45.3.32.184:1081), proxy[266] (104.207.45.110:1081), ... (+2 more)
-[health][proxies] degraded: proxy[49] (209.50.167.49:1081), proxy[1037] (209.50.169.110:1081), proxy[660] (98.76.54.32:1081)
+[health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
+[health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
@@ -685,7 +685,7 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 ```
 | 2026-08-04T00:12:03Z | RECOVERED | proxy[47]  | 1.2.3.4:8080     | after=3m12s |
 | 2026-08-04T00:12:03Z | DROPPED   | proxy[49]  | 5.6.7.8:1081     |             |
-| 2026-08-04T00:12:03Z | NEVER UP  | proxy[112] | 45.3.32.184:1081 |             |
+| 2026-08-04T00:12:03Z | NEVER UP  | proxy[112] | 203.0.113.11:1081 |             |
 ```
 
 | Field | Meaning |
@@ -762,8 +762,8 @@ The selector tracks per-strategy success rates and prefers whichever is most rel
 
 ```
 [traffic] total rx=2.3 MB/s tx=0.8 MB/s clients=1 active_proxies=2 billable_today=1.5 GB earning=yes
-[traffic] proxy[124] (216.26.228.3:1081) rx=2.3 MB/s tx=0.8 MB/s clients=1 age=5m12s billable_today=1.2 GB
-[traffic] proxy[230] (45.3.48.195:1081) rx=0.4 MB/s tx=0.1 MB/s clients=0 billable_today=340 MB
+[traffic] proxy[124] (203.0.113.19:1081) rx=2.3 MB/s tx=0.8 MB/s clients=1 age=5m12s billable_today=1.2 GB
+[traffic] proxy[230] (203.0.113.13:1081) rx=0.4 MB/s tx=0.1 MB/s clients=0 billable_today=340 MB
 ```
 
 Fires on every health heartbeat tick (same cadence as `[health]`). Measures **actual end-user relay traffic** — bytes flowing through the provider's IP relay stack (LocalUserNat) on behalf of connected clients. This is what earns you platform credit.
@@ -917,13 +917,13 @@ Low `util` across many `[contract] closed` lines means contracts are being acqui
 ## ⏱️ TCP Write Timeout (transport stream)
 
 ```
-[ts]019e28a3-76dd-1fd5-08a3-342775fdfa7b-> error = write tcp 172.17.0.2:58902->216.26.233.197:1081: i/o timeout
+[ts]019e28a3-76dd-1fd5-08a3-342775fdfa7b-> error = write tcp 172.17.0.2:58902->203.0.113.20:1081: i/o timeout
 ```
 
 A TCP write to a proxy server timed out at the transport stream layer. This appears when network conditions are degraded (high latency, packet loss).
 
 - `172.17.0.2` — the container's internal IP
-- `216.26.233.197:1081` — the proxy server that stopped responding
+- `203.0.113.20:1081` — the proxy server that stopped responding
 - Followed shortly by a `[t]auth error` for the same transport ID
 - Common during netem stress testing or real network degradation
 
@@ -962,10 +962,10 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 
 ```
 [INFO] proxy.txt found; adding proxy
-added server 65.111.10.67:1081 (91***rn/cf***9m)
+added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
-  proxy[0] 216.26.225.158:1081 (91***rn/cf***9m)
-  proxy[1] 45.3.34.215:1081 (91***rn/cf***9m)
+  proxy[0] 203.0.113.18:1081 (91***rn/cf***9m)
+  proxy[1] 203.0.113.12:1081 (91***rn/cf***9m)
   ...
 ```
 
