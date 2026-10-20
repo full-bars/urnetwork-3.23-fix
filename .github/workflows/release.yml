@@ -118,6 +118,55 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v6
 
+
+      # ───────────────────────── RELEASE GATE (installer tier) ────────────────
+      # A red installer cell means a user's first command fails, so it is worth
+      # blocking a release. Everything else in the installer matrix is advisory.
+      #
+      # MODE=report until two clean TAG runs have happened; then flip this to
+      # block. The check reads the installer jobs of the matrix run for THIS
+      # commit, not the workflow conclusion, so an advisory cell cannot block.
+      - name: Gate on the installer matrix
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          RELEASE_GATE_MODE: report   # TODO(release-gate): 'block' after two clean tag runs
+          REPO: ${{ github.repository }}
+          SHA: ${{ github.sha }}
+        run: |
+          set -uo pipefail
+          if [ "$RELEASE_GATE_MODE" != "block" ]; then
+            echo "RELEASE_GATE_MODE=report: the installer matrix is advisory for this release"
+            exit 0
+          fi
+          run_id=""
+          for _ in $(seq 1 30); do
+            run_id=$(gh api "repos/$REPO/actions/runs?head_sha=$SHA&per_page=50" \
+              --jq '[.workflow_runs[] | select(.name | startswith("Installer matrix"))] | sort_by(.created_at) | last | .id // empty' 2>/dev/null || true)
+            [ -n "$run_id" ] && break
+            sleep 10
+          done
+          if [ -z "$run_id" ]; then
+            echo "::error::no Installer matrix run found for $SHA; cannot gate"
+            exit 1
+          fi
+          echo "installer gate: watching run $run_id"
+          status=""
+          for _ in $(seq 1 120); do
+            status=$(gh api "repos/$REPO/actions/runs/$run_id" --jq '.status' 2>/dev/null || echo unknown)
+            [ "$status" = "completed" ] && break
+            sleep 20
+          done
+          if [ "$status" != "completed" ]; then
+            echo "::error::installer matrix run $run_id did not complete in time; refusing to publish blind"
+            exit 1
+          fi
+          failed=$(gh api "repos/$REPO/actions/runs/$run_id/jobs?per_page=100" \
+            --jq '[.jobs[] | select(.name | startswith("installer")) | select(.conclusion == "failure" or .conclusion == "cancelled")] | length')
+          if [ "$failed" != "0" ]; then
+            echo "::error::$failed installer cell(s) failed in run $run_id; the release is blocked"
+            exit 1
+          fi
+          echo "installer tier green in run $run_id; release gate open"
       - name: Download provider linux amd64 artifact
         uses: actions/download-artifact@v4
         with:
