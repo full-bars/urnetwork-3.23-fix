@@ -1,0 +1,135 @@
+name: Installer matrix (the real installer on 4 distros)
+
+# The provider repos never executed their own installer in CI: shakedown.sh
+# runs it on the GitHub Ubuntu runner only, so a distro-specific install break
+# reached users first. This runs scripts/Provider_Install_Linux.sh for real on
+# both Debian generations, the RHEL family and musl/Alpine, against a local
+# fake release.
+
+on:
+  push:
+    tags:
+      - 'v3.23.0-fix.*'
+  pull_request:
+    paths:
+      - 'scripts/Provider_Install_Linux.sh'
+      - 'scripts/Provider_Uninstall_Linux.sh'
+      - '.github/scripts/installer-lifecycle.sh'
+      - '.github/workflows/installer-matrix.yml'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+env:
+  INSTALLER_TAG: v0.0.0-ci-${{ github.run_id }}-1
+  INSTALLER_TAG2: v0.0.0-ci-${{ github.run_id }}-2
+
+jobs:
+  build-binaries:
+    name: build the installer payload
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    steps:
+      - uses: actions/checkout@v6
+        with:
+          persist-credentials: false
+      - uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+          cache-dependency-path: go.sum
+      - name: Build
+        run: |
+          set -euo pipefail
+          mkdir -p out
+          T1="$INSTALLER_TAG"; T2="$INSTALLER_TAG2"
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.Version=$T1 -X main.VersionStamp=URNET_VERSION_STAMP=$T1" -o out/provider ./provider/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.Version=$T2 -X main.VersionStamp=URNET_VERSION_STAMP=$T2" -o out/provider2 ./provider/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.Version=$T1" -o out/urnet-tools ./cmd/urnet-tools/
+          CGO_ENABLED=0 GOOS=linux GOARCH=amd64 go build -trimpath \
+            -ldflags "-s -w -X main.Version=$T2" -o out/urnet-tools2 ./cmd/urnet-tools/
+          CGO_ENABLED=0 go build -trimpath -o out/release-server ./scripts/ci/fake-release-server
+          cp scripts/Provider_Install_Linux.sh out/installer.sh
+          cp .github/scripts/installer-lifecycle.sh out/installer-lifecycle.sh
+          file out/provider out/urnet-tools out/release-server
+      - uses: actions/upload-artifact@v4
+        id: upload
+        with:
+          name: installer-payload
+          path: out/
+          retention-days: 2
+          if-no-files-found: error
+    outputs:
+      artifact-id: ${{ steps.upload.outputs.artifact-id }}
+
+  installer:
+    name: installer (${{ matrix.slug }})
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    permissions:
+      contents: read
+      actions: read
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { image: debian:12-slim, slug: debian-12 }
+          - { image: debian:13-slim, slug: debian-13 }
+          - { image: almalinux:9, slug: almalinux-9 }
+          - { image: alpine:latest, slug: alpine }
+    container:
+      image: ${{ matrix.image }}
+    steps:
+      - name: Install curl + unzip
+        run: |
+          set -eu
+          if command -v apt-get >/dev/null 2>&1; then
+            apt-get update -qq
+            DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends curl unzip ca-certificates
+          elif command -v dnf >/dev/null 2>&1; then
+            dnf install -y --allowerasing curl unzip ca-certificates
+          elif command -v apk >/dev/null 2>&1; then
+            apk add --no-cache curl unzip ca-certificates
+          else
+            echo "::error::no supported package manager"; exit 1
+          fi
+      - name: Fetch the payload
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -eu
+          mkdir -p /tmp/payload /tmp/payload2
+          url="https://api.github.com/repos/${{ github.repository }}/actions/artifacts/${{ needs.build-binaries.outputs.artifact-id }}/zip"
+          curl -fsSL -H "Authorization: Bearer $GITHUB_TOKEN" -o /tmp/payload.zip "$url"
+          unzip -q -o /tmp/payload.zip -d /tmp/payload
+          chmod +x /tmp/payload/provider /tmp/payload/provider2 /tmp/payload/urnet-tools \
+            /tmp/payload/urnet-tools2 /tmp/payload/release-server /tmp/payload/installer-lifecycle.sh
+          cp /tmp/payload/provider2 /tmp/payload2/provider
+          cp /tmp/payload/urnet-tools2 /tmp/payload2/urnet-tools
+      - name: Run the installer lifecycle
+        env:
+          BIN_DIR: /tmp/payload
+          BIN_DIR2: /tmp/payload2
+          INSTALLER: /tmp/payload/installer.sh
+          TAG: ${{ env.INSTALLER_TAG }}
+          TAG2: ${{ env.INSTALLER_TAG2 }}
+          VARIANT: ${{ matrix.slug }}
+          OUT_DIR: /tmp/installer-out
+          TIMEOUT_S: "300"
+        run: sh /tmp/payload/installer-lifecycle.sh 2>&1 | tee /tmp/installer.log
+      - name: Publish the cell summary
+        if: always()
+        run: |
+          {
+            echo "### installer — ${{ matrix.image }}"
+            echo
+            sed -n '/installer-lifecycle summary/,$p' /tmp/installer.log 2>/dev/null || echo "(no harness output)"
+          } >>"$GITHUB_STEP_SUMMARY" || true
+          if grep -q 'RESULT: PASS' /tmp/installer.log 2>/dev/null; then exit 0; fi
+          echo "::error::installer lifecycle failed for ${{ matrix.image }}"
+          exit 1
