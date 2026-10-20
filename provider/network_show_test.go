@@ -153,15 +153,137 @@ func TestInsecureNetworkWarning(t *testing.T) {
 
 func TestNetworkSwitchNoticeOnlyWhenAJwtExists(t *testing.T) {
 	dir := t.TempDir()
-	if got := networkSwitchNotice(dir); got != "" {
+	if got := networkSwitchNotice(dir, true); got != "" {
 		t.Errorf("no jwt: want no notice, got %q", got)
 	}
 	if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("x"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	got := networkSwitchNotice(dir)
+	if got := networkSwitchNotice(dir, false); got != "" {
+		t.Errorf("unchanged network: want no notice, got %q", got)
+	}
+	got := networkSwitchNotice(dir, true)
 	if !strings.Contains(got, "issued by the previously selected network") || !strings.Contains(got, "provider auth") {
-		t.Errorf("with a jwt: want the switch notice, got %q", got)
+		t.Errorf("with a jwt and a changed network: want the switch notice, got %q", got)
+	}
+}
+
+// apiUrlChanged is the comparison behind the switch notice: the default
+// network when no config is saved, the saved api_url otherwise.
+func TestApiUrlChanged(t *testing.T) {
+	t.Run("no saved config", func(t *testing.T) {
+		withTempHome(t)
+		if apiUrlChanged(DefaultApiUrl) {
+			t.Errorf("writing the default back with no config saved must not count as a change")
+		}
+		if !apiUrlChanged("https://api.example.com") {
+			t.Errorf("a custom api_url with no config saved must count as a change")
+		}
+	})
+	t.Run("saved config", func(t *testing.T) {
+		withTempHome(t)
+		if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
+			t.Fatal(err)
+		}
+		if apiUrlChanged("https://api.example.com") {
+			t.Errorf("re-saving the saved api_url must not count as a change")
+		}
+		if !apiUrlChanged(DefaultApiUrl) {
+			t.Errorf("moving from a custom api_url back to the default must count as a change")
+		}
+	})
+	t.Run("unreadable config", func(t *testing.T) {
+		home := withTempHome(t)
+		dir := filepath.Join(home, ".urnetwork")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "network.json"), []byte("{not json"), 0600); err != nil {
+			t.Fatal(err)
+		}
+		if !apiUrlChanged(DefaultApiUrl) {
+			t.Errorf("an unreadable config must count as a change so the notice is kept")
+		}
+	})
+}
+
+// Three commands write the api_url the provider is already on. None may print
+// the switch notice: following it would spend a single-use auth code.
+func TestChooseNetworkStaysQuietWhenTheEffectiveNetworkDoesNotChange(t *testing.T) {
+	newHomeWithJwt := func(t *testing.T) {
+		t.Helper()
+		home := withTempHome(t)
+		dir := filepath.Join(home, ".urnetwork")
+		if err := os.MkdirAll(dir, 0700); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("x"), 0600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	neverNotice := func(t *testing.T, out string) {
+		t.Helper()
+		if strings.Contains(out, "previously selected network") {
+			t.Errorf("a command that leaves the effective network alone printed the switch notice:\n%s", out)
+		}
+	}
+
+	t.Run("main preset with no saved network", func(t *testing.T) {
+		newHomeWithJwt(t)
+		out := captureOutput(t, func() {
+			chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "main"})
+		})
+		if !strings.Contains(out, "network saved (preset)") {
+			t.Errorf("missing the saved line:\n%s", out)
+		}
+		neverNotice(t, out)
+	})
+
+	t.Run("reset with no saved network", func(t *testing.T) {
+		newHomeWithJwt(t)
+		out := captureOutput(t, func() {
+			chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true})
+		})
+		if !strings.Contains(out, "network reset to the main network") {
+			t.Errorf("missing the reset line:\n%s", out)
+		}
+		neverNotice(t, out)
+	})
+
+	t.Run("re-saving the same pair", func(t *testing.T) {
+		newHomeWithJwt(t)
+		if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
+			t.Fatal(err)
+		}
+		out := captureOutput(t, func() {
+			chooseNetworkCmd(docopt.Opts{"choose_network": true, "<api_url>": "https://api.example.com", "<connect_url>": "wss://connect.example.com"})
+		})
+		if !strings.Contains(out, "network saved:") {
+			t.Errorf("missing the saved line:\n%s", out)
+		}
+		neverNotice(t, out)
+	})
+}
+
+// A real switch keeps the warning: resetting away from a saved custom network
+// points the existing jwt at a different api.
+func TestChooseNetworkResetToADifferentNetworkKeepsTheNotice(t *testing.T) {
+	home := withTempHome(t)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "jwt"), []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeNetworkConfig("https://api.example.com", "wss://connect.example.com"); err != nil {
+		t.Fatal(err)
+	}
+	out := captureOutput(t, func() {
+		chooseNetworkCmd(docopt.Opts{"choose_network": true, "--reset": true})
+	})
+	if !strings.Contains(out, "previously selected network") || !strings.Contains(out, "provider auth") {
+		t.Errorf("a reset off a custom network must keep the switch notice:\n%s", out)
 	}
 }
 
