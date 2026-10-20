@@ -366,9 +366,13 @@ func (self *udpSocketReadPollShard) readDatagrams(fd int, sequence *UdpSequence)
 			if packetsErr != nil {
 				return packetsErr
 			}
-			for _, packet := range packets {
+			for i, packet := range packets {
 				if !self.enqueue(sequence, packet) {
-					MessagePoolReturn(packet)
+					// the packets from here on were taken from the pool by
+					// this DataPackets call and have no other owner
+					for _, remainingPacket := range packets[i:] {
+						MessagePoolReturn(remainingPacket)
+					}
 					return syscall.EBADF
 				}
 			}
@@ -380,6 +384,9 @@ func (self *udpSocketReadPollShard) readDatagrams(fd int, sequence *UdpSequence)
 			return err
 		}
 		if n == 0 {
+			// a zero-length datagram ends the drain; harmless with a
+			// level-triggered epoll, an edge-triggered backend would need a
+			// different rule
 			return nil
 		}
 	}
@@ -390,6 +397,13 @@ func (self *udpSocketReadPollShard) readDatagrams(fd int, sequence *UdpSequence)
 // the flow is canceled, exactly as the per-flow receive channel it replaces
 // did. The kernel socket buffer is the next bounded absorption layer, so the
 // shard never introduces a new datagram loss source.
+//
+// The wait happens on the shard's single drain loop, which couples the flows
+// hashed to the shard: while the delivery queue is full, one slow receive
+// callback stalls the drain for every one of them, which the per-flow reader
+// did not do. That head-of-line cost has to be measured before
+// SocketReadShardCount is enabled anywhere; it is a design tradeoff, not a bug,
+// so there is deliberately no drop-on-full.
 func (self *udpSocketReadPollShard) enqueue(sequence *UdpSequence, packet []byte) bool {
 	select {
 	case <-self.ctx.Done():
