@@ -4,6 +4,21 @@ import (
 	"strings"
 )
 
+// net_http_doh_regional.go -- the regional dns resolver recommendations.
+//
+// Ported from connect v0.0.0-20261017075543-c8d8cdf536a8
+// (net_http_doh_regional.go), adapted to this tree:
+//   - The remote plain-dns lists carry each operator's v6 address beside its
+//     v4 one, so a regional recommendation is walked by operator across both
+//     families (knownDnsServerPairs, dualStackList) instead of being v4-only.
+//     A region that publishes no v6 resolver keeps a v4-only recommendation,
+//     and the resolver then walks the v4 list.
+//   - This tree's RegionalDnsResolverSettings() keeps its existing shape,
+//     including DnsUpgradeMaskAddress and the v4 remote list; the v6 remote
+//     list is added on top of it.
+//   - The bootstrap control-DoH presets (RegionalControlDohServer and
+//     RegionalControlDohUrls) stay as this tree already has them.
+//
 // a well known regional dns server, associated to a country code. Ipv6 is
 // empty where the operator publishes no v6 resolver (or none is known).
 type RegionalDnsServer struct {

@@ -146,6 +146,8 @@ var controlKeyCanonical = map[string]string{
 	"ip-version":                  "ip_version",
 	"ip_version":                  "ip_version",
 	"ip":                          "ip_version",
+	"proxy-target-family":         "proxy_target_family",
+	"proxy_target_family":         "proxy_target_family",
 	"h3_datagram_send":            "h3_datagram_send",
 	"proxy-audit":                 "proxy_audit",
 	"proxy_audit":                 "proxy_audit",
@@ -212,6 +214,12 @@ func validateControlValue(canonicalKey, value string) error {
 		case "dual", "dualstack", "dual-stack", "ipv4", "v4", "4", "ipv6", "v6", "6", "legacy":
 		default:
 			return fmt.Errorf("ip-version: must be dual, ipv4, ipv6 or legacy (got %q)", value)
+		}
+	case "proxy_target_family":
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "v4", "ipv4", "proxy":
+		default:
+			return fmt.Errorf("proxy-target-family: must be v4 or proxy (got %q)", value)
 		}
 	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus":
 		switch strings.ToLower(value) {

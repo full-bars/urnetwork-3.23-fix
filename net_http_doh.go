@@ -344,15 +344,6 @@ func dnsResolverAddrs(settings *DohSettings, remote bool, network string) []stri
 		ipv4 = settings.DnsResolverSettings.LocalDnsIpv4
 		ipv6 = settings.DnsResolverSettings.LocalDnsIpv6
 	}
-	// The probe is a heuristic, so it only governs the dual-stack default. An
-	// explicit IPv6 request is the operator's configuration and is honoured as
-	// written: nilling the list here would hand a `udp6` dial IPv4 resolver
-	// addresses, and on an IPv6-only host that is every resolution failing.
-	wants6 := strings.HasSuffix(network, "6") || settings.IpVersion == 6
-	if !wants6 && !hostHasGlobalIpv6() {
-		// without working IPv6 the v6 resolvers are only timeouts
-		ipv6 = nil
-	}
 
 	switch {
 	case strings.HasSuffix(network, "6") || settings.IpVersion == 6:
@@ -366,9 +357,51 @@ func dnsResolverAddrs(settings *DohSettings, remote bool, network string) []stri
 		}
 		return ipv6
 	default:
-		addrs := append([]string{}, ipv4...)
-		return append(addrs, ipv6...)
+		// both families, operator-paired and so interleaved v4 first: the
+		// plain-dns dial hook walks this list one entry per resolver attempt
+		// (see NewDohCache), so two attempts cover both families whichever
+		// one the path lacks.
+		//
+		// This replaces the older `if !hostHasGlobalIpv6() { ipv6 = nil }`
+		// filter. That probe answered a question about the HOST from a
+		// one-shot dial that does not re-run across a wifi/cellular switch,
+		// and it could only ever suppress the v6 list -- never the v4 one --
+		// so on a host whose v6 came up after the probe ran, v6 resolvers
+		// stayed unreachable for the life of the process. The family a
+		// lookup needs is decided per query by the record type instead (see
+		// dnsLookupNetwork), and a family the path lacks now costs one
+		// attempt rather than suppressing the other family for everyone.
+		return dualStackList(ipv4, ipv6, knownDnsServerPairs)
 	}
+}
+
+// dnsLookupNetwork is the net.Resolver network for a plain-dns lookup of one
+// record type: an A query must look up ip4 and an AAAA query ip6, whatever the
+// cache-wide IpVersion says, or the answer of one family would be cached under
+// the other's key. The second result is false when IpVersion excludes the
+// record type's family, in which case the lookup is skipped.
+func dnsLookupNetwork(recordType string, ipVersion int) (string, bool) {
+	switch recordType {
+	case "A":
+		return "ip4", ipVersion != 6
+	case "AAAA":
+		return "ip6", ipVersion != 4
+	default:
+		return "", false
+	}
+}
+
+// dnsResolverAddrPick is the server ONE resolver attempt dials: the next entry
+// in the family-filtered list, rotated per attempt. Round robin rather than a
+// random pick, so a family the path lacks costs one attempt each time instead
+// of a fresh coin flip -- over an operator-paired list a random choice can
+// land on the same unreachable family on every retry of the same name, and
+// each miss costs the caller a full resolver timeout.
+//
+// `next` is per cache and per resolver (remote/local), so concurrent lookups
+// spread across the configured servers instead of all pinning the first.
+func dnsResolverAddrPick(addrs []string, next *atomic.Uint64) string {
+	return addrs[int((next.Add(1)-1)%uint64(len(addrs)))]
 }
 
 func netIPAddr(ip net.IP) (netip.Addr, bool) {
@@ -389,6 +422,13 @@ func authoritativeDnsMiss(err error) bool {
 }
 
 func NewDohCache(settings *DohSettings) *DohCache {
+	// each resolver attempt takes the next server in the interleaved list
+	// (dnsResolverAddrs), so a family the path lacks costs ONE attempt instead
+	// of a coin flip per attempt: a random pick over an operator-paired list
+	// can land on the same unreachable family every time a name is retried,
+	// and the caller pays a full resolver timeout for each miss.
+	var remoteDnsNext atomic.Uint64
+	var localDnsNext atomic.Uint64
 	remoteResolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network string, addr string) (net.Conn, error) {
@@ -400,7 +440,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 			if len(localAddrs) == 0 {
 				return nil, fmt.Errorf("no remote DNS resolvers configured")
 			}
-			localAddr := localAddrs[mathrand.Intn(len(localAddrs))]
+			localAddr := dnsResolverAddrPick(localAddrs, &remoteDnsNext)
 			addr = net.JoinHostPort(localAddr, port)
 			return settings.DialContext(ctx, network, addr)
 		},
@@ -418,7 +458,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 			if len(localAddrs) == 0 {
 				return nil, fmt.Errorf("no local DNS resolvers configured")
 			}
-			localAddr := localAddrs[mathrand.Intn(len(localAddrs))]
+			localAddr := dnsResolverAddrPick(localAddrs, &localDnsNext)
 			addr = net.JoinHostPort(localAddr, port)
 			return netDialer.DialContext(ctx, network, addr)
 		},
@@ -694,9 +734,17 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 		}
 	}
 
-	if len(addrExpirations) == 0 && self.settings.DnsResolverSettings.EnableRemoteDns {
+	// the plain-dns fallback is the only step that carries a family of its own:
+	// an A query must look up ip4 and an AAAA query ip6, whatever the
+	// cache-wide IpVersion says, or one family's answer would be cached under
+	// the other's key. A record type with no address lookup (and a family
+	// IpVersion excludes) skips the fallback entirely rather than asking the
+	// resolver for an address the caller never wanted.
+	lookupNetwork, lookupFamilyEnabled := dnsLookupNetwork(q.RecordType, self.settings.IpVersion)
+
+	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableRemoteDns {
 		// try the remote resolver
-		resolvedIps, err := self.remoteResolver.LookupIP(ctx, self.settings.ResolverIp(), q.Domain)
+		resolvedIps, err := self.remoteResolver.LookupIP(ctx, lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {
@@ -724,9 +772,9 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 		}
 	}
 
-	if len(addrExpirations) == 0 && self.settings.DnsResolverSettings.EnableLocalDns {
+	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableLocalDns {
 		// try the local resolver
-		resolvedIps, err := self.localResolver.LookupIP(ctx, self.settings.ResolverIp(), q.Domain)
+		resolvedIps, err := self.localResolver.LookupIP(ctx, lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {
@@ -805,6 +853,15 @@ func DohQueryWithClient(
 	return dohQueryWithClientResult(ctx, httpClient, nil, remoteDohServers(settings, ipVersion), ipVersion, recordType, settings, domains...).AddrTtls
 }
 
+// dohServerUrls is the url view of a server list, for the pairing helpers.
+func dohServerUrls(servers []DohServer) []string {
+	urls := make([]string, len(servers))
+	for i, server := range servers {
+		urls[i] = server.Url
+	}
+	return urls
+}
+
 func dohServersFor(ipv4 []DohServer, ipv6 []DohServer, ipVersion int) []DohServer {
 	switch ipVersion {
 	case 4:
@@ -812,8 +869,26 @@ func dohServersFor(ipv4 []DohServer, ipv6 []DohServer, ipVersion int) []DohServe
 	case 6:
 		return ipv6
 	default:
-		servers := append([]DohServer{}, ipv4...)
-		return append(servers, ipv6...)
+		// both families, operator-paired (see dualStackList): each v4 endpoint
+		// followed by its operator's v6 endpoint, so a fan-out that launches
+		// one endpoint per operator still reaches both families in its first
+		// passes instead of walking every v4 endpoint before any v6 one. A
+		// server configured in both lists keeps its v4 entry, which is the
+		// first appearance.
+		byUrl := make(map[string]DohServer, len(ipv4)+len(ipv6))
+		for _, server := range ipv6 {
+			byUrl[server.Url] = server
+		}
+		for _, server := range ipv4 {
+			byUrl[server.Url] = server
+		}
+		servers := make([]DohServer, 0, len(ipv4)+len(ipv6))
+		for _, url := range dualStackList(dohServerUrls(ipv4), dohServerUrls(ipv6), knownDohUrlPairs) {
+			if server, ok := byUrl[url]; ok {
+				servers = append(servers, server)
+			}
+		}
+		return servers
 	}
 }
 

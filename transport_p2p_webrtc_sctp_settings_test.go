@@ -173,11 +173,12 @@ func TestCreateWebRtcPeerConnectionAppliesSctpCwndCAStep(t *testing.T) {
 		settings := DefaultWebRtcSettings()
 		settings.SctpCwndCAStep = cwndCAStep
 
-		pc, err := createWebRtcPeerConnection(ctx, true, settings)
+		pc, cancelIceResolve, err := createWebRtcPeerConnection(ctx, true, settings)
 		assert.Equal(t, err, nil)
 		if pc == nil {
 			t.Fatalf("createWebRtcPeerConnection(cwndCAStep=%d) returned a nil PeerConnection", cwndCAStep)
 		}
+		cancelIceResolve()
 		pc.Close()
 	}
 }

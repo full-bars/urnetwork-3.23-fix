@@ -342,6 +342,37 @@ jobs:
           go install golang.org/x/vuln/cmd/govulncheck@latest
           govulncheck ./...
 
+  modern-provider-gate:
+    name: modern provider gate
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v6
+        with:
+          # this job only runs tests: no step needs the token, so do not leave
+          # it in the credentials file the checkout writes for later steps
+          persist-credentials: false
+
+      - name: Set up Go (native cache)
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.27'
+          cache: true
+          cache-dependency-path: go.sum
+
+      # The platform's modern provider gate (urnetwork/server,
+      # model/egress_modern_provider.go and FP2FIX.md "Modern provider gate")
+      # takes providers out of the Quality and Speed buckets unless a real
+      # session measures BOTH end-to-end post-quantum encryption and resizable
+      # transfer windows (acks carrying receive_window_byte_count). It never
+      # reads a version, so this pins the two on the wire rather than trusting
+      # a release number. The gate enables 2026-10-21 00:00 UTC.
+      - name: Gate contract (PQ hybrid + receive_window_byte_count on acks)
+        run: go test -count=1 -v -run '^TestModernProviderGate$' .
+
   build-and-push:
     needs: [test, lint]
     runs-on: ubuntu-latest

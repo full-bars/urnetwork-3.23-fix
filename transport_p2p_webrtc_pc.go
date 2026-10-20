@@ -38,7 +38,14 @@ func applyP2pUdpSocketBuffers(connection any, byteCount int) {
 	}
 }
 
-func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebRtcSettings) (*webrtc.PeerConnection, error) {
+// createWebRtcPeerConnection builds one peer connection and returns the cancel
+// func for its per-generation ICE name resolver, which the caller must call
+// before PeerConnection.Close (see ice_resolve_net.go and peerConn.Run).
+//
+// The ctx is the peer generation's context; Pion gathers ICE server hostnames
+// through the returned resolver, so a lookup parked for this generation is
+// canceled when the generation retires.
+func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebRtcSettings) (*webrtc.PeerConnection, context.CancelFunc, error) {
 	s := webrtc.SettingEngine{}
 	s.LoggerFactory = &pionLoggerFactory{log: loggerOrDefault(settings.Log)}
 	s.DetachDataChannels()
@@ -52,15 +59,33 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 		settings.FailedTimeout,
 		settings.KeepAliveTimeout,
 	)
+	if 0 < settings.StunGatherTimeout {
+		s.SetSTUNGatherTimeout(settings.StunGatherTimeout)
+	}
 
+	// The socket network is selected exactly as before -- the buffered UDP
+	// wrapper when requested, else the standard net that Pion would have
+	// created for itself -- and then wrapped in the per-generation
+	// cancellation-aware resolver. Socket operations still delegate to the
+	// selected network; only the context-free Resolve* calls are overridden.
+	stdNet, err := stdnet.NewNet()
+	if err != nil {
+		return nil, nil, err
+	}
+	var socketNet transport.Net = stdNet
 	if 0 < settings.UdpSocketBufferByteCount {
-		if stdNet, err := stdnet.NewNet(); err == nil {
-			s.SetNet(&p2pUdpSocketNet{
-				Net:                   stdNet,
-				socketBufferByteCount: int(settings.UdpSocketBufferByteCount),
-			})
+		socketNet = &p2pUdpSocketNet{
+			Net:                   socketNet,
+			socketBufferByteCount: int(settings.UdpSocketBufferByteCount),
 		}
 	}
+	resolveNet, cancelIceResolve := newPeerConnectionResolveNet(
+		ctx,
+		socketNet,
+		settings.iceResolverForTest,
+		settings.StunGatherTimeout,
+	)
+	s.SetNet(resolveNet)
 
 	if 0 < settings.StunGatherTimeout {
 		s.SetSTUNGatherTimeout(settings.StunGatherTimeout)
@@ -74,7 +99,7 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 	}
 
 	api := webrtc.NewAPI(webrtc.WithSettingEngine(s))
-	return api.NewPeerConnection(webrtc.Configuration{
+	pc, err := api.NewPeerConnection(webrtc.Configuration{
 		ICEServers: []webrtc.ICEServer{
 			webrtc.ICEServer{
 				// per-session random subset of the pool (or the pinned override), drawn
@@ -83,6 +108,11 @@ func createWebRtcPeerConnection(ctx context.Context, active bool, settings *WebR
 			},
 		},
 	})
+	if err != nil {
+		cancelIceResolve()
+		return nil, nil, err
+	}
+	return pc, cancelIceResolve, nil
 }
 
 func detachWithDeadline(dc *webrtc.DataChannel) (datachannel.ReadWriteCloserDeadliner, error) {
