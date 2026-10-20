@@ -168,6 +168,10 @@ jobs:
             exit 1
           fi
 
+      - name: Test the VirusTotal scan script
+        # Unit tests against a local stub of the v3 API: no key, no quota.
+        run: python3 .github/scripts/test_vt_scan.py
+
       - name: Check hot-path verbose logging guards
         run: |
           # Tier-1 hot-path files must not grow new unguarded V(n).Inf* calls.

@@ -53,3 +53,5 @@ urnetwork-fake
 /urnet-tools
 raw-*.jsonl
 live-*.err
+__pycache__/
+*.pyc
