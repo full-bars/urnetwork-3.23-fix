@@ -2136,6 +2136,100 @@ download_asset ()
     return 1
 }
 
+# ----------------------------------------------------------- dependencies --
+# pkg_run <command>: run one package-manager command with the privilege the
+# host allows, and keep its output in a log the operator can read on failure.
+pkg_run ()
+{
+    pkg_run_cmd="$1"
+    pkg_run_log="${TMPDIR:-/tmp}/urnet-install-deps.log"
+    pr_info "Installing dependencies: %s" "$pkg_run_cmd"
+    if [ "$(id -u)" -eq 0 ]; then
+        if sh -c "$pkg_run_cmd" >>"$pkg_run_log" 2>&1; then return 0; fi
+    elif command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1; then
+        if sudo -n sh -c "$pkg_run_cmd" >>"$pkg_run_log" 2>&1; then return 0; fi
+    else
+        pr_warn "cannot install packages: not root and no non-interactive sudo"
+        return 1
+    fi
+    pr_warn "dependency install failed; see %s" "$pkg_run_log"
+    return 1
+}
+
+# ensure_dependencies installs a download client (curl, else wget) and a JSON
+# parser (jq, else python3) when the host has neither. Package-manager flags
+# are the non-interactive ones each family documents: --allowerasing for the
+# RHEL curl-minimal conflict, zypper --non-interactive, pacman --needed, apk
+# --no-cache. pacman is tried without -Sy first so a real Arch box does not get
+# a partial upgrade as a side effect of installing one package.
+ensure_dependencies ()
+{
+    dep_need_dl=0
+    dep_need_json=0
+    command -v curl > /dev/null 2>&1 || command -v wget > /dev/null 2>&1 || dep_need_dl=1
+    command -v jq > /dev/null 2>&1 || command -v python3 > /dev/null 2>&1 || dep_need_json=1
+    if [ "$dep_need_dl" -eq 0 ] && [ "$dep_need_json" -eq 0 ]; then
+        return 0
+    fi
+    if [ "${URNET_NO_AUTOINSTALL:-0}" = "1" ]; then
+        pr_info "URNET_NO_AUTOINSTALL=1: leaving missing dependencies to the operator"
+        return 0
+    fi
+    dep_pkgs=""
+    if [ "$dep_need_dl" -eq 1 ]; then dep_pkgs="curl"; fi
+    if [ "$dep_need_json" -eq 1 ]; then
+        if [ -n "$dep_pkgs" ]; then dep_pkgs="$dep_pkgs jq"; else dep_pkgs="jq"; fi
+    fi
+    dep_dl_state="present"; [ "$dep_need_dl" -eq 1 ] && dep_dl_state="missing"
+    dep_json_state="present"; [ "$dep_need_json" -eq 1 ] && dep_json_state="missing"
+    pr_info "Missing dependencies (download client: %s, json parser: %s); installing: %s" "$dep_dl_state" "$dep_json_state" "$dep_pkgs"
+
+    if command -v apt-get > /dev/null 2>&1; then
+        pkg_run "apt-get update -qq && DEBIAN_FRONTEND=noninteractive apt-get install -y -qq --no-install-recommends $dep_pkgs ca-certificates"
+    elif command -v dnf > /dev/null 2>&1; then
+        pkg_run "dnf install -y $dep_pkgs ca-certificates" || pkg_run "dnf install -y --allowerasing $dep_pkgs ca-certificates"
+    elif command -v microdnf > /dev/null 2>&1; then
+        pkg_run "microdnf install -y $dep_pkgs ca-certificates"
+    elif command -v yum > /dev/null 2>&1; then
+        pkg_run "yum install -y $dep_pkgs ca-certificates"
+    elif command -v zypper > /dev/null 2>&1; then
+        pkg_run "zypper --non-interactive install $dep_pkgs ca-certificates"
+    elif command -v pacman > /dev/null 2>&1; then
+        pkg_run "pacman -S --needed --noconfirm $dep_pkgs" || pkg_run "pacman -Sy --needed --noconfirm $dep_pkgs"
+    elif command -v apk > /dev/null 2>&1; then
+        pkg_run "apk add --no-cache $dep_pkgs ca-certificates"
+    else
+        pr_warn "no supported package manager; install %s manually" "$dep_pkgs"
+    fi
+
+    # Fall back to the other member of each pair when the preferred package is
+    # not available in this distro's repositories.
+    if [ "$dep_need_dl" -eq 1 ] && ! command -v curl > /dev/null 2>&1 && ! command -v wget > /dev/null 2>&1; then
+        if command -v apt-get > /dev/null 2>&1; then pkg_run "apt-get install -y -qq --no-install-recommends wget"
+        elif command -v dnf > /dev/null 2>&1; then pkg_run "dnf install -y wget"
+        elif command -v yum > /dev/null 2>&1; then pkg_run "yum install -y wget"
+        elif command -v zypper > /dev/null 2>&1; then pkg_run "zypper --non-interactive install wget"
+        elif command -v pacman > /dev/null 2>&1; then pkg_run "pacman -S --needed --noconfirm wget"
+        elif command -v apk > /dev/null 2>&1; then pkg_run "apk add --no-cache wget"
+        fi
+    fi
+    if [ "$dep_need_json" -eq 1 ] && ! command -v jq > /dev/null 2>&1 && ! command -v python3 > /dev/null 2>&1; then
+        if command -v apt-get > /dev/null 2>&1; then pkg_run "apt-get install -y -qq --no-install-recommends python3"
+        elif command -v dnf > /dev/null 2>&1; then pkg_run "dnf install -y python3"
+        elif command -v yum > /dev/null 2>&1; then pkg_run "yum install -y python3"
+        elif command -v zypper > /dev/null 2>&1; then pkg_run "zypper --non-interactive install python3"
+        elif command -v pacman > /dev/null 2>&1; then pkg_run "pacman -S --needed --noconfirm python"
+        elif command -v apk > /dev/null 2>&1; then pkg_run "apk add --no-cache python3"
+        fi
+    fi
+    if ! command -v curl > /dev/null 2>&1 && ! command -v wget > /dev/null 2>&1; then
+        pr_warn "still no download client after the install attempt"
+    fi
+    if ! command -v jq > /dev/null 2>&1 && ! command -v python3 > /dev/null 2>&1; then
+        pr_warn "still no JSON parser after the install attempt"
+    fi
+}
+
 do_install ()
 {
     : "${tag:=latest}"
@@ -2159,6 +2253,13 @@ do_install ()
     fi
 
     # Dependency Check
+    #
+    # A minimal host ships neither a download client nor a JSON parser, and the
+    # documented one-liner needs one of each before it can do anything. Install
+    # only what is missing, through the host's own package manager, instead of
+    # stopping a first-run install with a package-manager instruction. Set
+    # URNET_NO_AUTOINSTALL=1 to keep the old refuse-and-explain behaviour.
+    ensure_dependencies
     if ! command -v curl > /dev/null && ! command -v wget > /dev/null; then
         pr_info "Neither 'curl' nor 'wget' found; installing a downloader..."
         install_downloader || {
