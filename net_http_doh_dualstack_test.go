@@ -438,8 +438,10 @@ func TestRegionalDnsServersCarryIpv6(t *testing.T) {
 // each query with the stream framing the resolver uses for a Dial hook conn (a
 // two-byte length prefix), the first exchange of a lookup (network "udp") with
 // the TC bit set so the resolver immediately dials again over "tcp". One
-// LookupIP therefore takes exactly two dials, which is what makes a lookup's
-// two resolver attempts observable.
+// LookupIP therefore takes two dials on a resolver that tries UDP first, which
+// is what makes a lookup's two resolver attempts observable. A resolver
+// configured tcp-only makes a single dial; the test skips in that case rather
+// than failing on an environment it cannot exercise.
 type dnsReplyConn struct {
 	truncate bool
 	resp     []byte
@@ -512,8 +514,12 @@ func TestDohResolverRotationIsPerLookup(t *testing.T) {
 	}
 
 	type lookupMark struct{}
+	type dialAttempt struct {
+		network string
+		addr    string
+	}
 	var mutex sync.Mutex
-	dials := map[int][]string{}
+	dials := map[int][]dialAttempt{}
 	settings.DialContextSettings = &DialContextSettings{
 		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
 			// widen the window between a lookup's two attempts so another
@@ -522,7 +528,7 @@ func TestDohResolverRotationIsPerLookup(t *testing.T) {
 			mark, _ := ctx.Value(lookupMark{}).(*int)
 			mutex.Lock()
 			if mark != nil {
-				dials[*mark] = append(dials[*mark], addr)
+				dials[*mark] = append(dials[*mark], dialAttempt{network: network, addr: addr})
 			}
 			mutex.Unlock()
 			return &dnsReplyConn{truncate: network == "udp"}, nil
@@ -560,14 +566,17 @@ func TestDohResolverRotationIsPerLookup(t *testing.T) {
 	for i := 0; i < lookups; i += 1 {
 		attempts := dials[i]
 		if len(attempts) < 2 {
+			if len(attempts) == 1 && attempts[0].network == "tcp" {
+				t.Skipf("lookup %d made a single tcp dial; this resolver is configured tcp-only, so the udp-to-tcp retry pair is not observable", i)
+			}
 			t.Fatalf("lookup %d dialed %d servers, want 2 attempts: %v", i, len(attempts), attempts)
 		}
 		first, second := attempts[0], attempts[1]
-		if !want[first] || !want[second] {
+		if !want[first.addr] || !want[second.addr] {
 			t.Fatalf("lookup %d dialed %v, want entries of %v", i, attempts[:2], resolverAddrs)
 		}
-		if first == second {
-			t.Fatalf("lookup %d dialed %s on both of its first two attempts, want one attempt per family (all: %v)", i, first, attempts)
+		if first.addr == second.addr {
+			t.Fatalf("lookup %d dialed %s on both of its first two attempts, want one attempt per family (all: %v)", i, first.addr, attempts)
 		}
 	}
 }
