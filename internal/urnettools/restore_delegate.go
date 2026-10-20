@@ -525,6 +525,7 @@ func formatSets(p Provider, want string) error {
 		{"h3-datagram", "h3_datagram"},
 		{"h3-datagram-send", "h3_datagram_send"},
 		{"ip-version", "ip_version"},
+		{"proxy-target-family", "proxy_target_family"},
 		{"h1-plus", "h1_plus"},
 		{"baseline", "baseline"},
 		{"proxy-audit", "proxy_audit"},

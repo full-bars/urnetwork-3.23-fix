@@ -9,6 +9,7 @@ import (
 type transferQueueItem interface {
 	MessageId() Id
 	MessageByteCount() ByteCount
+	QueueByteCount() ByteCount
 	SequenceNumber() uint64
 	HeapIndex() int
 	SetHeapIndex(int)
@@ -19,7 +20,12 @@ type transferQueueItem interface {
 type transferItem struct {
 	messageId        Id
 	messageByteCount ByteCount
-	sequenceNumber   uint64
+	// queueByteCount can charge retained backing classes and owner envelopes
+	// independently from the protocol/accounting byte count. Zero preserves
+	// the base MessageByteCount charge; sendItem supplies its encoded-frame
+	// override explicitly.
+	queueByteCount ByteCount
+	sequenceNumber uint64
 
 	// the index of the item in the heap
 	heapIndex int
@@ -34,6 +40,13 @@ func (self *transferItem) MessageId() Id {
 }
 
 func (self *transferItem) MessageByteCount() ByteCount {
+	return self.messageByteCount
+}
+
+func (self *transferItem) QueueByteCount() ByteCount {
+	if 0 < self.queueByteCount {
+		return self.queueByteCount
+	}
 	return self.messageByteCount
 }
 
@@ -66,8 +79,14 @@ type transferQueue[T transferQueueItem] struct {
 	// message_id -> item
 	messageIdItems      map[Id]T
 	sequenceNumberItems map[uint64]T
-	byteCount           ByteCount
-	stateLock           sync.Mutex
+	// byteCount is the protocol/message total used by the per-sequence max and
+	// diagnostics. queueByteCount is the retained-allocation total used by the
+	// optional shared budget. They are identical for legacy/send queues; mobile
+	// receive queues can charge backing size classes without shrinking the
+	// useful per-flow payload window.
+	byteCount      ByteCount
+	queueByteCount ByteCount
+	stateLock      sync.Mutex
 
 	// shared budget accounting (see `TransferMemoryBudget`): the bytes held
 	// above `minByteCount` are borrowed from `budget`. every byte count
@@ -77,6 +96,8 @@ type transferQueue[T transferQueueItem] struct {
 	budget            *TransferMemoryBudget
 	minByteCount      ByteCount
 	borrowedByteCount ByteCount
+	floorRegistered   bool
+	lifetimeBudget    bool
 
 	cmp TransferQueueCmpFunction[T]
 }
@@ -94,15 +115,74 @@ func newTransferQueue[T transferQueueItem](cmp TransferQueueCmpFunction[T]) *tra
 	return transferQueue
 }
 
-func (self *transferQueue[T]) setBudget(budget *TransferMemoryBudget, minByteCount ByteCount) {
-	self.budget = budget
-	self.minByteCount = minByteCount
+// Budget is the shared budget this queue borrows above its floor from, or nil
+// when it is bounded only by its own maximum. Read to bound a window by what
+// the budget will lend rather than by a per-queue constant.
+// ObtainableByteCount is the most this queue could hold as the shared pool
+// stands: its guaranteed floor, plus what it has already borrowed, plus what
+// is left unreserved. Zero means there is no shared budget and the caller's
+// own maximum is the only bound.
+//
+// A per-sequence rule that reports the pool's total instead is claiming
+// permission it cannot obtain, which is what a campaign reads when it asks why
+// a provider serving many clients did not reach the number its windows said it
+// would (THROUGHPUTFIX §37.22).
+func (self *transferQueue[T]) ObtainableByteCount() ByteCount {
+	self.stateLock.Lock()
+	budget := self.budget
+	minByteCount := self.minByteCount
+	borrowedByteCount := self.borrowedByteCount
+	self.stateLock.Unlock()
+	if budget == nil {
+		return 0
+	}
+	return minByteCount + borrowedByteCount + budget.Available()
 }
 
-func (self *transferQueue[T]) updateByteCountWithLock(deltaByteCount ByteCount) {
+func (self *transferQueue[T]) Budget() *TransferMemoryBudget {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return self.budget
+}
+
+// setBudget attaches a shared budget with a guaranteed floor. Set before the
+// queue is used; the floor and budget do not change afterwards.
+func (self *transferQueue[T]) setBudget(budget *TransferMemoryBudget, minByteCount ByteCount) {
+	if self.budget != nil && self.floorRegistered {
+		self.budget.removeFloor(self.minByteCount)
+		self.floorRegistered = false
+	}
+	self.budget = budget
+	self.minByteCount = minByteCount
+	if budget != nil {
+		budget.addFloor(minByteCount)
+		self.floorRegistered = true
+	}
+}
+
+// The item, not its heap membership, owns exact retained admission. Per-flow
+// floors remain a window-sizing policy, never permission to overdraw memory.
+func (self *transferQueue[T]) setLifetimeBudget() {
+	self.setBudget(self.budget, 0)
+	self.lifetimeBudget = true
+}
+
+// updateByteCountWithLock applies a byte count change and maintains the
+// borrowed = max(0, byteCount-minByteCount) invariant against the shared
+// budget. every add and removal funnels through here, so releases can not be
+// missed on any exit path.
+func (self *transferQueue[T]) updateByteCountWithLock(
+	deltaByteCount ByteCount,
+	deltaQueueByteCount ByteCount,
+) {
 	self.byteCount += deltaByteCount
+	self.queueByteCount += deltaQueueByteCount
 	if self.budget != nil {
-		borrowTargetByteCount := max(0, self.byteCount-self.minByteCount)
+		borrowTargetByteCount := max(0, self.queueByteCount-self.minByteCount)
+		if self.lifetimeBudget {
+			self.borrowedByteCount = borrowTargetByteCount
+			return
+		}
 		if borrowTargetByteCount < self.borrowedByteCount {
 			self.budget.Release(self.borrowedByteCount - borrowTargetByteCount)
 			self.borrowedByteCount = borrowTargetByteCount
@@ -113,11 +193,31 @@ func (self *transferQueue[T]) updateByteCountWithLock(deltaByteCount ByteCount) 
 	}
 }
 
+// CanAdd reports whether the queue can grow by `byteCount` more bytes while
+// staying under `maxByteCount` and, above the floor, within the shared
+// budget headroom (see `TransferMemoryBudget`). An empty queue always admits
+// (at least one item is always allowed). Use a zero byteCount when the next
+// message size is unknown (approximate admission); it still requires budget
+// headroom to grow above the floor.
 func (self *transferQueue[T]) CanAdd(byteCount ByteCount, maxByteCount ByteCount) bool {
+	return self.CanAddWithQueueByteCount(byteCount, byteCount, maxByteCount)
+}
+
+// CanAddWithQueueByteCount keeps the per-sequence protocol window independent
+// from aggregate retained-allocation accounting. This matters for mobile H1:
+// a 1,500-byte frame may retain a 2-KiB packet root, a 4-KiB carrier root, and
+// an owner envelope, but it should still consume only 1,500 bytes of the
+// useful per-flow bandwidth-delay window.
+func (self *transferQueue[T]) CanAddWithQueueByteCount(
+	byteCount ByteCount,
+	queueByteCount ByteCount,
+	maxByteCount ByteCount,
+) bool {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
-	if len(self.orderedItems) == 0 {
+	// always allow at least one item
+	if len(self.orderedItems) == 0 && !self.lifetimeBudget {
 		return true
 	}
 	if maxByteCount <= self.byteCount+byteCount {
@@ -126,11 +226,19 @@ func (self *transferQueue[T]) CanAdd(byteCount ByteCount, maxByteCount ByteCount
 	if self.budget == nil {
 		return true
 	}
-	probeByteCount := max(self.byteCount+byteCount, self.byteCount+1)
+	// probe at least one byte above the current size, so a zero byteCount
+	// still requires headroom to grow above the floor
+	probeByteCount := max(
+		self.queueByteCount+queueByteCount,
+		self.queueByteCount+1,
+	)
 	borrowTargetByteCount := max(0, probeByteCount-self.minByteCount)
 	return borrowTargetByteCount-self.borrowedByteCount <= self.budget.Available()
 }
 
+// Clear removes every item, releasing all borrowed budget. The items are
+// returned for the caller to finalize (ack callbacks, pool returns). Used at
+// sequence teardown, where the queue is dropped wholesale.
 func (self *transferQueue[T]) Clear() []T {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -140,7 +248,13 @@ func (self *transferQueue[T]) Clear() []T {
 	self.maxHeap = newTransferQueueMaxHeap[T](self.cmp)
 	clear(self.messageIdItems)
 	clear(self.sequenceNumberItems)
-	self.updateByteCountWithLock(-self.byteCount)
+	self.updateByteCountWithLock(-self.byteCount, -self.queueByteCount)
+	// Teardown drops the queue wholesale, so its guaranteed floor is no longer
+	// spoken for and the pool may lend those bytes to the queues that remain.
+	if self.budget != nil && self.floorRegistered {
+		self.budget.removeFloor(self.minByteCount)
+		self.floorRegistered = false
+	}
 	return items
 }
 
@@ -187,7 +301,7 @@ func (self *transferQueue[T]) Add(item T) {
 	self.sequenceNumberItems[item.SequenceNumber()] = item
 	heap.Push(self, item)
 	heap.Push(self.maxHeap, item)
-	self.updateByteCountWithLock(item.MessageByteCount())
+	self.updateByteCountWithLock(item.MessageByteCount(), item.QueueByteCount())
 }
 
 func (self *transferQueue[T]) ContainsMessageId(messageId Id) (sequenceNumber uint64, ok bool) {
@@ -257,7 +371,7 @@ func (self *transferQueue[T]) remove(item T) T {
 		panic("Heap invariant broken.")
 	}
 	heap.Remove(self.maxHeap, item.MaxHeapIndex())
-	self.updateByteCountWithLock(-item.MessageByteCount())
+	self.updateByteCountWithLock(-item.MessageByteCount(), -item.QueueByteCount())
 	return item
 }
 
@@ -274,7 +388,7 @@ func (self *transferQueue[T]) RemoveFirst() T {
 	heap.Remove(self.maxHeap, item.MaxHeapIndex())
 	delete(self.messageIdItems, item.MessageId())
 	delete(self.sequenceNumberItems, item.SequenceNumber())
-	self.updateByteCountWithLock(-item.MessageByteCount())
+	self.updateByteCountWithLock(-item.MessageByteCount(), -item.QueueByteCount())
 	return item
 }
 

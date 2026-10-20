@@ -14,45 +14,55 @@ import (
 // ICE to the egress interface, so p2p (webrtc) traffic does not loop back into
 // the tunnel this process provides (R1). It embeds the standard net and only
 // overrides socket creation; a no-op unless an egress index is set / off
-// Windows.
+// Windows and macOS.
+//
+// Port note (v2026 engine -> 3.23 generation): the pinned engine constructs
+// this net in transport_p2p_webrtc_pc.go (newEgressNet(log)), so ICE candidates
+// are pinned. This generation's transport_p2p_webrtc_pc.go still creates its
+// net directly, so the constructor here is inert until that slice wires it;
+// the log field and the bind-failure line are the pinned engine's.
 type egressNet struct {
 	transport.Net
+	log Logger
 }
 
-func newEgressNet() (transport.Net, error) {
+func newEgressNet(log Logger) (transport.Net, error) {
 	base, err := stdnet.NewNet()
 	if err != nil {
 		return nil, err
 	}
-	return &egressNet{Net: base}, nil
+	return &egressNet{Net: base, log: loggerOrDefault(log)}, nil
 }
 
-// ListenUDP creates a UDP socket through the embedded transport.Net and,
-// when the connection exposes a syscall.Conn, binds it to the egress
-// interface via applyEgress (binding errors are ignored) so p2p (webrtc)
-// traffic does not loop back into the tunnel this process provides.
+// A socket we could not pin still works -- it just works through the wrong
+// interface, which for an ICE candidate means offering the tun's address to a
+// peer and gathering a path that loops back into this process. Not worth
+// failing the peer connection over, very much worth saying.
+func (self *egressNet) logBindFailure(err error) {
+	if err == nil {
+		return
+	}
+	self.log.Infof("[egress]ice socket not pinned to the physical interface, p2p may loop into the tunnel: %s\n", err)
+}
+
 func (self *egressNet) ListenUDP(network string, locAddr *net.UDPAddr) (transport.UDPConn, error) {
 	conn, err := self.Net.ListenUDP(network, locAddr)
 	if err != nil {
 		return nil, err
 	}
 	if sc, ok := conn.(syscall.Conn); ok {
-		_ = applyEgress(sc)
+		self.logBindFailure(applyEgress(sc))
 	}
 	return conn, nil
 }
 
-// ListenPacket is the packet-connection variant of ListenUDP: it creates the
-// socket through the embedded transport.Net and, when the connection exposes
-// a syscall.Conn, applies the egress interface binding best-effort (binding
-// errors are ignored, so the egress binding is not guaranteed).
 func (self *egressNet) ListenPacket(network string, address string) (net.PacketConn, error) {
 	conn, err := self.Net.ListenPacket(network, address)
 	if err != nil {
 		return nil, err
 	}
 	if sc, ok := conn.(syscall.Conn); ok {
-		_ = applyEgress(sc)
+		self.logBindFailure(applyEgress(sc))
 	}
 	return conn, nil
 }

@@ -31,13 +31,9 @@ func localDohUrls(settings *DohSettings, ipVersion int) []string {
 
 var knownDohUrlPairs = [][2]string{
 	{"https://1.1.1.1/dns-query", "https://[2606:4700:4700::1111]/dns-query"},
-	{"https://1.0.0.1/dns-query", "https://[2606:4700:4700::1001]/dns-query"},
-	{"https://8.8.8.8/dns-query", "https://[2001:4860:4860::8888]/dns-query"},
-	{"https://8.8.4.4/dns-query", "https://[2001:4860:4860::8844]/dns-query"},
+	{"https://8.8.8.8/resolve", "https://[2001:4860:4860::8888]/resolve"},
 	{"https://9.9.9.9/dns-query", "https://[2620:fe::fe]/dns-query"},
-	{"https://149.112.112.112/dns-query", "https://[2620:fe::9]/dns-query"},
 	{"https://208.67.222.222/dns-query", "https://[2620:119:35::35]/dns-query"},
-	{"https://208.67.220.220/dns-query", "https://[2620:119:53::53]/dns-query"},
 }
 
 // knownDnsServerPairs are the v4/v6 pairs of the default and regional plain

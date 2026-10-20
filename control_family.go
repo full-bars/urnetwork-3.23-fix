@@ -9,6 +9,7 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/wlynxg/anet"
@@ -193,6 +194,10 @@ func init() {
 // controlFamilyDemote records that `family` connected and then failed. It
 // reports whether the demotion took.
 //
+// This is the raw ledger write, kept callable for the policy's own tests. A
+// dial path must reach it through recordControlFamilyStrike, which refuses the
+// evidence a proxied dial cannot supply.
+//
 // It is REFUSED when the other family is not usable on this device. On an
 // IPv6-only network with no CLAT there is no IPv4 to fall back to, and
 // demoting IPv6 there would take the user from a slow control plane to no
@@ -230,6 +235,14 @@ func controlFamilyDemote(family int) bool {
 
 	now := controlFamilyLedger.now()
 	entry := controlFamilyLedger.demoted[family]
+	if now.Before(entry.until) {
+		// A demotion is already live, so this dial started before it was
+		// applied. Counting it would multiply the backoff for one incident:
+		// the parallel hello races four dialers through the same path, and
+		// four strikes turn a five minute hold into forty.
+		controlFamilyLedger.mu.Unlock()
+		return true
+	}
 	entry.strikes += 1
 	backoff := controlFamilyDemotionBase << (entry.strikes - 1)
 	if backoff > controlFamilyDemotionMax || backoff <= 0 {
@@ -243,6 +256,37 @@ func controlFamilyDemote(family int) bool {
 	loggerOrDefault(nil).Infof(
 		"[family]demote family=%d strikes=%d for=%s\n", family, strikes, backoff)
 	return true
+}
+
+// recordControlFamilyStrike is the ONLY sanctioned way a finished control dial
+// turns into a strike against the family that carried it. It refuses evidence
+// that cannot be about this host's address family:
+//
+//   - a proxied dial, whatever it was: the connection it observed belonged to
+//     the proxy (see proxyDialError).
+//   - anything that is not the post-connect timeout that proves a path
+//     blackholed. A refusal, a reset, a certificate failure or an ALPN mismatch
+//     mean the packets arrived and something at the far end objected, which says
+//     nothing about the family.
+//
+// controlFamilyDemote stays the raw recorder, so the ported tests of the policy
+// itself keep working. New callers, including the control-family dial helper
+// when the 34 line ports it, go through here.
+func recordControlFamilyStrike(family int, err error) bool {
+	if err == nil {
+		return false
+	}
+	var proxyErr *proxyDialError
+	if errors.As(err, &proxyErr) {
+		loggerOrDefault(nil).Infof(
+			"[family]no strike family=%d (dial went through proxy[%d])\n",
+			family, proxyErr.proxyIndex())
+		return false
+	}
+	if !isPathTimeout(err) {
+		return false
+	}
+	return controlFamilyDemote(family)
 }
 
 // controlFamilyUndemote drops any demotion of `family`, strike count included,
@@ -642,6 +686,17 @@ func isPathTimeout(err error) bool {
 		return netErr.Timeout()
 	}
 	return false
+}
+
+// isPathFailure reports whether err says this family's path cannot carry the
+// connection: a timeout, or an unreachable network or host. A cancellation, a
+// refusal, a DNS failure or a certificate failure says something else about
+// something else, and must not be read as evidence about the family.
+func isPathFailure(err error) bool {
+	if isPathTimeout(err) {
+		return true
+	}
+	return errors.Is(err, syscall.ENETUNREACH) || errors.Is(err, syscall.EHOSTUNREACH)
 }
 
 // connFamily is 4, 6, or 0 when the connection has no usable remote address.

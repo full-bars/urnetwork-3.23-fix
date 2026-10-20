@@ -485,7 +485,7 @@ func TestForceBeatsDemotion(t *testing.T) {
 	}
 }
 
-func TestControlFamilyBackoffDoublesAndCaps(t *testing.T) {
+func TestControlFamilyBackoffDoublesAcrossIncidentsAndCaps(t *testing.T) {
 	restore := swapControlFamilyProbe(func(int) bool { return true })
 	defer restore()
 	base := time.Unix(1750000000, 0)
@@ -499,14 +499,26 @@ func TestControlFamilyBackoffDoublesAndCaps(t *testing.T) {
 	if got := controlFamilyDemotedUntil(6).Sub(base); got != controlFamilyDemotionBase {
 		t.Fatalf("first demotion lasts %s, want %s", got, controlFamilyDemotionBase)
 	}
+	// A strike while the demotion is live came from a dial that started before
+	// it was applied, so it is not a new incident: the parallel hello races
+	// several dialers through the same dead path, and counting them all would
+	// turn a five minute hold into forty.
 	controlFamilyDemote(6)
-	if got := controlFamilyDemotedUntil(6).Sub(base); got != 2*controlFamilyDemotionBase {
-		t.Fatalf("second demotion lasts %s, want %s", got, 2*controlFamilyDemotionBase)
+	if got := controlFamilyDemotedUntil(6).Sub(base); got != controlFamilyDemotionBase {
+		t.Fatalf("a strike during a live demotion changed the hold to %s, want %s", got, controlFamilyDemotionBase)
 	}
+
+	now = now.Add(controlFamilyDemotionBase)
+	controlFamilyDemote(6)
+	if got := controlFamilyDemotedUntil(6).Sub(now); got != 2*controlFamilyDemotionBase {
+		t.Fatalf("second incident lasts %s, want %s", got, 2*controlFamilyDemotionBase)
+	}
+
 	for i := 0; i < 20; i += 1 {
+		now = controlFamilyDemotedUntil(6)
 		controlFamilyDemote(6)
 	}
-	if got := controlFamilyDemotedUntil(6).Sub(base); got != controlFamilyDemotionMax {
+	if got := controlFamilyDemotedUntil(6).Sub(now); got != controlFamilyDemotionMax {
 		t.Fatalf("demotion lasts %s, want the %s cap", got, controlFamilyDemotionMax)
 	}
 }

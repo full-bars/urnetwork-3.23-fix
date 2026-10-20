@@ -1,5 +1,49 @@
 # Changelog
 
+## [v3.23.0-fix.34.0]
+
+_Final release: everything in rc2 plus the post-rc2 fixes below. Notes: `releases/v3.23.0-fix.34.0.md`._
+
+### Added
+
+- **Contract lifecycle logs include the proxy identity**: every contract lifecycle line names the proxy that carried it, so a close, an OOM, or a denied contract is attributable to a slot without cross-referencing ids.
+
+### Fixed
+
+- **The network switch notice only appears when the effective network changes**: `choose_network main` or `--reset` with no saved network, and re-saving the same URL pair, no longer print the "jwt was issued by the previous network" warning. The notice compares the effective `api_url` before and after, so a real switch still warns and a single-use auth code is not spent on a false one.
+
+### Changed
+
+- **OpenRC smoke CI declares read-only token permissions** and disables checkout credential persistence.
+- **The CFAA egress blocklist is refreshed** to 41,513 IPv4 ranges and 575 IPv6 ranges (data-only).
+- **The host and Docker shakedowns can run together**: per-workflow concurrency groups plus a 0-30s jittered and retried JWT mint, so a tag push no longer cancels one of them.
+
+## [v3.23.0-fix.34.0-rc2]
+
+_Release candidate superseding rc1 with the two changes that merged after rc1 was tagged. Notes: `releases/v3.23.0-fix.34.0-rc2.md`._
+
+### Fixed
+
+- **A proxied TLS handshake never strikes or retries a family**: `recordControlFamilyStrike` rejected a `proxyDialError`, but a handshake over a proxy fails with a plain timeout, so a proxied stall still demoted the proxy socket's family and then retried through the same proxy. The dial now checks `dialUsesProxy` at every decision: no family strike and no family retry for a proxied handshake, with two regression tests.
+
+### Changed
+
+- **CI enforces the modern-provider gate on every build**: `build.yml` runs `modern_provider_gate_test.go`, so a release cannot lose the PQ/window capability evidence without the build failing.
+
+## [v3.23.0-fix.34.0-rc1]
+
+_Release candidate: the v2026 engine transplant plus the post-slice fixes. Notes: `releases/v3.23.0-fix.34.0-rc1.md`._
+
+### Fixed
+
+- **The governor restores its learned baseline in shadow mode**: `InitGovernState` returned early unless the mode was enforce, so a shadow process started every restart with no persisted baseline and judged windows against the plain 20% threshold. Shadow now restores the baseline and keeps learning it, so its `baseline` and `threshold` fields match the enforce decision. The outage restart marker stays enforce-only because only enforce acts on it.
+- **A local teardown is never governor evidence**: the H1 and H3 loops now skip `recordAttempt` when the attempt's local context has ended, matching the existing dial-failure carve-outs, so a cancelled dial is not counted as an early death.
+- **First-send counters require a successful write**: `recordTransferFirstSend` moved inside the success branch, so a write that never reached the wire no longer counts as a first send; the resend path already behaved this way.
+
+### Changed
+
+- **The standalone transfer budget is lock-free, and `Reserve` charges a hierarchy instead of panicking**: standalone reserve/release no longer take the root admission lock, an exact-equality hierarchy now charges its full amount rather than underflowing into a panic, the waiter grant scratch is reused across releases, and capacity waiters wake in FIFO order.
+
 ## [Unreleased]
 
 _Unreleased: the v33.1 batch. Not tagged, released, or deployed._

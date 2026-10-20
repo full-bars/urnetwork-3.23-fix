@@ -331,6 +331,7 @@ var liveEffectKeys = map[string]bool{
 	"hot_restart":                 true,
 	"metrics":                     true,
 	"metrics_listen":              true,
+	"proxy_target_family":         true,
 }
 
 // needsRestart returns true if setting this key requires a provider restart
@@ -373,6 +374,10 @@ func validateControlValue(key, value string) error {
 		}
 	case "ip_version":
 		if _, err := connect.ParseFamilyStackMode(value); err != nil {
+			return err
+		}
+	case "proxy_target_family":
+		if _, err := connect.ParseProxyTargetFamily(value); err != nil {
 			return err
 		}
 	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus":
@@ -485,6 +490,10 @@ var liveDefaults = map[string]string{
 	"smart_dialer": "off",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
+	// Clearing proxy_target_family goes back to resolving the target here and
+	// sending the proxy an IPv4 literal, which is what every release before the
+	// key did.
+	"proxy_target_family": proxyTargetFamilyDefault,
 	// Clearing h1_plus restores the default: H1+ upgrades allowed.
 	"h1_plus": "on",
 	// Clearing h3_datagram_send returns to the default: on, as upstream.
@@ -1104,6 +1113,11 @@ func applyLiveSideEffect(key, value string) error {
 		tlog("⚙️ [control] applied h3_datagram=%s (was %s)\n", value, onOff(previous))
 	case "ip_version":
 		return applyIpVersion(value)
+	case "proxy_target_family":
+		// Read inside every proxied dial (see connect/proxy_target_family.go), so
+		// the next dial follows it. Nothing is relaunched and no open session is
+		// touched, which keeps flipping it back a complete rollback.
+		return applyProxyTargetFamily(value)
 	case "h1_plus":
 		// Read at each dial: new connections try (on) or skip (off) the H1+
 		// upgrade; live connections keep their carrier until they reconnect.
@@ -1373,6 +1387,13 @@ func applyPersistedRuntimeTuning(state *controlState) {
 		if err := applyLiveSideEffect("ip_version", v); err != nil {
 			tlog("[control] failed to apply persisted ip_version=%s: %s\n", v, err)
 		}
+	}
+	// Replayed in both directions, including the default: an unset key must put
+	// the dial path on v4 explicitly rather than leave it on whatever the
+	// environment or a previous run left behind. URNETWORK_PROXY_TARGET_FAMILY is
+	// the startup default the key overrides.
+	if err := applyLiveSideEffect("proxy_target_family", resolveProxyTargetFamily(state)); err != nil {
+		tlog("[control] failed to apply proxy_target_family: %s\n", err)
 	}
 	// h3 is replayed in BOTH directions, falling back to the startup default
 	// when the key was never set: a persisted off must beat the env var and the

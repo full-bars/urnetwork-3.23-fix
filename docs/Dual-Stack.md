@@ -62,7 +62,9 @@ Enabling the same behavior in this line means:
    upstream family, so proving a proxy is v6-capable needs a probe through it.
 4. Keep family accounting honest: a dial failure through a proxy must never be
    counted as an IPv4 family strike. That accounting bug is what demoted IPv4
-   for six hours on a production box.
+   for six hours on a production box. Since rc2, a proxied TLS handshake that
+   fails is also never retried on another family: the family of the hop to the
+   proxy says nothing about the destination.
 5. Canary first — it changes DNS behavior for every proxied dial.
 
 ## What you need to do

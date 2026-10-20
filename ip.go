@@ -1009,6 +1009,22 @@ type UdpBufferSettings struct {
 	Mtu                 int
 	ReadBufferByteCount int
 	SequenceBufferSize  int
+	// SocketReadShardCount replaces one blocking socket-reader goroutine per
+	// udp flow with this many OS-readiness workers inside each address-family
+	// buffer. The local user nat already owns one udp buffer per dispatch
+	// shard, so this is the readiness fan-out within one dispatch shard, and
+	// each shard also owns one bounded delivery worker. Zero, the default,
+	// retains the portable per-flow reader: generic callers and platforms
+	// without a readiness backend keep the established implementation until
+	// their cohorts are measured.
+	SocketReadShardCount int
+	// SharedSocketLifecycle writes each provider udp datagram directly under
+	// its flow's send lock and uses one buffer-level idle worker instead of
+	// retaining a send goroutine, send queue, and idle timer per flow. It
+	// requires the readiness shards; a flow whose socket cannot be registered
+	// (a platform without a backend, or a proxy-wrapped socket) keeps the
+	// established Run loop.
+	SharedSocketLifecycle bool
 	// the number of open sockets per user
 	// uses an lru cleanup where new sockets over the limit close old sockets
 	UserLimit     int
@@ -1087,6 +1103,10 @@ type UdpBuffer[BufferId comparable] struct {
 	receiveCallback   ReceivePacketFunction
 	udpBufferSettings *UdpBufferSettings
 	bw                *ProxyBandwidth
+	// socketReadPoller is the buffer's shared readiness fan-out. It is built
+	// lazily under mutex on the first flow, so a tcp-only provider and an
+	// unused address family keep no poll descriptors or worker stacks.
+	socketReadPoller *udpSocketReadPoller
 
 	mutex sync.Mutex
 
@@ -1211,6 +1231,23 @@ func (self *UdpBuffer[BufferId]) udpSend(
 			}
 		}
 		sourceEntries[bufferId] = sequence
+
+		if self.socketReadPoller == nil {
+			// The buffer mutex serializes this lazy construction. A flow's
+			// socket is opened here, before any send item exists, so a shared
+			// flow has no send goroutine, send queue, or idle timer at all.
+			self.socketReadPoller = newUdpSocketReadPoller(self.ctx, self.udpBufferSettings)
+		}
+		sequence.socketReadPoller = self.socketReadPoller
+		sequence.sharedSocketLifecycle =
+			self.socketReadPoller != nil && self.udpBufferSettings.SharedSocketLifecycle
+		if sequence.sharedSocketLifecycle {
+			sequence.sharedSocketLifecycle = sequence.startSharedSocket()
+		}
+		if sequence.sharedSocketLifecycle {
+			return sequence
+		}
+		sequence.ensureSendItems()
 		go HandleError(func() {
 			defer func() {
 				self.mutex.Lock()
@@ -1268,6 +1305,19 @@ type UdpSequence struct {
 	// bw, when set, is credited with the bytes of the socket this sequence dials.
 	bw *ProxyBandwidth
 
+	// socketReadPoller, when set, owns this flow's socket reads: the flow is
+	// registered rather than started with a blocking reader goroutine.
+	socketReadPoller    *udpSocketReadPoller
+	socketReadPollShard int
+	socketReadPollFd    int
+	// sharedSocketLifecycle is true only for a flow that registered its socket
+	// with the readiness poller: writes go directly to the socket, and no
+	// per-flow send goroutine, send queue, or idle timer exists.
+	sharedSocketLifecycle bool
+	sharedSocket          net.Conn
+	sharedSocketErr       error
+	closeOnce             sync.Once
+
 	sendMutex sync.Mutex
 	sendItems chan *UdpSendItem
 
@@ -1292,9 +1342,10 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 		cancel:            cancel,
 		log:               loggerOrDefault(udpBufferSettings.Log),
 		receiveCallback:   receiveCallback,
-		sendItems:         make(chan *UdpSendItem, udpBufferSettings.SequenceBufferSize),
+		sendItems:         newUdpSendItemQueue(udpBufferSettings),
 		udpBufferSettings: udpBufferSettings,
 		idleCondition:     NewIdleCondition(),
+		socketReadPollFd:  -1,
 		StreamState: StreamState{
 			source:          source,
 			provideMode:     provideMode,
@@ -1311,7 +1362,27 @@ func NewUdpSequence(ctx context.Context, receiveCallback ReceivePacketFunction,
 	}
 }
 
+// newUdpSendItemQueue allocates the per-flow send queue, or nothing for the
+// shared socket lifecycle, whose datagrams are written by their sender.
+func newUdpSendItemQueue(udpBufferSettings *UdpBufferSettings) chan *UdpSendItem {
+	if udpBufferSettings.SharedSocketLifecycle {
+		return nil
+	}
+	return make(chan *UdpSendItem, udpBufferSettings.SequenceBufferSize)
+}
+
+// ensureSendItems repairs the send queue for a flow that fell back to the
+// per-flow Run loop after a shared-lifecycle registration failed.
+func (self *UdpSequence) ensureSendItems() {
+	if self.sendItems == nil {
+		self.sendItems = make(chan *UdpSendItem, self.udpBufferSettings.SequenceBufferSize)
+	}
+}
+
 func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (bool, error) {
+	if self.sharedSocketLifecycle {
+		return self.sendSharedSocket(sendItem)
+	}
 	self.sendMutex.Lock()
 	defer self.sendMutex.Unlock()
 
@@ -1360,6 +1431,74 @@ func (self *UdpSequence) send(sendItem *UdpSendItem, timeout time.Duration) (boo
 	}
 }
 
+// sendSharedSocket writes one datagram under the flow's send lock. The lock
+// serializes the flow's datagrams onto the socket, so each payload stays one
+// udp message in its arrival order without a writer goroutine or a per-flow
+// send queue. A write that does not consume the whole datagram is a protocol
+// error: the remaining bytes would be a different message, so the flow is
+// retired instead of resuming mid-datagram.
+//
+// Ownership follows the established contract: a true return consumes the
+// send item's pooled packet, and every false return leaves it to the caller.
+func (self *UdpSequence) sendSharedSocket(sendItem *UdpSendItem) (bool, error) {
+	self.sendMutex.Lock()
+	defer self.sendMutex.Unlock()
+
+	select {
+	case <-self.ctx.Done():
+		if self.sharedSocketErr != nil {
+			return false, self.sharedSocketErr
+		}
+		return false, errors.New("Done.")
+	default:
+	}
+	if self.sharedSocket == nil {
+		return false, errors.New("udp shared socket unavailable")
+	}
+
+	payload := sendItem.udp.payload
+	if 0 < len(payload) {
+		if err := self.sharedSocket.SetWriteDeadline(
+			time.Now().Add(self.udpBufferSettings.WriteTimeout),
+		); err != nil {
+			self.sharedSocketErr = err
+			self.Close()
+			return false, err
+		}
+		n, err := self.sharedSocket.Write(payload)
+		if err == nil {
+			if v := self.log.V(2); v.Enabled() {
+				v.Infof("[udp]forward %d\n", n)
+			}
+		} else if v := self.log.V(1); v.Enabled() {
+			v.Infof("[udp]forward %d error = %s", n, err)
+		}
+		if 0 < n {
+			self.UpdateLastActivityTime()
+		}
+		if err != nil {
+			self.sharedSocketErr = err
+			self.Close()
+			return false, err
+		}
+		if n != len(payload) {
+			self.sharedSocketErr = io.ErrShortWrite
+			self.Close()
+			return false, io.ErrShortWrite
+		}
+	}
+	MessagePoolReturn(sendItem.ipPacket)
+	return true, nil
+}
+
+// receivePacket delivers one drained datagram to the buffer's receive callback
+// and returns its pooled owner. It is called by the flow's reader goroutine and
+// by a readiness shard's delivery worker, and is the same delivery either way.
+func (self *UdpSequence) receivePacket(packet []byte) {
+	self.receiveCallback(self.source, self.provideMode, self.IpPath(), packet)
+	MessagePoolReturn(packet)
+}
+
 func (self *UdpSequence) Run() {
 	type writePayload struct {
 		sendIter uint64
@@ -1369,8 +1508,7 @@ func (self *UdpSequence) Run() {
 	var writePayloads chan writePayload
 
 	defer func() {
-		atomic.AddInt64(&activeConnectionCount, -1)
-		self.cancel()
+		self.Close()
 
 		func() {
 			self.sendMutex.Lock()
@@ -1410,34 +1548,20 @@ func (self *UdpSequence) Run() {
 		}
 	}()
 
-	receive := func(packet []byte) {
-		self.receiveCallback(self.source, self.provideMode, self.IpPath(), packet)
-		MessagePoolReturn(packet)
-	}
-
 	self.log.V(2).Infof("[init]udp connect\n")
 	dialStart := time.Now()
-	socket, err := self.udpBufferSettings.DialContext(
-		self.ctx,
-		"udp",
-		self.IpPath().DestinationHostPort(),
-	)
+	socket, err := self.openSocket()
 	if err != nil {
 		self.log.V(1).Infof("[init]udp connect error = %s\n", err)
 		// A UDP dial cannot yield a meaningful refusal to the inner source.
 		if self.ctx.Err() == nil {
 			if _, signal := classifyDialFailure(self.IpPath(), err, time.Since(dialStart)); signal != nil {
-				receive(MessagePoolCopy(signal))
+				self.receivePacket(MessagePoolCopy(signal))
 			}
 		}
 		return
 	}
 	defer socket.Close()
-	// Count the bytes of a direct socket as total traffic; a proxied one is
-	// already counted by its dialer.
-	socket = trackDirect(socket, self.bw)
-	self.UpdateLastActivityTime()
-	self.log.V(2).Infof("[init]connect success\n")
 
 	// if udpConn, ok := socket.(*net.UDPConn); ok {
 	// 	udpConn.SetReadBuffer(int(self.udpBufferSettings.MaxWindowSize))
@@ -1529,100 +1653,104 @@ func (self *UdpSequence) Run() {
 		}
 	}, self.cancel)
 
-	readPackets := make(chan []byte, self.udpBufferSettings.SequenceBufferSize)
-	go HandleError(func() {
-		defer self.cancel()
+	if self.socketReadPoller != nil && self.socketReadPoller.register(self, socket) {
+		defer self.socketReadPoller.unregister(self)
+	} else {
+		readPackets := make(chan []byte, self.udpBufferSettings.SequenceBufferSize)
+		go HandleError(func() {
+			defer self.cancel()
 
-		defer func() {
+			defer func() {
+				for {
+					select {
+					case packet, ok := <-readPackets:
+						if !ok {
+							return
+						}
+						self.receivePacket(packet)
+					}
+				}
+			}()
+
 			for {
 				select {
+				case <-self.ctx.Done():
+					return
 				case packet, ok := <-readPackets:
 					if !ok {
 						return
 					}
-					receive(packet)
+					self.receivePacket(packet)
 				}
 			}
-		}()
+		}, self.cancel)
 
-		for {
-			select {
-			case <-self.ctx.Done():
-				return
-			case packet, ok := <-readPackets:
-				if !ok {
+		go HandleError(func() {
+			defer func() {
+				self.cancel()
+				close(readPackets)
+			}()
+
+			buffer := make([]byte, self.udpBufferSettings.ReadBufferByteCount)
+
+			for forwardIter := uint64(0); ; forwardIter += 1 {
+				select {
+				case <-self.ctx.Done():
 					return
+				default:
 				}
-				receive(packet)
-			}
-		}
-	}, self.cancel)
 
-	go HandleError(func() {
-		defer func() {
-			self.cancel()
-			close(readPackets)
-		}()
+				readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
+				socket.SetReadDeadline(readTimeout)
+				n, err := socket.Read(buffer)
 
-		buffer := make([]byte, self.udpBufferSettings.ReadBufferByteCount)
-
-		for forwardIter := uint64(0); ; forwardIter += 1 {
-			select {
-			case <-self.ctx.Done():
-				return
-			default:
-			}
-
-			readTimeout := time.Now().Add(self.udpBufferSettings.ReadTimeout)
-			socket.SetReadDeadline(readTimeout)
-			n, err := socket.Read(buffer)
-
-			if err != nil {
-				if v := self.log.V(1); v.Enabled() {
-					v.Infof("[f%d]udp receive err = %s\n", forwardIter, err)
-				}
-			}
-
-			if 0 < n {
-				self.UpdateLastActivityTime()
-
-				packets, packetsErr := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
-				if packetsErr != nil {
-					self.log.Infof("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
-					return
-				}
-				if 1 < len(packets) {
-					if v := self.log.V(2); v.Enabled() {
-						v.Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
-					}
-				}
-				for _, packet := range packets {
+				if err != nil {
 					if v := self.log.V(1); v.Enabled() {
-						v.Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
-					}
-					select {
-					case <-self.ctx.Done():
-						MessagePoolReturn(packet)
-					case readPackets <- packet:
+						v.Infof("[f%d]udp receive err = %s\n", forwardIter, err)
 					}
 				}
-			}
 
-			if err != nil {
-				if err == io.EOF {
-					return
-				} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
-					if v := self.log.V(1); v.Enabled() {
-						v.Infof("[f%d]timeout\n", forwardIter)
+				if 0 < n {
+					self.UpdateLastActivityTime()
+
+					packets, packetsErr := self.DataPackets(buffer, n, self.udpBufferSettings.Mtu)
+					if packetsErr != nil {
+						self.log.Infof("[f%d]udp receive packets error = %s\n", forwardIter, packetsErr)
+						return
 					}
-					return
-				} else {
-					// some other error
-					return
+					if 1 < len(packets) {
+						if v := self.log.V(2); v.Enabled() {
+							v.Infof("[f%d]udp receive segemented packets = %d\n", forwardIter, len(packets))
+						}
+					}
+					for _, packet := range packets {
+						if v := self.log.V(1); v.Enabled() {
+							v.Infof("[f%d]udp receive %d\n", forwardIter, len(packet))
+						}
+						select {
+						case <-self.ctx.Done():
+							MessagePoolReturn(packet)
+						case readPackets <- packet:
+						}
+					}
+				}
+
+				if err != nil {
+					if err == io.EOF {
+						return
+					} else if netErr, ok := err.(net.Error); ok && netErr.Timeout() {
+						if v := self.log.V(1); v.Enabled() {
+							v.Infof("[f%d]timeout\n", forwardIter)
+						}
+						return
+					} else {
+						// some other error
+						return
+					}
 				}
 			}
-		}
-	}, self.cancel)
+		}, self.cancel)
+	}
 
 	// reusable idle timer: this send loop wakes per datagram, so a per-iteration
 	// time.After allocated a timer per packet (a dominant alloc in the udp
@@ -1677,11 +1805,71 @@ func (self *UdpSequence) Run() {
 }
 
 func (self *UdpSequence) Cancel() {
-	self.cancel()
+	self.Close()
 }
 
+// Close retires the flow exactly once. The shared socket lifecycle owns its
+// socket (the readiness registration and the socket must both go), while the
+// per-flow Run loop closes the socket it dialed itself.
 func (self *UdpSequence) Close() {
-	self.cancel()
+	self.closeOnce.Do(func() {
+		atomic.AddInt64(&activeConnectionCount, -1)
+		self.cancel()
+		if self.sharedSocketLifecycle {
+			if self.socketReadPoller != nil {
+				self.socketReadPoller.unregister(self)
+			}
+			self.closeSocket(self.sharedSocket)
+		}
+	})
+}
+
+// openSocket dials the flow's upstream socket and applies the flow's
+// accounting wrapper. Both the per-flow Run loop and the shared socket
+// lifecycle open the same way.
+func (self *UdpSequence) openSocket() (net.Conn, error) {
+	self.log.V(2).Infof("[init]udp connect\n")
+	socket, err := self.udpBufferSettings.DialContext(
+		self.ctx,
+		"udp",
+		self.IpPath().DestinationHostPort(),
+	)
+	if err != nil {
+		self.log.V(1).Infof("[init]udp connect error = %s\n", err)
+		return nil, err
+	}
+	// Count the bytes of a direct socket as total traffic; a proxied one is
+	// already counted by its dialer.
+	socket = trackDirect(socket, self.bw)
+	self.UpdateLastActivityTime()
+	self.log.V(2).Infof("[init]connect success\n")
+	return socket, nil
+}
+
+func (self *UdpSequence) closeSocket(socket net.Conn) {
+	if socket != nil {
+		_ = socket.Close()
+	}
+}
+
+// startSharedSocket opens the flow's socket before any send item exists and
+// registers it with the readiness shards. A dial failure still commits the flow
+// to the shared lifecycle (it is canceled, and the send path reports the dial
+// error); a socket that cannot be registered instead falls back to the per-flow
+// Run loop, which dials its own socket.
+func (self *UdpSequence) startSharedSocket() bool {
+	socket, err := self.openSocket()
+	if err != nil {
+		self.sharedSocketErr = err
+		self.cancel()
+		return true
+	}
+	if self.socketReadPoller == nil || !self.socketReadPoller.register(self, socket) {
+		self.closeSocket(socket)
+		return false
+	}
+	self.sharedSocket = socket
+	return true
 }
 
 type UdpSendItem struct {
