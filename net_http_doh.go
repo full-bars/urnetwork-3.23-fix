@@ -27,11 +27,26 @@ import (
 	"golang.org/x/net/http2"
 )
 
-// dohFailureCount tracks DoH failures for aggregate reporting in health heartbeat
+// dohFailureCount is the interval counter the health heartbeat consumes: it
+// reads as failures since the previous read. It is a delta by design and must
+// not be persisted.
 var dohFailureCount atomic.Int64
+
+// dohFailureTotal is the cumulative counterpart exported as
+// urnet_doh_failures_total. The interval counter above cannot feed a
+// "_total" series: reading it with Swap(0) made the exported value reset to
+// zero on every scrape, so neither rate() nor a cross-restart delta could use
+// it. It is persisted with the other cumulative counters
+// (metrics_persist.go).
+var dohFailureTotal atomic.Int64
 
 func GetDohFailureCount() uint64 {
 	return uint64(dohFailureCount.Swap(0))
+}
+
+// GetDohFailureTotal returns the cumulative DoH failure count.
+func GetDohFailureTotal() uint64 {
+	return uint64(max(dohFailureTotal.Load(), 0))
 }
 
 var dohErrThrottle = newLogThrottle(5 * time.Minute)
@@ -799,6 +814,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			cacheMiss = true
 		} else {
 			dohFailureCount.Add(1)
+			dohFailureTotal.Add(1)
 			if ok, suppressed := shouldLogDohErr(); ok {
 				if suppressed > 100 {
 					self.log.Infof("🚨 [doh] %d failures in last window — last: remote (%s) err = %s\n", suppressed+1, q.Domain, err)
@@ -829,6 +845,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			cacheMiss = true
 		} else {
 			dohFailureCount.Add(1)
+			dohFailureTotal.Add(1)
 			if ok, suppressed := shouldLogDohErr(); ok {
 				if suppressed > 0 {
 					self.log.Infof("🌐 [doh] local (%s) err = %s (%d suppressed)\n", q.Domain, err, suppressed)
