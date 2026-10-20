@@ -236,13 +236,16 @@ Two line families appear while transports are being changed, and both are expect
 - The four `[proxy][udp]` lines are printed **per proxy per change of answer**, so their count is bounded by the number of proxies. A proxy that alternates between the "ok" and "could not be learned" lines has an intermittent UDP path; one that reports "no udp relay" or an exit mismatch is simply not offered for H3, which is the intended fallback and needs no action.
 - None of these lines is an error, and none counts as a backend or proxy auth failure, so they should not be wired into the existing error-rate alerts. Watch them as a transport-settling signal only.
 
+Cumulative counters survive a provider restart. Traffic, transport, contract, error, DoH, control-command and loop-restart totals are written to `~/.urnetwork/metrics_counters.json` every 45 seconds and on a clean shutdown, and a starting provider adds the stored totals before it serves its first scrape. A restart (upgrade, reboot, crash) therefore continues every series instead of resetting it to zero, and a 24-hour delta computed from `/metrics` alone stays correct across one. A HotSwap candidate restores the store but does not write to it while the parent is still serving; on takeover it catches up to the parent's last write and becomes the writer. Gauges are process-scoped and are not restored. `urnet_process_start_time_seconds` marks when the current process started, so a query that must not read the restored total as fresh traffic can filter on it; `urnet_uptime_seconds` remains the current process's uptime.
+
 ## Metrics reference
 
 | Metric | Type | Labels | Meaning |
 |---|---|---|---|
 | `urnet_info` | gauge | `version` | Always 1; carries the provider version |
-| `urnet_uptime_seconds` | gauge | | Provider uptime |
-| `urnet_billable_bytes_total` | counter | `direction` | Billable bytes, all proxies |
+| `urnet_uptime_seconds` | gauge | | Uptime of the current provider process |
+| `urnet_process_start_time_seconds` | gauge | | Unix time the current provider process started |
+| `urnet_billable_bytes_total` | counter | `direction` | Billable bytes, all proxies, persisted across restarts |
 | `urnet_bytes_total` | counter | `direction` | All bytes, all proxies |
 | `urnet_clients_active` | gauge | | Active clients, all proxies |
 | `urnet_connections_active` | gauge | | Active connections |
@@ -272,7 +275,7 @@ Two line families appear while transports are being changed, and both are expect
 | `urnet_transport_pt_connect_failures_total` | counter | `mode` | Packet-translation transport connect attempts that failed |
 | `urnet_transport_pt_drops_total` | counter | `mode` | Packet-translation transport connections that ended while still wanted |
 | `urnet_proxy_pool_size` | gauge | `status` | Proxies by status: up, connecting, degraded, dead |
-| `urnet_proxy_bytes_total` | counter | `proxy`, `direction` | Bytes per proxy |
+| `urnet_proxy_bytes_total` | counter | `proxy`, `direction` | Bytes per proxy, persisted across restarts |
 | `urnet_proxy_billable_bytes_total` | counter | `proxy`, `direction` | Billable bytes per proxy |
 | `urnet_proxy_clients` | gauge | `proxy` | Active clients per proxy |
 | `urnet_proxy_session_age_seconds` | gauge | `proxy` | Length of the current client presence window per proxy |
@@ -290,11 +293,11 @@ Two line families appear while transports are being changed, and both are expect
 | `urnet_proxy_audit_distrusted` | gauge | | 1 when the last pass tripped the mass-failure breaker |
 | `urnet_proxy_audit_thin_pass` | gauge | | 1 when too few proxies could be graded to trust the last pass |
 | `urnet_proxy_audit_parks_24h` | gauge | | Parks counted against the rolling 24h budget |
-| `urnet_contracts_total` | counter | `result` | Contract outcomes since start |
-| `urnet_errors_total` | counter | `category` | Errors since start |
-| `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted |
+| `urnet_contracts_total` | counter | `result` | Contract outcomes, persisted across restarts |
+| `urnet_errors_total` | counter | `category` | Errors, persisted across restarts |
+| `urnet_loop_restarts_total` | counter | `loop` | Times a supervised background loop ended unexpectedly and was restarted; persisted across restarts |
 | `urnet_loop_up` | gauge | `loop` | 1 while a supervised loop is running, 0 while it is stopped or backing off |
-| `urnet_doh_failures_total` | counter | | DNS-over-HTTPS failures |
+| `urnet_doh_failures_total` | counter | | DNS-over-HTTPS failures, persisted across restarts |
 | `urnet_sessions_pqe` | gauge | | Active post-quantum sessions |
 | `urnet_sessions_classical` | gauge | | Active classical sessions |
 | `urnet_sessions_opened_total` | counter | `encryption` | Sessions opened, lifetime |
@@ -305,7 +308,7 @@ Two line families appear while transports are being changed, and both are expect
 | `urnet_lifetime_billable_bytes_total` | counter | | Billable bytes, persisted across restarts |
 | `urnet_lifetime_errors_total` | counter | `category` | Errors, persisted across restarts |
 | `urnet_hotswap_outcomes_total` | counter | `reason` | HotSwap attempt outcomes |
-| `urnet_control_commands_total` | counter | `cmd` | Control socket commands |
+| `urnet_control_commands_total` | counter | `cmd` | Control socket commands, persisted across restarts |
 | `urnet_startup_clean_shutdown` | gauge | | 1 if the previous run shut down cleanly |
 | `urnet_startup_restarted` | gauge | | 1 if the previous run did not shut down cleanly |
 | `urnet_startup_upgraded` | gauge | | 1 if the version changed since the previous run |

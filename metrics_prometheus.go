@@ -96,6 +96,15 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "# TYPE urnet_uptime_seconds gauge\n")
 		fmt.Fprintf(&b, "urnet_uptime_seconds %g\n", uptime)
 
+		// Process start time: the fixed point that tells a scrape-side consumer
+		// the provider restarted. Only uptime moves with the clock, and after a
+		// restart the cumulative counters continue from the persisted value, so
+		// without this a rate() over the restart boundary reads the whole
+		// restored total as traffic from this process.
+		fmt.Fprintf(&b, "# HELP urnet_process_start_time_seconds Unix time the provider process started.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_process_start_time_seconds gauge\n")
+		fmt.Fprintf(&b, "urnet_process_start_time_seconds %d\n", globalProm.startTime.Unix())
+
 		// --- Active connections ---
 		fmt.Fprintf(&b, "# HELP urnet_connections_active Currently active connections.\n")
 		fmt.Fprintf(&b, "# TYPE urnet_connections_active gauge\n")

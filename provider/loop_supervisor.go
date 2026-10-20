@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"math"
 	"sort"
 	"strings"
 	"sync"
@@ -46,6 +47,11 @@ type loopStatus struct {
 var (
 	loopStatusMu sync.Mutex
 	loopStatuses = map[string]*loopStatus{}
+	// loopRestartBase is the restart count the previous process persisted per
+	// loop (see provider/metrics_persist.go). The exported counter is
+	// base + live, so urnet_loop_restarts_total keeps counting up across a
+	// provider restart instead of falling back to zero. Guarded by loopStatusMu.
+	loopRestartBase = map[string]int64{}
 )
 
 // loopStatusOf returns a copy of the named loop's status, registering it.
@@ -72,6 +78,54 @@ func setLoopUp(name string, up bool, restart bool) {
 	if restart {
 		st.Restarts++
 	}
+}
+
+// addLoopRestartBase seeds a loop's restart count from the persisted store.
+// The name may not have a live status yet (the loop is registered when its
+// goroutine first starts), so the base map is independent of loopStatuses.
+func addLoopRestartBase(name string, v uint64) {
+	if name == "" || v == 0 {
+		return
+	}
+	loopStatusMu.Lock()
+	defer loopStatusMu.Unlock()
+	loopRestartBase[name] = satAddInt64(loopRestartBase[name], v)
+}
+
+// loopRestartTotalLocked returns base + live for one loop, saturating at
+// MaxInt64 instead of wrapping negative. Caller holds loopStatusMu.
+func loopRestartTotalLocked(name string) int64 {
+	var live int64
+	if st, ok := loopStatuses[name]; ok {
+		live = max(st.Restarts, 0)
+	}
+	return satAddInt64(loopRestartBase[name], uint64(live))
+}
+
+func satAddInt64(a int64, b uint64) int64 {
+	if b > math.MaxInt64 || a > math.MaxInt64-int64(b) {
+		return math.MaxInt64
+	}
+	return a + int64(b)
+}
+
+// snapshotLoopRestarts returns the exported restart total per loop, covering
+// loops that have a live status and loops the previous process counted but
+// this one has not started yet.
+func snapshotLoopRestarts() map[string]uint64 {
+	loopStatusMu.Lock()
+	defer loopStatusMu.Unlock()
+	out := make(map[string]uint64, len(loopStatuses)+len(loopRestartBase))
+	for name := range loopStatuses {
+		out[name] = uint64(max(loopRestartTotalLocked(name), 0))
+	}
+	for name := range loopRestartBase {
+		if _, ok := out[name]; ok {
+			continue
+		}
+		out[name] = uint64(max(loopRestartTotalLocked(name), 0))
+	}
+	return out
 }
 
 // nextLoopBackoff doubles the previous backoff up to loopBackoffMax, and
@@ -124,8 +178,10 @@ func supervisedLoopMetrics() string {
 	}
 	sort.Strings(names)
 	snap := make(map[string]loopStatus, len(names))
+	restarts := make(map[string]int64, len(names))
 	for _, name := range names {
 		snap[name] = *loopStatuses[name]
+		restarts[name] = loopRestartTotalLocked(name)
 	}
 	loopStatusMu.Unlock()
 
@@ -133,7 +189,7 @@ func supervisedLoopMetrics() string {
 	b.WriteString("# HELP urnet_loop_restarts_total Times a supervised background loop ended unexpectedly and was restarted.\n")
 	b.WriteString("# TYPE urnet_loop_restarts_total counter\n")
 	for _, name := range names {
-		fmt.Fprintf(&b, "urnet_loop_restarts_total{loop=%q} %d\n", name, snap[name].Restarts)
+		fmt.Fprintf(&b, "urnet_loop_restarts_total{loop=%q} %d\n", name, restarts[name])
 	}
 	b.WriteString("# HELP urnet_loop_up 1 while a supervised background loop is running, 0 while it is stopped or backing off.\n")
 	b.WriteString("# TYPE urnet_loop_up gauge\n")
