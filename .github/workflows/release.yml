@@ -44,11 +44,13 @@ jobs:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          # upstream-style app_version for the backend; empty falls back to VERSION
+          APP_VERSION=$(scripts/compute-app-version.sh "${VERSION}")
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION} -X main.AuthVersion=${APP_VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/; then
               echo "Build succeeded"; break
             fi

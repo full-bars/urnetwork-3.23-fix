@@ -457,6 +457,12 @@ jobs:
             VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
+          # upstream-style app_version for the backend; tag builds only, empty otherwise
+          APP_VERSION=""
+          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
+            APP_VERSION=$(scripts/compute-app-version.sh "${VERSION}")
+          fi
+          echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
@@ -466,7 +472,9 @@ jobs:
           push: ${{ github.event_name != 'pull_request' }}
           tags: ${{ steps.meta.outputs.tags }}
           labels: ${{ steps.meta.outputs.labels }}
-          build-args: VERSION=${{ steps.version.outputs.VERSION }}
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
           cache-from: type=gha
           cache-to: type=gha,mode=min
 
