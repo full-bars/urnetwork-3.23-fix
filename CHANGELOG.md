@@ -1,5 +1,23 @@
 # Changelog
 
+## [v3.23.0-fix.34.1]
+
+_Patch release on v3.23.0-fix.34.0: the v34 review follow-ups plus a CFAA blocklist refresh. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.1.md`._
+
+### Fixed
+
+- **Plain-DNS resolver rotation is per lookup, not per process**: the fallback resolver picked its server from a counter shared by the whole cache and advanced once per attempt, so a concurrent lookup could move it between another lookup's two attempts and both could land on the same address family. Each lookup now seeds its own attempt counter from the shared one, which advances once per lookup, so one lookup's attempts walk consecutive entries of the operator-paired v4/v6 list while lookups still spread across the servers. DoH stays primary and only the plain-DNS fallback changes.
+- **A network-refresh 401 is terminal**: the hourly renewal no longer falls back to the legacy code-create/code-login flow on HTTP 401, because that call would present the same dead token, fail the same way and mask the real error. The refresh fails, the current JWT stays in place and the next hourly pass retries. A 403, the other 4xx refusals except 408, 425 and 429, and the missing-route statuses 404, 405 and 501 still fall back.
+- **The UDP shared-socket poller returns the rest of the batch when a drain is canceled**: a refused enqueue returned only its own packet, so the packets behind it in the same batch, one pooled buffer per fragment of an oversized datagram, never went back to the message pool. The drain now returns the remainder of the slice. The poller stays inert: no shipped setting sets `SocketReadShardCount`. The head-of-line coupling of the shard's single drain loop and the zero-length-datagram end-of-drain rule are documented.
+- **Docker public-IP detection no longer masks curl's exit status**: `docker/scripts/provider_common.sh` split the declaration and the assignment of `URNETWORK_PUBLIC_IP` before the export, so `export` no longer swallows the command's status (shellcheck SC2155). The detected address and the log line are unchanged.
+
+### Changed
+
+- **The reliable handoff timeout default is 0, not -1**: the field is carried for a later wiring decision and has no effect yet, because no production caller reads the selector and the receive path still selects its handoff wait with `ClientSettings.BufferTimeout`. The comment now says a negative value must not become the default until the receive path is wired to it deliberately. No behavior change.
+- **Windows egress fail-closed behavior is documented** (comment only): a v4 egress index with `index6 == 0` fails IPv6 dials on purpose, since there is no v6 index to pin to, and the early return after the first successful option is safe for IPv4 destinations.
+- **The normal strategy dial is pinned to the same egress control** (test only): the dial reaches the network through `ConnectSettings.DialContext`, whose plain branch builds `NetDialer()` and installs `DialControl`, so the forced-interface egress control still runs on the socket. The new test fails the build if `NetDialer`'s `Control` field is dropped. No production change.
+- **The CFAA egress blocklist is refreshed** to 40,924 IPv4 ranges (from 41,513) and 546 IPv6 ranges (from 575), data only.
+
 ## [v3.23.0-fix.34.0]
 
 _Final release: everything in rc2 plus the post-rc2 fixes below. Notes: `releases/v3.23.0-fix.34.0.md`._
@@ -44,9 +62,17 @@ _Release candidate: the v2026 engine transplant plus the post-slice fixes. Notes
 
 - **The standalone transfer budget is lock-free, and `Reserve` charges a hierarchy instead of panicking**: standalone reserve/release no longer take the root admission lock, an exact-equality hierarchy now charges its full amount rather than underflowing into a panic, the waiter grant scratch is reused across releases, and capacity waiters wake in FIFO order.
 
-## [Unreleased]
+## [v3.23.0-fix.33.2]
 
-_Unreleased: the v33.1 batch. Not tagged, released, or deployed._
+_Docker-only patch: the v33.1 image could not be built; the provider and urnet-tools binaries are identical to v33.1. Notes: `releases/v3.23.0-fix.33.2.md`._
+
+### Fixed
+
+- **The v33.1 Docker image can be built and published**: the nightly Pelican egg check reads `provider_common.sh` again after the entrypoint consolidation, and the provider package timeout is raised past its roughly 446-second race run. Both are CI-only changes; no provider binary changed.
+
+## [v3.23.0-fix.33.1]
+
+_Release: the v33.1 batch. Notes: `releases/v3.23.0-fix.33.1.md`._
 
 ### Added
 

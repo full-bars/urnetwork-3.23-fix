@@ -42,7 +42,11 @@ Consequences:
 
 The local resolution was deliberate: it shares a DNS cache across burst dials
 and bounds a bad resolver with a short DoH timeout, so thousands of warmup
-dials cannot stall behind DNS.
+dials cannot stall behind DNS. The plain-DNS fallback behind DoH rotates its
+configured servers one entry per resolver attempt, and that rotation is per
+lookup rather than per process, so one lookup's attempts walk consecutive
+entries of the paired v4-then-v6 list however many other lookups resolve at
+the same time.
 
 ## What changes when we flip it
 

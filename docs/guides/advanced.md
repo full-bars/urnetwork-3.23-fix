@@ -296,6 +296,7 @@ ssh user@<node-ip> "urnet-tools proxy summary"
 
 | Version | Impact |
 |---------|--------|
+| 34.1 | Patch release: internal review follow-ups and a blocklist data refresh. No operator action beyond the normal update and restart. |
 | 30.0 | Cross-platform parity (Windows schtasks, macOS launchd), urnet-docker Design 2 host-side proxy ops. |
 | 29.0 | Go urnet-tools provider discovery, report URL runtime config, hot-restart subcommands. |
 | 28.0 | Standalone `urnet-docker` CLI for host-side Docker container discovery and delegation. |
