@@ -4,6 +4,10 @@
 
 _Final release: everything in rc2 plus the post-rc2 fixes below. Notes: `releases/v3.23.0-fix.34.0.md`._
 
+### Added
+
+- **Contract lifecycle logs include the proxy identity**: every contract lifecycle line names the proxy that carried it, so a close, an OOM, or a denied contract is attributable to a slot without cross-referencing ids.
+
 ### Fixed
 
 - **The network switch notice only appears when the effective network changes**: `choose_network main` or `--reset` with no saved network, and re-saving the same URL pair, no longer print the "jwt was issued by the previous network" warning. The notice compares the effective `api_url` before and after, so a real switch still warns and a single-use auth code is not spent on a false one.
@@ -11,6 +15,7 @@ _Final release: everything in rc2 plus the post-rc2 fixes below. Notes: `release
 ### Changed
 
 - **OpenRC smoke CI declares read-only token permissions** and disables checkout credential persistence.
+- **The CFAA egress blocklist is refreshed** to 41,513 IPv4 ranges and 575 IPv6 ranges (data-only).
 - **The host and Docker shakedowns can run together**: per-workflow concurrency groups plus a 0-30s jittered and retried JWT mint, so a tag push no longer cancels one of them.
 
 ## [v3.23.0-fix.34.0-rc2]
