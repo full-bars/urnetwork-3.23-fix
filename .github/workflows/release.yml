@@ -418,6 +418,16 @@ jobs:
           # Scans moved to the parallel 'scan' job (posts a release comment).
           # The release body is the custom notes, or auto-generated.
           if [ -f "$CUSTOM" ]; then
+            # The reported app_version derives from the tagged commit's time, so
+            # it cannot be written into the notes before the commit exists.
+            # Resolve the placeholder here, into a temp copy, and keep the
+            # committed file when the tag yields no calendar version.
+            APP_VERSION=$(scripts/compute-app-version.sh "${GITHUB_REF_NAME}")
+            if [ -n "$APP_VERSION" ] && grep -q 'TO BE FILLED IN AT TAG TIME' "$CUSTOM"; then
+              BODY="${RUNNER_TEMP}/release-notes.md"
+              sed "s|TO BE FILLED IN AT TAG TIME|${APP_VERSION}|g" "$CUSTOM" > "$BODY"
+              CUSTOM="$BODY"
+            fi
             echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
             echo "auto=false" >> "$GITHUB_OUTPUT"
           else
