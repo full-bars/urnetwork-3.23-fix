@@ -2072,9 +2072,13 @@ func_root_guard ()
     pr_info "needs a session bus that root lacks. As root the service cannot be enabled"
     pr_info "and you will hit 'Failed to connect to bus' errors."
 
-    # Non-interactive (curl | sh with no terminal): cannot prompt. Preserve the
+    # Non-interactive (curl | sh with no terminal, -f, or a container whose
+    # /dev/tty node exists but cannot be opened): cannot prompt. Preserve the
     # documented root tools-only path, but warn loudly and show the fix.
-    if [ ! -r /dev/tty ]; then
+    # `[ -r /dev/tty ]` is not enough: under `docker run` the node is readable
+    # but opening it fails with ENXIO, so the old guard fell through to a read
+    # that returned an empty choice and exited 1. Probe by OPENING it.
+    if [ "${FORCE:-0}" = "1" ] || ! { : < /dev/tty ; } 2>/dev/null; then
         pr_warn "No interactive terminal; continuing with tools only (no service)."
         pr_info "To run the provider service, create a user and install as them:"
         pr_info "    useradd -m -s /bin/sh urnet && loginctl enable-linger urnet"
