@@ -2,28 +2,47 @@
 """vt-scan.py — VirusTotal artifact scanner for CI (pure stdlib).
 
 Scans one or more files against the VirusTotal v3 API:
-  1. sha256 hash lookup (1 request; free if the file was scanned before)
-  2. if unknown: multipart upload, then poll the analysis until completed
-  3. prints a verdict per file; exits 1 if any file has malicious > VT_FAIL_THRESHOLD
+  1. sha256 hash lookup (1 request; free when the file was scanned before)
+  2. if unknown: upload, then poll the analysis until completed
+  3. prints a verdict per file and a markdown proof block for the release body
+
+Why it looks like this — each rule fixes a failure seen in a real release run:
+  * Free-tier keys allow 4 requests/minute. The old loop had no 429 handling,
+    so a throttled call became an UNKNOWN row. Every request now honours
+    Retry-After with exponential backoff.
+  * The provider binaries sit at VirusTotal's 32 MiB single-POST limit and one
+    of them tips over; that upload failed with 413 and shipped as UNKNOWN.
+    Files over the limit now use the large-file flow (/files/upload_url + PUT).
+  * Rescanning unchanged bytes is free, so every file is looked up by hash
+    first, and identical files in one run are scanned once.
+  * Uploads are submitted before analyses are polled: on a 4/minute budget,
+    polling between uploads spends the quota on waiting instead of new work.
+  * Coverage is explicit. A body that says PASS while an artifact was never
+    scanned is worse than one that says INCOMPLETE.
 
 Env:
-  VT_API_KEY          required
-  VT_FAIL_THRESHOLD   fail (exit 1) if malicious count > threshold
-                      (default 10 — real supply-chain hits are 10+ engines)
-  VT_REVIEW_THRESHOLD artifact is marked REVIEW (ships) if malicious count
-                      exceeds this but is at or below FAIL_THRESHOLD
-                      (default 2 — the known stripped-Go false-positive band)
-  VT_UPLOAD           "0" to never upload (lookup-only, useful on PRs)
-  VT_POLL_WAIT        seconds between analysis polls (default 12)
-  VT_POLL_MAX         max polls before timeout (default 20)
-  VT_SUMMARY_FILE     path: append a markdown proof block (per-file
-                      verdicts + VT links + CI run ref) to this file
-  VT_JSON_FILE        path: write machine-readable JSON scan results for
-                      downstream automation (one JSON object per file)
+  VT_API_KEY            required
+  VT_API_BASE           API root (default https://www.virustotal.com/api/v3)
+  VT_FAIL_THRESHOLD     fail above this many malicious detections (default 10 —
+                        real supply-chain hits are 10+ engines)
+  VT_REVIEW_THRESHOLD   REVIEW (ships, flagged) above this, at or below FAIL
+                        (default 2 — the known stripped-Go false-positive band)
+  VT_UPLOAD             "0" to never upload (lookup-only, useful on PRs)
+  VT_POLL_WAIT          seconds between analysis polls (default 12)
+  VT_POLL_MAX           max polls per analysis before a timeout (default 20)
+  VT_RETRIES            retries on 429/5xx (default 5)
+  VT_MIN_INTERVAL       minimum seconds between requests (default 0; use 16
+                        with a free-tier key — 4 requests/minute)
+  VT_SMALL_MAX          byte size above which the large-file flow is used
+                        (default 33554432 = 32 MiB)
+  VT_HTTP_TIMEOUT       per-request timeout in seconds (default 120)
+  VT_SUMMARY_FILE       append the markdown proof block to this path
+  VT_JSON_FILE          machine-readable results, one object per unique hash
+  VT_FAIL_ON_INCOMPLETE "1" to exit non-zero when any artifact could not be
+                        scanned (default "0": report it, keep the release green)
 
-Exit codes: 0 = pass/review/UNKNOWN (non-blocking api/upload/timeout),
-1 = malicious above fail threshold (real-malware line). The scan is
-informational and never blocks the release.
+Exit codes: 0 = pass/review, 1 = malicious above VT_FAIL_THRESHOLD,
+2 = coverage incomplete with VT_FAIL_ON_INCOMPLETE=1, or bad invocation.
 """
 
 import hashlib
@@ -31,39 +50,96 @@ import json
 import os
 import sys
 import time
-import urllib.request
 import urllib.error
+import urllib.request
 
-API = "https://www.virustotal.com/api/v3"
+API = os.environ.get("VT_API_BASE", "https://www.virustotal.com/api/v3").rstrip("/")
 POLL_WAIT = float(os.environ.get("VT_POLL_WAIT", "12"))
 POLL_MAX = int(os.environ.get("VT_POLL_MAX", "20"))
 FAIL_THRESHOLD = int(os.environ.get("VT_FAIL_THRESHOLD", "10"))
 REVIEW_THRESHOLD = int(os.environ.get("VT_REVIEW_THRESHOLD", "2"))
 UPLOAD = os.environ.get("VT_UPLOAD", "1") != "0"
+RETRIES = int(os.environ.get("VT_RETRIES", "5"))
+MIN_INTERVAL = float(os.environ.get("VT_MIN_INTERVAL", "0"))
+SMALL_MAX = int(os.environ.get("VT_SMALL_MAX", str(32 * 1024 * 1024)))
+HTTP_TIMEOUT = float(os.environ.get("VT_HTTP_TIMEOUT", "120"))
 SUMMARY_FILE = os.environ.get("VT_SUMMARY_FILE", "")
 JSON_FILE = os.environ.get("VT_JSON_FILE", "")
+FAIL_ON_INCOMPLETE = os.environ.get("VT_FAIL_ON_INCOMPLETE", "0") == "1"
+
+_last_call = 0.0
 
 
-def api(path: str, data=None, method=None, headers=None) -> tuple[int, dict]:
-    url = API + path
-    req = urllib.request.Request(url, data=data, method=method)
-    req.add_header("x-apikey", os.environ["VT_API_KEY"])
-    if data is not None and not isinstance(data, bytes):
-        req.add_header("Content-Type", "application/json")
-        data = json.dumps(data).encode()
-    for k, v in (headers or {}).items():
-        req.add_header(k, v)
+def _throttle() -> None:
+    """Keep a minimum spacing between requests (free tier: 4/minute)."""
+    global _last_call
+    if MIN_INTERVAL <= 0:
+        return
+    delta = time.time() - _last_call
+    if delta < MIN_INTERVAL:
+        time.sleep(MIN_INTERVAL - delta)
+    _last_call = time.time()
+
+
+def _retry_after(err: urllib.error.HTTPError) -> float:
+    raw = err.headers.get("Retry-After") if err.headers else None
+    if not isinstance(raw, str):
+        return 0.0
     try:
-        with urllib.request.urlopen(req, timeout=60) as resp:
-            body = resp.read()
-            code = resp.status
-    except urllib.error.HTTPError as e:
-        body = e.read()
-        code = e.code
-    try:
-        return code, json.loads(body or b"{}")
-    except json.JSONDecodeError:
-        return code, {"raw": body.decode(errors="replace")[:200]}
+        return max(1.0, float(raw))
+    except ValueError:
+        return 0.0
+
+
+def call(url, data=None, method=None, headers=None):
+    """One API/upload request with 429 and 5xx backoff. Returns (code, dict)."""
+    if not url.startswith("http"):
+        url = API + url
+    req_headers = {"x-apikey": os.environ["VT_API_KEY"]}
+    req_headers.update(headers or {})
+    payload = data
+    if isinstance(data, dict):
+        payload = json.dumps(data).encode()
+        req_headers.setdefault("Content-Type", "application/json")
+    last = (0, {"raw": "not attempted"})
+    for attempt in range(RETRIES + 1):
+        _throttle()
+        req = urllib.request.Request(url, data=payload, method=method)
+        for k, v in req_headers.items():
+            req.add_header(k, v)
+        try:
+            with urllib.request.urlopen(req, timeout=HTTP_TIMEOUT) as resp:
+                body = resp.read()
+                try:
+                    obj = json.loads(body or b"{}")
+                except json.JSONDecodeError:
+                    obj = {"raw": body[:300].decode(errors="replace")}
+                return resp.status, obj if isinstance(obj, dict) else {"raw": obj}
+        except urllib.error.HTTPError as e:
+            body = e.read()
+            try:
+                obj = json.loads(body or b"{}")
+                if not isinstance(obj, dict):
+                    obj = {"raw": obj}
+            except json.JSONDecodeError:
+                obj = {"raw": body[:300].decode(errors="replace")}
+            if (e.code == 429 or 500 <= e.code < 600) and attempt < RETRIES:
+                wait = _retry_after(e) if e.code == 429 else 0.0
+                wait = wait or min(60.0, 2.0 ** attempt)
+                print(f"    {e.code} — retry {attempt + 1}/{RETRIES} in {wait:.0f}s", flush=True)
+                time.sleep(wait)
+                last = (e.code, obj)
+                continue
+            return e.code, obj
+        except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
+            if attempt < RETRIES:
+                wait = min(60.0, 2.0 ** attempt)
+                print(f"    network error ({e}) — retry in {wait:.0f}s", flush=True)
+                time.sleep(wait)
+                last = (0, {"raw": str(e)})
+                continue
+            return 0, {"raw": str(e)}
+    return last
 
 
 def sha256_of(path: str) -> str:
@@ -74,208 +150,296 @@ def sha256_of(path: str) -> str:
     return h.hexdigest()
 
 
-def scan_file(path: str) -> int:
-    fsha = sha256_of(path)
-    print(f"== {path}  sha256={fsha}", flush=True)
-
-    # 1. lookup (1 request when already known)
-    code, body = api(f"/files/{fsha}")
-    verdict = None
-    if code == 200:
-        stats = body.get("data", {}).get("attributes", {}).get("last_analysis_stats", {})
-        verdict = "cached"
-    elif code == 404:
-        if not UPLOAD:
-            print("  lookup miss, upload disabled (VT_UPLOAD=0) — skipping", flush=True)
-            return 0
-        # 2. upload
-        boundary = f"----vtci{os.getpid()}"
-        with open(path, "rb") as f:
-            payload = f.read()
-        part = (
-            (
-                f"--{boundary}\r\n"
-                'Content-Disposition: form-data; name="file"; '
-                f'filename="{os.path.basename(path)}"\r\n'
-                "Content-Type: application/octet-stream\r\n\r\n"
-            ).encode()
-            + payload
-            + f"\r\n--{boundary}--\r\n".encode()
-        )
-        code, body = api(
-            "/files",
-            data=part,
-            method="POST",
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
-        )
-        if code != 200:
-            print(f"  UPLOAD FAILED ({code}): {body} - recorded UNKNOWN (non-blocking)", flush=True)
-            _summary_rows.append((path, fsha, "upload-error", None, None, None, None))
-            return 0
-        analysis_id = body.get("data", {}).get("id", "")
-        # 3. poll
-        stats = {}
-        for i in range(1, POLL_MAX + 1):
-            time.sleep(POLL_WAIT)
-            c, b = api(f"/analyses/{analysis_id}")
-            status = b.get("data", {}).get("attributes", {}).get("status")
-            if status == "completed":
-                stats = b.get("data", {}).get("attributes", {}).get("stats", {})
-                verdict = "uploaded"
-                break
-            if i == POLL_MAX:
-                print("  ANALYSIS TIMEOUT - scan not completed; recorded UNKNOWN (non-blocking)", flush=True)
-                _summary_rows.append((path, fsha, "timeout", None, None, None, None))
-                return 0
-    else:
-        print(f"  LOOKUP FAILED ({code}): {body} - recorded UNKNOWN (non-blocking)", flush=True)
-        _summary_rows.append((path, fsha, "lookup-error", None, None, None, None))
-        return 0
-
-    mal = int(stats.get("malicious", 0))
-    sus = int(stats.get("suspicious", 0))
-    har = int(stats.get("harmless", 0))
-    und = int(stats.get("undetected", 0))
-    print(
-        f"  verdict: malicious={mal} suspicious={sus} harmless={har} undetected={und}", flush=True
-    )
-    print(f"  https://www.virustotal.com/gui/file/{fsha}", flush=True)
-    _summary_rows.append((path, fsha, verdict, mal, sus, har, und))
-    if mal > FAIL_THRESHOLD:
-        print(f"  ^ FAIL: malicious ({mal}) > fail threshold ({FAIL_THRESHOLD})", flush=True)
-        return 1
-    if mal > REVIEW_THRESHOLD:
-        print(
-            f"  ^ REVIEW: malicious ({mal}) > review threshold ({REVIEW_THRESHOLD}), at/below fail threshold — ships but flagged",
-            flush=True,
-        )
-    return 0
+def label_for(path: str) -> str:
+    """`release_tmp/linux/amd64/provider` -> `linux/amd64/provider`."""
+    parts = os.path.normpath(path).split(os.sep)
+    if len(parts) >= 3 and parts[-3] in ("linux", "darwin", "windows", "freebsd"):
+        return "/".join(parts[-3:])
+    return os.path.basename(path)
 
 
-_summary_rows = []  # (path, sha, verdict, mal, sus, har, und) accumulated for the proof block
+class Row:
+    __slots__ = ("path", "label", "sha", "size", "source", "analysis_id",
+                 "malicious", "suspicious", "harmless", "undetected", "engines",
+                 "error", "duplicate_of")
+
+    path: str
+    label: str
+    sha: str
+    size: int
+    source: str | None
+    analysis_id: str | None
+    malicious: int | None
+    suspicious: int | None
+    harmless: int | None
+    undetected: int | None
+    engines: int | None
+    error: str | None
+    duplicate_of: str | None
+
+    def __init__(self, path, sha, size, label):
+        self.path = path
+        self.label = label
+        self.sha = sha
+        self.size = size
+        self.source = None
+        self.analysis_id = None
+        self.malicious = None
+        self.suspicious = None
+        self.harmless = None
+        self.undetected = None
+        self.engines = None
+        self.error = None
+        self.duplicate_of = None
+
+    def set_stats(self, stats, source):
+        self.source = source
+        self.malicious = int(stats.get("malicious", 0))
+        self.suspicious = int(stats.get("suspicious", 0))
+        self.harmless = int(stats.get("harmless", 0))
+        self.undetected = int(stats.get("undetected", 0))
+        self.engines = sum(int(stats.get(k, 0)) for k in (
+            "malicious", "suspicious", "harmless", "undetected",
+            "timeout", "confirmed-timeout", "failure", "type-unsupported"))
+
+    @property
+    def scanned(self):
+        return self.malicious is not None
+
+    @property
+    def verdict(self):
+        if not self.scanned:
+            return "UNKNOWN"
+        if self.malicious > FAIL_THRESHOLD:
+            return "FAIL"
+        if self.malicious > REVIEW_THRESHOLD:
+            return "REVIEW"
+        return "PASS"
 
 
-def write_json(json_path: str) -> bool:
-    """Write machine-readable scan results JSON for downstream automation."""
-    rows_out = []
-    for path, fsha, verdict, mal, sus, har, und in _summary_rows:
-        rows_out.append({
-            "path": path,
-            "sha": fsha,
-            "verdict": verdict,
-            "malicious": mal,
-            "suspicious": sus,
-            "harmless": har,
-            "undetected": und,
-        })
+def write_json(rows):
+    """Machine-readable results. `path`/`sha`/`malicious` are consumed by
+    stage-wdsi.py, so they are present on every row, scanned or not."""
+    if not JSON_FILE:
+        return True
+    out = [{
+        "path": r.path,
+        "sha": r.sha,
+        "label": r.label,
+        "bytes": r.size,
+        "verdict": r.verdict,
+        "source": r.source,
+        "analysis_id": r.analysis_id,
+        "malicious": r.malicious,
+        "suspicious": r.suspicious,
+        "harmless": r.harmless,
+        "undetected": r.undetected,
+        "engines": r.engines,
+        "error": r.error,
+        "duplicate_of": r.duplicate_of,
+    } for r in rows]
     try:
-        with open(json_path, "w") as f:
-            json.dump(rows_out, f, indent=2)
+        with open(JSON_FILE, "w") as f:
+            json.dump(out, f, indent=2)
         return True
     except OSError as e:
         print(f"  (json write failed: {e})", flush=True)
         return False
 
 
-def write_summary() -> None:
-    """Write the release-notes proof block once, after all files are scanned.
+def write_summary(rows):
+    """Append the release-notes proof block.
 
-    Three-tier status, measured against the release gates:
-      PASS   malicious <= VT_REVIEW_THRESHOLD (known Go false-positive band)
-      REVIEW malicious > review threshold, <= VT_FAIL_THRESHOLD (ships,
-             flagged for a look)
-      FAIL   malicious > VT_FAIL_THRESHOLD (the real-malware line, blocks)
+    Headline order: FAIL beats everything; INCOMPLETE (any unscanned artifact)
+    beats PASS/REVIEW, because a clean verdict for the scanned subset must not
+    read as a clean verdict for the release.
     """
-    if not SUMMARY_FILE or not _summary_rows:
+    if not SUMMARY_FILE or not rows:
         return
+    verified = [r for r in rows if r.scanned]
+    unknown = [r for r in rows if not r.scanned]
+    worst = max((r.malicious for r in verified), default=0)
     try:
-        server = os.environ.get("GITHUB_SERVER_URL", "https://github.com")
-        repo = os.environ.get("GITHUB_REPOSITORY", "")
-        run = os.environ.get("GITHUB_RUN_ID", "")
-        rows = list(_summary_rows)
-        verified = [mal for _, _, _, mal, _, _, _ in rows if mal is not None]
-        worst = max(verified) if verified else 0
-        has_unknown = any(mal is None for _, _, _, mal, _, _, _ in rows)
         with open(SUMMARY_FILE, "a") as f:
             f.write("\n---\n\n## VirusTotal Scan\n\n")
-            f.write(
-                "The release artifacts were scanned with VirusTotal "
-                "(70+ antivirus engines) during CI.\n\n"
-            )
+            f.write("The release artifacts were scanned with VirusTotal (60+ antivirus "
+                    "engines) during CI.\n\n")
             if worst > FAIL_THRESHOLD:
-                f.write(
-                    f"**Result: FAIL** — at least one artifact exceeds "
-                    f"{FAIL_THRESHOLD} malicious detections. The release was blocked.\n\n"
-                )
+                f.write(f"**Result: FAIL** — at least one artifact exceeds {FAIL_THRESHOLD} "
+                        f"malicious detections. The release was blocked.\n\n")
+            elif unknown:
+                f.write(f"**Result: INCOMPLETE** — {len(unknown)} of {len(rows)} artifacts "
+                        f"could not be scanned (upload, lookup or analysis failure), so the "
+                        f"clean result below covers only the other {len(verified)}. The "
+                        f"unscanned artifacts are downloadable from this release; rescan them "
+                        f"before relying on a clear verdict.\n\n")
             elif worst > REVIEW_THRESHOLD:
-                f.write(
-                    f"**Result: REVIEW** — an artifact has more than "
-                    f"{REVIEW_THRESHOLD} malicious detections but is at or below "
-                    f"{FAIL_THRESHOLD}. Review recommended.\n\n"
-                )
+                f.write(f"**Result: REVIEW** — an artifact has more than {REVIEW_THRESHOLD} "
+                        f"malicious detections but is at or below {FAIL_THRESHOLD}. Review "
+                        f"recommended.\n\n")
             else:
-                f.write(
-                    f"**Result: PASS** — every artifact is within "
-                    f"{REVIEW_THRESHOLD} malicious detections.\n\n"
-                )
-            if has_unknown:
-                f.write(
-                    "Artifacts marked UNKNOWN were not fully scanned "
-                    "(VirusTotal upload, lookup, or analysis timed out). "
-                    "Rescan them before relying on a clear verdict.\n\n"
-                )
-            f.write("| Artifact | Status | Malicious | Suspicious | VT link |\n")
-            f.write("|---|---|---|---|---|\n")
-            for path, fsha, _, mal, sus, _, _ in rows:
-                if mal is None:
-                    status = "UNKNOWN"
-                elif mal > FAIL_THRESHOLD:
-                    status = "FAIL"
-                elif mal > REVIEW_THRESHOLD:
-                    status = "REVIEW"
-                else:
-                    status = "PASS"
-                f.write(
-                    f"| {os.path.basename(path)} | {status} | "
-                    f"{'n/a' if mal is None else mal} | {'n/a' if sus is None else sus} | "
-                    f"[report](https://www.virustotal.com/gui/file/{fsha}) |\n"
-                )
-            f.write(
-                "\nNOTE: 1 to 2 detections are the known machine-learning "
-                "false-positive pattern on stripped Go binaries (PASS). "
-                "3 to 10 detections ship as REVIEW and should be checked. "
-                "More than 10 detections blocks the release.\n"
-            )
-            f.write(
-                "\nHeuristic machine-learning detections (such as Wacatac or "
-                "Execution.A!ml) on these stripped Go binaries are known recurring "
-                "false positives verified clean upon Microsoft analyst dispute. "
-                "Detections remain visible in the tally to ensure transparency.\n"
-            )
-            f.write(f"\n<sub>Scan run: [{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
+                f.write(f"**Result: PASS** — all {len(verified)} artifacts are within "
+                        f"{REVIEW_THRESHOLD} malicious detections.\n\n")
+            f.write("| Artifact | Status | Malicious | Suspicious | Engines | VT link |\n")
+            f.write("|---|---|---|---|---|---|\n")
+            for r in rows:
+                mal = "n/a" if r.malicious is None else r.malicious
+                sus = "n/a" if r.suspicious is None else r.suspicious
+                eng = "n/a" if r.engines is None else r.engines
+                note = f" ({r.error})" if r.error else ""
+                f.write(f"| {r.label}{note} | {r.verdict} | {mal} | {sus} | {eng} | "
+                        f"[report](https://www.virustotal.com/gui/file/{r.sha}) |\n")
+            dupes = [r for r in rows if r.duplicate_of]
+            if dupes:
+                f.write("\nIdentical bytes (scanned once): "
+                        + ", ".join(f"{r.label} = {r.duplicate_of}" for r in dupes) + ".\n")
+            f.write("\nNOTE: 1 to 2 detections are the known machine-learning false-positive "
+                    "pattern on stripped Go binaries (PASS). 3 to 10 detections ship as REVIEW "
+                    "and should be checked. More than 10 detections blocks the release.\n")
+            f.write("\nHeuristic machine-learning detections (such as Wacatac or Execution.A!ml) "
+                    "on these stripped Go binaries are known recurring false positives verified "
+                    "clean upon Microsoft analyst dispute. Detections remain visible in the tally "
+                    "to ensure transparency.\n")
+            server = os.environ.get("GITHUB_SERVER_URL", "")
+            repo = os.environ.get("GITHUB_REPOSITORY", "")
+            run = os.environ.get("GITHUB_RUN_ID", "")
+            if server and repo and run:
+                f.write(f"\n<sub>Scan run: [{run}]({server}/{repo}/actions/runs/{run}).</sub>\n\n")
     except OSError as e:
         print(f"  (summary write failed: {e})", flush=True)
 
 
-def main() -> int:
+def multipart(path):
+    """The multipart body VT expects for both /files and a large-file upload URL."""
+    boundary = f"----vt{os.getpid()}"
+    with open(path, "rb") as f:
+        payload = f.read()
+    part = ((f"--{boundary}\r\n"
+             'Content-Disposition: form-data; name="file"; '
+             f'filename="{os.path.basename(path)}"\r\n'
+             "Content-Type: application/octet-stream\r\n\r\n").encode()
+            + payload + f"\r\n--{boundary}--\r\n".encode())
+    return part, {"Content-Type": f"multipart/form-data; boundary={boundary}"}
+
+
+def submit(path):
+    """Upload one file. Returns (analysis_id, error)."""
+    part, mp_headers = multipart(path)
+    if os.path.getsize(path) > SMALL_MAX:
+        # Over the 32 MiB single-POST limit. The upload URL takes the SAME
+        # multipart POST as /files (a raw PUT answers 400 'Argument "file" is
+        # missing'), and each URL is single-use.
+        code, body = call("/files/upload_url")
+        data = body.get("data")
+        url = data.get("url") if isinstance(data, dict) else data
+        if code != 200 or not isinstance(url, str) or not url:
+            return None, f"upload_url failed ({code})"
+        code, body = call(url, data=part, method="POST", headers=mp_headers)
+    else:
+        code, body = call("/files", data=part, method="POST", headers=mp_headers)
+    if code != 200:
+        err = body.get("error")
+        detail = err.get("code", "") if isinstance(err, dict) else ""
+        return None, f"upload failed ({code}{' ' + detail if detail else ''})"
+    analysis_id = (body.get("data") or {}).get("id", "")
+    if not analysis_id:
+        return None, "upload returned no analysis id"
+    return analysis_id, None
+
+
+def poll(analysis_id, row):
+    for i in range(1, POLL_MAX + 1):
+        if POLL_WAIT:
+            time.sleep(POLL_WAIT)
+        code, body = call(f"/analyses/{analysis_id}")
+        attrs = (body.get("data") or {}).get("attributes", {}) if code == 200 else {}
+        if code == 200 and attrs.get("status") == "completed":
+            row.set_stats(attrs.get("stats", {}), "uploaded")
+            return
+        if code not in (200, 404) and i == POLL_MAX:
+            row.error = f"analysis poll failed ({code})"
+            return
+    row.error = f"analysis timeout after {POLL_MAX} polls"
+
+
+def main():
     if not os.environ.get("VT_API_KEY"):
         print("ERROR: VT_API_KEY not set", file=sys.stderr)
         return 2
-    files = sys.argv[1:]
-    if not files:
+    paths = sys.argv[1:]
+    if not paths:
         print("usage: vt-scan.py <file>...", file=sys.stderr)
         return 2
-    rc = 0
-    for f in files:
-        r = scan_file(f)
-        if r != 0 and rc == 0:
-            rc = r
-        time.sleep(2)
-    write_summary()
-    if JSON_FILE and not write_json(JSON_FILE):
-        rc = 1
-    print(f"RESULT: {'PASS' if rc == 0 else 'FAIL'}", flush=True)
-    return rc
+
+    rows = []
+    pending = []
+    by_sha = {}
+
+    for p in paths:
+        if not os.path.isfile(p):
+            r = Row(p, "", 0, label_for(p))
+            r.error = "missing file"
+            rows.append(r)
+            print(f"== {p}: MISSING", flush=True)
+            continue
+        fsha = sha256_of(p)
+        if fsha in by_sha:
+            first = by_sha[fsha]
+            r = Row(p, fsha, os.path.getsize(p), label_for(p))
+            r.duplicate_of = first.label
+            rows.append(r)
+            print(f"== {p}: identical to {first.label}, not rescanned", flush=True)
+            continue
+        r = Row(p, fsha, os.path.getsize(p), label_for(p))
+        by_sha[fsha] = r
+        rows.append(r)
+        print(f"== {p} ({r.size}B) sha={fsha}", flush=True)
+
+        code, body = call(f"/files/{fsha}")
+        if code == 200:
+            stats = (body.get("data") or {}).get("attributes", {}).get("last_analysis_stats", {})
+            r.set_stats(stats, "cached")
+            print(f"  cached: {r.verdict} malicious={r.malicious}", flush=True)
+        elif code == 404:
+            if UPLOAD:
+                pending.append(r)
+            else:
+                r.error = "not on VirusTotal and VT_UPLOAD=0"
+                print("  not on VirusTotal, uploads disabled", flush=True)
+        else:
+            r.error = f"lookup failed ({code})"
+            print(f"  lookup failed ({code})", flush=True)
+
+    # Submit every unknown file before polling any of them.
+    for r in pending:
+        r.analysis_id, err = submit(r.path)
+        print(f"  {r.label}: uploaded as {r.analysis_id}" if not err
+              else f"  {r.label}: {err}", flush=True)
+        if err:
+            r.error = err
+            write_json(rows)
+
+    for r in pending:
+        if not r.analysis_id:
+            continue
+        poll(r.analysis_id, r)
+        print(f"  {r.label}: {r.verdict}" if r.scanned
+              else f"  {r.label}: {r.error or 'no verdict'}", flush=True)
+        write_json(rows)
+
+    write_json(rows)
+    write_summary(rows)
+
+    fails = [r for r in rows if r.verdict == "FAIL"]
+    unknown = [r for r in rows if not r.scanned]
+    print(f"\nRESULT: {len(rows)} artifacts, {len(rows) - len(unknown)} scanned, "
+          f"{len(fails)} fail, {len(unknown)} unscanned", flush=True)
+    if fails:
+        return 1
+    if unknown and FAIL_ON_INCOMPLETE:
+        print("coverage incomplete and VT_FAIL_ON_INCOMPLETE=1", file=sys.stderr)
+        return 2
+    return 0
 
 
 if __name__ == "__main__":
