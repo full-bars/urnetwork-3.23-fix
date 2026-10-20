@@ -92,6 +92,28 @@ This creates/removes `~/.urnetwork/disable_ip_autodetect` — a marker file the 
 export URNETWORK_PUBLIC_IP=192.0.2.5
 ```
 
+## App Version Reported to the Platform
+
+The dashboard label above shows the build's own version, such as `[v3.23.0-fix.34.2]`. The provider also sends a separate **`app_version`** in its connect auth (and the `X-UR-AppVersion` header), and that is what the platform records against the node. Since v3.23.0-fix.34.2 it is written in the platform's own format instead of the git tag:
+
+```
+YYYY.M.D-<code>-fix.<N.M>
+2026.10.20-1076955500-fix.34.1
+```
+
+| Part | Meaning |
+|------|---------|
+| `YYYY.M.D` | UTC commit date of the tagged commit, no zero padding. The platform's provider rollout gauge keeps only this part. |
+| `<code>` | The house build code, `(seconds since 2023-05-23T00:00:00Z) x 10`, taken at the tagged commit's time. The same formula gives upstream's own tag codes. Stored by the platform, not read. |
+| `fix.<N.M>` | This line's release number. Keeps the node identifiable as a 3.23-fix provider. |
+
+A version that does not start with a real calendar date (every release before 34.2 sent the raw tag) is filed under `other` by the platform. The string is 64 characters or fewer, which is the limit the platform stores.
+
+It is set at build time with `-X main.AuthVersion=...`, computed from the release tag by `scripts/compute-app-version.sh <tag>`. A build without the flag, such as a local `make` build, a main-branch Docker image, or a test mint, reports its plain version instead. Everything else, including logs, metrics, hotswap and the update checks, keeps using the git tag.
+
+> [!NOTE]
+> This is how a node is recorded and counted by release. It is not what makes a node count as a modern provider: the platform's modern provider gate measures post-quantum encryption and resizable transfer windows on the wire and does not read the version.
+
 ## Privacy
 
 The provider is designed to give you flexibility in how you identify your nodes without compromising privacy:

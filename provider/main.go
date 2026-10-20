@@ -1949,6 +1949,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		if host := heartbeatHostLabel(); host != "" {
 			buildLine += fmt.Sprintf(" host=%s", host)
 		}
+		// the version the platform records, when it differs from the build's own
+		if reported := AuthAppVersion(); reported != RequireVersion() {
+			buildLine += fmt.Sprintf(" reports=%s", reported)
+		}
 		tlog("%s\n", buildLine)
 
 		healthLine := fmt.Sprintf("❤️ [health] uptime=%s profile=%s heap=%dMiB sys=%dMiB goroutines=%d connections=%d proxies=%d",
