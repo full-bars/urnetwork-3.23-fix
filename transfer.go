@@ -215,10 +215,10 @@ func DefaultReceiveBufferSettings() *ReceiveBufferSettings {
 		// the receive idle timeout should be a bit longer than the send idle timeout
 		IdleTimeout:        120 * time.Second,
 		SequenceBufferSize: DefaultTransferBufferSize,
-		// A reliable carrier reader may retain its one already-read frame until
-		// the bounded per-sequence queue drains or the sequence/client closes.
-		// This restores stream backpressure without enlarging any queue.
-		ReliablePackHandoffTimeout: -1,
+		// The field is carried for a later wiring decision and has no effect
+		// yet: no production caller reads the selector, so the receive path
+		// still selects its handoff wait with ClientSettings.BufferTimeout.
+		ReliablePackHandoffTimeout: 0,
 		// AckBufferSize: DefaultTransferBufferSize,
 		AckCompressTimeout: time.Duration(0),
 		// End one compression wait early when a hole becomes provable to the
@@ -4995,7 +4995,9 @@ type ReceiveBufferSettings struct {
 	// pin's placement and default. This tree's receive path still selects its
 	// handoff wait with ClientSettings.BufferTimeout, so wiring this value in
 	// is a separate decision: a negative default would replace that existing
-	// positive bound with an unbounded wait on reliable lanes.
+	// positive bound with an unbounded wait on reliable lanes. A negative value
+	// must not become the default until the receive path is wired to this value
+	// deliberately.
 	ReliablePackHandoffTimeout time.Duration
 
 	// ReceiveHoldPolicy decides what a full hold does with an arrival that

@@ -37,6 +37,14 @@ func htonl(x uint32) uint32 {
 // anywhere saying why. The dominant cause is an interface index that has been
 // reclaimed since it was chosen, which is exactly the case worth reporting.
 //
+// A host with a v4 egress index but index6 == 0 therefore fails dials of IPv6
+// destinations: the only attempted option is the v4 one, an AF_INET6 socket
+// rejects it, and the all-options-failed rule turns that into a dial error.
+// That is the fail-closed behaviour and it is intentional, since such a host
+// has no v6 index to pin to. The early return after the first successful
+// option relies on Go creating AF_INET sockets for IPv4 destinations, where
+// the v4 option is the one that applies.
+//
 // The error travels back through egressControl to net.Dialer.Control, so the
 // dial fails and shows up in the existing [net]dial log line. A failed dial
 // retries; an unpinned socket blackholes.

@@ -33,14 +33,17 @@ type networkRefreshTokenError struct {
 // legacy three-step flow should run instead.
 //
 // A missing route (404, 405, 501) is a server that predates the route. Any
-// other 4xx except 408, 425 and 429 is a refusal of this request: a client
+// other 4xx except 401, 408, 425 and 429 is a refusal of this request: a client
 // JWT, an API key, or a sign-in the server will not renew. The legacy flow is
-// what ran before the route existed, so it gets the request. 408, 425 and 429
-// are transient and 5xx is a server failure: those return an error so the
-// caller keeps the current JWT and retries on its next hourly pass.
+// what ran before the route existed, so it gets the request. 401, 408, 425 and
+// 429 return an error instead: 408, 425 and 429 are transient, and 401 means
+// the legacy code-create call would present the same dead token, fail the same
+// way, and mask the real error. 5xx is a server failure and returns an error
+// too, so the caller keeps the current JWT and retries on its next hourly
+// pass.
 func networkRefreshFallbackStatus(statusCode int) bool {
 	switch statusCode {
-	case http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
+	case http.StatusUnauthorized, http.StatusRequestTimeout, http.StatusTooEarly, http.StatusTooManyRequests:
 		return false
 	case http.StatusNotImplemented:
 		return true

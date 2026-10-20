@@ -162,10 +162,11 @@ func TestReceiveSequenceH1HandoffNegativeWaitCancellationReturnsToCaller(t *test
 
 // The selector is the pin's: an exact route that publishes its reliability
 // decides on its own, an unclassified H1 stream falls back to its transport
-// type, and every other carrier stays nonblocking.
+// type, and every other carrier stays nonblocking. The stored default is zero
+// because nothing reads the selector in production yet.
 func TestReceiveBufferSettingsPackHandoffTimeoutSelection(t *testing.T) {
-	if got := DefaultReceiveBufferSettings().ReliablePackHandoffTimeout; got != -1 {
-		t.Fatalf("ReliablePackHandoffTimeout default = %s, want -1", got)
+	if got := DefaultReceiveBufferSettings().ReliablePackHandoffTimeout; got != 0 {
+		t.Fatalf("ReliablePackHandoffTimeout default = %s, want 0", got)
 	}
 
 	settings := DefaultReceiveBufferSettings()
