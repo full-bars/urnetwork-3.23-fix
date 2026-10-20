@@ -367,7 +367,15 @@ install_downloader ()
     case "$dl_id" in
         arch)          $SUDO pacman -Sy --noconfirm curl || true ;;
         debian|ubuntu|linuxmint) $SUDO apt-get update && $SUDO apt-get install -y curl || true ;;
-        fedora|rhel|centos|rocky|almalinux|amzn) $SUDO dnf install -y curl || true ;;
+        fedora|rhel|centos|rocky|almalinux|amzn)
+            # Amazon Linux 2 has yum and no dnf; the newer RHEL family is the
+            # other way round.
+            if command -v dnf > /dev/null 2>&1; then
+                $SUDO dnf install -y curl || true
+            else
+                $SUDO yum install -y curl || true
+            fi
+            ;;
         alpine)        $SUDO apk add --no-cache curl || true ;;
         opensuse*|sles) $SUDO zypper install -y curl || true ;;
         *)
@@ -504,7 +512,11 @@ install_json_parser ()
             $SUDO apt-get update && $SUDO apt-get install -y jq || $SUDO apt-get install -y python3 || true
             ;;
         fedora|rhel|centos|rocky|almalinux|amzn)
-            $SUDO dnf install -y jq || $SUDO dnf install -y python3 || true
+            if command -v dnf > /dev/null 2>&1; then
+                $SUDO dnf install -y jq || $SUDO dnf install -y python3 || true
+            else
+                $SUDO yum install -y jq || $SUDO yum install -y python3 || true
+            fi
             ;;
         alpine)
             # community may be absent from a minimal image's repositories; the
