@@ -1,14 +1,20 @@
 package connect
 
 import (
+	"context"
+	"crypto/tls"
 	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
+	"net"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
+	"syscall"
 	"testing"
+	"time"
 )
 
 // Every control dial in this package must reach the network through the
@@ -131,5 +137,101 @@ func TestControlDialSitesUseTheBoundDialer(t *testing.T) {
 	}
 	if 0 < len(violations) {
 		t.Fatalf("raw dial/resolve sites outside the audited allowlist:\n%s", strings.Join(violations, "\n"))
+	}
+}
+
+// The normal strategy dial used to be a raw tls.Dialer wrapping
+// ConnectSettings.NetDialer(). It now dials through ConnectSettings.DialContext
+// (net_http.go, the "normal" dialer's tlsDialContext), and that path must still
+// apply the same socket Control: NetDialer installs DialControl, and DialControl
+// is where the forced-interface binding (egressControl) and the Windows VPN
+// service self-exclusion live. If it were dropped, this process's own control
+// dials would route back into the tunnel it provides.
+//
+// The dial below is the strategy's own "normal" dialer with no proxy and no
+// injected DialContextSettings, which is exactly the
+// `DialContextSettings == nil && ProxySettings == nil` branch of
+// ConnectSettings.DialContext: that branch builds a plain NetDialer and calls
+// net.Dialer.DialContext on it. The control wrapper records that it ran and
+// that it was handed a live socket, then chains egressControl the way
+// production installs it.
+func TestNormalStrategyDialPassesThroughEgressControl(t *testing.T) {
+	index4, index6 := EgressInterfaceIndex()
+	defer SetEgressInterfaceIndex(index4, index6)
+	// zero leaves egressControl a no-op on every platform, so this test asserts
+	// the plumbing, not a platform-specific bind
+	SetEgressInterfaceIndex(0, 0)
+
+	serverTls := selfSignedTlsConfig(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	tlsListener := tls.NewListener(listener, serverTls)
+	defer tlsListener.Close()
+	go func() {
+		for {
+			serverConn, err := tlsListener.Accept()
+			if err != nil {
+				return
+			}
+			go func(conn net.Conn) {
+				defer conn.Close()
+				handshakeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+				defer cancel()
+				_ = conn.(*tls.Conn).HandshakeContext(handshakeCtx)
+			}(serverConn)
+		}
+	}()
+
+	var controlCalls atomic.Int64
+	var controlFds atomic.Int64
+	var controlNetwork atomic.Value
+	settings := DefaultClientStrategySettings()
+	settings.TlsConfig = &tls.Config{InsecureSkipVerify: true}
+	// the plain branch under test
+	settings.DialContextSettings = nil
+	settings.ProxySettings = nil
+	settings.DialControl = func(network string, address string, c syscall.RawConn) error {
+		controlCalls.Add(1)
+		controlNetwork.Store(network)
+		if err := c.Control(func(fd uintptr) {
+			if fd != 0 {
+				controlFds.Add(1)
+			}
+		}); err != nil {
+			return err
+		}
+		return egressControl(network, address, c)
+	}
+
+	strategy := NewClientStrategy(context.Background(), settings)
+	var dialTls DialTlsContextFunction
+	for dialer := range strategy.dialers {
+		if dialer.description == "normal" {
+			dialTls = dialer.dialTlsContext
+		}
+	}
+	if dialTls == nil {
+		t.Fatal("the normal dialer is not registered")
+	}
+
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	defer cancel()
+	conn, err := dialTls(ctx, "tcp", listener.Addr().String())
+	if err != nil {
+		t.Fatalf("normal strategy dial: %v", err)
+	}
+	conn.Close()
+
+	if got := controlCalls.Load(); got != 1 {
+		t.Fatalf("the egress control ran %d times on the normal strategy dial, want 1: "+
+			"ConnectSettings.DialContext reached the network without NetDialer's Control", got)
+	}
+	if got := controlFds.Load(); got != 1 {
+		t.Fatalf("the egress control saw %d socket fds, want 1: it did not run on the dialed socket", got)
+	}
+	if network, _ := controlNetwork.Load().(string); !strings.HasPrefix(network, "tcp") {
+		t.Fatalf("the egress control saw network %q, want a tcp dial", network)
 	}
 }

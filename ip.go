@@ -1017,6 +1017,12 @@ type UdpBufferSettings struct {
 	// retains the portable per-flow reader: generic callers and platforms
 	// without a readiness backend keep the established implementation until
 	// their cohorts are measured.
+	//
+	// The setting also widens a stall's scope. A shard drains its flows into
+	// one bounded delivery queue and blocks while that queue is full, so one
+	// slow receive callback stalls every flow hashed to the same shard, which
+	// the per-flow reader did not do. Measure that head-of-line coupling before
+	// enabling this anywhere.
 	SocketReadShardCount int
 	// SharedSocketLifecycle writes each provider udp datagram directly under
 	// its flow's send lock and uses one buffer-level idle worker instead of

@@ -22,6 +22,9 @@ package connect
 
 import (
 	"context"
+	"encoding/binary"
+	"fmt"
+	"io"
 	"net"
 	"net/netip"
 	"net/url"
@@ -30,6 +33,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func withHostIpv6(t *testing.T, has bool) {
@@ -328,14 +332,14 @@ func TestDnsResolverAddrPickRotatesInOrder(t *testing.T) {
 		"2606:4700:4700::1111",
 	}
 	for i, expected := range want {
-		if got := dnsResolverAddrPick(addrs, &next); got != expected {
+		if got := dnsResolverAddrPick(context.Background(), addrs, &next); got != expected {
 			t.Fatalf("pick %d = %s, want %s", i, got, expected)
 		}
 	}
 	// a single configured server is dialed every time
 	var single atomic.Uint64
 	for i := 0; i < 3; i += 1 {
-		if got := dnsResolverAddrPick([]string{"9.9.9.9"}, &single); got != "9.9.9.9" {
+		if got := dnsResolverAddrPick(context.Background(), []string{"9.9.9.9"}, &single); got != "9.9.9.9" {
 			t.Fatalf("single pick = %s, want 9.9.9.9", got)
 		}
 	}
@@ -427,5 +431,152 @@ func TestRegionalDnsServersCarryIpv6(t *testing.T) {
 	}
 	if got := RegionalDnsServerIps("cn"); !slices.Equal(got, []string{"223.5.5.5", "119.29.29.29"}) {
 		t.Fatalf("cn v4 = %v, want the unchanged v4 list", got)
+	}
+}
+
+// dnsReplyConn stands in for the server a plain-dns dial reached: it answers
+// each query with the stream framing the resolver uses for a Dial hook conn (a
+// two-byte length prefix), the first exchange of a lookup (network "udp") with
+// the TC bit set so the resolver immediately dials again over "tcp". One
+// LookupIP therefore takes two dials on a resolver that tries UDP first, which
+// is what makes a lookup's two resolver attempts observable. A resolver
+// configured tcp-only makes a single dial; the test skips in that case rather
+// than failing on an environment it cannot exercise.
+type dnsReplyConn struct {
+	truncate bool
+	resp     []byte
+	off      int
+}
+
+func (self *dnsReplyConn) Write(p []byte) (int, error) {
+	// p is the length-prefixed query; only the message after the prefix is of
+	// interest here.
+	reply := dnsReply(p[2:], self.truncate)
+	self.resp = append(self.resp[:0], byte(len(reply)>>8), byte(len(reply)))
+	self.resp = append(self.resp, reply...)
+	self.off = 0
+	return len(p), nil
+}
+
+func (self *dnsReplyConn) Read(p []byte) (int, error) {
+	if len(self.resp) <= self.off {
+		return 0, io.EOF
+	}
+	n := copy(p, self.resp[self.off:])
+	self.off += n
+	return n, nil
+}
+
+func (self *dnsReplyConn) Close() error { return nil }
+func (self *dnsReplyConn) LocalAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
+}
+func (self *dnsReplyConn) RemoteAddr() net.Addr {
+	return &net.TCPAddr{IP: net.IPv4(127, 0, 0, 1), Port: 53}
+}
+func (self *dnsReplyConn) SetDeadline(deadline time.Time) error      { return nil }
+func (self *dnsReplyConn) SetReadDeadline(deadline time.Time) error  { return nil }
+func (self *dnsReplyConn) SetWriteDeadline(deadline time.Time) error { return nil }
+
+// dnsReply echoes the query's id and question with an empty NOERROR answer,
+// setting TC when truncated. An empty answer ends the lookup (the resolver
+// treats it as no such host) once the udp/tcp retry pair has been dialed.
+func dnsReply(query []byte, truncated bool) []byte {
+	reply := make([]byte, 12, 12+64)
+	copy(reply[0:2], query[0:2])              // id
+	flags := uint16(0x8000 | 0x0100 | 0x0080) // QR, RD, RA
+	if truncated {
+		flags |= 0x0200 // TC: retry over tcp
+	}
+	binary.BigEndian.PutUint16(reply[2:4], flags)
+	binary.BigEndian.PutUint16(reply[4:6], 1) // QDCOUNT
+	end := 12
+	for query[end] != 0 {
+		end += int(query[end]) + 1
+	}
+	end += 1 + 4 // root label, qtype, qclass
+	return append(reply, query[12:end]...)
+}
+
+// Rotation is per LOOKUP, not per process. Every lookup's first two resolver
+// attempts must cover both entries of a [v4, v6] list whatever the other
+// concurrent lookups do. A counter advanced once per ATTEMPT does not hold
+// that: another lookup's attempts move the shared position between a lookup's
+// two attempts, so both can land on the same family, and a node without that
+// family pays a wasted or timed-out attempt.
+func TestDohResolverRotationIsPerLookup(t *testing.T) {
+	settings := DefaultDohSettings()
+	settings.IpVersion = 0
+	settings.DnsResolverSettings = &DnsResolverSettings{
+		EnableRemoteDns: true,
+		RemoteDnsIpv4:   []string{"192.0.2.1"},
+		RemoteDnsIpv6:   []string{"2001:db8::1"},
+	}
+
+	type lookupMark struct{}
+	type dialAttempt struct {
+		network string
+		addr    string
+	}
+	var mutex sync.Mutex
+	dials := map[int][]dialAttempt{}
+	settings.DialContextSettings = &DialContextSettings{
+		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			// widen the window between a lookup's two attempts so another
+			// lookup's attempts land inside it, as they do in the field
+			time.Sleep(200 * time.Microsecond)
+			mark, _ := ctx.Value(lookupMark{}).(*int)
+			mutex.Lock()
+			if mark != nil {
+				dials[*mark] = append(dials[*mark], dialAttempt{network: network, addr: addr})
+			}
+			mutex.Unlock()
+			return &dnsReplyConn{truncate: network == "udp"}, nil
+		},
+	}
+
+	cache := NewDohCache(settings)
+	defer cache.Close()
+
+	// the fake list is exactly [v4, v6], both expected to be dialed in the
+	// first two attempts of every lookup
+	resolverAddrs := dnsResolverAddrs(settings, true, "udp")
+	if len(resolverAddrs) != 2 {
+		t.Fatalf("fake resolver list = %v, want [v4, v6]", resolverAddrs)
+	}
+	want := map[string]bool{}
+	for _, addr := range resolverAddrs {
+		want[net.JoinHostPort(addr, "53")] = true
+	}
+
+	const lookups = 32
+	var wg sync.WaitGroup
+	for i := 0; i < lookups; i += 1 {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx := context.WithValue(context.Background(), lookupMark{}, &i)
+			cache.resolve(ctx, NewDohKey("A", fmt.Sprintf("lookup-%d.test", i)), time.Now())
+		}(i)
+	}
+	wg.Wait()
+
+	mutex.Lock()
+	defer mutex.Unlock()
+	for i := 0; i < lookups; i += 1 {
+		attempts := dials[i]
+		if len(attempts) < 2 {
+			if len(attempts) == 1 && attempts[0].network == "tcp" {
+				t.Skipf("lookup %d made a single tcp dial; this resolver is configured tcp-only, so the udp-to-tcp retry pair is not observable", i)
+			}
+			t.Fatalf("lookup %d dialed %d servers, want 2 attempts: %v", i, len(attempts), attempts)
+		}
+		first, second := attempts[0], attempts[1]
+		if !want[first.addr] || !want[second.addr] {
+			t.Fatalf("lookup %d dialed %v, want entries of %v", i, attempts[:2], resolverAddrs)
+		}
+		if first.addr == second.addr {
+			t.Fatalf("lookup %d dialed %s on both of its first two attempts, want one attempt per family (all: %v)", i, first.addr, attempts)
+		}
 	}
 }

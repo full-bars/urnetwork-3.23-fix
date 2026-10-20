@@ -177,7 +177,7 @@ func TestNetworkRefreshFallbackStatus(t *testing.T) {
 		want       bool
 	}{
 		{http.StatusBadRequest, true},
-		{http.StatusUnauthorized, true},
+		{http.StatusUnauthorized, false},
 		{http.StatusForbidden, true},
 		{http.StatusNotFound, true},
 		{http.StatusMethodNotAllowed, true},
@@ -302,7 +302,7 @@ func TestRefreshJWTFallsBackWhenNetworkRefreshIsMissing(t *testing.T) {
 }
 
 func TestRefreshJWTFallsBackWhenNetworkRefreshRefuses(t *testing.T) {
-	for _, statusCode := range []int{http.StatusForbidden, http.StatusUnauthorized, http.StatusBadRequest} {
+	for _, statusCode := range []int{http.StatusForbidden, http.StatusBadRequest} {
 		t.Run(fmt.Sprintf("HTTP %d", statusCode), func(t *testing.T) {
 			original := networkRefreshTestNetworkJWT()
 			renewed := networkRefreshTestNetworkJWT()
@@ -405,6 +405,21 @@ func TestRefreshJWTDoesNotFallBackOnRateLimit(t *testing.T) {
 	}
 	if got := fake.log.count("/auth/code-create"); got != 0 {
 		t.Errorf("code-create requests = %d, want 0 after a rate limit", got)
+	}
+}
+
+func TestRefreshJWTDoesNotFallBackOnUnauthorized(t *testing.T) {
+	fake := newFakeNetworkAuthServer(t, networkRefreshTestNetworkJWT())
+	fake.networkRefresh = func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusUnauthorized)
+	}
+
+	_, err := refreshJWT(context.Background(), fake.srv.URL, networkRefreshTestNetworkJWT())
+	if err == nil {
+		t.Fatal("refreshJWT succeeded on HTTP 401, want an error")
+	}
+	if got := fake.log.count("/auth/code-create"); got != 0 {
+		t.Errorf("code-create requests = %d, want 0: the legacy flow needs the same dead token", got)
 	}
 }
 

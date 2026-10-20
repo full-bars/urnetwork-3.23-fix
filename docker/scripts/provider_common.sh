@@ -147,7 +147,8 @@ func_choose_network() {
 # Distinct from func_ip_checker below, which is an opt-in diagnostic.
 func_report_identity() {
   # Use curl ip.me -4 with a 5s timeout to avoid hanging startup
-  export URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
+  URNETWORK_PUBLIC_IP="$(curl -s --max-time 5 --retry 0 ip.me -4 || echo "")"
+  export URNETWORK_PUBLIC_IP
   if [ -n "$URNETWORK_PUBLIC_IP" ]; then
     log "[INFO] Public IP detected: $URNETWORK_PUBLIC_IP"
   else

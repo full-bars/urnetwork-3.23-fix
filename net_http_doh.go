@@ -295,6 +295,12 @@ type DohCache struct {
 	settings        *DohSettings
 	log             Logger
 
+	// remoteDnsNext and localDnsNext rotate the plain-dns server pick for a
+	// dial that carries no per-lookup attempt counter (see dnsResolverAddrPick).
+	// A lookup seeds its own counter from these, once per lookup.
+	remoteDnsNext *atomic.Uint64
+	localDnsNext  *atomic.Uint64
+
 	stateLock             sync.Mutex
 	queryResultExpiration map[DohKey]*DohResult
 	// in-flight resolutions keyed by query: concurrent identical queries (retry storms, the
@@ -359,8 +365,10 @@ func dnsResolverAddrs(settings *DohSettings, remote bool, network string) []stri
 	default:
 		// both families, operator-paired and so interleaved v4 first: the
 		// plain-dns dial hook walks this list one entry per resolver attempt
-		// (see NewDohCache), so two attempts cover both families whichever
-		// one the path lacks.
+		// (see dnsResolverAddrPick), and one lookup's attempts walk
+		// consecutive entries from its own start point, so the first two
+		// attempts of a lookup cover both families whichever one the path
+		// lacks, even while other lookups run.
 		//
 		// This replaces the older `if !hostHasGlobalIpv6() { ipv6 = nil }`
 		// filter. That probe answered a question about the HOST from a
@@ -391,6 +399,25 @@ func dnsLookupNetwork(recordType string, ipVersion int) (string, bool) {
 	}
 }
 
+// dnsLookupNextKey is the context key carrying a lookup's own resolver attempt
+// counter. It is a private type, so no other context value can collide with it
+// and nothing outside this package can set one.
+type dnsLookupNextKey struct{}
+
+// dnsLookupCtx returns ctx carrying a per-lookup resolver attempt counter,
+// seeded from shared's next value so this lookup's first attempt continues the
+// shared rotation instead of every lookup starting on the same entry. The
+// shared counter advances ONCE per lookup, not once per attempt: the attempts
+// of one lookup walk consecutive entries, so no other lookup can move the
+// rotation between a lookup's two attempts.
+func dnsLookupCtx(ctx context.Context, shared *atomic.Uint64) context.Context {
+	// one Add per lookup, not per attempt: the lookup claims the shared
+	// counter's next slot, then rotates its own attempts from there.
+	next := new(atomic.Uint64)
+	next.Store(shared.Add(1) - 1)
+	return context.WithValue(ctx, dnsLookupNextKey{}, next)
+}
+
 // dnsResolverAddrPick is the server ONE resolver attempt dials: the next entry
 // in the family-filtered list, rotated per attempt. Round robin rather than a
 // random pick, so a family the path lacks costs one attempt each time instead
@@ -398,9 +425,17 @@ func dnsLookupNetwork(recordType string, ipVersion int) (string, bool) {
 // land on the same unreachable family on every retry of the same name, and
 // each miss costs the caller a full resolver timeout.
 //
-// `next` is per cache and per resolver (remote/local), so concurrent lookups
-// spread across the configured servers instead of all pinning the first.
-func dnsResolverAddrPick(addrs []string, next *atomic.Uint64) string {
+// When ctx carries a per-lookup counter (DohCache.resolve sets one before each
+// plain-dns lookup), that counter rotates the pick, so the attempts of one
+// lookup stay consecutive however many other lookups run at the same time. A
+// dial with no such counter in its ctx falls back to fallbackNext, the counter
+// shared by the whole cache and resolver, so it still spreads across the
+// configured servers instead of pinning the first.
+func dnsResolverAddrPick(ctx context.Context, addrs []string, fallbackNext *atomic.Uint64) string {
+	next := fallbackNext
+	if perLookup, ok := ctx.Value(dnsLookupNextKey{}).(*atomic.Uint64); ok {
+		next = perLookup
+	}
 	return addrs[int((next.Add(1)-1)%uint64(len(addrs)))]
 }
 
@@ -426,9 +461,10 @@ func NewDohCache(settings *DohSettings) *DohCache {
 	// (dnsResolverAddrs), so a family the path lacks costs ONE attempt instead
 	// of a coin flip per attempt: a random pick over an operator-paired list
 	// can land on the same unreachable family every time a name is retried,
-	// and the caller pays a full resolver timeout for each miss.
-	var remoteDnsNext atomic.Uint64
-	var localDnsNext atomic.Uint64
+	// and the caller pays a full resolver timeout for each miss. A lookup's
+	// attempts rotate its own counter (dnsLookupCtx), seeded from these.
+	remoteDnsNext := new(atomic.Uint64)
+	localDnsNext := new(atomic.Uint64)
 	remoteResolver := &net.Resolver{
 		PreferGo: true,
 		Dial: func(ctx context.Context, network string, addr string) (net.Conn, error) {
@@ -440,7 +476,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 			if len(localAddrs) == 0 {
 				return nil, fmt.Errorf("no remote DNS resolvers configured")
 			}
-			localAddr := dnsResolverAddrPick(localAddrs, &remoteDnsNext)
+			localAddr := dnsResolverAddrPick(ctx, localAddrs, remoteDnsNext)
 			addr = net.JoinHostPort(localAddr, port)
 			return settings.DialContext(ctx, network, addr)
 		},
@@ -458,7 +494,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 			if len(localAddrs) == 0 {
 				return nil, fmt.Errorf("no local DNS resolvers configured")
 			}
-			localAddr := dnsResolverAddrPick(localAddrs, &localDnsNext)
+			localAddr := dnsResolverAddrPick(ctx, localAddrs, localDnsNext)
 			addr = net.JoinHostPort(localAddr, port)
 			return netDialer.DialContext(ctx, network, addr)
 		},
@@ -478,6 +514,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 		localHttpClient:       httpClientWithDialer(settings, settings.NetDialer().DialContext),
 		remoteResolver:        remoteResolver,
 		localResolver:         localResolver,
+		remoteDnsNext:         remoteDnsNext,
+		localDnsNext:          localDnsNext,
 		settings:              settings,
 		log:                   loggerOrDefault(settings.Log),
 		queryResultExpiration: map[DohKey]*DohResult{},
@@ -743,8 +781,9 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	lookupNetwork, lookupFamilyEnabled := dnsLookupNetwork(q.RecordType, self.settings.IpVersion)
 
 	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableRemoteDns {
-		// try the remote resolver
-		resolvedIps, err := self.remoteResolver.LookupIP(ctx, lookupNetwork, q.Domain)
+		// try the remote resolver. the per-lookup counter keeps this lookup's
+		// resolver attempts consecutive whichever other lookups run meanwhile.
+		resolvedIps, err := self.remoteResolver.LookupIP(dnsLookupCtx(ctx, self.remoteDnsNext), lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {
@@ -773,8 +812,8 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	}
 
 	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableLocalDns {
-		// try the local resolver
-		resolvedIps, err := self.localResolver.LookupIP(ctx, lookupNetwork, q.Domain)
+		// try the local resolver, with its own per-lookup counter
+		resolvedIps, err := self.localResolver.LookupIP(dnsLookupCtx(ctx, self.localDnsNext), lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {

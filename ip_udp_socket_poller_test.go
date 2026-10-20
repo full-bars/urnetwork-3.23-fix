@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"net"
+	"sync"
 	"testing"
 	"time"
 
@@ -224,6 +225,91 @@ func TestUdpSocketReadPollShardIndexIsStableAndSpread(t *testing.T) {
 	}
 	if len(reached) != 4 {
 		t.Fatalf("distinct destinations reached %d of 4 shards", len(reached))
+	}
+}
+
+// A cancellation that lands in the middle of a batch must return the packets
+// after the refused one too: they were taken from the pool by the same
+// DataPackets call and have no other owner.
+func TestUdpSocketReadPollerCancellationReturnsRemainingBatchPackets(t *testing.T) {
+	// every fragment of a datagram above the mtu is one packet from this pool
+	const fragmentPoolSize = 2048
+	ResetMessagePoolStats()
+	baseTaken, baseReturned := waitForPoolBalance(t, fragmentPoolSize)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	settings := DefaultUdpBufferSettings()
+	settings.Log = NewNoopLogger()
+	settings.SocketReadShardCount = 1
+	// one delivery slot: while the delivery worker is held inside the receive
+	// callback, the drain can enqueue at most one more packet and then blocks
+	settings.SequenceBufferSize = 1
+	settings.Mtu = 1500
+	// large enough to hold one whole datagram, so the read is not truncated
+	settings.ReadBufferByteCount = 16384
+	poller := newUdpSocketReadPoller(ctx, settings)
+	if poller == nil {
+		cancel()
+		t.Skip("socket readiness poller unavailable on this platform")
+	}
+
+	entered := make(chan struct{})
+	release := make(chan struct{})
+	var enteredOnce sync.Once
+	var releaseOnce sync.Once
+	releaseWorker := func() {
+		releaseOnce.Do(func() { close(release) })
+	}
+	t.Cleanup(func() {
+		releaseWorker()
+		cancel()
+		poller.waitForLifecycle()
+	})
+	receive := func(TransferPath, protocol.ProvideMode, *IpPath, []byte) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+	}
+
+	const sourcePort = UDPPort(42300)
+	const destinationPort = UDPPort(43300)
+	startUdpSocketReadTestFlow(t, ctx, poller, settings, sourcePort, destinationPort, receive)
+	peer, err := net.ListenUDP("udp", &net.UDPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: int(destinationPort),
+	})
+	if err != nil {
+		t.Fatalf("udp peer listen: %s", err)
+	}
+	t.Cleanup(func() { _ = peer.Close() })
+
+	// a datagram well above the mtu is fragmented into several pooled packets,
+	// so the failing enqueue still has packets left behind it in the batch
+	payload := make([]byte, 8000)
+	if _, err := peer.WriteToUDP(payload, &net.UDPAddr{
+		IP:   net.IPv4(127, 0, 0, 1),
+		Port: int(sourcePort),
+	}); err != nil {
+		t.Fatalf("udp write: %s", err)
+	}
+	select {
+	case <-entered:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the flow never reached its receive callback")
+	}
+	// cancel with the delivery worker blocked inside the callback: the queue
+	// stays full, so the next enqueue fails and the rest of the batch is left
+	// without an owner
+	cancel()
+	releaseWorker()
+	poller.waitForLifecycle()
+
+	taken, returned := waitForPoolBalance(t, fragmentPoolSize)
+	if taken-baseTaken < 2 {
+		t.Fatalf("the drain took %d packets, want a fragmented batch", taken-baseTaken)
+	}
+	if taken-baseTaken != returned-baseReturned {
+		t.Fatalf("canceled drain unbalance: taken_delta=%d returned_delta=%d",
+			taken-baseTaken, returned-baseReturned)
 	}
 }
 
