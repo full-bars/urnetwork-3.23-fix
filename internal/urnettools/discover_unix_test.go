@@ -506,12 +506,12 @@ func TestParseUnitLinesCorroboratesExecStart(t *testing.T) {
 		"urnetwork-sentinel.service loaded active running\n"
 
 	binaries := map[string]string{
-		"urnetwork.service":          "/home/klets/.local/share/urnetwork-provider/bin/urnetwork",
+		"urnetwork.service":          "/home/urnet/.local/share/urnetwork-provider/bin/urnetwork",
 		"urnetwork-sentinel.service": "/usr/bin/python3",
 	}
 
 	got := parseUnitLines(lines, nil,
-		func(string) string { return "klets" },
+		func(string) string { return "urnet" },
 		func(unit string) string { return binaries[unit] },
 	)
 
@@ -535,7 +535,7 @@ func TestParseUnitLinesFallsBackToTheNameRule(t *testing.T) {
 		"urnetwork-update.service loaded active running\n"
 
 	got := parseUnitLines(lines, nil,
-		func(string) string { return "klets" },
+		func(string) string { return "urnet" },
 		func(string) string { return "" }, // ExecStart unavailable
 	)
 

@@ -144,7 +144,7 @@ func TestNextHeartbeatInterval_NoFailuresUsesBase(t *testing.T) {
 }
 
 // TestNextHeartbeatInterval_BacksOffOnConsecutiveFailures is the fix for a
-// flaky-internet hub (e.g. Detroit): a fleet of 30 providers hammering a
+// flaky-internet hub: a fleet of 30 providers hammering a
 // down hub every 15s with no backoff turns a transient outage into
 // sustained connection churn. Each consecutive failure should double the
 // wait, capped, so the fleet backs off during an extended outage instead of

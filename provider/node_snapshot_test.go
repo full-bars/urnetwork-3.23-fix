@@ -271,7 +271,7 @@ func TestDeriveIdleHint(t *testing.T) {
 	}
 }
 
-// Chicago's real steady state (measured): ~229 failed auths a minute on a
+// A real steady state (measured): ~229 failed auths a minute on a
 // ~4,800 proxy pool with ~430 still connecting. That must not read as an
 // outage, and the hint must say what is actually true.
 func TestDeriveIdleHintBigPoolSteadyStateIsNotAuthFailing(t *testing.T) {

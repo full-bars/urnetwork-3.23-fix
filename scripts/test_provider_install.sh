@@ -717,13 +717,13 @@ test_openrc_install_path_respects_explicit_choice() {
         has_openrc=1
         has_systemd=0
         install_path_explicit=0
-        install_path=/home/klets/.local/share/urnetwork-provider
-        openrc_user_home() { echo /home/klets; }
+        install_path=/home/urnet/.local/share/urnetwork-provider
+        openrc_user_home() { echo /home/urnet; }
         id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
         openrc_maybe_redirect_install_path
         echo "nonroot=$install_path"
     ')"
-    assert_eq "1" "$(echo "$out" | grep -c 'nonroot=/home/klets/.local/share/urnetwork-provider')" \
+    assert_eq "1" "$(echo "$out" | grep -c 'nonroot=/home/urnet/.local/share/urnetwork-provider')" \
         "an unprivileged run keeps its own install path on OpenRC"
 }
 test_openrc_install_path_respects_explicit_choice

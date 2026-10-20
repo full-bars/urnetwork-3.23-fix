@@ -411,7 +411,7 @@ func applyEcoSettings(maxMemory connect.ByteCount) {
 }
 
 // ensureMemoryLimit guarantees every provider code path runs under a finite
-// GOMEMLIMIT so heap growth is always bounded by the runtime (the ATL2
+// GOMEMLIMIT so heap growth is always bounded by the runtime (the low-memory
 // outage class: turbo/Tier3/Tier4 and bare `provide` left the process with
 // no limit, so nothing pushed back and the kernel chose swap). Call it once
 // AFTER all profile/tier eco/turbo application so turbo and eco limits are
@@ -4518,7 +4518,7 @@ func provide(opts docopt.Opts) {
 		}
 	}
 	// URNETWORK_METRICS binds a Prometheus /metrics endpoint on the given
-	// address (typically a Tailscale IP like "192.200.0.5:9100") so remote
+	// address (typically a Tailscale IP like "100.64.0.10:9100") so remote
 	// Prometheus can scrape without an agent on the fleet server.
 	//
 	// A HotSwap candidate skips this: the parent still holds the address

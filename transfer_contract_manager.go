@@ -276,7 +276,7 @@ type ContractManagerSettings struct {
 	ContractStatsEpoch time.Duration
 
 	// ProxyDescription is a human-readable identifier for the proxy this
-	// manager's client runs behind (e.g. "proxy[15304] (216.26.234.33:1081)"
+	// manager's client runs behind (e.g. "proxy[15304] (203.0.113.21:1081)"
 	// or "proxy[0] (direct)"). When set, contract lifecycle logs include it.
 	ProxyDescription string
 }

@@ -432,7 +432,7 @@ func buildReport(nodeID, host string, startTime time.Time) bandwidthReport {
 
 // maxHeartbeatBackoff caps how far consecutive-failure backoff can stretch
 // the heartbeat interval. A fleet-wide server outage on a flaky link (e.g.
-// Detroit) should quiet down to at most one attempt every 5m per node
+// a saturated hub) should quiet down to at most one attempt every 5m per node
 // rather than retrying every base interval indefinitely.
 const maxHeartbeatBackoff = 5 * time.Minute
 
