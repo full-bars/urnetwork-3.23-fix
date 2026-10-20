@@ -569,7 +569,7 @@ The first run with a fresh volume adds `--allow-client-registration` because `AL
 
 ## 🧩 Shared Entrypoint Layout
 
-**v33.1, unreleased.** The batch consolidates the three Docker start scripts into one shared implementation. It is a script layout change only: no environment variable, image port, binary name or startup command changes.
+**Shipped in v3.23.0-fix.34.0** (it landed in v3.23.0-fix.33.1). The v33.1 batch consolidates the three Docker start scripts into one shared implementation. It is a script layout change only: no environment variable, image port, binary name or startup command changes.
 
 | File | Role |
 | :--- | :--- |

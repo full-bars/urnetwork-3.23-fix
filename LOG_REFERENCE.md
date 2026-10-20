@@ -1020,15 +1020,16 @@ Two triggers (OR logic — either fires a refresh):
 1. **Periodic (7-day)**: Has it been ≥7 days since the last successful refresh? Primary mechanism. Guarantees the token is rotated on a fixed cadence.
 2. **Expiry fallback (48h)**: Is the token within 48 hours of expiring? Safety net if the periodic refresh failed repeatedly.
 
-The refresher uses `/auth/code-create → /auth/code-login` (same flow as initial login). Before overwriting the on-disk JWT, it verifies the new token against `GET /transfer/stats`. A regression guard rejects any response containing a `client_id` claim (catches future regressions).
+The refresher tries `POST /auth/network-refresh` first, which renews the presented network token in one call, and falls back to `/auth/code-create → /auth/code-login` (same flow as initial login) when the route is missing (404, 405, 501) or the server refuses the request. **A 401 is terminal**: it is not a missing route, and the legacy flow would present the same dead token, fail the same way, and mask the real error, so a 401 ends the refresh instead of falling back. A 403 and the other 4xx refusals (except 408, 425 and 429) keep the existing fallback. A 408, 425, 429, a 5xx or a transport error stays an error. Before overwriting the on-disk JWT, both success paths verify the new token against `GET /transfer/stats`. A regression guard rejects any response containing a `client_id` claim (catches future regressions).
 
 | Message | Meaning |
 |---|---|
+| `network-refresh unavailable (...); falling back` | The one-call renewal was refused or the route is missing, so the three-step flow runs. A 401 never reaches this line. |
 | `step 1/3` | Requesting an auth code from the API. |
 | `step 2/3` | Exchanging the auth code for a fresh network JWT. |
 | `step 3/3` | Verifying the new token works via a read-only stats endpoint. |
 | `refresh OK` | New network JWT written to disk successfully. |
-| `refresh FAILED: ... — keeping existing JWT` | Refresh failed at any step. The existing JWT is preserved. Will retry in 1h. |
+| `refresh FAILED: ... — keeping existing JWT` | Refresh failed at any step. The existing JWT is preserved. Will retry in 1h. A 401 from `network-refresh` lands here, with no `step 1/3` lines after it. |
 
 ## 🔑 JWT Startup Health
 

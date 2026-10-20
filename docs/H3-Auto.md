@@ -1,7 +1,7 @@
 # H3 Auto
 
 > [!NOTE]
-> **Status: v33.1, unreleased.** `h3 auto` is not in a tagged release yet. Nothing changes unless you set the `h3` control key. This page describes the batch branch, not behavior in a shipped build.
+> **Status: shipped in v3.23.0-fix.34.0** (it landed in v3.23.0-fix.33.1). Nothing changes unless you set the `h3` control key. This page describes behavior in a shipped build.
 
 `h3 auto` is a value for the existing [`h3`](Configuration.md#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a new sensor, a new goroutine or a new metric series.
 

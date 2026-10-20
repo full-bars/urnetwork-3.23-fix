@@ -4,8 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.33.2  
-**Engine release in preparation**: v3.23.0-fix.34.0 (see [releases/v3.23.0-fix.34.0.md](releases/v3.23.0-fix.34.0.md))
+**Current Version**: v3.23.0-fix.34.0 — **Release in preparation**: v3.23.0-fix.34.1 (see [releases/v3.23.0-fix.34.1.md](releases/v3.23.0-fix.34.1.md))
 
 ---
 
@@ -3913,3 +3912,23 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files Added**: `.github/workflows/portable-core.yml`
 
 **Change**: A build and vet matrix over the supported operating systems, native Windows and macOS runs of the ip and wallet tests, and the same tests on the FreeBSD kernel.
+
+## 208. v34.1: Review Follow-Ups, Inert Defaults and the CFAA Refresh
+
+**Purpose**: Close the v34 review follow-ups without changing a shipped default. Two of them are deliberately inert and now say so where they live: the reliable handoff default and the UDP shared-socket poller.
+
+**Files Modified**: `net_http_doh.go`, `provider/network_refresh.go`, `ip_udp_socket_poller.go`, `ip.go`, `transfer.go`, `egress_windows.go`, `docker/scripts/provider_common.sh`, plus the tests `net_http_doh_dualstack_test.go`, `provider/network_refresh_test.go`, `ip_udp_socket_poller_test.go`, `transfer_pack_handoff_test.go`, `egress_dial_sites_test.go`.
+
+**Files Added**: none. No new production source file ships with this patch.
+
+**Change**:
+- **The plain-DNS rotation is per lookup, not per process** (`net_http_doh.go`): `DohCache.resolve` attaches a per-lookup resolver attempt counter (`dnsLookupCtx`, behind a private context key type) before each plain-DNS `LookupIP`, seeded from the cache-wide counter so that counter advances once per lookup instead of once per attempt. `dnsResolverAddrPick` takes the ctx and falls back to the shared counter when no per-lookup one is carried, so a direct `Resolver.Dial` keeps its old rotation. One lookup's attempts now walk consecutive entries of the operator-paired v4/v6 list, so both families are covered whatever the concurrent lookups do. DoH stays primary; only the fallback changes. Test: `TestDohResolverRotationIsPerLookup`.
+- **A network-refresh 401 is terminal** (`provider/network_refresh.go`): `networkRefreshFallbackStatus` returns false for `http.StatusUnauthorized`, so a 401 no longer falls through to the legacy code-create/code-login flow, which would present the same dead token, fail the same way and mask the real error. A 403, the other 4xx refusals except 408, 425 and 429, and the missing-route statuses 404, 405 and 501 still fall back. Test: `TestRefreshJWTDoesNotFallBackOnUnauthorized`, which also asserts no `/auth/code-create` request is made.
+- **The poller returns the remaining batch on a canceled drain** (`ip_udp_socket_poller.go`): a failed `enqueue` returned only the refused packet, so the packets after it in the same `DataPackets` slice, one pooled buffer per fragment of an oversized datagram, were never returned to the message pool. The drain now returns `packets[i:]`. Inert: no production settings value sets `SocketReadShardCount`, so the shared socket lifecycle is never built. The head-of-line coupling of the shard's single drain loop, and the zero-length-datagram end-of-drain rule, are documented on `enqueue`, `readDatagrams` and `UdpBufferSettings.SocketReadShardCount`. Test: `TestUdpSocketReadPollerCancellationReturnsRemainingBatchPackets`.
+- **SC2155 in the Docker shared entrypoint** (`docker/scripts/provider_common.sh`): the declaration and the assignment of `URNETWORK_PUBLIC_IP` are split before the export, so the `export` builtin no longer masks curl's exit status. The detected address and the `[INFO] Public IP detected` line are unchanged.
+- **The reliable handoff default is 0, not -1** (`transfer.go`): `DefaultReceiveBufferSettings().ReliablePackHandoffTimeout` moves from -1 to 0, and the comment states the field is carried for a later wiring decision with no effect yet, because no production caller reads `packHandoffTimeout` and the receive path still selects its handoff wait with `ClientSettings.BufferTimeout`. A negative value must not become the default until the receive path is wired to it deliberately. The test pins 0.
+- **Windows egress fail-closed is documented** (`egress_windows.go`, comment only): a v4 egress index with `index6 == 0` fails IPv6 dials on purpose, because such a host has no v6 index to pin to and the all-options-failed rule turns the rejected v4 option into a dial error. The early return after the first successful option is safe for IPv4 destinations, where Go creates an `AF_INET` socket and the v4 option is the one that applies.
+- **The normal strategy dial is pinned by a test** (`egress_dial_sites_test.go`, test only): the normal dial reaches the network through `ConnectSettings.DialContext`, and on the branch with no `DialContextSettings` and no `ProxySettings` that path builds `NetDialer()` and calls `net.Dialer.DialContext` on it, so it installs the same `DialControl` the old raw `tls.Dialer` did and `egressControl` still runs on the socket. The test asserts exactly one control call on a live fd of a plain tls dial; dropping `NetDialer`'s `Control` field fails it.
+- **CFAA blocklist refresh**: IPv4 41,513 → 40,924, IPv6 575 → 546, from upstream `932b1963a582a50cf5990674b2ad2c94d5e133a6`. Data-only; see section 141 for the table's history.
+
+**Impact**: the visible changes are the plain-DNS rotation under concurrent lookups and the terminal 401 on the hourly network refresh. Everything else is a comment, a test, a lint-level assignment split with an identical value, or a defect in code no production setting reaches. No new file, no new setting, and no operator action beyond the normal update and restart.

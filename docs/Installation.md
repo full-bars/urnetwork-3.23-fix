@@ -127,7 +127,7 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 | `urnet-tools update -f` | Non-interactive upgrade: stop, update, and restart the provider with no prompts. Use in scripts/automation. |
 
 > [!NOTE]
-> **Release selection (v33.1, unreleased).** `urnet-tools update` walks the release listing from newest to oldest. It never selects a draft, a pre-release (whether GitHub flags it or its tag is named like one, for example `-rc1`, `-beta2` or `-nightly`), or a release that does not publish the provider tarball with a sha256 digest. An explicit `urnet-tools update --tag=<tag>` bypasses the stable filter, so a named pre-release is selected if it exists.
+> **Release selection (shipped in v3.23.0-fix.34.0).** `urnet-tools update` walks the release listing from newest to oldest. It never selects a draft, a pre-release (whether GitHub flags it or its tag is named like one, for example `-rc1`, `-beta2` or `-nightly`), or a release that does not publish the provider tarball with a sha256 digest. An explicit `urnet-tools update --tag=<tag>` bypasses the stable filter, so a named pre-release is selected if it exists.
 
 ## 🪟 Windows Installation
 
