@@ -21,6 +21,12 @@ concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Every job here only reads the repository. Declaring it explicitly keeps the
+# token read-only instead of inheriting the repository or organization default,
+# which may allow writes (zizmor excessive-permissions).
+permissions:
+  contents: read
+
 env:
   # A version tag that can never collide with a real release, so a misconfigured
   # URL fails loudly instead of silently downloading a published build.
@@ -40,6 +46,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Nothing here runs an authenticated git command, so the checkout
+          # token must not stay in .git/config where a later step (or the
+          # container these steps drive) could read it.
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -202,6 +213,11 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          # Nothing here runs an authenticated git command, so the checkout
+          # token must not stay in .git/config where a later step (or the
+          # container these steps drive) could read it.
+          persist-credentials: false
 
       - name: Set up Go
         uses: actions/setup-go@v5
@@ -220,6 +236,8 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
       - name: dash + bash + shellcheck
         run: |
           set -euo pipefail
