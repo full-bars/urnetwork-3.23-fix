@@ -18,7 +18,6 @@ This guide covers multi-server fleet management, performance tuning, fleet monit
 
 - [Performance Profiles](#-performance-profiles)
 - [Fleet Management](#-fleet-management)
-- [Hub Dashboard (Deprecated)](#-hub-dashboard-deprecated) *(v31.3+ — retained for reference)*
 - [Hot-Reload & Proxy Management](#-hot-reload--proxy-management)
 - [Memory & GC Tuning](#-memory--gc-tuning)
 - [Logging & Forensics](#-logging--forensics)
@@ -110,37 +109,9 @@ The emergency goroutine pin at >= 25000 goroutines provides an extra safety net.
 
 ---
 
-## 📊 Hub Dashboard (Deprecated)
+## 📊 Fleet Dashboard (Removed)
 
-> [!WARNING]
-> **Removed (v32.0):** The hub dashboard has been removed. For fleet-wide visibility, use Prometheus metrics (`urnet-tools metrics on`) and the Grafana monitoring bundle.
-
-> [!CAUTION]
-> **The hub commands and setup instructions below are historical and non-actionable.** The `hub/` package has been removed from this codebase. The commands shown here (`hub install`, `hub init`, `hub link`, etc.) no longer exist. They are retained only as a reference for operators who previously ran the hub and may need to understand the old setup.
-
-```sh
-# Historical — these commands no longer exist in v31.3+
-urnet-tools hub install
-urnet-tools hub init
-urnet-tools hub onboard-cmd    # mints a one-time onboard token
-```
-
-Then on each provider node (historical):
-
-```sh
-# Historical — these commands no longer exist in v31.3+
-urnet-tools hub link <https://hub-host:port> --token <onboard-token>
-```
-
-The hub dashboard (port 8080) **used to** show:
-- Live Mbps throughput per node
-- Billable traffic (hourly/daily/monthly)
-- Contract win rates
-- Per-proxy drilldown by address
-- Active client sessions
-
-> [!WARNING]
-> **These instructions are historical.** The hub has been fully removed — no deployment, port mapping, or colocated-host guidance applies any longer.
+The old hub dashboard was removed in v32.0, along with the `urnet-tools hub` commands. For fleet-wide visibility turn on Prometheus metrics with `urnet-tools metrics on` and use the Grafana bundle. Setup is in [Monitoring](../Monitoring.md).
 
 ---
 
@@ -302,8 +273,8 @@ ssh user@<node-ip> "urnet-tools proxy summary"
 | 28.0 | Standalone `urnet-docker` CLI for host-side Docker container discovery and delegation. |
 | 27.0 | Initial Go rewrite of urnet-tools suite with targeting refusal safety model. |
 | 26.4 | GOMEMLIMIT added for turbo profiles. Degraded-proxy reaper runs automatically. No config change needed. |
-| 26.3 | `URNETWORK_SKIP_AUDIT` env var to skip startup system audit. Hub PAKE auth, choose_network, auto Tier 4 for 8 GiB+ RAM. |
-| 26.2 | Hot-reload for hub commands, self-heal pool management (opt-in). |
+| 26.3 | `URNETWORK_SKIP_AUDIT` env var to skip startup system audit. Hub auth (since removed), choose_network, auto Tier 4 for 8 GiB+ RAM. |
+| 26.2 | Hot-reload for the since-removed hub commands, self-heal pool management (opt-in). |
 | 26.1 | Docker in-place updates, Go 1.26 toolchain, dl.fullbars.xyz URLs. |
 
 ---
