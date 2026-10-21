@@ -26,6 +26,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import urllib.error
@@ -241,7 +242,7 @@ def render_body(state: dict) -> str:
 def render_block(body: str, changed_on: str) -> str:
     return "\n".join([
         BEGIN,
-        "_Read from the chains by CI, weekly. Values last changed on "
+        "_Read from the chains by CI every hour. Values last changed on "
         f"{changed_on}._",
         "",
         body,
@@ -257,13 +258,10 @@ def existing_block(text: str) -> str | None:
     return text[start:end + len(END)]
 
 
-def body_of(block: str) -> str:
-    """Strip the generated header and the end marker so an unchanged week is not a change."""
-    start = block.find("\n\n")
-    end = block.find(END)
-    if start < 0 or end <= start:
-        return block
-    return block[start + 2:end]
+def normalized(block: str) -> str:
+    """Ignore the date so an unchanged hour is not a change, but a changed
+    header or body still is."""
+    return re.sub(r"\d{4}-\d{2}-\d{2}", "<date>", block).strip()
 
 
 def main() -> int:
@@ -289,7 +287,7 @@ def main() -> int:
     if current is None:
         raise SystemExit(f"{PAGE} has no generated block markers")
 
-    unchanged = body_of(current).strip() == body.strip()
+    unchanged = normalized(current) == normalized(render_block(body, "<date>"))
     if args.check:
         if unchanged:
             print("live numbers are current")
