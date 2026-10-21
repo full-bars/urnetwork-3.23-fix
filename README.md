@@ -1,4 +1,4 @@
-# ⛓ UrNetwork v3.23 Fix
+# ⛓ UrNetwork 3.23-fix
 
 [![CodeRabbit Pull Request Reviews](https://img.shields.io/coderabbit/prs/github/full-bars/urnetwork-3.23-fix?utm_source=oss&utm_medium=github&utm_campaign=full-bars%2Furnetwork-3.23-fix&labelColor=171717&color=FF570A&link=https%3A%2F%2Fcoderabbit.ai&label=CodeRabbit+Reviews)](https://coderabbit.ai)
 [![CI](https://github.com/full-bars/urnetwork-3.23-fix/actions/workflows/build.yml/badge.svg)](https://github.com/full-bars/urnetwork-3.23-fix/actions)
@@ -7,7 +7,17 @@
 ![Language](https://img.shields.io/github/languages/top/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
 ![Activity](https://img.shields.io/github/commit-activity/m/full-bars/urnetwork-3.23-fix?labelColor=171717&color=FF570A)
 
-A high-performance, high-visibility fork of the **UrNetwork Connect** provider, based on the stable **v3.23** engine. Tuned for professional providers managing large proxy lists, high throughput, and production-grade operations.
+A fork of the **UrNetwork Connect** provider, tuned for people who run many proxies at high throughput. It adds clear logs, automatic tuning, a single management tool (`urnet-tools`), and Bittensor Subnet 25 support. It is the production line of this project.
+
+## 👋 New here? Do this
+
+1. **Install.** Pick your system in [Quick Start](#-quick-start) below. On Linux the one-liner is `curl -fSsL https://dl.fullbars.xyz/install.sh | sh`.
+2. **Log in.** Run `urnetwork auth` and paste your auth code from the UrNetwork app when asked.
+3. **Add proxies (optional).** `urnet-tools proxy add ~/proxies.txt`, then `urnet-tools proxy refresh`. See [Adding Proxies](docs/Adding-Proxies.md).
+4. **Check that it works.** Run `urnet-tools status`. It shows whether the provider is running. Run `urnet-tools logs` to watch it start. For a live screen, run `urnet-tools top`.
+5. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
+
+If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md). If you would rather follow a guide, pick one from the next section.
 
 ## 🗺 Start Here
 
@@ -218,7 +228,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | | Upstream | This fork |
 | :--- | :--- | :--- |
 | Control-plane dial visibility | Debug-level glog (silent by default) | INFO — one line per successful backend dial (`[net][s]select`, control-plane not relay traffic) |
-| Contract sizing | Fixed 1 MiB initial, 4-contract ramp to 128 MiB standard | Profile-tuned initial size (256 KiB lowmem/balanced, 1 MiB default) with a faster 3-contract ramp |
+| Contract sizing | Fixed 1 MiB initial, 4-step ramp | Initial size follows the memory tier (128 KiB on small boxes, 256 KiB mid-range, 2 MiB on large ones) with a faster 3-step ramp |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |
 | Dead proxy handling | Retry forever (15 min loop, no ceiling) | 24 h daily retry, 14-day drop (file) or 65 min cleanup (URL), persisted state |
@@ -227,7 +237,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Proxy health grading | None | A–F reachability grade per proxy with continuous re-probing (`proxy health`, `proxy trim`) |
 | Fleet visibility & accounting | None | Built-in CLI accounting (`usage`, `proxy traffic`), persistent byte splits, and Prometheus metrics (`urnet-tools metrics on`) |
 | Performance profiles | None | Auto / Turbo V4 / Turbo V8 / Eco / Lowmem — memory, window, and GC tuned per profile |
-| Crash diagnostics | Journal-only, logs lost on restart | Shared-memory RAM logs (`shmlog`) + disk-based critical event log, panic hooks |
+| Crash diagnostics | Journal-only, logs lost on restart | Optional RAM logs (`URNETWORK_RAMLOGS=1`) plus a disk-based critical event log and panic hooks |
 | Custom API/connect backend | One-off `--api_url`/`--connect_url` flags only, re-passed on every invocation | `choose_network` persists the URLs to disk; flags still override per-call |
 | Runtime settings | Edit systemd drop-ins by hand, then restart | Live control socket (`~/.urnetwork/provider.sock`); changes apply without a restart and are queued in `pending_overrides.json` when the provider is stopped |
 | Binary upgrade | Stop, swap, start (20–60 s of downtime) | HotSwap handoff to a verified candidate, with automatic rollback: no gap where no provider process is running, though proxy connections still ramp back over about 30 s (requires a `Type=notify` unit, which `urnet-tools update` sets up; see [docs/HotSwap.md](docs/HotSwap.md)) |
@@ -263,6 +273,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools hotswap` | Swap to an updated binary without a gap where no process is running (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Proxy connections still ramp back over about 30 s. Procedure and measured costs: [docs/HotSwap.md](docs/HotSwap.md) |
 | `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |
 | `urnet-tools history [limit]` | Read the provider's command audit trail, now including lifecycle events (start, hotswap, shutdown) alongside `set`/`clear` changes |
+| `urnet-tools top` (or `urtop`) | You want a live full-screen view of one provider: throughput, clients, proxies, memory and recent events |
 | `urnet-tools dashboard` | Terminal status panel: state, active settings, proxy sources, restart warnings |
 | `urnet-tools metrics on/off` | Toggle the Prometheus `/metrics` endpoint live, no restart |
 | `urnet-tools profile [name]` | Show or set the memory and GC tuning profile |
@@ -285,7 +296,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 ---
 
-## 📡 Telemetry & Legacy Fleet Dashboard
+## 📡 Telemetry & Fleet Visibility
 
 UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
 
@@ -340,7 +351,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 ## 🏗 Build Info
 
-- **Base engine:** UrNetwork v3.23
+- **Base engine:** UrNetwork v3.23, with the v2026 engine changes ported in (v34)
 - **Language:** Go 1.27, built on Alpine
 - **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), FreeBSD (amd64 and arm64), macOS and Windows. FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md). Alpine setup: [docs/OpenRC.md](docs/OpenRC.md)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. Each release also attaches `darwin/amd64` + `darwin/arm64`, `windows/amd64` + `windows/arm64` and `freebsd/amd64` + `freebsd/arm64` binaries.
