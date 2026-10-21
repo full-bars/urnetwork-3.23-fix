@@ -242,8 +242,7 @@ def render_body(state: dict) -> str:
 def render_block(body: str, changed_on: str) -> str:
     return "\n".join([
         BEGIN,
-        "_Read from the chains by CI every hour. Values last changed on "
-        f"{changed_on}._",
+        f"_Live values · last changed {changed_on} UTC · checked hourly_",
         "",
         body,
         END,
@@ -261,7 +260,7 @@ def existing_block(text: str) -> str | None:
 def normalized(block: str) -> str:
     """Ignore the date so an unchanged hour is not a change, but a changed
     header or body still is."""
-    return re.sub(r"\d{4}-\d{2}-\d{2}", "<date>", block).strip()
+    return re.sub(r"\d{4}-\d{2}-\d{2}(?: \d{2}:\d{2})?", "<date>", block).strip()
 
 
 def main() -> int:
@@ -274,7 +273,7 @@ def main() -> int:
 
     state = read_state()
     body = render_body(state)
-    today = datetime.now(timezone.utc).date().isoformat()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M")
 
     if args.print_block:
         print(render_block(body, today))
