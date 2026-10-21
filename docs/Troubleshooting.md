@@ -224,7 +224,7 @@ These come from `provider claim`, `provider wallet challenge`, `provider wallet 
 | `<source> does not name a client (is it the network token?) ...` | The token is the network token. Claim needs a client token. |
 | `<source> has expired; let the provider renew it or pass a fresher --provider-jwt` | Start the provider so it renews the identity, or pass a newer token file. |
 | `No claimable epoch.` | The platform's own answer: there is nothing to claim for that epoch with that client. Try another identity that served traffic, or another `--epoch`. |
-| `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Set the wallet in the URnetwork app or web account, or add `--legacy-network-wallet` to send the unsigned request anyway. `provide --wallet` prints this and keeps providing. |
+| `subnet wallet not set: provider wallet set sends the unsigned network wallet request ...` | The unsigned request is refused by default, because the platform is moving to a signed wallet consent. Sign the consent once from your own computer with `provider wallet sign <coldkey>`, then confirm with `provider wallet status` (see [Bittensor Quick Start](Bittensor-Quick-Start.md)). A plain wallet link in the app or website is only a login proof and is not paid. The unsigned request (`--legacy-network-wallet`) is not paid either. `provide --wallet` prints this and keeps providing. |
 
 | `wallet challenge: the server returned no message to sign` | The challenge request answered without the text to sign, so nothing was signed. Retry; if it repeats, the server side is at fault. |
 | `wallet challenge: the message to sign is not the expected sign-in challenge; refusing to sign it` | The provider signs only the server's documented three-line sign-in challenge. A different message means the answer was not the expected shape, so nothing is signed. |
@@ -232,7 +232,7 @@ These come from `provider claim`, `provider wallet challenge`, `provider wallet 
 | `seed file <path>: ...` | The 32-byte coldkey seed could not be used. It must be a regular file (not a symlink), mode 600, owned by the caller. |
 | `use either --coldkey_seed_file or --message with --signature, not both` | Give exactly one way to prove the coldkey. |
 
-`provider wallet challenge <coldkey_ss58>` prints the server's sign-in challenge so it can be signed elsewhere (btcli) and sent back with `--message`/`--signature`; the seed then never has to be on the node. `provider wallet set` sends the proof. The unsigned network wallet request is still refused unless `--legacy-network-wallet` is passed.
+`provider wallet challenge <coldkey_ss58>` prints the server's sign-in challenge so it can be signed elsewhere (btcli) and sent back with `--message`/`--signature`; the seed then never has to be on the node. `provider wallet set` sends the proof. The unsigned network wallet request is still refused unless `--legacy-network-wallet` is passed, and it is not paid, so standard operators should not use it.
 
 ### Hotkey, daemon and fleet messages
 
