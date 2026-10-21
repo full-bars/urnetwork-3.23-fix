@@ -518,6 +518,39 @@ func TestMetricsCountersProxySeededAfterLateKey(t *testing.T) {
 	}
 }
 
+// TestUnregisterAfterEmptyFlushDoesNotPanic covers the base map going empty:
+// a flush with no proxies prunes the base to nil, and the next unregister folds
+// into it. CI caught this as "assignment to entry in nil map".
+func TestUnregisterAfterEmptyFlushDoesNotPanic(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+	key := "10.88.88.88:1080"
+
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	// No proxies registered: this flush leaves the in-memory base empty.
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("empty flush: %v", err)
+	}
+
+	RegisterProxy(910088, key, key)
+	RegisterProxyBandwidth(910088).TotalRx.Add(5)
+	UnregisterProxy(910088) // must not panic on a nil base map
+
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush after unregister: %v", err)
+	}
+	file, err := readMetricsCountersFile(path)
+	if err != nil {
+		t.Fatalf("read back: %v", err)
+	}
+	if got := file.Proxies[key].TotalRx; got != 5 {
+		t.Errorf("folded total rx = %d, want 5", got)
+	}
+}
+
 func TestMetricsCountersProxyPruneAndCap(t *testing.T) {
 	now := time.Now()
 	old := now.Add(-metricsProxyRetention - time.Hour).Unix()

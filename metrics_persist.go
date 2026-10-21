@@ -416,7 +416,13 @@ func FlushMetricsCounters() error {
 	// replaced map, and one that landed before is already in it, so no folded
 	// total is lost either way.
 	metricsPersistMu.Lock()
-	metricsProxyBase = pruneProxyCounters(mergeProxyMaps(metricsProxyBase, proxies), live, now)
+	pruned := pruneProxyCounters(mergeProxyMaps(metricsProxyBase, proxies), live, now)
+	if pruned == nil {
+		// Keep the base writable: a fold from UnregisterProxy writes into it,
+		// and prune returns nil for an empty set.
+		pruned = map[string]metricsProxyCounters{}
+	}
+	metricsProxyBase = pruned
 	metricsPersistMu.Unlock()
 
 	file := metricsCountersFile{
@@ -789,6 +795,11 @@ func foldProxyBandwidthLocked(key string, bw *ProxyBandwidth) {
 		BillableTx: bw.BillableTx.Load(),
 	}
 	metricsPersistMu.Lock()
+	if metricsProxyBase == nil {
+		// The flush assigns a pruned map, and pruning an empty set returns
+		// nil. A later fold would then write into a nil map.
+		metricsProxyBase = map[string]metricsProxyCounters{}
+	}
 	base := metricsProxyBase[key]
 	base.TotalRx = max(base.TotalRx, live.TotalRx)
 	base.TotalTx = max(base.TotalTx, live.TotalTx)
@@ -805,6 +816,9 @@ func seedProxyBases(proxies map[string]metricsProxyCounters) {
 	}
 	metricsPersistMu.Lock()
 	defer metricsPersistMu.Unlock()
+	if metricsProxyBase == nil {
+		metricsProxyBase = map[string]metricsProxyCounters{}
+	}
 	for key, v := range proxies {
 		metricsProxyBase[key] = mergeProxyCounters2(metricsProxyBase[key], v)
 	}
