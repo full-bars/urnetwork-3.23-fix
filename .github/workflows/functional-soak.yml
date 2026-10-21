@@ -19,8 +19,6 @@ jobs:
       URNETWORK_PROXY_BENCHMARK: "true"
       URNETWORK_SELF_HEAL: "1"
       PROXY_URL_REFRESH: "2m"
-      URNETWORK_HEARTBEAT_INTERVAL: "15s"
-      URNETWORK_REPORT_INTERVAL: "1m"
       # Tight cap on URL-sourced proxies: keeps the runner's external-IP
       # footprint small and contained (ToS-conscious), while still loading
       # enough of a real pool to observe admission/grading/stabilization.
