@@ -55,7 +55,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.3"
 
       - name: Build urnet-tools and the fake provider
         env:
@@ -222,7 +222,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.3"
 
       - name: Vet urnettools for ${{ matrix.goos }}
         run: |
