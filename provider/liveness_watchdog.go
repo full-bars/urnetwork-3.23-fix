@@ -110,10 +110,17 @@ func sdWatchdogInterval(getenv func(string) string) (time.Duration, bool) {
 // systemd acts. gate is asked with episodeStart true only at the first stale
 // tick of an episode: the budget it consults includes the entry onStall itself
 // writes, so asking again mid-episode would feed the watchdog right back.
-func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *livenessProgress, staleAfter time.Duration, ping func() error, logf func(string, ...any), gate func(episodeStart bool) (bool, string), onStall func() func()) {
+//
+// idle, when set, runs each time the loop is about to wait for the next tick,
+// so the previous tick has been handled completely. Production passes nil; a
+// test uses it to know when a tick is done instead of guessing.
+func runSdWatchdogLoop(ctx context.Context, tick <-chan time.Time, progress *livenessProgress, staleAfter time.Duration, ping func() error, logf func(string, ...any), gate func(episodeStart bool) (bool, string), onStall func() func(), idle func()) {
 	passive, acting := false, false
 	var undo func()
 	for {
+		if idle != nil {
+			idle()
+		}
 		select {
 		case <-ctx.Done():
 			return
@@ -224,7 +231,7 @@ func runSdWatchdog(ctx context.Context, gate func(episodeStart bool) (bool, stri
 	_ = notifySystemdWatchdog() // first feed right away
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	runSdWatchdogLoop(ctx, ticker.C, processLiveness, livenessStaleAfter, notifySystemdWatchdog, critLog, gate, recordLivenessStall)
+	runSdWatchdogLoop(ctx, ticker.C, processLiveness, livenessStaleAfter, notifySystemdWatchdog, critLog, gate, recordLivenessStall, nil)
 }
 
 // recordLivenessStall leaves the next start leaner before systemd restarts a
