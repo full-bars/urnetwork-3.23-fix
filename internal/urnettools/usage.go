@@ -13,7 +13,9 @@ import (
 
 // usageSnapshot is one row of the provider's persistent usage history
 // (usage_history.jsonl). rx/tx are cumulative TOTAL bytes across all proxies
-// since process start; billable_rx/tx are the cumulative billable share.
+// from the provider's persisted counter base: they continue across a restart
+// instead of starting over, so a drop in a row means a proxy left the pool, not
+// a restart. billable_rx/tx are the cumulative billable share.
 type usageSnapshot struct {
 	TS         time.Time `json:"ts"`
 	RX         uint64    `json:"rx"`

@@ -45,6 +45,11 @@ type ProxyBandwidth struct {
 	LatencyNs                                atomic.Int64
 	SocksLatencyNs                           atomic.Int64
 
+	// seeded marks a record that has already been given the totals persisted
+	// for its identity (metrics_persist.go). Guarded by proxyHealthMu, not by
+	// mu: it is only read and written while the registry lock is held.
+	seeded bool
+
 	mu            sync.Mutex
 	sessions      map[any]time.Time
 	presenceSince time.Time // when clients first arrived in the current continuous window
@@ -235,6 +240,10 @@ func RegisterProxy(index int, address, key string) {
 	h.connecting = true
 	h.connectingSince = time.Now()
 	proxyHealthByKey[key] = h
+	// A re-registration keeps whatever bandwidth record the slot already has,
+	// including a seeded one: the identity that just changed is a rotation in
+	// the same slot, and its byte counters belong to the slot.
+	seedProxyBandwidthLocked(key, h.bw)
 }
 
 // RegisterProxyBandwidth securely retrieves or initializes the proxyBandwidth.
@@ -250,6 +259,7 @@ func RegisterProxyBandwidth(index int) *ProxyBandwidth {
 	if h.bw == nil {
 		h.bw = &ProxyBandwidth{}
 	}
+	seedProxyBandwidthLocked(h.key, h.bw)
 	return h.bw
 }
 
@@ -269,6 +279,7 @@ func RegisteredProxyBandwidth(index int) *ProxyBandwidth {
 	if h.bw == nil {
 		h.bw = &ProxyBandwidth{}
 	}
+	seedProxyBandwidthLocked(h.key, h.bw)
 	return h.bw
 }
 
@@ -443,6 +454,11 @@ func UnregisterProxy(id int) {
 			delete(proxyHealthByKey, h.key)
 		}
 	}
+	if h, ok := proxyHealthByIndex[id]; ok {
+		// Persist the final byte totals before the record goes away, so bytes
+		// moved since the last flush are not lost with it.
+		foldProxyBandwidthLocked(h.key, h.bw)
+	}
 	delete(proxyHealthByIndex, id)
 }
 
@@ -532,9 +548,10 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 // ProxyBandwidthTotals sums the cumulative billable and total (rx plus tx) byte
 // counters across every registered proxy. Unlike ProxyHealthSnapshot it sorts
 // and formats nothing, so it is cheap enough to call many times a second for
-// live throughput. The sums drop when a proxy is removed or respawns (its
-// counters start over), so callers derive rates from deltas and skip a
-// decrease rather than treating it as negative traffic.
+// live throughput. The sums still drop when a proxy is removed from the pool
+// (its bytes leave the aggregate), so callers derive rates from deltas and skip
+// a decrease rather than treating it as negative traffic. They do not drop on a
+// provider restart: a re-registered proxy is seeded with its persisted totals.
 func ProxyBandwidthTotals() (billable, total uint64) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()

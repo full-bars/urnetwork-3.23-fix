@@ -468,7 +468,7 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "urnet_pressure_score %g\n", pressure)
 
 	// --- DoH failures ---
-	dohFails := connect.GetDohFailureCount()
+	dohFails := connect.GetDohFailureTotal()
 	fmt.Fprintf(&b, "# HELP urnet_doh_failures_total DNS-over-HTTPS failures.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_doh_failures_total counter\n")
 	fmt.Fprintf(&b, "urnet_doh_failures_total %d\n", dohFails)

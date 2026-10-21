@@ -2033,7 +2033,21 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			if clients > 0 {
 				serving++
 			}
-			prev := prevTick[key]
+			prev, seen := prevTick[key]
+			if !seen {
+				// First sight of this proxy: anchor its rate baseline at the
+				// current value. A restored counter already carries the
+				// previous process's traffic, so treating it as this tick's
+				// delta would print a lifetime-scale rate once per restart.
+				prev = trafficBytes{rx: rx, tx: tx}
+				// Anchor "today" here too, for the same reason: the restored
+				// total is not today's traffic. Anchoring before the zero-delta
+				// continue below means the first active tick still counts its
+				// bytes, which anchoring on that later tick would drop.
+				if _, ok := midnightCheckpoint[key]; !ok {
+					midnightCheckpoint[key] = bw.BillableRx.Load() + bw.BillableTx.Load()
+				}
+			}
 			// Guard against counter resets: a proxy goroutine restart / hot-reload
 			// hands back a fresh zeroed ProxyBandwidth, so the current value can be
 			// below the persisted previous one. An unguarded uint64 subtraction would
@@ -2057,8 +2071,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			// Same reset guard for the midnight-anchored "today" total: if the live
 			// counter dropped below the checkpoint (proxy restart), rebase the
 			// checkpoint so billable_today starts from the current value instead of
-			// underflowing. A missing checkpoint defaults to 0 (lifetime == today
-			// until the first midnight rollover), preserving prior behavior.
+			// underflowing.
 			billableTotal := bw.BillableRx.Load() + bw.BillableTx.Load()
 			cp := midnightCheckpoint[key]
 			if billableTotal < cp {
@@ -3003,6 +3016,12 @@ func provide(opts docopt.Opts) {
 	mergePendingOverrides(globalControlState)
 	applyPersistedRuntimeTuning(globalControlState)
 	initPersistentErrors()
+	// Restore the cumulative /metrics counters (traffic, transports,
+	// contracts, errors) before anything can serve a scrape, so the first
+	// /metrics after a restart continues the series instead of showing zeros.
+	// A HotSwap candidate restores but does not start the periodic writer: the
+	// parent is still serving and must stay the only writer until takeover.
+	initMetricsCountersPersistence(!isHotSwapCandidate)
 	initAuditRing()
 	// A Docker in-place execve successor is not a candidate process (no
 	// IPC descriptor) but the env marker survives the exec, so both kinds
@@ -3972,6 +3991,10 @@ func provide(opts docopt.Opts) {
 				})
 
 				startMetricsAfterTakeover(globalControlState)
+				// The candidate restored the counter store at spawn time, before
+				// the parent's final flush. Catch up to it and only now become
+				// the store's writer.
+				startMetricsCountersAfterTakeover(ctx)
 
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {
@@ -4583,6 +4606,7 @@ func provide(opts docopt.Opts) {
 	closeDohCache()
 	flushRetentionEvents()
 	FlushPersistentErrors()
+	flushMetricsCountersOnExit()
 	forceAuditPersist()
 	// Stop the background STUN probe loop. Log-only, and it would die with the
 	// process anyway, but the loop waits on a five-minute timer between cycles
