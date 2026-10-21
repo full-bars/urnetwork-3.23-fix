@@ -32,10 +32,8 @@ chmod +x "$tmp/app/urnetwork_amd64_stable"
 
 for b in jwt stable; do
   sed -e "s|^APP_DIR=\"/app\"$|APP_DIR=\"$tmp/app\"|" \
-      -e 's/sleep 15$/sleep 0.05/' \
-      -e 's/^\( *\)sleep 5$/\1sleep 0.05/' \
-      -e 's/sleep 60$/sleep 0.05/' \
-      -e 's/sleep 300$/sleep 0.05/' \
+      -e 's/^\( *\)func_sleep [0-9][0-9]*$/\1func_sleep 0.05/' \
+      -e 's/^\( *\)sleep [0-9][0-9]*$/\1sleep 0.05/' \
       "$wt/docker/scripts/pelican_panel.sh" > "$tmp/panel_$b.sh"
 done
 
@@ -58,7 +56,12 @@ rm -f "$tmp/calls.log"
 ( eval "$base_env"
   export APP_DIR="$tmp/app" BUILD=jwt AUTHCODE="code-test"
   cd "$tmp/app"; timeout 8 sh "$tmp/panel_jwt.sh" ) >"$tmp/jwt.log" 2>&1 </dev/null &
-JP=$!; sleep 4; kill $JP 2>/dev/null; wait $JP 2>/dev/null
+JP=$!
+# wait for the marker, not a fixed sleep: the supervisor now stops promptly on
+# TERM, so killing on a timer can land before the fake records the call this
+# assertion is about
+_n=0; while [ "$_n" -lt 120 ]; do grep -q "FAKE-CALL: auth-provide code-test" "$tmp/calls.log" 2>/dev/null && break; sleep 0.1; _n=$((_n+1)); done
+kill $JP 2>/dev/null; wait $JP 2>/dev/null
 JWTLOG="$(cat "$tmp/jwt.log")"; CALLS="$(cat "$tmp/calls.log" 2>/dev/null)"
 
 t "jwt mode calls auth-provide with code" grep -q "FAKE-CALL: auth-provide code-test" <<<"${JWTLOG}${CALLS}"
@@ -69,7 +72,9 @@ rm -f "$tmp/calls.log"
 ( eval "$base_env"
   export APP_DIR="$tmp/app" BUILD=stable USER_AUTH=test@example.net PASSWORD=pw-test
   cd "$tmp/app"; timeout 8 sh "$tmp/panel_stable.sh" ) >"$tmp/stable.log" 2>&1 </dev/null &
-SP=$!; sleep 5; kill $SP 2>/dev/null; wait $SP 2>/dev/null
+SP=$!
+_n=0; while [ "$_n" -lt 120 ]; do grep -q "FAKE-CALL: provide" "$tmp/calls.log" 2>/dev/null && break; sleep 0.1; _n=$((_n+1)); done
+kill $SP 2>/dev/null; wait $SP 2>/dev/null
 SLOG="$(cat "$tmp/stable.log")"; SCALLS="$(cat "$tmp/calls.log" 2>/dev/null)"
 
 t "stable mode called auth with creds" grep -q -- "--user_auth=test@example.net" <<<"${SLOG}${SCALLS}"

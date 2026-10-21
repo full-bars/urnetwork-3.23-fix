@@ -317,6 +317,23 @@ t "provider_common picks nothing when only other platforms are published" test -
 dig="$(printf '%s' "$JSON_MULTI" | jq -r --arg f "$sel_pc" '.assets[] | select(.name == $f) | .digest')"
 t "digest lookup follows the picked asset name" test "$dig" = "sha256:4"
 
+# Drift guard: the stop contract is duplicated in every supervisor shell, so the
+# copies must stay byte-identical. A fix applied to one copy and not the others
+# leaves a container that still hangs on stop.
+stop_block() {
+  sed -n '/^# --- stop contract begin ---/,/^# --- stop contract end ---/p' "$HERE/$1"
+}
+STOP_FILES="provider_common.sh pelican_panel.sh"
+first_sum=""
+drift=0
+for f in $STOP_FILES; do
+  sum="$(stop_block "$f" | cksum)"
+  [ -z "$first_sum" ] && first_sum="$sum"
+  [ "$sum" = "$first_sum" ] || drift=1
+done
+t "stop contract is identical in every supervisor shell" test "$drift" -eq 0
+
+
 # The broken (unparenthesized) shape must stay broken-and-unused: assert it
 # errors, so nobody reintroduces it thinking it works.
 broken_exit=0

@@ -816,10 +816,13 @@ if [ -n "$CID" ]; then
   docker stop dsk-x3 >/dev/null 2>&1
   ELAPSED=$(( $(date +%s) - T0 ))
   echo "  X3: docker stop took ${ELAPSED}s" | tee -a "$REPORT"
-  if [ "$ELAPSED" -le 10 ]; then
-    ok "X3 provider stopped cleanly within default timeout (${ELAPSED}s)"
+  # The bar sits well inside the good regime on purpose: a bar at Docker's own
+  # 10s timeout passes while the provider is already being SIGKILLed, which is
+  # the failure it exists to catch. A forwarded stop takes well under a second.
+  if [ "$ELAPSED" -le 5 ]; then
+    ok "X3 provider stopped cleanly after SIGTERM (${ELAPSED}s)"
   else
-    bad "X3 provider took ${ELAPSED}s to stop (SIGKILL fallback likely — SIGTERM hang?)"
+    bad "X3 provider took ${ELAPSED}s to stop — SIGTERM is not reaching the provider (a shell running as PID 1 ignores it) so Docker fell back to SIGKILL at the 10s timeout"
   fi
   if docker logs dsk-x3 2>&1 | grep -qE "panic:|fatal error:"; then
     bad "X3 panic/fatal during shutdown"

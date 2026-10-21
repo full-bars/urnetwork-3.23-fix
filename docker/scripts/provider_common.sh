@@ -219,7 +219,7 @@ func_login_retry_loop() {
     # Retry loop for authentication
     while true; do
         log "[INFO] Sleeping 15s before obtaining new JWT..."
-        sleep 15
+        func_sleep 15
 
         log "[INFO] Attempting authentication..."
 
@@ -238,27 +238,102 @@ func_login_retry_loop() {
         # Check for success message in output
         if echo "$AUTH_OUTPUT" | grep -q "Jwt written to"; then
             log "[INFO] Authentication successful - JWT written"
-            sleep 5
+            func_sleep 5
 
             # Verify JWT file exists as backup check
             if [ -s "$JWT_FILE" ]; then
                 log "[INFO] JWT file verified at $JWT_FILE"
-                sleep 5
+                func_sleep 5
                 return 0
             else
                 log "[WARN] Success message found but JWT file missing - retrying"
                 log "[INFO] Will retry authentication in 1 minutes (60 seconds)..."
-                sleep 60
+                func_sleep 60
             fi
         else
             # Authentication failed - output exit code and auth output
             log "[ERROR] Authentication failed (exit code: $AUTH_EXIT_CODE)" >&2
 			log "[ERROR] $(echo "$PANIC_LINE" | tr '[:lower:]' '[:upper:]')" >&2
             log "[INFO] Will retry authentication in 5 minutes (300 seconds)..."
-            sleep 300
+            func_sleep 300
         fi
     done
 }
+
+# --- stop contract begin ---
+# === Stop handling (this script can run as PID 1) ===
+# The kernel applies no default signal action to PID 1, so an untrapped SIGTERM
+# is ignored and the stop turns into a hard kill once the grace period expires.
+# Forward exactly one TERM to the provider child, and keep the supervisor sleeps
+# interruptible: a deferred trap cannot fire while a foreground sleep runs.
+STOPPING=0
+PROVIDER_CHILD_PID=""
+SLEEP_PID=""
+
+provider_forward_stop() {
+    STOPPING=1
+    if [ -n "$PROVIDER_CHILD_PID" ]; then
+        kill -TERM "$PROVIDER_CHILD_PID" 2>/dev/null || true
+    fi
+}
+trap provider_forward_stop TERM INT
+
+# Interruptible sleep. A stop request must END the process, not return to the
+# caller's loop: returning would let a retry loop spin without its delay, and a
+# hotswap wait loop busy-spin, until Docker gives up and SIGKILLs PID 1.
+func_sleep() {
+    if [ "$STOPPING" = 1 ]; then provider_finish_stop; fi
+    sleep "$1" &
+    SLEEP_PID=$!
+    wait "$SLEEP_PID" 2>/dev/null || true
+    SLEEP_PID=""
+    if [ "$STOPPING" = 1 ]; then provider_finish_stop; fi
+    return 0
+}
+
+# Run the provider and wait for its real exit. A TERM can land between the
+# loop's stopping check and the spawn, so re-check right after the pid exists.
+provider_run() {
+    "$@" &
+    PROVIDER_CHILD_PID=$!
+    if [ "$STOPPING" = 1 ]; then
+        kill -TERM "$PROVIDER_CHILD_PID" 2>/dev/null || true
+    fi
+    code=0
+    wait "$PROVIDER_CHILD_PID" || code=$?
+    if [ "$STOPPING" = 1 ]; then
+        # A trapped TERM makes wait return while the child is still closing.
+        # Stay until it is actually gone: provider_finish_stop keys on this pid
+        # to avoid signalling the same provider twice, and the shutdown banner
+        # would be logged twice if the pid were cleared early.
+        _w=0
+        while kill -0 "$PROVIDER_CHILD_PID" 2>/dev/null && [ "$_w" -lt 100 ]; do
+            sleep 0.05 2>/dev/null || sleep 1
+            _w=$((_w + 1))
+        done
+    fi
+    PROVIDER_CHILD_PID=""
+    return $code
+}
+
+# Finish the stop: signal any provider the supervisor did not spawn (a hotswap
+# successor), give it a short window to close, then exit 0. Exiting PID 1 kills
+# the successor outright, so the window matters. Plain sleep on purpose: routing
+# it through func_sleep would recurse the stopping check into itself.
+provider_finish_stop() {
+    for _p in $(pgrep -f "^$APP_DIR/urnetwork_[^ ]* (auth-)?provide" 2>/dev/null || true); do
+        [ "$_p" = "$PROVIDER_CHILD_PID" ] && continue
+        kill -TERM "$_p" 2>/dev/null || true
+    done
+    _n=0
+    while [ "$_n" -lt 30 ]; do
+        pgrep -f "^$APP_DIR/urnetwork_[^ ]* (auth-)?provide" >/dev/null 2>&1 || break
+        sleep 0.2 2>/dev/null || sleep 1
+        _n=$((_n + 1))
+    done
+    exit 0
+}
+# --- stop contract end ---
 
 # === Provider Update Check (nightly only) ===
 # === Release Asset Selection ===
@@ -526,7 +601,8 @@ func_start_provider_stable(){
         # Capture the real exit code (set -e safe; avoids the `|| true` that pinned code to 0)
         resolve_provider_env_args
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if provider_run "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if [ "$STOPPING" = 1 ]; then provider_finish_stop; fi
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
                 rm -f "$HOME/.urnetwork/update-pending"
@@ -539,7 +615,7 @@ func_start_provider_stable(){
                 log "[INFO] UrNetwork hotswap successor active; continuing supervision."
                 failures=0
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
-                    sleep 2
+                    func_sleep 2
                 done
                 continue
             fi
@@ -553,20 +629,20 @@ func_start_provider_stable(){
                 log "[INFO] Re-authenticating with USER_AUTH/PASSWORD..."
                 if "$PROVIDER_BIN" auth --user_auth="$USER_AUTH" --password="$PASSWORD" -f && [ -s "$JWT_FILE" ]; then
                     log "[INFO] Re-authentication successful. Restarting provider..."
-                    sleep 5
+                    func_sleep 5
                     continue
                 else
                     log "[ERROR] Re-authentication failed."
                 fi
             fi
             log "[CRITICAL] Token expired/revoked and credentials unavailable. Check USER_AUTH/PASSWORD and restart."
-            sleep 30
+            func_sleep 30
             exit 78
         fi
         if [ "$code" -eq 75 ]; then
             log "[INFO] UrNetwork requested planned restart (exit 75); restarting in 5s."
             failures=0
-            sleep 5
+            func_sleep 5
             continue
         fi
         failures=$((failures+1))
@@ -578,7 +654,7 @@ func_start_provider_stable(){
             failures=0
         fi
         log "[INFO] Waiting 60s before retry"
-        sleep 60
+        func_sleep 60
     done
 }
 
@@ -592,7 +668,8 @@ func_start_provider_nightly(){
         # Capture the real exit code (set -e safe; bare `provide` would abort the loop on crash)
         resolve_provider_env_args
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if provider_run "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if [ "$STOPPING" = 1 ]; then provider_finish_stop; fi
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
                 rm -f "$HOME/.urnetwork/update-pending"
@@ -605,7 +682,7 @@ func_start_provider_nightly(){
                 log "[INFO] UrNetwork hotswap successor active; continuing supervision."
                 failures=0
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
-                    sleep 2
+                    func_sleep 2
                 done
                 continue
             fi
@@ -619,20 +696,20 @@ func_start_provider_nightly(){
                 log "[INFO] Re-authenticating with USER_AUTH/PASSWORD..."
                 if "$PROVIDER_BIN" auth --user_auth="$USER_AUTH" --password="$PASSWORD" -f && [ -s "$JWT_FILE" ]; then
                     log "[INFO] Re-authentication successful. Restarting provider..."
-                    sleep 5
+                    func_sleep 5
                     continue
                 else
                     log "[ERROR] Re-authentication failed."
                 fi
             fi
             log "[CRITICAL] Token expired/revoked and credentials unavailable. Check USER_AUTH/PASSWORD and restart."
-            sleep 30
+            func_sleep 30
             exit 78
         fi
         if [ "$code" -eq 75 ]; then
             log "[INFO] UrNetwork requested planned restart (exit 75); restarting in 5s."
             failures=0
-            sleep 5
+            func_sleep 5
             continue
         fi
         failures=$((failures+1))
@@ -644,7 +721,7 @@ func_start_provider_nightly(){
             failures=0
         fi
         log "[INFO] Waiting 60s before retry"
-        sleep 60
+        func_sleep 60
     done
 }
 
@@ -712,7 +789,8 @@ func_start_provider_jwt(){
         # code=0 and the code 78 re-auth branch below could never run.
         resolve_provider_env_args
         # shellcheck disable=SC2086  # PROVIDER_ENV_ARGS is a deliberately split flag list
-        if "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if provider_run "$PROVIDER_BIN" provide $PROVIDER_ENV_ARGS; then code=0; else code=$?; fi
+        if [ "$STOPPING" = 1 ]; then provider_finish_stop; fi
         if [ "$code" -eq 0 ]; then
             if [ -f "$HOME/.urnetwork/update-pending" ]; then
                 rm -f "$HOME/.urnetwork/update-pending"
@@ -727,7 +805,7 @@ func_start_provider_jwt(){
                 failures=0
                 reauth_attempts=0
                 while pgrep -f "urnetwork.*provide" >/dev/null 2>&1; do
-                    sleep 2
+                    func_sleep 2
                 done
                 continue
             fi
@@ -751,7 +829,7 @@ func_start_provider_jwt(){
                     log "[INFO] Re-authentication successful. Restarting provider..."
                     failures=0
                     reauth_attempts=0
-                    sleep 5
+                    func_sleep 5
                     continue
                 else
                     log "[ERROR] Re-authentication failed."
@@ -762,14 +840,14 @@ func_start_provider_jwt(){
                     log "[INFO] Re-authentication successful. Restarting provider..."
                     failures=0
                     reauth_attempts=0
-                    sleep 5
+                    func_sleep 5
                     continue
                 else
                     log "[ERROR] Re-authentication failed."
                 fi
             fi
             log "[CRITICAL] Token expired/revoked and re-auth unavailable. Set URNETWORK_AUTH_CODE and restart."
-            sleep 30
+            func_sleep 30
             exit 78
         fi
 
@@ -777,7 +855,7 @@ func_start_provider_jwt(){
             log "[INFO] UrNetwork requested planned restart (exit 75); restarting in 5s."
             failures=0
             reauth_attempts=0
-            sleep 5
+            func_sleep 5
             continue
         fi
 
@@ -793,7 +871,7 @@ func_start_provider_jwt(){
         fi
 
         log "[INFO] Waiting 60s before retry"
-        sleep 60
+        func_sleep 60
     done
 }
 
@@ -864,9 +942,9 @@ func_bootstrap() {
                 else
                     log "UrNetwork already running; skipping restart"
                 fi
-                sleep 60
+                func_sleep 60
             fi
-            sleep 30
+            func_sleep 30
           done
         ) &
         WATCHER_PID=$!

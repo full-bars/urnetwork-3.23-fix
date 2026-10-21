@@ -110,6 +110,15 @@ STUB_EOF
         echo ". '$REPO/docker/scripts/provider_env.sh'"
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
         extract_func "$src_file" "$fn_name"
+        # the loop now runs the provider behind the stop contract, so the stub
+        # needs those helpers and their globals or every iteration dies with
+        # "command not found" and reads as a crash
+        extract_func "$src_file" provider_run
+        extract_func "$src_file" func_sleep
+        extract_func "$src_file" provider_finish_stop
+        echo "STOPPING=0"
+        echo "PROVIDER_CHILD_PID=''"
+        echo "SLEEP_PID=''"
         echo "$fn_name"
     } > "$runner"
 

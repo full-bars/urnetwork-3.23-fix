@@ -203,6 +203,14 @@ STUB_EOF
         esac
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
         extract_func "$REPO/docker/scripts/provider_common.sh" "$_fn"
+        # the loop now runs the provider behind the stop contract; without these
+        # the stub dies with "command not found" and no flags ever reach provide
+        extract_func "$REPO/docker/scripts/provider_common.sh" provider_run
+        extract_func "$REPO/docker/scripts/provider_common.sh" func_sleep
+        extract_func "$REPO/docker/scripts/provider_common.sh" provider_finish_stop
+        echo "STOPPING=0"
+        echo "PROVIDER_CHILD_PID=''"
+        echo "SLEEP_PID=''"
         echo "$_fn"
     } > "$runner"
 
