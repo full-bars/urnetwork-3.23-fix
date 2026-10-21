@@ -69,6 +69,12 @@ func saveCounters(t *testing.T) {
 	doh := dohFailureTotal.Load()
 	dohInterval := dohFailureCount.Load()
 
+	// The fixture is a clean slate, not just a restore point: these counters
+	// are process globals, and tests that ran earlier in the package (the
+	// error tracking tests leave every category at 5) otherwise inflate the
+	// absolute values the persistence tests assert.
+	zeroCounters(t)
+
 	t.Cleanup(func() {
 		restoreMode(&h1ModeStats, h1)
 		restoreMode(&h1DirectStats, h1d)
