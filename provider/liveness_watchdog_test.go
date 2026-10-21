@@ -68,6 +68,7 @@ type watchdogHarness struct {
 	clock  atomic.Int64
 	l      *livenessProgress
 	tick   chan time.Time
+	idle   chan struct{} // signalled each time the loop is back waiting for a tick
 	cancel context.CancelFunc
 	done   chan struct{}
 
@@ -82,7 +83,7 @@ type watchdogHarness struct {
 func (h *watchdogHarness) now() time.Time { return time.Unix(0, h.clock.Load()) }
 
 func startWatchdogHarness(t *testing.T, gate func(episodeStart bool) (bool, string), undoFn func()) *watchdogHarness {
-	h := &watchdogHarness{t: t, tick: make(chan time.Time)}
+	h := &watchdogHarness{t: t, tick: make(chan time.Time), idle: make(chan struct{}, 1)}
 	h.clock.Store(time.Unix(1_000_000, 0).UnixNano())
 	h.l = newLivenessProgress(h.now)
 	h.l.tick()
@@ -116,12 +117,17 @@ func startWatchdogHarness(t *testing.T, gate func(episodeStart bool) (bool, stri
 					h.undos++
 					h.mu.Unlock()
 				}
-			})
+			},
+			func() { h.idle <- struct{}{} })
 	}()
+	<-h.idle // the loop is up and waiting for its first tick
 	return h
 }
 
-// step delivers one tick and waits for the loop to finish handling it.
+// step delivers two ticks and waits until the loop has handled each of them
+// completely. The unbuffered send alone only proves the loop took the tick, not
+// that it finished it, so a count read right after could miss a ping still in
+// flight.
 func (h *watchdogHarness) step() {
 	h.t.Helper()
 	for i := 0; i < 2; i++ {
@@ -130,10 +136,24 @@ func (h *watchdogHarness) step() {
 		case <-time.After(2 * time.Second):
 			h.t.Fatal("the watchdog loop did not take the tick")
 		}
+		select {
+		case <-h.idle:
+		case <-time.After(2 * time.Second):
+			h.t.Fatal("the watchdog loop did not finish the tick")
+		}
 	}
 }
 
-func (h *watchdogHarness) stop() { h.cancel(); <-h.done }
+func (h *watchdogHarness) stop() {
+	h.cancel()
+	for { // the loop may be signalling idle once more on its way out
+		select {
+		case <-h.idle:
+		case <-h.done:
+			return
+		}
+	}
+}
 
 func (h *watchdogHarness) counts() (pings, stalls, undos int, lines []string) {
 	h.mu.Lock()
