@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"bytes"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -55,6 +56,14 @@ const (
 	// addresses; the oldest non-live entries are dropped first, so a live proxy
 	// is never pruned by the cap.
 	metricsProxyMaxEntries = 2048
+
+	// metricsUnchangedRewriteAge is how stale the store may grow while nothing
+	// changes. An idle node skips the write entirely (every write is an fsync
+	// and a directory fsync, which is what wears an SD card), but the proxy
+	// retention clock reads LastSeen and the file's saved_at is what an
+	// operator checks for liveness, so an unchanged store is still refreshed
+	// this often.
+	metricsUnchangedRewriteAge = 24 * time.Hour
 )
 
 // modeCounters is one transport mode's cumulative totals. The lifecycle fields
@@ -419,11 +428,44 @@ func FlushMetricsCounters() error {
 		Proxies:          proxies,
 		Extras:           extras,
 	}
+	if priorErr == nil && countersFileUnchanged(file, prior, now) {
+		return nil
+	}
 	blob, err := json.MarshalIndent(file, "", "  ")
 	if err != nil {
 		return fmt.Errorf("marshal: %w", err)
 	}
 	return writeFileAtomicFsync(path, append(blob, '\n'), 0o600)
+}
+
+// countersFileUnchanged reports whether writing next would leave the store
+// saying the same thing prior already does. saved_at, the writer's pid and
+// every proxy's last_seen are stamped afresh on each flush, so they are left
+// out of the comparison; a store older than metricsUnchangedRewriteAge is
+// rewritten anyway so those stamps do not go stale on an idle node.
+func countersFileUnchanged(next, prior metricsCountersFile, now time.Time) bool {
+	if prior.SavedAt.IsZero() || now.Sub(prior.SavedAt) >= metricsUnchangedRewriteAge {
+		return false
+	}
+	next.SavedAt, prior.SavedAt = time.Time{}, time.Time{}
+	next.PID, prior.PID = 0, 0
+	next.Proxies = withoutLastSeen(next.Proxies)
+	prior.Proxies = withoutLastSeen(prior.Proxies)
+	a, errA := json.Marshal(next)
+	b, errB := json.Marshal(prior)
+	return errA == nil && errB == nil && bytes.Equal(a, b)
+}
+
+func withoutLastSeen(in map[string]metricsProxyCounters) map[string]metricsProxyCounters {
+	if len(in) == 0 {
+		return nil
+	}
+	out := make(map[string]metricsProxyCounters, len(in))
+	for k, v := range in {
+		v.LastSeen = 0
+		out[k] = v
+	}
+	return out
 }
 
 // metricsCountersSnapshot returns the current totals and the live per-proxy

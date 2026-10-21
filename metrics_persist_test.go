@@ -908,3 +908,159 @@ func runMetricsPersistChild(t *testing.T, path, phase string) string {
 	}
 	return string(out)
 }
+
+// backdateStore rewrites the store with mutate applied and an old mtime, so a
+// later flush that leaves the file alone is distinguishable from one that
+// rewrites it (a rewrite renames a fresh file over it).
+func backdateStore(t *testing.T, path string, mutate func(*metricsCountersFile)) time.Time {
+	t.Helper()
+	file, err := readMetricsCountersFile(path)
+	if err != nil {
+		t.Fatalf("read store: %v", err)
+	}
+	if mutate != nil {
+		mutate(&file)
+	}
+	blob, err := json.MarshalIndent(file, "", "  ")
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatalf("write store: %v", err)
+	}
+	old := time.Now().Add(-48 * time.Hour)
+	if err := os.Chtimes(path, old, old); err != nil {
+		t.Fatalf("chtimes: %v", err)
+	}
+	return old
+}
+
+func storeModTime(t *testing.T, path string) time.Time {
+	t.Helper()
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat store: %v", err)
+	}
+	return info.ModTime()
+}
+
+// An idle node must not rewrite the store: every write is an fsync plus a
+// directory fsync, which is what wears an SD card.
+func TestMetricsCountersFlushSkipsUnchangedStore(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	IncrContractAcquired()
+	registerTestProxyWithTraffic(t, 41, "198.51.100.41:1080", 100, 50)
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+
+	// The live proxy's last_seen is restamped on every flush; a stale value on
+	// disk must not make an otherwise identical store look changed.
+	old := backdateStore(t, path, func(f *metricsCountersFile) {
+		for k, v := range f.Proxies {
+			v.LastSeen = 1
+			f.Proxies[k] = v
+		}
+	})
+	for i := 0; i < 3; i++ {
+		if err := FlushMetricsCounters(); err != nil {
+			t.Fatalf("idle flush %d: %v", i, err)
+		}
+	}
+	if got := storeModTime(t, path); !got.Equal(old) {
+		t.Fatalf("an idle flush rewrote the store (mtime %v, want the untouched %v)", got, old)
+	}
+}
+
+func TestMetricsCountersFlushRewritesWhenCountersMove(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	IncrContractAcquired()
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	old := backdateStore(t, path, nil)
+
+	IncrContractAcquired()
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := storeModTime(t, path); !got.After(old) {
+		t.Fatalf("a changed counter was not written (mtime %v, backdated %v)", got, old)
+	}
+	file, err := readMetricsCountersFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if file.Counters.ContractsAcquired != 2 {
+		t.Errorf("contracts acquired = %d, want 2", file.Counters.ContractsAcquired)
+	}
+}
+
+// An unchanged store is still refreshed once it is a day old, so saved_at and
+// the proxy retention stamps do not go stale on a node that is idle for weeks.
+func TestMetricsCountersFlushRefreshesAStaleStore(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	IncrContractAcquired()
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	old := backdateStore(t, path, func(f *metricsCountersFile) {
+		f.SavedAt = time.Now().Add(-(metricsUnchangedRewriteAge + time.Hour)).UTC()
+	})
+
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if got := storeModTime(t, path); !got.After(old) {
+		t.Fatalf("a day-old unchanged store was not refreshed (mtime %v)", got)
+	}
+	file, err := readMetricsCountersFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if time.Since(file.SavedAt) > time.Minute {
+		t.Errorf("saved_at = %v, want a fresh stamp", file.SavedAt)
+	}
+}
+
+// A deleted or unreadable store is not "unchanged": it is recreated.
+func TestMetricsCountersFlushRecreatesAMissingStore(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	IncrContractAcquired()
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if err := os.Remove(path); err != nil {
+		t.Fatalf("remove: %v", err)
+	}
+	if err := FlushMetricsCounters(); err != nil {
+		t.Fatalf("flush: %v", err)
+	}
+	if _, err := os.Stat(path); err != nil {
+		t.Fatalf("store was not recreated: %v", err)
+	}
+}
