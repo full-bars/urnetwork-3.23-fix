@@ -205,7 +205,7 @@ func TestMetricsCountersStorePath(t *testing.T) {
 	if path == "" {
 		t.Skip("no state directory resolvable in this environment")
 	}
-	if !strings.HasSuffix(path, "/.urnetwork/metrics_counters.json") {
+	if !strings.HasSuffix(path, filepath.Join(".urnetwork", "metrics_counters.json")) {
 		t.Errorf("store path = %q, want under ~/.urnetwork", path)
 	}
 	if !strings.Contains(path, "metrics_counters.json") {
@@ -225,6 +225,9 @@ func TestMetricsCountersStorePath(t *testing.T) {
 func TestInitMetricsCountersPersistenceWritesStore(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
+	// os.UserHomeDir reads USERPROFILE on Windows; setting only HOME would
+	// leave the test writing into TestMain's shared profile directory.
+	t.Setenv("USERPROFILE", home)
 
 	IncrControlCmd("get")
 	initMetricsCountersPersistence(true)

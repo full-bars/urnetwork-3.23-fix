@@ -1372,8 +1372,8 @@ func runLifetimeCollector(ctx context.Context) {
 	var prevPQE, prevClas uint64
 	var prevUp, prevDeny int64
 	prevBillable := map[string]uint64{}
-	prevRxPerProxy := map[string]*uint64{}
-	prevTxPerProxy := map[string]*uint64{}
+	prevRxPerProxy := map[string]uint64{}
+	prevTxPerProxy := map[string]uint64{}
 	var prevTime time.Time
 	var prevA1, prevA2, prevA3, prevA4, prevA5, prevA6, prevA7 uint64
 
@@ -1480,22 +1480,16 @@ func runLifetimeCollector(ctx context.Context) {
 			// Per-proxy reset guards on the rate sums:
 			// an aggregate-only guard lets a churned proxy's return dump
 			// its whole counter into one tick's rate.
-			var rxDelta, txDelta uint64
+			curRxByKey := make(map[string]uint64, len(bw))
+			curTxByKey := make(map[string]uint64, len(bw))
 			for key, b := range bw {
-				rx := b.TotalRx.Load()
-				tx := b.TotalTx.Load()
-				rxDelta += uDelta(rx, u64At(prevRxPerProxy, key))
-				txDelta += uDelta(tx, u64At(prevTxPerProxy, key))
+				curRxByKey[key] = b.TotalRx.Load()
+				curTxByKey[key] = b.TotalTx.Load()
 			}
-			// Drop rate baselines for proxies no longer in the snapshot
-			// (bounded under churn; a returning proxy starts at zero and
-			// its first-tick delta is suppressed by the reset guard).
-			for key := range prevRxPerProxy {
-				if _, live := bw[key]; !live {
-					delete(prevRxPerProxy, key)
-					delete(prevTxPerProxy, key)
-				}
-			}
+			// Per-key deltas with first sight skipped, so a proxy that appears
+			// carrying its persisted totals does not enter this rate.
+			rxDelta := addProxyDeltas(prevRxPerProxy, curRxByKey)
+			txDelta := addProxyDeltas(prevTxPerProxy, curTxByKey)
 			tlog("🛰️ [relay] as-hop: %d clients via %d proxies — %s in, %s out\n",
 				clients, serving,
 				fmtRate(float64(rxDelta)/elapsed),
@@ -1503,14 +1497,10 @@ func runLifetimeCollector(ctx context.Context) {
 		} else {
 			// Idle tick: re-anchor per-proxy rate baselines so bytes moved
 			// during the idle window are not smeared into the next active
-			// tick's rate display. Use u64At to create the baseline slot (the
-			// active branch does the same): on the FIRST tick prevRxPerProxy is
-			// empty while bw is populated with every known proxy, so a bare
-			// index dereference panics (nil *uint64) and — with the collector
-			// launched as a bare `go` — crashes the whole provider process.
+			// tick's rate display.
 			for key, b := range bw {
-				*u64At(prevRxPerProxy, key) = b.TotalRx.Load()
-				*u64At(prevTxPerProxy, key) = b.TotalTx.Load()
+				prevRxPerProxy[key] = b.TotalRx.Load()
+				prevTxPerProxy[key] = b.TotalTx.Load()
 			}
 		}
 		prevTime = now
@@ -1520,7 +1510,7 @@ func runLifetimeCollector(ctx context.Context) {
 func runEarningWindows(ctx context.Context) {
 	const maxSamples = 60
 	deltas := make([]uint64, 0, maxSamples)
-	var prevCum uint64
+	prevCumByKey := map[string]uint64{}
 	var prevSet bool
 	var prevEarnActive bool
 
@@ -1551,6 +1541,9 @@ func runEarningWindows(ctx context.Context) {
 
 		if connect.ProxyHealthCount() == 0 {
 			prevSet = false
+			for k := range prevCumByKey {
+				delete(prevCumByKey, k)
+			}
 			// No live proxies: clear the per-address earn tracker too, so
 			// an address that re-appears later cannot inherit stale
 			// "earning" state that would wrongly suppress its first paid
@@ -1583,17 +1576,15 @@ func runEarningWindows(ctx context.Context) {
 		globalProxyEarningsStore.Observe(connect.ProxyBandwidthSnapshotByKey(), time.Now())
 		globalProxyEarningsStore.MaybeSave(time.Now())
 
-		var cum uint64
-		for _, p := range bw {
-			cum += p.BillableRx.Load() + p.BillableTx.Load()
+		curByKey := make(map[string]uint64, len(bw))
+		for key, p := range bw {
+			curByKey[key] = p.BillableRx.Load() + p.BillableTx.Load()
 		}
 
 		if prevSet {
-			if cum >= prevCum {
-				deltas = append(deltas, cum-prevCum)
-			} else {
-				deltas = append(deltas, 0)
-			}
+			// Per key, first sight skipped: a seeded proxy must not dump its
+			// persisted total into the one-minute window.
+			deltas = append(deltas, addProxyDeltas(prevCumByKey, curByKey))
 			if len(deltas) > maxSamples {
 				deltas = deltas[len(deltas)-maxSamples:]
 			}
@@ -1614,8 +1605,11 @@ func runEarningWindows(ctx context.Context) {
 					fmtBytes(billable1m), fmtBytes(billable5m), fmtBytes(billable15m), fmtBytes(billable60m), active)
 				prevEarnActive = nowActive
 			}
+		} else {
+			for key, v := range curByKey {
+				prevCumByKey[key] = v
+			}
 		}
-		prevCum = cum
 		prevSet = true
 	}
 }
@@ -1700,7 +1694,7 @@ func runProfitHeartbeat(ctx context.Context) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 
-	var prevBillable uint64
+	prevBillableByKey := map[string]uint64{}
 	var prevSet bool
 	prevTickTime := time.Now()
 	var lastLogTime time.Time
@@ -1716,16 +1710,26 @@ func runProfitHeartbeat(ctx context.Context) {
 
 		if connect.ProxyHealthCount() == 0 {
 			prevSet = false
+			for k := range prevBillableByKey {
+				delete(prevBillableByKey, k)
+			}
 			continue
 		}
 
 		proxiesUp, _, _, bw, connecting := connect.ProxyHealthSnapshot()
 
-		billable, clients, serving, proxiesOnly, directUp := profitTransportCounts(proxiesUp, bw, connect.ProxyHealthByKey())
+		_, clients, serving, proxiesOnly, directUp := profitTransportCounts(proxiesUp, bw, connect.ProxyHealthByKey())
+
+		curBillableByKey := make(map[string]uint64, len(bw))
+		for key, p := range bw {
+			curBillableByKey[key] = p.BillableRx.Load() + p.BillableTx.Load()
+		}
 
 		now := time.Now()
 		if !prevSet {
-			prevBillable = billable
+			for key, v := range curBillableByKey {
+				prevBillableByKey[key] = v
+			}
 			prevTickTime = now
 			prevSet = true
 			continue
@@ -1735,11 +1739,10 @@ func runProfitHeartbeat(ctx context.Context) {
 		if elapsed < 1 {
 			elapsed = 1
 		}
-		var delta uint64
-		if billable >= prevBillable {
-			delta = billable - prevBillable
-		}
-		prevBillable = billable
+		// Per-key deltas: a proxy that appears mid-run can carry the totals
+		// persisted for its identity, and folding that into the aggregate
+		// would read as one tick at the lifetime rate.
+		delta := addProxyDeltas(prevBillableByKey, curBillableByKey)
 		prevTickTime = now
 
 		earning := delta > 0 && clients > 0
