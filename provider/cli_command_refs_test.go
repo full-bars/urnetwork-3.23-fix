@@ -36,6 +36,9 @@ func TestDocumentedCliCommandsExist(t *testing.T) {
 	// main), so it is deliberately absent from the usage text. Everything else
 	// the docs name has to be a usage command.
 	sets["provider"]["help"] = true
+	// `provider consent for client <id>` is a line `provider wallet status`
+	// prints, quoted in the Bittensor Quick Start. It is output, not a command.
+	sets["provider"]["consent"] = true
 
 	root := ".."
 	skip := map[string]bool{
