@@ -267,7 +267,7 @@ ssh user@<node-ip> "urnet-tools proxy summary"
 
 | Version | Impact |
 |---------|--------|
-| 34.2 | Patch release: the provider reports an upstream-style `app_version` (`YYYY.M.D-<code>-fix.N.M`) to the backend, and the Linux installer distro fixes. No operator action beyond the normal update and restart. |
+| 34.2 | Patch release: the build moves to Go 1.27.3 for the compromised-certificate block (`CVE-2026-111943`), cumulative metrics counters survive a restart, the provider reports an upstream-style `app_version` (`YYYY.M.D-<code>-fix.N.M`) to the backend, the CFAA blocklist is refreshed, the retired hub report commands (`urnet-tools report`, `urnet-docker report`, `URNETWORK_REPORT_*`) are removed, and the Linux installer gets its distro fixes. Update and restart; remove any script that still calls a retired report command. |
 | 34.1 | Patch release: internal review follow-ups and a blocklist data refresh. No operator action beyond the normal update and restart. |
 | 30.0 | Cross-platform parity (Windows schtasks, macOS launchd), urnet-docker Design 2 host-side proxy ops. |
 | 29.0 | Go urnet-tools provider discovery, report URL runtime config, hot-restart subcommands. |
