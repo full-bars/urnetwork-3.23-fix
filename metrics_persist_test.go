@@ -749,8 +749,10 @@ func TestCatchUpMetricsCounters(t *testing.T) {
 			H1:                modeCounters{FramesTx: 900, BytesTx: 9000},
 		},
 		Proxies: map[string]metricsProxyCounters{
-			key: {TotalRx: 1234, BillableTx: 12, LastSeen: time.Now().Unix()},
+			key:                {TotalRx: 1234, BillableTx: 12, LastSeen: time.Now().Unix()},
+			"10.77.77.77:1080": {TotalRx: 500, LastSeen: time.Now().Unix()},
 		},
+		Extras: map[string]map[string]uint64{"raise_test": {"thing": 9}},
 	}
 	blob, err := json.Marshal(file)
 	if err != nil {
@@ -761,6 +763,12 @@ func TestCatchUpMetricsCounters(t *testing.T) {
 	}
 
 	bw := registerTestProxyWithTraffic(t, 910066, key, 10, 1)
+	var raised map[string]uint64
+	RegisterPersistentCounterSource(PersistentCounterSource{
+		Name:     "raise_test",
+		Snapshot: func() map[string]uint64 { return map[string]uint64{"thing": 1} },
+		Raise:    func(vals map[string]uint64) { raised = vals },
+	})
 	if err := CatchUpMetricsCounters(); err != nil {
 		t.Fatalf("catch up: %v", err)
 	}
@@ -778,6 +786,17 @@ func TestCatchUpMetricsCounters(t *testing.T) {
 	}
 	if got := bw.BillableTx.Load(); got != 12 {
 		t.Errorf("proxy billable tx = %d, want 12", got)
+	}
+	if raised["thing"] != 9 {
+		t.Errorf("source raise got %v, want thing=9", raised)
+	}
+	// A stored identity that has not registered yet must still reach the base:
+	// the proxy seeds from it when the staggered launch gets there.
+	RegisterProxy(910077, "10.77.77.77:1080", "10.77.77.77:1080")
+	late := RegisterProxyBandwidth(910077)
+	t.Cleanup(func() { UnregisterProxy(910077) })
+	if got := late.TotalRx.Load(); got != 500 {
+		t.Errorf("late-registered proxy rx = %d, want 500 from the store", got)
 	}
 
 	// Catch-up never lowers: a second call with the same store changes nothing.

@@ -1,11 +1,13 @@
 package main
 
 import (
+	"context"
 	"math"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"time"
 
 	"github.com/urnetwork/connect"
 )
@@ -72,11 +74,40 @@ func restoreProviderMetricCounters(vals map[string]uint64) {
 	}
 }
 
+// raiseProviderMetricCounters is the catch-up counterpart of
+// restoreProviderMetricCounters: it takes each counter to at least the stored
+// value instead of adding it, so a HotSwap child picking up the parent's later
+// writes cannot double count.
+func raiseProviderMetricCounters(vals map[string]uint64) {
+	raiseCounterTotal(&controlCmdsAcked, vals["control_commands.acked"])
+	raiseCounterTotal(&controlCmdsSet, vals["control_commands.set"])
+	raiseCounterTotal(&controlCmdsGet, vals["control_commands.get"])
+	raiseCounterTotal(&controlCmdsClear, vals["control_commands.clear"])
+	for key, v := range vals {
+		name, ok := strings.CutPrefix(key, "loop_restarts.")
+		if !ok || name == "" {
+			continue
+		}
+		raiseLoopRestartBase(name, v)
+	}
+}
+
 var (
 	providerCountersRestoreMu sync.Mutex
 	providerCountersRestored  bool
 	providerMetricsInitOnce   sync.Once
 )
+
+// raiseCounterTotal stores v when it is ahead of the counter, clamping at
+// MaxInt64. Unlike addCounterTotal it never adds, so it is idempotent.
+func raiseCounterTotal(dst *atomic.Int64, v uint64) {
+	if v > math.MaxInt64 {
+		v = math.MaxInt64
+	}
+	if cur := dst.Load(); cur < 0 || uint64(cur) < v {
+		dst.Store(int64(v))
+	}
+}
 
 // addCounterTotal adds a stored total to an int64 counter with saturation, so
 // a sum past MaxInt64 clamps instead of wrapping negative.
@@ -110,6 +141,7 @@ func initMetricsCountersPersistence(startFlush bool) {
 			Name:     "provider",
 			Snapshot: providerMetricCounters,
 			Restore:  restoreProviderMetricCounters,
+			Raise:    raiseProviderMetricCounters,
 		})
 		path := metricsCountersStorePath()
 		if path == "" {
@@ -131,8 +163,10 @@ func initMetricsCountersPersistence(startFlush bool) {
 
 // startMetricsCountersAfterTakeover makes a promoted HotSwap child the store's
 // writer: it catches up to whatever the draining parent wrote after the child's
-// own restore, then starts the periodic flush.
-func startMetricsCountersAfterTakeover() {
+// own restore, then starts the periodic flush. The parent flushes once more at
+// the end of its drain, which is after this takeover, so a second catch-up runs
+// once the drain window has passed and picks up those final numbers.
+func startMetricsCountersAfterTakeover(ctx context.Context) {
 	path := metricsCountersStorePath()
 	if path == "" {
 		return
@@ -141,6 +175,19 @@ func startMetricsCountersAfterTakeover() {
 		tlog("[metrics] counter catch-up after takeover failed: %v\n", err)
 	}
 	connect.StartMetricsCounters(path, connect.DefaultMetricsCountersFlushInterval)
+
+	go connect.HandleError(func() {
+		timer := time.NewTimer(HotSwapDrainTimeout + auditReconcileGrace)
+		defer timer.Stop()
+		select {
+		case <-ctx.Done():
+			return
+		case <-timer.C:
+		}
+		if err := connect.CatchUpMetricsCounters(); err != nil {
+			tlog("[metrics] delayed counter catch-up after takeover failed: %v\n", err)
+		}
+	})
 }
 
 // flushMetricsCountersOnExit stops the periodic writer and writes the final

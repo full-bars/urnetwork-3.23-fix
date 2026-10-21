@@ -132,6 +132,10 @@ type PersistentCounterSource struct {
 	Name     string
 	Snapshot func() map[string]uint64
 	Restore  func(map[string]uint64)
+	// Raise is the catch-up counterpart of Restore: it takes the source's
+	// counters to at least the stored values without adding them a second time.
+	// Optional; a source without it is only restored at startup.
+	Raise func(map[string]uint64)
 }
 
 var (
@@ -157,6 +161,10 @@ var (
 	persistentSources   = map[string]PersistentCounterSource{}
 	// pendingSourceTotals holds counters loaded before their source registered.
 	pendingSourceTotals = map[string]map[string]uint64{}
+	// pendingSourceRaises is the same for a catch-up that arrived before the
+	// source registered: applied with Raise, never with Restore, so a late
+	// registration cannot double count.
+	pendingSourceRaises = map[string]map[string]uint64{}
 )
 
 // RestoreMetricsCounters reads path and adds the stored totals into the
@@ -216,9 +224,14 @@ func CatchUpMetricsCounters() error {
 		return err
 	}
 	catchUpCounterTotals(file.Counters)
+	// Refresh the pre-process base as well: a proxy that has not registered yet
+	// in this process seeds from this map when it does, and the parent may have
+	// advanced its totals after this process restored at spawn time.
+	seedProxyBases(file.Proxies)
 	for key, want := range file.Proxies {
 		catchUpProxyBandwidth(key, want)
 	}
+	raiseSourceTotals(file.Extras)
 	return nil
 }
 
@@ -446,10 +459,17 @@ func RegisterPersistentCounterSource(src PersistentCounterSource) {
 	if hasPending {
 		delete(pendingSourceTotals, src.Name)
 	}
+	pendingRaise, hasPendingRaise := pendingSourceRaises[src.Name]
+	if hasPendingRaise {
+		delete(pendingSourceRaises, src.Name)
+	}
 	persistentSourcesMu.Unlock()
 
 	if hasPending && src.Restore != nil {
 		src.Restore(pending)
+	}
+	if hasPendingRaise && src.Raise != nil {
+		src.Raise(pendingRaise)
 	}
 }
 
@@ -489,6 +509,26 @@ func restoreSourceTotals(extras map[string]map[string]uint64) {
 		persistentSourcesMu.Unlock()
 		if ok && src.Restore != nil {
 			src.Restore(vals)
+		}
+	}
+}
+
+// raiseSourceTotals is restoreSourceTotals for a catch-up: each source is
+// raised to at least the stored values (never added), which is what makes
+// catching up twice harmless.
+func raiseSourceTotals(extras map[string]map[string]uint64) {
+	if len(extras) == 0 {
+		return
+	}
+	for name, vals := range extras {
+		persistentSourcesMu.Lock()
+		src, ok := persistentSources[name]
+		if !ok {
+			pendingSourceRaises[name] = mergeExtraCounters(pendingSourceRaises[name], vals)
+		}
+		persistentSourcesMu.Unlock()
+		if ok && src.Raise != nil {
+			src.Raise(vals)
 		}
 	}
 }

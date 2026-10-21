@@ -2040,6 +2040,13 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 				// previous process's traffic, so treating it as this tick's
 				// delta would print a lifetime-scale rate once per restart.
 				prev = trafficBytes{rx: rx, tx: tx}
+				// Anchor "today" here too, for the same reason: the restored
+				// total is not today's traffic. Anchoring before the zero-delta
+				// continue below means the first active tick still counts its
+				// bytes, which anchoring on that later tick would drop.
+				if _, ok := midnightCheckpoint[key]; !ok {
+					midnightCheckpoint[key] = bw.BillableRx.Load() + bw.BillableTx.Load()
+				}
 			}
 			// Guard against counter resets: a proxy goroutine restart / hot-reload
 			// hands back a fresh zeroed ProxyBandwidth, so the current value can be
@@ -2066,14 +2073,7 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 			// checkpoint so billable_today starts from the current value instead of
 			// underflowing.
 			billableTotal := bw.BillableRx.Load() + bw.BillableTx.Load()
-			cp, seenCP := midnightCheckpoint[key]
-			if !seenCP {
-				// Anchor "today" at first sight. A restored counter starts at
-				// the previous process's total, which is not today's traffic,
-				// so a missing checkpoint must not default to zero here.
-				cp = billableTotal
-				midnightCheckpoint[key] = cp
-			}
+			cp := midnightCheckpoint[key]
 			if billableTotal < cp {
 				cp = billableTotal
 				midnightCheckpoint[key] = billableTotal
@@ -3994,7 +3994,7 @@ func provide(opts docopt.Opts) {
 				// The candidate restored the counter store at spawn time, before
 				// the parent's final flush. Catch up to it and only now become
 				// the store's writer.
-				startMetricsCountersAfterTakeover()
+				startMetricsCountersAfterTakeover(ctx)
 
 				// Bind control socket now that the parent yielded its listener
 				if cleanup, err := startControlSocket(ctx, globalControlState); err != nil {

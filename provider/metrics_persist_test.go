@@ -173,6 +173,33 @@ func TestRestoreProviderMetricCountersIsIdempotent(t *testing.T) {
 	}
 }
 
+func TestRaiseProviderMetricCountersDoesNotDouble(t *testing.T) {
+	snapshotProviderCounters(t)
+
+	controlCmdsAcked.Store(7)
+	// A lower stored value must not lower the live counter.
+	raiseProviderMetricCounters(map[string]uint64{"control_commands.acked": 3})
+	if got := controlCmdsAcked.Load(); got != 7 {
+		t.Errorf("acked = %d, want 7 (raise must not lower)", got)
+	}
+	raiseProviderMetricCounters(map[string]uint64{"control_commands.acked": 9})
+	if got := controlCmdsAcked.Load(); got != 9 {
+		t.Errorf("acked = %d, want 9", got)
+	}
+	// Repeating the same catch-up is idempotent, which is the property the
+	// delayed post-drain catch-up relies on.
+	raiseProviderMetricCounters(map[string]uint64{"control_commands.acked": 9})
+	if got := controlCmdsAcked.Load(); got != 9 {
+		t.Errorf("acked = %d after a repeated raise, want 9", got)
+	}
+
+	raiseLoopRestartBase("catchup_loop", 4)
+	raiseLoopRestartBase("catchup_loop", 4)
+	if got := snapshotLoopRestarts()["catchup_loop"]; got != 4 {
+		t.Errorf("loop restarts = %d, want 4 (raise, not add)", got)
+	}
+}
+
 func TestMetricsCountersStorePath(t *testing.T) {
 	path := metricsCountersStorePath()
 	if path == "" {

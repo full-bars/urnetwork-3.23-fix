@@ -92,6 +92,20 @@ func addLoopRestartBase(name string, v uint64) {
 	loopRestartBase[name] = satAddInt64(loopRestartBase[name], v)
 }
 
+// raiseLoopRestartBase takes a loop's persisted restart count to at least v.
+// The catch-up path uses it instead of addLoopRestartBase so picking up the
+// parent's later write after a HotSwap cannot double count.
+func raiseLoopRestartBase(name string, v uint64) {
+	if name == "" || v == 0 {
+		return
+	}
+	loopStatusMu.Lock()
+	defer loopStatusMu.Unlock()
+	if v > uint64(max(loopRestartBase[name], 0)) {
+		loopRestartBase[name] = satAddInt64(0, v)
+	}
+}
+
 // loopRestartTotalLocked returns base + live for one loop, saturating at
 // MaxInt64 instead of wrapping negative. Caller holds loopStatusMu.
 func loopRestartTotalLocked(name string) int64 {
