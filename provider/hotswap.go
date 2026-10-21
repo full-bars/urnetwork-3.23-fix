@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"github.com/docopt/docopt-go"
+	"github.com/urnetwork/connect"
 )
 
 // HotswapMsgType defines the message actions exchanged over the IPC channel.
@@ -276,6 +277,14 @@ func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session 
 		tlog("⚡ [hotswap] Graceful drain complete -> parent PID %d exiting cleanly.\n", parentPID)
 		// a kick during the drain must reach the candidate through the hold file
 		settleClientLimitHolds(2 * time.Second)
+		// This exit skips main's shutdown block, so the cumulative counters
+		// would otherwise reach disk only at their last periodic flush and the
+		// promoted candidate would restore an interval-old value. Flush the
+		// final state here; the candidate still catches up after the drain
+		// window, which also covers a flush that fails.
+		if err := connect.FlushMetricsCounters(); err != nil {
+			tlog("[metrics] final counter flush at hotswap exit failed: %v\n", err)
+		}
 		exitFunc(0)
 	}()
 }
