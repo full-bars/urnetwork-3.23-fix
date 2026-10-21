@@ -57,6 +57,20 @@ func startUdpSocketReadTestFlow(
 	receive ReceivePacketFunction,
 ) (*UdpSequence, net.Conn) {
 	t.Helper()
+	// A sourcePort of 0 takes an ephemeral local port, so a test that does not
+	// care which port it has cannot collide with anything else on the runner
+	// ("bind: address already in use"). A test whose peer writes to the flow's
+	// port passes the port it needs.
+	socket, err := net.DialUDP(
+		"udp",
+		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(sourcePort)},
+		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(destinationPort)},
+	)
+	if err != nil {
+		t.Fatalf("udp dial: %s", err)
+	}
+	t.Cleanup(func() { _ = socket.Close() })
+	sourcePort = UDPPort(socket.LocalAddr().(*net.UDPAddr).Port)
 	sequence := NewUdpSequence(
 		ctx,
 		receive,
@@ -67,18 +81,6 @@ func startUdpSocketReadTestFlow(
 		net.IPv4(127, 0, 0, 1).To4(), UDPPort(destinationPort),
 		settings,
 	)
-	// The socket takes an ephemeral local port. sourcePort only names the flow
-	// in its path; binding it for real made the test fail with "address already
-	// in use" whenever anything else on the runner held that port.
-	socket, err := net.DialUDP(
-		"udp",
-		&net.UDPAddr{IP: net.ParseIP("127.0.0.1")},
-		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(destinationPort)},
-	)
-	if err != nil {
-		t.Fatalf("udp dial: %s", err)
-	}
-	t.Cleanup(func() { _ = socket.Close() })
 	if !poller.register(sequence, socket) {
 		t.Fatalf("flow %d->%d was not registered", sourcePort, destinationPort)
 	}
@@ -137,7 +139,7 @@ func TestUdpSocketReadPollerDrainsFlowsInOrder(t *testing.T) {
 			ctx,
 			poller,
 			settings,
-			UDPPort(41000+i),
+			0,
 			destinationPort,
 			func(_ TransferPath, _ protocol.ProvideMode, _ *IpPath, packet []byte) {
 				select {
