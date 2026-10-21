@@ -270,6 +270,10 @@ func_login_retry_loop() {
 # is a single line, so naive line-grepping grabs the last token of the
 # whole body instead of any URL). Uses grep -oE, which works for both
 # one-line and pretty-printed JSON.
+# One OS-token list for every fallback that cannot parse the release tag: keep
+# it here so the jq-free paths never drift from each other.
+UPD_PER_ARCH_OS_RES='darwin|freebsd|linux|windows'
+
 func_check_update() {
     # Pelican mode: the panel owns updates via image re-pull. A runtime
     # fetch would silently replace the binary baked into the published
@@ -352,14 +356,21 @@ func_check_update() {
     ASSET_NAME=""
     DOWNLOAD_URL=""
     if command -v jq >/dev/null 2>&1 && [ -n "$RELEASE_JSON" ]; then
-        ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
-          | jq -r --arg arch "$A_SYS_ARCH" '
-              .assets[] | .name |
-              select((startswith("urnetwork-provider-")) and (endswith(".tar.gz")) and
-                     (contains("linux-" + $arch) or
-                      ((test("-darwin-|-linux-|-windows-")) | not)))
-            ' 2>/dev/null \
-          | head -n1)"
+        # Exact names, not a deny-list of OS tokens: the tag is in the release
+        # JSON, so the arch tarball and the OS-less fat tarball are addressed by
+        # name. A token list mis-picks on the first platform it does not name
+        # (that is how a freebsd asset reached a linux container) and on
+        # sub-variants such as a musl build that sorts ahead.
+        RELEASE_TAG="$(printf '%s\n' "$RELEASE_JSON" | jq -r '.tag_name // empty' 2>/dev/null)"
+        if [ -n "$RELEASE_TAG" ]; then
+            ARCH_ASSET="urnetwork-provider-${RELEASE_TAG}-linux-${A_SYS_ARCH}.tar.gz"
+            FAT_ASSET="urnetwork-provider-${RELEASE_TAG}.tar.gz"
+            ASSET_NAME="$(printf '%s\n' "$RELEASE_JSON" \
+              | jq -r --arg a "$ARCH_ASSET" --arg f "$FAT_ASSET" '
+                  ([.assets[].name | select(. == $a)][0] //
+                   [.assets[].name | select(. == $f)][0] // empty)
+                ' 2>/dev/null)"
+        fi
         if [ -n "$ASSET_NAME" ]; then
             DOWNLOAD_URL="$(printf '%s\n' "$RELEASE_JSON" \
               | jq -r --arg f "$ASSET_NAME" '.assets[] | select(.name == $f) | .browser_download_url' 2>/dev/null)"
@@ -382,7 +393,7 @@ func_check_update() {
           | head -n1)"
         if [ -z "$DOWNLOAD_URL" ]; then
             DOWNLOAD_URL="$(printf '%s\n' "$CAND_URLS" \
-              | grep -Ev -- '-(darwin|linux|windows)-' \
+              | grep -Ev -- "-(${UPD_PER_ARCH_OS_RES})-(amd64|arm64)\\.tar\\.gz$" \
               | head -n1)"
         fi
         [ -n "$DOWNLOAD_URL" ] || {

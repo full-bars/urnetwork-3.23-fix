@@ -55,7 +55,11 @@ Download_API() {
     # (urnetwork-provider-vX.tar.gz): exclude per-arch assets (which carry an
     # -<os>-<goarch> token) rather than filtering FOR linux-amd64 — a
     # startswith/endswith-only head -n1 instead grabs darwin-amd64 first.
-    filename="$(echo "$release_json" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) and ((.name | test("-darwin-|-linux-|-windows-")) | not)) | .name' | head -n1)"
+    # Exact name from the release tag. Extract_Providers pulls both linux arches
+    # out of the OS-less fat tarball, and a deny-list of OS tokens mis-picks on
+    # the first platform it does not name (freebsd sorted ahead of linux and was
+    # taken for the multi-arch tarball).
+    filename="$(echo "$release_json" | jq -r '.tag_name as $t | "urnetwork-provider-\($t).tar.gz" as $f | ([.assets[] | select(.name == $f) | .name][0] // empty)')"
     download_url="$(echo "$release_json" | jq -r --arg f "$filename" \
         '.assets[] | select(.name == $f) | .browser_download_url')"
     [ -n "$filename" ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] || {
