@@ -52,7 +52,7 @@ Do these on **your own computer** (the one with your wallet's browser extension)
    ```bash
    provider wallet sign <your_coldkey_address>
    ```
-   A page opens on `127.0.0.1`, so only your own computer can reach it. Your wallet extension pops up and shows the message. Its first line is `Approve URnetwork network wallet mapping`. Approve it. The page counts down 15 minutes. You can leave out the address and pick the account on the page. Add `--no-open` to print the page address instead of opening the browser.
+   A page opens at `http://127.0.0.1:8765/` (another free port if that one is taken), so only your own computer can reach it. Unlock your extension, click **1. Connect wallet** and approve, then click **2. Sign** and approve. The extension shows the message. Its first line is `Approve URnetwork network wallet mapping`. You can leave out the address and pick the account on the page. Add `--no-open` to print the page address instead of opening the browser. More detail is in [the wallet-consent README](../scripts/wallet-consent/README.md).
 5. **Look for the success line:**
    ```text
    subnet wallet consent for 5... stored: epochs N through M, generation G, receipt ...
@@ -63,6 +63,7 @@ Good to know:
 
 - The consent starts at a **later** weekly payout period (an "epoch"), never the current one. Epochs before your first consent are not paid to it.
 - It covers 65,536 epochs (more than a thousand years). In practice you never renew it.
+- Leave the epoch range at its default. You can pick one with `--wallet-from-epoch` and `--wallet-through-epoch`, but a mistaken range cannot be undone, so a range that would leave epochs unpaid is refused unless you set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1`.
 - **No browser on that computer?** Run `provider wallet challenge <coldkey>` to print the exact message. It signs nothing. Sign the message somewhere else (for example btcli or a hardware wallet), then submit it within 5 minutes, because the challenge expires 300 seconds after it is issued:
   ```bash
   provider wallet set <coldkey> --message='<printed text>' --signature=0x<128 hex characters>
@@ -98,7 +99,8 @@ The step is the same for everyone. Nothing changes on the nodes.
 | Problem | What to check |
 |---|---|
 | `wallet status` says you are not logged in | The node's saved login lives in `~/.urnetwork/jwt` (or under `URNETWORK_STATE_DIR` if set). The command must run as the same user that owns it. For Docker, check which user the container runs as. This is not confirmed for every setup. |
-| The signing page expired | Run `provider wallet sign` again. Nothing was stored. |
+| The message expired before you signed | Each message is valid for 5 minutes. Click **New message** on the page to get a fresh one. |
+| The signing page closed | The page closes after 15 minutes. Run `provider wallet sign` again. Nothing was stored. |
 | `signature_mismatch` | The signature came from a different account than the coldkey you named. Pick the same account in the extension, or leave out the address and choose it on the page. |
 | Refused because the account is not the network owner | Network consent needs the owner's login (the auth code from the website), not a single node's client login. Run `provider auth` on your own computer. |
 

@@ -3,6 +3,9 @@
 > [!TIP]
 > **Most operators can stop here.** Claims are optional. Under settlement v2 anyone can send a claim, credit never expires, and you can claim whenever the balance is worth the gas. Daemons are only for people who want this automated. See the [Quick Start](Bittensor-Quick-Start.md).
 
+> [!NOTE]
+> Upstream has set settlement v2 to start at epoch 3 (block 9,348,028, about 2026-10-23 18:10 UTC), as of sn `83e6f48c2`. It still depends on the release checks passing. Earlier epochs are settlement v1, and v1 claims stay open for 8 epochs plus 1 epoch of grace, so keep the v1 daemon (or `--v1-config`) running until those are claimed.
+
 
 `provider claim-daemon` (v1) and `provider claim-daemon-v2` (v2) keep Subnet 25 claims submitted as epochs finalize, so an operator who wants automation does not have to run `provider claim` by hand (claiming is optional and not urgent). Each daemon reads one strict YAML config file, drives its own claim queue under the config's state directory, and reconciles already signed transactions after a restart. For the wider subnet workflow, see [Bittensor operations](Bittensor-Operations.md).
 

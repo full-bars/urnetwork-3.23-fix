@@ -129,6 +129,9 @@ provider fleet bind \
 
 Before anything is sent, the command walks `--rpc` endpoints in order, checks the reported chain id against the manifest `chain_id`, simulates the call and estimates gas. With `--dry-run` it stops there and prints the intent without sending; without it, the transaction is sent and waited on through mining and finality.
 
+> [!WARNING]
+> On mainnet a bind reverts with `StaleCommitment()` until the commitment oracle has copied your published commitment to chain 964. As of sn `83e6f48c2` the oracle is built but not deployed. See [Head Tier: current blockers](Bittensor-Head-Tier.md#current-blockers).
+
 ## sign
 
 `sign` builds exactly the same binding as `bind` and signs it locally, for the operator who submits through the Top 200 submission page instead of from this host:
@@ -179,6 +182,9 @@ provider fleet register --manifest=/path/to/fleet-manifest.json --hotkey_seed_fi
 
 The declaration uses the owner-local schema `urnetwork-owner-local-volumes-v2` and lists the pre-provisioned state roots the journals may live under. The CLI never creates, enrolls or infers storage, and both flags must be given together. Without them a mainnet write fails early with `explicit durable-volume declaration and hash are required`.
 
+> [!NOTE]
+> This is a different schema from the claim daemons' declaration (`urnetwork-durable-volumes-v2`, see [Claim Daemons](Bittensor-Claim-Daemons.md#durable-volumes)). The daemons refuse an owner-local file, so you cannot reuse one declaration for both.
+
 ## Seed files
 
 Three flags read seed material, always by path: `--hotkey_seed_file` (sr25519 fleet hotkey), `--coldkey_seed_file` (sr25519 fleet coldkey) and `--client_seed_file` (Ed25519 member client key).
@@ -200,7 +206,7 @@ Mainnet fleet writes are crash-safe by retaining signed liabilities, not by trus
 
 ## bind-head and unbind-head
 
-`provider bind-head` and `provider unbind-head` are unchanged in this release: not removed, not renamed, kept beside the fleet group. They are the pre-fleet EVM-only path with their own grammar and `--key_file` flow; use the `provider fleet` group for new work. Their reference is in [Bittensor operations](Bittensor-Operations.md).
+`provider bind-head` and `provider unbind-head` are unchanged in this release: not removed, not renamed, kept beside the fleet group. They are the pre-fleet EVM-only path with their own grammar and `--key_file` flow; use the `provider fleet` group for new work. Their grammar is in [Bittensor operations](Bittensor-Operations.md#bind-head-and-unbind-head-old-head-tier-path).
 
 ## What to check after
 
