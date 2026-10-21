@@ -355,7 +355,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 ## 🏗 Build Info
 
 - **Base engine:** UrNetwork v3.23, with the v2026 engine changes ported in (v34)
-- **Language:** Go 1.27, built on Alpine
+- **Language:** Go 1.27.3, built on Alpine
 - **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), FreeBSD (amd64 and arm64), macOS and Windows. FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md). Alpine setup: [docs/OpenRC.md](docs/OpenRC.md)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. Each release also attaches `darwin/amd64` + `darwin/arm64`, `windows/amd64` + `windows/arm64` and `freebsd/amd64` + `freebsd/arm64` binaries.
 - **Bridge-friendly:** runs on standard Docker bridge networks, no `--network host` required
