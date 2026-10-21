@@ -23,6 +23,7 @@ _Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style versi
 - **The VirusTotal release scan covers every artifact**: hash lookup before upload, one scan per identical file, `Retry-After` handling, large files through the upload URL, and `INCOMPLETE` reported when anything was not scanned.
 - **CI runs the real installer on Debian 12 and 13, the RHEL family and Alpine**, and release publication waits for that matrix (report-only until two clean tag runs).
 - **Examples and comments use placeholder hosts** instead of real hosts and home directories.
+- **The Bittensor guides are rewritten** (Quick Start, Head Tier, Hotkey Delegation, Operations, Fleet, Claim Daemons, Glossary) and re-checked against current upstream: every `wallet status` result, the settlement v2 schedule, the v1 claim window, the mainnet flag pairs and the commitment oracle status.
 
 ### Removed
 
