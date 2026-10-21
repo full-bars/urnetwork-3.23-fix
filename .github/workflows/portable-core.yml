@@ -54,7 +54,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.3"
       - name: Build
         env:
           GOOS: ${{ matrix.goos }}
@@ -82,7 +82,7 @@ jobs:
           persist-credentials: false
       - uses: actions/setup-go@v5
         with:
-          go-version: "1.27"
+          go-version: "1.27.3"
       - name: Root package, platform-sensitive ip tests
         shell: bash
         run: go test -count=1 -timeout 300s -run "$ROOT_TESTS" .

@@ -2,7 +2,7 @@
 
 This is a map of the 3.23-fix repository. It is written for people who want to find their way around the code, not for people who only run the provider. If you only run it, start with the [README](https://github.com/full-bars/urnetwork-3.23-fix#readme).
 
-3.23-fix is a fork of the UrNetwork Connect provider with a Go management tool (`urnet-tools`), proxy health and grading, a DNS-over-HTTPS resolver, auto-tuning, a live control socket and the Bittensor Subnet 25 tooling. The Go module is `github.com/urnetwork/connect` (Go 1.27, see `go.mod`); the name is kept from upstream so merges stay easy.
+3.23-fix is a fork of the UrNetwork Connect provider with a Go management tool (`urnet-tools`), proxy health and grading, a DNS-over-HTTPS resolver, auto-tuning, a live control socket and the Bittensor Subnet 25 tooling. The Go module is `github.com/urnetwork/connect` (Go 1.27.3, see `go.mod`); the name is kept from upstream so merges stay easy.
 
 ## Top-level directories
 
