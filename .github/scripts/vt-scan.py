@@ -12,7 +12,8 @@ Why it looks like this — each rule fixes a failure seen in a real release run:
     Retry-After with exponential backoff.
   * The provider binaries sit at VirusTotal's 32 MiB single-POST limit and one
     of them tips over; that upload failed with 413 and shipped as UNKNOWN.
-    Files over the limit now use the large-file flow (/files/upload_url + PUT).
+    Files over the limit now use the large-file flow (/files/upload_url + the same
+    multipart POST as /files; a raw PUT there is rejected).
   * Rescanning unchanged bytes is free, so every file is looked up by hash
     first, and identical files in one run are scanned once.
   * Uploads are submitted before analyses are polled: on a 4/minute budget,
@@ -47,6 +48,7 @@ Exit codes: 0 = pass/review, 1 = malicious above VT_FAIL_THRESHOLD,
 
 import datetime
 import email.utils
+import math
 import hashlib
 import json
 import os
@@ -63,6 +65,7 @@ REVIEW_THRESHOLD = int(os.environ.get("VT_REVIEW_THRESHOLD", "2"))
 UPLOAD = os.environ.get("VT_UPLOAD", "1") != "0"
 RETRIES = int(os.environ.get("VT_RETRIES", "5"))
 MIN_INTERVAL = float(os.environ.get("VT_MIN_INTERVAL", "0"))
+RETRY_AFTER_MAX = float(os.environ.get("VT_RETRY_AFTER_MAX", "120"))
 SMALL_MAX = int(os.environ.get("VT_SMALL_MAX", str(32 * 1024 * 1024)))
 HTTP_TIMEOUT = float(os.environ.get("VT_HTTP_TIMEOUT", "120"))
 SUMMARY_FILE = os.environ.get("VT_SUMMARY_FILE", "")
@@ -94,9 +97,16 @@ def _retry_after(err: urllib.error.HTTPError) -> float:
         return 0.0
     raw = raw.strip()
     try:
-        return max(1.0, float(raw))
+        secs = float(raw)
     except ValueError:
-        pass
+        secs = None
+    if secs is not None:
+        # Non-finite values would make time.sleep raise OverflowError, and a
+        # huge one would sleep the job into its timeout: clamp to the ceiling
+        # instead of ignoring the server's request.
+        if not math.isfinite(secs) or secs <= 0:
+            return 0.0
+        return min(RETRY_AFTER_MAX, max(1.0, secs))
     try:
         when = email.utils.parsedate_to_datetime(raw)
     except (TypeError, ValueError):
@@ -106,7 +116,9 @@ def _retry_after(err: urllib.error.HTTPError) -> float:
     if when.tzinfo is None:
         when = when.replace(tzinfo=datetime.timezone.utc)
     delta = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
-    return max(1.0, delta)
+    if not math.isfinite(delta) or delta <= 0:
+        return 0.0
+    return min(RETRY_AFTER_MAX, max(1.0, delta))
 
 
 def call(url, data=None, method=None, headers=None, retries=None):

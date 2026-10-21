@@ -264,6 +264,9 @@ class VTScanTest(unittest.TestCase):
             return mod._retry_after(err)
 
         self.assertEqual(parse("7"), 7.0)
+        self.assertEqual(parse("3600"), 120.0, "an hour-long retry must be capped")
+        self.assertEqual(parse("inf"), 0.0, "non-finite waits fall back to the caller's backoff")
+        self.assertEqual(parse("-5"), 0.0)
         ahead = _time.time() + 30
         got = parse(email.utils.formatdate(ahead, usegmt=True))
         self.assertGreater(got, 25, f"date form parsed as {got}s")
