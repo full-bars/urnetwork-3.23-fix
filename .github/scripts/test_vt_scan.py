@@ -37,6 +37,7 @@ class Stub:
         self.small_posts = 0
         self.large_posts = 0
         self.fail_upload_posts = 0   # 500s to serve on the upload-url POST, then succeed
+        self.retry_after_date = False  # send Retry-After as an HTTP-date instead of seconds
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -55,6 +56,12 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _retry_after_value(self):
+        if not self.stub.retry_after_date:
+            return "1"
+        import email.utils, time
+        return email.utils.formatdate(time.time() + 2, usegmt=True)
+
     def _record(self, method):
         self.stub.requests.append((method, self.path.split("?")[0]))
 
@@ -66,14 +73,14 @@ class Handler(BaseHTTPRequestHandler):
             if s.delay_upload_url > 0:
                 s.delay_upload_url -= 1
                 return self._send(429, {"error": {"code": "QuotaExceededError"}},
-                                  {"Retry-After": "1"})
+                                  {"Retry-After": self._retry_after_value()})
             return self._send(200, {"data": f"http://127.0.0.1:{self.server.server_port}/upload/large"})
         if path.startswith("/files/"):
             sha = path[len("/files/"):]
             if s.throttle > 0:
                 s.throttle -= 1
                 return self._send(429, {"error": {"code": "QuotaExceededError"}},
-                                  {"Retry-After": "1"})
+                                  {"Retry-After": self._retry_after_value()})
             if sha in s.files:
                 return self._send(200, {"data": {"attributes": {
                     "last_analysis_stats": s.files[sha]}}})
@@ -236,6 +243,31 @@ class VTScanTest(unittest.TestCase):
         self.assertEqual(lookups, [1, 1])
         self.assertIn("429", proc.stdout)
         self.assertEqual(rows[0]["verdict"], "PASS")
+
+    def test_retry_after_parses_seconds_and_http_date(self):
+        """RFC 9110 allows either form; a date must not fall back to 1s."""
+        import email.message
+        import email.utils
+        import importlib.util
+        import io
+        import time as _time
+        import urllib.error
+
+        spec = importlib.util.spec_from_file_location("vtscan_unit", SCRIPT)
+        mod = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(mod)
+
+        def parse(value):
+            h = email.message.Message()
+            h["Retry-After"] = value
+            err = urllib.error.HTTPError("http://x", 429, "rate", h, io.BytesIO(b"{}"))
+            return mod._retry_after(err)
+
+        self.assertEqual(parse("7"), 7.0)
+        ahead = _time.time() + 30
+        got = parse(email.utils.formatdate(ahead, usegmt=True))
+        self.assertGreater(got, 25, f"date form parsed as {got}s")
+        self.assertLessEqual(got, 30)
 
     def test_fail_threshold_exits_1(self):
         p = self.make_file("release_tmp/linux/amd64/provider", 32)

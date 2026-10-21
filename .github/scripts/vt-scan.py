@@ -45,6 +45,8 @@ Exit codes: 0 = pass/review, 1 = malicious above VT_FAIL_THRESHOLD,
 2 = coverage incomplete with VT_FAIL_ON_INCOMPLETE=1, or bad invocation.
 """
 
+import datetime
+import email.utils
 import hashlib
 import json
 import os
@@ -82,13 +84,29 @@ def _throttle() -> None:
 
 
 def _retry_after(err: urllib.error.HTTPError) -> float:
+    """Seconds to wait from a Retry-After header.
+
+    RFC 9110 allows either delay-seconds or an HTTP-date; VirusTotal uses both,
+    and treating a date as "no header" burns quota on a backoff that is too short.
+    """
     raw = err.headers.get("Retry-After") if err.headers else None
     if not isinstance(raw, str):
         return 0.0
+    raw = raw.strip()
     try:
         return max(1.0, float(raw))
     except ValueError:
+        pass
+    try:
+        when = email.utils.parsedate_to_datetime(raw)
+    except (TypeError, ValueError):
         return 0.0
+    if when is None:
+        return 0.0
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=datetime.timezone.utc)
+    delta = (when - datetime.datetime.now(datetime.timezone.utc)).total_seconds()
+    return max(1.0, delta)
 
 
 def call(url, data=None, method=None, headers=None, retries=None):
