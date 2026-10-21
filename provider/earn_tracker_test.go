@@ -20,6 +20,15 @@ func TestEarnTracker_SnapshotKeyFormatMatchesProduction(t *testing.T) {
 	const addr = "198.51.100.7:443"
 	defer connect.UnregisterProxy(idx)
 
+	// -count>1 reuses the process, so the tracker and the persisted per-identity
+	// base both survive into the next run: the record then starts where the
+	// previous run left it and "first sight has no prior counter" no longer
+	// holds. Start each run from a fresh tracker (the counter baseline is
+	// handled by advancing with Add below).
+	prevTracker := globalPerProxyEarnTracker
+	globalPerProxyEarnTracker = newPerProxyEarnTracker()
+	t.Cleanup(func() { globalPerProxyEarnTracker = prevTracker })
+
 	bw := connect.RegisterProxyBandwidth(idx)
 	connect.RegisterProxy(idx, addr, addr)
 
@@ -31,8 +40,11 @@ func TestEarnTracker_SnapshotKeyFormatMatchesProduction(t *testing.T) {
 	}
 
 	// Advance the counter and snapshot again: the positive delta must be
-	// recorded under the RAW address key.
-	bw.BillableRx.Store(1 << 20)
+	// recorded under the RAW address key. Add rather than Store: a record can
+	// carry a persisted base when the same identity registers again in one
+	// process (metrics persistence seeds it), and an absolute store would then
+	// leave the counter where the baseline already is, with no delta to see.
+	bw.BillableRx.Add(1 << 20)
 	_, _, _, snap2, _ := connect.ProxyHealthSnapshot()
 	globalPerProxyEarnTracker.Update(snap2)
 
