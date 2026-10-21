@@ -23,7 +23,7 @@ If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md).
 
 | If you want to... | Go here |
 | :--- | :--- |
-| **Run a Bittensor SN25 provider** | [Bittensor Operations](docs/Bittensor-Operations.md) |
+| **Get paid on Bittensor SN25 (do I need to do anything?)** | [Bittensor Quick Start](docs/Bittensor-Quick-Start.md) |
 | **Start here — pick your skill level** | [🐣 Beginner](docs/guides/beginner.md) · [🧭 Intermediate](docs/guides/intermediate.md) · [🚀 Advanced](docs/guides/advanced.md) |
 | Install on a Linux host as a user-level service | [Installation Guide](docs/Installation.md) |
 | Install on FreeBSD as an rc.d service | [FreeBSD Guide](docs/FreeBSD.md) |
@@ -42,9 +42,12 @@ If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md).
 
 ## ₿ Bittensor Subnet 25
 
-This build is the Bittensor mainnet release. Everything a provider needs to take part in SN25 is here: the signed network wallet consent that settlement pays, hotkey delegation, claiming by hand or with the claim daemons, fleet registration for head nodes, and multi-operator provide. Nothing here runs unless you start it.
+Most operators need to do one thing: sign a single wallet message, once, from their own computer. Your nodes do not change. Everything else here (hotkeys, claim daemons, fleets, multiple operators) is optional or advanced, and skipping it costs you nothing. Nothing here runs unless you start it.
 
-- [Bittensor operations](docs/Bittensor-Operations.md): the guide, from the two miner tiers and wallet consent through claims, the fleet group and the operators.
+- [Bittensor Quick Start](docs/Bittensor-Quick-Start.md): start here. Check where you stand, sign once, and see which commands you can ignore.
+- [Bittensor operations](docs/Bittensor-Operations.md): the overview, from the two tiers and wallet consent through claims and the FAQ.
+- [Bittensor head tier](docs/Bittensor-Head-Tier.md): the optional, advanced tier. Most operators should skip it.
+- [Bittensor glossary](docs/Bittensor-Glossary.md): plain meanings of the words.
 - [Bittensor claim daemons](docs/Bittensor-Claim-Daemons.md): automatic epoch claims, config key by key.
 - [Bittensor fleet](docs/Bittensor-Fleet.md): the head-tier lifecycle from one manifest.
 - [Bittensor hotkey delegation](docs/Bittensor-Hotkey-Delegation.md): one coldkey signature pays the miner's network on every operator.
@@ -336,7 +339,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 - [Project Structure](docs/Project-Structure.md)
 - [Log Message Reference](LOG_REFERENCE.md)
 - [Go urnet-tools Reference](docs/urnet-tools-go.md)
-- [Bittensor Operations](docs/Bittensor-Operations.md)
+- [Bittensor Quick Start](docs/Bittensor-Quick-Start.md) · [Bittensor Operations](docs/Bittensor-Operations.md) · [Head Tier](docs/Bittensor-Head-Tier.md) · [Glossary](docs/Bittensor-Glossary.md)
 - [Bittensor Claim Daemons](docs/Bittensor-Claim-Daemons.md) · [Bittensor Fleet](docs/Bittensor-Fleet.md) · [Bittensor Hotkey Delegation](docs/Bittensor-Hotkey-Delegation.md) · [Multi-Operator](docs/Multi-Operator.md)
 - [Changelog](CHANGELOG.md)
 
@@ -344,7 +347,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 - [Online GitHub Wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki)
 - [CI and Release Process](https://github.com/full-bars/urnetwork-3.23-fix/wiki/CI-and-Release-Process)
-- [Bittensor Operations](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations)
+- [Bittensor Quick Start](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start) · [Bittensor Operations](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations) · [Head Tier](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier) · [Glossary](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Glossary)
 - [Bittensor Claim Daemons](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons) · [Bittensor Fleet](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Fleet) · [Bittensor Hotkey Delegation](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Hotkey-Delegation) · [Multi-Operator](https://github.com/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator)
 
 ---
