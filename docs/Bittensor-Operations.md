@@ -3,6 +3,9 @@
 > [!TIP]
 > **Most operators can stop at the [Quick Start](Bittensor-Quick-Start.md).** You sign one message from your own computer and your nodes keep running as they are. Everything below is background, or for people who want more.
 
+> [!NOTE]
+> Checked against upstream server `50851997d`, connect `f1837db6`, sdk `23b3c7dd` and sn `83e6f48c2` (2026-10-21). Upstream is still changing the Bittensor side quickly. If a command prints something different from this page, trust the command.
+
 ## The short version
 
 - URnetwork is **Subnet 25 (SN25)** on Bittensor. Your nodes can earn the SN25 token (alpha, branded $UR) on top of normal URnetwork earnings.
@@ -29,9 +32,9 @@ Your pool earnings are credited to your coldkey. A **claim** is a small blockcha
 
 - Anyone can send the claim. The money always goes to your coldkey.
 - **Optional.** You can wait until the balance is worth the gas fee.
-- **Settlement v2** is planned to start around epoch 3 (about 2026-10-23). In v2, credit **never expires**. This start date is **unconfirmed**, so check with the project if it matters to you.
-- Before v2 (settlement v1, the earliest epochs), claims could expire. How that applies to the early epochs is **unconfirmed**.
-- The easiest way is a claim button in the apps or ur.io, if it is live. This is **unconfirmed**.
+- **Settlement v2** starts at epoch 3: block 9,348,028, about 2026-10-23 18:10 UTC. Upstream has decided this date, but it still depends on the release checks passing, and the launch is not final yet. In v2, credit **never expires**.
+- **Settlement v1** covers the earliest epochs. Its mainnet policy keeps a claim open for 8 epochs (56 days) plus 1 epoch of grace. After that the policy's action is `carry_same_operator`. What that means for your own payout is not documented here, so claim v1 epochs within that window if they matter to you.
+- The easiest way may be a claim button in the apps or on ur.io. The SDK the apps use now has a pool claim call. Whether the app you have shows a button is **unconfirmed**.
 - Command-line claims exist for people who want automation. They need an EVM key with TAO for gas. See [Claiming by hand](#claiming-by-hand-advanced) and [Claim Daemons](Bittensor-Claim-Daemons.md).
 
 ## Signing the consent (reference)
@@ -39,14 +42,14 @@ Your pool earnings are credited to your coldkey. A **claim** is a small blockcha
 The Quick Start has the steps. In short:
 
 ```bash
-provider auth <auth_code>              # on your own computer
+provider auth                          # on your own computer; paste the code at the prompt
 provider wallet sign <coldkey_ss58>    # opens a local page for your wallet extension
 provider wallet status                 # confirm
 ```
 
 Options:
 
-- `provider wallet sign [<coldkey_ss58>] [--port=<port>] [--no-open]`. Leave the address out to choose the account on the page.
+- `provider wallet sign [<coldkey_ss58>] [--port=<port>] [--no-open]`. Leave the address out to choose the account on the page. The page itself is described in [the wallet-consent README](../scripts/wallet-consent/README.md).
 - No browser: `provider wallet challenge <coldkey_ss58>` prints the exact text (it signs nothing). Sign it elsewhere, then run `provider wallet set <coldkey_ss58> --message=<text> --signature=<hex>`.
 - `provider wallet set <coldkey_ss58> --coldkey_seed_file=<path>` signs from a seed file. Use it only on your own computer, never on a node. `urnet-tools wallet sign` and `wallet set --coldkey_seed_file` refuse on a node unless you pass `--i-am-on-my-own-workstation`.
 - `--wallet-from-epoch=<e> --wallet-through-epoch=<e>` pick an exact window. A window that would leave epochs unpaid is refused unless you set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1`. The window spans at most 65,536 epochs. A newer consent must start at a later epoch than the one it replaces.
@@ -80,6 +83,15 @@ provider claim --store-client=direct --epoch=<epoch>
 ```
 
 To submit it yourself, add `--rpc=<rpc_url> --key_file=<path>`. Add `--dry-run` to check without sending. `provider snclaim` is a low-level tool that takes the calldata (`provider snclaim --help` lists its commands, including `v2 status`, `v2 claim` and `v2 check`).
+
+## bind-head and unbind-head (old head-tier path)
+
+`provider bind-head` and `provider unbind-head` are the head-tier path from before the `provider fleet` group. They are still in the binary, with their own `--key_file` flow, but **do not use them for new work**. Use `provider fleet` ([Fleet](Bittensor-Fleet.md)). Their grammar is in `provider --help`:
+
+```text
+provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
+```
 
 ## The status dashboard (`sn-status`)
 
