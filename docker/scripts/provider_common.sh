@@ -85,6 +85,15 @@ func_install_stop_trap() {
 
 func_exit_if_stopping() {
     if [ "$PROVIDER_STOPPING" -eq 1 ]; then
+        # a hotswap successor is not our child, so wait cannot reap it; poll
+        # (bounded below Docker's 10s stop timeout) so PID 1 does not exit
+        # and SIGKILL the successor in the middle of its graceful shutdown
+        _stop_i=0
+        while [ "$_stop_i" -lt 8 ] \
+            && pgrep -f "^$APP_DIR/urnetwork_[^ ]* (auth-)?provide" >/dev/null 2>&1; do
+            sleep 1
+            _stop_i=$((_stop_i+1))
+        done
         log "[INFO] Stop requested; supervisor exiting."
         exit 0
     fi
@@ -95,10 +104,16 @@ func_exit_if_stopping() {
 # `sleep N` swallows a `docker stop` for its whole duration and Docker
 # SIGKILLs the container; backgrounding the sleep lets the trap run. The
 # wait keeps the elapsed time, and every sleep doubles as a stopping
-# checkpoint.
+# checkpoint. Both the entry and the post-spawn flag checks matter: a trap
+# consumed at a command boundary between them leaves the flag set with no
+# pending signal, and the sleep would otherwise run to its full duration.
 func_sleep() {
+    func_exit_if_stopping
     sleep "$1" &
     _sleep_pid=$!
+    if [ "$PROVIDER_STOPPING" -eq 1 ]; then
+        kill "$_sleep_pid" 2>/dev/null || true
+    fi
     wait "$_sleep_pid" || true
     func_exit_if_stopping
 }
