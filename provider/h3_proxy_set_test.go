@@ -167,6 +167,7 @@ func TestPlatformSettingsForAProxyFollowTheSetting(t *testing.T) {
 // Candidates are noted under every setting, so switching to a count later ranks
 // over the real set instead of an empty one.
 func TestCandidatesNotedBeforeACountSetting(t *testing.T) {
+	h3RankingValue.Store(nil)
 	t.Cleanup(func() {
 		h3RankingValue.Store(nil)
 		noteH3Candidates(nil, h3Setting{Mode: h3ModeDirect})
