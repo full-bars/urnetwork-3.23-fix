@@ -140,7 +140,6 @@ class VTScanTest(unittest.TestCase):
     def setUp(self):
         self.stub = Stub()
         Handler.stub = self.stub
-        self.server.ping = 1
         self.server.poll_counts = {}
         self.tmp = tempfile.mkdtemp(prefix="vt-test-")
 
@@ -285,9 +284,13 @@ class VTScanTest(unittest.TestCase):
         dup = [r for r in rows if r["duplicate_of"]]
         self.assertEqual(len(dup), 1)
         self.assertEqual(dup[0]["duplicate_of"], "windows/amd64/provider")
+        self.assertEqual(dup[0]["source"], "duplicate")
+        self.assertEqual(dup[0]["malicious"], 0, "duplicate carries the source verdict")
         lookups = [1 for m, path in self.stub.requests if path.startswith("/files/") and path != "/files/upload_url"]
         self.assertEqual(len(lookups), 1)
         self.assertIn("Identical bytes", summary)
+        self.assertIn("**Result: PASS**", summary, "a duplicate must not make the run INCOMPLETE")
+        self.assertNotIn("INCOMPLETE", summary)
 
     def test_upload_disabled_marks_unscanned(self):
         p = self.make_file("release_tmp/linux/amd64/provider", 32)

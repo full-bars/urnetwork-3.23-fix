@@ -427,9 +427,23 @@ def main():
               else f"  {r.label}: {r.error or 'no verdict'}", flush=True)
         write_json(rows)
 
+    # Identical bytes were deliberately not rescanned. Give the duplicate row
+    # the verdict of the file it duplicates, otherwise a clean run reports
+    # itself as INCOMPLETE just because two artifacts share content.
+    for r in rows:
+        if r.duplicate_of and not r.scanned:
+            src = by_sha.get(r.sha)
+            if src is not None and src.scanned:
+                r.malicious = src.malicious
+                r.suspicious = src.suspicious
+                r.harmless = src.harmless
+                r.undetected = src.undetected
+                r.engines = src.engines
+                r.source = "duplicate"
+                r.error = None
+
     write_json(rows)
     write_summary(rows)
-
     fails = [r for r in rows if r.verdict == "FAIL"]
     unknown = [r for r in rows if not r.scanned]
     print(f"\nRESULT: {len(rows)} artifacts, {len(rows) - len(unknown)} scanned, "
