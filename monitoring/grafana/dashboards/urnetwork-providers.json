@@ -225,7 +225,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum((rate(urnet_billable_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0)))",
+          "expr": "sum((rate(urnet_billable_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0)))",
           "refId": "A",
           "legendFormat": "__auto",
           "range": false,
@@ -704,7 +704,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) ((rate(urnet_billable_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0)))",
+          "expr": "sum by (instance) ((rate(urnet_billable_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0)))",
           "refId": "A",
           "legendFormat": "{{instance}}",
           "range": true,
@@ -764,7 +764,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (direction) ((rate(urnet_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0)))",
+          "expr": "sum by (direction) ((rate(urnet_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0)))",
           "refId": "A",
           "legendFormat": "{{direction}}",
           "range": true,
@@ -1127,7 +1127,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (result) ((rate(urnet_contracts_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))) * 60",
+          "expr": "sum by (result) ((rate(urnet_contracts_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))) * 60",
           "refId": "A",
           "legendFormat": "{{result}}",
           "range": true,
@@ -1200,7 +1200,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (category) ((rate(urnet_errors_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))) * 60",
+          "expr": "sum by (category) ((rate(urnet_errors_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))) * 60",
           "refId": "A",
           "legendFormat": "{{category}}",
           "range": true,
@@ -1511,7 +1511,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) ((rate(urnet_doh_failures_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))) * 60",
+          "expr": "sum by (instance) ((rate(urnet_doh_failures_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))) * 60",
           "refId": "A",
           "legendFormat": "{{instance}}",
           "range": true,
@@ -2043,7 +2043,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (mode, dir) ((rate(urnet_transport_payload_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0)))",
+          "expr": "sum by (mode, dir) ((rate(urnet_transport_payload_bytes_total{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0)))",
           "refId": "A",
           "legendFormat": "{{mode}} {{dir}}",
           "range": true,
@@ -2099,7 +2099,7 @@
             "type": "prometheus",
             "uid": "${datasource}"
           },
-          "expr": "sum by (instance) ((rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))) / clamp_min(sum by (instance) ((rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))) + sum by (instance) ((rate(urnet_transport_direct_h1_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[5m]) > 0))), 1e-9)",
+          "expr": "sum by (instance) ((rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))) / clamp_min(sum by (instance) ((rate(urnet_transport_frames_total{mode=\"h3\",dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))) + sum by (instance) ((rate(urnet_transport_direct_h1_frames_total{dir=\"tx\",job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) unless on(instance) (changes(urnet_process_start_time_seconds{job=\"urnetwork\", instance=~\"$instance\"}[$__rate_interval]) > 0))), 1e-9)",
           "refId": "A",
           "legendFormat": "{{instance}}",
           "range": true,
