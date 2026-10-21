@@ -1,5 +1,9 @@
 # Bittensor Fleet (Head Tier)
 
+> [!WARNING]
+> **Most operators can stop here.** This is the optional, advanced head tier. Not using it costs nothing, and a signed network consent already earns your nodes the pool share. Read [Bittensor Head Tier](Bittensor-Head-Tier.md) first, including its current blockers.
+
+
 `provider fleet` drives the head-tier lifecycle for one fleet node from a single canonical manifest: the burned registration of the fleet hotkey, commitment publication, the dual-signed client and hotkey binding, local submission signing, status and revocation. It is the group a Top 200 head-tier operator runs.
 
 Read commands are safe to run anywhere. The write commands (`register`, `publish`, `bind`, `revoke`) and every seed file they read belong on a workstation or a locked-down host where possible, never a mining host: the fleet coldkey seed pays the registration burn, and the client and hotkey seeds sign bindings the whole fleet depends on.

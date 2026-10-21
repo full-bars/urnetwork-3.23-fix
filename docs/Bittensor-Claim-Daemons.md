@@ -1,6 +1,10 @@
 # Bittensor Claim Daemons
 
-`provider claim-daemon` (v1) and `provider claim-daemon-v2` (v2) keep Subnet 25 claims submitted as epochs finalize, so an operator never runs `provider claim` per epoch by hand. Each daemon reads one strict YAML config file, drives its own claim queue under the config's state directory, and reconciles already signed transactions after a restart. For the wider subnet workflow, see [Bittensor operations](Bittensor-Operations.md).
+> [!TIP]
+> **Most operators can stop here.** Claims are optional. Under settlement v2 anyone can send a claim, credit never expires, and you can claim whenever the balance is worth the gas. Daemons are only for people who want this automated. See the [Quick Start](Bittensor-Quick-Start.md).
+
+
+`provider claim-daemon` (v1) and `provider claim-daemon-v2` (v2) keep Subnet 25 claims submitted as epochs finalize, so an operator who wants automation does not have to run `provider claim` by hand (claiming is optional and not urgent). Each daemon reads one strict YAML config file, drives its own claim queue under the config's state directory, and reconciles already signed transactions after a restart. For the wider subnet workflow, see [Bittensor operations](Bittensor-Operations.md).
 
 ## What the daemons do
 

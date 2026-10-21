@@ -1,5 +1,9 @@
 # Multi-Operator Providers
 
+> [!TIP]
+> **Most operators can stop here.** Only one operator is listed today (`bringyour.com`), so you do not need multi-operator mode. Also note that signing in with a hotkey (`--auto-register --hotkey_seed_file`) creates a **new** URnetwork account owned by the hotkey at each operator. Your website account and its wallet consent do not cover it. Use [hotkey delegation](Bittensor-Hotkey-Delegation.md) or sign a network consent for that account. See the [Quick Start](Bittensor-Quick-Start.md).
+
+
 Run one provider for each operator in the published operator list, from a single supervisor. [Bittensor operations](Bittensor-Operations.md) covers the wider Subnet 25 surface, and [Bittensor hotkey delegation](Bittensor-Hotkey-Delegation.md) covers paying one coldkey across the operators.
 
 ## What it is

@@ -35,6 +35,8 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
+| `top [target] [--interval D]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. |
+| `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
 ### Restored Provider & Session Commands (v3.23.0-fix.30.4+)
@@ -96,7 +98,7 @@ The full flow, including where to run each form and what settlement pays, is in 
 ### Hub Command Family (removed)
 
 > [!WARNING]
-> **Removed (v31.3+):** The hub service, its dashboard and the whole `hub` command family were removed from `urnet-tools`. Nothing in the tool depends on them. What remains is per-provider bandwidth reporting: `urnet-tools report <url>` (or `set report-url <url>`) points one provider's bandwidth reporter at your own collector, and `report off` disables it. See "Configuration & Introspection" below.
+> **Removed (v32.0):** The hub service, its dashboard and the whole `hub` command family are gone from `urnet-tools`. For fleet visibility use `urnet-tools metrics on` and the [Monitoring](Monitoring.md) bundle. The leftover `report` command (see "Configuration & Introspection") only matters if you run your own collector.
 
 ### System & Performance Tuning
 
@@ -131,7 +133,7 @@ The billable rate is the **lifetime byte counter's delta divided by the time del
 Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Set live bandwidth reporting URL (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
+| `report <url>` | Leftover; the hub that received reports was removed, so most operators never use it. Sets the URL the provider posts its bandwidth report to (`report off` disables). Writes the lower-precedence override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. A `report-url` set through the control socket takes precedence: while it exists, `report <url>` cannot change the effective URL and `report off` cannot disable it, so clear that override first. |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
@@ -219,31 +221,7 @@ urnet-tools session load /path/to/backup.urnsession --allow-different-account
 - **Pre-Load Safety Backup:** Automatically creates a timestamped copy of `~/.urnetwork/` (e.g. `~/.urnetwork.bak.1724288000`) before modifying live files.
 - **Permission Hardening:** Unpacks files with `0700` directory permissions and `0600` file permissions, automatically chowning them to the unit owner when run with elevated privileges.
 
-### 3. Hub Setup and Verification
-
-> [!WARNING]
-> **Deprecated (v31.3+):** The hub commands and bandwidth reporting have been removed. This section is retained for historical reference.
-
-Full lifecycle management for centralized bandwidth reporting:
-
-```bash
-# Initialize hub service on the server
-urnet-tools hub init
-
-# Link a provider to the hub with TOFU TLS verification
-urnet-tools hub link https://hub.example.com:8080
-
-# Verify certificate chain and reachability
-urnet-tools hub test
-
-# Open firewall ports for hub traffic
-urnet-tools hub open-port
-```
-
-- **TLS Pinning:** Verifies TLS against `hub_ca.pem` or pinned SHA-256 public key fingerprints.
-- **Identity Safety:** Prompts with typed confirmation if linking would overwrite existing provider hub registration.
-
-### 4. Persisted Default Provider
+### 3. Persisted Default Provider
 
 Avoid passing `--unit` or `--network` on every invocation:
 
@@ -260,7 +238,7 @@ urnet-tools default clear
 
 ---
 
-### 5. Control Socket, Queued Overrides, and Confirming a Change (v3.23.0-fix.31.0+)
+### 4. Control Socket, Queued Overrides, and Confirming a Change (v3.23.0-fix.31.0+)
 
 Runtime settings no longer go through hand-edited systemd drop-ins. The provider
 owns a Unix domain socket at `~/.urnetwork/provider.sock` (owner-only, `0600`)

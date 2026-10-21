@@ -1,5 +1,9 @@
 # Bittensor Hotkey Delegation
 
+> [!TIP]
+> **Most operators can stop here.** With one listed operator, a website account and a signed network consent (see the [Quick Start](Bittensor-Quick-Start.md)) you do not need hotkey delegation. An account created by `--auto-register --hotkey_seed_file` is a separate URnetwork account that website consent does not cover ([Multi-Operator](Multi-Operator.md)), so those operators still need delegation or a network consent for that account. This page is for people who sign in with a hotkey across several operators.
+
+
 One coldkey signature pays the miner on every operator. This page covers the global hotkey wallet consent and the per-operator delegation in detail. [Bittensor operations](Bittensor-Operations.md) covers the wider Subnet 25 surface, and [Multi-Operator](Multi-Operator.md) covers running one provider per operator in the published list.
 
 ## What the delegation is
@@ -14,7 +18,7 @@ The chain lives in the provider state directory (`~/.urnetwork`): `hotkey-wallet
 
 ## When to use it
 
-Use it when the miner's network should earn to one coldkey across the operators it runs on, without signing a wallet consent at each operator. One coldkey signature, made once, covers every operator that stores the chain.
+There is one operator in the published list today, and a signed network consent already covers you there, so most people do not need this. Use it when the miner's network should earn to one coldkey across the operators it runs on, without signing a wallet consent at each operator. One coldkey signature, made once, covers every operator that stores the chain.
 
 Timing: a delegation starts two epochs after it is signed and is not retroactive. The sn module pinned by this tree (its miner wallet command, the generation this provider ports) states the rule for a delegation: it earns from the operator's current epoch plus 2, past the operator's prospective boundary. The provider builds the delegation window the same way, so sign early if an epoch matters; epochs already under way are not covered.
 

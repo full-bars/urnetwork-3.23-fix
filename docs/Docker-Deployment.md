@@ -78,7 +78,7 @@ The provider maintains identity keys, cryptographic signing states, and cached J
 > - **Authentication selector (`AUTH=userpass|authcode`)**: New preferred selector. `AUTH=authcode` uses `AUTHCODE` (or trailing argument), while `AUTH=userpass` uses `USER_AUTH` and `PASSWORD`. Existing `BUILD=stable|nightly|jwt` remains fully supported for backward compatibility (see [Legacy Variables](#-legacy-variables)).
 > - **vnStat retired**: The embedded vnStat traffic daemon, CGI scripts, and container port 8080 have been removed. Provider containers now operate with zero listening ports by default. For bandwidth and connection telemetry, use built-in Prometheus metrics (`URNETWORK_METRICS`) with the Grafana stack.
 > - **Volume mount path**: The state volume must be mounted at `/root/.urnetwork` (for example `-v urnetwork_data:/root/.urnetwork`). If unmounted or empty, startup logs a warning reminding you that a new identity will be generated across container recreations.
-> - **Payout wallet reminder**: Set your earning wallet and consent in the URnetwork mobile app or website (or via `provider wallet set` in [Bittensor Operations](Bittensor-Operations.md)) to receive rewards.
+> - **Payout wallet reminder**: To get paid on Bittensor SN25, sign one wallet consent from your own computer (`provider wallet sign <coldkey>`). Nothing changes in the container. See the [Bittensor Quick Start](Bittensor-Quick-Start.md).
 
 ## 🏃 Quick Start (Docker Run)
 
@@ -269,31 +269,10 @@ View a single-pane fleet overview showing proxy counts by source (file vs URL), 
 docker exec -it <container> provider proxy summary
 ```
 
-## 📡 Report URL (Deprecated)
+## 📡 Report URL (Leftover)
 
-> [!WARNING]
-> **Deprecated (v31.3+):** Bandwidth hub reporting has been removed. The `report_url` file and `urnet-tools report` command are no longer functional. This section is retained for historical reference.
-
-Set or check the hub report URL at runtime without restarting. Uses `~/.urnetwork/report_url` inside the container:
-
-```sh
-# Set report URL
-docker exec -it <container> sh -c 'echo "http://HUB_IP:8080" > "$HOME/.urnetwork/report_url"'
-
-# Check current URL
-docker exec -it <container> sh -c 'cat "$HOME/.urnetwork/report_url" 2>/dev/null || echo "not set"'
-
-# Disable
-docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/report_url"'
-```
-
-Or use the Go `urnet-docker` binary (v3.23.0-fix.27.0+) which handles `docker exec` transparently: it discovers provider containers and delegates commands into them:
-```sh
-urnet-docker report http://HUB_IP:8080
-urnet-docker report
-urnet-docker report off
-```
-(The legacy PowerShell wrapper `urnet-tools.ps1` has been retired; the Go binary replaces it on every platform.)
+> [!NOTE]
+> The fleet hub that used to receive bandwidth reports was removed in v32.0. The `report_url` file and `urnet-tools report` command still exist, but there is no official receiver, so most operators should ignore them. For fleet visibility turn on Prometheus metrics instead: `docker exec <container> urnet-tools metrics on` (see [Monitoring](Monitoring.md)).
 
 ## ♻️ Hot-Restart
 

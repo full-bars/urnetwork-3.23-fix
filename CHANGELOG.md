@@ -147,6 +147,26 @@ _Release: the v33.1 batch. Notes: `releases/v3.23.0-fix.33.1.md`._
 - The seed file is read through the descriptor that was checked, closing a check-then-read swap window.
 - The receive path releases its scratch references after a committed-prefix scan.
 
+## [v3.23.0-fix.33.0-rc6]
+
+_Sixth and final pre-release of the v33 line. This is a **test-only** release: the provider code is identical to rc5, built from `e9dd5b70d`; the only changes are in the release shakedown harnesses. It exists so the repaired checks run against a tag before the stable release. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc6.md`._
+
+## [v3.23.0-fix.33.0-rc5]
+
+_Fifth pre-release of the v33 line: rc4 plus the operator-facing completion work. The Docker container gains the `AUTH` selector with local JWT validation, the operator env passthrough and `ALL_OPERATORS`; the provider ports sn's all-operators surface with the typed 401 and sign-in quarantine, adds `provider snclaim` and `choose_network --show`, and fixes the durable-head publication in three places (the claim queue's cancel window among them); and the CFAA blocklist is refreshed for the v33 tag. The provider code here is the v33 release candidate (`e9dd5b70d`). Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc5.md`._
+
+## [v3.23.0-fix.33.0-rc4]
+
+_Fourth pre-release of the v33 line: rc3 plus the Bittensor mainnet operator surface and a provider hardening pass. It adds the operators, fleet, claim-daemon and wallet-hotkey command groups with the Bittensor operations docs, serves `/metrics` by default (never on a public interface), and lands the TLS, stream and p2p accounting together with the transport, DoH, WebRTC, DMCA and wallet-journal fixes. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc4.md`._
+
+## [v3.23.0-fix.33.0-rc3]
+
+_Third pre-release of the v33 line: test-only fixes for the ICMP test isolation and the cancelled-sequence stats test on top of rc2; the runtime is unchanged from rc2. See the rc2 entry for that release's features. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc3.md`._
+
+## [v3.23.0-fix.33.0-rc2]
+
+_Second pre-release of the v33 line. It adds the receive-window advertisement the platform's modern-provider gate looks for, ICMP echo, the client dial-failure gates, provider-side fragment reassembly, and the network wallet consent commands. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc2.md`._
+
 ## [v3.23.0-fix.33.0-rc1]
 
 > Pre-release of the v33 line, invisible to `urnet-tools update`. Try it on one box first.
