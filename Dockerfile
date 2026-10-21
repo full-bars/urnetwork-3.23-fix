@@ -3,6 +3,8 @@ FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETARCH
 ARG VERSION=v.unknown
+# upstream-style app_version reported to the backend (scripts/compute-app-version.sh); empty falls back to VERSION
+ARG APP_VERSION=
 WORKDIR /app
 
 # Install build dependencies
@@ -25,7 +27,7 @@ COPY . .
 # Build for the target architecture with version injection
 RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath \
-    -ldflags "-s -w -X main.Version=${VERSION}" \
+    -ldflags "-s -w -X main.Version=${VERSION} -X main.AuthVersion=${APP_VERSION}" \
     -o provider_bin ./provider/
 
 # --- Final Stage ---

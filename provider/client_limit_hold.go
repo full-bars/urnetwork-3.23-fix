@@ -296,7 +296,7 @@ func newProviderClientAuth(byClientJwt string, instanceId connect.Id) *connect.C
 	return &connect.ClientAuth{
 		ByJwt:         byClientJwt,
 		InstanceId:    instanceId,
-		AppVersion:    RequireVersion(),
+		AppVersion:    AuthAppVersion(),
 		ProvideIntent: provideIntentEnabled(),
 	}
 }

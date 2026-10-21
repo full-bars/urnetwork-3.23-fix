@@ -162,6 +162,24 @@ func paceMonitor(ctx context.Context) {
 // -ldflags "-X main.Version=$WARP_VERSION-$WARP_VERSION_CODE"
 var Version string
 
+// AuthVersion is the upstream-style version this build reports to the backend
+// in its connect auth, e.g. 2026.10.20-1076956260-fix.34.1. The backend keeps
+// only the leading YYYY.M.D for its provider rollout gauge, and a git tag like
+// v3.23.0-fix.34.1 reads there as year 3 and falls into "other".
+// Set via: -ldflags "-X main.AuthVersion=$(scripts/compute-app-version.sh $TAG)"
+var AuthVersion string
+
+// AuthAppVersion is the app_version for the connect auth. It is only the
+// platform-facing identity: RequireVersion stays the build's real version for
+// logs, metrics, hotswap and update checks. A build without AuthVersion
+// reports its plain version, as before.
+func AuthAppVersion() string {
+	if AuthVersion != "" {
+		return AuthVersion
+	}
+	return RequireVersion()
+}
+
 // VersionStamp is an alternative version marker embedded as program data
 // (not buildinfo). Unlike -ldflags main.Version which is stripped by
 // -trimpath, VersionStamp survives because it is a Go string literal written
@@ -1930,6 +1948,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		buildLine := fmt.Sprintf("🏷️ [health][build] %s profile=%s", buildVersion, profile)
 		if host := heartbeatHostLabel(); host != "" {
 			buildLine += fmt.Sprintf(" host=%s", host)
+		}
+		// the version the platform records, when it differs from the build's own
+		if reported := AuthAppVersion(); reported != RequireVersion() {
+			buildLine += fmt.Sprintf(" reports=%s", reported)
 		}
 		tlog("%s\n", buildLine)
 

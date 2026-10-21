@@ -596,7 +596,16 @@ or a pasted excerpt identifies the build that produced it: the startup banner
 scrolls out of a RAM log window, and every other line in the block is only
 interpretable once you know the version. `host` is the node name
 (`URNETWORK_NODE_NAME`, the `~/.urnetwork/node_name` override, `HOST_HOSTNAME`,
-then the kernel hostname).
+then the kernel hostname). From v3.23.0-fix.34.2 a build that reports a different
+`app_version` to the platform than its own tag appends `reports=<version>`:
+
+```
+[health][build] v3.23.0-fix.34.2 profile=auto host=node-a reports=2026.10.21-1077100000-fix.34.2
+```
+
+The first field is the build's own version (the git tag). `reports` is what the
+platform records for the node, so one log line shows both. It is absent on a
+build without `-X main.AuthVersion`, which reports its plain version.
 
 Fires every 5 minutes (default). Provides passive liveness confirmation and resource utilization trends.
 

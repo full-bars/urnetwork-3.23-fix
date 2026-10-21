@@ -1,5 +1,22 @@
 # Changelog
 
+## [v3.23.0-fix.34.2]
+
+_Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, plus the Linux installer distro fixes. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.2.md`._
+
+### Added
+
+- **The provider reports an upstream-style `app_version` to the backend**: the connect auth now carries `YYYY.M.D-<code>-fix.N.M` (for example `2026.10.20-1076955500-fix.34.1`) instead of the git tag, which the platform filed under `other`. The date is the tagged commit's UTC date, the code is the house build code (`(seconds since 2023-05-23) x 10`), and `fix.N.M` is the release. Logs, metrics, hotswap, the dashboard label and the update checks keep the git tag. A build without the `main.AuthVersion` flag reports its plain version.
+
+### Fixed
+
+- **The installer installs missing curl and JSON dependencies** through the host's package manager (apt, dnf, yum, zypper, pacman, apk), honors `URNET_NO_AUTOINSTALL=1` on every path, uses `yum` when `dnf` is absent (Amazon Linux 2), and no longer prompts under a non-interactive run.
+
+### Changed
+
+- **CI runs the real installer on Debian 12 and 13, the RHEL family and Alpine**, and release publication waits for that matrix (report-only until two clean tag runs).
+- **Examples and comments use placeholder hosts** instead of real hosts and home directories.
+
 ## [v3.23.0-fix.34.1]
 
 _Patch release on v3.23.0-fix.34.0: the v34 review follow-ups plus a CFAA blocklist refresh. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.1.md`._

@@ -44,11 +44,13 @@ jobs:
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
         run: |
           VERSION=${GITHUB_REF_NAME:-v3.23.0-fix.1}
+          # upstream-style app_version for the backend; empty falls back to VERSION
+          APP_VERSION=$(scripts/compute-app-version.sh "${VERSION}")
           for attempt in 1 2 3; do
             echo "Build attempt $attempt..."
             if GOOS=${{ matrix.goos }} GOARCH=${{ matrix.goarch }} CGO_ENABLED=0 \
                go build -trimpath \
-               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION}" \
+               -ldflags "-s -w -X main.Version=${VERSION} -X main.VersionStamp=URNET_VERSION_STAMP=${VERSION} -X main.AuthVersion=${APP_VERSION}" \
                -o bin/${{ matrix.goos }}/${{ matrix.goarch }}/provider ./provider/; then
               echo "Build succeeded"; break
             fi
@@ -416,6 +418,16 @@ jobs:
           # Scans moved to the parallel 'scan' job (posts a release comment).
           # The release body is the custom notes, or auto-generated.
           if [ -f "$CUSTOM" ]; then
+            # The reported app_version derives from the tagged commit's time, so
+            # it cannot be written into the notes before the commit exists.
+            # Resolve the placeholder here, into a temp copy, and keep the
+            # committed file when the tag yields no calendar version.
+            APP_VERSION=$(scripts/compute-app-version.sh "${GITHUB_REF_NAME}")
+            if [ -n "$APP_VERSION" ] && grep -q 'TO BE FILLED IN AT TAG TIME' "$CUSTOM"; then
+              BODY="${RUNNER_TEMP}/release-notes.md"
+              sed "s|TO BE FILLED IN AT TAG TIME|${APP_VERSION}|g" "$CUSTOM" > "$BODY"
+              CUSTOM="$BODY"
+            fi
             echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
             echo "auto=false" >> "$GITHUB_OUTPUT"
           else
