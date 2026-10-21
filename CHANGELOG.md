@@ -2,11 +2,16 @@
 
 ## [v3.23.0-fix.34.2]
 
-_Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, plus the Linux installer distro fixes. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.2.md`._
+_Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, its metrics counters survive a restart, the build moves to Go 1.27.3 for the compromised-certificate block (CVE-2026-111943), the retired hub report commands are removed, plus the Linux installer distro fixes. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.2.md`._
 
 ### Added
 
 - **The provider reports an upstream-style `app_version` to the backend**: the connect auth now carries `YYYY.M.D-<code>-fix.N.M` (for example `2026.10.20-1076955500-fix.34.1`) instead of the git tag, which the platform filed under `other`. The date is the tagged commit's UTC date, the code is the house build code (`(seconds since 2023-05-23) x 10`), and `fix.N.M` is the release. Logs, metrics, hotswap, the dashboard label and the update checks keep the git tag. A build without the `main.AuthVersion` flag reports its plain version.
+- **Cumulative metrics counters survive a restart**: the counters behind `/metrics` (`urnet_*_total`) are stored in `~/.urnetwork/metrics_counters.json` and restored at start, and the HotSwap parent flushes them before it exits, so a restart, reboot, upgrade or crash no longer resets a 24-hour attribution window.
+
+### Security
+
+- **The build moves to Go 1.27.3** (`CVE-2026-111943`): Go 1.27.3 and 1.26.10 block eight compromised eMudhra intermediate CA keys in the certificate verifier. `go.mod`, the Dockerfile builder and every `setup-go` pin Go 1.27.3; only binaries built with it carry the block, so update to this release.
 
 ### Fixed
 
@@ -16,6 +21,10 @@ _Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style versi
 
 - **CI runs the real installer on Debian 12 and 13, the RHEL family and Alpine**, and release publication waits for that matrix (report-only until two clean tag runs).
 - **Examples and comments use placeholder hosts** instead of real hosts and home directories.
+
+### Removed
+
+- **The retired fleet hub's report commands and settings**: `urnet-tools report`, `urnet-docker report`, the `report-url` and `report-interval` settings, `URNETWORK_REPORT_URL`, `URNETWORK_REPORT_INTERVAL` and `URNETWORK_HEARTBEAT_INTERVAL` and the reporters behind them are gone. Nothing received the reports after the hub was removed in v32.0. A saved `report_url` is ignored.
 
 ## [v3.23.0-fix.34.1]
 
