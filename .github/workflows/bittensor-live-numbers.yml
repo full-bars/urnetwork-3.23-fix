@@ -46,7 +46,7 @@ jobs:
           fi
           git config user.name "full-bars"
           git config user.email "45684698+full-bars@users.noreply.github.com"
-          branch="docs/sn25-live-numbers"
+          branch="automation/sn25-live-numbers"
           git checkout -B "$branch"
           git commit -am "docs(bittensor): refresh the SN25 live numbers"
           git push -f origin "$branch"
