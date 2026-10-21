@@ -325,6 +325,16 @@ jobs:
           chmod +x docker/scripts/test_exit75_restart.sh
           ./docker/scripts/test_exit75_restart.sh
 
+      - name: Docker stop SIGTERM forwarding tests
+        run: |
+          chmod +x docker/scripts/test_stop_forwarding.sh
+          ./docker/scripts/test_stop_forwarding.sh
+
+      - name: Nightly login exit code tests
+        run: |
+          chmod +x docker/scripts/test_login_exit_code.sh
+          ./docker/scripts/test_login_exit_code.sh
+
       - name: Shellcheck docker scripts (error severity)
         run: |
           # Error-severity gate over every docker script. Pre-existing

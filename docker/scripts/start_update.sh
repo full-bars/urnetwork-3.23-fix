@@ -47,15 +47,12 @@ Download_API() {
     log "[INFO] Selected stable release: $tag"
 
     local filename download_url asset_digest
-    # NOTE: the parens matter — select((A) and (B)); without them jq parses
-    # select(A) and B as a boolean stage and "| .name" then errors on it
-    # ("Cannot index boolean with string") for every matching asset.
+    # The shared picker (update_verify.sh) selects the MULTI-ARCH fat tarball:
     # Extract_Providers pulls BOTH linux/amd64 and linux/arm64 from the one
-    # tarball, so this script must select the multi-arch fat tarball
-    # (urnetwork-provider-vX.tar.gz): exclude per-arch assets (which carry an
-    # -<os>-<goarch> token) rather than filtering FOR linux-amd64 — a
-    # startswith/endswith-only head -n1 instead grabs darwin-amd64 first.
-    filename="$(echo "$release_json" | jq -r '.assets[] | select((.name | startswith("urnetwork-provider-")) and (.name | endswith(".tar.gz")) and ((.name | test("-darwin-|-linux-|-windows-")) | not)) | .name' | head -n1)"
+    # file, so per-arch assets (which carry an -<os>-<goarch> token) are
+    # excluded. The OS token list is shared with the nightly updater, so a new
+    # release platform can never be mistaken for the fat tarball again.
+    filename="$(upd_pick_fat_tarball_name "$release_json")"
     download_url="$(echo "$release_json" | jq -r --arg f "$filename" \
         '.assets[] | select(.name == $f) | .browser_download_url')"
     [ -n "$filename" ] && [ -n "$download_url" ] && [ "$download_url" != "null" ] || {

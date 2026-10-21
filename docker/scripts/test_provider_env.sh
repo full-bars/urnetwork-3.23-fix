@@ -174,7 +174,8 @@ STUB_EOF
 
     local runner="$test_dir/runner.sh"
     {
-        echo "set -u"
+        # -e mirrors production: provider_common.sh runs under set -e.
+        echo "set -eu"
         echo "export TEST_DIR='$test_dir'"
         echo "APP_DIR='$test_dir/app'"
         echo "A_SYS_ARCH='amd64'"
@@ -194,6 +195,10 @@ STUB_EOF
         esac
         echo "PROVIDER_MODE='$_mode'"
         echo "PROVIDER_FLAVOR='$_flavor'"
+        # provider_common.sh initializes these at the top; the extracted loop
+        # functions reference them under set -u, so set them here too.
+        echo "PROVIDER_STOPPING=0"
+        echo "PROVIDER_CHILD_PID=\"\""
         echo ". '$HELPER'"
         case "$script_file" in
             start_stable.sh)  _fn=func_start_provider_stable ;;
@@ -202,6 +207,9 @@ STUB_EOF
             *)                _fn=func_start_provider ;;
         esac
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
+        extract_func "$REPO/docker/scripts/provider_common.sh" func_exit_if_stopping
+        extract_func "$REPO/docker/scripts/provider_common.sh" func_sleep
+        extract_func "$REPO/docker/scripts/provider_common.sh" func_run_provider
         extract_func "$REPO/docker/scripts/provider_common.sh" "$_fn"
         echo "$_fn"
     } > "$runner"

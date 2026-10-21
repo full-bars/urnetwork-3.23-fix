@@ -32,10 +32,7 @@ chmod +x "$tmp/app/urnetwork_amd64_stable"
 
 for b in jwt stable; do
   sed -e "s|^APP_DIR=\"/app\"$|APP_DIR=\"$tmp/app\"|" \
-      -e 's/sleep 15$/sleep 0.05/' \
-      -e 's/^\( *\)sleep 5$/\1sleep 0.05/' \
-      -e 's/sleep 60$/sleep 0.05/' \
-      -e 's/sleep 300$/sleep 0.05/' \
+      -e 's/^\( *\)func_sleep [0-9]*$/\1func_sleep 0.05/' \
       "$wt/docker/scripts/pelican_panel.sh" > "$tmp/panel_$b.sh"
 done
 
