@@ -11,7 +11,7 @@ _Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style versi
 
 ### Security
 
-- **The CFAA endpoint blocklist is refreshed from upstream**: 40,924 to 42,556 IPv4 entries and 546 to 543 IPv6 entries. Data only.
+- **The CFAA endpoint blocklist is refreshed from upstream**: 40,924 to 41,202 IPv4 entries and 546 to 593 IPv6 entries, across two syncs. Data only.
 - **The build moves to Go 1.27.3** (`CVE-2026-111943`): Go 1.27.3 and 1.26.10 block eight compromised eMudhra intermediate CA keys in the certificate verifier. `go.mod`, the Dockerfile builder and every `setup-go` pin Go 1.27.3; only binaries built with it carry the block, so update to this release.
 
 ### Fixed
