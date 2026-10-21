@@ -121,10 +121,6 @@ type pendingOp struct {
 var controlKeyCanonical = map[string]string{
 	"node-name":                   "node_name",
 	"node_name":                   "node_name",
-	"report-url":                  "report_url",
-	"report_url":                  "report_url",
-	"report-interval":             "report_interval",
-	"report_interval":             "report_interval",
 	"fast-auth":                   "fast_auth",
 	"fast_auth":                   "fast_auth",
 	"self-heal":                   "proxy_self_heal",
@@ -186,7 +182,7 @@ func canonicalControlKey(key string) (string, bool) {
 // queueing to pending_overrides.json.
 func validateControlValue(canonicalKey, value string) error {
 	switch canonicalKey {
-	case "report_interval", "proxy_url_refresh", "proxy_dead_cleanup_interval":
+	case "proxy_url_refresh", "proxy_dead_cleanup_interval":
 		d, err := time.ParseDuration(value)
 		if err != nil {
 			return fmt.Errorf("%s: invalid duration %q (use e.g. 30s, 5m, 1h)", canonicalKey, value)
@@ -516,8 +512,6 @@ func queuePendingOverrideIn(root, stateDir, op, key, value string) error {
 func removeLegacyFile(stateDir, canonicalKey string) {
 	legacyFiles := map[string]string{
 		"node_name":                   "node_name",
-		"report_url":                  "report_url",
-		"report_interval":             "report_interval",
 		"fast_auth":                   "fast_auth",
 		"proxy_self_heal":             "proxy_self_heal",
 		"proxy_url_max":               "proxy_url_max",
@@ -623,8 +617,6 @@ func queryControlOverride(p Provider, canonicalKey string) (value string, source
 	// Check legacy files
 	legacyFiles := map[string]string{
 		"node_name":                   "node_name",
-		"report_url":                  "report_url",
-		"report_interval":             "report_interval",
 		"fast_auth":                   "fast_auth",
 		"proxy_self_heal":             "proxy_self_heal",
 		"proxy_url_max":               "proxy_url_max",

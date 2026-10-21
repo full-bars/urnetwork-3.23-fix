@@ -126,7 +126,7 @@ func TestControlState_ConcurrentSetClear(t *testing.T) {
 	s := newControlState()
 
 	keys := []string{
-		"node_name", "report_url", "report_interval", "fast_auth",
+		"node_name", "fast_auth",
 		"proxy_self_heal", "proxy_url_max", "proxy_url_refresh",
 		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
 	}

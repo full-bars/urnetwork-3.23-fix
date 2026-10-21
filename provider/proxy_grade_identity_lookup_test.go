@@ -2,9 +2,6 @@ package main
 
 import (
 	"testing"
-	"time"
-
-	"github.com/urnetwork/connect"
 )
 
 // The paid store is keyed by identity, so a credentialed proxy's grade is found
@@ -30,36 +27,5 @@ func TestBuildTrimGradeResolver_CredentialedURLProxy(t *testing.T) {
 	resolve := buildTrimGradeResolver(&ProxyState{}, url)
 	if score, ok := resolve(identityKey("10.0.0.2:1080", "u")); !ok || score != 0.95 {
 		t.Fatalf("credentialed URL proxy must resolve its grade: ok=%v score=%v", ok, score)
-	}
-}
-
-// The hub report is built from display strings; a credentialed proxy's grade
-// lives under its identity key in proxy.state and must still be attached.
-func TestBuildReport_GradesCredentialedProxyByIdentity(t *testing.T) {
-	withTempHome(t)
-	connect.ResetProxyHealthForTesting()
-	t.Cleanup(connect.ResetProxyHealthForTesting)
-
-	addr := "10.0.0.1:1080"
-	key := identityKey(addr, "u")
-	registerBandwidthProxy(1, addr, key, 1<<20)
-	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{
-		key: {Graded: true, Score: 0.9, LastGraded: time.Now()},
-	}}); err != nil {
-		t.Fatal(err)
-	}
-
-	report := buildReport("node", "host", time.Now())
-	var found *proxyReport
-	for i := range report.Proxies {
-		if report.Proxies[i].Address == addr {
-			found = &report.Proxies[i]
-		}
-	}
-	if found == nil {
-		t.Fatalf("proxy missing from report: %+v", report.Proxies)
-	}
-	if !found.Graded || found.Score != 0.9 {
-		t.Fatalf("credentialed proxy must carry its identity-keyed grade, got graded=%v score=%v", found.Graded, found.Score)
 	}
 }

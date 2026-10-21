@@ -46,7 +46,6 @@ The `provider` binary authenticates with the platform, starts one connection per
 | Transport choices | `h3*.go`, `h1plus_metrics.go`, `family_transport.go`, `smart_dialer_probe.go`, `socks5_udp.go`, `ssrf_guard.go`, `direct.go` | Pick HTTP/3 or HTTP/1, the IPv4 and IPv6 families, and direct (no proxy) providing. |
 | Logs, metrics and status | `shmlog_*.go`, `critlog.go`, `important_log*.go`, `tlog.go`, `metrics_*.go`, `lifetime_metrics.go`, `node_snapshot*.go`, `baseline.go`, `enforcement_log.go`, `hourly_pulse.go`, `earn_tracker.go`, `verdict_feed.go` | RAM logs, the critical event log, the Prometheus endpoint, the status snapshot that `urnet-tools status` and `top` read, and the local behaviour record. |
 | DNS and disk | `doh_cache.go`, `disk_bench_metrics.go` | Persistent DNS-over-HTTPS cache and disk speed checks. |
-| Leftover reporting | `bandwidth_reporter.go` | The old fleet-hub reporter. The hub is gone; this only matters if you run your own collector. |
 | Bittensor Subnet 25 | `sn*.go`, `snclaim_cmd.go`, `bt_*.go`, `claim_*.go`, `fleet*.go`, `hotkey_wallet.go`, `wallet_*`, `operator_clientauth.go` | Network wallet consent, claims and claim daemons, fleet registration, hotkey delegation and multi-operator provide. The operator guides are the `docs/Bittensor-*.md` pages. |
 
 `provider/README.md` has more about running the binary directly.

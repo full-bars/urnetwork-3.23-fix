@@ -188,7 +188,7 @@ func cmdFastAuth(args []string, force, dryRun bool) error {
 // never reports an effect that provably cannot take place.
 func validateSetValue(key, value string) error {
 	switch key {
-	case "report-interval", "proxy-url-refresh", "cleanup-interval":
+	case "proxy-url-refresh", "cleanup-interval":
 		d, err := time.ParseDuration(value)
 		if err != nil {
 			return fmt.Errorf("%s: invalid duration %q (use e.g. 30s, 5m, 1h)", key, value)
@@ -218,7 +218,6 @@ func validateSetValue(key, value string) error {
 // in its state dir. Mirrors the legacy _set_key_to_file table.
 var setKeyFiles = map[string]string{
 	"node-name":         "node_name",
-	"report-interval":   "report_interval",
 	"proxy-url-max":     "proxy_url_max",
 	"proxy-url-refresh": "proxy_url_refresh",
 	"cleanup-scope":     "proxy_dead_cleanup_scope",
@@ -229,8 +228,6 @@ var setKeyFiles = map[string]string{
 // setKeyHelps describes each key for `set help` / usage.
 var setKeyHelps = []string{
 	"  node-name           <string>      node name reported to the fleet (default: hostname)",
-	"  report-url          <url>|off     bandwidth report destination URL",
-	"  report-interval     <duration>    bandwidth report cadence (default: 5m, min: 10s)",
 	"  fast-auth           on|off        bypass auth rate limiter",
 	"  self-heal           on|off        dead proxy auto-cleanup & load gate",
 	"  proxy-url-max       <int>         max proxies from URL feeds (default: 500)",
@@ -504,8 +501,6 @@ func formatSets(p Provider, want string) error {
 		canonicalKey string
 	}{
 		{"node-name", "node_name"},
-		{"report-url", "report_url"},
-		{"report-interval", "report_interval"},
 		{"fast-auth", "fast_auth"},
 		{"self-heal", "proxy_self_heal"},
 		{"proxy-url-max", "proxy_url_max"},

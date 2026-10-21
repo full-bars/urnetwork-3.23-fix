@@ -174,7 +174,7 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 
 	queueFile := filepath.Join(dir, "pending_overrides.json")
 
-	if err := applySetOverride(p, "report-interval", "30s", false); err != nil {
+	if err := applySetOverride(p, "proxy-url-refresh", "30s", false); err != nil {
 		t.Fatalf("applySetOverride 1: %v", err)
 	}
 
@@ -186,7 +186,7 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 	if err := json.Unmarshal(b, &ops); err != nil {
 		t.Fatalf("unmarshal queue file: %v", err)
 	}
-	if len(ops) != 1 || ops[0].Op != "set" || ops[0].Key != "report_interval" || ops[0].Value != "30s" {
+	if len(ops) != 1 || ops[0].Op != "set" || ops[0].Key != "proxy_url_refresh" || ops[0].Value != "30s" {
 		t.Fatalf("unexpected ops[0]: %+v", ops)
 	}
 
@@ -208,7 +208,7 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 		t.Fatalf("unexpected ops[1]: %+v", ops[1])
 	}
 
-	if err := applySetOverride(p, "report-interval", "off", false); err != nil {
+	if err := applySetOverride(p, "proxy-url-refresh", "off", false); err != nil {
 		t.Fatalf("applySetOverride clear: %v", err)
 	}
 
@@ -222,7 +222,7 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 	if len(ops) != 3 {
 		t.Fatalf("expected 3 ops in queue, got %d", len(ops))
 	}
-	if ops[2].Op != "clear" || ops[2].Key != "report_interval" {
+	if ops[2].Op != "clear" || ops[2].Key != "proxy_url_refresh" {
 		t.Fatalf("unexpected ops[2]: %+v", ops[2])
 	}
 
@@ -231,9 +231,9 @@ func TestControlClient_SocketUnavailableQueueFallback(t *testing.T) {
 		t.Fatalf("queryControlOverride(gomemlimit) got (%q, %q, %v, %v), want (512MiB, pending, true, nil)", val, src, found, err)
 	}
 
-	_, _, reportFound, _ := queryControlOverride(p, "report_interval")
+	_, _, reportFound, _ := queryControlOverride(p, "proxy_url_refresh")
 	if reportFound {
-		t.Fatalf("report_interval should not be found after clear op was queued")
+		t.Fatalf("proxy_url_refresh should not be found after clear op was queued")
 	}
 }
 
@@ -252,7 +252,7 @@ func TestControlClient_MalformedQueueSurfacesErrorNotOverwritten(t *testing.T) {
 	}
 	orig, _ := os.ReadFile(queueFile)
 
-	if err := applySetOverride(p, "report-interval", "30s", false); err == nil {
+	if err := applySetOverride(p, "proxy-url-refresh", "30s", false); err == nil {
 		t.Fatalf("expected error surfacing the malformed queue, got nil")
 	}
 
@@ -276,8 +276,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		value        string
 	}{
 		{"node-name", "node_name", "node-1"},
-		{"report-url", "report_url", "https://hub.example.com/reports"},
-		{"report-interval", "report_interval", "15s"},
+		{"proxy-url-refresh", "proxy_url_refresh", "15s"},
 		{"fast-auth", "fast_auth", "on"},
 		{"self-heal", "proxy_self_heal", "on"},
 		{"proxy-url-max", "proxy_url_max", "1000"},
@@ -362,8 +361,8 @@ func TestControlClient_InvalidValuesRejected(t *testing.T) {
 		key   string
 		value string
 	}{
-		{"report-interval", "2s"},
-		{"report-interval", "invalid"},
+		{"proxy-url-refresh", "2s"},
+		{"proxy-url-refresh", "invalid"},
 		{"proxy-url-max", "-5"},
 		{"proxy-url-max", "abc"},
 		{"cleanup-scope", "invalid"},

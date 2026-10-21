@@ -6,7 +6,6 @@ import (
 	"bytes"
 	"compress/gzip"
 	"crypto/sha256"
-	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -333,50 +332,6 @@ func TestProxySubcommandHelpDoesNotExecute(t *testing.T) {
 		if err := Run(args); err != nil {
 			t.Errorf("Run(%v) = %v, want nil (help must never execute)", args, err)
 		}
-	}
-}
-
-// TestCmdReportWritesOverrideFile: `report <url>` must queue a pending
-// override in pending_overrides.json when the provider is stopped, not write
-// a legacy file. The provider's control socket resolves report_url from
-// control-state first; writeReportURL now always goes through
-// applyControlOverride which queues to pending_overrides.json when the
-// socket is unavailable.
-func TestCmdReportWritesOverrideFile(t *testing.T) {
-	dir := t.TempDir()
-	p := Provider{StateDir: dir, User: "testuser"}
-	// Call the PRODUCTION write helper (tests must call
-	// production logic, not reimplement it).
-	if err := writeReportURL(p, "http://127.0.0.1:8080"); err != nil {
-		t.Fatalf("writeReportURL: %v", err)
-	}
-	// The override should be queued in pending_overrides.json.
-	pendingPath := filepath.Join(dir, "pending_overrides.json")
-	b, err := os.ReadFile(pendingPath)
-	if err != nil {
-		t.Fatalf("read pending_overrides.json: %v", err)
-	}
-	var ops []pendingOp
-	if err := json.Unmarshal(b, &ops); err != nil {
-		t.Fatalf("parse pending_overrides.json: %v", err)
-	}
-	if len(ops) != 1 {
-		t.Fatalf("pending ops = %d, want 1", len(ops))
-	}
-	if ops[0].Op != "set" || ops[0].Key != "report_url" || ops[0].Value != "http://127.0.0.1:8080" {
-		t.Fatalf("pending op = %+v, want set report_url=http://127.0.0.1:8080", ops[0])
-	}
-	// Also verify cmdReport's no-provider error path (must error, never
-	// delegate to a provider binary). Skip on a box that HAS a discoverable
-	// provider (e.g. this dev box's leftover sentinel unit) — the no-provider
-	// branch is only reachable on a clean box, same as the other no-provider
-	// tests.
-	if len(Discover()) != 0 {
-		t.Skip("requires a box with zero discoverable providers")
-	}
-	err = cmdReport([]string{"http://127.0.0.1:8080"}, false, false)
-	if err == nil {
-		t.Fatal("cmdReport with no providers must error (not delegate to a provider binary)")
 	}
 }
 

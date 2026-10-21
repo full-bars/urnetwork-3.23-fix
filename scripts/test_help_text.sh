@@ -72,7 +72,6 @@ echo "--- Test: set help ---"
 set_help=$(do_set help 2>&1)
 
 assert_contains "node-name" "$set_help" "Set help lists node-name"
-assert_contains "report-interval" "$set_help" "Set help lists report-interval"
 assert_contains "proxy-url-max" "$set_help" "Set help lists proxy-url-max"
 assert_contains "proxy-url-refresh" "$set_help" "Set help lists proxy-url-refresh"
 assert_contains "cleanup-scope" "$set_help" "Set help lists cleanup-scope"

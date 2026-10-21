@@ -78,7 +78,6 @@ Proxy Management:
   proxy ids               Client IDs for each proxy (from JWT store)
   summary                 Fleet-style proxy summary (sources, health, counts)
   proxy remove-dead       Prune dead/degraded/failing proxies interactively
-  report [<url>|off]      Set report URL
   self-heal [on|off]      Auto-regulate proxies (load gate + cleanup)
   show-ip [on|off|status] Show public IP on the dashboard label (was: ip-detect)
   direct [on|off]         Toggle providing on the machine's direct/local IP
@@ -181,7 +180,6 @@ func buildRootCmd() *cobra.Command {
 		newProxyCmd(),
 		newDirectCmd(),
 		newUsageCmd(),
-		newReportCmd(),
 		newReinstallCmd(),
 		newUninstallCmd(),
 		newAutoUpdateCmd(),
@@ -523,7 +521,7 @@ func newSetCmd() *cobra.Command {
 		Use:                "set",
 		Short:              "runtime tuning override",
 		Long:               "Read or write a runtime tuning override in the provider's state directory. Most keys apply live on the provider's next tick with no restart; profile and ramlogs only take effect on the next restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list the runtime override keys, their value domains and what each changes.",
-		Example:            "  urnet-tools set help\n  urnet-tools set report-interval 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
+		Example:            "  urnet-tools set help\n  urnet-tools set proxy-url-refresh 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -612,14 +610,6 @@ func newProxyCmd() *cobra.Command {
 			})
 		},
 	}
-}
-
-func newReportCmd() *cobra.Command {
-	return withHelp(newCobraCmd("report", "set report URL", nil, func(cmd *cobra.Command, args []string) error {
-		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-			return cmdReport(rest, dryRun, force)
-		})
-	}), "Set the report URL for one targeted provider at runtime, or pass \"off\" to disable reporting. This writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. Honors -n/--dry-run, which prints the plan and changes nothing.", "  urnet-tools report http://192.0.2.10:8080 --unit urnetwork-native.service\n  urnet-tools report off --unit urnetwork-native.service")
 }
 
 func newReinstallCmd() *cobra.Command {
@@ -1284,8 +1274,6 @@ func cmdDashboard(args []string) error {
 		{"fast_auth", "Fast Auth"},
 		{"proxy_self_heal", "Proxy Self-Heal"},
 		{"hot_restart", "Hot Restart"},
-		{"report_url", "Report URL"},
-		{"report_interval", "Report Interval"},
 		{"proxy_url_max", "Max Proxies"},
 		{"proxy_url_refresh", "URL Refresh"},
 		{"proxy_dead_cleanup_scope", "Dead Cleanup Scope"},

@@ -100,7 +100,6 @@ Core Commands:
   auth [<code>] [target]  authenticate provider inside container
   choose-network <api> <connect> [target]  set API/connect endpoints inside container
   summary [target]        activity & performance summary for container
-  report <url> [target]   set report URL inside container (no restart)
   update [<container>]     update a container's provider in place (no recreate), or the host binary
   version                 print tool version
 
@@ -858,21 +857,6 @@ func cmdDockerUsage(args []string) error {
 		return err
 	}
 	inner := append([]string{"urnet-tools", "usage"}, rest...)
-	return containerExecByName(p.Unit, inner...)
-}
-
-// cmdDockerReport configures the report URL inside the container.
-func cmdDockerReport(args []string) error {
-	providers := DiscoverDocker()
-	t, rest, err := dockerTargetFromArgs(args, providers)
-	if err != nil {
-		return err
-	}
-	p, err := selectTargetInteractive(providers, t)
-	if err != nil {
-		return err
-	}
-	inner := append([]string{"urnet-tools", "report"}, rest...)
 	return containerExecByName(p.Unit, inner...)
 }
 

@@ -50,7 +50,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `usage [graphs\|graph <view>] [target]` | Display traffic & billing accounting: billable relay bytes vs control-plane protocol overhead, with rolling time-series summaries. Available across `urnet-tools` and `urnet-docker`. |
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
-| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear a runtime provider override over the control socket. `urnet-tools set help` lists every key with its value domain and what it changes. The keys are `node-name`, `report-url`, `report-interval`, `fast-auth`, `self-heal`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `hot-restart`, `oom-cap`, `smart-dialer`, `gomemlimit`, `gogc`, `profile`, `ramlogs`, `metrics`, `metrics-listen`, `h3`, `h3-datagram`, `h3-datagram-send`, `baseline` and `proxy-audit`. Most apply live on the next tick; `profile` and `ramlogs` need a restart. Queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
+| `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear a runtime provider override over the control socket. `urnet-tools set help` lists every key with its value domain and what it changes. The keys are `node-name`, `fast-auth`, `self-heal`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `hot-restart`, `oom-cap`, `smart-dialer`, `gomemlimit`, `gogc`, `profile`, `ramlogs`, `metrics`, `metrics-listen`, `h3`, `h3-datagram`, `h3-datagram-send`, `baseline` and `proxy-audit`. Most apply live on the next tick; `profile` and `ramlogs` need a restart. Queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
 | `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available across `urnet-tools` and `urnet-docker`. |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
@@ -133,7 +133,6 @@ The billable rate is the **lifetime byte counter's delta divided by the time del
 Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Leftover; the hub that received reports was removed, so most operators never use it. Sets the URL the provider posts its bandwidth report to (`report off` disables). Writes the lower-precedence override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. A `report-url` set through the control socket takes precedence: while it exists, `report <url>` cannot change the effective URL and `report off` cannot disable it, so clear that override first. |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 
@@ -246,13 +245,13 @@ and is the single writer of `~/.urnetwork/provider_state.json`.
 
 ```bash
 # Change a setting on a running provider. No restart.
-urnet-tools set report-interval 300
+urnet-tools set proxy-url-refresh 5m
 
 # Read one back
-urnet-tools set report-interval
+urnet-tools set proxy-url-refresh
 
 # Clear it
-urnet-tools set report-interval off
+urnet-tools set proxy-url-refresh off
 ```
 
 **When the provider is stopped**, the change is written to
@@ -265,8 +264,8 @@ request was accepted. The provider logs the change itself, which is the
 authoritative confirmation:
 
 ```text
-⚙️ [control] set report-interval=300 (was unset)
-⚙️ [control] cleared report-interval (was 300)
+⚙️ [control] set proxy-url-refresh=5m (was unset)
+⚙️ [control] cleared proxy-url-refresh (was 5m)
 ⚙️ [control] applied 2 queued override(s) from pending_overrides.json: profile=v8, cleared gogc
 ```
 

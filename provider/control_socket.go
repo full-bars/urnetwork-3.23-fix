@@ -321,8 +321,6 @@ var liveEffectKeys = map[string]bool{
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
 	"oom_cap":                     true,
-	"report_url":                  true,
-	"report_interval":             true,
 	"proxy_url_refresh":           true,
 	"proxy_url_max":               true,
 	"proxy_dead_cleanup_scope":    true,
@@ -349,7 +347,7 @@ func validateControlValue(key, value string) error {
 	// client-side behavior in internal/urnettools/control_client.go.
 	valLower := strings.ToLower(value)
 	switch key {
-	case "report_interval", "proxy_url_refresh", "proxy_dead_cleanup_interval":
+	case "proxy_url_refresh", "proxy_dead_cleanup_interval":
 		d, err := time.ParseDuration(value)
 		if err != nil {
 			return fmt.Errorf("%s: invalid duration %q (use e.g. 30s, 5m, 1h)", key, value)
@@ -450,15 +448,6 @@ func validateControlValue(key, value string) error {
 		for _, c := range value {
 			if c < 32 || c > 126 {
 				return fmt.Errorf("node_name: must be printable ASCII (got 0x%02x)", c)
-			}
-		}
-	case "report_url":
-		if value != "" {
-			// basic URL sanity — reject values with spaces or newlines
-			for _, c := range value {
-				if c == ' ' || c == '\n' || c == '\r' || c == '\t' {
-					return fmt.Errorf("report_url: must not contain whitespace (got %q)", value)
-				}
 			}
 		}
 	}
@@ -958,8 +947,7 @@ func dialControlSocket(req controlRequest) (controlResponse, error) {
 // runtime setting safely changeable at any time via runtime/debug. Every
 // other key has no live side effect here: the persisted value alone is
 // enough, because the resolve*/*Enabled function that consumes it re-reads
-// controlState on its own next call (see bandwidth_reporter.go,
-// auth_rate_limiter.go, proxy_url_source.go). Not called on `clear` — there
+// controlState on its own next call (see auth_rate_limiter.go, proxy_url_source.go). Not called on `clear` — there
 // is no well-defined "revert to" value to apply live, so clearing one of
 // these two keys only affects the NEXT restart's baseline, same as before
 // this feature existed.

@@ -499,8 +499,6 @@ func TestValidateControlValue(t *testing.T) {
 	}{
 		// valid values
 		{"node_name", "nyc-1", false},
-		{"report_url", "https://example.com", false},
-		{"report_url", "", false},
 		{"profile", "turbo-v4", false},
 		{"profile", "auto", false},
 		{"profile", "eco", false},
@@ -522,9 +520,6 @@ func TestValidateControlValue(t *testing.T) {
 		{"hot_restart", "no", false},
 		{"hot_restart", "1", false},
 		{"hot_restart", "0", false},
-		{"report_interval", "30s", false},
-		{"report_interval", "5m", false},
-		{"report_interval", "1h", false},
 		{"proxy_url_refresh", "10s", false},
 		{"proxy_dead_cleanup_interval", "1m", false},
 		{"proxy_dead_cleanup_interval", "5m", false},
@@ -547,16 +542,12 @@ func TestValidateControlValue(t *testing.T) {
 		{"fast_auth", "1", true},
 		{"proxy_self_heal", "true", true},
 		{"hot_restart", "y", true},
-		{"report_interval", "5", true},
-		{"report_interval", "1s", true},
 		{"proxy_url_refresh", "invalid", true},
 		{"proxy_dead_cleanup_interval", "30s", true},
 		{"proxy_dead_cleanup_scope", "all-proxies", true},
 		{"proxy_url_max", "-1", true},
 		{"proxy_url_max", "abc", true},
 		{"gogc", "-1", true},
-		{"report_url", "bad url", true},
-		{"report_url", "bad\nurl", true},
 		// case-insensitive: uppercase/TitleCase should work
 		{"fast_auth", "ON", false},
 		{"fast_auth", "Off", false},
@@ -590,7 +581,6 @@ func TestNeedsRestart_AutoComputed(t *testing.T) {
 	liveKeys := []string{
 		"gomemlimit", "gogc",
 		"fast_auth", "proxy_self_heal",
-		"report_url", "report_interval",
 		"proxy_url_refresh", "proxy_url_max",
 		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
 		"node_name", "hot_restart", "h3", "h3_datagram", "h3_datagram_send", "ip_version", "h1_plus",

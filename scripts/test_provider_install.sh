@@ -223,7 +223,7 @@ test_pending_overrides_valid_json() {
     home=$(mktemp -d)
     queue_pending_override "ramlogs" "on" "$home"
     queue_pending_override 'weird"key' 'has "quotes" and a \backslash' "$home"
-    queue_pending_override "report_url" "https://example.com/a?b=c" "$home"
+    queue_pending_override "node_name" "https://example.com/a?b=c" "$home"
     queue_pending_clear "profile" "$home"
 
     local file="$home/.urnetwork/pending_overrides.json"

@@ -93,9 +93,6 @@ Quick jump:
 | `URNETWORK_PPROF` | - | Set to a `host:port` to enable the loopback-only diagnostics server (e.g. `127.0.0.1:6060`). Off by default. Serves `/debug/pprof/*`, `/metrics/pool`, and `/metrics/errors`; only literal loopback IPs are accepted (hostnames are rejected). Pull profiles via an SSH tunnel, e.g. `ssh -L 6060:127.0.0.1:6060 host` then `go tool pprof http://127.0.0.1:6060/debug/pprof/profile`. |
 | `URNETWORK_PROXY_BENCHMARK` | - | Set to `true` to enable per-proxy latency monitoring. Off by default. Probes: TCP connect every 5 min (raw RTT to proxy port), SOCKS5 CONNECT every 15 min (end-to-end through proxy). Staggered startup jitter prevents thundering herd. ~104 GB/month at 10k proxies. |
 | `URNETWORK_PROXY_BENCHMARK_ENDPOINT` | `connect.bringyour.com:443` | Target for the SOCKS5 CONNECT latency probe. Measured end-to-end through each proxy. |
-| `URNETWORK_REPORT_URL` | - | Leftover. The fleet hub that used to receive these reports was removed, so there is no official place to send them and most operators should leave this unset. If you run your own collector, the provider still posts its JSON bandwidth report to this URL. Order of precedence: control-socket state, then `~/.urnetwork/report_url`, then this variable (read once at start). `urnet-tools report <url>` sets it for one provider; `report off` disables it. For fleet visibility use `urnet-tools metrics on` (see [Monitoring](Monitoring.md)). |
-| `URNETWORK_REPORT_INTERVAL` | `5m` | Leftover (see `URNETWORK_REPORT_URL`). How often the report is sent, minimum `10s`. Does nothing unless a report URL is set. |
-| `URNETWORK_HEARTBEAT_INTERVAL` | `15s` | Leftover (see `URNETWORK_REPORT_URL`). How often the small heartbeat is sent to the report URL, minimum `5s`. Does nothing unless a report URL is set. |
 | `URNETWORK_AUTH_UNLIMITED` | `false` | Bypass the auth rate limiter; every auth attempt fires immediately. Equivalent to creating `~/.urnetwork/fast_auth`. Only for trusted or benchmark environments. |
 | `URNETWORK_PUBLIC_IP` | `<detected>` | Override the public IP shown in the dashboard identity label. Display only; does not change the actual egress IP. Auto-set by Docker startup scripts. |
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
@@ -154,8 +151,8 @@ cat ~/.urnetwork/events.log
 
 ```bash
 urnet-tools set                     # list current overrides
-urnet-tools set report-interval 300 # change one, live, no restart
-urnet-tools set report-interval off # clear it
+urnet-tools set proxy-url-refresh 5m # change one, live, no restart
+urnet-tools set proxy-url-refresh off # clear it
 ```
 
 **Capacity and dialer settings (v3.23.0-fix.32.8, v3.23.0-fix.32.9).** Five settings are control keys. `smart_dialer` has its own command; the rest are set with `urnet-tools set`. All are live, persisted and re-applied at startup.
@@ -180,7 +177,7 @@ Read every capacity decision with `urnet-tools autopilot log [limit]`. The log l
 change, which is the authoritative signal rather than the CLI's exit code:
 
 ```text
-⚙️ [control] set report-interval=300 (was unset)
+⚙️ [control] set proxy-url-refresh=5m (was unset)
 ⚙️ [control] applied 2 queued override(s) from pending_overrides.json: profile=v8, cleared gogc
 ❌ [control] set gogc=abc rejected: ...
 ```
