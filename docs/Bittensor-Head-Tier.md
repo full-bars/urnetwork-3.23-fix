@@ -66,7 +66,7 @@ All commands below are in this build's `provider` program. Run them on your own 
      --mainnet-runtime-authority=<path> --mainnet-runtime-authority-sha256=<hex> \
      --durable-volumes=<path> --durable-volumes-sha256=sha256:<64 hex>
    ```
-   The plan prints the live burn, your balances, the enforced limit and the quoted fee, and broadcasts nothing. The two `--mainnet-runtime-authority` flags and the two `--durable-volumes` flags are needed for every mainnet write (`register`, `publish`, `bind`, `revoke`) and for mainnet `status`. Without the durable-volume pair a mainnet write stops early with `explicit durable-volume declaration and hash are required`.
+   The plan prints the live burn, your balances, the enforced limit and the quoted fee, and broadcasts nothing. The runtime-authority pair (`--mainnet-runtime-authority`, `--mainnet-runtime-authority-sha256`) and the durable-volume pair are needed for every mainnet write (`register`, `publish`, `bind`, `revoke`) and for mainnet `status`. Without the durable-volume pair a mainnet write stops early with `explicit durable-volume declaration and hash are required`.
 
 3. **Publish the commitment.** This always writes. There is no plan mode:
    ```bash
@@ -102,7 +102,7 @@ provider fleet revoke --manifest=<path> --client_id=<hex> --client_seed_file=<pa
   --rpc=<rpc_url> --relayer_key_file=<path> [--dry-run] [mainnet flags]
 ```
 
-Or let the binding run out at its `valid_to_epoch`. Either way the node goes back to the pool from the next epoch, and your network consent pays it again. The burn is not refunded.
+Or let the binding run out at its `valid_to_epoch`. Either way the node goes back to the pool from the next epoch, and your network consent pays it again, unless the node has its own per-provider consent, which keeps paying to that consent instead. The burn is not refunded.
 
 ## What can go wrong
 
