@@ -1,0 +1,79 @@
+name: SN25 live numbers
+
+# The cost table on the Bittensor head-tier page is generated from live chain
+# state. This job refreshes it weekly and lands the change through a pull
+# request, so main only ever moves by merge. When the values are unchanged the
+# job writes nothing and no commit is made.
+
+on:
+  schedule:
+    - cron: '17 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sn25-live-numbers
+  cancel-in-progress: false
+
+jobs:
+  refresh:
+    if: github.repository_owner == 'full-bars'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out main
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Refresh the generated block
+        run: python3 .github/scripts/bittensor_live_numbers.py --write
+
+      - name: Land the change through a pull request
+        id: land
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          if git diff --quiet; then
+            echo "SN25 live numbers are unchanged."
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+            exit 0
+          fi
+          git config user.name "full-bars"
+          git config user.email "45684698+full-bars@users.noreply.github.com"
+          branch="docs/sn25-live-numbers"
+          git checkout -B "$branch"
+          git commit -am "docs(bittensor): refresh the SN25 live numbers"
+          git push -f origin "$branch"
+          pr=$(gh pr list --head "$branch" --json number --jq '.[0].number // empty')
+          if [ -z "$pr" ]; then
+            pr=$(gh pr create --base main --head "$branch" \
+              --title "docs(bittensor): refresh the SN25 live numbers" \
+              --body "Generated from the live chains by .github/scripts/bittensor_live_numbers.py. No hand edits." \
+              --json number --jq .number)
+          fi
+          gh pr merge "$pr" --merge --delete-branch
+          echo "changed=true" >> "$GITHUB_OUTPUT"
+
+      - name: Mirror the page to the wiki
+        if: steps.land.outputs.changed == 'true'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          git clone --depth 1 "https://x-access-token:${GH_TOKEN}@github.com/${GITHUB_REPOSITORY}.wiki.git" wiki
+          cp docs/Bittensor-Head-Tier.md wiki/Bittensor-Head-Tier.md
+          cd wiki
+          git config user.name "full-bars"
+          git config user.email "45684698+full-bars@users.noreply.github.com"
+          git add Bittensor-Head-Tier.md
+          if git diff --cached --quiet; then
+            echo "Wiki page already carries these values."
+            exit 0
+          fi
+          git commit -m "docs: sync the SN25 live numbers"
+          git push origin master
