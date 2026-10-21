@@ -51,7 +51,7 @@ Options:
 
 - `provider wallet sign [<coldkey_ss58>] [--port=<port>] [--no-open]`. Leave the address out to choose the account on the page. The page itself is described in [the wallet-consent README](../scripts/wallet-consent/README.md).
 - No browser: `provider wallet challenge <coldkey_ss58>` prints the exact text (it signs nothing). Sign it elsewhere, then run `provider wallet set <coldkey_ss58> --message=<text> --signature=<hex>`.
-- `provider wallet set <coldkey_ss58> --coldkey_seed_file=<path>` signs from a seed file. Use it only on your own computer, never on a node. `urnet-tools wallet sign` and `wallet set --coldkey_seed_file` refuse on a node unless you pass `--i-am-on-my-own-workstation`.
+- `provider wallet set <coldkey_ss58> --coldkey_seed_file=<path>` signs from a seed file. Use it only on your own computer, never on a node. The `provider` binary only checks the seed file's ownership and mode. `urnet-tools wallet sign` and `urnet-tools wallet set --coldkey_seed_file` also refuse when the box looks like a fleet member, unless you pass `--i-am-on-my-own-workstation`.
 - `--wallet-from-epoch=<e> --wallet-through-epoch=<e>` pick an exact window. A window that would leave epochs unpaid is refused unless you set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1`. The window spans at most 65,536 epochs. A newer consent must start at a later epoch than the one it replaces.
 - A consent for one node only (a per-provider consent) wins over the network consent for that node, and it is listed per client in `wallet status`.
 

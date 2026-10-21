@@ -33,10 +33,27 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 
 ## What it costs and requires
 
-No TAO figures are given here, because they change.
+The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
+
+<!-- BEGIN SN25 LIVE NUMBERS (generated) -->
+_Live values · last changed 2026-10-21 22:31 UTC · checked hourly_
+
+| | Value |
+|---|---|
+| Fleet seat registration burn | 0.0005 TAO (~$0.14) |
+| Burn floor | 0.0005 TAO |
+| Seats in use | 256 of 256 |
+| Registration open | yes |
+| Immunity after registering | 21,600 blocks (~3.0 days) |
+| Tempo | 360 blocks (~72 minutes) |
+| Gas price, chain 964 | 5.0 gwei |
+| One node binding | 245,301 gas, about 0.001227 TAO (~$0.34) |
+| Commitment oracle | active, balance 0.0479 TAO |
+| Coordinator | not paused |
+<!-- END SN25 LIVE NUMBERS (generated) -->
 
 - **A registration burn.** Your fleet coldkey burns TAO to register the fleet hotkey's seat. The amount is live. `fleet register` reads it, prints it, and refuses above the limit you set with `--burn_limit_rao`. It only plans until you add `--apply`.
-- **You can lose the seat.** Nothing reserves a place for head fleets. When the subnet is full, a new registration removes the lowest-scoring seat that is past its immunity period. Upstream review notes record SN25 at 256 of 256 UIDs. The SN25 immunity length is not stated here. A lost seat means the burn is gone.
+- **You can lose the seat.** Nothing reserves a place for head fleets. When the subnet is full, a new registration removes the lowest-scoring seat that is past its immunity period. The live table above carries the current seat count and immunity length. A lost seat means the burn is gone.
 - **Gas for each node you bind.** `fleet bind` sends one EVM transaction per node through a relayer key you fund. The other route is `fleet sign`, which signs locally and needs no relayer, and then you submit on the ur.io "Top 200" page. The server side of that page exists (`POST /sn/head/binding`). It is not confirmed that the page itself is live for operators.
 - **Re-signing.** A binding lasts at most 12 epochs (`maximum_validity_epochs: 12`, about 3 months). Changes take effect from the next epoch.
 - **Several keys**, all as files on your own computer:
@@ -119,8 +136,8 @@ Or let the binding run out at its `valid_to_epoch`. Either way the node goes bac
 
 > [!WARNING]
 > As of sn `83e6f48c2` (2026-10-21):
-> - **The commitment oracle is not deployed.** Upstream's latest status (sn `mainnet/LAUNCH.md`, dated 2026-10-14) says it is built but not deployed: no service unit, its key `0x56Dd…CF03` unfunded, and no fleet commitment mirrored on chain 964. Until it runs, every `bind` fails with `StaleCommitment()`. Check before you spend anything.
-> - **One client per node.** This build uses one `.provider.key` for every proxy client on a box, so at most **one client per node** can be a fleet member. Per-slot keys are only a design idea, not built.
+> - **The commitment oracle is not deployed.** Upstream's status (sn `mainnet/LAUNCH.md`) says the service is built but not deployed, so no fleet commitment is mirrored. The service key `0x56Dd…CF03` is already the coordinator's active oracle and holds a small balance, so the wiring is in place; until the service runs, every `bind` fails with `StaleCommitment()`. Check before you spend anything.
+> - **One client per provider install.** The provider keeps one `.provider.key` per state directory, and every proxy slot on it signs with that key, so one install can bind one member. A box that needs more members runs one install per member, each with its own `URNETWORK_STATE_DIR`. Per-slot keys are a design idea, not built.
 > - **No mainnet authority file is shipped.** Mainnet `register`, `publish`, `bind`, `status` and `revoke` need a runtime authority file and its approved hash. Where an ordinary operator gets this file is **not confirmed**.
 > - **Old fleets must republish.** Fleets published before 2026-10-15 hold an untagged commitment that the oracle never mirrors. Republish with `provider fleet publish`.
 
