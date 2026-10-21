@@ -3,6 +3,7 @@ name: Installer matrix (the real installer on 4 distros)
 # The provider repos never executed their own installer in CI: shakedown.sh
 # runs it on the GitHub Ubuntu runner only, so a distro-specific install break
 # reached users first. This runs scripts/Provider_Install_Linux.sh for real on
+# See docs/Installer-Matrix-CI.md for the cells, what it asserts, and gating.
 # both Debian generations, the RHEL family and musl/Alpine, against a local
 # fake release.
 
