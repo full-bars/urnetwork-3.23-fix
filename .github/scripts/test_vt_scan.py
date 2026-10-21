@@ -36,6 +36,7 @@ class Stub:
         self.requests = []                 # (method, path) in order
         self.small_posts = 0
         self.large_posts = 0
+        self.fail_upload_posts = 0   # 500s to serve on the upload-url POST, then succeed
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -111,6 +112,9 @@ class Handler(BaseHTTPRequestHandler):
             if path == "/files":
                 s.small_posts += 1
             else:
+                if s.fail_upload_posts > 0:
+                    s.fail_upload_posts -= 1
+                    return self._send(500, {"error": {"code": "InternalError"}})
                 s.large_posts += 1
             return self._send(200, {"data": {"id": self._register(content)}})
         return self._send(404, {"error": {"code": "NotFoundError"}})
@@ -318,6 +322,31 @@ class VTScanTest(unittest.TestCase):
         self.assertTrue(polls, seq)
         self.assertLess(max(posts), min(polls), seq)
         self.assertEqual([r["verdict"] for r in rows], ["PASS", "PASS"])
+
+    def test_large_upload_fetches_fresh_url_after_failure(self):
+        """The upload URL is single-use: a failed POST must not be replayed."""
+        p = self.make_file("release_tmp/darwin/amd64/provider", 200)
+        self.stub.fail_upload_posts = 1
+        proc, rows, _ = self.run_scan([p], VT_SMALL_MAX=100)
+        self.assertEqual(proc.returncode, 0, proc.stdout + proc.stderr)
+        urls = [1 for m, path in self.stub.requests if path == "/files/upload_url"]
+        self.assertEqual(len(urls), 2, self.stub.requests)
+        self.assertEqual(self.stub.large_posts, 1)
+        self.assertEqual(rows[0]["verdict"], "PASS")
+
+    def test_incomplete_headline_names_review_detections(self):
+        """An unscanned file plus a REVIEW artifact must not be called clean."""
+        import hashlib
+        ok = self.make_file("release_tmp/linux/amd64/urnet-docker", 40, b"r")
+        bad = self.make_file("release_tmp/linux/arm64/urnet-docker", 41, b"q")
+        sha = hashlib.sha256(b"r" * 40).hexdigest()
+        self.stub.files[sha] = {"malicious": 5, "suspicious": 0, "harmless": 0, "undetected": 55}
+        self.stub.upload_fail = True
+        proc, rows, summary = self.run_scan([ok, bad], VT_FAIL_THRESHOLD=10, VT_REVIEW_THRESHOLD=2)
+        self.assertEqual(proc.returncode, 0)
+        self.assertIn("**Result: INCOMPLETE**", summary)
+        self.assertIn("includes REVIEW-level detections", summary)
+        self.assertNotIn("is clean", summary)
 
     def test_upload_url_429_is_retried(self):
         p = self.make_file("release_tmp/windows/arm64/provider", 200)

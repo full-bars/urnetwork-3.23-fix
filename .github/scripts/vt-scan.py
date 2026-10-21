@@ -91,8 +91,12 @@ def _retry_after(err: urllib.error.HTTPError) -> float:
         return 0.0
 
 
-def call(url, data=None, method=None, headers=None):
-    """One API/upload request with 429 and 5xx backoff. Returns (code, dict)."""
+def call(url, data=None, method=None, headers=None, retries=None):
+    """One API/upload request with 429 and 5xx backoff. Returns (code, dict).
+
+    `retries=0` disables the internal retry loop, for requests that must not be
+    replayed against the same URL (a single-use upload URL).
+    """
     if not url.startswith("http"):
         url = API + url
     req_headers = {"x-apikey": os.environ["VT_API_KEY"]}
@@ -101,8 +105,9 @@ def call(url, data=None, method=None, headers=None):
     if isinstance(data, dict):
         payload = json.dumps(data).encode()
         req_headers.setdefault("Content-Type", "application/json")
+    attempts = RETRIES if retries is None else retries
     last = (0, {"raw": "not attempted"})
-    for attempt in range(RETRIES + 1):
+    for attempt in range(attempts + 1):
         _throttle()
         req = urllib.request.Request(url, data=payload, method=method)
         for k, v in req_headers.items():
@@ -123,7 +128,7 @@ def call(url, data=None, method=None, headers=None):
                     obj = {"raw": obj}
             except json.JSONDecodeError:
                 obj = {"raw": body[:300].decode(errors="replace")}
-            if (e.code == 429 or 500 <= e.code < 600) and attempt < RETRIES:
+            if (e.code == 429 or 500 <= e.code < 600) and attempt < attempts:
                 wait = _retry_after(e) if e.code == 429 else 0.0
                 wait = wait or min(60.0, 2.0 ** attempt)
                 print(f"    {e.code} — retry {attempt + 1}/{RETRIES} in {wait:.0f}s", flush=True)
@@ -132,7 +137,7 @@ def call(url, data=None, method=None, headers=None):
                 continue
             return e.code, obj
         except (urllib.error.URLError, TimeoutError, ConnectionError) as e:
-            if attempt < RETRIES:
+            if attempt < attempts:
                 wait = min(60.0, 2.0 ** attempt)
                 print(f"    network error ({e}) — retry in {wait:.0f}s", flush=True)
                 time.sleep(wait)
@@ -268,11 +273,13 @@ def write_summary(rows):
                 f.write(f"**Result: FAIL** — at least one artifact exceeds {FAIL_THRESHOLD} "
                         f"malicious detections. The release was blocked.\n\n")
             elif unknown:
+                subset = ("includes REVIEW-level detections" if worst > REVIEW_THRESHOLD
+                          else "is clean")
                 f.write(f"**Result: INCOMPLETE** — {len(unknown)} of {len(rows)} artifacts "
-                        f"could not be scanned (upload, lookup or analysis failure), so the "
-                        f"clean result below covers only the other {len(verified)}. The "
-                        f"unscanned artifacts are downloadable from this release; rescan them "
-                        f"before relying on a clear verdict.\n\n")
+                        f"could not be scanned (upload, lookup or analysis failure). The scanned "
+                        f"subset of {len(verified)} {subset}. The unscanned artifacts are "
+                        f"downloadable from this release; rescan them before relying on a clear "
+                        f"verdict.\n\n")
             elif worst > REVIEW_THRESHOLD:
                 f.write(f"**Result: REVIEW** — an artifact has more than {REVIEW_THRESHOLD} "
                         f"malicious detections but is at or below {FAIL_THRESHOLD}. Review "
@@ -326,15 +333,26 @@ def submit(path):
     """Upload one file. Returns (analysis_id, error)."""
     part, mp_headers = multipart(path)
     if os.path.getsize(path) > SMALL_MAX:
-        # Over the 32 MiB single-POST limit. The upload URL takes the SAME
-        # multipart POST as /files (a raw PUT answers 400 'Argument "file" is
-        # missing'), and each URL is single-use.
-        code, body = call("/files/upload_url")
-        data = body.get("data")
-        url = data.get("url") if isinstance(data, dict) else data
-        if code != 200 or not isinstance(url, str) or not url:
-            return None, f"upload_url failed ({code})"
-        code, body = call(url, data=part, method="POST", headers=mp_headers)
+        # The upload URL is single-use, so a retry has to start over with a
+        # fresh URL: the POST runs with retries disabled and the whole
+        # upload_url-then-POST sequence loops with backoff.
+        code, body = 0, {"raw": "not attempted"}
+        for attempt in range(RETRIES + 1):
+            ucode, ubody = call("/files/upload_url")
+            data = ubody.get("data")
+            url = data.get("url") if isinstance(data, dict) else data
+            if ucode != 200 or not isinstance(url, str) or not url:
+                return None, f"upload_url failed ({ucode})"
+            code, body = call(url, data=part, method="POST", headers=mp_headers, retries=0)
+            if code == 200:
+                break
+            retryable = code == 0 or code == 429 or code >= 500
+            if not retryable or attempt == RETRIES:
+                break
+            wait = min(60.0, 2.0 ** attempt)
+            print(f"    upload failed ({code}), fetching a fresh upload url in {wait:.0f}s",
+                  flush=True)
+            time.sleep(wait)
     else:
         code, body = call("/files", data=part, method="POST", headers=mp_headers)
     if code != 200:
