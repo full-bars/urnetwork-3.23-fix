@@ -32,7 +32,7 @@ common="$REPO/docker/scripts/provider_common.sh"
 {
     echo '#!/bin/sh'
     echo 'set -eu'
-    echo 'APP_DIR=/app'
+    echo 'APP_DIR=${HARNESS_APP_DIR:-/app}'
     echo 'PROVIDER_CHILD_PID=""'
     echo 'PROVIDER_STOPPING=0'
     for fn in log func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
@@ -133,7 +133,46 @@ else
     bad "crash scenario stub never started"
 fi
 
-# 3. Docker: the same shell as PID 1, stopped with `docker stop` (default 10s
+# 3. Hotswap successor: a provider started by an earlier supervisor is not this
+# shell's child, so `wait` cannot reap it. The stop trap must signal it too, or
+# PID 1 exits and Docker SIGKILLs the successor in the middle of its shutdown.
+# The stand-in is a real process whose argv matches the pgrep pattern, so this
+# exercises func_forward_stop's sweep rather than a stub of it. The harness gets
+# a private APP_DIR so the case cannot match (or signal) a provider on the host.
+successor_app="$tmp/app"
+mkdir -p "$successor_app"
+bash -c "exec -a \"$successor_app/urnetwork_fake provide\" sleep 30" &
+successor=$!
+i=0
+while [ "$i" -lt 50 ] && ! pgrep -f "^$successor_app/urnetwork_fake provide" >/dev/null 2>&1; do
+    sleep 0.1; i=$((i+1))
+done
+if ! pgrep -f "^$successor_app/urnetwork_fake provide" >/dev/null 2>&1; then
+    bad "successor stand-in never appeared in pgrep"
+    kill -KILL "$successor" 2>/dev/null
+else
+    out="$tmp/successor"; mkdir -p "$out"
+    OUT="$out" STUB="$tmp/stub.sh" HARNESS_APP_DIR="$successor_app" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+    sup=$!
+    if wait_file "$out/stub.pid"; then
+        kill -TERM "$sup"
+        i=0
+        while kill -0 "$sup" 2>/dev/null && [ "$i" -lt 50 ]; do sleep 0.1; i=$((i+1)); done
+        kill -KILL "$sup" 2>/dev/null
+        if kill -0 "$successor" 2>/dev/null; then
+            bad "hotswap successor survived the stop"
+            kill -KILL "$successor" 2>/dev/null
+        else
+            ok "hotswap successor was signalled and is gone"
+        fi
+    else
+        bad "successor case: supervisor never started"
+        kill -KILL "$sup" 2>/dev/null
+        kill -KILL "$successor" 2>/dev/null
+    fi
+fi
+
+# 4. Docker: the same shell as PID 1, stopped with `docker stop` (default 10s
 # timeout). Without the trap PID 1 ignores SIGTERM and the stop takes the full
 # timeout. Skipped when docker is not available.
 if command -v docker >/dev/null 2>&1 && docker info >/dev/null 2>&1; then
