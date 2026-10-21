@@ -144,7 +144,7 @@ _Fourth pre-release of the v33 line: rc3 plus the Bittensor mainnet operator sur
 
 ## [v3.23.0-fix.33.0-rc3]
 
-_Third pre-release of the v33 line: rc2 plus test-only fixes for the ICMP test isolation and the cancelled-sequence stats test; the runtime is unchanged from rc2. The line adds the receive-window advertisement the platform's modern-provider gate looks for, ICMP echo, the client dial-failure gates, provider-side fragment reassembly, and the network wallet consent commands. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc3.md`._
+_Third pre-release of the v33 line: test-only fixes for the ICMP test isolation and the cancelled-sequence stats test on top of rc2; the runtime is unchanged from rc2. See the rc2 entry for that release's features. Pre-release, invisible to `urnet-tools update`. Notes: `releases/v3.23.0-fix.33.0-rc3.md`._
 
 ## [v3.23.0-fix.33.0-rc2]
 

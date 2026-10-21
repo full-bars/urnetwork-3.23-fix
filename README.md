@@ -230,7 +230,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 | | Upstream | This fork |
 | :--- | :--- | :--- |
-| Control-plane dial visibility | One INFO line per backend dial (`[net][s]select`) | The same line plus dial time and a count of suppressed repeats (`dur=…ms`, `(N suppressed)`) |
+| Control-plane dial visibility | One `Debug(2)` line per backend dial (`[net][s]select`) | The same line promoted to INFO, plus dial time and a count of suppressed repeats (`dur=…ms`, `(N suppressed)`) |
 | Contract sizing | Fixed 1 MiB initial, 4-step ramp | Initial size follows the memory tier (128 KiB on small boxes, 256 KiB mid-range, 2 MiB on large ones) with a faster 3-step ramp |
 | Proxy startup | All at once | Jittered stagger with live `[pace]` warmup, plus a shared adaptive rate limiter that bounds aggregate auth load on the API |
 | Proxy changes | Restart required | Hot-reload via trigger file, zero downtime, with full added-proxy listing |

@@ -296,7 +296,7 @@ The `(N suppressed)` suffix ensures no errors are silently dropped — you see t
 ## 🛠️ Troubleshooting
 
 **`[net][s]select` not appearing in logs:**
-This is the control-plane dial line: one per backend dial, not relay traffic. Upstream logs it at INFO too; this fork adds the dial time (`dur=…ms`) and a count of suppressed repeats. If it is missing, the provider is not successfully connecting any proxies, so check auth and network connectivity.
+This is the control-plane dial line: one per backend dial, not relay traffic. Upstream logs it at INFO too; this fork adds the dial time (`dur=…ms`) and a count of suppressed repeats. A direct-only provider has no proxy source, so no backend dial is expected and the line is absent by design; only when proxy sources are configured does a missing line mean the provider is not connecting any of them, which is when to check auth and network connectivity.
 
 **High memory usage under load:**
 If RSS grows without bound, consider switching from turbo to the default profile or enabling eco mode. The Accordion window means idle connections are cheap, but connections that have ramped up to the ceiling will hold their window allocation until they go idle. Check `[health]` log lines to track heap trend over time and verify the `connections=N` count — if heap grows while connections stay flat, it may indicate a leak or oversized proxy list metadata.

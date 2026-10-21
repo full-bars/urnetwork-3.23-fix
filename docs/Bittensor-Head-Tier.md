@@ -28,7 +28,7 @@ No figures are given here, because they change.
 
 ## Prerequisites checklist
 
-1. The network wallet consent is signed. It covers every node you do not bind.
+1. The network wallet consent is signed. It covers every node you do not bind, except a node with its own per-provider consent, which wins for that node.
 2. A coldkey with enough TAO for the live burn, and a separate hotkey seed file.
 3. Nodes with stable, distinct egress IP ranges.
 4. One unique client key per bound node (see the blockers below).
@@ -64,7 +64,7 @@ All commands below are in this build's `provider` program. Seed files must be pr
    ```bash
    provider fleet status --manifest=<path> --client_id=<hex> --substrate=<ws_url> --rpc=<rpc_url>
    ```
-6. **About every 12 epochs,** bind again. **To leave,** revoke:
+6. **Rebind before the recorded `valid_to_epoch`,** with a few days of margin: a binding lasts at most 12 epochs (about 3 months) and an expired binding returns the node to the pool. **To leave,** revoke:
    ```bash
    provider fleet revoke --manifest=<path> --client_id=<hex> --client_seed_file=<path> --effective_epoch=<e> --rpc=<rpc_url> --relayer_key_file=<path>
    ```

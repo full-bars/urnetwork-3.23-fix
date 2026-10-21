@@ -25,7 +25,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `monitoring/` | The Prometheus and Grafana bundle. See [Monitoring](Monitoring.md). |
 | `pelican/` | The Pelican game-server panel egg. |
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
-| `docs/` | The documentation. `docs/*.md` is copied to the GitHub wiki on every push. `docs/guides/` and `docs/design/` are not. |
+| `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
 | `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. |
 

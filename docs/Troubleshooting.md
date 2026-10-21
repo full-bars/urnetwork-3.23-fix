@@ -232,7 +232,7 @@ These come from `provider claim`, `provider wallet challenge`, `provider wallet 
 | `seed file <path>: ...` | The 32-byte coldkey seed could not be used. It must be a regular file (not a symlink), mode 600, owned by the caller. |
 | `use either --coldkey_seed_file or --message with --signature, not both` | Give exactly one way to prove the coldkey. |
 
-`provider wallet challenge <coldkey_ss58>` prints the server's sign-in challenge so it can be signed elsewhere (btcli) and sent back with `--message`/`--signature`; the seed then never has to be on the node. `provider wallet set` sends the proof. The unsigned network wallet request is still refused unless `--legacy-network-wallet` is passed, and it is not paid, so standard operators should not use it.
+`provider wallet challenge <coldkey_ss58>` prints the network-wallet consent statement so it can be signed elsewhere (btcli) and sent back with `--message`/`--signature`; the seed then never has to be on the node. This is a consent, not a sign-in challenge. `provider wallet set` sends the proof. `--legacy-network-wallet` is only a local CLI gate for the old unsigned request: it does not make the platform accept it, the request is never paid, and standard operators should not use it.
 
 ### Hotkey, daemon and fleet messages
 

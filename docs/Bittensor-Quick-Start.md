@@ -34,9 +34,9 @@ Do these on **your own computer** (the one with your wallet's browser extension)
 1. **Have a wallet.** If you do not have one, install a Polkadot-style browser wallet extension (Talisman, SubWallet, Polkadot{.js} or Nova) and create an account. Write the recovery phrase on paper and keep it offline. The account address starts with `5`. This address is your coldkey.
 2. **Get the `provider` program** on that computer and log it in to your URnetwork account with an auth code from the website:
    ```bash
-   provider auth <auth_code>
+   provider auth
    ```
-   This only saves your login. It does not start a node.
+   Paste the code when prompted rather than passing it as an argument: an argument shows up in `ps` and in your shell history. This only saves your login. It does not start a node.
 3. **Sign the consent:**
    ```bash
    provider wallet sign <your_coldkey_address>
@@ -56,14 +56,14 @@ The step is the same for everyone. Nothing changes on the nodes.
 
 | You run your nodes with | What to do |
 |---|---|
-| **Docker** | Nothing in the containers. On your own computer: `provider auth <code>`, then `provider wallet sign <coldkey>`. |
-| **Linux install (urnet-tools)** | Nothing on the node. On your own desktop: `provider auth <code>`, then `provider wallet sign <coldkey>`. On a node, `urnet-tools wallet sign` refuses on purpose. |
-| **Windows** | On the PC with your wallet extension: `provider.exe auth <code>`, then `provider.exe wallet sign <coldkey>`. This has not been tested end to end on Windows yet, so check with `wallet status` afterwards. |
-| **The URnetwork app or ur.io** | A signing page is planned or rolling out in the apps. A plain "connect wallet" is **not enough**. If you use the app, confirm with `provider wallet status` afterwards. |
+| **Docker** | Nothing in the containers. On your own computer: `provider auth` (paste the code at the prompt), then `provider wallet sign <coldkey>`. |
+| **Linux install (urnet-tools)** | Nothing on the node. On your own desktop: `provider auth` (paste the code at the prompt), then `provider wallet sign <coldkey>`. On a node, `urnet-tools wallet sign` refuses on purpose. |
+| **Windows** | On the PC with your wallet extension: `provider.exe auth` (paste the code at the prompt), then `provider.exe wallet sign <coldkey>`. This has not been tested end to end on Windows yet, so check with `wallet status` afterwards. |
+| **The URnetwork app or ur.io** | App consent signing is unconfirmed. A plain "connect wallet" is **not enough**. If you use the app, run `provider wallet status` afterwards and do not assume the consent exists. |
 
 ## How to confirm it works
 
-1. Run `provider wallet status` again. A good result shows `network consent ... in effect now` (or `starts in 1 epoch(s)`) and a receipt line.
+1. Run `provider wallet status` again. A good result shows `network consent ... in effect now` (or `starts in 1 epoch(s)`). The `receipt` line appears only when the platform returns a mapping hash, so a missing receipt is not a failure.
 2. Your nodes just need to be healthy and carrying traffic. Nothing Bittensor-specific runs on a node.
 3. Optional dashboard: `urnet-tools sn-status` (Docker: `urnet-docker sn-status`). Look for the green `Wallet consent` line. The "Global Rank" lines there are the URnetwork bandwidth leaderboard. They do **not** say whether you qualify for anything on Bittensor.
 

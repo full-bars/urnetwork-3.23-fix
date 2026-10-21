@@ -133,7 +133,7 @@ The billable rate is the **lifetime byte counter's delta divided by the time del
 Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), host available MiB (min), swap used MiB (max), PSI full avg60 (mean and max), desired, trim cap, restarts, OOM kills. Every row shows before, after and the change. |
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
-| `report <url>` | Leftover; the hub that received reports was removed, so most operators never use it. Sets the URL the provider posts its bandwidth report to (`report off` disables). Writes an override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. |
+| `report <url>` | Leftover; the hub that received reports was removed, so most operators never use it. Sets the URL the provider posts its bandwidth report to (`report off` disables). Writes the lower-precedence override file the provider's bandwidth reporter re-reads on its next tick, so no restart is needed. A `report-url` set through the control socket takes precedence: while it exists, `report <url>` cannot change the effective URL and `report off` cannot disable it, so clear that override first. |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
 | `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
 

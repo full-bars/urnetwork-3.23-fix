@@ -52,7 +52,7 @@ Options:
 - `--wallet-from-epoch=<e> --wallet-through-epoch=<e>` pick an exact window. A window that would leave epochs unpaid is refused unless you set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1`. The window spans at most 65,536 epochs. A newer consent must start at a later epoch than the one it replaces.
 - A consent for one node only (a per-provider consent) wins over the network consent for that node. It shows up in `wallet status` as a `provider consent for client <id>` line.
 
-The old unsigned request (`provide --wallet=...`, `wallet set --legacy-network-wallet`, `POST /sn/wallet`) is not a consent and is not paid. Without `--legacy-network-wallet` it is refused and the provider keeps providing. Do not use it.
+The old unsigned request (`provide --wallet=...`, `wallet set --legacy-network-wallet`, `POST /sn/wallet`) is not a consent and is not paid. `--legacy-network-wallet` is a local CLI gate: it lets this client send the request, but it cannot make the platform accept it, and a direct `POST /sn/wallet` is not controlled by the flag at all. Without the flag the CLI refuses and the provider keeps providing. Do not use it.
 
 Docker users: you do not change the container command for this. A Docker run that still passes `--wallet=<coldkey>` and `--legacy-network-wallet` can drop both.
 

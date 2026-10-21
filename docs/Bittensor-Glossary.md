@@ -11,7 +11,7 @@ New to this? Start with the [Quick Start](Bittensor-Quick-Start.md). This page e
 | Coldkey | Your main wallet. The money goes here. Keep its secret offline. The address starts with `5`. |
 | Hotkey | A working key owned by a coldkey. You only need one for the head tier or hotkey sign-in. |
 | Seed / recovery phrase | The secret behind a key. Never put it on a node or in a command line. |
-| Network wallet consent | One signature from your coldkey that says "pay all nodes on my URnetwork account to this coldkey". This is the thing that gets you paid. |
+| Network wallet consent | One signature from your coldkey that says "pay all unbound pool nodes on my URnetwork account to this coldkey". It controls pool payouts only: a bound head-tier node is paid directly to the fleet hotkey instead, and a node with its own per-provider consent is paid to that consent. |
 | Login-proof wallet | The older website or app wallet link. It shows your address but payouts do not use it. |
 | Per-provider consent | A consent for one node only. It wins over the network consent for that node. |
 | Hotkey delegation | Pays a hotkey's account to a coldkey across many operators. Rarely needed. |
