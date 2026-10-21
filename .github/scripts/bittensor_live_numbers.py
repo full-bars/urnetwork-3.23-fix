@@ -215,14 +215,9 @@ def render_body(state: dict) -> str:
     immunity_days = state["immunity"] * BLOCK_SECONDS / 86400
     tempo_minutes = state["tempo"] * BLOCK_SECONDS / 60
 
-    ceiling = (
-        f"{tao(state['max_burn_rao'])} TAO"
-        if state["max_burn_rao"] is not None
-        else "not set on chain"
-    )
     rows = [
         ("Fleet seat registration burn", f"{tao(state['burn_rao'])} TAO (~${usd(seat_usd)})"),
-        ("Burn floor and ceiling", f"{tao(state['min_burn_rao'])} TAO / {ceiling}"),
+        ("Burn floor", f"{tao(state['min_burn_rao'])} TAO"),
         ("Seats in use", f"{state['uids']} of {SUBNET_UIDS}"),
         ("Registration open", "yes" if state["registration_allowed"] else "no"),
         ("Immunity after registering", f"{state['immunity']:,} blocks (~{immunity_days:.1f} days)"),

@@ -41,7 +41,7 @@ _Read from the chains by CI, weekly. Values last changed on 2026-10-21._
 | | Value |
 |---|---|
 | Fleet seat registration burn | 0.0005 TAO (~$0.14) |
-| Burn floor and ceiling | 0.0005 TAO / not set on chain |
+| Burn floor | 0.0005 TAO |
 | Seats in use | 256 of 256 |
 | Registration open | yes |
 | Immunity after registering | 21,600 blocks (~3.0 days) |
