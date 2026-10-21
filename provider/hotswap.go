@@ -271,6 +271,12 @@ func handoffDrainParent(ctx context.Context, cancel context.CancelFunc, session 
 			// Restart=on-failure (or the Docker supervision loop) restarts the unit
 			// instead of leaving the node silently offline after a clean exit(0).
 			critLog("FATAL: hotswap candidate died during parent drain; exiting non-zero for supervisor restart")
+			// No candidate is left to catch up, so this exit has to persist the
+			// counters itself: it skips main's shutdown block the same way the
+			// clean path does.
+			if err := connect.FlushMetricsCounters(); err != nil {
+				critLog("[metrics] counter flush at hotswap failure exit failed: %v", err)
+			}
 			exitFunc(1)
 			return
 		}
