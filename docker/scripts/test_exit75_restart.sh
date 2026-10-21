@@ -93,7 +93,9 @@ STUB_EOF
         esac
     fi
     {
-        echo "set -u"
+        # -e mirrors production: provider_common.sh runs under set -e, so the
+        # loop helpers must keep the supervisor alive through provider exits.
+        echo "set -eu"
         echo "export TEST_DIR='$test_dir'"
         echo "APP_DIR='$test_dir/app'"
         echo "A_SYS_ARCH='amd64'"
@@ -102,6 +104,10 @@ STUB_EOF
         echo "JWT_FILE='$jwt_file'"
         echo "USER_AUTH=''"
         echo "PASSWORD=''"
+        # provider_common.sh initializes these at the top; the extracted
+        # loop functions reference them under set -u, so set them here too.
+        echo "PROVIDER_STOPPING=0"
+        echo "PROVIDER_CHILD_PID=\"\""
         echo "log() { echo \"LOG: \$*\" >> '$test_dir/out.log'; }"
         echo "sleep() { :; }"
         echo "pgrep() { return 1; }"
@@ -109,6 +115,11 @@ STUB_EOF
         echo "func_check_credentials() { echo 'LOG: func_check_credentials called' >> '$test_dir/out.log'; }"
         echo ". '$REPO/docker/scripts/provider_env.sh'"
         extract_func "$REPO/docker/scripts/provider_common.sh" resolve_provider_env_args
+        # helpers come from the SAME file the loop comes from, so pelican's
+        # standalone copies are exercised and drift cannot hide here
+        for _h in func_exit_if_stopping func_sleep func_run_provider; do
+            extract_func "$src_file" "$_h" 2>/dev/null || extract_func "$REPO/docker/scripts/provider_common.sh" "$_h"
+        done
         extract_func "$src_file" "$fn_name"
         echo "$fn_name"
     } > "$runner"
