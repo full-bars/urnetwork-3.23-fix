@@ -67,9 +67,12 @@ func startUdpSocketReadTestFlow(
 		net.IPv4(127, 0, 0, 1).To4(), UDPPort(destinationPort),
 		settings,
 	)
+	// The socket takes an ephemeral local port. sourcePort only names the flow
+	// in its path; binding it for real made the test fail with "address already
+	// in use" whenever anything else on the runner held that port.
 	socket, err := net.DialUDP(
 		"udp",
-		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(sourcePort)},
+		&net.UDPAddr{IP: net.ParseIP("127.0.0.1")},
 		&net.UDPAddr{IP: net.ParseIP("127.0.0.1"), Port: int(destinationPort)},
 	)
 	if err != nil {
