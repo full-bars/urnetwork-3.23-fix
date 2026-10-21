@@ -16,6 +16,8 @@ _Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style versi
 
 ### Fixed
 
+- **`urnet_doh_failures_total` no longer drops to zero on every scrape**: the exported counter was fed by a read that swaps the count to zero for the health heartbeat, so a scrape saw the series fall back to zero. A cumulative counter now backs it.
+- **A restored total no longer shows up as a tick of traffic**: per-proxy rate and profit deltas skip a key's first sample, so a record that arrives carrying its persisted totals cannot appear at the lifetime rate.
 - **The installer installs missing curl and JSON dependencies** through the host's package manager (apt, dnf, yum, zypper, pacman, apk), honors `URNET_NO_AUTOINSTALL=1` on every path, uses `yum` when `dnf` is absent (Amazon Linux 2), and no longer prompts under a non-interactive run.
 
 ### Changed

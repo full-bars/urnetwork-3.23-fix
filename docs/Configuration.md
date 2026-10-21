@@ -41,6 +41,7 @@ Quick jump:
 | `UR_API_URL` | `https://api.bringyour.com` | Custom API URL, for operators running their own backend. Must be set together with `UR_CONNECT_URL`. Applied once at startup via `provider choose_network` and persisted to `~/.urnetwork/network.json`, so it survives restarts if that directory is on a volume, same as the JWT. |
 | `UR_CONNECT_URL` | `wss://connect.bringyour.com` | Custom connect (WebSocket signaling) URL, for operators running their own backend. Must be set together with `UR_API_URL`. See `UR_API_URL`. |
 | `URNETWORK_NODE_NAME` | hostname / redacted IP | Friendly label for dashboard identity and webhook alerts. |
+| `URNET_NO_AUTOINSTALL` | - | Installer only, not read by the provider. Set to `1` to stop the Linux installer from installing a missing downloader (`curl` or `wget`) or JSON parser (`jq` or `python3`) through the package manager; it stops with a message instead. See [Installation](Installation.md#-missing-download-and-json-tools). |
 | `HOST_HOSTNAME` | - | Pass the host server name into the container. Use `-e HOST_HOSTNAME=$(hostname)` with `docker run` or `HOST_HOSTNAME=${HOSTNAME}` in Compose. |
 
 ### ⚡ Performance & Hardware Profiles

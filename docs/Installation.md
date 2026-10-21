@@ -21,6 +21,14 @@ Uninstall:
 curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 ```
 
+### 🧰 Missing download and JSON tools
+
+The Linux installer needs a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`). On a minimal host that lacks one, it installs only what is missing through the host's package manager (apt, dnf, yum, zypper, pacman or apk), using `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so the installer uses `yum` there. Set `URNET_NO_AUTOINSTALL=1` to stop the installer from installing anything: it prints that it is not installing the tool and then stops with a message telling you what to install, so you can do it yourself.
+
+```bash
+curl -fSsL https://dl.fullbars.xyz/install.sh | URNET_NO_AUTOINSTALL=1 sh
+```
+
 ### 🔑 Post-Install Authentication
 
 After installation, source your terminal profile so the new commands are available in the terminal you installed from (new terminals, `ssh host urnet-tools ...`, cron and root find them without this step: the installer links `urnet-tools` and `urnetwork` into `~/.local/bin` and `/usr/local/bin` and writes the PATH block to `~/.bashrc`, `~/.profile` and `~/.zshenv`), and authenticate the provider. Then you can load your proxy list:

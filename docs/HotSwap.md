@@ -69,6 +69,10 @@ systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for
 > [!IMPORTANT]
 > Builds up to and including v3.23.0-fix.32.0 do not perform the unit migration on units with no `Type=` line, so on those the update always restarts. Once a node is on a build with the fix, the sequence above applies: the next update migrates and restarts, and the one after that hotswaps. If you would rather a node never hotswap, use `urnet-tools restart` after installing an update by hand.
 
+## Metrics counters across a swap
+
+The cumulative `urnet_*_total` counters live in `~/.urnetwork/metrics_counters.json`. The new process restores the stored totals but does not write while the old one is still serving. At takeover it catches up to whatever the old process wrote, and then starts the periodic write. The old process writes its final totals at the end of its drain, and the new one catches up again once the drain window has passed. If the new process dies during the drain, the old process writes its totals before it exits for the supervisor. A scrape therefore continues the series across the swap; see [Monitoring](Monitoring.md) for the dashboards' restart gate.
+
 ## What you will see
 
 `urnet-tools update` prints the download, the checksum check, the binary swap, then:

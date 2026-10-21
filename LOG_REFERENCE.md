@@ -813,6 +813,38 @@ Fires on the earning-windows tick when any PQE/classical session activity exists
 
 ---
 
+## 🔁 Counter Persistence (`[metrics]`)
+
+The cumulative `urnet_*_total` counters are stored in `~/.urnetwork/metrics_counters.json` so a restart continues the series instead of dropping to zero. The file is written every 45 seconds and on a clean shutdown. See [Monitoring](docs/Monitoring.md) for what is stored.
+
+```
+[metrics] cumulative counters persist across restarts in /home/user/.urnetwork/metrics_counters.json
+[metrics] counter persistence disabled: no provider state directory
+[metrics] counter restore skipped: <error>
+[metrics] counters not restored from <path>: <error> (starting from zero)
+[metrics] counter flush failed: <error>
+[metrics] final counter flush failed: <error>
+[metrics] final counter flush at hotswap exit failed: <error>
+[metrics] counter flush at hotswap failure exit failed: <error>
+[metrics] counter catch-up after takeover failed: <error>
+[metrics] delayed counter catch-up after takeover failed: <error>
+```
+
+| Message | Meaning |
+|---|---|
+| `cumulative counters persist across restarts in <path>` | Normal. Printed at start; the store is `<path>`. |
+| `counter persistence disabled: no provider state directory` | The provider found no state directory, so nothing is stored and the counters start at zero on every run. |
+| `counter restore skipped: <error>` / `counters not restored from <path>: <error> (starting from zero)` | The store could not be read or used, so this run starts its counters from zero. |
+| `counter flush failed: <error>` | A periodic write failed. The previous file is intact (writes go through a temporary file and a rename), so a crash now loses the counts since the last good write. |
+| `final counter flush failed: <error>` | The write at a clean shutdown failed. Same consequence: the counts since the last good write are lost. |
+| `final counter flush at hotswap exit failed: <error>` | The old process could not write its final totals at the end of a HotSwap drain. |
+| `counter flush at hotswap failure exit failed: <error>` | The HotSwap candidate died during the drain and the old process, exiting for the supervisor, could not write its totals. This line is also in the critical log. |
+| `counter catch-up after takeover failed` / `delayed counter catch-up after takeover failed` | The new process could not read the totals the old one wrote after the new one started, so counts the old process accrued in that window may be missing. |
+
+A crash or hard kill loses at most the counts since the last 45-second write.
+
+---
+
 ## ♾️ All-Time Lifetime Metrics (`[lifetime]`)
 
 ```
