@@ -41,7 +41,6 @@ NETUID = 25
 SUBNET_UIDS = 256
 COORDINATOR = "0xC18925925E2B7bb9059b7d696b8c92762AE86406"
 ORACLE = "0x56Ddfb8f3E267E98EfDa690110645f31365BCF03"
-SN25_LAUNCH_BLOCK = 9_239_923
 BLOCK_SECONDS = 12
 
 # Measured on 2026-10-21 with `forge test --match-test
@@ -49,13 +48,6 @@ BLOCK_SECONDS = 12
 # evm/test/ReleaseBindingPolicy.t.sol (avg of 3 calls). Re-measure when the
 # coordinator changes.
 BIND_GAS = 245_301
-
-TOPIC_COMMITMENT_MIRRORED = (
-    "0xbda6e2cfac3de3ebb9eab5eade9029089b278976df2c670f8d3cec84f6a536a8"
-)
-TOPIC_FLEET_BOUND = (
-    "0x3d5c5a5a3c1ac54617633434d0bb9cd70ae983788bf8a1231ef93905794ce9f7"
-)
 
 PAGE = Path("docs/Bittensor-Head-Tier.md")
 BEGIN = "<!-- BEGIN SN25 LIVE NUMBERS (generated) -->"
@@ -171,16 +163,6 @@ def read_state() -> dict:
     oracle = "0x" + eth_call("0x06d902e9")[-40:]
     paused = int(eth_call("0x5c975abb"), 16) == 1
 
-    launch = hex(SN25_LAUNCH_BLOCK)
-    mirrored = len(rpc("eth_getLogs", [{
-        "address": COORDINATOR, "fromBlock": launch, "toBlock": "latest",
-        "topics": [TOPIC_COMMITMENT_MIRRORED],
-    }]))
-    bound = len(rpc("eth_getLogs", [{
-        "address": COORDINATOR, "fromBlock": launch, "toBlock": "latest",
-        "topics": [TOPIC_FLEET_BOUND],
-    }]))
-
     if not 0 < burn_rao:
         raise SystemExit(f"implausible burn {burn_rao} rao")
     if max_burn_rao is not None and burn_rao > max_burn_rao:
@@ -202,8 +184,6 @@ def read_state() -> dict:
         "oracle_balance_wei": oracle_balance_wei,
         "oracle_is_active": oracle.lower() == ORACLE.lower(),
         "paused": paused,
-        "mirrored": mirrored,
-        "bound": bound,
         "tao_usd": tao_price(),
     }
 
@@ -225,8 +205,6 @@ def render_body(state: dict) -> str:
         ("Tempo", f"{state['tempo']:,} blocks (~{tempo_minutes:.0f} minutes)"),
         ("Gas price, chain 964", f"{state['gas_price_wei'] / 1e9:.1f} gwei"),
         ("One node binding", f"{BIND_GAS:,} gas, about {per_bind_tao:.6f} TAO (~${usd(bind_usd)})"),
-        ("Fleet commitments mirrored", f"{state['mirrored']}"),
-        ("Fleet bindings ever made", f"{state['bound']}"),
         ("Commitment oracle", f"active, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
         ("Coordinator", "paused" if state["paused"] else "not paused"),
     ]

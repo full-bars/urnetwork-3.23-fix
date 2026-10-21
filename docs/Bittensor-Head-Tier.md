@@ -36,7 +36,7 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
-_Live values · last changed 2026-10-21 22:26 UTC · checked hourly_
+_Live values · last changed 2026-10-21 22:31 UTC · checked hourly_
 
 | | Value |
 |---|---|
@@ -48,8 +48,6 @@ _Live values · last changed 2026-10-21 22:26 UTC · checked hourly_
 | Tempo | 360 blocks (~72 minutes) |
 | Gas price, chain 964 | 5.0 gwei |
 | One node binding | 245,301 gas, about 0.001227 TAO (~$0.34) |
-| Fleet commitments mirrored | 0 |
-| Fleet bindings ever made | 0 |
 | Commitment oracle | active, balance 0.0479 TAO |
 | Coordinator | not paused |
 <!-- END SN25 LIVE NUMBERS (generated) -->
@@ -138,7 +136,7 @@ Or let the binding run out at its `valid_to_epoch`. Either way the node goes bac
 
 > [!WARNING]
 > As of sn `83e6f48c2` (2026-10-21):
-> - **The commitment oracle is not mirroring.** The service key `0x56Dd…CF03` is funded and is the coordinator's active oracle, but nothing has been mirrored since the subnet launched and no fleet has bound; the live table above carries both counts. Until it runs, every `bind` fails with `StaleCommitment()`. Check before you spend anything.
+> - **The commitment oracle is not deployed.** Upstream's status (sn `mainnet/LAUNCH.md`) says the service is built but not deployed, so no fleet commitment is mirrored. The service key `0x56Dd…CF03` is already the coordinator's active oracle and holds a small balance, so the wiring is in place; until the service runs, every `bind` fails with `StaleCommitment()`. Check before you spend anything.
 > - **One client per node.** This build uses one `.provider.key` for every proxy client on a box, so at most **one client per node** can be a fleet member. Per-slot keys are only a design idea, not built.
 > - **No mainnet authority file is shipped.** Mainnet `register`, `publish`, `bind`, `status` and `revoke` need a runtime authority file and its approved hash. Where an ordinary operator gets this file is **not confirmed**.
 > - **Old fleets must republish.** Fleets published before 2026-10-15 hold an untagged commitment that the oracle never mirrors. Republish with `provider fleet publish`.
