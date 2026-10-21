@@ -74,7 +74,7 @@ The Prometheus `/metrics` endpoint is the supported path for fleet-wide observab
 urnet-tools metrics on        # starts the metrics listener, prints the scrape address
 ```
 
-The `monitoring/` bundle ships a ready-made Prometheus + Grafana stack. See [docs/Monitoring.md](docs/Monitoring.md). The generic `report` command posts provider telemetry to any configured URL (`urnet-tools report <url>` or `URNETWORK_REPORT_URL`). The standalone hub dashboard was removed in v3.23.0-fix.32.0.
+The `monitoring/` bundle ships a ready-made Prometheus + Grafana stack. See [docs/Monitoring.md](docs/Monitoring.md). The standalone hub dashboard was removed in v3.23.0-fix.32.0.
 
 ## Reference: All urnet-tools Commands
 
@@ -107,9 +107,7 @@ urnet-tools lowmode on|off         # reduced buffer allocations
 urnet-tools optimize               # apply Golden Fleet OS limits
 urnet-tools ramlogs on|off         # RAM-disk logging
 
-# Reporting & Metrics
-urnet-tools report <url>           # set the report URL (effective next tick)
-urnet-tools report off             # stop reporting
+# Metrics
 urnet-tools metrics on|off         # Prometheus /metrics listener
 
 # Maintenance
@@ -138,8 +136,6 @@ Key variables:
 | `UR_API_URL` / `UR_CONNECT_URL` | Custom API/connect backend (must be set together, Docker only) |
 | `ENABLE_VNSTAT` | Accepted, removed: vnStat and port 8080 are gone, a `true` value logs a warning |
 | `URNETWORK_PROFILE` | `auto` (tiers: low/balanced/perf/extreme), `lowmem`, `eco`, `turbo-v4`, `turbo-v8` |
-| `URNETWORK_REPORT_URL` | URL for bandwidth reports |
-| `URNETWORK_REPORT_INTERVAL` | Report interval (default 5m) |
 | `PROXY_URL` | Live proxy URL feed (comma-separated) |
 | `URNETWORK_HEALTH_INTERVAL` | Health heartbeat interval |
 | `URNETWORK_RAMLOGS` | `1` = log to /dev/shm |
@@ -160,17 +156,16 @@ Key variables:
 |------|---------|
 | `~/.local/share/urnetwork-provider/bin/urnetwork` | Provider binary |
 | `~/.local/share/urnetwork-provider/bin/urnet-tools` | CLI tool |
-| `~/.urnetwork/report_url` | URL this provider reports to |
 | `~/.config/systemd/user/urnetwork.service` | Provider systemd unit |
 | `~/.config/systemd/user/urnetwork.service.d/override.conf` | Provider env overrides |
 | `/dev/shm/urnetwork.log` | Provider ramdisk log (when ramlogs enabled) |
 
 ## Troubleshooting
 
-### Provider not reporting
-1. Check ramlog (if ramlogs enabled): `tail -100 /dev/shm/urnetwork.log | grep report`
-2. Check report URL: `cat ~/.urnetwork/report_url`
-3. Provider logs: `urnet-tools logs -i`
+### Provider not connecting
+1. Check status: `urnet-tools status`
+2. Provider logs: `urnet-tools logs -i`
+3. Check ramlog (if ramlogs enabled): `tail -100 /dev/shm/urnetwork.log`
 
 ## Documentation Index
 

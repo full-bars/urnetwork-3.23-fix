@@ -3179,22 +3179,7 @@ func provide(opts docopt.Opts) {
 
 	nodeName := strings.TrimSpace(os.Getenv("URNETWORK_NODE_NAME"))
 
-	// Determine a temporary display name for the outage watcher/heartbeat
-	watcherName := nodeName
-	if watcherName == "" {
-		watcherName, _ = os.Hostname()
-		if containerIDRe.MatchString(watcherName) {
-			watcherName = "provider"
-		}
-	}
-
 	go connect.HandleError(func() { runHealthHeartbeat(ctx, provideStartTime, os.Getenv("URNETWORK_PROFILE")) })
-	go connect.HandleError(func() {
-		runBandwidthReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	})
-	go connect.HandleError(func() {
-		runHeartbeatReporter(ctx, watcherName, watcherName, os.Getenv("URNETWORK_REPORT_URL"), provideStartTime)
-	})
 	go connect.HandleError(func() { runJWTRefresher(ctx, apiUrl) })
 	go connect.HandleError(func() { runEarningWindows(ctx) })
 	go connect.HandleError(func() { runLifetimeCollector(ctx) })

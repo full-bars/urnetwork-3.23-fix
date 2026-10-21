@@ -16,7 +16,7 @@ func TestRunHelpEveryCommand(t *testing.T) {
 	cmds := []string{
 		"providers", "list", "ps",
 		"status", "update", "proxy",
-		"summary", "report",
+		"summary",
 		"start", "stop", "restart", "logs",
 		"turbo", "eco", "lowmode", "ramlogs", "auto",
 		"optimize", "auto-start", "autostart", "auto-update", "autoupdate",
@@ -64,7 +64,6 @@ func TestRunNoProvidersOnBox(t *testing.T) {
 	cmds := [][]string{
 		{"status"},
 		{"summary"},
-		{"report"},
 		{"start"},
 		{"stop"},
 		{"restart"},
@@ -215,7 +214,7 @@ func TestParseGlobalFlagsYesIsForce(t *testing.T) {
 func TestRunDockerHelpEveryCommand(t *testing.T) {
 	for _, cmd := range []string{
 		"providers", "list", "ps", "status", "start", "stop", "restart", "logs",
-		"auth", "choose-network", "choose_network", "summary", "report",
+		"auth", "choose-network", "choose_network", "summary",
 		"self-heal", "selfheal", "set", "fast-auth", "fastauth", "session",
 		"proxy",
 	} {

@@ -231,7 +231,7 @@ func TestPressureStatusObservedJSONGolden(t *testing.T) {
 // for status only, and their only production reader is writePressureStatus.
 //
 // The metrics and telemetry surfaces (metrics_provider.go,
-// bandwidth_reporter.go, node_snapshot.go, proxy_grade_summary.go) are pinned
+// node_snapshot.go, proxy_grade_summary.go) are pinned
 // to the ACTUATING value on purpose for this phase: moving them to the
 // observed reading is a deliberate, visible change tracked separately.
 func TestConsumerCallSitesReadActuatingPressure(t *testing.T) {
@@ -251,7 +251,6 @@ func TestConsumerCallSitesReadActuatingPressure(t *testing.T) {
 		{"proxy_grade_paid.go", 2, 0, 0, 0},
 		// Telemetry surfaces and actuator-adjacent readers found in review:
 		// all read the actuating value and none may move to observed.
-		{"bandwidth_reporter.go", 1, 0, 0, 0},
 		{"metrics_provider.go", 1, 0, 0, 0},
 		{"node_snapshot.go", 1, 0, 0, 0},
 		{"proxy_grade_summary.go", 1, 0, 0, 0},

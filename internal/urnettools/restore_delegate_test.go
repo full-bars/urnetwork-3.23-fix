@@ -96,7 +96,6 @@ func TestFormatSetsEmpty(t *testing.T) {
 func TestSetKeyMapping(t *testing.T) {
 	want := map[string]string{
 		"node-name":         "node_name",
-		"report-interval":   "report_interval",
 		"proxy-url-max":     "proxy_url_max",
 		"proxy-url-refresh": "proxy_url_refresh",
 		"cleanup-scope":     "proxy_dead_cleanup_scope",
@@ -191,7 +190,7 @@ func TestFastAuthInvalidRejected(t *testing.T) {
 // silently discard must be rejected before the write.
 func TestValidateSetValue(t *testing.T) {
 	good := [][2]string{
-		{"report-interval", "30s"},
+		{"proxy-url-refresh", "30s"},
 		{"proxy-url-max", "500"},
 		{"cleanup-scope", "url"},
 		{"cleanup-interval", "1h"},
@@ -203,12 +202,12 @@ func TestValidateSetValue(t *testing.T) {
 		}
 	}
 	bad := [][2]string{
-		{"report-interval", "5s"},   // below 10s minimum
-		{"report-interval", "abc"},  // not a duration
-		{"proxy-url-max", "-1"},     // negative
-		{"proxy-url-max", "xyz"},    // not an int
-		{"cleanup-scope", "bogus"},  // not in enum
-		{"cleanup-interval", "30s"}, // below 1m minimum
+		{"proxy-url-refresh", "5s"},  // below 10s minimum
+		{"proxy-url-refresh", "abc"}, // not a duration
+		{"proxy-url-max", "-1"},      // negative
+		{"proxy-url-max", "xyz"},     // not an int
+		{"cleanup-scope", "bogus"},   // not in enum
+		{"cleanup-interval", "30s"},  // below 1m minimum
 	}
 	for _, kv := range bad {
 		if err := validateSetValue(kv[0], kv[1]); err == nil {

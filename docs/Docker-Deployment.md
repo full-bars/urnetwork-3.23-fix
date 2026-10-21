@@ -269,11 +269,6 @@ View a single-pane fleet overview showing proxy counts by source (file vs URL), 
 docker exec -it <container> provider proxy summary
 ```
 
-## 📡 Report URL (Leftover)
-
-> [!NOTE]
-> The fleet hub that used to receive bandwidth reports was removed in v32.0. The `report_url` file and `urnet-tools report` command still exist, but there is no official receiver, so most operators should ignore them. For fleet visibility turn on Prometheus metrics instead: `docker exec <container> urnet-tools metrics on` (see [Monitoring](Monitoring.md)).
-
 ## ♻️ Hot-Restart
 
 Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle: now the read path follows suit.

@@ -45,7 +45,6 @@ show_help ()
     echo "  proxy refresh            🔄  Re-read configs and hot-reload proxies"
     echo "  proxy summary            📊  Fleet summary (sources, health, counts)"
     echo "  proxy remove-dead        💀  Interactively prune dead/degraded/failing"
-    echo "  report [<url>|off]       📡  Show or set report URL"
     echo "  fast-auth [on|off]       ⚡  Bypass auth rate limiter without restart"
     echo "  self-heal [on|off]       🏥  Auto-regulate proxies (load gate + cleanup) (default: off)"
     echo "  set [<k> [<v>|off]]      ⚙   Show or change runtime tuning overrides"
@@ -3147,7 +3146,7 @@ _append_pending_op() {
 # replaced (queue_pending_override used to emit `"key": ramlogs` — value
 # unquoted — which is not valid JSON at all, so every queued override was
 # silently unparseable and mergePendingOverrides() never applied it).
-# Values here can carry ", \ or a newline (e.g. a report_url with a query
+# Values here can carry ", \ or a newline (e.g. a node_name with a query
 # string); an unescaped one silently corrupts the queue file the provider
 # parses at startup. Parity with urnet-tools' Go json.Marshal. POSIX sh only
 # (no ANSI-C $'...' quoting — this script runs under dash).
@@ -3157,7 +3156,7 @@ json_string() {
         -e 's/	/\\t/g' \
         -e 's/\r/\\r/g')"
     # Embedded newlines are not handled here (sed is line-oriented); callers
-    # pass single-line values (keys, report_url, profile names, toggles).
+    # pass single-line values (keys, profile names, toggles).
 }
 
 # queue_pending_override KEY VALUE [HOME_DIR]
@@ -3622,35 +3621,6 @@ setup_zram_manual () {
     return 1
 }
 
-do_report ()
-{
-    mode="$1"
-
-    if [ -z "$mode" ]; then
-        # Show current setting
-        url=$(read_control_value report_url)
-        if [ -n "$url" ]; then
-            pr_info "Report URL: %s" "$url"
-        else
-            pr_info "Report URL: not configured"
-        fi
-        return
-    fi
-
-    case "$mode" in
-        off)
-            pr_info "Removing report URL (takes effect on next provider restart)..."
-            queue_pending_clear "report_url"
-            pr_info "Report URL removed. Restart provider to apply: %s" "$(urnetwork_service_restart_hint)"
-            ;;
-        *)
-            pr_info "Setting report URL to %s (takes effect on next provider restart)..." "$mode"
-            queue_pending_override "report_url" "$mode"
-            pr_info "Report URL set to %s. Restart provider to apply: %s" "$mode" "$(urnetwork_service_restart_hint)"
-            ;;
-    esac
-}
-
 do_self_heal ()
 {
     file="$HOME/.urnetwork/proxy_self_heal"
@@ -3722,7 +3692,6 @@ _set_key_to_file ()
 {
     case "$1" in
         node-name)         echo "node_name" ;;
-        report-interval)   echo "report_interval" ;;
         proxy-url-max)     echo "proxy_url_max" ;;
         proxy-url-refresh) echo "proxy_url_refresh" ;;
         cleanup-scope)     echo "proxy_dead_cleanup_scope" ;;
@@ -3750,7 +3719,6 @@ do_set ()
         echo "Available keys:"
         echo ""
         echo "  node-name           <string>    Node name reported to the fleet (default: hostname)"
-        echo "  report-interval     <duration>  Bandwidth report cadence (default: 5m, min: 10s)"
         echo "  proxy-url-max       <int>       Max proxies from URL feeds, 0 = unlimited (default: 0)"
         echo "  proxy-url-refresh   <duration>  URL proxy list refresh interval (default: 1h, min: 10s)"
         echo "  cleanup-scope       none|url|all  Dead proxy auto-cleanup scope (default: none)"
@@ -3765,7 +3733,7 @@ do_set ()
         # Show all active overrides
         pr_info "Runtime overrides (%s/):" "$base_dir"
         found=0
-        for name in node_name report_interval proxy_url_max proxy_url_refresh \
+        for name in node_name proxy_url_max proxy_url_refresh \
                     proxy_dead_cleanup_scope proxy_dead_cleanup_interval fast_auth; do
             file="$base_dir/$name"
             [ -f "$file" ] || continue
@@ -3783,7 +3751,7 @@ do_set ()
     filename=$(_set_key_to_file "$key")
     if [ -z "$filename" ]; then
         pr_err "Unknown key: %s" "$key"
-        pr_err "Valid keys: node-name, report-interval, proxy-url-max, proxy-url-refresh,"
+        pr_err "Valid keys: node-name, proxy-url-max, proxy-url-refresh,"
         pr_err "            cleanup-scope, cleanup-interval, fast-auth"
         exit 1
     fi
@@ -4525,11 +4493,6 @@ case "$operation" in
 
     proxy)
         do_proxy "$@"
-        exit 0
-        ;;
-
-    report)
-        do_report "$@"
         exit 0
         ;;
 

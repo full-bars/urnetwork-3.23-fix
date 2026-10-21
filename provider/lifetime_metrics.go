@@ -18,8 +18,8 @@ import (
 // collectors (never absolute assignments — a counter reset between ticks
 // must not corrupt history), and flushed to disk throttled.
 //
-// File format is JSON under ~/.urnetwork/ (same home for fast_auth,
-// report_url, pressure_status). Writes are atomic: temp file + rename, so a
+// File format is JSON under ~/.urnetwork/ (same home for fast_auth and
+// pressure_status). Writes are atomic: temp file + rename, so a
 // crash mid-write can never leave a half-written store. Flushes happen on a
 // throttle (min interval between disk writes) plus a final flush on context
 // cancellation; worst case a hard kill loses at most one throttle window of
