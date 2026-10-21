@@ -184,6 +184,7 @@ urnetwork-3.23-fix/
 │   ├── docker-shakedown.yml      # Docker shakedown on v3.23.0-fix.* tags
 │   ├── codeql.yml                # Weekly scheduled CodeQL security scan
 │   ├── dash-compat.yml           # Dash/POSIX compatibility check
+│   ├── installer-matrix.yml      # Real installer on debian 12/13, almalinux 9, alpine (tags, installer PRs, manual)
 │   ├── unix-lifecycle.yml        # Unix lifecycle verification (push to main + PR)
 │   ├── windows-lifecycle.yml     # Windows lifecycle verification (push to main + PR)
 │   ├── lifecycle-stress.yml      # Lifecycle stress test (PRs touching provider/, daily, manual)
