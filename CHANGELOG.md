@@ -2,12 +2,12 @@
 
 ## [v3.23.0-fix.34.2]
 
-_Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, its metrics counters survive a restart, the build moves to Go 1.27.3 for the compromised-certificate block (CVE-2026-111943), the retired hub report commands are removed, plus the Linux installer distro fixes. No operator action beyond the normal update and restart. Notes: `releases/v3.23.0-fix.34.2.md`._
+_Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, its metrics counters survive a restart, the build moves to Go 1.27.3 for the compromised-certificate block (CVE-2026-111943), the retired hub report commands are removed, plus the Linux installer distro fixes. No operator action beyond the normal update and restart is required unless a script or cron job still calls a retired report command or sets a retired `URNETWORK_REPORT_*` variable; remove those calls and settings. Notes: `releases/v3.23.0-fix.34.2.md`._
 
 ### Added
 
 - **The provider reports an upstream-style `app_version` to the backend**: the connect auth now carries `YYYY.M.D-<code>-fix.N.M` (for example `2026.10.20-1076955500-fix.34.1`) instead of the git tag, which the platform filed under `other`. The date is the tagged commit's UTC date, the code is the house build code (`(seconds since 2023-05-23) x 10`), and `fix.N.M` is the release. Logs, metrics, hotswap, the dashboard label and the update checks keep the git tag. A build without the `main.AuthVersion` flag reports its plain version.
-- **Cumulative metrics counters survive a restart**: the counters behind `/metrics` (`urnet_*_total`) are stored in `~/.urnetwork/metrics_counters.json` and restored at start, and the HotSwap parent flushes them before it exits, so a restart, reboot, upgrade or crash no longer resets a 24-hour attribution window.
+- **Cumulative metrics counters survive a restart**: the counters behind `/metrics` (`urnet_*_total`) are stored in `~/.urnetwork/metrics_counters.json` and restored at start, are written every 45 seconds and on a clean shutdown, and the HotSwap parent flushes them before it exits, so a restart, reboot or upgrade no longer resets a 24-hour attribution window. A crash or hard kill loses at most the counts since the last write.
 
 ### Security
 
