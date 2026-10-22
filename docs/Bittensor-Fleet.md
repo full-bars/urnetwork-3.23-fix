@@ -34,7 +34,7 @@ The file must be exactly the canonical form: lowercase `0x` hex, members sorted 
 The commitment sha256 is the value the fleet hotkey writes to Subtensor's commitments pallet; each dual-signed binding carries it together with its own epoch window, so one committed generation can be activated at the next safe coordinator boundary.
 
 > [!NOTE]
-> The manifest is immutable input, not configuration to be edited in place. Changing members means a new generation and a new publish; an edited manifest will not parse and will not match the on-chain commitment.
+> The manifest is immutable input, not configuration to be edited in place. Changing members or the generation means a new generation and a new publish, because the edited file no longer matches the on-chain commitment. Only a formatting or schema violation makes the file fail to parse.
 
 ## The command surface
 
