@@ -22,7 +22,7 @@ jobs:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Fetch upstream CFAA blocklist
+      - name: Fetch upstream blocklists
         uses: actions/github-script@v7
         id: fetch
         with:
@@ -32,50 +32,66 @@ jobs:
             const fs = require('fs');
 
             const upstreamRepo = 'urnetwork/connect';
-            const upstreamFile = 'ip_security_cfaa_block.go';
 
-            // Fetch upstream main
+            // Both tables come from upstream's security pipeline and are never
+            // hand-edited in the fork. Syncing only the CFAA file left
+            // ip_blocker_block.go drifting, so the pair moves together now.
+            const files = [
+              { name: 'ip_security_cfaa_block.go' },
+              { name: 'ip_blocker_block.go' },
+            ];
+
             execSync(`git fetch --depth=1 https://github.com/${upstreamRepo}.git HEAD`, { stdio: 'pipe' });
             const sha = execSync('git rev-parse FETCH_HEAD', { encoding: 'utf-8' }).trim();
 
-            // Get upstream file content (redirect to file to avoid ENOBUFS on 4MB+ file)
-            execSync(`git show ${sha}:${upstreamFile} > /tmp/upstream_cfaa.go`, { stdio: 'pipe' });
-            const upstreamContent = fs.readFileSync('/tmp/upstream_cfaa.go', 'utf-8');
+            // The tables are multi-megabyte single lines, so read them from disk.
+            for (const f of files) {
+              const tmp = `/tmp/upstream_${f.name}`;
+              execSync(`git show ${sha}:${f.name} > ${tmp}`, { stdio: 'pipe' });
+              f.upstream = fs.readFileSync(tmp, 'utf-8');
+              f.fork = fs.readFileSync(f.name, 'utf-8');
+              f.identical = f.upstream === f.fork;
+            }
 
-            // Extract constants
             const extractConst = (content, name) => {
-              const m = content.match(new RegExp(`${name}\\s*=\\s*(\\d+)`));
-              return m ? parseInt(m[1]) : 0;
+              const m = content.match(new RegExp(name + '\\s*=\\s*(\\d+)'));
+              return m ? parseInt(m[1], 10) : 0;
             };
 
-            const upstreamV4 = extractConst(upstreamContent, 'cfaaBlockedPrefixCount');
-            const upstreamV6 = extractConst(upstreamContent, 'cfaaBlockedPrefix6Count');
+            const cfaa = files[0];
+            const blocker = files[1];
 
-            const forkContent = fs.readFileSync(upstreamFile, 'utf-8');
-            const forkV4 = extractConst(forkContent, 'cfaaBlockedPrefixCount');
-            const forkV6 = extractConst(forkContent, 'cfaaBlockedPrefix6Count');
+            const cfaaUpV4 = extractConst(cfaa.upstream, 'cfaaBlockedPrefixCount');
+            const cfaaUpV6 = extractConst(cfaa.upstream, 'cfaaBlockedPrefix6Count');
+            const cfaaForkV4 = extractConst(cfaa.fork, 'cfaaBlockedPrefixCount');
+            const cfaaForkV6 = extractConst(cfaa.fork, 'cfaaBlockedPrefix6Count');
+            const blockerUpHosts = extractConst(blocker.upstream, 'blockerBlockedHostCount');
+            const blockerForkHosts = extractConst(blocker.fork, 'blockerBlockedHostCount');
 
-            const filesIdentical = upstreamContent === forkContent;
+            const allIdentical = cfaa.identical && blocker.identical;
 
-            console.log(`Upstream: IPv4=${upstreamV4}, IPv6=${upstreamV6}, SHA=${sha}`);
-            console.log(`Fork:     IPv4=${forkV4}, IPv6=${forkV6}`);
-            console.log(`Files identical: ${filesIdentical}`);
+            console.log(`Upstream SHA: ${sha}`);
+            console.log(`CFAA:  fork v4=${cfaaForkV4} v6=${cfaaForkV6} -> upstream v4=${cfaaUpV4} v6=${cfaaUpV6} identical=${cfaa.identical}`);
+            console.log(`BLOCK: fork hosts=${blockerForkHosts} -> upstream hosts=${blockerUpHosts} identical=${blocker.identical}`);
 
             core.setOutput('upstream_sha', sha);
-            core.setOutput('upstream_v4', upstreamV4);
-            core.setOutput('upstream_v6', upstreamV6);
-            core.setOutput('fork_v4', forkV4);
-            core.setOutput('fork_v6', forkV6);
-            core.setOutput('files_identical', filesIdentical);
+            core.setOutput('upstream_v4', cfaaUpV4);
+            core.setOutput('upstream_v6', cfaaUpV6);
+            core.setOutput('fork_v4', cfaaForkV4);
+            core.setOutput('fork_v6', cfaaForkV6);
+            core.setOutput('upstream_hosts', blockerUpHosts);
+            core.setOutput('fork_hosts', blockerForkHosts);
+            core.setOutput('cfaa_identical', cfaa.identical);
+            core.setOutput('blocker_identical', blocker.identical);
+            core.setOutput('files_identical', allIdentical);
 
       - name: Write sync info JSON
-        run: bash .github/scripts/write_sync_info.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.files_identical }}"
+        run: bash .github/scripts/write_sync_info.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.files_identical }}" "${{ steps.fetch.outputs.upstream_hosts }}" "${{ steps.fetch.outputs.fork_hosts }}" "${{ steps.fetch.outputs.cfaa_identical }}" "${{ steps.fetch.outputs.blocker_identical }}"
 
       - name: Skip if no changes needed
         if: steps.fetch.outputs.files_identical == 'true'
         run: |
-          echo "CFAA blocklist is already in sync. Nothing to do."
-          exit 0
+          echo "Both blocklists are already in sync. Nothing to do."
 
       - name: Import GPG key
         if: steps.fetch.outputs.files_identical == 'false'
@@ -98,7 +114,7 @@ jobs:
 
       - name: Create branch and apply changes
         if: steps.fetch.outputs.files_identical == 'false'
-        run: bash .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}"
+        run: bash .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.upstream_hosts }}" "${{ steps.fetch.outputs.fork_hosts }}" "${{ steps.fetch.outputs.cfaa_identical }}" "${{ steps.fetch.outputs.blocker_identical }}"
 
       - name: Push and open PR
         if: steps.fetch.outputs.files_identical == 'false'
