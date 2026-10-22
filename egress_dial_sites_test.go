@@ -163,6 +163,11 @@ func TestNormalStrategyDialPassesThroughEgressControl(t *testing.T) {
 	SetEgressInterfaceIndex(0, 0)
 
 	serverTls := selfSignedTlsConfig(t)
+	// the strategy's websocket path offers http/1.1
+	// (clientWebSocketNextProtos); this test dials it, and the h3 fixture's
+	// server advertises h3count only, which has no overlap. ALPN is not what
+	// this test checks.
+	serverTls.NextProtos = nil
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
 		t.Fatal(err)
