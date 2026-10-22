@@ -74,7 +74,7 @@ func TestNLayerLimitedHop(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(ctx, lonely.connectSettings(), lonely.extenderConfig(connect.ExtenderCarrierTcp), &connect.ExtenderDial{
+	conn, _, err := connect.DialExtender(ctx, lonely.connectSettings(), lonely.extenderConfig(connect.ExtenderCarrierTcp), &connect.ExtenderDial{
 		Service: connect.ExtenderServiceProbe,
 	})
 	if conn != nil {

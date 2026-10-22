@@ -98,7 +98,7 @@ func (self *relayEndpoint) dialContext(
 func relayTestSession(fixture *extenderFixture, carrier string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(
+	conn, _, err := connect.DialExtender(
 		ctx,
 		fixture.connectSettings(),
 		fixture.extenderConfig(carrier),

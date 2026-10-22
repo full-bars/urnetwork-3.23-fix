@@ -19,9 +19,7 @@ package connect
 
 import (
 	"context"
-	"crypto/tls"
 	"encoding/binary"
-	"errors"
 	"fmt"
 	"io"
 	"math/rand"
@@ -210,47 +208,6 @@ func JitterExtenderLimitedBackoff(retryAfter time.Duration, defaultBackoff time.
 		return 0
 	}
 	return backoff/2 + time.Duration(rand.Int63n(int64(backoff)+1))
-}
-
-// errExtenderCarriersUnbuilt is the phase-1 answer of the carrier dial: the
-// directory, the feed client and the network client are in place, and the
-// carrier that would carry a feed frame is the next phase. It is a plain
-// error, never a retryable outcome, so a caller records no failure against an
-// address for it.
-var errExtenderCarriersUnbuilt = errors.New("the extender carrier layer is not built in this phase")
-
-// DialExtender opens one carrier, performs the extender request and returns
-// the raw stream that follows the response. The caller owns the returned
-// connection, which for the udp carriers also owns the QUIC connection and its
-// socket. The gossip and feed clients use this directly; an ordinary dial goes
-// through the tls dialer, which runs the inner TLS on top.
-//
-// Phase 1: the carrier layer is not built, so this reports
-// errExtenderCarriersUnbuilt. The signature is the one the carrier phase
-// fills in, and nothing here references the carrier internals.
-func DialExtender(
-	ctx context.Context,
-	connectSettings *ConnectSettings,
-	extenderConfig *ExtenderConfig,
-	extenderDial *ExtenderDial,
-) (net.Conn, *protocol.ExtenderResponse, error) {
-	return nil, nil, errExtenderCarriersUnbuilt
-}
-
-// The dns carrier: over the dns packet translation, raced over the config's
-// dns ports (net_extender_dns_ports.go). Phase 1 leaves the carrier itself to
-// the carrier phase, so this reports errExtenderCarriersUnbuilt for each port
-// it is asked to dial; the caller's port race and its cancellation are the
-// same here as they will be with a real dial.
-func dialExtenderQuic(
-	ctx context.Context,
-	connectSettings *ConnectSettings,
-	extenderConfig *ExtenderConfig,
-	extenderTlsConfig *tls.Config,
-	headerBytes []byte,
-	roundTrip *ExtenderRoundTrip,
-) (net.Conn, *protocol.ExtenderResponse, error) {
-	return nil, nil, errExtenderCarriersUnbuilt
 }
 
 // withConnWritePhaseDeadline bounds a synchronous connection write phase by

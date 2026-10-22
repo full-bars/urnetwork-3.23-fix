@@ -169,7 +169,7 @@ func TestExtenderQuicCarrierHandshakesOnVersion2(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(
+	conn, _, err := connect.DialExtender(
 		ctx,
 		connectSettings,
 		fixture.extenderConfig(connect.ExtenderCarrierQuic),

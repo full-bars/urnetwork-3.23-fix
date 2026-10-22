@@ -158,7 +158,7 @@ func TestExtenderRefusesUnauthorizedRequests(t *testing.T) {
 			extenderConfig := fixture.extenderConfig(carrier)
 			extenderConfig.Secret = c.secret
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			conn, _, err := extenderTestDial(ctx, fixture.connectSettings(), extenderConfig, c.extenderDial)
+			conn, _, err := connect.DialExtender(ctx, fixture.connectSettings(), extenderConfig, c.extenderDial)
 			cancel()
 			if conn != nil {
 				conn.Close()
@@ -218,7 +218,7 @@ func TestExtenderSecretsGateTheRequest(t *testing.T) {
 		extenderConfig := fixture.extenderConfig(connect.ExtenderCarrierTcp)
 		extenderConfig.Secret = c.secret
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		conn, _, err := extenderTestDial(
+		conn, _, err := connect.DialExtender(
 			ctx,
 			fixture.connectSettings(),
 			extenderConfig,
@@ -276,7 +276,7 @@ func TestExtenderChallengeResponseVerifies(t *testing.T) {
 			t.Fatal(err)
 		}
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		conn, response, err := extenderTestDial(
+		conn, response, err := connect.DialExtender(
 			ctx,
 			fixture.connectSettings(),
 			fixture.extenderConfig(carrier),
@@ -315,7 +315,7 @@ func TestExtenderWithoutAnIdentityKeyPublishesNothing(t *testing.T) {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, response, err := extenderTestDial(
+	conn, response, err := connect.DialExtender(
 		ctx,
 		fixture.connectSettings(),
 		fixture.extenderConfig(connect.ExtenderCarrierTcp),
@@ -370,7 +370,7 @@ func TestExtenderOuterCertificateVerifiesAgainstTheRecordKey(t *testing.T) {
 		verifiedConfig := fixture.extenderConfig(carrier)
 		verifiedConfig.PublicKey = []byte(publicKey)
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		conn, _, err := extenderTestDial(
+		conn, _, err := connect.DialExtender(
 			ctx,
 			fixture.connectSettings(),
 			verifiedConfig,
@@ -385,7 +385,7 @@ func TestExtenderOuterCertificateVerifiesAgainstTheRecordKey(t *testing.T) {
 		substitutedConfig := fixture.extenderConfig(carrier)
 		substitutedConfig.PublicKey = []byte(otherPublicKey)
 		ctx, cancel = context.WithTimeout(context.Background(), 20*time.Second)
-		conn, _, err = extenderTestDial(
+		conn, _, err = connect.DialExtender(
 			ctx,
 			fixture.connectSettings(),
 			substitutedConfig,
@@ -417,7 +417,7 @@ func TestExtenderWithoutAnIdentityKeyFailsRecordVerification(t *testing.T) {
 	extenderConfig.PublicKey = []byte(publicKey)
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(
+	conn, _, err := connect.DialExtender(
 		ctx,
 		fixture.connectSettings(),
 		extenderConfig,
@@ -468,7 +468,7 @@ func TestExtenderServicesReachTheirHandlers(t *testing.T) {
 	for _, carrier := range carriers {
 		for _, c := range cases {
 			ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			conn, _, err := extenderTestDial(
+			conn, _, err := connect.DialExtender(
 				ctx,
 				fixture.connectSettings(),
 				fixture.extenderConfig(carrier),
