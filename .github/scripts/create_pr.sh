@@ -3,7 +3,7 @@
 set -euo pipefail
 
 BRANCH_NAME=$(git branch --show-current)
-PR_TITLE="chore(security): sync CFAA blocklist from upstream"
+PR_TITLE="chore(security): sync upstream blocklists (CFAA + IP blocker)"
 PR_BODY_FILE="/tmp/cfaa_pr_body.md"
 
 git push --force origin "$BRANCH_NAME"
