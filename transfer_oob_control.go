@@ -155,6 +155,20 @@ func (self *ApiOutOfBandControl) SendControl(
 				safeCallback(nil, err)
 				return
 			}
+			// A null reply decodes to no result at all, and this line's older
+			// decode reports that as neither a result nor an error. It is not
+			// a processed control either.
+			if result == nil {
+				safeCallback(nil, errors.New("connect control response is missing"))
+				return
+			}
+			// A reply can be delivered and still be a refusal: the server
+			// answers the application error inside the result. It is not a
+			// processed control, so it never reaches the caller as one.
+			if result.Error != nil {
+				safeCallback(nil, errors.New("connect control rejected: "+result.Error.Message))
+				return
+			}
 
 			packBytes, err := DecodeBase64(base64.StdEncoding, result.Pack)
 			if err != nil {

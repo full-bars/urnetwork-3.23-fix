@@ -376,7 +376,8 @@ type ConnectControlArgs struct {
 }
 
 type ConnectControlResult struct {
-	Pack string `json:"pack"`
+	Pack  string               `json:"pack"`
+	Error *ConnectControlError `json:"error"`
 }
 
 type ConnectControlError struct {
