@@ -1,5 +1,24 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **PQE handshake stages and negotiated curves** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/944>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/946>): the `[pqe]` line reports `attempts`, `tls_ok`, `verified` and `identity_failed`, plus a per-curve histogram. `/metrics` carries the same data as `urnet_sessions_handshake_total{stage=...}` and `urnet_sessions_curve_total{curve=...}`, and two dashboard panels show both rates. A zero classical count is now explainable instead of ambiguous.
+
+### Fixed
+
+- **A `docker stop` skipped the shutdown path** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/940>): a shell as PID 1 has no default action for SIGTERM, so the provider never heard the stop and Docker SIGKILLed the container at the grace timeout. The supervisor forwards the signal and waits for the successor.
+- **The nightly updater could pick another platform's tarball** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/940>): the asset is now matched against this architecture.
+- **A completed handshake could go uncounted** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/944>): an epoch that was superseded before verification returned early, so the attempt looked like a TLS failure. A failed identity proof could also be counted by every concurrent verifier. Both count once now.
+- **Lifetime session counters dropped on proxy exit** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/946>): a `_total` could decrease and `rate()` read it as a reset. A departing manager's counts fold into a provider-wide accumulator first.
+
+### Changed
+
+- **The IP blocker table syncs with CFAA** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/947>): the scheduled job pulled one file, so the blocker table drifted unseen. Both files sync now, and a check fails on drift.
+- **SN25 costs are published from the chain** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/941>): the head-tier cost table is regenerated on a schedule instead of promising a manual check.
+- **Four Bittensor claims are corrected** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/945>): the v1 and v2 claim triggers, the quoted challenge message, the stopped-daemon caveat for unsigned v1 claims, and the consent scope.
+
 ## [v3.23.0-fix.34.2]
 
 _Patch release on v3.23.0-fix.34.1: the provider reports an upstream-style version to the backend, its metrics counters survive a restart, the build moves to Go 1.27.3 for the compromised-certificate block (CVE-2026-111943), the retired hub report commands are removed, plus the Linux installer distro fixes. No operator action beyond the normal update and restart is required unless a script or cron job still calls a retired report command or sets a retired `URNETWORK_REPORT_*` variable; remove those calls and settings. Notes: `releases/v3.23.0-fix.34.2.md`._
