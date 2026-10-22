@@ -15,7 +15,8 @@ A fork of the **UrNetwork Connect** provider, tuned for people who run many prox
 2. **Log in.** Run `urnetwork auth` and paste your auth code from the UrNetwork app when asked.
 3. **Add proxies (optional).** `urnet-tools proxy add ~/proxies.txt`, then `urnet-tools proxy refresh`. See [Adding Proxies](docs/Adding-Proxies.md).
 4. **Check that it works.** Run `urnet-tools status`. It shows whether the provider is running. Run `urnet-tools logs` to watch it start. For a live screen, run `urnet-tools top`.
-5. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
+5. **Get paid on Bittensor (optional).** Sign one wallet message, once, from your own computer. Your nodes do not change. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
+6. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
 
 If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md). If you would rather follow a guide, pick one from the next section.
 
@@ -271,7 +272,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
 | `urnet-tools summary` | You want a single-pane fleet overview -- sources, health, URL cache status |
 | `urnet-tools proxy refresh` | You updated your proxy list and want the node to reload live |
-| `urnet-tools hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; `off` sets `URNETWORK_HOT_RESTART=0`) |
+| `urnet-tools set hot-restart on/off` | Toggle client JWT reuse across restarts (on by default; there is no standalone `hot-restart` command). See [docs/Hot-Restart.md](docs/Hot-Restart.md) |
 | `urnet-tools set [<key> [<value>]]` | Show or change a runtime tuning override live, without editing a drop-in or restarting |
 | `urnet-tools hotswap` | Swap to an updated binary without a gap where no process is running (needs a `Type=notify` unit; otherwise `update` falls back to a restart). Proxy connections still ramp back over about 30 s. Procedure and measured costs: [docs/HotSwap.md](docs/HotSwap.md) |
 | `urnet-tools config [--json]` | Show every provider setting with the source it came from, so you can see which writer won |

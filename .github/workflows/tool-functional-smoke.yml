@@ -145,10 +145,26 @@ jobs:
       - name: proxy clear
         run: /tmp/urnet-tools proxy clear -f || echo "proxy clear returned nonzero"
 
-      - name: hot-restart (verify client-id reuse across restart)
+      - name: restart (verify client-id reuse across restart)
         run: |
-          /tmp/urnet-tools hot-restart -f || echo "hot-restart returned nonzero"
-          sleep 15
+          ids() { /tmp/urnet-tools proxy ids 2>/dev/null | awk '$1 != "PROXY" && NF >= 2 {print $1" "$2}' | sort; }
+          ids > /tmp/ids-before.txt
+          [ -s /tmp/ids-before.txt ] || { echo "FAIL: no stored client ids to compare"; exit 1; }
+          echo "client ids before restart:"; cat /tmp/ids-before.txt
+          kill -TERM "$(cat /tmp/provider.pid)" 2>/dev/null || true
+          for _ in $(seq 1 30); do kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || break; sleep 1; done
+          nohup /tmp/provider provide >> /tmp/provider.log 2>&1 &
+          echo $! > /tmp/provider.pid
+          sleep 30
+          kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || { tail -30 /tmp/provider.log; exit 1; }
+          ids > /tmp/ids-after.txt
+          echo "client ids after restart:"; cat /tmp/ids-after.txt
+          if diff -u /tmp/ids-before.txt /tmp/ids-after.txt; then
+            echo "PASS: client ids reused across restart"
+          else
+            echo "FAIL: client ids changed across restart, hot restart did not reuse the store"
+            exit 1
+          fi
           /tmp/urnet-tools providers
 
       - name: Teardown — full uninstall + wipe provider state
