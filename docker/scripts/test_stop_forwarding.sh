@@ -32,7 +32,7 @@ common="$REPO/docker/scripts/provider_common.sh"
 {
     echo '#!/bin/sh'
     echo 'set -eu'
-    echo 'APP_DIR=/app'
+    echo 'APP_DIR=${HARNESS_APP_DIR:-/app}'
     echo 'PROVIDER_CHILD_PID=""'
     echo 'PROVIDER_STOPPING=0'
     for fn in log func_forward_stop func_install_stop_trap func_exit_if_stopping func_sleep func_run_provider; do
@@ -65,7 +65,8 @@ wait_file() {
 
 # 1. Local: SIGTERM to the supervisor reaches the provider and ends the loop.
 out="$tmp/local"; mkdir -p "$out"
-OUT="$out" STUB="$tmp/stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+mkdir -p "$tmp/app"
+OUT="$out" STUB="$tmp/stub.sh" HARNESS_APP_DIR="$tmp/app" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
 sup=$!
 if wait_file "$out/stub.pid"; then
     kill -TERM "$sup"
@@ -114,7 +115,8 @@ touch "$OUT/crashed"
 exit 5
 EOF
 chmod +x "$tmp/crash_stub.sh"
-OUT="$out" STUB="$tmp/crash_stub.sh" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
+mkdir -p "$tmp/appcrash"
+OUT="$out" STUB="$tmp/crash_stub.sh" HARNESS_APP_DIR="$tmp/appcrash" sh "$tmp/harness.sh" >"$out/stdout" 2>&1 &
 sup=$!
 if wait_file "$out/stub.pid"; then
     sleep 2
