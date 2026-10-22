@@ -11,7 +11,7 @@ Some proxy-list endpoints publish new `ip:port` entries on a rolling basis — s
 Point the provider at a URL and it will:
 - 🌱 **Fetch on an interval** (default every 15 minutes) and add any genuinely new proxies — entries already running, by address, are skipped. This never disturbs already-warmed-up proxies.
 - 🧹 **Optionally clean up dead entries** on a much slower, separate cadence (default once a day) — and only the ones that came from a URL, by default. Proxies you added yourself via a file or `proxy add` are left alone unless you explicitly widen the cleanup scope.
-- 🤝 **Coexist with your existing proxy file.** A URL source is additive — you can run `--proxy_file` and `--proxy_url` at the same time. They share one hot-reload pipeline (see [Proxy Management & Hot-Reloading](Proxy-Management.md)).
+- 🤝 **Coexist with your existing proxy file.** A URL source is additive — you can run `--proxy_file` and `--proxy_url` at the same time. They share one hot-reload pipeline (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management)).
 
 ---
 
@@ -89,7 +89,7 @@ URL-source entries are graded on the same footing as free ones.
 
 **Kill switch**: create `~/.urnetwork/proxy_probe.json` with
 `{"enabled": false}` to disable stage-1 entirely and fall back to
-stage-0-only admission. See [Configuration](Configuration.md) for the
+stage-0-only admission. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration) for the
 full set of `proxy_probe.json` knobs.
 
 **Persistence**: `Score`, `Graded`, and `Failed` are stored per proxy in
@@ -247,4 +247,4 @@ The fetch cycle is skipped with a logged warning. Already-added proxies from tha
 `proxy clear` (which calls `proxy remove --all`) now wipes the entire `proxy_url.json` — cache, blacklist, and source URLs — alongside the internal config and `proxy.state`. After a clear, no URL-sourced proxies will be fetched unless a source is re-added via `urnet-tools proxy add-source <url>`. This ensures a clean slate when you want only the proxies you explicitly add.
 
 **Does this validate proxies before adding them?**
-No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](Proxy-Management.md#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 4 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
+No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 4 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).

@@ -1,6 +1,6 @@
 # 😈 FreeBSD
 
-This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](Installation.md).
+This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](/full-bars/urnetwork-3.23-fix/wiki/Installation).
 
 The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the release for your architecture.
 

@@ -78,7 +78,7 @@ The provider maintains identity keys, cryptographic signing states, and cached J
 > - **Authentication selector (`AUTH=userpass|authcode`)**: New preferred selector. `AUTH=authcode` uses `AUTHCODE` (or trailing argument), while `AUTH=userpass` uses `USER_AUTH` and `PASSWORD`. Existing `BUILD=stable|nightly|jwt` remains fully supported for backward compatibility (see [Legacy Variables](#-legacy-variables)).
 > - **vnStat retired**: The embedded vnStat traffic daemon, CGI scripts, and container port 8080 have been removed. Provider containers now operate with zero listening ports by default. For bandwidth and connection telemetry, use built-in Prometheus metrics (`URNETWORK_METRICS`) with the Grafana stack.
 > - **Volume mount path**: The state volume must be mounted at `/root/.urnetwork` (for example `-v urnetwork_data:/root/.urnetwork`). If unmounted or empty, startup logs a warning reminding you that a new identity will be generated across container recreations.
-> - **Payout wallet reminder**: To get paid on Bittensor SN25, sign one wallet consent from your own computer (`provider wallet sign <coldkey>`). Nothing changes in the container. See the [Bittensor Quick Start](Bittensor-Quick-Start.md).
+> - **Payout wallet reminder**: To get paid on Bittensor SN25, sign one wallet consent from your own computer (`provider wallet sign <coldkey>`). Nothing changes in the container. See the [Bittensor Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start).
 
 ## 🏃 Quick Start (Docker Run)
 
@@ -271,7 +271,7 @@ docker exec -it <container> provider proxy summary
 
 ## ♻️ Hot-Restart
 
-Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle: now the read path follows suit. What is stored, how to inspect it, and what mints a new identity: [Hot-Restart.md](Hot-Restart.md).
+Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle: now the read path follows suit. What is stored, how to inspect it, and what mints a new identity: [Hot-Restart.md](/full-bars/urnetwork-3.23-fix/wiki/Hot-Restart).
 
 **Disabling:**
 ```bash
@@ -476,7 +476,7 @@ Each target is the host address and the port that reaches the provider. On bare 
 > [!TIP]
 > For several provider containers on one host, publish each on its own host port (for example `-p 100.64.0.10:9101:9100`) and add that host port as the target. Each container binds its own internal `9100`, so the port only moves up to `9103` when several processes share one network namespace, as on bare metal. Never expose the metrics endpoint on a public address: it lists every proxy address and its traffic.
 
-See [Monitoring](Monitoring.md) for the full setup, the metric list and the alert rules. The [Configuration](Configuration.md#-monitoring--telemetry) reference lists the telemetry variables.
+See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) for the full setup, the metric list and the alert rules. The [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-monitoring--telemetry) reference lists the telemetry variables.
 
 ## ⚙️ Environment Variables
 
@@ -488,12 +488,12 @@ See [Monitoring](Monitoring.md) for the full setup, the metric list and the aler
 | `PASSWORD` | Required for `AUTH=userpass` | Account password. |
 | `HOST_HOSTNAME` | Optional | Host server name passed into the container for dashboard identification. |
 | `URNETWORK_NODE_NAME` | Optional | Custom label for webhook alerts and dashboard identification. |
-| `PROXY_URL` | Optional | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](Proxy-URL-Sources.md)). |
+| `PROXY_URL` | Optional | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](/full-bars/urnetwork-3.23-fix/wiki/Proxy-URL-Sources)). |
 | `URNETWORK_RAMLOGS` | Optional | Set to `1` to redirect logs to in-memory `/dev/shm/urnetwork.log`. |
 | `URNETWORK_PROFILE` | Optional | Hardware profile (`auto`, `lowmem`, `eco`, `turbo-v4`, `turbo-v8`). |
 | `TURBO` | Optional | Shorthand for turbo mode (`v4` or `v8`). |
 | `URNETWORK_METRICS` | Optional | Prometheus listen address (e.g. `:9100`). |
-| `ALL_OPERATORS` | Optional | Set to `1` to run `provide --all-operators`: one child provider per operator in the published list. The single `USER_AUTH`/`PASSWORD` login is skipped because each operator signs in on its own. See [Multi-Operator](Multi-Operator.md). |
+| `ALL_OPERATORS` | Optional | Set to `1` to run `provide --all-operators`: one child provider per operator in the published list. The single `USER_AUTH`/`PASSWORD` login is skipped because each operator signs in on its own. See [Multi-Operator](/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator). |
 | `AUTO_REGISTER` | Optional | With `ALL_OPERATORS=1`: add `--auto-register`, signing in to each operator with the hotkey. Requires `HOTKEY_SEED_FILE`. |
 | `HOTKEY_SEED_FILE` | Optional | With `ALL_OPERATORS=1`: path to the 32-byte hotkey seed used by `--auto-register`. Mount the file read-only. |
 | `ALLOW_CLIENT_REGISTRATION` | Optional | `auto`, `Y` or `N`. `Y` always adds `--allow-client-registration`; `N` never does; `auto` adds it only when `/root/.urnetwork` has neither `.provider.key` nor an `operators/` directory (a fresh identity). |
@@ -628,7 +628,7 @@ The egg ships with automated CI checks (`docker/scripts/test_pelican_gates.sh` f
 
 ## Letting the Thrash Watchdog Restart the Container's Provider
 
-The swap-thrash watchdog ([details](Configuration.md#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container the watchdog counts the container as a supervisor, the same as systemd and OpenRC, so the provider restarts with no extra switch: self-heal is the one switch.
+The swap-thrash watchdog ([details](/full-bars/urnetwork-3.23-fix/wiki/Configuration#swap-thrash-watchdog)) restarts the provider by exiting with status 75. Inside a container the watchdog counts the container as a supervisor, the same as systemd and OpenRC, so the provider restarts with no extra switch: self-heal is the one switch.
 
 ```yaml
 services:

@@ -75,10 +75,11 @@ docker exec -it urfix urnet-tools proxy remove-dead
 > 1. 💀 **Dead Proxies:** Proxies that have *never* successfully authenticated (likely bad credentials or unreachable IPs).
 > 2. 💤 **Inactive/Degraded Proxies:** Proxies that were previously working but have been offline for an extended period.
 > 
-> Proxies that proxy audit has parked (health `parked`) are resting, not failing, and are never listed here. See [Configuration](Configuration.md#proxy-audit).
+> Proxies that proxy audit has parked (health `parked`) are resting, not failing, and are never listed here. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration#proxy-audit).
 > 
 > The tool will prompt you separately for each category, allowing you to selectively remove dead proxies while keeping inactive ones (in case they are just suffering a temporary network blip), or wipe all failing proxies at once.
 > 
+
 > [!TIP]
 > **As of v30.8**, proxies that fail continuously are automatically cleaned up. File-sourced proxies that fail for 14 days are dropped from the active pool (persisted across reboots). URL-sourced proxies are cleaned up after 65 minutes of uptime. You no longer need to manually remove long-dead proxies — the provider handles it. Use `proxy remove-dead` for immediate cleanup of known-bad entries.
 
@@ -146,9 +147,9 @@ urnet-docker proxy trim --unit urfix 500
 > 5. **Controller Coordination:** The AIMD resource pressure controller's `TargetPoolSize` is automatically clamped to this cap so automatic and manual controls never conflict.
 > 6. **Honored Before Launching (v3.23.0-fix.32.8):** A restart splits the desired list with the same ranking a live trim uses *before* it launches anything, so it never opens every desired proxy and then sheds down. Held proxies stay desired and are admitted by the next reload once the cap is raised.
 > 7. **Shed Proxies Keep Their State:** A shed proxy keeps its ID, health, downtime and grade history, so it relaunches as itself when the cap rises instead of as an ungraded newcomer.
-> 8. **Every Change Leaves a Receipt:** The log shows `[proxy][trim] received: cap=N (was X)` when a cap is seen or changes and an `applied:` result line even when nothing needed shedding. See the [Log Message Reference](../LOG_REFERENCE.md).
+> 8. **Every Change Leaves a Receipt:** The log shows `[proxy][trim] received: cap=N (was X)` when a cap is seen or changes and an `applied:` result line even when nothing needed shedding. See the [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
 > 9. **`--preview` Asks the Running Provider:** The preview is computed inside the running provider over the control socket, where the real pool exists. Builds before v3.23.0-fix.32.8 built it in the short-lived CLI process, where the health registry is empty, so it always answered "nothing to shed". The CLI now says so when it cannot reach a provider.
-> 10. **Two Caps, the Tighter One Wins:** The automatic [OOM cap](Configuration.md#-control-socket--runtime-settings) can also limit the pool after a kernel OOM kill. It never writes `proxy_trim`; the effective cap is the tighter of the two, and the log says which is binding.
+> 10. **Two Caps, the Tighter One Wins:** The automatic [OOM cap](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-control-socket--runtime-settings) can also limit the pool after a kernel OOM kill. It never writes `proxy_trim`; the effective cap is the tighter of the two, and the log says which is binding.
 
 ---
 
@@ -171,7 +172,7 @@ urnet-tools self-heal off      # Disable pressure monitoring
 
 ## 🔍 Automated Proxy Audit & Quality Enforcement
 
-`URNETWORK_PROXY_AUDIT=1` (or `urnet-tools proxy audit on` at runtime) activates automated background proxy auditing. The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (scores <= 0.4 on two consecutive probe passes). Active parking also requires hot restart (`urnet-tools set hot-restart on`, see [Hot-Restart.md](Hot-Restart.md)); with hot restart off, the audit runs in observe mode and logs `would-park` instead of parking.
+`URNETWORK_PROXY_AUDIT=1` (or `urnet-tools proxy audit on` at runtime) activates automated background proxy auditing. The provider evaluates proxy reachability scores every 5 minutes and temporarily parks proxies that grade as proven junk (scores <= 0.4 on two consecutive probe passes). Active parking also requires hot restart (`urnet-tools set hot-restart on`, see [Hot-Restart.md](/full-bars/urnetwork-3.23-fix/wiki/Hot-Restart)); with hot restart off, the audit runs in observe mode and logs `would-park` instead of parking.
 
 ```sh
 urnet-tools proxy audit on                  # Enable automated proxy audit & parking

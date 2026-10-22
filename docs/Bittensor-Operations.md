@@ -1,7 +1,7 @@
 # Bittensor Subnet 25: Overview for Operators
 
 > [!TIP]
-> **Most operators can stop at the [Quick Start](Bittensor-Quick-Start.md).** You sign one message from your own computer and your nodes keep running as they are. Everything below is background, or for people who want more.
+> **Most operators can stop at the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start).** You sign one message from your own computer and your nodes keep running as they are. Everything below is background, or for people who want more.
 
 > [!NOTE]
 > Checked against upstream server `50851997d`, connect `f1837db6`, sdk `23b3c7dd` and sn `83e6f48c2` (2026-10-21). Upstream is still changing the Bittensor side quickly. If a command prints something different from this page, trust the command.
@@ -10,14 +10,14 @@
 
 - URnetwork is **Subnet 25 (SN25)** on Bittensor. Your nodes can earn the SN25 token (alpha, branded $UR) on top of normal URnetwork earnings.
 - You get paid by signing **one** consent with your Bittensor wallet (your coldkey). It says "pay every node on my URnetwork account to this coldkey". One signature covers all nodes on your URnetwork account, now and later. A hotkey that auto-registers creates a separate account, which this consent does not cover.
-- Check where you stand with `provider wallet status`. Words you do not know are in the [Glossary](Bittensor-Glossary.md).
+- Check where you stand with `provider wallet status`. Words you do not know are in the [Glossary](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Glossary).
 
 ## Pool or head: which one am I?
 
 | | Pool tier (almost everyone) | Head tier (optional, advanced) |
 |---|---|---|
 | What it is | Your nodes earn inside URnetwork's shared pool. | You get your own seat (UID) on the subnet. |
-| What you do | Sign the consent once. | A long setup with keys, a fleet file, a burn and per-node binding. See [Head Tier](Bittensor-Head-Tier.md). |
+| What you do | Sign the consent once. | A long setup with keys, a fleet file, a burn and per-node binding. See [Head Tier](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier). |
 | How you are scored | By the work your nodes do in the pool: usage weighted by quality, with quality kept between 0.75 and 1.0. | By how many different IP ranges (/29 IPv4, /48 IPv6) your nodes served traffic through. |
 | How you are paid | Credited to your coldkey every epoch (7 days). A claim moves it to your wallet. | Paid directly to your hotkey every tempo (about 72 minutes). No claim. |
 | Where the money waits | In the settlement vault contract (`STSettlementVault` for v1, `STSettlementVault2` for v2). | Nowhere. It is paid by the network. |
@@ -35,7 +35,7 @@ Your pool earnings are credited to your coldkey. A **claim** is a small blockcha
 - **Settlement v2** starts at epoch 3: block 9,348,028, about 2026-10-23 18:10 UTC. Upstream has decided this date, but it still depends on the release checks passing, and the launch is not final yet. In v2, credit **never expires**.
 - **Settlement v1** covers the earliest epochs. Its mainnet policy keeps a claim open for 8 epochs (56 days) plus 1 epoch of grace. After that the policy's action is `carry_same_operator`. What that means for your own payout is not documented here, so claim v1 epochs within that window if they matter to you.
 - The easiest way may be a claim button in the apps or on ur.io. The SDK the apps use now has a pool claim call. Whether the app you have shows a button is **unconfirmed**.
-- Command-line claims exist for people who want automation. They need an EVM key with TAO for gas. See [Claiming by hand](#claiming-by-hand-advanced) and [Claim Daemons](Bittensor-Claim-Daemons.md).
+- Command-line claims exist for people who want automation. They need an EVM key with TAO for gas. See [Claiming by hand](#claiming-by-hand-advanced) and [Claim Daemons](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons).
 
 ## Signing the consent (reference)
 
@@ -49,7 +49,7 @@ provider wallet status                 # confirm
 
 Options:
 
-- `provider wallet sign [<coldkey_ss58>] [--port=<port>] [--no-open]`. Leave the address out to choose the account on the page. The page itself is described in [the wallet-consent README](../scripts/wallet-consent/README.md).
+- `provider wallet sign [<coldkey_ss58>] [--port=<port>] [--no-open]`. Leave the address out to choose the account on the page. The page itself is described in [the wallet-consent README](/full-bars/urnetwork-3.23-fix/blob/main/scripts/wallet-consent/README.md).
 - No browser: `provider wallet challenge <coldkey_ss58>` prints the exact text (it signs nothing). Sign it elsewhere, then run `provider wallet set <coldkey_ss58> --message="<text>" --signature=<hex>`. Quote the message: it contains spaces and shell-significant characters, and an unquoted copy is split or altered, which makes a valid signature fail verification.
 - `provider wallet set <coldkey_ss58> --coldkey_seed_file=<path>` signs from a seed file. Use it only on your own computer, never on a node. The `provider` binary only checks the seed file's ownership and mode. `urnet-tools wallet sign` and `urnet-tools wallet set --coldkey_seed_file` also refuse when the box looks like a fleet member, unless you pass `--i-am-on-my-own-workstation`.
 - `--wallet-from-epoch=<e> --wallet-through-epoch=<e>` pick an exact window. A window that would leave epochs unpaid is refused unless you set `URNETWORK_WALLET_ALLOW_ODD_INTERVAL=1`. The window spans at most 65,536 epochs. A newer consent must start at a later epoch than the one it replaces.
@@ -61,10 +61,10 @@ Docker users: you do not change the container command for this. A Docker run tha
 
 ## Other pages, only if you need them
 
-- [Hotkey Delegation](Bittensor-Hotkey-Delegation.md): only if you sign in with a hotkey across operators.
-- [Multi-Operator](Multi-Operator.md): only when more than one operator is listed. Today there is one.
-- [Claim Daemons](Bittensor-Claim-Daemons.md): optional automatic claims.
-- [Head Tier](Bittensor-Head-Tier.md) and [Fleet](Bittensor-Fleet.md): the advanced head-tier path.
+- [Hotkey Delegation](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Hotkey-Delegation): only if you sign in with a hotkey across operators.
+- [Multi-Operator](/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator): only when more than one operator is listed. Today there is one.
+- [Claim Daemons](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons): optional automatic claims.
+- [Head Tier](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier) and [Fleet](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Fleet): the advanced head-tier path.
 
 ## Claiming by hand (advanced)
 
@@ -86,7 +86,7 @@ To submit it yourself, add `--rpc=<rpc_url> --key_file=<path>`. Add `--dry-run` 
 
 ## bind-head and unbind-head (old head-tier path)
 
-`provider bind-head` and `provider unbind-head` are the head-tier path from before the `provider fleet` group. They are still in the binary, with their own `--key_file` flow, but **do not use them for new work**. Use `provider fleet` ([Fleet](Bittensor-Fleet.md)). Their grammar is in `provider --help`:
+`provider bind-head` and `provider unbind-head` are the head-tier path from before the `provider fleet` group. They are still in the binary, with their own `--key_file` flow, but **do not use them for new work**. Use `provider fleet` ([Fleet](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Fleet)). Their grammar is in `provider --help`:
 
 ```text
 provider bind-head --manifest=<file> --hotkey_seed_file=<file> --valid_from_epoch=<n> --valid_to_epoch=<n> [--client_id=<hex16>] [--client_seed_file=<file>] [--rpc=<rpc_url>]... [--key_file=<key_file>] [--dry-run]
@@ -117,7 +117,7 @@ Look for the `Wallet consent` line. A green line with your address and "in effec
 ## FAQ
 
 ### Do I have to do anything?
-Run `provider wallet status`. If it shows a network consent in effect, you are done. If not, sign once from your own computer. See the [Quick Start](Bittensor-Quick-Start.md). Nothing else is required, and your nodes keep providing either way.
+Run `provider wallet status`. If it shows a network consent in effect, you are done. If not, sign once from your own computer. See the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start). Nothing else is required, and your nodes keep providing either way.
 
 ### I linked my wallet on the website or in the app. Am I paid?
 Not necessarily. The older "connect wallet" link is only a login proof, and payouts do not use it. A signed consent is what counts. Confirm with `provider wallet status`. If it says `NOT a consent`, sign once.
@@ -138,10 +138,10 @@ Not unless you do the head tier or sign in with a hotkey.
 No. It lasts 65,536 epochs. Sign again only to change the wallet.
 
 ### What happens to claims while a claim daemon is stopped?
-Nothing already signed is lost: signed entries are saved and finished after a restart. Unsigned settlement-v1 claims are different, because they stay subject to claimability and expiry rules while the daemon is stopped, so claim them inside their window. See [Claim Daemons](Bittensor-Claim-Daemons.md).
+Nothing already signed is lost: signed entries are saved and finished after a restart. Unsigned settlement-v1 claims are different, because they stay subject to claimability and expiry rules while the daemon is stopped, so claim them inside their window. See [Claim Daemons](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons).
 
 ### Is the head tier worth it?
-For most operators, no. See [Head Tier](Bittensor-Head-Tier.md) for what it takes and the current blockers.
+For most operators, no. See [Head Tier](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier) for what it takes and the current blockers.
 
 ## Safety rules
 

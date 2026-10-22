@@ -1,7 +1,7 @@
 # Bittensor Head Tier (Optional and Advanced)
 
 > [!IMPORTANT]
-> **Most operators should not do this.** Not doing it costs you nothing. If you have signed the network wallet consent (see the [Quick Start](Bittensor-Quick-Start.md)), your nodes already earn in the pool. If you are not sure you want the head tier, you do not want it.
+> **Most operators should not do this.** Not doing it costs you nothing. If you have signed the network wallet consent (see the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start)), your nodes already earn in the pool. If you are not sure you want the head tier, you do not want it.
 
 > [!NOTE]
 > Checked against upstream sn `83e6f48c2`, server `50851997d`, connect `f1837db6` and sdk `23b3c7dd` (2026-10-21). The numbers on this page come from the approved mainnet policy (`deploy/mainnet/policy-v1.yml` in sn). Upstream is still changing this area quickly, so re-check [Current blockers](#current-blockers) before you spend anything.
@@ -66,11 +66,11 @@ _Live values · last changed 2026-10-22 22:00 UTC · refreshed automatically_
 
 ## Order of steps
 
-All commands below are in this build's `provider` program. Run them on your own computer, never on a mining node. Full flag details are on the [Fleet page](Bittensor-Fleet.md).
+All commands below are in this build's `provider` program. Run them on your own computer, never on a mining node. Full flag details are on the [Fleet page](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Fleet).
 
 0. **Keep the network consent signed.** It covers every node you do not bind, except a node with its own per-provider consent, which wins for that node.
 
-1. **Write the manifest.** This is the fleet file. This build has no `fleet init` command, so write it by hand. The fields are listed on the Fleet page under [The manifest](Bittensor-Fleet.md#the-manifest). In short: schema `urnetwork-fleet-manifest-v1`, chain 964 (mainnet), subnet 25, the coordinator address, the fleet id, the hotkey, a nonzero generation, and the members (`client_id` plus `client_key`, each used once). Then check it:
+1. **Write the manifest.** This is the fleet file. This build has no `fleet init` command, so write it by hand. The fields are listed on the Fleet page under [The manifest](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Fleet#the-manifest). In short: schema `urnetwork-fleet-manifest-v1`, chain 964 (mainnet), subnet 25, the coordinator address, the fleet id, the hotkey, a nonzero generation, and the members (`client_id` plus `client_key`, each used once). Then check it:
    ```bash
    provider fleet manifest --manifest=<path>
    ```
