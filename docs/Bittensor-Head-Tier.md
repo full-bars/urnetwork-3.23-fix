@@ -36,19 +36,19 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
-_Live values · last changed 2026-10-22 19:07 UTC · checked hourly_
+_Live values · last changed 2026-10-22 20:33 UTC · refreshed automatically_
 
 | | Value |
 |---|---|
 | Fleet seat registration burn | 0.0005 TAO (~$0.13) |
-| Burn floor | 0.0005 TAO |
+| Burn floor | 0.0005 TAO (~$0.13) |
 | Seats in use | 256 of 256 |
 | Registration open | yes |
 | Immunity after registering | 21,600 blocks (~3.0 days) |
 | Tempo | 360 blocks (~72 minutes) |
-| Gas price, chain 964 | 5.3 gwei |
-| One node binding | 245,301 gas, about 0.001292 TAO (~$0.33) |
-| Commitment oracle | active, balance 0.0479 TAO |
+| Gas price, chain 964 | 5.0 gwei (a plain transfer of 21,000 gas costs ~$0.03) |
+| One node binding | 245,301 gas, about 0.001227 TAO (~$0.31) |
+| Commitment oracle | address set, balance 0.0479 TAO (~$12), 4 transactions sent. This does not show the service is running, see [Current blockers](#current-blockers) |
 | Coordinator | not paused |
 <!-- END SN25 LIVE NUMBERS (generated) -->
 
