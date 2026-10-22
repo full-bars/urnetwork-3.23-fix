@@ -43,15 +43,21 @@ do_update() {
     api_root="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
     if [ -n "$requested_tag" ]; then
         release_url="$api_root/releases/tags/$requested_tag"
-        release_json="$(curl -s --connect-timeout 10 "$release_url")" || {
-            echo "ERROR: could not reach GitHub API."
-            exit 1
-        }
+        # an API error body (403/500/rate limit) also parses as a release with
+        # no tag_name, which used to be reported as "tag not found"
+        release_tmp="$(mktemp)"
+        http_status="$(curl -s -o "$release_tmp" -w '%{http_code}' --connect-timeout 10 "$release_url")" || http_status="000"
+        case "$http_status" in
+            200) release_json="$(cat "$release_tmp")" ;;
+            404) rm -f "$release_tmp"; echo "ERROR: release tag '$requested_tag' not found."; exit 1 ;;
+            *)   rm -f "$release_tmp"; echo "ERROR: GitHub API returned HTTP $http_status for release '$requested_tag'."; exit 1 ;;
+        esac
+        rm -f "$release_tmp"
     else
         # Stable channel: page past releases without a provider tarball and
         # never treat a pre-release as stable. An explicitly requested tag
         # above stays an operator override (canary/rollback).
-        release_json="$(upd_fetch_stable_release_json "$api_root")" || {
+        release_json="$(upd_fetch_stable_release_json "$api_root" "$arch")" || {
             echo "ERROR: no stable release with a verified provider tarball found."
             exit 1
         }

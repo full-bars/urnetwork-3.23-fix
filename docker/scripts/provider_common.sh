@@ -141,7 +141,10 @@ func_run_provider() {
     PROVIDER_CHILD_PID=""
     if [ "$PROVIDER_STOPPING" -eq 1 ]; then
         log "[INFO] Stop requested; UrNetwork exited (code=$code)."
-        exit 0
+        # the drained child is gone, but a hotswap successor may still be
+        # shutting down; func_exit_if_stopping bounds the wait so PID 1 does
+        # not exit and hand Docker a SIGKILL for that successor
+        func_exit_if_stopping
     fi
 }
 

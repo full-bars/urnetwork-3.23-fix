@@ -83,7 +83,7 @@ upd_asset_digest_from_json() {
 # when the page holds no eligible release. Exit status is jq's: non-zero only
 # when the JSON cannot be parsed.
 upd_select_stable_release_json() {
-    printf '%s' "$1" | jq -c '
+    printf '%s' "$1" | jq -c --arg req "${2:-}" '
       [ .[]
         | select(type == "object")
         | select((.draft // false) == false)
@@ -94,13 +94,15 @@ upd_select_stable_release_json() {
         | . as $r
         | ("urnetwork-provider-" + $r.tag_name + ".tar.gz") as $want
         | select([$r.assets[]? | select(.name == $want and ((.digest // "") | test("^sha256:[0-9a-fA-F]+$")))] | length > 0)
+        | select($req == ""
+                 or ([$r.assets[]? | select(.name == ("urnetwork-provider-" + $r.tag_name + "-linux-" + $req + ".tar.gz"))] | length > 0))
       ] | first // empty'
 }
 
 # upd_release_select_cleanup: POSIX sh has no function-local scope; drop the
 # UPD_ globals the selection walk uses (mirrors the digest helpers' rule).
 upd_release_select_cleanup() {
-    unset UPD_root UPD_per_page UPD_max_pages UPD_page UPD_page_json UPD_selected UPD_count
+    unset UPD_root UPD_want_arch UPD_per_page UPD_max_pages UPD_page UPD_page_json UPD_selected UPD_count
 }
 
 # --- Tarball asset selection -----------------------------------------------
@@ -151,6 +153,7 @@ upd_pick_fat_tarball_name() {
 # exists in the walked pages.
 upd_fetch_stable_release_json() {
     UPD_root="$1"
+    UPD_want_arch="${2:-}"
     UPD_per_page="${UPD_RELEASE_PER_PAGE:-100}"
     UPD_max_pages="${UPD_RELEASE_MAX_PAGES:-10}"
     UPD_page=1
@@ -161,7 +164,7 @@ upd_fetch_stable_release_json() {
             upd_release_select_cleanup
             return 1
         fi
-        if ! UPD_selected="$(upd_select_stable_release_json "$UPD_page_json")"; then
+        if ! UPD_selected="$(upd_select_stable_release_json "$UPD_page_json" "$UPD_want_arch")"; then
             echo "upd_verify: could not parse release listing page $UPD_page" >&2
             upd_release_select_cleanup
             return 1
