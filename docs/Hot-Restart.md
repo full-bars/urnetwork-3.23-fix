@@ -101,7 +101,7 @@ docker exec urfix sh -c 'echo ${URNETWORK_HOT_RESTART:-1}'
 
 The store keeps up to 10 timestamped snapshots taken before an overwrite, so a corrupted or truncated file can be inspected. Snapshots of identical content are at most one every 5 minutes, which stops a crash loop from cycling through every backup slot. A file that fails to parse is reported and the provider starts fresh instead of refusing to run.
 
-Entries whose slot has not reconnected for 30 days are pruned at load time.
+Entries whose `minted_at` is older than 30 days are pruned at load time.
 
 ## What keeps an id and what mints a new one
 
@@ -113,7 +113,7 @@ Entries whose slot has not reconnected for 30 days are pruned at load time.
 | Different proxy credentials on the same address | New slot on the sn fork, which keys by address and auth user; same slot on 3.23-fix and meso-miner, which key by address alone |
 | Different account or network (`~/.urnetwork/jwt` replaced) | Fresh mint, logged as `network_id mismatch` |
 | State dir wiped, new `HOME`, container recreated without its volume | Fresh mint |
-| Slot idle for more than 30 days | Entry pruned, fresh mint on return |
+| `minted_at` older than 30 days | Entry pruned, fresh mint on return |
 | Reuse turned off | Fresh mint on every start |
 
 Identities are per slot, never shared. Two proxies on one box do not present one id, and one id is not meant to be copied to another host.
@@ -161,9 +161,10 @@ Both routes replace the stored identity for every slot that connects. Turning re
 ## Verifying reuse after a restart
 
 ```bash
-urnet-tools proxy ids > /tmp/before.txt
+ids() { urnet-tools proxy ids 2>/dev/null | awk '$1 != "PROXY" && NF >= 2 {print $1" "$2}' | sort; }
+ids > /tmp/before.txt
 urnet-tools restart -y
-urnet-tools proxy ids > /tmp/after.txt
+ids > /tmp/after.txt
 diff /tmp/before.txt /tmp/after.txt
 ```
 
