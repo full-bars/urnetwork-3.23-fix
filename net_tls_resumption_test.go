@@ -4,6 +4,7 @@ import (
 	"context"
 	"crypto/tls"
 	"crypto/x509"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -52,6 +53,14 @@ func resilientTestSettings(t *testing.T) (*httptest.Server, *ConnectSettings) {
 	return server, settings
 }
 
+// tlsConnectionStateConn is the part of a dialed tls connection these tests
+// read: both crypto/tls's *tls.Conn and the Chrome hello's *chromeTlsConn
+// answer ConnectionState in crypto/tls's type (net_tls_hello.go).
+type tlsConnectionStateConn interface {
+	net.Conn
+	ConnectionState() tls.ConnectionState
+}
+
 // dialResumed dials once and reports whether the handshake resumed a session.
 func dialResumed(t *testing.T, dial DialTlsContextFunction, addr string) bool {
 	t.Helper()
@@ -62,9 +71,9 @@ func dialResumed(t *testing.T, dial DialTlsContextFunction, addr string) bool {
 		t.Fatalf("dial: %v", err)
 	}
 	defer conn.Close()
-	tlsConn, ok := conn.(*tls.Conn)
+	tlsConn, ok := conn.(tlsConnectionStateConn)
 	if !ok {
-		t.Fatalf("expected a *tls.Conn, got %T", conn)
+		t.Fatalf("expected a tls connection, got %T", conn)
 	}
 	// a TLS 1.3 session ticket arrives after the handshake; read to take it in
 	tlsConn.SetReadDeadline(time.Now().Add(300 * time.Millisecond))
