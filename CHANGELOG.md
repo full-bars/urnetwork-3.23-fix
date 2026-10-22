@@ -11,13 +11,21 @@
 - **A `docker stop` skipped the shutdown path** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/940>): a shell as PID 1 has no default action for SIGTERM, so the provider never heard the stop and Docker SIGKILLed the container at the grace timeout. The supervisor forwards the signal and waits for the successor.
 - **The nightly updater could pick another platform's tarball** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/940>): the asset is now matched against this architecture.
 - **A completed handshake could go uncounted** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/944>): an epoch that was superseded before verification returned early, so the attempt looked like a TLS failure. A failed identity proof could also be counted by every concurrent verifier. Both count once now.
+- **`urnet-tools` could pick a release it cannot install** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/949>): a stable release that carries only the fat tarball was selected and then had no `linux-<arch>` asset, so an untagged update exited without installing anything. Releases without a per-arch asset are skipped when the caller needs one.
+- **An api failure read as a missing tag** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/949>): `curl -s` returns success with an error body on 403 or 500, and the empty `tag_name` was reported as a tag that does not exist. The http status is checked now and the real failure is named.
+- **A `docker stop` could exit before a hotswap successor drained** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/949>): the stop branch returned as soon as the tracked child was reaped, so PID 1 could exit while a successor was still draining and Docker SIGKILLed it. The exit hands over to the successor wait, which is bounded below the stop timeout.
 - **Lifetime session counters dropped on proxy exit** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/946>): a `_total` could decrease and `rate()` read it as a reset. A departing manager's counts fold into a provider-wide accumulator first.
 
 ### Changed
 
+- **The stop harness cannot signal a provider on the host** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/949>): it runs against a private app path, and the stale deny-list guard matches the old inline list as a fixed string.
 - **The IP blocker table syncs with CFAA** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/947>): the scheduled job pulled one file, so the blocker table drifted unseen. Both files sync now, and a check fails on drift.
 - **SN25 costs are published from the chain** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/941>): the head-tier cost table is regenerated on a schedule instead of promising a manual check.
 - **Four Bittensor claims are corrected** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/945>): the v1 and v2 claim triggers, the quoted challenge message, the stopped-daemon caveat for unsigned v1 claims, and the consent scope.
+
+### Security
+
+- **The CFAA and IP blocker tables refreshed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/951>): 41,202 to 46,733 IPv4 entries and 593 to 597 IPv6 entries, with blocked hosts moving from 163,972 to 164,212. Data only.
 
 ## [v3.23.0-fix.34.2]
 
