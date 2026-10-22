@@ -16,7 +16,7 @@ if [ -n "$EXISTING_PR" ]; then
   PR_URL=$(echo "$EXISTING_PR" | awk '{print $2}')
   echo "PR #${PR_NUMBER} already exists: ${PR_URL}"
 else
-  PR_URL=$(gh pr create --title "$PR_TITLE" --body-file "$PR_BODY_FILE" --label "security" | tr -d '\r\n') || PR_URL=""
+  PR_URL=$(gh pr create --base main --title "$PR_TITLE" --body-file "$PR_BODY_FILE" --label "security" | tr -d '\r\n') || PR_URL=""
   echo "Created PR: ${PR_URL}"
 fi
 

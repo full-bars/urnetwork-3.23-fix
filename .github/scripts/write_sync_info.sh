@@ -34,8 +34,8 @@ cat > /tmp/cfaa_sync_info.json << EOF
   "fork_v6": ${FORK_V6},
   "upstream_hosts": ${UPSTREAM_HOSTS},
   "fork_hosts": ${FORK_HOSTS},
-  "cfaa_identical": ${CFAA_IDENTICAL},
-  "blocker_identical": ${BLOCKER_IDENTICAL},
+  "cfaa_identical": "${CFAA_IDENTICAL}",
+  "blocker_identical": "${BLOCKER_IDENTICAL}",
   "sync_needed": ${SYNC_NEEDED}
 }
 EOF
