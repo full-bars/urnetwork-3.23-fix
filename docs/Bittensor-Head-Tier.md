@@ -33,10 +33,10 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 
 ## What it costs and requires
 
-The figures below are read from the chains by a scheduled job, so this page does not carry hand-maintained numbers. GitHub runs scheduled jobs on a best-effort basis and can delay them by hours, so the "last changed" line, not the clock, tells you how fresh they are. The bullets after the table explain what each figure means.
+The chain figures below are read from the chains by a scheduled job, and every dollar amount is an estimate from an external TAO price feed, so this page does not carry hand-maintained numbers. GitHub runs scheduled jobs on a best-effort basis and can delay them by hours, so the "last changed" line, not the clock, tells you how fresh they are. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
-_Live values · last changed 2026-10-22 09:26 UTC · refreshed automatically_
+_Live values · last changed 2026-10-22 09:46 UTC · refreshed automatically_
 
 | | Value |
 |---|---|
@@ -47,8 +47,8 @@ _Live values · last changed 2026-10-22 09:26 UTC · refreshed automatically_
 | Immunity after registering | 21,600 blocks (~3.0 days) |
 | Tempo | 360 blocks (~72 minutes) |
 | Gas price, chain 964 | 5.0 gwei (a plain transfer of 21,000 gas costs ~$0.03) |
-| One node binding | 245,301 gas, about 0.001227 TAO (~$0.32) |
-| Commitment oracle | address set, balance 0.0479 TAO (~$12), 4 transactions sent. This does not show the service is running, see Current blockers |
+| One node binding | 245,301 gas, about 0.001227 TAO (~$0.31) |
+| Commitment oracle | address set, balance 0.0479 TAO (~$12), 4 transactions sent. This does not show the service is running, see [Current blockers](#current-blockers) |
 | Coordinator | not paused |
 <!-- END SN25 LIVE NUMBERS (generated) -->
 

@@ -207,7 +207,7 @@ def render_body(state: dict) -> str:
         ("Tempo", f"{state['tempo']:,} blocks (~{tempo_minutes:.0f} minutes)"),
         ("Gas price, chain 964", f"{state['gas_price_wei'] / 1e9:.1f} gwei (a plain transfer of 21,000 gas costs ~${usd(21_000 * state['gas_price_wei'] / 1e18 * price)})"),
         ("One node binding", f"{BIND_GAS:,} gas, about {per_bind_tao:.6f} TAO (~${usd(bind_usd)})"),
-        ("Commitment oracle", f"address set, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO (~${state['oracle_balance_wei'] / 1e18 * price:,.0f}), {state['oracle_tx_count']} transactions sent. This does not show the service is running, see Current blockers" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
+        ("Commitment oracle", f"address set, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO (~${state['oracle_balance_wei'] / 1e18 * price:,.0f}), {state['oracle_tx_count']} transactions sent. This does not show the service is running, see [Current blockers](#current-blockers)" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
         ("Coordinator", "paused" if state["paused"] else "not paused"),
     ]
 
