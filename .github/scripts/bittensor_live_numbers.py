@@ -161,6 +161,7 @@ def read_state() -> dict:
     gas_price_wei = int(rpc("eth_gasPrice", []), 16)
     oracle_balance_wei = int(rpc("eth_getBalance", [ORACLE, "latest"]), 16)
     oracle = "0x" + eth_call("0x06d902e9")[-40:]
+    oracle_tx_count = int(rpc("eth_getTransactionCount", [ORACLE, "latest"]), 16)
     paused = int(eth_call("0x5c975abb"), 16) == 1
 
     if not 0 < burn_rao:
@@ -183,6 +184,7 @@ def read_state() -> dict:
         "gas_price_wei": gas_price_wei,
         "oracle_balance_wei": oracle_balance_wei,
         "oracle_is_active": oracle.lower() == ORACLE.lower(),
+        "oracle_tx_count": oracle_tx_count,
         "paused": paused,
         "tao_usd": tao_price(),
     }
@@ -205,7 +207,7 @@ def render_body(state: dict) -> str:
         ("Tempo", f"{state['tempo']:,} blocks (~{tempo_minutes:.0f} minutes)"),
         ("Gas price, chain 964", f"{state['gas_price_wei'] / 1e9:.1f} gwei"),
         ("One node binding", f"{BIND_GAS:,} gas, about {per_bind_tao:.6f} TAO (~${usd(bind_usd)})"),
-        ("Commitment oracle", f"active, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
+        ("Commitment oracle", f"address set, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO, {state['oracle_tx_count']} transactions sent. This does not show the service is running, see Current blockers" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
         ("Coordinator", "paused" if state["paused"] else "not paused"),
     ]
 
@@ -220,7 +222,7 @@ def render_body(state: dict) -> str:
 def render_block(body: str, changed_on: str) -> str:
     return "\n".join([
         BEGIN,
-        f"_Live values · last changed {changed_on} UTC · checked hourly_",
+        f"_Live values · last changed {changed_on} UTC · refreshed automatically_",
         "",
         body,
         END,
