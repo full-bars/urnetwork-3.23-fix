@@ -117,33 +117,28 @@ jobs:
             sleep 300
           done
 
-      - name: Decode client_id helper
-        run: |
-          cat > /tmp/jwt-client-id.sh << 'EOF'
-          #!/bin/bash
-          # Decode client_id from a raw JWT (payload = 2nd dot-segment,
-          # base64url). client_id is a claim, never plaintext in the file.
-          f="$1"
-          [ -s "$f" ] || { echo ""; exit 0; }
-          payload=$(cut -d. -f2 "$f")
-          # base64url -> base64
-          b64=$(echo "$payload" | tr '_-' '/+')
-          # pad
-          case $((${#b64} % 4)) in
-            2) b64="${b64}==" ;;
-            3) b64="${b64}=" ;;
-          esac
-          echo "$b64" | base64 -d 2>/dev/null | grep -oE '"client_id"\s*:\s*"[^"]*"' | head -1 | cut -d'"' -f4
-          EOF
-          chmod +x /tmp/jwt-client-id.sh
-          echo "helper ready"
-
       - name: Restart cycle 1 (client-ID reuse check)
         run: |
-          echo "client_id before: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
-          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
-          sleep 30
-          echo "client_id after: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
+          ids() { /tmp/urnet-tools proxy ids 2>/dev/null | awk '$1 != "PROXY" && NF >= 2 {print $1" "$2}' | sort; }
+          restart_provider() {
+            kill -TERM "$(cat /tmp/provider.pid)" 2>/dev/null || true
+            for _ in $(seq 1 30); do kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || break; sleep 1; done
+            nohup /tmp/provider provide >> /tmp/provider.log 2>&1 &
+            echo $! > /tmp/provider.pid
+            sleep 30
+            kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || { tail -30 /tmp/provider.log; exit 1; }
+          }
+          ids > /tmp/ids-before.txt
+          echo "client ids before restart:"; cat /tmp/ids-before.txt
+          restart_provider
+          ids > /tmp/ids-after.txt
+          echo "client ids after restart:"; cat /tmp/ids-after.txt
+          if diff -u /tmp/ids-before.txt /tmp/ids-after.txt; then
+            echo "PASS: client ids reused across restart"
+          else
+            echo "FAIL: client ids changed across restart, hot restart did not reuse the store"
+            exit 1
+          fi
           /tmp/urnet-tools providers
 
       # ---- Soak block 2: 50 min pool observation ----
@@ -158,10 +153,26 @@ jobs:
 
       - name: Restart cycle 2 (client-ID reuse check)
         run: |
-          echo "client_id before: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
-          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
-          sleep 30
-          echo "client_id after: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
+          ids() { /tmp/urnet-tools proxy ids 2>/dev/null | awk '$1 != "PROXY" && NF >= 2 {print $1" "$2}' | sort; }
+          restart_provider() {
+            kill -TERM "$(cat /tmp/provider.pid)" 2>/dev/null || true
+            for _ in $(seq 1 30); do kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || break; sleep 1; done
+            nohup /tmp/provider provide >> /tmp/provider.log 2>&1 &
+            echo $! > /tmp/provider.pid
+            sleep 30
+            kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || { tail -30 /tmp/provider.log; exit 1; }
+          }
+          ids > /tmp/ids-before.txt
+          echo "client ids before restart:"; cat /tmp/ids-before.txt
+          restart_provider
+          ids > /tmp/ids-after.txt
+          echo "client ids after restart:"; cat /tmp/ids-after.txt
+          if diff -u /tmp/ids-before.txt /tmp/ids-after.txt; then
+            echo "PASS: client ids reused across restart"
+          else
+            echo "FAIL: client ids changed across restart, hot restart did not reuse the store"
+            exit 1
+          fi
           /tmp/urnet-tools providers
 
       # ---- Soak block 3: 50 min pool observation ----
@@ -176,7 +187,9 @@ jobs:
 
       - name: Remint cycle (new client ID check)
         run: |
-          echo "client_id before: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
+          ids() { /tmp/urnet-tools proxy ids 2>/dev/null | awk '$1 != "PROXY" && NF >= 2 {print $1" "$2}' | sort; }
+          ids > /tmp/remint-before.txt
+          echo "client ids before re-auth:"; cat /tmp/remint-before.txt
           rm -f "$HOME/.urnetwork/jwt"
           rm -rf /tmp/remint && mkdir -p /tmp/remint
           HOME=/tmp/remint /tmp/provider auth \
@@ -184,7 +197,9 @@ jobs:
             --api_url=https://api.bringyour.com -f 2>&1 | grep -vE '^I[0-9]{4}' || true
           cp /tmp/remint/.urnetwork/jwt "$HOME/.urnetwork/jwt" 2>/dev/null || true
           sleep 10
-          echo "client_id after remint: $(/tmp/jwt-client-id.sh "$HOME/.urnetwork/jwt")"
+          ids > /tmp/remint-after.txt
+          echo "client ids after re-auth:"; cat /tmp/remint-after.txt
+          diff -u /tmp/remint-before.txt /tmp/remint-after.txt || true
           /tmp/urnet-tools providers
 
       - name: proxy clear + refresh (wrapper-fix parity w/ docker soak) + final restart
@@ -195,7 +210,10 @@ jobs:
           /tmp/urnet-tools proxy refresh --force || echo "refresh nonzero"
           sleep 30
           /tmp/urnet-tools providers
-          /tmp/urnet-tools hot-restart -f || echo "hot-restart nonzero"
+          kill -TERM "$(cat /tmp/provider.pid)" 2>/dev/null || true
+          for _ in $(seq 1 30); do kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || break; sleep 1; done
+          nohup /tmp/provider provide >> /tmp/provider.log 2>&1 &
+          echo $! > /tmp/provider.pid
           sleep 20
           /tmp/urnet-tools providers
 
