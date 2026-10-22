@@ -116,7 +116,7 @@ urnet-tools logs [all|dump|-i]     # stream logs (-i = important only)
 urnet-tools uninstall              # full removal
 
 # Experimental
-urnet-tools hot-restart on|off     # client JWT reuse (default off)
+urnet-tools set hot-restart on|off # client JWT reuse (default on)
 urnet-tools fast-auth on|off       # bypass auth rate limiter
 urnet-tools set h3 off|direct|on|auto|N|all # which identities may use H3 (QUIC) and the DNS carriers; auto = memory-sized 0..64 (default: direct)
 urnet-tools set h3-datagram on|off # offer QUIC DATAGRAM on the H3 connection (default on)

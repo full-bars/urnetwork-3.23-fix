@@ -195,7 +195,7 @@ urnet-tools start
 urnet-tools proxy summary
 ```
 
-Auto-update is enabled by default on install (`urnet-tools auto-update-enable` / `auto-update-disable` to control it). Stream logs with `urnet-tools logs`.
+Auto-update is enabled by default on install (`urnet-tools auto-update daily|weekly|monthly|off` to control it). Stream logs with `urnet-tools logs`.
 
 ---
 
