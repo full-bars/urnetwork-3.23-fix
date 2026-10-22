@@ -45,8 +45,8 @@ func TestProxyTrimNoArgsReportsCapAndReduction(t *testing.T) {
 		}
 	})
 	for _, want := range []string{
-		"Trim cap: 500 running proxies (operator)",
-		"Configured pool: 1200, holding 700 back (operator cap)",
+		"Trim cap: 500 running proxies (operator cap)",
+		"Configured pool: 1200, holding 700 back",
 		"Running now: 480 up, 12 connecting, 0 dropped, 8 dead (500 total)",
 	} {
 		if !strings.Contains(out, want) {
@@ -78,7 +78,6 @@ func TestProxyTrimNoArgsReportsOffAndGarbage(t *testing.T) {
 	for _, tc := range []struct{ file, want string }{
 		{"off\n", "Trim cap: none, this provider runs its full pool"},
 		{"0\n", "Trim cap: none, this provider runs its full pool"},
-		{"lots", `Trim cap: none ("lots" in`},
 	} {
 		p := trimProvider(t, tc.file)
 		stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 3, Configured: 3}}, nil)
@@ -107,5 +106,20 @@ func TestProxyTrimNoArgsStillReportsCapWhenProviderIsDown(t *testing.T) {
 	}
 	if !strings.Contains(out, "not answering") {
 		t.Errorf("expected the unavailable notice:\n%s", out)
+	}
+}
+
+// A provider too old to report trim state falls back to the operator file, and
+// an unparseable file is called out rather than read as a cap.
+func TestProxyTrimNoArgsGarbageFileOnOldProvider(t *testing.T) {
+	p := trimProvider(t, "lots")
+	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 3}}, nil)
+	out := captureStdout(t, func() {
+		if err := printTrimStatus(p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, `Trim cap: none ("lots" in`) {
+		t.Errorf("garbage file not reported:\n%s", out)
 	}
 }
