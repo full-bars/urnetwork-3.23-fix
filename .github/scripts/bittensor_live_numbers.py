@@ -161,6 +161,7 @@ def read_state() -> dict:
     gas_price_wei = int(rpc("eth_gasPrice", []), 16)
     oracle_balance_wei = int(rpc("eth_getBalance", [ORACLE, "latest"]), 16)
     oracle = "0x" + eth_call("0x06d902e9")[-40:]
+    oracle_tx_count = int(rpc("eth_getTransactionCount", [ORACLE, "latest"]), 16)
     paused = int(eth_call("0x5c975abb"), 16) == 1
 
     if not 0 < burn_rao:
@@ -183,6 +184,7 @@ def read_state() -> dict:
         "gas_price_wei": gas_price_wei,
         "oracle_balance_wei": oracle_balance_wei,
         "oracle_is_active": oracle.lower() == ORACLE.lower(),
+        "oracle_tx_count": oracle_tx_count,
         "paused": paused,
         "tao_usd": tao_price(),
     }
@@ -198,14 +200,14 @@ def render_body(state: dict) -> str:
 
     rows = [
         ("Fleet seat registration burn", f"{tao(state['burn_rao'])} TAO (~${usd(seat_usd)})"),
-        ("Burn floor", f"{tao(state['min_burn_rao'])} TAO"),
+        ("Burn floor", f"{tao(state['min_burn_rao'])} TAO (~${usd(state['min_burn_rao'] / 1e9 * price)})"),
         ("Seats in use", f"{state['uids']} of {SUBNET_UIDS}"),
         ("Registration open", "yes" if state["registration_allowed"] else "no"),
         ("Immunity after registering", f"{state['immunity']:,} blocks (~{immunity_days:.1f} days)"),
         ("Tempo", f"{state['tempo']:,} blocks (~{tempo_minutes:.0f} minutes)"),
-        ("Gas price, chain 964", f"{state['gas_price_wei'] / 1e9:.1f} gwei"),
+        ("Gas price, chain 964", f"{state['gas_price_wei'] / 1e9:.1f} gwei (a plain transfer of 21,000 gas costs ~${usd(21_000 * state['gas_price_wei'] / 1e18 * price)})"),
         ("One node binding", f"{BIND_GAS:,} gas, about {per_bind_tao:.6f} TAO (~${usd(bind_usd)})"),
-        ("Commitment oracle", f"active, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
+        ("Commitment oracle", f"address set, balance {state['oracle_balance_wei'] / 1e18:.4f} TAO (~${state['oracle_balance_wei'] / 1e18 * price:,.0f}), {state['oracle_tx_count']} transactions sent. This does not show the service is running, see [Current blockers](#current-blockers)" if state["oracle_is_active"] else "NOT the coordinator's active oracle"),
         ("Coordinator", "paused" if state["paused"] else "not paused"),
     ]
 
@@ -220,7 +222,7 @@ def render_body(state: dict) -> str:
 def render_block(body: str, changed_on: str) -> str:
     return "\n".join([
         BEGIN,
-        f"_Live values · last changed {changed_on} UTC · checked hourly_",
+        f"_Live values · last changed {changed_on} UTC · refreshed automatically_",
         "",
         body,
         END,

@@ -1,13 +1,22 @@
 name: SN25 live numbers
 
 # The cost table on the Bittensor head-tier page is generated from live chain
-# state. This job refreshes it hourly and commits straight to main, so nobody
-# has to review a number change. When the values are unchanged the job writes
-# nothing and makes no commit.
+# state. It commits straight to main, so nobody has to review a number change.
+# When the values are unchanged the job writes nothing and makes no commit.
+#
+# GitHub runs scheduled jobs best effort and can start them hours late or skip
+# them, so there are three triggers: two off-peak schedules (not the start of
+# the hour, which GitHub names as the busiest time), a run whenever main gets a
+# push, and a manual run. The commit this job makes uses the workflow token, and
+# pushes made with that token do not start new runs, so the push trigger cannot
+# loop.
 
 on:
   schedule:
-    - cron: '7 * * * *'
+    - cron: '23 * * * *'
+    - cron: '47 * * * *'
+  push:
+    branches: [main]
   workflow_dispatch:
 
 permissions:
