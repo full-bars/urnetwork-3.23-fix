@@ -68,7 +68,6 @@ jobs:
           exit 1
 
       - name: Mirror the page to the wiki
-        if: steps.land.outputs.changed == 'true'
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
