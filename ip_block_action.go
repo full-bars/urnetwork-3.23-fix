@@ -213,15 +213,18 @@ func (self *blockActionMatch) merge(override *BlockActionOverride) {
 	}
 }
 
-// blockActionApply combines the security policy result with the matched overrides
-// into the final egress decision. the rules are
+// blockActionApply combines the security policy result, the ad/tracker
+// blocker, and the matched overrides into the final egress decision. the
+// rules are
 //  1. an incident (martian/malformed) is always blocked and not overridable
-//  2. the block override takes precedence over the security decision,
+//  2. a blocker match blocks by default, like a security drop
+//  3. the block override takes precedence over both default decisions,
 //     and the route override over the default route (local when the security
 //     result is drop and the local security bypass is on, else egress)
-//  3. drop-classified traffic never egresses to a provider.
-//     un-blocking it routes it locally
-func blockActionApply(r SecurityPolicyResult, localSecurityBypass bool, match *blockActionMatch) (block bool, local bool) {
+//  4. drop-classified traffic never egresses to a provider: un-blocking it
+//     routes it locally. an un-blocked blocker match (allow-classified)
+//     egresses remotely as normal
+func blockActionApply(r SecurityPolicyResult, localSecurityBypass bool, blockerBlock bool, match *blockActionMatch) (block bool, local bool) {
 	switch r {
 	case SecurityPolicyResultAllow:
 	case SecurityPolicyResultDrop:
@@ -234,6 +237,11 @@ func blockActionApply(r SecurityPolicyResult, localSecurityBypass bool, match *b
 		// incident. always blocked, not overridable
 		block = true
 		return
+	}
+
+	if blockerBlock {
+		block = true
+		local = false
 	}
 
 	if match != nil {
