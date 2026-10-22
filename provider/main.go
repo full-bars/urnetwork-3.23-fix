@@ -4395,6 +4395,29 @@ func provide(opts docopt.Opts) {
 	// The toggle file always wins — `provider direct on` re-enables direct
 	// even if the env var was set, and vice versa.
 	noDirect := !isDirectEnabled()
+	// The extender serving role is process-wide and opt-in. It needs the
+	// direct slot: only that slot's egress is this host's own address, which
+	// is the address its carriers answer on. A failed start (a corrupt
+	// identity file, say) disables the role and never the provider.
+	var extenderServeRole *extenderRole
+	if extenderRoleRequested(os.Getenv) {
+		if !extenderRoleEligible(nil, !noDirect) {
+			tlog("[extender] role not started: direct providing is disabled\n")
+		} else {
+			role, roleErr := startExtenderRole(ctx, defaultExtenderRoleConfig())
+			if roleErr != nil {
+				tlog("[extender] role disabled: %v\n", roleErr)
+			} else {
+				extenderServeRole = role
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-ctx.Done()
+					extenderServeRole.CloseAndWait()
+				}()
+			}
+		}
+	}
 	// Published to the reloader below so a `direct off` before any reload
 	// has hot-toggled direct doesn't skip the bounded wait for this startup
 	// goroutine (it would otherwise unregister proxy[0] out from under a

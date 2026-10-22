@@ -76,6 +76,10 @@ var importantLogMarkers = []string{
 	"[proxy][trim] startup",
 	"[oomcap]",
 	"[proxy][resources]",
+	// The extender serving role logs only state transitions and one line per
+	// carrier bind failure. The state line is the only record of whether the
+	// role took the host's ports, so keep it in the important buffer.
+	"[extender]",
 }
 
 // isImportantLogLine reports whether a single log line should be mirrored to the
