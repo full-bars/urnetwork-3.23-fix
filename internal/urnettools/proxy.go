@@ -226,7 +226,7 @@ func withProxyRemoveYes(opArgs []string, force bool) []string {
 
 func cmdProxy(args []string, force, dryRun bool) error {
 	if len(args) == 0 {
-		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim <N> | audit")
+		return fmt.Errorf("proxy requires a subcommand: add <file> | paste | clear | remove | refresh | add-source <url> | remove-source <url> | health | traffic | ids | remove-dead | trim [<N>] | audit")
 	}
 	sub := args[0]
 	rest := args[1:]
@@ -254,7 +254,7 @@ Subcommands:
   traffic                proxy traffic from state files (single target)
   ids                    client_id per proxy from JWT store (single target)
   remove-dead            remove dead/degraded proxies (single target)
-  trim <N>               hold running proxies at N, shed the A-F-worst (single target)
+  trim [<N>]             show the trim cap, or hold running proxies at N (off clears)
   audit [action]         inspect or toggle automated proxy audit engine (status|on|off|release)
   exclude                targeting flag, not a subcommand (see 'urnet-tools help')
 
@@ -535,7 +535,11 @@ Targets and batch flags work as for other commands (--unit/--user/--network,
 			return fmt.Errorf("proxy trim operates on ONE provider — --all/--include/--exclude do not apply; use --unit/--user/--network to target it")
 		}
 		if len(positionals) < 1 {
-			return fmt.Errorf("proxy trim requires a target count, e.g. 'proxy trim 500' (or 'proxy trim off' to clear)")
+			p, err := selectTarget(providers, t)
+			if err != nil {
+				return err
+			}
+			return printTrimStatus(p)
 		}
 		p, err := selectTarget(providers, t)
 		if err != nil {

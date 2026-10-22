@@ -83,7 +83,7 @@ The full flow, including where to run each form and what settlement pays, is in 
 | `proxy paste [target]` | Stream raw proxies from stdin or pipe without creating host files. Auto-detects formats and URLs. |
 | `proxy clear [target]` | Remove all proxies and URL sources. Confirm-gated (`-f` bypasses prompt). |
 | `proxy remove [addresses...] [target]` | Remove specific proxies or patterns. Use `--match=<pattern>` for host substring matches, or `--all` for complete wipe. |
-| `proxy trim <N> [target] [--preview]` | **(New in 30.4)** Set persistent hard cap of `<N>` running proxies. Sheds worst A-F reachability graded proxies first. `proxy trim off` clears the cap. |
+| `proxy trim [<N>] [target] [--preview]` | **(New in 30.4)** With `<N>`, set a persistent hard cap of `<N>` running proxies, shedding the worst A-F reachability graded proxies first. `proxy trim off` clears the cap. With no argument it reports the current cap, the configured pool size and how many proxies the cap is holding back. |
 | `proxy refresh [target] [--force]` | Reload proxy list into running provider without restarting. `--force` bypasses warmup lockout. |
 | `proxy add-source <url> [target]` | Add live URL proxy source. Fetched and probed immediately. |
 | `proxy remove-source <url> [target]` | Remove URL proxy source. |
@@ -185,6 +185,9 @@ The tool accepts selectors in both space-separated and equals-separated format (
 `urnet-tools proxy trim <count>` sets a persistent hard cap on the number of running proxies:
 
 ```bash
+# Report the cap in force, the configured pool size and what the cap holds back
+urnet-tools proxy trim
+
 # Preview what proxies would be shed without making changes
 urnet-tools proxy trim 500 --preview
 
@@ -194,6 +197,8 @@ urnet-tools proxy trim 500
 # Remove the cap
 urnet-tools proxy trim off
 ```
+
+`urnet-tools status` carries the same information as a `trim` row on the live block whenever a cap is in force, so a capped box is visible at a glance instead of looking like a small one.
 
 - **A-F Grade Ranking:** Sheds worst-graded proxies first using the provider's website-reachability probe scores (`dead` → `never-graded` → `F` → `D` → `C` → `B` → `A`).
 - **Traffic Tiebreaker:** Proxies with active billable bandwidth are shed last within their grade tier, preserving active earning connections.
