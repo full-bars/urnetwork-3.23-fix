@@ -15,7 +15,8 @@ A fork of the **UrNetwork Connect** provider, tuned for people who run many prox
 2. **Log in.** Run `urnetwork auth` and paste your auth code from the UrNetwork app when asked.
 3. **Add proxies (optional).** `urnet-tools proxy add ~/proxies.txt`, then `urnet-tools proxy refresh`. See [Adding Proxies](docs/Adding-Proxies.md).
 4. **Check that it works.** Run `urnet-tools status`. It shows whether the provider is running. Run `urnet-tools logs` to watch it start. For a live screen, run `urnet-tools top`.
-5. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
+5. **Get paid on Bittensor (optional).** Sign one wallet message, once, from your own computer. Your nodes do not change. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
+6. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
 
 If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md). If you would rather follow a guide, pick one from the next section.
 
