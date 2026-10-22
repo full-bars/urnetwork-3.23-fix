@@ -1359,15 +1359,18 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 	if !done {
 		return
 	}
+	// Count the completed handshake even when the epoch has since been
+	// superseded. NoteAttempt already counted this attempt, so skipping it
+	// here would make a successful TLS handshake look like a failure.
+	if err == nil && self.manager != nil {
+		self.manager.notePqeEstablished(pqeCurveOf(e))
+	}
 	// If this epoch has already been reset out from under us, don't emit
 	// an identity proof bound to a dead handshake.
 	if !self.isCurrentEpoch(e) {
 		return
 	}
 	logTlsHandshake(self.client.log, self.logTag, err)
-	if err == nil && self.manager != nil {
-		self.manager.notePqeEstablished(pqeCurveOf(e))
-	}
 	if err == nil {
 		self.client.log.V(1).Infof(
 			"[tls]%s completeHandshake: cipher derived, exporter %d bytes — starting identity proof exchange\n",
@@ -1475,6 +1478,9 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		return
 	}
 	ok := VerifyClientKeySignature(peerPub, exporter, payload)
+	// firstIdentityFailure distinguishes the call that marked this epoch failed
+	// from a concurrent call verifying the same already-failed proof.
+	firstIdentityFailure := false
 	func() {
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
@@ -1488,6 +1494,7 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 				self.markEstablishedWithLock(e)
 			}
 		} else {
+			firstIdentityFailure = !e.identityFailed
 			e.identityFailed = true
 		}
 	}()
@@ -1525,7 +1532,7 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		// established epoch swapped): the only promote path runs above
 		self.manager.peerIdentityChanged()
 	} else {
-		if self.manager != nil {
+		if self.manager != nil && firstIdentityFailure {
 			self.manager.notePqeIdentityFailed()
 		}
 		self.client.log.Errorf(
