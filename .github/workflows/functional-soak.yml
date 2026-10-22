@@ -129,6 +129,7 @@ jobs:
             kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || { tail -30 /tmp/provider.log; exit 1; }
           }
           ids > /tmp/ids-before.txt
+          [ -s /tmp/ids-before.txt ] || { echo "FAIL: no stored client ids to compare"; exit 1; }
           echo "client ids before restart:"; cat /tmp/ids-before.txt
           restart_provider
           ids > /tmp/ids-after.txt
@@ -163,6 +164,7 @@ jobs:
             kill -0 "$(cat /tmp/provider.pid)" 2>/dev/null || { tail -30 /tmp/provider.log; exit 1; }
           }
           ids > /tmp/ids-before.txt
+          [ -s /tmp/ids-before.txt ] || { echo "FAIL: no stored client ids to compare"; exit 1; }
           echo "client ids before restart:"; cat /tmp/ids-before.txt
           restart_provider
           ids > /tmp/ids-after.txt
