@@ -4451,7 +4451,7 @@ func provide(opts docopt.Opts) {
 
 	// Publish the denominator for systemd STATUS= now that the proxy list is
 	// final (post prune/rebuild above).
-	setConfiguredProxyCount(trimmedConfiguredCount(len(allProxySettings)))
+	noteTrimSelection(len(allProxySettings))
 
 	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {
