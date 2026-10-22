@@ -1292,22 +1292,66 @@ func unregisterEncryptionManager(m *connect.EncryptionSessionManager) {
 	defer encryptionManagers.mu.Unlock()
 	for i, x := range encryptionManagers.set {
 		if x == m {
+			// Preserve this manager's lifetime counts before dropping it, or
+			// the exported _total series would decrease on every proxy exit.
+			retirePQE(m.PQECounts())
 			encryptionManagers.set = append(encryptionManagers.set[:i], encryptionManagers.set[i+1:]...)
 			return
 		}
 	}
 }
 
+// pqeRetired accumulates the lifetime counts of encryption managers that have
+// unregistered. Each proxy owns its manager, and unregistering on exit would
+// otherwise drop that proxy's history, so a _total would go backwards and
+// rate() would read the drop as a counter reset. Only monotonic values are
+// carried over: the windowed (hour/day/week) and active counts describe live
+// sessions and must not be summed from retired managers.
+var pqeRetired = struct {
+	mu     sync.Mutex
+	counts connect.PQECounts
+	curves map[string]int64
+}{curves: map[string]int64{}}
+
+// retirePQE folds a departing manager's lifetime counts into pqeRetired.
+// Caller holds encryptionManagers.mu, which keeps the retirement ordered
+// against pqeTotalCounts's snapshot (same lock order there).
+func retirePQE(c connect.PQECounts) {
+	pqeRetired.mu.Lock()
+	defer pqeRetired.mu.Unlock()
+	pqeRetired.counts.PQELifetime += c.PQELifetime
+	pqeRetired.counts.ClasLifetime += c.ClasLifetime
+	pqeRetired.counts.Attempts += c.Attempts
+	pqeRetired.counts.Established += c.Established
+	pqeRetired.counts.Verified += c.Verified
+	pqeRetired.counts.IdentityFailed += c.IdentityFailed
+	for _, cc := range c.Curves {
+		pqeRetired.curves[cc.Curve] += cc.Count
+	}
+}
+
 // pqeTotalCounts sums PQECounts across all live encryption managers.
 func pqeTotalCounts() connect.PQECounts {
 	var total connect.PQECounts
-	encryptionManagers.mu.Lock()
-	n := len(encryptionManagers.set)
-	snapshot := make([]*connect.EncryptionSessionManager, n)
-	copy(snapshot, encryptionManagers.set)
-	encryptionManagers.mu.Unlock()
 	curveTotals := map[string]int64{}
-	for _, m := range snapshot {
+	encryptionManagers.mu.Lock()
+	// Read the retired totals under the registry lock so a concurrent
+	// unregister cannot be counted twice (once in the snapshot, once here).
+	pqeRetired.mu.Lock()
+	total.PQELifetime = pqeRetired.counts.PQELifetime
+	total.ClasLifetime = pqeRetired.counts.ClasLifetime
+	total.Attempts = pqeRetired.counts.Attempts
+	total.Established = pqeRetired.counts.Established
+	total.Verified = pqeRetired.counts.Verified
+	total.IdentityFailed = pqeRetired.counts.IdentityFailed
+	for name, count := range pqeRetired.curves {
+		curveTotals[name] = count
+	}
+	pqeRetired.mu.Unlock()
+	// Live counts are collected while the registry lock is held: an unregister
+	// after the unlock would add a snapshotted manager's counts to pqeRetired
+	// and the loop would add them again.
+	for _, m := range encryptionManagers.set {
 		c := m.PQECounts()
 		total.ActivePQE += c.ActivePQE
 		total.ActiveClas += c.ActiveClas
@@ -1327,6 +1371,7 @@ func pqeTotalCounts() connect.PQECounts {
 			curveTotals[cc.Curve] += cc.Count
 		}
 	}
+	encryptionManagers.mu.Unlock()
 	if 0 < len(curveTotals) {
 		total.Curves = make([]connect.CurveCount, 0, len(curveTotals))
 		for name, count := range curveTotals {
