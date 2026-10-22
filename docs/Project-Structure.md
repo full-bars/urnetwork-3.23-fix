@@ -22,7 +22,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `connectctl/`, `emoji/` | Upstream tools copied in as they are. |
 | `docker/scripts/` | Start-up and helper scripts baked into the Docker image. |
 | `scripts/` | Installers and uninstallers for Linux, FreeBSD, macOS and Windows, plus test and release-check scripts. |
-| `monitoring/` | The Prometheus and Grafana bundle. See [Monitoring](Monitoring.md). |
+| `monitoring/` | The Prometheus and Grafana bundle. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring). |
 | `pelican/` | The Pelican game-server panel egg. |
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
 | `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
@@ -89,4 +89,4 @@ Everything in `docs/*.md` is copied to the [GitHub wiki](https://github.com/full
 
 ## The hub (removed)
 
-The fleet-hub dashboard (the `hub/` package and the `urnet-tools hub` commands) was removed in v32.0 (FORK_CHANGES section 165). Fleet visibility is now the Prometheus `/metrics` endpoint (`urnet-tools metrics on`) with the [Monitoring bundle](Monitoring.md).
+The fleet-hub dashboard (the `hub/` package and the `urnet-tools hub` commands) was removed in v32.0 (FORK_CHANGES section 165). Fleet visibility is now the Prometheus `/metrics` endpoint (`urnet-tools metrics on`) with the [Monitoring bundle](/full-bars/urnetwork-3.23-fix/wiki/Monitoring).

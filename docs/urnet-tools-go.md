@@ -58,7 +58,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 
 #### OpenRC (Alpine) command parity
 
-On a host where OpenRC is the running init system, the lifecycle commands (`start`, `stop`, `restart`, `auto-start`, `auto-update`, `logs`, `status`, `uninstall`) act on the installer's `urnetwork` service. The command table, the multi-provider selector rules and the root requirement are on the [Alpine Linux (OpenRC)](OpenRC.md#urnet-tools-command-parity) page.
+On a host where OpenRC is the running init system, the lifecycle commands (`start`, `stop`, `restart`, `auto-start`, `auto-update`, `logs`, `status`, `uninstall`) act on the installer's `urnetwork` service. The command table, the multi-provider selector rules and the root requirement are on the [Alpine Linux (OpenRC)](/full-bars/urnetwork-3.23-fix/wiki/OpenRC#urnet-tools-command-parity) page.
 
 ### Wallet Consent Commands
 
@@ -69,11 +69,11 @@ The network wallet consent is one signature from your coldkey that covers every 
 | `wallet status [target]` | Show the stored network consent: the consent coldkey, its epoch interval, and whether it is in effect now, still starts in an epoch, or ended. A legacy login-proof wallet (if any) is listed apart: it is not a consent and settlement does not pay it. Read-only. |
 | `wallet challenge <coldkey_ss58> [--wallet-from-epoch N --wallet-through-epoch N] [target]` | Fetch a fresh, verified consent statement to sign. Signs nothing; prints the exact message and the epoch interval it covers. |
 | `wallet set <coldkey_ss58> [--message=<text> --signature=0x<hex> \| --coldkey_seed_file=<path>] [target]` | Submit a signed consent. The `--coldkey_seed_file` form reads a seed from disk and is **for the operator's own workstation only, never a fleet node**: on a fleet member the tool refuses unless you pass `--i-am-on-my-own-workstation`. Use `wallet sign` instead when you can. |
-| `wallet sign [coldkey_ss58] [target]` | Run `provider wallet sign`: one local page (127.0.0.1 only, 15 minutes, visible countdowns, extendable) where a wallet extension (Talisman, SubWallet, Polkadot{.js}, Nova, or any Polkadot `signRaw` extension) signs the consent statement; without an address you choose the account on the page. The seed never leaves the extension. Refused on a fleet node unless `--i-am-on-my-own-workstation`. See [scripts/wallet-consent/README.md](../scripts/wallet-consent/README.md). |
+| `wallet sign [coldkey_ss58] [target]` | Run `provider wallet sign`: one local page (127.0.0.1 only, 15 minutes, visible countdowns, extendable) where a wallet extension (Talisman, SubWallet, Polkadot{.js}, Nova, or any Polkadot `signRaw` extension) signs the consent statement; without an address you choose the account on the page. The seed never leaves the extension. Refused on a fleet node unless `--i-am-on-my-own-workstation`. See [scripts/wallet-consent/README.md](/full-bars/urnetwork-3.23-fix/blob/main/scripts/wallet-consent/README.md). |
 
 A later consent must start at a later epoch than the one before it. Use `--wallet-from-epoch`/`--wallet-through-epoch` with `wallet challenge` and `wallet set` for an explicit interval; the default is the next epoch through the full 65,536-epoch span.
 
-The full flow, including where to run each form and what settlement pays, is in [Bittensor operations](Bittensor-Operations.md). Delegating the consent to a hotkey is covered in [Bittensor hotkey delegation](Bittensor-Hotkey-Delegation.md), and automatic claims in [Bittensor claim daemons](Bittensor-Claim-Daemons.md).
+The full flow, including where to run each form and what settlement pays, is in [Bittensor operations](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations). Delegating the consent to a hotkey is covered in [Bittensor hotkey delegation](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Hotkey-Delegation), and automatic claims in [Bittensor claim daemons](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons).
 
 ### Proxy Management Commands
 
@@ -97,7 +97,7 @@ The full flow, including where to run each form and what settlement pays, is in 
 ### Hub Command Family (removed)
 
 > [!WARNING]
-> **Removed (v32.0):** The hub service, its dashboard and the whole `hub` command family are gone from `urnet-tools`. For fleet visibility use `urnet-tools metrics on` and the [Monitoring](Monitoring.md) bundle. The leftover `report` command (see "Configuration & Introspection") only matters if you run your own collector.
+> **Removed (v32.0):** The hub service, its dashboard and the whole `hub` command family are gone from `urnet-tools`. For fleet visibility use `urnet-tools metrics on` and the [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) bundle. The leftover `report` command (see "Configuration & Introspection") only matters if you run your own collector.
 
 ### System & Performance Tuning
 
@@ -106,13 +106,13 @@ The full flow, including where to run each form and what settlement pays, is in 
 | `auto [on\|off]` | Enable or disable Smart Auto hardware profile. |
 | `optimize [-f]` | Tune kernel parameters (conntrack, socket buffers, port ranges, BBR). Platform-aware. Self-elevates to root when needed (apply live + persist atomically, or roll back). |
 | `eco [on\|off]` | Enable or disable Eco profile (RAM-constrained hosts). |
-| `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](Configuration.md#-control-socket--runtime-settings). |
+| `smart-dialer [status\|on\|off]` | **(New in 32.8)** Show or set the measured-cost transport preference. Live, persisted, off by default. `status` says which way it is set and how to change it. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-control-socket--runtime-settings). |
 | `set oom-cap [on\|off\|shadow]` | **(New in 32.8)** Show or set the OOM-aware start cap kill switch. `shadow` (default) decides and logs and enforces nothing, `on` enforces, `off` disables it and forgets a standing cap. Any source saying `off` wins. Live and persisted. |
-| `set h3 [off\|direct\|on\|auto\|N\|all]` | Show or set which identities may use the transports beyond H1 (H3, H3 over DNS, the DNS pump), live and persisted. `direct` (default): the direct identity runs them as automatic fallbacks. `on` also runs H3 beside H1; a number or `all` widens the fallbacks to the best N or every proxy; `auto` sizes the fallback set from memory pressure, from none up to 64. Widening relaunches the proxies it adds and each redial costs the platform's speed tests. See [Configuration](Configuration.md) and [H3 Auto](H3-Auto.md). |
+| `set h3 [off\|direct\|on\|auto\|N\|all]` | Show or set which identities may use the transports beyond H1 (H3, H3 over DNS, the DNS pump), live and persisted. `direct` (default): the direct identity runs them as automatic fallbacks. `on` also runs H3 beside H1; a number or `all` widens the fallbacks to the best N or every proxy; `auto` sizes the fallback set from memory pressure, from none up to 64. Widening relaunches the proxies it adds and each redial costs the platform's speed tests. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration) and [H3 Auto](/full-bars/urnetwork-3.23-fix/wiki/H3-Auto). |
 | `set h3-datagram [on\|off]` | Offer QUIC DATAGRAM (RFC 9221) on the H3 connection, so a server that accepts can send its small frames as datagrams instead of on the reliable stream. On by default, as upstream. |
 | `set h3-datagram-send [on\|off]` | Also send small frames as datagrams on a connection where the server accepted them. On by default, as upstream; read per message, and used only while H1 is up. |
-| `set h1-plus [on\|off]` | Show or set the H1+ carrier upgrade on new H1 dials, live and persisted. On by default. See [Configuration](Configuration.md). |
-| `set ip-version [dual\|ipv4\|ipv6\|legacy]` | **(New)** Show or set which IP families the **direct** identity uses to reach the platform, live and persisted, no restart. `dual` (default): an IPv4 connection and an IPv6 connection plus a fallback if neither works. `ipv4` / `ipv6`: that family only, no fallback. `legacy`: the behavior before dual stack, one connection where the OS picks the family. `ip` is a short alias. Proxied identities are never affected. See [Configuration](Configuration.md) and [Monitoring](Monitoring.md#metrics-and-log-lines-for-dual-stack-platform-transports). |
+| `set h1-plus [on\|off]` | Show or set the H1+ carrier upgrade on new H1 dials, live and persisted. On by default. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration). |
+| `set ip-version [dual\|ipv4\|ipv6\|legacy]` | **(New)** Show or set which IP families the **direct** identity uses to reach the platform, live and persisted, no restart. `dual` (default): an IPv4 connection and an IPv6 connection plus a fallback if neither works. `ipv4` / `ipv6`: that family only, no fallback. `legacy`: the behavior before dual stack, one connection where the OS picks the family. `ip` is a short alias. Proxied identities are never affected. See [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration) and [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring#metrics-and-log-lines-for-dual-stack-platform-transports). |
 | `autopilot log [limit]` | **(New in 32.8)** Show the capacity decisions the provider recorded (OOM-aware start cap and trim results) as a timeline: UTC time, actor, action, the change, the mode and the reason. Shadow decisions show as `[shadow]`. Also prints the current `oom-cap` value. Default 20 entries, at most 200. A provider that predates the `ledger` command answers with an explanatory error.
 | `baseline show [-n N] [--json]` | **(New in 32.8)** Show the newest rows of this box's own behaviour record: UTC time, kind, version, proxies up against desired, RSS, host memory available, swap, and the file's first and last timestamps and size. Default 20 rows, at most 200. Reads `~/.urnetwork/baseline.jsonl` directly, so it works on a box whose provider is stopped. |
 | `baseline mark <label>` | **(New in 32.8)** Annotate the timeline, for example just before an upgrade. Goes through the control socket, so the provider stays the only writer to the file. Prints the timestamp recorded. A label is required: an unlabelled mark is a boundary `compare` cannot use. Works while the recorder is off, and never deletes the file. |
@@ -133,7 +133,7 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 | `turbo [v4\|v8\|off]` | Enable Turbo V4 or Turbo V8 high-throughput modes. |
 | `ramlogs [on\|off]` | Enable or disable RAM-disk logging (`/dev/shm`). |
 | `profile [name]` | **(New in 31.0)** Show or set the memory and GC tuning profile (`auto`, `turbo-v4`, `turbo-v8`, `eco`, `lowmem`). With no argument, prints the current profile and what each one is for. |
-| `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](Monitoring.md). |
+| `metrics [status\|on\|off\|listen <ip:port\|auto>]` | Show where the Prometheus `/metrics` endpoint listens and the address to scrape, turn it on or off, or choose its listen address. Live, no restart, and persisted. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring). |
 
 
 ---
@@ -199,7 +199,7 @@ urnet-tools proxy trim off
 - **Traffic Tiebreaker:** Proxies with active billable bandwidth are shed last within their grade tier, preserving active earning connections.
 - **Persistence:** Stored at `~/.urnetwork/proxy_trim`, surviving provider restarts and reloads.
 - **AIMD Integration:** Clamps the AIMD pool controller `TargetPoolSize` so automated pressure management works within the hard cap.
-- **Receipts and preview (32.8):** every change logs `[proxy][trim] received` and `applied` lines. `--preview` is computed by the running provider, and the CLI says so when it cannot reach one. Shed proxies keep their state, and the cap is honored before launching at startup. See [Proxy Management](Proxy-Management.md).
+- **Receipts and preview (32.8):** every change logs `[proxy][trim] received` and `applied` lines. `--preview` is computed by the running provider, and the CLI says so when it cannot reach one. Shed proxies keep their state, and the cap is honored before launching at startup. See [Proxy Management](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management).
 
 ### 2. Session Save and Load
 

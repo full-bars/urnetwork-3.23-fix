@@ -1,7 +1,7 @@
 # Bittensor Hotkey Delegation
 
 > [!TIP]
-> **Most operators can stop here.** If you log in with a website account and have signed the network consent (see the [Quick Start](Bittensor-Quick-Start.md)), you do not need hotkey delegation. There is one operator in the published list today, and your network consent already covers you there.
+> **Most operators can stop here.** If you log in with a website account and have signed the network consent (see the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start)), you do not need hotkey delegation. There is one operator in the published list today, and your network consent already covers you there.
 
 > [!NOTE]
 > Checked against upstream sn `83e6f48c2` (2026-10-21). This build pins sn `6608298ead6b`, and the hotkey wallet code (`hotkeywallet/`, `miner/hotkey_wallet_cmd.go`, `protocol/earning_wallet.go`) is unchanged between the two.
@@ -11,7 +11,7 @@
 | Your situation | Do you need it? |
 |---|---|
 | You log in with a website account and signed the network consent | **No.** |
-| You sign in with `--auto-register --hotkey_seed_file`, on one operator | Maybe. That creates a **separate** URnetwork account owned by the hotkey, and your website consent does not cover it ([Multi-Operator](Multi-Operator.md)). That account needs either a network consent of its own or this delegation. |
+| You sign in with `--auto-register --hotkey_seed_file`, on one operator | Maybe. That creates a **separate** URnetwork account owned by the hotkey, and your website consent does not cover it ([Multi-Operator](/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator)). That account needs either a network consent of its own or this delegation. |
 | You run the same hotkey on several operators and want one coldkey paid everywhere | **Yes.** This is what the delegation is for. |
 
 ## In plain words
@@ -100,7 +100,7 @@ Run `provider wallet hotkey status` and read the operator line.
 |---|---|---|
 | `adopts the head, generation N, from epoch A through B` and no caveats | Working. | Nothing. |
 | `not effective: the window ends at epoch A and the operator is at epoch B; ...` | The delegation window ends before the operator's epoch plus 2. | A running provider renews it on its hourly upkeep. Or run the same `set` again. |
-| A caveat naming a signed **network** consent | That consent outranks the delegation, so its coldkey is paid. | Nothing, if that is the coldkey you want. Otherwise replace the network consent (see the [Quick Start](Bittensor-Quick-Start.md#changing-your-wallet)). |
+| A caveat naming a signed **network** consent | That consent outranks the delegation, so its coldkey is paid. | Nothing, if that is the coldkey you want. Otherwise replace the network consent (see the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start#changing-your-wallet)). |
 | `delegates to hotkey X at generation N, not the head` | The operator holds an older head or another hotkey. | Run `set` from that provider. |
 | `no hotkey delegation` | The operator holds none. | Run `set` from that provider. |
 | `unavailable: <error>` | The operator could not be asked. | Check the network, then retry. |
@@ -110,7 +110,7 @@ A per-provider consent outranks both, but `status` does not list those. It only 
 
 If a `set` exited 1 over operator failures, its output names them. Run the same `set` again. An operator that already has the head reports `chain stored; the delegation already adopts generation N`.
 
-On a provider that runs one child per operator, `provider operators` shows the list and each operator's credential state. See [Multi-Operator](Multi-Operator.md).
+On a provider that runs one child per operator, `provider operators` shows the list and each operator's credential state. See [Multi-Operator](/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator).
 
 ## Command reference
 
@@ -131,7 +131,7 @@ provider wallet hotkey status [--hotkey_seed_file=<path>] [--operators-url=<url>
 | `--coldkey_seed_file` | Local coldkey signing for `set`. Mode `0600`, never created by the tool. Use it on your own computer, never on a fleet node. |
 | `--message`, `--signature` | The offline signature, always together. The message is exactly what `challenge` printed, or its one-line form with a literal `\n` per line break. The signature is the coldkey's 64-byte sr25519 signature as hex (`0x` optional). |
 | `--wallet-from-epoch`, `--wallet-through-epoch` | The consent's earning window, always together. At most 65,536 epochs: through is at most 65,535 after from. |
-| `--operators-url` | The operator list used by the operators family ([Multi-Operator](Multi-Operator.md)). The hotkey commands still resolve their one operator from the provider's saved network config, not from this list. |
+| `--operators-url` | The operator list used by the operators family ([Multi-Operator](/full-bars/urnetwork-3.23-fix/wiki/Multi-Operator)). The hotkey commands still resolve their one operator from the provider's saved network config, not from this list. |
 
 ## Generations and earning windows
 
@@ -149,4 +149,4 @@ provider wallet hotkey status [--hotkey_seed_file=<path>] [--operators-url=<url>
 - **Seed files are read, never created.** They must be private files you own. They are never logged. A missing or unsafe seed file is an error that names its path.
 - **Linux and macOS only.** Seed custody does not support Windows. There a seed load fails with `private seed file custody is unsupported on this platform`. `status` without `--hotkey_seed_file` reads no seed and works anywhere.
 
-For the wider Subnet 25 picture see [Bittensor Operations](Bittensor-Operations.md). For plain meanings of the words, see the [Glossary](Bittensor-Glossary.md).
+For the wider Subnet 25 picture see [Bittensor Operations](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations). For plain meanings of the words, see the [Glossary](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Glossary).

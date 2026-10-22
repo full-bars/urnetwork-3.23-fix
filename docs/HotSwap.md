@@ -3,7 +3,7 @@
 HotSwap replaces the running provider with a new binary without stopping the service. The old process keeps serving what it already has while a new process starts, takes over, and the old one drains and exits. This page is the procedure, what you will see, and what it costs. Everything here was observed on a live node (Linux, systemd user unit, about 1,400 proxies), not just in tests.
 
 > [!WARNING]
-> **HotSwap is not available on Alpine and other OpenRC hosts.** This page describes systemd hosts. On OpenRC, `urnet-tools update` stops and starts the service instead. See [Not available under OpenRC](#not-available-under-openrc-alpine), and [Alpine Linux (OpenRC)](OpenRC.md#hotswap-is-not-available) for details.
+> **HotSwap is not available on Alpine and other OpenRC hosts.** This page describes systemd hosts. On OpenRC, `urnet-tools update` stops and starts the service instead. See [Not available under OpenRC](#not-available-under-openrc-alpine), and [Alpine Linux (OpenRC)](/full-bars/urnetwork-3.23-fix/wiki/OpenRC#hotswap-is-not-available) for details.
 
 > [!IMPORTANT]
 > HotSwap removes the gap where **no provider process is running** (about 2 to 3 seconds on a plain restart on the test node). It does **not** keep your proxy connections up: the old process drops almost all of them within a second of the handover and the new process re-establishes them over about 30 seconds, the same ramp a plain restart has. Measured numbers are in [What it costs](#what-it-costs).
@@ -20,7 +20,7 @@ On a host where OpenRC is the init system (Alpine and its relatives), there is *
 zero-downtime hotswap unavailable: the provider is supervised by OpenRC's supervise-daemon, which has no sd_notify MainPID handoff; this update uses a stop/start service restart
 ```
 
-`urnet-tools hotswap` declines with the same message. The restart needs root, so updates on OpenRC are run from a root shell. The install walkthrough and the rest of the OpenRC behavior are on the [Alpine Linux (OpenRC)](OpenRC.md) page.
+`urnet-tools hotswap` declines with the same message. The restart needs root, so updates on OpenRC are run from a root shell. The install walkthrough and the rest of the OpenRC behavior are on the [Alpine Linux (OpenRC)](/full-bars/urnetwork-3.23-fix/wiki/OpenRC) page.
 
 ## What HotSwap is, and is not
 
@@ -71,7 +71,7 @@ systemctl --user show urnetwork.service -p Type,NotifyAccess   # drop --user for
 
 ## Metrics counters across a swap
 
-The cumulative `urnet_*_total` counters live in `~/.urnetwork/metrics_counters.json`. The new process restores the stored totals but does not write while the old one is still serving. At takeover it catches up to whatever the old process wrote, and then starts the periodic write. The old process writes its final totals at the end of its drain, and the new one catches up again once the drain window has passed. If the new process dies during the drain, the old process writes its totals before it exits for the supervisor. A scrape therefore continues the series across the swap; see [Monitoring](Monitoring.md) for the dashboards' restart gate.
+The cumulative `urnet_*_total` counters live in `~/.urnetwork/metrics_counters.json`. The new process restores the stored totals but does not write while the old one is still serving. At takeover it catches up to whatever the old process wrote, and then starts the periodic write. The old process writes its final totals at the end of its drain, and the new one catches up again once the drain window has passed. If the new process dies during the drain, the old process writes its totals before it exits for the supervisor. A scrape therefore continues the series across the swap; see [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) for the dashboards' restart gate.
 
 ## What you will see
 
@@ -121,5 +121,5 @@ Set `URNETWORK_PPROF=127.0.0.1:6060` to expose pprof on loopback. During a swap 
 
 ## Related
 
-- [Troubleshooting: HotSwap declines on an existing node](Troubleshooting.md#5-hotswap-declines-on-an-existing-node)
-- [Monitoring: `urnet_hotswap_outcomes_total`](Monitoring.md)
+- [Troubleshooting: HotSwap declines on an existing node](/full-bars/urnetwork-3.23-fix/wiki/Troubleshooting#5-hotswap-declines-on-an-existing-node)
+- [Monitoring: `urnet_hotswap_outcomes_total`](/full-bars/urnetwork-3.23-fix/wiki/Monitoring)

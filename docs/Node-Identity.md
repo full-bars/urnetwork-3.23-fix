@@ -10,7 +10,7 @@ For example: `us-east-1 @ 66.x.x.96 [v3.23.0-fix.30.9]`
 
 The label is built by `providerDescription()` in `provider/main.go` and is sent at **every mint and renewal** — so changes take effect within one auth cycle (~once per day), no restart required.
 
-The label is separate from the `client_id` the platform assigns to each proxy slot. Those ids, and how they are kept stable across restarts, are covered in [Hot-Restart.md](Hot-Restart.md).
+The label is separate from the `client_id` the platform assigns to each proxy slot. Those ids, and how they are kept stable across restarts, are covered in [Hot-Restart.md](/full-bars/urnetwork-3.23-fix/wiki/Hot-Restart).
 
 ## How the Label Is Assembled
 

@@ -3,7 +3,7 @@
 > [!NOTE]
 > **Status: shipped in v3.23.0-fix.34.0** (it landed in v3.23.0-fix.33.1). Nothing changes unless you set the `h3` control key. This page describes behavior in a shipped build.
 
-`h3 auto` is a value for the existing [`h3`](Configuration.md#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a new sensor, a new goroutine or a new metric series.
+`h3 auto` is a value for the existing [`h3`](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-control-socket--runtime-settings) control key. It chooses how many proxies get the H3, H3-over-DNS and DNS-pump fallback policy from the provider's memory limit and its existing memory pressure signal. It does not add a new sensor, a new goroutine or a new metric series.
 
 ## What it sizes
 
@@ -63,7 +63,7 @@ A target move logs one line, and only when the ranked set actually changes:
 
 The first number is the previous target, the second the new one. `capacity` is what the effective memory limit allows, from 0 to 64. A pool smaller than the target does not produce a line per step.
 
-The usual H3 signals still apply: the `[health]` fields (`h3_up`, `h3_tx_share`, `h3_drops`, `h3_conn_fail`), the `[proxy][udp]` lines, and the `urnet_h3_*` and `urnet_transport_*` series in `/metrics`. See [Monitoring](Monitoring.md) and the [log reference](../LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies).
+The usual H3 signals still apply: the `[health]` fields (`h3_up`, `h3_tx_share`, `h3_drops`, `h3_conn_fail`), the `[proxy][udp]` lines, and the `urnet_h3_*` and `urnet_transport_*` series in `/metrics`. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) and the [log reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies).
 
 ## Default and compatibility
 
@@ -85,6 +85,6 @@ Known risks:
 
 ## Related
 
-- [Configuration](Configuration.md#-control-socket--runtime-settings): the `h3` row and the other control keys.
-- [Monitoring](Monitoring.md): the H3 metrics and health fields.
-- [Log reference](../LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies): the relaunch and auto lines.
+- [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-control-socket--runtime-settings): the `h3` row and the other control keys.
+- [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring): the H3 metrics and health fields.
+- [Log reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md#widening-or-narrowing-the-h3-key-relaunches-proxies): the relaunch and auto lines.

@@ -43,7 +43,7 @@ What the answer means:
 Do these on **your own computer** (the one with your wallet's browser extension), not on a node.
 
 1. **Have a wallet.** If you do not have one, install a Polkadot-style browser wallet extension (Talisman, SubWallet, Polkadot{.js} or Nova) and create an account. Write the recovery phrase on paper and keep it offline. The account address starts with `5`. This address is your coldkey.
-2. **Get the `provider` program** on that computer. The installers in the [README](../README.md#install) work, or download the binary for your system from the releases page. You do not need to run a node on this computer.
+2. **Get the `provider` program** on that computer. The installers in the [README](/full-bars/urnetwork-3.23-fix/blob/main/README.md#install) work, or download the binary for your system from the releases page. You do not need to run a node on this computer.
 3. **Log in** to your URnetwork account with an auth code from the website:
    ```bash
    provider auth
@@ -53,7 +53,7 @@ Do these on **your own computer** (the one with your wallet's browser extension)
    ```bash
    provider wallet sign <your_coldkey_address>
    ```
-   A page opens at `http://127.0.0.1:8765/` (another free port if that one is taken), so only your own computer can reach it. Unlock your extension, click **1. Connect wallet** and approve, then click **2. Sign** and approve. The extension shows the message. Its first line is `Approve URnetwork network wallet mapping`. You can leave out the address and pick the account on the page. Add `--no-open` to print the page address instead of opening the browser. More detail is in [the wallet-consent README](../scripts/wallet-consent/README.md).
+   A page opens at `http://127.0.0.1:8765/` (another free port if that one is taken), so only your own computer can reach it. Unlock your extension, click **1. Connect wallet** and approve, then click **2. Sign** and approve. The extension shows the message. Its first line is `Approve URnetwork network wallet mapping`. You can leave out the address and pick the account on the page. Add `--no-open` to print the page address instead of opening the browser. More detail is in [the wallet-consent README](/full-bars/urnetwork-3.23-fix/blob/main/scripts/wallet-consent/README.md).
 5. **Look for the success line:**
    ```text
    subnet wallet consent for 5... stored: epochs N through M, generation G, receipt ...
@@ -113,15 +113,15 @@ The step is the same for everyone. Nothing changes on the nodes.
 | `provider wallet set <coldkey> --legacy-network-wallet` | Same thing. Unsigned, not paid. |
 | `provider wallet hotkey ...` | Only for people who sign in with a hotkey across several operators. Today there is one operator. |
 | `provide --all-operators`, `provider operators` | Multi-operator mode. Today there is one operator. |
-| `provider fleet ...`, `bind-head`, `unbind-head` | Head tier only. See [the head tier page](Bittensor-Head-Tier.md). |
+| `provider fleet ...`, `bind-head`, `unbind-head` | Head tier only. See [the head tier page](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier). |
 | `provider claim-daemon`, `claim-daemon-v2`, `provider snclaim` | Optional claim automation and a low-level tool. |
 | `provider claim` | Optional manual claim. |
 | `sn-status` | Optional dashboard. |
 
 ## When you DO need more
 
-- **You want the head tier** (your own seat on the subnet, paid directly). It is advanced, costs TAO up front, and only makes sense if you control many different public IP ranges. Most operators should not do it. Read [Bittensor Head Tier](Bittensor-Head-Tier.md) first. Keep your consent signed too: nodes you do not bind keep earning in the pool.
-- **You sign in with a hotkey** (`--auto-register` with a hotkey seed file). That makes a **new** URnetwork account owned by the hotkey. Your website consent does not cover it. See [Hotkey Delegation](Bittensor-Hotkey-Delegation.md).
-- **You want automatic claims.** See [Claim Daemons](Bittensor-Claim-Daemons.md). Most people do not need this.
+- **You want the head tier** (your own seat on the subnet, paid directly). It is advanced, costs TAO up front, and only makes sense if you control many different public IP ranges. Most operators should not do it. Read [Bittensor Head Tier](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier) first. Keep your consent signed too: nodes you do not bind keep earning in the pool.
+- **You sign in with a hotkey** (`--auto-register` with a hotkey seed file). That makes a **new** URnetwork account owned by the hotkey. Your website consent does not cover it. See [Hotkey Delegation](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Hotkey-Delegation).
+- **You want automatic claims.** See [Claim Daemons](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Claim-Daemons). Most people do not need this.
 
-For the full picture and a FAQ, see [Bittensor Operations](Bittensor-Operations.md). For plain meanings of the words, see the [Glossary](Bittensor-Glossary.md).
+For the full picture and a FAQ, see [Bittensor Operations](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations). For plain meanings of the words, see the [Glossary](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Glossary).
