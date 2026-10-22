@@ -293,6 +293,57 @@ func readHotswapDeclinesFromDisk() map[string]int64 {
 
 // providerExtraMetrics generates the Prometheus text-format lines that only
 // the provider can supply. Called by connect.PrometheusHandler on every scrape.
+// writePQESessionMetrics writes the PQE/classical session families: active and
+// windowed session counts, the handshake stages that lead to a session, and the
+// negotiated-curve histogram. Split out from providerExtraMetrics so the
+// exposition can be tested with synthesized counts instead of a live manager.
+func writePQESessionMetrics(b *strings.Builder, pq connect.PQECounts) {
+	fmt.Fprintf(b, "# HELP urnet_sessions_pqe Active PQE sessions.\n")
+	fmt.Fprintf(b, "# TYPE urnet_sessions_pqe gauge\n")
+	fmt.Fprintf(b, "urnet_sessions_pqe %d\n", pq.ActivePQE)
+
+	fmt.Fprintf(b, "# HELP urnet_sessions_classical Active classical sessions.\n")
+	fmt.Fprintf(b, "# TYPE urnet_sessions_classical gauge\n")
+	fmt.Fprintf(b, "urnet_sessions_classical %d\n", pq.ActiveClas)
+
+	// Hour/day/week are sliding windows and go down as sessions age out, so
+	// they are gauges. Only the lifetime count is a counter; rate() over a
+	// value that decreases reads every drop as a counter reset.
+	fmt.Fprintf(b, "# HELP urnet_sessions_opened_total Sessions opened over the provider's lifetime.\n")
+	fmt.Fprintf(b, "# TYPE urnet_sessions_opened_total counter\n")
+	fmt.Fprintf(b, "urnet_sessions_opened_total{encryption=\"pqe\"} %d\n", pq.PQELifetime)
+	fmt.Fprintf(b, "urnet_sessions_opened_total{encryption=\"classical\"} %d\n", pq.ClasLifetime)
+
+	fmt.Fprintf(b, "# HELP urnet_sessions_opened_recent Sessions opened in the last hour, day, or week.\n")
+	fmt.Fprintf(b, "# TYPE urnet_sessions_opened_recent gauge\n")
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"pqe\"} %d\n", pq.PQEHour)
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"pqe\"} %d\n", pq.PQEDay)
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"pqe\"} %d\n", pq.PQEWeek)
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"classical\"} %d\n", pq.ClasHour)
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"classical\"} %d\n", pq.ClasDay)
+	fmt.Fprintf(b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"classical\"} %d\n", pq.ClasWeek)
+
+	// Handshake stages and negotiated curves: the stage counters bracket the
+	// path to a session (attempts minus tls_ok is failed TLS handshakes,
+	// identity_failed is a completed handshake whose peer proof did not
+	// verify), and the curve histogram shows which key-exchange group peers
+	// actually negotiated, which is the only way to see a fallback to a
+	// classical group.
+	fmt.Fprintf(b, "# HELP urnet_sessions_handshake_total Handshake events over the provider's lifetime.\n")
+	fmt.Fprintf(b, "# TYPE urnet_sessions_handshake_total counter\n")
+	fmt.Fprintf(b, "urnet_sessions_handshake_total{stage=\"attempts\"} %d\n", pq.Attempts)
+	fmt.Fprintf(b, "urnet_sessions_handshake_total{stage=\"tls_ok\"} %d\n", pq.Established)
+	fmt.Fprintf(b, "urnet_sessions_handshake_total{stage=\"verified\"} %d\n", pq.Verified)
+	fmt.Fprintf(b, "urnet_sessions_handshake_total{stage=\"identity_failed\"} %d\n", pq.IdentityFailed)
+	if 0 < len(pq.Curves) {
+		fmt.Fprintf(b, "# HELP urnet_sessions_curve_total Established handshakes by negotiated key-exchange curve.\n")
+		fmt.Fprintf(b, "# TYPE urnet_sessions_curve_total counter\n")
+		for _, cc := range pq.Curves {
+			fmt.Fprintf(b, "urnet_sessions_curve_total{curve=%s} %d\n", connect.PrometheusLabelValue(cc.Curve), cc.Count)
+		}
+	}
+}
+
 func providerExtraMetrics() string {
 	detectStartup()
 	var b strings.Builder
@@ -435,31 +486,7 @@ func providerExtraMetrics() string {
 	}
 
 	// --- PQE session counts ---
-	pq := pqeTotalCounts()
-	fmt.Fprintf(&b, "# HELP urnet_sessions_pqe Active PQE sessions.\n")
-	fmt.Fprintf(&b, "# TYPE urnet_sessions_pqe gauge\n")
-	fmt.Fprintf(&b, "urnet_sessions_pqe %d\n", pq.ActivePQE)
-
-	fmt.Fprintf(&b, "# HELP urnet_sessions_classical Active classical sessions.\n")
-	fmt.Fprintf(&b, "# TYPE urnet_sessions_classical gauge\n")
-	fmt.Fprintf(&b, "urnet_sessions_classical %d\n", pq.ActiveClas)
-
-	// Hour/day/week are sliding windows and go down as sessions age out, so
-	// they are gauges. Only the lifetime count is a counter; rate() over a
-	// value that decreases reads every drop as a counter reset.
-	fmt.Fprintf(&b, "# HELP urnet_sessions_opened_total Sessions opened over the provider's lifetime.\n")
-	fmt.Fprintf(&b, "# TYPE urnet_sessions_opened_total counter\n")
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{encryption=\"pqe\"} %d\n", pq.PQELifetime)
-	fmt.Fprintf(&b, "urnet_sessions_opened_total{encryption=\"classical\"} %d\n", pq.ClasLifetime)
-
-	fmt.Fprintf(&b, "# HELP urnet_sessions_opened_recent Sessions opened in the last hour, day, or week.\n")
-	fmt.Fprintf(&b, "# TYPE urnet_sessions_opened_recent gauge\n")
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"pqe\"} %d\n", pq.PQEHour)
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"pqe\"} %d\n", pq.PQEDay)
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"pqe\"} %d\n", pq.PQEWeek)
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"hour\",encryption=\"classical\"} %d\n", pq.ClasHour)
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"day\",encryption=\"classical\"} %d\n", pq.ClasDay)
-	fmt.Fprintf(&b, "urnet_sessions_opened_recent{window=\"week\",encryption=\"classical\"} %d\n", pq.ClasWeek)
+	writePQESessionMetrics(&b, pqeTotalCounts())
 
 	// --- Resource pressure ---
 	pressure := currentPressure()
