@@ -1306,6 +1306,7 @@ func pqeTotalCounts() connect.PQECounts {
 	snapshot := make([]*connect.EncryptionSessionManager, n)
 	copy(snapshot, encryptionManagers.set)
 	encryptionManagers.mu.Unlock()
+	curveTotals := map[string]int64{}
 	for _, m := range snapshot {
 		c := m.PQECounts()
 		total.ActivePQE += c.ActivePQE
@@ -1318,6 +1319,25 @@ func pqeTotalCounts() connect.PQECounts {
 		total.ClasDay += c.ClasDay
 		total.ClasWeek += c.ClasWeek
 		total.ClasLifetime += c.ClasLifetime
+		total.Attempts += c.Attempts
+		total.Established += c.Established
+		total.Verified += c.Verified
+		total.IdentityFailed += c.IdentityFailed
+		for _, cc := range c.Curves {
+			curveTotals[cc.Curve] += cc.Count
+		}
+	}
+	if 0 < len(curveTotals) {
+		total.Curves = make([]connect.CurveCount, 0, len(curveTotals))
+		for name, count := range curveTotals {
+			total.Curves = append(total.Curves, connect.CurveCount{Curve: name, Count: count})
+		}
+		sort.Slice(total.Curves, func(i, j int) bool {
+			if total.Curves[i].Count != total.Curves[j].Count {
+				return total.Curves[i].Count > total.Curves[j].Count
+			}
+			return total.Curves[i].Curve < total.Curves[j].Curve
+		})
 	}
 	return total
 }
@@ -1527,7 +1547,9 @@ func runEarningWindows(ctx context.Context) {
 		c := pqeTotalCounts()
 		if c.ActivePQE != 0 || c.ActiveClas != 0 || c.PQEHour != 0 || c.PQEDay != 0 ||
 			c.PQEWeek != 0 || c.PQELifetime != 0 || c.ClasHour != 0 || c.ClasDay != 0 ||
-			c.ClasWeek != 0 || c.ClasLifetime != 0 {
+			c.ClasWeek != 0 || c.ClasLifetime != 0 ||
+			c.Attempts != 0 || c.Established != 0 || c.Verified != 0 || c.IdentityFailed != 0 ||
+			0 < len(c.Curves) {
 			// "direct-e2e": per-peer TLS tunnels THIS node terminates. Client
 			// traffic merely forwarded through us (transit hops) never opens
 			// such a session here — those appear on 🛰️ [relay] / 📈 [traffic].
@@ -1535,6 +1557,18 @@ func runEarningWindows(ctx context.Context) {
 				c.ActivePQE, c.ActiveClas,
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
+			// The stage/curve line explains a zero classical count: attempts
+			// minus tls_ok is failed handshakes, and the curve histogram shows
+			// which key-exchange group peers actually negotiated. attempts and
+			// tls_ok are per handshake (rekeys count again); verified is per
+			// session.
+			curves := make([]string, 0, len(c.Curves))
+			for _, cc := range c.Curves {
+				curves = append(curves, fmt.Sprintf("%s=%d", cc.Curve, cc.Count))
+			}
+			tlog("🔐 [pqe] handshake stages: attempts=%d tls_ok=%d verified=%d identity_failed=%d | curves: %s\n",
+				c.Attempts, c.Established, c.Verified, c.IdentityFailed,
+				strings.Join(curves, " "))
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
 			tlog("🔐 [pqe] all-time: pqe=%d classical=%d\n", allPQE, allClas)
 		}
