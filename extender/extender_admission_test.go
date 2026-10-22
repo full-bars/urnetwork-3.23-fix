@@ -327,7 +327,7 @@ func newTestAdmissionFixture(
 func dialTestAdmission(fixture *extenderFixture, carrier string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(ctx, fixture.connectSettings(), fixture.extenderConfig(carrier), &connect.ExtenderDial{
+	conn, _, err := connect.DialExtender(ctx, fixture.connectSettings(), fixture.extenderConfig(carrier), &connect.ExtenderDial{
 		DestinationHost: "dest.example",
 		DestinationPort: 443,
 	})

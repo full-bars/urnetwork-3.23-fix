@@ -91,7 +91,7 @@ func TestExtenderClosesAServiceStreamAfterTheHandlerReturns(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(
+	conn, _, err := connect.DialExtender(
 		ctx,
 		fixture.connectSettings(),
 		fixture.extenderConfig(connect.ExtenderCarrierTcp),

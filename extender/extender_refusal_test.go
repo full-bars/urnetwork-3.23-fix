@@ -327,7 +327,7 @@ func TestExtenderAllowsEverySecretAndBindsTheSignedFields(t *testing.T) {
 		extenderConfig := fixture.extenderConfig(connect.ExtenderCarrierTcp)
 		extenderConfig.Secret = secret
 		ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-		conn, _, err := extenderTestDial(
+		conn, _, err := connect.DialExtender(
 			ctx,
 			fixture.connectSettings(),
 			extenderConfig,
@@ -345,7 +345,7 @@ func TestExtenderAllowsEverySecretAndBindsTheSignedFields(t *testing.T) {
 	extenderConfig.Secret = "not-an-allowed-secret"
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
-	conn, _, err := extenderTestDial(
+	conn, _, err := connect.DialExtender(
 		ctx,
 		fixture.connectSettings(),
 		extenderConfig,
