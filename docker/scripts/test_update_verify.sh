@@ -333,8 +333,21 @@ t "start_update.sh selects the fat tarball through the shared picker" \
     grep -q 'upd_pick_fat_tarball_name' "$HERE/start_update.sh"
 t "nightly updater calls the shared arch picker" \
     grep -q 'upd_pick_arch_tarball_name' "$HERE/provider_common.sh"
-t "stale inline darwin/linux/windows OS list is gone from docker/scripts" \
-    test -z "$(grep -rlE -- '-darwin-\|-linux-\|-windows-' "$HERE")"
+# The old deny-list was an alternation string used inside a jq test(), and the
+# previous guard matched it as an ERE where a backslash-pipe is a literal pipe,
+# so it only caught that exact spelling. Match it as a fixed string instead,
+# then catch any other inline per-arch deny-list: the OS token set lives in
+# update_verify.sh's UPD_PER_ARCH_OS_RES (darwin|freebsd|linux|windows), so no
+# other script may carry a -<os>- asset token in code. Comment lines are
+# skipped, since they document the asset name shape rather than filter on it.
+t "stale inline per-arch OS alternation is gone from docker/scripts" \
+    test -z "$(grep -rFl -- '-darwin-|-linux-|-windows-' "$HERE" | grep -v 'test_update_verify.sh')"
+t "no per-arch OS token outside update_verify.sh" \
+    test -z "$(grep -rnF -- '-darwin-' "$HERE" \
+        | grep -v ':[0-9][0-9]*:[[:space:]]*#' \
+        | grep -v -e '/update_verify\.sh:' -e '/test_update_verify\.sh:')"
+t "deny-list canary token is still one the shared OS list filters" \
+    grep -q 'UPD_PER_ARCH_OS_RES="[^"]*darwin' "$HERE/update_verify.sh"
 
 # Nightly asset mapping: URL->name match-back finds the API name even when
 # the URL layout changes above the filename segment.

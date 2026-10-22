@@ -99,7 +99,7 @@ func_run_provider() {
     PROVIDER_CHILD_PID=""
     if [ "$PROVIDER_STOPPING" -eq 1 ]; then
         log "[INFO] Stop requested; UrNetwork exited (code=$code)."
-        exit 0
+        func_exit_if_stopping
     fi
 }
 
