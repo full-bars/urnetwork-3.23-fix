@@ -271,7 +271,7 @@ docker exec -it <container> provider proxy summary
 
 ## ♻️ Hot-Restart
 
-Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle: now the read path follows suit.
+Client JWTs are reused across restarts by default (no env var needed since v3.23.0-fix.26). The write path has been un-gated since v25.15, so JWTs were already being saved on every auth cycle: now the read path follows suit. What is stored, how to inspect it, and what mints a new identity: [Hot-Restart.md](Hot-Restart.md).
 
 **Disabling:**
 ```bash

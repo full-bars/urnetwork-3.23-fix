@@ -28,7 +28,6 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `start [target]` | Start provider service/process. |
 | `stop [target]` | Stop provider service/process. |
 | `restart [target]` | Restart provider service/process. |
-| `hot-restart [target]` | Restart provider unit behind confirm gate (`-f` skips prompt). |
 | `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
 | `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
 | `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
