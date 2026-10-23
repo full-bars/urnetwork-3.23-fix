@@ -73,6 +73,7 @@ type feed struct {
 	csvTypeCol int    // for kindCSV: 0-based column to filter on (with csvTypeVal); ignored when csvTypeVal is ""
 	csvTypeVal string // for kindCSV: only rows whose csvTypeCol equals this are taken
 	minCount   int    // hard-fail the build if fewer valid entries than this
+	minV4Count int    // hard-fail the build if fewer valid IPv4 entries than this
 	minV6Count int    // hard-fail the build if fewer valid IPv6 entries than this
 	deprecated bool   // accept a successfully fetched empty feed; fetch errors still fail
 	credit     string // attribution line embedded in the generated header
@@ -314,15 +315,15 @@ func main() {
 	src := emit(final, final6, aggregated.spamhausCredit, results)
 	formatted, ferr := format.Source(src)
 	if ferr != nil {
-		fmt.Fprintf(os.Stderr, "warning: gofmt failed (%v); writing unformatted output\n", ferr)
-		formatted = src
+		// writing unformatted output would leave a file that does not compile
+		fatal(fmt.Errorf("generated source does not format: %w", ferr))
 	}
-	if err := os.WriteFile(outPath, formatted, 0o644); err != nil {
+	if err := writeFileAtomic(outPath, formatted); err != nil {
 		fatal(err)
 	}
 	fmt.Fprintf(os.Stderr, "wrote %s (%d ranges, %d bytes)\n", outPath, len(final), len(formatted))
 	if metaFormatted != nil {
-		if err := os.WriteFile(metaPath, metaFormatted, 0o644); err != nil {
+		if err := writeFileAtomic(metaPath, metaFormatted); err != nil {
 			fatal(err)
 		}
 		fmt.Fprintf(os.Stderr, "wrote %s (%d prefixes, %d bytes)\n", metaPath, len(meta.prefixes), len(metaFormatted))
@@ -343,6 +344,11 @@ func aggregateResults(results []result) aggregation {
 			result.disposition = feedDispositionSkippedMinCount
 			aggregated.problems = append(aggregated.problems, fmt.Sprintf("%s: only %d valid entries (min %d) — feed may be broken or reformatted",
 				result.f.name, len(result.ranges)+len(result.ranges6), result.f.minCount))
+			continue
+		case !result.f.deprecated && len(result.ranges) < result.f.minV4Count:
+			result.disposition = feedDispositionSkippedMinCount
+			aggregated.problems = append(aggregated.problems, fmt.Sprintf("%s: only %d valid IPv4 entries (min %d) — feed may be broken or reformatted",
+				result.f.name, len(result.ranges), result.f.minV4Count))
 			continue
 		case !result.f.deprecated && len(result.ranges6) < result.f.minV6Count:
 			result.disposition = feedDispositionSkippedMinCount
@@ -419,6 +425,20 @@ func parseResponse(f feed, data []byte) result {
 	return res
 }
 
+// writeFileAtomic stages the file next to its target and renames it, so an
+// interruption leaves the previous file intact instead of a truncated one.
+func writeFileAtomic(path string, data []byte) error {
+	tmp := path + ".tmp"
+	if err := os.WriteFile(tmp, data, 0o644); err != nil {
+		return err
+	}
+	return os.Rename(tmp, path)
+}
+
+// maxFeedBytes bounds one feed response, matching the whois budget's spirit:
+// a compromised or broken feed must not be able to exhaust memory.
+const maxFeedBytes = 64 << 20
+
 func httpGet(url string, timeout time.Duration) ([]byte, error) {
 	client := &http.Client{Timeout: timeout}
 	var lastErr error
@@ -437,7 +457,7 @@ func httpGet(url string, timeout time.Duration) ([]byte, error) {
 			lastErr = err
 			continue
 		}
-		body, err := io.ReadAll(resp.Body)
+		body, err := io.ReadAll(io.LimitReader(resp.Body, maxFeedBytes))
 		resp.Body.Close()
 		if err != nil {
 			lastErr = err
@@ -535,6 +555,12 @@ func parseCSV(data []byte, col int, typeCol int, typeVal string) (ranges []ipran
 			ranges = append(ranges, rg)
 			host++
 		} else if rg6, ok := parseAddr6(field); ok {
+			ranges6 = append(ranges6, rg6)
+			host++
+		} else if rg, ok := parsePrefix(field); ok {
+			ranges = append(ranges, rg)
+			host++
+		} else if rg6, ok := parsePrefix6(field); ok {
 			ranges6 = append(ranges6, rg6)
 			host++
 		} else {
