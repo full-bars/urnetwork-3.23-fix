@@ -13,6 +13,7 @@ import (
 	"encoding/binary"
 	"errors"
 	"net"
+	"sync"
 	"syscall"
 	"testing"
 	"time"
@@ -311,13 +312,27 @@ func TestProviderEgressTcpNatFlowMirrorsPacketTtl(t *testing.T) {
 		t.Skipf("no tcp4 loopback: %v", err)
 	}
 	defer listener.Close()
+	// hold the accepted side open for the life of the test: closing it here
+	// races the getsockopt that reads the TTL, which is stable in isolation and
+	// not under a loaded runner
+	var acceptedLock sync.Mutex
+	var accepted []net.Conn
+	t.Cleanup(func() {
+		acceptedLock.Lock()
+		defer acceptedLock.Unlock()
+		for _, conn := range accepted {
+			conn.Close()
+		}
+	})
 	go func() {
 		for {
 			conn, err := listener.Accept()
 			if err != nil {
 				return
 			}
-			conn.Close()
+			acceptedLock.Lock()
+			accepted = append(accepted, conn)
+			acceptedLock.Unlock()
 		}
 	}()
 
