@@ -743,6 +743,8 @@ type baselineHostRaw struct {
 // best-effort and independent: a box with no cgroup limit still records host
 // memory, and a box with an unreadable /proc/meminfo still records PSI and
 // load. Only the memory fields are dropped when BOTH memory readers fail.
+var readPSIBaselineFn = readPSI
+
 func readBaselineHost() (baselineHost, error) {
 	raw := baselineHostRaw{
 		HostMiB:   readMemAvailableMiB(),
@@ -751,7 +753,10 @@ func readBaselineHost() (baselineHost, error) {
 	if used, ok := readSwapUsedMiB(); ok {
 		raw.SwapUsed = &used
 	}
-	if some, err := readPSI("some"); err == nil {
+	// "some" is a line inside /proc/pressure/memory, not a resource file of
+	// its own, so the resource name is memory and readPSI parses the line.
+	// The seam exists so a test can pin the resource this call site asks for.
+	if some, err := readPSIBaselineFn("memory"); err == nil {
 		raw.PSISome60 = &some
 	}
 	if full60, full300, err := readPSIFull(); err == nil {
