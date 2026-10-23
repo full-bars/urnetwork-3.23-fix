@@ -36,6 +36,16 @@ type lifetimeMetrics struct {
 	ProxiesLost   uint64 `json:"proxies_lost"`
 	BillableBytes uint64 `json:"billable_bytes"`
 
+	// Since is when these totals began accumulating, so a log line can say
+	// what "all-time" actually covers. It is written once, when the store is
+	// created, and never rewritten afterwards.
+	//
+	// SinceApprox marks a store that predates this field: its totals really
+	// do start somewhere earlier, but nothing recorded where, so the start is
+	// pinned to the first load that understood the field.
+	Since       time.Time `json:"since,omitempty"`
+	SinceApprox bool      `json:"since_approx,omitempty"`
+
 	path       string
 	dirty      bool
 	lastFlush  time.Time
@@ -56,13 +66,13 @@ func lifetimeMetricsPath() string {
 // unreadable — a corrupt file resets counters rather than blocking the
 // provider; these are operator-visible stats, not consensus state).
 func loadLifetimeMetrics(path string) *lifetimeMetrics {
-	lm := &lifetimeMetrics{path: path, flushEvery: 5 * time.Minute, lastFlush: time.Now()}
+	lm := &lifetimeMetrics{path: path, flushEvery: 5 * time.Minute, lastFlush: time.Now(), Since: time.Now()}
 	if path == "" {
 		return lm
 	}
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return lm // first boot or unreadable: start fresh
+		return lm // first boot or unreadable: start fresh, so "since" is now
 	}
 	var persisted struct {
 		PQEOpens      uint64 `json:"pqe_opens"`
@@ -73,6 +83,8 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 		ProxiesLost   uint64 `json:"proxies_lost"`
 		BillableBytes uint64 `json:"billable_bytes"`
 		SavedAt       string `json:"saved_at"`
+		Since         string `json:"since"`
+		SinceApprox   bool   `json:"since_approx"`
 	}
 	if json.Unmarshal(data, &persisted) != nil {
 		return lm
@@ -84,6 +96,15 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	lm.ProxiesRecov = persisted.ProxiesRecov
 	lm.ProxiesLost = persisted.ProxiesLost
 	lm.BillableBytes = persisted.BillableBytes
+	// A store written before the field existed keeps its real totals but has
+	// no recorded start: pin the start to now and say so, rather than
+	// claiming a date the numbers do not cover.
+	if since, perr := time.Parse(time.RFC3339, persisted.Since); perr == nil {
+		lm.Since = since
+		lm.SinceApprox = persisted.SinceApprox
+	} else {
+		lm.SinceApprox = true
+	}
 	// Anchor the flush throttle to the last real save (not boot time), so a
 	// quick restart doesn't delay the first persistence of new deltas by a
 	// full throttle window after an already-stale file.
@@ -91,6 +112,37 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 		lm.lastFlush = savedAt
 	}
 	return lm
+}
+
+// Started reports when the lifetime totals began and whether that start is
+// approximate. A false approximation means the date is exact; true means the
+// totals include history from before this build recorded one.
+func (lm *lifetimeMetrics) Started() (since time.Time, approx bool) {
+	lm.mu.Lock()
+	defer lm.mu.Unlock()
+	return lm.Since, lm.SinceApprox
+}
+
+// sinceLabel renders a start time for an operator-facing log line, e.g.
+// "since 2026-10-05 08:12 PDT". An approximate start says why it is one.
+func sinceLabel(t time.Time, approx bool) string {
+	if t.IsZero() {
+		return "since unknown"
+	}
+	label := "since " + clockLabel(t)
+	if approx {
+		label += ", earlier history not recorded"
+	}
+	return label
+}
+
+// clockLabel renders an instant the way the operator-facing lines show it:
+// local time with the zone, so "when did this start" needs no arithmetic.
+func clockLabel(t time.Time) string {
+	if t.IsZero() {
+		return "unknown"
+	}
+	return t.Local().Format("2006-01-02 15:04 MST")
 }
 
 // Add applies positive deltas to named totals and marks the store dirty.
@@ -158,9 +210,20 @@ func (lm *lifetimeMetrics) writeLocked() error {
 		ProxiesLost   uint64 `json:"proxies_lost"`
 		BillableBytes uint64 `json:"billable_bytes"`
 		SavedAt       string `json:"saved_at"`
-	}{lm.PQEOpens, lm.ClasOpens, lm.ContractsUp, lm.ContractsDeny,
-		lm.ProxiesRecov, lm.ProxiesLost, lm.BillableBytes,
-		time.Now().UTC().Format(time.RFC3339)}, "", " ")
+		Since         string `json:"since,omitempty"`
+		SinceApprox   bool   `json:"since_approx,omitempty"`
+	}{
+		PQEOpens:      lm.PQEOpens,
+		ClasOpens:     lm.ClasOpens,
+		ContractsUp:   lm.ContractsUp,
+		ContractsDeny: lm.ContractsDeny,
+		ProxiesRecov:  lm.ProxiesRecov,
+		ProxiesLost:   lm.ProxiesLost,
+		BillableBytes: lm.BillableBytes,
+		SavedAt:       time.Now().UTC().Format(time.RFC3339),
+		Since:         lm.Since.UTC().Format(time.RFC3339),
+		SinceApprox:   lm.SinceApprox,
+	}, "", " ")
 	if err != nil {
 		return err
 	}
