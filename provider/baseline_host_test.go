@@ -1,6 +1,7 @@
 package main
 
 import (
+	"errors"
 	"os"
 	"testing"
 )
@@ -177,5 +178,32 @@ func TestReadPSIFullReadsTheRealKernelFile(t *testing.T) {
 	}
 	if avg60 < 0 || avg300 < 0 {
 		t.Errorf("avg60=%v avg300=%v, want non-negative", avg60, avg300)
+	}
+}
+
+// The "some" PSI figure lives inside /proc/pressure/memory; there is no
+// /proc/pressure/some. Asking for a resource named after the LINE silently
+// failed every read and dropped the field from every sample.
+func TestReadBaselineHostAsksForTheMemoryPressureResource(t *testing.T) {
+	old := readPSIBaselineFn
+	t.Cleanup(func() { readPSIBaselineFn = old })
+
+	var asked string
+	readPSIBaselineFn = func(resource string) (float64, error) {
+		asked = resource
+		return 3.5, nil
+	}
+
+	host, err := readBaselineHost()
+	// A host whose memory readers are unavailable reports errNoHostData while
+	// still returning the PSI readings, so that error is expected here.
+	if err != nil && !errors.Is(err, errNoHostData) {
+		t.Fatalf("readBaselineHost: %v", err)
+	}
+	if asked != "memory" {
+		t.Fatalf("asked for the %q pressure resource; the some line is inside memory", asked)
+	}
+	if host.PSISomeAvg60 == nil || *host.PSISomeAvg60 != 3.5 {
+		t.Fatalf("psi some avg60 = %v, want the reader's 3.5", host.PSISomeAvg60)
 	}
 }
