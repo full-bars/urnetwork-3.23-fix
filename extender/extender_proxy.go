@@ -392,12 +392,23 @@ func (self *extenderProxy) relayResponse(
 	progress := make(chan struct{}, 1)
 	relayDone := make(chan struct{})
 	go connect.HandleError(func() {
+		// one timer, reset on each relayed step: time.After in the loop
+		// would leave a timer per chunk until it expired
+		idleTimer := time.NewTimer(settings.ProxyIdleTimeout)
+		defer idleTimer.Stop()
 		for {
 			select {
 			case <-relayDone:
 				return
 			case <-progress:
-			case <-time.After(settings.ProxyIdleTimeout):
+				if !idleTimer.Stop() {
+					select {
+					case <-idleTimer.C:
+					default:
+					}
+				}
+				idleTimer.Reset(settings.ProxyIdleTimeout)
+			case <-idleTimer.C:
 				self.server.reportError("proxy relay", fmt.Errorf("the upstream site stopped sending"))
 				upstreamCancel()
 				return

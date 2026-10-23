@@ -185,6 +185,10 @@ func (self *FeedServer) Serve(conn net.Conn) {
 		return
 	}
 
+	// one timer for the life of the stream: time.After in the loop would
+	// allocate a fresh timer on every message
+	keepaliveTimer := time.NewTimer(self.settings.KeepaliveTimeout)
+	defer keepaliveTimer.Stop()
 	for {
 		select {
 		case <-self.ctx.Done():
@@ -217,12 +221,13 @@ func (self *FeedServer) Serve(conn net.Conn) {
 			if err := self.write(conn, frame); err != nil {
 				return
 			}
-		case <-time.After(self.settings.KeepaliveTimeout):
+		case <-keepaliveTimer.C:
 			if err := self.write(conn, &protocol.ExtenderFeedFrame{
 				Frame: &protocol.ExtenderFeedFrame_Keepalive{Keepalive: true},
 			}); err != nil {
 				return
 			}
+			keepaliveTimer.Reset(self.settings.KeepaliveTimeout)
 		}
 	}
 }

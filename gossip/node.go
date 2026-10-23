@@ -645,6 +645,10 @@ func (self *Node) Close() {
 // and every `PeerTimeout`. Nothing is ever dropped here; the connection
 // manager trims above its high water.
 func (self *Node) runPeering() {
+	// one timer across rounds: time.After here would leave a timer behind on
+	// every directory change or wake
+	peerTimer := time.NewTimer(self.settings.PeerTimeout)
+	defer peerTimer.Stop()
 	for {
 		// subscribe to both wakes immediately before the round reads the
 		// directory and the host, so a change during the round is carried into
@@ -663,8 +667,9 @@ func (self *Node) runPeering() {
 			coalesce = true
 		case <-wake:
 			coalesce = true
-		case <-time.After(self.settings.PeerTimeout):
+		case <-peerTimer.C:
 		}
+		peerTimer.Reset(self.settings.PeerTimeout)
 		if coalesce && 0 < self.settings.PeerCoalesceTimeout {
 			// a burst of applied records is one round, not one round each
 			select {
