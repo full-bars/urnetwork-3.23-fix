@@ -345,6 +345,9 @@ type extenderReleaseMemoryTx struct {
 	// by key hex, by country, by identity hex: the last release time
 	releaseTimes map[string]map[string]map[string]time.Time
 	issuedKeys   map[string]*extenderReleaseEpochKeys
+	// the epoch the issued table was last pruned to; pruning walks the whole
+	// table and the epoch only moves on the epoch timeout
+	pruneEpoch uint64
 }
 
 // Disclosure history outlives a record's eligibility and country changes.
@@ -395,10 +398,15 @@ func (self *ExtenderReleaseMemoryLedger) IssuedKeyHexes(identity []byte, epoch u
 // Active epoch disclosures are never evicted to admit another identity.
 func (self *extenderReleaseMemoryTx) IssuedKeyHexes(identity []byte, epoch uint64) ([]string, error) {
 	identityHex := hex.EncodeToString(identity)
-	for key, entry := range self.issuedKeys {
-		if entry.epoch < epoch {
-			delete(self.issuedKeys, key)
+	// prune only when the epoch moves: the walk is over every tracked identity
+	// and Release reads this twice per request
+	if self.pruneEpoch != epoch {
+		for key, entry := range self.issuedKeys {
+			if entry.epoch < epoch {
+				delete(self.issuedKeys, key)
+			}
 		}
+		self.pruneEpoch = epoch
 	}
 	if entry := self.issuedKeys[identityHex]; entry != nil && entry.epoch == epoch {
 		return slices.Clone(entry.keyHexes), nil

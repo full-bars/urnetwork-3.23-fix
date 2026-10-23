@@ -232,7 +232,11 @@ type extenderRole struct {
 	dnsPorts       []int
 	servers        []*extender.ExtenderServer
 	baseStats      extender.ExtenderStats
-	tcpRetries     int64
+	// counts folded from retired servers, so the cumulative metrics do not
+	// drop when a server leaves r.servers
+	baseServiceCounts map[string]uint64
+	baseRefusalCounts map[string]uint64
+	tcpRetries        int64
 
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -275,15 +279,17 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 	}
 	roleCtx, cancel := context.WithCancel(ctx)
 	r := &extenderRole{
-		ctx:          roleCtx,
-		cancel:       cancel,
-		config:       config,
-		keyId:        extenderKeyIdString(seed),
-		state:        extenderStateStarting,
-		carriers:     map[string]bool{},
-		listenErrors: map[string]string{},
-		ready:        make(chan struct{}),
-		done:         make(chan struct{}),
+		ctx:               roleCtx,
+		cancel:            cancel,
+		config:            config,
+		keyId:             extenderKeyIdString(seed),
+		state:             extenderStateStarting,
+		carriers:          map[string]bool{},
+		listenErrors:      map[string]string{},
+		baseServiceCounts: map[string]uint64{},
+		baseRefusalCounts: map[string]uint64{},
+		ready:             make(chan struct{}),
+		done:              make(chan struct{}),
 	}
 	r.setKeySeed(seed)
 	if created {
@@ -598,18 +604,30 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
-	stats := server.Stats()
+	// the counters are atomic and survive close, so sample after the drain:
+	// requests that finish while CloseAndWait runs must count
 	server.CloseAndWait()
+	stats := server.Stats()
+	serviceCounts := server.ServiceCounts()
+	refusalCounts := server.RefusalCounts()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := slices.Index(r.servers, server)
-	if 0 <= index {
-		r.servers = slices.Delete(r.servers, index, index+1)
+	if index < 0 {
+		// already retired: folding the counts again would double count
+		return
 	}
+	r.servers = slices.Delete(r.servers, index, index+1)
 	r.baseStats.IngressByteCount += stats.IngressByteCount
 	r.baseStats.IngressReadCount += stats.IngressReadCount
 	r.baseStats.EgressByteCount += stats.EgressByteCount
 	r.baseStats.EgressReadCount += stats.EgressReadCount
+	for service, count := range serviceCounts {
+		r.baseServiceCounts[service] += count
+	}
+	for stage, count := range refusalCounts {
+		r.baseRefusalCounts[stage] += count
+	}
 	r.refreshLocked()
 }
 
@@ -730,6 +748,8 @@ type extenderRoleSnapshot struct {
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	r.mu.Lock()
 	servers := slices.Clone(r.servers)
+	baseServiceCounts := maps.Clone(r.baseServiceCounts)
+	baseRefusalCounts := maps.Clone(r.baseRefusalCounts)
 	snapshot := extenderRoleSnapshot{
 		Enabled:      true,
 		State:        r.state,
@@ -745,8 +765,16 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	slices.Sort(snapshot.Carriers)
 	r.mu.Unlock()
 
-	snapshot.ServiceCounts = map[string]uint64{}
-	snapshot.RefusalCounts = map[string]uint64{}
+	// retired servers' counts are folded into the base maps, so the cumulative
+	// counters keep their totals when a server leaves
+	snapshot.ServiceCounts = baseServiceCounts
+	snapshot.RefusalCounts = baseRefusalCounts
+	if snapshot.ServiceCounts == nil {
+		snapshot.ServiceCounts = map[string]uint64{}
+	}
+	if snapshot.RefusalCounts == nil {
+		snapshot.RefusalCounts = map[string]uint64{}
+	}
 	for _, server := range servers {
 		for service, count := range server.ServiceCounts() {
 			snapshot.ServiceCounts[service] += count

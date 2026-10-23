@@ -601,6 +601,15 @@ func dialExtenderQuic(
 		return nil, nil, err
 	}
 	closers = append(closers, func() { quicConn.CloseWithError(0, "") })
+	// with no deadline a canceled dial would block in ReadResponse forever, so
+	// abort the handshake by closing the connection; the hook is stopped once
+	// the handshake completes and the stream belongs to the caller
+	callbackDone := make(chan struct{})
+	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(callbackDone)
+		quicConn.CloseWithError(0, "")
+	})
+	defer stopCancel()
 	flight := quicSendFlightForConn(quicConn)
 	flight.bind(quicConn)
 
@@ -616,15 +625,23 @@ func dialExtenderQuic(
 	// is written as DATA frames after it; the content length still describes
 	// it
 	request := newExtenderRequest(extenderConfig, headerBytes, http.NoBody)
-	deadline := time.Now().Add(connectSettings.ConnectTimeout)
-	if requestDeadline, ok := ctx.Deadline(); ok && requestDeadline.Before(deadline) {
+	// a zero timeout is unbounded, as on the tcp carrier, which only sets a
+	// deadline from a positive phase timeout; only the settings or the context
+	// can arm one here
+	var deadline time.Time
+	if 0 < connectSettings.ConnectTimeout {
+		deadline = time.Now().Add(connectSettings.ConnectTimeout)
+	}
+	if requestDeadline, ok := ctx.Deadline(); ok && (deadline.IsZero() || requestDeadline.Before(deadline)) {
 		deadline = requestDeadline
 	}
-	if err := stream.SetDeadline(deadline); err != nil {
-		return nil, nil, err
-	}
-	if err := writer.SetWriteDeadline(deadline); err != nil {
-		return nil, nil, err
+	if !deadline.IsZero() {
+		if err := stream.SetDeadline(deadline); err != nil {
+			return nil, nil, err
+		}
+		if err := writer.SetWriteDeadline(deadline); err != nil {
+			return nil, nil, err
+		}
 	}
 	roundTrip.markSend()
 	if err := stream.SendRequestHeader(request); err != nil {
@@ -653,6 +670,14 @@ func dialExtenderQuic(
 	}
 	if err := writer.SetWriteDeadline(time.Time{}); err != nil {
 		return nil, nil, err
+	}
+
+	// a callback that already started is closing the connection, so the dial
+	// has been canceled: wait for it and fail rather than hand out a conn that
+	// is about to be closed
+	if !stopCancel() {
+		<-callbackDone
+		return nil, nil, ctx.Err()
 	}
 
 	success = true

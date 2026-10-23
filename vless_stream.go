@@ -110,10 +110,12 @@ type vlessConn struct {
 	requestHeader []byte
 	requestSent   bool
 
-	// only the reading goroutine touches this
-	// the response header is consumed once, whichever reader gets there
-	// first: a second concurrent Read must not read framing bytes as payload
-	responseOnce sync.Once
+	// the response header is parsed once. The lock serializes concurrent
+	// readers, and the buffer keeps bytes a timed out read consumed, so a
+	// later Read can resume after the caller refreshes the deadline
+	responseLock sync.Mutex
+	responseDone bool
+	responseBuf  []byte
 	responseErr  error
 }
 
@@ -155,15 +157,81 @@ func (self *vlessConn) sendRequestHeader() error {
 }
 
 func (self *vlessConn) Read(b []byte) (int, error) {
-	self.responseOnce.Do(func() {
-		if err := self.sendRequestHeader(); err != nil {
-			self.responseErr = err
-			return
-		}
-		self.responseErr = readVlessResponseHeader(self.Conn)
-	})
-	if self.responseErr != nil {
-		return 0, self.responseErr
+	if err := self.readResponseHeader(); err != nil {
+		return 0, err
 	}
+	self.responseLock.Lock()
+	if 0 < len(self.responseBuf) {
+		n := copy(b, self.responseBuf)
+		self.responseBuf = self.responseBuf[n:]
+		self.responseLock.Unlock()
+		return n, nil
+	}
+	self.responseLock.Unlock()
 	return self.Conn.Read(b)
+}
+
+// Consumes the response header, resuming where a previous call stopped. A
+// timeout leaves the bytes read so far in responseBuf, so the caller can
+// refresh the deadline and call Read again. A terminal error is cached.
+func (self *vlessConn) readResponseHeader() error {
+	self.responseLock.Lock()
+	defer self.responseLock.Unlock()
+	if self.responseDone {
+		return self.responseErr
+	}
+	if err := self.sendRequestHeader(); err != nil {
+		return err
+	}
+	for {
+		if self.finishResponseHeaderLocked() {
+			return self.responseErr
+		}
+		var chunk [512]byte
+		n, err := self.Conn.Read(chunk[:])
+		if 0 < n {
+			self.responseBuf = append(self.responseBuf, chunk[:n]...)
+		}
+		if err != nil {
+			// a read can return the bytes that complete the header together
+			// with an error, so finish the parse before reporting it
+			if self.finishResponseHeaderLocked() {
+				return self.responseErr
+			}
+			// only a timeout is worth retrying; anything else is terminal
+			// and is cached so later reads do not re-read a dead connection
+			var timeoutError net.Error
+			if errors.As(err, &timeoutError) && timeoutError.Timeout() {
+				return err
+			}
+			if errors.Is(err, io.EOF) && 0 < len(self.responseBuf) {
+				err = io.ErrUnexpectedEOF
+			}
+			self.responseDone = true
+			self.responseErr = err
+			return err
+		}
+	}
+}
+
+// Consumes the buffered response header when every byte of it is present.
+// Returns false when more bytes are needed, and true once the parse is
+// finished, successfully or not.
+func (self *vlessConn) finishResponseHeaderLocked() bool {
+	if len(self.responseBuf) < 2 {
+		return false
+	}
+	if self.responseBuf[0] != vlessVersion {
+		self.responseDone = true
+		self.responseErr = fmt.Errorf("vless response version %d", self.responseBuf[0])
+		return true
+	}
+	headerLength := 2 + int(self.responseBuf[1])
+	if len(self.responseBuf) < headerLength {
+		return false
+	}
+	self.responseBuf = append(self.responseBuf[:0], self.responseBuf[headerLength:]...)
+	self.responseDone = true
+	self.responseErr = nil
+	return true
 }
