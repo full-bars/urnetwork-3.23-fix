@@ -564,6 +564,9 @@ func TestRunProxyURLFetcher_WarmupCancelSetsInactiveState(t *testing.T) {
 	// Keep warmup incomplete so the fetcher parks in the warmup loop.
 	proxyWarmupDone.Store(false)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+	// The warmup wait is bounded from provideStartTime; open the window so
+	// this test parks in the warmup loop rather than skipping it.
+	startWarmupWindow(t)
 
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})

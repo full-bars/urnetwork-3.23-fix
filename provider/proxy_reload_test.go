@@ -198,6 +198,7 @@ func TestReload_WarmupGate_DefersThenLaunchesURLProxies(t *testing.T) {
 	// Start with warmup NOT done — URL proxies should be deferred
 	proxyWarmupDone.Store(false)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+	startWarmupWindow(t)
 
 	cancelMapMu := &sync.Mutex{}
 	reloader := &ProxyReloader{
@@ -235,6 +236,68 @@ func TestReload_WarmupGate_DefersThenLaunchesURLProxies(t *testing.T) {
 	cancelMapMu.Unlock()
 	if !launched {
 		t.Fatal("URL proxy must be launched after warmup completes")
+	}
+}
+
+// startWarmupWindow models the invariant provide() establishes in production:
+// provideStartTime is set before the reloader or the URL fetcher exists, and
+// the warmup hold is bounded from that moment. Left zero, time.Since
+// saturates and urlWarmupHold can never hold, so any test that wants the hold
+// must open the window first.
+func startWarmupWindow(t *testing.T) {
+	t.Helper()
+	provideStartTime = time.Now()
+	t.Cleanup(func() { provideStartTime = time.Time{} })
+}
+
+// TestReload_WarmupGate_GraceExpiresLaunchesURLProxies is the regression test
+// for the LA6 stall: file proxies that never auth (down/dead) keep
+// paceMonitor's health ratio below its bar for the whole run, so
+// proxyWarmupDone never goes true. The hold must be bounded — once
+// urlWarmupLaunchGrace has passed, qualified URL-sourced replacements launch
+// anyway instead of being held behind proxies that are already dead while the
+// running pool drains.
+func TestReload_WarmupGate_GraceExpiresLaunchesURLProxies(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{
+		"9.9.9.9:1080": {},
+	}}); err != nil {
+		t.Fatal(err)
+	}
+
+	state := &ProxyState{Proxies: map[string]ProxyEntry{}}
+	if err := writeProxyState(state); err != nil {
+		t.Fatal(err)
+	}
+
+	// Warmup never completed, and the process is past the grace window.
+	proxyWarmupDone.Store(false)
+	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+	provideStartTime = time.Now().Add(-urlWarmupLaunchGrace - time.Minute)
+	t.Cleanup(func() { provideStartTime = time.Time{} })
+
+	cancelMapMu := &sync.Mutex{}
+	reloader := &ProxyReloader{
+		cancelMap:   map[string]context.CancelFunc{},
+		cancelMapMu: cancelMapMu,
+		state:       state,
+		sourcePath:  "",
+		parentCtx:   context.Background(),
+		wg:          &sync.WaitGroup{},
+		spawnProxy: func(proxyCtx context.Context, settings *connect.ProxySettings, isNative bool, isURLSourced bool) {
+			<-proxyCtx.Done()
+		},
+		drainingProxies: map[string]context.CancelFunc{},
+	}
+
+	reloader.reload()
+
+	cancelMapMu.Lock()
+	_, launched := reloader.cancelMap["9.9.9.9:1080"]
+	cancelMapMu.Unlock()
+	if !launched {
+		t.Fatal("URL proxy must launch once urlWarmupLaunchGrace has passed, even with warmup incomplete")
 	}
 }
 

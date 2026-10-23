@@ -802,3 +802,38 @@ func TestEnableProviderEncryptionPreservesUnrelatedFields(t *testing.T) {
 		t.Fatalf("IdleTimeout changed: got %v, want %v", settings.EncryptionSettings.IdleTimeout, wantIdleTimeout)
 	}
 }
+
+// TestURLWarmupHold pins the bound on the URL-sourced warmup hold: the hold
+// applies only while the process is inside urlWarmupLaunchGrace, so a node
+// whose file pool never reaches paceMonitor's warmup bar still refills from
+// the URL pool. A zero provideStartTime can never hold (time.Since
+// saturates), which is why production always sets it before the reloader and
+// the URL fetcher start.
+func TestURLWarmupHold(t *testing.T) {
+	cases := []struct {
+		name     string
+		done     bool
+		start    time.Time
+		wantHold bool
+	}{
+		{"warmup done holds nothing", true, time.Now(), false},
+		{"inside grace holds", false, time.Now(), true},
+		{"exactly at grace holds", false, time.Now().Add(-urlWarmupLaunchGrace + time.Second), true},
+		{"past grace releases", false, time.Now().Add(-urlWarmupLaunchGrace - time.Second), false},
+		{"zero start never holds", false, time.Time{}, false},
+		{"done with old start holds nothing", true, time.Now().Add(-time.Hour), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			proxyWarmupDone.Store(c.done)
+			provideStartTime = c.start
+			t.Cleanup(func() {
+				proxyWarmupDone.Store(false)
+				provideStartTime = time.Time{}
+			})
+			if got := urlWarmupHold(); got != c.wantHold {
+				t.Fatalf("urlWarmupHold() = %v, want %v (done=%v, start=%v)", got, c.wantHold, c.done, c.start)
+			}
+		})
+	}
+}

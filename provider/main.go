@@ -54,6 +54,23 @@ var provideStartTime time.Time
 // for this before launching, so file proxies get an uncontested ramp.
 var proxyWarmupDone atomic.Bool
 
+// urlWarmupLaunchGrace bounds that wait. The hold must never outlive the ramp
+// it protects: a public-list node carries a permanent tail of file proxies that
+// will never auth (down/dead), and paceMonitor's ratio is taken over every
+// registered proxy, so warmup can stay unreachable for a whole run. Unbounded,
+// the gate then blocks every qualified URL replacement — and the URL fetcher —
+// behind proxies that are already dead, while the running pool drains. After
+// this long the ramp has had its uncontested window and the URL pool refills.
+const urlWarmupLaunchGrace = 5 * time.Minute
+
+// urlWarmupHold reports whether unproven URL-sourced proxies must still wait
+// for the file-proxy warmup. Bounded by urlWarmupLaunchGrace from the moment
+// the process started: a zero provideStartTime (only reachable without
+// provide() having run) saturates time.Since and can never hold.
+func urlWarmupHold() bool {
+	return !proxyWarmupDone.Load() && time.Since(provideStartTime) < urlWarmupLaunchGrace
+}
+
 // backoffPacerWithDelay calculates the effective start delay using a cumulative base delay
 // and slotDuration for jitter calculation.
 func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, proxyCtx context.Context) bool {
