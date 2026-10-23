@@ -1377,7 +1377,7 @@ func (self *ExtenderServer) IsAllowedSecret(header *protocol.ExtenderHeader) boo
 		mac.Write(timestampBytes)
 		mac.Write(header.Nonce)
 		signature := mac.Sum(nil)
-		if slices.Equal(signature, header.Signature) {
+		if hmac.Equal(signature, header.Signature) {
 			return true
 		}
 	}
