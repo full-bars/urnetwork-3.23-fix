@@ -418,6 +418,8 @@ func (self *ConnectSettings) dialUsesProxy() bool {
 
 type DialContextSettings struct {
 	DialContext DialContextFunction
+	// Only Tun sets this diagnostic marker; other supplied dialers stay caller.
+	dohTun bool
 	// PacketConnFactory, when set, supplies the packet conn for udp dials so a
 	// pinned transport can bind its own family (ported from upstream at
 	// 20b29f79, inert here; nil keeps the existing behavior).
@@ -517,13 +519,15 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 // keep-alive configuration, and resolver; each call returns an independent
 // dialer, so per-dial state never shares between calls.
 func (self *ConnectSettings) NetDialer() *net.Dialer {
-	return &net.Dialer{
+	// providerEgressDialer is inert unless the dial context carries a provider
+	// egress target (see providerEgressTarget.dialContext).
+	return providerEgressDialer(&net.Dialer{
 		Timeout:         self.ConnectTimeout,
 		KeepAlive:       self.KeepAliveTimeout,
 		KeepAliveConfig: self.KeepAliveConfig,
 		Control:         self.DialControl,
 		Resolver:        self.Resolver,
-	}
+	})
 }
 
 type ProxySettings struct {

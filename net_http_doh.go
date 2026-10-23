@@ -525,8 +525,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &DohCache{
-		httpClient:            httpClientWithSettings(settings),
-		localHttpClient:       httpClientWithDialer(settings, settings.NetDialer().DialContext),
+		httpClient:            httpClientWithDialer(settings, wrapDohDial(settings.Log, dohRemoteDialPath(settings), settings.DialContext)),
+		localHttpClient:       httpClientWithDialer(settings, wrapDohDial(settings.Log, dohPathHost, settings.NetDialer().DialContext)),
 		remoteResolver:        remoteResolver,
 		localResolver:         localResolver,
 		remoteDnsNext:         remoteDnsNext,

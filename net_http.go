@@ -1016,7 +1016,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
+		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
@@ -1060,7 +1060,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
+		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
@@ -1083,7 +1083,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, helloRequest, startDial))
+		response, err := httpClientForRequest(httpClient, helloRequest).Do(timing.trace(handleCtx, helloRequest, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
