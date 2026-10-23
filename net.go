@@ -377,9 +377,9 @@ type ConnectSettings struct {
 	TlsConfig *tls.Config
 
 	// The tls client hello of the normal and resilient dialers
-	// (net_tls_hello.go). `TlsClientHelloFingerprintChrome`, or empty, asks
-	// for a current Chrome hello through uTLS.
-	// `TlsClientHelloFingerprintGo`, or any other value, restores Go's own
+	// (net_tls_hello.go). `TlsClientHelloFingerprintChrome` asks for a current
+	// Chrome hello through uTLS. `TlsClientHelloFingerprintGo`, empty, or any
+	// other value keeps Go's own
 	// crypto/tls hello: the kill switch, should the Chrome hello be refused
 	// somewhere. `DefaultConnectSettings` sets Go's hello, so the parrot is
 	// opt-in until a dial soak passes. Once set, the process-wide runtime gate

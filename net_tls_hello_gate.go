@@ -47,6 +47,14 @@ func SetTlsClientHelloChrome(chrome bool) (previous bool) {
 	return tlsHelloGate.Swap(next) == tlsHelloChrome
 }
 
+// ResetTlsClientHelloGate returns the process to the unset state, where each
+// strategy's ConnectSettings.TlsClientHelloFingerprint decides again. Without
+// it the first set would override every strategy for the life of the process,
+// which library embedders and tests cannot undo.
+func ResetTlsClientHelloGate() {
+	tlsHelloGate.Store(tlsHelloUnset)
+}
+
 // TlsClientHelloChrome reports whether the gate has been set to the Chrome
 // hello. An unset gate reads false: its effective default is Go's hello.
 func TlsClientHelloChrome() bool {

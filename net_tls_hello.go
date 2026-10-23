@@ -72,9 +72,9 @@ var chromeClientHelloId = utls.HelloChrome_133
 // configuration is one it carries exactly, and a path that offers h2 has a
 // net/http that reads the negotiated protocol off the uTLS connection.
 func chromeClientHelloApplies(fingerprint string, config *tls.Config, readsTlsConnectionState bool) bool {
-	switch fingerprint {
-	case "", TlsClientHelloFingerprintChrome:
-	default:
+	// only the explicit chrome value opts in: a zero-value settings literal
+	// must keep Go's hello, the same as DefaultConnectSettings
+	if fingerprint != TlsClientHelloFingerprintChrome {
 		return false
 	}
 	if len(config.Certificates) != 0 || config.GetClientCertificate != nil {
@@ -334,10 +334,16 @@ func (self *clientTlsHandshaker) handshake(ctx context.Context, conn net.Conn, c
 		return nil, err
 	}
 	// a server that settled on a group the hello shared no key for asked for a
-	// retry; the session key is the server name (uTLS keys tickets by it)
+	// retry; uTLS keys tickets by the server name, or by the remote address
+	// when the configuration carries none, so the suppression must use the
+	// same key or it never matches
 	if serverHello := uconn.HandshakeState.ServerHello; serverHello != nil && serverHello.ServerShare.Group != 0 &&
 		!slices.Contains(keyShareGroups, serverHello.ServerShare.Group) {
-		self.chromeSessionCache.markHelloRetry(config.ServerName)
+		sessionKey := config.ServerName
+		if sessionKey == "" {
+			sessionKey = uconn.RemoteAddr().String()
+		}
+		self.chromeSessionCache.markHelloRetry(sessionKey)
 	}
 	// only the handshake reads the hello's extensions and its key share
 	// private keys; release them, as crypto/tls does, rather than keep about

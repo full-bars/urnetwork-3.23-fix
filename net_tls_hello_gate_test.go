@@ -9,9 +9,11 @@ package connect
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"net"
 	"slices"
+	"sync"
 	"testing"
 
 	"github.com/urnetwork/connect/fingerprint"
@@ -21,7 +23,7 @@ import (
 // next test in this package starts from its strategy's own fingerprint again.
 func tlsHelloGateForTest(t *testing.T) {
 	t.Helper()
-	t.Cleanup(func() { tlsHelloGate.Store(tlsHelloUnset) })
+	t.Cleanup(ResetTlsClientHelloGate)
 }
 
 // SetTlsHelloGateForTest drives the process gate for the external conformance
@@ -173,4 +175,81 @@ func TestTlsClientHelloGateReadPerDial(t *testing.T) {
 			}
 		})
 	}
+}
+
+// only the explicit chrome value opts in: a zero-value settings literal must
+// keep Go's hello, matching DefaultConnectSettings
+func TestChromeClientHelloAppliesRequiresExplicitChrome(t *testing.T) {
+	config := &tls.Config{ServerName: "example.com"}
+	for _, tc := range []struct {
+		fingerprint string
+		want        bool
+	}{
+		{"", false},
+		{TlsClientHelloFingerprintGo, false},
+		{"anything-else", false},
+		{TlsClientHelloFingerprintChrome, true},
+	} {
+		if got := chromeClientHelloApplies(tc.fingerprint, config, false); got != tc.want {
+			t.Fatalf("fingerprint %q applies=%v, want %v", tc.fingerprint, got, tc.want)
+		}
+	}
+}
+
+// the gate can be returned to unset, so a library embedder or a test is not
+// locked into the first decision it made
+func TestTlsClientHelloGateReset(t *testing.T) {
+	tlsHelloGateForTest(t)
+	defer ResetTlsClientHelloGate()
+
+	SetTlsClientHelloChrome(true)
+	if !TlsClientHelloChrome() {
+		t.Fatal("gate did not read back on")
+	}
+	if got := tlsClientHelloFingerprint(TlsClientHelloFingerprintGo); got != TlsClientHelloFingerprintChrome {
+		t.Fatalf("gated fingerprint = %q, want chrome", got)
+	}
+	ResetTlsClientHelloGate()
+	if TlsClientHelloChrome() {
+		t.Fatal("reset gate still reads on")
+	}
+	if got := tlsClientHelloFingerprint(TlsClientHelloFingerprintChrome); got != TlsClientHelloFingerprintChrome {
+		t.Fatalf("after reset a chrome base = %q, want chrome", got)
+	}
+	if got := tlsClientHelloFingerprint(TlsClientHelloFingerprintGo); got != TlsClientHelloFingerprintGo {
+		t.Fatalf("after reset a go base = %q, want go", got)
+	}
+}
+
+// flipping the gate while dialers read it must be race free
+func TestTlsClientHelloGateConcurrentFlipAndRead(t *testing.T) {
+	tlsHelloGateForTest(t)
+	defer ResetTlsClientHelloGate()
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 2000; i++ {
+			SetTlsClientHelloChrome(i%2 == 0)
+			if i%97 == 0 {
+				ResetTlsClientHelloGate()
+			}
+		}
+		close(done)
+	}()
+	go func() {
+		defer wg.Done()
+		for {
+			select {
+			case <-done:
+				return
+			default:
+				_ = TlsClientHelloChrome()
+				_ = tlsClientHelloFingerprint(TlsClientHelloFingerprintChrome)
+			}
+		}
+	}()
+	wg.Wait()
 }
