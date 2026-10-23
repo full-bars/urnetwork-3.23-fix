@@ -18,6 +18,11 @@ import (
 type DialContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 type DialTlsContextFunction = func(ctx context.Context, network string, addr string) (net.Conn, error)
 
+// DialPacketContextFunction opens a packet connection to addr. The extender
+// packet dial returns one of these so quic can run over a carrier that is
+// itself a reliable stream (net_extender_datagram.go).
+type DialPacketContextFunction = func(ctx context.Context, network string, addr string) (net.PacketConn, error)
+
 // dnsCacheEntry holds the resolved IPs plus their expiry time. ip is the first
 // answer and the only one older entries carry; ips, when set, is the full set
 // the caller picks a healthy address from.

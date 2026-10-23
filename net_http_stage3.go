@@ -34,12 +34,10 @@ func (self *ClientStrategy) dialerInfo(dialer *clientDialer) *DialerInfo {
 // has no quic or dns extender dialers, so there never is one.
 func (self *ClientStrategy) H3ExtenderConfig() *ExtenderConfig { return nil }
 
-// ExtenderDirectory is the directory of discovered extenders. This tree has none;
-// the type exists so the platform transport can report in-use addresses to it.
-type ExtenderDirectory struct{}
-
-func (self *ExtenderDirectory) SetInUse(ip netip.Addr, delta int) {}
-
+// ExtenderDirectory is the directory of discovered extenders (E1,
+// net_extender_directory.go). The strategy does not draw candidates from it
+// yet: the extender strategy rework is a later phase, so this returns nil and
+// the platform transport reports no in-use addresses.
 func (self *ClientStrategy) ExtenderDirectory() *ExtenderDirectory { return nil }
 
 // ConnectSettings is the connect settings the strategy dials with.
