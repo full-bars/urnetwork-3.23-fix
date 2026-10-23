@@ -186,12 +186,10 @@ func (self *ExtenderFeedStream) Next(ctx context.Context) (*protocol.ExtenderFee
 	if err := ctx.Err(); err != nil {
 		return nil, err
 	}
-	// cancellation is delivered as an immediate read deadline, which is the
-	// only way to interrupt a blocked stream read
-	stopCancel := context.AfterFunc(ctx, func() {
-		self.conn.SetReadDeadline(time.Now())
-	})
-	defer stopCancel()
+	// the deadline is set before the cancellation hook is registered: if the
+	// hook ran first it would arm an immediate deadline that the deadline set
+	// below would overwrite, leaving a canceled read blocked until the frame
+	// arrives
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := self.conn.SetReadDeadline(deadline); err != nil {
 			return nil, err
@@ -199,6 +197,12 @@ func (self *ExtenderFeedStream) Next(ctx context.Context) (*protocol.ExtenderFee
 	} else if err := self.conn.SetReadDeadline(time.Time{}); err != nil {
 		return nil, err
 	}
+	// cancellation is delivered as an immediate read deadline, which is the
+	// only way to interrupt a blocked stream read
+	stopCancel := context.AfterFunc(ctx, func() {
+		self.conn.SetReadDeadline(time.Now())
+	})
+	defer stopCancel()
 	frame, err := ReadExtenderFeedFrame(self.reader)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
