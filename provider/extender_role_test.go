@@ -402,3 +402,19 @@ func containsString(values []string, want string) bool {
 	}
 	return false
 }
+
+// Counts folded in from a retired server must stay in the cumulative metrics:
+// snapshot starts from the base maps the retire path accumulates.
+func TestExtenderRoleSnapshotKeepsRetiredServerCounts(t *testing.T) {
+	role := &extenderRole{
+		baseServiceCounts: map[string]uint64{"feed": 3},
+		baseRefusalCounts: map[string]uint64{"country": 2},
+	}
+	snapshot := role.snapshot()
+	if snapshot.ServiceCounts["feed"] != 3 {
+		t.Fatalf("service counts = %v, expected the retired feed count", snapshot.ServiceCounts)
+	}
+	if snapshot.RefusalCounts["country"] != 2 {
+		t.Fatalf("refusal counts = %v, expected the retired country refusal", snapshot.RefusalCounts)
+	}
+}
