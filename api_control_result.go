@@ -18,6 +18,12 @@ func (self *ConnectControlResult) UnmarshalJSON(data []byte) error {
 		return err
 	}
 	if wire.Pack == nil {
+		if wire.Error != nil {
+			// a refusal carries no pack but is a complete answer: keep the
+			// server's message instead of dropping it as malformed
+			self.Pack, self.Error = "", wire.Error
+			return nil
+		}
 		return errors.New("connect control response lacks an explicit pack")
 	}
 	self.Pack, self.Error = *wire.Pack, wire.Error

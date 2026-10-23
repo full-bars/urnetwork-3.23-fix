@@ -106,8 +106,11 @@ type authRequestObservation struct {
 }
 
 func beginAuthRequestObservation(ctx, ownerCtx context.Context) (context.Context, *authRequestObservation) {
+	if ctx == nil {
+		ctx = context.Background()
+	}
 	counts, _ := ctx.Value(authObservationsContextKey{}).(*AuthNetworkClientObservations)
-	if counts == nil {
+	if counts == nil && ownerCtx != nil {
 		counts, _ = ownerCtx.Value(authObservationsContextKey{}).(*AuthNetworkClientObservations)
 	}
 	if counts == nil {
@@ -145,12 +148,16 @@ func (self *authPostProgress) responseHeaders(response *http.Response, err error
 // Preserve the operation's terminal verdict even when retained earlier attempt
 // failures contain another deadline or cancellation cause.
 func observeAuthStrategyEnd(ctx, strategyCtx context.Context) {
+	if ctx == nil {
+		return
+	}
 	observation, _ := ctx.Value(authRequestContextKey{}).(*authRequestObservation)
 	if observation == nil {
 		return
 	}
 	result := authTimeout
-	if errors.Is(ctx.Err(), context.Canceled) || errors.Is(strategyCtx.Err(), context.Canceled) {
+	strategyCanceled := strategyCtx != nil && errors.Is(strategyCtx.Err(), context.Canceled)
+	if errors.Is(ctx.Err(), context.Canceled) || strategyCanceled {
 		result = authCanceled
 	}
 	observation.strategyEnd.Store(int32(result))
