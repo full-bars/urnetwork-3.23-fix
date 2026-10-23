@@ -1527,9 +1527,11 @@ func runLifetimeCollector(ctx context.Context) {
 
 		// All-time rollup line (only once something changed since last tick).
 		a1, a2, a3, a4, a5, a6, a7 := lifetimeStore.Snapshot()
+		lifeSince, lifeApprox := lifetimeStore.Started()
 		if a1 != prevA1 || a2 != prevA2 || a3 != prevA3 || a4 != prevA4 || a5 != prevA5 || a6 != prevA6 || a7 != prevA7 {
 			if a1|a2|a3|a4|a5|a6|a7 != 0 {
-				tlog("♾️ [lifetime] all-time: post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+				tlog("♾️ [lifetime] all-time (%s): post-quantum=%d classical=%d contracts_acquired=%d denied=%d proxies_recovered=%d lost=%d billable_total=%s\n",
+					sinceLabel(lifeSince, lifeApprox),
 					a1, a2, a3, a4, a5, a6, fmtBytes(a7))
 			}
 			prevA1, prevA2, prevA3, prevA4, prevA5, prevA6, prevA7 = a1, a2, a3, a4, a5, a6, a7
@@ -1598,8 +1600,9 @@ func runEarningWindows(ctx context.Context) {
 			// "direct-e2e": per-peer TLS tunnels THIS node terminates. Client
 			// traffic merely forwarded through us (transit hops) never opens
 			// such a session here — those appear on 🛰️ [relay] / 📈 [traffic].
-			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | since-start: pqe=%d classical=%d | 1h: pqe=%d classical=%d | 24h: pqe=%d classical=%d | 7d: pqe=%d classical=%d\n",
+			tlog("🔐 [pqe] direct-e2e tunnels terminated: live pqe=%d classical=%d | since-start (%s): pqe=%d classical=%d | 1h: pqe=%d classical=%d | 24h: pqe=%d classical=%d | 7d: pqe=%d classical=%d\n",
 				c.ActivePQE, c.ActiveClas,
+				clockLabel(provideStartTime),
 				c.PQELifetime, c.ClasLifetime,
 				c.PQEHour, c.ClasHour, c.PQEDay, c.ClasDay, c.PQEWeek, c.ClasWeek)
 			// The stage/curve line explains a zero classical count: attempts
@@ -1615,7 +1618,8 @@ func runEarningWindows(ctx context.Context) {
 				c.Attempts, c.Established, c.Verified, c.IdentityFailed,
 				strings.Join(curves, " "))
 			allPQE, allClas, _, _, _, _, _ := lifetimeStore.Snapshot()
-			tlog("🔐 [pqe] all-time: pqe=%d classical=%d\n", allPQE, allClas)
+			allSince, allApprox := lifetimeStore.Started()
+			tlog("🔐 [pqe] all-time (%s): pqe=%d classical=%d\n", sinceLabel(allSince, allApprox), allPQE, allClas)
 		}
 
 		if connect.ProxyHealthCount() == 0 {
@@ -2090,10 +2094,11 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		now := time.Now()
 		report := connect.ProxyHealthHeartbeat(uptime >= deadConfirmDelay)
 		down := len(report.Dead) + len(report.Degraded)
-		tlog("❤️ [health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d\n",
+		tlog("❤️ [health][proxies] up=%d down=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d (since-start %s)\n",
 			report.Up, down, len(report.Dead), len(report.Degraded),
 			len(report.Recovered), len(report.NewlyDegraded),
-			report.LifetimeRecovered, report.LifetimeLost)
+			report.LifetimeRecovered, report.LifetimeLost,
+			clockLabel(startTime))
 		tlog("%s\n", governHealthLine(connect.GovernorStatusNow()))
 		// Feed the persistent all-time store: this loop is the exclusive
 		// consumer of the heartbeat report, so transition deltas are
@@ -4474,7 +4479,7 @@ func provide(opts docopt.Opts) {
 
 	// Publish the denominator for systemd STATUS= now that the proxy list is
 	// final (post prune/rebuild above).
-	setConfiguredProxyCount(trimmedConfiguredCount(len(allProxySettings)))
+	noteTrimSelection(len(allProxySettings))
 
 	finishProxy := bannerPhase("Proxy load")
 	if 0 < len(allProxySettings) {

@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,5 +110,116 @@ func TestLifetimeMetrics_ThrottledFlush(t *testing.T) {
 	}
 	if lm.MaybeFlush(now.Add(2*time.Hour + time.Minute)) {
 		t.Fatal("clean store must not rewrite")
+	}
+}
+
+// "Since" is what makes "all-time" datable: it must survive restarts
+// unchanged, so the label keeps describing the same period after a restart.
+func TestLifetimeMetrics_SinceSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lm.json")
+
+	lm := loadLifetimeMetrics(path)
+	started, approx := lm.Started()
+	if started.IsZero() || approx {
+		t.Fatalf("fresh store: since=%v approx=%v, want a real instant with no caveat", started, approx)
+	}
+	lm.Add(1, 0, 0, 0, 0, 0, 0)
+	lm.Flush()
+
+	reloaded := loadLifetimeMetrics(path)
+	again, approxAgain := reloaded.Started()
+	if approxAgain {
+		t.Fatal("restarted store lost its exact start and became approximate")
+	}
+	if !again.Equal(started.UTC().Truncate(time.Second)) {
+		t.Fatalf("since moved across restart: %v -> %v", started, again)
+	}
+}
+
+// A store written before the field existed keeps its totals but cannot know
+// when they began. It must say so rather than claim the date it was upgraded.
+func TestLifetimeMetrics_LegacyStoreGetsApproximateStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.json")
+	legacy := `{"pqe_opens":42,"billable_bytes":1024,"saved_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lm := loadLifetimeMetrics(path)
+	pqe, _, _, _, _, _, bytes := lm.Snapshot()
+	if pqe != 42 || bytes != 1024 {
+		t.Fatalf("legacy totals dropped: pqe=%d bytes=%d", pqe, bytes)
+	}
+	started, approx := lm.Started()
+	if !approx {
+		t.Fatal("legacy store must report an approximate start, not a date it cannot know")
+	}
+	if started.IsZero() || time.Since(started) > time.Minute {
+		t.Fatalf("approximate start should be pinned near load time, got %v", started)
+	}
+}
+
+func TestSinceLabel(t *testing.T) {
+	instant := time.Date(2026, 10, 5, 8, 12, 0, 0, time.Local)
+	if got, want := sinceLabel(instant, false), "since 2026-10-05 08:12 "+instant.Format("MST"); got != want {
+		t.Fatalf("exact label = %q, want %q", got, want)
+	}
+	approxLabel := sinceLabel(instant, true)
+	if !strings.Contains(approxLabel, "start approximate") {
+		t.Fatalf("approximate label must say the start is approximate, got %q", approxLabel)
+	}
+	if !strings.Contains(approxLabel, "totals include earlier history") {
+		t.Fatalf("approximate label must say the totals still cover earlier history, got %q", approxLabel)
+	}
+	if got := sinceLabel(time.Time{}, false); got != "since unknown" {
+		t.Fatalf("zero start label = %q", got)
+	}
+	if got, want := clockLabel(instant), "2026-10-05 08:12 "+instant.Format("MST"); got != want {
+		t.Fatalf("clockLabel = %q, want %q", got, want)
+	}
+	if got := clockLabel(time.Time{}); got != "unknown" {
+		t.Fatalf("zero clockLabel = %q, want unknown", got)
+	}
+}
+
+// The pinned start must reach disk even when the node never moves a counter,
+// otherwise every idle restart re-pins a later date while the totals stay put.
+func TestLifetimeMetrics_LegacyStartPersistsWithoutTraffic(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.json")
+	legacy := `{"pqe_opens":7,"saved_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lm := loadLifetimeMetrics(path)
+	pinned, _ := lm.Started()
+	lm.Flush() // no Add at all: an idle node between restarts
+
+	reloaded := loadLifetimeMetrics(path)
+	again, approx := reloaded.Started()
+	if !approx {
+		t.Fatal("reloaded legacy store lost its approximate flag")
+	}
+	if !again.Equal(pinned.UTC().Truncate(time.Second)) {
+		t.Fatalf("pinned start rolled forward across restart: %v -> %v", pinned, again)
+	}
+}
+
+// A zero time marshals as year 1. If one ever reaches the file, loading it
+// must not turn it into an exact start date.
+func TestLifetimeMetrics_YearOneSinceStaysApproximate(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "zero.json")
+	zeroed := `{"pqe_opens":1,"since":"0001-01-01T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(zeroed), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lm := loadLifetimeMetrics(path)
+	started, approx := lm.Started()
+	if !approx {
+		t.Fatal("a year-one timestamp must be treated as an unknown start")
+	}
+	if started.Year() == 1 {
+		t.Fatal("year-one start leaked through as if it were a real date")
 	}
 }

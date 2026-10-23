@@ -87,7 +87,7 @@ curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
 docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-**🐋 Docker (management wrapper)**
+**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
 
 ```sh
 curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh

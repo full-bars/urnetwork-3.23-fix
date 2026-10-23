@@ -336,6 +336,45 @@ func resetTrimCapSeen() {
 // run: the desired count, capped by the operator trim target. The status line
 // uses it as its denominator, so a healthy box trimmed to N reads N/N, not
 // N/desired (which reads "critical" and teaches operators to ignore it).
+// trimSelection is the last trim decision this process made: the configured
+// pool size before the cap, the effective cap, and which source set it. Status
+// readers use it to show a reduced-capacity box and by how much, so a provider
+// held at 500 of 1200 reads as trimmed instead of small.
+var trimSelection struct {
+	mu      sync.Mutex
+	desired int
+	cap     int
+	source  string
+	set     bool
+}
+
+// noteTrimSelection records a trim decision and refreshes the configured count
+// the systemd status line reports.
+func noteTrimSelection(desired int) {
+	cap, source, err := effectiveTrimCapSource()
+	if err != nil {
+		cap, source = 0, ""
+	}
+	if cap > desired {
+		cap = desired
+	}
+	trimSelection.mu.Lock()
+	trimSelection.desired = desired
+	trimSelection.cap = cap
+	trimSelection.source = source
+	trimSelection.set = true
+	trimSelection.mu.Unlock()
+	setConfiguredProxyCount(trimmedConfiguredCount(desired))
+}
+
+// currentTrimSelection returns the recorded selection. ok is false before the
+// first decision, so callers omit the fields instead of reporting "no cap".
+func currentTrimSelection() (desired, cap int, source string, ok bool) {
+	trimSelection.mu.Lock()
+	defer trimSelection.mu.Unlock()
+	return trimSelection.desired, trimSelection.cap, trimSelection.source, trimSelection.set
+}
+
 func trimmedConfiguredCount(desired int) int {
 	if cap, err := effectiveTrimCap(); err == nil && cap > 0 && desired > cap {
 		return cap

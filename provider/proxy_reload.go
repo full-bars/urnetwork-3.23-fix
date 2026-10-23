@@ -1247,7 +1247,7 @@ func (r *ProxyReloader) reload() {
 		// This must still be set when nothing was running, or a node that never
 		// had proxies would keep a stale count.
 		if urlCacheLoaded {
-			setConfiguredProxyCount(0)
+			noteTrimSelection(0)
 		}
 		return
 	}
@@ -1689,7 +1689,13 @@ func (r *ProxyReloader) reload() {
 	// Update systemd status counters: the configured count reflects
 	// the full desired set (file/internal + URL cache), and resolution
 	// is OK since we found proxies. These are operator-facing only.
-	setConfiguredProxyCount(trimmedConfiguredCount(len(desiredSet)))
+	// Only record a COMPLETE desired set: an unreadable proxy_url.json leaves
+	// every URL-sourced proxy out of desiredSet, and reporting that as the
+	// configured pool would understate it and clamp the cap below the running
+	// count. A read failure keeps the last complete selection in place.
+	if urlCacheLoaded {
+		noteTrimSelection(len(desiredSet))
+	}
 	setProxyResolutionOK()
 
 	deferredTotal := deferredBackoff + warmupDeferred

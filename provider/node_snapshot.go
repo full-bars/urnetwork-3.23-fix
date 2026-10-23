@@ -110,6 +110,14 @@ type SnapshotProxies struct {
 	Degraded   int `json:"degraded"`
 	Connecting int `json:"connecting"`
 	Dead       int `json:"dead"`
+	// Configured is the pool size before the trim cap; TrimCap is the
+	// effective cap on running proxies (0 = none) and TrimCapSource says who
+	// set it (operator, oomcap, thrashcap). Omitted before the first trim
+	// decision, so a reader cannot mistake "not measured yet" for "no cap".
+	TrimReported  bool   `json:"trim_reported,omitempty"`
+	Configured    int    `json:"configured,omitempty"`
+	TrimCap       int    `json:"trim_cap,omitempty"`
+	TrimCapSource string `json:"trim_cap_source,omitempty"`
 }
 
 type SnapshotRestart struct {
@@ -752,7 +760,14 @@ func productionSnapshotSources() snapshotSources {
 			for _, p := range bw {
 				clients += p.Clients.Load()
 			}
-			return SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead)}, clients
+			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead)}
+			if desired, cap, source, ok := currentTrimSelection(); ok {
+				sp.TrimReported = true
+				sp.Configured = desired
+				sp.TrimCap = cap
+				sp.TrimCapSource = source
+			}
+			return sp, clients
 		},
 		cumulative: func() (int64, int64) {
 			return totalProxyAuthFailures(), connect.ContractsAcquiredTotal()

@@ -131,6 +131,12 @@ type SnapshotProxies struct {
 	Degraded   int `json:"degraded"`
 	Connecting int `json:"connecting"`
 	Dead       int `json:"dead"`
+	// A provider that predates trim reporting omits these; zeros then mean
+	// "not reported", never "uncapped".
+	TrimReported  bool   `json:"trim_reported,omitempty"`
+	Configured    int    `json:"configured,omitempty"`
+	TrimCap       int    `json:"trim_cap,omitempty"`
+	TrimCapSource string `json:"trim_cap_source,omitempty"`
 }
 
 type SnapshotRestart struct {
