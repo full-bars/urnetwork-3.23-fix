@@ -618,6 +618,9 @@ func providerExtraMetrics() string {
 	// --- Provider path discovery ---
 	b.WriteString(connect.PathDiscoveryMetricsText())
 
+	// --- Provider contract discovery ---
+	b.WriteString(contractDiscoveryMetricsText())
+
 	return b.String()
 }
 

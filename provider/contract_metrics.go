@@ -1,6 +1,9 @@
 package main
 
 import (
+	"fmt"
+	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -211,6 +214,79 @@ func (r *contractMetricsRegistry) windowTotals(d time.Duration) (acquired, denie
 // registration binds its callbacks to the entry generation, so a late retire
 // from an older spawn of the same stable index cannot release the replacement's
 // rings. Defer the returned func from the same goroutine that registered.
+// contractDiscovery is the answer to "why is my provider not finding a data
+// path": how many contracts were acquired, how many were refused, and for which
+// reason. It counts across every registered client and logs a refusal at most
+// once a minute with the number it stands for.
+type contractDiscovery struct {
+	mu       sync.Mutex
+	acquired uint64
+	denied   uint64
+	reasons  map[string]uint64
+	window   int
+	lastLog  time.Time
+}
+
+var globalContractDiscovery contractDiscovery
+
+func (self *contractDiscovery) record(status *connect.ContractStatus) {
+	self.mu.Lock()
+	if self.reasons == nil {
+		self.reasons = map[string]uint64{}
+	}
+	now := time.Now()
+	if status.Error == nil {
+		self.acquired++
+		self.mu.Unlock()
+		return
+	}
+	self.denied++
+	reason := status.Error.String()
+	self.reasons[reason]++
+	self.window++
+	emit := self.lastLog.IsZero() || time.Minute <= now.Sub(self.lastLog)
+	count := self.window
+	if emit {
+		self.window = 0
+		self.lastLog = now
+	}
+	self.mu.Unlock()
+	if !emit {
+		return
+	}
+	if count == 1 {
+		tlog("[contracts] a provider refused a contract: %s\n", reason)
+		return
+	}
+	tlog("[contracts] %d contracts refused in the last minute; latest reason: %s\n", count, reason)
+}
+
+func (self *contractDiscovery) metricsText() string {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	var b strings.Builder
+	fmt.Fprintf(&b, "# HELP urnet_contract_attempts_total Contract acquisition attempts, by result.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_contract_attempts_total counter\n")
+	fmt.Fprintf(&b, "urnet_contract_attempts_total{result=\"acquired\"} %d\n", self.acquired)
+	fmt.Fprintf(&b, "urnet_contract_attempts_total{result=\"denied\"} %d\n", self.denied)
+	fmt.Fprintf(&b, "# HELP urnet_contract_denied_total Contract refusals, by the reason the provider gave.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_contract_denied_total counter\n")
+	reasons := make([]string, 0, len(self.reasons))
+	for reason := range self.reasons {
+		reasons = append(reasons, reason)
+	}
+	slices.Sort(reasons)
+	for _, reason := range reasons {
+		fmt.Fprintf(&b, "urnet_contract_denied_total{reason=%s} %d\n",
+			connect.PrometheusLabelValue(reason), self.reasons[reason])
+	}
+	return b.String()
+}
+
+func contractDiscoveryMetricsText() string {
+	return globalContractDiscovery.metricsText()
+}
+
 func registerContractCallback(index int, client *connect.Client) func() {
 	metrics := globalContractMetrics.getOrCreate(index)
 	metrics.mu.Lock()
@@ -220,6 +296,7 @@ func registerContractCallback(index int, client *connect.Client) func() {
 
 	unsubscribe := client.ContractManager().AddContractStatusCallback(func(cs *connect.ContractStatus) {
 		acquired := cs.Error == nil
+		globalContractDiscovery.record(cs)
 		metrics.add(acquired, ownerGen)
 	})
 
