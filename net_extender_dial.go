@@ -604,7 +604,9 @@ func dialExtenderQuic(
 	// with no deadline a canceled dial would block in ReadResponse forever, so
 	// abort the handshake by closing the connection; the hook is stopped once
 	// the handshake completes and the stream belongs to the caller
+	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(callbackDone)
 		quicConn.CloseWithError(0, "")
 	})
 	defer stopCancel()
@@ -670,7 +672,13 @@ func dialExtenderQuic(
 		return nil, nil, err
 	}
 
-	stopCancel()
+	// a callback that already started is closing the connection, so the dial
+	// has been canceled: wait for it and fail rather than hand out a conn that
+	// is about to be closed
+	if !stopCancel() {
+		<-callbackDone
+		return nil, nil, ctx.Err()
+	}
 
 	success = true
 	return newStreamConn(
