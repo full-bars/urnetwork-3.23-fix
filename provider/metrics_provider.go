@@ -612,6 +612,9 @@ func providerExtraMetrics() string {
 	writeNodeGauges(&b, reason, collectResources())
 	writeResourceSignalGauges(&b, readBaselineGC(time.Now()), readBaselineNet())
 
+	// --- Provider contract discovery ---
+	b.WriteString(contractDiscoveryMetricsText())
+
 	return b.String()
 }
 
