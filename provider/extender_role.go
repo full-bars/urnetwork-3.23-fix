@@ -6,6 +6,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"io/fs"
 	"maps"
 	"net"
 	"os"
@@ -574,8 +575,14 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 	if previous == message {
 		return
 	}
+	// a bind below 1024 needs a capability: say so once, because the bare
+	// permission error reads like a bug rather than a deployment choice
+	hint := ""
+	if errors.Is(err, fs.ErrPermission) {
+		hint = "; port 443 needs CAP_NET_BIND_SERVICE (setcap cap_net_bind_service=+ep <binary>) or root"
+	}
 	if carrier == connect.ExtenderCarrierTcp {
-		tlog("[extender] tcp 443 unavailable: %v; retrying no faster than %s\n", err, r.config.retryInterval)
+		tlog("[extender] tcp 443 unavailable: %v; retrying no faster than %s%s\n", err, r.config.retryInterval, hint)
 		return
 	}
 	if carrier == connect.ExtenderCarrierDns && strings.Contains(message, ":53") {
@@ -584,7 +591,7 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 		tlog("[extender] dns 53 unavailable: %v; keeping %d\n", err, connect.ExtenderDnsPort)
 		return
 	}
-	tlog("[extender] %s carrier unavailable: %v\n", carrier, err)
+	tlog("[extender] %s carrier unavailable: %v%s\n", carrier, err, hint)
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
