@@ -614,7 +614,7 @@ func (self *blockActionCollector) flush() {
 	}()
 	if 0 < dropped {
 		self.log.Warningf(
-			"[block]dropped %d block action aggregations at the %d per-epoch cap; the block action list under-reports this epoch\n",
+			"[block] dropped %d block actions this epoch: the per-epoch list is full (%d), so the counts for this epoch under-report\n",
 			dropped,
 			self.maxCount,
 		)
