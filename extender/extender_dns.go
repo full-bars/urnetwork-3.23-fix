@@ -58,6 +58,9 @@ type extenderDnsForwarder struct {
 	packetConn net.PacketConn
 	queries    chan *extenderDnsQuery
 
+	ctx    context.Context
+	cancel context.CancelFunc
+
 	stateLock    sync.Mutex
 	totalBucket  tokenBucket
 	sourceStates map[string]*extenderDnsSource
@@ -70,7 +73,10 @@ type extenderDnsForwarder struct {
 // is owned by the carrier; the forwarder only answers on it.
 func newExtenderDnsForwarder(server *ExtenderServer, packetConn net.PacketConn) *extenderDnsForwarder {
 	workerCount := max(1, server.settings.DnsForwardWorkerCount)
+	ctx, cancel := context.WithCancel(server.ctx)
 	self := &extenderDnsForwarder{
+		ctx:          ctx,
+		cancel:       cancel,
 		server:       server,
 		packetConn:   packetConn,
 		queries:      make(chan *extenderDnsQuery, workerCount),
@@ -94,7 +100,7 @@ func newExtenderDnsForwarder(server *ExtenderServer, packetConn net.PacketConn) 
 func (self *extenderDnsForwarder) run() {
 	for {
 		select {
-		case <-self.server.ctx.Done():
+		case <-self.ctx.Done():
 			return
 		case query := <-self.queries:
 			self.resolveQuery(query)
@@ -326,6 +332,7 @@ func (self *extenderDnsForwarder) forward(
 // Releases the forwarder's own resolver. The workers exit with the server
 // context, which CloseAndWait joins.
 func (self *extenderDnsForwarder) close() {
+	self.cancel()
 	self.dohOnce.Do(func() {})
 	if self.dohCache != nil {
 		self.dohCache.Close()
