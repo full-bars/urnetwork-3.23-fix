@@ -204,13 +204,21 @@ func (self *ExtenderFeedStream) Next(ctx context.Context) (*protocol.ExtenderFee
 	}
 	// cancellation is delivered as an immediate read deadline, which is the
 	// only way to interrupt a blocked stream read
+	callbackDone := make(chan struct{})
 	stopCancel := context.AfterFunc(ctx, func() {
+		defer close(callbackDone)
 		// a hook from an earlier Next must not touch a later read
 		if self.readGeneration.Load() == generation {
 			self.conn.SetReadDeadline(time.Now())
 		}
 	})
-	defer stopCancel()
+	defer func() {
+		// a started callback changes the shared connection deadline, so wait
+		// for it before the caller can reuse the stream
+		if !stopCancel() {
+			<-callbackDone
+		}
+	}()
 	frame, err := ReadExtenderFeedFrame(self.reader)
 	if err != nil {
 		if ctxErr := ctx.Err(); ctxErr != nil {
