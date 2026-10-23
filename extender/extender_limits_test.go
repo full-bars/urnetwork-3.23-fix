@@ -71,11 +71,19 @@ func TestExtenderRefusesASourceOverItsConcurrentCap(t *testing.T) {
 		t.Fatal("a second connection from the same source was accepted over the cap")
 	}
 
-	// releasing the held connection frees the slot; the extender must observe
-	// the close before it can accept again, so wait for the attributed drop
+	// releasing the held connection frees the slot, but the error is reported
+	// before the deferred endConnection decrements the count. wait for the
+	// count itself, or the next dial races the release
 	held.Close()
 	if _, ok := fixture.nextError(); !ok {
 		t.Fatal("the released connection was not attributed")
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for 0 < fixture.server.ConnectionCount() {
+		if time.Now().After(deadline) {
+			t.Fatalf("the released connection still counts: %d", fixture.server.ConnectionCount())
+		}
+		time.Sleep(2 * time.Millisecond)
 	}
 	if extenderRefusesAnotherConn(t, fixture) {
 		t.Fatal("a connection was refused after the source released its slot")

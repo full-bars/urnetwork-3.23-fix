@@ -75,6 +75,9 @@ func TestExtenderListenPortsWidenOnlyForAConfiguredDnsCarrier(t *testing.T) {
 			},
 		},
 		{
+			// one udp carrier per port: widening 53 to dns beside quic would
+			// fail the whole listen, so the privileged port is left alone and
+			// dns keeps serving on its default port
 			description:       "another carrier already on the privileged port",
 			dnsPrivilegedPort: true,
 			ports: map[int][]connect.ExtenderConnectMode{
@@ -82,7 +85,7 @@ func TestExtenderListenPortsWidenOnlyForAConfiguredDnsCarrier(t *testing.T) {
 				4053:                   {connect.ExtenderConnectModeDns},
 			},
 			expected: map[int][]connect.ExtenderConnectMode{
-				connect.DefaultDnsPort: {connect.ExtenderConnectModeQuic, connect.ExtenderConnectModeDns},
+				connect.DefaultDnsPort: {connect.ExtenderConnectModeQuic},
 				4053:                   {connect.ExtenderConnectModeDns},
 			},
 		},

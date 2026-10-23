@@ -217,6 +217,25 @@ func (self *extenderDnsForwarder) resolveQuery(query *extenderDnsQuery) {
 		return
 	}
 
+	// the OPT record's class carries the sender's udp payload size (RFC 6891)
+	requestedUdpSize := 0
+	if err := parser.SkipAllAnswers(); err == nil {
+		if err := parser.SkipAllAuthorities(); err == nil {
+			for {
+				resource, err := parser.Additional()
+				if err != nil {
+					break
+				}
+				if resource.Header.Type == dnsmessage.TypeOPT {
+					requestedUdpSize = int(resource.Header.Class)
+				}
+				if err := parser.SkipAdditional(); err != nil {
+					break
+				}
+			}
+		}
+	}
+
 	if question.Type == dnsmessage.TypeALL {
 		// ANY is a reflection amplifier and answers nothing useful (A6)
 		self.answerStatus(query, header, question, dnsmessage.RCodeRefused, false)
@@ -248,8 +267,17 @@ func (self *extenderDnsForwarder) resolveQuery(query *extenderDnsQuery) {
 		return
 	}
 
-	maxByteCount := self.server.settings.DnsMaxResponseByteCount
-	if 0 < maxByteCount && maxByteCount < len(responseBytes) {
+	// A udp answer without EDNS0 is bounded at 512 (RFC 1035); with EDNS0 at
+	// the size the query advertised, and never above the configured bound. A
+	// spoofable source must not turn a 40 byte query into a 4 KB answer.
+	maxByteCount := 512
+	if 512 < requestedUdpSize {
+		maxByteCount = requestedUdpSize
+	}
+	if configured := self.server.settings.DnsMaxResponseByteCount; 0 < configured && configured < maxByteCount {
+		maxByteCount = configured
+	}
+	if maxByteCount < len(responseBytes) {
 		// over what the datagram may carry: answer the header with TC set and
 		// no sections, which is what tells the client to ask again over tcp
 		self.answerStatus(query, header, question, dnsmessage.RCodeSuccess, true)

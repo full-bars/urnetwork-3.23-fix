@@ -1137,6 +1137,14 @@ func (self *ExtenderServer) listenPorts() map[int][]connect.ExtenderConnectMode 
 	if slices.Contains(ports[connect.DefaultDnsPort], connect.ExtenderConnectModeDns) {
 		return ports
 	}
+	// one udp carrier per port: if 53 already carries quic, adding dns there
+	// would fail the whole listen instead of merely skipping the privileged
+	// port. the dns carrier keeps serving on its default port
+	if slices.ContainsFunc(ports[connect.DefaultDnsPort], func(mode connect.ExtenderConnectMode) bool {
+		return mode == connect.ExtenderConnectModeQuic
+	}) {
+		return ports
+	}
 	ports[connect.DefaultDnsPort] = append(
 		slices.Clone(ports[connect.DefaultDnsPort]),
 		connect.ExtenderConnectModeDns,

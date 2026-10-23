@@ -93,6 +93,9 @@ func (self *ExtenderServer) relayDatagram(
 				return
 			}
 			touch()
+			// the O1 counters cover every carrier, datagrams included
+			self.ingressByteCount.Add(int64(n))
+			self.ingressReadCount.Add(1)
 			if _, err := forwardConn.Write(buffer[:n]); err != nil {
 				self.reportError("datagram relay write destination", err)
 				return
@@ -113,6 +116,9 @@ func (self *ExtenderServer) relayDatagram(
 				return
 			}
 			touch()
+			// the answer side of the same relay, on the egress counters
+			self.egressByteCount.Add(int64(n))
+			self.egressReadCount.Add(1)
 			if err := writer.Write(clientConn, buffer[:n]); err != nil {
 				// An oversized reply is dropped rather than ending the relay:
 				// one bad packet from the destination must not take down a

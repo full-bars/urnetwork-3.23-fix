@@ -219,6 +219,39 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 	})
 	sibling.readEndOfSample(t)
 
+	// read both subscribers while the records are applied: the subscription
+	// buffer holds 64, and a reader that only starts after the applies can be
+	// disconnected as a slow subscriber, which makes the test scheduling
+	// dependent
+	type streamResult struct {
+		keys []string
+		err  error
+	}
+	readStreamed := func(client *testFeedClient) streamResult {
+		streamed := []string{}
+		for {
+			frame, err := connect.ReadExtenderFeedFrame(client.conn)
+			if err != nil {
+				return streamResult{err: err}
+			}
+			if frame.GetRevocation() != nil {
+				return streamResult{keys: streamed}
+			}
+			if frame.GetRecord() == nil {
+				continue
+			}
+			body, err := directory.RootKeys().VerifyRecord(frame.GetRecord())
+			if err != nil {
+				return streamResult{err: err}
+			}
+			streamed = append(streamed, hex.EncodeToString(body.PublicKey))
+		}
+	}
+	firstResult := make(chan streamResult, 1)
+	siblingResult := make(chan streamResult, 1)
+	go func() { firstResult <- readStreamed(first) }()
+	go func() { siblingResult <- readStreamed(sibling) }()
+
 	appliedKeys := []*testKey{}
 	for i := range 64 {
 		extenderKey := newTestKey(t)
@@ -238,38 +271,25 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	readStreamed := func(client *testFeedClient) []string {
-		streamed := []string{}
-		for {
-			frame, err := connect.ReadExtenderFeedFrame(client.conn)
-			if err != nil {
-				t.Fatal(err)
-			}
-			if frame.GetRevocation() != nil {
-				return streamed
-			}
-			if frame.GetRecord() == nil {
-				continue
-			}
-			body, err := directory.RootKeys().VerifyRecord(frame.GetRecord())
-			if err != nil {
-				t.Fatal(err)
-			}
-			streamed = append(streamed, hex.EncodeToString(body.PublicKey))
-		}
+	firstStream := <-firstResult
+	if firstStream.err != nil {
+		t.Fatal(firstStream.err)
 	}
-	streamed := readStreamed(first)
-	if len(streamed) == 0 {
+	siblingStream := <-siblingResult
+	if siblingStream.err != nil {
+		t.Fatal(siblingStream.err)
+	}
+	if len(firstStream.keys) == 0 {
 		t.Fatal("the stream carried none of the applied records")
 	}
 	// ninety-six open records make sixteen partitions; a subscriber that was
 	// sent more than half of what was applied was not bound to one
-	if 32 < len(streamed) {
-		t.Fatalf("the stream carried %d of %d applied records", len(streamed), len(appliedKeys))
+	if 32 < len(firstStream.keys) {
+		t.Fatalf("the stream carried %d of %d applied records", len(firstStream.keys), len(appliedKeys))
 	}
 	// one prefix is one vantage: the sibling was sent exactly the same
-	if siblingStreamed := readStreamed(sibling); !slices.Equal(siblingStreamed, streamed) {
-		t.Fatalf("a sibling of the prefix was streamed %d records, expected the same %d", len(siblingStreamed), len(streamed))
+	if !slices.Equal(siblingStream.keys, firstStream.keys) {
+		t.Fatalf("a sibling of the prefix was streamed %d records, expected the same %d", len(siblingStream.keys), len(firstStream.keys))
 	}
 }
 
