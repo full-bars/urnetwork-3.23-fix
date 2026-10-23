@@ -616,15 +616,23 @@ func dialExtenderQuic(
 	// is written as DATA frames after it; the content length still describes
 	// it
 	request := newExtenderRequest(extenderConfig, headerBytes, http.NoBody)
-	deadline := time.Now().Add(connectSettings.ConnectTimeout)
-	if requestDeadline, ok := ctx.Deadline(); ok && requestDeadline.Before(deadline) {
+	// a zero timeout is unbounded, as on the tcp carrier, which only sets a
+	// deadline from a positive phase timeout; only the settings or the context
+	// can arm one here
+	var deadline time.Time
+	if 0 < connectSettings.ConnectTimeout {
+		deadline = time.Now().Add(connectSettings.ConnectTimeout)
+	}
+	if requestDeadline, ok := ctx.Deadline(); ok && (deadline.IsZero() || requestDeadline.Before(deadline)) {
 		deadline = requestDeadline
 	}
-	if err := stream.SetDeadline(deadline); err != nil {
-		return nil, nil, err
-	}
-	if err := writer.SetWriteDeadline(deadline); err != nil {
-		return nil, nil, err
+	if !deadline.IsZero() {
+		if err := stream.SetDeadline(deadline); err != nil {
+			return nil, nil, err
+		}
+		if err := writer.SetWriteDeadline(deadline); err != nil {
+			return nil, nil, err
+		}
 	}
 	roundTrip.markSend()
 	if err := stream.SendRequestHeader(request); err != nil {
