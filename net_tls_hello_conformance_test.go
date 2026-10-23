@@ -102,6 +102,9 @@ func captureDialerHellos(t *testing.T, endpoint *fingerprint.Endpoint, dialer co
 // purpose, so their record count is not asserted; the reassembled hello still
 // matches, which is what a reassembling filter sees.
 func TestConnectDialersPresentChromeGoldenFingerprint(t *testing.T) {
+	// the runtime gate, not a strategy default, is what asks for the parrot:
+	// the default connect settings present Go's hello until it is switched on
+	connect.SetTlsHelloGateForTest(t, true)
 	golden, err := fingerprint.LoadGolden(fingerprint.GoldenChrome133Synthetic)
 	if err != nil {
 		t.Fatal(err)
@@ -131,11 +134,12 @@ func TestConnectDialersPresentChromeGoldenFingerprint(t *testing.T) {
 }
 
 // The drift gate catches a connect that regresses off the Chrome parrot: with
-// the shipped kill switch (TlsClientHelloFingerprintGo, a faithful revert of
-// the Chrome-hello behavior) the dialer emits Go's hello, and the diff against
-// the Chrome golden reports drift -- grease, the cipher list and the extension
-// set among the fields. this is the fail-before to the test above's pass-after.
+// the kill switch (the tls_hello gate off, which beats the strategy's
+// fingerprint) the dialer emits Go's hello, and the diff against the Chrome
+// golden reports drift -- grease, the cipher list and the extension set among
+// the fields. this is the fail-before to the test above's pass-after.
 func TestConformanceGateCatchesGoHelloRevert(t *testing.T) {
+	connect.SetTlsHelloGateForTest(t, false)
 	golden, err := fingerprint.LoadGolden(fingerprint.GoldenChrome133Synthetic)
 	if err != nil {
 		t.Fatal(err)
@@ -168,6 +172,7 @@ func TestConformanceGateCatchesGoHelloRevert(t *testing.T) {
 // the pq field. so a golden that fell behind a real-Chrome refresh fails loudly
 // rather than passing a now-wrong comparison.
 func TestConformanceGateCatchesStaleGolden(t *testing.T) {
+	connect.SetTlsHelloGateForTest(t, true)
 	golden, err := fingerprint.LoadGolden(fingerprint.GoldenChrome133Synthetic)
 	if err != nil {
 		t.Fatal(err)
@@ -200,6 +205,7 @@ func TestConformanceGateCatchesStaleGolden(t *testing.T) {
 // the fragmenting dialers deliberately differ, which the test above does not
 // assert for them; this pins the normal dialer's shape explicitly.
 func TestNormalDialerSendsSingleRecordHello(t *testing.T) {
+	connect.SetTlsHelloGateForTest(t, true)
 	endpoint, err := fingerprint.NewEndpoint(fingerprint.EndpointOptions{Handler: connect.TlsHelloConformanceHandlerForTest()})
 	if err != nil {
 		t.Fatal(err)
