@@ -116,11 +116,41 @@ func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context)
 	return backoffPacerWithDelay(baseDelay, time.Duration(staggerMs)*time.Millisecond, proxyCtx)
 }
 
+// scheduleURLWarmupGraceReload signals a proxy reload when the URL warmup hold
+// expires by time. urlWarmupHold lets URL-sourced proxies through
+// urlWarmupLaunchGrace after the process started even when the file-proxy
+// warmup never completes, but reload() skips a held proxy without arranging a
+// retry, and the reload is otherwise signaled only when paceMonitor declares
+// warmup done. A cached URL list that has not changed also writes no trigger
+// after the grace, so without this the held proxies would wait for the hourly
+// reconciler. The caller stops the timer; it does nothing when warmup already
+// completed, because that path signaled the reload itself.
+func scheduleURLWarmupGraceReload() *time.Timer {
+	wait := urlWarmupLaunchGrace - time.Since(provideStartTime)
+	if wait < 0 {
+		wait = 0
+	}
+	return time.AfterFunc(wait, func() {
+		if proxyWarmupDone.Load() {
+			return
+		}
+		if reloadPath, err := proxyReloadPath(); err == nil {
+			if err := writeReloadTrigger(reloadPath); err != nil {
+				tlog("[proxy] warn: failed to signal proxy reload at the url warmup grace (write .reload): %v\n", err)
+			}
+		}
+	})
+}
+
 // paceMonitor logs real-time warmup progress every 30s. It uses the health
 // snapshot to show the user how the proxy fleet is coming online. This is a
 // passive observer — the jittered stagger (backoffPacer) and per-transport
 // retry (transport.go) handle rate-limiting without global cooldowns.
 func paceMonitor(ctx context.Context) {
+	// The URL warmup hold also ends by time, which paceMonitor does not see as
+	// a completion: schedule the reload that completion would have signaled.
+	graceReload := scheduleURLWarmupGraceReload()
+	defer graceReload.Stop()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {

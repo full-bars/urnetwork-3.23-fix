@@ -837,3 +837,66 @@ func TestURLWarmupHold(t *testing.T) {
 		})
 	}
 }
+
+// TestScheduleURLWarmupGraceReload pins the reload at the end of the URL warmup
+// hold. The hold ends by time, reload() skips held URL proxies without
+// scheduling a retry, and an unchanged cached URL list writes no trigger, so
+// the expiry itself has to signal a reload or the held proxies wait for the
+// hourly reconciler.
+func TestScheduleURLWarmupGraceReload(t *testing.T) {
+	withTempHome(t)
+	path, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastReloadTriggerTime.Lock()
+	origTs, origPending := lastReloadTriggerTime.ts, lastReloadTriggerTime.pending
+	lastReloadTriggerTime.ts = time.Time{}
+	lastReloadTriggerTime.pending = false
+	lastReloadTriggerTime.Unlock()
+	t.Cleanup(func() {
+		proxyWarmupDone.Store(false)
+		provideStartTime = time.Time{}
+		lastReloadTriggerTime.Lock()
+		lastReloadTriggerTime.ts = origTs
+		lastReloadTriggerTime.pending = origPending
+		lastReloadTriggerTime.Unlock()
+	})
+
+	t.Run("signals at expiry while warmup is still pending", func(t *testing.T) {
+		_ = os.Remove(path)
+		proxyWarmupDone.Store(false)
+		provideStartTime = time.Now().Add(-urlWarmupLaunchGrace + 150*time.Millisecond)
+		timer := scheduleURLWarmupGraceReload()
+		t.Cleanup(func() { timer.Stop() })
+		if seq, _ := readReloadSeq(path); seq != 0 {
+			t.Fatalf("reload was signaled before the grace expired (seq=%d)", seq)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if seq, _ := readReloadSeq(path); seq >= 1 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("no reload was signaled when the URL warmup grace expired")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("stays quiet when warmup already completed", func(t *testing.T) {
+		_ = os.Remove(path)
+		lastReloadTriggerTime.Lock()
+		lastReloadTriggerTime.ts = time.Time{}
+		lastReloadTriggerTime.pending = false
+		lastReloadTriggerTime.Unlock()
+		proxyWarmupDone.Store(true)
+		provideStartTime = time.Now().Add(-urlWarmupLaunchGrace - time.Second)
+		timer := scheduleURLWarmupGraceReload()
+		t.Cleanup(func() { timer.Stop() })
+		time.Sleep(300 * time.Millisecond)
+		if seq, _ := readReloadSeq(path); seq != 0 {
+			t.Fatalf("a completed warmup must not get a second reload from the grace timer (seq=%d)", seq)
+		}
+	})
+}
