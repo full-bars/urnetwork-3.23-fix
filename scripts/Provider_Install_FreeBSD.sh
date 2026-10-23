@@ -364,7 +364,19 @@ do_install() {
 
     pr_info "Fetching release info..."
     release_json="$(curl -fsSL "$release_url" 2>/dev/null)"
-    tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
+    # python3 is not part of the FreeBSD base system, so parsing with it alone
+    # makes a default `latest` install fail on a clean host. jq first, then
+    # python3, then a sed extraction that needs nothing beyond base.
+    tag=""
+    if command -v jq > /dev/null 2>&1; then
+        tag="$(printf '%s' "$release_json" | jq -r '.tag_name // empty' 2>/dev/null)"
+    fi
+    if [ -z "$tag" ] && command -v python3 > /dev/null 2>&1; then
+        tag="$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name") or "")' 2>/dev/null)"
+    fi
+    if [ -z "$tag" ]; then
+        tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
 
     # GitHub API failed or rate-limited: for an explicit version we can trust
     # the caller's tag directly; for "latest" fall back to the dl.fullbars.xyz
