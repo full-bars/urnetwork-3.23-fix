@@ -479,6 +479,16 @@ func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, 
 	if settings.IcmpBufferSettings.Log == nil {
 		settings.IcmpBufferSettings.Log = log
 	}
+	// say once, in words, which egress mode this process runs: the zero mode is
+	// silent by design, and the other two change what leaves the box
+	if settings.TcpBufferSettings != nil {
+		switch mode := settings.TcpBufferSettings.EgressTtlMode; mode {
+		case EgressTtlModeShadow:
+			log.Infof("egress ttl: shadow — measuring what the provider's TTL would be; packets are unchanged\n")
+		case EgressTtlModeMirror:
+			log.Infof("egress ttl: mirror — new flows carry the provider's TTL on the egress socket\n")
+		}
+	}
 
 	numShards := runtime.NumCPU()
 	if numShards < 1 {
