@@ -1689,7 +1689,13 @@ func (r *ProxyReloader) reload() {
 	// Update systemd status counters: the configured count reflects
 	// the full desired set (file/internal + URL cache), and resolution
 	// is OK since we found proxies. These are operator-facing only.
-	noteTrimSelection(len(desiredSet))
+	// Only record a COMPLETE desired set: an unreadable proxy_url.json leaves
+	// every URL-sourced proxy out of desiredSet, and reporting that as the
+	// configured pool would understate it and clamp the cap below the running
+	// count. A read failure keeps the last complete selection in place.
+	if urlCacheLoaded {
+		noteTrimSelection(len(desiredSet))
+	}
 	setProxyResolutionOK()
 
 	deferredTotal := deferredBackoff + warmupDeferred
