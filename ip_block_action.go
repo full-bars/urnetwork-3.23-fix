@@ -224,6 +224,11 @@ func (self *blockActionMatch) merge(override *BlockActionOverride) {
 //  4. drop-classified traffic never egresses to a provider: un-blocking it
 //     routes it locally. an un-blocked blocker match (allow-classified)
 //     egresses remotely as normal
+//
+// note: on this fork the live packet path does not call this function. SendPacket
+// consults the blocker directly (SetBlocker) and applies the security policy
+// result itself, so overrides are not yet reachable from real traffic; the
+// function is kept aligned with upstream for the overrides port.
 func blockActionApply(r SecurityPolicyResult, localSecurityBypass bool, blockerBlock bool, match *blockActionMatch) (block bool, local bool) {
 	switch r {
 	case SecurityPolicyResultAllow:
