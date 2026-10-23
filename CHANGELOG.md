@@ -2,10 +2,17 @@
 
 ## [Unreleased]
 
+_Nothing yet._
+
+## [3.23.0-fix.35.0]
+
 ### Added
 
 - **The TLS ClientHello is a runtime switch** (`tls_hello`): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's TLS ClientHello instead of Go's on new connections, live and without a restart, with `URNETWORK_TLS_HELLO` as the startup default. It affects new connections only: an open session keeps the handshake it made and follows the setting the next time it dials. The Chrome hello is **off by default** while it soaks, so a box that never sets the key keeps Go's hello exactly as before; a persisted `off` beats `URNETWORK_TLS_HELLO=on`, and clearing the key hands the decision back to the environment. The provider logs `⚙️ [control] applied tls_hello=<v> (was <old>)` on each change.
 - **`urnet-tools proxy trim` reports the trim cap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/965>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/966>): with no argument the command reports the effective cap and its source (operator, OOM or thrash), the configured pool size before the cap, how many proxies the cap holds back, and the live counts. `urnet-tools status` carries a `trim` row whenever a cap applies. The provider's effective cap wins over the `proxy_trim` file, and trim state is reported only from a complete pool, so an unreadable `proxy_url.json` cannot understate the pool.
+- **A provider can serve as an extender** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/971>): `URNETWORK_EXTENDER=auto|on|off`, off by default. When on it binds tcp 443, quic 443 and dns 4053 and forwards only to the hosts in `URNETWORK_EXTENDER_ALLOWED_HOSTS`; with the list unset every forward is refused and the ready line says so. The DNS answer path is bounded to 512 bytes or the query's advertised EDNS size, and the privileged-port widening no longer fails the listen when 53 already carries quic.
+- **Egress TTL realism, the h3 datagram handshake, redirect scoping and DoH dial visibility** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/976>): Egress TTL ships inactive, with `shadow` measuring and `mirror` setting it on new flows. The h3 datagram auth response is negotiated on the real handshake, redirect policy is scoped per hop, and a failed DoH dial logs once per path per interval.
+- **The security generator and the control API refuse less silently** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/975>): the generator stages both outputs, refuses unformatted source, bounds a feed response, reports a truncated scan, ingests CIDR rows and enforces a per-family floor. The control API keeps a refusal that carries no pack and tolerates a nil context.
 
 ### Fixed
 
@@ -18,6 +25,9 @@
 - **The live-numbers job signs its commits** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/968>): the scheduled cost-table refresh refuses to push an unsigned commit, runs twice an hour off-peak and on pushes to `main`, and the wiki mirror runs every time.
 - **The client-id reuse checks restart the provider and fail on an empty store** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/955>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/957>): the smoke and soak checks stop and start the provider and diff the full stored client-id list instead of comparing one decoded JWT.
 - **The documentation links at the wiki and drops the phantom commands** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/960>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/961>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/963>): wiki links replace raw markdown paths, the SN25 table shows dollar figures, and `urnet-tools auto-update daily|weekly|monthly|off` replaces the auto-update commands that never existed.
+- **Contract discovery and path building are measurable** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/977>): `/metrics` gains `urnet_contract_attempts_total{result}`, `urnet_contract_denied_total{reason}`, `urnet_path_channels_total{window}`, `urnet_path_channel_connects_total{window}` and `urnet_path_channel_connect_millis_total{window}`, and a contract refusal logs once a minute with its count.
+- **The extender role reports what it serves and how it is used** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/971>): `/metrics` gains `urnet_extender_requests_total{service}` and `urnet_extender_refused_total{stage}`; the log carries one ready line, then only transitions, and a refusal once a minute with its count.
+
 
 ## [v3.23.0-fix.34.3]
 
