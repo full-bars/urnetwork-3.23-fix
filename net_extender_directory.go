@@ -2651,7 +2651,7 @@ func (self *ExtenderDirectory) IsActiveKey(publicKey []byte) bool {
 // stay waits out a failed dial on its own transport's schedule. Nil when the
 // directory does not know the address or may no longer dial it.
 func (self *ExtenderDirectory) PinnedCandidate(ip netip.Addr) *ExtenderCandidate {
-	if self == nil || !ip.IsValid() {
+	if self == nil || self.settings == nil || !ip.IsValid() {
 		return nil
 	}
 	ip = ip.Unmap()
