@@ -111,7 +111,10 @@ type vlessConn struct {
 	requestSent   bool
 
 	// only the reading goroutine touches this
-	responseRead bool
+	// the response header is consumed once, whichever reader gets there
+	// first: a second concurrent Read must not read framing bytes as payload
+	responseOnce sync.Once
+	responseErr  error
 }
 
 func newVlessConn(conn net.Conn, requestHeader []byte) *vlessConn {
@@ -152,14 +155,15 @@ func (self *vlessConn) sendRequestHeader() error {
 }
 
 func (self *vlessConn) Read(b []byte) (int, error) {
-	if !self.responseRead {
+	self.responseOnce.Do(func() {
 		if err := self.sendRequestHeader(); err != nil {
-			return 0, err
+			self.responseErr = err
+			return
 		}
-		if err := readVlessResponseHeader(self.Conn); err != nil {
-			return 0, err
-		}
-		self.responseRead = true
+		self.responseErr = readVlessResponseHeader(self.Conn)
+	})
+	if self.responseErr != nil {
+		return 0, self.responseErr
 	}
 	return self.Conn.Read(b)
 }

@@ -323,8 +323,11 @@ type vlessWebSocketConn struct {
 	wsConn *websocket.Conn
 
 	writeLock sync.Mutex
+	// net.Conn allows concurrent Read calls, and the message reader is
+	// stateful: one lock keeps two readers from interleaving frames
+	readLock sync.Mutex
 
-	// the reading goroutine's current message
+	// the current message being read
 	reader io.Reader
 }
 
@@ -335,6 +338,8 @@ func newVlessWebSocketConn(wsConn *websocket.Conn) *vlessWebSocketConn {
 }
 
 func (self *vlessWebSocketConn) Read(b []byte) (int, error) {
+	self.readLock.Lock()
+	defer self.readLock.Unlock()
 	for {
 		if self.reader == nil {
 			messageType, reader, err := self.wsConn.NextReader()
