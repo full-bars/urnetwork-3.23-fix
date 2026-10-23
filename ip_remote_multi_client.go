@@ -3496,9 +3496,14 @@ func (self *multiClientChannel) addConnectSuccess() {
 	if self.firstConnectAt.CompareAndSwap(0, time.Now().UnixNano()) {
 		elapsed := time.Since(self.createTime)
 		recordPathChannelConnected(self.windowType, elapsed)
-		providerId := fmt.Sprintf("%s", self.args.ClientId)
-		if 8 < len(providerId) {
-			providerId = providerId[:8]
+		// a channel built outside a window (tests, direct construction) has no
+		// args yet; its identity is not worth a panic
+		providerId := "unknown"
+		if self.args != nil {
+			providerId = fmt.Sprintf("%s", self.args.ClientId)
+			if 8 < len(providerId) {
+				providerId = providerId[:8]
+			}
 		}
 		loggerOrDefault(self.log).Infof(
 			"[path] %s channel connected in %s (provider %s)\n",
