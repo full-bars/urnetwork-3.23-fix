@@ -321,7 +321,7 @@ ${service_name}_start()
         echo "Refusing to start: \$logdir/stdout.log is a symlink (privilege escalation risk)."
         return 1
     fi
-    install -o \${${service_name}_user} -m 0640 /dev/null "\$logdir/stdout.log" 2>/dev/null || true
+    install -o \${${service_name}_user} -m 640 /dev/null "\$logdir/stdout.log" 2>/dev/null || true
     echo "Starting $service_name."
     \$daemon -f -t $service_name -p "\$pidfile" -o "\$logdir/stdout.log" \\
         -u \${${service_name}_user} \\

@@ -116,8 +116,17 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if strings.Contains(script, `\${urnetwork_user}`) {
 		t.Error("script escapes ${urnetwork_user}; sh would pass it literally, not expand it")
 	}
-	if !strings.Contains(script, `chown ${urnetwork_user} "$logdir"`) {
-		t.Error("script does not chown the log dir to the rc.conf user")
+	// The log dir stays root-owned and world-readable. The previous form
+	// chowned it to the service user, which let that user replace the log
+	// path with a symlink that root's daemon then wrote through.
+	if !strings.Contains(script, `chown root:wheel "$logdir"`) {
+		t.Error("script does not keep the log dir root-owned")
+	}
+	if !strings.Contains(script, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
+		t.Error("script does not pre-create the log file as a regular file owned by the service user")
+	}
+	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
+		t.Error("script does not refuse a symlinked log file")
 	}
 	// $flags must reach the provider expanded, not as a literal ${...} or a
 	// bare backslash followed by the value.
