@@ -68,16 +68,25 @@ logdir="/var/log/%[1]s"
 %[1]s_running_pid()
 {
     # Print the live provider pid, or nothing when it is not running.
+    _pf_pid=""
     if [ -f "$pidfile" ] && [ -r "$pidfile" ]; then
-        _pid="$(cat "$pidfile" 2>/dev/null)"
-        if [ -n "$_pid" ] && ps -p "$_pid" -o user=,args= 2>/dev/null | awk -v u="${%[1]s_user}" -v b='%[4]s' '$1 == u && $2 == b && $3 == "provide" {found=1} END {exit !found}'; then
+        _pf_pid="$(cat "$pidfile" 2>/dev/null)"
+        _pid="$_pf_pid"
+        if [ -n "$_pid" ] && ps -p "$_pid" -o args= 2>/dev/null | awk -v b='%[4]s' '$1 == b && $2 == "provide" {found=1} END {exit !found}'; then
             echo "$_pid"
             return 0
         fi
     fi
-    _pid="$(ps -U "${%[1]s_user}" -o pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
-    [ -n "$_pid" ] || return 1
-    echo "$_pid"
+    _pid="$(ps -axo pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
+    if [ -n "$_pid" ]; then
+        echo "$_pid"
+        return 0
+    fi
+    if [ -n "$_pf_pid" ] && [ -n "$(ps -p "$_pf_pid" -o pid= 2>/dev/null)" ]; then
+        echo "$_pf_pid"
+        return 0
+    fi
+    return 1
 }
 
 %[1]s_start()

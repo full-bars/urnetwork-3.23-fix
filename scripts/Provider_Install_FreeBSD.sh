@@ -282,14 +282,16 @@ ${service_name}_running_pid()
     # in daemon.c, not configurable through -p/-P) and start runs as root, so
     # an unprivileged one*status cannot read the file at all. When it is
     # unreadable, fall back to scanning the process table.
+    _pf_pid=""
     if [ -f "\$pidfile" ] && [ -r "\$pidfile" ]; then
-        _pid="\$(cat "\$pidfile" 2>/dev/null)"
+        _pf_pid="\$(cat "\$pidfile" 2>/dev/null)"
+        _pid="\$_pf_pid"
         # daemon(8) writes the provider's pid, so a readable pidfile is only
         # trusted once that pid is alive AND is this provider running as the
         # service user. A stale file whose pid was reused would otherwise make
         # start skip a real start, and the two providers would share state the
         # provider assumes it owns exclusively.
-        if [ -n "\$_pid" ] && ps -p "\$_pid" -o user=,args= 2>/dev/null | awk -v u="\${${service_name}_user}" -v b='$provider_bin' '\$1 == u && \$2 == b && \$3 == "provide" {found=1} END {exit !found}'; then
+        if [ -n "\$_pid" ] && ps -p "\$_pid" -o args= 2>/dev/null | awk -v b='$provider_bin' '\$1 == b && \$2 == "provide" {found=1} END {exit !found}'; then
             echo "\$_pid"
             return 0
         fi
@@ -301,9 +303,20 @@ ${service_name}_running_pid()
     # string in its own argv, and "ps -U <service user>" lists that grep when
     # the caller is the service user. The grep then matches itself and a
     # stopped provider reports as running (and start skips a real start).
-    _pid="\$(ps -U "\${${service_name}_user}" -o pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
-    [ -n "\$_pid" ] || return 1
-    echo "\$_pid"
+    _pid="\$(ps -axo pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
+    if [ -n "\$_pid" ]; then
+        echo "\$_pid"
+        return 0
+    fi
+    # daemon(8) writes the child pid before the child has exec'd the provider,
+    # so an alive pidfile pid that does not identify yet is still this service
+    # starting, not a stale file. Refusing it would make status report stopped
+    # through a healthy boot.
+    if [ -n "\$_pf_pid" ] && [ -n "\$(ps -p "\$_pf_pid" -o pid= 2>/dev/null)" ]; then
+        echo "\$_pf_pid"
+        return 0
+    fi
+    return 1
 }
 
 ${service_name}_start()
