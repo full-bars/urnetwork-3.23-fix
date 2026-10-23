@@ -522,13 +522,15 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 // keep-alive configuration, and resolver; each call returns an independent
 // dialer, so per-dial state never shares between calls.
 func (self *ConnectSettings) NetDialer() *net.Dialer {
-	return &net.Dialer{
+	// providerEgressDialer is inert unless the dial context carries a provider
+	// egress target (see providerEgressTarget.dialContext).
+	return providerEgressDialer(&net.Dialer{
 		Timeout:         self.ConnectTimeout,
 		KeepAlive:       self.KeepAliveTimeout,
 		KeepAliveConfig: self.KeepAliveConfig,
 		Control:         self.DialControl,
 		Resolver:        self.Resolver,
-	}
+	})
 }
 
 type ProxySettings struct {
