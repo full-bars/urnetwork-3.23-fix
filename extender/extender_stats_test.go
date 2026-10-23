@@ -138,6 +138,24 @@ func relayTestSessionStats(sessionCount int64) ExtenderStats {
 	}
 }
 
+// The byte counts are exact. The read counts are not: how the transport splits
+// a write into reads depends on the transport and the scheduler, so one chunk
+// can arrive in more than one read. Assert at least one read per chunk and at
+// most one read per byte, which still proves every relayed read is counted
+// without pinning segmentation the relay does not control.
+func assertRelayStats(t *testing.T, stats ExtenderStats, expected ExtenderStats, context string) {
+	t.Helper()
+	if stats.IngressByteCount != expected.IngressByteCount || stats.EgressByteCount != expected.EgressByteCount {
+		t.Fatalf("%s stats = %+v, expected %d ingress and %d egress bytes", context, stats, expected.IngressByteCount, expected.EgressByteCount)
+	}
+	if stats.IngressReadCount < expected.IngressReadCount || expected.IngressByteCount < stats.IngressReadCount {
+		t.Fatalf("%s ingress reads = %d, expected between %d and %d", context, stats.IngressReadCount, expected.IngressReadCount, expected.IngressByteCount)
+	}
+	if stats.EgressReadCount < expected.EgressReadCount || expected.EgressByteCount < stats.EgressReadCount {
+		t.Fatalf("%s egress reads = %d, expected between %d and %d", context, stats.EgressReadCount, expected.EgressReadCount, expected.EgressByteCount)
+	}
+}
+
 // The extender of the counter tests: every forward dial reaches the raw
 // endpoint.
 func newRelayStatsFixture(t *testing.T, endpoint *relayEndpoint) *extenderFixture {
@@ -174,9 +192,7 @@ func TestExtenderStatsCountEveryCarrierInBothDirections(t *testing.T) {
 		// the counters are cumulative, so each carrier is checked against the
 		// sum of every session so far
 		expected := relayTestSessionStats(int64(i + 1))
-		if stats := fixture.server.Stats(); stats != expected {
-			t.Fatalf("through %s stats = %+v, expected %+v", carrier, stats, expected)
-		}
+		assertRelayStats(t, fixture.server.Stats(), expected, "through "+carrier)
 	}
 }
 
@@ -307,7 +323,5 @@ func TestExtenderStatsAreSafeToReadWhileRelaying(t *testing.T) {
 	}
 
 	expected := relayTestSessionStats(int64(len(carriers)))
-	if stats := fixture.server.Stats(); stats != expected {
-		t.Fatalf("stats after the concurrent sessions = %+v, expected %+v", stats, expected)
-	}
+	assertRelayStats(t, fixture.server.Stats(), expected, "after the concurrent sessions")
 }
