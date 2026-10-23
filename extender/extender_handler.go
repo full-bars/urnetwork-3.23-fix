@@ -43,6 +43,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	if !isExtenderRequest(req) {
 		// everything that is not the extender protocol looks like an ordinary
 		// host to whoever asked (A5)
+		server.usage.recordService(extenderUsageProxy)
 		server.proxy.serve(w, req)
 		return
 	}
@@ -56,6 +57,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		self.refuse(w, req, "header decode", err)
 		return
 	}
+	server.usage.recordService(extenderUsageServiceIndex(header.Service))
 	if !server.IsAllowedSecret(header) {
 		self.refuse(w, req, "header authorization", fmt.Errorf("secret signature is not allowed"))
 		return

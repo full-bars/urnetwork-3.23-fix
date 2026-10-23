@@ -449,6 +449,13 @@ type ExtenderServer struct {
 	egressByteCount  atomic.Int64
 	egressReadCount  atomic.Int64
 
+	// what the role is actually used for, by service and by refusal reason
+	usage extenderUsage
+
+	// refusal logging state: a flood must not bury the log it writes to
+	refusalLogLock  sync.Mutex
+	refusalLogState map[string]*extenderRefusalLogState
+
 	// the camouflage counts of P7, cumulative for the life of the server and
 	// surfaced beside the admission counts. A spliced byte is never added to the
 	// O1 relay counters above (P10), so the two sets never double count a
@@ -1463,6 +1470,118 @@ func (self *ExtenderServer) ConnectionCount() int {
 // toward the forward destination and egress what moves back from the
 // destination toward the client. A read is one chunk the relay moved on one
 // side, because a byte stream has no packet boundary in userspace.
+// The services a request can ask for, in the order the metrics report them.
+// Proxy is not an extender service: it is the camouflage answer an ordinary
+// request gets, counted so the two can be told apart.
+const (
+	extenderUsageProxy = iota
+	extenderUsageForward
+	extenderUsageGossip
+	extenderUsageFeed
+	extenderUsageProbe
+	extenderUsageOther
+	extenderUsageCount
+)
+
+var extenderUsageServiceNames = [extenderUsageCount]string{
+	extenderUsageProxy:   "proxy",
+	extenderUsageForward: "forward",
+	extenderUsageGossip:  "gossip",
+	extenderUsageFeed:    "feed",
+	extenderUsageProbe:   "probe",
+	extenderUsageOther:   "other",
+}
+
+func extenderUsageServiceIndex(service uint32) int {
+	switch service {
+	case connect.ExtenderServiceForward:
+		return extenderUsageForward
+	case connect.ExtenderServiceGossip:
+		return extenderUsageGossip
+	case connect.ExtenderServiceFeed:
+		return extenderUsageFeed
+	case connect.ExtenderServiceProbe:
+		return extenderUsageProbe
+	}
+	return extenderUsageOther
+}
+
+type extenderRefusalLogState struct {
+	count   int
+	lastLog time.Time
+}
+
+// noteRefusal logs a refusal at most once a minute per stage, with the number
+// of refusals it stands for, so the operator sees why clients are being turned
+// away without the log filling up under a bad deploy.
+func (self *ExtenderServer) noteRefusal(stage string, err error) {
+	now := time.Now()
+	self.refusalLogLock.Lock()
+	if self.refusalLogState == nil {
+		self.refusalLogState = map[string]*extenderRefusalLogState{}
+	}
+	state := self.refusalLogState[stage]
+	if state == nil {
+		state = &extenderRefusalLogState{}
+		self.refusalLogState[stage] = state
+	}
+	state.count++
+	emit := state.lastLog.IsZero() || time.Minute <= now.Sub(state.lastLog)
+	count := state.count
+	if emit {
+		state.count = 0
+		state.lastLog = now
+	}
+	self.refusalLogLock.Unlock()
+	if !emit {
+		return
+	}
+	if count == 1 {
+		log.Printf("[extender] refused a request at %s: %v", stage, err)
+		return
+	}
+	log.Printf("[extender] refused %d requests at %s in the last minute; latest: %v", count, stage, err)
+}
+
+// extenderUsage counts requests by service and refusals by stage. Both are
+// cumulative for the life of the server and safe to read while it serves.
+type extenderUsage struct {
+	services [extenderUsageCount]atomic.Uint64
+	refusals sync.Map // stage string -> *atomic.Uint64
+}
+
+func (self *extenderUsage) recordService(index int) {
+	if 0 <= index && index < extenderUsageCount {
+		self.services[index].Add(1)
+	}
+}
+
+func (self *extenderUsage) recordRefusal(stage string) {
+	counter, _ := self.refusals.LoadOrStore(stage, &atomic.Uint64{})
+	counter.(*atomic.Uint64).Add(1)
+}
+
+// ServiceCounts returns the per-service request counts by name.
+func (self *ExtenderServer) ServiceCounts() map[string]uint64 {
+	counts := map[string]uint64{}
+	for index, name := range extenderUsageServiceNames {
+		if count := self.usage.services[index].Load(); 0 < count {
+			counts[name] = count
+		}
+	}
+	return counts
+}
+
+// RefusalCounts returns the per-stage refusal counts by stage name.
+func (self *ExtenderServer) RefusalCounts() map[string]uint64 {
+	counts := map[string]uint64{}
+	self.usage.refusals.Range(func(key, value any) bool {
+		counts[key.(string)] = value.(*atomic.Uint64).Load()
+		return true
+	})
+	return counts
+}
+
 type ExtenderStats struct {
 	IngressByteCount int64
 	IngressReadCount int64

@@ -540,6 +540,8 @@ func refuseRequest(
 	stage string,
 	err error,
 ) {
+	server.usage.recordRefusal(stage)
+	server.noteRefusal(stage, err)
 	server.reportError(stage, err)
 	if req.ProtoMajor == 1 {
 		w.Header().Set("Connection", "close")

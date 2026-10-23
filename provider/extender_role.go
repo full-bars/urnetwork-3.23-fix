@@ -220,16 +220,19 @@ type extenderRole struct {
 	config extenderRoleConfig
 	keyId  string
 
-	mu           sync.Mutex
-	keySeed      []byte
-	state        string
-	note         string
-	carriers     map[string]bool
-	listenErrors map[string]string
-	dnsPorts     []int
-	servers      []*extender.ExtenderServer
-	baseStats    extender.ExtenderStats
-	tcpRetries   int64
+	mu             sync.Mutex
+	lastStatusLine string
+	lastStatusNote string
+	readyLogged    bool
+	keySeed        []byte
+	state          string
+	note           string
+	carriers       map[string]bool
+	listenErrors   map[string]string
+	dnsPorts       []int
+	servers        []*extender.ExtenderServer
+	baseStats      extender.ExtenderStats
+	tcpRetries     int64
 
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -718,6 +721,10 @@ type extenderRoleSnapshot struct {
 	Connections  int
 	Stats        extender.ExtenderStats
 	TcpRetries   int64
+	// per-service requests and per-stage refusals, summed over every server
+	// the role currently owns
+	ServiceCounts map[string]uint64
+	RefusalCounts map[string]uint64
 }
 
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
@@ -738,7 +745,15 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	slices.Sort(snapshot.Carriers)
 	r.mu.Unlock()
 
+	snapshot.ServiceCounts = map[string]uint64{}
+	snapshot.RefusalCounts = map[string]uint64{}
 	for _, server := range servers {
+		for service, count := range server.ServiceCounts() {
+			snapshot.ServiceCounts[service] += count
+		}
+		for stage, count := range server.RefusalCounts() {
+			snapshot.RefusalCounts[stage] += count
+		}
 		stats := server.Stats()
 		snapshot.Stats.IngressByteCount += stats.IngressByteCount
 		snapshot.Stats.IngressReadCount += stats.IngressReadCount
@@ -751,31 +766,89 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 
 func (r *extenderRole) publishStatus(note string) {
 	snapshot := r.snapshot()
-	tcp := "unavailable"
-	if slices.Contains(snapshot.Carriers, connect.ExtenderCarrierTcp) {
-		tcp = "listening"
+	summary := extenderRoleSummary(snapshot)
+	policy := r.forwardPolicySummary()
+
+	r.mu.Lock()
+	changed := summary != r.lastStatusLine || note != r.lastStatusNote
+	firstServing := snapshot.State == extenderStateServing && !r.readyLogged
+	if changed {
+		r.lastStatusLine = summary
+		r.lastStatusNote = note
 	}
-	dnsPorts := make([]string, 0, len(snapshot.DnsPorts))
-	for _, port := range snapshot.DnsPorts {
-		dnsPorts = append(dnsPorts, fmt.Sprintf("%d", port))
+	if firstServing {
+		r.readyLogged = true
 	}
-	errParts := make([]string, 0, len(snapshot.ListenErrors))
-	for carrier, err := range snapshot.ListenErrors {
-		errParts = append(errParts, fmt.Sprintf("%s=%s", carrier, err))
+	r.mu.Unlock()
+
+	// one line a human can read at 3am, then only when something changes:
+	// the counters live in /metrics, not in a repeated dump
+	if firstServing {
+		tlog("[extender] ready — %s; %s\n", summary, policy)
+		return
 	}
-	slices.Sort(errParts)
-	tlog("[extender] state=%s carriers=%s dns_ports=%s tcp=%s identity=%s ingress_bytes=%d egress_bytes=%d tcp_retries=%d note=%s listen_errors=%s\n",
-		snapshot.State,
-		strings.Join(snapshot.Carriers, ","),
-		strings.Join(dnsPorts, ","),
-		tcp,
-		r.keyId,
-		snapshot.Stats.IngressByteCount,
-		snapshot.Stats.EgressByteCount,
-		snapshot.TcpRetries,
-		note,
-		strings.Join(errParts, ";"),
-	)
+	if !changed {
+		return
+	}
+	if snapshot.State == extenderStateServing {
+		tlog("[extender] %s\n", summary)
+		return
+	}
+	if note == "" {
+		note = summary
+	}
+	tlog("[extender] %s — %s\n", snapshot.State, note)
+}
+
+// extenderRoleSummary says what the role is serving in words, not keys.
+func extenderRoleSummary(snapshot extenderRoleSnapshot) string {
+	up := make([]string, 0, 3)
+	down := make([]string, 0, 3)
+	for _, carrier := range []string{
+		connect.ExtenderCarrierTcp,
+		connect.ExtenderCarrierQuic,
+		connect.ExtenderCarrierDns,
+	} {
+		if slices.Contains(snapshot.Carriers, carrier) {
+			up = append(up, carrier)
+			continue
+		}
+		if _, failed := snapshot.ListenErrors[carrier]; failed {
+			down = append(down, carrier)
+		}
+	}
+	switch {
+	case len(up) == 0:
+		return "not serving: no carrier is listening"
+	case len(down) == 0:
+		return "serving on " + englishJoin(up)
+	default:
+		return "serving on " + englishJoin(up) + "; " + englishJoin(down) + " unavailable"
+	}
+}
+
+func (r *extenderRole) forwardPolicySummary() string {
+	if len(r.config.allowedHosts) == 0 {
+		return "forwards are disabled: set URNETWORK_EXTENDER_ALLOWED_HOSTS to the hosts clients may ask for"
+	}
+	if len(r.config.allowedHosts) == 1 {
+		return "forwards allowed for 1 host"
+	}
+	return fmt.Sprintf("forwards allowed for %d hosts", len(r.config.allowedHosts))
+}
+
+// englishJoin renders ["a","b","c"] as "a, b and c".
+func englishJoin(items []string) string {
+	switch len(items) {
+	case 0:
+		return ""
+	case 1:
+		return items[0]
+	case 2:
+		return items[0] + " and " + items[1]
+	default:
+		return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	}
 }
 
 // extenderRoleMetricsText renders the role for connect.PrometheusHandler.
@@ -823,6 +896,23 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 			value = 1
 		}
 		fmt.Fprintf(&b, "urnet_extender_carrier_listening{carrier=%s} %d\n", connect.PrometheusLabelValue(carrier), value)
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_requests_total Extender requests by service, cumulative.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_requests_total counter\n")
+	for _, service := range []string{"proxy", "forward", "gossip", "feed", "probe", "other"} {
+		fmt.Fprintf(&b, "urnet_extender_requests_total{service=%s} %d\n",
+			connect.PrometheusLabelValue(service), snapshot.ServiceCounts[service])
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_refused_total Extender requests refused, by stage, cumulative.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_refused_total counter\n")
+	refusalStages := make([]string, 0, len(snapshot.RefusalCounts))
+	for stage := range snapshot.RefusalCounts {
+		refusalStages = append(refusalStages, stage)
+	}
+	slices.Sort(refusalStages)
+	for _, stage := range refusalStages {
+		fmt.Fprintf(&b, "urnet_extender_refused_total{stage=%s} %d\n",
+			connect.PrometheusLabelValue(stage), snapshot.RefusalCounts[stage])
 	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_listen_error 1 when the carrier's last bind failed.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_listen_error gauge\n")
