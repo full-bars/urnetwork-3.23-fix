@@ -604,16 +604,20 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
+	// the counters are atomic and survive close, so sample after the drain:
+	// requests that finish while CloseAndWait runs must count
+	server.CloseAndWait()
 	stats := server.Stats()
 	serviceCounts := server.ServiceCounts()
 	refusalCounts := server.RefusalCounts()
-	server.CloseAndWait()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := slices.Index(r.servers, server)
-	if 0 <= index {
-		r.servers = slices.Delete(r.servers, index, index+1)
+	if index < 0 {
+		// already retired: folding the counts again would double count
+		return
 	}
+	r.servers = slices.Delete(r.servers, index, index+1)
 	r.baseStats.IngressByteCount += stats.IngressByteCount
 	r.baseStats.IngressReadCount += stats.IngressReadCount
 	r.baseStats.EgressByteCount += stats.EgressByteCount
