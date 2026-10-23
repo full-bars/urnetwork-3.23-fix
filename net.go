@@ -423,6 +423,8 @@ func (self *ConnectSettings) dialUsesProxy() bool {
 
 type DialContextSettings struct {
 	DialContext DialContextFunction
+	// Only Tun sets this diagnostic marker; other supplied dialers stay caller.
+	dohTun bool
 	// PacketConnFactory, when set, supplies the packet conn for udp dials so a
 	// pinned transport can bind its own family (ported from upstream at
 	// 20b29f79, inert here; nil keeps the existing behavior).
