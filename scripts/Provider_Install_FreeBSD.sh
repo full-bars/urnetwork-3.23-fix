@@ -284,14 +284,16 @@ ${service_name}_running_pid()
     # unreadable, fall back to scanning the process table.
     if [ -f "\$pidfile" ] && [ -r "\$pidfile" ]; then
         _pid="\$(cat "\$pidfile" 2>/dev/null)"
-        [ -n "\$_pid" ] || return 1
-        # ps, not kill -0: kill -0 returns EPERM (non-zero, same as ESRCH) for a
-        # process owned by another user, so an unprivileged service status would
-        # report "not running" while the provider is up. ps sees every process,
-        # so a pid ps lists is alive regardless of who owns it.
-        [ -n "\$(ps -p "\$_pid" -o pid= 2>/dev/null)" ] || return 1
-        echo "\$_pid"
-        return 0
+        # daemon(8) writes the provider's pid, so a readable pidfile is only
+        # trusted once that pid is alive AND is this provider running as the
+        # service user. A stale file whose pid was reused would otherwise make
+        # start skip a real start, and the two providers would share state the
+        # provider assumes it owns exclusively.
+        if [ -n "\$_pid" ] && ps -p "\$_pid" -o user=,args= 2>/dev/null | awk -v u="\${${service_name}_user}" -v b='$provider_bin' '\$1 == u && \$2 == b && \$3 == "provide" {found=1} END {exit !found}'; then
+            echo "\$_pid"
+            return 0
+        fi
+        # stale or foreign pid: fall through to the scan below
     fi
     # -U selects processes by username; -u would only select the output
     # format. The match is done in awk on the argv fields on purpose: a
@@ -472,7 +474,13 @@ do_install() {
         exit 1
     }
 
-    provider_src="$tmpdir/freebsd/$goarch/provider"
+    # The FreeBSD archives ship the binary at the archive root; older layouts
+    # nested it under freebsd/<arch>/. Accept both rather than exiting on a
+    # valid release.
+    provider_src="$tmpdir/provider"
+    if [ ! -f "$provider_src" ]; then
+        provider_src="$tmpdir/freebsd/$goarch/provider"
+    fi
     if [ ! -f "$provider_src" ]; then
         pr_err "FreeBSD/%s binary not found in release tarball" "$goarch"
         rm -rf "$tmpdir"
@@ -484,6 +492,10 @@ do_install() {
     # elevates instead of failing at the first mkdir. (This was a regression
     # from moving the tree out of the service user's home.)
     priv mkdir -p "$install_path/bin" || { pr_err "Failed to create %s" "$install_path"; rm -rf "$tmpdir"; exit 1; }
+    # A restrictive invoking umask can leave these 0700 even on the sudo path,
+    # and the root-only repair below never runs there. daemon -u must be able
+    # to traverse and execute.
+    priv chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
     # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
@@ -508,6 +520,7 @@ do_install() {
     ver_tmp="$install_path/.version.new.$$"
     printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
         priv mv -f "$ver_tmp" "$install_path/version"
+    priv chmod 644 "$install_path/version" 2>/dev/null || true
 
     # Install the tool: the Go urnet-tools binary shipped as a release asset,
     # digest-verified; fall back to this shell script for releases that
@@ -783,12 +796,24 @@ do_update() {
 write_state_flag() {
     _flag="$state_dir/$1"
     _val="$2"
+    # state_dir lives in the service user's home and the user controls it. A
+    # symlinked state_dir would send root's mkdir and mktemp into an arbitrary
+    # directory, so refuse it before anything is created.
+    if [ -L "$state_dir" ]; then
+        pr_err "refusing to write under %s: it is a symlink" "$state_dir"
+        return 1
+    fi
     if [ -h "$_flag" ]; then
         pr_err "refusing to write %s: it is a symlink" "$_flag"
         return 1
     fi
     mkdir -p "$state_dir"
-    _tmp=$(mktemp "$state_dir/.flag.XXXXXX") || {
+    # The temp file must not sit in the user-writable directory: the service
+    # user can unlink a name it can see and plant a symlink there before the
+    # write, and both the write and the chmod follow symlinks. A root-owned
+    # sticky temp directory is not theirs to replace, and the final mv is a
+    # rename, which replaces a planted link instead of following it.
+    _tmp=$(mktemp "${TMPDIR:-/tmp}/urnet-state-flag.XXXXXX") || {
         pr_err "cannot create temp file under %s" "$state_dir"
         return 1
     }

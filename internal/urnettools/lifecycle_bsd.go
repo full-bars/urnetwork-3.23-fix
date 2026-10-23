@@ -70,10 +70,10 @@ logdir="/var/log/%[1]s"
     # Print the live provider pid, or nothing when it is not running.
     if [ -f "$pidfile" ] && [ -r "$pidfile" ]; then
         _pid="$(cat "$pidfile" 2>/dev/null)"
-        [ -n "$_pid" ] || return 1
-        [ -n "$(ps -p "$_pid" -o pid= 2>/dev/null)" ] || return 1
-        echo "$_pid"
-        return 0
+        if [ -n "$_pid" ] && ps -p "$_pid" -o user=,args= 2>/dev/null | awk -v u="${%[1]s_user}" -v b='%[4]s' '$1 == u && $2 == b && $3 == "provide" {found=1} END {exit !found}'; then
+            echo "$_pid"
+            return 0
+        fi
     fi
     _pid="$(ps -U "${%[1]s_user}" -o pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
     [ -n "$_pid" ] || return 1
