@@ -3,6 +3,7 @@ package connect
 import (
 	"encoding/binary"
 	"net"
+	"sync"
 	"testing"
 
 	"github.com/urnetwork/connect/protocol"
@@ -291,4 +292,131 @@ func TestMultiClientBlockerBeforeLocalRoutes(t *testing.T) {
 			t.Fatalf("unblocked egress reached the security policy %d times, want 1", calls)
 		}
 	})
+}
+
+// blockerTestTcp6Packet builds a minimal tcpv6 packet to the given destination.
+func blockerTestTcp6Packet(destinationIp net.IP, sourcePort int, destinationPort int, flags byte) []byte {
+	sourceIp := net.ParseIP("2001:db8::2")
+	destinationIp = destinationIp.To16()
+	packet := make([]byte, Ipv6HeaderSize+TcpHeaderSizeWithoutExtensions)
+	writeIpv6Header(packet, ipProtocolNumberTcp, sourceIp, destinationIp)
+	tcp := packet[Ipv6HeaderSize:]
+	binary.BigEndian.PutUint16(tcp[0:2], uint16(sourcePort))
+	binary.BigEndian.PutUint16(tcp[2:4], uint16(destinationPort))
+	tcp[12] = byte(TcpHeaderSizeWithoutExtensions/4) << 4
+	tcp[13] = flags
+	binary.BigEndian.PutUint16(tcp[14:16], 65535)
+	binary.BigEndian.PutUint16(tcp[16:18], transportChecksum(
+		ipProtocolNumberTcp,
+		sourceIp,
+		destinationIp,
+		tcp,
+	))
+	return packet
+}
+
+// the gate must be protocol and family agnostic, and must hold for packets
+// that arrive mid-connection rather than only on the opening syn.
+func TestMultiClientBlockerCoversIpv6UdpAndMidConnection(t *testing.T) {
+	var v6Low, v6High [16]byte
+	copy(v6Low[:], net.ParseIP("2001:db8:bad::").To16())
+	copy(v6High[:], net.ParseIP("2001:db8:bad:ffff::").To16())
+	var v4Range = [][2]uint32{{0xcb00710a, 0xcb0071ff}}
+	blocker := blockerTestNew(nil, v4Range, [][2][16]byte{{v6Low, v6High}})
+
+	t.Run("ipv6", func(t *testing.T) {
+		policy := &smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector(), result: SecurityPolicyResultAllow}
+		multi := newBlockerMultiClient(t, policy)
+		defer multi.Close()
+		multi.SetBlocker(blocker)
+
+		packet := blockerTestTcp6Packet(net.ParseIP("2001:db8:bad::10"), 48040, 443, byte(tcpFlagSyn))
+		if multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+			t.Fatal("blocked ipv6 egress was accepted")
+		}
+		if calls := policy.calls.Load(); calls != 0 {
+			t.Fatalf("blocked ipv6 egress reached the security policy %d times, want 0", calls)
+		}
+
+		// control: the same destination passes once the blocker is off, so the
+		// test cannot pass on a malformed packet
+		multi.SetBlocker(nil)
+		openPacket := blockerTestTcp6Packet(net.ParseIP("2001:db8:bad::10"), 48042, 443, byte(tcpFlagSyn))
+		multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, openPacket, 0)
+		if calls := policy.calls.Load(); calls != 1 {
+			t.Fatalf("unblocked ipv6 egress reached the security policy %d times, want 1", calls)
+		}
+	})
+
+	t.Run("udp", func(t *testing.T) {
+		policy := &smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector(), result: SecurityPolicyResultAllow}
+		multi := newBlockerMultiClient(t, policy)
+		defer multi.Close()
+		multi.SetBlocker(blocker)
+
+		packet := testingUdp4Packet("10.0.0.2", "203.0.113.10", 53, []byte{1, 2, 3, 4})
+		if multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+			t.Fatal("blocked udp egress was accepted")
+		}
+		if calls := policy.calls.Load(); calls != 0 {
+			t.Fatalf("blocked udp egress reached the security policy %d times, want 0", calls)
+		}
+
+		multi.SetBlocker(nil)
+		openPacket := testingUdp4Packet("10.0.0.2", "203.0.113.10", 53, []byte{5, 6, 7, 8})
+		multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, openPacket, 0)
+		if calls := policy.calls.Load(); calls != 1 {
+			t.Fatalf("unblocked udp egress reached the security policy %d times, want 1", calls)
+		}
+	})
+
+	t.Run("midConnection", func(t *testing.T) {
+		policy := &smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector(), result: SecurityPolicyResultAllow}
+		multi := newBlockerMultiClient(t, policy)
+		defer multi.Close()
+		multi.SetBlocker(blocker)
+
+		packet := blockerTestTcp4Packet(net.IPv4(203, 0, 113, 10), 48041, 443, byte(tcpFlagAck))
+		if multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0) {
+			t.Fatal("blocked mid-connection egress was accepted")
+		}
+		if calls := policy.calls.Load(); calls != 0 {
+			t.Fatalf("blocked mid-connection egress reached the security policy %d times, want 0", calls)
+		}
+
+		multi.SetBlocker(nil)
+		openPacket := blockerTestTcp4Packet(net.IPv4(203, 0, 113, 10), 48043, 443, byte(tcpFlagAck))
+		multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, openPacket, 0)
+		if calls := policy.calls.Load(); calls != 1 {
+			t.Fatalf("unblocked mid-connection egress reached the security policy %d times, want 1", calls)
+		}
+	})
+}
+
+// flipping the blocker while packets are in flight must be race free: the
+// setters take the state lock and the packet path reads an atomic snapshot.
+func TestMultiClientBlockerSetterRace(t *testing.T) {
+	policy := &smtpSeamPolicy{stats: DefaultSecurityPolicyStatsCollector(), result: SecurityPolicyResultAllow}
+	multi := newBlockerMultiClient(t, policy)
+	defer multi.Close()
+	blocker := blockerTestNew(nil, [][2]uint32{{0xcb00710a, 0xcb0071ff}}, nil)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			multi.SetBlocker(blocker)
+			multi.SetLocalSecurityBypass(i%2 == 0)
+			multi.SetBlocker(nil)
+		}
+	}()
+	go func() {
+		defer wg.Done()
+		for i := 0; i < 500; i++ {
+			packet := blockerTestTcp4Packet(net.IPv4(203, 0, 113, 10), 48050+i%10, 443, byte(tcpFlagSyn))
+			multi.SendPacket(SourceId(NewId()), protocol.ProvideMode_Network, packet, 0)
+		}
+	}()
+	wg.Wait()
 }
