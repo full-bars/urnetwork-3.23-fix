@@ -3303,7 +3303,7 @@ func (self *PlatformTransport) runH3(
 					return nil, fmt.Errorf("Auth response error: got %T.", responseMessage)
 				}
 				connectionState := conn.ConnectionState()
-				useH3Datagrams, responseErr = ValidateH3DatagramAuthResponse(
+				useH3Datagrams, responseErr = negotiateH3DatagramAuthResponse(
 					authMessage,
 					authResponse,
 					offerDatagrams,

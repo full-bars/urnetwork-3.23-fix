@@ -268,7 +268,7 @@ When a reload actually starts URL-sourced proxies it says so on its own line, an
 🔄 [proxy] reloaded: +14 added (url 12, file 2), -0 removed [3s]
 ```
 
-Unproven URL proxies wait until the file proxies finish warming up, so `launching 7 of 12` means 5 are still queued, not lost.
+Unproven URL proxies wait until the file proxies finish warming up, so `launching 7 of 12` means 5 are still queued, not lost. The wait is bounded: once the process is five minutes old they launch regardless, because a node whose file list carries a permanent tail of dead proxies never reaches the warmup bar and the pool would otherwise stay short for that whole run.
 
 ---
 
@@ -357,6 +357,21 @@ Once H3 has been attempted, the health heartbeat line gains these fields. A box 
 - `h3_conn_fail` counts H3 connect attempts that failed.
 
 With `h3_datagram` on and a server that accepted the offer, the line also carries `h3_dg=accepted/offered dg_rx=<n> dg_rx_drop=<n>`. With `h3_datagram_send` on, it adds `dg_tx`, `dg_tx_stream`, `dg_tx_err` and `dg_blackhole`.
+
+---
+
+## 🧬 TLS ClientHello (`tls_hello` key, `URNETWORK_TLS_HELLO`)
+
+Which ClientHello the normal and resilient dialers present is a control key. It is off by default (Go's hello); `urnet-tools set tls-hello on` switches new connections to Chrome's hello. The switch logs one line per change, and nothing else: a hello is not a connection event, so there is no start, drop or failure line of its own.
+
+```
+⚙️ [control] applied tls_hello=on (was off)
+```
+
+- `⚙️ [control] applied tls_hello=<on|off> (was <old>)` is the control-socket confirmation when the `tls_hello` key is applied live. `was off` on a first `on` is expected: an unset gate presents Go's hello, so it reads as off.
+- It applies to new connections only. A connection already open keeps the handshake it made, so changing the key neither drops a session nor re-handshakes one; the next dial of each path follows the new value. Nothing is counted as a drop.
+- A dial whose tls configuration the Chrome hello cannot carry exactly keeps Go's hello even with `tls_hello on`, and logs nothing: a client certificate, an ECH configuration, a restricted cipher, group or version set, or an `h2` offer on a net/http before Go 1.27.
+- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a clear (or removing the variable) returns it to the Chrome hello.
 
 ---
 
@@ -1172,6 +1187,7 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+| `warmup: X/Y up (Z%), N connecting — forced done after 60m` | The bar was still unmet after an hour, usually because a fixed tail of file proxies never auths. Warmup is declared done so the goroutine exits. The URL-sourced hold is not affected: it opens at five minutes regardless (`urlWarmupLaunchGrace`). |
 
 ---
 

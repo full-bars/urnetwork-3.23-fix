@@ -615,6 +615,9 @@ func providerExtraMetrics() string {
 	// --- Extender serving role ---
 	b.WriteString(extenderRoleMetricsText())
 
+	// --- Provider path discovery ---
+	b.WriteString(connect.PathDiscoveryMetricsText())
+
 	return b.String()
 }
 

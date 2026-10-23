@@ -1582,9 +1582,11 @@ func (r *ProxyReloader) reload() {
 		// Defer unproven URL-sourced proxy launches until file-proxy warmup
 		// completes, so operator-curated proxies get an uncontested ramp.
 		// Promoted URL proxies (earnings >= 64 MiB) are known earners and
-		// should launch with the file list rather than be deferred.
+		// should launch with the file list rather than be deferred. The wait
+		// is bounded (urlWarmupHold): a node whose file pool never reaches the
+		// warmup bar must still be able to refill from the URL pool.
 		isPromoted := proxyEarningsScore(key, time.Now()) >= earningsPromotionBytes
-		if sourceOf[key] == "url" && !isPromoted && !proxyWarmupDone.Load() {
+		if sourceOf[key] == "url" && !isPromoted && urlWarmupHold() {
 			warmupDeferred++
 			continue
 		}

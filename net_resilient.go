@@ -68,7 +68,7 @@ func NewResilientDialTlsContext(
 	fragment bool,
 	reorder bool,
 ) DialTlsContextFunction {
-	return newResilientDialTlsContext(connectSettings, fragment, reorder, false)
+	return newResilientDialTlsContext(connectSettings, fragment, reorder, false, nil)
 }
 
 // NewResilientDialTlsContextWithSegment is NewResilientDialTlsContext with the
@@ -79,7 +79,7 @@ func NewResilientDialTlsContextWithSegment(
 	reorder bool,
 	segment bool,
 ) DialTlsContextFunction {
-	return newResilientDialTlsContext(connectSettings, fragment, reorder, segment)
+	return newResilientDialTlsContext(connectSettings, fragment, reorder, segment, nil)
 }
 
 func newResilientDialTlsContext(
@@ -87,10 +87,15 @@ func newResilientDialTlsContext(
 	fragment bool,
 	reorder bool,
 	segment bool,
+	nextProtos []string,
 ) DialTlsContextFunction {
 	// one session ticket cache for this dial path, shared by every dial it makes
 	// (Clone below keeps the pointer)
-	baseTlsConfig := newClientTlsConfig(connectSettings.TlsConfig, nil)
+	baseTlsConfig := newClientTlsConfig(connectSettings.TlsConfig, nextProtos)
+	// the Chrome hello, or Go's (net_tls_hello.go); either goes out through the
+	// fragment/reorder layer as one handshake record. Which one a dial presents
+	// is read at dial time from the runtime gate (net_tls_hello_gate.go).
+	tlsHandshaker := newClientTlsHandshaker(connectSettings.TlsClientHelloFingerprint)
 	tlsPath := resilientTlsPath(fragment, reorder, segment)
 
 	return func(
@@ -122,18 +127,25 @@ func newResilientDialTlsContext(
 			// copy and extend
 			tlsConfig := baseTlsConfig.Clone()
 			tlsConfig.ServerName = host
-			tlsConn := tls.Client(rconn, tlsConfig)
 
+			var tlsConn net.Conn
 			func() {
 				tlsCtx, tlsCancel := context.WithTimeout(ctx, connectSettings.TlsTimeout)
 				defer tlsCancel()
-				err = tlsConn.HandshakeContext(tlsCtx)
+				// closes the tls connection, and rconn under it, on error
+				tlsConn, err = tlsHandshaker.handshake(tlsCtx, rconn, tlsConfig)
 			}()
-			noteTlsHandshake(tlsPath, host, tlsConn.ConnectionState(), err)
 			if err != nil {
-				tlsConn.Close()
+				noteTlsHandshake(tlsPath, host, tls.ConnectionState{}, err)
 				return nil, err
 			}
+			var tlsState tls.ConnectionState
+			if chromeConn, ok := tlsConn.(*chromeTlsConn); ok {
+				tlsState = chromeConn.ConnectionState()
+			} else if goConn, ok := tlsConn.(*tls.Conn); ok {
+				tlsState = goConn.ConnectionState()
+			}
+			noteTlsHandshake(tlsPath, host, tlsState, nil)
 			// once the stream is established, no longer need the resilient features
 			if err := rconn.Off(); err != nil {
 				tlsConn.Close()

@@ -304,6 +304,15 @@ func DefaultConnectSettings() *ConnectSettings {
 		ControlFamilyRetryReserve:          5 * time.Second,
 
 		TlsConfig: tlsConfig,
+		// Go's own hello. The Chrome parrot is opt-in until a dial soak
+		// passes: the provider turns it on with the tls_hello control key or
+		// URNETWORK_TLS_HELLO, through the runtime gate
+		// (net_tls_hello_gate.go), never by a per-strategy default.
+		TlsClientHelloFingerprint: TlsClientHelloFingerprintGo,
+
+		// spell out the zero value's meaning: a version 2 Initial first,
+		// version 1 behind it (net_quic_version.go)
+		QuicVersionPolicy: QuicVersionPolicyPreferV2,
 	}
 }
 
@@ -372,6 +381,21 @@ type ConnectSettings struct {
 
 	TlsConfig *tls.Config
 
+	// The tls client hello of the normal and resilient dialers
+	// (net_tls_hello.go). `TlsClientHelloFingerprintChrome` asks for a current
+	// Chrome hello through uTLS. `TlsClientHelloFingerprintGo`, empty, or any
+	// other value keeps Go's own
+	// crypto/tls hello: the kill switch, should the Chrome hello be refused
+	// somewhere. `DefaultConnectSettings` sets Go's hello, so the parrot is
+	// opt-in until a dial soak passes. Once set, the process-wide runtime gate
+	// (`SetTlsClientHelloChrome`, net_tls_hello_gate.go) overrides this base
+	// for every dial in both directions; the provider drives that gate from
+	// its tls_hello control key and URNETWORK_TLS_HELLO. Either way a dial
+	// keeps its server name, certificate verification, application protocols
+	// and timeouts. The extender, VLESS and alt dialers, DoH and the streaming
+	// post keep their own hellos.
+	TlsClientHelloFingerprint string
+
 	ProxySettings *ProxySettings
 	Resolver      *net.Resolver
 
@@ -399,6 +423,8 @@ func (self *ConnectSettings) dialUsesProxy() bool {
 
 type DialContextSettings struct {
 	DialContext DialContextFunction
+	// Only Tun sets this diagnostic marker; other supplied dialers stay caller.
+	dohTun bool
 	// PacketConnFactory, when set, supplies the packet conn for udp dials so a
 	// pinned transport can bind its own family (ported from upstream at
 	// 20b29f79, inert here; nil keeps the existing behavior).
@@ -498,13 +524,15 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 // keep-alive configuration, and resolver; each call returns an independent
 // dialer, so per-dial state never shares between calls.
 func (self *ConnectSettings) NetDialer() *net.Dialer {
-	return &net.Dialer{
+	// providerEgressDialer is inert unless the dial context carries a provider
+	// egress target (see providerEgressTarget.dialContext).
+	return providerEgressDialer(&net.Dialer{
 		Timeout:         self.ConnectTimeout,
 		KeepAlive:       self.KeepAliveTimeout,
 		KeepAliveConfig: self.KeepAliveConfig,
 		Control:         self.DialControl,
 		Resolver:        self.Resolver,
-	}
+	})
 }
 
 type ProxySettings struct {

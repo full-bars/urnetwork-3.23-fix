@@ -31,6 +31,15 @@ func PinnedCertPool() (*x509.CertPool, error) {
 // clientTlsSessionCacheCapacity bounds one dial path's session ticket cache.
 const clientTlsSessionCacheCapacity = 16
 
+// The application protocols of the two client dial paths: an api request can
+// negotiate h2, while a websocket upgrade requires http/1.1, so the paths
+// keep separate tls dialers and ALPN offers (net_tls_hello.go applies the
+// Chrome hello only where the offered protocols can be presented).
+var (
+	clientHttpNextProtos      = []string{"h2", "http/1.1"}
+	clientWebSocketNextProtos = []string{"http/1.1"}
+)
+
 // newClientTlsConfig gives one dial path its own TLS session ticket cache, so a
 // re-dial of a server resumes and skips the certificate chain verification that
 // otherwise made up ~13% of a busy node's allocations (alloc profile,
