@@ -1310,8 +1310,10 @@ func runProxyURLFetcher(ctx context.Context, urls []string, refreshInterval time
 
 	// Wait for file-proxy warmup to finish before the first fetch, so URL-
 	// sourced proxies never compete for auth rate-limiter slots with the
-	// operator-curated file proxies during the initial ramp.
-	for !proxyWarmupDone.Load() {
+	// operator-curated file proxies during the initial ramp. The wait is
+	// bounded by urlWarmupHold, so a node whose file pool never reaches the
+	// warmup bar still refreshes its URL list instead of parking forever.
+	for urlWarmupHold() {
 		select {
 		case <-ctx.Done():
 			// CR #5: cancelled during warmup — publish a distinct

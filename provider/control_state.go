@@ -119,6 +119,7 @@ var controlKeys = map[string]bool{
 	"h3_datagram_send":            true,
 	"ip_version":                  true,
 	"h1_plus":                     true,
+	"tls_hello":                   true,
 	"oom_cap":                     true,
 	"proxy_target_family":         true,
 }

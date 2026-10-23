@@ -802,3 +802,101 @@ func TestEnableProviderEncryptionPreservesUnrelatedFields(t *testing.T) {
 		t.Fatalf("IdleTimeout changed: got %v, want %v", settings.EncryptionSettings.IdleTimeout, wantIdleTimeout)
 	}
 }
+
+// TestURLWarmupHold pins the bound on the URL-sourced warmup hold: the hold
+// applies only while the process is inside urlWarmupLaunchGrace, so a node
+// whose file pool never reaches paceMonitor's warmup bar still refills from
+// the URL pool. A zero provideStartTime can never hold (time.Since
+// saturates), which is why production always sets it before the reloader and
+// the URL fetcher start.
+func TestURLWarmupHold(t *testing.T) {
+	cases := []struct {
+		name     string
+		done     bool
+		start    time.Time
+		wantHold bool
+	}{
+		{"warmup done holds nothing", true, time.Now(), false},
+		{"inside grace holds", false, time.Now(), true},
+		{"exactly at grace holds", false, time.Now().Add(-urlWarmupLaunchGrace + time.Second), true},
+		{"past grace releases", false, time.Now().Add(-urlWarmupLaunchGrace - time.Second), false},
+		{"zero start never holds", false, time.Time{}, false},
+		{"done with old start holds nothing", true, time.Now().Add(-time.Hour), false},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			proxyWarmupDone.Store(c.done)
+			provideStartTime = c.start
+			t.Cleanup(func() {
+				proxyWarmupDone.Store(false)
+				provideStartTime = time.Time{}
+			})
+			if got := urlWarmupHold(); got != c.wantHold {
+				t.Fatalf("urlWarmupHold() = %v, want %v (done=%v, start=%v)", got, c.wantHold, c.done, c.start)
+			}
+		})
+	}
+}
+
+// TestScheduleURLWarmupGraceReload pins the reload at the end of the URL warmup
+// hold. The hold ends by time, reload() skips held URL proxies without
+// scheduling a retry, and an unchanged cached URL list writes no trigger, so
+// the expiry itself has to signal a reload or the held proxies wait for the
+// hourly reconciler.
+func TestScheduleURLWarmupGraceReload(t *testing.T) {
+	withTempHome(t)
+	path, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lastReloadTriggerTime.Lock()
+	origTs, origPending := lastReloadTriggerTime.ts, lastReloadTriggerTime.pending
+	lastReloadTriggerTime.ts = time.Time{}
+	lastReloadTriggerTime.pending = false
+	lastReloadTriggerTime.Unlock()
+	t.Cleanup(func() {
+		proxyWarmupDone.Store(false)
+		provideStartTime = time.Time{}
+		lastReloadTriggerTime.Lock()
+		lastReloadTriggerTime.ts = origTs
+		lastReloadTriggerTime.pending = origPending
+		lastReloadTriggerTime.Unlock()
+	})
+
+	t.Run("signals at expiry while warmup is still pending", func(t *testing.T) {
+		_ = os.Remove(path)
+		proxyWarmupDone.Store(false)
+		provideStartTime = time.Now().Add(-urlWarmupLaunchGrace + 150*time.Millisecond)
+		timer := scheduleURLWarmupGraceReload()
+		t.Cleanup(func() { timer.Stop() })
+		if seq, _ := readReloadSeq(path); seq != 0 {
+			t.Fatalf("reload was signaled before the grace expired (seq=%d)", seq)
+		}
+		deadline := time.Now().Add(3 * time.Second)
+		for {
+			if seq, _ := readReloadSeq(path); seq >= 1 {
+				return
+			}
+			if time.Now().After(deadline) {
+				t.Fatal("no reload was signaled when the URL warmup grace expired")
+			}
+			time.Sleep(10 * time.Millisecond)
+		}
+	})
+
+	t.Run("stays quiet when warmup already completed", func(t *testing.T) {
+		_ = os.Remove(path)
+		lastReloadTriggerTime.Lock()
+		lastReloadTriggerTime.ts = time.Time{}
+		lastReloadTriggerTime.pending = false
+		lastReloadTriggerTime.Unlock()
+		proxyWarmupDone.Store(true)
+		provideStartTime = time.Now().Add(-urlWarmupLaunchGrace - time.Second)
+		timer := scheduleURLWarmupGraceReload()
+		t.Cleanup(func() { timer.Stop() })
+		time.Sleep(300 * time.Millisecond)
+		if seq, _ := readReloadSeq(path); seq != 0 {
+			t.Fatalf("a completed warmup must not get a second reload from the grace timer (seq=%d)", seq)
+		}
+	})
+}

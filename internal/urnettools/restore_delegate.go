@@ -245,6 +245,7 @@ var setKeyHelps = []string{
 	"  metrics-listen      auto|<ip:port> /metrics listen address. auto binds loopback plus every Tailscale IPv4 (0.0.0.0 in a container); an explicit address is used as-is, and off clears back to auto. Live; a change rebinds a running listener (default: auto)",
 	"  h3                  off|direct|on|auto|N|all   which identities may use H3 (QUIC), H3 over DNS and the DNS pump when H1 is blocked. direct (default): the DIRECT identity runs them as automatic fallbacks, tried in that order only while nothing better is connected, idle otherwise. N: also the N best proxies; all: every proxy; auto: a memory-sized count from none up to 64, widened a few at a time while the box is calm and shed at the first pressure tier. A proxy's QUIC goes out through that proxy's SOCKS5 UDP relay (never from this host), and a proxy that cannot relay UDP stays on H1. on: direct, plus H3 beside H1 on the direct identity (the old meaning of on). off: H1 only, and beats URNETWORK_H3. Live: a change relaunches the identities it affects, a few at a time. Clearing the key hands the decision back to URNETWORK_H3 and the startup default",
 	"  h3-datagram         on|off        offer QUIC DATAGRAM on that H3 connection. A server that accepts then sends its small frames as datagrams, so one lost packet stops holding up the frames behind it; everything this provider sends still goes on the stream. Live: changing it closes and re-dials H3, which does not count as a drop (default: on, as upstream)",
+	"  tls-hello           on|off        present Chrome's tls ClientHello on new connections instead of Go's, so a filter that singles out the Go runtime sees a Chrome fingerprint. Live: read on every dial, so open connections keep the handshake they made and only new ones change. A clear returns to URNETWORK_TLS_HELLO, so `set tls-hello off` is the kill switch on a box whose env says on (default: off, Go's hello)",
 	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: on, as upstream)",
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
@@ -264,9 +265,14 @@ var setKeyHelps = []string{
 // report success while the recorder kept writing, and h3 would revert to
 // URNETWORK_H3, which may be on, so the box an operator switched off would
 // come back on at the next start.
+//
+// tls_hello is the same shape: a clear hands the hello back to
+// URNETWORK_TLS_HELLO, which may say on, so `set tls-hello off` must persist a
+// real off value or the box an operator switched back to Go's hello returns to
+// the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello":
 		return false
 	}
 	return true
@@ -517,6 +523,7 @@ func formatSets(p Provider, want string) error {
 		{"metrics", "metrics"},
 		{"metrics-listen", "metrics_listen"},
 		{"h3", "h3"},
+		{"tls-hello", "tls_hello"},
 		{"h3-datagram", "h3_datagram"},
 		{"h3-datagram-send", "h3_datagram_send"},
 		{"ip-version", "ip_version"},

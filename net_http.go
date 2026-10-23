@@ -142,8 +142,8 @@ type ClientStrategySettings struct {
 	// if true, enables non-ech
 	// TODO set this to default false
 	ExposeServerHostNames bool
-	// note that extenders and proxy are the only strategies that will be enabled if
-	// `ExposeServerIps == false` and `ExposeServerNames == false`
+	// note that extenders, vless and proxy are the only strategies that will be
+	// enabled if `ExposeServerIps == false` and `ExposeServerNames == false`
 
 	EnableNormal bool
 	// tls frag, retransmit, tls frag + retransmit
@@ -163,6 +163,17 @@ type ClientStrategySettings struct {
 	// for a family-pinned transport sets it: an extender's address family is its
 	// own, so it would prove the extender's family, not the provider's.
 	DisableManualExtenders bool
+	// VlessConfigs are VLESS servers the user named (vless.go), each an
+	// additional persistent dialer that carries the strategy's connections
+	// through its server. The strategy copies each entry, and
+	// `SetVlessConfigs` replaces them on a running strategy. Empty is a
+	// strategy without VLESS.
+	VlessConfigs []*VlessConfig
+	// Refuses VLESS whatever path the configurations arrive by: neither
+	// `VlessConfigs` nor `SetVlessConfigs` adds a dialer. A hosted (cloud)
+	// device's strategy sets it, because a VLESS server is dialed from the
+	// host, which is not cloud safe.
+	DisableVless bool
 	// extender minimum weight
 	ExtenderMinimumWeight float32
 	// drop dialers that have not had a successful connect in this timeout
@@ -249,6 +260,62 @@ func NewClientStrategyWithDefaults(ctx context.Context) *ClientStrategy {
 	return NewClientStrategy(ctx, DefaultClientStrategySettings())
 }
 
+// newNormalDialTlsContext builds the tls dial of the normal dialer for a path
+// offering nextProtos. One session ticket cache and one handshaker (Chrome's
+// hello, or Go's) belong to the path and are shared by every dial it makes.
+func newNormalDialTlsContext(
+	settings *ClientStrategySettings,
+	nextProtos []string,
+) DialTlsContextFunction {
+	// this dial path's own session ticket cache (see newClientTlsConfig)
+	normalTlsConfig := newClientTlsConfig(settings.TlsConfig, nextProtos)
+	// the Chrome hello, or Go's (net_tls_hello.go); which one a dial presents
+	// is read at dial time from the runtime gate (net_tls_hello_gate.go)
+	tlsHandshaker := newClientTlsHandshaker(settings.TlsClientHelloFingerprint)
+	// the handshake metric label follows the strategy's transport, which
+	// the unified dial no longer branches on
+	handshakePath := tlsPathNormal
+	if settings.ProxySettings != nil {
+		handshakePath = tlsPathNormalProxy
+	}
+	return func(ctx context.Context, network string, addr string) (net.Conn, error) {
+		// the handshake half of the dial. It owns the connection's tls
+		// lifetime, and closes what it was handed on its own error paths
+		// -- dialControlTlsWithFamilyFallback has already read the
+		// family off the connection by then, so the close cannot hide it.
+		handshake := func(ctx context.Context, conn net.Conn) (net.Conn, error) {
+			host, _, err := net.SplitHostPort(addr)
+			if err != nil {
+				return nil, err
+			}
+
+			tlsConfig := normalTlsConfig
+			if tlsConfig.ServerName == "" {
+				c := tlsConfig.Clone()
+				c.ServerName = host
+				tlsConfig = c
+			}
+
+			tlsCtx, tlsCancel := context.WithTimeout(ctx, settings.TlsTimeout)
+			defer tlsCancel()
+			tlsConn, err := tlsHandshaker.handshake(tlsCtx, conn, tlsConfig)
+			var tlsState tls.ConnectionState
+			if chromeConn, ok := tlsConn.(*chromeTlsConn); ok {
+				tlsState = chromeConn.ConnectionState()
+			} else if goConn, ok := tlsConn.(*tls.Conn); ok {
+				tlsState = goConn.ConnectionState()
+			}
+			noteTlsHandshake(handshakePath, host, tlsState, err)
+			return tlsConn, err
+		}
+		// one retry over the other address family when the handshake
+		// hits its own timeout after the connect succeeded
+		// (control_family_dial.go)
+		return dialControlTlsWithFamilyFallback(
+			ctx, &settings.ConnectSettings, network, addr, settings.DialContext, handshake)
+	}
+}
+
 // extender udp 53 to platform extender
 func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *ClientStrategy {
 	// wire the internal DoH resolver when InternalDohDomains are configured
@@ -275,60 +342,16 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// handshake. That is the intended behavior, and it applies to every
 			// dial, not only forced ones.
 
-			// this dial path's own session ticket cache (see newClientTlsConfig)
-			normalTlsConfig := newClientTlsConfig(settings.TlsConfig, nil)
-			// the handshake metric label follows the strategy's transport, which
-			// the unified dial no longer branches on
-			handshakePath := tlsPathNormal
-			if settings.ProxySettings != nil {
-				handshakePath = tlsPathNormalProxy
-			}
-			var tlsDialContext DialTlsContextFunction
-			tlsDialContext = func(ctx context.Context, network string, addr string) (net.Conn, error) {
-				// the handshake half of the dial. It owns the connection's tls
-				// lifetime, and closes what it was handed on its own error paths
-				// -- dialControlTlsWithFamilyFallback has already read the
-				// family off the connection by then, so the close cannot hide it.
-				handshake := func(ctx context.Context, conn net.Conn) (net.Conn, error) {
-					host, _, err := net.SplitHostPort(addr)
-					if err != nil {
-						return nil, err
-					}
-
-					tlsConfig := normalTlsConfig
-					if tlsConfig.ServerName == "" {
-						c := tlsConfig.Clone()
-						c.ServerName = host
-						tlsConfig = c
-					}
-
-					tlsConn := tls.Client(conn, tlsConfig)
-					func() {
-						tlsCtx, tlsCancel := context.WithTimeout(ctx, settings.TlsTimeout)
-						defer tlsCancel()
-						err = tlsConn.HandshakeContext(tlsCtx)
-					}()
-					noteTlsHandshake(handshakePath, host, tlsConn.ConnectionState(), err)
-					if err != nil {
-						tlsConn.Close()
-						return nil, err
-					}
-					return tlsConn, nil
-				}
-				// one retry over the other address family when the handshake
-				// hits its own timeout after the connect succeeded
-				// (control_family_dial.go)
-				return dialControlTlsWithFamilyFallback(
-					ctx, &settings.ConnectSettings, network, addr, settings.DialContext, handshake)
-			}
-
 			dialer := &clientDialer{
-				log:            loggerOrDefault(settings.Log),
-				description:    "normal",
-				minimumWeight:  0.5,
-				priority:       25,
-				dialTlsContext: tlsDialContext,
-				settings:       settings,
+				log:           loggerOrDefault(settings.Log),
+				description:   "normal",
+				minimumWeight: 0.5,
+				priority:      25,
+				// websocket upgrades require http/1.1, while api requests can
+				// negotiate h2, so each path keeps its own tls dialer
+				dialTlsContext:     newNormalDialTlsContext(settings, clientWebSocketNextProtos),
+				httpDialTlsContext: newNormalDialTlsContext(settings, clientHttpNextProtos),
+				settings:           settings,
 			}
 			dialers[dialer] = true
 		}
@@ -338,31 +361,34 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 		if settings.ExposeServerHostNames && settings.ExposeServerIps {
 			// fragment+reorder
 			dialer1 := &clientDialer{
-				log:            loggerOrDefault(settings.Log),
-				description:    "fragment+reorder",
-				minimumWeight:  0.25,
-				priority:       50,
-				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, true),
-				settings:       settings,
+				log:                loggerOrDefault(settings.Log),
+				description:        "fragment+reorder",
+				minimumWeight:      0.25,
+				priority:           50,
+				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, true, false, clientWebSocketNextProtos),
+				httpDialTlsContext: newResilientDialTlsContext(&settings.ConnectSettings, true, true, false, clientHttpNextProtos),
+				settings:           settings,
 			}
 			// fragment
 			// this is the highest priority because it has no performance impact and additional security benefits
 			dialer2 := &clientDialer{
-				log:            loggerOrDefault(settings.Log),
-				description:    "fragment",
-				minimumWeight:  0.25,
-				priority:       0,
-				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, true, false),
-				settings:       settings,
+				log:                loggerOrDefault(settings.Log),
+				description:        "fragment",
+				minimumWeight:      0.25,
+				priority:           0,
+				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, false, false, clientWebSocketNextProtos),
+				httpDialTlsContext: newResilientDialTlsContext(&settings.ConnectSettings, true, false, false, clientHttpNextProtos),
+				settings:           settings,
 			}
 			// reorder
 			dialer3 := &clientDialer{
-				log:            loggerOrDefault(settings.Log),
-				description:    "reorder",
-				minimumWeight:  0.25,
-				priority:       50,
-				dialTlsContext: NewResilientDialTlsContext(&settings.ConnectSettings, false, true),
-				settings:       settings,
+				log:                loggerOrDefault(settings.Log),
+				description:        "reorder",
+				minimumWeight:      0.25,
+				priority:           50,
+				dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, false, true, false, clientWebSocketNextProtos),
+				httpDialTlsContext: newResilientDialTlsContext(&settings.ConnectSettings, false, true, false, clientHttpNextProtos),
+				settings:           settings,
 			}
 
 			dialers[dialer1] = true
@@ -376,12 +402,13 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			// also saves a dial per reconnect round.
 			if settings.ProxySettings == nil {
 				dialer4 := &clientDialer{
-					log:            loggerOrDefault(settings.Log),
-					description:    "fragment+segment",
-					minimumWeight:  0.25,
-					priority:       50,
-					dialTlsContext: NewResilientDialTlsContextWithSegment(&settings.ConnectSettings, true, false, true),
-					settings:       settings,
+					log:                loggerOrDefault(settings.Log),
+					description:        "fragment+segment",
+					minimumWeight:      0.25,
+					priority:           50,
+					dialTlsContext:     newResilientDialTlsContext(&settings.ConnectSettings, true, false, true, clientWebSocketNextProtos),
+					httpDialTlsContext: newResilientDialTlsContext(&settings.ConnectSettings, true, false, true, clientHttpNextProtos),
+					settings:           settings,
 				}
 				dialers[dialer4] = true
 			}
@@ -422,6 +449,11 @@ func NewClientStrategy(ctx context.Context, settings *ClientStrategySettings) *C
 			dialers[ptDialer2] = true
 		}
 	*/
+	for _, vlessConfig := range settings.VlessConfigs {
+		if dialer := newVlessClientDialer(settings, vlessConfig); dialer != nil {
+			dialers[dialer] = true
+		}
+	}
 
 	return &ClientStrategy{
 		ctx:                 ctx,
@@ -457,6 +489,77 @@ func (self *ClientStrategy) CustomExtenders() map[netip.Addr]string {
 	defer self.mutex.Unlock()
 
 	return maps.Clone(self.extenderIpSecrets)
+}
+
+// The VLESS dialer weight floor and rank. A server the user named is meant to
+// be used, so it keeps the floor of the direct dialer; among dialers that
+// last succeeded it ranks after the direct ones, which skip the extra hop when
+// they work, and before the resilient and extender ones.
+const (
+	vlessDialerMinimumWeight = float32(0.5)
+	vlessDialerPriority      = 30
+)
+
+// A persistent dialer for one VLESS server, or nil for a nil or invalid
+// configuration and for a strategy that refuses VLESS (`DisableVless`). Every
+// VLESS dialer a strategy holds is made here. The dialer keeps its own copy of
+// the configuration.
+func newVlessClientDialer(settings *ClientStrategySettings, vlessConfig *VlessConfig) *clientDialer {
+	if settings.DisableVless || vlessConfig == nil || vlessConfig.Validate() != nil {
+		return nil
+	}
+	copiedConfig := vlessConfig.Copy()
+	return &clientDialer{
+		log:            loggerOrDefault(settings.Log),
+		description:    "vless",
+		minimumWeight:  vlessDialerMinimumWeight,
+		priority:       vlessDialerPriority,
+		dialTlsContext: newVlessDialTlsContext(&settings.ConnectSettings, copiedConfig, nil),
+		vlessConfig:    copiedConfig,
+		settings:       settings,
+	}
+}
+
+// SetVlessConfigs replaces the strategy's VLESS dialers with one per valid
+// configuration; nil or empty removes them. A strategy that refuses VLESS
+// (`DisableVless`) keeps none. The replaced dialers' pooled connections close,
+// and requests in flight finish on the connections they have.
+func (self *ClientStrategy) SetVlessConfigs(vlessConfigs []*VlessConfig) {
+	retiredDialers := []*clientDialer{}
+	func() {
+		self.mutex.Lock()
+		defer self.mutex.Unlock()
+
+		for dialer := range self.dialers {
+			if dialer.vlessConfig != nil {
+				retiredDialers = append(retiredDialers, dialer)
+				delete(self.dialers, dialer)
+			}
+		}
+		for _, vlessConfig := range vlessConfigs {
+			if dialer := newVlessClientDialer(self.settings, vlessConfig); dialer != nil {
+				self.dialers[dialer] = true
+			}
+		}
+	}()
+	for _, dialer := range retiredDialers {
+		dialer.Close()
+	}
+}
+
+// Copies of the configurations of the strategy's VLESS dialers, in no
+// particular order.
+func (self *ClientStrategy) VlessConfigs() []*VlessConfig {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+
+	vlessConfigs := []*VlessConfig{}
+	for dialer := range self.dialers {
+		if dialer.vlessConfig != nil {
+			vlessConfigs = append(vlessConfigs, dialer.vlessConfig.Copy())
+		}
+	}
+	return vlessConfigs
 }
 
 // nextConnectMaxLead caps how far the shared next-connect timestamp may run
@@ -1000,7 +1103,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
+		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
@@ -1044,7 +1147,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, request, startDial))
+		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
@@ -1067,7 +1170,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		httpClient := dialer.HttpClient()
 		startDial := time.Now()
 		timing := &dialTiming{}
-		response, err := httpClient.Do(timing.trace(handleCtx, helloRequest, startDial))
+		response, err := httpClientForRequest(httpClient, helloRequest).Do(timing.trace(handleCtx, helloRequest, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
@@ -1364,8 +1467,17 @@ type clientDialer struct {
 	priority int
 
 	dialTlsContext DialTlsContextFunction
+	// httpDialTlsContext serves the api client, which can negotiate h2.
+	// dialTlsContext serves the websocket, which requires http/1.1; a single
+	// h2-enabled tls dialer would hand gorilla/websocket a connection it
+	// cannot speak. When nil, dialTlsContext serves both.
+	httpDialTlsContext DialTlsContextFunction
 
 	extenderConfig *ExtenderConfig
+
+	// vlessConfig is set on a VLESS dialer (vless.go) and nil on any other; the
+	// strategy identifies and replaces its VLESS dialers through it.
+	vlessConfig *VlessConfig
 
 	mutex           sync.Mutex
 	successCount    uint64
@@ -1468,13 +1580,22 @@ func (self *clientDialer) HttpClient() *http.Client {
 	defer self.mutex.Unlock()
 
 	if self.httpClient == nil {
+		httpDialTlsContext := self.httpDialTlsContext
+		if httpDialTlsContext == nil {
+			httpDialTlsContext = self.dialTlsContext
+		}
 		transport := &http.Transport{
-			DialTLSContext:        self.dialTlsContext,
+			DialTLSContext:        httpDialTlsContext,
 			IdleConnTimeout:       self.settings.ConnectSettings.IdleConnTimeout,
 			TLSHandshakeTimeout:   self.settings.ConnectSettings.TlsTimeout,
 			ResponseHeaderTimeout: self.settings.ConnectTimeout,
 			ExpectContinueTimeout: self.settings.ConnectTimeout,
 			DisableKeepAlives:     false,
+			// A custom DialTLSContext disables net/http's automatic HTTP/2
+			// attempt unless this is set, and the api path now offers h2
+			// (net_tls.go clientHttpNextProtos). Without it the transport
+			// would speak http/1.1 into an h2-negotiated connection.
+			ForceAttemptHTTP2: true,
 		}
 		self.httpClient = &http.Client{
 			Transport: transport,

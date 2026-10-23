@@ -14,7 +14,9 @@ import (
 	"net/http"
 	"net/netip"
 	"net/url"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -525,8 +527,8 @@ func NewDohCache(settings *DohSettings) *DohCache {
 
 	lifecycleCtx, lifecycleCancel := context.WithCancel(context.Background())
 	return &DohCache{
-		httpClient:            httpClientWithSettings(settings),
-		localHttpClient:       httpClientWithDialer(settings, settings.NetDialer().DialContext),
+		httpClient:            httpClientWithDialer(settings, wrapDohDial(settings.Log, dohRemoteDialPath(settings), settings.DialContext)),
+		localHttpClient:       httpClientWithDialer(settings, wrapDohDial(settings.Log, dohPathHost, settings.NetDialer().DialContext)),
 		remoteResolver:        remoteResolver,
 		localResolver:         localResolver,
 		remoteDnsNext:         remoteDnsNext,
@@ -600,6 +602,111 @@ func (self *DohCache) Warm() {
 				"A", self.settings, dohWarmDomain)
 		}
 	}()
+}
+
+// Forward resolves qType for domain and returns the raw RFC 8484 response
+// wire, for a caller that speaks the dns protocol itself rather than asking
+// for parsed addresses -- the extender's udp 53 forwarder (extender_dns.go).
+// It follows the cache's configured path order (remote/tunnel DoH, then local
+// DoH), races the servers of one path best recent performers first, and is not
+// cached: the caller's stub caches by record TTL. usable is false when no
+// server answered with a usable answer (NOERROR or NXDOMAIN).
+func (self *DohCache) Forward(ctx context.Context, qType dnsmessage.Type, domain string) ([]byte, bool) {
+	if self.settings == nil || self.lifecycleCtx.Err() != nil {
+		return nil, false
+	}
+	name, err := Punycode(domain)
+	if err != nil {
+		return nil, false
+	}
+	forwardCtx, forwardCancel := context.WithTimeout(ctx, self.settings.RequestTimeout)
+	defer forwardCancel()
+
+	rs := self.settings.DnsResolverSettings
+	if rs.EnableRemoteDoh {
+		servers := remoteDohServers(self.settings, self.settings.IpVersion)
+		if response, ok := self.forwardRaw(forwardCtx, self.httpClient, servers, qType, name); ok {
+			return response, true
+		}
+	}
+	if rs.EnableLocalDoh {
+		servers := localDohServers(self.settings, self.settings.IpVersion)
+		return self.forwardRaw(forwardCtx, self.localHttpClient, servers, qType, name)
+	}
+	return nil, false
+}
+
+// forwardRaw races one path's servers for a raw response. The first usable
+// answer wins and cancels the losers, so a dead server does not burn the whole
+// request timeout after a winner is known.
+func (self *DohCache) forwardRaw(
+	ctx context.Context,
+	httpClient *http.Client,
+	servers []DohServer,
+	qType dnsmessage.Type,
+	name string,
+) ([]byte, bool) {
+	if len(servers) == 0 || self.settings.RequestTimeout <= 0 {
+		return nil, false
+	}
+	// reserve memory from the optional budget; blocks until available (or ctx
+	// ends). released on return. no-op when MemoryTarget is nil.
+	if self.settings.MemoryTarget != nil {
+		if !self.settings.MemoryTarget.Acquire(ctx, dohQueryReserveByteCount) {
+			return nil, false
+		}
+		defer self.settings.MemoryTarget.Release(dohQueryReserveByteCount)
+	}
+
+	orderedServers := servers
+	if len(servers) > 1 {
+		orderedServers = serversByUrl(servers, self.stats.order(urlsForServers(servers)))
+	}
+	queryCtx, queryCancel := context.WithCancel(ctx)
+	defer queryCancel()
+
+	type rawResult struct {
+		data []byte
+		ok   bool
+	}
+	results := make(chan rawResult, len(orderedServers))
+	stagger := self.settings.DohServerStagger
+	go HandleError(func() {
+		for i := range orderedServers {
+			if 0 < i && 0 < stagger {
+				timer := time.NewTimer(stagger)
+				select {
+				case <-timer.C:
+				case <-queryCtx.Done():
+					timer.Stop()
+					return
+				}
+			}
+			server := orderedServers[i]
+			go HandleError(func() {
+				data, ok := dohQueryWireRaw(queryCtx, httpClient, server.Url, qType, name)
+				if self.stats != nil {
+					self.stats.record(server.Url, ok)
+				}
+				select {
+				case results <- rawResult{data: data, ok: ok}:
+				case <-queryCtx.Done():
+				}
+			})
+		}
+	})
+
+	for range orderedServers {
+		select {
+		case <-ctx.Done():
+			return nil, false
+		case result := <-results:
+			if result.ok {
+				return result.data, true
+			}
+		}
+	}
+	return nil, false
 }
 
 // Close shuts the cache down: it cancels any in-flight DoH queries (derived from
@@ -880,6 +987,28 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 
 func DohQueryWithDefaults(ctx context.Context, recordType string, domains ...string) map[netip.Addr]int {
 	return DohQuery(ctx, 0, recordType, DefaultDohSettings(), domains...)
+}
+
+// DohQueryTxt is the one-shot TXT query: the value of every TXT record of the
+// name, its character strings joined, over the settings' servers with the same
+// fan-out and hedging as an address query (DohQuery). Nothing is cached: its
+// one caller runs it once per bootstrap pass and the value is a signed record
+// that carries its own expiry (the extender dns bootstrap, E3).
+func DohQueryTxt(ctx context.Context, settings *DohSettings, name string) []string {
+	httpClient := httpClientWithSettings(settings)
+	defer httpClient.CloseIdleConnections()
+
+	// both families' servers: a txt answer has no family of its own
+	return dohQueryWithClientResult(
+		ctx,
+		httpClient,
+		nil,
+		remoteDohServers(settings, 0),
+		0,
+		"TXT",
+		settings,
+		name,
+	).Txts
 }
 
 // return ip -> ttl (seconds)
@@ -1278,7 +1407,12 @@ func serversByUrl(servers []DohServer, orderedUrls []string) []DohServer {
 
 type dohQueryResult struct {
 	AddrTtls map[netip.Addr]int
-	Miss     bool
+	// Txts is the TXT answers of a TXT query, one entry per record with its
+	// character strings joined, which is how a long signed record is
+	// published and read (the extender bootstrap, net_extender_network.go).
+	// Empty for an address query.
+	Txts []string
+	Miss bool
 }
 
 func newDohQueryResult() *dohQueryResult {
@@ -1303,7 +1437,7 @@ func dohQueryWithClientResult(
 	defer queryCancel()
 
 	switch recordType {
-	case "A", "AAAA":
+	case "A", "AAAA", "TXT":
 	default:
 		return newDohQueryResult()
 	}
@@ -1383,7 +1517,7 @@ func dohQueryWithClientResult(
 					result := query(srv, domain)
 					// record server success for future fan-out ordering
 					if stats != nil {
-						stats.record(srv.Url, 0 < len(result.AddrTtls) || result.Miss)
+						stats.record(srv.Url, 0 < len(result.AddrTtls) || 0 < len(result.Txts) || result.Miss)
 					}
 					select {
 					case receiveResults <- result:
@@ -1402,6 +1536,7 @@ func dohQueryWithClientResult(
 		if timeout <= 0 {
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Txts:     mergedResult.Txts,
 				Miss:     mergedResult.Miss,
 			}
 		}
@@ -1409,27 +1544,35 @@ func dohQueryWithClientResult(
 		case <-queryCtx.Done():
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Txts:     mergedResult.Txts,
 				Miss:     mergedResult.Miss,
 			}
 		case result := <-receiveResults:
 			maps.Copy(mergedResult.AddrTtls, result.AddrTtls)
+			for _, txt := range result.Txts {
+				if !slices.Contains(mergedResult.Txts, txt) {
+					mergedResult.Txts = append(mergedResult.Txts, txt)
+				}
+			}
 			if result.Miss {
 				mergedResult.Miss = true
 			}
-			if 0 < len(mergedResult.AddrTtls) {
+			if 0 < len(mergedResult.AddrTtls) || 0 < len(mergedResult.Txts) {
 				stopLaunching()
 				return &dohQueryResult{
 					AddrTtls: mergedResult.AddrTtls,
+					Txts:     mergedResult.Txts,
 				}
 			}
 		case <-time.After(timeout):
 			return &dohQueryResult{
 				AddrTtls: mergedResult.AddrTtls,
+				Txts:     mergedResult.Txts,
 				Miss:     mergedResult.Miss,
 			}
 		}
 	}
-	mergedResult.Miss = len(mergedResult.AddrTtls) == 0 && mergedResult.Miss
+	mergedResult.Miss = len(mergedResult.AddrTtls) == 0 && len(mergedResult.Txts) == 0 && mergedResult.Miss
 	return mergedResult
 }
 
@@ -1479,12 +1622,54 @@ func dohQueryJson(ctx context.Context, httpClient *http.Client, dohUrl string, r
 	for _, answer := range dohResponse.Answer {
 		if ip, err := netip.ParseAddr(answer.Data); err == nil {
 			result.AddrTtls[ip] = max(result.AddrTtls[ip], answer.TTL)
+			continue
+		}
+		if answer.Type == int(dnsmessage.TypeTXT) {
+			txt := joinDohJsonTxt(answer.Data)
+			if txt != "" && !slices.Contains(result.Txts, txt) {
+				result.Txts = append(result.Txts, txt)
+			}
 		}
 	}
-	if len(result.AddrTtls) == 0 {
+	if len(result.AddrTtls) == 0 && len(result.Txts) == 0 {
 		result.Miss = true
 	}
 	return result
+}
+
+// joinDohJsonTxt joins the character strings of one JSON TXT answer: the json
+// api writes each character string of the record as a quoted string, one
+// after another, and the record's value is the strings run together, the same
+// join parseDohWire makes of a wire-format TXT record (RFC 7208 §3.3).
+func joinDohJsonTxt(data string) string {
+	var joined strings.Builder
+	for i := 0; i < len(data); {
+		if data[i] != '"' {
+			i++
+			continue
+		}
+		j := i + 1
+		for j < len(data) {
+			switch data[j] {
+			case '\\':
+				j += 2
+				continue
+			case '"':
+			default:
+				j++
+				continue
+			}
+			break
+		}
+		quoted := data[i:min(j+1, len(data))]
+		if txt, err := strconv.Unquote(quoted); err == nil {
+			joined.WriteString(txt)
+		} else {
+			joined.WriteString(strings.Trim(quoted, "\""))
+		}
+		i = j + 1
+	}
+	return joined.String()
 }
 
 // dohQueryWire runs an RFC 8484 wire-format DoH query (Accept application/dns-message,
@@ -1502,6 +1687,8 @@ func dohQueryWire(ctx context.Context, httpClient *http.Client, dohUrl string, r
 		qType = dnsmessage.TypeA
 	case "AAAA":
 		qType = dnsmessage.TypeAAAA
+	case "TXT":
+		qType = dnsmessage.TypeTXT
 	default:
 		return result
 	}
@@ -1535,6 +1722,56 @@ func dohQueryWire(ctx context.Context, httpClient *http.Client, dohUrl string, r
 		return result
 	}
 	return parseDohWire(data, qType)
+}
+
+// dohQueryWireRaw runs one opaque RFC 8484 wire-format query for any record
+// type and returns the response wire when it carries a usable answer (NOERROR
+// or NXDOMAIN), for DohCache.Forward. name must already be punycoded ascii.
+func dohQueryWireRaw(ctx context.Context, httpClient *http.Client, dohUrl string, qType dnsmessage.Type, name string) ([]byte, bool) {
+	dnsName, err := dnsmessage.NewName(name + ".")
+	if err != nil {
+		return nil, false
+	}
+	// id 0 is recommended for DoH (RFC 8484 §4.1); recursion desired
+	msg := dnsmessage.Message{
+		Header:    dnsmessage.Header{RecursionDesired: true},
+		Questions: []dnsmessage.Question{{Name: dnsName, Type: qType, Class: dnsmessage.ClassINET}},
+	}
+	wire, err := msg.Pack()
+	if err != nil {
+		return nil, false
+	}
+	requestUrl := fmt.Sprintf("%s?dns=%s", dohUrl, base64.RawURLEncoding.EncodeToString(wire))
+
+	request, err := http.NewRequestWithContext(ctx, "GET", requestUrl, nil)
+	if err != nil {
+		return nil, false
+	}
+	request.Header.Set("Accept", "application/dns-message")
+
+	response, err := httpClient.Do(request)
+	if err != nil {
+		return nil, false
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return nil, false
+	}
+	data, err := io.ReadAll(io.LimitReader(response.Body, 64<<10))
+	if err != nil {
+		return nil, false
+	}
+	var parser dnsmessage.Parser
+	header, err := parser.Start(data)
+	if err != nil {
+		return nil, false
+	}
+	switch header.RCode {
+	case dnsmessage.RCodeSuccess, dnsmessage.RCodeNameError:
+		return data, true
+	default:
+		return nil, false
+	}
 }
 
 // parseDohWire parses an RFC 8484 wire-format DNS response, extracting the A or AAAA answers
@@ -1581,13 +1818,25 @@ func parseDohWire(data []byte, qType dnsmessage.Type) *dohQueryResult {
 			}
 			ip := netip.AddrFrom16(r.AAAA)
 			result.AddrTtls[ip] = max(result.AddrTtls[ip], int(ah.TTL))
+		case ah.Type == dnsmessage.TypeTXT && qType == dnsmessage.TypeTXT:
+			r, err := p.TXTResource()
+			if err != nil {
+				return result
+			}
+			// one record is a sequence of character strings that together
+			// form one value; a value long enough to need splitting -- a
+			// signed record is -- arrives as several
+			txt := strings.Join(r.TXT, "")
+			if txt != "" && !slices.Contains(result.Txts, txt) {
+				result.Txts = append(result.Txts, txt)
+			}
 		default:
 			if err := p.SkipAnswer(); err != nil {
 				return result
 			}
 		}
 	}
-	if len(result.AddrTtls) == 0 {
+	if len(result.AddrTtls) == 0 && len(result.Txts) == 0 {
 		result.Miss = true
 	}
 	return result

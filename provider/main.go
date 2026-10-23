@@ -54,6 +54,23 @@ var provideStartTime time.Time
 // for this before launching, so file proxies get an uncontested ramp.
 var proxyWarmupDone atomic.Bool
 
+// urlWarmupLaunchGrace bounds that wait. The hold must never outlive the ramp
+// it protects: a public-list node carries a permanent tail of file proxies that
+// will never auth (down/dead), and paceMonitor's ratio is taken over every
+// registered proxy, so warmup can stay unreachable for a whole run. Unbounded,
+// the gate then blocks every qualified URL replacement — and the URL fetcher —
+// behind proxies that are already dead, while the running pool drains. After
+// this long the ramp has had its uncontested window and the URL pool refills.
+const urlWarmupLaunchGrace = 5 * time.Minute
+
+// urlWarmupHold reports whether unproven URL-sourced proxies must still wait
+// for the file-proxy warmup. Bounded by urlWarmupLaunchGrace from the moment
+// the process started: a zero provideStartTime (only reachable without
+// provide() having run) saturates time.Since and can never hold.
+func urlWarmupHold() bool {
+	return !proxyWarmupDone.Load() && time.Since(provideStartTime) < urlWarmupLaunchGrace
+}
+
 // backoffPacerWithDelay calculates the effective start delay using a cumulative base delay
 // and slotDuration for jitter calculation.
 func backoffPacerWithDelay(baseDelay time.Duration, slotDuration time.Duration, proxyCtx context.Context) bool {
@@ -99,11 +116,41 @@ func backoffPacer(n int, staggerMs int, now time.Time, proxyCtx context.Context)
 	return backoffPacerWithDelay(baseDelay, time.Duration(staggerMs)*time.Millisecond, proxyCtx)
 }
 
+// scheduleURLWarmupGraceReload signals a proxy reload when the URL warmup hold
+// expires by time. urlWarmupHold lets URL-sourced proxies through
+// urlWarmupLaunchGrace after the process started even when the file-proxy
+// warmup never completes, but reload() skips a held proxy without arranging a
+// retry, and the reload is otherwise signaled only when paceMonitor declares
+// warmup done. A cached URL list that has not changed also writes no trigger
+// after the grace, so without this the held proxies would wait for the hourly
+// reconciler. The caller stops the timer; it does nothing when warmup already
+// completed, because that path signaled the reload itself.
+func scheduleURLWarmupGraceReload() *time.Timer {
+	wait := urlWarmupLaunchGrace - time.Since(provideStartTime)
+	if wait < 0 {
+		wait = 0
+	}
+	return time.AfterFunc(wait, func() {
+		if proxyWarmupDone.Load() {
+			return
+		}
+		if reloadPath, err := proxyReloadPath(); err == nil {
+			if err := writeReloadTrigger(reloadPath); err != nil {
+				tlog("[proxy] warn: failed to signal proxy reload at the url warmup grace (write .reload): %v\n", err)
+			}
+		}
+	})
+}
+
 // paceMonitor logs real-time warmup progress every 30s. It uses the health
 // snapshot to show the user how the proxy fleet is coming online. This is a
 // passive observer — the jittered stagger (backoffPacer) and per-transport
 // retry (transport.go) handle rate-limiting without global cooldowns.
 func paceMonitor(ctx context.Context) {
+	// The URL warmup hold also ends by time, which paceMonitor does not see as
+	// a completion: schedule the reload that completion would have signaled.
+	graceReload := scheduleURLWarmupGraceReload()
+	defer graceReload.Stop()
 	ticker := time.NewTicker(30 * time.Second)
 	defer ticker.Stop()
 	for {
@@ -4395,6 +4442,29 @@ func provide(opts docopt.Opts) {
 	// The toggle file always wins — `provider direct on` re-enables direct
 	// even if the env var was set, and vice versa.
 	noDirect := !isDirectEnabled()
+	// The extender serving role is process-wide and opt-in. It needs the
+	// direct slot: only that slot's egress is this host's own address, which
+	// is the address its carriers answer on. A failed start (a corrupt
+	// identity file, say) disables the role and never the provider.
+	var extenderServeRole *extenderRole
+	if extenderRoleRequested(os.Getenv) {
+		if !extenderRoleEligible(nil, !noDirect) {
+			tlog("[extender] role not started: direct providing is disabled\n")
+		} else {
+			role, roleErr := startExtenderRole(ctx, defaultExtenderRoleConfig())
+			if roleErr != nil {
+				tlog("[extender] role disabled: %v\n", roleErr)
+			} else {
+				extenderServeRole = role
+				wg.Add(1)
+				go func() {
+					defer wg.Done()
+					<-ctx.Done()
+					extenderServeRole.CloseAndWait()
+				}()
+			}
+		}
+	}
 	// Published to the reloader below so a `direct off` before any reload
 	// has hot-toggled direct doesn't skip the bounded wait for this startup
 	// goroutine (it would otherwise unregister proxy[0] out from under a

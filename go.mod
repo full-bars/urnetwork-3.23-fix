@@ -13,11 +13,17 @@ require (
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/google/gopacket v1.1.19
 	github.com/gorilla/websocket v1.5.3
+	github.com/holiman/uint256 v1.3.2
+	github.com/libp2p/go-libp2p v0.49.0
+	github.com/libp2p/go-libp2p-pubsub v0.17.0
+	github.com/multiformats/go-multiaddr v0.16.1
+	github.com/multiformats/go-multiaddr-fmt v0.1.0
 	github.com/pion/datachannel v1.6.2
 	github.com/pion/logging v0.2.4
 	github.com/pion/transport/v4 v4.1.0
 	github.com/pion/webrtc/v4 v4.2.18
 	github.com/quic-go/quic-go v0.61.0
+	github.com/refraction-networking/utls v1.8.2
 	github.com/rivo/uniseg v0.4.7
 	github.com/spf13/cobra v1.10.2
 	github.com/spf13/pflag v1.0.9
@@ -43,18 +49,24 @@ require (
 	github.com/ChainSafe/go-schnorrkel v1.1.0 // indirect
 	github.com/ProjectZKM/Ziren/crates/go-runtime/zkvm_runtime v0.0.0-20251001021608-1fe7b43fc4d6 // indirect
 	github.com/StackExchange/wmi v1.2.1 // indirect
+	github.com/andybalholm/brotli v1.0.6 // indirect
+	github.com/benbjohnson/clock v1.3.5 // indirect
+	github.com/beorn7/perks v1.0.1 // indirect
 	github.com/bits-and-blooms/bitset v1.24.4 // indirect
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/consensys/gnark-crypto v0.20.1 // indirect
 	github.com/cosmos/go-bip39 v1.0.0 // indirect
 	github.com/crate-crypto/go-eth-kzg v1.5.0 // indirect
 	github.com/davecgh/go-spew v1.1.2-0.20180830191138-d8f796af33cc // indirect
+	github.com/davidlazar/go-crypto v0.0.0-20200604182044-b73af7476f6c // indirect
 	github.com/deckarep/golang-set v1.8.0 // indirect
 	github.com/deckarep/golang-set/v2 v2.6.0 // indirect
 	github.com/decred/base58 v1.0.4 // indirect
 	github.com/decred/dcrd/crypto/blake256 v1.1.0 // indirect
 	github.com/ethereum/c-kzg-4844/v2 v2.1.6 // indirect
+	github.com/filecoin-project/go-clock v0.1.0 // indirect
 	github.com/fjl/jsonw v0.1.0 // indirect
+	github.com/flynn/noise v1.1.0 // indirect
 	github.com/fsnotify/fsnotify v1.9.0 // indirect
 	github.com/gdamore/encoding v1.0.1 // indirect
 	github.com/go-logr/logr v1.4.3 // indirect
@@ -63,10 +75,35 @@ require (
 	github.com/google/uuid v1.6.0 // indirect
 	github.com/gtank/merlin v0.1.1 // indirect
 	github.com/gtank/ristretto255 v0.2.0 // indirect
-	github.com/holiman/uint256 v1.3.2 // indirect
+	github.com/hashicorp/golang-lru/v2 v2.0.7 // indirect
+	github.com/huin/goupnp v1.3.0 // indirect
 	github.com/inconshreveable/mousetrap v1.1.0 // indirect
+	github.com/ipfs/go-cid v0.6.2 // indirect
+	github.com/jackpal/go-nat-pmp v1.0.2 // indirect
+	github.com/jbenet/go-temp-err-catcher v0.1.0 // indirect
+	github.com/klauspost/compress v1.19.2 // indirect
+	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
+	github.com/koron/go-ssdp v0.9.1 // indirect
+	github.com/libp2p/go-buffer-pool v0.1.0 // indirect
+	github.com/libp2p/go-flow-metrics v0.3.0 // indirect
+	github.com/libp2p/go-libp2p-asn-util v0.4.1 // indirect
+	github.com/libp2p/go-msgio v0.3.0 // indirect
+	github.com/libp2p/go-netroute v0.4.0 // indirect
+	github.com/libp2p/go-reuseport v0.4.0 // indirect
+	github.com/libp2p/go-yamux/v5 v5.1.0 // indirect
 	github.com/lucasb-eyer/go-colorful v1.3.0 // indirect
 	github.com/mimoo/StrobeGo v0.0.0-20220103164710-9a04d6ca976b // indirect
+	github.com/minio/sha256-simd v1.0.1 // indirect
+	github.com/mr-tron/base58 v1.3.0 // indirect
+	github.com/multiformats/go-base32 v0.1.0 // indirect
+	github.com/multiformats/go-base36 v0.2.0 // indirect
+	github.com/multiformats/go-multiaddr-dns v0.6.0 // indirect
+	github.com/multiformats/go-multibase v0.3.0 // indirect
+	github.com/multiformats/go-multicodec v0.10.0 // indirect
+	github.com/multiformats/go-multihash v0.2.3 // indirect
+	github.com/multiformats/go-multistream v0.6.1 // indirect
+	github.com/multiformats/go-varint v0.1.0 // indirect
+	github.com/munnerz/goautoneg v0.0.0-20191010083416-a7dc8b61c822 // indirect
 	github.com/pierrec/xxHash v0.1.5 // indirect
 	github.com/pion/dtls/v3 v3.1.5 // indirect
 	github.com/pion/ice/v4 v4.4.1 // indirect
@@ -81,8 +118,14 @@ require (
 	github.com/pion/stun/v3 v3.1.6 // indirect
 	github.com/pion/turn/v5 v5.0.12 // indirect
 	github.com/pmezard/go-difflib v1.0.0 // indirect
+	github.com/prometheus/client_golang v1.24.1 // indirect
+	github.com/prometheus/client_model v0.6.2 // indirect
+	github.com/prometheus/common v0.70.1 // indirect
+	github.com/prometheus/procfs v0.21.1 // indirect
+	github.com/quic-go/qpack v0.6.0 // indirect
 	github.com/rs/cors v1.8.2 // indirect
 	github.com/shirou/gopsutil v3.21.4-0.20210419000835-c7a38de76ee5+incompatible // indirect
+	github.com/spaolacci/murmur3 v1.1.0 // indirect
 	github.com/stretchr/objx v0.5.2 // indirect
 	github.com/stretchr/testify v1.11.1 // indirect
 	github.com/supranational/blst v0.3.16 // indirect
@@ -92,8 +135,8 @@ require (
 	go.opentelemetry.io/otel v1.43.0 // indirect
 	go.opentelemetry.io/otel/metric v1.43.0 // indirect
 	go.opentelemetry.io/otel/trace v1.43.0 // indirect
-	go.uber.org/mock v0.6.0 // indirect
 	gopkg.in/natefinch/npipe.v2 v2.0.0-20160621034901-c1b8fa8bdcce // indirect
+	lukechampine.com/blake3 v1.4.1 // indirect
 )
 
 replace github.com/centrifuge/go-substrate-rpc-client/v4 => ./third_party/go-substrate-rpc-client

@@ -12,6 +12,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"strconv"
 )
 
 // The upstream H1 ACK priority lane is a transfer.go send-path feature. This tree
@@ -115,11 +116,58 @@ func (self *receiveLaneTransport) Downgrade(source TransferPath) {
 	self.base.Downgrade(source)
 }
 
-// NewExtenderPacketDialContext would dial a udp socket through an extender's quic
-// or dns carrier. This tree has none (ClientStrategy.H3ExtenderConfig is always
-// nil), so no caller reaches it; it refuses rather than dialing direct.
-func NewExtenderPacketDialContext(connectSettings *ConnectSettings, extenderConfig *ExtenderConfig) func(ctx context.Context, network string, address string) (net.PacketConn, error) {
-	return func(ctx context.Context, network string, address string) (net.PacketConn, error) {
-		return nil, errors.New("extender packet carriers are not supported in this build")
+// NewExtenderPacketDialContext returns a dial that yields a net.PacketConn
+// reaching (destinationHost, destinationPort) through the extender.
+//
+// This is the h3 path. An extender relays one reliable byte stream and cannot
+// see inside the inner tls, so it cannot reframe a quic stream into anything;
+// the datagrams are framed explicitly instead and the extender turns them back
+// into udp at the far end (net_extender_datagram.go).
+func NewExtenderPacketDialContext(
+	connectSettings *ConnectSettings,
+	extenderConfig *ExtenderConfig,
+) DialPacketContextFunction {
+	extenderTlsConfig := newExtenderTlsConfig(extenderConfig)
+	return func(
+		ctx context.Context,
+		network string,
+		address string,
+	) (net.PacketConn, error) {
+		switch network {
+		case "udp", "udp4", "udp6":
+		default:
+			return nil, fmt.Errorf("extender packet dial supports udp, not %s", network)
+		}
+
+		host, portStr, err := net.SplitHostPort(address)
+		if err != nil {
+			return nil, err
+		}
+		port, err := strconv.Atoi(portStr)
+		if err != nil {
+			return nil, err
+		}
+
+		serverConn, _, err := dialExtenderStream(
+			ctx,
+			connectSettings,
+			extenderConfig,
+			&ExtenderDial{
+				DestinationHost: host,
+				DestinationPort: port,
+				Datagram:        true,
+			},
+			extenderTlsConfig,
+		)
+		if err != nil {
+			return nil, err
+		}
+
+		// ReadFrom's address is informational: the extender already owns the
+		// destination from the accepted header. Construct it without resolving
+		// the hostname here; an unbound resolver would bypass the egress path
+		// and can recurse into the tunnel on Windows.
+		remote := newExtenderDatagramAddr(network, address)
+		return newExtenderPacketConn(serverConn, remote), nil
 	}
 }
