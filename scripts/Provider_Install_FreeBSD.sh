@@ -322,7 +322,42 @@ run_rc_command "\$1"
 RCSCRIPT
 }
 
+# assert_state_path_safe runs BEFORE anything is installed. A symlink anywhere
+# in the service user's own path sends root's mkdir and chmod somewhere else,
+# and checking only the leaf misses a symlinked parent. It must happen early:
+# refusing after the binary has been renamed into place leaves a half-done
+# install. System ancestors above the home are not checked, because legitimately
+# symlinked system paths (/home -> /usr/home) would make every install refuse.
+assert_state_path_safe() {
+    if [ -L "$service_home" ]; then
+        pr_err "%s is a symlink; refusing to install through it" "$service_home"
+        exit 1
+    fi
+    if [ -L "$state_dir" ]; then
+        pr_err "%s is a symlink; refusing to create or chmod through it" "$state_dir"
+        exit 1
+    fi
+    # In this layout the install tree lives INSIDE the service user's home
+    # ($service_home/.local/share/urnetwork-provider), so the directories above
+    # it are user-controlled too. A symlinked .local, share or install_path
+    # sends root's mkdir, cp and mv somewhere else just as effectively.
+    _p="$service_home/.local"
+    while :; do
+        if [ -L "$_p" ]; then
+            pr_err "%s is a symlink; refusing to install through it" "$_p"
+            exit 1
+        fi
+        [ "$_p" = "$install_path" ] && break
+        case "$install_path" in
+            "$_p"/*) _p="$_p/$(printf '%s' "${install_path#"$_p"/}" | cut -d/ -f1)" ;;
+            *) break ;;
+        esac
+    done
+}
+
 do_install() {
+    # Before the download, before the binary, before any root write.
+    assert_state_path_safe
     version="${1:-latest}"
 
     # Refuse BEFORE downloading: an install that runs the internet-facing
@@ -345,7 +380,19 @@ do_install() {
 
     pr_info "Fetching release info..."
     release_json="$(curl -fsSL "$release_url" 2>/dev/null)"
-    tag="$(echo "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin)["tag_name"])' 2>/dev/null)"
+    # python3 is not part of the FreeBSD base system, so parsing with it alone
+    # makes a default `latest` install fail on a clean host. jq first, then
+    # python3, then a sed extraction that needs nothing beyond base.
+    tag=""
+    if command -v jq > /dev/null 2>&1; then
+        tag="$(printf '%s' "$release_json" | jq -r '.tag_name // empty' 2>/dev/null)"
+    fi
+    if [ -z "$tag" ] && command -v python3 > /dev/null 2>&1; then
+        tag="$(printf '%s' "$release_json" | python3 -c 'import json,sys; print(json.load(sys.stdin).get("tag_name") or "")' 2>/dev/null)"
+    fi
+    if [ -z "$tag" ]; then
+        tag="$(printf '%s' "$release_json" | sed -n 's/.*"tag_name"[[:space:]]*:[[:space:]]*"\([^"]*\)".*/\1/p' | head -1)"
+    fi
 
     # GitHub API failed or rate-limited: for an explicit version we can trust
     # the caller's tag directly; for "latest" fall back to the dl.fullbars.xyz
@@ -403,12 +450,26 @@ do_install() {
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
     # allowed over a running image, and never leaves a half-written binary.
+    # Staging an empty or non-executable file produces a provider that fails at
+    # exec time, after the old binary has already been renamed away.
+    # -f and -s, not -x: the binary is chmod 755 after staging, so a tarball
+    # that lost the exec bit installs fine, while a directory or an empty file
+    # still has to be refused before it replaces a working binary.
+    if [ ! -f "$provider_src" ] || [ ! -s "$provider_src" ]; then
+        pr_err "Refusing to install %s: not a non-empty regular file" "$provider_src"
+        rm -rf "$tmpdir"; exit 1
+    fi
     staged="$provider_bin.new.$$"
     cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
     chmod 755 "$staged"
     mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
 
-    echo "$tag" > "$install_path/version"
+    # Same rename-not-follow rule as the binary above. The version file lives
+    # in a directory the service user can write to, so a symlink planted at
+    # that name would redirect root's write. Write beside it and rename over
+    # it: rename replaces the entry instead of following it.
+    ver_tmp="$install_path/.version.new.$$"
+    printf '%s\n' "$tag" > "$ver_tmp" && mv -f "$ver_tmp" "$install_path/version"
 
     # Install the tool: the Go urnet-tools binary shipped as a release asset,
     # digest-verified; fall back to this shell script for releases that
@@ -468,6 +529,10 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
             install_wrapper_tool "$tmpdir" || true
         fi
     else
+        # Without jq or python3 the digest cannot be read, and the wrapper is
+        # fetched from the branch, not from $tag. Say so rather than installing
+        # an unpinned script as if it were the release asset.
+        pr_warn "no jq or python3 on this host: cannot verify the urnet-tools digest, falling back to the shell wrapper fetched from the branch (not from %s)" "$tag"
         install_wrapper_tool "$tmpdir" || true
     fi
 
@@ -477,8 +542,16 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     # starts as an account that cannot read its own binary.
     if [ "$(id -u)" = "0" ] && [ "$service_user" != "root" ]; then
         chown -R "$service_user" "$install_path" 2>/dev/null || true
+        # Re-check here, not only at the top of do_install: the service user
+        # can replace the directory with a symlink between the two, and these
+        # are the root writes that would follow it. -h keeps the recursive
+        # chown from dereferencing anything that appears.
+        if [ -L "$state_dir" ]; then
+            pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
+            rm -rf "$tmpdir"; exit 1
+        fi
         mkdir -p "$state_dir"
-        chown -R "$service_user" "$state_dir" 2>/dev/null || true
+        chown -R -h "$service_user" "$state_dir" 2>/dev/null || true
     fi
 
     if [ "$(id -u)" != "0" ]; then
