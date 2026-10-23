@@ -262,13 +262,22 @@ func dohDialObservationLine(ctx context.Context, path dohDialPath, address strin
 	)
 }
 
-// Preserve the existing per-target emission bound, partitioned by actual path.
-// The internal throttle key is bounded and never emitted; dials are untouched.
+// Wrap a resolver dial so a failed attempt is visible. Only failures log, and
+// at most once per path per interval: a successful dial costs one atomic load,
+// no allocation and no lock, because the DoH path is a resolver hot path and a
+// line per dial would be the expensive part of observing it.
 func wrapDohDial(log Logger, path dohDialPath, dial DialContextFunction) DialContextFunction {
+	lastFailureLog := make([]atomic.Int64, dohPathCount)
 	return func(ctx context.Context, network string, address string) (net.Conn, error) {
 		conn, err := dial(ctx, network, address)
-		if emit, _ := controlDialThrottle("doh|" + path.String() + "|" + address).Allow(time.Now()); emit {
-			loggerOrDefault(log).Infof("%s\n", dohDialObservationLine(ctx, path, address, err))
+		if err != nil && int(path) < len(lastFailureLog) {
+			now := time.Now().UnixNano()
+			previous := lastFailureLog[path].Load()
+			if previous == 0 || controlDialLogInterval <= time.Duration(now-previous) {
+				if lastFailureLog[path].CompareAndSwap(previous, now) {
+					loggerOrDefault(log).Infof("%s\n", dohDialObservationLine(ctx, path, address, err))
+				}
+			}
 		}
 		return conn, err
 	}
