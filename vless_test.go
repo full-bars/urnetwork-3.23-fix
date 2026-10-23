@@ -699,13 +699,13 @@ func TestVlessConnResumesResponseHeaderAfterTimeout(t *testing.T) {
 		if _, err := server.Write([]byte{vlessVersion}); err != nil {
 			return
 		}
-		time.Sleep(80 * time.Millisecond)
+		time.Sleep(250 * time.Millisecond)
 		if _, err := server.Write(append([]byte{0x00}, payload...)); err != nil {
 			return
 		}
 	}()
 
-	client.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
 	buffer := make([]byte, 32)
 	if _, err := conn.Read(buffer); err == nil {
 		t.Fatal("expected the first header read to time out")
@@ -718,5 +718,62 @@ func TestVlessConnResumesResponseHeaderAfterTimeout(t *testing.T) {
 	}
 	if got := string(buffer[:n]); got != string(payload) {
 		t.Fatalf("payload = %q, expected %q", got, payload)
+	}
+	assertNoSecondRequest(t, server)
+}
+
+// The same resume, with a timeout that cuts across a multi-byte addons field:
+// the version and the addons length are buffered, two addon bytes arrive, then
+// the deadline expires. The resumed read must consume the remaining addons and
+// return the payload with no byte dropped or duplicated.
+func TestVlessConnResumesAfterPartialAddonsTimeout(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	requestHeader := []byte{0xaa, 0xbb}
+	conn := newVlessConn(client, requestHeader)
+	payload := []byte("payload")
+
+	go func() {
+		head := make([]byte, len(requestHeader))
+		if _, err := io.ReadFull(server, head); err != nil {
+			return
+		}
+		// version, four addon bytes, and the first two of them
+		if _, err := server.Write([]byte{vlessVersion, 0x04, 0x01, 0x02}); err != nil {
+			return
+		}
+		time.Sleep(250 * time.Millisecond)
+		// the rest of the addons, then the payload
+		if _, err := server.Write(append([]byte{0x03, 0x04}, payload...)); err != nil {
+			return
+		}
+	}()
+
+	client.SetReadDeadline(time.Now().Add(50 * time.Millisecond))
+	buffer := make([]byte, 32)
+	if _, err := conn.Read(buffer); err == nil {
+		t.Fatal("expected the first header read to time out")
+	}
+
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buffer)
+	if err != nil {
+		t.Fatalf("resume read: %v", err)
+	}
+	if got := string(buffer[:n]); got != string(payload) {
+		t.Fatalf("payload = %q, expected %q", got, payload)
+	}
+	assertNoSecondRequest(t, server)
+}
+
+// A resumed read must not re-send the request header: the server reads the
+// header once, so a second send would desync the framing.
+func assertNoSecondRequest(t *testing.T, server net.Conn) {
+	t.Helper()
+	server.SetReadDeadline(time.Now().Add(100 * time.Millisecond))
+	if _, err := server.Read(make([]byte, 1)); err == nil {
+		t.Fatal("the request header was sent more than once")
 	}
 }
