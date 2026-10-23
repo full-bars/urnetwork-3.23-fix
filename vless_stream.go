@@ -110,10 +110,12 @@ type vlessConn struct {
 	requestHeader []byte
 	requestSent   bool
 
-	// only the reading goroutine touches this
-	// the response header is consumed once, whichever reader gets there
-	// first: a second concurrent Read must not read framing bytes as payload
-	responseOnce sync.Once
+	// the response header is parsed once. The lock serializes concurrent
+	// readers, and the buffer keeps bytes a timed out read consumed, so a
+	// later Read can resume after the caller refreshes the deadline
+	responseLock sync.Mutex
+	responseDone bool
+	responseBuf  []byte
 	responseErr  error
 }
 
@@ -155,15 +157,54 @@ func (self *vlessConn) sendRequestHeader() error {
 }
 
 func (self *vlessConn) Read(b []byte) (int, error) {
-	self.responseOnce.Do(func() {
-		if err := self.sendRequestHeader(); err != nil {
-			self.responseErr = err
-			return
-		}
-		self.responseErr = readVlessResponseHeader(self.Conn)
-	})
-	if self.responseErr != nil {
-		return 0, self.responseErr
+	if err := self.readResponseHeader(); err != nil {
+		return 0, err
 	}
+	self.responseLock.Lock()
+	if 0 < len(self.responseBuf) {
+		n := copy(b, self.responseBuf)
+		self.responseBuf = self.responseBuf[n:]
+		self.responseLock.Unlock()
+		return n, nil
+	}
+	self.responseLock.Unlock()
 	return self.Conn.Read(b)
+}
+
+// Consumes the response header, resuming where a previous call stopped. A read
+// error leaves the bytes read so far in responseBuf, so a timeout does not
+// poison the stream: the caller can refresh the deadline and call Read again.
+func (self *vlessConn) readResponseHeader() error {
+	self.responseLock.Lock()
+	defer self.responseLock.Unlock()
+	if self.responseDone {
+		return self.responseErr
+	}
+	if err := self.sendRequestHeader(); err != nil {
+		return err
+	}
+	for {
+		if 2 <= len(self.responseBuf) {
+			if self.responseBuf[0] != vlessVersion {
+				self.responseDone = true
+				self.responseErr = fmt.Errorf("vless response version %d", self.responseBuf[0])
+				return self.responseErr
+			}
+			headerLength := 2 + int(self.responseBuf[1])
+			if headerLength <= len(self.responseBuf) {
+				self.responseBuf = append(self.responseBuf[:0], self.responseBuf[headerLength:]...)
+				self.responseDone = true
+				self.responseErr = nil
+				return nil
+			}
+		}
+		var chunk [512]byte
+		n, err := self.Conn.Read(chunk[:])
+		if 0 < n {
+			self.responseBuf = append(self.responseBuf, chunk[:n]...)
+		}
+		if err != nil {
+			return err
+		}
+	}
 }

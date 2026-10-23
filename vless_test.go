@@ -677,3 +677,46 @@ func TestVlessHttpHost(t *testing.T) {
 		}
 	}
 }
+
+// A timeout while the response header is being read must not poison the
+// stream: the bytes already consumed are kept and a later Read, after the
+// caller refreshes the deadline, resumes the parse.
+func TestVlessConnResumesResponseHeaderAfterTimeout(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	defer server.Close()
+
+	requestHeader := []byte{0xaa, 0xbb}
+	conn := newVlessConn(client, requestHeader)
+	payload := []byte("payload")
+
+	go func() {
+		head := make([]byte, len(requestHeader))
+		if _, err := io.ReadFull(server, head); err != nil {
+			return
+		}
+		// version only: the rest of the header arrives after the deadline
+		if _, err := server.Write([]byte{vlessVersion}); err != nil {
+			return
+		}
+		time.Sleep(80 * time.Millisecond)
+		if _, err := server.Write(append([]byte{0x00}, payload...)); err != nil {
+			return
+		}
+	}()
+
+	client.SetReadDeadline(time.Now().Add(20 * time.Millisecond))
+	buffer := make([]byte, 32)
+	if _, err := conn.Read(buffer); err == nil {
+		t.Fatal("expected the first header read to time out")
+	}
+
+	client.SetReadDeadline(time.Now().Add(2 * time.Second))
+	n, err := conn.Read(buffer)
+	if err != nil {
+		t.Fatalf("resume read: %v", err)
+	}
+	if got := string(buffer[:n]); got != string(payload) {
+		t.Fatalf("payload = %q, expected %q", got, payload)
+	}
+}
