@@ -71,10 +71,13 @@ reads it. Both real Chrome and connect's dialer hit it.
 
 ## Hard realities (honor these)
 
-- **TLS ClientHello & QUIC Initial goldens = real Chrome, captured at the
-  endpoint, hermetic.** High value, low cost. The QUIC long-header **version**
-  is in the clear and is the primary udp drift signal (a version 2 Initial is
-  not decrypted by the GFW/TSPU version 1 parsers; see `net_quic_version.go`).
+- **TLS ClientHello & QUIC Initial goldens: the committed TLS golden is
+  SYNTHETIC** (uTLS `HelloChrome_133`, see Golden provenance below), so it pins
+  "connect still matches the uTLS Chrome_133 reference", not "matches real
+  Chrome". The QUIC long-header **version** is in the clear and is the primary
+  udp drift signal (a version 2 Initial is not decrypted by the GFW/TSPU
+  version 1 parsers; see `net_quic_version.go`). A real-Chrome capture replaces
+  the synthetic golden once a root-capable host runs Layer B.
 - **QUIC transport parameters and CRYPTO-frame layout are inside the
   AEAD-encrypted Initial.** Reading them needs the Initial keys derived from the
   version salt and the destination connection id (RFC 9001 / RFC 9369). The
