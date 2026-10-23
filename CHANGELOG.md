@@ -5,6 +5,25 @@
 ### Added
 
 - **The TLS ClientHello is a runtime switch** (`tls_hello`): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's TLS ClientHello instead of Go's on new connections, live and without a restart, with `URNETWORK_TLS_HELLO` as the startup default. It affects new connections only: an open session keeps the handshake it made and follows the setting the next time it dials. The Chrome hello is **off by default** while it soaks, so a box that never sets the key keeps Go's hello exactly as before; a persisted `off` beats `URNETWORK_TLS_HELLO=on`, and clearing the key hands the decision back to the environment. The provider logs `⚙️ [control] applied tls_hello=<v> (was <old>)` on each change.
+- **`urnet-tools proxy trim` reports the trim cap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/965>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/966>): with no argument the command reports the effective cap and its source (operator, OOM or thrash), the configured pool size before the cap, how many proxies the cap holds back, and the live counts. `urnet-tools status` carries a `trim` row whenever a cap applies. The provider's effective cap wins over the `proxy_trim` file, and trim state is reported only from a complete pool, so an unreadable `proxy_url.json` cannot understate the pool.
+
+### Fixed
+
+- **URL proxies were held back for an hour behind proxies that never authenticate** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/973>): the warmup gate released on a ratio over every registered proxy, so a node with a dead proxy tail never crossed the gate and only a 60-minute backstop ended the hold, while the URL fetcher stayed parked behind the same flag. The hold is now bounded to five minutes from the start in both the reload gate and the fetcher, and the reload fires when the grace expires.
+
+### Changed
+
+- **The lifetime counters say when they began** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/967>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/969>): the store persists a start stamp written once, the `all-time` lines carry it, a pre-existing store reports an approximate start instead of inventing a date, and the scrape gains `urnet_lifetime_start_timestamp_seconds` and `urnet_lifetime_start_approximate`.
+- **The CFAA and IP blocker tables refreshed** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/959>): blocked hosts 164,212 to 164,225, CFAA prefixes 46,733 to 47,632 IPv4 and 597 to 619 IPv6. Data only.
+- **The live-numbers job signs its commits** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/968>): the scheduled cost-table refresh refuses to push an unsigned commit, runs twice an hour off-peak and on pushes to `main`, and the wiki mirror runs every time.
+- **The client-id reuse checks restart the provider and fail on an empty store** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/955>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/957>): the smoke and soak checks stop and start the provider and diff the full stored client-id list instead of comparing one decoded JWT.
+- **The documentation links at the wiki and drops the phantom commands** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/960>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/961>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/963>): wiki links replace raw markdown paths, the SN25 table shows dollar figures, and `urnet-tools auto-update daily|weekly|monthly|off` replaces the auto-update commands that never existed.
+
+## [v3.23.0-fix.34.3]
+
+_Patch release on v3.23.0-fix.34.2: the pqe handshake stages and negotiated curves land with dashboard panels, `docker stop` reaches the shutdown path inside a container, lifetime session counters survive a proxy exit, the scheduled blocklist sync covers both tables, the SN25 cost table publishes from the chain, plus the Bittensor doc corrections. Notes: `releases/v3.23.0-fix.34.3.md`._
+
+### Added
 - **PQE handshake stages and negotiated curves** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/944>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/946>): the `[pqe]` line reports `attempts`, `tls_ok`, `verified` and `identity_failed`, plus a per-curve histogram. `/metrics` carries the same data as `urnet_sessions_handshake_total{stage=...}` and `urnet_sessions_curve_total{curve=...}`, and two dashboard panels show both rates. A zero classical count is now explainable instead of ambiguous.
 
 ### Fixed

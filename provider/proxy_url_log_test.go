@@ -181,6 +181,7 @@ func urlReloadOutput(t *testing.T, warmupDone bool, urlAddrs ...string) string {
 	}
 	proxyWarmupDone.Store(warmupDone)
 	t.Cleanup(func() { proxyWarmupDone.Store(false) })
+	startWarmupWindow(t)
 
 	reloader := &ProxyReloader{
 		cancelMap:   map[string]context.CancelFunc{},

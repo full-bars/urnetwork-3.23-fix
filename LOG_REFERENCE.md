@@ -268,7 +268,7 @@ When a reload actually starts URL-sourced proxies it says so on its own line, an
 🔄 [proxy] reloaded: +14 added (url 12, file 2), -0 removed [3s]
 ```
 
-Unproven URL proxies wait until the file proxies finish warming up, so `launching 7 of 12` means 5 are still queued, not lost.
+Unproven URL proxies wait until the file proxies finish warming up, so `launching 7 of 12` means 5 are still queued, not lost. The wait is bounded: once the process is five minutes old they launch regardless, because a node whose file list carries a permanent tail of dead proxies never reaches the warmup bar and the pool would otherwise stay short for that whole run.
 
 ---
 
@@ -1187,6 +1187,7 @@ Once the `✓ done` line is logged, the `paceMonitor` goroutine exits. No furthe
 | `⚠ warmup: X/Y up (Z%), N connecting` | Fewer than 50% of proxies are up and more than 10 are still connecting — slow warmup. |
 | `warmup: X/Y up (Z%), N connecting` | Normal warmup progress. |
 | `✓ warmup: X/Y up (Z%), N connecting — done` | More than 90% of proxies are up and fewer than 5 are still connecting. Logged once, then the goroutine exits. |
+| `warmup: X/Y up (Z%), N connecting — forced done after 60m` | The bar was still unmet after an hour, usually because a fixed tail of file proxies never auths. Warmup is declared done so the goroutine exits. The URL-sourced hold is not affected: it opens at five minutes regardless (`urlWarmupLaunchGrace`). |
 
 ---
 
