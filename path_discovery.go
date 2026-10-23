@@ -20,11 +20,7 @@ type pathDiscoveryCounters struct {
 	connectMillis map[string]uint64
 }
 
-var globalPathDiscovery = pathDiscoveryCounters{
-	channels:      map[string]uint64{},
-	connects:      map[string]uint64{},
-	connectMillis: map[string]uint64{},
-}
+var globalPathDiscovery pathDiscoveryCounters
 
 func pathDiscoveryWindowName(window WindowType) string {
 	if name := window.RankMode(); name != "" {
@@ -33,40 +29,58 @@ func pathDiscoveryWindowName(window WindowType) string {
 	return "auto"
 }
 
-func recordPathChannelCreated(window WindowType) {
+func (self *pathDiscoveryCounters) initLocked() {
+	if self.channels == nil {
+		self.channels = map[string]uint64{}
+		self.connects = map[string]uint64{}
+		self.connectMillis = map[string]uint64{}
+	}
+}
+
+func (self *pathDiscoveryCounters) recordCreated(window WindowType) {
 	name := pathDiscoveryWindowName(window)
-	globalPathDiscovery.mu.Lock()
-	globalPathDiscovery.channels[name]++
-	globalPathDiscovery.mu.Unlock()
+	self.mu.Lock()
+	self.initLocked()
+	self.channels[name]++
+	self.mu.Unlock()
+}
+
+func (self *pathDiscoveryCounters) recordConnected(window WindowType, elapsed time.Duration) {
+	name := pathDiscoveryWindowName(window)
+	millis := uint64(elapsed / time.Millisecond)
+	self.mu.Lock()
+	self.initLocked()
+	self.connects[name]++
+	self.connectMillis[name] += millis
+	self.mu.Unlock()
+}
+
+func recordPathChannelCreated(window WindowType) {
+	globalPathDiscovery.recordCreated(window)
 }
 
 func recordPathChannelConnected(window WindowType, elapsed time.Duration) {
-	name := pathDiscoveryWindowName(window)
-	millis := uint64(elapsed / time.Millisecond)
-	globalPathDiscovery.mu.Lock()
-	globalPathDiscovery.connects[name]++
-	globalPathDiscovery.connectMillis[name] += millis
-	globalPathDiscovery.mu.Unlock()
+	globalPathDiscovery.recordConnected(window, elapsed)
 }
 
-// PathDiscoveryMetricsText renders the discovery counters for /metrics. Every
-// window is emitted even before it builds anything, so a dashboard reads a
-// stable zero rather than a gap.
-func PathDiscoveryMetricsText() string {
-	globalPathDiscovery.mu.Lock()
-	channels := make(map[string]uint64, len(globalPathDiscovery.channels))
-	for window, count := range globalPathDiscovery.channels {
+// metricsText renders the discovery counters for /metrics. Every window is
+// emitted even before it builds anything, so a dashboard reads a stable zero
+// rather than a gap.
+func (self *pathDiscoveryCounters) metricsText() string {
+	self.mu.Lock()
+	channels := make(map[string]uint64, len(self.channels))
+	for window, count := range self.channels {
 		channels[window] = count
 	}
-	connects := make(map[string]uint64, len(globalPathDiscovery.connects))
-	for window, count := range globalPathDiscovery.connects {
+	connects := make(map[string]uint64, len(self.connects))
+	for window, count := range self.connects {
 		connects[window] = count
 	}
-	connectMillis := make(map[string]uint64, len(globalPathDiscovery.connectMillis))
-	for window, millis := range globalPathDiscovery.connectMillis {
+	connectMillis := make(map[string]uint64, len(self.connectMillis))
+	for window, millis := range self.connectMillis {
 		connectMillis[window] = millis
 	}
-	globalPathDiscovery.mu.Unlock()
+	self.mu.Unlock()
 
 	windows := []string{"quality", "speed", "auto"}
 	emit := func(b *strings.Builder, name string, counts map[string]uint64, help string) {
@@ -92,4 +106,10 @@ func PathDiscoveryMetricsText() string {
 	emit(&b, "urnet_path_channel_connects_total", connects, "Provider channels that reached a connected provider, by window.")
 	emit(&b, "urnet_path_channel_connect_millis_total", connectMillis, "Sum of channel connect times in milliseconds, by window; divide by the connects for the mean.")
 	return b.String()
+}
+
+// PathDiscoveryMetricsText renders the process-wide discovery counters for
+// /metrics.
+func PathDiscoveryMetricsText() string {
+	return globalPathDiscovery.metricsText()
 }
