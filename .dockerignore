@@ -6,7 +6,10 @@ CLAUDE.md
 AGENTS.md
 *.md
 docs/
-res/
+# res/ is mostly screenshots; the spoof table is embedded into the binary by
+# net_extender_spoof.go, so it must stay in the build context
+res/*
+!res/extender_spoof*.bin
 
 # VCS
 .git
