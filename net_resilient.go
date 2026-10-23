@@ -93,8 +93,9 @@ func newResilientDialTlsContext(
 	// (Clone below keeps the pointer)
 	baseTlsConfig := newClientTlsConfig(connectSettings.TlsConfig, nextProtos)
 	// the Chrome hello, or Go's (net_tls_hello.go); either goes out through the
-	// fragment/reorder layer as one handshake record
-	tlsHandshaker := newClientTlsHandshaker(connectSettings.TlsClientHelloFingerprint, baseTlsConfig)
+	// fragment/reorder layer as one handshake record. Which one a dial presents
+	// is read at dial time from the runtime gate (net_tls_hello_gate.go).
+	tlsHandshaker := newClientTlsHandshaker(connectSettings.TlsClientHelloFingerprint)
 	tlsPath := resilientTlsPath(fragment, reorder, segment)
 
 	return func(

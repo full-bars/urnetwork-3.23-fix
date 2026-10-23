@@ -258,8 +258,9 @@ func newNormalDialTlsContext(
 ) DialTlsContextFunction {
 	// this dial path's own session ticket cache (see newClientTlsConfig)
 	normalTlsConfig := newClientTlsConfig(settings.TlsConfig, nextProtos)
-	// the Chrome hello, or Go's (net_tls_hello.go)
-	tlsHandshaker := newClientTlsHandshaker(settings.TlsClientHelloFingerprint, normalTlsConfig)
+	// the Chrome hello, or Go's (net_tls_hello.go); which one a dial presents
+	// is read at dial time from the runtime gate (net_tls_hello_gate.go)
+	tlsHandshaker := newClientTlsHandshaker(settings.TlsClientHelloFingerprint)
 	// the handshake metric label follows the strategy's transport, which
 	// the unified dial no longer branches on
 	handshakePath := tlsPathNormal

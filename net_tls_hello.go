@@ -8,12 +8,17 @@ package connect
 // present the newest stable Chrome hello of the vendored uTLS instead
 // (`chromeClientHelloId`), with the grease values, the extension order
 // shuffled per connection and the X25519MLKEM768 key share that profile
-// defines. What belongs to the dial stays as with Go's hello: the server name,
-// certificate verification (roots, the skip, the peer and connection
-// verifiers) and the error types of a refused certificate, the application
-// protocols, the timeouts, and the resilient fragment/reorder wrapping, which
-// takes the larger hello (about 1.7 KiB, 2 KiB with a ticket) as one record
-// like any other.
+// defines. Which hello a dial presents is decided per dial, not per path: the
+// process-wide runtime gate (`SetTlsClientHelloChrome`,
+// net_tls_hello_gate.go) overrides the strategy's fingerprint when the
+// provider's tls_hello control key or URNETWORK_TLS_HELLO has set it, so a
+// running provider switches hellos without a restart and each new connection
+// follows the latest value. What belongs to the dial stays as with Go's
+// hello: the server name, certificate verification (roots, the skip, the peer
+// and connection verifiers) and the error types of a refused certificate, the
+// application protocols, the timeouts, and the resilient fragment/reorder
+// wrapping, which takes the larger hello (about 1.7 KiB, 2 KiB with a ticket)
+// as one record like any other.
 //
 // The alpn list is the dial path's own, never Chrome's: the websocket dial
 // offers http/1.1 alone, as Chrome itself does for a websocket. Application
@@ -250,30 +255,39 @@ func (self *chromeSessionCache) Put(sessionKey string, session *utls.ClientSessi
 // one set of application protocols. Built once per path from the path's
 // configuration (`newClientTlsConfig`); safe for concurrent use.
 type clientTlsHandshaker struct {
-	chrome bool
-	// the Chrome hello's tickets; nil for Go's hello, whose tickets live in the
-	// path's crypto/tls configuration
+	// the strategy's fingerprint, the base the runtime gate overrides
+	// (`tlsClientHelloFingerprint`). Read on every dial, never resolved here.
+	fingerprint string
+	// the Chrome hello's tickets. Always allocated, because the gate can turn
+	// the Chrome hello on after the path was built; unused while Go's hello is
+	// the one presented.
 	chromeSessionCache *chromeSessionCache
 }
 
-// The handshaker of a dial path with config, presenting the hello the
-// fingerprint names where the Chrome hello applies (`chromeClientHelloApplies`)
-// and Go's hello everywhere else.
-func newClientTlsHandshaker(fingerprint string, config *tls.Config) *clientTlsHandshaker {
-	handshaker := &clientTlsHandshaker{
-		chrome: chromeClientHelloApplies(fingerprint, config, httpTransportReadsTlsConnectionState),
+// The handshaker of a dial path, presenting the hello the fingerprint names
+// where the Chrome hello applies (`chromeClientHelloApplies`) and Go's hello
+// everywhere else. The fingerprint is the base the runtime gate overrides, so
+// it is kept rather than resolved.
+func newClientTlsHandshaker(fingerprint string) *clientTlsHandshaker {
+	return &clientTlsHandshaker{
+		fingerprint:        fingerprint,
+		chromeSessionCache: newChromeSessionCache(),
 	}
-	if handshaker.chrome {
-		handshaker.chromeSessionCache = newChromeSessionCache()
-	}
-	return handshaker
+}
+
+// Whether one dial presents the Chrome hello: the runtime gate where it has
+// been set (net_tls_hello_gate.go), otherwise the strategy's fingerprint, and
+// in either case only a configuration the Chrome hello carries exactly.
+func (self *clientTlsHandshaker) chrome(config *tls.Config) bool {
+	fingerprint := tlsClientHelloFingerprint(self.fingerprint)
+	return chromeClientHelloApplies(fingerprint, config, httpTransportReadsTlsConnectionState)
 }
 
 // Runs the handshake over conn. config is the dial's own clone of the path's
 // configuration, its server name set. On error the tls connection is closed,
 // and with it conn.
 func (self *clientTlsHandshaker) handshake(ctx context.Context, conn net.Conn, config *tls.Config) (net.Conn, error) {
-	if !self.chrome {
+	if !self.chrome(config) {
 		tlsConn := tls.Client(conn, config)
 		if err := tlsConn.HandshakeContext(ctx); err != nil {
 			tlsConn.Close()
