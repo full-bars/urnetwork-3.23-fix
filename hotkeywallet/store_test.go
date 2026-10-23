@@ -6,12 +6,33 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strings"
 	"testing"
 
 	"github.com/urfoundation/sn/protocol"
 )
+
+// A store file is private where a mode bit can enforce it: written 0600, so
+// owner-only. Windows has no mode bits for this — Go reports 0666 for any file
+// the process can write, and privacy there is the ACL the directory inherits —
+// so the check is not applicable rather than silently satisfied. Say so in the
+// log instead of asserting a mode the platform cannot express.
+func requirePrivateMode(t *testing.T, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Logf("%s: mode bits are not a privacy boundary on this platform", path)
+		return
+	}
+	info, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("%s: %v", path, err)
+	}
+	if info.Mode().Perm() != 0600 {
+		t.Fatalf("%s is not private: mode %v", path, info.Mode().Perm())
+	}
+}
 
 func testStore(t *testing.T) Store {
 	t.Helper()
@@ -43,10 +64,7 @@ func TestStoreAppendsAndReloadsTheChain(t *testing.T) {
 		t.Fatalf("the chain was not reloaded: %v", err)
 	}
 	path := filepath.Join(store.Directory, "originals.json")
-	info, err := os.Stat(path)
-	if err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("the chain is not private: %v %v", info, err)
-	}
+	requirePrivateMode(t, path)
 	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -115,9 +133,7 @@ func TestStorePendingIsRemovedOnceItsGenerationIsStored(t *testing.T) {
 	if raw, err := os.ReadFile(path); err != nil || string(raw) != strings.TrimPrefix(message, protocol.HotkeyWalletMappingConsentPrefix) {
 		t.Fatalf("the pending statement is not its canonical JSON: %q %v", raw, err)
 	}
-	if info, err := os.Stat(path); err != nil || info.Mode().Perm() != 0600 {
-		t.Fatalf("the pending statement is not private: %v %v", info, err)
-	}
+	requirePrivateMode(t, path)
 
 	first := testSigned(t, *statement, coldkey, hotkey)
 	if err := store.Append(first); err != nil {

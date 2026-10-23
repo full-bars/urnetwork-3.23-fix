@@ -60,7 +60,7 @@ jobs:
         # NOTE: Tests in internal/urnettools/ may not exist yet for Windows
         # lifecycle — they are added by PR #616. This step passes once #616
         # lands. Until then, the test binary has no matching tests and exits 0.
-        run: go test ./internal/urnettools/
+        run: go test ./internal/urnettools/ ./internal/durablesync/
         env:
           GOOS: windows
           GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
