@@ -4,6 +4,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 )
@@ -109,5 +110,70 @@ func TestLifetimeMetrics_ThrottledFlush(t *testing.T) {
 	}
 	if lm.MaybeFlush(now.Add(2*time.Hour + time.Minute)) {
 		t.Fatal("clean store must not rewrite")
+	}
+}
+
+// "Since" is what makes "all-time" datable: it must survive restarts
+// unchanged, so the label keeps describing the same period after a restart.
+func TestLifetimeMetrics_SinceSurvivesRestart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "lm.json")
+
+	lm := loadLifetimeMetrics(path)
+	started, approx := lm.Started()
+	if started.IsZero() || approx {
+		t.Fatalf("fresh store: since=%v approx=%v, want a real instant with no caveat", started, approx)
+	}
+	lm.Add(1, 0, 0, 0, 0, 0, 0)
+	lm.Flush()
+
+	reloaded := loadLifetimeMetrics(path)
+	again, approxAgain := reloaded.Started()
+	if approxAgain {
+		t.Fatal("restarted store lost its exact start and became approximate")
+	}
+	if !again.Equal(started.UTC().Truncate(time.Second)) {
+		t.Fatalf("since moved across restart: %v -> %v", started, again)
+	}
+}
+
+// A store written before the field existed keeps its totals but cannot know
+// when they began. It must say so rather than claim the date it was upgraded.
+func TestLifetimeMetrics_LegacyStoreGetsApproximateStart(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "legacy.json")
+	legacy := `{"pqe_opens":42,"billable_bytes":1024,"saved_at":"2026-01-01T00:00:00Z"}`
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	lm := loadLifetimeMetrics(path)
+	pqe, _, _, _, _, _, bytes := lm.Snapshot()
+	if pqe != 42 || bytes != 1024 {
+		t.Fatalf("legacy totals dropped: pqe=%d bytes=%d", pqe, bytes)
+	}
+	started, approx := lm.Started()
+	if !approx {
+		t.Fatal("legacy store must report an approximate start, not a date it cannot know")
+	}
+	if started.IsZero() || time.Since(started) > time.Minute {
+		t.Fatalf("approximate start should be pinned near load time, got %v", started)
+	}
+}
+
+func TestSinceLabel(t *testing.T) {
+	instant := time.Date(2026, 10, 5, 8, 12, 0, 0, time.Local)
+	if got, want := sinceLabel(instant, false), "since 2026-10-05 08:12 "+instant.Format("MST"); got != want {
+		t.Fatalf("exact label = %q, want %q", got, want)
+	}
+	if got := sinceLabel(instant, true); !strings.Contains(got, "earlier history not recorded") {
+		t.Fatalf("approximate label must explain itself, got %q", got)
+	}
+	if got := sinceLabel(time.Time{}, false); got != "since unknown" {
+		t.Fatalf("zero start label = %q", got)
+	}
+	if got, want := clockLabel(instant), "2026-10-05 08:12 "+instant.Format("MST"); got != want {
+		t.Fatalf("clockLabel = %q, want %q", got, want)
+	}
+	if got := clockLabel(time.Time{}); got != "unknown" {
+		t.Fatalf("zero clockLabel = %q, want unknown", got)
 	}
 }
