@@ -422,6 +422,12 @@ do_install() {
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
     # allowed over a running image, and never leaves a half-written binary.
+    # Staging an empty or non-executable file produces a provider that fails at
+    # exec time, after the old binary has already been renamed away.
+    if [ ! -s "$provider_src" ] || [ ! -x "$provider_src" ]; then
+        pr_err "Refusing to install %s: not a non-empty executable" "$provider_src"
+        rm -rf "$tmpdir"; exit 1
+    fi
     staged="$provider_bin.new.$$"
     cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
     chmod 755 "$staged"
