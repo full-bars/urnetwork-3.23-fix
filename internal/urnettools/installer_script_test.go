@@ -175,9 +175,22 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	} else if firstFetch >= 0 && refusalIdx > firstFetch {
 		t.Error("do_install downloads before refusing a root service user; the refusal must come first")
 	}
-	// Under sudo the files land root-owned; the service user must own them.
-	if !strings.Contains(body, `chown -R "$service_user" "$install_path"`) {
-		t.Error("do_install does not hand the install directory to the service user")
+	// The install tree stays root-owned: the rc.d start runs as root before
+	// daemon(8) drops to the service user, and the Linux installer chowns its
+	// tree to root for the same reason. What must belong to the service user
+	// is its state directory, where its config and JWT live.
+	rootOwned := strings.Contains(body, `chown -R root:wheel "$install_path"`) ||
+		strings.Contains(body, `chown -R root "$install_path"`)
+	if !rootOwned {
+		t.Error("do_install does not keep the install tree root-owned")
+	}
+	// -h is main's no-follow form: a symlink that appears under the state dir
+	// must not be dereferenced by a recursive chown. Accept either spelling so
+	// the assertion tests the ownership intent, not one exact word order.
+	stateOwned := strings.Contains(body, `chown -R -h "$service_user" "$state_dir"`) ||
+		strings.Contains(body, `chown -R "$service_user" "$state_dir"`)
+	if !stateOwned {
+		t.Error("do_install does not hand the state directory to the service user")
 	}
 	// The service must not be started when a failure to start would be
 	// reported as success: the start/restart outcome is checked.
