@@ -322,7 +322,26 @@ run_rc_command "\$1"
 RCSCRIPT
 }
 
+# assert_state_path_safe runs BEFORE anything is installed. A symlink anywhere
+# in the service user's own path sends root's mkdir and chmod somewhere else,
+# and checking only the leaf misses a symlinked parent. It must happen early:
+# refusing after the binary has been renamed into place leaves a half-done
+# install. System ancestors above the home are not checked, because legitimately
+# symlinked system paths (/home -> /usr/home) would make every install refuse.
+assert_state_path_safe() {
+    if [ -L "$service_home" ]; then
+        pr_err "%s is a symlink; refusing to install through it" "$service_home"
+        exit 1
+    fi
+    if [ -L "$state_dir" ]; then
+        pr_err "%s is a symlink; refusing to create or chmod through it" "$state_dir"
+        exit 1
+    fi
+}
+
 do_install() {
+    # Before the download, before the binary, before any root write.
+    assert_state_path_safe
     version="${1:-latest}"
 
     # Refuse BEFORE downloading: an install that runs the internet-facing
