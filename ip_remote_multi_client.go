@@ -1276,12 +1276,24 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 	}
 	// the ad/tracker blocker drops a blocked destination before any route
 	// decision: a blocker match blocks by default, including over the port 25
-	// local route and the local security bypass.
-	if config := self.config.Load(); config.blocker != nil && config.blocker.Enabled() {
-		if addr, ok := ipAssocAddr(ipPath.DestinationIp); ok &&
-			blockerCheck(config.blocker, addr, self.serverNames(addr)) {
-			MessagePoolReturn(packet)
-			return false
+	// local route and the local security bypass. The host lookup is only
+	// consulted when the ip itself does not match, so the common case costs
+	// one range lookup and no allocation.
+	if config := self.config.Load(); config != nil && config.blocker != nil && config.blocker.Enabled() {
+		if addr, ok := ipAssocAddr(ipPath.DestinationIp); ok {
+			blocked := config.blocker.BlockIp(addr)
+			if !blocked && config.serverNameLookup != nil {
+				for _, serverName := range config.serverNameLookup.ServerNames(addr.String()) {
+					if config.blocker.BlockHost(serverName) {
+						blocked = true
+						break
+					}
+				}
+			}
+			if blocked {
+				MessagePoolReturn(packet)
+				return false
+			}
 		}
 	}
 	// Port 25 is a deliberate local-only route and must be selected before
