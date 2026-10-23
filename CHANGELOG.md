@@ -4,6 +4,7 @@
 
 ### Added
 
+- **The TLS ClientHello is a runtime switch** (`tls_hello`): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's TLS ClientHello instead of Go's on new connections, live and without a restart, with `URNETWORK_TLS_HELLO` as the startup default. It affects new connections only: an open session keeps the handshake it made and follows the setting the next time it dials. The Chrome hello is **off by default** while it soaks, so a box that never sets the key keeps Go's hello exactly as before; a persisted `off` beats `URNETWORK_TLS_HELLO=on`, and clearing the key hands the decision back to the environment. The provider logs `⚙️ [control] applied tls_hello=<v> (was <old>)` on each change.
 - **`urnet-tools proxy trim` reports the trim cap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/965>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/966>): with no argument the command reports the effective cap and its source (operator, OOM or thrash), the configured pool size before the cap, how many proxies the cap holds back, and the live counts. `urnet-tools status` carries a `trim` row whenever a cap applies. The provider's effective cap wins over the `proxy_trim` file, and trim state is reported only from a complete pool, so an unreadable `proxy_url.json` cannot understate the pool.
 
 ### Fixed
@@ -23,7 +24,6 @@
 _Patch release on v3.23.0-fix.34.2: the pqe handshake stages and negotiated curves land with dashboard panels, `docker stop` reaches the shutdown path inside a container, lifetime session counters survive a proxy exit, the scheduled blocklist sync covers both tables, the SN25 cost table publishes from the chain, plus the Bittensor doc corrections. Notes: `releases/v3.23.0-fix.34.3.md`._
 
 ### Added
-
 - **PQE handshake stages and negotiated curves** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/944>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/946>): the `[pqe]` line reports `attempts`, `tls_ok`, `verified` and `identity_failed`, plus a per-curve histogram. `/metrics` carries the same data as `urnet_sessions_handshake_total{stage=...}` and `urnet_sessions_curve_total{curve=...}`, and two dashboard panels show both rates. A zero classical count is now explainable instead of ambiguous.
 
 ### Fixed

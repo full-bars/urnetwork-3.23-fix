@@ -315,6 +315,7 @@ var liveEffectKeys = map[string]bool{
 	"h3":                          true,
 	"h3_datagram":                 true,
 	"h3_datagram_send":            true,
+	"tls_hello":                   true,
 	"ip_version":                  true,
 	"h1_plus":                     true,
 	"baseline":                    true,
@@ -378,7 +379,7 @@ func validateControlValue(key, value string) error {
 		if _, err := connect.ParseProxyTargetFamily(value); err != nil {
 			return err
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -500,11 +501,22 @@ var liveDefaults = map[string]string{
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
-func applyLiveDefault(key string) error {
+func applyLiveDefault(key string, scoped ...*controlState) error {
+	state := globalControlState
+	if len(scoped) != 0 && scoped[0] != nil {
+		state = scoped[0]
+	}
 	if key == "h3" {
 		// Clearing the key hands the decision back to URNETWORK_H3, which is
 		// what a restart would use, so the live state matches the persisted one.
 		return applyLiveSideEffect(key, h3DefaultModeName())
+	}
+	if key == "tls_hello" {
+		// The same for the client hello: clearing hands the decision back to
+		// URNETWORK_TLS_HELLO, so `set tls_hello off` on a box whose env says on
+		// is the only way to keep the parrot off across a restart, and a clear
+		// is the way to follow the environment again.
+		return applyLiveSideEffect(key, resolveTlsHelloName(state))
 	}
 	def, ok := liveDefaults[key]
 	if !ok {
@@ -714,7 +726,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key); err != nil {
+			if err := applyLiveDefault(req.Key, state); err != nil {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process
@@ -1099,6 +1111,20 @@ func applyLiveSideEffect(key, value string) error {
 		enabled := strings.EqualFold(value, "on")
 		previous := connect.SetH3DatagramsEnabled(enabled)
 		tlog("⚙️ [control] applied h3_datagram=%s (was %s)\n", value, onOff(previous))
+	case "tls_hello":
+		// The hello is chosen when a connection is dialed (see
+		// connect.SetTlsClientHelloChrome), so a change applies to every new
+		// connection and touches nothing that is already open: an open session
+		// keeps the handshake it made and follows the switch when it next
+		// dials.
+		chrome := strings.EqualFold(value, "on")
+		previous := connect.SetTlsClientHelloChrome(chrome)
+		// say what the switch changes, not only that it changed
+		consequence := "use Go's hello"
+		if chrome {
+			consequence = "present the Chrome hello"
+		}
+		tlog("⚙️ [control] applied tls_hello=%s (was %s) — new connections %s; open ones keep theirs\n", onOff(chrome), onOff(previous), consequence)
 	case "ip_version":
 		return applyIpVersion(value)
 	case "proxy_target_family":
@@ -1392,6 +1418,15 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	// anything. A pooled node keeps the off default.
 	if err := applyLiveSideEffect("h3", resolveH3Mode(state, currentProxyResolution()).String()); err != nil {
 		tlog("[control] failed to apply h3: %s\n", err)
+	}
+	// tls_hello is replayed in BOTH directions, falling back to the startup
+	// default (URNETWORK_TLS_HELLO) when the key was never set: a persisted off
+	// must beat an environment that says on, and an unset key must not leave the
+	// gate at whatever a previous run, another caller or the zero value left it
+	// at. The hello itself is read per dial (connect.SetTlsClientHelloChrome),
+	// so this is enough to make a restart's dials follow the setting.
+	if err := applyLiveSideEffect("tls_hello", resolveTlsHelloName(state)); err != nil {
+		tlog("[control] failed to apply tls_hello: %s\n", err)
 	}
 	if v, ok := state.get("smart_dialer"); ok && strings.EqualFold(v, "on") {
 		if err := applyLiveSideEffect("smart_dialer", v); err != nil {

@@ -583,7 +583,7 @@ func TestNeedsRestart_AutoComputed(t *testing.T) {
 		"fast_auth", "proxy_self_heal",
 		"proxy_url_refresh", "proxy_url_max",
 		"proxy_dead_cleanup_scope", "proxy_dead_cleanup_interval",
-		"node_name", "hot_restart", "h3", "h3_datagram", "h3_datagram_send", "ip_version", "h1_plus",
+		"node_name", "hot_restart", "h3", "h3_datagram", "h3_datagram_send", "ip_version", "h1_plus", "tls_hello",
 	}
 	for _, k := range liveKeys {
 		if needsRestart(k) {

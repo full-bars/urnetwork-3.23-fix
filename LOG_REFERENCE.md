@@ -360,6 +360,21 @@ With `h3_datagram` on and a server that accepted the offer, the line also carrie
 
 ---
 
+## 🧬 TLS ClientHello (`tls_hello` key, `URNETWORK_TLS_HELLO`)
+
+Which ClientHello the normal and resilient dialers present is a control key. It is off by default (Go's hello); `urnet-tools set tls-hello on` switches new connections to Chrome's hello. The switch logs one line per change, and nothing else: a hello is not a connection event, so there is no start, drop or failure line of its own.
+
+```
+⚙️ [control] applied tls_hello=on (was off)
+```
+
+- `⚙️ [control] applied tls_hello=<on|off> (was <old>)` is the control-socket confirmation when the `tls_hello` key is applied live. `was off` on a first `on` is expected: an unset gate presents Go's hello, so it reads as off.
+- It applies to new connections only. A connection already open keeps the handshake it made, so changing the key neither drops a session nor re-handshakes one; the next dial of each path follows the new value. Nothing is counted as a drop.
+- A dial whose tls configuration the Chrome hello cannot carry exactly keeps Go's hello even with `tls_hello on`, and logs nothing: a client certificate, an ECH configuration, a restricted cipher, group or version set, or an `h2` offer on a net/http before Go 1.27.
+- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a clear (or removing the variable) returns it to the Chrome hello.
+
+---
+
 ## 📡 STUN Success Aggregate
 
 The provider reports the result of its STUN probe as one low-noise line. The probe follows the active ICE settings and adds a probe-only Cloudflare endpoint, so a filtered or broken STUN path shows up without turning on verbose logging.
