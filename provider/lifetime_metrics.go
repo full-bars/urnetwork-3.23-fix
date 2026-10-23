@@ -99,11 +99,15 @@ func loadLifetimeMetrics(path string) *lifetimeMetrics {
 	// A store written before the field existed keeps its real totals but has
 	// no recorded start: pin the start to now and say so, rather than
 	// claiming a date the numbers do not cover.
-	if since, perr := time.Parse(time.RFC3339, persisted.Since); perr == nil {
+	if since, perr := time.Parse(time.RFC3339, persisted.Since); perr == nil && !since.IsZero() {
 		lm.Since = since
 		lm.SinceApprox = persisted.SinceApprox
 	} else {
 		lm.SinceApprox = true
+		// Persist the pinned start even if no counter ever moves: otherwise an
+		// idle node never flushes, and every restart re-pins a slightly later
+		// date while the totals stay put.
+		lm.dirty = true
 	}
 	// Anchor the flush throttle to the last real save (not boot time), so a
 	// quick restart doesn't delay the first persistence of new deltas by a
@@ -131,7 +135,7 @@ func sinceLabel(t time.Time, approx bool) string {
 	}
 	label := "since " + clockLabel(t)
 	if approx {
-		label += ", earlier history not recorded"
+		label += ", start approximate, totals include earlier history"
 	}
 	return label
 }
@@ -201,6 +205,12 @@ func (lm *lifetimeMetrics) writeLocked() error {
 	if err := os.MkdirAll(filepath.Dir(lm.path), 0o700); err != nil {
 		return err
 	}
+	// A zero Since must stay empty: time.Time marshals its zero value as
+	// year 1, which would come back as an exact start on the next load.
+	sinceValue := ""
+	if !lm.Since.IsZero() {
+		sinceValue = lm.Since.UTC().Format(time.RFC3339)
+	}
 	blob, err := json.MarshalIndent(struct {
 		PQEOpens      uint64 `json:"pqe_opens"`
 		ClasOpens     uint64 `json:"clas_opens"`
@@ -221,7 +231,7 @@ func (lm *lifetimeMetrics) writeLocked() error {
 		ProxiesLost:   lm.ProxiesLost,
 		BillableBytes: lm.BillableBytes,
 		SavedAt:       time.Now().UTC().Format(time.RFC3339),
-		Since:         lm.Since.UTC().Format(time.RFC3339),
+		Since:         sinceValue,
 		SinceApprox:   lm.SinceApprox,
 	}, "", " ")
 	if err != nil {
