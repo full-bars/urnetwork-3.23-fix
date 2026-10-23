@@ -4,11 +4,17 @@
 
 ### Added
 
+- **The provider can serve as an entry relay (extender v2)** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/971>): the extender library and server with signed records, a trust chain, a directory and feed client, and tcp, quic and dns carriers, plus a feed and gossip composition layer and `host_sleep`. The serving role is opt-in through `URNETWORK_EXTENDER`, runs on a direct slot only, binds tcp 443 before quic 443 and dns 4053, keeps its own identity seed at `.provider.extender.key`, and exports `urnet_extender_*` metrics. Off by default.
+- **A VLESS/Reality client carrier** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/971>): VLESS over tcp, TLS, Reality, WebSocket and HTTP upgrade, with share-link import and export, connection, request and admission limits, and relay statistics.
+- **Lag tickets and measurement ids** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/975>): the protocol gains the lag ticket and report messages, and extenders are named by measurement id.
+- **API additions** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/975>): opt-in auth request observations through the request context, wallet mapping consent calls, and a control-result error reply treated as a refusal.
+- **Egress TTL realism and DoH dial observation** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/976>): the egress TTL can be applied or shadowed on the socket with counters for both modes (ships inactive behind the zero mode), what the resolver dial observed is recorded behind the dial context settings, and the H3 datagram auth negotiator is now actually called, so the connection negotiates the authentication shape the peer accepts.
 - **The TLS ClientHello is a runtime switch** (`tls_hello`): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's TLS ClientHello instead of Go's on new connections, live and without a restart, with `URNETWORK_TLS_HELLO` as the startup default. It affects new connections only: an open session keeps the handshake it made and follows the setting the next time it dials. The Chrome hello is **off by default** while it soaks, so a box that never sets the key keeps Go's hello exactly as before; a persisted `off` beats `URNETWORK_TLS_HELLO=on`, and clearing the key hands the decision back to the environment. The provider logs `⚙️ [control] applied tls_hello=<v> (was <old>)` on each change.
 - **`urnet-tools proxy trim` reports the trim cap** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/965>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/966>): with no argument the command reports the effective cap and its source (operator, OOM or thrash), the configured pool size before the cap, how many proxies the cap holds back, and the live counts. `urnet-tools status` carries a `trim` row whenever a cap applies. The provider's effective cap wins over the `proxy_trim` file, and trim state is reported only from a complete pool, so an unreadable `proxy_url.json` cannot understate the pool.
 
 ### Fixed
 
+- **A redirect could leak its headers and method into a later attempt** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/976>): the redirect policy is scoped to one request now.
 - **URL proxies were held back for an hour behind proxies that never authenticate** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/973>): the warmup gate released on a ratio over every registered proxy, so a node with a dead proxy tail never crossed the gate and only a 60-minute backstop ended the hold, while the URL fetcher stayed parked behind the same flag. The hold is now bounded to five minutes from the start in both the reload gate and the fetcher, and the reload fires when the grace expires.
 
 ### Changed
@@ -18,6 +24,11 @@
 - **The live-numbers job signs its commits** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/968>): the scheduled cost-table refresh refuses to push an unsigned commit, runs twice an hour off-peak and on pushes to `main`, and the wiki mirror runs every time.
 - **The client-id reuse checks restart the provider and fail on an empty store** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/955>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/957>): the smoke and soak checks stop and start the provider and diff the full stored client-id list instead of comparing one decoded JWT.
 - **The documentation links at the wiki and drops the phantom commands** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/960>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/961>, <https://github.com/full-bars/urnetwork-3.23-fix/pull/963>): wiki links replace raw markdown paths, the SN25 table shows dollar figures, and `urnet-tools auto-update daily|weekly|monthly|off` replaces the auto-update commands that never existed.
+
+### Security
+
+- **The packet path consults the ad and tracker blocker** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/974>): a destination in the blocker's ranges, or whose observed server names are in its host set, is dropped before the local-route, SMTP-guard and policy decisions, and the host lookup runs only when the ip range misses. The blocker is installed through `SetBlocker` by the device and shared with the dns path; nothing installs one on this fork yet, so traffic is unaffected until that wiring lands. The shipped tables are unchanged.
+- **The blocklist generator is a Go program** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/975>): it replaces the shell pipeline, preserves CIDR masks, validates octets, parses the abuse.ch csv feeds, enforces per-feed minimum counts and subtracts reserved space. It runs only through `go:generate`, is never invoked by the build, and refuses a target without a do-not-edit marker unless forced.
 
 ## [v3.23.0-fix.34.3]
 
