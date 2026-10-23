@@ -601,6 +601,13 @@ func dialExtenderQuic(
 		return nil, nil, err
 	}
 	closers = append(closers, func() { quicConn.CloseWithError(0, "") })
+	// with no deadline a canceled dial would block in ReadResponse forever, so
+	// abort the handshake by closing the connection; the hook is stopped once
+	// the handshake completes and the stream belongs to the caller
+	stopCancel := context.AfterFunc(ctx, func() {
+		quicConn.CloseWithError(0, "")
+	})
+	defer stopCancel()
 	flight := quicSendFlightForConn(quicConn)
 	flight.bind(quicConn)
 
@@ -662,6 +669,8 @@ func dialExtenderQuic(
 	if err := writer.SetWriteDeadline(time.Time{}); err != nil {
 		return nil, nil, err
 	}
+
+	stopCancel()
 
 	success = true
 	return newStreamConn(
