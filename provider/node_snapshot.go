@@ -114,6 +114,7 @@ type SnapshotProxies struct {
 	// effective cap on running proxies (0 = none) and TrimCapSource says who
 	// set it (operator, oomcap, thrashcap). Omitted before the first trim
 	// decision, so a reader cannot mistake "not measured yet" for "no cap".
+	TrimReported  bool   `json:"trim_reported,omitempty"`
 	Configured    int    `json:"configured,omitempty"`
 	TrimCap       int    `json:"trim_cap,omitempty"`
 	TrimCapSource string `json:"trim_cap_source,omitempty"`
@@ -761,6 +762,7 @@ func productionSnapshotSources() snapshotSources {
 			}
 			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead)}
 			if desired, cap, source, ok := currentTrimSelection(); ok {
+				sp.TrimReported = true
 				sp.Configured = desired
 				sp.TrimCap = cap
 				sp.TrimCapSource = source

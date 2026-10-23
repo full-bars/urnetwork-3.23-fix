@@ -36,7 +36,7 @@ func TestProxyTrimNoArgsReportsCapAndReduction(t *testing.T) {
 	p := trimProvider(t, "500\n")
 	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{
 		Up: 480, Connecting: 12, Dead: 8,
-		Configured: 1200, TrimCap: 500, TrimCapSource: "operator",
+		TrimReported: true, Configured: 1200, TrimCap: 500, TrimCapSource: "operator",
 	}}, nil)
 
 	out := captureStdout(t, func() {
@@ -57,7 +57,7 @@ func TestProxyTrimNoArgsReportsCapAndReduction(t *testing.T) {
 
 func TestProxyTrimNoArgsReportsNoCap(t *testing.T) {
 	p := trimProvider(t, "")
-	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 1200, Configured: 1200}}, nil)
+	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 1200, TrimReported: true, Configured: 1200}}, nil)
 
 	out := captureStdout(t, func() {
 		if err := printTrimStatus(p); err != nil {
@@ -80,7 +80,7 @@ func TestProxyTrimNoArgsReportsOffAndGarbage(t *testing.T) {
 		{"0\n", "Trim cap: none, this provider runs its full pool"},
 	} {
 		p := trimProvider(t, tc.file)
-		stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 3, Configured: 3}}, nil)
+		stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{Up: 3, TrimReported: true, Configured: 3}}, nil)
 		out := captureStdout(t, func() {
 			if err := printTrimStatus(p); err != nil {
 				t.Fatal(err)
@@ -121,5 +121,49 @@ func TestProxyTrimNoArgsGarbageFileOnOldProvider(t *testing.T) {
 	})
 	if !strings.Contains(out, `Trim cap: none ("lots" in`) {
 		t.Errorf("garbage file not reported:\n%s", out)
+	}
+}
+
+// An unreadable operator file must not hide a cap the provider is enforcing:
+// the provider's report is authoritative and needs no file access.
+func TestProxyTrimNoArgsUnreadableFileWithReportingProvider(t *testing.T) {
+	p := trimProvider(t, "")
+	// A directory at the file path makes the read fail for a reason other
+	// than "not set".
+	if err := os.Mkdir(filepath.Join(p.StateDir, "proxy_trim"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{
+		Up: 500, TrimReported: true, Configured: 1200, TrimCap: 500, TrimCapSource: "operator",
+	}}, nil)
+
+	out := captureStdout(t, func() {
+		if err := printTrimStatus(p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "Trim cap: 500 running proxies (operator cap)") {
+		t.Errorf("provider cap not reported over an unreadable file:\n%s", out)
+	}
+	if strings.Contains(out, "could not read") {
+		t.Errorf("reported a file error even though the provider answered:\n%s", out)
+	}
+}
+
+// A reporting provider with an empty pool still counts as reporting: the
+// presence flag keeps "no cap on zero proxies" from looking like "unreported".
+func TestProxyTrimNoArgsReportedEmptyPool(t *testing.T) {
+	p := trimProvider(t, "500")
+	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{TrimReported: true}}, nil)
+	out := captureStdout(t, func() {
+		if err := printTrimStatus(p); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if !strings.Contains(out, "Trim cap: none, this provider runs its full pool") {
+		t.Errorf("reported provider with an empty pool misread:\n%s", out)
+	}
+	if strings.Contains(out, "500") {
+		t.Errorf("fell back to the file despite a provider report:\n%s", out)
 	}
 }
