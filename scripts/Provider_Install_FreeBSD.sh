@@ -452,8 +452,11 @@ do_install() {
     # allowed over a running image, and never leaves a half-written binary.
     # Staging an empty or non-executable file produces a provider that fails at
     # exec time, after the old binary has already been renamed away.
-    if [ ! -s "$provider_src" ] || [ ! -x "$provider_src" ]; then
-        pr_err "Refusing to install %s: not a non-empty executable" "$provider_src"
+    # -f and -s, not -x: the binary is chmod 755 after staging, so a tarball
+    # that lost the exec bit installs fine, while a directory or an empty file
+    # still has to be refused before it replaces a working binary.
+    if [ ! -f "$provider_src" ] || [ ! -s "$provider_src" ]; then
+        pr_err "Refusing to install %s: not a non-empty regular file" "$provider_src"
         rm -rf "$tmpdir"; exit 1
     fi
     staged="$provider_bin.new.$$"
