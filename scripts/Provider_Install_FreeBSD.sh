@@ -68,6 +68,14 @@ resolve_service_user() {
         printf '%s\n' "$SERVICE_USER_OVERRIDE"
         return
     fi
+    if [ -n "${URNETWORK_USER:-}" ]; then
+        printf '%s\n' "$URNETWORK_USER"
+        return
+    fi
+    if id -u urnetwork >/dev/null 2>&1; then
+        printf '%s\n' "urnetwork"
+        return
+    fi
     if [ -n "${SUDO_USER:-}" ]; then
         printf '%s\n' "$SUDO_USER"
         return
@@ -110,12 +118,12 @@ user_shell() {
 service_name="urnetwork"
 rc_script="/usr/local/etc/rc.d/$service_name"
 
-# Paths come from the SERVICE user's home, not $HOME. Under sudo $HOME may
-# still be root's, and an install under /root would be unreadable by the
-# account the provider actually runs as.
+# Paths: the install tree is root-owned at /usr/local/libexec/urnetwork-provider
+# (with chmod go-w), while the state directory (~/.urnetwork) lives in the
+# service user's home.
 service_user="$(resolve_service_user)"
 service_home="$(user_home "$service_user")"
-install_path="$service_home/.local/share/urnetwork-provider"
+install_path="/usr/local/libexec/urnetwork-provider"
 provider_bin="$install_path/bin/urnetwork"
 state_dir="$service_home/.urnetwork"
 github_api="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
@@ -183,7 +191,12 @@ install_wrapper_tool() {
     _td="$1"
     curl -fsSL "$github_raw/scripts/Provider_Install_FreeBSD.sh" -o "$_td/urnet-tools.wrapper" 2>/dev/null || return 1
     chmod 755 "$_td/urnet-tools.wrapper"
-    mv -f "$_td/urnet-tools.wrapper" "$install_path/bin/urnet-tools"
+    priv mv -f "$_td/urnet-tools.wrapper" "$install_path/bin/urnet-tools"
+    # mv keeps the invoker's ownership when the temp dir is on the same
+    # filesystem, so the owner must be set explicitly: see do_install.
+    priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
+        pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
+    priv chmod 755 "$install_path/bin/urnet-tools"
 }
 
 # --- rc.d script ---
@@ -264,10 +277,30 @@ logdir="/var/log/$service_name"
 
 ${service_name}_running_pid()
 {
-    [ -f "\$pidfile" ] || return 1
-    _pid="\$(cat "\$pidfile" 2>/dev/null)"
+    # Print the live provider pid, or nothing when it is not running.
+    # daemon(8) opens the pidfile with a hard-coded mode 0600 (pidfile_open
+    # in daemon.c, not configurable through -p/-P) and start runs as root, so
+    # an unprivileged one*status cannot read the file at all. When it is
+    # unreadable, fall back to scanning the process table.
+    if [ -f "\$pidfile" ] && [ -r "\$pidfile" ]; then
+        _pid="\$(cat "\$pidfile" 2>/dev/null)"
+        [ -n "\$_pid" ] || return 1
+        # ps, not kill -0: kill -0 returns EPERM (non-zero, same as ESRCH) for a
+        # process owned by another user, so an unprivileged service status would
+        # report "not running" while the provider is up. ps sees every process,
+        # so a pid ps lists is alive regardless of who owns it.
+        [ -n "\$(ps -p "\$_pid" -o pid= 2>/dev/null)" ] || return 1
+        echo "\$_pid"
+        return 0
+    fi
+    # -U selects processes by username; -u would only select the output
+    # format. The match is done in awk on the argv fields on purpose: a
+    # "grep -F '<binary> provide'" in this same pipeline carries the search
+    # string in its own argv, and "ps -U <service user>" lists that grep when
+    # the caller is the service user. The grep then matches itself and a
+    # stopped provider reports as running (and start skips a real start).
+    _pid="\$(ps -U "\${${service_name}_user}" -o pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
     [ -n "\$_pid" ] || return 1
-    kill -0 "\$_pid" 2>/dev/null || return 1
     echo "\$_pid"
 }
 
@@ -279,7 +312,16 @@ ${service_name}_start()
     fi
     rm -f "\$pidfile"
     mkdir -p "\$logdir"
-    chown \${${service_name}_user} "\$logdir"
+    chown root:wheel "\$logdir" 2>/dev/null || true
+    chmod 0755 "\$logdir" 2>/dev/null || true
+    # Pre-create stdout.log as a regular file owned by the service user.
+    # Must be a regular file (not a symlink) to prevent privilege escalation
+    # via planted symlinks. If it exists and is a symlink, refuse to start.
+    if [ -L "\$logdir/stdout.log" ]; then
+        echo "Refusing to start: \$logdir/stdout.log is a symlink (privilege escalation risk)."
+        return 1
+    fi
+    install -o \${${service_name}_user} -m 0640 /dev/null "\$logdir/stdout.log" 2>/dev/null || true
     echo "Starting $service_name."
     \$daemon -f -t $service_name -p "\$pidfile" -o "\$logdir/stdout.log" \\
         -u \${${service_name}_user} \\
@@ -337,22 +379,14 @@ assert_state_path_safe() {
         pr_err "%s is a symlink; refusing to create or chmod through it" "$state_dir"
         exit 1
     fi
-    # In this layout the install tree lives INSIDE the service user's home
-    # ($service_home/.local/share/urnetwork-provider), so the directories above
-    # it are user-controlled too. A symlinked .local, share or install_path
-    # sends root's mkdir, cp and mv somewhere else just as effectively.
-    _p="$service_home/.local"
-    while :; do
-        if [ -L "$_p" ]; then
-            pr_err "%s is a symlink; refusing to install through it" "$_p"
-            exit 1
-        fi
-        [ "$_p" = "$install_path" ] && break
-        case "$install_path" in
-            "$_p"/*) _p="$_p/$(printf '%s' "${install_path#"$_p"/}" | cut -d/ -f1)" ;;
-            *) break ;;
-        esac
-    done
+    # In this layout the install tree is root-owned at /usr/local/libexec, so
+    # its ancestors are system paths rather than the service user's. The tree
+    # itself must still not be a symlink: root's mkdir, cp and mv would
+    # otherwise be redirected somewhere else.
+    if [ -L "$install_path" ]; then
+        pr_err "%s is a symlink; refusing to install through it" "$install_path"
+        exit 1
+    fi
 }
 
 do_install() {
@@ -418,8 +452,8 @@ do_install() {
         *)             pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
     esac
 
-    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
-    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag.tar.gz"
+    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag-freebsd-$goarch.tar.gz"
+    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag-freebsd-$goarch.tar.gz"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
@@ -445,7 +479,11 @@ do_install() {
         exit 1
     fi
 
-    mkdir -p "$install_path/bin"
+    # The tree is root-owned at /usr/local/libexec, which a normal user cannot
+    # create. Every write below goes through priv so a non-root install
+    # elevates instead of failing at the first mkdir. (This was a regression
+    # from moving the tree out of the service user's home.)
+    priv mkdir -p "$install_path/bin" || { pr_err "Failed to create %s" "$install_path"; rm -rf "$tmpdir"; exit 1; }
     # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
@@ -459,17 +497,17 @@ do_install() {
         pr_err "Refusing to install %s: not a non-empty regular file" "$provider_src"
         rm -rf "$tmpdir"; exit 1
     fi
-    staged="$provider_bin.new.$$"
-    cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
-    chmod 755 "$staged"
-    mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
+    staged="$install_path/bin/.urnetwork.new.$$"
+    priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
+    priv chmod 755 "$staged"
+    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
 
-    # Same rename-not-follow rule as the binary above. The version file lives
-    # in a directory the service user can write to, so a symlink planted at
-    # that name would redirect root's write. Write beside it and rename over
+    # Same rename-not-follow rule as the binary above. A symlink planted at the
+    # version name would redirect the write, so stage beside it and rename over
     # it: rename replaces the entry instead of following it.
     ver_tmp="$install_path/.version.new.$$"
-    printf '%s\n' "$tag" > "$ver_tmp" && mv -f "$ver_tmp" "$install_path/version"
+    printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
+        priv mv -f "$ver_tmp" "$install_path/version"
 
     # Install the tool: the Go urnet-tools binary shipped as a release asset,
     # digest-verified; fall back to this shell script for releases that
@@ -518,8 +556,18 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 actual=""
             fi
             if [ -n "$actual" ] && [ "$actual" = "$tool_digest" ]; then
-                mv -f "$tmpdir/$tool_asset" "$install_path/bin/urnet-tools"
-                chmod 755 "$install_path/bin/urnet-tools"
+                priv mv -f "$tmpdir/$tool_asset" "$install_path/bin/urnet-tools"
+                # curl downloaded the asset as the INVOKING user, and mv is a
+                # rename (owner preserved) whenever $tmpdir shares the
+                # filesystem, so the owner has to be set here rather than
+                # inherited. The tool is run by root — `sudo urnet-tools
+                # update` and the weekly auto-update entry — so a
+                # SUDO_USER-owned copy would let the service user rewrite a
+                # binary root executes. The chown -R below is deliberately
+                # gated on id -u 0 and does not run on this sudo path.
+                priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
+                    pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
+                priv chmod 755 "$install_path/bin/urnet-tools"
             else
                 pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
                 install_wrapper_tool "$tmpdir" || true
@@ -536,22 +584,33 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
         install_wrapper_tool "$tmpdir" || true
     fi
 
-    # The rc.d script and rc.conf are ROOT-owned; the files the SERVICE user
-    # must read are not. Under sudo the download and copy ran as root, so hand
-    # the install and state directories to the service user or the provider
-    # starts as an account that cannot read its own binary.
-    if [ "$(id -u)" = "0" ] && [ "$service_user" != "root" ]; then
-        chown -R "$service_user" "$install_path" 2>/dev/null || true
-        # Re-check here, not only at the top of do_install: the service user
-        # can replace the directory with a symlink between the two, and these
-        # are the root writes that would follow it. -h keeps the recursive
-        # chown from dereferencing anything that appears.
-        if [ -L "$state_dir" ]; then
-            pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
-            rm -rf "$tmpdir"; exit 1
+    # The install tree stays ROOT-OWNED and group/other-writable-never. The
+    # provider binary is executed by root on every hot-swap and by the rc.d
+    # script on restart, so a service-user-writable binary is a privilege
+    # boundary the installer must not create. Only the STATE directory belongs
+    # to the service user: that is where its own config and JWT live.
+    if [ "$(id -u)" = "0" ]; then
+        if [ "$service_user" != "root" ]; then
+            # Re-check here, not only at the top of do_install: the service user
+            # controls this directory and can replace it with a symlink between
+            # the two, and these are the root writes that would follow it. -h
+            # keeps the recursive chown from dereferencing anything that
+            # appears.
+            if [ -L "$state_dir" ]; then
+                pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
+                rm -rf "$tmpdir"; exit 1
+            fi
+            mkdir -p "$state_dir"
+            chown -R -h "$service_user" "$state_dir" 2>/dev/null || true
+            chmod 700 "$state_dir" 2>/dev/null || true
         fi
-        mkdir -p "$state_dir"
-        chown -R -h "$service_user" "$state_dir" 2>/dev/null || true
+        chown -R root:wheel "$install_path" 2>/dev/null || \
+            chown -R root "$install_path" 2>/dev/null || true
+        chmod -R go-w "$install_path" 2>/dev/null || true
+        # The binaries must stay executable by the service user while the
+        # directories above them are not writable by anyone else.
+        chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
+        [ -f "$provider_bin" ] && chmod 755 "$provider_bin" 2>/dev/null || true
     fi
 
     if [ "$(id -u)" != "0" ]; then
@@ -711,12 +770,41 @@ do_update() {
     pr_info "Update complete."
 }
 
+# write_state_flag sets a flag file (on/off) under state_dir.
+#
+# state_dir lives in the service user's home, so under sudo the writer may
+# be root while the directory is user-controlled: a symlink planted at the
+# flag path would redirect a root write anywhere on the filesystem. Refuse
+# a symlink outright, and write through a temp file + rename(2) — rename
+# replaces the destination dirent and never follows a trailing symlink, so
+# even a race cannot turn the final step into an arbitrary write. 0644
+# matches what a plain printf > would have created (umask 022), keeping
+# the flag readable by the service user after a root run.
+write_state_flag() {
+    _flag="$state_dir/$1"
+    _val="$2"
+    if [ -h "$_flag" ]; then
+        pr_err "refusing to write %s: it is a symlink" "$_flag"
+        return 1
+    fi
+    mkdir -p "$state_dir"
+    _tmp=$(mktemp "$state_dir/.flag.XXXXXX") || {
+        pr_err "cannot create temp file under %s" "$state_dir"
+        return 1
+    }
+    if ! { printf '%s\n' "$_val" > "$_tmp" && chmod 0644 "$_tmp" && mv -f "$_tmp" "$_flag"; }; then
+        rm -f "$_tmp"
+        pr_err "cannot write %s" "$_flag"
+        return 1
+    fi
+}
+
 do_hot_restart() {
     mode="${1:-}"
     file="$state_dir/hot_restart"
     case "$mode" in
-        on)    mkdir -p "$state_dir"; printf '%s\n' "on"  > "$file"; pr_info "hot-restart enabled" ;;
-        off)   mkdir -p "$state_dir"; printf '%s\n' "off" > "$file"; pr_info "hot-restart disabled" ;;
+        on)    write_state_flag hot_restart on  || exit 1; pr_info "hot-restart enabled" ;;
+        off)   write_state_flag hot_restart off || exit 1; pr_info "hot-restart disabled" ;;
         status|"")
             if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "on" ]; then
                 pr_info "hot-restart: on"
@@ -786,8 +874,8 @@ case "$operation" in
     self-heal)
         file="$state_dir/proxy_self_heal"
         case "${1:-}" in
-            on) mkdir -p "$state_dir"; printf '%s\n' "on" > "$file"; pr_info "Self-heal enabled" ;;
-            off) mkdir -p "$state_dir"; printf '%s\n' "off" > "$file"; pr_info "Self-heal disabled" ;;
+            on) write_state_flag proxy_self_heal on  || exit 1; pr_info "Self-heal enabled" ;;
+            off) write_state_flag proxy_self_heal off || exit 1; pr_info "Self-heal disabled" ;;
             status|"")
                 if [ -f "$file" ] && [ "$(cat "$file" 2>/dev/null)" = "on" ]; then
                     pr_info "self-heal: on"
