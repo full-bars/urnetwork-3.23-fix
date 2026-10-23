@@ -121,6 +121,22 @@ type extenderRoleConfig struct {
 	listen            func(network string, address string) (net.Listener, error)
 	listenPacket      func(network string, address string) (net.PacketConn, error)
 	forwardDialer     *net.Dialer
+	// allowedHosts is the forward allow list. Empty refuses every forward
+	// request, which is the server's default and upstream's network-space
+	// behaviour; an open provider names its hosts here.
+	allowedHosts []string
+}
+
+// extenderAllowedHostsFromEnv reads the comma-separated forward allow list.
+func extenderAllowedHostsFromEnv(getenv func(string) string) []string {
+	var allowedHosts []string
+	for _, host := range strings.Split(getenv("URNETWORK_EXTENDER_ALLOWED_HOSTS"), ",") {
+		host = strings.TrimSpace(strings.ToLower(host))
+		if host != "" {
+			allowedHosts = append(allowedHosts, host)
+		}
+	}
+	return allowedHosts
 }
 
 func defaultExtenderRoleConfig() extenderRoleConfig {
@@ -135,6 +151,7 @@ func defaultExtenderRoleConfig() extenderRoleConfig {
 			},
 		},
 		dnsPrivilegedPort: extenderDnsPrivilegedPortRequested(os.Getenv),
+		allowedHosts:      extenderAllowedHostsFromEnv(os.Getenv),
 		retryInterval:     extenderTcpRetryInterval,
 		listen:            net.Listen,
 		listenPacket:      net.ListenPacket,
@@ -242,6 +259,9 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 	}
 	if config.listenPacket == nil {
 		config.listenPacket = net.ListenPacket
+	}
+	if len(config.allowedHosts) == 0 {
+		tlog("[extender] no forward hosts configured (URNETWORK_EXTENDER_ALLOWED_HOSTS); every forward request will be refused\n")
 	}
 	if config.forwardDialer == nil {
 		config.forwardDialer = &net.Dialer{
@@ -378,6 +398,13 @@ func (r *extenderRole) run() {
 			case err := <-primaryErr:
 				tcpTimer.Stop()
 				r.retireServer(primary)
+				// the recovered tcp carrier holds 443 too: retiring only the
+				// primary would leave it orphaned and the restart in EADDRINUSE
+				if tcpServer != nil {
+					r.retireServer(tcpServer)
+					tcpServer = nil
+					tcpErr = nil
+				}
 				r.mu.Lock()
 				r.note = fmt.Sprintf("primary serve ended: %v", err)
 				r.mu.Unlock()
@@ -523,7 +550,7 @@ func (r *extenderRole) newServer(ports map[int][]connect.ExtenderConnectMode, he
 	return extender.NewExtenderServer(
 		r.ctx,
 		nil,
-		nil,
+		r.config.allowedHosts,
 		ports,
 		r.config.forwardDialer,
 		settings,
