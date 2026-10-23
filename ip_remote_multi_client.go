@@ -11,6 +11,7 @@ import (
 	"fmt"
 	"math"
 	mathrand "math/rand"
+	"net/netip"
 	"slices"
 	"strings"
 
@@ -426,6 +427,8 @@ type multiClientConfig struct {
 	performanceProfile  *PerformanceProfile
 	localSecurityBypass bool
 	serverNameLookup    ServerNameLookup
+	// the ad/tracker blocker consulted in the egress decision (nil = none)
+	blocker Blocker
 }
 
 type RemoteUserNatMultiClient struct {
@@ -533,6 +536,7 @@ func NewRemoteUserNatMultiClient(
 		performanceProfile:  multiClient.overrideAllowDirect(settings.DefaultPerformanceProfile),
 		localSecurityBypass: false,
 		serverNameLookup:    nil,
+		blocker:             nil,
 	})
 
 	multiClient.windows[WindowTypeQuality] = newMultiClientWindow(
@@ -702,6 +706,7 @@ func (self *RemoteUserNatMultiClient) SetPerformanceProfile(performanceProfile *
 			performanceProfile:  performanceProfile,
 			localSecurityBypass: prev.localSecurityBypass,
 			serverNameLookup:    prev.serverNameLookup,
+			blocker:             prev.blocker,
 		})
 	}()
 	for _, window := range self.windows {
@@ -719,6 +724,7 @@ func (self *RemoteUserNatMultiClient) SetLocalSecurityBypass(localSecurityBypass
 		performanceProfile:  prev.performanceProfile,
 		localSecurityBypass: localSecurityBypass,
 		serverNameLookup:    prev.serverNameLookup,
+		blocker:             prev.blocker,
 	})
 }
 
@@ -736,7 +742,51 @@ func (self *RemoteUserNatMultiClient) SetServerNameLookup(serverNameLookup Serve
 		performanceProfile:  prev.performanceProfile,
 		localSecurityBypass: prev.localSecurityBypass,
 		serverNameLookup:    serverNameLookup,
+		blocker:             prev.blocker,
 	})
+}
+
+// SetBlocker installs (or clears, with nil) the ad/tracker Blocker consulted
+// by the egress decision: a destination whose ip is in the blocker's ranges,
+// or whose own observed server names are in its host set, is dropped. the
+// blocker is shared with the dns path and owned by the device; enabling and
+// disabling happen on the blocker itself and take effect immediately. Safe to
+// call at runtime.
+func (self *RemoteUserNatMultiClient) SetBlocker(blocker Blocker) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	prev := self.config.Load()
+	self.config.Store(&multiClientConfig{
+		performanceProfile:  prev.performanceProfile,
+		localSecurityBypass: prev.localSecurityBypass,
+		serverNameLookup:    prev.serverNameLookup,
+		blocker:             blocker,
+	})
+}
+
+// serverNames returns the destination's observed server names, when a lookup
+// is installed.
+func (self *RemoteUserNatMultiClient) serverNames(addr netip.Addr) []string {
+	config := self.config.Load()
+	if config == nil || config.serverNameLookup == nil {
+		return nil
+	}
+	return config.serverNameLookup.ServerNames(addr.String())
+}
+
+// blockerCheck is the destination-scoped blocker match: the destination ip
+// against the blocked ranges, and each of the destination's own observed
+// server names against the blocked host set.
+func blockerCheck(blocker Blocker, addr netip.Addr, serverNames []string) bool {
+	if blocker.BlockIp(addr) {
+		return true
+	}
+	for _, serverName := range serverNames {
+		if blocker.BlockHost(serverName) {
+			return true
+		}
+	}
+	return false
 }
 
 // ordered by choice descending
@@ -1223,6 +1273,28 @@ func (self *RemoteUserNatMultiClient) SendPacket(
 		self.log.Infof("[multi]send bad packet = %s\n", err)
 		MessagePoolReturn(packet)
 		return false
+	}
+	// the ad/tracker blocker drops a blocked destination before any route
+	// decision: a blocker match blocks by default, including over the port 25
+	// local route and the local security bypass. The host lookup is only
+	// consulted when the ip itself does not match, so the common case costs
+	// one range lookup and no allocation.
+	if config := self.config.Load(); config != nil && config.blocker != nil && config.blocker.Enabled() {
+		if addr, ok := ipAssocAddr(ipPath.DestinationIp); ok {
+			blocked := config.blocker.BlockIp(addr)
+			if !blocked && config.serverNameLookup != nil {
+				for _, serverName := range config.serverNameLookup.ServerNames(addr.String()) {
+					if config.blocker.BlockHost(serverName) {
+						blocked = true
+						break
+					}
+				}
+			}
+			if blocked {
+				MessagePoolReturn(packet)
+				return false
+			}
+		}
 	}
 	// Port 25 is a deliberate local-only route and must be selected before
 	// CFAA inspection (which classifies privileged SMTP as a drop). Ports
