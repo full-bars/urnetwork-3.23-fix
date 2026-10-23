@@ -501,7 +501,11 @@ var liveDefaults = map[string]string{
 }
 
 // applyLiveDefault reapplies the runtime default for a live-applied key.
-func applyLiveDefault(key string) error {
+func applyLiveDefault(key string, scoped ...*controlState) error {
+	state := globalControlState
+	if len(scoped) != 0 && scoped[0] != nil {
+		state = scoped[0]
+	}
 	if key == "h3" {
 		// Clearing the key hands the decision back to URNETWORK_H3, which is
 		// what a restart would use, so the live state matches the persisted one.
@@ -512,7 +516,7 @@ func applyLiveDefault(key string) error {
 		// URNETWORK_TLS_HELLO, so `set tls_hello off` on a box whose env says on
 		// is the only way to keep the parrot off across a restart, and a clear
 		// is the way to follow the environment again.
-		return applyLiveSideEffect(key, resolveTlsHelloName(globalControlState))
+		return applyLiveSideEffect(key, resolveTlsHelloName(state))
 	}
 	def, ok := liveDefaults[key]
 	if !ok {
@@ -722,7 +726,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key); err != nil {
+			if err := applyLiveDefault(req.Key, state); err != nil {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process
