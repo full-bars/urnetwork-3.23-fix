@@ -168,6 +168,10 @@ var dohResolverCounters [dohPathCount][dohScopeCount]dohResolverCounter
 
 // Count every completion and return an immutable snapshot when emission is due.
 func (self *dohResolverCounter) record(outcome dohResolverOutcome, now time.Time) ([dohOutcomeCount]uint64, bool) {
+	if outcome >= dohOutcomeCount {
+		// a future outcome must not index past the array
+		outcome = dohOutcomeFailed
+	}
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	self.counts[outcome]++
@@ -181,6 +185,9 @@ func (self *dohResolverCounter) record(outcome dohResolverOutcome, now time.Time
 // Publish before logging so detached dials see the terminal state even when a
 // logger is slow. Snapshot counts are exact; emitted line counts are sampled.
 func (self *dohResolverObservation) finish(log Logger, outcome dohResolverOutcome) {
+	if self == nil || self.path >= dohPathCount || self.scope >= dohScopeCount {
+		return
+	}
 	self.outcome.Store(uint32(outcome))
 	counts, emit := dohResolverCounters[self.path][self.scope].record(outcome, time.Now())
 	if emit {
@@ -227,10 +234,12 @@ func dohDialObservationLine(ctx context.Context, path dohDialPath, address strin
 		result = "error"
 	}
 	owner, scope, outcome := "unknown", "unknown", "unknown"
-	if observation, ok := ctx.Value(dohResolverObservationKey{}).(*dohResolverObservation); ok {
-		owner = observation.path.String()
-		scope = observation.scope.String()
-		outcome = dohResolverOutcome(observation.outcome.Load()).String()
+	if ctx != nil {
+		if observation, ok := ctx.Value(dohResolverObservationKey{}).(*dohResolverObservation); ok && observation != nil {
+			owner = observation.path.String()
+			scope = observation.scope.String()
+			outcome = dohResolverOutcome(observation.outcome.Load()).String()
+		}
 	}
 	// Retain only fixed legacy error tokens so an older monitor still sees
 	// timeout/refusal pages during a rolling producer/parser deployment.
