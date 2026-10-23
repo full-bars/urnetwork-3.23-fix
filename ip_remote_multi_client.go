@@ -2823,6 +2823,8 @@ func (self *multiClientWindow) expand(
 				self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
 				self.monitor.AddProviderEvent(args.ClientId, ProviderStateEvaluationFailed)
 			} else {
+				client.windowType = self.windowType
+				recordPathChannelCreated(self.windowType)
 
 				// send an initial ping on the client and let the ack timeout close it
 				pingDone, pingCancel := context.WithCancel(self.ctx)
@@ -3233,6 +3235,9 @@ type multiClientChannel struct {
 	ingressSecurityPolicy       SecurityPolicy
 	performanceProfile          *PerformanceProfile
 	createTime                  time.Time
+	windowType                  WindowType
+	// set once, when the channel first reaches its provider
+	firstConnectAt atomic.Int64
 
 	settings *MultiClientSettings
 
@@ -3486,6 +3491,22 @@ func (self *multiClientChannel) addDialFailure(destination string) {
 // flow that received its first inbound data). A single success in the window
 // clears dialStarved.
 func (self *multiClientChannel) addConnectSuccess() {
+	// once per channel: how long it took to become usable, and which window it
+	// serves. One compare-and-swap, so the per-packet path is untouched.
+	if self.firstConnectAt.CompareAndSwap(0, time.Now().UnixNano()) {
+		elapsed := time.Since(self.createTime)
+		recordPathChannelConnected(self.windowType, elapsed)
+		providerId := fmt.Sprintf("%s", self.args.ClientId)
+		if 8 < len(providerId) {
+			providerId = providerId[:8]
+		}
+		loggerOrDefault(self.log).Infof(
+			"[path] %s channel connected in %s (provider %s)\n",
+			pathDiscoveryWindowName(self.windowType),
+			elapsed.Round(time.Millisecond),
+			providerId,
+		)
+	}
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 

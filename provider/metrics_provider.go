@@ -612,6 +612,9 @@ func providerExtraMetrics() string {
 	writeNodeGauges(&b, reason, collectResources())
 	writeResourceSignalGauges(&b, readBaselineGC(time.Now()), readBaselineNet())
 
+	// --- Provider path discovery ---
+	b.WriteString(connect.PathDiscoveryMetricsText())
+
 	return b.String()
 }
 
