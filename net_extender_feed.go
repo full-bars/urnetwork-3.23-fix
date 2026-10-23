@@ -8,6 +8,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"google.golang.org/protobuf/proto"
@@ -128,6 +129,9 @@ type ExtenderFeedStream struct {
 	reader    *bufio.Reader
 	response  *protocol.ExtenderResponse
 	closeOnce sync.Once
+	// identifies the read a cancel hook belongs to: a hook from a previous
+	// Next must not arm a deadline on a later read
+	readGeneration atomic.Uint64
 }
 
 // Opens the feed service on one extender and sends the request (A8, D4). The
@@ -190,6 +194,7 @@ func (self *ExtenderFeedStream) Next(ctx context.Context) (*protocol.ExtenderFee
 	// hook ran first it would arm an immediate deadline that the deadline set
 	// below would overwrite, leaving a canceled read blocked until the frame
 	// arrives
+	generation := self.readGeneration.Add(1)
 	if deadline, ok := ctx.Deadline(); ok {
 		if err := self.conn.SetReadDeadline(deadline); err != nil {
 			return nil, err
@@ -200,7 +205,10 @@ func (self *ExtenderFeedStream) Next(ctx context.Context) (*protocol.ExtenderFee
 	// cancellation is delivered as an immediate read deadline, which is the
 	// only way to interrupt a blocked stream read
 	stopCancel := context.AfterFunc(ctx, func() {
-		self.conn.SetReadDeadline(time.Now())
+		// a hook from an earlier Next must not touch a later read
+		if self.readGeneration.Load() == generation {
+			self.conn.SetReadDeadline(time.Now())
+		}
 	})
 	defer stopCancel()
 	frame, err := ReadExtenderFeedFrame(self.reader)
