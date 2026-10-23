@@ -1119,7 +1119,12 @@ func applyLiveSideEffect(key, value string) error {
 		// dials.
 		chrome := strings.EqualFold(value, "on")
 		previous := connect.SetTlsClientHelloChrome(chrome)
-		tlog("⚙️ [control] applied tls_hello=%s (was %s)\n", onOff(chrome), onOff(previous))
+		// say what the switch changes, not only that it changed
+		consequence := "use Go's hello"
+		if chrome {
+			consequence = "present the Chrome hello"
+		}
+		tlog("⚙️ [control] applied tls_hello=%s (was %s) — new connections %s; open ones keep theirs\n", onOff(chrome), onOff(previous), consequence)
 	case "ip_version":
 		return applyIpVersion(value)
 	case "proxy_target_family":
