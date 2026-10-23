@@ -521,6 +521,10 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
             install_wrapper_tool "$tmpdir" || true
         fi
     else
+        # Without jq or python3 the digest cannot be read, and the wrapper is
+        # fetched from the branch, not from $tag. Say so rather than installing
+        # an unpinned script as if it were the release asset.
+        pr_warn "no jq or python3 on this host: cannot verify the urnet-tools digest, falling back to the shell wrapper fetched from the branch (not from %s)" "$tag"
         install_wrapper_tool "$tmpdir" || true
     fi
 
