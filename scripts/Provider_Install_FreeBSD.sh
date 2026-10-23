@@ -337,6 +337,22 @@ assert_state_path_safe() {
         pr_err "%s is a symlink; refusing to create or chmod through it" "$state_dir"
         exit 1
     fi
+    # In this layout the install tree lives INSIDE the service user's home
+    # ($service_home/.local/share/urnetwork-provider), so the directories above
+    # it are user-controlled too. A symlinked .local, share or install_path
+    # sends root's mkdir, cp and mv somewhere else just as effectively.
+    _p="$service_home/.local"
+    while :; do
+        if [ -L "$_p" ]; then
+            pr_err "%s is a symlink; refusing to install through it" "$_p"
+            exit 1
+        fi
+        [ "$_p" = "$install_path" ] && break
+        case "$install_path" in
+            "$_p"/*) _p="$_p/$(printf '%s' "${install_path#"$_p"/}" | cut -d/ -f1)" ;;
+            *) break ;;
+        esac
+    done
 }
 
 do_install() {
