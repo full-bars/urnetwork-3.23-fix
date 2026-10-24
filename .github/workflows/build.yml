@@ -226,6 +226,18 @@ jobs:
           chmod +x scripts/test_provider_install.sh
           ./scripts/test_provider_install.sh
 
+      - name: Installer shell rc symlink regression test
+        # The falsification half of this suite replays the pre-fix installer
+        # pinned by SHA. That commit is only reachable with full history, and
+        # REQUIRE_FALSIFICATION makes a missing pin fail instead of skip — so
+        # this step must stay in a job that checks out with fetch-depth: 0
+        # (the lint job's checkout above does).
+        env:
+          REQUIRE_FALSIFICATION: '1'
+        run: |
+          chmod +x scripts/test_provider_install_shellrc_symlink.sh
+          ./scripts/test_provider_install_shellrc_symlink.sh
+
       - name: Run Fallback Logic Tests
         run: |
           chmod +x scripts/test_fallback_logic.sh
