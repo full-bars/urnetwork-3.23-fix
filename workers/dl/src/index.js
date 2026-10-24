@@ -9,6 +9,7 @@ const ROUTES = {
   '/install.sh': '/Provider_Install_Linux.sh',
   '/install-mac.sh': '/Provider_Install_Mac.sh',
   '/install-win.ps1': '/Provider_Install_Win32.ps1',
+  '/install-freebsd.sh': '/Provider_Install_FreeBSD.sh',
   '/urnet-docker.sh': '/install-urnet-docker.sh',
   '/uninstall.sh': '/Provider_Uninstall_Linux.sh',
   '/uninstall-win.ps1': '/Provider_Uninstall_Win32.ps1',
@@ -19,6 +20,7 @@ const INSTALL_ALIASES = {
   '/install-mac.sh': 'https://dl.fullbars.xyz/install-mac.sh',
   '/install-win.ps1': 'https://dl.fullbars.xyz/install-win.ps1',
   '/win.ps1': 'https://dl.fullbars.xyz/install-win.ps1',
+  '/install-freebsd.sh': 'https://dl.fullbars.xyz/install-freebsd.sh',
 };
 
 const DISPATCHER = `#!/bin/sh
@@ -27,12 +29,14 @@ os="$(uname -s)"
 case "$os" in
   Linux*)   script="https://dl.fullbars.xyz/install.sh" ;;
   Darwin*)  script="https://dl.fullbars.xyz/install-mac.sh" ;;
+  FreeBSD*) script="https://dl.fullbars.xyz/install-freebsd.sh" ;;
   MINGW*|MSYS*|CYGWIN*)
     echo "Detected Windows (Git Bash/MSYS/Cygwin). Launching PowerShell installer..."
     exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
     ;;
   *)
     echo "Unsupported OS: $os"
+    echo "FreeBSD is supported through install-freebsd.sh; if this host reports another BSD, use that script directly."
     echo "Windows users - run this in PowerShell instead:"
     echo "  irm https://dl.fullbars.xyz/install-win.ps1 | iex"
     exit 1
@@ -77,9 +81,9 @@ const LANDING_PAGE = `<!doctype html>
     <h1>Install URnetwork Provider</h1>
     <p class="sub">One-liner installer for the full-bars provider fork. Always fetches the latest release.</p>
 
-    <h2>Linux / macOS</h2>
+    <h2>Linux, macOS, FreeBSD</h2>
     <pre>curl -fsSL https://install.fullbars.xyz | sh</pre>
-    <div class="note">Runs the official Provider_Install_Linux.sh / Provider_Install_Mac.sh. Add <code>sudo</code> before <code>sh</code> if you want root-aware behavior (the installer will guide you).</div>
+    <div class="note">Detects the host and runs the matching official installer: Provider_Install_Linux.sh (systemd or OpenRC, so Alpine is covered), Provider_Install_Mac.sh, or Provider_Install_FreeBSD.sh (rc.d). Add <code>sudo</code> before <code>sh</code> if you want root-aware behavior (the installer will guide you).</div>
 
     <h2>Windows (PowerShell)</h2>
     <pre>irm https://install.fullbars.xyz/win.ps1 | iex</pre>
