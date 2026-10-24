@@ -564,12 +564,20 @@ func TestWriteReloadTrigger_TrailingEdgeFires(t *testing.T) {
 		t.Fatalf("expected seq 1 (trailing not yet fired), got %d", seq)
 	}
 
-	// Wait for trailing edge + some margin
-	time.Sleep(200 * time.Millisecond)
-
-	seq, _ = readReloadSeq(path)
-	if seq != 2 {
-		t.Fatalf("expected seq 2 (trailing edge fired), got %d", seq)
+	// Poll for the trailing edge instead of sleeping a fixed margin. The
+	// timer fires on its own goroutine, so a 2x margin is enough on an idle
+	// machine and not on a loaded CI runner, which made this test flaky while
+	// the edge itself always fired. Generous deadline, immediate exit.
+	deadline := time.Now().Add(3 * time.Second)
+	for {
+		seq, _ = readReloadSeq(path)
+		if seq == 2 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatalf("expected seq 2 (trailing edge fired), got %d", seq)
+		}
+		time.Sleep(10 * time.Millisecond)
 	}
 }
 
