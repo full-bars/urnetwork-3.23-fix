@@ -585,6 +585,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 
 	var d oomCapDecision
 	var msg string
+	prevSince := st.SinceUnix
 	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills, now) {
 		st, d = oomCapOnOOM(st, prev.Proxies, desired, now)
 		msg = "OOM kill since the last start (peak running " + strconv.Itoa(prev.Proxies) + ")"
@@ -592,14 +593,33 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 		st, d = oomCapOnCleanStart(st, desired, now)
 		msg = "no OOM since the last start"
 	}
-	_ = oomWriteJSON(statePath, st)
+	werr := oomWriteJSON(statePath, st)
 
 	if d.Action == "none" || d.Action == "" {
+		// No cap moved, but the state may still have: an OOM the cap cannot
+		// answer restarts the clean-window clock, and that reset exists only if
+		// this write lands.
+		if werr != nil {
+			// A clean start with no standing cap changes nothing, so do not claim a
+			// clock reset that was never due; say which of the two was lost.
+			msg := "[oomcap] warn: could not persist the cap state (" + werr.Error() + ")"
+			if st.SinceUnix != prevSince {
+				msg += ": the clean-window reset could not be recorded"
+			}
+			warnings = append(warnings, msg)
+		}
 		return warnings
 	}
 	modeName := "shadow"
 	if mode == oomCapOn {
 		modeName = "on"
+	}
+	if werr != nil {
+		// Nothing was written, so nothing is enforced and nothing is ledgered:
+		// an "applied" entry for a cap the next read cannot find is exactly the
+		// reader/writer disagreement the ledger exists to catch.
+		warnings = append(warnings, "[oomcap] warn: could not persist the cap ("+werr.Error()+"): no cap change was applied")
+		return warnings
 	}
 	ledgerRecord(ledgerEntry{Actor: "oomcap", Action: d.Action, From: d.From, To: d.To, Mode: modeName, Reason: msg})
 	verb, tail := "shadow: "+msg+": ", " (not enforced; set URNETWORK_OOM_CAP=on to enforce)"
