@@ -3023,9 +3023,12 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 		if frozen != held {
 			held = frozen
 			if frozen {
-				tlog("[proxy-quality] reaper held off: a backend outage is under way or ended within %s, so downed proxies are not culled yet\n", degradedReaperMinDownTime)
+				// Two conditions hold the reaper: a backend outage, and a degraded set
+				// whose scores rank nothing. Naming only the outage would send an
+				// operator looking for one that may never have happened.
+				tlog("[proxy-quality] reaper held off: downed proxies are not culled yet, either because a backend outage is under way or ended within %s, or because the degraded set carries no ranking to cull by\n", degradedReaperMinDownTime)
 			} else {
-				tlog("[proxy-quality] reaper resumed: no backend outage in the last %s\n", degradedReaperMinDownTime)
+				tlog("[proxy-quality] reaper resumed: no backend outage in the last %s and the degraded set ranks\n", degradedReaperMinDownTime)
 			}
 		}
 	}
