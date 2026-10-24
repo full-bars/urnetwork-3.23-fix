@@ -404,7 +404,7 @@ The provider reports the result of its STUN probe as one low-noise line. The pro
 | `cut_short=true` | The last attempt was cut off by the connect deadline: the proxy is slow, not refused. A slow give-up does not count toward URL eviction or the 14-day drop and does not move the shared auth rate limiter, so latency cannot spiral into a failure cascade. `cut_short=false` is a genuine failure. |
 
 > [!NOTE]
-> Turn the smart dialer on or off with `urnet-tools smart-dialer [status|on|off]`. It is live, persisted and off by default. With it off, transport scoring and ordering are exactly what they were before it existed.
+> Turn the smart dialer on or off with `urnet-tools smart-dialer [status|on|off]`. It is persisted, off by default, and takes effect on provider restart. With it off, transport scoring and ordering are exactly what they were before it existed.
 
 ---
 
