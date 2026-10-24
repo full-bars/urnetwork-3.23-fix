@@ -76,9 +76,17 @@ type diskBenchResult struct {
 	Err      string  `json:"err,omitempty"`
 }
 
+// diskBenchCacheSample identifies the sampling configuration a cached result
+// was measured with. The published rate is a function of how much was written:
+// a 16 MiB burst and a 256 MiB budgeted sample are not the same measurement, so
+// a cache written by one sampler must never satisfy a request for the other.
+// Bump this whenever the sampling shape changes.
+const diskBenchCacheSample = "budget-3s-256mib-v1"
+
 type diskBenchCache struct {
 	At     time.Time       `json:"at"`
 	Device uint64          `json:"device"`
+	Sample string          `json:"sample"`
 	Result diskBenchResult `json:"result"`
 }
 
@@ -289,6 +297,12 @@ func readDiskBenchCache(dir string, dev uint64, devOK bool, now time.Time) (disk
 	if json.Unmarshal(b, &c) != nil || (devOK && c.Device != dev) {
 		return diskBenchResult{}, false
 	}
+	// A cache from an older sampler says nothing about the current one: without
+	// this, an upgraded host keeps reporting the old burst rate until the entry
+	// ages out, and the new sample is never run.
+	if c.Sample != diskBenchCacheSample {
+		return diskBenchResult{}, false
+	}
 	ttl := diskBenchFastTTL
 	if c.Result.Slow {
 		ttl = diskBenchSlowTTL
@@ -306,7 +320,7 @@ func writeDiskBenchCache(dir string, dev uint64, devOK bool, r diskBenchResult, 
 	if !devOK {
 		dev = 0
 	}
-	b, err := json.Marshal(diskBenchCache{At: now, Device: dev, Result: r})
+	b, err := json.Marshal(diskBenchCache{At: now, Device: dev, Sample: diskBenchCacheSample, Result: r})
 	if err != nil {
 		return
 	}

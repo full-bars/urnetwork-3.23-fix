@@ -3,6 +3,7 @@
 package connect
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -527,5 +528,41 @@ func TestRunDiskAuditUnmeasurablePathIsNotReportedAsAFullDisk(t *testing.T) {
 	}
 	if _, err := os.Stat(dir); err == nil {
 		t.Fatal("the benchmark created the state dir although it could not measure it")
+	}
+}
+
+// A cache written by a sampler with a different shape must not answer for the
+// current one: the published rate depends on how much was written, so an old
+// burst measurement would keep a host on the previous verdict until the entry
+// aged out, without the new sample ever running.
+func TestDiskBenchCacheFromAnOlderSamplerIsRejected(t *testing.T) {
+	dir := t.TempDir()
+	dev, devOK := diskBenchDevice(dir)
+	now := time.Now()
+	path := filepath.Join(dir, diskBenchCacheFile)
+
+	// What the 16 MiB sampler would have written: fresh, same device, no marker.
+	old := diskBenchCache{At: now, Device: dev, Result: diskBenchResult{MBps: 900, Bytes: 16 << 20, Millis: 18}}
+	b, err := json.Marshal(old)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readDiskBenchCache(dir, dev, devOK, now); ok {
+		t.Fatal("a cache from an older sampler must be rejected, not reused")
+	}
+
+	// The current sampler's own entry is still honoured, or the cache is useless.
+	old.Sample = diskBenchCacheSample
+	if b, err = json.Marshal(old); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := readDiskBenchCache(dir, dev, devOK, now); !ok {
+		t.Fatal("a cache from the current sampler must be reused")
 	}
 }
