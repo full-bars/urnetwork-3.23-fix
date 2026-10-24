@@ -2,6 +2,8 @@ package connect
 
 import (
 	"context"
+	"os"
+	"strings"
 	"testing"
 	"time"
 
@@ -222,5 +224,34 @@ func TestAdmitConnectQuiet_RanksBehindAScoredH1Waiter(t *testing.T) {
 	case <-quiet:
 		t.Fatal("the quiet H3 waiter was released ahead of, or with, the scored one")
 	default:
+	}
+}
+
+// The H1 loop classifies a failed connect with its attempt's stats, so a timeout
+// after the platform replied counts as the platform failing. The H3 loop passes
+// the stats for their bytes only and classifies without them, so a QUIC timeout
+// stays ambiguous. Swapping the two keeps every count the same and is silent, so
+// each call is pinned to the loop it sits in, by the lines just above it.
+func TestGovernorFeedSites_H1ClassifiesWithItsStatsAndH3WithoutThem(t *testing.T) {
+	src, err := os.ReadFile("transport.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	text := string(src)
+	const h1 = "connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)"
+	const h3 = "connectGov.recordAttempt(classifyConnectError(err, nil), attemptStats)"
+	const oldH3 = "connectGov.recordAttempt(classifyConnectError(err, nil), nil)"
+	if strings.Count(text, h1) != 1 || strings.Count(text, h3) != 1 || strings.Contains(text, oldH3) {
+		t.Fatalf("want exactly one H1 feed and one H3 feed that carries bytes, and no byte-less H3 feed")
+	}
+	above := func(call string) string {
+		i := strings.Index(text, call)
+		return text[max(0, i-700):i]
+	}
+	if !strings.Contains(above(h1), "familyNoteConnectFailed(TransportModeH1,") {
+		t.Fatal("the feed that classifies with its stats is not the H1 loop's")
+	}
+	if !strings.Contains(above(h3), "connectGov.recordCanceledBytes") && !strings.Contains(above(h3), "h3GatedFor(ptMode)") {
+		t.Fatal("the feed that classifies without its stats is not the H3 loop's")
 	}
 }
