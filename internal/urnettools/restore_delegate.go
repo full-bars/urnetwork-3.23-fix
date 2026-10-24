@@ -236,7 +236,7 @@ var setKeyHelps = []string{
 	"  cleanup-interval    <duration>    dead proxy cleanup interval (default: 6h, min: 1m)",
 	"  hot-restart         on|off        preserve client JWTs across restarts",
 	"  oom-cap             on|off|shadow OOM-aware start cap: shadow logs what it would do (default), on enforces, off is the kill switch and forgets the standing cap",
-	"  smart-dialer        on|off        adapt transport choice to measured network cost (skip DPI circumvention when not needed)",
+	"  smart-dialer        on|off        adapt transport choice to measured network cost (skip DPI circumvention when not needed). Needs a restart: the probe loop is created per identity at start",
 	"  gomemlimit          <bytes>       Go runtime memory limit (e.g. 256MiB, 1GiB)",
 	"  gogc      <int>|off|disabled     GC target percentage (default: 100). off clears; disabled turns GC off entirely (unbounded heap)",
 	"  profile             <profile>     tuning profile (auto, eco, lowmem, turbo-v4, turbo-v8)",
@@ -284,7 +284,7 @@ func printSetHelp() {
 Usage: urnet-tools set <key> [<value>|off] [target]
 
 Runtime overrides are managed via the provider's control socket (~/.urnetwork/provider.sock).
-When the provider is running, most changes take effect immediately without a restart; profile and ramlogs need a restart.
+When the provider is running, most changes take effect immediately without a restart; profile, ramlogs and smart-dialer need a restart.
 When the provider is not running, changes are queued in pending_overrides.json and apply on next startup.
 
 Set a value:  urnet-tools set <key> <value>
@@ -398,13 +398,17 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 		if err != nil {
 			return err
 		}
-		if appliedLive {
-			fmt.Printf("%s cleared for %s (applied live via control socket)\n", key, providerLabel(p))
-		} else {
-			fmt.Printf("%s cleared for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, providerLabel(p))
-		}
-		if needsRestart {
+		switch {
+		case appliedLive && needsRestart:
+			// The socket accepted the clear; the running process keeps its
+			// current value. Saying "applied live" here would claim an effect
+			// on the process that does not happen.
+			fmt.Printf("%s cleared for %s (persisted; takes effect at the next start)\n", key, providerLabel(p))
 			fmt.Printf("  ⚠ %s requires a restart to take effect\n", key)
+		case appliedLive:
+			fmt.Printf("%s cleared for %s (applied live via control socket)\n", key, providerLabel(p))
+		default:
+			fmt.Printf("%s cleared for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, providerLabel(p))
 		}
 		return nil
 	}
@@ -422,13 +426,16 @@ func applySetOverride(p Provider, key, value string, dryRun bool) error {
 	if err != nil {
 		return err
 	}
-	if appliedLive {
-		fmt.Printf("%s set to %s for %s (applied live via control socket)\n", key, value, providerLabel(p))
-	} else {
-		fmt.Printf("%s set to %s for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, value, providerLabel(p))
-	}
-	if needsRestart {
+	switch {
+	case appliedLive && needsRestart:
+		// Same distinction as the clear path: accepted by the socket, adopted
+		// at the next start, not by the running process.
+		fmt.Printf("%s set to %s for %s (persisted; takes effect at the next start)\n", key, value, providerLabel(p))
 		fmt.Printf("  ⚠ %s requires a restart to take effect\n", key)
+	case appliedLive:
+		fmt.Printf("%s set to %s for %s (applied live via control socket)\n", key, value, providerLabel(p))
+	default:
+		fmt.Printf("%s set to %s for %s (provider not running; queued in pending_overrides.json, takes effect on next start)\n", key, value, providerLabel(p))
 	}
 	return nil
 }

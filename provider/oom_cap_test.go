@@ -565,3 +565,30 @@ func TestOOMCapStillBlamesAKillAfterTheSwitchIsBackOn(t *testing.T) {
 		t.Fatalf("a kill after re-enabling must be blamed, got %q", lines)
 	}
 }
+
+// A clean start with no standing cap changes nothing, so a failed state write
+// must not claim a clean-window reset it never attempted. The failure itself
+// must still be reported: the state carries the cap as well as the clock.
+func TestOOMCapPersistFailureOnCleanStartDoesNotClaimAClockReset(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	dir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	// A directory where the state file belongs fails the write everywhere,
+	// including as root, where a read-only parent would not.
+	if err := os.Mkdir(filepath.Join(dir, "oom_cap.json"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("URNETWORK_OOM_CAP", "shadow")
+
+	lines := oomCapDecide(100, "boot-under-test", 0, time.Unix(1700000000, 0))
+	joined := strings.Join(lines, "\n")
+	if !strings.Contains(joined, "could not persist the cap state") {
+		t.Fatalf("a failed state write must be reported, got:\n%s", joined)
+	}
+	if strings.Contains(joined, "clean-window reset") {
+		t.Fatalf("a clean start with no standing cap resets nothing, but the warning claims a reset:\n%s", joined)
+	}
+}

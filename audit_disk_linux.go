@@ -36,7 +36,11 @@ import (
 //     is how containers sense each other without any coordination, and a busy
 //     disk is never reported as a slow one.
 const (
-	diskBenchMaxBytes     = 16 << 20        // upper bound on bytes written
+	// The sample is bounded by TIME, not by this figure: the loop stops when the
+	// budget is spent. The ceiling only stops a very fast device (an NVMe writes
+	// 256 MiB in under 100 ms) from grinding for the whole budget, and it is what a
+	// slow device never reaches because its rate trips the early exit first.
+	diskBenchMaxBytes     = 256 << 20
 	diskBenchChunk        = 1 << 20         // one synchronous write
 	diskBenchBudget       = 3 * time.Second // wall-clock cap on the write loop
 	diskBenchGrace        = 500 * time.Millisecond
@@ -66,14 +70,23 @@ var diskBenchOpen = func(path string) (diskBenchFile, error) {
 type diskBenchResult struct {
 	MBps     float64 `json:"mbps"`
 	Bytes    int64   `json:"bytes"`
+	Millis   int64   `json:"millis,omitempty"` // sample length: a rate means nothing without it
 	Slow     bool    `json:"slow"`
 	TimedOut bool    `json:"timed_out,omitempty"`
 	Err      string  `json:"err,omitempty"`
 }
 
+// diskBenchCacheSample identifies the sampling configuration a cached result
+// was measured with. The published rate is a function of how much was written:
+// a 16 MiB burst and a 256 MiB budgeted sample are not the same measurement, so
+// a cache written by one sampler must never satisfy a request for the other.
+// Bump this whenever the sampling shape changes.
+const diskBenchCacheSample = "budget-3s-256mib-v1"
+
 type diskBenchCache struct {
 	At     time.Time       `json:"at"`
 	Device uint64          `json:"device"`
+	Sample string          `json:"sample"`
 	Result diskBenchResult `json:"result"`
 }
 
@@ -150,7 +163,7 @@ func RunDiskAudit(dir string) (slowDisk bool, lowSpace bool) {
 	case r.Err != "":
 		fmt.Printf("[audit] Disk I/O test failed: %s\n", r.Err)
 	default:
-		fmt.Printf("[audit] Disk write speed: %.1f MB/s (%d MB sync test)\n", r.MBps, r.Bytes>>20)
+		fmt.Printf("[audit] Disk write speed: %.1f MB/s (%d MB written in %d ms)\n", r.MBps, r.Bytes>>20, r.Millis)
 	}
 	if r.Slow {
 		fmt.Printf("[audit] Slow disk I/O detected.\n")
@@ -181,7 +194,7 @@ func runDiskBench(dir string, maxBytes int64, budget time.Duration) diskBenchRes
 	case <-timer.C:
 		// unlink now so the space comes back as soon as the stuck write releases it
 		os.Remove(path)
-		return diskBenchResult{Slow: true, TimedOut: true}
+		return diskBenchResult{Slow: true, TimedOut: true, Millis: (budget + diskBenchGrace).Milliseconds()}
 	}
 }
 
@@ -209,7 +222,7 @@ func benchWrite(path string, maxBytes int64, budget time.Duration) diskBenchResu
 		n, werr := f.Write(chunk)
 		written += int64(n)
 		if werr != nil {
-			return diskBenchResult{Bytes: written, Slow: true, Err: werr.Error()}
+			return diskBenchResult{Bytes: written, Slow: true, Err: werr.Error(), Millis: time.Since(start).Milliseconds()}
 		}
 		elapsed := time.Since(start)
 		if elapsed >= budget {
@@ -227,7 +240,7 @@ func benchWrite(path string, maxBytes int64, budget time.Duration) diskBenchResu
 			slow, mbps = true, tail // sustained rate fell off after the cache filled
 		}
 	}
-	return diskBenchResult{MBps: mbps, Bytes: written, Slow: slow}
+	return diskBenchResult{MBps: mbps, Bytes: written, Slow: slow, Millis: elapsed.Milliseconds()}
 }
 
 func rateMBps(bytes int64, elapsed time.Duration) float64 {
@@ -284,6 +297,12 @@ func readDiskBenchCache(dir string, dev uint64, devOK bool, now time.Time) (disk
 	if json.Unmarshal(b, &c) != nil || (devOK && c.Device != dev) {
 		return diskBenchResult{}, false
 	}
+	// A cache from an older sampler says nothing about the current one: without
+	// this, an upgraded host keeps reporting the old burst rate until the entry
+	// ages out, and the new sample is never run.
+	if c.Sample != diskBenchCacheSample {
+		return diskBenchResult{}, false
+	}
 	ttl := diskBenchFastTTL
 	if c.Result.Slow {
 		ttl = diskBenchSlowTTL
@@ -301,7 +320,7 @@ func writeDiskBenchCache(dir string, dev uint64, devOK bool, r diskBenchResult, 
 	if !devOK {
 		dev = 0
 	}
-	b, err := json.Marshal(diskBenchCache{At: now, Device: dev, Result: r})
+	b, err := json.Marshal(diskBenchCache{At: now, Device: dev, Sample: diskBenchCacheSample, Result: r})
 	if err != nil {
 		return
 	}

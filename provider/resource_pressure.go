@@ -971,7 +971,14 @@ func runPressureMonitor(ctx context.Context, selfHealEnabled bool) {
 	}()
 
 	var headroom headroomTracker
-	headroomLow := headroomLowThresholdMiB(detectEffectiveRAMLimitBytes() >> 20)
+	// The headroom threshold depends only on how much RAM this process can use.
+	// Read it once. Whether that number is a real reading is decided by its
+	// source, not its value: when detection fails connect returns an 850 MiB
+	// placeholder, which would otherwise clamp to the 150 MiB floor. Unknown RAM
+	// takes the 400 MiB cap, and the one line that explains the threshold goes
+	// to the persisted log once per process.
+	headroomLow, headroomNote := headroomAtStartup()
+	logHeadroomStartupNote(headroomNote)
 	var prev pressureState
 	// prevObserved carries the observed score's smoothing state separately
 	// from prev, so switching self-heal on still starts the actuating rise

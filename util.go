@@ -217,11 +217,39 @@ func CgroupMemoryCeiling() (int64, bool) {
 	return cgroupV2MemoryCeiling("/sys/fs/cgroup", string(self))
 }
 
+// ramLimitFallbackSource is the EffectiveRAMLimit source for the placeholder
+// value returned when no memory limit could be read at all. Callers that need
+// to know whether the byte count is a measurement must compare the source, not
+// the value: 850 MiB is also a perfectly plausible real host.
+const ramLimitFallbackSource = "fallback default, host memory unreadable"
+
+// ramLimitMinPlausibleBytes is the smallest value accepted as a real reading.
+// Anything below 1 MiB truncates to 0 MiB in the memory-headroom arithmetic and
+// cannot be a host total or a cgroup limit, so it is a corrupt or partial read.
+const ramLimitMinPlausibleBytes = 1 << 20
+
 // DetectEffectiveRAMLimitBytes returns the effective RAM ceiling in bytes.
 // Checks cgroup v2, then cgroup v1, then /proc/meminfo MemTotal.
 func DetectEffectiveRAMLimitBytes() int64 {
 	v, _ := EffectiveRAMLimit()
 	return v
+}
+
+// EffectiveRAMLimitKnown is EffectiveRAMLimit plus whether the value is a real
+// reading. When detection fails, EffectiveRAMLimit returns an 850 MiB
+// placeholder with the ramLimitFallbackSource source; that is a guess, not a
+// measurement, and a real 850 MiB host is indistinguishable from it by value.
+// Callers that would otherwise treat the placeholder as evidence of a small box
+// must branch on the bool.
+func EffectiveRAMLimitKnown() (int64, bool) {
+	v, source := EffectiveRAMLimit()
+	return v, ramLimitKnown(v, source)
+}
+
+// ramLimitKnown classifies one EffectiveRAMLimit result. It is split out so a
+// test can exercise the fallback source without making host memory unreadable.
+func ramLimitKnown(v int64, source string) bool {
+	return v >= ramLimitMinPlausibleBytes && source != ramLimitFallbackSource
 }
 
 // EffectiveRAMLimit is DetectEffectiveRAMLimitBytes plus a human-readable name
@@ -246,7 +274,7 @@ func EffectiveRAMLimit() (int64, string) {
 	if v, ok := HostMemoryTotalBytes(); ok {
 		return v, "host MemTotal, no cgroup limit found"
 	}
-	return 850 * 1024 * 1024, "fallback default, host memory unreadable"
+	return 850 * 1024 * 1024, ramLimitFallbackSource
 }
 
 var memoryShedders = NewCallbackList[func()]()
