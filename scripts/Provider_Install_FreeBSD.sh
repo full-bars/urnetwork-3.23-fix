@@ -352,13 +352,16 @@ ${service_name}_running_pid()
         return 0
     fi
     # daemon(8) writes the child pid before the child has exec'd the provider,
-    # so an alive pidfile pid that does not identify yet is still this service
-    # starting, not a stale file. Refusing it would make status report stopped
-    # through a healthy boot.
-    if [ -n "\$_pf_pid" ] && [ -n "\$(ps -p "\$_pf_pid" -o pid= 2>/dev/null)" ]; then
-        echo "\$_pf_pid"
-        return 0
-    fi
+    # so an alive pidfile pid that does not identify yet can still be this
+    # service starting, not a stale file. Accept it only while its argv is
+    # still daemon(8)'s command line FOR THIS SERVICE: the -t title and the
+    # provider command must both be there. A pid reused by an unrelated
+    # process has neither, so it no longer makes start report "already
+    # running" and skip a real start.
+    _pargs="\$(ps -p "\$_pf_pid" -o args= 2>/dev/null)"
+    case "\$_pargs" in
+        "\$daemon"*" -t $service_name "*"$provider_bin provide"*) echo "\$_pf_pid"; return 0 ;;
+    esac
     return 1
 }
 
@@ -693,9 +696,16 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
                 rm -rf "$tmpdir"; exit 1
             fi
-            mkdir -p "$state_dir"
-            chown -R -h "$service_user" "$state_dir" 2>/dev/null || true
-            chmod 700 "$state_dir" 2>/dev/null || true
+            # No -p: it follows a symlinked state_dir, and the parent (the
+            # service user's home) already exists.
+            [ -d "$state_dir" ] || mkdir "$state_dir" 2>/dev/null || true
+            # Enter the directory before re-owning it, for the same reason as
+            # the check above: cd resolves the entry once, and the relative
+            # '.' cannot be redirected by a symlink swapped in afterwards.
+            if ( cd "$state_dir" 2>/dev/null ); then
+                chown -R -h "$service_user" . 2>/dev/null || true
+                chmod 700 . 2>/dev/null || true
+            fi
         fi
         chown -R root:wheel "$install_path" 2>/dev/null || \
             chown -R root "$install_path" 2>/dev/null || true
@@ -865,43 +875,79 @@ do_update() {
 
 # write_state_flag sets a flag file (on/off) under state_dir.
 #
-# state_dir lives in the service user's home, so under sudo the writer may
-# be root while the directory is user-controlled: a symlink planted at the
-# flag path would redirect a root write anywhere on the filesystem. Refuse
-# a symlink outright, and write through a temp file + rename(2) — rename
-# replaces the destination dirent and never follows a trailing symlink, so
-# even a race cannot turn the final step into an arbitrary write. 0644
-# matches what a plain printf > would have created (umask 022), keeping
-# the flag readable by the service user after a root run.
+# state_dir lives in the service user's home, so under sudo the writer is root
+# while every path component below that home belongs to the service user. No
+# check-then-write on those paths can be atomic, so the write enters the
+# directory once and then uses only relative paths:
+#
+#   - After `cd`, the shell's working directory is pinned to the inode it
+#     resolved. Swapping state_dir for a symlink afterwards cannot move the
+#     write, which closes the window between a `[ -L ]` check and the write.
+#   - Root refuses to create the directory and refuses one it does not own:
+#     `mkdir -p` follows a symlinked state_dir, and a directory that is not
+#     the service user's is not one root should be writing into.
+#   - The temp file is created with O_EXCL (`set -C`, noclobber) so a name
+#     planted at it makes the write fail instead of redirecting it, and it is
+#     renamed within the same directory: rename(2) replaces a planted dirent
+#     rather than following it and never degrades to a cross-filesystem copy.
+#   - umask 022 gives the 0644 the old `printf >` produced, without a separate
+#     chmod (chmod follows symlinks).
 write_state_flag() {
-    _flag="$state_dir/$1"
+    _name="$1"
     _val="$2"
-    # state_dir lives in the service user's home and the user controls it. A
-    # symlinked state_dir would send root's mkdir and mktemp into an arbitrary
-    # directory, so refuse it before anything is created.
+    _owner=""
+    if [ "$(id -u)" = "0" ] && [ "$service_user" != "root" ]; then
+        _owner="$service_user"
+    fi
+
     if [ -L "$state_dir" ]; then
         pr_err "refusing to write under %s: it is a symlink" "$state_dir"
         return 1
     fi
-    if [ -h "$_flag" ]; then
-        pr_err "refusing to write %s: it is a symlink" "$_flag"
+
+    if [ -n "$_owner" ]; then
+        # Root must not create the directory: mkdir follows a symlinked
+        # state_dir, and the directory belongs to the service user anyway.
+        if [ ! -d "$state_dir" ]; then
+            pr_err "%s does not exist; start the provider once as %s, then retry" "$state_dir" "$_owner"
+            return 1
+        fi
+    elif ! mkdir -p "$state_dir" 2>/dev/null; then
+        pr_err "cannot create %s" "$state_dir"
         return 1
     fi
-    mkdir -p "$state_dir"
-    # The temp file must not sit in the user-writable directory: the service
-    # user can unlink a name it can see and plant a symlink there before the
-    # write, and both the write and the chmod follow symlinks. A root-owned
-    # sticky temp directory is not theirs to replace, and the final mv is a
-    # rename, which replaces a planted link instead of following it.
-    _tmp=$(mktemp "${TMPDIR:-/tmp}/urnet-state-flag.XXXXXX") || {
-        pr_err "cannot create temp file under %s" "$state_dir"
+
+    # Subshell: the cd must not move the caller's working directory.
+    (
+        cd "$state_dir" 2>/dev/null || exit 1
+        # The directory actually entered must be the service user's: a symlink
+        # already in place when cd ran would otherwise land root elsewhere.
+        if [ -n "$_owner" ] && [ "$(stat -f '%Su' . 2>/dev/null)" != "$_owner" ]; then
+            pr_err "refusing to write under %s: it is not owned by %s" "$state_dir" "$_owner"
+            exit 2
+        fi
+        # A directory planted at the flag name would make mv move the temp
+        # file into it instead of replacing the entry.
+        if [ -d "./$_name" ]; then
+            exit 1
+        fi
+        _i=0
+        while [ "$_i" -lt 10 ]; do
+            _tmp="./.urnet-flag.$$.$_i"
+            if ( set -C; umask 022; printf '%s\n' "$_val" > "$_tmp" ) 2>/dev/null; then
+                mv -f "$_tmp" "./$_name" 2>/dev/null && exit 0
+                rm -f "$_tmp" 2>/dev/null
+                exit 1
+            fi
+            _i=$((_i + 1))
+        done
+        exit 1
+    ) || {
+        _status=$?
+        # 2 is the ownership refusal, which already printed its own reason.
+        [ "$_status" = "2" ] || pr_err "cannot write %s" "$state_dir/$_name"
         return 1
     }
-    if ! { printf '%s\n' "$_val" > "$_tmp" && chmod 0644 "$_tmp" && mv -f "$_tmp" "$_flag"; }; then
-        rm -f "$_tmp"
-        pr_err "cannot write %s" "$_flag"
-        return 1
-    fi
 }
 
 do_hot_restart() {

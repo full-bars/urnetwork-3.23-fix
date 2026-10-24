@@ -88,6 +88,13 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `urnetwork_running_pid`) {
 		t.Error("script has no pidfile-based running check; start/status cannot be reliable")
 	}
+	// A pidfile pid that does not identify as the provider yet is only the
+	// boot window if its argv is still this service's daemon command line.
+	// Accepting any live pid makes a stale file with a reused pid report
+	// "already running", and start then skips a real start.
+	if !strings.Contains(script, `"$daemon"*" -t urnetwork "*`) {
+		t.Error("script accepts an unidentified live pidfile pid as running; a reused pid would skip a real start")
+	}
 	// daemon(8) defaults to sending both streams to -o. A mask of 0 sends
 	// neither, which silently discards everything the provider logs.
 	if strings.Contains(script, "-m 0") {

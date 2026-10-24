@@ -82,10 +82,17 @@ logdir="/var/log/%[1]s"
         echo "$_pid"
         return 0
     fi
-    if [ -n "$_pf_pid" ] && [ -n "$(ps -p "$_pf_pid" -o pid= 2>/dev/null)" ]; then
-        echo "$_pf_pid"
-        return 0
-    fi
+    # daemon(8) writes the child pid before the child has exec'd the provider,
+    # so an alive pidfile pid that does not identify yet can still be this
+    # service starting, not a stale file. Accept it only while its argv is
+    # still daemon(8)'s command line FOR THIS SERVICE: the -t title and the
+    # provider command must both be there. A pid reused by an unrelated
+    # process has neither, so it no longer makes start report "already
+    # running" and skip a real start.
+    _pargs="$(ps -p "$_pf_pid" -o args= 2>/dev/null)"
+    case "$_pargs" in
+        "$daemon"*" -t %[1]s "*"%[4]s provide"*) echo "$_pf_pid"; return 0 ;;
+    esac
     return 1
 }
 

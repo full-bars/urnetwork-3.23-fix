@@ -1,8 +1,10 @@
 package urnettools
 
 import (
+	"fmt"
 	"os"
 	"os/exec"
+	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
@@ -184,19 +186,107 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	if !rootOwned {
 		t.Error("do_install does not keep the install tree root-owned")
 	}
-	// -h is main's no-follow form: a symlink that appears under the state dir
-	// must not be dereferenced by a recursive chown. Accept either spelling so
-	// the assertion tests the ownership intent, not one exact word order.
-	stateOwned := strings.Contains(body, `chown -R -h "$service_user" "$state_dir"`) ||
-		strings.Contains(body, `chown -R "$service_user" "$state_dir"`)
+	// The chown runs on '.' inside a `cd "$state_dir"` subshell. -h is main's
+	// no-follow form: a symlink that appears under the state dir must not be
+	// dereferenced by a recursive chown. The cd pins the directory the chown
+	// actually operates on, so a symlink swapped in at state_dir after the
+	// check above cannot redirect it; dropping the cd must fail this test.
+	stateOwned := strings.Contains(body, `cd "$state_dir"`) &&
+		strings.Contains(body, `chown -R -h "$service_user" .`)
 	if !stateOwned {
-		t.Error("do_install does not hand the state directory to the service user")
+		t.Error(`do_install does not hand the state directory to the service user (want cd "$state_dir" plus chown -R -h "$service_user" .)`)
 	}
 	// The service must not be started when a failure to start would be
 	// reported as success: the start/restart outcome is checked.
 	if !strings.Contains(body, "Failed to start the service") {
 		t.Error("do_install does not fail when the service fails to start")
 	}
+}
+
+// write_state_flag() writes into a directory the service user owns, as root
+// under sudo. A check-then-write on that path is unwinnable: the service user
+// can swap state_dir for a symlink, or plant one at the flag name. These cases
+// execute the shipped function and pin the fix: the write enters the directory
+// and renames over the flag entry (rename does not follow it), and a symlinked
+// state_dir is refused outright.
+func TestFreeBSDWriteStateFlagDoesNotFollowSymlinks(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	fn := extractShellFunc(t, script, "write_state_flag")
+	if fn == "" {
+		t.Fatal("could not extract write_state_flag from the FreeBSD installer")
+	}
+
+	dir := t.TempDir()
+	harness := filepath.Join(dir, "flag.sh")
+	body := "pr_err() { printf 'ERR: %s\\n' \"$1\" >&2; }\n" +
+		"state_dir=\"$1\"\nservice_user=\"$(id -un)\"\n" +
+		fn + "\nwrite_state_flag \"$2\" \"$3\"\n"
+	if err := os.WriteFile(harness, []byte(body), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run := func(stateDir, name, value string) error {
+		out, err := exec.Command("/bin/sh", harness, stateDir, name, value).CombinedOutput()
+		if err != nil {
+			return fmt.Errorf("%w: %s", err, out)
+		}
+		return nil
+	}
+
+	t.Run("symlink at the flag name is replaced, not followed", func(t *testing.T) {
+		stateDir := filepath.Join(dir, "state-flag")
+		if err := os.Mkdir(stateDir, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		victim := filepath.Join(dir, "victim")
+		if err := os.WriteFile(victim, []byte("keep"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		flag := filepath.Join(stateDir, "hot_restart")
+		if err := os.Symlink(victim, flag); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(stateDir, "hot_restart", "on"); err != nil {
+			t.Fatalf("write_state_flag: %v", err)
+		}
+		if got, err := os.ReadFile(victim); err != nil || string(got) != "keep" {
+			t.Fatalf("write followed the symlink into the victim: %q, %v", got, err)
+		}
+		fi, err := os.Lstat(flag)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if fi.Mode()&os.ModeSymlink != 0 {
+			t.Error("flag is still a symlink; the write did not replace the entry")
+		}
+		if got, err := os.ReadFile(flag); err != nil || strings.TrimSpace(string(got)) != "on" {
+			t.Errorf("flag = %q, %v; want on", got, err)
+		}
+		if perm := fi.Mode().Perm(); perm != 0o644 {
+			t.Errorf("flag mode = %o; want 644 (umask 022 at creation, no chmod)", perm)
+		}
+	})
+
+	t.Run("symlinked state dir is refused", func(t *testing.T) {
+		target := filepath.Join(dir, "target")
+		if err := os.Mkdir(target, 0o755); err != nil {
+			t.Fatal(err)
+		}
+		stateDir := filepath.Join(dir, "state-link")
+		if err := os.Symlink(target, stateDir); err != nil {
+			t.Fatal(err)
+		}
+		if err := run(stateDir, "hot_restart", "on"); err == nil {
+			t.Fatal("write_state_flag wrote through a symlinked state_dir")
+		}
+		if entries, err := os.ReadDir(target); err != nil || len(entries) != 0 {
+			t.Fatalf("target of the symlinked state dir changed: %v, %v", entries, err)
+		}
+	})
 }
 
 // extractShellFunc returns the body of a top-level shell function, from its
