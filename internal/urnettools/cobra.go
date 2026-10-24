@@ -520,7 +520,7 @@ func newSetCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "set",
 		Short:              "runtime tuning override",
-		Long:               "Read or write a runtime tuning override in the provider's state directory. Most keys apply live on the provider's next tick with no restart; profile and ramlogs only take effect on the next restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list the runtime override keys, their value domains and what each changes.",
+		Long:               "Read or write a runtime tuning override in the provider's state directory. Most keys apply live on the provider's next tick with no restart; profile, ramlogs and smart-dialer only take effect on the next restart. Run with no key to list every active override, with just a key to show its current value, with a key and value to set it, or with a key and \"off\" to clear it back to the startup default. Run 'set help' to list the runtime override keys, their value domains and what each changes.",
 		Example:            "  urnet-tools set help\n  urnet-tools set proxy-url-refresh 5m --unit urnetwork-native.service\n  urnet-tools set cleanup-scope off",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
@@ -920,7 +920,7 @@ func newSmartDialerCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:                "smart-dialer [status|on|off]",
 		Short:              "show or toggle measured-cost transport preference (skip DPI-circumvention cost when the network does not need it)",
-		Long:               "Show or toggle the measured-cost transport preference: when the network does not need DPI circumvention, the provider prefers transport paths that avoid its cost. 'status' (the default) reports the current value; on and off change it. Applied to the running provider at its next tick, with no restart. Honors -n/--dry-run. Alias: smart_dialer.",
+		Long:               "Show or toggle the measured-cost transport preference: when the network does not need DPI circumvention, the provider prefers transport paths that avoid its cost. 'status' (the default) reports the current value; on and off change it. The change is persisted; the command reports whether it is already in force or takes effect at the provider's next start. Honors -n/--dry-run. Alias: smart_dialer.",
 		Example:            "  urnet-tools smart-dialer\n  urnet-tools smart-dialer on\n  urnet-tools smart-dialer off --unit urnetwork-native.service",
 		Aliases:            []string{"smart_dialer"},
 		DisableFlagParsing: true,
@@ -984,6 +984,16 @@ func cmdSmartDialer(args []string, dryRun bool) error {
 		if !resp.OK {
 			return fmt.Errorf("provider returned error: %s", resp.Error)
 		}
+		// Whether the change took effect now is the provider's answer, not a
+		// second copy of the classification here: a key with a live case
+		// reports needs_restart=false and the status block below then shows
+		// the value that is actually in force. A restart-required key reports
+		// true, and then one statement says what was persisted and when it
+		// starts; the status block is skipped because it would read as though
+		// the value were already running, contradicting the line above it.
+		if !reportSmartDialerChange(os.Stdout, change.Value, resp) {
+			return nil
+		}
 	}
 
 	status, err := sendSocketRequest(socketPath, controlRequest{Cmd: "status"})
@@ -995,6 +1005,23 @@ func cmdSmartDialer(args []string, dryRun bool) error {
 	}
 	printSmartDialerStatus(os.Stdout, status)
 	return nil
+}
+
+// reportSmartDialerChange prints the outcome of a smart-dialer on/off and
+// reports whether the caller should go on to print the status block. The
+// provider's needs_restart flag decides: it is the one place the key's
+// classification lives, so a key that regains a live case needs no change here
+// — the response reports no restart, this prints nothing, and the status block
+// reports the value that is now in force.
+func reportSmartDialerChange(w io.Writer, value string, resp controlResponse) (printStatus bool) {
+	if !resp.NeedsRestart {
+		return true
+	}
+	// One statement, not a restart warning followed by an active-status block
+	// that says the opposite: the running provider keeps its current
+	// preference until it restarts.
+	fmt.Fprintf(w, "smart-dialer %s: persisted, not yet in force (takes effect at the next start)\n", value)
+	return false
 }
 
 func printSmartDialerStatus(w io.Writer, resp controlResponse) {
