@@ -1283,6 +1283,33 @@ func TestThrashCapDirWritableBoundedTimesOut(t *testing.T) {
 	}
 }
 
+// The marker write runs immediately before the exit, so it is bounded by the
+// same timeout as the cap write: a state directory hung in swap I/O must not
+// keep the exit from being taken, or the supervised node never restarts. A
+// timeout is returned for the caller to log; the exit proceeds.
+func TestThrashExitMarkerBoundedTimesOut(t *testing.T) {
+	prevWrite, prevTimeout := thrashExitMarkerWriteFn, thrashPersistTimeout
+	t.Cleanup(func() { thrashExitMarkerWriteFn, thrashPersistTimeout = prevWrite, prevTimeout })
+	release := make(chan struct{})
+	t.Cleanup(func() { close(release) })
+	thrashExitMarkerWriteFn = func() error { <-release; return nil }
+	thrashPersistTimeout = 50 * time.Millisecond
+
+	start := time.Now()
+	err := markThrashExitBounded()
+	if err == nil {
+		t.Fatal("a marker write that never returns must time out")
+	}
+	if took := time.Since(start); took > 2*time.Second {
+		t.Fatalf("the marker write was not bounded: took %v", took)
+	}
+
+	thrashExitMarkerWriteFn = func() error { return nil }
+	if err := markThrashExitBounded(); err != nil {
+		t.Fatalf("a healthy marker write must pass: %v", err)
+	}
+}
+
 // A heap far over its soft limit on a box with little free RAM is a spiral in
 // the making: the runtime pins a core on collection, part of the heap swaps out,
 // and within minutes the process is too starved to run any responder. PSI can

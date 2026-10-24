@@ -211,6 +211,35 @@ func TestRunSdWatchdogDispatchesToSelfExit(t *testing.T) {
 	}
 }
 
+// TestSelfExitLivenessExitsWhenTheLogPathHangs: the exit marker and the
+// diagnostic line both run before the exit, and every one of them can be
+// pointed at a hung state directory (or a wedged journal pipe). A marker write
+// that times out must still reach the exit: the restart contract is the status,
+// not the marker or the line.
+func TestSelfExitLivenessExitsWhenTheLogPathHangs(t *testing.T) {
+	exited := selfExitLivenessRig(t, map[string]string{"URNETWORK_INIT": "openrc"})
+	t.Setenv("URNETWORK_SELF_HEAL", "1")
+
+	release := make(chan struct{})
+	prevMarker, prevStderr := thrashExitMarkerWriteFn, thrashStderrWriteFn
+	prevPersist, prevNote := thrashPersistTimeout, thrashExitNoteTimeout
+	t.Cleanup(func() {
+		close(release)
+		thrashExitMarkerWriteFn, thrashStderrWriteFn = prevMarker, prevStderr
+		thrashPersistTimeout, thrashExitNoteTimeout = prevPersist, prevNote
+	})
+	thrashExitMarkerWriteFn = func() error { <-release; return nil }
+	thrashStderrWriteFn = func(p []byte) (int, error) { <-release; return len(p), nil }
+	thrashPersistTimeout = 25 * time.Millisecond
+	thrashExitNoteTimeout = 25 * time.Millisecond
+
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	go runSelfExitLivenessWatchdog(ctx, livenessGate)
+
+	waitSelfExit(t, exited, "a stalled provider whose exit marker cannot be written")
+}
+
 // TestSelfExitStateDurableOnlyChecksContainers: a container's state directory
 // must be writable before a self-exit (its throttle record has to survive);
 // systemd and OpenRC keep the file on the box itself, so no probe runs there.
