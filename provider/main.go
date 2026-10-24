@@ -358,6 +358,17 @@ func detectEffectiveRAMLimitBytes() int64 {
 	return connect.DetectEffectiveRAMLimitBytes()
 }
 
+// effectiveRAMLimit returns the effective RAM ceiling in bytes and whether it is
+// a real reading rather than the connect package's unreadable placeholder. The
+// placeholder is 850 MiB, so the byte count alone cannot say whether a small-box
+// floor is justified; connect.EffectiveRAMLimitKnown decides it by source.
+//
+// It is a variable so a test can simulate a failed detection, which cannot be
+// provoked on a host whose memory is readable.
+var effectiveRAMLimit = func() (int64, bool) {
+	return connect.EffectiveRAMLimitKnown()
+}
+
 func applyTurboSettings(clientSettings *connect.ClientSettings, localUserNatSettings *connect.LocalUserNatSettings) {
 	profile := os.Getenv("URNETWORK_PROFILE")
 	var windowSize uint32
