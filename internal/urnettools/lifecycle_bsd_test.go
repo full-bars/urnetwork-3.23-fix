@@ -88,6 +88,13 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `urnetwork_running_pid`) {
 		t.Error("script has no pidfile-based running check; start/status cannot be reliable")
 	}
+	// A pidfile pid that does not identify as the provider yet is only the
+	// boot window if its argv is still this service's daemon command line.
+	// Accepting any live pid makes a stale file with a reused pid report
+	// "already running", and start then skips a real start.
+	if !strings.Contains(script, `"$daemon"*" -t urnetwork "*`) {
+		t.Error("script accepts an unidentified live pidfile pid as running; a reused pid would skip a real start")
+	}
 	// daemon(8) defaults to sending both streams to -o. A mask of 0 sends
 	// neither, which silently discards everything the provider logs.
 	if strings.Contains(script, "-m 0") {
@@ -116,8 +123,17 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if strings.Contains(script, `\${urnetwork_user}`) {
 		t.Error("script escapes ${urnetwork_user}; sh would pass it literally, not expand it")
 	}
-	if !strings.Contains(script, `chown ${urnetwork_user} "$logdir"`) {
-		t.Error("script does not chown the log dir to the rc.conf user")
+	// The log dir stays root-owned and world-readable. The previous form
+	// chowned it to the service user, which let that user replace the log
+	// path with a symlink that root's daemon then wrote through.
+	if !strings.Contains(script, `chown root:wheel "$logdir"`) {
+		t.Error("script does not keep the log dir root-owned")
+	}
+	if !strings.Contains(script, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
+		t.Error("script does not pre-create the log file as a regular file owned by the service user")
+	}
+	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
+		t.Error("script does not refuse a symlinked log file")
 	}
 	// $flags must reach the provider expanded, not as a literal ${...} or a
 	// bare backslash followed by the value.
