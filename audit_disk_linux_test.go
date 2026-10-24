@@ -411,11 +411,12 @@ func TestRunDiskBenchSteadyFastDiskStillPassesTheTailCheck(t *testing.T) {
 
 func TestDiskBenchCapIsWholeChunksAndNeverAboveOneSixtyFourthOfFree(t *testing.T) {
 	cases := []struct{ freeMiB, wantBytes int64 }{
-		{300, 4 << 20},     // 4.69 MiB rounds down, not up to 5
-		{256, 4 << 20},     // the smallest disk that is benchmarked
-		{1000, 15 << 20},   // 15.6 MiB
-		{1024, 16 << 20},   // exactly the byte cap
-		{500000, 16 << 20}, // large disks stay at the byte cap
+		{300, 4 << 20},      // 4.69 MiB rounds down, not up to 5
+		{256, 4 << 20},      // the smallest disk that is benchmarked
+		{1000, 15 << 20},    // 15.6 MiB
+		{1024, 16 << 20},    // free/64 = 16 MiB, still under the ceiling
+		{16384, 256 << 20},  // free/64 `exactly` reaches the ceiling
+		{500000, 256 << 20}, // large disks stay at the ceiling, not above it
 	}
 	for _, c := range cases {
 		got := diskBenchCap(c.freeMiB)
