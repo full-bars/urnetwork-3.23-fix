@@ -300,6 +300,29 @@ func (self *connectGovernor) recordAttempt(class connectClass, stats *attemptSta
 	}
 }
 
+// recordCanceledBytes charges the bytes a canceled attempt already burned to the
+// window without counting it as an attempt: a cancel is local teardown, not an
+// outcome, but the packets are on the wire all the same. The H3 gate cancels a
+// lower-priority carrier whenever a better one is waiting, and each of those
+// cancels arrives after most of a PTO ladder, so leaving them out hid about two
+// thirds of a silent edge's QUIC egress. They add only to the failed-byte total
+// the byte breaker reads; the breaker still needs most attempts to be failing.
+func (self *connectGovernor) recordCanceledBytes(stats *attemptStats) {
+	if stats == nil {
+		return
+	}
+	bytes := stats.rx.Load() + stats.tx.Load()
+	if bytes <= 0 {
+		return
+	}
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	b := self.bucket()
+	b.dials += stats.dials.Load()
+	b.bytes += bytes
+	b.failedBytes += bytes
+}
+
 // recordEarlyDeath records that a connect which counted as OK lost its session
 // young. Such a connect is a failure in all but name: it resets the backoff and
 // the shared failure streak, and it is what the incident was made of.

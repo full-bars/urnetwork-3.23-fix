@@ -3352,6 +3352,14 @@ func (self *PlatformTransport) runH3(
 			case <-time.After(connectDelay):
 			}
 		}
+		// fork: a proxied identity's QUIC waits its turn under the shared attempt
+		// budget, like its H1 does (above); the direct path never waits. Before
+		// the gate, so a parked dial does not hold the transport's one H3 slot.
+		if !self.admitH3Dial(ctx) {
+			releaseReconnect()
+			cancelConnect()
+			return
+		}
 		attemptCtx, releaseAttempt, acquired := self.h3Gate.Acquire(ctx, ptMode)
 		if !acquired {
 			releaseReconnect()
@@ -3369,12 +3377,15 @@ func (self *PlatformTransport) runH3(
 		var err error
 		dialStart := time.Now()
 		self.familyNoteAttempt(ptMode)
+		// fork: what this attempt cost, fed to the connect governor after the dial
+		attemptStats := &attemptStats{}
+		dialCtx := withAttemptStats(attemptCtx, attemptStats)
 		if self.log.V(2).Enabled() {
 			connStream, err = TraceWithReturnError(fmt.Sprintf("[t]connect %s", clientId), func() (*ConnStream, error) {
-				return connect(attemptCtx)
+				return connect(dialCtx)
 			})
 		} else {
-			connStream, err = connect(attemptCtx)
+			connStream, err = connect(dialCtx)
 		}
 		releaseReconnect()
 		if err != nil {
@@ -3382,12 +3393,15 @@ func (self *PlatformTransport) runH3(
 		}
 		// fork: the governor reads the platform's health from every transport's
 		// connects; an auxiliary H3 beside H1 and a pinned transport are never a
-		// health signal. (H3 is UDP, so it never goes through a proxy and the
-		// attempt budget would exempt it as direct.)
+		// health signal.
 		// Local teardown is not a backend outcome, and a canceled dial's error
 		// can miss context.Canceled when it was snapshotted before the cancel.
-		if !self.h3GatedFor(ptMode) && !self.pinned() && (err == nil || (ctx.Err() == nil && attemptCtx.Err() == nil)) {
-			connectGov.recordAttempt(classifyConnectError(err, nil), nil)
+		if !self.h3GatedFor(ptMode) && !self.pinned() {
+			if err == nil || (ctx.Err() == nil && attemptCtx.Err() == nil) {
+				connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
+			} else {
+				connectGov.recordCanceledBytes(attemptStats)
+			}
 		}
 		if err != nil {
 			attemptCanceled := attemptCtx.Err() != nil

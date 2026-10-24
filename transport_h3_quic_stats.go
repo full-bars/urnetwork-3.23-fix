@@ -298,6 +298,11 @@ type h3QuicHandshakeAttempt struct {
 	received atomic.Uint64
 	pto      atomic.Uint64
 	finished atomic.Bool
+	// sentBytes and receivedBytes are the wire bytes of this handshake's QUIC
+	// packets, so the connect governor can price a failed attempt in bytes
+	sentBytes     atomic.Uint64
+	receivedBytes atomic.Uint64
+	credited      atomic.Bool
 }
 
 func (self *H3QuicPacketStats) beginHandshakeAttempt() *h3QuicHandshakeAttempt {
@@ -320,6 +325,18 @@ func (self *h3QuicHandshakeAttempt) finish(success bool) {
 	if 0 < self.sent.Load() && self.received.Load() == 0 {
 		self.stats.handshakeSentWithoutResponseCount.Add(1)
 	}
+}
+
+// creditTo charges the handshake's wire bytes to the connect attempt that
+// started it, once. A handshake that gets no answer retransmits a full ladder of
+// padded Initial packets, which is the whole cost of a failed QUIC dial: without
+// this the connect governor sees QUIC attempts as free (see attemptStats).
+func (self *h3QuicHandshakeAttempt) creditTo(stats *attemptStats) {
+	if self == nil || stats == nil || !self.credited.CompareAndSwap(false, true) {
+		return
+	}
+	stats.tx.Add(int64(self.sentBytes.Load()))
+	stats.rx.Add(int64(self.receivedBytes.Load()))
 }
 
 func (self *h3QuicHandshakeAttempt) sentWithoutResponse() bool {
@@ -359,6 +376,7 @@ func (self *h3QuicPacketStatsRecorder) recordSent(event qlog.PacketSent) {
 	self.stats.sentPacketCount.Add(1)
 	if self.attempt != nil {
 		self.attempt.sent.Add(1)
+		self.attempt.sentBytes.Add(uint64(max(0, event.Raw.Length)))
 	}
 	self.stats.sentPacketByteCount.Add(uint64(max(0, event.Raw.Length)))
 	self.stats.PacketFingerprints.recordSent(event.DatagramPayloadChecksum)
@@ -374,6 +392,7 @@ func (self *h3QuicPacketStatsRecorder) recordReceived(event qlog.PacketReceived)
 	self.stats.receivedPacketCount.Add(1)
 	if self.attempt != nil {
 		self.attempt.received.Add(1)
+		self.attempt.receivedBytes.Add(uint64(max(0, event.Raw.Length)))
 	}
 	self.stats.receivedPacketByteCount.Add(uint64(max(0, event.Raw.Length)))
 	self.stats.PacketFingerprints.recordReceived(event.DatagramPayloadChecksum)
