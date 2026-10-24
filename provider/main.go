@@ -2876,6 +2876,25 @@ func selectProxiesToReap(scored []scoredDegradedProxy, keep int, minDownTime tim
 	return toReap
 }
 
+// scoresCarryNoRanking reports whether every candidate scored the same, which
+// is what an unreachable upstream produces: no bytes move, so every proxy's
+// contribution freezes at the same value. An ordering with no information in it
+// cannot say which proxies are under-performing, and reaping on it would cut a
+// healthy pool in half the moment the platform stops answering. One differing
+// score means the ranking is real again.
+func scoresCarryNoRanking(scored []scoredDegradedProxy) bool {
+	if len(scored) < 2 {
+		// Nothing to compare: one candidate cannot be ranked against anything.
+		return true
+	}
+	for _, s := range scored[1:] {
+		if s.score != scored[0].score {
+			return false
+		}
+	}
+	return true
+}
+
 // degradedEntryKey returns the identity key a DegradedProxyEntry was
 // registered under: its Key when set (DegradedProxies always sets it), or
 // the bare Address for entries constructed by hand — an unauthenticated
@@ -2982,6 +3001,11 @@ func degradedReaperPass(
 	}
 
 	scored := scoreDegradedProxies(cancellable, liveContractsAcquired)
+	if scoresCarryNoRanking(scored) {
+		// Every candidate ties, so the ordering ranks nothing: hold off for the
+		// same reason an outage hold exists, rather than culling on noise.
+		return 0, true
+	}
 	keep := degradedReaperKeepCount(len(scored))
 	toReap := selectProxiesToReap(scored, keep, degradedReaperMinDownTime)
 
@@ -3010,9 +3034,12 @@ func runDegradedProxyReaper(ctx context.Context, proxyCancelMap map[string]conte
 		if frozen != held {
 			held = frozen
 			if frozen {
-				tlog("[proxy-quality] reaper held off: a backend outage is under way or ended within %s, so downed proxies are not culled yet\n", degradedReaperMinDownTime)
+				// Two conditions hold the reaper: a backend outage, and a degraded set
+				// whose scores rank nothing. Naming only the outage would send an
+				// operator looking for one that may never have happened.
+				tlog("[proxy-quality] reaper held off: downed proxies are not culled yet, either because a backend outage is under way or ended within %s, or because the degraded set carries no ranking to cull by\n", degradedReaperMinDownTime)
 			} else {
-				tlog("[proxy-quality] reaper resumed: no backend outage in the last %s\n", degradedReaperMinDownTime)
+				tlog("[proxy-quality] reaper resumed: no backend outage in the last %s and the degraded set ranks\n", degradedReaperMinDownTime)
 			}
 		}
 	}
