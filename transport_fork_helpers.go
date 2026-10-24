@@ -40,7 +40,7 @@ func (self *PlatformTransport) admitH3Dial(ctx context.Context) bool {
 		return true
 	}
 	proxyIndex, proxied := self.proxyIndex()
-	return admitConnect(ctx, !proxied || proxyIndex == 0, proxyIndex)
+	return admitConnectQuiet(ctx, !proxied || proxyIndex == 0)
 }
 
 // h3Gated reports whether this transport's H3 is an opt-in auxiliary that the

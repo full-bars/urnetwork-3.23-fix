@@ -298,11 +298,13 @@ type h3QuicHandshakeAttempt struct {
 	received atomic.Uint64
 	pto      atomic.Uint64
 	finished atomic.Bool
-	// sentBytes and receivedBytes are the wire bytes of this handshake's QUIC
-	// packets, so the connect governor can price a failed attempt in bytes
-	sentBytes     atomic.Uint64
-	receivedBytes atomic.Uint64
-	credited      atomic.Bool
+	// connect, when set, is the connect attempt that started this handshake. Each
+	// traced packet is charged to it as it is sent or received, not once the dial
+	// returns: a dial that is canceled mid-ladder returns before its siblings have
+	// finished, so a credit made at return would land after the connect governor
+	// has already read the attempt. Charging stops once the handshake is over, so
+	// the session that follows is not billed to the attempt.
+	connect *attemptStats
 }
 
 func (self *H3QuicPacketStats) beginHandshakeAttempt() *h3QuicHandshakeAttempt {
@@ -327,16 +329,19 @@ func (self *h3QuicHandshakeAttempt) finish(success bool) {
 	}
 }
 
-// creditTo charges the handshake's wire bytes to the connect attempt that
-// started it, once. A handshake that gets no answer retransmits a full ladder of
-// padded Initial packets, which is the whole cost of a failed QUIC dial: without
-// this the connect governor sees QUIC attempts as free (see attemptStats).
-func (self *h3QuicHandshakeAttempt) creditTo(stats *attemptStats) {
-	if self == nil || stats == nil || !self.credited.CompareAndSwap(false, true) {
+// chargeConnect adds one traced packet to the connect attempt. A handshake that
+// gets no answer retransmits a full ladder of padded Initial packets, which is the
+// whole cost of a failed QUIC dial: without this the connect governor sees QUIC
+// attempts as free (see attemptStats).
+func (self *h3QuicHandshakeAttempt) chargeConnect(byteCount int64, sent bool) {
+	if self == nil || self.connect == nil || self.finished.Load() || byteCount <= 0 {
 		return
 	}
-	stats.tx.Add(int64(self.sentBytes.Load()))
-	stats.rx.Add(int64(self.receivedBytes.Load()))
+	if sent {
+		self.connect.tx.Add(byteCount)
+	} else {
+		self.connect.rx.Add(byteCount)
+	}
 }
 
 func (self *h3QuicHandshakeAttempt) sentWithoutResponse() bool {
@@ -376,7 +381,7 @@ func (self *h3QuicPacketStatsRecorder) recordSent(event qlog.PacketSent) {
 	self.stats.sentPacketCount.Add(1)
 	if self.attempt != nil {
 		self.attempt.sent.Add(1)
-		self.attempt.sentBytes.Add(uint64(max(0, event.Raw.Length)))
+		self.attempt.chargeConnect(int64(event.Raw.Length), true)
 	}
 	self.stats.sentPacketByteCount.Add(uint64(max(0, event.Raw.Length)))
 	self.stats.PacketFingerprints.recordSent(event.DatagramPayloadChecksum)
@@ -392,7 +397,7 @@ func (self *h3QuicPacketStatsRecorder) recordReceived(event qlog.PacketReceived)
 	self.stats.receivedPacketCount.Add(1)
 	if self.attempt != nil {
 		self.attempt.received.Add(1)
-		self.attempt.receivedBytes.Add(uint64(max(0, event.Raw.Length)))
+		self.attempt.chargeConnect(int64(event.Raw.Length), false)
 	}
 	self.stats.receivedPacketByteCount.Add(uint64(max(0, event.Raw.Length)))
 	self.stats.PacketFingerprints.recordReceived(event.DatagramPayloadChecksum)

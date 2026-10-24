@@ -2354,7 +2354,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		// teardown is not a backend outcome, and a canceled dial's error can
 		// miss context.Canceled when it was snapshotted before the cancel.
 		if !self.pinned() && (err == nil || self.ctx.Err() == nil) {
-			connectGov.recordAttempt(classifyConnectError(err, attemptStats), attemptStats)
+			// the class is read without the stats on purpose: a QUIC timeout stays
+			// ambiguous (a proxy's UDP relay can answer a little and still be
+			// the thing that is broken). Only the bytes are new.
+			connectGov.recordAttempt(classifyConnectError(err, nil), attemptStats)
 		}
 		if err != nil {
 			// a definitive refusal of the credential holds it before the next

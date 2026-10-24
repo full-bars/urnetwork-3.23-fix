@@ -778,6 +778,20 @@ func admitConnect(ctx context.Context, direct bool, proxyIndex int) bool {
 	)
 }
 
+// admitConnectQuiet is admitConnect for a dial that is not the proxy's health
+// signal, such as an auxiliary H3 carrier. It waits under the same budget but
+// never marks the proxy parked: that flag is shared with the proxy's H1 loop and
+// read by connectingActive, so a second writer would clear the H1's mark while it
+// is still waiting. With no score it also ranks behind every H1 waiter, which is
+// the order that matters: H1 is how the platform is probed.
+func admitConnectQuiet(ctx context.Context, direct bool) bool {
+	if currentGovernMode() != governEnforce {
+		return true
+	}
+	budgetLoopOnce.Do(func() { go connectBudget.run(context.Background()) })
+	return connectBudget.admitParked(ctx, direct, nil, nil)
+}
+
 // OutageRecent reports whether a backend outage is under way or ended within d,
 // as seen by the reconnect attempt budget. The provider's reapers use it to hold
 // off: a proxy that has been down since the outage is not dead until a long

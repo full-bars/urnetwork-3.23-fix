@@ -7,56 +7,65 @@ import (
 
 	quic "github.com/quic-go/quic-go"
 	"github.com/quic-go/quic-go/qlog"
+	"github.com/quic-go/quic-go/qlogwriter"
 )
 
 // silentQuicLadderBytes is what one QUIC dial costs when the peer never answers:
 // the Initial and its retransmits, each padded to the 1200 byte minimum.
 const silentQuicLadderBytes = 16 * 1200
 
-func recordHandshakePackets(t *testing.T, sent int, received int) *h3QuicHandshakeAttempt {
-	t.Helper()
-	stats := &H3QuicPacketStats{}
-	attempt := stats.beginHandshakeAttempt()
-	recorder := stats.tracerForAttempt(attempt)(context.Background(), true, quic.ConnectionID{}).AddProducer()
-	for i := 0; i < sent; i++ {
-		recorder.RecordEvent(qlog.PacketSent{Raw: qlog.RawInfo{Length: 1200}})
-	}
-	for i := 0; i < received; i++ {
-		recorder.RecordEvent(qlog.PacketReceived{Raw: qlog.RawInfo{Length: 1500}})
-	}
-	return attempt
+// handshakeFor starts a traced handshake whose packets are charged to stats, the
+// way dialH3 wires it, and returns the recorder events are fed to.
+func handshakeFor(stats *attemptStats) (*h3QuicHandshakeAttempt, qlogwriter.Recorder) {
+	packetStats := &H3QuicPacketStats{}
+	attempt := packetStats.beginHandshakeAttempt()
+	attempt.connect = stats
+	recorder := packetStats.tracerForAttempt(attempt)(context.Background(), true, quic.ConnectionID{}).AddProducer()
+	return attempt, recorder
 }
 
-func TestH3HandshakeWireBytesAreChargedToTheConnectAttemptOnce(t *testing.T) {
-	attempt := recordHandshakePackets(t, 16, 0)
+func TestH3HandshakeBytesAreChargedAsEachPacketIsTraced(t *testing.T) {
 	stats := &attemptStats{}
-	attempt.creditTo(stats)
-	attempt.creditTo(stats) // the dial's error path and its late-failure path may both run
+	attempt, recorder := handshakeFor(stats)
+	for i := 0; i < 16; i++ {
+		recorder.RecordEvent(qlog.PacketSent{Raw: qlog.RawInfo{Length: 1200}})
+		// the dial has not returned yet, and the bytes are already on the attempt: a
+		// dial canceled mid-ladder returns after the governor has read the attempt
+		if got := stats.tx.Load(); got != int64(i+1)*1200 {
+			t.Fatalf("after %d packets tx=%d, want %d", i+1, got, (i+1)*1200)
+		}
+	}
 	if got := stats.tx.Load(); got != silentQuicLadderBytes {
 		t.Fatalf("tx=%d, want %d", got, silentQuicLadderBytes)
 	}
 	if got := stats.rx.Load(); got != 0 {
 		t.Fatalf("a silent peer answered nothing but rx=%d", got)
 	}
+	recorder.RecordEvent(qlog.PacketReceived{Raw: qlog.RawInfo{Length: 1500}})
+	if got := stats.rx.Load(); got != 1500 {
+		t.Fatalf("rx=%d, want 1500", got)
+	}
+	attempt.finish(true)
 }
 
-func TestH3HandshakeReplyBytesLetTheGovernorSeeThePlatformAnswered(t *testing.T) {
-	attempt := recordHandshakePackets(t, 4, 1)
+// The session that follows a connected handshake is not part of the attempt.
+func TestH3HandshakeBytesStopBeingChargedOnceTheHandshakeIsOver(t *testing.T) {
 	stats := &attemptStats{}
-	attempt.creditTo(stats)
-	err := context.DeadlineExceeded
-	if got := classifyConnectError(err, stats); got != connectTimeoutPlatform {
-		t.Fatalf("a timeout after the platform sent %d bytes is %v, want timeout_platform", stats.rx.Load(), got)
-	}
-	if got := classifyConnectError(err, &attemptStats{}); got != connectTimeoutNoReply {
-		t.Fatalf("a timeout in silence is %v, want timeout_silent", got)
+	attempt, recorder := handshakeFor(stats)
+	recorder.RecordEvent(qlog.PacketSent{Raw: qlog.RawInfo{Length: 1200}})
+	attempt.finish(true)
+	recorder.RecordEvent(qlog.PacketSent{Raw: qlog.RawInfo{Length: 1200}})
+	recorder.RecordEvent(qlog.PacketReceived{Raw: qlog.RawInfo{Length: 1500}})
+	if tx, rx := stats.tx.Load(), stats.rx.Load(); tx != 1200 || rx != 0 {
+		t.Fatalf("tx=%d rx=%d, want only the handshake's 1200 sent", tx, rx)
 	}
 }
 
-func TestH3HandshakeCreditToleratesNoStats(t *testing.T) {
-	recordHandshakePackets(t, 3, 0).creditTo(nil)
+func TestH3HandshakeWithoutAConnectAttemptChargesNothingAndDoesNotPanic(t *testing.T) {
+	_, recorder := handshakeFor(nil)
+	recorder.RecordEvent(qlog.PacketSent{Raw: qlog.RawInfo{Length: 1200}})
 	var none *h3QuicHandshakeAttempt
-	none.creditTo(&attemptStats{})
+	none.chargeConnect(10, true)
 }
 
 // A silent edge answers nothing, so the verdict stays unsure. The bytes the QUIC
@@ -165,5 +174,53 @@ func TestAdmitH3Dial_DirectAndPinnedQuicNeverWait(t *testing.T) {
 	pinned.ipFamily = 4
 	if !admitWithin(pinned, 100*time.Millisecond) {
 		t.Fatal("a family-pinned transport paces itself and must not wait on the budget")
+	}
+}
+
+// The proxy's `parked` flag is shared with its H1 loop and read by
+// connectingActive, which keeps the reaper away from a proxy waiting its turn. An
+// H3 waiter that set and then cleared it would clear the H1's mark early.
+func TestAdmitH3Dial_NeverMarksTheProxyParked(t *testing.T) {
+	resetProxyHealthForTest()
+	budget := withEnforcedBudget(t)
+	RegisterProxy(7, "192.0.2.7:1080", "192.0.2.7:1080")
+	markProxyParked(7, true) // its H1 loop is waiting
+	budget.setRate(budgetFloorRate)
+	if admitWithin(h3TransportForProxy(7, true), 100*time.Millisecond) {
+		t.Fatal("setup: the budget is throttled, the H3 dial must wait")
+	}
+	proxyHealthMu.Lock()
+	parked := proxyHealthByIndex[7].parked
+	proxyHealthMu.Unlock()
+	if !parked {
+		t.Fatal("an H3 waiter cleared the mark its proxy's H1 loop set")
+	}
+}
+
+// H1 is how the platform is probed, so it is served before an auxiliary carrier.
+// admitConnectQuiet queues with no score, which ranks behind every scored waiter.
+func TestAdmitConnectQuiet_RanksBehindAScoredH1Waiter(t *testing.T) {
+	h := newBudgetHarness()
+	h.budget.setRate(budgetFloorRate)
+	h.budget.pick = func(n int) int { return 0 } // the random slot would hide the order
+
+	quiet := make(chan bool, 1)
+	go func() { quiet <- h.budget.admitParked(context.Background(), false, nil, nil) }()
+	waitQueued(t, h.budget, 1)
+	scored := waiterScored(context.Background(), h.budget, 1<<20)
+	waitQueued(t, h.budget, 2)
+
+	h.step(500 * time.Millisecond) // one token
+	time.Sleep(50 * time.Millisecond)
+
+	select {
+	case <-scored:
+	default:
+		t.Fatal("the scored H1 waiter was not the one released first")
+	}
+	select {
+	case <-quiet:
+		t.Fatal("the quiet H3 waiter was released ahead of, or with, the scored one")
+	default:
 	}
 }
