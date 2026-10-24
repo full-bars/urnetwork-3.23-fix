@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"time"
 )
 
@@ -66,6 +67,55 @@ func thrashCapPath() (string, error) {
 		return "", err
 	}
 	return filepath.Join(dir, thrashCapFileName), nil
+}
+
+// thrashExitMarkerPrefix names the one-shot file a provider writes immediately
+// before exiting for a planned thrash restart, beside thrash_cap.json. The pid
+// in the name binds the marker to the process that asked for the restart:
+// thrash_cap.json itself is also written mid-life (the liveness watchdog
+// records and then undoes a stall while the child keeps running), so neither
+// its existence nor its timestamp can say which child exited.
+const thrashExitMarkerPrefix = "thrash_exit."
+
+// thrashExitMarkerName is the marker a provider with this pid writes.
+func thrashExitMarkerName(pid int) string {
+	return fmt.Sprintf("%s%d", thrashExitMarkerPrefix, pid)
+}
+
+// markThrashExit writes this process's one-shot exit marker. It must be called
+// immediately before the exit it explains: exit status 75 is shared by the
+// swap-thrash restart and the network sign-in quarantine, and a supervisor
+// that manages this process (provide --all-operators) uses the marker to tell
+// the two apart for the operator (bt_operators_supervisor.go
+// operatorChildThrashRestarted consumes it with this pid).
+//
+// A failure is the caller's to log and never blocks the exit: the restart
+// contract is the exit status, which every service supervisor reads. The write
+// itself is unbounded, so every production caller uses markThrashExitBounded
+// (thrash_watchdog.go), which bounds it with thrashPersistTimeout: a state
+// directory hung in swap I/O must not keep the exit from being taken.
+func markThrashExit() error {
+	path, err := thrashCapPath()
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(path)
+	if err := os.MkdirAll(dir, 0o700); err != nil {
+		return err
+	}
+	name := thrashExitMarkerName(os.Getpid())
+	// Only a supervisor consumes a marker. Under systemd or a container start
+	// script nobody does, so drop the markers earlier lives left behind here
+	// instead of collecting one file per restart forever.
+	if entries, err := os.ReadDir(dir); err == nil {
+		for _, entry := range entries {
+			if strings.HasPrefix(entry.Name(), thrashExitMarkerPrefix) && entry.Name() != name {
+				_ = os.Remove(filepath.Join(dir, entry.Name()))
+			}
+		}
+	}
+	return os.WriteFile(filepath.Join(dir, name),
+		[]byte(fmt.Sprintf("pid %d exited for a planned thrash restart\n", os.Getpid())), 0o600)
 }
 
 // readThrashCapState reads the persisted state; a missing file is the zero
@@ -154,6 +204,12 @@ func thrashCapForNextStart(running int) int {
 // restarts ring with this escape appended, and a fresh expiry. Errors are
 // returned so the caller can log; the escalation itself never depends on the
 // write succeeding (the exit proceeds either way).
+//
+// This is the anti-loop record, not the exit-reason marker: it is also written
+// mid-life (recordLivenessStall and its undo), and a persist that timed out on
+// thrashEscalate can complete after the process has moved on. A reader cannot
+// tell which child, if any, exited from it. The exit marker is the separate
+// one-shot file markThrashExit writes just before the exit.
 func recordThrashEscalation(cap int, now time.Time) error {
 	path, err := thrashCapPath()
 	if err != nil {

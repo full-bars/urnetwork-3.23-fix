@@ -50,7 +50,7 @@ Every time the provider binary exits with a non-zero code, it prints a `FATAL [e
 | 20 | The proxy file specified with `--proxy_file` cannot be read. Check the path and file permissions. |
 | 21 | The proxy file is empty or contains no valid `ip:port:user:pass` lines. |
 | 78 | The JWT is expired or invalid. The startup script intercepts this code, deletes the stale JWT, and re-authenticates automatically. |
-| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds. See [Swap-thrash watchdog](/full-bars/urnetwork-3.23-fix/wiki/Configuration#swap-thrash-watchdog). |
+| 75 | Planned restart requested by the swap-thrash watchdog. It is not a crash. Under systemd with `Restart=on-failure` the unit restarts the provider. In a container the start script restarts it after 5 seconds. The same code also marks a rejected network sign-in set aside for a fresh sign-in. A planned restart is marked by a one-shot `thrash_exit.<pid>` file the provider writes immediately before it exits, and `provide --all-operators` uses it to choose the operator log line, so it does not report a restart it asked for as a quarantine. Both cases make the same supervisor changes and the same automatic sign-in decision: the marker only selects the wording. See [Swap-thrash watchdog](/full-bars/urnetwork-3.23-fix/wiki/Configuration#swap-thrash-watchdog). |
 
 ### logs
 
@@ -91,7 +91,7 @@ If your container exits unexpectedly:
 3. **Read the ramlogs**: `docker exec <name> logs`
 4. **Exit 0** means a clean shutdown (SIGTERM or manual stop).
 5. **Exit 78** means the JWT expired (the script attempted automatic re-authentication). Verify `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` are set correctly.
-6. **Exit 75** is the thrash watchdog's planned restart, not a fault. The start scripts restart the provider after 5 seconds and leave the JWT alone.
+6. **Exit 75** has two causes, so read the exit log before diagnosing. A planned restart is not a fault: the swap-thrash watchdog (or the liveness watchdog, when the process has made no progress) asks for it, the start scripts restart the provider after 5 seconds, and the JWT is left alone, because the set-aside token on disk decides the next sign-in. A rejected network sign-in set aside for a fresh sign-in shares the code and is not a restart: check `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` before touching the token. A one-shot `thrash_exit.<pid>` marker beside `thrash_cap.json` marks the planned restart, and `provide --all-operators` names the cause it saw in the operator log.
 7. **All other non-zero codes** indicate a configuration or environment problem. The fatal message describes the specific issue.
 
 ### Fatal messages always write to both logs and stderr

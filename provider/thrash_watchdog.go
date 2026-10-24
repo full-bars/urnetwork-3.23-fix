@@ -84,6 +84,9 @@ var (
 	thrashEnvFn                 = os.Getenv
 	thrashFileExistsFn          = defaultFileExists
 	thrashCheckCapDirWritableFn = defaultThrashCheckCapDirWritable
+	// thrashExitMarkerWriteFn writes the one-shot exit marker; a test seam for
+	// markThrashExitBounded (the real write is thrash_cap.go markThrashExit).
+	thrashExitMarkerWriteFn = markThrashExit
 	// thrashPersistTimeout bounds the anti-loop state write: a blocked flock
 	// must abort the escalation (alert), never stall the loop or exit without
 	// the record.
@@ -1454,10 +1457,21 @@ func runThrashWatchdog(ctx context.Context, selfHealEnabled bool) {
 			esc := thrashEscalate(now, rt, rd, selfHealEnabled, attr, share, shareOK)
 			switch esc.Action {
 			case "restart":
-				importantLogf("%s\n", esc.Msg)
-				// os.Exit skips the defers: clear the stale status first.
-				clearThrashStatusFile()
-				thrashExitFn(thrashExitCode)
+				// Mark this exit for a supervising provide --all-operators:
+				// status 75 alone cannot tell this planned memory restart from
+				// the network sign-in quarantine, and the restart record is
+				// written mid-life too, so it cannot carry the reason
+				// (thrash_cap.go markThrashExit,
+				// bt_operators_supervisor.go operatorChildThrashRestarted).
+				// Any new 75 producer must mark its exit the same way.
+				//
+				// thrashExitOnRestart is the shared pre-exit sequence (also
+				// used by the self-exit liveness loop): the reason line goes to
+				// stderr only, and the status clear and the marker write are
+				// bounded, because the state directory whose hang this
+				// escalation exists for must not be able to stop the exit
+				// (see thrash_exit_note.go).
+				thrashExitOnRestart("[thrash]", "%s", esc.Msg)
 				return // a test seam replaced thrashExitFn: stop the loop cleanly
 			case "alert":
 				// Dedupe by reason CODE: re-arm reasons embed changing
@@ -1509,6 +1523,27 @@ func thrashCapDirWritableBounded() error {
 		return err
 	case <-time.After(thrashPersistTimeout):
 		return errors.New("timed out probing the state directory")
+	}
+}
+
+// markThrashExitBounded writes the one-shot exit marker with the same bounded
+// wait as the cap write and the probe above.
+//
+// markThrashExit runs MkdirAll, ReadDir and WriteFile with no limit, and both
+// callers run it immediately before the exit they explain. On a state
+// directory hung in swap I/O — the exact condition that fires this watchdog —
+// the unbounded write would keep the exit from ever being taken and the node
+// could not restart. The restart contract is the exit status, not the marker,
+// so a timeout here is returned for the caller to log and the exit proceeds.
+func markThrashExitBounded() error {
+	done := make(chan error, 1)
+	write := thrashExitMarkerWriteFn // read here, not in the goroutine
+	go func() { done <- write() }()
+	select {
+	case err := <-done:
+		return err
+	case <-time.After(thrashPersistTimeout):
+		return errors.New("timed out writing the exit marker")
 	}
 }
 

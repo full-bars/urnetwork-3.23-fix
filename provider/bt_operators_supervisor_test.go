@@ -859,6 +859,74 @@ func TestOperatorSupervisorSignsInAgainAfterAQuarantine(t *testing.T) {
 	fixture.stop(syscall.SIGTERM, second)
 }
 
+// A child that exited 75 after marking its planned thrash restart is not
+// reported as a network-sign-in quarantine, even though the JWT is gone for the
+// ordinary reason that the child stopped.
+func TestOperatorSupervisorDoesNotReportAThrashRestartAsAQuarantine(t *testing.T) {
+	fixture := newTestOperatorFixture(t)
+	fixture.authenticate("alpha.example")
+	fixture.publish(testListedOperator("alpha.example"))
+	fixture.run()
+	first := fixture.nextStart()
+	if err := os.Remove(operatorJwtPath(fixture.base, "alpha.example")); err != nil {
+		t.Fatal(err)
+	}
+	// The thrash path writes the one-shot marker for its own pid immediately
+	// before the exit; the supervisor's synthetic child is pid 1.
+	marker := filepath.Join(operatorDirectory(fixture.base, "alpha.example"), operatorStateSubdirectory, thrashExitMarkerName(first.pid))
+	if err := os.MkdirAll(filepath.Dir(marker), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(marker, []byte("pid 1 exited for a planned thrash restart\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	from := fixture.journal.length()
+	first.exit <- testOperatorExit{code: providerQuarantinedExitCode}
+	fixture.journal.wait(t, from, "log operator alpha.example: provider (pid 1) exited without a network sign-in; checking its credentials")
+	if journal := fixture.journal.String(); strings.Contains(journal, "set its rejected network sign-in aside") {
+		t.Fatalf("a thrash restart was reported as a quarantine:\n%s", journal)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the thrash exit marker was not consumed: %v", err)
+	}
+	fixture.stop(syscall.SIGTERM)
+}
+
+// The masking case the mtime heuristic got wrong: a thrash record written while
+// the child was still running (the liveness watchdog's record/undo, or a bounded
+// persist that completed late) is not evidence about this exit, so a real
+// quarantine after it is still reported as one.
+func TestOperatorSupervisorDoesNotMaskAQuarantineWithAMidLifeThrashRecord(t *testing.T) {
+	fixture := newTestOperatorFixture(t)
+	fixture.authenticate("alpha.example")
+	fixture.publish(testListedOperator("alpha.example"))
+	fixture.run()
+	first := fixture.nextStart()
+	// Mid-life: the record is written without any exit, so its mtime falls
+	// inside the child's life (startedAt is the fixture's pinned clock).
+	record := filepath.Join(operatorDirectory(fixture.base, "alpha.example"), operatorStateSubdirectory, thrashCapFileName)
+	if err := os.MkdirAll(filepath.Dir(record), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(record, []byte(`{"cap":10,"restarts":[1]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	itsLife := testOperatorEpoch.Add(time.Minute)
+	if err := os.Chtimes(record, itsLife, itsLife); err != nil {
+		t.Fatal(err)
+	}
+	// The real sign-in quarantine: the JWT is set aside and the child exits 75
+	// without ever marking a thrash restart.
+	testOperatorQuarantine(t, fixture.base, "alpha.example", testOperatorEpoch)
+	from := fixture.journal.length()
+	first.exit <- testOperatorExit{code: providerQuarantinedExitCode}
+	fixture.journal.wait(t, from, "log operator alpha.example: provider (pid 1) set its rejected network sign-in aside; checking its credentials")
+	if journal := fixture.journal.String(); strings.Contains(journal, "exited without a network sign-in") {
+		t.Fatalf("a mid-life thrash record masked a real quarantine:\n%s", journal)
+	}
+	fixture.stop(syscall.SIGTERM)
+}
+
 // Rejections in a row limit automatic sign-ins: the limit is logged once per
 // change with the manual command, a restarted supervisor reads the same limit
 // from the set-aside files, and the sign-in runs when the limit ends.
@@ -927,12 +995,120 @@ func TestOperatorAutomaticSignInDoublesUpToADay(t *testing.T) {
 // A real child process's exit status carries the quarantine.
 func TestOperatorChildQuarantinedReadsTheExitStatus(t *testing.T) {
 	err := exec.Command("sh", "-c", fmt.Sprintf("exit %d", providerQuarantinedExitCode)).Run()
-	if !operatorChildQuarantined(err) {
+	if !operatorChildQuarantined(err, false) {
 		t.Fatalf("exit %d was not a quarantine: %v", providerQuarantinedExitCode, err)
 	}
 	for _, other := range []error{nil, errors.New("exit status 75"), exec.Command("sh", "-c", "exit 1").Run()} {
-		if operatorChildQuarantined(other) {
+		if operatorChildQuarantined(other, false) {
 			t.Fatalf("%v read as a quarantine", other)
 		}
+	}
+}
+
+// TestOperatorChildQuarantinedDoesNotClaimAThrashRestart pins the shared exit
+// code: 75 with this process's one-shot exit marker is a planned memory
+// restart, while a 75 with no marker (or only another process's) remains a
+// quarantine. The thrash record is deliberately present and recent: it is
+// written mid-life, so it must not explain an exit.
+func TestOperatorChildQuarantinedDoesNotClaimAThrashRestart(t *testing.T) {
+	exit75 := exec.Command("sh", "-c", fmt.Sprintf("exit %d", providerQuarantinedExitCode)).Run()
+	const pid = 4242
+
+	stateDir := t.TempDir()
+	// A mid-life persist: the liveness watchdog writes thrash_cap.json (and its
+	// undo writes it again) while the child is still running, and a bounded
+	// persist that timed out can complete after the escalation moved on. Its
+	// mtime is inside the child's life and still says nothing about the exit.
+	record := filepath.Join(stateDir, thrashCapFileName)
+	if err := os.WriteFile(record, []byte(`{"cap":10,"restarts":[1]}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	itsLife := testOperatorEpoch.Add(time.Minute)
+	if err := os.Chtimes(record, itsLife, itsLife); err != nil {
+		t.Fatal(err)
+	}
+	if operatorChildThrashRestarted(stateDir, pid) {
+		t.Fatal("a thrash record written mid-life was read as this child's exit marker")
+	}
+	if !operatorChildQuarantined(exit75, false) {
+		t.Fatalf("exit %d after only a mid-life record was not read as a quarantine", providerQuarantinedExitCode)
+	}
+
+	// The marker the exiting process writes binds the exit to that process.
+	marker := filepath.Join(stateDir, thrashExitMarkerName(pid))
+	if err := os.WriteFile(marker, []byte("pid 4242 exited for a planned thrash restart\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if !operatorChildThrashRestarted(stateDir, pid) {
+		t.Fatal("the exit marker was not read as a thrash restart")
+	}
+	if operatorChildQuarantined(exit75, true) {
+		t.Fatalf("exit %d with the thrash marker was reported as a quarantine", providerQuarantinedExitCode)
+	}
+	if _, err := os.Stat(marker); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the exit marker was not consumed: %v", err)
+	}
+	if operatorChildThrashRestarted(stateDir, pid) {
+		t.Fatal("the exit marker explained more than the one exit it names")
+	}
+
+	// Another process's marker is not this child's evidence.
+	if err := os.WriteFile(filepath.Join(stateDir, thrashExitMarkerName(pid+1)), []byte("other\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if operatorChildThrashRestarted(stateDir, pid) {
+		t.Fatal("another process's exit marker was read as this child's")
+	}
+	if !operatorChildQuarantined(exit75, false) {
+		t.Fatalf("exit %d with another process's marker was not a quarantine", providerQuarantinedExitCode)
+	}
+}
+
+// The writer and the reader agree on the marker: markThrashExit names this
+// process, and nothing else reads as this process's exit.
+func TestMarkThrashExitNamesTheExitingProcess(t *testing.T) {
+	home := withTempHome(t)
+	if err := markThrashExit(); err != nil {
+		t.Fatal(err)
+	}
+	stateDir := filepath.Join(home, ".urnetwork")
+	if _, err := os.Stat(filepath.Join(stateDir, thrashExitMarkerName(os.Getpid()))); err != nil {
+		t.Fatalf("markThrashExit did not write this process's marker: %v", err)
+	}
+	if operatorChildThrashRestarted(stateDir, os.Getpid()+1) {
+		t.Fatal("the marker was read for a process that did not write it")
+	}
+	if !operatorChildThrashRestarted(stateDir, os.Getpid()) {
+		t.Fatal("the supervisor does not read the marker markThrashExit writes")
+	}
+	if err := markThrashExit(); err != nil {
+		t.Fatal(err)
+	}
+	if !operatorChildThrashRestarted(stateDir, os.Getpid()) {
+		t.Fatal("a second exit marker was not written")
+	}
+}
+
+// Under systemd or a container start script no supervisor consumes the marker,
+// so the next exit clears the ones earlier lives left behind instead of
+// collecting a file per restart forever.
+func TestMarkThrashExitClearsEarlierMarkers(t *testing.T) {
+	home := withTempHome(t)
+	stateDir := filepath.Join(home, ".urnetwork")
+	if err := os.MkdirAll(stateDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	stale := filepath.Join(stateDir, thrashExitMarkerName(999999))
+	if err := os.WriteFile(stale, nil, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := markThrashExit(); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := os.Stat(stale); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("a marker from an earlier life survived: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(stateDir, thrashExitMarkerName(os.Getpid()))); err != nil {
+		t.Fatalf("the current marker is missing: %v", err)
 	}
 }

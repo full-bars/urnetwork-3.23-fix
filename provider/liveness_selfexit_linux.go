@@ -92,7 +92,13 @@ func runSelfExitLivenessWatchdog(ctx context.Context, gate func(episodeStart boo
 			continue
 		}
 		acting = true
-		critLog("🚨 [liveness] no progress for %s: exiting %d so the supervisor restarts the provider\n", livenessStaleAfter, thrashExitCode)
-		thrashExitFn(thrashExitCode)
+		// Mark the exit for a supervising provide --all-operators: status 75
+		// alone cannot tell this planned restart from the network sign-in
+		// quarantine (thrash_cap.go markThrashExit). thrashExitOnRestart is the
+		// shared pre-exit sequence: its only diagnostics go to stderr (never
+		// events.log in the state directory this loop is reacting to) and both
+		// the status clear and the marker write are bounded, so the exit is
+		// always taken.
+		thrashExitOnRestart("[liveness]", "🚨 [liveness] no progress for %s: exiting %d so the supervisor restarts the provider", livenessStaleAfter, thrashExitCode)
 	}
 }
