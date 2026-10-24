@@ -585,6 +585,7 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 
 	var d oomCapDecision
 	var msg string
+	prevSince := st.SinceUnix
 	if havePrev && oomKilledSinceMarker(&prev, bootID, oomKills, now) {
 		st, d = oomCapOnOOM(st, prev.Proxies, desired, now)
 		msg = "OOM kill since the last start (peak running " + strconv.Itoa(prev.Proxies) + ")"
@@ -599,7 +600,13 @@ func oomCapDecide(desired int, bootID string, oomKills int64, now time.Time) []s
 		// answer restarts the clean-window clock, and that reset exists only if
 		// this write lands.
 		if werr != nil {
-			warnings = append(warnings, "[oomcap] warn: could not persist the cap state ("+werr.Error()+"): the clean-window clock could not be recorded")
+			// A clean start with no standing cap changes nothing, so do not claim a
+			// clock reset that was never due; say which of the two was lost.
+			msg := "[oomcap] warn: could not persist the cap state (" + werr.Error() + ")"
+			if st.SinceUnix != prevSince {
+				msg += ": the clean-window reset could not be recorded"
+			}
+			warnings = append(warnings, msg)
 		}
 		return warnings
 	}
