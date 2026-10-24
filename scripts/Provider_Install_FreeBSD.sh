@@ -147,6 +147,49 @@ priv() {
     fi
 }
 
+# --- staged-file cleanup ---
+#
+# The staged binary and the staged version file live in the root-owned install
+# tree, so they can only be removed with the privilege that created them: a
+# plain `rm -f` after `priv cp` fails with EPERM and leaves a root-owned
+# .urnetwork.new.<pid> behind on every failed non-root install. Every removal
+# of a staged path goes through priv_rm.
+#
+# install_cleanup is the EXIT trap for the paths that leave without reaching an
+# explicit cleanup branch (an interrupt, a failure further down). It must never
+# make the failure worse, so it preserves the status it inherited, warns rather
+# than failing when a removal does not work, and reads stdin from /dev/null so
+# a sudo that wants a password fails at once instead of blocking the exit on a
+# prompt nobody is watching.
+staged_bin=""
+staged_version=""
+
+priv_rm() {
+    if [ -z "${1:-}" ]; then
+        return 0
+    fi
+    # -e and -L, not -f: a staged path that was never created is not an error,
+    # and a symlink planted at the name must still be removed as a link.
+    if [ ! -e "$1" ] && [ ! -L "$1" ]; then
+        return 0
+    fi
+    priv rm -f "$1" < /dev/null 2>/dev/null ||
+        pr_warn "could not remove staged file %s; remove it by hand" "$1"
+    return 0
+}
+
+install_cleanup() {
+    _status=$?
+    trap - EXIT INT TERM HUP
+    priv_rm "$staged_bin"
+    priv_rm "$staged_version"
+    # mktemp -d ran as the invoking user, so this removal needs no privilege.
+    if [ -n "${tmpdir:-}" ]; then
+        rm -rf "$tmpdir" 2>/dev/null || true
+    fi
+    exit "$_status"
+}
+
 load_service() {
     priv service "$service_name" start
 }
@@ -405,6 +448,14 @@ assert_state_path_safe() {
 }
 
 do_install() {
+    # Every exit from here on removes a staged file that priv created, so the
+    # cleanup runs on all of them. The signal traps exit normally (130 = SIGINT,
+    # 143 = SIGTERM, 129 = SIGHUP) so the EXIT trap runs and the status still
+    # says the install was interrupted rather than reporting success.
+    trap install_cleanup EXIT
+    trap 'exit 130' INT
+    trap 'exit 143' TERM
+    trap 'exit 129' HUP
     # Before the download, before the binary, before any root write.
     assert_state_path_safe
     version="${1:-latest}"
@@ -523,16 +574,32 @@ do_install() {
         rm -rf "$tmpdir"; exit 1
     fi
     staged="$install_path/bin/.urnetwork.new.$$"
-    priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
+    # Recorded before cp, not after: a cp that dies halfway (ENOSPC, EINTR,
+    # sudo timeout) may already have created the file as root, and that is
+    # exactly the partial file the cleanup has to remove.
+    staged_bin="$staged"
+    priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
     priv chmod 755 "$staged"
-    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; rm -f "$staged"; rm -rf "$tmpdir"; exit 1; }
+    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
+    # Renamed into place: forget the name, or the EXIT trap would delete the
+    # binary that is now the installed provider.
+    staged_bin=""
 
     # Same rename-not-follow rule as the binary above. A symlink planted at the
     # version name would redirect the write, so stage beside it and rename over
     # it: rename replaces the entry instead of following it.
     ver_tmp="$install_path/.version.new.$$"
-    printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
-        priv mv -f "$ver_tmp" "$install_path/version"
+    staged_version="$ver_tmp"
+    # Not fatal: the binary is already installed and the provider is about to
+    # start, so failing here would report a failed install for a working
+    # provider. The root-owned temp file still has to go with the failure, or
+    # every retry leaves .version.new.<pid> in the install tree.
+    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
+           priv mv -f "$ver_tmp" "$install_path/version"; }; then
+        priv_rm "$ver_tmp"
+        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
+    fi
+    staged_version=""
     priv chmod 644 "$install_path/version" 2>/dev/null || true
 
     # Install the tool: the Go urnet-tools binary shipped as a release asset,
