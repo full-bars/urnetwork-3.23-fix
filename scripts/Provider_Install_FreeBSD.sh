@@ -600,15 +600,107 @@ RCSCRIPT
         case "$_shell" in
             */zsh)  shell_rc="$service_home/.zshrc" ;;
             */bash) shell_rc="$service_home/.bash_profile" ;;
-            */tcsh) shell_rc="$service_home/.cshrc" ;;
+            */tcsh|*/csh) shell_rc="$service_home/.cshrc" ;;
         esac
-        if ! grep -qsF "$install_path/bin" "$shell_rc" 2>/dev/null; then
+        # The service user owns this directory, so a symlink planted at the rc
+        # file's name sent root's append (and chown) into a file of their
+        # choosing. Refuse a link outright; the provider is installed by now,
+        # so warn and carry on instead of failing the whole install.
+        if [ -L "$shell_rc" ]; then
+            pr_warn "Refusing to edit %s: it is a symlink. Add %s/bin to PATH by hand" "$shell_rc" "$install_path"
+        else
             case "$_shell" in
-                */tcsh) printf '%s\n' "setenv PATH $install_path/bin:\$PATH" >> "$shell_rc" ;;
-                *)      printf '%s\n' "export PATH=\"$install_path/bin:\$PATH\"" >> "$shell_rc" ;;
+                */tcsh|*/csh) rc_line="setenv PATH \"$install_path/bin:\$PATH\"" ;;
+                *)      rc_line="export PATH=\"$install_path/bin:\$PATH\"" ;;
             esac
-            chown "$service_user" "$shell_rc" 2>/dev/null || true
-            pr_info "Added %s to PATH in %s" "$install_path/bin" "$shell_rc"
+            # How to reach the service user is settled BEFORE the script is fed
+            # in. `su` from a caller that is neither root nor that user stops to
+            # ask for a password, and a prompt during an unattended install is a
+            # hang, not a hint. Root switches user; the service user edits their
+            # own rc directly; anyone else is told to add the line by hand.
+            shellrc_mode=""
+            if [ "$(id -u)" = "0" ]; then
+                shellrc_mode=su
+            elif [ "$(id -un)" = "$service_user" ]; then
+                shellrc_mode=direct
+            fi
+            if [ -z "$shellrc_mode" ]; then
+                pr_warn "Skipping the PATH update in %s: it belongs to %s, but this install is running as %s. Add %s/bin to PATH by hand" \
+                    "$shell_rc" "$service_user" "$(id -un)" "$install_path"
+            else
+                # Everything below runs AS THE SERVICE USER. Root must not
+                # reopen a path inside a directory that user owns: between the
+                # check above and any root cat/chmod/chown/mv the name can be
+                # swapped for a link, and root would follow it. The owner
+                # editing their own rc crosses no privilege boundary, so the
+                # whole edit — copy, append, mode, rename — is handed over and
+                # the installer only reports on it.
+                #
+                # The script goes in on stdin and is run by /bin/sh explicitly.
+                # `su -c` would otherwise hand it to the login shell, and a tcsh
+                # service user cannot parse POSIX sh. The login name must come
+                # BEFORE -c: FreeBSD reads an earlier -c as a login class, not
+                # as the command (its -m keeps the environment, so these
+                # assignments reach the script).
+                (
+                    # One script, one environment, two ways in: root has to
+                    # become the owner, the owner just runs it.
+                    if [ "$shellrc_mode" = su ]; then
+                        SHELLRC_RC="$shell_rc" SHELLRC_LINE="$rc_line" SHELLRC_BIN="$install_path/bin" \
+                            su -m "$service_user" -c '/bin/sh -s'
+                    else
+                        SHELLRC_RC="$shell_rc" SHELLRC_LINE="$rc_line" SHELLRC_BIN="$install_path/bin" \
+                            /bin/sh -s
+                    fi
+                ) <<'SHELLRC_END'
+# Runs as the service user, who owns both the rc file and its directory.
+# Exit: 0 wrote it, 10 already active, anything else failed and left the rc
+# byte-for-byte alone (the temp is removed on every failure path).
+set -u
+rc="${SHELLRC_RC:-}"
+line="${SHELLRC_LINE:-}"
+bin="${SHELLRC_BIN:-}"
+[ -n "$rc" ] && [ -n "$line" ] && [ -n "$bin" ] || exit 7
+# mv would move *into* a directory and cat would block forever on a FIFO.
+if [ -e "$rc" ] || [ -L "$rc" ]; then
+    [ -f "$rc" ] || exit 8
+fi
+# Only an ACTIVE entry counts: a line whose first non-space character is not
+# '#'. A commented-out export used to suppress the append for good.
+if [ -f "$rc" ]; then
+    if awk -v want="$bin" '
+        { line = $0; sub(/^[[:space:]]+/, "", line) }
+        line !~ /^#/ && index(line, want) > 0 { found = 1; exit }
+        END { exit(found ? 0 : 1) }
+    ' "$rc"; then
+        exit 10
+    fi
+fi
+# mktemp is O_EXCL and runs as the owner: no name can be planted ahead of it.
+tmp="$(mktemp "$rc.new.XXXXXX")" || exit 3
+if [ -f "$rc" ] && ! cat "$rc" > "$tmp"; then
+    rm -f "$tmp"
+    exit 4
+fi
+# Without this the entry is glued onto the last line; when the file already
+# ends with a newline, adding another would leave a blank line.
+last="$(tail -c 1 "$tmp" 2>/dev/null | wc -l | tr -d ' ')"
+if [ -s "$tmp" ] && [ "${last:-0}" -eq 0 ]; then
+    ( printf '\n' ) >> "$tmp" || { rm -f "$tmp"; exit 5; }
+fi
+# Subshell so a failed write cannot take this script down before the cleanup;
+# the status is checked, and a half-written temp is never renamed over the rc.
+( printf '%s\n' "$line" ) >> "$tmp" || { rm -f "$tmp"; exit 5; }
+mode="$(stat -c '%a' "$rc" 2>/dev/null || stat -f '%Lp' "$rc" 2>/dev/null)"
+chmod "${mode:-644}" "$tmp" 2>/dev/null || { rm -f "$tmp"; exit 6; }
+mv -f "$tmp" "$rc" || { rm -f "$tmp"; exit 6; }
+SHELLRC_END
+                case "$?" in
+                    0)  pr_info "Added %s to PATH in %s" "$install_path/bin" "$shell_rc" ;;
+                    10) : ;;
+                    *)  pr_warn "Could not update %s; add %s/bin to PATH by hand" "$shell_rc" "$install_path" ;;
+                esac
+            fi
         fi
     fi
 
