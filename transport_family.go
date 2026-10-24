@@ -1937,6 +1937,13 @@ func (self *PlatformTransport) dialH3(
 	// packetConn, not the host socket: an injected endpoint has no host
 	// socket, and a packet translation reports the address of the one it wraps.
 	self.log.Infof("[c]h3 connect to %v (%s) local=%v bound=%t\n", peerAddr, tlsConfig.ServerName, attempt.packetConn.LocalAddr(), egressPinned)
+	// fork: charge this dial's socket to the connect attempt, so a QUIC attempt is
+	// priced like an H1 one (reconnect_governor.go); its handshake bytes follow
+	// per packet through the tracer
+	connectStats := attemptStatsFrom(ctx)
+	if connectStats != nil {
+		connectStats.dials.Add(1)
+	}
 
 	attempt.quicTransport = &quic.Transport{
 		Conn: attempt.packetConn,
@@ -1945,6 +1952,9 @@ func (self *PlatformTransport) dialH3(
 	attemptTlsConfig := tlsConfig.Clone()
 	attemptQuicConfig := quicConfig.Clone()
 	handshakeAttempt := self.settings.H3QuicPacketStats.beginHandshakeAttempt()
+	if handshakeAttempt != nil {
+		handshakeAttempt.connect = connectStats
+	}
 	if handshakeAttempt != nil {
 		attemptQuicConfig.Tracer = self.settings.H3QuicPacketStats.tracerForAttempt(handshakeAttempt)
 	}

@@ -29,6 +29,20 @@ func (self *PlatformTransport) proxyIndex() (int, bool) {
 	return ps.Index, true
 }
 
+// admitH3Dial gates the start of an H3 carrier dial under the shared attempt
+// budget, the way the H1 loop gates its own: a proxied identity waits its turn
+// while the backend is failing, the direct path never waits, and a family-pinned
+// transport paces itself and neither waits on nor feeds the budget. It returns
+// false only when ctx ends first. QUIC left out of the budget is what let every
+// proxy of a node set to h3 all redial a silent edge on its own timer.
+func (self *PlatformTransport) admitH3Dial(ctx context.Context) bool {
+	if self.pinned() {
+		return true
+	}
+	proxyIndex, proxied := self.proxyIndex()
+	return admitConnectQuiet(ctx, !proxied || proxyIndex == 0)
+}
+
 // h3Gated reports whether this transport's H3 is an opt-in auxiliary that the
 // runtime gate (SetH3Enabled) switches: Auto mode on an eligible identity.
 func (self *PlatformTransport) h3Gated() bool {
