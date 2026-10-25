@@ -20,8 +20,9 @@ var (
 )
 
 // trimRAMLog bounds a RAM log file by discarding its oldest 1/ratio and
-// keeping the newest (ratio-1)/ratio, in place, so the file descriptor and any
-// `tail -f` following it stay valid.
+// keeping the newest (ratio-1)/ratio. The trim replaces the file rather than
+// emptying it in place, so a follower has to reopen by name: `tail -F`, not
+// `tail -f`.
 //
 // It fails closed. If the kept portion cannot be read back in full, the file is
 // left exactly as it is: an oversized log that can still be read beats a

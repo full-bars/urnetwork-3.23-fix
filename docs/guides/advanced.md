@@ -221,7 +221,7 @@ The message pool free-list is auto-sized to RAM/32 at startup, capped at 256 MiB
 ### Watch logs live
 
 ```sh
-tail -f /dev/shm/urnetwork.log
+tail -F /dev/shm/urnetwork.log
 ```
 
 ---
