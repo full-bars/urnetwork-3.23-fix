@@ -21,13 +21,20 @@ Uninstall:
 curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 ```
 
-### 🧰 Missing download and JSON tools
+### 🧰 What the installer needs on the host
 
-The Linux installer needs a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`). On a minimal host that lacks one, it installs only what is missing through the host's package manager (apt, dnf, yum, zypper, pacman or apk), using `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so the installer uses `yum` there. Set `URNET_NO_AUTOINSTALL=1` to stop the installer from installing anything: it prints that it is not installing the tool and then stops with a message telling you what to install, so you can do it yourself.
+| Platform | Needs | Missing tools |
+|---|---|---|
+| Linux (systemd or OpenRC) | a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`) | installed through the host package manager: `apt`, `dnf`, `yum`, `zypper`, `pacman` or `apk`, with `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so `yum` is used there |
+| FreeBSD | `curl`, which is not in the base system | nothing is installed for you; `pkg install -y curl` first if the host is bare. A JSON parser is optional: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system |
+
+To keep the Linux installer from touching packages at all:
 
 ```bash
 curl -fSsL https://dl.fullbars.xyz/install.sh | URNET_NO_AUTOINSTALL=1 sh
 ```
+
+With that set the installer installs nothing: it reports the missing piece ("not installing a downloader" or "not installing a JSON parser"), stops, and leaves the install to you once the tool is there. FreeBSD never installs packages, so the variable has no effect there.
 
 ### 🔑 Post-Install Authentication
 

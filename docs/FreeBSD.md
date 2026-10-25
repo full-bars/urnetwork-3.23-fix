@@ -17,8 +17,20 @@ Run the installer as the account the provider should run as, with `sudo`, or as 
 ## Install
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh -o urnet-install.sh
+curl -fsSL https://dl.fullbars.xyz/install-freebsd.sh -o urnet-install.sh
 sudo sh urnet-install.sh install
+```
+
+That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. The same script is what `https://install.fullbars.xyz` runs after it detects the platform, so either one installs the same thing:
+
+```sh
+curl -fsSL https://install.fullbars.xyz | sudo sh -s -- install
+```
+
+FreeBSD does not ship `curl` in the base system; if the host has never installed a package, fetch it first:
+
+```sh
+sudo pkg install -y curl
 ```
 
 To install a specific release instead of the latest:
