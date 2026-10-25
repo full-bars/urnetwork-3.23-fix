@@ -248,3 +248,108 @@ func lastCompleteLine(b []byte) string {
 	}
 	return string(trimmed)
 }
+
+// TestTrimRAMLogByRenameKeepsTheTailAndSwapsTheFile pins the rename trim: the
+// oversized log is replaced by a smaller one that holds the newest lines, the
+// cut lands on a line boundary, and the temporary sibling is gone afterwards.
+// It is the variant the logger uses so the writer's lock is never held across
+// the copy.
+func TestTrimRAMLogByRenameKeepsTheTailAndSwapsTheFile(t *testing.T) {
+	f, path := openTestLog(t, os.O_RDWR)
+	writeLines(t, f, 64*1024)
+	f.Close()
+
+	before, err := os.Stat(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed, err := trimRAMLogByRename(path, 16*1024, 3)
+	if err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if !trimmed {
+		t.Fatal("an oversized log reported nothing trimmed")
+	}
+	after, err := os.Stat(path)
+	if err != nil {
+		t.Fatalf("stat after trim: %v", err)
+	}
+	if after.Size() >= before.Size() {
+		t.Fatalf("trim left %d bytes of %d; nothing was reclaimed", after.Size(), before.Size())
+	}
+	if after.Size() > 16*1024 {
+		t.Fatalf("trim left %d bytes, over the %d cap", after.Size(), 16*1024)
+	}
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(body) == 0 || body[0] == '\n' {
+		t.Fatalf("trimmed log starts with an empty line; the partial first line must be dropped")
+	}
+	if !strings.HasSuffix(string(body), "\n") {
+		t.Fatalf("trimmed log does not end on a line boundary")
+	}
+	if _, err := os.Stat(path + ".trim"); !os.IsNotExist(err) {
+		t.Fatalf("the temporary trim file survived: %v", err)
+	}
+}
+
+// TestTrimRAMLogByRenameLeavesASmallLogAlone: an unremarkable file is not an
+// error and is not rewritten, so the reader never loses a byte to a no-op trim.
+func TestTrimRAMLogByRenameLeavesASmallLogAlone(t *testing.T) {
+	f, path := openTestLog(t, os.O_RDWR)
+	f.WriteString("one line\n")
+	f.Close()
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	trimmed, err := trimRAMLogByRename(path, 1024, 3)
+	if err != nil {
+		t.Fatalf("trim: %v", err)
+	}
+	if trimmed {
+		t.Fatal("a small log reported a trim")
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(before, after) {
+		t.Fatalf("a no-op trim changed the file: %q -> %q", before, after)
+	}
+}
+
+// TestTrimRAMLogByRenameRejectsABadRatio keeps the guard the in-place trim has.
+func TestTrimRAMLogByRenameRejectsABadRatio(t *testing.T) {
+	f, path := openTestLog(t, os.O_RDWR)
+	f.WriteString("one line\n")
+	f.Close()
+	if _, err := trimRAMLogByRename(path, 1024, 1); err == nil {
+		t.Fatal("ratio 1 accepted; the kept share would be the whole file")
+	}
+}
+
+// TestTrimRAMLogByRenameIsSilentOnTheReplacement pins the fact the trimmer has
+// to work around: after a rename the path holds a small file, so the next pass
+// reports "not trimmed". That is why the descriptor swap is driven by a
+// pending-swap flag rather than by this return value, and why a reopen that
+// failed once is retried even though there is nothing left to trim.
+func TestTrimRAMLogByRenameIsSilentOnTheReplacement(t *testing.T) {
+	f, path := openTestLog(t, os.O_RDWR)
+	writeLines(t, f, 64*1024)
+	f.Close()
+
+	trimmed, err := trimRAMLogByRename(path, 16*1024, 3)
+	if err != nil || !trimmed {
+		t.Fatalf("first trim = %v, %v; want a trim", trimmed, err)
+	}
+	trimmed, err = trimRAMLogByRename(path, 16*1024, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trimmed {
+		t.Fatal("the replacement reported another trim; then a failed reopen would never be retried on this signal")
+	}
+}

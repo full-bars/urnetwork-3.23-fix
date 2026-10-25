@@ -190,7 +190,7 @@ urnet-tools lowmode off
 ```
 
 > [!NOTE]
-> When lowmem is active, logs go to RAM (`/dev/shm`) rather than stdout. Remove `--log-driver` / `--log-opt` from your Docker run command. View logs with: `docker exec -it <container> tail -f /dev/shm/urnetwork.log`
+> When lowmem is active, logs go to RAM (`/dev/shm`) rather than stdout. Remove `--log-driver` / `--log-opt` from your Docker run command. View logs with: `docker exec -it <container> tail -F /dev/shm/urnetwork.log`
 
 ---
 
@@ -305,4 +305,4 @@ If RSS grows without bound, consider switching from turbo to the default profile
 These appear when the OOB signaling layer is overloaded. Tuning `CreateContractTimeout` higher (already 60s in fork) and `ContractFillFraction` lower gives more headroom. If they persist, it's usually a backend API outage — the `[outage]` watcher will detect and log this.
 
 **RAM logging + Docker log drivers conflict:**
-`URNETWORK_RAMLOGS=1` and `--log-driver` / `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout. Remove the Docker log driver flags and use `docker exec -it <container> tail -f /dev/shm/urnetwork.log` to view logs.
+`URNETWORK_RAMLOGS=1` and `--log-driver` / `--log-opt` are mutually exclusive. When RAM logging is active, nothing is written to stdout. Remove the Docker log driver flags and use `docker exec -it <container> tail -F /dev/shm/urnetwork.log` to view logs.

@@ -78,17 +78,17 @@ var shmInitOnce sync.Once
 //   - `URNETWORK_CONTAINER_NAME` (deployment-pinned, e.g. "urfix") when set;
 //   - the container ID (hostname) when running inside Docker — `docker exec`
 //     accepts the container ID, so the hint works without knowing the --name;
-//   - a plain `tail -f` on bare metal, where a docker hint would be wrong.
+//   - a plain `tail -F` on bare metal, where a docker hint would be wrong.
 func ramlogsTailHint() string {
 	if name := strings.TrimSpace(os.Getenv("URNETWORK_CONTAINER_NAME")); name != "" {
-		return fmt.Sprintf("docker exec %s tail -f %s", name, shmLogPath)
+		return fmt.Sprintf("docker exec %s tail -F %s", name, shmLogPath)
 	}
 	if _, err := os.Stat(ramlogsDockerEnvPath); err == nil {
 		if host, err := os.Hostname(); err == nil && host != "" {
-			return fmt.Sprintf("docker exec %s tail -f %s", host, shmLogPath)
+			return fmt.Sprintf("docker exec %s tail -F %s", host, shmLogPath)
 		}
 	}
-	return fmt.Sprintf("tail -f %s", shmLogPath)
+	return fmt.Sprintf("tail -F %s", shmLogPath)
 }
 
 // ramlogsTailHintWithTemplate returns the resolved hint; when the context is
@@ -99,7 +99,7 @@ func ramlogsTailHintWithTemplate() string {
 	resolved := ramlogsTailHint()
 	if strings.HasPrefix(resolved, "docker exec ") {
 		return fmt.Sprintf(
-			"%s\n[ramlogs] (any container name: docker exec <container> tail -f %s)",
+			"%s\n[ramlogs] (any container name: docker exec <container> tail -F %s)",
 			resolved, shmLogPath,
 		)
 	}
@@ -151,7 +151,14 @@ func initSHMLogger() {
 		dup2(int(w.Fd()), int(os.Stdout.Fd()))
 		dup2(int(w.Fd()), int(os.Stderr.Fd()))
 
+		// fMu guards the descriptor the reader writes to, and nothing else.
+		// A trim renames a new file over shmLogPath, so the reader must not
+		// cache `f`: it writes through logFile, which the trimmer swaps under
+		// this lock. Holding the lock only for a write or a swap is the point
+		// of the rename trim - the copy of the kept tail happens outside it,
+		// so the 64 KiB pipe keeps draining while a trim runs.
 		var fMu sync.Mutex
+		logFile := f
 
 		// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
 		// O_RDWR for the same reason as the main log: the trimmer reads before
@@ -188,7 +195,7 @@ func initSHMLogger() {
 				n, err := r.Read(buf)
 				if n > 0 {
 					fMu.Lock()
-					f.Write(buf[:n])
+					logFile.Write(buf[:n])
 					fMu.Unlock()
 
 					// Mirror complete important lines into the small buffer. Both
@@ -255,24 +262,53 @@ func initSHMLogger() {
 		// the tail loop in urnet-tools logs (which reopens on fi.Size() < pos)
 		// handles the size change transparently.
 		go func() {
+			// The rename can succeed and the reopen still fail, for example with
+			// EMFILE on a process holding many sockets. At that point the old
+			// inode is already unlinked: the reader would keep writing to a file
+			// no path refers to, nothing would trim it, and no later pass would
+			// retry the swap because the replacement file is small. So the swap
+			// stays pending and the open is retried every pass until it works.
+			pendingSwap := false
 			for {
 				time.Sleep(5 * time.Second)
-				fMu.Lock()
-				err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio)
-				fMu.Unlock()
+				if !pendingSwap {
+					trimmed, err := trimRAMLogByRename(shmLogPath, shmLogMaxSize, shmLogTrimRatio)
+					if err != nil {
+						reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+						continue
+					}
+					if !trimmed {
+						continue
+					}
+					pendingSwap = true
+				}
+				next, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
 				if err != nil {
 					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+					continue
 				}
+				fMu.Lock()
+				previous := logFile
+				logFile = next
+				fMu.Unlock()
+				previous.Close()
+				pendingSwap = false
 			}
 		}()
 
-		// Periodically sync to ensure tail -f sees updates quickly
+		// Periodically sync to ensure tail -F sees updates quickly
 		go func() {
 			for {
 				time.Sleep(500 * time.Millisecond)
+				// An fsync on an append-only descriptor is safe beside a
+				// concurrent write, so the sync reads the current descriptor
+				// under the lock and then flushes outside it. Holding the lock
+				// across the fsync was the second half of the convoy: on a busy
+				// /dev/shm it stalls the pipe for as long as the kernel takes.
 				fMu.Lock()
-				f.Sync()
+				current := logFile
 				fMu.Unlock()
+				current.Sync()
 			}
 		}()
 	})

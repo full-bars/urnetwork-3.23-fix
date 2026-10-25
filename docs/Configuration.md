@@ -108,7 +108,7 @@ Quick jump:
 | `URNETWORK_SHM_LOG` | `/dev/shm/urnetwork.log` | Path for the RAM log. |
 | `URNETWORK_PROXY_HEALTH_DIR` | `<home>/.urnetwork` | Directory for persistent `proxy_health.state` and `proxy_traffic.state` files (Docker: `/root/.urnetwork`). |
 | `URNETWORK_CONTAINER` | unset | Set to `1` to mark the process as containerized when `/.dockerenv` is absent (Podman, Kubernetes and other runtimes). A container counts as a restart supervisor for the thrash watchdog's exit 75. |
-| `URNETWORK_CONTAINER_NAME` | `<container-id>` | Container name used in copy-paste `docker exec <name> tail -f` hints for RAM logs. |
+| `URNETWORK_CONTAINER_NAME` | `<container-id>` | Container name used in copy-paste `docker exec <name> tail -F` hints for RAM logs. |
 | `WARP_HOST` | `<hostname>` | Override the host string reported by the warp status endpoint. Diagnostic only. |
 
 ## 📄 `proxy_probe.json` (Stage-1 Gate)

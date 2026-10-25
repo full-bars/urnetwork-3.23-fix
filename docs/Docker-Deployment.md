@@ -226,7 +226,7 @@ Setting `URNETWORK_RAMLOGS=1` redirects provider logs to `/dev/shm/urnetwork.log
 > **Live Monitoring (RAMLOGS)**
 > If you have `URNETWORK_RAMLOGS=1` enabled, your logs are stored in high-speed memory instead of standard output. Use this command to live-tail them:
 > ```bash
-> docker exec -it <container_name> tail -f /dev/shm/urnetwork.log
+> docker exec -it <container_name> tail -F /dev/shm/urnetwork.log
 > ```
 
 > [!NOTE]
@@ -256,7 +256,7 @@ docker run -d \
 View logs live:
 
 ```bash
-docker exec -it urfix tail -f /dev/shm/urnetwork.log
+docker exec -it urfix tail -F /dev/shm/urnetwork.log
 ```
 
 RAM logs are capped at 1MB with automatic rotation and are lost when the container restarts.
@@ -324,7 +324,7 @@ The load will prompt for the passphrase, check the network_id against the curren
 You can view the full list of never-up and dropped proxies, as well as a live event log of proxy state transitions. These files persist on the config volume and survive container restarts, even if RAM logging is active.
 
 - Persistent (always): `docker exec -it <container> proxy-health`
-- Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -f /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
+- Live-tail RAMLOGS on: `docker exec -it <container> sh -c "tail -F /dev/shm/urnetwork.log | grep -E '\[health\]\[proxies\]|\[pulse\]'"`
 - Live-tail RAMLOGS off: `docker logs -f <container> 2>&1 | grep -E '\[health\]\[proxies\]|\[pulse\]'`
 
 ## 🏎️ Auto-Tune Performance
