@@ -45,7 +45,18 @@ esac
 echo "Detected $os -> $script"
 tmp="$(mktemp)" || exit 1
 trap 'rm -f "$tmp"' 0 1 2 15
-curl -fsSL "$script" -o "$tmp" || { echo "download failed" >&2; exit 1; }
+if command -v curl > /dev/null 2>&1; then
+  curl -fsSL "$script" -o "$tmp"
+elif command -v fetch > /dev/null 2>&1; then
+  # FreeBSD base ships fetch(1); curl there is only a package, and this
+  # dispatcher must still work on a host that has never installed one.
+  fetch -q -o "$tmp" "$script"
+elif command -v wget > /dev/null 2>&1; then
+  wget -q -O "$tmp" "$script"
+else
+  echo "need curl, fetch or wget to download the installer" >&2
+  exit 1
+fi || { echo "download failed" >&2; exit 1; }
 sh "$tmp" "$@"
 `;
 
