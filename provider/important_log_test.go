@@ -26,6 +26,8 @@ func TestIsImportantLogLine(t *testing.T) {
 		// The process-wide STUN aggregate: the only success signal for STUN and
 		// the only record of the ok/fail balance.
 		"1005 00:00:00 📡 [stun] ok=12 fail=0 | google: v4=ok v6=ok · meteredca: v4=ok v6=fail",
+		// The per-source reason behind "N failed" in the cycle summary.
+		"1024 18:00:00 [proxy][url] fetch failed for raw.githubusercontent.com/x/y/socks5.txt: fetch: context deadline exceeded (skipping this cycle)",
 	}
 	for _, l := range important {
 		if !isImportantLogLine(l) {

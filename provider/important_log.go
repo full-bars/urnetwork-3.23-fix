@@ -40,6 +40,10 @@ var importantLogMarkers = []string{
 	// The per-cycle headline (what a URL fetch did to the pool) and the launch
 	// line (URL proxies actually starting) are rare and high-value.
 	"[proxy][url] cycle:",
+	// The cycle summary only says "N failed"; this per-source line carries the
+	// actual error (timeout, DNS, status) and is the only record of why a list
+	// could not be fetched once the ring rolls.
+	"[proxy][url] fetch failed for",
 	"[proxy][url] source ",
 	"[proxy][url] launching",
 	"[proxy][url] reaper: refreshed grade",
