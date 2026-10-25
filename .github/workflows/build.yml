@@ -483,11 +483,15 @@ jobs:
             VERSION=$(git describe --tags --abbrev=0 --match 'v3.23.0-fix.*' 2>/dev/null || echo "v3.23.0-fix.1")
           fi
           echo "VERSION=${VERSION}" >> $GITHUB_OUTPUT
-          # upstream-style app_version for the backend; tag builds only, empty otherwise
-          APP_VERSION=""
-          if [[ "${{ github.ref }}" == refs/tags/* ]]; then
-            APP_VERSION=$(scripts/compute-app-version.sh "${VERSION}")
-          fi
+          # Upstream-style app_version for the backend, for EVERY build, tagged
+          # or not. The script prints nothing for a tag outside v3.23.0-fix.*,
+          # so AuthAppVersion still falls back to the plain tag exactly as
+          # before. Computing it only for tags left :main and :sha images with
+          # an empty AuthVersion, so they reported the raw tag and the backend
+          # could not bucket them by date at all - the same node read as a
+          # different "version" depending on which image it happened to be on.
+          APP_VERSION=$(scripts/compute-app-version.sh "${VERSION}")
+          echo "APP_VERSION=${APP_VERSION}"
           echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_OUTPUT
 
       - name: Build and push Docker image
