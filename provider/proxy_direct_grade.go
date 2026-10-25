@@ -204,16 +204,22 @@ func probeDirectTarget(ctx context.Context, ip net.IP, host string, port uint16,
 // address ends the loop. An intercepted address is remembered rather than
 // overwritten by a later unreachable one: a completed interceptor handshake is
 // evidence about the route, and a different address failing afterwards does
-// not retract it. attempted is true only when at least one dial left the box.
+// not retract it. attempted is true only when the full address set was asked: a
+// set cut short by a limiter denial or a caller deadline carries no verdict,
+// because the address that was never asked might have answered.
 func probeDirectTargetAny(ctx context.Context, ips []net.IP, host string, port uint16, timeout time.Duration) (directProbeOutcome, bool) {
 	outcome := directUnattempted
 	attempted := false
+	complete := true
 	for _, ip := range ips {
 		if ctx.Err() != nil {
+			complete = false
 			break
 		}
 		o, at := probeDirectTarget(ctx, ip, host, port, timeout)
 		if !at {
+			// Box-side: this address never left the box.
+			complete = false
 			continue
 		}
 		attempted = true
@@ -227,6 +233,11 @@ func probeDirectTargetAny(ctx context.Context, ips []net.IP, host string, port u
 				outcome = o
 			}
 		}
+	}
+	if !complete && outcome != directIntercepted {
+		// Some address was never asked. Positive evidence still stands, but a
+		// failure is not a verdict about a route the box did not finish asking.
+		return directUnattempted, false
 	}
 	return outcome, attempted
 }

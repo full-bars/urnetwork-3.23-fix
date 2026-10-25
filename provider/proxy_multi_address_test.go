@@ -9,6 +9,8 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+
+	"golang.org/x/time/rate"
 )
 
 // Tests for the multi-address probe paths: a host the box resolves to more than
@@ -81,24 +83,24 @@ func listenSocks5RefusingFirst(t *testing.T) (addr string, refused, dials *int32
 					return
 				}
 				greeting := make([]byte, 3)
-				if _, err := c.Read(greeting); err != nil {
+				if _, err := io.ReadFull(c, greeting); err != nil {
 					return
 				}
 				head := make([]byte, 4)
-				if _, err := c.Read(head); err != nil {
+				if _, err := io.ReadFull(c, head); err != nil {
 					return
 				}
 				var dst net.IP
 				switch head[3] {
 				case 0x01:
 					buf := make([]byte, 6)
-					if _, err := c.Read(buf); err != nil {
+					if _, err := io.ReadFull(c, buf); err != nil {
 						return
 					}
 					dst = net.IP(buf[:4])
 				case 0x04:
 					buf := make([]byte, 18)
-					if _, err := c.Read(buf); err != nil {
+					if _, err := io.ReadFull(c, buf); err != nil {
 						return
 					}
 					dst = net.IP(buf[:16])
@@ -291,5 +293,49 @@ func TestProbeDirectTargetAnyKeepsAnInterception(t *testing.T) {
 	}
 	if outcome != directIntercepted {
 		t.Fatalf("outcome = %v, want directIntercepted kept from the first address", outcome)
+	}
+}
+
+// TestProbeSocks5ConnectAnyPartialSetCarriesNoEvidence: when the dial limiter
+// denies a later address, the host was never fully asked, so a refusal on the
+// first address is not a verdict about the proxy. Recording it as a failure was
+// the defect code review found: the address that was never asked is the one that
+// might have answered.
+func TestProbeSocks5ConnectAnyPartialSetCarriesNoEvidence(t *testing.T) {
+	addr, refused, _ := listenSocks5RefusingFirst(t)
+
+	orig := globalProbeDialLimiter
+	// Burst 1, rate 0: the first address takes the only token, the second waits
+	// out the per-target timeout and is denied.
+	globalProbeDialLimiter = rate.NewLimiter(rate.Limit(0), 1)
+	t.Cleanup(func() { globalProbeDialLimiter = orig })
+
+	answered, attempted := probeSocks5ConnectAny(context.Background(), addr, "", "",
+		[]net.IP{refusedProbeIP, acceptedProbeIP}, 443, 50*time.Millisecond)
+	if answered || attempted {
+		t.Fatalf("answered=%v attempted=%v, want false/false: a partial set carries no evidence", answered, attempted)
+	}
+	if got := atomic.LoadInt32(refused); got != 1 {
+		t.Fatalf("saw %d refusals, want 1 (only the first address should leave the box)", got)
+	}
+}
+
+// TestProbeDirectTargetAnyPartialSetCarriesNoVerdict: the direct pass has its
+// own bucket. A first address that fails while the limiter denies the second
+// must not convict the route, for the same reason.
+func TestProbeDirectTargetAnyPartialSetCarriesNoVerdict(t *testing.T) {
+	orig := directProbeDialLimiter
+	directProbeDialLimiter = rate.NewLimiter(rate.Limit(0), 1)
+	t.Cleanup(func() { directProbeDialLimiter = orig })
+
+	// Both are closed loopback ports: the first dial leaves the box and fails,
+	// the second never gets a token.
+	outcome, attempted := probeDirectTargetAny(context.Background(),
+		[]net.IP{net.ParseIP("127.0.0.1"), net.ParseIP("127.0.0.2")}, "localhost", 1, 50*time.Millisecond)
+	if attempted {
+		t.Fatalf("attempted=true (outcome=%v) for a set the limiter cut short; a partial set must carry no verdict", outcome)
+	}
+	if outcome != directUnattempted {
+		t.Fatalf("outcome=%v, want directUnattempted", outcome)
 	}
 }

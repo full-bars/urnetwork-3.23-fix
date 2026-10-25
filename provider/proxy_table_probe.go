@@ -882,18 +882,29 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 // way: the proxy is asked on every address because a proxy that fails on the
 // first and succeeds on the second is working, and recording the first only
 // would convict it of an address-family problem that is not its own.
-// attempted is true only when at least one dial actually left the box, so a
-// limiter denial on every address still carries no evidence.
+// attempted is true only when the full address set was asked; a set cut short
+// by a limiter denial or a caller deadline carries no evidence, because the
+// address that was never asked is the one that might have answered.
 func probeSocks5ConnectAny(ctx context.Context, address, user, password string, ips []net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
+	complete := true
 	for _, ip := range ips {
 		if ctx.Err() != nil {
-			return answered, attempted
+			complete = false
+			break
 		}
 		a, at := probeSocks5Connect(ctx, address, user, password, ip, port, timeout)
-		attempted = attempted || at
-		if a {
-			return true, attempted
+		if !at {
+			// Box-side: this address never left the box.
+			complete = false
+			continue
 		}
+		attempted = true
+		if a {
+			return true, true
+		}
+	}
+	if !complete {
+		return false, false
 	}
 	return false, attempted
 }
