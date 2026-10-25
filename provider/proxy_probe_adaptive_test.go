@@ -42,7 +42,7 @@ func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConf
 		hosts := sampleProbeHosts(blockSeed, width, cfg.UseSpreadOrder)
 		for _, h := range hosts {
 			added[h] = true
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}
@@ -51,7 +51,7 @@ func seedProbeDNSForBlocks(t *testing.T, address string, cfg proxyTableProbeConf
 	if growTo > baseW {
 		for _, h := range disjointGrowthHosts(address, pass, baseW, growTo-baseW, cfg.UseSpreadOrder) {
 			added[h] = true
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}
@@ -434,7 +434,7 @@ func seedOnlyOneProbeHost(t *testing.T, address string) {
 	probeDNSCache.Lock()
 	defer probeDNSCache.Unlock()
 	// One resolvable host: the first the probe dials.
-	probeDNSCache.m[resolvable] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+	probeDNSCache.m[resolvable] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 	delete(probeDNSCache.fail, resolvable)
 
 	// Fail-cache the adaptive growth block too (same-width consecutive strides),

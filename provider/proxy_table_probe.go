@@ -387,8 +387,8 @@ var probeDNSCache = struct {
 // probeDNSCachedIP is a successful resolution memoized with its lookup time
 // so it can expire (probeDNSSuccessTTL).
 type probeDNSCachedIP struct {
-	ip net.IP
-	at time.Time
+	ips []net.IP
+	at  time.Time
 }
 
 // probeDNSFailTTL is how long a failed resolution is remembered before the
@@ -402,20 +402,15 @@ const probeDNSFailTTL = 30 * time.Second
 // within hours.
 const probeDNSSuccessTTL = 2 * time.Hour
 
-// resolveProbeTarget resolves host, returning the box's own DNS answer or
-// nil when it cannot answer. Literal IPs pass straight through — they are
-// the resolver-down fallback. Resolution is deliberately OUTSIDE the
-// probed channel: a proxy with broken DNS must not fail a TCP probe that
-// was never about DNS.
-func resolveProbeTarget(ctx context.Context, host string) net.IP {
+func resolveProbeTargets(ctx context.Context, host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
-		return ip
+		return []net.IP{ip}
 	}
 	probeDNSCache.Lock()
 	if e, ok := probeDNSCache.m[host]; ok {
 		if time.Since(e.at) < probeDNSSuccessTTL {
 			probeDNSCache.Unlock()
-			return e.ip
+			return e.ips
 		}
 		// Stale address: drop it so the lookup below re-resolves.
 		delete(probeDNSCache.m, host)
@@ -426,19 +421,31 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 	}
 	probeDNSCache.Unlock()
 
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
 		probeDNSCache.Lock()
 		probeDNSCache.fail[host] = time.Now()
 		probeDNSCache.Unlock()
 		return nil
 	}
-	ip := addrs[0].AsSlice()
+	// IPv4 first: the v4 route is the one that carries the traffic, and a probe
+	// should not spend its budget on a v6 path that may be absent.
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		if ip := net.IP(addr.AsSlice()); ip.To4() != nil {
+			ips = append(ips, ip)
+		}
+	}
+	for _, addr := range addrs {
+		if ip := net.IP(addr.AsSlice()); ip.To4() == nil {
+			ips = append(ips, ip)
+		}
+	}
 	probeDNSCache.Lock()
-	probeDNSCache.m[host] = probeDNSCachedIP{ip: ip, at: time.Now()}
+	probeDNSCache.m[host] = probeDNSCachedIP{ips: ips, at: time.Now()}
 	delete(probeDNSCache.fail, host)
 	probeDNSCache.Unlock()
-	return ip
+	return ips
 }
 
 // probeTableThroughProxy runs one stage-1 pass against one proxy: sample a
@@ -499,12 +506,12 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		if ctx.Err() != nil {
 			break
 		}
-		ip := resolveProbeTarget(ctx, host)
-		if ip == nil {
+		ips := resolveProbeTargets(ctx, host)
+		if len(ips) == 0 {
 			baseUnresolved++
 			continue
 		}
-		answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+		answered, attempted := probeSocks5ConnectAny(ctx, address, user, password, ips, 443, cfg.TargetTimeout)
 		if !attempted {
 			// Box-side failure (limiter denial / caller deadline): no evidence
 			// about the proxy. Excluded from Total exactly like an unresolved
@@ -568,15 +575,15 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			if ctx.Err() != nil {
 				break
 			}
-			ip := resolveProbeTarget(ctx, host)
-			if ip == nil {
+			ips := resolveProbeTargets(ctx, host)
+			if len(ips) == 0 {
 				// Intended but not resolvable from this box; counted as visited
 				// so the decidable quorum matches the base convention.
 				res.SampleWidth++
 				unresolvedGrowth++
 				continue
 			}
-			answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+			answered, attempted := probeSocks5ConnectAny(ctx, address, user, password, ips, 443, cfg.TargetTimeout)
 			if !attempted {
 				// Box-side failure: no evidence; exclude from Total (CRITICAL-1).
 				res.SampleWidth++
@@ -860,7 +867,7 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 		return false, true
 	}
 
-	connectFrame := socks5ConnectV4(ip, port)
+	connectFrame := socks5Connect(ip, port)
 	if _, err := conn.Write(connectFrame); err != nil {
 		return false, true
 	}
@@ -868,6 +875,38 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 	// fixed length, so a short domain reply or an IPv6 BND.ADDR is handled
 	// correctly; only a fully-consumed reply with REP 0x00 counts).
 	return readSocks5ConnectReply(conn), true
+}
+
+// probeSocks5ConnectAny tries every address the box resolved for one host,
+// stopping at the first one the proxy answers. A host is one sample either
+// way: the proxy is asked on every address because a proxy that fails on the
+// first and succeeds on the second is working, and recording the first only
+// would convict it of an address-family problem that is not its own.
+// attempted is true only when the full address set was asked; a set cut short
+// by a limiter denial or a caller deadline carries no evidence, because the
+// address that was never asked is the one that might have answered.
+func probeSocks5ConnectAny(ctx context.Context, address, user, password string, ips []net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
+	complete := true
+	for _, ip := range ips {
+		if ctx.Err() != nil {
+			complete = false
+			break
+		}
+		a, at := probeSocks5Connect(ctx, address, user, password, ip, port, timeout)
+		if !at {
+			// Box-side: this address never left the box.
+			complete = false
+			continue
+		}
+		attempted = true
+		if a {
+			return true, true
+		}
+	}
+	if !complete {
+		return false, false
+	}
+	return false, attempted
 }
 
 // proxyURLGrade is the admission decision for one URL-source line after the

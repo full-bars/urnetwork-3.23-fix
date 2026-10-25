@@ -140,7 +140,7 @@ func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
 			delete(probeDNSCache.m, h)
 			probeDNSCache.fail[h] = time.Now()
 		} else {
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("198.51.100.1")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}
@@ -149,7 +149,7 @@ func TestMinConfirmDials_ConfirmationGrowthIsSizedToTheShortfall(t *testing.T) {
 	// dial count measures the SIZING, not resolution luck
 	for _, h := range disjointGrowthHosts(addr, tableProbePassCounter.Load(), cfg.MinSampleWidth, 30, true) {
 		probeDNSCache.Lock()
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("198.51.100.1")}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 		probeDNSCache.Unlock()
 	}
@@ -222,7 +222,7 @@ func TestMinConfirmDials_ConvictionGateRefusesAVerdictBelowTheFloor(t *testing.T
 			probeDNSCache.fail[h] = time.Now() // the one unresolvable base host
 			continue
 		}
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("198.51.100.1")}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 	}
 	for _, h := range growth {

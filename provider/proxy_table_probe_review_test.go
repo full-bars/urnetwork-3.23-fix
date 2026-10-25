@@ -410,8 +410,17 @@ func TestReview_FailFast_AlternatingFailuresCountedIndividually(t *testing.T) {
 
 	cfg := defaultProxyTableProbeConfig()
 	cfg.SampleWidth = 10
+	// One CONNECT per host is the premise of an alternating reply: the probe now
+	// asks EVERY address a host resolves to, so a host with three addresses would
+	// spend three CONNECTs and shift the parity the fake proxy replies on. Pin the
+	// sample to one address per host and keep the width fixed so the block is the
+	// whole pass.
+	cfg.MaxSampleWidth = cfg.SampleWidth
 	cfg.PassBar = 0.6
 	cfg.TargetTimeout = 10 * time.Second
+	if n := seedProbeDNSForBlocks(t, addr, cfg, tableProbePassCounter.Load()); n < 8 {
+		t.Skipf("only %d hosts seeded; need most of the block", n)
+	}
 
 	res := probeTableThroughProxy(context.Background(), addr, "", "", "", 0, cfg)
 	if res.Total < 8 {
@@ -1382,7 +1391,7 @@ func seedProbeDNSForAddress(t *testing.T, address string, passes ...uint64) {
 			if _, exists := probeDNSCache.m[h]; !exists {
 				added[h] = true
 			}
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}

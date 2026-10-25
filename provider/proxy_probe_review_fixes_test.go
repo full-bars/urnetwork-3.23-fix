@@ -118,7 +118,7 @@ func TestMinConfirmDials_ResolverStarvationSuppressesGrowth(t *testing.T) {
 	for i, h := range base {
 		if i < 2 {
 			resolvable[h] = true
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 		}
 		delete(probeDNSCache.fail, h)
 	}
@@ -261,7 +261,7 @@ func TestProbeTableThroughProxy_HonoursSpreadOrderAndKillSwitch(t *testing.T) {
 
 	probeDNSCache.Lock()
 	for _, h := range append(append([]string{}, spreadHosts...), legacyHosts...) {
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 	}
 	probeDNSCache.Unlock()
