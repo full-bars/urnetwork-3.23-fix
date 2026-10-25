@@ -36,12 +36,12 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
-_Live values · last changed 2026-10-24 22:45 UTC · refreshed automatically_
+_Live values · last changed 2026-10-25 00:36 UTC · refreshed automatically_
 
 | | Value |
 |---|---|
-| Fleet seat registration burn | 0.0005 TAO (~$0.12) |
-| Burn floor | 0.0005 TAO (~$0.12) |
+| Fleet seat registration burn | 0.0005 TAO (~$0.13) |
+| Burn floor | 0.0005 TAO (~$0.13) |
 | Seats in use | 256 of 256 |
 | Registration open | yes |
 | Immunity after registering | 21,600 blocks (~3.0 days) |
