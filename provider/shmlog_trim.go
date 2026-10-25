@@ -6,6 +6,7 @@ import (
 	"bytes"
 	"fmt"
 	"os"
+	"path/filepath"
 	"time"
 )
 
@@ -153,11 +154,16 @@ func trimRAMLogByRename(path string, maxSize int64, ratio int64) (bool, error) {
 		b = b[i+1:]
 	}
 
-	tmp := path + ".trim"
-	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	// A fixed `path + ".trim"` is a liability where the log lives in a shared
+	// world-writable directory: anyone who can create that name can block
+	// trimming, and a pre-created regular file would be truncated by us. A
+	// uniquely named temp file in the same directory keeps the rename atomic
+	// (same filesystem) without giving anyone a name to squat on.
+	out, err := os.CreateTemp(filepath.Dir(path), filepath.Base(path)+".trim.*")
 	if err != nil {
 		return false, fmt.Errorf("open trim target: %w", err)
 	}
+	tmp := out.Name()
 	if _, err := out.Write(b); err != nil {
 		out.Close()
 		os.Remove(tmp)
@@ -166,6 +172,11 @@ func trimRAMLogByRename(path string, maxSize int64, ratio int64) (bool, error) {
 	if err := out.Close(); err != nil {
 		os.Remove(tmp)
 		return false, fmt.Errorf("close trim target: %w", err)
+	}
+	// the temp file must keep the log's mode rather than CreateTemp's 0600
+	if err := os.Chmod(tmp, 0644); err != nil {
+		os.Remove(tmp)
+		return false, fmt.Errorf("chmod trim target: %w", err)
 	}
 	if err := os.Rename(tmp, path); err != nil {
 		os.Remove(tmp)

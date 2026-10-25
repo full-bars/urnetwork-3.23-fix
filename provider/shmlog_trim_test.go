@@ -330,3 +330,26 @@ func TestTrimRAMLogByRenameRejectsABadRatio(t *testing.T) {
 		t.Fatal("ratio 1 accepted; the kept share would be the whole file")
 	}
 }
+
+// TestTrimRAMLogByRenameIsSilentOnTheReplacement pins the fact the trimmer has
+// to work around: after a rename the path holds a small file, so the next pass
+// reports "not trimmed". That is why the descriptor swap is driven by a
+// pending-swap flag rather than by this return value, and why a reopen that
+// failed once is retried even though there is nothing left to trim.
+func TestTrimRAMLogByRenameIsSilentOnTheReplacement(t *testing.T) {
+	f, path := openTestLog(t, os.O_RDWR)
+	writeLines(t, f, 64*1024)
+	f.Close()
+
+	trimmed, err := trimRAMLogByRename(path, 16*1024, 3)
+	if err != nil || !trimmed {
+		t.Fatalf("first trim = %v, %v; want a trim", trimmed, err)
+	}
+	trimmed, err = trimRAMLogByRename(path, 16*1024, 3)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if trimmed {
+		t.Fatal("the replacement reported another trim; then a failed reopen would never be retried on this signal")
+	}
+}

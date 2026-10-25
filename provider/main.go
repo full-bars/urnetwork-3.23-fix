@@ -301,7 +301,7 @@ func initGlog() {
 
 func initSHMLoggerWithHandover() {
 	fmt.Printf("\n[audit] Slow disk detected. Moving all subsequent logs to RAM (/dev/shm) for performance.\n")
-	tlog("[audit] >>> Live logs: urnet-tools logs  |  tail -f /dev/shm/urnetwork.log")
+	tlog("[audit] >>> Live logs: urnet-tools logs  |  tail -F /dev/shm/urnetwork.log")
 	tlog("[audit] Redirecting in 3...")
 	time.Sleep(1 * time.Second)
 	fmt.Printf(" 2...")
