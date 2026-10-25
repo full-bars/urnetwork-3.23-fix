@@ -387,8 +387,8 @@ var probeDNSCache = struct {
 // probeDNSCachedIP is a successful resolution memoized with its lookup time
 // so it can expire (probeDNSSuccessTTL).
 type probeDNSCachedIP struct {
-	ip net.IP
-	at time.Time
+	ips []net.IP
+	at  time.Time
 }
 
 // probeDNSFailTTL is how long a failed resolution is remembered before the
@@ -402,20 +402,15 @@ const probeDNSFailTTL = 30 * time.Second
 // within hours.
 const probeDNSSuccessTTL = 2 * time.Hour
 
-// resolveProbeTarget resolves host, returning the box's own DNS answer or
-// nil when it cannot answer. Literal IPs pass straight through — they are
-// the resolver-down fallback. Resolution is deliberately OUTSIDE the
-// probed channel: a proxy with broken DNS must not fail a TCP probe that
-// was never about DNS.
-func resolveProbeTarget(ctx context.Context, host string) net.IP {
+func resolveProbeTargets(ctx context.Context, host string) []net.IP {
 	if ip := net.ParseIP(host); ip != nil {
-		return ip
+		return []net.IP{ip}
 	}
 	probeDNSCache.Lock()
 	if e, ok := probeDNSCache.m[host]; ok {
 		if time.Since(e.at) < probeDNSSuccessTTL {
 			probeDNSCache.Unlock()
-			return e.ip
+			return e.ips
 		}
 		// Stale address: drop it so the lookup below re-resolves.
 		delete(probeDNSCache.m, host)
@@ -426,19 +421,43 @@ func resolveProbeTarget(ctx context.Context, host string) net.IP {
 	}
 	probeDNSCache.Unlock()
 
-	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip4", host)
+	addrs, err := net.DefaultResolver.LookupNetIP(ctx, "ip", host)
 	if err != nil || len(addrs) == 0 {
 		probeDNSCache.Lock()
 		probeDNSCache.fail[host] = time.Now()
 		probeDNSCache.Unlock()
 		return nil
 	}
-	ip := addrs[0].AsSlice()
+	// IPv4 first: the v4 route is the one that carries the traffic, and a probe
+	// should not spend its budget on a v6 path that may be absent.
+	ips := make([]net.IP, 0, len(addrs))
+	for _, addr := range addrs {
+		if ip := net.IP(addr.AsSlice()); ip.To4() != nil {
+			ips = append(ips, ip)
+		}
+	}
+	for _, addr := range addrs {
+		if ip := net.IP(addr.AsSlice()); ip.To4() == nil {
+			ips = append(ips, ip)
+		}
+	}
 	probeDNSCache.Lock()
-	probeDNSCache.m[host] = probeDNSCachedIP{ip: ip, at: time.Now()}
+	probeDNSCache.m[host] = probeDNSCachedIP{ips: ips, at: time.Now()}
 	delete(probeDNSCache.fail, host)
 	probeDNSCache.Unlock()
-	return ip
+	return ips
+}
+
+// resolveProbeTarget resolves host, returning the box's own DNS answer or
+// nil when it cannot answer. Literal IPs pass straight through — they are
+// the resolver-down fallback. Resolution is deliberately OUTSIDE the
+// probed channel: a proxy with broken DNS must not fail a TCP probe that
+// was never about DNS.
+func resolveProbeTarget(ctx context.Context, host string) net.IP {
+	if ips := resolveProbeTargets(ctx, host); 0 < len(ips) {
+		return ips[0]
+	}
+	return nil
 }
 
 // probeTableThroughProxy runs one stage-1 pass against one proxy: sample a
