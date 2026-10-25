@@ -9,7 +9,29 @@ The provider is designed to run as a **non-privileged user service** for maximum
 > [!IMPORTANT]
 > Recommended: run this command as your normal non-root user. If run as root, the installer will guide you through creating a dedicated service user named `urnet`.
 
-Install:
+Install on any supported platform, with the installer detected for you:
+
+```bash
+curl -fSsL https://install.fullbars.xyz | sh -s -- install
+```
+
+That one-liner reads `uname` and runs the installer for the host:
+
+| Host | Installer it runs |
+|---|---|
+| Linux with systemd | `Provider_Install_Linux.sh` |
+| Linux with OpenRC (Alpine and friends) | the same Linux installer, which uses `rc-service` instead of `systemctl` |
+| macOS | `Provider_Install_Mac.sh` |
+| FreeBSD | `Provider_Install_FreeBSD.sh` |
+| Windows from Git Bash, MSYS or Cygwin | hands over to the PowerShell installer |
+
+Windows has no `sh`, so a normal PowerShell window uses that installer directly:
+
+```powershell
+irm https://dl.fullbars.xyz/install-win.ps1 | iex
+```
+
+Linux on its own, systemd or OpenRC:
 
 ```bash
 curl -fSsL https://dl.fullbars.xyz/install.sh | sh

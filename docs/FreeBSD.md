@@ -27,11 +27,7 @@ That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. The same scri
 curl -fsSL https://install.fullbars.xyz | sudo sh -s -- install
 ```
 
-FreeBSD does not ship `curl` in the base system; if the host has never installed a package, fetch it first:
-
-```sh
-sudo pkg install -y curl
-```
+FreeBSD's base system ships `fetch`, and the installer uses it when `curl` is not installed, so a bare host needs nothing added first. `curl` is preferred when it is present, and `wget` covers hosts that have neither.
 
 To install a specific release instead of the latest:
 
