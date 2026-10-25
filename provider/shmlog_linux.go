@@ -151,7 +151,14 @@ func initSHMLogger() {
 		dup2(int(w.Fd()), int(os.Stdout.Fd()))
 		dup2(int(w.Fd()), int(os.Stderr.Fd()))
 
+		// fMu guards the descriptor the reader writes to, and nothing else.
+		// A trim renames a new file over shmLogPath, so the reader must not
+		// cache `f`: it writes through logFile, which the trimmer swaps under
+		// this lock. Holding the lock only for a write or a swap is the point
+		// of the rename trim - the copy of the kept tail happens outside it,
+		// so the 64 KiB pipe keeps draining while a trim runs.
 		var fMu sync.Mutex
+		logFile := f
 
 		// Second buffer: high-value lines only. Best-effort; nil disables mirroring.
 		// O_RDWR for the same reason as the main log: the trimmer reads before
@@ -188,7 +195,7 @@ func initSHMLogger() {
 				n, err := r.Read(buf)
 				if n > 0 {
 					fMu.Lock()
-					f.Write(buf[:n])
+					logFile.Write(buf[:n])
 					fMu.Unlock()
 
 					// Mirror complete important lines into the small buffer. Both
@@ -257,12 +264,24 @@ func initSHMLogger() {
 		go func() {
 			for {
 				time.Sleep(5 * time.Second)
-				fMu.Lock()
-				err := trimRAMLog(f, shmLogMaxSize, shmLogTrimRatio)
-				fMu.Unlock()
+				trimmed, err := trimRAMLogByRename(shmLogPath, shmLogMaxSize, shmLogTrimRatio)
 				if err != nil {
 					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+					continue
 				}
+				if !trimmed {
+					continue
+				}
+				next, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+				if err != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+					continue
+				}
+				fMu.Lock()
+				previous := logFile
+				logFile = next
+				fMu.Unlock()
+				previous.Close()
 			}
 		}()
 
@@ -270,9 +289,15 @@ func initSHMLogger() {
 		go func() {
 			for {
 				time.Sleep(500 * time.Millisecond)
+				// An fsync on an append-only descriptor is safe beside a
+				// concurrent write, so the sync reads the current descriptor
+				// under the lock and then flushes outside it. Holding the lock
+				// across the fsync was the second half of the convoy: on a busy
+				// /dev/shm it stalls the pipe for as long as the kernel takes.
 				fMu.Lock()
-				f.Sync()
+				current := logFile
 				fMu.Unlock()
+				current.Sync()
 			}
 		}()
 	})

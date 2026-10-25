@@ -99,3 +99,77 @@ func reportTrimFailure(warned *bool, warnTime *time.Time, path string, err error
 	*warnTime = now
 	fmt.Fprintf(os.Stderr, "[ramlogs] warning: cannot trim %s, leaving it oversized rather than losing history: %v\n", path, err)
 }
+
+// trimRAMLogByRename trims the log at path without anyone holding the writer's
+// lock for the copy.
+//
+// trimRAMLog rewrites the file in place, which is correct but expensive: the
+// caller has to hold the write lock across a read and a write of most of a
+// multi-megabyte file, and while it does, the goroutine draining the 64 KiB
+// pipe cannot write. The pipe fills, and then every glog emit blocks inside the
+// stderr sink's mutex - a lock convoy that shows up as most of a core on a
+// small box, and as dials that appear to stall.
+//
+// This variant builds the kept tail in a sibling file and renames it over the
+// log. The rename is atomic within a directory, so a reader that opens the path
+// sees either the old file or the trimmed one, and the caller only has to swap
+// its own descriptor afterwards. The copy never runs under the writer's lock.
+//
+// It reports whether it trimmed; an unremarkable file is not an error.
+func trimRAMLogByRename(path string, maxSize int64, ratio int64) (bool, error) {
+	if ratio < 2 {
+		return false, fmt.Errorf("trim ratio %d must be at least 2", ratio)
+	}
+	source, err := os.Open(path)
+	if err != nil {
+		return false, fmt.Errorf("open for trim: %w", err)
+	}
+	defer source.Close()
+
+	fi, err := source.Stat()
+	if err != nil {
+		return false, fmt.Errorf("stat: %w", err)
+	}
+	if fi.Size() <= maxSize {
+		return false, nil
+	}
+
+	keep := fi.Size() * (ratio - 1) / ratio
+	if maxKeep := maxSize * (ratio - 1) / ratio; keep > maxKeep {
+		keep = maxKeep
+	}
+	if keep <= 0 {
+		return false, nil
+	}
+
+	b := make([]byte, keep)
+	if _, err := source.ReadAt(b, fi.Size()-keep); err != nil {
+		// Nothing has been written: the oversized log survives intact.
+		return false, fmt.Errorf("read newest %d bytes: %w", keep, err)
+	}
+	// The cut lands mid-line, so drop the partial first line for the same
+	// reason trimRAMLog does: line-oriented tooling must not open on half a line.
+	if i := bytes.IndexByte(b, '\n'); i >= 0 && i+1 < len(b) {
+		b = b[i+1:]
+	}
+
+	tmp := path + ".trim"
+	out, err := os.OpenFile(tmp, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, 0644)
+	if err != nil {
+		return false, fmt.Errorf("open trim target: %w", err)
+	}
+	if _, err := out.Write(b); err != nil {
+		out.Close()
+		os.Remove(tmp)
+		return false, fmt.Errorf("write kept %d bytes: %w", len(b), err)
+	}
+	if err := out.Close(); err != nil {
+		os.Remove(tmp)
+		return false, fmt.Errorf("close trim target: %w", err)
+	}
+	if err := os.Rename(tmp, path); err != nil {
+		os.Remove(tmp)
+		return false, fmt.Errorf("rename trim target: %w", err)
+	}
+	return true, nil
+}
