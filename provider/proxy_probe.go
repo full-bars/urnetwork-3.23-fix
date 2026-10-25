@@ -90,6 +90,29 @@ func socks5ConnectV4(ip net.IP, port uint16) []byte {
 	return frame
 }
 
+// socks5Connect builds a SOCKS5 CONNECT frame for whatever family the resolved
+// address has. A v6-only target must be encoded as ATYP=0x04 with its 16-byte
+// address: sent as ATYP=0x01 with a nil To4(), the frame carries an all-zero
+// IPv4 destination and the proxy answers for 0.0.0.0 instead of the target.
+func socks5Connect(ip net.IP, port uint16) []byte {
+	if v4 := ip.To4(); v4 != nil {
+		return socks5ConnectV4(v4, port)
+	}
+	if v6 := ip.To16(); v6 != nil {
+		frame := make([]byte, 4, 22)
+		frame[0] = 0x05 // VER
+		frame[1] = 0x01 // CMD = CONNECT
+		frame[2] = 0x00 // RSV
+		frame[3] = 0x04 // ATYP = IPv6
+		frame = append(frame, v6...)
+		return binary.BigEndian.AppendUint16(frame, port)
+	}
+	// Neither family (unscoped or malformed): keep the old bytes rather than
+	// inventing an address; the peer will reject it and the caller records a
+	// failed attempt, which is the honest verdict.
+	return socks5ConnectV4(ip, port)
+}
+
 // socks5Greet completes the SOCKS5 greeting phase on conn: it offers no-auth
 // (0x00), plus username/password (0x02) when BOTH credentials are non-empty,
 // then validates the server's method selection. Returns true only when the
@@ -287,7 +310,7 @@ func probeProxy(ctx context.Context, address, user, password string, apiHost str
 		tlog("[proxy][probe] warn: could not set stage-2 deadline: %v\n", err)
 		return probeSocks5Only
 	}
-	connectFrame := socks5ConnectV4(apiIP, apiPort)
+	connectFrame := socks5Connect(apiIP, apiPort)
 	if _, err := conn.Write(connectFrame); err != nil {
 		return probeSocks5Only
 	}
