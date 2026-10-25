@@ -336,7 +336,24 @@ jobs:
             # status wiring; syntax checks cannot.
             # NOTE: no heredocs here (YAML block scalar), printf builds the files.
             mkdir -p /tmp/ci/bin
-            printf '%s\n' '#!/bin/sh' 'echo "standin stdout: $*"' 'echo "standin stderr" >&2' 'exec sleep 120' > /tmp/ci/bin/urnetwork
+            # The stand-in has to keep the PROVIDER's argv. The shipped template
+            # finds the running provider by argv - the alive pidfile pid must
+            # read "<binary> provide", and the table scan matches the same two
+            # fields - so a stand-in that execs another program destroys the
+            # identity the template looks for and onestatus truthfully reports
+            # "not running" seconds after a good start. Compile it, so argv
+            # stays /tmp/ci/bin/urnetwork and the primary pidfile path is
+            # exercised instead of only the fallback scan.
+            printf '%s\n' \
+              '#include <stdio.h>' \
+              '#include <unistd.h>' \
+              'int main(int argc, char **argv) {' \
+              '    printf("standin stdout: %s\n", argc > 1 ? argv[1] : "");' \
+              '    fprintf(stderr, "standin stderr\n");' \
+              '    fflush(NULL);' \
+              '    for (;;) sleep(60);' \
+              '}' > /tmp/ci/standin.c
+            cc -o /tmp/ci/bin/urnetwork /tmp/ci/standin.c || { echo "FATAL: could not build the provider stand-in"; exit 1; }
             chmod 755 /tmp/ci/bin/urnetwork
             chmod 755 /tmp/ci /tmp/ci/bin
             { awk '{print} /^RCSCRIPT$/{exit}' scripts/Provider_Install_FreeBSD.sh; printf '%s\n' '}' 'service_name="urnettest"' 'provider_bin="/tmp/ci/bin/urnetwork"' 'write_rc_script_body "nobody" > /tmp/ci/urnettest'; } > /tmp/ci/rcgen.sh
