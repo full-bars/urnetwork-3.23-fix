@@ -199,6 +199,38 @@ func probeDirectTarget(ctx context.Context, ip net.IP, host string, port uint16,
 	return directReachable, true
 }
 
+// probeDirectTargetAny tries every address the box resolved for one host and
+// reports the best outcome seen, so the host stays one sample. A reachable
+// address ends the loop. An intercepted address is remembered rather than
+// overwritten by a later unreachable one: a completed interceptor handshake is
+// evidence about the route, and a different address failing afterwards does
+// not retract it. attempted is true only when at least one dial left the box.
+func probeDirectTargetAny(ctx context.Context, ips []net.IP, host string, port uint16, timeout time.Duration) (directProbeOutcome, bool) {
+	outcome := directUnattempted
+	attempted := false
+	for _, ip := range ips {
+		if ctx.Err() != nil {
+			break
+		}
+		o, at := probeDirectTarget(ctx, ip, host, port, timeout)
+		if !at {
+			continue
+		}
+		attempted = true
+		switch o {
+		case directReachable:
+			return directReachable, true
+		case directIntercepted:
+			outcome = directIntercepted
+		default:
+			if outcome == directUnattempted {
+				outcome = o
+			}
+		}
+	}
+	return outcome, attempted
+}
+
 // directProbePassCounter advances once per direct pass so the grade walks the
 // table like the proxy probe does. It must NOT share tableProbePassCounter: that
 // one is advanced by the URL fetcher and the paid sweep, so on a node running
@@ -228,12 +260,12 @@ func probeTableDirect(ctx context.Context, cfg proxyTableProbeConfig) tableProbe
 		if ctx.Err() != nil {
 			break
 		}
-		ip := resolveProbeTarget(ctx, host)
-		if ip == nil {
+		ips := resolveProbeTargets(ctx, host)
+		if len(ips) == 0 {
 			unresolved++
 			continue
 		}
-		outcome, attempted := probeDirectTarget(ctx, ip, host, 443, cfg.TargetTimeout)
+		outcome, attempted := probeDirectTargetAny(ctx, ips, host, 443, cfg.TargetTimeout)
 		if !attempted {
 			unresolved++
 			continue

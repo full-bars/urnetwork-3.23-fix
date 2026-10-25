@@ -448,18 +448,6 @@ func resolveProbeTargets(ctx context.Context, host string) []net.IP {
 	return ips
 }
 
-// resolveProbeTarget resolves host, returning the box's own DNS answer or
-// nil when it cannot answer. Literal IPs pass straight through — they are
-// the resolver-down fallback. Resolution is deliberately OUTSIDE the
-// probed channel: a proxy with broken DNS must not fail a TCP probe that
-// was never about DNS.
-func resolveProbeTarget(ctx context.Context, host string) net.IP {
-	if ips := resolveProbeTargets(ctx, host); 0 < len(ips) {
-		return ips[0]
-	}
-	return nil
-}
-
 // probeTableThroughProxy runs one stage-1 pass against one proxy: sample a
 // block of health targets, resolve each via the box's own DNS (outside the
 // probed channel), dial :443 through the proxy via SOCKS5 CONNECT, count
@@ -518,12 +506,12 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 		if ctx.Err() != nil {
 			break
 		}
-		ip := resolveProbeTarget(ctx, host)
-		if ip == nil {
+		ips := resolveProbeTargets(ctx, host)
+		if len(ips) == 0 {
 			baseUnresolved++
 			continue
 		}
-		answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+		answered, attempted := probeSocks5ConnectAny(ctx, address, user, password, ips, 443, cfg.TargetTimeout)
 		if !attempted {
 			// Box-side failure (limiter denial / caller deadline): no evidence
 			// about the proxy. Excluded from Total exactly like an unresolved
@@ -587,15 +575,15 @@ func probeTableThroughProxy(ctx context.Context, address, user, password, apiHos
 			if ctx.Err() != nil {
 				break
 			}
-			ip := resolveProbeTarget(ctx, host)
-			if ip == nil {
+			ips := resolveProbeTargets(ctx, host)
+			if len(ips) == 0 {
 				// Intended but not resolvable from this box; counted as visited
 				// so the decidable quorum matches the base convention.
 				res.SampleWidth++
 				unresolvedGrowth++
 				continue
 			}
-			answered, attempted := probeSocks5Connect(ctx, address, user, password, ip, 443, cfg.TargetTimeout)
+			answered, attempted := probeSocks5ConnectAny(ctx, address, user, password, ips, 443, cfg.TargetTimeout)
 			if !attempted {
 				// Box-side failure: no evidence; exclude from Total (CRITICAL-1).
 				res.SampleWidth++
@@ -887,6 +875,27 @@ func probeSocks5Connect(ctx context.Context, address, user, password string, ip 
 	// fixed length, so a short domain reply or an IPv6 BND.ADDR is handled
 	// correctly; only a fully-consumed reply with REP 0x00 counts).
 	return readSocks5ConnectReply(conn), true
+}
+
+// probeSocks5ConnectAny tries every address the box resolved for one host,
+// stopping at the first one the proxy answers. A host is one sample either
+// way: the proxy is asked on every address because a proxy that fails on the
+// first and succeeds on the second is working, and recording the first only
+// would convict it of an address-family problem that is not its own.
+// attempted is true only when at least one dial actually left the box, so a
+// limiter denial on every address still carries no evidence.
+func probeSocks5ConnectAny(ctx context.Context, address, user, password string, ips []net.IP, port uint16, timeout time.Duration) (answered, attempted bool) {
+	for _, ip := range ips {
+		if ctx.Err() != nil {
+			return answered, attempted
+		}
+		a, at := probeSocks5Connect(ctx, address, user, password, ip, port, timeout)
+		attempted = attempted || at
+		if a {
+			return true, attempted
+		}
+	}
+	return false, attempted
 }
 
 // proxyURLGrade is the admission decision for one URL-source line after the
