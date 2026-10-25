@@ -1382,7 +1382,7 @@ func seedProbeDNSForAddress(t *testing.T, address string, passes ...uint64) {
 			if _, exists := probeDNSCache.m[h]; !exists {
 				added[h] = true
 			}
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}

@@ -56,7 +56,7 @@ func seedTableAllHosts(t *testing.T, denied map[string]string) {
 		if d, ok := denied[h]; ok {
 			ip = d
 		}
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP(ip), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP(ip)}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 	}
 	probeDNSCache.Unlock()
@@ -184,7 +184,7 @@ func TestMinConfirmDials_GrowthLoopAlsoRespectsTheFloor(t *testing.T) {
 			delete(probeDNSCache.m, h)
 			probeDNSCache.fail[h] = time.Now()
 		} else {
-			probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+			probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("198.51.100.1")}, at: time.Now()}
 			delete(probeDNSCache.fail, h)
 		}
 	}
@@ -193,7 +193,7 @@ func TestMinConfirmDials_GrowthLoopAlsoRespectsTheFloor(t *testing.T) {
 	for _, h := range disjointGrowthHosts(addr, tableProbePassCounter.Load(), cfg.MinSampleWidth,
 		cfg.MaxSampleWidth-cfg.MinSampleWidth, true) {
 		probeDNSCache.Lock()
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("198.51.100.1"), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("198.51.100.1")}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 		probeDNSCache.Unlock()
 	}

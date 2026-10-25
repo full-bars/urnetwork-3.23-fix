@@ -133,7 +133,7 @@ func TestProbeTableThroughProxy_ViabilityAbort(t *testing.T) {
 	hosts := sampleProbeHosts(tableProbeSeed(addr, pass), 20, cfg.UseSpreadOrder)
 	probeDNSCache.Lock()
 	for _, h := range hosts {
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP("93.184.216.34"), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP("93.184.216.34")}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 	}
 	probeDNSCache.Unlock()

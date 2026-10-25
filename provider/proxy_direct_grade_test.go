@@ -45,7 +45,7 @@ func seedDirectDNS(t *testing.T, names []string, ip string) {
 	probeDNSCache.Lock()
 	defer probeDNSCache.Unlock()
 	for _, h := range names {
-		probeDNSCache.m[h] = probeDNSCachedIP{ip: net.ParseIP(ip), at: time.Now()}
+		probeDNSCache.m[h] = probeDNSCachedIP{ips: []net.IP{net.ParseIP(ip)}, at: time.Now()}
 		delete(probeDNSCache.fail, h)
 	}
 	t.Cleanup(func() {
