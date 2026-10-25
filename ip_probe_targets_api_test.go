@@ -24,6 +24,23 @@ func TestProbeTargetsAccessors(t *testing.T) {
 	}
 }
 
+// TestProbeTargetsExcludeKnownDeadHosts: speedtest.tele2.net refuses :443 and
+// connectivity-check.ubuntu.com never completes the :443 probe, so neither can
+// ever answer a health probe. They were removed for that reason after a live
+// provider's direct grade went F -> A without them, and putting either back
+// brings the F back.
+func TestProbeTargetsExcludeKnownDeadHosts(t *testing.T) {
+	knownDead := map[string]string{
+		"speedtest.tele2.net":           "refuses :443",
+		"connectivity-check.ubuntu.com": "never completes the :443 probe",
+	}
+	for _, host := range ProbeHostNames() {
+		if why, dead := knownDead[host]; dead {
+			t.Errorf("probe host %q is a known never-pass host (%s); it must not be in the table", host, why)
+		}
+	}
+}
+
 // TestSampleProbeTargets_Deterministic: the same seed yields the same block.
 func TestSampleProbeTargets_Deterministic(t *testing.T) {
 	h1, r1 := SampleProbeTargets(42, 8)
