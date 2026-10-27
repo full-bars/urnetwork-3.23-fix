@@ -1546,6 +1546,14 @@ Platform toggles updated:
 
 ---
 
+## [v3.23.0-fix.25.14] — 2026-07-08
+
+### Added
+
+**Disk-based critical event log** (#242): `~/.urnetwork/events.log` records `STARTUP` (version, PID, hostname), `SIGNAL`, and fatal exits, capped at 1 MB with rotation. It exists because the provider periodically exited 0 on some nodes with no log at all: RAMLOG lives in `/dev/shm` and `initSHMLogger` opens it `O_TRUNC`, so a restart wiped the only evidence. The event log survives the restart.
+
+---
+
 ## [v3.23.0-fix.25.12]
 
 ### Added
@@ -1609,6 +1617,88 @@ Platform toggles updated:
 ### Changed
 
 **CI**: Renamed `hub-v*` Docker tags to `hub-docker-v*` to clarify they are Docker-only.
+
+---
+
+## [v3.23.0-fix.25.5] — 2026-07-08
+
+### Fixed
+
+**The `proxy_fleet_hourly` backfill migration raced the first report** (#239): the backfill now runs only when the source table actually has history, instead of rebuilding from an empty source.
+
+### Changed
+
+**Hub commands moved into their own help category** (#238): `urnet-tools` help lists the hub commands as a group rather than mixing them with the provider's.
+
+---
+
+## [v3.23.0-fix.25.4] — 2026-07-08
+
+### Added
+
+**Best Proxies hall-of-fame leaderboard** (#235): a ranked board over the fleet's proxy history with a win percentage, so a consistently good proxy can be told from a lucky one.
+
+**Per-proxy client JWT persisted across restarts** (#233), gated behind an opt-in flag that is off by default (#237): a restart reuses the same client token instead of minting a new one, so the server-side reputation attached to that client is not thrown away. The log distinguishes a reused token from a fresh mint.
+
+**Tactical log visibility** (#226): emoji and layout changes on the lines an operator actually watches.
+
+### Fixed
+
+**Best Proxies navigation and scaling** (#236): a duplicate nav item and a `win_pct` scale bug.
+
+**Profit-heartbeat metrics were wrong** (#228): corrected against #226's definitions.
+
+**URL proxies were probed inside the file lock**: the reaper held `proxy.lock` across the probe, so every other proxy operation waited on a network round trip. Probing now happens outside the lock.
+
+**Heartbeat deltas, body cap and drain re-trigger**: the delta baseline was recomputed on every pass, the response body had no bound, and a drain did not re-trigger when it should have. The delta is also chunked now.
+
+**TLS and stream correctness**: the `tlsSrv` pointer race, client reuse, `DNSName` verification, a non-atomic flag, an `io.Reader` contract violation, and snapshot copies that shared their backing array.
+
+**SSE responses were gzipped**: server-sent events now bypass compression, and signal shutdown is wired to the servers.
+
+**JWT refresh rewritten onto `code-create`/`code-login`** (#227): `AuthNetworkClient` was not the right endpoint for a refresh. The verification client also had no timeout, and now has 30 seconds.
+
+**Checkpointed contracts were counted in `contractUtilSum`**, inflating utilization.
+
+**Upstream correctness ports** (#231, #234): `MessagePoolReadAllWithTag`'s defensive guards, and the partial read/write fixes from upstream `7f0835a`.
+
+**Cleanups** (#229): JWT expiry formatting, a dead throttle removed, the peak rate frozen rather than recomputed, and a WebRTC rate limit.
+
+### Changed
+
+**Hub dashboard**: reset zoom, request sequencing so a slow response cannot overwrite a newer one, and the fleet-hourly query made cheaper.
+
+---
+
+## [v3.23.0-fix.25.3] — 2026-07-06
+
+### Added
+
+**A password-derived hub CA** (#216): the hub's random self-signed certificate is replaced by an Ed25519 CA derived from the operator's password with Argon2id. The same password and salt produce a byte-identical certificate, so providers do not have to re-pin after a hub restart.
+
+**The provider prefers CA verification and fails closed** (#217): when no trust material exists — no `hub_ca.pem` and no `hub.pin` — the provider now refuses the connection with a clear error instead of accepting any certificate.
+
+**Token-based onboarding** (#218): the operator mints a 15-minute token and pastes a one-liner into each provider. The script is self-contained and works the same for native and Docker providers.
+
+**An operator CLI for the CA trust system** (direct to main): `urnet-tools hub link` writes the CA material, and the legacy fingerprint fallback is kept for a hub that has not been migrated (#222). The manual CA certificate path is documented for operators who cannot run the one-liner (#223).
+
+### Fixed
+
+**Pre-ship audit, P0 and P1** (#224): CA material could be lost on a failed write, `--token` was not forwarded, the password was not validated, the systemd path had no guard, IPv6 addresses were not bracketed, and `ca.crt` rotation rewrote more than it should.
+
+**Pre-ship audit, remaining P2 items** (#224): thirty-one further edge cases across error handling, resilience and UX, plus token URL-encoding and JSON parsing fallbacks.
+
+**`onboard.sh` corruption and a port-443 edge case**: both fixed, with test coverage.
+
+**The proxy reload trigger fired in rapid-fire loops** (#221): the trigger is debounced, so one configuration change no longer starts a reload storm.
+
+**Shutdown logged no signal name** (#215): the signal that triggered `Event.SetOnSignals` is named in the log.
+
+**The PowerShell hub link ran in the wrong place** (#222): `hub link` and `unlink` route through `docker exec` when the provider is containerized, detect Docker versus native correctly, match the container name exactly, and warn before an operation would contaminate the host.
+
+### Changed
+
+**Release notes for this release were finalized** (#223): migration order and the legacy `hub.pin` caveat are documented, including the deprecation tlog for a legacy pin.
 
 ---
 
@@ -1834,6 +1924,30 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.24.29] — 2026-07-02
+
+### Added
+- **Pattern-based proxy removal** (PR #183): `proxy remove --match=<substring>` removes all proxies whose host matches a case-insensitive substring — no provider restart needed. Matching operates on host only (never port/user/pass). Persists exclusion patterns to `proxy_url.json` so URL source refreshes don't re-add matching proxies. `proxy exclude <pat>` / `proxy exclude --remove <pat>` manages the pattern list; `proxy summary` shows active patterns.
+- **Fleet-wide per-proxy analytics** (PR #184): Three-tier proxy history in the hub database with delta-based ingestion, automatic rollups, and time-based retention:
+  - **Tier 1 — proxy_node_hourly (90d)**: Sparse per-node per-proxy hourly deltas from cumulative provider counters. A delta tracker suppresses the first report after provider restart (counter going backwards = new baseline, no spike). Only proxies with actual activity get rows.
+  - **Tier 2 — proxy_node_daily (13mo)**: Rolled up from hourly by a background goroutine using a high-water mark to prevent double-counting.
+  - **Tier 3 — proxy_fleet_daily (forever)**: Fleet-wide daily aggregates with per-proxy node count.
+  - Retention windows configurable via `URNETWORK_HUB_RETAIN_HOURLY_DAYS` (default 90) and `URNETWORK_HUB_RETAIN_DAILY_MONTHS` (default 13).
+- **New hub read APIs** (PR #184): Three GET endpoints consumed by the new UI:
+  - `/api/proxies/top?window=&sort=&node=&limit=` — proxy leaderboard with traffic/contracts/denied sorting
+  - `/api/proxies/history?addr=&window=&split=node` — per-proxy time series with optional per-node comparison
+  - `/api/nodes/contracts?node=&window=` — per-server won/denied contract series from node_hourly
+- **Hub UI overhaul** (PR #184): Sidebar navigation with four pages:
+  - **Overview**: summary cards + 5 fleet mini-charts (traffic, billable, clients, nodes, contracts/hr)
+  - **Servers**: sortable/filterable node table with per-node proxy drawer
+  - **Proxies**: leaderboard from `/api/proxies/top` with window pills, sort dropdown, node filter, color-coded win%, and collapsible idle section
+  - **Contracts**: fleet won-vs-denied uPlot chart + per-server table sorted by win rate with green/red split bars; click a server opens its proxy drawer
+
+### Fixed
+- **Hub test CI timeout**: `TestRollupAndPrune` was processing 17000+ empty rollup hours on every run, timing out at 600s in CI. Mocked `nowFunc` to limit the rollup window to only the 3 test hours (0.06s → 0.06s, was 15s without race).
+
+---
+
 ## [v3.23.0-fix.24.28] — 2026-07-01
 
 ### Added
@@ -1877,6 +1991,55 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.24.26] — 2026-06-30
+
+### Fixed
+- **`isHttpRequest` actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port, but the code was never added to `ip_security_dmca.go`. This change delivers it for real — plaintext HTTP/1.x request lines are detected in the DPI flow and return `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false-positive drops of radio/media streaming over non-standard ports.
+- **Privileged-port DPI skip** (upstream 2144e33): `dmcaDetector.classify()` now allows destination ports `<1024` without payload inspection or flow tracking. A privileged port can't host a peer-to-peer/BitTorrent hole (peers, DHT, uTP, plaintext trackers all run on ephemeral/high ports), so skipping it lets legitimate non-web-standard encrypted services on privileged ports (e.g. Telegram MTProto on 443) through. Peer traffic on high ports is still inspected.
+- **DoH rewrite actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port too, but it was also lost in the same history rewrite. Restored the full DoH refactor: dnsmessage wire-format support for Quad9/OpenDNS, parallel queries to 4 providers (Cloudflare, Google, Quad9, OpenDNS), `MinCacheTtl`/`MaxConcurrentResolutions` settings, single-flight query coalescing, local DoH support, and `TlsConfig` field for cert pinning. Merge conflict resolved by applying LE pinning to remote DoH (tunneled) while preserving system pool for local DoH (host-dialed).
+- **Miss flag lost in DoH merge timeout paths** (PR #169): `dohQueryWithClientResult`'s three early-return paths (deadline, ctx cancel, timeout) were creating a new result struct with only `AddrTtls`, silently dropping a merged `Miss=true` from an already-received NXDOMAIN response. This caused the cache layer to skip caching, doubling DoH requests on resolution timeout.
+
+### Added
+- **DPI test coverage**: Ported upstream `ip_security_dmca_test.go` wholesale (13 tests). The fork's earlier DPI refactor (`f79e3c5`) brought `ip_security_dmca.go` without its test file, leaving the detector untested; this restores full upstream parity so future audits diff cleanly.
+
+---
+
+## [v3.23.0-fix.24.25] — 2026-06-29
+
+### Fixed
+- **DoH certificate pinning** (PR #164): DNS-over-HTTPS resolver now uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure `// FIXME` nil TLS config. Prevents potential MITM of DoH responses. (This was already live; PR #167's DoH rewrite was lost.)
+- **`isHttpRequest` detection** (PR #167): Ported from upstream b6ee955. Detects plaintext HTTP/1.x request lines in DPI flow and returns `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false positives on radio/media streaming over non-standard ports.
+- **Port bounds check** (PR #168): Fixed CodeQL alert #11 where `strconv.Atoi` return values on 64-bit systems could hold values outside the 0–65535 port range. Added bounds guard so invalid ports fall back to `defaultAPIPort` instead of silently wrapping.
+
+---
+
+## [v3.23.0-fix.24.24] — 2026-06-29
+
+### Fixed
+- **Error propagation for reload/state writes** (PR #163): `writeReloadTrigger()` and `writeProxyState()` now log warnings on failure instead of silently discarding errors. Prevents hot-reloads from silently breaking and stale state files when disk writes fail.
+- **DoH certificate pinning** (PR #164): DNS-over-HTTPS resolver now uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure `// FIXME` nil TLS config. Prevents potential MITM of DoH responses.
+- **Reload watcher and proxy probe error handling** (PR #165): Split error check from sequence comparison in `readReloadSeq` to prevent transient FS read failures from spuriously triggering proxy reloads. Added proper timeout handling for `SetDeadline` errors in probe stages.
+- **Removed dead config fields** (PR #166): Eliminated `LegacyCreateContract` and `TrackUsedContracts` fields from `ContractManagerSettings` that were always `false` and had no active code paths.
+
+---
+
+## [v3.23.0-fix.24.23] — 2026-06-28
+
+### Fixed
+- **`urnet-tools` no-args shows help instead of triggering install** (PR #161): Running the script with no arguments was triggering a full install instead of showing the help menu. Fixed via `$0` path check instead of the broken `URNETWORK_TOOLS_MODE` env var injection approach.
+
+### Added
+- **Build release monitor** (PR #162): New GitHub Actions job monitors `urnetwork/build` repository for release tags, posts commit summaries with file changes to Discord. Expands critical files list and shows actual filenames in notifications.
+
+---
+
+## [v3.23.0-fix.24.22] — 2026-06-28
+
+### Added
+- **IP Security DPI Refactor** (PR #160): Replaced the monolithic `ip_security.go` (~66K lines) with a layered deep-packet-inspection pipeline. Payload-level BitTorrent signature detection (BEP 3/5/15/29, entropy-based encrypted-flow heuristic) instead of port-only heuristics. 214 IPv6 prefix ranges now blocked (previously unchecked). 66K-line `map[[4]byte]bool` blocklist replaced by ~8K-line packed binary-search for zero-allocation lookups. Known-safe protocols (NTP, IKE, DNS/UDP) skip DPI entirely via three-way verdict (drop/allow/pass-to-DPI).
+
+---
+
 ## [v3.23.0-fix.24.21] — 2026-06-27
 
 ### Added
@@ -1904,76 +2067,18 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
-## [v3.23.0-fix.24.22] — 2026-06-28
+## [v3.23.0-fix.24.20] — 2026-06-27
 
 ### Added
-- **IP Security DPI Refactor** (PR #160): Replaced the monolithic `ip_security.go` (~66K lines) with a layered deep-packet-inspection pipeline. Payload-level BitTorrent signature detection (BEP 3/5/15/29, entropy-based encrypted-flow heuristic) instead of port-only heuristics. 214 IPv6 prefix ranges now blocked (previously unchecked). 66K-line `map[[4]byte]bool` blocklist replaced by ~8K-line packed binary-search for zero-allocation lookups. Known-safe protocols (NTP, IKE, DNS/UDP) skip DPI entirely via three-way verdict (drop/allow/pass-to-DPI).
-
----
-
-## [v3.23.0-fix.24.23] — 2026-06-28
-
-### Fixed
-- **`urnet-tools` no-args shows help instead of triggering install** (PR #161): Running the script with no arguments was triggering a full install instead of showing the help menu. Fixed via `$0` path check instead of the broken `URNETWORK_TOOLS_MODE` env var injection approach.
-
-### Added
-- **Build release monitor** (PR #162): New GitHub Actions job monitors `urnetwork/build` repository for release tags, posts commit summaries with file changes to Discord. Expands critical files list and shows actual filenames in notifications.
-
----
-
-## [v3.23.0-fix.24.24] — 2026-06-29
+- **Hub UI overhaul** (direct to main): summary cards, a fleet chart, history charts, a filter, and a per-node drawer.
+- **Hub server-side performance** (direct to main): gzip, request rate limiting, stale-node eviction, and a `nodeSummary` API so the dashboard stops fetching every node to draw a summary.
+- **Idempotent `override.conf` helpers** (PR #153): six inline `sed`/`printf` patterns across the toggle functions became two shared helpers. Running a toggle twice can no longer produce duplicate `Environment=` lines or a duplicate `[Service]` section.
+- **`urnet-tools report`** (PR #154): prints, sets or clears `REPORT_URL` through those helpers, so the hub report URL is no longer edited by hand.
 
 ### Fixed
-- **Error propagation for reload/state writes** (PR #163): `writeReloadTrigger()` and `writeProxyState()` now log warnings on failure instead of silently discarding errors. Prevents hot-reloads from silently breaking and stale state files when disk writes fail.
-- **DoH certificate pinning** (PR #164): DNS-over-HTTPS resolver now uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure `// FIXME` nil TLS config. Prevents potential MITM of DoH responses.
-- **Reload watcher and proxy probe error handling** (PR #165): Split error check from sequence comparison in `readReloadSeq` to prevent transient FS read failures from spuriously triggering proxy reloads. Added proper timeout handling for `SetDeadline` errors in probe stages.
-- **Removed dead config fields** (PR #166): Eliminated `LegacyCreateContract` and `TrackUsedContracts` fields from `ContractManagerSettings` that were always `false` and had no active code paths.
-
----
-
-## [v3.23.0-fix.24.29] — 2026-07-02
-
-### Added
-- **Pattern-based proxy removal** (PR #183): `proxy remove --match=<substring>` removes all proxies whose host matches a case-insensitive substring — no provider restart needed. Matching operates on host only (never port/user/pass). Persists exclusion patterns to `proxy_url.json` so URL source refreshes don't re-add matching proxies. `proxy exclude <pat>` / `proxy exclude --remove <pat>` manages the pattern list; `proxy summary` shows active patterns.
-- **Fleet-wide per-proxy analytics** (PR #184): Three-tier proxy history in the hub database with delta-based ingestion, automatic rollups, and time-based retention:
-  - **Tier 1 — proxy_node_hourly (90d)**: Sparse per-node per-proxy hourly deltas from cumulative provider counters. A delta tracker suppresses the first report after provider restart (counter going backwards = new baseline, no spike). Only proxies with actual activity get rows.
-  - **Tier 2 — proxy_node_daily (13mo)**: Rolled up from hourly by a background goroutine using a high-water mark to prevent double-counting.
-  - **Tier 3 — proxy_fleet_daily (forever)**: Fleet-wide daily aggregates with per-proxy node count.
-  - Retention windows configurable via `URNETWORK_HUB_RETAIN_HOURLY_DAYS` (default 90) and `URNETWORK_HUB_RETAIN_DAILY_MONTHS` (default 13).
-- **New hub read APIs** (PR #184): Three GET endpoints consumed by the new UI:
-  - `/api/proxies/top?window=&sort=&node=&limit=` — proxy leaderboard with traffic/contracts/denied sorting
-  - `/api/proxies/history?addr=&window=&split=node` — per-proxy time series with optional per-node comparison
-  - `/api/nodes/contracts?node=&window=` — per-server won/denied contract series from node_hourly
-- **Hub UI overhaul** (PR #184): Sidebar navigation with four pages:
-  - **Overview**: summary cards + 5 fleet mini-charts (traffic, billable, clients, nodes, contracts/hr)
-  - **Servers**: sortable/filterable node table with per-node proxy drawer
-  - **Proxies**: leaderboard from `/api/proxies/top` with window pills, sort dropdown, node filter, color-coded win%, and collapsible idle section
-  - **Contracts**: fleet won-vs-denied uPlot chart + per-server table sorted by win rate with green/red split bars; click a server opens its proxy drawer
-
-### Fixed
-- **Hub test CI timeout**: `TestRollupAndPrune` was processing 17000+ empty rollup hours on every run, timing out at 600s in CI. Mocked `nowFunc` to limit the rollup window to only the 3 test hours (0.06s → 0.06s, was 15s without race).
-
----
-
-## [v3.23.0-fix.24.26] — 2026-06-30
-
-### Fixed
-- **`isHttpRequest` actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port, but the code was never added to `ip_security_dmca.go`. This change delivers it for real — plaintext HTTP/1.x request lines are detected in the DPI flow and return `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false-positive drops of radio/media streaming over non-standard ports.
-- **Privileged-port DPI skip** (upstream 2144e33): `dmcaDetector.classify()` now allows destination ports `<1024` without payload inspection or flow tracking. A privileged port can't host a peer-to-peer/BitTorrent hole (peers, DHT, uTP, plaintext trackers all run on ephemeral/high ports), so skipping it lets legitimate non-web-standard encrypted services on privileged ports (e.g. Telegram MTProto on 443) through. Peer traffic on high ports is still inspected.
-- **DoH rewrite actually shipped** (upstream b6ee955): The v3.23.0-fix.24.25 entry documented this port too, but it was also lost in the same history rewrite. Restored the full DoH refactor: dnsmessage wire-format support for Quad9/OpenDNS, parallel queries to 4 providers (Cloudflare, Google, Quad9, OpenDNS), `MinCacheTtl`/`MaxConcurrentResolutions` settings, single-flight query coalescing, local DoH support, and `TlsConfig` field for cert pinning. Merge conflict resolved by applying LE pinning to remote DoH (tunneled) while preserving system pool for local DoH (host-dialed).
-- **Miss flag lost in DoH merge timeout paths** (PR #169): `dohQueryWithClientResult`'s three early-return paths (deadline, ctx cancel, timeout) were creating a new result struct with only `AddrTtls`, silently dropping a merged `Miss=true` from an already-received NXDOMAIN response. This caused the cache layer to skip caching, doubling DoH requests on resolution timeout.
-
-### Added
-- **DPI test coverage**: Ported upstream `ip_security_dmca_test.go` wholesale (13 tests). The fork's earlier DPI refactor (`f79e3c5`) brought `ip_security_dmca.go` without its test file, leaving the detector untested; this restores full upstream parity so future audits diff cleanly.
-
----
-
-## [v3.23.0-fix.24.25] — 2026-06-29
-
-### Fixed
-- **DoH certificate pinning** (PR #164): DNS-over-HTTPS resolver now uses `DefaultTlsConfig()` with ISRG Root X1/X2 pinning instead of insecure `// FIXME` nil TLS config. Prevents potential MITM of DoH responses. (This was already live; PR #167's DoH rewrite was lost.)
-- **`isHttpRequest` detection** (PR #167): Ported from upstream b6ee955. Detects plaintext HTTP/1.x request lines in DPI flow and returns `dmcaAllow` before the encrypted-traffic entropy heuristic fires, preventing false positives on radio/media streaming over non-standard ports.
-- **Port bounds check** (PR #168): Fixed CodeQL alert #11 where `strconv.Atoi` return values on 64-bit systems could hold values outside the 0–65535 port range. Added bounds guard so invalid ports fall back to `defaultAPIPort` instead of silently wrapping.
+- **Bug fixes for the proxy summary and reachability-probe work** (PR #151, #152, #153): the reported failures in those three changes.
+- **PowerShell log switch syntax and Docker exec sanitization** (direct to main): `') {'` became `' {'`, and the values passed into `docker exec` are sanitized.
+- **`REPORT_URL` extraction and help text** (direct to main): the `sed` pattern matched the wrong form, and the help text described the old behavior.
 
 ---
 
@@ -2000,13 +2105,6 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
-## [v3.23.0-fix.24.16] — 2026-06-25
-
-### Fixed
-- **`proxy clear` now wipes URL cache, source URLs, and systemd PROXY_URL** (PR #139, #140): `proxy remove --all` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` and systemd `Environment=PROXY_URL` untouched. The cached URL proxies and env var would re-populate sources on restart — the clear had no lasting effect. Now `proxy_url.json` is wiped entirely (cache, blacklist, source URLs) and `PROXY_URL` is stripped from any systemd override drop-in in `~/.config/systemd/user/urnetwork.service.d/`, with a systemd daemon-reload.
-- **File-sourced proxies launch before URL-sourced ones** (PR #139): The proxy launch order at startup was non-deterministic (Go random map iteration), so file-based and URL-sourced proxies were interleaved — no priority for paid proxies. The proxy list is now sorted so file-sourced proxies get lower indices in the launch sequence, giving them a head start via `backoffPacer` before any URL-sourced proxies begin connecting.
-- **URL fetcher waits for file-proxy warmup before first fetch** (PR #140): The URL fetcher was triggering 5-15 minutes after startup, before file proxy warmup completed (~17 min for 1000 proxies at 1s stagger). URL-sourced proxies started authing mid-warmup, competing with file proxies for auth rate-limiter slots. The URL fetcher now waits for warmup to reach `>90% up with <5 connecting`, with a 60-minute timeout fallback so a few slow file proxies don't block URL proxies forever.
-
 ## [v3.23.0-fix.24.18] — 2026-06-26
 
 ### Added
@@ -2018,6 +2116,31 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 - **Startup sort order test** — verifies file/internal proxies sort before URL-sourced ones.
 - **backoffPacer edge case tests** — zero stagger returns immediately, context cancellation aborts non-zero stagger waits.
 - **Warmup gate lifecycle test** — URL proxies deferred during warmup are launched once warmup completes.
+
+## [v3.23.0-fix.24.17] — 2026-06-25
+
+### Added
+- **Emoji prefixes on the key log lines** (direct to main): the lines an operator scans for — ready, contract, proxy auth, traffic — are prefixed so they can be found in a busy log.
+
+### Fixed
+- **The reload tests hung on the warmup gate** (direct to main): the tests now set `proxyWarmupDone`, which the gate requires, instead of waiting for a warmup that never completes in a test.
+
+---
+
+## [v3.23.0-fix.24.16] — 2026-06-25
+
+### Fixed
+- **`proxy clear` now wipes URL cache, source URLs, and systemd PROXY_URL** (PR #139, #140): `proxy remove --all` was clearing the internal config and `proxy.state`, but leaving `proxy_url.json` and systemd `Environment=PROXY_URL` untouched. The cached URL proxies and env var would re-populate sources on restart — the clear had no lasting effect. Now `proxy_url.json` is wiped entirely (cache, blacklist, source URLs) and `PROXY_URL` is stripped from any systemd override drop-in in `~/.config/systemd/user/urnetwork.service.d/`, with a systemd daemon-reload.
+- **File-sourced proxies launch before URL-sourced ones** (PR #139): The proxy launch order at startup was non-deterministic (Go random map iteration), so file-based and URL-sourced proxies were interleaved — no priority for paid proxies. The proxy list is now sorted so file-sourced proxies get lower indices in the launch sequence, giving them a head start via `backoffPacer` before any URL-sourced proxies begin connecting.
+- **URL fetcher waits for file-proxy warmup before first fetch** (PR #140): The URL fetcher was triggering 5-15 minutes after startup, before file proxy warmup completed (~17 min for 1000 proxies at 1s stagger). URL-sourced proxies started authing mid-warmup, competing with file proxies for auth rate-limiter slots. The URL fetcher now waits for warmup to reach `>90% up with <5 connecting`, with a 60-minute timeout fallback so a few slow file proxies don't block URL proxies forever.
+
+## [v3.23.0-fix.24.15] — 2026-06-25
+
+### Fixed
+- **`ulid.Make()` allocated on the per-packet hot path** (PR #137): every sequence, message and transport id went through the external library, which heap-allocates on each call. It is replaced by an inline monotonic generator that writes into a stack-allocated `[16]byte`, ported from upstream `d474f36`.
+- **Frame marshal allocated per frame** (PR #138): `frame_protobuf.go` is ported so the send and receive hot path marshals without allocating.
+
+---
 
 ## [v3.23.0-fix.24.14] — 2026-06-25
 
@@ -2066,11 +2189,43 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.24.9] — 2026-06-24
+
+### Added
+- **`earning=yes|no` column on the hub dashboard** (direct to main): the proxy table says whether a proxy has earned, rather than leaving it to be inferred from a billable figure.
+- **`urnet-tools update -f` stops, updates and restarts non-interactively** (PR #125): the unattended path no longer needs a second command to bring the provider back.
+- **`[profit]` heartbeat and `[contract]` close utilization logging** (PR #126): a periodic profit line and a utilization figure on each contract close.
+
+### Changed
+- **HMAC migration deadline disclaimer** (direct to main): the releases that skipped the migration now carry it.
+
+---
+
+## [v3.23.0-fix.24.8] — 2026-06-23
+
+### Added
+- **Per-minute earning windows** (direct to main): `billable_1m`, `5m`, `15m` and `60m` are tracked separately, so a rate can be read without differencing two cumulative totals.
+- **Hub SQLite historical storage** (PR #123): the flat `hub.json`, rewritten in full on every report from every node, became a WAL-mode SQLite database. Each node's proxy list is stored per report as a compressed blob with seven-day retention.
+- **A five-minute report interval and timestamped status lines** (PR #123).
+
+### Fixed
+- **`paceMonitor` outlived warmup** (PR #122): the goroutine kept running after the warmup it was pacing had completed.
+
+---
+
 ## [v3.23.0-fix.24.7] — 2026-06-23
 
 ### Fixed
 - **Operator-curated proxies never give up on auth** (PR #119): File, internal, and direct proxies that exhaust `maxAuthFailures` now switch to a slow capped retry (5m → 10m → 15m with jitter) instead of going permanently offline. URL-sourced proxies retain the short leash — they give up and the `time.AfterFunc` requeue brings them back after 15 minutes.
 - **URL requeue decoupled from reload engine** (PR #120): Replaced the per-proxy `scheduleGiveUpRequeue` goroutine (15m sleep + cooldown map + trigger write + 30s recheck) with a single `time.AfterFunc` per proxy. Deleted the entire `proxyGiveUpCooldown` map/mutex/functions (~110 lines). `reload()` now acquires `proxy.lock` before proceeding, serializing hot-reloads with cross-process operations like `proxy remove-dead` and URL source fetches.
+
+---
+
+## [v3.23.0-fix.24.6] — 2026-06-23
+
+### Fixed
+- **`urnet-tools -v` reported the installer's version, not the binary's** (PR #117), and the dash-compatibility cleanup replaced `echo -e` with `printf` in the ramlogs override. The dash bashism lint now covers the deps and uninstall scripts too.
+- **`[traffic]` lines were logged for every proxy** (PR #118): only proxies serving clients print a per-proxy traffic line, so an idle box no longer fills its buffer with zeroes.
 
 ---
 
@@ -2112,6 +2267,31 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.24.4] — 2026-06-22
+
+### Fixed
+- **`proxy add-source` held the proxy lock across its SOCKS5 probe** (direct to main): the lock is released before the probe, so a slow or dead candidate cannot block every other proxy operation while it times out.
+
+---
+
+## [v3.23.0-fix.24.3] — 2026-06-22
+
+### Fixed
+- **The `[c]ping` suppression counters were per connection, so the rate limit did not hold** (direct to main): the counters moved to package level and are shared across connections. This is the same fix `v3.23.0-fix.24.2` shipped; the tag re-cuts it.
+
+---
+
+## [v3.23.0-fix.24.2] — 2026-06-22
+
+### Added
+- **`urnet-tools auth`** (direct to main): mint or check provider auth without going through the installer.
+
+### Fixed
+- **`[c]ping` logged on every ping** (direct to main): the line is rate-limited to one per five minutes with a suppressed count, and the suppression counters live at package level so all connections share them.
+- **Documentation for the 24 defaults** (direct to main): the performance tuning guide, the Docker examples with volumes and capabilities, and a quick-install one-liner.
+
+---
+
 ## [v3.23.0-fix.24.1] — 2026-06-21
 
 ### Fixed
@@ -2121,6 +2301,17 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 - **Docker build depends on test success**: `build-and-push` now `needs: test-and-lint`, saving ~3 min of Docker build compute on every failing PR.
 - **Go module cache restored**: Re-added `~/go/pkg/mod` cache alongside existing build cache. Saves ~30s per run.
 - **Test order optimized**: Go tests (with `-race`) now run before shell installer tests for faster failure feedback.
+
+---
+
+## [v3.23.0-fix.24] — 2026-06-21
+
+### Changed
+- **Default throughput ceilings raised** (PR #105): the transport buffer went from 1 to 16 messages, which removes the serialization between the protocol framer and the WebSocket writer, and the TCP and UDP maximum window went from 1 MiB to 4 MiB, which removes roughly a 160 Mbps per-connection ceiling at 50 ms RTT.
+- **Client-side auth rate limiter relaxed** (PR #107): the limiter's starting rate is higher, so a large pool no longer spends its first minutes queueing.
+- **`MultiRaceClientCount` scales with CPU count** (PR #108): 4 on one or two cores, 6 on three or four, 8 on five to eight, and 12 above that, instead of a hardcoded 2 that left 14 of 16 candidate providers idle during connection setup.
+- **`ContractFillFraction` follows observed RTT** (PR #109) instead of a fixed fraction.
+- **Packet dispatch is sharded across goroutines** (PR #110), so one busy proxy's traffic does not serialize behind another's.
 
 ---
 
