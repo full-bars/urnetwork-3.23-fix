@@ -368,3 +368,20 @@ func TestPasteEndHintNamesBothWindowsKeys(t *testing.T) {
 		}
 	}
 }
+
+// A Windows pty reaches the process as a pipe, so a char-device-only check
+// hides the prompt and the read blocks with nothing on screen.
+func TestStdinPromptWantedCoversTheWindowsPty(t *testing.T) {
+	if !stdinPromptWantedFor(os.ModeCharDevice, "") {
+		t.Fatal("a character device must get the prompt")
+	}
+	if !stdinPromptWantedFor(os.ModeNamedPipe, "xterm") {
+		t.Fatal("a pipe with a terminal in the environment must get the prompt")
+	}
+	if stdinPromptWantedFor(os.ModeNamedPipe, "") {
+		t.Fatal("a plain pipe in a script must not get the prompt")
+	}
+	if stdinPromptWantedFor(0, "") {
+		t.Fatal("a regular file must not get the prompt")
+	}
+}

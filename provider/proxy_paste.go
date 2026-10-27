@@ -355,6 +355,28 @@ func validColonForm(s string) bool {
 // pasteEndHint names the key that ends input. A Unix terminal sends EOF on
 // Ctrl+D, and so does a pty on Windows (Git Bash, MSYS), but a native Windows
 // console wants Ctrl+Z followed by Enter, so both are named there.
+// stdinPromptWanted reports whether the paste prompt should be printed. A
+// character device is the plain case. A pty on Windows (Git Bash, MSYS) is not
+// always a character device to Go, and suppressing the prompt there leaves the
+// read blocking with no hint at all, so a pipe with a terminal in the
+// environment counts too.
+func stdinPromptWanted() bool {
+	stat, err := os.Stdin.Stat()
+	if err != nil {
+		return false
+	}
+	return stdinPromptWantedFor(stat.Mode(), os.Getenv("TERM"))
+}
+
+// stdinPromptWantedFor is the decision without the process state, so the
+// Windows pty case can be pinned by a test on any host.
+func stdinPromptWantedFor(mode os.FileMode, term string) bool {
+	if mode&os.ModeCharDevice != 0 {
+		return true
+	}
+	return mode&os.ModeNamedPipe != 0 && term != ""
+}
+
 func pasteEndHint(goos string) string {
 	if goos == "windows" {
 		return "Ctrl+D (or Ctrl+Z then Enter in a Windows console)"
@@ -381,7 +403,7 @@ func proxyPaste(opts docopt.Opts) {
 		defer f.Close()
 		rawLines = readLines(f)
 	} else {
-		if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
+		if stdinPromptWanted() {
 			fmt.Fprintf(os.Stderr, "Paste proxies + source URLs, then %s when done:\n", pasteEndHint(runtime.GOOS))
 		}
 		rawLines = readLines(os.Stdin)
