@@ -2,14 +2,16 @@
 
 This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](/full-bars/urnetwork-3.23-fix/wiki/Installation).
 
-The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is no hosted one-line installer for FreeBSD: you fetch the installer script and run it, and it downloads the release for your architecture.
+The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is a hosted one-liner: `https://install.fullbars.xyz` detects FreeBSD and runs this repository's FreeBSD installer, and fetching the script straight from the mirror installs the same thing. Either way it downloads the release for your architecture.
 
 ## Before you start
 
-The base system has no `jq` and no `python3`. The installer works without them, but they change one thing: they are what lets it verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)). Install `curl`, `sudo` and, recommended, `jq`:
+FreeBSD's base system has no `jq` and no `python3`, and neither is required to install: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `jq` is still worth installing, because it is what lets the installer verify and install the Go `urnet-tools` binary (see [What the installer does](#what-the-installer-does)).
+
+Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `fetch(1)` is in the base system, so a bare host needs no downloader first, and `curl` and `wget` are optional.
 
 ```sh
-pkg install -y curl sudo jq
+pkg install -y sudo jq
 ```
 
 Run the installer as the account the provider should run as, with `sudo`, or as root with an explicit account (see [Service user](#service-user)).
@@ -23,7 +25,7 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh
 sudo sh urnet-install.sh install
 ```
 
-That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. The same script is what `https://install.fullbars.xyz` runs after it detects the platform, so either one installs the same thing:
+That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. `https://install.fullbars.xyz` detects the platform and runs the same script, so either one installs the same thing:
 
 ```sh
 fetch -qo urnet-install.sh https://install.fullbars.xyz && sudo sh urnet-install.sh install
@@ -48,19 +50,19 @@ The provider must not run as root, and the installer refuses to set that up. It 
 3. `logname`, the owner of the login session, unless it is `root`.
 4. `id -un`, the current user.
 
-If the result is `root` (a genuine root login with none of the above), the install stops before downloading anything:
+If the result is `root` (a genuine root login with none of the above), the install stops with exit status 1 before downloading anything:
 
 ```text
 refusing to install a service that runs as root
 ```
 
-From a root shell, name the account:
+From a root shell, name a non-root account that already exists:
 
 ```sh
 SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
-The account must already exist. Create one with `pw useradd urnet -m -s /bin/sh` if you want a dedicated user. All paths below come from that user's home directory, read from the passwd database (`getent passwd`, then `pw usershow`), not from `$HOME`, which under `sudo` can still be root's.
+The installer does not create the account. Create it first, once, with `pw useradd urnet -m -s /bin/sh`, or name any other existing non-root account. Nothing validates the name: the state directory comes from that user's home, read from the passwd database (`getent passwd`, then `pw usershow`), and when the account is missing that lookup falls back to `$HOME`, which under a root shell is root's. The install tree does not: it is at a fixed root-owned path.
 
 ### What the installer does
 

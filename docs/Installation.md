@@ -21,7 +21,7 @@ That one-liner reads `uname` and runs the installer for the host. On FreeBSD the
 fetch -qo - https://install.fullbars.xyz | sudo sh -s -- install
 ```
 
-From a root shell drop the `sudo`: `fetch -qo - https://install.fullbars.xyz | sh -s -- install`.
+From a root shell drop the `sudo`, but name a non-root account that already exists: the installer refuses to run the service as root, and it does not create the account for you. `SERVICE_USER_OVERRIDE` has to reach the `sh` on the right of the pipe: `fetch -qo - https://install.fullbars.xyz | SERVICE_USER_OVERRIDE=urnet sh -s -- install`.
 
 | Host | Installer it runs |
 |---|---|
@@ -54,7 +54,7 @@ curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 | Platform | Needs | Missing tools |
 |---|---|---|
 | Linux (systemd or OpenRC) | a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`) | installed through the host package manager: `apt`, `dnf`, `yum`, `zypper`, `pacman` or `apk`, with `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so `yum` is used there |
-| FreeBSD | `fetch`, and root or `sudo` to run the installer | nothing is installed for you and nothing needs to be; `curl` and `wget` are optional, and so is a JSON parser: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `sudo` is not in the base system, so either `pkg install -y sudo` and pipe the Quick Start one-liner into `sudo sh -s -- install`, or run that one-liner unchanged from a root shell (`su -`), where it needs no `sudo` |
+| FreeBSD | `fetch`, and root or `sudo` to run the installer | nothing is installed for you and nothing needs to be; `curl` and `wget` are optional, and so is a JSON parser: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system. `sudo` is not in the base system, so either `pkg install -y sudo` and pipe the Quick Start one-liner into `sudo sh -s -- install`, or run it from a root shell (`su -`), where it needs no `sudo` but must name an existing non-root account (`fetch -qo - https://install.fullbars.xyz \| SERVICE_USER_OVERRIDE=urnet sh -s -- install`), because the installer refuses to run the service as root and never creates that account |
 
 To keep the Linux installer from touching packages at all:
 
