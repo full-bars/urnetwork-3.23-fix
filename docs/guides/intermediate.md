@@ -9,7 +9,7 @@ This guide walks you through a complete provider setup with explanations at each
 ## 📋 Before you start
 
 You need:
-- A Linux, macOS, or Windows machine with a **wired ethernet connection** — the provider relays traffic in real time, so connection quality matters more than raw CPU/RAM. Avoid wireless backhaul, VPNs on the provider machine, carrier-grade NAT, or anything that adds latency or jitter between the provider and the peers it serves.
+- A Linux, macOS, Windows, or FreeBSD machine with a **wired ethernet connection** — the provider relays traffic in real time, so connection quality matters more than raw CPU/RAM. Avoid wireless backhaul, VPNs on the provider machine, carrier-grade NAT, or anything that adds latency or jitter between the provider and the peers it serves.
 - An **auth code** (generate one from the [web dashboard](https://app.ur.network), the [ur.io site](https://ur.io/), or the URnetwork mobile app)
 - Optional: a list of SOCKS5 proxies you want the provider to manage. Resource needs scale with proxy count — for very large proxy pools, allocate more RAM accordingly.
 
@@ -22,8 +22,11 @@ You need:
 |--------|----------|-----------------|
 | **Systemd** (Linux native) | Dedicated servers, maximum performance | Automatic on crash, manual for config changes |
 | **launchd** (macOS native) | Mac desktops/servers | Automatic on crash via `KeepAlive`; no auto-update yet |
+| **rc.d** (FreeBSD native) | FreeBSD servers | Standard service control; `onestart` is idempotent, and updates run from a cron entry |
 | **Native Windows service** | Windows desktops/servers | Starts at login (Task Scheduler logon task); auto-update on by default |
 | **Docker** | Containers, easy migration, isolated environment, any OS with Docker | Automatic with `--restart unless-stopped` |
+
+FreeBSD installs an `rc.d` service instead of a unit file; the [FreeBSD guide](../FreeBSD.md) covers the install, the sysctl tuning and updates.
 
 ---
 

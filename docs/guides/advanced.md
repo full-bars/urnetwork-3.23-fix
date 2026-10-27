@@ -59,7 +59,7 @@ Turbo raises per-connection throughput limits by scaling buffers:
 
 ### Multi-node setup
 
-Each server runs its own provider instance. Standard deployment (Linux shown; see [intermediate.md](intermediate.md) for the macOS/Windows/Docker installers):
+Each server runs its own provider instance. Standard deployment (Linux shown; see [intermediate.md](intermediate.md) for the macOS, Windows, FreeBSD and Docker installers):
 
 ```sh
 # Per server — same steps:
