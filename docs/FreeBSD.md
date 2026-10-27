@@ -21,6 +21,8 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh
 sudo sh urnet-install.sh install
 ```
 
+> **Upgrading from an install made before the tree moved to `/usr/local/libexec`?** Stop the service first (`sudo service urnetwork onestop`). The installer rewrites the `rc.d` script, and a provider still running from the old per-user tree does not match the new script's pid, argv and pidfile checks, so the install can leave a second provider running. The state directory `~/.urnetwork` is untouched.
+
 That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. The same script is what `https://install.fullbars.xyz` runs after it detects the platform, so either one installs the same thing:
 
 ```sh
