@@ -74,17 +74,16 @@ Then load it:
 urnet-tools proxy add ~/proxies.txt
 ```
 
-`proxy paste` takes the same lines from stdin or a file and normalizes them on
-the way in:
+`urnet-tools proxy paste` is interactive: run it, paste the lines at the prompt,
+then press Ctrl+D. It normalizes them on the way in and reloads the provider, so
+there is no separate `proxy refresh` step:
 
 ```sh
-cat ~/proxies.txt | urnet-tools proxy paste
-urnet-tools proxy paste --file=~/proxies.txt
+urnet-tools proxy paste
 ```
 
-Use it when the list streams straight from a pipe or another tool and you would
-rather not manage an intermediate file; `proxy add` stays the plain path for a
-file already on disk.
+Use it when you have the list in hand and would rather paste it than save a file;
+`proxy add` stays the plain path for a file already on disk.
 
 ### 4. Start and verify
 

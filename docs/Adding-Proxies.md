@@ -35,19 +35,21 @@ urnet-tools proxy refresh --force
 
 ### Pasting instead of adding
 
-`proxy paste` accepts the same lines from stdin or a file, normalizes the
-formats, adds them, and reloads the provider in one step, so no separate
-`proxy refresh` is needed:
+`urnet-tools proxy paste` is interactive: run it, paste your lines at the
+prompt, then press Ctrl+D. It normalizes the formats, adds them and reloads the
+provider in one step, so no separate `proxy refresh` is needed.
 
 ```text
-cat ~/proxies.txt | urnet-tools proxy paste
-urnet-tools proxy paste --file=~/proxies.txt
+$ urnet-tools proxy paste
+Paste proxies + source URLs, then Ctrl+D when done:
+192.0.2.45:1081:proxyuser:proxypass
+198.51.100.78:1081
+^D
 ```
 
-Choose it when the list arrives from a pipe or another tool and you would rather
-not write a file first. A pasted line that is an `http(s)://` URL is fetched as a
-proxy list rather than added as one proxy. Like `proxy add`, paste is
-additive-only: it never removes proxies already loaded.
+A pasted line that is an `http(s)://` URL is fetched as a proxy list rather than
+added as one proxy. Like `proxy add`, paste is additive-only: it never removes
+proxies already loaded.
 
 ## Installing the tools
 
