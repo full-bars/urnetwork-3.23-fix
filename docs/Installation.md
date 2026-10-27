@@ -48,7 +48,7 @@ curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 | Platform | Needs | Missing tools |
 |---|---|---|
 | Linux (systemd or OpenRC) | a downloader (`curl` or `wget`) and a JSON parser (`jq` or `python3`) | installed through the host package manager: `apt`, `dnf`, `yum`, `zypper`, `pacman` or `apk`, with `sudo` when you are not root. Amazon Linux 2 has no `dnf`, so `yum` is used there |
-| FreeBSD | `curl`, which is not in the base system | nothing is installed for you; `pkg install -y curl` first if the host is bare. A JSON parser is optional: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system |
+| FreeBSD | `fetch`, which is in the base system on standard 13/14 installs | nothing is installed for you and nothing needs to be; `curl` and `wget` are optional. A JSON parser is optional: the release tag is read with `jq`, then `python3`, then a `sed` extraction that needs only the base system |
 
 To keep the Linux installer from touching packages at all:
 

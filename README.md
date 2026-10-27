@@ -69,7 +69,8 @@ curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 **🐡 FreeBSD (rc.d)**
 
 ```sh
-curl -fSsL https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh | sudo sh -s -- install
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && \
+  sudo sh urnet-install.sh install
 ```
 
 The FreeBSD installer downloads the provider and installs an `rc.d` service. See [docs/FreeBSD.md](docs/FreeBSD.md).

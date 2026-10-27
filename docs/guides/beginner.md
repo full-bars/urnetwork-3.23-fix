@@ -33,11 +33,12 @@ curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
 
 **FreeBSD:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-freebsd.sh | sudo sh -s -- install
+fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && \
+  sudo sh urnet-install.sh install
 ```
 
 > [!NOTE]
-> `curl` is not in the FreeBSD base system. On a bare host run `pkg install -y curl` first, or fetch the script with `fetch` and run it locally. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
 
 **Windows (PowerShell, no admin required):**
 ```powershell
