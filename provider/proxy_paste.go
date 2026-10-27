@@ -12,6 +12,7 @@ import (
 	"os/exec"
 	"os/signal"
 	"regexp"
+	"runtime"
 	"strconv"
 	"strings"
 	"syscall"
@@ -351,6 +352,16 @@ func validColonForm(s string) bool {
 	return len(parts) >= 3
 }
 
+// pasteEndHint names the key that ends input. A Unix terminal sends EOF on
+// Ctrl+D, and so does a pty on Windows (Git Bash, MSYS), but a native Windows
+// console wants Ctrl+Z followed by Enter, so both are named there.
+func pasteEndHint(goos string) string {
+	if goos == "windows" {
+		return "Ctrl+D (or Ctrl+Z then Enter in a Windows console)"
+	}
+	return "Ctrl+D"
+}
+
 func proxyPaste(opts docopt.Opts) {
 	// File-backed providers (Workflow A: --proxy_file=<X>) re-read their
 	// source file on every reload, so pasted entries must land in THAT file,
@@ -371,7 +382,7 @@ func proxyPaste(opts docopt.Opts) {
 		rawLines = readLines(f)
 	} else {
 		if stat, _ := os.Stdin.Stat(); (stat.Mode() & os.ModeCharDevice) != 0 {
-			fmt.Fprintln(os.Stderr, "Paste proxies + source URLs, then Ctrl+D when done:")
+			fmt.Fprintf(os.Stderr, "Paste proxies + source URLs, then %s when done:\n", pasteEndHint(runtime.GOOS))
 		}
 		rawLines = readLines(os.Stdin)
 	}
