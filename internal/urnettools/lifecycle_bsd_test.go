@@ -129,8 +129,34 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `chown root:wheel "$logdir"`) {
 		t.Error("script does not keep the log dir root-owned")
 	}
-	if !strings.Contains(script, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
-		t.Error("script does not pre-create the log file as a regular file owned by the service user")
+	// The log has to survive a restart: install(1) truncates its target, so
+	// the file is created only when it is missing, and a creation that fails
+	// must stop the start instead of being swallowed. Pinning the command
+	// alone would pass while every restart erased the previous run.
+	scriptLines := strings.Split(script, "\n")
+	logGuard, logCreate := -1, -1
+	for i, line := range scriptLines {
+		if strings.Contains(line, `if [ ! -e "$logdir/stdout.log" ]; then`) {
+			logGuard = i
+		}
+		if strings.Contains(line, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
+			logCreate = i
+		}
+	}
+	if logGuard < 0 {
+		t.Fatal(`script creates stdout.log unconditionally; a restart would truncate the previous run`)
+	}
+	if logCreate < 0 {
+		t.Fatal(`script does not pre-create the log file as a regular file owned by the service user`)
+	}
+	if logCreate < logGuard || logCreate-logGuard > 3 {
+		t.Errorf("stdout.log creation sits outside the missing-file guard (guard line %d, install line %d)", logGuard, logCreate)
+	}
+	if !strings.Contains(scriptLines[logCreate], "|| return 1") {
+		t.Errorf("a failed stdout.log creation does not fail the start: %q", strings.TrimSpace(scriptLines[logCreate]))
+	}
+	if strings.Contains(scriptLines[logCreate], "|| true") {
+		t.Errorf("stdout.log creation failure is swallowed: %q", strings.TrimSpace(scriptLines[logCreate]))
 	}
 	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
 		t.Error("script does not refuse a symlinked log file")
