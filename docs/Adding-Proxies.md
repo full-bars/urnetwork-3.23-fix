@@ -33,6 +33,22 @@ refuse to load (a warmup lockout). Add `--force` to bypass it:
 urnet-tools proxy refresh --force
 ```
 
+### Pasting instead of adding
+
+`proxy paste` accepts the same lines from stdin or a file, normalizes the
+formats, adds them, and reloads the provider in one step, so no separate
+`proxy refresh` is needed:
+
+```text
+cat ~/proxies.txt | urnet-tools proxy paste
+urnet-tools proxy paste --file=~/proxies.txt
+```
+
+Choose it when the list arrives from a pipe or another tool and you would rather
+not write a file first. A pasted line that is an `http(s)://` URL is fetched as a
+proxy list rather than added as one proxy. Like `proxy add`, paste is
+additive-only: it never removes proxies already loaded.
+
 ## Installing the tools
 
 Two CLIs exist. `urnet-tools` runs alongside a provider installed as a process

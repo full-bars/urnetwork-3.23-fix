@@ -74,6 +74,18 @@ Then load it:
 urnet-tools proxy add ~/proxies.txt
 ```
 
+`proxy paste` takes the same lines from stdin or a file and normalizes them on
+the way in:
+
+```sh
+cat ~/proxies.txt | urnet-tools proxy paste
+urnet-tools proxy paste --file=~/proxies.txt
+```
+
+Use it when the list streams straight from a pipe or another tool and you would
+rather not manage an intermediate file; `proxy add` stays the plain path for a
+file already on disk.
+
 ### 4. Start and verify
 
 ```sh
