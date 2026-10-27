@@ -172,7 +172,8 @@ func (self *extenderDnsForwarder) admit(source string, now time.Time) error {
 	return nil
 }
 
-// Releases the in-flight slot of a source once its answer is written.
+// Releases the in-flight slot of a source before its answer goes on the wire.
+// A second release for the same query is harmless: the slot is already clear.
 func (self *extenderDnsForwarder) release(source string) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -329,6 +330,11 @@ func (self *extenderDnsForwarder) answerStatus(
 // Writes one answer on the carrier socket, which the translation reads from
 // and writes to concurrently.
 func (self *extenderDnsForwarder) writeAnswer(query *extenderDnsQuery, answerBytes []byte) {
+	// Release before the write. The client can send its next query the moment
+	// the answer is on the wire, so releasing afterwards refused a client that
+	// answered and asked again quickly as "already has a query in flight". The
+	// deferred release in resolveQuery still covers the paths that return early.
+	self.release(query.source)
 	if _, err := self.packetConn.WriteTo(answerBytes, query.addr); err != nil {
 		self.server.reportError("dns answer", err)
 	}

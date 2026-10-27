@@ -462,24 +462,30 @@ func TestExtenderForwarderRefillsBothBucketsBeforeTakingEither(t *testing.T) {
 	}
 }
 
-// recordingPacketConn stands in for the carrier socket, so a forwarder test
+// dnsSlotProbePacketConn stands in for the carrier socket, so a forwarder test
 // can drive sources the loopback does not have.
-type recordingPacketConn struct {
+type dnsSlotProbePacketConn struct {
 	answers chan []byte
+	// onWrite runs at the moment an answer is handed to the socket, which is
+	// where a test can observe state the client can already see.
+	onWrite func()
 }
 
-func newRecordingPacketConn() *recordingPacketConn {
-	return &recordingPacketConn{
+func newRecordingPacketConn() *dnsSlotProbePacketConn {
+	return &dnsSlotProbePacketConn{
 		answers: make(chan []byte, 16),
 	}
 }
 
 // The forwarder never reads the socket; the translation owns that side.
-func (self *recordingPacketConn) ReadFrom([]byte) (int, net.Addr, error) {
+func (self *dnsSlotProbePacketConn) ReadFrom([]byte) (int, net.Addr, error) {
 	return 0, nil, net.ErrClosed
 }
 
-func (self *recordingPacketConn) WriteTo(answerBytes []byte, _ net.Addr) (int, error) {
+func (self *dnsSlotProbePacketConn) WriteTo(answerBytes []byte, _ net.Addr) (int, error) {
+	if self.onWrite != nil {
+		self.onWrite()
+	}
 	select {
 	case self.answers <- append([]byte(nil), answerBytes...):
 	default:
@@ -487,23 +493,23 @@ func (self *recordingPacketConn) WriteTo(answerBytes []byte, _ net.Addr) (int, e
 	return len(answerBytes), nil
 }
 
-func (self *recordingPacketConn) LocalAddr() net.Addr {
+func (self *dnsSlotProbePacketConn) LocalAddr() net.Addr {
 	return &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 53}
 }
 
-func (self *recordingPacketConn) Close() error {
+func (self *dnsSlotProbePacketConn) Close() error {
 	return nil
 }
 
-func (self *recordingPacketConn) SetDeadline(time.Time) error {
+func (self *dnsSlotProbePacketConn) SetDeadline(time.Time) error {
 	return nil
 }
 
-func (self *recordingPacketConn) SetReadDeadline(time.Time) error {
+func (self *dnsSlotProbePacketConn) SetReadDeadline(time.Time) error {
 	return nil
 }
 
-func (self *recordingPacketConn) SetWriteDeadline(time.Time) error {
+func (self *dnsSlotProbePacketConn) SetWriteDeadline(time.Time) error {
 	return nil
 }
 
@@ -624,4 +630,50 @@ func TestExtenderForwarderNeverBlocksTheDnsCarrier(t *testing.T) {
 		t.Fatal(err)
 	}
 	response.Body.Close()
+}
+
+// A client can answer and ask again the moment the answer is on the wire, so
+// the in-flight slot has to be clear by then. Releasing it after the write
+// refused that client as "already has a query in flight" instead of letting
+// the rate limit decide.
+func TestExtenderForwarderReleasesTheInFlightSlotBeforeTheAnswer(t *testing.T) {
+	settings := DefaultExtenderSettings()
+	settings.DnsMaxQueryBurstPerSource = 2
+	settings.DnsMaxQueryRatePerSource = 1
+	settings.DnsMaxQueryBurst = 4
+	settings.DnsMaxQueryRate = 1
+	settings.DnsForward = func(context.Context, dnsmessage.Type, string) ([]byte, bool) {
+		return newTestDnsAnswer(t, testForwardName, dnsmessage.TypeA, netip.MustParseAddr("192.0.2.12"), 1), true
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	server := NewExtenderServer(ctx, nil, nil, nil, nil, settings)
+	defer server.Close()
+
+	const source = "192.0.2.21"
+	forwarder := &extenderDnsForwarder{
+		server:       server,
+		sourceStates: map[string]*extenderDnsSource{},
+	}
+	probe := newRecordingPacketConn()
+	heldAtWrite := true
+	probe.onWrite = func() {
+		forwarder.stateLock.Lock()
+		state, ok := forwarder.sourceStates[source]
+		heldAtWrite = ok && state.inFlight
+		forwarder.stateLock.Unlock()
+	}
+	forwarder.packetConn = probe
+
+	if err := forwarder.admit(source, time.Now()); err != nil {
+		t.Fatalf("the query was refused: %v", err)
+	}
+	forwarder.resolveQuery(&extenderDnsQuery{
+		queryBytes: newTestDnsQuery(t, 0x7777, testForwardName, dnsmessage.TypeA),
+		addr:       &net.UDPAddr{IP: net.ParseIP("192.0.2.21"), Port: 5353},
+		source:     source,
+	})
+	if heldAtWrite {
+		t.Fatal("the in-flight slot was still held when the answer was written")
+	}
 }
