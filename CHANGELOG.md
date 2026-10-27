@@ -375,6 +375,26 @@ _Second pre-release of the v33 line. It adds the receive-window advertisement th
 - **The container start scripts treat exit 75 as a planned restart** (<https://github.com/full-bars/urnetwork-3.23-fix/pull/803>): `start_stable.sh`, `start_nightly.sh`, `start_jwt.sh` and the provider loop of `pelican_panel.sh` counted 75 as a crash, which counted toward the three-crash JWT clear and slept 60 seconds. It now restarts after 5 seconds and leaves the JWT alone. Every other status is unchanged.
 - **The hourly reconnect pulse is skipped during a backend outage**: once an hour every stalled transport had its backoff reset, which in an outage sent every failing proxy back into it within the same half minute. The pulse is now skipped, with one `[pulse] skipped hourly reset (backend degraded)` line, while the backend is degraded or the connect budget was throttled within the last 10 minutes, and the next hour tries again. When the backend is healthy, or with `URNETWORK_GOVERN=off`, nothing changes.
 
+## [v3.23.0-fix.32.11-rc1]
+
+_Pre-release tag, not a stable release._
+
+### Added
+
+- **Backend-outage protection is enforced by default** ([#824](https://github.com/full-bars/urnetwork-3.23-fix/pull/824), [#825](https://github.com/full-bars/urnetwork-3.23-fix/pull/825), [#826](https://github.com/full-bars/urnetwork-3.23-fix/pull/826), [#834](https://github.com/full-bars/urnetwork-3.23-fix/pull/834)): short-lived sessions back off, a shared attempt budget limits reconnects during a degraded backend, and failed dials stop after one round. The verdict uses the host's learned baseline; recovery scouts favor proxies with a stronger earnings history. `shadow` and `off` remain available as overrides.
+- **Resend amplification is measured and bounded** ([#836](https://github.com/full-bars/urnetwork-3.23-fix/pull/836), [#837](https://github.com/full-bars/urnetwork-3.23-fix/pull/837), [#838](https://github.com/full-bars/urnetwork-3.23-fix/pull/838)): first sends and resends have separate counters, and a token budget defers excess resends without charging a send that did not happen.
+- **Stalled providers recover under OpenRC and containers** ([#815](https://github.com/full-bars/urnetwork-3.23-fix/pull/815), [#816](https://github.com/full-bars/urnetwork-3.23-fix/pull/816), [#817](https://github.com/full-bars/urnetwork-3.23-fix/pull/817)): where the supervisor restarts exit 75, a stalled provider records its restart cap before exiting; containers must prove the state write is durable to avoid an unthrottled restart loop.
+- **Outage status is observable** ([#830](https://github.com/full-bars/urnetwork-3.23-fix/pull/830), [#839](https://github.com/full-bars/urnetwork-3.23-fix/pull/839), [#844](https://github.com/full-bars/urnetwork-3.23-fix/pull/844), [#846](https://github.com/full-bars/urnetwork-3.23-fix/pull/846)): health metrics, budget and memory-pressure logs, speed-test accounting and alert rules expose the protection's decisions and reconnect cost.
+
+### Fixed
+
+- **Automatic proxy removal holds during backend outages** ([#827](https://github.com/full-bars/urnetwork-3.23-fix/pull/827), [#842](https://github.com/full-bars/urnetwork-3.23-fix/pull/842)): reaping, give-up eviction and URL cleanup stand down while the backend is degraded. Saved client identities are not removed for timeouts; automatic identity eviction is off unless explicitly enabled and requires repeated platform refusals while healthy ([#829](https://github.com/full-bars/urnetwork-3.23-fix/pull/829), [#838](https://github.com/full-bars/urnetwork-3.23-fix/pull/838)).
+- **Startup failures no longer throttle a healthy recovery** ([#847](https://github.com/full-bars/urnetwork-3.23-fix/pull/847)): the first 90 seconds are excluded from the outage verdict and budget cuts, and startup samples cannot seed the learned baseline.
+
+### Security
+
+- **The CFAA blocklist refreshed** ([#848](https://github.com/full-bars/urnetwork-3.23-fix/pull/848)): 40,588 to 38,548 IPv4 entries and 569 to 562 IPv6 entries. Data only.
+
 ## [v3.23.0-fix.32.10]
 
 ### Added
@@ -628,6 +648,36 @@ _Second pre-release of the v33 line. It adds the receive-window advertisement th
 
 ### Other
 - **H3 + miner migration plan (PR #639)**: added `MIGRATION_PLAN.md` and `scripts/h3-workspace.sh`. No behavior changes.
+
+## [v3.23.0-fix.31.9-rc1]
+
+_Pre-release tag._
+
+### Added
+
+- **The heartbeat identifies the build and reports message-pool health** ([#592](https://github.com/full-bars/urnetwork-3.23-fix/pull/592), [#595](https://github.com/full-bars/urnetwork-3.23-fix/pull/595)): `[health][build]` leads each heartbeat, and the pool line reports whether it is warming, healthy or accumulating buffers that may indicate a leak.
+- **`urnet-tools proxy ids` lists client ids by proxy** ([#593](https://github.com/full-bars/urnetwork-3.23-fix/pull/593)).
+
+### Fixed
+
+- **RAM logs retain their history and `urnet-tools logs` follows the active buffer** ([#596](https://github.com/full-bars/urnetwork-3.23-fix/pull/596), [#597](https://github.com/full-bars/urnetwork-3.23-fix/pull/597)): the trim now reads the file it rewrites instead of replacing retained content with zero bytes, and log discovery recognizes RAM logging enabled through the provider environment.
+- **Repeated transport errors no longer flood the RAM log** ([#598](https://github.com/full-bars/urnetwork-3.23-fix/pull/598)): TLS handshake timeouts and audit-send errors are rate-limited by failure class.
+- **Provider discovery rejects unrelated sibling services** ([#599](https://github.com/full-bars/urnetwork-3.23-fix/pull/599)): when `ExecStart` is unreadable, a matching service name alone is no longer enough; a provider state directory is also required.
+- **Status retrieval reports when both backing calls fail** ([#590](https://github.com/full-bars/urnetwork-3.23-fix/pull/590)); a failed reload or empty proxy source also appears in service status ([#591](https://github.com/full-bars/urnetwork-3.23-fix/pull/591)).
+
+## [v3.23.0-fix.31.8-rc1]
+
+_Pre-release tag._
+
+### Added
+
+- **Provider version detection survives trimmed build metadata** ([#579](https://github.com/full-bars/urnetwork-3.23-fix/pull/579), [#580](https://github.com/full-bars/urnetwork-3.23-fix/pull/580), [#584](https://github.com/full-bars/urnetwork-3.23-fix/pull/584), [#585](https://github.com/full-bars/urnetwork-3.23-fix/pull/585)): release builds carry a version stamp, the control socket reports the running version, and unattended update prompts record the current version with a binary fallback when needed.
+
+### Fixed
+
+- **An unreliable transfer lane no longer stalls the whole send sequence** ([#586](https://github.com/full-bars/urnetwork-3.23-fix/pull/586)): when its resend flight is full, traffic can use an available reliable lane; unreliable acknowledgements no longer skew the RTT estimate, and ICE UDP sockets receive a larger buffer.
+- **Go pseudo-versions with build suffixes no longer mask the provider version stamp** ([#587](https://github.com/full-bars/urnetwork-3.23-fix/pull/587)).
+- **The unattended update timer states its non-interactive intent** ([#583](https://github.com/full-bars/urnetwork-3.23-fix/pull/583)): the unit passes `-y` to `urnet-tools update`.
 
 ## [v3.23.0-fix.31.3]
 
