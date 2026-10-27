@@ -5,11 +5,13 @@ name: SN25 live numbers
 # When the values are unchanged the job writes nothing and makes no commit.
 #
 # GitHub runs scheduled jobs best effort and can start them hours late or skip
-# them, so there are three triggers: two off-peak schedules (not the start of
-# the hour, which GitHub names as the busiest time), a run whenever main gets a
-# push, and a manual run. The commit this job makes uses the workflow token, and
-# pushes made with that token do not start new runs, so the push trigger cannot
-# loop.
+# them, so the hourly request below is a request: the published table can be
+# several hours stale, and the last-changed line on it is the freshness signal,
+# not the cron. There are three triggers: two off-peak schedules (not the start
+# of the hour, which GitHub names as the busiest time), a run whenever main gets
+# a push, and a manual run. The commit this job makes uses the workflow token,
+# and pushes made with that token do not start new runs, so the push trigger
+# cannot loop.
 
 on:
   schedule:
