@@ -636,19 +636,6 @@ _Pre-release tag, not a stable release._
 
 ---
 
-## [v3.23.0-fix.31.4]
-
-### Fixed
-- **Flight window no longer grows back on a resend timeout (PR #640)**: a timeout halved the unreliable-flight window, but the old release path handed the timed-out item to the acknowledge path, which grew the window back on the same event. Timeouts now only shrink the window; delivery evidence is the only thing that grows it. On lossy routes the congestion reduction sticks and recovery is consistent.
-- **The receiver no longer acknowledges items it can still evict (PR #641)**: held items were acknowledged on arrival and then quietly evicted when a full hold had to admit an earlier arrival. The sender learned of the withdrawal only after two acknowledgement-tail probes and the full selective-ack lease. The receive hold now commits a prefix that no later arrival can evict; tentative items above the boundary are held unacknowledged and evicted at zero cost, so a removal costs the sender a resend instead of a stalled lease.
-
-### Changed
-- **CFAA blocklist refreshed (PR #637)**: content-filtering ranges synced from upstream.
-- **Hub deprecation notice (PR #635, #636)**: release notes carry a CAUTION callout. The hub is removed in the next release series.
-
-### Other
-- **H3 + miner migration plan (PR #639)**: added `MIGRATION_PLAN.md` and `scripts/h3-workspace.sh`. No behavior changes.
-
 ## [v3.23.0-fix.31.9-rc1]
 
 _Pre-release tag._
@@ -678,6 +665,19 @@ _Pre-release tag._
 - **An unreliable transfer lane no longer stalls the whole send sequence** ([#586](https://github.com/full-bars/urnetwork-3.23-fix/pull/586)): when its resend flight is full, traffic can use an available reliable lane; unreliable acknowledgements no longer skew the RTT estimate, and ICE UDP sockets receive a larger buffer.
 - **Go pseudo-versions with build suffixes no longer mask the provider version stamp** ([#587](https://github.com/full-bars/urnetwork-3.23-fix/pull/587)).
 - **The unattended update timer states its non-interactive intent** ([#583](https://github.com/full-bars/urnetwork-3.23-fix/pull/583)): the unit passes `-y` to `urnet-tools update`.
+
+## [v3.23.0-fix.31.4]
+
+### Fixed
+- **Flight window no longer grows back on a resend timeout (PR #640)**: a timeout halved the unreliable-flight window, but the old release path handed the timed-out item to the acknowledge path, which grew the window back on the same event. Timeouts now only shrink the window; delivery evidence is the only thing that grows it. On lossy routes the congestion reduction sticks and recovery is consistent.
+- **The receiver no longer acknowledges items it can still evict (PR #641)**: held items were acknowledged on arrival and then quietly evicted when a full hold had to admit an earlier arrival. The sender learned of the withdrawal only after two acknowledgement-tail probes and the full selective-ack lease. The receive hold now commits a prefix that no later arrival can evict; tentative items above the boundary are held unacknowledged and evicted at zero cost, so a removal costs the sender a resend instead of a stalled lease.
+
+### Changed
+- **CFAA blocklist refreshed (PR #637)**: content-filtering ranges synced from upstream.
+- **Hub deprecation notice (PR #635, #636)**: release notes carry a CAUTION callout. The hub is removed in the next release series.
+
+### Other
+- **H3 + miner migration plan (PR #639)**: added `MIGRATION_PLAN.md` and `scripts/h3-workspace.sh`. No behavior changes.
 
 ## [v3.23.0-fix.31.3]
 
