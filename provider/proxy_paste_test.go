@@ -370,18 +370,25 @@ func TestPasteEndHintNamesBothWindowsKeys(t *testing.T) {
 }
 
 // A Windows pty reaches the process as a pipe, so a char-device-only check
-// hides the prompt and the read blocks with nothing on screen.
+// hides the prompt and the read blocks with nothing on screen. That pipe case
+// is Windows-only: an interactive unix shell exports TERM, and a script piped
+// from it must not be mistaken for an interactive session.
 func TestStdinPromptWantedCoversTheWindowsPty(t *testing.T) {
-	if !stdinPromptWantedFor(os.ModeCharDevice, "") {
-		t.Fatal("a character device must get the prompt")
+	tests := []struct {
+		name string
+		mode os.FileMode
+		term string
+		goos string
+		want bool
+	}{
+		{"windows pty as a pipe with TERM", os.ModeNamedPipe, "xterm", "windows", true},
+		{"unix pipe with TERM from the shell", os.ModeNamedPipe, "xterm", "linux", false},
+		{"unix character device", os.ModeCharDevice, "", "linux", true},
+		{"regular file", 0, "", "linux", false},
 	}
-	if !stdinPromptWantedFor(os.ModeNamedPipe, "xterm") {
-		t.Fatal("a pipe with a terminal in the environment must get the prompt")
-	}
-	if stdinPromptWantedFor(os.ModeNamedPipe, "") {
-		t.Fatal("a plain pipe in a script must not get the prompt")
-	}
-	if stdinPromptWantedFor(0, "") {
-		t.Fatal("a regular file must not get the prompt")
+	for _, tt := range tests {
+		if got := stdinPromptWantedFor(tt.mode, tt.term, tt.goos); got != tt.want {
+			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+		}
 	}
 }

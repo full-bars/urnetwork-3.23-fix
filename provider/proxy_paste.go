@@ -365,16 +365,18 @@ func stdinPromptWanted() bool {
 	if err != nil {
 		return false
 	}
-	return stdinPromptWantedFor(stat.Mode(), os.Getenv("TERM"))
+	return stdinPromptWantedFor(stat.Mode(), os.Getenv("TERM"), runtime.GOOS)
 }
 
 // stdinPromptWantedFor is the decision without the process state, so the
-// Windows pty case can be pinned by a test on any host.
-func stdinPromptWantedFor(mode os.FileMode, term string) bool {
+// Windows pty case can be pinned by a test on any host. Only Windows hands a
+// pty to the process as a pipe; on unix a pipe means a scripted run, which has
+// to stay non-interactive even though an interactive shell exports TERM.
+func stdinPromptWantedFor(mode os.FileMode, term string, goos string) bool {
 	if mode&os.ModeCharDevice != 0 {
 		return true
 	}
-	return mode&os.ModeNamedPipe != 0 && term != ""
+	return goos == "windows" && mode&os.ModeNamedPipe != 0 && term != ""
 }
 
 func pasteEndHint(goos string) string {
