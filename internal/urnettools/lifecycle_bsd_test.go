@@ -161,6 +161,36 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
 		t.Error("script does not refuse a symlinked log file")
 	}
+	// The symlink check alone lets two shapes through to daemon(8), which
+	// opens the path as root: a fifo blocks that open for good, and a hard link
+	// makes the log write through to an aliased file. The check has to ask for
+	// the file type, the link count and the owner, and it has to run before the
+	// missing-file guard decides whether anything is created.
+	statLine := -1
+	for i, line := range scriptLines {
+		if !strings.Contains(line, "stat -f ") {
+			continue
+		}
+		statLine = i
+		if !strings.Contains(line, `'%HT %l %Su'`) {
+			t.Errorf("stdout.log check does not ask stat for the file type, link count and owner: %q", strings.TrimSpace(line))
+		}
+		if !strings.Contains(line, `!= "Regular File 1 ${urnetwork_user}"`) {
+			t.Errorf("stdout.log check does not require a single-link regular file owned by the service user: %q", strings.TrimSpace(line))
+		}
+	}
+	if statLine < 0 {
+		t.Fatal(`script keeps an existing stdout.log without checking its type; a fifo or hard link passes the symlink check`)
+	}
+	if statLine > logGuard {
+		t.Errorf("the stdout.log type check (line %d) runs after creation (line %d); it has to decide first", statLine, logGuard)
+	}
+	if statLine+1 >= len(scriptLines) || !strings.Contains(scriptLines[statLine+1], `rm -f "$logdir/stdout.log"`) {
+		t.Error("a stdout.log that fails the type check is not removed before daemon(8) opens it")
+	}
+	if !strings.Contains(scriptLines[statLine+1], "|| return 1") {
+		t.Error("a failed removal of the unsafe stdout.log does not fail the start")
+	}
 	// $flags must reach the provider expanded, not as a literal ${...} or a
 	// bare backslash followed by the value.
 	if !strings.Contains(script, `provide $urnetwork_flags`) {

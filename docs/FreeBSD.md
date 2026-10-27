@@ -143,7 +143,11 @@ tail -f /var/log/urnetwork/stdout.log
 - **`-p`** writes the pid of the provider (the child), not of the `daemon` process, so `stop` and `status` act on the provider itself.
 - **`-u`** runs the child as the service user and sets its `HOME`, `USER` and `SHELL`, which is why the state directory lands in that user's home.
 
-The log directory is created and handed to the service user on every start.
+The log directory is set back to `root:wheel` mode `0755` on every start, so the
+service user cannot rename it aside. `stdout.log` is created on the first start
+as a regular file owned by the service user and kept across restarts; a symlink
+is refused outright, and a fifo, a hard link or a file owned by anyone else is
+replaced with a fresh one before `daemon(8)` opens it.
 
 ## Updates and auto-update
 
