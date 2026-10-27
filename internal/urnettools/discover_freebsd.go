@@ -175,16 +175,24 @@ func installedBSDProvider() string {
 }
 
 // bsdProviderCandidates are the install paths bsdInstallerPaths installs to,
-// in priority order. Kept as a pure function of the home directory so the
-// installer script and this lookup cannot drift apart silently.
+// in priority order, so the installer script and this lookup cannot drift
+// apart silently.
+//
+// The current installer puts the binary in a root-owned tree at
+// /usr/local/libexec/urnetwork-provider, which is not derived from a home
+// directory at all, so it is listed first and survives an unknown home. The
+// older per-user location stays as a fallback: an operator upgrading from an
+// install made before the tree moved still has a provider there until the
+// installer is re-run.
 func bsdProviderCandidates(home string) []string {
+	candidates := []string{"/usr/local/libexec/urnetwork-provider/bin/urnetwork"}
 	if home == "" {
-		return nil
+		return candidates
 	}
-	return []string{
+	return append(candidates,
 		filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork"),
 		filepath.Join(home, ".urnetwork", "urnetwork"),
-	}
+	)
 }
 
 // bsdStateDir is the provider state dir on FreeBSD.
