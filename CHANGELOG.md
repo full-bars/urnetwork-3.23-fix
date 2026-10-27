@@ -666,6 +666,45 @@ _Pre-release tag._
 - **Go pseudo-versions with build suffixes no longer mask the provider version stamp** ([#587](https://github.com/full-bars/urnetwork-3.23-fix/pull/587)).
 - **The unattended update timer states its non-interactive intent** ([#583](https://github.com/full-bars/urnetwork-3.23-fix/pull/583)): the unit passes `-y` to `urnet-tools update`.
 
+## [v3.23.0-fix.31.6-rc1] — 2026-09-10
+
+_Pre-release tag._
+
+### Added
+
+- **A unified v2 configuration schema** ([#575](https://github.com/full-bars/urnetwork-3.23-fix/pull/575)): the provider becomes the single source of truth for its settings. A v2 envelope, backward compatible with v1, records where each value came from (socket, environment, pending queue, legacy file, default), a `status` socket command returns all of it with that provenance, and `urnet-tools config` renders it as a table or JSON. Persistence syncs the file and its parent directory.
+- **Socket hardening: peer credentials, size limits and version negotiation** ([#573](https://github.com/full-bars/urnetwork-3.23-fix/pull/573)): `SO_PEERCRED` checks the connecting UID against the provider's on Linux, a five-second per-line read deadline closes the slowloris shape, requests are capped at 64 KiB and values at 4 KiB, and a client speaking a newer protocol version is rejected instead of parsed hopefully.
+- **A phased startup banner with one ready summary** ([#571](https://github.com/full-bars/urnetwork-3.23-fix/pull/571)): startup prints in phases and closes with a single ready line instead of the scattered lines that made a slow start hard to read.
+- **`optimize` sizes the conntrack table from host RAM** ([#569](https://github.com/full-bars/urnetwork-3.23-fix/pull/569)): the connection-tracking table is scaled to the host instead of left at the distribution default.
+
+### Fixed
+
+- **The control socket validates values at the server** ([#572](https://github.com/full-bars/urnetwork-3.23-fix/pull/572)): a raw socket client can no longer persist a value that breaks the next start.
+- **`version` reported non-provider units**: a sentinel or similar unit was answered as the provider's version; only provider units are considered now.
+- **The running provider's version is read through `/proc/<pid>/exe`** ([#578](https://github.com/full-bars/urnetwork-3.23-fix/pull/578)): the resolved binary is used instead of the unit's start path, which can be a wrapper.
+- **Startup log duplication and idle spam** ([#577](https://github.com/full-bars/urnetwork-3.23-fix/pull/577)): the ready summary no longer repeats lines already printed, and idle lines stop filling the buffer.
+
+### Changed
+
+- **CFAA blocklist refreshed twice** ([#570](https://github.com/full-bars/urnetwork-3.23-fix/pull/570), [#574](https://github.com/full-bars/urnetwork-3.23-fix/pull/574)): 44,672 to 43,261 and then to 44,007 IPv4 entries; 522 to 569 and then to 591 IPv6 entries. Data only.
+
+## [v3.23.0-fix.31.5-rc1] — 2026-09-10
+
+_Pre-release tag._
+
+### Added
+
+- **A Prometheus `/metrics` endpoint with no new dependencies** ([#565](https://github.com/full-bars/urnetwork-3.23-fix/pull/565)): eleven `urnet_*` metrics covering uptime, connections, the proxy pool by status, per-proxy bytes and clients, errors by category, contracts by result, and Go runtime memory and goroutines. The text format is generated directly, and the endpoint mounts on the loopback diagnostics server.
+- **`history`, `metrics`, `profile` and `dashboard` commands** ([#568](https://github.com/full-bars/urnetwork-3.23-fix/pull/568)): the provider's 1000-entry command audit ring, a live toggle for the metrics endpoint without a restart, the tuning profile, and a terminal status panel.
+- **A hardened control socket with a persisted audit trail** ([#566](https://github.com/full-bars/urnetwork-3.23-fix/pull/566)): server-side validation for every key with an auto-computed `needs_restart`, an atomic error flush with checksum recovery, and a bounded audit ring served by a `history` command.
+- **Durable v2 persistence and a `status` socket command**: writes are synced and the parent directory fsynced, so a recorded setting survives a host crash rather than only a clean exit.
+
+### Fixed
+
+- **`ramlogs`, `turbo` and `eco` with no arguments showed nothing** ([#564](https://github.com/full-bars/urnetwork-3.23-fix/pull/564)): they print the current status instead of failing or prompting.
+- **Dead `IncrBytesTransferred` removed and label escaping fixed**: the unused counter is gone and metric labels are escaped, so a proxy address or error class cannot break the exposition format.
+- **Metrics error handling, naming and shutdown** ([#565](https://github.com/full-bars/urnetwork-3.23-fix/pull/565)): review findings on the new endpoint, including a clean stop when the provider exits.
+
 ## [v3.23.0-fix.31.4]
 
 ### Fixed
@@ -679,6 +718,26 @@ _Pre-release tag._
 ### Other
 - **H3 + miner migration plan (PR #639)**: added `MIGRATION_PLAN.md` and `scripts/h3-workspace.sh`. No behavior changes.
 
+## [v3.23.0-fix.31.4-rc1] — 2026-09-09
+
+_Pre-release tag._
+
+### Fixed
+
+- **Shakedown failures: Docker arch, `--tag`, restart verification and hotswap** ([#558](https://github.com/full-bars/urnetwork-3.23-fix/pull/558)): the checks now run against the architecture and tag they are given and verify a restart after a handover.
+- **An unbalanced brace in the `supportsHotSwap` gate** ([#558](https://github.com/full-bars/urnetwork-3.23-fix/pull/558)): the tool's capability gate compiled to the wrong branch; it is balanced now.
+- **The HotSwap decline reason was lost on the update path** ([#560](https://github.com/full-bars/urnetwork-3.23-fix/pull/560)): `urnet-tools update` reports why a handover was declined instead of proceeding silently.
+- **An unreadable unit `Type=` was reported as a plain mismatch** ([#560](https://github.com/full-bars/urnetwork-3.23-fix/pull/560)): it is reported as a query failure, so an unreadable unit is not mistaken for `Type=simple`.
+- **Provider units are corroborated against `ExecStart`** ([#562](https://github.com/full-bars/urnetwork-3.23-fix/pull/562)): a matching unit name alone no longer identifies a provider.
+- **The discovery fallback test raced its child** ([#559](https://github.com/full-bars/urnetwork-3.23-fix/pull/559)): the test polls for the process instead of assuming it exists at the next statement.
+- **The auto-update test mutated the host** ([#563](https://github.com/full-bars/urnetwork-3.23-fix/pull/563)): it runs against a fixture, not the machine running CI.
+
+### Changed
+
+- **CI shakedown review findings** ([#557](https://github.com/full-bars/urnetwork-3.23-fix/pull/557)): the workflow inputs and quoting were corrected.
+- **README fork-changes section refreshed** ([#556](https://github.com/full-bars/urnetwork-3.23-fix/pull/556)): docs only.
+- **CFAA blocklist refreshed** ([#561](https://github.com/full-bars/urnetwork-3.23-fix/pull/561)): 44,533 to 44,672 IPv4 entries and 506 to 522 IPv6 entries. Data only.
+
 ## [v3.23.0-fix.31.3]
 
 ### Fixed
@@ -687,6 +746,23 @@ _Pre-release tag._
 ### Changed
 - **CFAA blocklist refreshed**: content-filtering ranges synced from upstream.
 - **Hub deprecation notice (PR #635)**: release notes now carry the initial deprecation callout.
+
+## [v3.23.0-fix.31.3-rc1] — 2026-09-08
+
+_Pre-release tag._
+
+### Added
+
+- **`urnet-tools show-ip`, and settings a provider receives are logged** ([#553](https://github.com/full-bars/urnetwork-3.23-fix/pull/553)): `ip-detect` is renamed to `show-ip`, and a setting applied over the control socket now leaves a line in the provider's own log instead of being visible only in the CLI that set it.
+
+### Fixed
+
+- **The Docker shakedown pulled the image before it existed** ([#555](https://github.com/full-bars/urnetwork-3.23-fix/pull/555)): the job now waits for the build to publish before pulling.
+
+### Changed
+
+- **The v31 surface reached the release notes, wiki, README and changelog** ([#554](https://github.com/full-bars/urnetwork-3.23-fix/pull/554)): docs only; before this the control socket and HotSwap were documented only in a release-notes draft.
+- **CFAA blocklist refreshed** ([#549](https://github.com/full-bars/urnetwork-3.23-fix/pull/549)): 43,809 to 44,533 IPv4 entries and 469 to 506 IPv6 entries. Data only.
 
 ## [v3.23.0-fix.31.2]
 
@@ -715,6 +791,27 @@ _Pre-release tag._
 - **Release engineering hardening (PR #617, #618, #629)**: Windows packaging cleaned of legacy updater remnants; WDSI bundle automated; Docker nightly extraction regression-tested to prevent silent packaging regressions.
 
 ---
+
+## [v3.23.0-fix.31.2-rc1] — 2026-09-08
+
+_Pre-release tag._
+
+### Added
+
+- **Shakedown sections Q to Z for the v31 daemon surface** ([#544](https://github.com/full-bars/urnetwork-3.23-fix/pull/544)): 980 lines covering the parts of the daemon work the existing script never reached. The unit shapes it exercises are taken from a live sweep of 24 production nodes, every one of which runs `Type=simple`.
+- **A Docker shakedown workflow** ([#545](https://github.com/full-bars/urnetwork-3.23-fix/pull/545)): a separate workflow and script for the container path, because HotSwap and the lifecycle commands have their own implementations there rather than being the same code deployed twice.
+- **A manual dispatch can target a specific release** ([#548](https://github.com/full-bars/urnetwork-3.23-fix/pull/548)): the dispatch no longer resolves `/releases/latest`, which excludes prereleases and silently tested 30.9.
+
+### Fixed
+
+- **`Type=notify` wedged every start and restart** ([#546](https://github.com/full-bars/urnetwork-3.23-fix/pull/546)): the unit shipped `Type=notify` with `TimeoutStartSec=0`, so a start that never received `READY=1` blocked forever.
+- **Provider version resolution on `-trimpath` release builds** ([#547](https://github.com/full-bars/urnetwork-3.23-fix/pull/547)): `-trimpath` strips the `-ldflags` build setting, so `main.Version` is unreadable from a release binary; the existing `--version` fallback was gated behind a check that never ran.
+- **Shakedown section L aborted the suite on an unset variable** ([#550](https://github.com/full-bars/urnetwork-3.23-fix/pull/550)): `$CID_FRESH` is never assigned and the script runs under `set -u`, so every section after L had never executed in any run.
+- **A childless session read as a dead HotSwap candidate** ([#552](https://github.com/full-bars/urnetwork-3.23-fix/pull/552)): `Wait` returns immediately when no child backs the session, so the drain-liveness select fired at once and the handover was abandoned.
+
+### Changed
+
+- **CI shards the race suite and splits lint out** ([#551](https://github.com/full-bars/urnetwork-3.23-fix/pull/551)): `test-and-lint` was the whole critical path at 408 seconds while every other check finished inside 3.5 minutes.
 
 ## [v3.23.0-fix.31.1]
 
@@ -756,6 +853,10 @@ _Pre-release tag._
 - 62 new test functions covering denial backoff, proxy selection and ordering, adaptive probe batching, HotSwap unit migration, counters and declines, the control socket (`gogc`, metrics at boot), earnings launch ranking, `ParseByteCount`, the audit wire format, and the `writeStateFile` descriptor fix.
 
 ---
+
+## [v3.23.0-fix.31.1-rc1] — 2026-09-08
+
+_Pre-release tag. This tag points at the same commit as `v3.23.0-fix.31.0-rc1`; it re-cuts that build and carries no code change of its own._
 
 ## [v3.23.0-fix.31.0]
 
@@ -822,6 +923,31 @@ _Pre-release tag._
 - **Update timer unit passes `-y` (PR #583)**: makes the non-interactive intent explicit in the file an operator reads.
 
 ---
+
+## [v3.23.0-fix.31.0-rc1] — 2026-09-08
+
+_Pre-release tag._
+
+### Added
+
+- **Zero-downtime HotSwap** ([#533](https://github.com/full-bars/urnetwork-3.23-fix/pull/533)): a running provider hands its listener, its coordinator session and its clients to a replacement binary instead of restarting. The handover is verified before the old process yields, rolls back if the candidate fails to take over, and works for a container's PID 1 as an in-place `execve`.
+- **A control socket for live settings** ([#536](https://github.com/full-bars/urnetwork-3.23-fix/pull/536), [#537](https://github.com/full-bars/urnetwork-3.23-fix/pull/537), [#538](https://github.com/full-bars/urnetwork-3.23-fix/pull/538), consolidated in [#539](https://github.com/full-bars/urnetwork-3.23-fix/pull/539)): `~/.urnetwork/provider.sock` replaces the nine settings files two processes used to share. Settings that need a restart are queued in `pending_overrides.json` and applied once on the next start.
+- **Public IP autodetection and a dashboard display name** ([#534](https://github.com/full-bars/urnetwork-3.23-fix/pull/534)): a native or systemd install detects its public IPv4 the way the Docker entrypoint already did, with `urnet-tools ip-detect on|off|status` to opt out, and `urnet-tools rename` sets the dashboard label.
+- **Multi-provider `urnet-tools` UX** ([#539](https://github.com/full-bars/urnetwork-3.23-fix/pull/539)): ordinary commands scope to the current user's provider, `providers` lists what is running, a cross-user target self-elevates under the full binary path, and a manage-time refusal now says how to narrow it.
+- **JWT refresh logs its transfer stats**: step 3 of the refresh parses `paid_bytes_provided` and `unpaid_bytes_provided` and prints them in human units.
+
+### Fixed
+
+- **systemd READY was sent before the provider could serve** ([#543](https://github.com/full-bars/urnetwork-3.23-fix/pull/543)): the provider reports ready when it is self-managing, not when a proxy authenticates.
+- **`json_escape` emitted unquoted JSON**, corrupting `pending_overrides.json`; and a queued override written under `sudo` left the file owned by root.
+- **Profile defaults clobbered persisted `gomemlimit`/`gogc`**, and those values were applied only live rather than at startup.
+- **HotSwap was offered on a unit that cannot support it**: the zero-downtime handoff is now gated on `Type=notify` rather than on version alone.
+- **The darwin build was broken by `SOCK_CLOEXEC`**, and a Linux-only root gate check failed on other platforms.
+
+### Changed
+
+- **CFAA blocklist refreshed twice** ([#540](https://github.com/full-bars/urnetwork-3.23-fix/pull/540), [#542](https://github.com/full-bars/urnetwork-3.23-fix/pull/542)): 48,427 to 43,479 and then to 43,809 IPv4 entries; 453 to 438 and then to 469 IPv6 entries. Data only.
+- **CI no longer triggers every smoke workflow twice for a `fix/*` branch**, and never publishes `:latest` for a pre-release tag.
 
 ## [v3.23.0-fix.30.9]
 
@@ -922,6 +1048,22 @@ _Pre-release tag._
 - **CI skips heavy jobs on docs-only PRs (PR #452)**: the build, dash-compat, tool-functional-smoke, unix-lifecycle, and windows-lifecycle workflows skip their heavy jobs on pull requests that touch only `**/*.md`, `docs/**`, or `releases/**`. The labeler always runs. VirusTotal upload, lookup, and analysis timeouts are now non-fatal. A timed-out artifact records UNKNOWN in the summary instead of failing the scan job. Only a genuine malicious hit over the threshold fails the job.
 
 ---
+
+## [v3.23.0-fix.30.5] — 2026-08-22
+
+### Added
+- **`urnet-tools` and `urnet-docker` dispatch migrated to Cobra** (PR #448): the 2,000-plus lines of hand-written switch logic became a structured command tree, so `-h` on a subcommand prints that subcommand's description and flags instead of the root usage list.
+- **`urnet-docker update <target>` updates a container in place** (PR #453): with a target the in-container self-update runs behind the confirm gate without recreating the container; without one it falls through to the host tool's self-update. Verified on a 26.4 container updating to 30.4 with the container ID unchanged.
+- **Go 1.27.0 toolchain** (PR #449): the builder images moved with it.
+
+### Fixed
+- **`update <target>` matched only the bare flag form**: `--flag=value` fell through the target gate; the help wrap was corrected with it.
+- **Opus review findings on the in-place update** (PR #453): the container update path was remediated, and the shim test is POSIX-only so the Windows runner skips it.
+
+### Changed
+- **CI skips heavy jobs on docs-only pull requests and treats a VirusTotal timeout as non-blocking** (PR #452).
+- **Greenteagc is recorded as viable on Go 1.27** (PR #450), and the 30.4 Windows detections are recorded as Microsoft-confirmed false positives (PR #451).
+- **Changelog, fork-changes and Docker docs brought current for this release** (PR #454).
 
 ## [v3.23.0-fix.30.4] — 2026-08-22
 
