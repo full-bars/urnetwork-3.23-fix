@@ -36,15 +36,15 @@ urnet-tools proxy refresh --force
 ### Pasting instead of adding
 
 `urnet-tools proxy paste` is interactive: run it, paste your lines at the
-prompt, then press Ctrl+D. It normalizes the formats, adds them and reloads the
-provider in one step, so no separate `proxy refresh` is needed.
+prompt, then press Ctrl+D (on Windows, Ctrl+Z then Enter). It normalizes the
+formats, adds them and reloads the provider in one step, so no separate
+`proxy refresh` is needed.
 
 ```text
 $ urnet-tools proxy paste
 Paste proxies + source URLs, then Ctrl+D when done:
 192.0.2.45:1081:proxyuser:proxypass
 198.51.100.78:1081
-^D
 ```
 
 A pasted line that is an `http(s)://` URL is fetched as a proxy list rather than
