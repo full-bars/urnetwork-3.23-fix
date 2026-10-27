@@ -15,7 +15,13 @@ Install on any supported platform, with the installer detected for you:
 curl -fSsL https://install.fullbars.xyz | sh -s -- install
 ```
 
-That one-liner reads `uname` and runs the installer for the host:
+That one-liner reads `uname` and runs the installer for the host. On FreeBSD the base system has `fetch` rather than `curl`, so use the same installer through `fetch`:
+
+```sh
+fetch -qo - https://install.fullbars.xyz | sudo sh -s -- install
+```
+
+From a root shell drop the `sudo`: `fetch -qo - https://install.fullbars.xyz | sh -s -- install`.
 
 | Host | Installer it runs |
 |---|---|
