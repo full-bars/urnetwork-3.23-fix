@@ -2363,6 +2363,39 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.22.2] — 2026-06-20
+
+### Fixed
+- **A dead proxy was counted as API overload** (PR #94): reachability is now established before an auth attempt and before a URL-sourced proxy is merged, so a proxy that cannot be dialed is classified as dead instead of feeding the auth rate limiter's overload signal.
+
+---
+
+## [v3.23.0-fix.22.1] — 2026-06-20
+
+### Added
+- **Hub report URL hot-reloads** (PR #93): `~/.urnetwork/report_url` is re-read, so the report target changes without a restart.
+- **The outage alert webhook hot-reloads too** (PR #93): the same file change reaches the alert path.
+
+---
+
+## [v3.23.0-fix.22] — 2026-06-20
+
+### Added
+- **Proxy URL sources** (PR #90): one or more URLs become a live, additive proxy source on top of `--proxy_file` and the internal config. Lists are fetched on an interval, parsed with or without a `socks5://` prefix and with optional credentials, and merged into the hot-reload pipeline without disturbing proxies that are already running. `proxy add-source` and `proxy remove-source` persist a source at runtime, and source-scoped dead-proxy cleanup (`none`/`url`/`all`) lets a noisy public list prune itself without touching curated entries.
+- **Docker CLI parity and a larger RAMLOG** (PR #86).
+- **Proactive seven-day JWT refresh** (PR #89): the token is renewed weekly with a 48-hour expiry fallback, startup jitter desynchronizes the fleet, and the last refresh is persisted so a restart does not re-refresh.
+
+### Fixed
+- **quic-go memory exhaustion** (PR #85, #86): the dependency moved to v0.59.1 for the vulnerability fix.
+- **Proxy state was not written at startup** (PR #87): `started_at` is now persisted, and a zero value is healed on the heartbeat.
+- **`urnet-tools` relied on bashisms and non-POSIX JSON parsing** (PR #88): it now parses without `jq`-only constructs and runs under dash.
+- **Auth timeouts and connection failures were not treated as overload** (PR #92): they are now classified as an overload signal, so the rate limiter backs off instead of retrying into a struggling API.
+
+### Changed
+- **Changelog, fork-changes and READMEs caught up for the release** (PR #91).
+
+---
+
 ## [v3.23.0-fix.21.2] — 2026-06-16
 
 ### Fixed
@@ -2425,6 +2458,37 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.19.1] — 2026-06-09
+
+### Added
+- **A node remove endpoint and its dashboard button** (direct to main): a node that has left the fleet can be removed from the hub instead of sitting in the list forever.
+
+### Fixed
+- **Hub UI corrections** (direct to main): the dashboard's layout and refresh behavior.
+
+### Changed
+- **Release notes and a dashboard preview image** (direct to main): the notes were rewritten for this release and the preview added to the wiki and README.
+
+---
+
+## [v3.23.0-fix.19] — 2026-06-09
+
+### Added
+- **Bandwidth hub reporting** (PR #47): an opt-in reporter posts per-proxy metrics and system information to `URNETWORK_REPORT_URL` every 60 seconds, and a standalone hub server with no external dependencies stores them and serves `/api/nodes` and the dashboard. Nothing changes for a provider that does not set the URL.
+- **A hub dashboard** (direct to main): fleet view, per-node proxy lists and history.
+- **Proactive JWT renewal** (PR #49): the expiry is checked hourly and the token is refreshed inside 48 hours of `exp`, so a provider no longer exits 78 to force re-authentication. Live sessions keep working throughout.
+- **Fatal errors reach the RAMLOG and every failure path has an exit code** (PR #48): `shmLogFatal` writes directly to the file, bypassing the pipe goroutine that could lose the message when the process died.
+- **Per-proxy failure reason tracking** (direct to main): atomic counters per reason, so a proxy's failures can be told apart.
+- **Proxy benchmarking** (direct to main): staggered TCP connect and SOCKS5 RTT probes.
+- **Graceful draining for proxy hot-reload** (direct to main): a removed proxy finishes its live clients instead of cutting them.
+- **Hub unit tests** (direct to main): 18 tests plus CI integration.
+
+### Fixed
+- **User session counting lived in the SOCKS5 dialer** (direct to main): it moved to the NAT buffer layer, where the sessions actually are.
+- **Upstream proxy fixes ported** (direct to main): the out-of-band provide acknowledgement and the ping companion contract from upstream `proxy-fixes2`.
+
+---
+
 ## [v3.23.0-fix.18.4] — unreleased
 
 ### Added
@@ -2434,6 +2498,36 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ### Fixed
 - **Ramlog Race on Fatal Exit**: When the provider exited with code 78 (expired JWT), the error message was written to the stdout/stderr pipe but the process often died before the ramlog goroutine could flush it to `/dev/shm/urnetwork.log`. `shmLogFatal` writes directly to the file, sidestepping the race entirely.
+
+---
+
+## [v3.23.0-fix.18.3] — 2026-06-08
+
+### Added
+- **A CLI configuration change triggers a proxy hot-reload** (PR #44): adding or removing a proxy through the tool no longer needs a separate `proxy refresh`.
+- **A native `[direct]` proxy connection in proxy mode** (PR #45): proxy mode can run a direct connection natively instead of requiring it to come from a list.
+
+### Fixed
+- **Proxy health log tests still asserted the old table widths** (direct to main): they now match the widened ASCII tables.
+
+---
+
+## [v3.23.0-fix.18.2] — 2026-06-08
+
+### Fixed
+- **One proxy's auth failure killed the whole provider** (PR #43): the failure is contained to that proxy.
+- **The installer gave up on a transient download failure** (direct to main): downloads retry with fallbacks, and the installer tests parse URLs the way the script does.
+- **Idle timeout lines flooded the log** (direct to main): demoted to `V(2)`.
+
+### Changed
+- **Proxy health and traffic tables widened** (direct to main): the columns no longer run together at fleet scale.
+
+---
+
+## [v3.23.0-fix.18.1] — 2026-06-07
+
+### Added
+- **`proxy-traffic` and `logs` aliases inside the container** (direct to main): `docker exec -it <name> logs` tails the RAMLOG, which fixes the empty `docker logs` output, and `proxy-traffic` gives a quick load check.
 
 ---
 
@@ -2466,6 +2560,20 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 ### Fixed
 - **[net][s]select Error Spam**: Implemented rate-limiting for `[net][s]select:` error logs during backend outages. Errors are now suppressed to one log line per minute with a suppression count.
 - **Clients Counter Bug**: Fixed a regression from the rc.1 pre-release where the clients counter was not being copied into bandwidth snapshots, causing it to display as 0.
+
+---
+
+## [v3.23.0-fix.17-rc.1] — 2026-06-02
+
+### Added
+- **Per-proxy bandwidth tracking** (direct to main): cumulative billable and total bytes per proxy, surviving a RAMLOG rotation.
+- **Active NAT session tracking** (direct to main): `clients=N` on the `[net][s]select` lines and in the traffic report, so sessions multiplexed through a proxy are counted.
+
+### Fixed
+- **Proxy ids sorted lexicographically** (direct to main): they sort numerically now, and the table column was widened for the result.
+
+### Changed
+- **CI detects a pre-release from the tag name** (direct to main) and supports a short image tag, which is how this candidate was published.
 
 ---
 
@@ -2508,6 +2616,13 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 
 ---
 
+## [v3.23.0-fix.15.1] — 2026-05-29
+
+### Changed
+- **Optimized sysctls added to the Docker examples** (direct to main): documentation only.
+
+---
+
 ## [v3.23.0-fix.15] — 2026-05-28
 
 ### Added
@@ -2545,6 +2660,11 @@ Minor version bump covering ~50 PRs across core networking stability, performanc
 - **Restart loop reliability (jwt build)**: Fixed a `provide || true` pattern that made the crash counter always read success, so the in-script restart/backoff never engaged on a real crash.
 - **Multi-node startup race**: The 3-in-1 scaling guide now uses a healthcheck on the first node plus `depends_on` so secondary nodes wait for the shared JWT instead of crash-looping on first boot.
 - **Graceful ZRAM handling**: Systems with kernels that don't include zram support (e.g., Oracle Linux UEK) now complete `optimize` successfully. ZRAM is skipped with a simple warning; other OS optimizations (sysctl, ulimits) continue normally. Users on Ubuntu can optionally install Zabbly kernel to gain zram support.
+
+## [v3.23.0-fix.14.3] — 2026-05-28
+
+### Fixed
+- **`optimize` failed on a kernel without ZRAM support** (direct to main): for example Oracle Linux's UEK. ZRAM is skipped with a warning and the remaining sysctl and ulimit work still runs, so `optimize` completes instead of aborting.
 
 ## [v3.23.0-fix.14.2] — 2026-05-28
 
