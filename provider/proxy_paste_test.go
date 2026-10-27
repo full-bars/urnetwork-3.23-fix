@@ -353,3 +353,42 @@ func TestSetupPasteSignalHandler_RemovesTempFileOnSignal(t *testing.T) {
 		t.Errorf("expected temp file %s to be removed on signal, stat err: %v", tmpPath, err)
 	}
 }
+
+// The prompt is the only place a Windows user is told how to finish the paste,
+// and the wrong key there hangs the command: Ctrl+Z suspends the process in a
+// shell that has job control, while a native console needs it to send EOF.
+func TestPasteEndHintNamesBothWindowsKeys(t *testing.T) {
+	windows := pasteEndHint("windows")
+	if !strings.Contains(windows, "Ctrl+D") || !strings.Contains(windows, "Ctrl+Z then Enter") {
+		t.Fatalf("windows hint = %q, want both keys named", windows)
+	}
+	for _, goos := range []string{"linux", "darwin", "freebsd"} {
+		if got := pasteEndHint(goos); got != "Ctrl+D" {
+			t.Fatalf("%s hint = %q, want Ctrl+D", goos, got)
+		}
+	}
+}
+
+// A Windows pty reaches the process as a pipe, so a char-device-only check
+// hides the prompt and the read blocks with nothing on screen. That pipe case
+// is Windows-only: an interactive unix shell exports TERM, and a script piped
+// from it must not be mistaken for an interactive session.
+func TestStdinPromptWantedCoversTheWindowsPty(t *testing.T) {
+	tests := []struct {
+		name string
+		mode os.FileMode
+		term string
+		goos string
+		want bool
+	}{
+		{"windows pty as a pipe with TERM", os.ModeNamedPipe, "xterm", "windows", true},
+		{"unix pipe with TERM from the shell", os.ModeNamedPipe, "xterm", "linux", false},
+		{"unix character device", os.ModeCharDevice, "", "linux", true},
+		{"regular file", 0, "", "linux", false},
+	}
+	for _, tt := range tests {
+		if got := stdinPromptWantedFor(tt.mode, tt.term, tt.goos); got != tt.want {
+			t.Errorf("%s: got %v, want %v", tt.name, got, tt.want)
+		}
+	}
+}
