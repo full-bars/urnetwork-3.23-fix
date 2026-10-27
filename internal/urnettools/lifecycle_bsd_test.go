@@ -129,11 +129,67 @@ func TestRenderBSDServiceScriptShape(t *testing.T) {
 	if !strings.Contains(script, `chown root:wheel "$logdir"`) {
 		t.Error("script does not keep the log dir root-owned")
 	}
-	if !strings.Contains(script, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
-		t.Error("script does not pre-create the log file as a regular file owned by the service user")
+	// The log has to survive a restart: install(1) truncates its target, so
+	// the file is created only when it is missing, and a creation that fails
+	// must stop the start instead of being swallowed. Pinning the command
+	// alone would pass while every restart erased the previous run.
+	scriptLines := strings.Split(script, "\n")
+	logGuard, logCreate := -1, -1
+	for i, line := range scriptLines {
+		if strings.Contains(line, `if [ ! -e "$logdir/stdout.log" ]; then`) {
+			logGuard = i
+		}
+		if strings.Contains(line, `install -o ${urnetwork_user} -m 640 /dev/null "$logdir/stdout.log"`) {
+			logCreate = i
+		}
+	}
+	if logGuard < 0 {
+		t.Fatal(`script creates stdout.log unconditionally; a restart would truncate the previous run`)
+	}
+	if logCreate < 0 {
+		t.Fatal(`script does not pre-create the log file as a regular file owned by the service user`)
+	}
+	if logCreate < logGuard || logCreate-logGuard > 3 {
+		t.Errorf("stdout.log creation sits outside the missing-file guard (guard line %d, install line %d)", logGuard, logCreate)
+	}
+	if !strings.Contains(scriptLines[logCreate], "|| return 1") {
+		t.Errorf("a failed stdout.log creation does not fail the start: %q", strings.TrimSpace(scriptLines[logCreate]))
+	}
+	if strings.Contains(scriptLines[logCreate], "|| true") {
+		t.Errorf("stdout.log creation failure is swallowed: %q", strings.TrimSpace(scriptLines[logCreate]))
 	}
 	if !strings.Contains(script, `is a symlink (privilege escalation risk)`) {
 		t.Error("script does not refuse a symlinked log file")
+	}
+	// The symlink check alone lets two shapes through to daemon(8), which
+	// opens the path as root: a fifo blocks that open for good, and a hard link
+	// makes the log write through to an aliased file. The check has to ask for
+	// the file type, the link count and the owner, and it has to run before the
+	// missing-file guard decides whether anything is created.
+	statLine := -1
+	for i, line := range scriptLines {
+		if !strings.Contains(line, "stat -f ") {
+			continue
+		}
+		statLine = i
+		if !strings.Contains(line, `'%HT %l %Su'`) {
+			t.Errorf("stdout.log check does not ask stat for the file type, link count and owner: %q", strings.TrimSpace(line))
+		}
+		if !strings.Contains(line, `!= "Regular File 1 ${urnetwork_user}"`) {
+			t.Errorf("stdout.log check does not require a single-link regular file owned by the service user: %q", strings.TrimSpace(line))
+		}
+	}
+	if statLine < 0 {
+		t.Fatal(`script keeps an existing stdout.log without checking its type; a fifo or hard link passes the symlink check`)
+	}
+	if statLine > logGuard {
+		t.Errorf("the stdout.log type check (line %d) runs after creation (line %d); it has to decide first", statLine, logGuard)
+	}
+	if statLine+1 >= len(scriptLines) || !strings.Contains(scriptLines[statLine+1], `rm -f "$logdir/stdout.log"`) {
+		t.Error("a stdout.log that fails the type check is not removed before daemon(8) opens it")
+	}
+	if !strings.Contains(scriptLines[statLine+1], "|| return 1") {
+		t.Error("a failed removal of the unsafe stdout.log does not fail the start")
 	}
 	// $flags must reach the provider expanded, not as a literal ${...} or a
 	// bare backslash followed by the value.

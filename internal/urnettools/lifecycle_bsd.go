@@ -110,7 +110,18 @@ logdir="/var/log/%[1]s"
         echo "Refusing to start: $logdir/stdout.log is a symlink (privilege escalation risk)."
         return 1
     fi
-    install -o ${%[1]s_user} -m 640 /dev/null "$logdir/stdout.log" 2>/dev/null || true
+    # daemon(8) opens this path as root, so an existing log is kept only while
+    # it is a plain file with a single link that the service user owns. A fifo,
+    # a hard link or a foreign owner is replaced: removing the name leaves the
+    # inode it pointed at alone.
+    if [ -e "$logdir/stdout.log" ] && [ "$(stat -f '%%HT %%l %%Su' "$logdir/stdout.log" 2>/dev/null)" != "Regular File 1 ${%[1]s_user}" ]; then
+        rm -f "$logdir/stdout.log" || return 1
+    fi
+    # Create the log only when it is missing: installing over an existing
+    # file truncates it, so every restart would erase the previous run.
+    if [ ! -e "$logdir/stdout.log" ]; then
+        install -o ${%[1]s_user} -m 640 /dev/null "$logdir/stdout.log" 2>/dev/null || return 1
+    fi
     echo "Starting %[1]s."
     $daemon -f -t %[1]s -p "$pidfile" -o "$logdir/stdout.log" \
         -u ${%[1]s_user} \

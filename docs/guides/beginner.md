@@ -38,7 +38,7 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && \
 ```
 
 > [!NOTE]
-> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. `sudo` is not in the base system either: if the host does not have it, run the same commands from a root shell (`su -`) without `sudo`. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
 
 **Windows (PowerShell, no admin required):**
 ```powershell
@@ -129,7 +129,7 @@ When you see a client ID logged, the provider has successfully authenticated wit
 
 - **Add your own proxy list** → see the [Intermediate Guide](intermediate.md)
 - **Tune for performance** → see the [Advanced Guide](advanced.md)
-- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On FreeBSD, `urnet-tools auto-update weekly|monthly|off` maintains a crontab entry. On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
+- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On FreeBSD, `urnet-tools auto-update weekly|monthly|off` maintains a crontab entry, but that command belongs to the release `urnet-tools` binary: install `jq` or `python3` before installing, because on a bare host the installer falls back to a shell `urnet-tools` that has no `auto-update`. On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
 
 ---
 
