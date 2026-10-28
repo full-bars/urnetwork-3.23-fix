@@ -348,8 +348,8 @@ func TestPrintProxyStatus(t *testing.T) {
 		writeFile(t, dir, "proxy_url.json", `{"sources":["https://example.com/list.txt"]}`)
 		p := Provider{StateDir: dir}
 		out := captureStdout(t, func() { printProxyStatus(p) })
-		if !strings.Contains(out, "https://example.com/list.txt") {
-			t.Errorf("missing URL source in output:\n%s", out)
+		if !strings.Contains(out, "https://example.com") || strings.Contains(out, "/list.txt") {
+			t.Errorf("source should show only scheme and host:\n%s", out)
 		}
 		// File source should still degrade to "none".
 		lines := strings.Split(out, "\n")

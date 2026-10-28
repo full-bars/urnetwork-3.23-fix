@@ -1380,7 +1380,7 @@ func cmdDashboard(args []string) error {
 		sources := readProxyURLSources(p.StateDir)
 		if len(sources) > 0 {
 			for _, src := range sources {
-				fmt.Printf("  %s•%s %s\n", green, reset, src)
+				fmt.Printf("  %s•%s %s\n", green, reset, sanitizeSourceForDisplay(src))
 			}
 		} else {
 			fmt.Printf("  %s(no proxy sources configured)%s\n", dim, reset)

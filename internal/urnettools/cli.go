@@ -667,7 +667,11 @@ func printProxyStatus(p Provider) {
 	// URL sources from proxy_url.json (sources list).
 	urlSrc := readProxyURLSources(p.StateDir)
 	if len(urlSrc) > 0 {
-		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(urlSrc, ", "))
+		safe := make([]string, len(urlSrc))
+		for i, src := range urlSrc {
+			safe[i] = sanitizeSourceForDisplay(src)
+		}
+		fmt.Printf("  %-*s %s\n", keyW+1, "URL sources:", strings.Join(safe, ", "))
 	} else {
 		fmt.Printf("  %-*s none\n", keyW+1, "URL sources:")
 	}

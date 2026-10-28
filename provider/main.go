@@ -6388,7 +6388,7 @@ func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
 		}
 		address, user, password := parseProxyAddress(line)
 		if user == "" || password == "" {
-			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
+			tlog("[proxy] error: proxy %s missing credentials — required format ip:port:user:pass; skipping\n", redactProxySource(line))
 			continue
 		}
 		all = append(all, &connect.ProxySettings{
