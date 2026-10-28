@@ -161,8 +161,10 @@ func runProcstat(args ...string) string {
 
 // installedBSDProvider locates the provider in the standard install location
 // used by the FreeBSD installer script.
+var bsdUserHomeDir = os.UserHomeDir
+
 func installedBSDProvider() string {
-	home, err := os.UserHomeDir()
+	home, err := bsdUserHomeDir()
 	if err != nil {
 		// An unknown home says nothing about the root-owned tree, which is
 		// listed first precisely so it survives this case. Returning early
@@ -187,7 +189,17 @@ func installedBSDProviderIn(home string) string {
 		if err != nil {
 			continue
 		}
-		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+		if !info.Mode().IsRegular() {
+			continue
+		}
+		// The root-owned libexec binary runs as an unprivileged service user,
+		// so that user needs the other-execute bit. Per-user candidates run
+		// as their owner, for whom any execute class is sufficient.
+		executeBits := os.FileMode(0o111)
+		if c == bsdLibexecProviderPath {
+			executeBits = 0o001
+		}
+		if info.Mode().Perm()&executeBits == 0 {
 			continue
 		}
 		return c

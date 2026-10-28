@@ -3,6 +3,7 @@
 package urnettools
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"testing"
@@ -77,6 +78,19 @@ func TestFreeBSDInstalledProviderSkipsNonExecutableLibexec(t *testing.T) {
 	}
 }
 
+// A root-owned candidate must be executable by the unprivileged service user.
+func TestFreeBSDInstalledProviderSkipsLibexecWithoutOtherExecute(t *testing.T) {
+	root := useWritableBSDProviderRoot(t)
+	writeBSDProviderFile(t, root, 0o700)
+	home := t.TempDir()
+	legacy := filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork")
+	writeBSDProviderFile(t, legacy, 0o700)
+
+	if got := installedBSDProviderIn(home); got != legacy {
+		t.Fatalf("installed provider = %q, want the per-user binary %q", got, legacy)
+	}
+}
+
 // A directory satisfies os.Stat as well, and running it is impossible.
 func TestFreeBSDInstalledProviderSkipsDirectoryAtLibexec(t *testing.T) {
 	root := useWritableBSDProviderRoot(t)
@@ -110,8 +124,11 @@ func TestFreeBSDInstalledProviderPrefersExecutableLibexec(t *testing.T) {
 func TestFreeBSDInstalledProviderFindsLibexecWithoutAHome(t *testing.T) {
 	root := useWritableBSDProviderRoot(t)
 	writeBSDProviderFile(t, root, 0o755)
+	previous := bsdUserHomeDir
+	bsdUserHomeDir = func() (string, error) { return "", errors.New("home unavailable") }
+	t.Cleanup(func() { bsdUserHomeDir = previous })
 
-	if got := installedBSDProviderIn(""); got != root {
+	if got := installedBSDProvider(); got != root {
 		t.Fatalf("installed provider = %q, want the root-owned binary %q", got, root)
 	}
 }
