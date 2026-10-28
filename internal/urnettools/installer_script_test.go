@@ -139,14 +139,7 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	}
 	// Executable lines only: a commented-out `mv -f` satisfied the old
 	// string check while the live code copied (mutation-proved).
-	var execLines []string
-	for _, line := range strings.Split(body, "\n") {
-		trimmed := strings.TrimSpace(line)
-		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
-			continue
-		}
-		execLines = append(execLines, trimmed)
-	}
+	execLines := shellExecLines(body)
 
 	stagedRename, refusalIdx, firstFetch := -1, -1, -1
 	for i, line := range execLines {
@@ -180,11 +173,12 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	// The install tree stays root-owned: the rc.d start runs as root before
 	// daemon(8) drops to the service user, and the Linux installer chowns its
 	// tree to root for the same reason. What must belong to the service user
-	// is its state directory, where its config and JWT live.
-	rootOwned := strings.Contains(body, `chown -R root:wheel "$install_path"`) ||
-		strings.Contains(body, `chown -R root "$install_path"`)
-	if !rootOwned {
-		t.Error("do_install does not keep the install tree root-owned")
+	// is its state directory, where its config and JWT live. The repair itself
+	// moved into enforce_install_tree_perms, which is a checked gate (see
+	// TestFreeBSDInstallTreePermsGate*), so what do_install must still do is
+	// route through it before the rc.d script is written.
+	if !strings.Contains(body, `enforce_install_tree_perms "$install_path" "$provider_bin"`) {
+		t.Error("do_install does not enforce the install tree's ownership and traversal")
 	}
 	// The chown runs on '.' inside a `cd "$state_dir"` subshell. -h is main's
 	// no-follow form: a symlink that appears under the state dir must not be
@@ -287,6 +281,304 @@ func TestFreeBSDWriteStateFlagDoesNotFollowSymlinks(t *testing.T) {
 			t.Fatalf("target of the symlinked state dir changed: %v, %v", entries, err)
 		}
 	})
+}
+
+// The install tree's ownership and traversal repair used to be best effort:
+// `chown ... || chown ... || true`, `chmod -R go-w ... || true` and
+// `chmod 755 ... || true`. do_install then wrote the rc.d script and reported
+// "installed" for a tree the service user cannot traverse or execute. These
+// cases run the shipped gate with each repair failing in turn, and each one
+// asserts the MESSAGE that names the path and the failure: a bare exit status
+// leaves the operator with the same silence the fix removes.
+func TestFreeBSDInstallTreePermsGateAborts(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	fn := extractShellFunc(t, script, "enforce_install_tree_perms")
+	if fn == "" {
+		t.Fatal("could not extract enforce_install_tree_perms from the FreeBSD installer")
+	}
+
+	// The harness stubs the two programs the gate drives, because a real chown
+	// needs root and only one repair may fail per case. chmod wraps the real
+	// one so the success case leaves a genuinely traversable tree; everything
+	// between is the function lifted verbatim out of the installer.
+	harness := `pr_err() {
+    fmt="$1"; shift
+    printf 'ERR: '"$fmt"'\n' "$@" >&2
+}
+pr_info() {
+    fmt="$1"; shift
+    printf 'INFO: '"$fmt"'\n' "$@"
+}
+stat() {
+    if [ "$1" = -f ]; then
+        case "$2" in
+            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" ;;
+            %Lp) /usr/bin/stat -c %a "$3" ;;
+            *) return 1 ;;
+        esac
+        return
+    fi
+    /usr/bin/stat "$@"
+}
+chown() {
+    case "${FAIL_CHOWN:-none}" in
+        all) return 1 ;;
+        group) case "$2" in root:wheel) return 1 ;; esac ;;
+    esac
+    return 0
+}
+chmod() {
+    case "$*" in
+        "-R go-w "*) [ "${FAIL_GOW:-0}" = 1 ] && return 1 ;;
+    esac
+    [ "$1" = 755 ] || { /bin/chmod "$@"; return; }
+    case "${FAIL_755:-none}" in
+        all) return 1 ;;
+        tree) [ "$2" = "$TREE" ] && return 1 ;;
+        bin) [ "$2" = "$TREE/bin" ] && return 1 ;;
+        binary) [ "$2" = "$BIN" ] && return 1 ;;
+    esac
+    /bin/chmod "$@"
+}
+` + fn + `
+enforce_install_tree_perms "$TREE" "$BIN"
+`
+
+	// A tree in the state a restrictive umask leaves behind: 0700 directories
+	// and a 0644 image, which daemon -u can neither traverse nor exec.
+	setup := func(t *testing.T) (tree, bin string) {
+		t.Helper()
+		tree = filepath.Join(t.TempDir(), "urnetwork-provider")
+		binDir := filepath.Join(tree, "bin")
+		if err := os.MkdirAll(binDir, 0o700); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{tree, binDir} {
+			if err := os.Chmod(p, 0o700); err != nil {
+				t.Fatal(err)
+			}
+		}
+		bin = filepath.Join(binDir, "urnetwork")
+		if err := os.WriteFile(bin, []byte("#!/bin/sh\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		return tree, bin
+	}
+	run := func(t *testing.T, tree, bin string, env ...string) (string, error) {
+		t.Helper()
+		h := filepath.Join(t.TempDir(), "gate.sh")
+		if err := os.WriteFile(h, []byte(harness), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		cmd := exec.Command("/bin/sh", h)
+		cmd.Env = append([]string{"PATH=/usr/bin:/bin", "TREE=" + tree, "BIN=" + bin}, env...)
+		out, err := cmd.CombinedOutput()
+		return string(out), err
+	}
+
+	t.Run("failed chown aborts and names the tree", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_CHOWN=all")
+		if err == nil {
+			t.Fatalf("gate passed with both chowns failing; the install would report success for a tree root does not own (%s)", out)
+		}
+		want := "ERR: could not make " + tree + " root-owned: chown -R root:wheel and chown -R root both failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	t.Run("failed chown continues when tree already conforms", func(t *testing.T) {
+		tree, bin := setup(t)
+		for _, p := range []string{tree, filepath.Join(tree, "bin"), bin} {
+			if err := os.Chmod(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := run(t, tree, bin, "FAIL_CHOWN=all", "STAT_ROOT=1")
+		if err != nil {
+			t.Fatalf("gate aborted although the tree already conforms: %v (%s)", err, out)
+		}
+		want := "INFO: chown -R root:wheel and chown -R root both failed; " + tree + " already conformed"
+		if !strings.Contains(out, want) {
+			t.Fatalf("missing already-conformed diagnostic\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	t.Run("failed root:wheel chown falls back to root", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_CHOWN=group")
+		if err != nil {
+			t.Fatalf("gate aborted although chown -R root succeeds: %v (%s)", err, out)
+		}
+		if strings.Contains(out, "ERR:") {
+			t.Errorf("a recoverable chown reported an error: %s", out)
+		}
+	})
+
+	t.Run("failed go-w chmod aborts and names the tree", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_GOW=1")
+		if err == nil {
+			t.Fatalf("gate passed with the group/other write repair failing (%s)", out)
+		}
+		want := "ERR: could not remove group/other write access from " + tree + ": chmod -R go-w failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	t.Run("failed tree traversal chmod aborts and names the tree", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_755=tree")
+		if err == nil {
+			t.Fatalf("gate passed with the tree's chmod 755 failing (%s)", out)
+		}
+		want := "ERR: could not make " + tree + " traversable by the service user: chmod 755 failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	// 0755 on bin/ is no use while the directory above it stays 0700, so the
+	// two are separate repairs and the message has to say which one failed.
+	t.Run("failed bin traversal chmod aborts and names bin", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_755=bin")
+		if err == nil {
+			t.Fatalf("gate passed with bin's chmod 755 failing (%s)", out)
+		}
+		want := "ERR: could not make " + filepath.Join(tree, "bin") + " traversable by the service user: chmod 755 failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	t.Run("failed binary chmod aborts and names the binary", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "FAIL_755=binary")
+		if err == nil {
+			t.Fatalf("gate passed with the binary's chmod 755 failing (%s)", out)
+		}
+		want := "ERR: could not make " + bin + " executable by the service user: chmod 755 failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
+		}
+	})
+
+	// The install continues on the root path only when every repair landed, so
+	// this pins the repaired shape rather than the absence of an error.
+	t.Run("successful repair leaves the tree startable", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin)
+		if err != nil {
+			t.Fatalf("gate aborted with every repair succeeding: %v (%s)", err, out)
+		}
+		if strings.Contains(out, "ERR:") {
+			t.Errorf("the gate reported an error on the success path: %s", out)
+		}
+		for _, p := range []string{tree, filepath.Join(tree, "bin"), bin} {
+			fi, err := os.Stat(p)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := fi.Mode().Perm(); got != 0o755 {
+				t.Errorf("%s mode = %o, want 755: the service user cannot traverse or execute it", p, got)
+			}
+		}
+	})
+}
+
+// A checked repair is only a gate if the install acts on it. These assertions
+// pin the call site: do_install must call enforce_install_tree_perms, and a
+// failing gate must exit before the rc.d script is written and before the
+// success message, because "the install aborted" is what the operator needs to
+// be true. The swallowed forms are refuted across the whole script, so
+// restoring any one of them fails here rather than next review cycle.
+func TestFreeBSDInstallTreePermsGateGatesTheInstall(t *testing.T) {
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	body := extractShellFunc(t, script, "do_install")
+	if body == "" {
+		t.Fatal("could not extract do_install from the installer")
+	}
+
+	gateIdx, exitIdx, rcIdx, doneIdx := -1, -1, -1, -1
+	var gateLine string
+	for i, line := range shellExecLines(body) {
+		switch {
+		case strings.HasPrefix(line, "if ! enforce_install_tree_perms"):
+			if gateIdx < 0 {
+				gateIdx, gateLine = i, line
+			}
+		case gateIdx >= 0 && exitIdx < 0 && line == "exit 1":
+			exitIdx = i
+		case strings.Contains(line, "write_rc_script_body") && rcIdx < 0:
+			rcIdx = i
+		case strings.Contains(line, "URnetwork provider %s installed") && doneIdx < 0:
+			doneIdx = i
+		}
+	}
+	if gateIdx < 0 {
+		t.Fatal("do_install does not call enforce_install_tree_perms")
+	}
+	// Repairs must name this install's tree and binary: a bare `$install_path`
+	// read from a global can be repointed by an earlier assignment.
+	if !strings.Contains(gateLine, `"$install_path" "$provider_bin"`) {
+		t.Errorf("the gate is not called on the install tree and binary: %q", gateLine)
+	}
+	if exitIdx < 0 {
+		t.Fatal("do_install calls the gate but does not abort when it fails")
+	}
+	if rcIdx < 0 {
+		t.Fatal("do_install no longer writes the rc.d script; this test needs updating")
+	}
+	if gateIdx > rcIdx {
+		t.Error("the gate runs after the rc.d script is written; a broken tree would already be installed as a service")
+	}
+	if exitIdx > rcIdx {
+		t.Error("a failed gate does not abort before the rc.d script is written")
+	}
+	if doneIdx < 0 {
+		t.Fatal("do_install has no success message; this test needs updating")
+	}
+	if exitIdx > doneIdx {
+		t.Error("a failed gate can fall through to the success message")
+	}
+	for _, swallowed := range []string{
+		`chown -R root:wheel "$install_path" 2>/dev/null ||`,
+		`chown -R root "$install_path" 2>/dev/null || true`,
+		`chmod -R go-w "$install_path" 2>/dev/null || true`,
+		`chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true`,
+	} {
+		if strings.Contains(script, swallowed) {
+			t.Errorf("installer still swallows the permission repair: %q", swallowed)
+		}
+	}
+}
+
+// shellExecLines returns the executable lines of a shell function body,
+// trimmed. A commented-out copy of a repair satisfies a whole-text Contains
+// while doing nothing, so assertions about what the installer DOES read only
+// these.
+func shellExecLines(body string) []string {
+	var out []string
+	for _, line := range strings.Split(body, "\n") {
+		trimmed := strings.TrimSpace(line)
+		if trimmed == "" || strings.HasPrefix(trimmed, "#") {
+			continue
+		}
+		out = append(out, trimmed)
+	}
+	return out
 }
 
 // extractShellFunc returns the body of a top-level shell function, from its

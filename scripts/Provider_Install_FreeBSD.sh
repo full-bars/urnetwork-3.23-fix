@@ -508,6 +508,76 @@ assert_state_path_safe() {
     fi
 }
 
+# enforce_install_tree_perms <tree> <binary>
+#
+# Repair the install tree's ownership and traversal, or return nonzero with the
+# path and the failed repair in the message. do_install calls this only when it
+# runs as root, and there it is a GATE rather than best effort: rc.d starts the
+# provider as root and daemon(8) drops to the service user before exec, so a
+# tree that stays writable by that user crosses a privilege boundary and a tree
+# it cannot traverse can never start. With no privilege left to escalate to,
+# the caller aborts instead of writing the rc.d script and reporting success.
+# The non-root path cannot do this (chown needs root) and keeps its own
+# reported attempt before staging, not this gate.
+enforce_install_tree_perms() {
+    _tree="$1"
+    _bin="$2"
+    _tree_conforms() {
+        _dirs=$(find "$_tree" -type d -print) || return 1
+        for _path in $_dirs; do
+            [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            [ "$(stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
+        done
+        [ "$(stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
+        [ "$(stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
+    }
+    # :wheel is the FreeBSD convention, not what makes the tree safe, so retry
+    # with root alone before failing: the boundary is the OWNER, not the group.
+    if ! chown -R root:wheel "$_tree" 2>/dev/null; then
+        if ! chown -R root "$_tree" 2>/dev/null; then
+            if _tree_conforms; then
+                pr_info "chown -R root:wheel and chown -R root both failed; %s already conformed" "$_tree"
+            else
+                pr_err "could not make %s root-owned: chown -R root:wheel and chown -R root both failed" "$_tree"
+                return 1
+            fi
+        fi
+    fi
+    # Group/other write on a binary root executes is the boundary itself, so
+    # this is required rather than convenient.
+    if ! chmod -R go-w "$_tree" 2>/dev/null; then
+        if _tree_conforms; then
+            pr_info "chmod -R go-w failed; %s already conformed" "$_tree"
+        else
+            pr_err "could not remove group/other write access from %s: chmod -R go-w failed" "$_tree"
+            return 1
+        fi
+    fi
+    # One path per call so the message names the directory that failed: 0755 on
+    # bin/ is no use while the tree above it is still 0700.
+    for _dir in "$_tree" "$_tree/bin"; do
+        if ! chmod 755 "$_dir" 2>/dev/null; then
+            if _tree_conforms; then
+                pr_info "chmod 755 failed for %s; %s already conformed" "$_dir" "$_tree"
+            else
+                pr_err "could not make %s traversable by the service user: chmod 755 failed" "$_dir"
+                return 1
+            fi
+        fi
+    done
+    # The binary was renamed into place by this run, so an absent or
+    # unexecutable image is a broken install rather than an optional repair.
+    if ! chmod 755 "$_bin" 2>/dev/null; then
+        if _tree_conforms; then
+            pr_info "chmod 755 failed for %s; %s already conformed" "$_bin" "$_tree"
+        else
+            pr_err "could not make %s executable by the service user: chmod 755 failed" "$_bin"
+            return 1
+        fi
+    fi
+    return 0
+}
+
 do_install() {
     # Every exit from here on removes a staged file that priv created, so the
     # cleanup runs on all of them. The signal traps exit normally (130 = SIGINT,
@@ -619,8 +689,15 @@ do_install() {
     priv mkdir -p "$install_path/bin" || { pr_err "Failed to create %s" "$install_path"; rm -rf "$tmpdir"; exit 1; }
     # A restrictive invoking umask can leave these 0700 even on the sudo path,
     # and the root-only repair below never runs there. daemon -u must be able
-    # to traverse and execute.
-    priv chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
+    # to traverse and execute. This is the only traversal repair the NON-ROOT
+    # path gets (the checked gate, enforce_install_tree_perms, runs only as
+    # root), so a failure here is REPORTED with the paths instead of being
+    # hidden behind `|| true`. It stays non-fatal because this branch cannot
+    # chown at all: repairing traversal without the ownership half does not
+    # make the tree safe, so the install's start/restart check is what decides
+    # success after this point.
+    priv chmod 755 "$install_path" "$install_path/bin" 2>/dev/null ||
+        pr_warn "could not make %s and %s/bin traversable; the service user may be unable to start the provider" "$install_path" "$install_path"
     # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
@@ -765,13 +842,15 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 chmod 700 . 2>/dev/null || true
             fi
         fi
-        chown -R root:wheel "$install_path" 2>/dev/null || \
-            chown -R root "$install_path" 2>/dev/null || true
-        chmod -R go-w "$install_path" 2>/dev/null || true
-        # The binaries must stay executable by the service user while the
-        # directories above them are not writable by anyone else.
-        chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
-        [ -f "$provider_bin" ] && chmod 755 "$provider_bin" 2>/dev/null || true
+        # Checked, not best effort: as root there is no higher privilege left
+        # to repair this with, and daemon(8) drops to the service user before
+        # exec. A tree that cannot be made root-owned or traversable aborts
+        # here, before the rc.d script is written and before anything reports
+        # success.
+        if ! enforce_install_tree_perms "$install_path" "$provider_bin"; then
+            rm -rf "$tmpdir"
+            exit 1
+        fi
     fi
 
     if [ "$(id -u)" != "0" ]; then
