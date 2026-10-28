@@ -528,6 +528,19 @@ enforce_install_tree_perms() {
             [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
             [ "$(stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
         done
+        # Every regular file, not only $_bin: bin/urnet-tools is root-executed
+        # too, and version is written by this run. Any group/other write bit
+        # fails, and so does a mode that does not parse as three octal digits.
+        _files=$(find "$_tree" -type f -print) || return 1
+        for _path in $_files; do
+            [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            _mode=$(stat -f %Lp "$_path" 2>/dev/null) || return 1
+            case "$_mode" in
+                [0-7][2367][0-7]|[0-7][0-7][2367]) return 1 ;;
+                [0-7][0-7][0-7]) ;;
+                *) return 1 ;;
+            esac
+        done
         [ "$(stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
         [ "$(stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
     }

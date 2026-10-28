@@ -317,8 +317,8 @@ pr_info() {
 stat() {
     if [ "$1" = -f ]; then
         case "$2" in
-            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" ;;
-            %Lp) /usr/bin/stat -c %a "$3" ;;
+            %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" 2>/dev/null || /usr/bin/stat -f %u "$3" ;;
+            %Lp) /usr/bin/stat -c %a "$3" 2>/dev/null || /usr/bin/stat -f %Lp "$3" ;;
             *) return 1 ;;
         esac
         return
@@ -418,6 +418,33 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		}
 		if strings.Contains(out, "ERR:") {
 			t.Errorf("a recoverable chown reported an error: %s", out)
+		}
+	})
+
+	// The fallback accepts a tree that already conforms, so the conformance check
+	// has to cover every regular file root runs, not only the directories and the
+	// daemon binary. bin/urnet-tools is root-executed and sits beside the daemon.
+	t.Run("fallback rejects a group-writable sibling binary", func(t *testing.T) {
+		tree, bin := setup(t)
+		tool := filepath.Join(tree, "bin", "urnet-tools")
+		if err := os.WriteFile(tool, []byte("#!/bin/sh\n"), 0o775); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.Chmod(tool, 0o775); err != nil {
+			t.Fatal(err)
+		}
+		for _, p := range []string{tree, filepath.Join(tree, "bin"), bin} {
+			if err := os.Chmod(p, 0o755); err != nil {
+				t.Fatal(err)
+			}
+		}
+		out, err := run(t, tree, bin, "FAIL_GOW=1", "STAT_ROOT=1")
+		if err == nil {
+			t.Fatalf("gate accepted a group-writable urnet-tools after chmod -R go-w failed (%s)", out)
+		}
+		want := "ERR: could not remove group/other write access from " + tree + ": chmod -R go-w failed"
+		if !strings.Contains(out, want) {
+			t.Errorf("the abort does not name the path and the failure\n want: %s\n  got: %s", want, out)
 		}
 	})
 
