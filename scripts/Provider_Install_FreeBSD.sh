@@ -56,6 +56,59 @@ pr_warn() {
     printf "%s: $fmt\n" "$me" "$@" >&2
 }
 
+# get_asset_digest_from_api_response extracts the sha256 hex digest for an asset.
+get_asset_digest_from_api_response() {
+    _rel="$1"
+    _ast="$2"
+    _dig=""
+    if command -v jq > /dev/null 2>&1; then
+        _dig="$(printf '%s' "$_rel" | jq -r --arg a "$_ast" '
+            (.assets[]? | select(.name == $a) | .digest)
+            | select(type == "string")
+            | sub("^sha256:"; "")
+            | select(test("^[0-9a-fA-F]{64}$"))
+        ' 2>/dev/null || true)"
+    elif command -v python3 > /dev/null 2>&1; then
+        _dig="$(printf '%s' "$_rel" | python3 -c '
+import sys, json, re
+try:
+    doc = json.load(sys.stdin)
+except Exception:
+    sys.exit(0)
+val = ""
+for asset in doc.get("assets", []):
+    if asset.get("name") == sys.argv[1]:
+        val = asset.get("digest") or ""
+        break
+val = val.replace("sha256:", "")
+print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
+' "$_ast" 2>/dev/null || true)"
+    fi
+    printf '%s' "$_dig"
+}
+
+compute_sha256_file() {
+    _f="$1"
+    [ -f "$_f" ] || return 1
+    if command -v sha256 > /dev/null 2>&1; then
+        sha256 -q "$_f"
+    elif command -v openssl > /dev/null 2>&1; then
+        openssl dgst -sha256 "$_f" | awk '{print $NF}'
+    elif command -v sha256sum > /dev/null 2>&1; then
+        sha256sum "$_f" | awk '{print $1}'
+    else
+        return 1
+    fi
+}
+
+verify_sha256_file() {
+    _f="$1"
+    _exp="$2"
+    [ -n "$_exp" ] && [ -f "$_f" ] || return 1
+    _act="$(compute_sha256_file "$_f")"
+    [ -n "$_act" ] && [ "$_act" = "$_exp" ]
+}
+
 # http_fetch <url> [output-file]
 #
 # One downloader for every fetch the installer makes. FreeBSD ships fetch(1) in
@@ -659,8 +712,9 @@ do_install() {
         *)             pr_err "Unsupported architecture: %s" "$arch"; exit 1 ;;
     esac
 
-    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/urnetwork-provider-$tag-freebsd-$goarch.tar.gz"
-    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/urnetwork-provider-$tag-freebsd-$goarch.tar.gz"
+    provider_asset="urnetwork-provider-$tag-freebsd-$goarch.tar.gz"
+    tarball_url="https://dl.fullbars.xyz/releases/download/$tag/$provider_asset"
+    mirror_url="https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$provider_asset"
     pr_info "Downloading %s..." "$tarball_url"
 
     tmpdir="$(mktemp -d)"
@@ -671,6 +725,29 @@ do_install() {
             rm -rf "$tmpdir"
             exit 1
         fi
+    fi
+
+    # Resolve provider tarball digest
+    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+    if [ -z "$provider_digest" ]; then
+        if _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"; then
+            if [ -n "$_rel_extra" ]; then
+                release_json="$_rel_extra"
+                provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+            fi
+        fi
+    fi
+
+    if [ -n "$provider_digest" ]; then
+        if ! verify_sha256_file "$tmpdir/provider.tar.gz" "$provider_digest"; then
+            actual="$(compute_sha256_file "$tmpdir/provider.tar.gz")"
+            pr_err "SHA-256 digest mismatch for provider asset '%s': expected %s, got %s" "$provider_asset" "$provider_digest" "${actual:-<unknown>}"
+            rm -rf "$tmpdir"
+            exit 1
+        fi
+        pr_info "Provider asset sha256 verified (%s)" "$provider_asset"
+    else
+        pr_warn "Release %s has no sha256 digest for '%s'; continuing without verification" "$tag" "$provider_asset"
     fi
 
     tar -xzf "$tmpdir/provider.tar.gz" -C "$tmpdir" || {
@@ -806,9 +883,28 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
         fi
     fi
 
+    provider_backup="$install_path/bin/.urnetwork.bak.$$"
+    had_old_binary=0
+    if [ -f "$provider_bin" ]; then
+        had_old_binary=1
+        _live_bin="$provider_bin"
+        if ! priv ln -f "$_live_bin" "$provider_backup" 2>/dev/null; then
+            priv cp -p "$_live_bin" "$provider_backup" 2>/dev/null || \
+            priv cp "$_live_bin" "$provider_backup" 2>/dev/null || true
+        fi
+    fi
+
     priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
     staged_tool=""
-    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
+    priv mv -f "$staged" "$provider_bin" || {
+        pr_err "Failed to install binary"
+        priv_rm "$staged"
+        if [ "$had_old_binary" -eq 1 ] && [ ! -f "$provider_bin" ] && [ -f "$provider_backup" ]; then
+            priv mv -f "$provider_backup" "$provider_bin" 2>/dev/null || true
+        fi
+        rm -rf "$tmpdir"
+        exit 1
+    }
     # Renamed into place: forget the name, or the EXIT trap would delete the
     # binary that is now the installed provider.
     staged_bin=""
@@ -860,13 +956,25 @@ RCSCRIPT
     # only if it was already running, so a deliberately stopped provider is not
     # resurrected by an unattended `update` from cron. Failures are fatal —
     # reporting "installed" for a service that did not start is a false green.
+    service_ok=1
     if service_running; then
-        restart_service || { pr_err "Failed to restart the service after install"; exit 1; }
+        restart_service || { service_ok=0; pr_err "Failed to restart the service after install"; }
     elif [ "${UPDATING:-0}" != "1" ]; then
-        load_service || { pr_err "Failed to start the service"; exit 1; }
+        load_service || { service_ok=0; pr_err "Failed to start the service"; }
     else
         pr_info "Service is not running; leaving it stopped (run '%s start' when ready)" "$me"
     fi
+
+    if [ "$service_ok" -ne 1 ]; then
+        if [ "$had_old_binary" -eq 1 ] && [ -f "$provider_backup" ]; then
+            priv mv -f "$provider_backup" "$provider_bin" 2>/dev/null || true
+            service_running && restart_service 2>/dev/null || true
+            pr_err "Restored previous binary after service restart failure"
+        fi
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    [ "$had_old_binary" -eq 1 ] && priv rm -f "$provider_backup" 2>/dev/null || true
 
     # PATH hint goes into the SERVICE user's shell rc, once. Under sudo $HOME
     # is root's, and root's PATH never contains the service user's bin dir, so
