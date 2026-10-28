@@ -212,7 +212,7 @@ func installedBSDProviderIn(home string) string {
 // production never reassigns it.
 var bsdLibexecProviderPath = "/usr/local/libexec/urnetwork-provider/bin/urnetwork"
 
-// bsdProviderCandidates are the install paths bsdInstallerPaths installs to,
+// bsdProviderCandidates are the install paths the FreeBSD installer writes to,
 // in priority order, so the installer script and this lookup cannot drift
 // apart silently.
 //
