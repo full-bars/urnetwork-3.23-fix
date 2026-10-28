@@ -87,6 +87,20 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     printf '%s' "$_dig"
 }
 
+release_lists_asset() {
+    [ -n "$1" ] || return 1
+    if command -v jq >/dev/null 2>&1; then
+        printf '%s' "$1" | jq -e --arg a "$2" 'any(.assets[]?; .name == $a)' >/dev/null 2>&1
+    elif command -v python3 >/dev/null 2>&1; then
+        printf '%s' "$1" | python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); sys.exit(0 if any(a.get("name")==sys.argv[1] for a in d.get("assets",[])) else 1)
+except Exception: sys.exit(1)' "$2" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
 compute_sha256_file() {
     _f="$1"
     [ -f "$_f" ] || return 1
@@ -727,16 +741,26 @@ do_install() {
         fi
     fi
 
-    # Resolve provider tarball digest
-    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
-    if [ -z "$provider_digest" ]; then
-        if _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"; then
-            if [ -n "$_rel_extra" ]; then
-                release_json="$_rel_extra"
-                provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
-            fi
-        fi
+    if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+        pr_err "Neither jq nor python3 is installed; cannot read release metadata for %s (%s). Refusing to install. Install jq (pkg install jq) or python3 and retry." "$tag" "$provider_asset"
+        rm -rf "$tmpdir"
+        exit 1
     fi
+    _rel_extra=""
+    if ! release_lists_asset "$release_json" "$provider_asset"; then
+        _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null || true)"
+        release_lists_asset "$_rel_extra" "$provider_asset" && release_json="$_rel_extra"
+    fi
+    if ! release_lists_asset "$release_json" "$provider_asset"; then
+        if [ -z "$release_json" ]; then
+            pr_err "Could not fetch release metadata for %s to verify asset %s (GitHub API unreachable or rate-limited); refusing to install." "$tag" "$provider_asset"
+        else
+            pr_err "Release metadata for %s does not list asset %s; refusing to install." "$tag" "$provider_asset"
+        fi
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
 
     if [ -n "$provider_digest" ]; then
         if ! verify_sha256_file "$tmpdir/provider.tar.gz" "$provider_digest"; then
@@ -909,23 +933,6 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
     # binary that is now the installed provider.
     staged_bin=""
 
-    # Same rename-not-follow rule as the binary above. A symlink planted at the
-    # version name would redirect the write, so stage beside it and rename over
-    # it: rename replaces the entry instead of following it.
-    ver_tmp="$install_path/.version.new.$$"
-    staged_version="$ver_tmp"
-    # Not fatal: the binary is already installed and the provider is about to
-    # start, so failing here would report a failed install for a working
-    # provider. The root-owned temp file still has to go with the failure, or
-    # every retry leaves .version.new.<pid> in the install tree.
-    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
-           priv mv -f "$ver_tmp" "$install_path/version"; }; then
-        priv_rm "$ver_tmp"
-        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
-    fi
-    staged_version=""
-    priv chmod 644 "$install_path/version" 2>/dev/null || true
-
 
     if [ "$(id -u)" != "0" ]; then
         pr_info "Installing the rc.d service requires root; re-running that step with sudo..."
@@ -957,7 +964,9 @@ RCSCRIPT
     # resurrected by an unattended `update` from cron. Failures are fatal —
     # reporting "installed" for a service that did not start is a false green.
     service_ok=1
+    service_was_running=0
     if service_running; then
+        service_was_running=1
         restart_service || { service_ok=0; pr_err "Failed to restart the service after install"; }
     elif [ "${UPDATING:-0}" != "1" ]; then
         load_service || { service_ok=0; pr_err "Failed to start the service"; }
@@ -967,14 +976,33 @@ RCSCRIPT
 
     if [ "$service_ok" -ne 1 ]; then
         if [ "$had_old_binary" -eq 1 ] && [ -f "$provider_backup" ]; then
-            priv mv -f "$provider_backup" "$provider_bin" 2>/dev/null || true
-            service_running && restart_service 2>/dev/null || true
-            pr_err "Restored previous binary after service restart failure"
+            if ! priv mv -f "$provider_backup" "$provider_bin"; then
+                pr_err "Could not restore previous binary from %s; service restart was not attempted" "$provider_backup"
+            elif [ "$service_was_running" -eq 1 ]; then
+                if restart_service; then
+                    pr_warn "Restored previous binary and restarted the service; update did not apply"
+                else
+                    pr_err "Restored previous binary but failed to restart the service"
+                fi
+            else
+                pr_warn "Restored previous binary; service was not running before install and remains stopped"
+            fi
         fi
         rm -rf "$tmpdir"
         exit 1
     fi
     [ "$had_old_binary" -eq 1 ] && priv rm -f "$provider_backup" 2>/dev/null || true
+
+    # Publish the version only after the service start/restart succeeded.
+    ver_tmp="$install_path/.version.new.$$"
+    staged_version="$ver_tmp"
+    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
+           priv mv -f "$ver_tmp" "$install_path/version"; }; then
+        priv_rm "$ver_tmp"
+        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
+    fi
+    staged_version=""
+    priv chmod 644 "$install_path/version" 2>/dev/null || true
 
     # PATH hint goes into the SERVICE user's shell rc, once. Under sudo $HOME
     # is root's, and root's PATH never contains the service user's bin dir, so

@@ -989,6 +989,11 @@ type installerHarnessResult struct {
 	stderr   string
 	tarCalls []string
 	finalBin string
+	// versionWritten reports whether the installer left its version marker
+	// (.version on Linux, version on FreeBSD) in the install tree, and
+	// versionMarker is its content.
+	versionWritten bool
+	versionMarker  string
 }
 
 func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarnessResult {
@@ -1020,10 +1025,14 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 		_ = os.WriteFile(filepath.Join(installPath, "bin", "urnetwork"), []byte(opts.existingBin), 0o755)
 	}
 
+	fnListsAsset := extractShellFunc(t, script, "release_lists_asset")
 	fnDigest := extractShellFunc(t, script, "get_asset_digest_from_api_response")
 	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
 	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
 	fnDoInstall := extractShellFunc(t, script, "do_install")
+	if fnListsAsset == "" {
+		t.Fatal("could not extract release_lists_asset from FreeBSD script")
+	}
 	if fnDoInstall == "" {
 		t.Fatal("could not extract do_install from FreeBSD script")
 	}
@@ -1131,7 +1140,7 @@ FAIL_MV=%q
 do_install "$version"
 `, tag, installPath, stateDir, rcScript, failRestartVal, failCpVal, failMvVal)
 
-	fullScript := harness + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
+	fullScript := harness + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
@@ -1155,13 +1164,16 @@ do_install "$version"
 	}
 
 	finalBinBytes, _ := os.ReadFile(filepath.Join(installPath, "bin", "urnetwork"))
+	versionBytes, verr := os.ReadFile(filepath.Join(installPath, "version"))
 
 	return installerHarnessResult{
-		exitCode: exitCode,
-		stdout:   string(out),
-		stderr:   string(out),
-		tarCalls: tarCalls,
-		finalBin: string(finalBinBytes),
+		exitCode:       exitCode,
+		stdout:         string(out),
+		stderr:         string(out),
+		tarCalls:       tarCalls,
+		finalBin:       string(finalBinBytes),
+		versionWritten: verr == nil,
+		versionMarker:  string(versionBytes),
 	}
 }
 
@@ -1194,6 +1206,10 @@ func runLinuxInstaller(t *testing.T, opts installerHarnessOpts) installerHarness
 
 	fnGetVersion := extractShellFunc(t, script, "get_version_from_api_response")
 	fnGetDate := extractShellFunc(t, script, "get_release_date_from_api_response")
+	fnListsAsset := extractShellFunc(t, script, "release_lists_asset")
+	if fnListsAsset == "" {
+		t.Fatal("could not extract release_lists_asset from Linux script")
+	}
 	fnDigest := extractShellFunc(t, script, "get_asset_digest_from_api_response")
 	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
 	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
@@ -1310,7 +1326,7 @@ systemd_units_stopped=1
 do_install
 `, tag, op, installPath, tempDir, failRestartVal, failCpVal, failMvVal, tempDir, tempDir, tempDir, tempDir)
 
-	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
+	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	out, err := cmd.CombinedOutput()
@@ -1334,13 +1350,16 @@ do_install
 	}
 
 	finalBinBytes, _ := os.ReadFile(filepath.Join(installPath, "bin", "urnetwork"))
+	versionBytes, verr := os.ReadFile(filepath.Join(installPath, ".version"))
 
 	return installerHarnessResult{
-		exitCode: exitCode,
-		stdout:   string(out),
-		stderr:   string(out),
-		tarCalls: tarCalls,
-		finalBin: string(finalBinBytes),
+		exitCode:       exitCode,
+		stdout:         string(out),
+		stderr:         string(out),
+		tarCalls:       tarCalls,
+		finalBin:       string(finalBinBytes),
+		versionWritten: verr == nil,
+		versionMarker:  string(versionBytes),
 	}
 }
 
@@ -1473,15 +1492,16 @@ func TestInstallerProviderTarballNoDigestWarnsAndProceeds(t *testing.T) {
 			if strings.Contains(combinedOut, "mismatch") {
 				t.Errorf("missing digest must not be treated as a mismatch:\n%s", combinedOut)
 			}
-			hasProviderWarn := false
-			for _, line := range strings.Split(combinedOut, "\n") {
+			// stdout and stderr are the same combined stream in the harness,
+			// so count the warnings in one of them only.
+			providerWarns := 0
+			for _, line := range strings.Split(res.stdout, "\n") {
 				if strings.Contains(line, "[WARN]") && strings.Contains(line, tc.assetName) {
-					hasProviderWarn = true
-					break
+					providerWarns++
 				}
 			}
-			if !hasProviderWarn {
-				t.Errorf("expected warning specifically naming unverified asset %q:\n%s", tc.assetName, combinedOut)
+			if providerWarns != 1 {
+				t.Errorf("expected exactly one warning naming unverified asset %q, got %d:\n%s", tc.assetName, providerWarns, res.stdout)
 			}
 		})
 	}
@@ -1587,6 +1607,142 @@ func TestInstallerFailedRestartRestoresBackup(t *testing.T) {
 			combined := res.stdout + "\n" + res.stderr
 			if !strings.Contains(combined, "Restored") && !strings.Contains(combined, "restored") {
 				t.Errorf("expected message indicating rollback/restoration of previous binary:\n%s", combined)
+			}
+		})
+	}
+}
+
+// assertInstallRefused checks the fail-closed contract shared by both
+// installers: a non-zero exit, no tarball extraction, and an error that names
+// the tag and the provider asset it could not verify.
+func assertInstallRefused(t *testing.T, res installerHarnessResult, tag, assetName string) {
+	t.Helper()
+	combined := res.stdout + "\n" + res.stderr
+	if res.exitCode == 0 {
+		t.Fatalf("expected refusal (non-zero exit), got exit 0:\n%s", combined)
+	}
+	if len(res.tarCalls) != 0 {
+		t.Fatalf("tar ran (%v) before the release metadata was verified", res.tarCalls)
+	}
+	if !strings.Contains(strings.ToLower(combined), "refusing") {
+		t.Errorf("refusal message does not say it refused:\n%s", combined)
+	}
+	for _, want := range []string{tag, assetName} {
+		if !strings.Contains(combined, want) {
+			t.Errorf("refusal output missing %q:\n%s", want, combined)
+		}
+	}
+}
+
+// 6. Release metadata unavailable (API unreachable or rate-limited, empty body,
+// no tag fallback): the installer refuses before download and extraction. An
+// unreadable release used to leave the digest empty and install unverified.
+func TestInstallerRefusesWithoutReleaseMetadata(t *testing.T) {
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: "",
+				tarballData: []byte("tarball-with-no-verifiable-release"),
+			})
+			assertInstallRefused(t, res, tag, tc.assetName)
+		})
+	}
+}
+
+// 7. Release metadata readable but the named provider asset absent (an error
+// body or a release without the tarball): refuse, naming the asset.
+func TestInstallerRefusesWhenProviderAssetAbsent(t *testing.T) {
+	tag := "v2026.10.27"
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": "urnet-tools-unrelated.tar.gz", "digest": "sha256:%s"}
+		]
+	}`, tag, strings.Repeat("e", 64))
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: []byte("tarball-absent-from-release"),
+			})
+			assertInstallRefused(t, res, tag, tc.assetName)
+		})
+	}
+}
+
+// 8. The version marker is written only once the units are installed and the
+// service has started. A failed start leaves no marker, so a rollback never
+// leaves the file naming the release that did not run.
+func TestInstallerVersionMarkerOnlyAfterServiceStarts(t *testing.T) {
+	tarballContent := []byte("marker-ordering-tarball")
+	tag := "v2026.10.27"
+	sum := sha256.Sum256(tarballContent)
+	actualDigest := hex.EncodeToString(sum[:])
+
+	for _, tc := range []struct {
+		name      string
+		assetName string
+		run       func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		releaseJSON := fmt.Sprintf(`{
+		"tag_name": %q,
+		"published_at": "2026-10-27T00:00:00Z",
+		"assets": [
+			{"name": %q, "digest": "sha256:%s"}
+		]
+	}`, tag, tc.assetName, actualDigest)
+
+		t.Run(tc.name+"/started", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+			})
+			if res.exitCode != 0 {
+				t.Fatalf("expected install to succeed, got exit %d (out:\n%s)", res.exitCode, res.stdout)
+			}
+			if !res.versionWritten {
+				t.Fatalf("version marker not written after a successful start (out:\n%s)", res.stdout)
+			}
+			if !strings.Contains(res.versionMarker, "2026.10.27") {
+				t.Errorf("version marker %q does not name the installed release", res.versionMarker)
+			}
+		})
+		t.Run(tc.name+"/start_fails", func(t *testing.T) {
+			res := tc.run(t, installerHarnessOpts{
+				tag:         tag,
+				releaseJSON: releaseJSON,
+				tarballData: tarballContent,
+				failRestart: true,
+			})
+			if res.exitCode == 0 {
+				t.Fatalf("expected install to fail when the service does not start, got exit 0 (out:\n%s)", res.stdout)
+			}
+			if res.versionWritten {
+				t.Errorf("version marker written (%q) for a release whose service did not start", res.versionMarker)
 			}
 		})
 	}

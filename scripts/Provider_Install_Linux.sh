@@ -331,6 +331,22 @@ except (json.JSONDecodeError, KeyError):
     echo "$digest" | sed 's/^sha256://'
 }
 
+# Return success only when the release listing contains the named asset.
+release_lists_asset ()
+{
+    [ -n "$1" ] || return 1
+    if command -v jq > /dev/null 2>&1; then
+        printf '%s' "$1" | jq -e --arg a "$2" 'any(.assets[]?; .name == $a)' >/dev/null 2>&1
+    elif command -v python3 > /dev/null 2>&1; then
+        printf '%s' "$1" | python3 -c 'import sys,json
+try:
+ d=json.load(sys.stdin); sys.exit(0 if any(a.get("name")==sys.argv[1] for a in d.get("assets",[])) else 1)
+except Exception: sys.exit(1)' "$2" >/dev/null 2>&1
+    else
+        return 1
+    fi
+}
+
 # install_downloader makes sure curl or wget exists, preferring curl (better
 # progress output, timeouts and retry semantics that BusyBox wget lacks).
 # A minimal host may ship neither — Alpine's busybox provides wget, but a slim
@@ -2478,23 +2494,25 @@ do_install ()
     mirror_url="$urnet_github_dl_base/$tag/urnetwork-provider-$tag.tar.gz"
     provider_asset="urnetwork-provider-$tag.tar.gz"
     
-    # Resolve the digest from the release JSON
-    provider_digest=""
-    if [ -n "${release_json:-}" ]; then
-        provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+    # The release listing is required even when the asset has no digest.
+    if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
+        pr_err "Neither jq nor python3 is installed; cannot read release metadata for %s (%s). Refusing to install. Install jq or python3 and retry." "$tag" "$provider_asset"
+        exit 1
     fi
-    if [ -z "$provider_digest" ] && [ -n "${release:-}" ]; then
-        release_json="$release"
-        provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+    release_json="${release_json:-${release:-}}"
+    if ! release_lists_asset "$release_json" "$provider_asset"; then
+        release_json_tag="$(network_fetch "$api_base/releases/tags/$tag" 2>/dev/null || true)"
+        release_lists_asset "$release_json_tag" "$provider_asset" && release_json="$release_json_tag"
     fi
-    if [ -z "$provider_digest" ]; then
-        if release_json_tag="$(network_fetch "$api_base/releases/tags/$tag" 2>/dev/null)"; then
-            if [ -n "$release_json_tag" ]; then
-                release_json="$release_json_tag"
-                provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
-            fi
+    if ! release_lists_asset "$release_json" "$provider_asset"; then
+        if [ -z "$release_json" ]; then
+            pr_err "Could not fetch release metadata for %s to verify asset %s (GitHub API unreachable or rate-limited); refusing to install." "$tag" "$provider_asset"
+        else
+            pr_err "Release metadata for %s does not list asset %s; refusing to install." "$tag" "$provider_asset"
         fi
+        exit 1
     fi
+    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
 
     pr_info "Downloading: %s" "$dl_url"
     
@@ -2707,9 +2725,6 @@ do_install ()
         # bundled content that may lack the latest fix.
     fi
 
-    echo "$version_to_install" > "$install_path/.version"
-    echo "$release_date" > "$install_path/.date"
-
     if [ "$has_systemd" -eq 1 ]; then
         install_systemd_units
     fi
@@ -2717,6 +2732,9 @@ do_install ()
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
         install_openrc_units
     fi
+
+    echo "$version_to_install" > "$install_path/.version"
+    echo "$release_date" > "$install_path/.date"
 
     # The symlinks are not a shell-startup edit, so they are made regardless of
     # -B; the rc-file blocks honour it.
