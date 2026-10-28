@@ -164,15 +164,41 @@ func runProcstat(args ...string) string {
 func installedBSDProvider() string {
 	home, err := os.UserHomeDir()
 	if err != nil {
-		return ""
+		// An unknown home says nothing about the root-owned tree, which is
+		// listed first precisely so it survives this case. Returning early
+		// here made a working libexec install undiscoverable for the callers
+		// whose home is unreliable (rc.d, cron), so the search continues with
+		// no home instead of giving up.
+		home = ""
 	}
+	return installedBSDProviderIn(home)
+}
+
+// installedBSDProviderIn reports the first candidate that is a regular file
+// with an execute bit set.
+//
+// A successful os.Stat is not enough evidence that a candidate can be run: a
+// staged copy, an interrupted download or a leftover file all exist, and
+// accepting one of them hides a working per-user install further down the
+// list. Directories are excluded by the regular-file check.
+func installedBSDProviderIn(home string) string {
 	for _, c := range bsdProviderCandidates(home) {
-		if info, err := os.Stat(c); err == nil && !info.IsDir() {
-			return c
+		info, err := os.Stat(c)
+		if err != nil {
+			continue
 		}
+		if !info.Mode().IsRegular() || info.Mode().Perm()&0o111 == 0 {
+			continue
+		}
+		return c
 	}
 	return ""
 }
+
+// bsdLibexecProviderPath is the root-owned path the current installer writes.
+// It is a variable so tests can substitute a writable tree of the same shape;
+// production never reassigns it.
+var bsdLibexecProviderPath = "/usr/local/libexec/urnetwork-provider/bin/urnetwork"
 
 // bsdProviderCandidates are the install paths bsdInstallerPaths installs to,
 // in priority order, so the installer script and this lookup cannot drift
@@ -185,7 +211,7 @@ func installedBSDProvider() string {
 // install made before the tree moved still has a provider there until the
 // installer is re-run.
 func bsdProviderCandidates(home string) []string {
-	candidates := []string{"/usr/local/libexec/urnetwork-provider/bin/urnetwork"}
+	candidates := []string{bsdLibexecProviderPath}
 	if home == "" {
 		return candidates
 	}
