@@ -234,13 +234,9 @@ const defaultAPIPort = 443
 // the URL cache is keyed by bare address, so it is cleared by the key's
 // address part. Used by both the interactive `proxy remove-dead` command and
 // the automatic scoped cleanup job, so removal logic only lives in one place.
-func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) error {
-	release, err := acquireProxyLock()
-	if err != nil {
-		return fmt.Errorf("could not acquire proxy lock: %w", err)
-	}
-	defer release()
-
+// removeProxiesLocked applies removals across file, internal and URL stores.
+// The caller must hold the proxy lock.
+func removeProxiesLocked(state *ProxyState, addrsBySource map[string][]string) error {
 	if fileAddrs := addrsBySource["file"]; len(fileAddrs) > 0 {
 		if state.Source == "" {
 			tlog("[proxy] warning: %d proxies tagged source=file but no file source is configured; skipping\n", len(fileAddrs))
@@ -276,6 +272,74 @@ func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) err
 		if err := writeProxyURLState(urlState); err != nil {
 			return fmt.Errorf("could not write proxy_url.json: %w", err)
 		}
+	}
+	return nil
+}
+
+// afterMatchRemovalHook runs inside the transaction once the matches are
+// gone. Tests use it to run a competing writer at that exact point.
+var afterMatchRemovalHook func()
+
+// removeMatchingProxies is the transaction behind `proxy remove --match`. The
+// proxy lock is held from the exclusion write through every removal, so a URL
+// fetch cannot merge a matching address back between the two. The exclusion is
+// written first: if the removal is interrupted, the pattern is already
+// excluded and a rerun finishes the job. The matches are collected under the
+// lock, so they reflect the stores as they are now rather than as the
+// operator's preview saw them. The reload trigger is written after unlocking
+// so the running provider can take the lock.
+func removeMatchingProxies(pattern string) (int, error) {
+	removed, err := removeMatchingProxiesLocked(pattern)
+	if err != nil {
+		return 0, err
+	}
+	if removed > 0 {
+		triggerProxyReload()
+	}
+	return removed, nil
+}
+
+func removeMatchingProxiesLocked(pattern string) (int, error) {
+	release, err := acquireProxyLockWithRetry()
+	if err != nil {
+		return 0, fmt.Errorf("could not acquire proxy lock: %w", err)
+	}
+	defer release()
+
+	urlState, err := readProxyURLState()
+	if err != nil {
+		urlState = &ProxyURLState{}
+	} else if addExcludePattern(urlState, pattern) {
+		if err := writeProxyURLState(urlState); err != nil {
+			return 0, fmt.Errorf("could not persist exclude pattern: %w", err)
+		}
+	}
+
+	state, stateErr := readProxyState()
+	if stateErr != nil {
+		state = &ProxyState{}
+	}
+	addrsBySource, display := collectMatchingProxies(
+		pattern, readProxyConfig(), state.Proxies, state.Source, urlState.Cache)
+	if err := removeProxiesLocked(state, addrsBySource); err != nil {
+		return 0, err
+	}
+	if afterMatchRemovalHook != nil {
+		afterMatchRemovalHook()
+	}
+	return len(display), nil
+}
+
+// removeDeadProxies removes dead proxies across all sources under the proxy lock.
+func removeDeadProxies(state *ProxyState, addrsBySource map[string][]string) error {
+	release, err := acquireProxyLockWithRetry()
+	if err != nil {
+		return fmt.Errorf("could not acquire proxy lock: %w", err)
+	}
+	defer release()
+
+	if err := removeProxiesLocked(state, addrsBySource); err != nil {
+		return err
 	}
 
 	// Release the lock before writing the reload trigger so the running

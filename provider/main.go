@@ -6218,7 +6218,7 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 		urlState = &ProxyURLState{}
 	}
 
-	addrsBySource, display := collectMatchingProxies(
+	_, display := collectMatchingProxies(
 		pattern, proxyConfig, stateProxies, stateSource, urlState.Cache)
 
 	if len(display) == 0 {
@@ -6246,23 +6246,13 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 		return
 	}
 
-	if err := removeDeadProxies(state, addrsBySource); err != nil {
+	removed, err := removeMatchingProxies(pattern)
+	if err != nil {
 		fmt.Printf("removal failed: %v\n", err)
 		return
 	}
 
-	// Persist the exclude pattern so URL source refreshes cannot re-add
-	// matching proxies. Re-read to avoid clobbering the cache changes
-	// removeDeadProxies just wrote.
-	if urlState, err := readProxyURLState(); err == nil {
-		if addExcludePattern(urlState, pattern) {
-			if err := writeProxyURLState(urlState); err != nil {
-				fmt.Printf("warning: could not persist exclude pattern: %v\n", err)
-			}
-		}
-	}
-
-	fmt.Printf("Removed %d proxies matching %q. Pattern excluded from future URL fetches.\n", len(display), pattern)
+	fmt.Printf("Removed %d proxies matching %q. Pattern excluded from future URL fetches.\n", removed, pattern)
 	fmt.Println("The running provider will apply the change via hot reload (no restart).")
 }
 
