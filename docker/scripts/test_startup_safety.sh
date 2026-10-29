@@ -235,5 +235,22 @@ for function_set in common pelican; do
   unset user_auth password auth_echo_mode
 done
 
+# The nightly bootstrap must download the binary before the proxy import runs it,
+# and a failed import must not abort startup. The function-level cases above cannot
+# see either, because they run func_check_proxy outside the real sequence.
+bootstrap_order() {
+  block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
+  update_line=$(printf '%s\n' "$block" | grep -n 'func_check_update' | head -1 | cut -d: -f1)
+  proxy_line=$(printf '%s\n' "$block" | grep -n 'func_check_proxy' | head -1 | cut -d: -f1)
+  [ -n "$update_line" ] && [ -n "$proxy_line" ] && [ "$update_line" -lt "$proxy_line" ]
+}
+report 'nightly downloads the binary before importing proxies' bootstrap_order
+
+bootstrap_proxy_nonfatal() {
+  block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
+  printf '%s\n' "$block" | grep -q 'func_check_proxy || true'
+}
+report 'a failed proxy import does not abort nightly startup' bootstrap_proxy_nonfatal
+
 printf 'Results: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
