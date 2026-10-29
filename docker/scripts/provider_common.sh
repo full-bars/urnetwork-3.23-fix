@@ -21,6 +21,9 @@ PROVIDER_FLAVOR="${PROVIDER_FLAVOR:-stable}"
 
 # === Configuration Variables ===
 export TZ="America/Tijuana"
+# Some entrypoints run without HOME. Normalize it once here, before JWT_FILE
+# and every other path is derived, so nothing resolves to /.urnetwork.
+export HOME="${HOME:-/root}"
 APP_DIR="/app"
 JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-}"
@@ -184,9 +187,9 @@ func_check_credentials() {
 }
 
 # === Proxy Setup ===
-func_check_proxy() {
+func_check_proxy_import() {
     log "[INFO] Checking proxy configuration"
-    proxy_dir="${HOME:-/root}/.urnetwork"
+    proxy_dir="$HOME/.urnetwork"
     proxy_config="$proxy_dir/proxy"
     # A staging directory outlives the container process if it is killed
     # mid-import, so sweep the leftovers before making another one.
@@ -292,6 +295,22 @@ func_check_proxy() {
     fi
     log "[INFO] Proxy configuration replaced from proxy.txt"
     rm -rf "$proxy_stage_home"
+}
+
+# A failed import is only fatal when there is no configuration to fall back on.
+# With a saved config the container keeps working on it; without one it would
+# start sending traffic straight out of its own address while the operator
+# believes the mounted proxy is in use, so it stops instead.
+func_check_proxy() {
+    if func_check_proxy_import; then
+        return 0
+    fi
+    if [ -f "$proxy_config" ]; then
+        log "[WARN] Proxy import failed; kept the existing configuration"
+        return 0
+    fi
+    log "[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy" >&2
+    return 1
 }
 
 # === Architecture Detection ===
@@ -1038,7 +1057,7 @@ func_bootstrap() {
         func_choose_network
         func_check_dir
         func_check_credentials
-        func_check_proxy || true
+        func_check_proxy
         func_report_identity
         func_ip_checker
         func_start_vnstat
@@ -1058,7 +1077,7 @@ func_bootstrap() {
         func_check_update
         # The proxy import runs the provider binary, which only exists after
         # the update check has downloaded it on a fresh nightly container.
-        func_check_proxy || true
+        func_check_proxy
         # choose_network runs after func_check_update: on a fresh nightly
         # container the urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR} binary doesn't exist
         # until the update check downloads it.

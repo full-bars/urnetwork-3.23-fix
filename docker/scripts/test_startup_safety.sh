@@ -11,7 +11,7 @@ python3 - "$HERE" "$tmp/functions" <<'PY'
 import pathlib, re, sys
 source_dir, dest = map(pathlib.Path, sys.argv[1:])
 for name, source_name, functions in (
-    ('common', 'provider_common.sh', ('func_check_proxy', 'func_ip_checker', 'func_login_retry_loop')),
+    ('common', 'provider_common.sh', ('func_check_proxy_import', 'func_check_proxy', 'func_ip_checker', 'func_login_retry_loop')),
     ('pelican', 'pelican_panel.sh', ('func_do_login',)),
 ):
     source = (source_dir / source_name).read_text()
@@ -129,8 +129,15 @@ proxy_failure() {
     printf '%s\n' 'live proxy config differs from the seeded bytes'
     return 1
   fi
-  [ "$rc" -ne 0 ] && grep -Fq 'Proxy replacement failed' "$out" && cmp -s "$argv" "$expected_argv" && no_staging_left || return 1
+  [ "$rc" -eq 0 ] && grep -Fq 'kept the existing configuration' "$out" && cmp -s "$argv" "$expected_argv" && no_staging_left || return 1
   if [ "$proxy_fail" != yes ]; then grep -Fq 'no valid servers' "$out"; fi
+}
+
+# No saved config means nothing to fall back on: starting would send traffic
+# straight out while the operator believes the mounted proxy is in use.
+proxy_fatal_without_config() {
+  [ "$rc" -ne 0 ] && grep -Fq 'refusing to start without the mounted proxy' "$out" &&
+    [ ! -e "$state/proxy" ] && no_staging_left
 }
 proxy_invalid_healed() {
   [ "$rc" -eq 0 ] && cmp -s "$argv" "$expected_argv" && no_staging_left || return 1
@@ -217,6 +224,13 @@ rm -f "$state/proxy" "$argv"
 expect_auth=no; run
 report 'first import initializes config and installs proxies' proxy_success
 
+# With no saved config there is nothing to fall back on, so a failed import stops startup.
+fatal_home="$tmp/home-fatal"; fatal_state="$fatal_home/.urnetwork"; mkdir -p "$fatal_state"
+home="$fatal_home"; state="$fatal_state"; out="$tmp/home-fatal/out"; argv="$tmp/home-fatal/argv"
+rm -f "$argv"; proxy_fail=yes; run
+report 'a failed import with no saved config stops startup' proxy_fatal_without_config
+proxy_fail=no
+
 # Fetch failures must not execute an error response as a successful checker script.
 function_set=common; action=ip; home="$tmp/ip/home"; state="$home/.urnetwork"
 mkdir -p "$state"; out="$tmp/ip/out"; argv="$tmp/ip/argv"; curl_log="$tmp/ip/curl-log"
@@ -257,11 +271,11 @@ bootstrap_order() {
 }
 report 'nightly downloads the binary before importing proxies' bootstrap_order
 
-bootstrap_proxy_nonfatal() {
+bootstrap_proxy_fatal() {
   block=$(sed -n '/^      nightly)/,/^        ;;/p' "$HERE/provider_common.sh")
-  printf '%s\n' "$block" | grep -q 'func_check_proxy || true'
+  printf '%s\n' "$block" | grep -q '^        func_check_proxy$'
 }
-report 'a failed proxy import does not abort nightly startup' bootstrap_proxy_nonfatal
+report 'nightly lets a fatal proxy failure reach startup' bootstrap_proxy_fatal
 
 printf 'Results: %s passed, %s failed\n' "$pass" "$fail"
 [ "$fail" -eq 0 ]
