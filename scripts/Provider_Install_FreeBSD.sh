@@ -511,43 +511,42 @@ assert_state_path_safe() {
 # enforce_install_tree_perms <tree> <binary>
 #
 # Repair the install tree's ownership and traversal, or return nonzero with the
-# path and the failed repair in the message. do_install calls this only when it
-# runs as root, and there it is a GATE rather than best effort: rc.d starts the
-# provider as root and daemon(8) drops to the service user before exec, so a
-# tree that stays writable by that user crosses a privilege boundary and a tree
-# it cannot traverse can never start. With no privilege left to escalate to,
-# the caller aborts instead of writing the rc.d script and reporting success.
-# The non-root path cannot do this (chown needs root) and keeps its own
-# reported attempt before staging, not this gate.
+# path and the failed repair in the message. Every command goes through priv,
+# so the gate runs the same way for root and for a sudo user, and it is a GATE
+# rather than best effort: rc.d starts the provider as root and daemon(8) drops
+# to the service user before exec, so a tree that stays writable by that user
+# crosses a privilege boundary and a tree it cannot traverse can never start.
+# A repair that cannot be made returns nonzero and the caller aborts instead of
+# writing the rc.d script and reporting success.
 enforce_install_tree_perms() {
     _tree="$1"
     _bin="$2"
     _tree_conforms() {
-        _dirs=$(find "$_tree" -type d -print) || return 1
+        _dirs=$(priv find "$_tree" -type d -print) || return 1
         for _path in $_dirs; do
-            [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
-            [ "$(stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
+            [ "$(priv stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            [ "$(priv stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
         done
         # Every regular file, not only $_bin: bin/urnet-tools is root-executed
         # too, and version is written by this run. Any group/other write bit
         # fails, and so does a mode that does not parse as three octal digits.
-        _files=$(find "$_tree" -type f -print) || return 1
+        _files=$(priv find "$_tree" -type f -print) || return 1
         for _path in $_files; do
-            [ "$(stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
-            _mode=$(stat -f %Lp "$_path" 2>/dev/null) || return 1
+            [ "$(priv stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            _mode=$(priv stat -f %Lp "$_path" 2>/dev/null) || return 1
             case "$_mode" in
                 [0-7][2367][0-7]|[0-7][0-7][2367]) return 1 ;;
                 [0-7][0-7][0-7]) ;;
                 *) return 1 ;;
             esac
         done
-        [ "$(stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
-        [ "$(stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
+        [ "$(priv stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
+        [ "$(priv stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
     }
     # :wheel is the FreeBSD convention, not what makes the tree safe, so retry
     # with root alone before failing: the boundary is the OWNER, not the group.
-    if ! chown -R root:wheel "$_tree" 2>/dev/null; then
-        if ! chown -R root "$_tree" 2>/dev/null; then
+    if ! priv chown -R root:wheel "$_tree" 2>/dev/null; then
+        if ! priv chown -R root "$_tree" 2>/dev/null; then
             if _tree_conforms; then
                 pr_info "chown -R root:wheel and chown -R root both failed; %s already conformed" "$_tree"
             else
@@ -558,7 +557,7 @@ enforce_install_tree_perms() {
     fi
     # Group/other write on a binary root executes is the boundary itself, so
     # this is required rather than convenient.
-    if ! chmod -R go-w "$_tree" 2>/dev/null; then
+    if ! priv chmod -R go-w "$_tree" 2>/dev/null; then
         if _tree_conforms; then
             pr_info "chmod -R go-w failed; %s already conformed" "$_tree"
         else
@@ -569,7 +568,7 @@ enforce_install_tree_perms() {
     # One path per call so the message names the directory that failed: 0755 on
     # bin/ is no use while the tree above it is still 0700.
     for _dir in "$_tree" "$_tree/bin"; do
-        if ! chmod 755 "$_dir" 2>/dev/null; then
+        if ! priv chmod 755 "$_dir" 2>/dev/null; then
             if _tree_conforms; then
                 pr_info "chmod 755 failed for %s; %s already conformed" "$_dir" "$_tree"
             else
@@ -578,9 +577,8 @@ enforce_install_tree_perms() {
             fi
         fi
     done
-    # The binary was renamed into place by this run, so an absent or
-    # unexecutable image is a broken install rather than an optional repair.
-    if ! chmod 755 "$_bin" 2>/dev/null; then
+    # The staged binary must be executable before it replaces the live image.
+    if ! priv chmod 755 "$_bin" 2>/dev/null; then
         if _tree_conforms; then
             pr_info "chmod 755 failed for %s; %s already conformed" "$_bin" "$_tree"
         else
@@ -700,17 +698,6 @@ do_install() {
     # elevates instead of failing at the first mkdir. (This was a regression
     # from moving the tree out of the service user's home.)
     priv mkdir -p "$install_path/bin" || { pr_err "Failed to create %s" "$install_path"; rm -rf "$tmpdir"; exit 1; }
-    # A restrictive invoking umask can leave these 0700 even on the sudo path,
-    # and the root-only repair below never runs there. daemon -u must be able
-    # to traverse and execute. This is the only traversal repair the NON-ROOT
-    # path gets (the checked gate, enforce_install_tree_perms, runs only as
-    # root), so a failure here is REPORTED with the paths instead of being
-    # hidden behind `|| true`. It stays non-fatal because this branch cannot
-    # chown at all: repairing traversal without the ownership half does not
-    # make the tree safe, so the install's start/restart check is what decides
-    # success after this point.
-    priv chmod 755 "$install_path" "$install_path/bin" 2>/dev/null ||
-        pr_warn "could not make %s and %s/bin traversable; the service user may be unable to start the provider" "$install_path" "$install_path"
     # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
@@ -731,28 +718,6 @@ do_install() {
     staged_bin="$staged"
     priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
     priv chmod 755 "$staged"
-    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
-    # Renamed into place: forget the name, or the EXIT trap would delete the
-    # binary that is now the installed provider.
-    staged_bin=""
-
-    # Same rename-not-follow rule as the binary above. A symlink planted at the
-    # version name would redirect the write, so stage beside it and rename over
-    # it: rename replaces the entry instead of following it.
-    ver_tmp="$install_path/.version.new.$$"
-    staged_version="$ver_tmp"
-    # Not fatal: the binary is already installed and the provider is about to
-    # start, so failing here would report a failed install for a working
-    # provider. The root-owned temp file still has to go with the failure, or
-    # every retry leaves .version.new.<pid> in the install tree.
-    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
-           priv mv -f "$ver_tmp" "$install_path/version"; }; then
-        priv_rm "$ver_tmp"
-        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
-    fi
-    staged_version=""
-    priv chmod 644 "$install_path/version" 2>/dev/null || true
-
     # Install the tool: the Go urnet-tools binary shipped as a release asset,
     # digest-verified; fall back to this shell script for releases that
     # predate the Go asset.
@@ -808,7 +773,7 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 # update` and the weekly auto-update entry — so a
                 # SUDO_USER-owned copy would let the service user rewrite a
                 # binary root executes. The chown -R below is deliberately
-                # gated on id -u 0 and does not run on this sudo path.
+                # checked by the permission gate on both install paths.
                 priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
                     pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
                 priv chmod 755 "$install_path/bin/urnet-tools"
@@ -855,16 +820,37 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 chmod 700 . 2>/dev/null || true
             fi
         fi
-        # Checked, not best effort: as root there is no higher privilege left
-        # to repair this with, and daemon(8) drops to the service user before
-        # exec. A tree that cannot be made root-owned or traversable aborts
-        # here, before the rc.d script is written and before anything reports
-        # success.
-        if ! enforce_install_tree_perms "$install_path" "$provider_bin"; then
-            rm -rf "$tmpdir"
-            exit 1
-        fi
     fi
+
+    # Check the staged binary and the complete tree before replacing the live
+    # binary or version, for both root and sudo installs.
+    if ! enforce_install_tree_perms "$install_path" "$staged"; then
+        rm -rf "$tmpdir"
+        exit 1
+    fi
+
+    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
+    # Renamed into place: forget the name, or the EXIT trap would delete the
+    # binary that is now the installed provider.
+    staged_bin=""
+
+    # Same rename-not-follow rule as the binary above. A symlink planted at the
+    # version name would redirect the write, so stage beside it and rename over
+    # it: rename replaces the entry instead of following it.
+    ver_tmp="$install_path/.version.new.$$"
+    staged_version="$ver_tmp"
+    # Not fatal: the binary is already installed and the provider is about to
+    # start, so failing here would report a failed install for a working
+    # provider. The root-owned temp file still has to go with the failure, or
+    # every retry leaves .version.new.<pid> in the install tree.
+    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
+           priv mv -f "$ver_tmp" "$install_path/version"; }; then
+        priv_rm "$ver_tmp"
+        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
+    fi
+    staged_version=""
+    priv chmod 644 "$install_path/version" 2>/dev/null || true
+
 
     if [ "$(id -u)" != "0" ]; then
         pr_info "Installing the rc.d service requires root; re-running that step with sudo..."
