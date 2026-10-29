@@ -3602,9 +3602,9 @@ func provide(opts docopt.Opts) {
 						// labeling it a quality rejection would suppress the give-up/
 						// eviction/backoff machinery and the address would churn on
 						// every reload forever.
-						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, proxySettings.Address, score)
+						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, redactedProxyAddress(proxySettings.Address), score)
 					}
-					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
+					err = fmt.Errorf("proxy unreachable: %s", redactedProxyAddress(proxySettings.Address))
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
 					// (persists across the 15-minute URL-source requeue, unlike
@@ -3777,7 +3777,7 @@ func provide(opts docopt.Opts) {
 							// The outer handler recognizes the sentinel and
 							// backs off + requeues without RecordGiveUp, so a
 							// slow-but-working list entry is never evicted.
-							return "", connect.Id{}, false, fmt.Errorf("%w: %s", errProxyURLSlowCutShort, proxySettings.Address)
+							return "", connect.Id{}, false, fmt.Errorf("%w: %s", errProxyURLSlowCutShort, redactedProxyAddress(proxySettings.Address))
 						}
 						return "", connect.Id{}, false, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 					}
@@ -5478,6 +5478,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	description := providerDescription(nodeName)
 
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
+	displayKey := proxyKeyDisplay(identityKey)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
 			// If the account JWT has no network_id claim, fill it in from the stored entry
@@ -5494,7 +5495,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				}
 			}
 			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
-				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", displayKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
 				// Stored client JWT expired: try renewal-with-same-client_id
 				// before falling through to fresh mint, so the operator's
@@ -5503,25 +5504,25 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
-						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", displayKey, parsedId)
 						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 							ByClientJWT: renewedJwt,
 							ClientID:    entry.ClientID,
 							NetworkID:   currentNetworkId,
 							MintedAt:    time.Now(),
 						}); putErr != nil {
-							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", displayKey, putErr)
 						}
 						return renewedJwt, parsedId, true, nil
 					}
 					if isRenewalTransient(renewErr) {
-						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", displayKey, parsedId, renewErr)
 						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
 						return
 					}
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", displayKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", displayKey, entry.ClientID, parseErr)
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
 				// Stored JWT missing client_id claim in payload: prioritize salvaging the
@@ -5529,28 +5530,28 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
-						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", identityKey, parsedId)
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", displayKey, parsedId)
 						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 							ByClientJWT: renewedJwt,
 							ClientID:    entry.ClientID,
 							NetworkID:   currentNetworkId,
 							MintedAt:    time.Now(),
 						}); putErr != nil {
-							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", displayKey, putErr)
 						}
 						return renewedJwt, parsedId, true, nil
 					}
 					if isRenewalTransient(renewErr) {
-						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", displayKey, parsedId, renewErr)
 						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
 						return
 					}
-					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", displayKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", displayKey)
 				}
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
-				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
+				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", displayKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
 				// Self-heal: stamp the current network_id onto legacy
@@ -5567,7 +5568,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 						NetworkID:   currentNetworkId,
 						MintedAt:    entry.MintedAt,
 					}); putErr != nil {
-						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", identityKey, putErr)
+						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", displayKey, putErr)
 					}
 				}
 				return entry.ByClientJWT, parsedId, true, nil
@@ -5666,7 +5667,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		NetworkID:   currentNetworkId,
 		MintedAt:    time.Now(),
 	}); putErr != nil {
-		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
+		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", displayKey, putErr)
 	}
 
 	return
@@ -5708,6 +5709,7 @@ var identityEvictionBlocked = connect.BackendDegraded
 // just re-signed it), so this watcher stops before it evicts the fresh entry
 // while the transport is still reconnecting.
 func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int, revocationDone <-chan struct{}) {
+	displayKey := proxyKeyDisplay(identityKey)
 	ticker := time.NewTicker(revocationCheckInterval)
 	defer ticker.Stop()
 	for {
@@ -5715,7 +5717,7 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 		case <-ctx.Done():
 			return
 		case <-revocationDone:
-			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", displayKey)
 			return
 		case <-ticker.C:
 		}
@@ -5730,7 +5732,7 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 		if connect.ProxyAuthRejectionCount(proxyIndex) >= revokedIdentityAuthFailureThreshold && !identityEvictionBlocked() {
 			if !identityEvictionEnabled() {
 				tlog("⚠️ [jwt-store] identity for %s was refused %d times; NOT evicting it (automatic eviction is off, set URNETWORK_EVICT_REVOKED_IDENTITIES=1 to enable)\n",
-					identityKey, revokedIdentityAuthFailureThreshold)
+					displayKey, revokedIdentityAuthFailureThreshold)
 				return
 			}
 			// Re-check the renewal signal AFTER the failure-count check: the
@@ -5742,15 +5744,15 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 			// out from under the reconnecting transport.
 			select {
 			case <-revocationDone:
-				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", displayKey)
 				return
 			default:
 			}
 			if delErr := globalClientJWTStore.Delete(identityKey); delErr != nil {
-				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", identityKey, delErr)
+				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", displayKey, delErr)
 			} else {
 				tlog("⚠️ [jwt-store] reused client identity for %s never authenticated after %d transport auth failures — evicted, will mint fresh on next retry/restart\n",
-					identityKey, revokedIdentityAuthFailureThreshold)
+					displayKey, revokedIdentityAuthFailureThreshold)
 			}
 			return
 		}

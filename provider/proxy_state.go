@@ -4,9 +4,11 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"sync"
 	"time"
 
@@ -253,10 +255,48 @@ func adoptLegacyProxyState(state *ProxyState, desired []*connect.ProxySettings) 
 // begin with (see ProxySettings.Key()).
 func proxyKeyDisplay(key string) string {
 	address, user := connect.SplitProxyKey(key)
+	address = redactedProxyAddress(address)
 	if user == "" {
 		return address
 	}
 	return fmt.Sprintf("%s (user %s)", address, obfuscateUser(user))
+}
+
+// redactedProxyAddress returns an address that is safe to print: the "direct"
+// sentinel or a plain host:port, and a placeholder for anything else. The
+// legacy parser keeps a malformed entry (userinfo, token path, trailing
+// parameters) verbatim as the address, so a bare Address field is never printed
+// without going through here.
+func redactedProxyAddress(address string) string {
+	if address == "direct" || plainHostPort(address) {
+		return address
+	}
+	return "<unparsable proxy address>"
+}
+
+// plainHostPort reports whether s is a bare host:port that cannot carry
+// credentials: a host of letters, digits and . - _ : (an IPv6 literal may be
+// bracketed), and a decimal port in 1-65535.
+func plainHostPort(s string) bool {
+	host, port, err := net.SplitHostPort(s)
+	if err != nil || host == "" || port == "" {
+		return false
+	}
+	for _, c := range host {
+		switch {
+		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
+			c == '.', c == '-', c == '_', c == ':', c == '%':
+		default:
+			return false
+		}
+	}
+	n, err := strconv.Atoi(port)
+	for _, c := range port {
+		if c < '0' || '9' < c {
+			return false
+		}
+	}
+	return err == nil && 1 <= n && n <= 65535
 }
 
 // resolveProxyID returns the stable ID for an address.
