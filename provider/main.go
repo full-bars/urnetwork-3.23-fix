@@ -6129,29 +6129,36 @@ func proxyRemove(opts docopt.Opts) {
 	proxyConfig := readProxyConfig()
 
 	if all, _ := opts.Bool("--all"); all {
-		clear(proxyConfig.Servers)
 		// Take the cross-process lock so a concurrent daemon health-snapshot
 		// write can't clobber this reset and silently revive the removed
-		// proxies (finding #11). Proxy config write above is process-local;
-		// this serializes the proxy.state reset against the daemon.
+		// proxies (finding #11). Hold the lock across internal config write,
+		// proxy.state reset, and URL cache reset.
 		stateLockRelease, stateLockErr := acquireProxyLockWithRetry()
 		if stateLockErr != nil {
 			tlog("[proxy] warning: could not acquire proxy lock for state reset: %v\n", stateLockErr)
-			writeProxyConfig(proxyConfig)
+			fmt.Fprintf(os.Stderr, "could not acquire proxy lock: %v\n", stateLockErr)
 			return
 		}
+		defer stateLockRelease()
+
+		clear(proxyConfig.Servers)
+		writeProxyConfig(proxyConfig)
+
 		// Reset proxy.state so the next run starts ID assignment from 0.
-		// Without this, the monotonic counter resumes above whatever IDs were
-		// saved from previous runs, producing confusingly high and mixed IDs
-		// even when the same proxies are re-added.
-		if state, err := readProxyState(); err == nil {
+		// An unreadable proxy.state does not stop the URL cache reset, and it
+		// is surfaced: the operator must be told proxy.state was not cleared.
+		if state, err := readProxyState(); err != nil {
+			tlog("[proxy] warning: proxy.state not cleared: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: proxy.state not cleared: %v\n", err)
+		} else {
 			state.Proxies = map[string]ProxyEntry{}
 			state.NextID = 0
 			if err := writeProxyState(state); err != nil {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: could not reset proxy.state: %v\n", err)
 			}
 		}
-		stateLockRelease()
+
 		// Also clear the URL cache and source URLs so previously-fetched free
 		// proxies don't reappear after a restart. The user wants only the
 		// proxies they explicitly added; URL sources must be re-added if
@@ -6162,7 +6169,11 @@ func proxyRemove(opts docopt.Opts) {
 			if err := writeProxyURLState(urlState); err != nil {
 				tlog("[proxy] warning: could not clear proxy_url.json cache: %v\n", err)
 			}
+		} else if !os.IsNotExist(err) {
+			tlog("[proxy] warning: could not read proxy_url.json: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: could not read proxy_url.json: %v\n", err)
 		}
+		return
 	} else {
 
 		allKeyAddress := []string{}
