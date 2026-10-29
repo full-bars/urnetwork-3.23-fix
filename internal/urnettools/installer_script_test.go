@@ -981,6 +981,9 @@ type installerHarnessOpts struct {
 	failCpToDst bool
 	failMv      bool
 	operation   string
+	// noParser runs the installer with jq and python3 hidden from PATH, the
+	// shape of a default FreeBSD host.
+	noParser bool
 }
 
 type installerHarnessResult struct {
@@ -1026,12 +1029,16 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 	}
 
 	fnListsAsset := extractShellFunc(t, script, "release_lists_asset")
+	fnScan := extractShellFunc(t, script, "release_asset_scan")
 	fnDigest := extractShellFunc(t, script, "get_asset_digest_from_api_response")
 	fnCompute := extractShellFunc(t, script, "compute_sha256_file")
 	fnVerify := extractShellFunc(t, script, "verify_sha256_file")
 	fnDoInstall := extractShellFunc(t, script, "do_install")
 	if fnListsAsset == "" {
 		t.Fatal("could not extract release_lists_asset from FreeBSD script")
+	}
+	if fnScan == "" {
+		t.Fatal("could not extract release_asset_scan from FreeBSD script")
 	}
 	if fnDoInstall == "" {
 		t.Fatal("could not extract do_install from FreeBSD script")
@@ -1140,9 +1147,12 @@ FAIL_MV=%q
 do_install "$version"
 `, tag, installPath, stateDir, rcScript, failRestartVal, failCpVal, failMvVal)
 
-	fullScript := harness + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
+	fullScript := harness + "\n" + fnScan + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	if opts.noParser {
+		cmd.Env = []string{"PATH=" + pathWithoutParsers(t)}
+	}
 	out, err := cmd.CombinedOutput()
 
 	var exitCode int
@@ -1746,4 +1756,90 @@ func TestInstallerVersionMarkerOnlyAfterServiceStarts(t *testing.T) {
 			}
 		})
 	}
+}
+
+// pathWithoutParsers returns a PATH directory holding every tool from
+// /usr/bin and /bin except jq and python, so `command -v jq` fails the way it
+// does on a default FreeBSD host while the base utilities still resolve.
+func pathWithoutParsers(t *testing.T) string {
+	t.Helper()
+	dir := t.TempDir()
+	for _, src := range []string{"/bin", "/usr/bin"} {
+		entries, err := os.ReadDir(src)
+		if err != nil {
+			continue
+		}
+		for _, e := range entries {
+			name := e.Name()
+			if name == "jq" || strings.HasPrefix(name, "python") {
+				continue
+			}
+			_ = os.Symlink(filepath.Join(src, name), filepath.Join(dir, name))
+		}
+	}
+	return dir
+}
+
+// A host with neither jq nor python3 must still install. FreeBSD base has
+// neither, so requiring one aborted a default `latest` install. The release
+// listing and digest are read with base-system tools instead, and the digest
+// is still enforced.
+func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
+	tag := "v2026.10.27"
+	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
+	tarballContent := []byte("new-tarball-payload")
+	sum := sha256.Sum256(tarballContent)
+	releaseFor := func(digest string) string {
+		return fmt.Sprintf(`{
+  "url": "https://api.github.com/repos/x/y/releases/1",
+  "tag_name": %q,
+  "name": %q,
+  "assets": [
+    {
+      "name": "urnet-tools-freebsd-amd64",
+      "digest": "sha256:%s"
+    },
+    {
+      "url": "https://api.github.com/repos/x/y/releases/assets/2",
+      "name": %q,
+      "uploader": {"login": "bot"},
+      "size": 19,
+      "digest": "sha256:%s"
+    }
+  ]
+}`, tag, tag, strings.Repeat("a", 64), asset, digest)
+	}
+
+	t.Run("digest_match_installs", func(t *testing.T) {
+		res := runFreeBSDInstaller(t, installerHarnessOpts{
+			tag:         tag,
+			releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
+			tarballData: tarballContent,
+			noParser:    true,
+		})
+		if res.exitCode != 0 {
+			t.Fatalf("install on a host without jq/python3 failed (exit %d):\n%s", res.exitCode, res.stdout)
+		}
+		if len(res.tarCalls) == 0 || res.finalBin == "" {
+			t.Fatalf("install did not run to completion (tar=%v bin=%q):\n%s", res.tarCalls, res.finalBin, res.stdout)
+		}
+		if !strings.Contains(res.stdout, "sha256 verified") {
+			t.Errorf("digest was not read and verified without a parser:\n%s", res.stdout)
+		}
+	})
+
+	t.Run("digest_mismatch_aborts", func(t *testing.T) {
+		res := runFreeBSDInstaller(t, installerHarnessOpts{
+			tag:         tag,
+			releaseJSON: releaseFor(strings.Repeat("b", 64)),
+			tarballData: tarballContent,
+			noParser:    true,
+		})
+		if res.exitCode == 0 {
+			t.Fatalf("mismatched digest installed without a parser:\n%s", res.stdout)
+		}
+		if len(res.tarCalls) != 0 {
+			t.Fatalf("tar ran despite a digest mismatch: %v", res.tarCalls)
+		}
+	})
 }

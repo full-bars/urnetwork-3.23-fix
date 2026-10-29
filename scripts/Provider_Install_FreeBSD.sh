@@ -83,8 +83,39 @@ for asset in doc.get("assets", []):
 val = val.replace("sha256:", "")
 print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$_ast" 2>/dev/null || true)"
+    else
+        _dig="$(release_asset_scan "$_rel" "$_ast" digest)"
     fi
     printf '%s' "$_dig"
+}
+
+# release_asset_scan JSON ASSET MODE: a base-system fallback for hosts with
+# neither jq nor python3 (FreeBSD ships neither). It walks the comma-separated
+# fields of the release document, remembers the last "name" seen, and acts on
+# the field that follows it: MODE "list" exits 0 when ASSET is named, MODE
+# "digest" prints the 64-hex sha256 of ASSET. GitHub emits an asset's name
+# before its digest, so a digest is attributed to the right asset. A wrong
+# reading can only make verification fail, never pass: the digest is compared
+# against the downloaded bytes.
+release_asset_scan() {
+    printf '%s' "$1" | A="$2" M="$3" awk '
+        BEGIN { RS = ","; a = ENVIRON["A"]; m = ENVIRON["M"]; cur = ""; found = 0 }
+        {
+            if (match($0, /"name"[ \t\r\n]*:[ \t\r\n]*"[^"]*"/)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^"name"[ \t\r\n]*:[ \t\r\n]*"/, "", v)
+                sub(/"$/, "", v)
+                cur = v
+                if (cur == a) found = 1
+            }
+            if (m == "digest" && cur == a && match($0, /"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?[0-9a-fA-F]+"/)) {
+                v = substr($0, RSTART, RLENGTH)
+                sub(/^"digest"[ \t\r\n]*:[ \t\r\n]*"(sha256:)?/, "", v)
+                sub(/"$/, "", v)
+                if (length(v) == 64) { print v; exit }
+            }
+        }
+        END { if (m == "list") exit(found ? 0 : 1) }'
 }
 
 release_lists_asset() {
@@ -97,7 +128,7 @@ try:
  d=json.load(sys.stdin); sys.exit(0 if any(a.get("name")==sys.argv[1] for a in d.get("assets",[])) else 1)
 except Exception: sys.exit(1)' "$2" >/dev/null 2>&1
     else
-        return 1
+        release_asset_scan "$1" "$2" list
     fi
 }
 
@@ -741,11 +772,6 @@ do_install() {
         fi
     fi
 
-    if ! command -v jq >/dev/null 2>&1 && ! command -v python3 >/dev/null 2>&1; then
-        pr_err "Neither jq nor python3 is installed; cannot read release metadata for %s (%s). Refusing to install. Install jq (pkg install jq) or python3 and retry." "$tag" "$provider_asset"
-        rm -rf "$tmpdir"
-        exit 1
-    fi
     _rel_extra=""
     if ! release_lists_asset "$release_json" "$provider_asset"; then
         _rel_extra="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null || true)"
