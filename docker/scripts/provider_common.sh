@@ -186,7 +186,8 @@ func_check_credentials() {
 # === Proxy Setup ===
 func_check_proxy() {
     log "[INFO] Checking proxy configuration"
-    proxy_config="$HOME/.urnetwork/proxy"
+    proxy_dir="$HOME/.urnetwork"
+    proxy_config="$proxy_dir/proxy"
     if [ ! -f "/app/proxy.txt" ]; then
         if [ -f "$proxy_config" ]; then
             log "[INFO] No proxy.txt found; kept existing proxy configuration"
@@ -196,9 +197,58 @@ func_check_proxy() {
         return 0
     fi
 
+    # Stage the import under a temporary HOME so failures cannot damage live state.
+    if ! mkdir -p "$proxy_dir"; then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
+            log "[WARN] Proxy staging failed; none configured"
+        fi
+        return 1
+    fi
+    if ! proxy_stage_home=$(mktemp -d "$proxy_dir/.proxy-import.XXXXXX"); then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
+            log "[WARN] Proxy staging failed; none configured"
+        fi
+        return 1
+    fi
+    proxy_stage_dir="$proxy_stage_home/.urnetwork"
+    proxy_stage_config="$proxy_stage_dir/proxy"
+    if ! mkdir -p "$proxy_stage_dir"; then
+        log "[WARN] Proxy staging failed; kept existing configuration"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if [ -f "$proxy_config" ]; then
+        if ! jq -c 'select(type == "object") | .servers = {}' "$proxy_config" > "$proxy_stage_config" || [ ! -s "$proxy_stage_config" ]; then
+            log "[WARN] Cannot read existing proxy configuration; kept it unchanged"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+    elif ! printf '%s\n' '{"servers":{}}' > "$proxy_stage_config"; then
+        log "[WARN] Proxy staging failed; none configured"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+
     log "[INFO] proxy.txt found; adding proxy"
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
-    "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt"
+    if HOME="$proxy_stage_home" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f &&
+       [ -f "$proxy_stage_config" ] && chmod 600 "$proxy_stage_config" &&
+       mv -f "$proxy_stage_config" "$proxy_config"; then
+        log "[INFO] Proxy configuration replaced from proxy.txt"
+    else
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy replacement failed; kept existing configuration"
+        else
+            log "[WARN] Proxy replacement failed; none configured"
+        fi
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    rm -rf "$proxy_stage_home"
 }
 
 # === Architecture Detection ===

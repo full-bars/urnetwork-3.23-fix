@@ -31,14 +31,14 @@ printf '%s\n' "$@" > "$ARGV_LOG"
 case "$1" in
   proxy)
     if [ "$PROXY_FAIL" = yes ]; then
-      # Model a failed write that proxyAdd reports with exit status zero.
-      printf 'simulated proxy write failure: %s\n' "$HOME/.urnetwork/proxy" >&2
-      exit 0
+      printf '%s\n' partial > "$HOME/.urnetwork/proxy"
+      exit 17
     fi
     python3 - "$HOME/.urnetwork/proxy" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
+assert data['servers'] == {}
 data['servers']['new:1080'] = ''
 path.write_text(json.dumps(data) + '\n')
 PY
@@ -113,15 +113,24 @@ run() {
 }
 proxy_kept() { [ "$rc" -eq 0 ] && cmp -s "$state/proxy" "$original" && rg -q 'kept existing proxy configuration' "$out" && [ ! -e "$argv" ]; }
 proxy_none() { [ "$rc" -eq 0 ] && [ ! -e "$state/proxy" ] && rg -q 'none configured' "$out" && [ ! -e "$argv" ]; }
-proxy_failure() { [ "$rc" -eq 0 ] && cmp -s "$state/proxy" "$original" && rg -Fq "simulated proxy write failure: $state/proxy" "$out" && cmp -s "$argv" "$expected_argv"; }
+no_staging_left() { for stage in "$state"/.proxy-import.*; do [ ! -e "$stage" ] || return 1; done; }
+proxy_failure() {
+  if ! cmp -s "$state/proxy" "$original"; then
+    printf '%s\n' 'live proxy config differs from the seeded bytes'
+    return 1
+  fi
+  [ "$rc" -ne 0 ] && rg -Fq 'kept existing configuration' "$out" && cmp -s "$argv" "$expected_argv" && no_staging_left
+}
+proxy_invalid() { [ "$rc" -ne 0 ] && cmp -s "$state/proxy" "$original" && rg -Fq 'kept it unchanged' "$out" && [ ! -e "$argv" ] && no_staging_left; }
 proxy_success() {
-  [ "$rc" -eq 0 ] && cmp -s "$argv" "$expected_argv" || return 1
-  python3 - "$state/proxy" <<'PY'
+  [ "$rc" -eq 0 ] && cmp -s "$argv" "$expected_argv" && [ "$(stat -c '%a' "$state/proxy")" = 600 ] && no_staging_left || return 1
+  python3 - "$state/proxy" "$expect_auth" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
-assert data['servers'] == {'old:1080': 'keep', 'new:1080': ''}
-assert data['auths']['keep']['user'] == 'alice'
+assert data['servers'] == {'new:1080': ''}
+if sys.argv[2] == 'yes':
+    assert data['auths']['keep']['user'] == 'alice'
 PY
 }
 fetch_failure() { [ "$rc" -eq 0 ] && [ -f "$curl_log" ] && [ ! -e "$curl_log.executed" ] && rg -q 'IP checker fetch failed' "$out" && ! rg -q 'ran successfully|script failed' "$out"; }
@@ -140,7 +149,7 @@ home="$tmp/proxy/home"; state="$home/.urnetwork"
 mkdir -p "$state"
 original="$tmp/proxy/original"; out="$tmp/proxy/out"; argv="$tmp/proxy/argv"; curl_log="$tmp/proxy/curl-log"
 expected_argv="$tmp/proxy/expected-argv"
-printf '%s\n' proxy add "--proxy_file=$tmp/app/proxy.txt" > "$expected_argv"
+printf '%s\n' proxy add "--proxy_file=$tmp/app/proxy.txt" -f > "$expected_argv"
 printf '%s\n' '{"auths":{"keep":{"user":"alice","password":"secret"}},"servers":{"old:1080":"keep"}}' > "$original"
 cp "$original" "$state/proxy"
 rm -f "$tmp/app/proxy.txt" "$argv"
@@ -149,12 +158,21 @@ report 'no proxy mount preserves existing config' proxy_kept
 rm -f "$state/proxy" "$argv"
 run
 report 'no proxy mount reports no config without calling provider' proxy_none
+printf '%s\n' '{not-json' > "$original"
 cp "$original" "$state/proxy"
 printf '%s\n' 'new:1080' > "$tmp/app/proxy.txt"
+run
+report 'invalid existing config remains untouched' proxy_invalid
+printf '%s\n' '{"auths":{"keep":{"user":"alice","password":"secret"}},"servers":{"old:1080":"keep"}}' > "$original"
+cp "$original" "$state/proxy"; rm -f "$argv"
 proxy_fail=yes; run
-report 'failed proxy import leaves existing config intact' proxy_failure
-proxy_fail=no; run
-report 'successful proxy import adds servers and keeps named auth' proxy_success
+report 'partial failed import preserves live config' proxy_failure
+cp "$original" "$state/proxy"; rm -f "$argv"
+proxy_fail=no; expect_auth=yes; run
+report 'successful import replaces servers and retains auth' proxy_success
+rm -f "$state/proxy" "$argv"
+expect_auth=no; run
+report 'first import initializes config and installs proxies' proxy_success
 
 # Fetch failures must not execute an error response as a successful checker script.
 function_set=common; action=ip; home="$tmp/ip/home"; state="$home/.urnetwork"
