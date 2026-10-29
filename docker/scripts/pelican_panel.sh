@@ -2,6 +2,7 @@
 set -e
 
 APP_DIR="/app"
+JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="false"
 
 # Accept URNETWORK_AUTH_CODE as an alias for AUTHCODE if unset
@@ -13,30 +14,6 @@ fi
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
-
-# Resolve the standalone panel's state path before reading the stored JWT.
-resolve_state_dir() {
-    STATE_DIR=$(printf '%s' "${URNETWORK_STATE_DIR:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    STATE_DIR=${STATE_DIR:-${HOME:-/root}/.urnetwork}
-    case "$STATE_DIR" in /*) ;; *) STATE_DIR="$PWD/$STATE_DIR" ;; esac
-    if ! mkdir -p "$STATE_DIR"; then
-        log "ERROR: Cannot create state directory '$STATE_DIR' (see mkdir error above)" >&2
-        exit 1
-    fi
-    if ! resolved_state_dir=$(cd "$STATE_DIR" && pwd -P); then
-        log "ERROR: Cannot access state directory '$STATE_DIR'" >&2
-        exit 1
-    fi
-    STATE_DIR=$resolved_state_dir
-    export URNETWORK_STATE_DIR="$STATE_DIR"
-    if [ "${URNETWORK_STATE_DIR_LOGGED:-}" != 1 ]; then
-        log "State directory: $STATE_DIR"
-        export URNETWORK_STATE_DIR_LOGGED=1
-    fi
-}
-
-resolve_state_dir
-JWT_FILE="$STATE_DIR/jwt"
 
 # === Stop Forwarding ===
 # Same helpers as docker/scripts/provider_common.sh, kept inline because this

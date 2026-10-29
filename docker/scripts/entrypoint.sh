@@ -28,30 +28,6 @@ elif [ -f "/app/jwt_verify.sh" ]; then
   . "/app/jwt_verify.sh"
 fi
 
-# Resolve once before any state paths are used, including by child binaries.
-resolve_state_dir() {
-    STATE_DIR=$(printf '%s' "${URNETWORK_STATE_DIR:-}" | sed 's/^[[:space:]]*//; s/[[:space:]]*$//')
-    STATE_DIR=${STATE_DIR:-${HOME:-/root}/.urnetwork}
-    case "$STATE_DIR" in /*) ;; *) STATE_DIR="$PWD/$STATE_DIR" ;; esac
-    if ! mkdir -p "$STATE_DIR"; then
-        log "ERROR: Cannot create state directory '$STATE_DIR' (see mkdir error above)" >&2
-        exit 1
-    fi
-    if ! resolved_state_dir=$(cd "$STATE_DIR" && pwd -P); then
-        log "ERROR: Cannot access state directory '$STATE_DIR'" >&2
-        exit 1
-    fi
-    STATE_DIR=$resolved_state_dir
-    export URNETWORK_STATE_DIR="$STATE_DIR"
-    if [ "${URNETWORK_STATE_DIR_LOGGED:-}" != 1 ]; then
-        log "State directory: $STATE_DIR"
-        export URNETWORK_STATE_DIR_LOGGED=1
-    fi
-}
-
-resolve_state_dir
-JWT_FILE="$STATE_DIR/jwt"
-
 # Accept AUTHCODE as an alias for URNETWORK_AUTH_CODE
 if [ -z "${URNETWORK_AUTH_CODE:-}" ] && [ -n "${AUTHCODE:-}" ]; then
   export URNETWORK_AUTH_CODE="$AUTHCODE"
@@ -103,6 +79,7 @@ else
 fi
 
 # Validate stored JWT if present: decode locally and verify exp/nbf
+JWT_FILE="${HOME:-/root}/.urnetwork/jwt"
 if [ -s "$JWT_FILE" ]; then
   if command -v validate_jwt_file >/dev/null 2>&1; then
     if ! validate_jwt_file "$JWT_FILE"; then
@@ -125,12 +102,15 @@ if [ "$AUTH_LC" = "userpass" ]; then
   fi
 elif [ "$AUTH_LC" = "authcode" ]; then
   if [ -z "${URNETWORK_AUTH_CODE:-}" ] && [ "$#" -eq 0 ] && [ ! -s "$JWT_FILE" ]; then
-    log "ERROR: AUTH=authcode requires AUTHCODE (or an existing session volume at $STATE_DIR)"
+    log "ERROR: AUTH=authcode requires AUTHCODE (or an existing session volume at ${HOME:-/root}/.urnetwork)"
     exit 1
   fi
 fi
 
 # === Startup Safety Messages ===
+STATE_DIR="${HOME:-/root}/.urnetwork"
+[ -d "$STATE_DIR" ] || STATE_DIR="/root/.urnetwork"
+
 is_mounted() {
   target="$1"
   if command -v mountpoint >/dev/null 2>&1; then
@@ -152,8 +132,8 @@ is_empty_dir() {
   [ ! -d "$target" ] || [ -z "$(ls -A "$target" 2>/dev/null)" ]
 }
 
-if ! is_mounted "$STATE_DIR" || ( ! has_identity "$STATE_DIR" && is_empty_dir "$STATE_DIR" ); then
-  log "WARNING: Without a persistent volume mounted at $STATE_DIR every container restart creates a NEW provider identity."
+if ! is_mounted "$STATE_DIR" && ! is_mounted "/root/.urnetwork" || ( ! has_identity "$STATE_DIR" && is_empty_dir "$STATE_DIR" ); then
+  log "WARNING: Without a persistent volume mounted at /root/.urnetwork every container restart creates a NEW provider identity."
 fi
 
 log "INFO: A payout wallet and consent must be set in the URnetwork app or website (or with the provider wallet commands in docs/Bittensor-Operations.md) for the provider to be paid."
@@ -198,7 +178,7 @@ run_normal() {
       exec /app/start_nightly.sh
       ;;
     jwt)
-      if [ "$#" -eq 0 ] && [ -s "$JWT_FILE" ]; then
+      if [ "$#" -eq 0 ] && [ -s "$HOME/.urnetwork/jwt" ]; then
         log "Existing session found — skipping auth"
         exec /app/start_jwt.sh
       elif [ "$#" -eq 0 ] && [ -n "$URNETWORK_AUTH_CODE" ]; then
@@ -207,7 +187,7 @@ run_normal() {
       elif [ "$#" -ne 1 ]; then
         log "ERROR: jwt mode requires a JWT token on first run"
         log "ERROR: Usage: docker run ... IMAGE <JWT_TOKEN>"
-        log "ERROR: On subsequent starts the session is read from the $STATE_DIR volume automatically."
+        log "ERROR: On subsequent starts the session is read from the $HOME/.urnetwork volume automatically."
         exit 1
       fi
       log "Entrypoint received $# arguments"

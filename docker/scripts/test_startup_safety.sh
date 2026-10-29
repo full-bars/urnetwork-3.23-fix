@@ -31,14 +31,15 @@ printf '%s\n' "$@" > "$ARGV_LOG"
 case "$1" in
   proxy)
     if [ "$PROXY_FAIL" = yes ]; then
-      printf '%s\n' '{"servers":{"partial":""}}' > "$URNETWORK_STATE_DIR/proxy"
-      exit 17
+      # Model a failed write that proxyAdd reports with exit status zero.
+      printf 'simulated proxy write failure: %s\n' "$HOME/.urnetwork/proxy" >&2
+      exit 0
     fi
-    python3 - "$URNETWORK_STATE_DIR/proxy" <<'PY'
+    python3 - "$HOME/.urnetwork/proxy" <<'PY'
 import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
-data['servers'] = {'new:1080': ''}
+data['servers']['new:1080'] = ''
 path.write_text(json.dumps(data) + '\n')
 PY
     ;;
@@ -78,7 +79,6 @@ log() { printf '%s\n' "$*"; }
 func_sleep() { :; }
 func_exit_if_stopping() { :; }
 APP_DIR="$TEST_APP"
-STATE_DIR="${URNETWORK_STATE_DIR:-$HOME/.urnetwork}"
 A_SYS_ARCH=test
 PROVIDER_FLAVOR=stable
 ENABLE_IP_CHECKER=true
@@ -107,22 +107,21 @@ run() {
   env PATH="$tmp/bin:$PATH" HOME="$home" TEST_APP="$tmp/app" FUNCTIONS="$tmp/functions/$function_set.sh" \
     ACTION="$action" PROXY_FAIL="${proxy_fail:-no}" ARGV_LOG="$argv" CURL_MODE="${curl_mode:-fetch-fail}" \
     CURL_LOG="$curl_log" DEBUG=true USER_AUTH='fake-user-123' PASSWORD='fake-password-456' \
-    JWT_FILE="$home/.urnetwork/jwt" URNETWORK_STATE_DIR="${state_override:-}" \
+    JWT_FILE="$home/.urnetwork/jwt" \
     TMPDIR="$tmp/tmpfiles" sh "$tmp/driver" > "$out" 2>&1
   rc=$?
 }
 proxy_kept() { [ "$rc" -eq 0 ] && cmp -s "$state/proxy" "$original" && rg -q 'kept existing proxy configuration' "$out" && [ ! -e "$argv" ]; }
 proxy_none() { [ "$rc" -eq 0 ] && [ ! -e "$state/proxy" ] && rg -q 'none configured' "$out" && [ ! -e "$argv" ]; }
-proxy_failure() { [ "$rc" -ne 0 ] && cmp -s "$state/proxy" "$original" && rg -q 'kept existing configuration' "$out" && rg -qx 'proxy' "$argv" && rg -qx 'add' "$argv" && rg -qx '\-f' "$argv"; }
+proxy_failure() { [ "$rc" -eq 0 ] && cmp -s "$state/proxy" "$original" && rg -Fq "simulated proxy write failure: $state/proxy" "$out" && cmp -s "$argv" "$expected_argv"; }
 proxy_success() {
-  [ "$rc" -eq 0 ] && rg -q 'configuration replaced' "$out" || return 1
+  [ "$rc" -eq 0 ] && cmp -s "$argv" "$expected_argv" || return 1
   python3 - "$state/proxy" <<'PY'
-import json, pathlib, stat, sys
+import json, pathlib, sys
 path = pathlib.Path(sys.argv[1])
 data = json.loads(path.read_text())
-assert data['servers'] == {'new:1080': ''}
+assert data['servers'] == {'old:1080': 'keep', 'new:1080': ''}
 assert data['auths']['keep']['user'] == 'alice'
-assert stat.S_IMODE(path.stat().st_mode) == 0o600
 PY
 }
 fetch_failure() { [ "$rc" -eq 0 ] && [ -f "$curl_log" ] && [ ! -e "$curl_log.executed" ] && rg -q 'IP checker fetch failed' "$out" && ! rg -q 'ran successfully|script failed' "$out"; }
@@ -137,9 +136,11 @@ login_safe() {
 }
 
 function_set=common
-home="$tmp/proxy/home"; state="$home/.urnetwork"; state_override=
+home="$tmp/proxy/home"; state="$home/.urnetwork"
 mkdir -p "$state"
 original="$tmp/proxy/original"; out="$tmp/proxy/out"; argv="$tmp/proxy/argv"; curl_log="$tmp/proxy/curl-log"
+expected_argv="$tmp/proxy/expected-argv"
+printf '%s\n' proxy add "--proxy_file=$tmp/app/proxy.txt" > "$expected_argv"
 printf '%s\n' '{"auths":{"keep":{"user":"alice","password":"secret"}},"servers":{"old:1080":"keep"}}' > "$original"
 cp "$original" "$state/proxy"
 rm -f "$tmp/app/proxy.txt" "$argv"
@@ -153,22 +154,10 @@ printf '%s\n' 'new:1080' > "$tmp/app/proxy.txt"
 proxy_fail=yes; run
 report 'failed proxy import leaves existing config intact' proxy_failure
 proxy_fail=no; run
-report 'successful proxy import replaces servers and keeps named auth' proxy_success
-
-# An explicit state directory receives the replacement without touching the default path.
-state="$tmp/proxy/override state"; state_override="$state"; mkdir -p "$state"
-cp "$original" "$state/proxy"
-cp "$original" "$home/.urnetwork/proxy"
-run
-report 'proxy import honors explicit state directory' proxy_success
-if cmp -s "$home/.urnetwork/proxy" "$original"; then
-  pass=$((pass + 1)); echo 'PASS: explicit state import leaves default config untouched'
-else
-  fail=$((fail + 1)); echo 'FAIL: explicit state import changed default config'
-fi
+report 'successful proxy import adds servers and keeps named auth' proxy_success
 
 # Fetch failures must not execute an error response as a successful checker script.
-state_override=; function_set=common; action=ip; home="$tmp/ip/home"; state="$home/.urnetwork"
+function_set=common; action=ip; home="$tmp/ip/home"; state="$home/.urnetwork"
 mkdir -p "$state"; out="$tmp/ip/out"; argv="$tmp/ip/argv"; curl_log="$tmp/ip/curl-log"
 curl_mode=fetch-fail; run; report 'IP-checker fetch failure is reported and body is not run' fetch_failure
 curl_mode=script-fail; rm -f "$curl_log.executed"; run; report 'IP-checker script failure is reported' script_failure

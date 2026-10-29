@@ -101,7 +101,6 @@ STUB_EOF
         echo "A_SYS_ARCH='amd64'"
         echo "PROVIDER_FLAVOR='$flavor'"
         echo "HOME='$test_dir/home'"
-        echo "STATE_DIR='$test_dir/home/.urnetwork'"
         echo "JWT_FILE='$jwt_file'"
         echo "USER_AUTH=''"
         echo "PASSWORD=''"
