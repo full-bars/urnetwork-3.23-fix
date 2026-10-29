@@ -50,6 +50,10 @@ PY
     printf '%s\n' jwt > "$JWT_FILE"
     if [ "${AUTH_ECHO_MODE:-secrets}" = clean ]; then
       printf '%s\n' 'Jwt written to test file' 'provider diagnostic'
+    elif [ "${AUTH_ECHO_MODE:-secrets}" = normalized ]; then
+      # the server may echo the address normalized and nothing else; the
+      # redaction must catch it on the address alone
+      printf '%s\n' 'Jwt written to test file' "provider echoed $(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')"
     else
       printf '%s\n' 'Jwt written to test file' "provider echoed $USER_AUTH $PASSWORD"
     fi
@@ -134,6 +138,9 @@ proxy_invalid_healed() {
   [ "${#backups[@]}" -eq 1 ] && cmp -s "${backups[0]}" "$original" &&
     grep -Fq "$state/proxy" "$out" && grep -Fq "${backups[0]}" "$out" &&
     jq -e '.servers == {"new:1080":""}' "$state/proxy" >/dev/null
+}
+login_normalized() {
+  [ "$rc" -eq 0 ] && grep -Fxq 'DEBUG: AUTH_OUTPUT=[redacted]' "$out" && ! grep -Fq 'private-user-123' "$out"
 }
 login_diagnostic() {
   [ "$rc" -eq 0 ] && grep -Fxq 'provider diagnostic' "$out" && ! grep -Fq 'AUTH_OUTPUT=[redacted]' "$out" || return 1
@@ -232,6 +239,10 @@ for function_set in common pelican; do
     esac
     run; report "$function_set DEBUG shows diagnostics with empty $empty_field" login_diagnostic
   done
+  auth_echo_mode=normalized
+  user_auth='Private-User-123'; password='private-password-456'
+  run; report "$function_set DEBUG redacts a case-normalized credential echo" login_normalized
+  auth_echo_mode=clean
   unset user_auth password auth_echo_mode
 done
 

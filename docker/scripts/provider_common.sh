@@ -434,12 +434,16 @@ func_login_retry_loop() {
             echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
             # Preserve the output line without exposing echoed credentials.
+            # The match ignores case: the server may echo the address normalized.
             auth_output_secret=no
+            auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
             if [ -n "$USER_AUTH" ]; then
-                case "$AUTH_OUTPUT" in *"$USER_AUTH"*) auth_output_secret=yes ;; esac
+                user_auth_lower=$(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_secret=yes ;; esac
             fi
             if [ -n "$PASSWORD" ]; then
-                case "$AUTH_OUTPUT" in *"$PASSWORD"*) auth_output_secret=yes ;; esac
+                password_lower=$(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$password_lower"*) auth_output_secret=yes ;; esac
             fi
             if [ "$auth_output_secret" = yes ]; then
                 echo "DEBUG: AUTH_OUTPUT=[redacted]"
