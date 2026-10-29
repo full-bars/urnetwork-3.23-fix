@@ -247,6 +247,15 @@ A URL fetch cycle prints detail lines, then **one line per source** saying what 
 ⚠️ [proxy][url] cycle: every source failed (2 of 2); pool unchanged at 340 qualified of 371 cached
 ```
 
+A source that cannot be fetched also gets one earlier line that carries the cause, which the per-source `fetch failed` line above does not:
+
+```
+[proxy][url] fetch failed for broken.example.net/list: fetch: context deadline exceeded (skipping this cycle)
+[proxy][url] fetch failed for other.example.org/raw: unexpected status 403 (skipping this cycle)
+```
+
+The text after the colon is the error itself (a timeout, a DNS failure, an unexpected status code), with the request URL removed from it so a token in the query string is not logged. The cycle headline only counts `N failed`, so this line is the only record of why. It is kept in the important buffer, so it is still there after the main log has rolled over. The source label follows the same redaction rules as below.
+
 A source is labeled by host and path only. The query string and any userinfo (`user:password@`) are never logged in these lines, since source URLs often carry an API token there. A path segment that looks like a credential (the segment after `/token/` or `/key/`, a long opaque blob, or a JWT-like dotted token) is shown as `[redacted]`, including when the secret contains an encoded slash (`%2F`); a filename such as `http.txt` is kept. A short token in an ordinary path segment cannot be recognized and would be shown, so keep tokens in the query string where you can. A URL that cannot be parsed is shown by its host alone, and a URL whose credentials may contain an unescaped slash is shown as `[unparseable source]`. Two sources that would share a label are numbered (`#2`).
 
 | Field | Meaning |
