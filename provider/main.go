@@ -711,7 +711,17 @@ func printNetworkIdCmd(opts docopt.Opts) {
 	fmt.Println(networkId)
 }
 
+type fileOwner struct {
+	uid, gid int
+}
+
+var chownFile = os.Chown
+
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFileOwned(path, data, perm, nil)
+}
+
+func atomicWriteFileOwned(path string, data []byte, perm os.FileMode, owner *fileOwner) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -728,6 +738,16 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if owner != nil {
+		if err := chownFile(tmp, owner.uid, owner.gid); err != nil {
+			os.Remove(tmp)
+			return fmt.Errorf("keep owner %d:%d of %s: %w", owner.uid, owner.gid, path, err)
+		}
 	}
 	return os.Rename(tmp, path)
 }
@@ -6054,6 +6074,18 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 
 	allKeyAddress := proxyAddCollectAddresses(opts)
 
+	// Keep an existing source's permissions when replacing it. New sources
+	// contain credentials and must not be made world-readable.
+	perm := os.FileMode(0600)
+	var owner *fileOwner
+	if info, err := os.Stat(sourcePath); err == nil {
+		perm = info.Mode().Perm()
+		owner, _ = sourceOwnerOf(info)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "proxy add: could not stat %s: %v\n", sourcePath, err)
+		return
+	}
+
 	// Read existing file content, preserving comments/blank lines, and track
 	// which normalized proxy lines are already present.
 	existing := map[string]bool{}
@@ -6103,7 +6135,7 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	}
 
 	content := strings.Join(out, "\n") + "\n"
-	if err := atomicWriteFile(sourcePath, []byte(content), 0644); err != nil {
+	if err := atomicWriteFileOwned(sourcePath, []byte(content), perm, owner); err != nil {
 		fmt.Fprintf(os.Stderr, "proxy add: could not write %s: %v\n", sourcePath, err)
 		return
 	}
