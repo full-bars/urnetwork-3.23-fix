@@ -4308,6 +4308,15 @@ func provide(opts docopt.Opts) {
 
 	// Load proxy.state to assign address-stable IDs. Known addresses keep their ID
 	// across restarts/reloads; new addresses get the next monotonic counter value.
+	// Startup imports identity/provenance into proxy.state and persists it. Take
+	// the cross-process lock across the read-modify-write so a clear or reload
+	// cannot replace this transaction with a stale snapshot.
+	releaseProxyLock, err := acquireProxyLockWait(ctx, proxyStartLockWait)
+	if err != nil {
+		shmLogFatal(20, "[proxy] could not acquire proxy lock: %v", err)
+	}
+	defer releaseProxyLock()
+
 	proxyState, stateErr := readProxyState()
 	if stateErr != nil {
 		tlog("[proxy] warning: could not read proxy.state: %v\n", stateErr)
@@ -4549,6 +4558,7 @@ func provide(opts docopt.Opts) {
 	if err := writeProxyState(proxyState); err != nil {
 		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
+	releaseProxyLock()
 
 	// Load persisted DoH server scores and start a warm-up probe so the
 	// server-scorer (P2-2) has signal before real DNS traffic arrives.
