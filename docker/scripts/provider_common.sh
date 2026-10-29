@@ -369,8 +369,8 @@ func_start_vnstat() {
 }
 
 # === Authentication (USER_AUTH/PASSWORD) ===
-# stable and nightly differ here on purpose: stable reuses a valid stored JWT,
-# nightly always starts from a fresh one. The retry loop itself is shared.
+# stable and nightly share this path: both reuse a valid stored JWT and remove it
+# only when it is expired or invalid. The retry loop itself is shared.
 func_do_login_stable() {
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
 
@@ -395,9 +395,10 @@ func_do_login_stable() {
 }
 
 func_do_login_nightly() {
-    rm -f "$JWT_FILE" || true
-    log "[INFO] Removed existing JWT (if any)"
-    func_login_retry_loop
+    # Nightly reuses a valid stored JWT, the same as stable. Discarding a working
+    # session on every start leaves a container retrying through a platform blip
+    # that a stored token would have carried it past.
+    func_do_login_stable
 }
 
 func_login_retry_loop() {
