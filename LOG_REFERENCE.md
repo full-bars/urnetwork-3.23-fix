@@ -1026,7 +1026,8 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 ## 🔄 Startup — Proxy Loading
 
 ```
-[INFO] proxy.txt found; adding proxy
+[INFO] Checking proxy configuration
+[INFO] Proxy configuration replaced from proxy.txt
 added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
   proxy[0] 203.0.113.18:1081 (91***rn/cf***9m)
@@ -1034,6 +1035,8 @@ Using 1000 proxy servers:
   ...
 ```
 
+- Without a mounted `/app/proxy.txt` a container logs `[INFO] No proxy.txt found; kept existing proxy configuration` (the saved configuration on the state volume is untouched) or `[INFO] No proxy.txt found; none configured`.
+- A proxy import that could not complete is a `[WARN]` line and leaves the saved configuration as it was: `Proxy staging failed; kept existing configuration` (or `none configured`), `Cannot read existing proxy configuration; kept it unchanged`, or `Proxy replacement failed; kept existing configuration` (or `none configured`).
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
