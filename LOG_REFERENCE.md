@@ -1027,6 +1027,7 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 
 ```
 [INFO] Checking proxy configuration
+[INFO] proxy.txt found; adding proxy
 [INFO] Proxy configuration replaced from proxy.txt
 added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
