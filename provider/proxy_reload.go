@@ -447,6 +447,57 @@ type ProxyReloader struct {
 	// launched again.
 	trimShed  map[string]bool
 	networkID string
+
+	// stopCh is closed when the run ends, so a reload waiting for its turn or
+	// inside an acquire wait lets go immediately instead of blocking shutdown.
+	stopCh   chan struct{}
+	stopOnce sync.Once
+}
+
+func (r *ProxyReloader) initStop() {
+	if r.stopCh == nil {
+		r.stopCh = make(chan struct{})
+	}
+}
+
+func (r *ProxyReloader) stop() {
+	r.initStop()
+	r.stopOnce.Do(func() {
+		close(r.stopCh)
+	})
+}
+
+func (r *ProxyReloader) isStopped() bool {
+	if r.stopCh == nil {
+		return false
+	}
+	select {
+	case <-r.stopCh:
+		return true
+	default:
+		return false
+	}
+}
+
+// quiesce waits for any in-flight reload to finish.
+func (r *ProxyReloader) quiesce() {
+	r.mu.Lock()
+	r.mu.Unlock() //nolint:staticcheck // the empty section is the wait
+}
+
+// quiesceForRun is the run's wait for any reload in flight. When the run is
+// ending, the reloader is told to stop first: a reload waiting to acquire
+// the slot hears the stop and lets go, where quiescing alone would wait out
+// the timeout. While the run is live, a worker returning is not the end, and
+// the reload is left to finish.
+func quiesceForRun(ctx context.Context, r *ProxyReloader) {
+	if r == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		r.stop()
+	}
+	r.quiesce()
 }
 
 // proxyLaunches records, per proxy address, the launch generation that
@@ -770,6 +821,9 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 		if time.Now().After(deadline) {
 			return false
 		}
+		if r.isStopped() {
+			return false
+		}
 		// Shutdown must never wait out the slot timeout: the parent context
 		// cancels on SIGTERM and on hotswap drain, and a reload that cannot
 		// take the slot has nothing to do anyway.
@@ -777,11 +831,18 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 			select {
 			case <-r.parentCtx.Done():
 				return false
+			case <-r.stopCh:
+				return false
 			case <-poll.C:
 			}
 			poll.Reset(reloadSlotPollInterval)
 		} else {
-			time.Sleep(reloadSlotPollInterval)
+			select {
+			case <-r.stopCh:
+				return false
+			case <-poll.C:
+			}
+			poll.Reset(reloadSlotPollInterval)
 		}
 	}
 }
@@ -922,7 +983,7 @@ func (r *ProxyReloader) reload() {
 
 	r.reloadSlotSkipped.Store(false)
 	if !r.acquireReloadSlot() {
-		if r.parentCtx != nil && r.parentCtx.Err() != nil {
+		if (r.parentCtx != nil && r.parentCtx.Err() != nil) || r.isStopped() {
 			// Shutdown, not contention: no retry is wanted and no alarm is
 			// due.
 			tlog("[proxy] reload cancelled: shutting down\n")
