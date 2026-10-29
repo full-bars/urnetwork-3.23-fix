@@ -2608,6 +2608,12 @@ do_install ()
             if ${SUDO:-} cp -p "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old" 2>/dev/null || \
                ${SUDO:-} cp "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old" 2>/dev/null; then
                 provider_swap_pending=1
+            else
+                # No backup means a failed start could not be rolled back, so
+                # the live binary is left untouched.
+                pr_err "Could not back up the current binary to %s; refusing to replace it" "$install_path/bin/urnetwork.old"
+                ${SUDO:-} rm -f "$install_path/bin/urnetwork.old" "$staged_bin" 2>/dev/null || true
+                exit 1
             fi
         fi
 

@@ -939,8 +939,15 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
         had_old_binary=1
         _live_bin="$provider_bin"
         if ! priv ln -f "$_live_bin" "$provider_backup" 2>/dev/null; then
-            priv cp -p "$_live_bin" "$provider_backup" 2>/dev/null || \
-            priv cp "$_live_bin" "$provider_backup" 2>/dev/null || true
+            if ! priv cp -p "$_live_bin" "$provider_backup" 2>/dev/null && \
+               ! priv cp "$_live_bin" "$provider_backup" 2>/dev/null; then
+                # Without a backup a failed start cannot roll back safely.
+                pr_err "Could not back up the current binary to %s; refusing to replace it" "$provider_backup"
+                priv_rm "$provider_backup"
+                priv_rm "$staged"
+                rm -rf "$tmpdir"
+                exit 1
+            fi
         fi
     fi
 

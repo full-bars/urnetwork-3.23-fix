@@ -980,6 +980,8 @@ type installerHarnessOpts struct {
 	failRestart bool
 	failCpToDst bool
 	failMv      bool
+	failBackup  bool
+	latest      bool
 	operation   string
 	// noParser runs the installer with jq and python3 hidden from PATH, the
 	// shape of a default FreeBSD host.
@@ -1048,6 +1050,9 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 	if tag == "" {
 		tag = "v2026.10.27"
 	}
+	if opts.latest {
+		tag = "latest"
+	}
 	failRestartVal := "0"
 	if opts.failRestart {
 		failRestartVal = "1"
@@ -1098,7 +1103,16 @@ http_fetch() {
         return 0
     fi
 }
+ln() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
+    command ln "$@"
+}
 cp() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*|*"/bin/urnetwork.old") return 1;; esac
+    fi
     if [ "${FAIL_CP:-0}" = "1" ]; then
         case "$*" in
             *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
@@ -1152,6 +1166,9 @@ do_install "$version"
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	if opts.noParser {
 		cmd.Env = []string{"PATH=" + pathWithoutParsers(t)}
+	}
+	if opts.failBackup {
+		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
 	}
 	out, err := cmd.CombinedOutput()
 
@@ -1272,7 +1289,16 @@ download_asset() {
     _dst="$2"
     cp %q "$_dst"
 }
+ln() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*) return 1;; esac
+    fi
+    command ln "$@"
+}
 cp() {
+    if [ "${FAIL_BACKUP:-0}" = "1" ]; then
+        case "$*" in *"/bin/.urnetwork.bak."*|*"/bin/urnetwork.old") return 1;; esac
+    fi
     if [ "${FAIL_CP:-0}" = "1" ]; then
         case "$*" in
             *"/bin/.urnetwork"*|*"/bin/urnetwork"*)
@@ -1339,6 +1365,9 @@ do_install
 	fullScript := harness + "\n" + fnGetVersion + "\n" + fnGetDate + "\n" + fnListsAsset + "\n" + fnDigest + "\n" + fnCompute + "\n" + fnVerify + "\n" + fnSanitize + "\n" + fnInstallSystemd + "\n" + fnDoInstall + "\n" + driver
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
+	if opts.failBackup {
+		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
+	}
 	out, err := cmd.CombinedOutput()
 
 	var exitCode int
@@ -1571,6 +1600,27 @@ func TestInstallerInterruptedReplacementLeavesBinaryIntact(t *testing.T) {
 			}
 			if res.finalBin != existingPayload {
 				t.Errorf("interrupted replacement changed binary, want %q, got %q", existingPayload, res.finalBin)
+			}
+		})
+	}
+}
+
+func TestInstallerBackupFailurePreservesLiveBinary(t *testing.T) {
+	const tag = "v2026.10.27"
+	const old = "pre-existing-working-binary"
+	for _, tc := range []struct {
+		name  string
+		asset string
+		run   func(*testing.T, installerHarnessOpts) installerHarnessResult
+	}{
+		{"FreeBSD", "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz", runFreeBSDInstaller},
+		{"Linux", "urnetwork-provider-" + tag + ".tar.gz", runLinuxInstaller},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			release := fmt.Sprintf(`{"tag_name":%q,"assets":[{"name":%q}]}`, tag, tc.asset)
+			res := tc.run(t, installerHarnessOpts{tag: tag, operation: "update", releaseJSON: release, tarballData: []byte("payload"), existingBin: old, failBackup: true})
+			if res.exitCode == 0 || res.finalBin != old || !strings.Contains(res.stdout, "Could not back up") {
+				t.Fatalf("backup failure did not abort before replacing live binary: exit=%d binary=%q output=%s", res.exitCode, res.finalBin, res.stdout)
 			}
 		})
 	}
@@ -1816,6 +1866,7 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 			releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
 			tarballData: tarballContent,
 			noParser:    true,
+			latest:      true,
 		})
 		if res.exitCode != 0 {
 			t.Fatalf("install on a host without jq/python3 failed (exit %d):\n%s", res.exitCode, res.stdout)
@@ -1834,6 +1885,7 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 			releaseJSON: releaseFor(strings.Repeat("b", 64)),
 			tarballData: tarballContent,
 			noParser:    true,
+			latest:      true,
 		})
 		if res.exitCode == 0 {
 			t.Fatalf("mismatched digest installed without a parser:\n%s", res.stdout)
