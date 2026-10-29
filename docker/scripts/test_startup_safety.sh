@@ -54,6 +54,9 @@ PY
       # the server may echo the address normalized and nothing else; the
       # redaction must catch it on the address alone
       printf '%s\n' 'Jwt written to test file' "provider echoed $(printf '%s' "$USER_AUTH" | tr '[:upper:]' '[:lower:]')"
+    elif [ "${AUTH_ECHO_MODE:-secrets}" = password ]; then
+      # same question for the password, with the address left out entirely
+      printf '%s\n' 'Jwt written to test file' "provider echoed $(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')"
     else
       printf '%s\n' 'Jwt written to test file' "provider echoed $USER_AUTH $PASSWORD"
     fi
@@ -148,6 +151,9 @@ proxy_invalid_healed() {
 }
 login_normalized() {
   [ "$rc" -eq 0 ] && grep -Fxq 'DEBUG: AUTH_OUTPUT=[redacted]' "$out" && ! grep -Fq 'private-user-123' "$out"
+}
+login_password_normalized() {
+  [ "$rc" -eq 0 ] && grep -Fxq 'DEBUG: AUTH_OUTPUT=[redacted]' "$out" && ! grep -Fq 'private-password-456' "$out"
 }
 login_diagnostic() {
   [ "$rc" -eq 0 ] && grep -Fxq 'provider diagnostic' "$out" && ! grep -Fq 'AUTH_OUTPUT=[redacted]' "$out" || return 1
@@ -256,6 +262,9 @@ for function_set in common pelican; do
   auth_echo_mode=normalized
   user_auth='Private-User-123'; password='private-password-456'
   run; report "$function_set DEBUG redacts a case-normalized credential echo" login_normalized
+  auth_echo_mode=password
+  user_auth='private-user-123'; password='Private-Password-456'
+  run; report "$function_set DEBUG redacts a case-normalized password echo" login_password_normalized
   auth_echo_mode=clean
   unset user_auth password auth_echo_mode
 done
