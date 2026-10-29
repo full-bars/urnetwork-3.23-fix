@@ -180,6 +180,7 @@ STUB_EOF
         echo "APP_DIR='$test_dir/app'"
         echo "A_SYS_ARCH='amd64'"
         echo "HOME='$test_dir/home'"
+        echo "STATE_DIR='$test_dir/home/.urnetwork'"
         echo "JWT_FILE='$test_dir/home/.urnetwork/jwt'"
         echo "USER_AUTH=''"
         echo "PASSWORD=''"

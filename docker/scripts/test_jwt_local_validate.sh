@@ -128,7 +128,7 @@ t "entrypoint: proceeds to re-auth with AUTHCODE" grep -q "Authentication reques
 
 # Startup safety messages: wallet reminder and volume warning
 t "entrypoint: logs wallet reminder" grep -q "INFO: A payout wallet and consent must be set" <<<"$ep_out"
-t "entrypoint: logs volume warning on empty unmounted dir" grep -q "WARNING: Without a persistent volume mounted at /root/.urnetwork" <<<"$ep_out"
+t "entrypoint: logs volume warning for resolved state directory" rg -Fq "WARNING: Without a persistent volume mounted at $tmp/h7/.urnetwork" <<<"$ep_out"
 
 echo ""
 echo "Results: $pass passed, $fail failed"

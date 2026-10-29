@@ -78,6 +78,7 @@ log() { printf '%s\n' "$*"; }
 func_sleep() { :; }
 func_exit_if_stopping() { :; }
 APP_DIR="$TEST_APP"
+STATE_DIR="${URNETWORK_STATE_DIR:-$HOME/.urnetwork}"
 A_SYS_ARCH=test
 PROVIDER_FLAVOR=stable
 ENABLE_IP_CHECKER=true
