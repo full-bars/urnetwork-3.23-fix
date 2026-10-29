@@ -140,10 +140,16 @@ func_do_login() {
         PANIC_LINE=$(echo "$AUTH_OUTPUT" | grep -E '^panic:' || true)
         
         if [ "${DEBUG:-false}" = "true" ]; then
-            echo "DEBUG: USER_AUTH=$USER_AUTH"
-            echo "DEBUG: PASSWORD=$PASSWORD"
+            if [ -n "$USER_AUTH" ]; then user_auth_set=yes; else user_auth_set=no; fi
+            if [ -n "$PASSWORD" ]; then password_set=yes; else password_set=no; fi
+            echo "DEBUG: USER_AUTH set=$user_auth_set length=${#USER_AUTH}"
+            echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
-            echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            # Preserve the output line without exposing echoed credentials.
+            case "$AUTH_OUTPUT" in
+                *"$USER_AUTH"*|*"$PASSWORD"*) echo "DEBUG: AUTH_OUTPUT=[redacted]" ;;
+                *) echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT" ;;
+            esac
         fi
         
         # Check for success message in output

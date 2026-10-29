@@ -186,15 +186,55 @@ func_check_credentials() {
 # === Proxy Setup ===
 func_check_proxy() {
     log "[INFO] Checking proxy configuration"
-    # ls -la ~/.urnetwork/ 2>/dev/null || log "~/.urnetwork/ not found"
-    rm -f ~/.urnetwork/proxy || true
-    if [ -f "/app/proxy.txt" ]; then
-        log "[INFO] proxy.txt found; adding proxy"
-		PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
-        "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt"
-    else
-        log "[INFO] No proxy.txt found; skipping proxy"
+    proxy_dir="${URNETWORK_STATE_DIR:-$HOME/.urnetwork}"
+    proxy_config="$proxy_dir/proxy"
+    if [ ! -f "/app/proxy.txt" ]; then
+        if [ -f "$proxy_config" ]; then
+            log "[INFO] No proxy.txt found; kept existing proxy configuration"
+        else
+            log "[INFO] No proxy.txt found; none configured"
+        fi
+        return 0
     fi
+
+    # Build the replacement in the same filesystem, away from live state.
+    # Preserve named auth entries while replacing the server list.
+    if ! mkdir -p "$proxy_dir" || ! proxy_stage=$(mktemp -d "$proxy_dir/.proxy-import.XXXXXX"); then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
+            log "[WARN] Proxy staging failed; none configured"
+        fi
+        return 1
+    fi
+    if [ -f "$proxy_config" ]; then
+        if ! jq -c 'select(type == "object") | .servers = {}' "$proxy_config" > "$proxy_stage/proxy" || [ ! -s "$proxy_stage/proxy" ]; then
+            log "[WARN] Cannot read existing proxy configuration; kept it unchanged"
+            rm -rf "$proxy_stage"
+            return 1
+        fi
+    else
+        if ! printf '%s\n' '{"servers":{}}' > "$proxy_stage/proxy"; then
+            log "[WARN] Proxy staging failed; none configured"
+            rm -rf "$proxy_stage"
+            return 1
+        fi
+    fi
+    PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
+    if URNETWORK_STATE_DIR="$proxy_stage" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f &&
+       [ -f "$proxy_stage/proxy" ] && chmod 600 "$proxy_stage/proxy" &&
+       mv -f "$proxy_stage/proxy" "$proxy_config"; then
+        log "[INFO] Proxy configuration replaced from proxy.txt"
+    else
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy replacement failed; kept existing configuration"
+        else
+            log "[WARN] Proxy replacement failed; none configured"
+        fi
+        rm -rf "$proxy_stage"
+        return 1
+    fi
+    rm -rf "$proxy_stage"
 }
 
 # === Architecture Detection ===
@@ -252,10 +292,18 @@ func_report_identity() {
 func_ip_checker() {
   if [ "$ENABLE_IP_CHECKER" = "true" ]; then
     log "[INFO] Checking current public IP..."
-    if curl -fsSL "$IP_CHECKER_URL" | sh; then
-      log "[INFO] IP checker script ran successfully"
+    if ! ip_checker_file=$(mktemp "${TMPDIR:-/tmp}/urnetwork-ip-checker.XXXXXX"); then
+      log "[WARN] IP checker fetch failed: could not create temporary file"
+    elif ! curl -fsSL "$IP_CHECKER_URL" -o "$ip_checker_file"; then
+      log "[WARN] IP checker fetch failed"
+      rm -f "$ip_checker_file"
     else
-      log "[WARN] Could not fetch or execute IP checker script"
+      if sh "$ip_checker_file"; then
+        log "[INFO] IP checker script ran successfully"
+      else
+        log "[WARN] IP checker script failed"
+      fi
+      rm -f "$ip_checker_file"
     fi
   else
     log "[INFO] IP checker disabled"
@@ -322,10 +370,16 @@ func_login_retry_loop() {
         PANIC_LINE=$(echo "$AUTH_OUTPUT" | grep -E '^panic:' || true)
 
         if [ "${DEBUG:-false}" = "true" ]; then
-            echo "DEBUG: USER_AUTH=$USER_AUTH"
-            echo "DEBUG: PASSWORD=$PASSWORD"
+            if [ -n "$USER_AUTH" ]; then user_auth_set=yes; else user_auth_set=no; fi
+            if [ -n "$PASSWORD" ]; then password_set=yes; else password_set=no; fi
+            echo "DEBUG: USER_AUTH set=$user_auth_set length=${#USER_AUTH}"
+            echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
-            echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            # Preserve the output line without exposing echoed credentials.
+            case "$AUTH_OUTPUT" in
+                *"$USER_AUTH"*|*"$PASSWORD"*) echo "DEBUG: AUTH_OUTPUT=[redacted]" ;;
+                *) echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT" ;;
+            esac
         fi
 
         # Check for success message in output
