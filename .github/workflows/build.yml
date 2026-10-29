@@ -342,6 +342,11 @@ jobs:
           chmod +x docker/scripts/test_stop_forwarding.sh
           ./docker/scripts/test_stop_forwarding.sh
 
+      - name: Docker startup safety tests
+        run: |
+          chmod +x docker/scripts/test_startup_safety.sh
+          ./docker/scripts/test_startup_safety.sh
+
       - name: Nightly login exit code tests
         run: |
           chmod +x docker/scripts/test_login_exit_code.sh
