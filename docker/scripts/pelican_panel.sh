@@ -146,10 +146,18 @@ func_do_login() {
             echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
             # Preserve the output line without exposing echoed credentials.
-            case "$AUTH_OUTPUT" in
-                *"$USER_AUTH"*|*"$PASSWORD"*) echo "DEBUG: AUTH_OUTPUT=[redacted]" ;;
-                *) echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT" ;;
-            esac
+            auth_output_secret=no
+            if [ -n "$USER_AUTH" ]; then
+                case "$AUTH_OUTPUT" in *"$USER_AUTH"*) auth_output_secret=yes ;; esac
+            fi
+            if [ -n "$PASSWORD" ]; then
+                case "$AUTH_OUTPUT" in *"$PASSWORD"*) auth_output_secret=yes ;; esac
+            fi
+            if [ "$auth_output_secret" = yes ]; then
+                echo "DEBUG: AUTH_OUTPUT=[redacted]"
+            else
+                echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            fi
         fi
         
         # Check for success message in output

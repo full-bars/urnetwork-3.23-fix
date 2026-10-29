@@ -221,33 +221,69 @@ func_check_proxy() {
         rm -rf "$proxy_stage_home"
         return 1
     fi
-    if [ -f "$proxy_config" ]; then
-        if ! jq -c 'select(type == "object") | .servers = {}' "$proxy_config" > "$proxy_stage_config" || [ ! -s "$proxy_stage_config" ]; then
-            log "[WARN] Cannot read existing proxy configuration; kept it unchanged"
+    proxy_corrupt=no
+    if [ -f "$proxy_config" ] && jq -s -e 'length == 1 and (.[0] | type == "object")' "$proxy_config" >/dev/null 2>&1; then
+        if ! jq -c '.servers = {}' "$proxy_config" > "$proxy_stage_config"; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
             rm -rf "$proxy_stage_home"
             return 1
         fi
-    elif ! printf '%s\n' '{"servers":{}}' > "$proxy_stage_config"; then
-        log "[WARN] Proxy staging failed; none configured"
-        rm -rf "$proxy_stage_home"
-        return 1
+    else
+        [ ! -f "$proxy_config" ] || proxy_corrupt=yes
+        if ! printf '%s\n' '{"servers":{}}' > "$proxy_stage_config"; then
+            log "[WARN] Proxy staging failed; existing configuration unchanged"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
     fi
 
     log "[INFO] proxy.txt found; adding proxy"
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
-    if HOME="$proxy_stage_home" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f &&
-       [ -f "$proxy_stage_config" ] && chmod 600 "$proxy_stage_config" &&
-       mv -f "$proxy_stage_config" "$proxy_config"; then
-        log "[INFO] Proxy configuration replaced from proxy.txt"
-    else
-        if [ -f "$proxy_config" ]; then
-            log "[WARN] Proxy replacement failed; kept existing configuration"
+    if ! HOME="$proxy_stage_home" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f; then
+        log "[WARN] Proxy replacement failed: provider import failed; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if ! jq -e '(.servers|type=="object") and (.servers|length>0)' "$proxy_stage_config" >/dev/null 2>&1; then
+        log "[WARN] Proxy replacement failed: staged config has no valid servers; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if ! chmod 600 "$proxy_stage_config"; then
+        log "[WARN] Proxy replacement failed: cannot secure staged config; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    proxy_backup=""
+    if [ "$proxy_corrupt" = yes ]; then
+        # Leave the live file in place until the new import has passed validation.
+        if ! proxy_backup=$(mktemp "$proxy_config.corrupt.$(date +%Y%m%d%H%M%S).XXXXXX"); then
+            log "[WARN] Proxy replacement failed: cannot reserve corrupt config backup; existing configuration unchanged"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+        if ! mv -f "$proxy_config" "$proxy_backup"; then
+            log "[WARN] Proxy replacement failed: cannot move $proxy_config to $proxy_backup"
+            rm -f "$proxy_backup"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+        log "[WARN] Unreadable proxy configuration $proxy_config moved to $proxy_backup"
+    fi
+    if ! mv -f "$proxy_stage_config" "$proxy_config"; then
+        if [ -n "$proxy_backup" ]; then
+            if mv -f "$proxy_backup" "$proxy_config"; then
+                log "[WARN] Proxy replacement failed: install failed; original configuration restored"
+            else
+                log "[WARN] Proxy replacement failed: install and restore failed; original configuration is at $proxy_backup"
+            fi
         else
-            log "[WARN] Proxy replacement failed; none configured"
+            log "[WARN] Proxy replacement failed: install failed; existing configuration unchanged"
         fi
         rm -rf "$proxy_stage_home"
         return 1
     fi
+    log "[INFO] Proxy configuration replaced from proxy.txt"
     rm -rf "$proxy_stage_home"
 }
 
@@ -390,10 +426,18 @@ func_login_retry_loop() {
             echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
             # Preserve the output line without exposing echoed credentials.
-            case "$AUTH_OUTPUT" in
-                *"$USER_AUTH"*|*"$PASSWORD"*) echo "DEBUG: AUTH_OUTPUT=[redacted]" ;;
-                *) echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT" ;;
-            esac
+            auth_output_secret=no
+            if [ -n "$USER_AUTH" ]; then
+                case "$AUTH_OUTPUT" in *"$USER_AUTH"*) auth_output_secret=yes ;; esac
+            fi
+            if [ -n "$PASSWORD" ]; then
+                case "$AUTH_OUTPUT" in *"$PASSWORD"*) auth_output_secret=yes ;; esac
+            fi
+            if [ "$auth_output_secret" = yes ]; then
+                echo "DEBUG: AUTH_OUTPUT=[redacted]"
+            else
+                echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            fi
         fi
 
         # Check for success message in output
