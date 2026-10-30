@@ -1368,7 +1368,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, info.Mode())
 	if err != nil {
 		return err
 	}
@@ -1541,31 +1541,57 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		return fmt.Errorf("backup stat: %w", err)
 	}
 
-	// Windows-safe swap: rename the running executable ASIDE first, then
-	// install the staged binary at the freed path. On Windows you cannot
-	// rename a .new over a running .exe (the kernel locks the image section),
-	// but you CAN rename the running executable itself to a .bak-* name — the
-	// standard self-update pattern. On failure the original is restored from
-	// .bak-*; on success the backup is left for removal after process exit
-	// (the next invocation cleans stale .bak-* files).
-	if err := os.Rename(exePath, backup); err != nil {
-		return fmt.Errorf("move current tool aside: %w", err)
-	}
-	fmt.Printf("moved %s -> %s\n", exePath, backup)
-
-	// Swap in place. The tool runs as the invoking user (root or the
-	// operator), so no chown is needed — installBinary with user="" keeps
-	// current ownership.
-	if err := installBinary(staged, exePath, ""); err != nil {
-		// Restore the original before giving up — an update that fails
-		// mid-swap must not leave the tool missing.
-		if rerr := os.Rename(backup, exePath); rerr != nil {
-			return fmt.Errorf("swap tool binary: %w (restore from %s failed: %v)", err, backup, rerr)
+	// Windows-safe swap vs Unix atomic replace:
+	// On Windows you cannot rename a .new over a running .exe (the kernel locks
+	// the image section), but you CAN rename the running executable itself to a
+	// .bak-* name.
+	// On Unix, rename over a running image is atomic and supported; taking the
+	// backup first via hard link or copy ensures the executable is never absent
+	// from disk if interrupted mid-update.
+	if runtime.GOOS == "windows" {
+		if err := os.Rename(exePath, backup); err != nil {
+			return fmt.Errorf("move current tool aside: %w", err)
 		}
-		return fmt.Errorf("swap tool binary: %w", err)
+		fmt.Printf("moved %s -> %s\n", exePath, backup)
+
+		// Swap in place. The tool runs as the invoking user (root or the
+		// operator), so no chown is needed — installBinary with user="" keeps
+		// current ownership.
+		if err := installBinary(staged, exePath, ""); err != nil {
+			// Restore the original before giving up — an update that fails
+			// mid-swap must not leave the tool missing.
+			if rerr := os.Rename(backup, exePath); rerr != nil {
+				return fmt.Errorf("swap tool binary: %w (restore from %s failed: %v)", err, backup, rerr)
+			}
+			return fmt.Errorf("swap tool binary: %w", err)
+		}
+	} else {
+		if err := backupToolBinary(exePath, backup); err != nil {
+			return fmt.Errorf("backup tool: %w", err)
+		}
+		fmt.Printf("backed up %s -> %s\n", exePath, backup)
+
+		if err := installBinary(staged, exePath, ""); err != nil {
+			return fmt.Errorf("swap tool binary: %w", err)
+		}
 	}
 	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
 	return nil
+}
+
+// backupToolBinary hard-links src to dst, falling back to a copy when the link
+// is impossible. dst must not exist: os.Link reports EEXIST instead of
+// replacing it, and copyFile opens with O_EXCL, so a path created after the
+// os.Stat check is refused rather than truncated through a planted symlink.
+func backupToolBinary(src, dst string) error {
+	err := os.Link(src, dst)
+	if err == nil {
+		return nil
+	}
+	if os.IsExist(err) {
+		return err
+	}
+	return copyFile(src, dst)
 }
 
 // cleanupStaleBackups removes .bak-* files left by earlier self-update

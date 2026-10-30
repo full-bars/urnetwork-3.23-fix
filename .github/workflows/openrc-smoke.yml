@@ -131,10 +131,16 @@ jobs:
           {"tag_name": "$CI_TAG"}
           EOF
           TOOL_DIGEST=$(sha256sum "$DL/urnet-tools-linux-${{ matrix.binarch }}" | awk '{print $1}')
+          PROVIDER_DIGEST=$(sha256sum "$DL/urnetwork-provider-$CI_TAG.tar.gz" | awk '{print $1}')
           cat > "$ROOT/api/releases/tags/$CI_TAG" <<EOF
           {
             "tag_name": "$CI_TAG",
             "assets": [
+              {
+                "name": "urnetwork-provider-$CI_TAG.tar.gz",
+                "browser_download_url": "http://127.0.0.1:8099/releases/download/$CI_TAG/urnetwork-provider-$CI_TAG.tar.gz",
+                "digest": "sha256:$PROVIDER_DIGEST"
+              },
               {
                 "name": "urnet-tools-linux-${{ matrix.binarch }}",
                 "browser_download_url": "http://127.0.0.1:8099/releases/download/$CI_TAG/urnet-tools-linux-${{ matrix.binarch }}",
