@@ -6164,6 +6164,7 @@ func proxyRemove(opts docopt.Opts) {
 	proxyConfig := readProxyConfig()
 
 	if all, _ := opts.Bool("--all"); all {
+		defer triggerProxyReload()
 		// Take the cross-process lock so a concurrent daemon health-snapshot
 		// write can't clobber this reset and silently revive the removed
 		// proxies (finding #11). Hold the lock across internal config write,

@@ -44,6 +44,14 @@ func TestProxyRemoveAllReportsUnreadableStateAndClearsCache(t *testing.T) {
 	}
 	os.Stderr = w
 
+	reloadPath, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before, err := readReloadSeq(reloadPath)
+	if err != nil {
+		t.Fatal(err)
+	}
 	proxyRemove(docopt.Opts{"--all": true})
 
 	w.Close()
@@ -69,12 +77,26 @@ func TestProxyRemoveAllReportsUnreadableStateAndClearsCache(t *testing.T) {
 	}
 
 	// Reload trigger written
-	reloadPath, err := proxyReloadPath()
+	seq, err := readReloadSeq(reloadPath)
+	if err != nil || seq < before+2 {
+		t.Fatalf("reload trigger seq = %d (%v), want at least %d (config write and completed clear)", seq, err, before+2)
+	}
+}
+
+func TestProxyRemoveAllTriggersReloadWhenLockFails(t *testing.T) {
+	withTempHome(t)
+	release, err := acquireProxyLock()
 	if err != nil {
 		t.Fatal(err)
 	}
-	seq, err := readReloadSeq(reloadPath)
-	if err != nil || seq < 1 {
-		t.Fatalf("reload trigger seq = %d (%v), want >= 1", seq, err)
+	defer release()
+	proxyRemove(docopt.Opts{"--all": true})
+	path, err := proxyReloadPath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	seq, err := readReloadSeq(path)
+	if err != nil || seq == 0 {
+		t.Fatalf("reload trigger seq = %d (%v), want a reload even after lock failure", seq, err)
 	}
 }
