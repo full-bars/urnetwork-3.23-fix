@@ -7,6 +7,35 @@ import (
 	"time"
 )
 
+func TestReloadStopConcurrentInitialization(t *testing.T) {
+	for i := 0; i < 100; i++ {
+		r := &ProxyReloader{}
+		start := make(chan struct{})
+		var wg sync.WaitGroup
+		wg.Add(3)
+		go func() {
+			defer wg.Done()
+			<-start
+			r.initStop()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			r.stop()
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			_ = r.isStopped()
+		}()
+		close(start)
+		wg.Wait()
+		if !r.isStopped() {
+			t.Fatal("reloader is not stopped after concurrent initialization and stop")
+		}
+	}
+}
+
 // A reload queued behind a held slot aborts immediately when stop is signalled,
 // instead of blocking for reloadSlotTimeout.
 func TestReloadWaitingForSlotHonorsStop(t *testing.T) {

@@ -450,29 +450,32 @@ type ProxyReloader struct {
 
 	// stopCh is closed when the run ends, so a reload waiting for its turn or
 	// inside an acquire wait lets go immediately instead of blocking shutdown.
-	stopCh   chan struct{}
-	stopOnce sync.Once
+	stopCh       chan struct{}
+	stopInitOnce sync.Once
+	stopOnce     sync.Once
+}
+
+func (r *ProxyReloader) stopChannel() chan struct{} {
+	r.stopInitOnce.Do(func() {
+		r.stopCh = make(chan struct{})
+	})
+	return r.stopCh
 }
 
 func (r *ProxyReloader) initStop() {
-	if r.stopCh == nil {
-		r.stopCh = make(chan struct{})
-	}
+	r.stopChannel()
 }
 
 func (r *ProxyReloader) stop() {
-	r.initStop()
+	stopCh := r.stopChannel()
 	r.stopOnce.Do(func() {
-		close(r.stopCh)
+		close(stopCh)
 	})
 }
 
 func (r *ProxyReloader) isStopped() bool {
-	if r.stopCh == nil {
-		return false
-	}
 	select {
-	case <-r.stopCh:
+	case <-r.stopChannel():
 		return true
 	default:
 		return false
@@ -809,6 +812,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 // the parent context cancelled), so the caller can skip instead of blocking
 // forever.
 func (r *ProxyReloader) acquireReloadSlot() bool {
+	stopCh := r.stopChannel()
 	deadline := time.Now().Add(reloadSlotTimeout)
 	// One reused timer: time.After in the loop would schedule a fresh timer
 	// on every poll tick.
@@ -831,14 +835,14 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 			select {
 			case <-r.parentCtx.Done():
 				return false
-			case <-r.stopCh:
+			case <-stopCh:
 				return false
 			case <-poll.C:
 			}
 			poll.Reset(reloadSlotPollInterval)
 		} else {
 			select {
-			case <-r.stopCh:
+			case <-stopCh:
 				return false
 			case <-poll.C:
 			}
