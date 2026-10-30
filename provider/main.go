@@ -4331,6 +4331,10 @@ func provide(opts docopt.Opts) {
 	// Startup imports identity/provenance into proxy.state and persists it. Take
 	// the cross-process lock across the read-modify-write so a clear or reload
 	// cannot replace this transaction with a stale snapshot.
+	// A hot swap execs in place: the pid survives and the previous image's
+	// proxy.lock would read as held-by-a-live-holder. Clear it before the lock
+	// is taken, or startup waits proxyStartLockWait and fatals before cleanup.
+	cleanStaleSelfProxyLock()
 	releaseProxyLock, err := acquireProxyLockWait(ctx, proxyStartLockWait)
 	if err != nil {
 		shmLogFatal(20, "[proxy] could not acquire proxy lock: %v", err)
@@ -4700,10 +4704,6 @@ func provide(opts docopt.Opts) {
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
-	// A hot swap execs in place: the pid survives and the previous image's
-	// proxy.lock would read as held-by-a-live-holder. Clear it before any
-	// reload path (watcher, watchdog, first reload) can observe it.
-	cleanStaleSelfProxyLock()
 	reloader.StartWatcher(ctx)
 	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx, func() time.Time { return nowFn() }) }, nil)
 	// Reconcile against the operator trim cap immediately at startup. The launch
