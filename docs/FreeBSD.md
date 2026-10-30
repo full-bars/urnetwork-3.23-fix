@@ -177,7 +177,7 @@ The interval is `daily`, `weekly` or `monthly`, and `off` removes it. On FreeBSD
 | `weekly` | `17 3 * * 0` (Sundays, 03:17) |
 | `monthly` | `17 3 1 * *` (the 1st, 03:17) |
 
-The line runs `urnet-tools update -f` and appends its output to `~/.urnetwork/auto-update.log` in that user's home. It ends in the marker comment `# urnet-tools auto-update urnetwork`, which is how a later change replaces or removes only its own line and leaves the rest of the crontab alone. Changing the interval never leaves two schedules.
+For a non-root user the line runs `urnet-tools update -f` and appends its output to `~/.urnetwork/auto-update.log` in that user's home. Root's line runs the root-owned copy at `/usr/local/libexec/urnetwork-provider/bin/urnet-tools` and appends to `/var/log/urnetwork/auto-update.log`; if that copy is missing or not root-owned, scheduling is refused until the installer has put it there. A provider installed in the root-owned tree can only be updated by root, so a non-root user who tries to schedule it gets an error that says to run `sudo urnet-tools auto-update <interval>`. It ends in the marker comment `# urnet-tools auto-update urnetwork`, which is how a later change replaces or removes only its own line and leaves the rest of the crontab alone. Changing the interval never leaves two schedules.
 
 Two things differ from a systemd timer:
 
