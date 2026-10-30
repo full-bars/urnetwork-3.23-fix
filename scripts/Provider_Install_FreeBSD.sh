@@ -507,6 +507,14 @@ assert_state_path_safe() {
 enforce_install_tree_perms() {
     _tree="$1"
     _bin="$2"
+    _links=$(priv find "$_tree" -type l -print) || {
+        pr_err "could not scan %s for symlinks" "$_tree"
+        return 1
+    }
+    if [ -n "$_links" ]; then
+        pr_err "symlink in install tree; refusing to repair: %s" "$_links"
+        return 1
+    fi
     _tree_conforms() {
         _dirs=$(priv find "$_tree" -type d -print) || return 1
         for _path in $_dirs; do
