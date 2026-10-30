@@ -200,7 +200,6 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 
 	rootKey := newTestKey(t)
 	directory := newTestPinnedDirectory(t, rootKey)
-	applyTestOpenFeedRecords(t, directory, rootKey, 32, 100)
 
 	settings := DefaultFeedServerSettings()
 	settings.KeepaliveTimeout = time.Minute
@@ -219,13 +218,12 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 	})
 	sibling.readEndOfSample(t)
 
-	// read both subscribers while the records are applied: the subscription
-	// buffer holds 64, and a reader that only starts after the applies can be
-	// disconnected as a slow subscriber, which makes the test scheduling
-	// dependent
+	// Each revocation marks a batch on both streams. Unlike revoking an applied
+	// key, this marker does not change the open pool while a handler filters it.
 	type streamResult struct {
-		keys []string
-		err  error
+		keys       []string
+		revocation *protocol.ExtenderRevocation
+		err        error
 	}
 	readStreamed := func(client *testFeedClient) streamResult {
 		streamed := []string{}
@@ -235,7 +233,7 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 				return streamResult{err: err}
 			}
 			if frame.GetRevocation() != nil {
-				return streamResult{keys: streamed}
+				return streamResult{keys: streamed, revocation: frame.GetRevocation()}
 			}
 			if frame.GetRecord() == nil {
 				continue
@@ -249,47 +247,72 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 	}
 	firstResult := make(chan streamResult, 1)
 	siblingResult := make(chan streamResult, 1)
-	go func() { firstResult <- readStreamed(first) }()
-	go func() { siblingResult <- readStreamed(sibling) }()
-
-	appliedKeys := []*testKey{}
-	for i := range 64 {
-		extenderKey := newTestKey(t)
-		applyTestFeedRecord(t, directory, rootKey, extenderKey, fmt.Sprintf("198.51.101.%d", 1+i))
-		appliedKeys = append(appliedKeys, extenderKey)
+	readBatches := func(client *testFeedClient, results chan<- streamResult) {
+		for {
+			result := readStreamed(client)
+			select {
+			case results <- result:
+			case <-ctx.Done():
+				return
+			}
+			if result.err != nil {
+				return
+			}
+		}
 	}
-	// then a revocation, which marks the end of what the stream owes
-	revocation, err := connect.SignExtenderRevocation(rootKey.privateKey, &protocol.ExtenderRevocationBody{
-		PublicKey:   appliedKeys[0].publicKey,
-		IssueTimeMs: uint64(time.Now().Add(time.Second).UnixMilli()),
-		NetworkHost: testNetworkHost,
-	})
+	go readBatches(first, firstResult)
+	go readBatches(sibling, siblingResult)
+
+	remote, err := net.ResolveTCPAddr("tcp", "203.0.113.7:40000")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := directory.ApplyRevocationSource(revocation, connect.ExtenderSourceGossip); err != nil {
-		t.Fatal(err)
+	vantage := connect.ExtenderVantageKeyOfAddr(remote)
+	markerKey := newTestKey(t)
+	markerTime := uint64(time.Now().UnixMilli())
+	streamedCount := 0
+	for i := range 64 {
+		extenderKey := newTestKey(t)
+		applyTestFeedRecord(t, directory, rootKey, extenderKey, fmt.Sprintf("198.51.101.%d", 1+i))
+		expected := []string{}
+		// Compare the stream against the independently generated sample from
+		// this same stable pool, not the stream's filtering helper.
+		for _, message := range directory.SampleRecords(64, nil, vantage) {
+			body, err := directory.RootKeys().VerifyRecord(message.GetRecord())
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.Equal(body.PublicKey, extenderKey.publicKey) {
+				expected = append(expected, hex.EncodeToString(extenderKey.publicKey))
+			}
+		}
+		revocation, err := connect.SignExtenderRevocation(rootKey.privateKey, &protocol.ExtenderRevocationBody{
+			PublicKey:   markerKey.publicKey,
+			IssueTimeMs: markerTime + uint64(i),
+			NetworkHost: testNetworkHost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := directory.ApplyRevocationSource(revocation, connect.ExtenderSourceGossip); err != nil || !changed {
+			t.Fatalf("apply marker %d: changed=%t err=%v", i, changed, err)
+		}
+		// The pool stays fixed until both handlers have passed this record.
+		// Otherwise a partition resize or revocation can make two handlers
+		// legitimately make different decisions for the same queued record.
+		for name, results := range map[string]<-chan streamResult{"first": firstResult, "sibling": siblingResult} {
+			result := <-results
+			if result.err != nil {
+				t.Fatalf("%s batch %d: %v", name, i, result.err)
+			}
+			if !proto.Equal(result.revocation, revocation) || !slices.Equal(result.keys, expected) {
+				t.Fatalf("%s batch %d: got records %v and marker %v, want records %v and marker %v", name, i, result.keys, result.revocation, expected, revocation)
+			}
+		}
+		streamedCount += len(expected)
 	}
-
-	firstStream := <-firstResult
-	if firstStream.err != nil {
-		t.Fatal(firstStream.err)
-	}
-	siblingStream := <-siblingResult
-	if siblingStream.err != nil {
-		t.Fatal(siblingStream.err)
-	}
-	if len(firstStream.keys) == 0 {
+	if streamedCount == 0 {
 		t.Fatal("the stream carried none of the applied records")
-	}
-	// ninety-six open records make sixteen partitions; a subscriber that was
-	// sent more than half of what was applied was not bound to one
-	if 32 < len(firstStream.keys) {
-		t.Fatalf("the stream carried %d of %d applied records", len(firstStream.keys), len(appliedKeys))
-	}
-	// one prefix is one vantage: the sibling was sent exactly the same
-	if !slices.Equal(siblingStream.keys, firstStream.keys) {
-		t.Fatalf("a sibling of the prefix was streamed %d records, expected the same %d", len(siblingStream.keys), len(firstStream.keys))
 	}
 }
 
