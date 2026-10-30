@@ -379,7 +379,7 @@ ${service_name}_running_pid()
     # string in its own argv, and "ps -U <service user>" lists that grep when
     # the caller is the service user. The grep then matches itself and a
     # stopped provider reports as running (and start skips a real start).
-    _pid="\$(ps -axo pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
+    _pid="\$(ps -U "\${${service_name}_user}" -o pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
     if [ -n "\$_pid" ]; then
         echo "\$_pid"
         return 0
@@ -786,9 +786,7 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
         if [ "$service_user" != "root" ]; then
             # Re-check here, not only at the top of do_install: the service user
             # controls this directory and can replace it with a symlink between
-            # the two, and these are the root writes that would follow it. -h
-            # keeps the recursive chown from dereferencing anything that
-            # appears.
+            # the two, and these are the root writes that would follow it.
             if [ -L "$state_dir" ]; then
                 pr_err "%s became a symlink during install; refusing to write through it" "$state_dir"
                 rm -rf "$tmpdir"; exit 1
@@ -798,11 +796,25 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
             [ -d "$state_dir" ] || mkdir "$state_dir" 2>/dev/null || true
             # Enter the directory before re-owning it, for the same reason as
             # the check above: cd resolves the entry once, and the relative
-            # '.' cannot be redirected by a symlink swapped in afterwards.
-            if ( cd "$state_dir" 2>/dev/null ); then
-                chown -R -h "$service_user" . 2>/dev/null || true
+            # '.' cannot be redirected by a symlink swapped in afterwards. The
+            # cd and the writes share ONE subshell: a cd in its own subshell
+            # leaves the installer's working directory unchanged, and the
+            # recursive chown would then run on wherever it was started from.
+            # The directory entered must also be the one the name should
+            # reach, or a symlink swapped in after the check above lands root
+            # in an arbitrary directory.
+            (
+                cd "$state_dir" 2>/dev/null || exit 1
+                [ "$(pwd -P)" = "$(cd "$service_home" 2>/dev/null && pwd -P)/.urnetwork" ] || exit 2
+                # Not recursive: the service user owns this tree, and a hard
+                # link it plants to a root-owned file would be re-owned by a
+                # recursive root chown (-h guards symlinks, not links).
+                chown -h "$service_user" . 2>/dev/null || true
                 chmod 700 . 2>/dev/null || true
-            fi
+                if [ -n "$(find . ! -user "$service_user" -print 2>/dev/null | head -n 1)" ]; then
+                    pr_warn "%s holds files not owned by %s; fix them by hand" "$state_dir" "$service_user"
+                fi
+            ) || pr_warn "left %s alone: it could not be entered, or it resolves outside %s" "$state_dir" "$service_home"
         fi
     fi
 

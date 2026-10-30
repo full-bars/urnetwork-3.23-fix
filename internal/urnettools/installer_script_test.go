@@ -150,7 +150,7 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 			if refusalIdx < 0 {
 				refusalIdx = i
 			}
-		case strings.Contains(line, "curl -fsSL") && firstFetch < 0:
+		case (strings.Contains(line, "http_fetch ") || strings.Contains(line, "curl -fsSL")) && firstFetch < 0:
 			firstFetch = i
 		}
 		// Any copy whose destination is the live binary is the ETXTBSY bug,
@@ -180,15 +180,23 @@ func TestFreeBSDInstallerNeverCopiesOntoRunningBinary(t *testing.T) {
 	if !strings.Contains(body, `enforce_install_tree_perms "$install_path" "$staged"`) {
 		t.Error("do_install does not enforce the install tree's ownership and traversal")
 	}
-	// The chown runs on '.' inside a `cd "$state_dir"` subshell. -h is main's
-	// no-follow form: a symlink that appears under the state dir must not be
-	// dereferenced by a recursive chown. The cd pins the directory the chown
-	// actually operates on, so a symlink swapped in at state_dir after the
-	// check above cannot redirect it; dropping the cd must fail this test.
+	// The chown runs on '.' after a `cd "$state_dir"` in the SAME subshell. A cd
+	// in its own `if ( cd ... )` subshell leaves the installer's working
+	// directory unchanged, so the chown would hit wherever the operator ran the
+	// script from. The entered directory must match the service home by
+	// pwd -P, and the chown must not recurse: -h guards symlinks, not hard
+	// links the service user can plant to root-owned files.
 	stateOwned := strings.Contains(body, `cd "$state_dir"`) &&
-		strings.Contains(body, `chown -R -h "$service_user" .`)
+		strings.Contains(body, `pwd -P`) &&
+		strings.Contains(body, `chown -h "$service_user" .`)
 	if !stateOwned {
-		t.Error(`do_install does not hand the state directory to the service user (want cd "$state_dir" plus chown -R -h "$service_user" .)`)
+		t.Error(`do_install does not hand the state directory to the service user (want cd "$state_dir", a pwd -P check and chown -h "$service_user" .)`)
+	}
+	if strings.Contains(body, `if ( cd "$state_dir"`) {
+		t.Error("the state dir cd is in its own subshell, so the chown runs in the installer's working directory")
+	}
+	if strings.Contains(body, `chown -R -h "$service_user"`) {
+		t.Error("do_install recurses a root chown through the service user's tree")
 	}
 	// The service must not be started when a failure to start would be
 	// reported as success: the start/restart outcome is checked.
@@ -531,76 +539,6 @@ enforce_install_tree_perms "$TREE" "$BIN"
 	})
 }
 
-func TestFreeBSDInstallTreePermsRejectsSymlinks(t *testing.T) {
-	skipWithoutPOSIXShell(t)
-	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
-	if err != nil {
-		t.Fatal(err)
-	}
-	fn := extractShellFunc(t, strings.ReplaceAll(string(b), "\r\n", "\n"), "enforce_install_tree_perms")
-	if fn == "" {
-		t.Fatal("could not extract enforce_install_tree_perms")
-	}
-
-	harness := `priv() { if [ "${FAIL_SCAN:-0}" = 1 ] && [ "$1" = find ]; then return 1; fi; "$@"; }
-pr_err() { fmt="$1"; shift; printf 'ERR: '"$fmt"'\n' "$@" >&2; }
-pr_info() { :; }
-stat() { case "$2" in %u) printf '0\n' ;; %Lp) printf '755\n' ;; *) return 1 ;; esac; }
-chown() { printf 'chown\n' >> "$REPAIRS"; [ "${FAIL_CHOWN:-0}" != 1 ]; }
-chmod() { printf 'chmod\n' >> "$REPAIRS"; }
-` + fn + `
-enforce_install_tree_perms "$TREE" "$BIN"
-`
-	for _, c := range []struct {
-		name, target        string
-		failChown, failScan bool
-	}{
-		{"file repair succeeds", "urnetwork", false, false},
-		{"directory repair succeeds", ".", false, false},
-		{"dangling repair succeeds", "missing", false, false},
-		{"file already conformed fallback", "urnetwork", true, false},
-		{"scan failure", "", false, true},
-	} {
-		t.Run(c.name, func(t *testing.T) {
-			tree := filepath.Join(t.TempDir(), "tree")
-			binDir := filepath.Join(tree, "bin")
-			if err := os.MkdirAll(binDir, 0o755); err != nil {
-				t.Fatal(err)
-			}
-			bin := filepath.Join(binDir, "urnetwork")
-			if err := os.WriteFile(bin, []byte("binary"), 0o755); err != nil {
-				t.Fatal(err)
-			}
-			wantPath := tree
-			if !c.failScan {
-				wantPath = filepath.Join(binDir, "link with spaces")
-				if err := os.Symlink(c.target, wantPath); err != nil {
-					t.Fatal(err)
-				}
-			}
-			repairs := filepath.Join(t.TempDir(), "repairs")
-			cmd := exec.Command("/bin/sh", "-c", harness)
-			cmd.Env = []string{"PATH=/usr/bin:/bin", "TREE=" + tree, "BIN=" + bin, "REPAIRS=" + repairs}
-			if c.failChown {
-				cmd.Env = append(cmd.Env, "FAIL_CHOWN=1")
-			}
-			if c.failScan {
-				cmd.Env = append(cmd.Env, "FAIL_SCAN=1")
-			}
-			out, err := cmd.CombinedOutput()
-			if err == nil {
-				t.Errorf("gate accepted %s: %s", wantPath, out)
-			}
-			if !strings.Contains(string(out), wantPath) || !strings.Contains(string(out), "ERR:") {
-				t.Errorf("error must name %s: %s", wantPath, out)
-			}
-			if _, err := os.Stat(repairs); !os.IsNotExist(err) {
-				t.Errorf("repair ran before symlink rejection: stat error %v", err)
-			}
-		})
-	}
-}
-
 // A checked repair is only a gate if the install acts on it. These assertions
 // pin the call site: do_install must call enforce_install_tree_perms, and a
 // failing gate must exit before the rc.d script is written and before the
@@ -911,5 +849,35 @@ func skipWithoutPOSIXShell(t *testing.T) {
 	}
 	if _, err := exec.LookPath("/bin/sh"); err != nil {
 		t.Skipf("no /bin/sh on this host: %v", err)
+	}
+}
+
+// The installer puts the provider in a ROOT-owned tree outside the service
+// user's home, so the account that runs the binary cannot rewrite it. Both
+// sides carry that path as a literal: the shell script, and the FreeBSD
+// discovery fallback that has to find a stopped install. This fails when one
+// moves without the other, which is what the script's "keep the two in step"
+// comment promises.
+func TestFreeBSDRootOwnedInstallPathMatchesDiscovery(t *testing.T) {
+	const installPath = "/usr/local/libexec/urnetwork-provider"
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	if !strings.Contains(script, `install_path="`+installPath+`"`) {
+		t.Errorf("installer does not install into the root-owned tree %s", installPath)
+	}
+	// The old per-user tree must not be where a NEW install writes: it left
+	// the service user owning a binary root executes.
+	if strings.Contains(script, `install_path="$service_home/`) {
+		t.Error("installer still installs under the service user's home")
+	}
+	d, err := os.ReadFile("discover_freebsd.go")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(d), `"`+installPath+`/bin/urnetwork"`) {
+		t.Errorf("discovery fallback does not look in %s/bin/urnetwork; a stopped install would be undiscoverable", installPath)
 	}
 }

@@ -843,6 +843,16 @@ test_json_parser_package_commands_use_sudo() {
     rm -rf "$tmpd"
 }
 test_json_parser_package_commands_use_sudo
+# --- do_install must contain exactly one install body ---
+# A pasted second copy of the body once re-ran the whole download against
+# another fork's URLs after a successful first pass.
+test_do_install_body_not_duplicated() {
+    local script="scripts/Provider_Install_Linux.sh"
+    assert_eq "1" "$(grep -c 'Fetching release information' "$script")" "do_install fetches release information exactly once"
+    assert_eq "0" "$(grep -c 'full-bars/meso-miner' "$script")" "installer never downloads from another fork"
+}
+test_do_install_body_not_duplicated
+
 test_sanitize_restart_dropins_flags_weakened_policies() {
     local tmp d out
     tmp="$(mktemp -d)"
