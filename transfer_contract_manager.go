@@ -718,7 +718,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 						self.contractStatus(contractStatus)
 						proxyTag := ""
 						if self.settings != nil && self.settings.ProxyDescription != "" {
-							proxyTag = " " + self.settings.ProxyDescription
+							proxyTag = " | " + self.settings.ProxyDescription
 						}
 						self.client.log.Infof("💚 [contract] acquired%s size=%s destination=%s\n",
 							proxyTag,
@@ -746,7 +746,7 @@ func (self *ContractManager) HandleControlFrame(contractKey ContractKey, frame *
 		}
 		proxyTag := ""
 		if self.settings != nil && self.settings.ProxyDescription != "" {
-			proxyTag = " " + self.settings.ProxyDescription
+			proxyTag = " | " + self.settings.ProxyDescription
 		}
 		for _, contractError := range contractErrors {
 			self.client.log.Infof("⛔ [contract] denied%s = %s destination=%s\n", proxyTag, contractError, contractKey.Destination.DestinationId)
@@ -1352,7 +1352,7 @@ func closeContractLineWithProxy(
 	}
 	proxyTag := ""
 	if proxyDescription != "" {
-		proxyTag = " " + proxyDescription
+		proxyTag = " | " + proxyDescription
 	}
 	return fmt.Sprintf("%s [contract] %s%s acked=%s allotted=%s util=%.0f%% destination=%s",
 		emoji,

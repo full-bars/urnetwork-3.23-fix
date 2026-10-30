@@ -96,7 +96,10 @@ func TestFreeBSDInstalledProviderSkipsLibexecWithoutOtherExecute(t *testing.T) {
 // further down the list.
 func TestFreeBSDInstalledProviderSkipsPerUserWithoutOwnerExecute(t *testing.T) {
 	if os.Geteuid() == 0 {
-		t.Skip("access checks as root do not test user execute permissions")
+		// Root skips on purpose: access(2) as root reports X_OK for any execute
+		// bit, so the owner-execute rule cannot be observed here. The
+		// unprivileged run in freebsd.yml is the coverage for it.
+		t.Skip("skipped as root: access(2) X_OK is any-bit for root, so owner-execute is untestable here; freebsd.yml runs it as nobody")
 	}
 	useWritableBSDProviderRoot(t)
 	home := t.TempDir()

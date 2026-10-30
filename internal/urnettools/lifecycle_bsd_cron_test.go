@@ -37,3 +37,41 @@ func TestBSDCronMarkerMatchesWholeServiceName(t *testing.T) {
 		}
 	}
 }
+
+// The swapped binary in the root-owned FreeBSD tree must not be chowned to the
+// service user: root executes it afterwards. Paths outside the tree, and names
+// that merely share its prefix, are not in the tree.
+func TestBSDTreeOwnedByRoot(t *testing.T) {
+	cases := []struct {
+		path string
+		want bool
+	}{
+		{"/usr/local/libexec/urnetwork-provider/bin/urnetwork", true},
+		{"/usr/local/libexec/urnetwork-provider/bin/urnet-tools", true},
+		{"/usr/local/libexec/urnetwork-provider", true},
+		{"/usr/local/libexec/urnetwork-provider-evil/bin/urnetwork", false},
+		{"/home/alice/.local/share/urnetwork-provider/bin/urnetwork", false},
+		{"", false},
+	}
+	for _, c := range cases {
+		if got := bsdTreeOwnedByRoot(c.path); got != c.want {
+			t.Errorf("bsdTreeOwnedByRoot(%q) = %v, want %v", c.path, got, c.want)
+		}
+	}
+}
+
+// Root's crontab must never run a path the invoker can replace. Root gets the
+// staged tool or an error, and a non-root crontab keeps the running tool.
+func TestBSDScheduledUpdate(t *testing.T) {
+	tool, logDir, err := bsdScheduledUpdate(0, true, "/home/alice/bin/urnet-tools", "/home/alice/.urnetwork")
+	if err != nil || tool != bsdRootToolPath || logDir != bsdRootLogDir {
+		t.Errorf("root with staged tool = (%q, %q, %v)", tool, logDir, err)
+	}
+	if _, _, err := bsdScheduledUpdate(0, false, "/home/alice/bin/urnet-tools", "/home/alice/.urnetwork"); err == nil {
+		t.Error("root without a staged tool must be refused, not fall back to the invoker's binary")
+	}
+	tool, logDir, err = bsdScheduledUpdate(1001, false, "/home/alice/bin/urnet-tools", "/home/alice/.urnetwork")
+	if err != nil || tool != "/home/alice/bin/urnet-tools" || logDir != "/home/alice/.urnetwork" {
+		t.Errorf("non-root = (%q, %q, %v)", tool, logDir, err)
+	}
+}

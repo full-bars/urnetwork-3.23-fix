@@ -470,6 +470,33 @@ jobs:
             tail -40 /tmp/t3.log
             echo "--- urnettools bsd tests done ---"
 
+            # The owner-execute test (discover_freebsd_test.go) is the only test
+            # where the access(X_OK) check in discover_freebsd.go decides the
+            # result. Root
+            # skips it on purpose, so it runs twice: as root it must SKIP for
+            # the stated reason, and as nobody it must PASS. A 0654 binary owned
+            # by nobody is rejected by access(X_OK). A plain 0o111 mask accepts
+            # it because the group execute bit is set, so this run goes red if
+            # the check is reverted.
+            name='TestFreeBSDInstalledProviderSkipsPerUserWithoutOwnerExecute'
+            ../../out/urnettools.test -test.v -test.run "$name" > /tmp/t4-root.log 2>&1 || failures=1
+            tail -10 /tmp/t4-root.log
+            if ! grep -Eq "^--- SKIP: $name " /tmp/t4-root.log || ! grep -Fq 'skipped as root:' /tmp/t4-root.log; then
+              echo "FATAL: the root run did not SKIP $name for the expected reason"
+              failures=1
+            fi
+            # Copy out of the workspace and give nobody a writable temp directory.
+            # FreeBSD su passes -c after the login to the caller's shell.
+            install -m 755 ../../out/urnettools.test /tmp/urnettools-nobody.test
+            printf '%s\n' '#!/bin/sh' 'cd /tmp || exit 1' 'export HOME=/tmp TMPDIR=/tmp' "exec /tmp/urnettools-nobody.test -test.v -test.run $name" > /tmp/urnettools-nobody.sh
+            chmod 755 /tmp/urnettools-nobody.sh
+            su -m nobody -c '/bin/sh /tmp/urnettools-nobody.sh' > /tmp/t4-nobody.log 2>&1 || failures=1
+            tail -10 /tmp/t4-nobody.log
+            if ! grep -Eq "^--- PASS: $name " /tmp/t4-nobody.log; then
+              echo "FATAL: the unprivileged run did not PASS $name (skipped, failed, or -test.run stopped matching)"
+              failures=1
+            fi
+
             if [ "$failures" -ne 0 ]; then
               echo "FATAL: a FreeBSD Go test binary failed"
               exit 1

@@ -51,6 +51,11 @@ func readReloadSeq(path string) (int, error) {
 	return n, nil
 }
 
+// errProxyLockHeld is the only acquisition failure that waiting can cure: a
+// live holder owns the lock. Every other failure (an uncreatable or read-only
+// state directory, a failed lock write) is returned as it is.
+var errProxyLockHeld = errors.New("reload already in progress — try again in a moment")
+
 // acquireProxyLock creates the lock file at the default path. Returns an error
 // if a reload is already in progress (lock already held).
 func acquireProxyLock() (func(), error) {
@@ -73,6 +78,37 @@ func acquireProxyLockWithRetry() (func(), error) {
 		time.Sleep(100 * time.Millisecond)
 	}
 	return nil, err
+}
+
+// proxyStartLockWait bounds how long provider startup waits for a live lock
+// holder (a slow reload, clear or health write in another process). A holder
+// that is gone is stolen by acquireProxyLockAt, so this only expires when a
+// live process genuinely never lets go, and startup then fails with that error.
+var proxyStartLockWait = 2 * time.Minute
+
+// acquireProxyLockWait polls for the proxy lock every 100 ms until it is held,
+// the context ends, or maxWait passes. Only a lock held by another process is
+// waited on; any other acquisition error is returned at once. The returned
+// error is the last acquisition error, or the context's.
+func acquireProxyLockWait(ctx context.Context, maxWait time.Duration) (func(), error) {
+	deadline := time.NewTimer(maxWait)
+	defer deadline.Stop()
+	for {
+		release, err := acquireProxyLock()
+		if err == nil {
+			return release, nil
+		}
+		if !errors.Is(err, errProxyLockHeld) {
+			return nil, fmt.Errorf("acquire proxy lock: %w", err)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-deadline.C:
+			return nil, fmt.Errorf("proxy lock still held after %v: %w", maxWait, err)
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
 }
 
 // acquireProxyLockAt is the path-explicit form, for testing.
@@ -109,7 +145,7 @@ func acquireProxyLockAt(path string) (func(), error) {
 	f, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_EXCL, 0600)
 	if err != nil {
 		if errors.Is(err, os.ErrExist) {
-			return nil, fmt.Errorf("reload already in progress — try again in a moment")
+			return nil, errProxyLockHeld
 		}
 		return nil, err
 	}
@@ -411,6 +447,60 @@ type ProxyReloader struct {
 	// launched again.
 	trimShed  map[string]bool
 	networkID string
+
+	// stopCh is closed when the run ends, so a reload waiting for its turn or
+	// inside an acquire wait lets go immediately instead of blocking shutdown.
+	stopCh       chan struct{}
+	stopInitOnce sync.Once
+	stopOnce     sync.Once
+}
+
+func (r *ProxyReloader) stopChannel() chan struct{} {
+	r.stopInitOnce.Do(func() {
+		r.stopCh = make(chan struct{})
+	})
+	return r.stopCh
+}
+
+func (r *ProxyReloader) initStop() {
+	r.stopChannel()
+}
+
+func (r *ProxyReloader) stop() {
+	stopCh := r.stopChannel()
+	r.stopOnce.Do(func() {
+		close(stopCh)
+	})
+}
+
+func (r *ProxyReloader) isStopped() bool {
+	select {
+	case <-r.stopChannel():
+		return true
+	default:
+		return false
+	}
+}
+
+// quiesce waits for any in-flight reload to finish.
+func (r *ProxyReloader) quiesce() {
+	r.mu.Lock()
+	r.mu.Unlock() //nolint:staticcheck // the empty section is the wait
+}
+
+// quiesceForRun is the run's wait for any reload in flight. When the run is
+// ending, the reloader is told to stop first: a reload waiting to acquire
+// the slot hears the stop and lets go, where quiescing alone would wait out
+// the timeout. While the run is live, a worker returning is not the end, and
+// the reload is left to finish.
+func quiesceForRun(ctx context.Context, r *ProxyReloader) {
+	if r == nil {
+		return
+	}
+	if ctx != nil && ctx.Err() != nil {
+		r.stop()
+	}
+	r.quiesce()
 }
 
 // proxyLaunches records, per proxy address, the launch generation that
@@ -722,6 +812,7 @@ func (r *ProxyReloader) StartWatcher(ctx context.Context) {
 // the parent context cancelled), so the caller can skip instead of blocking
 // forever.
 func (r *ProxyReloader) acquireReloadSlot() bool {
+	stopCh := r.stopChannel()
 	deadline := time.Now().Add(reloadSlotTimeout)
 	// One reused timer: time.After in the loop would schedule a fresh timer
 	// on every poll tick.
@@ -734,6 +825,9 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 		if time.Now().After(deadline) {
 			return false
 		}
+		if r.isStopped() {
+			return false
+		}
 		// Shutdown must never wait out the slot timeout: the parent context
 		// cancels on SIGTERM and on hotswap drain, and a reload that cannot
 		// take the slot has nothing to do anyway.
@@ -741,11 +835,18 @@ func (r *ProxyReloader) acquireReloadSlot() bool {
 			select {
 			case <-r.parentCtx.Done():
 				return false
+			case <-stopCh:
+				return false
 			case <-poll.C:
 			}
 			poll.Reset(reloadSlotPollInterval)
 		} else {
-			time.Sleep(reloadSlotPollInterval)
+			select {
+			case <-stopCh:
+				return false
+			case <-poll.C:
+			}
+			poll.Reset(reloadSlotPollInterval)
 		}
 	}
 }
@@ -886,7 +987,7 @@ func (r *ProxyReloader) reload() {
 
 	r.reloadSlotSkipped.Store(false)
 	if !r.acquireReloadSlot() {
-		if r.parentCtx != nil && r.parentCtx.Err() != nil {
+		if (r.parentCtx != nil && r.parentCtx.Err() != nil) || r.isStopped() {
 			// Shutdown, not contention: no retry is wanted and no alarm is
 			// due.
 			tlog("[proxy] reload cancelled: shutting down\n")
