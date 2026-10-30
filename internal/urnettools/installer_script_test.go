@@ -2059,8 +2059,14 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 	})
 
 	t.Run("sha256sum_verifies_both_assets", func(t *testing.T) {
-		if _, err := exec.LookPath("sha256sum"); err != nil {
-			t.Skip("sha256sum is not installed")
+		// The installer runs with a restricted PATH built from /bin and /usr/bin,
+		// so sha256sum only reaches it when the base system ships it. On FreeBSD
+		// the base tool is `sha256` (in /usr/bin) and sha256sum lives in
+		// /usr/local/bin, which the harness does not expose — guarding on
+		// LookPath alone passes while the run has no such tool at all.
+		if p, err := exec.LookPath("sha256sum"); err != nil ||
+			!(strings.HasPrefix(p, "/bin/") || strings.HasPrefix(p, "/usr/bin/")) {
+			t.Skip("sha256sum is not part of the base system")
 		}
 		res := runFreeBSDInstaller(t, installerHarnessOpts{
 			tag: tag, releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
