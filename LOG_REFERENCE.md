@@ -247,6 +247,15 @@ A URL fetch cycle prints detail lines, then **one line per source** saying what 
 ⚠️ [proxy][url] cycle: every source failed (2 of 2); pool unchanged at 340 qualified of 371 cached
 ```
 
+A source that cannot be fetched also gets one earlier line that carries the cause, which the per-source `fetch failed` line above does not:
+
+```
+[proxy][url] fetch failed for broken.example.net/list: fetch: context deadline exceeded (skipping this cycle)
+[proxy][url] fetch failed for other.example.org/raw: unexpected status 403 (skipping this cycle)
+```
+
+The text after the colon is the error itself (a timeout, a DNS failure, an unexpected status code), with the request URL removed from it so a token in the query string is not logged. The cycle headline only counts `N failed`, so this line is the only record of why. It is kept in the important buffer, so it is still there after the main log has rolled over. The source label follows the same redaction rules as below.
+
 A source is labeled by host and path only. The query string and any userinfo (`user:password@`) are never logged in these lines, since source URLs often carry an API token there. A path segment that looks like a credential (the segment after `/token/` or `/key/`, a long opaque blob, or a JWT-like dotted token) is shown as `[redacted]`, including when the secret contains an encoded slash (`%2F`); a filename such as `http.txt` is kept. A short token in an ordinary path segment cannot be recognized and would be shown, so keep tokens in the query string where you can. A URL that cannot be parsed is shown by its host alone, and a URL whose credentials may contain an unescaped slash is shown as `[unparseable source]`. Two sources that would share a label are numbered (`#2`).
 
 | Field | Meaning |
@@ -950,10 +959,12 @@ Persists the current billable transfer rate to `~/.urnetwork/billable_rate` on a
 ## 📑 Contract Lifecycle (3.23-fix)
 
 ```
-[contract] acquired size=256 KiB destination=0142...c3a9
-[contract] denied = insufficient allowance destination=0142...c3a9
-[contract] closed acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
+[contract] acquired | proxy[3] (203.0.113.22:1081) size=256 KiB destination=0142...c3a9
+[contract] denied | proxy[3] (203.0.113.22:1081) = insufficient allowance destination=0142...c3a9
+[contract] closed | proxy[3] (203.0.113.22:1081) acked=198 KiB allotted=256 KiB util=77% destination=0142...c3a9
 ```
+
+The provider names the proxy a contract belongs to after a vertical bar, set off from the verb: `acquired`, `denied`, `closed` and `checkpointed` (the line a close report prints when it is sent as a checkpoint instead of a final close) all read `[contract] <verb> | proxy[<index>] (<address>)`, and a direct slot reads `proxy[0] (direct)`. The bar is the only change from earlier releases, which joined the proxy to the verb with a space. A contract manager with no proxy description prints no bar and no proxy.
 
 A contract is the platform's bandwidth grant for relaying a client's traffic. These lines bracket a contract's life:
 
@@ -1017,7 +1028,9 @@ instance_id: 019e2d67-5a73-4bb3-6661-df9b5c595003
 ## 🔄 Startup — Proxy Loading
 
 ```
+[INFO] Checking proxy configuration
 [INFO] proxy.txt found; adding proxy
+[INFO] Proxy configuration replaced from proxy.txt
 added server 203.0.113.22:1081 (91***rn/cf***9m)
 Using 1000 proxy servers:
   proxy[0] 203.0.113.18:1081 (91***rn/cf***9m)
@@ -1025,6 +1038,8 @@ Using 1000 proxy servers:
   ...
 ```
 
+- Without a mounted `/app/proxy.txt` a container logs `[INFO] No proxy.txt found; kept existing proxy configuration` (the saved configuration on the state volume is untouched) or `[INFO] No proxy.txt found; none configured`.
+- A proxy import that could not complete is a `[WARN]` line and leaves the saved configuration as it was: `Proxy staging failed; kept existing configuration` (or `none configured`), or `Proxy replacement failed: <reason>; existing configuration unchanged`. With a usable saved configuration the start then logs `[WARN] Proxy import failed; kept the existing configuration` and carries on. With none, it logs `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy` and the container stops, so it never sends traffic out of its own address while the operator believes the mounted proxy is in use.
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
