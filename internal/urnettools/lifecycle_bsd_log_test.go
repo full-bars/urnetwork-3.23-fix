@@ -20,9 +20,11 @@ import (
 //
 // The start function is taken from the rc.d script the shipped installer
 // renders (the shell template is executed, not retyped) and run under sh in a
-// sandbox with a recording daemon. The host is Linux, where stat(1) -f reports
-// filesystem status instead, so the sandbox supplies a stat that answers the
-// one format string the guard asks for; mkfifo, ln, open and unlink are real.
+// sandbox with a recording daemon. On FreeBSD, stat(1) -f takes the same
+// format the guard uses, so the real binary answers. On Linux, stat(1) -f
+// reports filesystem status instead, so the sandbox supplies a stat that
+// answers the one format string the guard asks for; mkfifo, ln, open and
+// unlink are real.
 func TestFreeBSDStartReplacesUnsafeLog(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("the rc.d template is not a Windows artifact")
@@ -178,26 +180,40 @@ func newFreeBSDLogSandbox(t *testing.T) *freeBSDLogSandbox {
 	if err := os.MkdirAll(s.stubDir, 0o755); err != nil {
 		t.Fatalf("create the stub dir: %v", err)
 	}
-	for name, body := range map[string]string{
+	stubs := map[string]string{
 		"daemon":  daemonStub,
 		"install": installStub,
 		"ps":      "#!/bin/sh\n# no provider is running in the sandbox\nexit 1\n",
-		"stat":    statStub,
-	} {
+	}
+	// FreeBSD's stat(1) already answers -f FORMAT, so the guard runs against
+	// the real binary there; the stand-in is only for the Linux host.
+	if runtime.GOOS != "freebsd" {
+		stubs["stat"] = statStub
+	}
+	for name, body := range stubs {
 		if err := os.WriteFile(filepath.Join(s.stubDir, name), []byte(body), 0o755); err != nil {
 			t.Fatalf("write the %s stub: %v", name, err)
 		}
 	}
 
-	// A stub that mistranslates FreeBSD's %HT %l %Su would make the guard look
+	// A stat that mistranslates FreeBSD's %HT %l %Su would make the guard look
 	// either too strict or too lax, so prove it answers for a file this user
 	// owns before drawing any conclusion from the cases below.
 	probe := filepath.Join(s.root, "probe")
 	if err := os.WriteFile(probe, nil, 0o600); err != nil {
 		t.Fatalf("write the stat probe: %v", err)
 	}
-	out, err := exec.Command(filepath.Join(s.stubDir, "stat"), "-f", "%HT %l %Su", probe).CombinedOutput()
+	statBin := "stat"
+	if runtime.GOOS != "freebsd" {
+		statBin = filepath.Join(s.stubDir, "stat")
+	}
+	out, err := exec.Command(statBin, "-f", "%HT %l %Su", probe).CombinedOutput()
 	if want := "Regular File 1 " + me.Username; err != nil || strings.TrimSpace(string(out)) != want {
+		// On FreeBSD the real stat(1) is the one the guard calls, so a mismatch
+		// there is a broken environment; a skip would hide it.
+		if runtime.GOOS == "freebsd" {
+			t.Fatalf("stat -f cannot report %q on FreeBSD: %v: %q", want, err, out)
+		}
 		t.Skipf("the stat stub cannot report %q on this host: %v: %q", want, err, out)
 	}
 	return s
