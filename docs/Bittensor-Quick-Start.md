@@ -69,7 +69,7 @@ Good to know:
   ```bash
   provider wallet set <coldkey> --message='<printed text>' --signature=0x<128 hex characters>
   ```
-- **`urnet-tools wallet sign` refuses on a node on purpose.** If your desktop also runs a provider and the tool mistakes it for a fleet node, and you are sure it is your own computer, add `--i-am-on-my-own-workstation`.
+- **`urnet-tools wallet sign` needs no flag, anywhere.** It serves a page on 127.0.0.1 and the seed never leaves your wallet extension, so it does not care whether the box also runs a provider. The seed-file form is the one that asks: `wallet set --coldkey_seed_file` prompts when it can, and on a fleet node with no terminal to answer it refuses outright. There is no flag to skip that.
 
 ## By install type
 
