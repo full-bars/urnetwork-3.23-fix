@@ -1,9 +1,41 @@
 package main
 
 import (
+	"bytes"
+	"os"
 	"path/filepath"
 	"testing"
 )
+
+func TestRemoveMatchAbortsOnUnreadableURLState(t *testing.T) {
+	withTempHome(t)
+	addr := "203.0.113.7:1080"
+	if err := writeProxyState(&ProxyState{Proxies: map[string]ProxyEntry{addr: {}}}); err != nil {
+		t.Fatal(err)
+	}
+	path, err := proxyURLStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	original := []byte(`{"exclude_patterns":["old.example"],`)
+	if err := os.WriteFile(path, original, 0600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := removeMatchingProxies("203.0.113.7"); err == nil {
+		t.Error("expected unreadable URL state to abort removal")
+	}
+	got, err := os.ReadFile(path)
+	if err != nil || !bytes.Equal(got, original) {
+		t.Errorf("URL state changed: %q, err=%v", got, err)
+	}
+	state, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := state.Proxies[addr]; !ok {
+		t.Error("matching proxy removed despite unreadable URL state")
+	}
+}
 
 // If the removal fails part way, the exclusion is already on disk so no fetch
 // can re-add the matches before the operator reruns the command.

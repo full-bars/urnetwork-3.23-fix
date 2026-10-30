@@ -308,8 +308,9 @@ func removeMatchingProxiesLocked(pattern string) (int, error) {
 
 	urlState, err := readProxyURLState()
 	if err != nil {
-		urlState = &ProxyURLState{}
-	} else if addExcludePattern(urlState, pattern) {
+		return 0, fmt.Errorf("could not read the exclude patterns, nothing removed: %w", err)
+	}
+	if addExcludePattern(urlState, pattern) {
 		if err := writeProxyURLState(urlState); err != nil {
 			return 0, fmt.Errorf("could not persist exclude pattern: %w", err)
 		}
