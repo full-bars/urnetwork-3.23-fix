@@ -95,6 +95,9 @@ func TestFreeBSDInstalledProviderSkipsLibexecWithoutOtherExecute(t *testing.T) {
 // owner even when group or other can, so it must not hide the working copy
 // further down the list.
 func TestFreeBSDInstalledProviderSkipsPerUserWithoutOwnerExecute(t *testing.T) {
+	if os.Geteuid() == 0 {
+		t.Skip("access checks as root do not test user execute permissions")
+	}
 	useWritableBSDProviderRoot(t)
 	home := t.TempDir()
 	writeBSDProviderFile(t, filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork"), 0o654)
