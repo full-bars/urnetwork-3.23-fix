@@ -91,6 +91,21 @@ func TestFreeBSDInstalledProviderSkipsLibexecWithoutOtherExecute(t *testing.T) {
 	}
 }
 
+// A per-user binary whose owner-execute bit is clear cannot be run by its
+// owner even when group or other can, so it must not hide the working copy
+// further down the list.
+func TestFreeBSDInstalledProviderSkipsPerUserWithoutOwnerExecute(t *testing.T) {
+	useWritableBSDProviderRoot(t)
+	home := t.TempDir()
+	writeBSDProviderFile(t, filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork"), 0o654)
+	fallback := filepath.Join(home, ".urnetwork", "urnetwork")
+	writeBSDProviderFile(t, fallback, 0o755)
+
+	if got := installedBSDProviderIn(home); got != fallback {
+		t.Fatalf("installed provider = %q, want the executable binary %q", got, fallback)
+	}
+}
+
 // A directory satisfies os.Stat as well, and running it is impossible.
 func TestFreeBSDInstalledProviderSkipsDirectoryAtLibexec(t *testing.T) {
 	root := useWritableBSDProviderRoot(t)

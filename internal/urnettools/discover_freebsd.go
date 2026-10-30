@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"strconv"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // discoverProcesses enumerates running provider processes on FreeBSD.
@@ -177,7 +179,7 @@ func installedBSDProvider() string {
 }
 
 // installedBSDProviderIn reports the first candidate that is a regular file
-// with an execute bit set.
+// the invoking user can execute.
 //
 // A successful os.Stat is not enough evidence that a candidate can be run: a
 // staged copy, an interrupted download or a leftover file all exist, and
@@ -192,14 +194,17 @@ func installedBSDProviderIn(home string) string {
 		if !info.Mode().IsRegular() {
 			continue
 		}
-		// The root-owned libexec binary runs as an unprivileged service user,
-		// so that user needs the other-execute bit. Per-user candidates run
-		// as their owner, for whom any execute class is sufficient.
-		executeBits := os.FileMode(0o111)
-		if c == bsdLibexecProviderPath {
-			executeBits = 0o001
+		// The root-owned libexec binary runs as an unprivileged service user
+		// who is not its owner, so it must also carry the other-execute bit:
+		// the invoking user's own class says nothing about the service user.
+		if c == bsdLibexecProviderPath && info.Mode().Perm()&0o001 == 0 {
+			continue
 		}
-		if info.Mode().Perm()&executeBits == 0 {
+		// Ask the kernel whether the invoking user can execute the file. The
+		// owner, group or other class that applies is chosen from the real
+		// uid/gid (root's any-bit rule included), where testing the 0o111 mask
+		// accepted a file only a different class could run.
+		if unix.Access(c, unix.X_OK) != nil {
 			continue
 		}
 		return c
