@@ -21,6 +21,9 @@ PROVIDER_FLAVOR="${PROVIDER_FLAVOR:-stable}"
 
 # === Configuration Variables ===
 export TZ="America/Tijuana"
+# Some entrypoints run without HOME. Normalize it once here, before JWT_FILE
+# and every other path is derived, so nothing resolves to /.urnetwork.
+export HOME="${HOME:-/root}"
 APP_DIR="/app"
 JWT_FILE="$HOME/.urnetwork/jwt"
 ENABLE_VNSTAT="${ENABLE_VNSTAT:-}"
@@ -184,17 +187,131 @@ func_check_credentials() {
 }
 
 # === Proxy Setup ===
-func_check_proxy() {
+func_check_proxy_import() {
     log "[INFO] Checking proxy configuration"
-    # ls -la ~/.urnetwork/ 2>/dev/null || log "~/.urnetwork/ not found"
-    rm -f ~/.urnetwork/proxy || true
-    if [ -f "/app/proxy.txt" ]; then
-        log "[INFO] proxy.txt found; adding proxy"
-		PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
-        "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt"
-    else
-        log "[INFO] No proxy.txt found; skipping proxy"
+    proxy_dir="$HOME/.urnetwork"
+    proxy_config="$proxy_dir/proxy"
+    # A staging directory outlives the container process if it is killed
+    # mid-import, so sweep the leftovers before making another one.
+    if [ -d "$proxy_dir" ]; then
+        # Only sweep directories old enough to belong to a dead container: a
+        # sibling sharing this volume may be importing right now.
+        find "$proxy_dir" -maxdepth 1 -name '.proxy-import.*' -type d -mmin +10 -exec rm -rf {} + 2>/dev/null || true
     fi
+    if [ ! -f "/app/proxy.txt" ]; then
+        if [ -f "$proxy_config" ]; then
+            log "[INFO] No proxy.txt found; kept existing proxy configuration"
+        else
+            log "[INFO] No proxy.txt found; none configured"
+        fi
+        return 0
+    fi
+
+    # Stage the import under a temporary HOME so failures cannot damage live state.
+    if ! mkdir -p "$proxy_dir"; then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
+            log "[WARN] Proxy staging failed; none configured"
+        fi
+        return 1
+    fi
+    if ! proxy_stage_home=$(mktemp -d -p "$proxy_dir" .proxy-import.XXXXXX); then
+        if [ -f "$proxy_config" ]; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+        else
+            log "[WARN] Proxy staging failed; none configured"
+        fi
+        return 1
+    fi
+    proxy_stage_dir="$proxy_stage_home/.urnetwork"
+    proxy_stage_config="$proxy_stage_dir/proxy"
+    if ! mkdir -p "$proxy_stage_dir"; then
+        log "[WARN] Proxy staging failed; kept existing configuration"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    proxy_corrupt=no
+    if [ -f "$proxy_config" ] && jq -s -e 'length == 1 and (.[0] | type == "object")' "$proxy_config" >/dev/null 2>&1; then
+        if ! jq -c '.servers = {}' "$proxy_config" > "$proxy_stage_config"; then
+            log "[WARN] Proxy staging failed; kept existing configuration"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+    else
+        [ ! -f "$proxy_config" ] || proxy_corrupt=yes
+        if ! printf '%s\n' '{"servers":{}}' > "$proxy_stage_config"; then
+            log "[WARN] Proxy staging failed; existing configuration unchanged"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+    fi
+
+    log "[INFO] proxy.txt found; adding proxy"
+    PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
+    if ! HOME="$proxy_stage_home" "$PROVIDER_BIN" proxy add --proxy_file="/app/proxy.txt" -f; then
+        log "[WARN] Proxy replacement failed: provider import failed; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if ! jq -e '(.servers|type=="object") and (.servers|length>0)' "$proxy_stage_config" >/dev/null 2>&1; then
+        log "[WARN] Proxy replacement failed: staged config has no valid servers; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    if ! chmod 600 "$proxy_stage_config"; then
+        log "[WARN] Proxy replacement failed: cannot secure staged config; existing configuration unchanged"
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    proxy_backup=""
+    if [ "$proxy_corrupt" = yes ]; then
+        # Leave the live file in place until the new import has passed validation.
+        if ! proxy_backup=$(mktemp -p "$proxy_dir" "proxy.corrupt.$(date +%Y%m%d%H%M%S).XXXXXX"); then
+            log "[WARN] Proxy replacement failed: cannot reserve corrupt config backup; existing configuration unchanged"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+        if ! mv -f "$proxy_config" "$proxy_backup"; then
+            log "[WARN] Proxy replacement failed: cannot move $proxy_config to $proxy_backup"
+            rm -f "$proxy_backup"
+            rm -rf "$proxy_stage_home"
+            return 1
+        fi
+        log "[WARN] Unreadable proxy configuration $proxy_config moved to $proxy_backup"
+    fi
+    if ! mv -f "$proxy_stage_config" "$proxy_config"; then
+        if [ -n "$proxy_backup" ]; then
+            if mv -f "$proxy_backup" "$proxy_config"; then
+                log "[WARN] Proxy replacement failed: install failed; original configuration restored"
+            else
+                log "[WARN] Proxy replacement failed: install and restore failed; original configuration is at $proxy_backup"
+            fi
+        else
+            log "[WARN] Proxy replacement failed: install failed; existing configuration unchanged"
+        fi
+        rm -rf "$proxy_stage_home"
+        return 1
+    fi
+    log "[INFO] Proxy configuration replaced from proxy.txt"
+    rm -rf "$proxy_stage_home"
+}
+
+# A failed import is only fatal when there is no configuration to fall back on.
+# With a saved config the container keeps working on it; without one it would
+# start sending traffic straight out of its own address while the operator
+# believes the mounted proxy is in use, so it stops instead.
+func_check_proxy() {
+    if func_check_proxy_import; then
+        return 0
+    fi
+    # A saved config is only a fallback if the provider can actually load it.
+    if [ -f "$proxy_config" ] && jq -e -s 'length == 1 and (.[0] | type == "object")' "$proxy_config" >/dev/null 2>&1; then
+        log "[WARN] Proxy import failed; kept the existing configuration"
+        return 0
+    fi
+    log "[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy" >&2
+    return 1
 }
 
 # === Architecture Detection ===
@@ -252,10 +369,18 @@ func_report_identity() {
 func_ip_checker() {
   if [ "$ENABLE_IP_CHECKER" = "true" ]; then
     log "[INFO] Checking current public IP..."
-    if curl -fsSL "$IP_CHECKER_URL" | sh; then
-      log "[INFO] IP checker script ran successfully"
+    if ! ip_checker_file=$(mktemp "${TMPDIR:-/tmp}/urnetwork-ip-checker.XXXXXX"); then
+      log "[WARN] IP checker fetch failed: could not create temporary file"
+    elif ! curl -fsSL "$IP_CHECKER_URL" -o "$ip_checker_file"; then
+      log "[WARN] IP checker fetch failed"
+      rm -f "$ip_checker_file"
     else
-      log "[WARN] Could not fetch or execute IP checker script"
+      if sh "$ip_checker_file"; then
+        log "[INFO] IP checker script ran successfully"
+      else
+        log "[WARN] IP checker script failed"
+      fi
+      rm -f "$ip_checker_file"
     fi
   else
     log "[INFO] IP checker disabled"
@@ -271,8 +396,8 @@ func_start_vnstat() {
 }
 
 # === Authentication (USER_AUTH/PASSWORD) ===
-# stable and nightly differ here on purpose: stable reuses a valid stored JWT,
-# nightly always starts from a fresh one. The retry loop itself is shared.
+# stable and nightly share this path: both reuse a valid stored JWT and remove it
+# only when it is expired or invalid. The retry loop itself is shared.
 func_do_login_stable() {
     PROVIDER_BIN="$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
 
@@ -297,9 +422,10 @@ func_do_login_stable() {
 }
 
 func_do_login_nightly() {
-    rm -f "$JWT_FILE" || true
-    log "[INFO] Removed existing JWT (if any)"
-    func_login_retry_loop
+    # Nightly reuses a valid stored JWT, the same as stable. Discarding a working
+    # session on every start leaves a container retrying through a platform blip
+    # that a stored token would have carried it past.
+    func_do_login_stable
 }
 
 func_login_retry_loop() {
@@ -322,10 +448,29 @@ func_login_retry_loop() {
         PANIC_LINE=$(echo "$AUTH_OUTPUT" | grep -E '^panic:' || true)
 
         if [ "${DEBUG:-false}" = "true" ]; then
-            echo "DEBUG: USER_AUTH=$USER_AUTH"
-            echo "DEBUG: PASSWORD=$PASSWORD"
+            if [ -n "$USER_AUTH" ]; then user_auth_set=yes; else user_auth_set=no; fi
+            if [ -n "$PASSWORD" ]; then password_set=yes; else password_set=no; fi
+            echo "DEBUG: USER_AUTH set=$user_auth_set length=${#USER_AUTH}"
+            echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
-            echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            # Preserve the output line without exposing echoed credentials.
+            # The match ignores case: the server may echo the address normalized.
+            auth_output_secret=no
+            auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
+            if [ -n "$USER_AUTH" ]; then
+                user_auth_trimmed=$(printf '%s' "$USER_AUTH" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                user_auth_lower=$(printf '%s' "$user_auth_trimmed" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_secret=yes ;; esac
+            fi
+            if [ -n "$PASSWORD" ]; then
+                password_lower=$(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$password_lower"*) auth_output_secret=yes ;; esac
+            fi
+            if [ "$auth_output_secret" = yes ]; then
+                echo "DEBUG: AUTH_OUTPUT=[redacted]"
+            else
+                echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            fi
         fi
 
         # Check for success message in output
@@ -928,11 +1073,13 @@ func_bootstrap() {
         func_get_architecture
         func_check_dir
         func_check_credentials
-        func_check_proxy
         func_report_identity
         func_ip_checker
         func_start_vnstat
         func_check_update
+        # The proxy import runs the provider binary, which only exists after
+        # the update check has downloaded it on a fresh nightly container.
+        func_check_proxy
         # choose_network runs after func_check_update: on a fresh nightly
         # container the urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR} binary doesn't exist
         # until the update check downloads it.
