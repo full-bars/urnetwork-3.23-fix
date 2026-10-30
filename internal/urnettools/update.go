@@ -1560,13 +1560,8 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 			return fmt.Errorf("swap tool binary: %w", err)
 		}
 	} else {
-		if err := os.Link(exePath, backup); err != nil {
-			if os.IsExist(err) {
-				return fmt.Errorf("backup tool: %w", err)
-			}
-			if err := copyFile(exePath, backup); err != nil {
-				return fmt.Errorf("backup tool: %w", err)
-			}
+		if err := backupToolBinary(exePath, backup); err != nil {
+			return fmt.Errorf("backup tool: %w", err)
 		}
 		fmt.Printf("backed up %s -> %s\n", exePath, backup)
 
@@ -1576,6 +1571,21 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	}
 	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
 	return nil
+}
+
+// backupToolBinary hard-links src to dst, falling back to a copy when the link
+// is impossible. dst must not exist: os.Link reports EEXIST instead of
+// replacing it, and copyFile opens with O_EXCL, so a path created after the
+// os.Stat check is refused rather than truncated through a planted symlink.
+func backupToolBinary(src, dst string) error {
+	err := os.Link(src, dst)
+	if err == nil {
+		return nil
+	}
+	if os.IsExist(err) {
+		return err
+	}
+	return copyFile(src, dst)
 }
 
 // cleanupStaleBackups removes .bak-* files left by earlier self-update

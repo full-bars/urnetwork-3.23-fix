@@ -51,3 +51,43 @@ func TestCopyFileRefusesExistingDestination(t *testing.T) {
 		})
 	}
 }
+
+// The self-update backup is taken with os.Link, which fails with EEXIST when
+// the path exists. That branch was previously unreachable from a test, so the
+// fallback could be reached without anything asserting it refuses the path.
+func TestBackupToolBinaryRefusesExistingDestination(t *testing.T) {
+	for _, kind := range []string{"file", "symlink"} {
+		t.Run(kind, func(t *testing.T) {
+			if kind == "symlink" && runtime.GOOS == "windows" {
+				t.Skip("symlinks require privileges on Windows")
+			}
+			dir := t.TempDir()
+			src, dst, target := filepath.Join(dir, "src"), filepath.Join(dir, "backup"), filepath.Join(dir, "target")
+			if err := os.WriteFile(src, []byte("new"), 0o755); err != nil {
+				t.Fatal(err)
+			}
+			if kind == "file" {
+				if err := os.WriteFile(dst, []byte("keep"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				if err := os.WriteFile(target, []byte("keep"), 0o600); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.Symlink(target, dst); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if err := backupToolBinary(src, dst); !os.IsExist(err) {
+				t.Fatalf("backupToolBinary error = %v, want existence refusal", err)
+			}
+			check := dst
+			if kind == "symlink" {
+				check = target
+			}
+			if got, err := os.ReadFile(check); err != nil || string(got) != "keep" {
+				t.Errorf("existing content changed: %q, %v", got, err)
+			}
+		})
+	}
+}
