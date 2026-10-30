@@ -1206,6 +1206,12 @@ func tarRelPath(goos, arch string) string {
 		// guard never fires.
 		return path.Join("freebsd", arch, "provider")
 	}
+	if goos == "darwin" {
+		// Same trap as freebsd: the universal tarball ships darwin/<arch>/provider,
+		// and the fallthrough would stage the LINUX ELF on macOS, which the Mach-O
+		// check then refuses — so every macOS update failed after a correct download.
+		return path.Join("darwin", arch, "provider")
+	}
 	return path.Join("linux", arch, "provider")
 }
 
