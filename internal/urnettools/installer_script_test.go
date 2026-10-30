@@ -316,6 +316,7 @@ pr_info() {
     printf 'INFO: '"$fmt"'\n' "$@"
 }
 stat() {
+    [ "${STAT_FAIL:-0}" = 1 ] && return 1
     if [ "$1" = -f ]; then
         case "$2" in
             %u) [ "${STAT_ROOT:-0}" = 1 ] && { printf '0\n'; return; }; /usr/bin/stat -c %u "$3" 2>/dev/null || /usr/bin/stat -f %u "$3" ;;
@@ -411,9 +412,17 @@ enforce_install_tree_perms "$TREE" "$BIN"
 		}
 	})
 
+	t.Run("undetermined ownership aborts even after successful repairs", func(t *testing.T) {
+		tree, bin := setup(t)
+		out, err := run(t, tree, bin, "STAT_FAIL=1")
+		if err == nil || !strings.Contains(out, "could not verify ownership and permissions") {
+			t.Fatalf("gate must refuse when ownership cannot be determined: %v (%s)", err, out)
+		}
+	})
+
 	t.Run("failed root:wheel chown falls back to root", func(t *testing.T) {
 		tree, bin := setup(t)
-		out, err := run(t, tree, bin, "FAIL_CHOWN=group")
+		out, err := run(t, tree, bin, "FAIL_CHOWN=group", "STAT_ROOT=1")
 		if err != nil {
 			t.Fatalf("gate aborted although chown -R root succeeds: %v (%s)", err, out)
 		}
@@ -503,7 +512,7 @@ enforce_install_tree_perms "$TREE" "$BIN"
 	// this pins the repaired shape rather than the absence of an error.
 	t.Run("successful repair leaves the tree startable", func(t *testing.T) {
 		tree, bin := setup(t)
-		out, err := run(t, tree, bin)
+		out, err := run(t, tree, bin, "STAT_ROOT=1")
 		if err != nil {
 			t.Fatalf("gate aborted with every repair succeeding: %v (%s)", err, out)
 		}
@@ -625,12 +634,15 @@ func freeBSDGateFailure(t *testing.T) (string, string, string) {
  id() { if [ "$1" = -u ]; then printf '1000\n'; else command id "$@"; fi; }
  priv() { "$@"; }
  priv_rm() { [ -z "$1" ] || rm -f "$1"; }
- install_cleanup() { priv_rm "${staged_bin:-}"; }
+ install_cleanup() { priv_rm "${staged_bin:-}"; priv_rm "${staged_tool:-}"; }
  assert_state_path_safe() { :; }
  pr_info() { :; }
  pr_warn() { :; }
  pr_err() { :; }
- http_fetch() { if [ "$#" -gt 1 ]; then : > "$2"; else printf '{}'; fi; }
+ http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi; }
+ jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
+ uname() { printf 'amd64\n'; }
+ sha256() { printf '%064d\n' 0 | tr 0 a; }
  tar() { printf 'new binary' > "$4/provider"; }
  install_wrapper_tool() { :; }
  enforce_install_tree_perms() { printf '%s\n%s\n' "$(id -u)" "$2" > "$install_path/gate-called"; return 1; }
@@ -716,7 +728,7 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
 	i := strings.Index(script, `tool_digest="$(printf`)
-	j := strings.Index(script, `if [ -n "$tool_digest" ]`)
+	j := strings.Index(script, `if [ -z "$tool_digest" ]`)
 	if i < 0 || j < 0 || j <= i {
 		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
 	}
