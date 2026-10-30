@@ -380,7 +380,7 @@ Which ClientHello the normal and resilient dialers present is a control key. It 
 - `⚙️ [control] applied tls_hello=<on|off> (was <old>)` is the control-socket confirmation when the `tls_hello` key is applied live. `was off` on a first `on` is expected: an unset gate presents Go's hello, so it reads as off.
 - It applies to new connections only. A connection already open keeps the handshake it made, so changing the key neither drops a session nor re-handshakes one; the next dial of each path follows the new value. Nothing is counted as a drop.
 - A dial whose tls configuration the Chrome hello cannot carry exactly keeps Go's hello even with `tls_hello on`, and logs nothing: a client certificate, an ECH configuration, a restricted cipher, group or version set, or an `h2` offer on a net/http before Go 1.27.
-- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a clear (or removing the variable) returns it to the Chrome hello.
+- The provider also accepts `clear` on the socket for this key, which hands the decision back to `URNETWORK_TLS_HELLO`. The CLI's `set tls-hello off` is a real value, not a clear, so a box whose unit sets `URNETWORK_TLS_HELLO=on` keeps Go's hello across a restart and only a socket `clear` returns it to the environment setting.
 
 ---
 
@@ -1039,7 +1039,7 @@ Using 1000 proxy servers:
 ```
 
 - Without a mounted `/app/proxy.txt` a container logs `[INFO] No proxy.txt found; kept existing proxy configuration` (the saved configuration on the state volume is untouched) or `[INFO] No proxy.txt found; none configured`.
-- A proxy import that could not complete is a `[WARN]` line and leaves the saved configuration as it was: `Proxy staging failed; kept existing configuration` (or `none configured`), or `Proxy replacement failed: <reason>; existing configuration unchanged`. With a usable saved configuration the start then logs `[WARN] Proxy import failed; kept the existing configuration` and carries on. With none, it logs `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy` and the container stops, so it never sends traffic out of its own address while the operator believes the mounted proxy is in use.
+- A proxy import that could not complete logs a `[WARN]` line. Examples include `Proxy staging failed; kept existing configuration`, `Proxy staging failed; none configured` and `[WARN] Proxy replacement failed: provider import failed; existing configuration unchanged`. With a usable saved configuration the start then logs `[WARN] Proxy import failed; kept the existing configuration` and carries on. With none, it logs `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy` and the container stops, so it never sends traffic out of its own address while the operator believes the mounted proxy is in use.
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments

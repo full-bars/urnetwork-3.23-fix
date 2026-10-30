@@ -578,7 +578,7 @@ The consolidation was checked with the Docker script suites and an old-versus-ne
 
 When nothing was saved either, the second line reads `No proxy.txt found; none configured`.
 
-When `/app/proxy.txt` is mounted, it is imported into a staging directory first and replaces the saved configuration only if the import produced valid servers. A failed import keeps the saved configuration and the container carries on with it (`[WARN] Proxy import failed; kept the existing configuration`). If nothing was saved either, the container stops with `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy`, rather than start sending traffic from its own address.
+When `/app/proxy.txt` is mounted, it is imported into a staging directory first. After the import succeeds and produces valid servers, a malformed saved configuration is moved aside before the new configuration is installed. If the provider import fails or produces no valid servers, a malformed file stays at `~/.urnetwork/proxy`. A failed import keeps a usable saved configuration and the container carries on with it (`[WARN] Proxy import failed; kept the existing configuration`). If there is no usable saved configuration, the container stops with `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy`, rather than start sending traffic from its own address.
 
 **`DEBUG=true` does not print your credentials.** With `DEBUG=true` the password-login path prints the auth command's exit code and output to help find a failed login. The account email and password are no longer echoed: you see whether each is set and how long it is, and the auth output is replaced by `[redacted]` when it contains either value.
 
