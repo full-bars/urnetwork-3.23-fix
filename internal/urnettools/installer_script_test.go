@@ -955,6 +955,97 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	}
 }
 
+// The release metadata path must work on a clean FreeBSD host: jq and python3
+// are packages there, and this installer never installs packages. The base
+// fallback is exercised by pointing PATH at a directory that holds only base
+// tools, so `command -v jq` and `command -v python3` fail exactly as they do
+// on a base-only box. A parser-dependent harness would skip here instead of
+// proving the install still verifies.
+func TestFreeBSDDigestAndAssetListOnBaseToolsOnly(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	b, err := os.ReadFile("../../scripts/Provider_Install_FreeBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := strings.ReplaceAll(string(b), "\r\n", "\n")
+	digestFn := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	listFn := extractShellFunc(t, script, "release_lists_asset")
+	scanFn := extractShellFunc(t, script, "release_asset_scan")
+	if digestFn == "" || listFn == "" || scanFn == "" {
+		t.Fatal("could not extract the FreeBSD digest, asset-list and base-scan helpers")
+	}
+
+	// A base-only PATH: no jq, no python3, nothing the fallback may lean on
+	// beyond what FreeBSD ships. Resolve from the system directories rather
+	// than LookPath: installer tests earlier in this package prepend stub
+	// directories to PATH, and a stub that their cleanup already removed
+	// would leave a dangling symlink and a 127 in the child shell.
+	bin := t.TempDir()
+	for _, tool := range []string{"tr", "awk", "sed", "grep", "cat"} {
+		path := ""
+		for _, dir := range []string{"/bin", "/usr/bin", "/usr/local/bin", "/sbin", "/usr/sbin"} {
+			candidate := filepath.Join(dir, tool)
+			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
+				path = candidate
+				break
+			}
+		}
+		if path == "" {
+			t.Skipf("no %s in the system directories to build a base-only PATH", tool)
+		}
+		if err := os.Symlink(path, filepath.Join(bin, tool)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	basePath := []string{"PATH=" + bin}
+
+	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
+	// Pretty-printed like the GitHub API, which is what the installer actually
+	// receives — the digest is not on the same line as the name.
+	release := `{
+  "assets": [
+    {
+      "name": "urnetwork-provider-v1-freebsd-amd64.tar.gz",
+      "size": 123,
+      "digest": "sha256:` + hex64 + `",
+      "browser_download_url": "https://example.invalid/urnetwork-provider-v1-freebsd-amd64.tar.gz"
+    },
+    {
+      "name": "other.txt",
+      "digest": "sha256:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff"
+    }
+  ]
+}`
+	basePath = append(basePath, "RELEASE="+release, "ASSET=urnetwork-provider-v1-freebsd-amd64.tar.gz")
+
+	run := func(expr string) (string, error) {
+		cmd := exec.Command("/bin/sh", "-c", scanFn+"\n"+digestFn+"\n"+listFn+"\n"+expr)
+		cmd.Env = basePath
+		out, err := cmd.CombinedOutput()
+		return strings.TrimSpace(string(out)), err
+	}
+
+	if got, err := run(`command -v jq || command -v python3 || echo none`); err != nil || got != "none" {
+		t.Fatalf("base-only PATH still has a parser (%q, %v); the fallback is not being exercised", got, err)
+	}
+	if got, err := run(`get_asset_digest_from_api_response "$RELEASE" "$ASSET"`); err != nil || got != hex64 {
+		t.Errorf("digest on base tools = %q (%v), want %q", got, err, hex64)
+	}
+	if _, err := run(`release_lists_asset "$RELEASE" "$ASSET"`); err != nil {
+		t.Errorf("release_lists_asset rejected a listed asset: %v", err)
+	}
+	if _, err := run(`release_lists_asset "$RELEASE" "absent.tar.gz"`); err == nil {
+		t.Error("release_lists_asset accepted an asset the release does not list")
+	}
+	// The download URL repeats the filename; a listing must come from "name".
+	if _, err := run(`release_lists_asset '{"assets":[{"url":"https://x/urnetwork-provider-v1-freebsd-amd64.tar.gz","name":"other.txt"}]}' "$ASSET"`); err == nil {
+		t.Error("release_lists_asset matched a browser_download_url instead of a name")
+	}
+	if got, err := run(`get_asset_digest_from_api_response '{"assets":[{"name":"urnetwork-provider-v1-freebsd-amd64.tar.gz","digest":null}]}' "$ASSET"`); err != nil || got != "" {
+		t.Errorf("null digest on base tools = %q (%v), want empty", got, err)
+	}
+}
+
 // skipWithoutPOSIXShell skips tests that execute the FreeBSD installer with
 // /bin/sh. The suite also runs on Windows, where that binary does not exist,
 // so without this the test fails on a platform it was never meant to
