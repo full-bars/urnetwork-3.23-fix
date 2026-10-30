@@ -1919,8 +1919,9 @@ func pathWithoutParsers(t *testing.T) string {
 	return dir
 }
 
-// Without a JSON parser, refuse before extraction or installation even when
-// release metadata contains a valid digest.
+// Without a JSON parser the installer verifies the digest with base tools
+// (release_asset_scan) and installs. A mismatched digest still aborts before
+// extraction.
 func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 	tag := "v2026.10.27"
 	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
@@ -1947,7 +1948,7 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 }`, tag, tag, strings.Repeat("a", 64), asset, digest)
 	}
 
-	t.Run("digest_match_aborts", func(t *testing.T) {
+	t.Run("digest_match_installs_with_base_tools", func(t *testing.T) {
 		res := runFreeBSDInstaller(t, installerHarnessOpts{
 			tag:         tag,
 			releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
@@ -1955,11 +1956,21 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 			noParser:    true,
 			latest:      true,
 		})
-		if res.exitCode == 0 || len(res.tarCalls) != 0 || res.finalBin != "" {
-			t.Fatalf("install must refuse without a JSON parser (exit=%d tar=%v bin=%q):\n%s", res.exitCode, res.tarCalls, res.finalBin, res.stdout)
+		if res.exitCode != 0 {
+			t.Fatalf("install must succeed on a base-only host with a matching digest (exit=%d):\n%s", res.exitCode, res.stdout)
 		}
-		if !strings.Contains(res.stderr, "Neither python3 nor jq is available") || !strings.Contains(res.stderr, "pkg install jq") {
-			t.Fatalf("missing parser error or installation hint: %s", res.stderr)
+		if len(res.tarCalls) != 1 {
+			t.Fatalf("expected exactly one tar call (download and extraction), got %v", res.tarCalls)
+		}
+		// The harness's fake tar writes this marker as the extracted provider.
+		if got := strings.TrimSpace(res.finalBin); got != "extracted-new-binary" {
+			t.Fatalf("installed binary is not the new payload: got %q, want %q", got, "extracted-new-binary")
+		}
+		if strings.Contains(res.stderr, "Neither python3 nor jq is available") {
+			t.Fatalf("base-only host refused for a missing parser:\n%s", res.stderr)
+		}
+		if !strings.Contains(res.stdout, "Provider asset sha256 verified") {
+			t.Fatalf("missing digest-verified line:\n%s", res.stdout)
 		}
 	})
 
