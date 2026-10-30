@@ -84,8 +84,7 @@ val = val.replace("sha256:", "")
 print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$_ast" 2>/dev/null || true)"
     else
-        pr_err "Neither python3 nor jq is available; install jq with: pkg install jq"
-        exit 1
+        _dig="$(release_asset_scan "$_rel" "$_ast" digest 2>/dev/null || true)"
     fi
     printf '%s' "$_dig"
 }
