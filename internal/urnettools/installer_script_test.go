@@ -1867,8 +1867,8 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 		if res.exitCode == 0 || len(res.tarCalls) != 0 || res.finalBin != "" {
 			t.Fatalf("install must refuse without a JSON parser (exit=%d tar=%v bin=%q):\n%s", res.exitCode, res.tarCalls, res.finalBin, res.stdout)
 		}
-		if !strings.Contains(res.stderr, "Neither python3 nor jq is available") {
-			t.Fatalf("missing parser error: %s", res.stderr)
+		if !strings.Contains(res.stderr, "Neither python3 nor jq is available") || !strings.Contains(res.stderr, "pkg install jq") {
+			t.Fatalf("missing parser error or installation hint: %s", res.stderr)
 		}
 	})
 
