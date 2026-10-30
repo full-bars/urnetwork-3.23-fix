@@ -1989,4 +1989,38 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 			t.Fatalf("tar ran despite a digest mismatch: %v", res.tarCalls)
 		}
 	})
+
+	t.Run("unreadable_digest_refuses", func(t *testing.T) {
+		// The asset is listed but carries no digest field, so the base-tool
+		// reader finds nothing. Without a parser that cannot be told apart
+		// from a release that publishes no digest, so the install must refuse.
+		noDigest := fmt.Sprintf(`{
+  "url": "https://api.github.com/repos/x/y/releases/1",
+  "tag_name": %q,
+  "name": %q,
+  "assets": [
+    {
+      "url": "https://api.github.com/repos/x/y/releases/assets/2",
+      "name": %q,
+      "size": 19
+    }
+  ]
+}`, tag, tag, asset)
+		res := runFreeBSDInstaller(t, installerHarnessOpts{
+			tag:         tag,
+			releaseJSON: noDigest,
+			tarballData: tarballContent,
+			noParser:    true,
+			latest:      true,
+		})
+		if res.exitCode == 0 {
+			t.Fatalf("installed without a readable digest on a base-only host:\n%s", res.stdout)
+		}
+		if len(res.tarCalls) != 0 {
+			t.Fatalf("tar ran without a readable digest: %v", res.tarCalls)
+		}
+		if !strings.Contains(res.stderr, "without jq or python3") {
+			t.Fatalf("missing refusal message for unreadable digest:\n%s", res.stderr)
+		}
+	})
 }
