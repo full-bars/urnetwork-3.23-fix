@@ -162,6 +162,20 @@ func TestTarRelPath(t *testing.T) {
 	if got, want := tarRelPath("windows", "amd64"), "windows/amd64/provider.exe"; got != want {
 		t.Errorf("tarRelPath(windows, amd64) = %q, want %q", got, want)
 	}
+	// darwin and freebsd both ship their own directory in the universal tarball.
+	// The linux fallthrough would stage the Linux ELF on those hosts. On darwin
+	// the Mach-O check refuses it, so the update stops after the download. On
+	// freebsd the ELF check accepts it, so the wrong binary is staged and may
+	// not start.
+	if got, want := tarRelPath("darwin", "arm64"), "darwin/arm64/provider"; got != want {
+		t.Errorf("tarRelPath(darwin, arm64) = %q, want %q", got, want)
+	}
+	if got, want := tarRelPath("darwin", "amd64"), "darwin/amd64/provider"; got != want {
+		t.Errorf("tarRelPath(darwin, amd64) = %q, want %q", got, want)
+	}
+	if got, want := tarRelPath("freebsd", "amd64"), "freebsd/amd64/provider"; got != want {
+		t.Errorf("tarRelPath(freebsd, amd64) = %q, want %q", got, want)
+	}
 	if strings.ContainsRune(tarRelPath("windows", "amd64"), '\\') {
 		t.Errorf("tarRelPath must never emit backslashes, got %q", tarRelPath("windows", "amd64"))
 	}
