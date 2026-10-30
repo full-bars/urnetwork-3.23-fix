@@ -485,12 +485,12 @@ jobs:
               echo "FATAL: the root run did not SKIP $name for the expected reason"
               failures=1
             fi
-            # install -m 755 copies the binary out of the synced workspace, which
-            # nobody may not be able to traverse. su runs the wrapper script.
+            # Copy out of the workspace and give nobody a writable temp directory.
+            # FreeBSD su passes -c after the login to the caller's shell.
             install -m 755 ../../out/urnettools.test /tmp/urnettools-nobody.test
-            printf '%s\n' '#!/bin/sh' "exec /tmp/urnettools-nobody.test -test.v -test.run $name" > /tmp/urnettools-nobody.sh
+            printf '%s\n' '#!/bin/sh' 'cd /tmp || exit 1' 'export HOME=/tmp TMPDIR=/tmp' "exec /tmp/urnettools-nobody.test -test.v -test.run $name" > /tmp/urnettools-nobody.sh
             chmod 755 /tmp/urnettools-nobody.sh
-            su -m nobody -s /bin/sh /tmp/urnettools-nobody.sh > /tmp/t4-nobody.log 2>&1 || failures=1
+            su -m nobody -c '/bin/sh /tmp/urnettools-nobody.sh' > /tmp/t4-nobody.log 2>&1 || failures=1
             tail -10 /tmp/t4-nobody.log
             if ! grep -Eq "^--- PASS: $name " /tmp/t4-nobody.log; then
               echo "FATAL: the unprivileged run did not PASS $name (skipped, failed, or -test.run stopped matching)"
