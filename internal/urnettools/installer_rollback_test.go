@@ -24,7 +24,7 @@ func TestLinuxInstallerRollbackReporting(t *testing.T) {
 				}
 				for name, content := range map[string]string{
 					"urnetwork": "new", "urnetwork.old": "old",
-					"rc-update": "#!/bin/sh\nexit 0\n",
+					"rc-update":  "#!/bin/sh\nexit 0\n",
 					"rc-service": "#!/bin/sh\nprintf 'start\\n' >> \"$TEST_DIR/starts\"\nexit 1\n",
 				} {
 					if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o755); err != nil {
