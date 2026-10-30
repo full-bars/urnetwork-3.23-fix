@@ -22,10 +22,17 @@ func TestLinuxInstallerRollbackReporting(t *testing.T) {
 				if err := os.MkdirAll(bin, 0o755); err != nil {
 					t.Fatal(err)
 				}
-				for name, content := range map[string]string{"urnetwork": "new", "urnetwork.old": "old"} {
+				for name, content := range map[string]string{
+					"urnetwork": "new", "urnetwork.old": "old",
+					"rc-update": "#!/bin/sh\nexit 0\n",
+					"rc-service": "#!/bin/sh\nprintf 'start\\n' >> \"$TEST_DIR/starts\"\nexit 1\n",
+				} {
 					if err := os.WriteFile(filepath.Join(bin, name), []byte(content), 0o755); err != nil {
 						t.Fatal(err)
 					}
+				}
+				if err := os.WriteFile(filepath.Join(dir, "starts"), nil, 0o600); err != nil {
+					t.Fatal(err)
 				}
 				fn := extractShellFunc(t, string(script), "install_"+init+"_units")
 				if fn == "" {
@@ -40,9 +47,7 @@ openrc_finalize_root_paths() { :; }
 openrc_user_home() { printf '%s\n' "$TEST_DIR"; }
 openrc_restore_update_entry() { :; }
 id() { if [ "$1" = "-u" ]; then printf '0\n'; else return 0; fi; }
-rc-update() { :; }
 systemctl() { if [ "$2" = start ]; then printf 'start\n' >> "$TEST_DIR/starts"; return 1; fi; }
-rc-service() { printf 'start\n' >> "$TEST_DIR/starts"; return 1; }
 mv() { case "$MOVE_MODE" in failure) return 1;; failure_missing) command rm -f "$install_path/bin/urnetwork"; return 1;; esac; command mv "$@"; }
 install_path="$TEST_DIR"
 systemd_userdir="$TEST_DIR"
@@ -56,7 +61,7 @@ openrc_home="$TEST_DIR"
 openrc_initd_file="$TEST_DIR/initd"
 ` + fn + "\ninstall_" + init + "_units\n"
 				cmd := exec.Command("/bin/sh", "-c", harness)
-				cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "MOVE_MODE="+mode)
+				cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "MOVE_MODE="+mode, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 				out, err := cmd.CombinedOutput()
 				if err == nil {
 					t.Fatalf("restart failure must exit nonzero: %s", out)
