@@ -855,12 +855,10 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Fatal(err)
 	}
 	script := strings.ReplaceAll(string(b), "\r\n", "\n")
-	i := strings.Index(script, `tool_digest="$(printf`)
-	j := strings.Index(script, `if [ -z "$tool_digest" ]`)
-	if i < 0 || j < 0 || j <= i {
-		t.Fatal("could not locate the tool digest lookup in the FreeBSD installer")
+	block := extractShellFunc(t, script, "get_asset_digest_from_api_response")
+	if block == "" || !strings.Contains(script, `tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"`) {
+		t.Fatal("tool digest lookup does not use the shared helper")
 	}
-	block := script[i:j]
 
 	const hex64 = "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef"
 	cases := []struct {
@@ -899,13 +897,13 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 	// A missing marker is a FAILURE, not a skip: the previous version wrapped
 	// this in `if found {`, so adding one space to the expression made every
 	// jq subtest vanish while the test reported success (mutation-proved).
-	jqStart := strings.Index(block, "jq -r --arg a \"$tool_asset\" '")
+	jqStart := strings.Index(block, "jq -r --arg a \"$_ast\" '")
 	if !haveJq {
 		t.Log("jq not installed here; exercising only the python path")
 	} else if jqStart < 0 {
 		t.Error("could not find the jq digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
-		expr := block[jqStart+len("jq -r --arg a \"$tool_asset\" '"):]
+		expr := block[jqStart+len("jq -r --arg a \"$_ast\" '"):]
 		if end := strings.Index(expr, "' 2>/dev/null"); end >= 0 {
 			expr = expr[:end]
 			for _, c := range cases {
@@ -935,7 +933,7 @@ func TestFreeBSDToolDigestLookup(t *testing.T) {
 		t.Error("could not find the python digest expression in the installer; the marker moved and this test would otherwise pass vacuously")
 	} else {
 		py := block[pyStart+len("python3 -c '"):]
-		pyEnd := strings.Index(py, "' \"$tool_asset\"")
+		pyEnd := strings.Index(py, "' \"$_ast\"")
 		if pyEnd < 0 {
 			t.Error("could not find the end of the python digest expression; the marker moved")
 		} else {
@@ -1830,10 +1828,8 @@ func pathWithoutParsers(t *testing.T) string {
 	return dir
 }
 
-// A host with neither jq nor python3 must still install. FreeBSD base has
-// neither, so requiring one aborted a default `latest` install. The release
-// listing and digest are read with base-system tools instead, and the digest
-// is still enforced.
+// Without a JSON parser, refuse before extraction or installation even when
+// release metadata contains a valid digest.
 func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 	tag := "v2026.10.27"
 	asset := "urnetwork-provider-" + tag + "-freebsd-amd64.tar.gz"
@@ -1860,7 +1856,7 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 }`, tag, tag, strings.Repeat("a", 64), asset, digest)
 	}
 
-	t.Run("digest_match_installs", func(t *testing.T) {
+	t.Run("digest_match_aborts", func(t *testing.T) {
 		res := runFreeBSDInstaller(t, installerHarnessOpts{
 			tag:         tag,
 			releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
@@ -1868,14 +1864,11 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 			noParser:    true,
 			latest:      true,
 		})
-		if res.exitCode != 0 {
-			t.Fatalf("install on a host without jq/python3 failed (exit %d):\n%s", res.exitCode, res.stdout)
+		if res.exitCode == 0 || len(res.tarCalls) != 0 || res.finalBin != "" {
+			t.Fatalf("install must refuse without a JSON parser (exit=%d tar=%v bin=%q):\n%s", res.exitCode, res.tarCalls, res.finalBin, res.stdout)
 		}
-		if len(res.tarCalls) == 0 || res.finalBin == "" {
-			t.Fatalf("install did not run to completion (tar=%v bin=%q):\n%s", res.tarCalls, res.finalBin, res.stdout)
-		}
-		if !strings.Contains(res.stdout, "sha256 verified") {
-			t.Errorf("digest was not read and verified without a parser:\n%s", res.stdout)
+		if !strings.Contains(res.stderr, "Neither python3 nor jq is available") {
+			t.Fatalf("missing parser error: %s", res.stderr)
 		}
 	})
 

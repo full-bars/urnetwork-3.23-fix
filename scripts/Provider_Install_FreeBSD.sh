@@ -84,7 +84,8 @@ val = val.replace("sha256:", "")
 print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$_ast" 2>/dev/null || true)"
     else
-        _dig="$(release_asset_scan "$_rel" "$_ast" digest)"
+        pr_err "Neither python3 nor jq is available"
+        exit 1
     fi
     printf '%s' "$_dig"
 }
@@ -786,7 +787,7 @@ do_install() {
         rm -rf "$tmpdir"
         exit 1
     fi
-    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")"
+    provider_digest="$(get_asset_digest_from_api_response "$release_json" "$provider_asset")" || { rm -rf "$tmpdir"; exit 1; }
 
     if [ -n "$provider_digest" ]; then
         if ! verify_sha256_file "$tmpdir/provider.tar.gz" "$provider_digest"; then
@@ -849,29 +850,7 @@ do_install() {
     # jq prints "null" for a missing field, so accept only a real hex digest.
     tool_digest=""
     release_json="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"
-    if command -v jq > /dev/null 2>&1; then
-        tool_digest="$(printf '%s' "$release_json" | jq -r --arg a "$tool_asset" '
-            (.assets[]? | select(.name == $a) | .digest)
-            | select(type == "string")
-            | sub("^sha256:"; "")
-            | select(test("^[0-9a-fA-F]{64}$"))
-        ' 2>/dev/null || true)"
-    elif command -v python3 > /dev/null 2>&1; then
-        tool_digest="$(printf '%s' "$release_json" | python3 -c '
-import sys, json, re
-try:
-    doc = json.load(sys.stdin)
-except Exception:
-    sys.exit(0)
-val = ""
-for asset in doc.get("assets", []):
-    if asset.get("name") == sys.argv[1]:
-        val = asset.get("digest") or ""
-        break
-val = val.replace("sha256:", "")
-print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
-' "$tool_asset" 2>/dev/null || true)"
-    fi
+    tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")" || { rm -rf "$tmpdir"; exit 1; }
 
     if [ -z "$tool_digest" ]; then
         pr_err "Cannot verify urnet-tools: release digest is unavailable"
