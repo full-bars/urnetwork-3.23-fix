@@ -73,6 +73,11 @@ assert_state_path_safe() { :; }
 pr_info() { :; }
 pr_warn() { :; }
 pr_err() { :; }
+release_lists_asset() { return 0; }
+get_asset_digest_from_api_response() {
+    case "$2" in urnet-tools-*) [ "$DIGEST" = missing ] || printf '%064d\n' 0 | tr 0 a ;; esac
+}
+verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
 http_fetch() {
     if [ "$#" = 1 ]; then
         if [ "$DIGEST" = missing ]; then printf '{"assets":[]}'; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi
@@ -123,6 +128,12 @@ enforce_install_tree_perms() {
 				t.Fatal(err)
 			}
 			for _, entry := range entries {
+				if tc.wantSuccess && strings.HasPrefix(entry.Name(), ".urnetwork.bak.") {
+					if got := read("bin/" + entry.Name()); got != "old provider" {
+						t.Errorf("rollback backup = %q, want old provider", got)
+					}
+					continue // harness exits immediately after the second move
+				}
 				if strings.HasPrefix(entry.Name(), ".urnet") {
 					t.Errorf("staged file left behind: %s", entry.Name())
 				}

@@ -711,6 +711,9 @@ func freeBSDGateFailure(t *testing.T) (string, string, string) {
  pr_info() { :; }
  pr_warn() { :; }
  pr_err() { :; }
+ release_lists_asset() { return 0; }
+ get_asset_digest_from_api_response() { case "$2" in urnet-tools-*) printf '%064d\n' 0 | tr 0 a ;; esac; }
+ verify_sha256_file() { [ "$(sha256 -q "$1")" = "$2" ]; }
  http_fetch() { if [ "$#" -gt 1 ]; then printf 'tool' > "$2"; else printf '{"assets":[{"name":"urnet-tools-freebsd-amd64","digest":"sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"}]}'; fi; }
  jq() { case "$*" in *tag_name*) printf 'test-tag\n' ;; *) printf '%064d\n' 0 | tr 0 a ;; esac; }
  uname() { printf 'amd64\n'; }
@@ -1074,7 +1077,8 @@ type installerHarnessOpts struct {
 	operation   string
 	// noParser runs the installer with jq and python3 hidden from PATH, the
 	// shape of a default FreeBSD host.
-	noParser bool
+	noParser      bool
+	sha256sumOnly bool
 }
 
 type installerHarnessResult struct {
@@ -1111,7 +1115,19 @@ func runFreeBSDInstaller(t *testing.T, opts installerHarnessOpts) installerHarne
 	if err := os.WriteFile(tarballPath, opts.tarballData, 0o644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.WriteFile(releaseJSONPath, []byte(opts.releaseJSON), 0o644); err != nil {
+	// The gate requires a verified tool asset, even in provider-only cases.
+	releaseJSON := opts.releaseJSON
+	if !strings.Contains(releaseJSON, `"urnet-tools-freebsd-amd64"`) {
+		if end := strings.LastIndex(releaseJSON, "]"); end >= 0 && strings.Contains(releaseJSON, `"assets"`) {
+			digest := sha256.Sum256(opts.tarballData)
+			prefix := ","
+			if strings.HasSuffix(strings.TrimSpace(releaseJSON[:end]), "[") {
+				prefix = ""
+			}
+			releaseJSON = releaseJSON[:end] + fmt.Sprintf(`%s{"name":"urnet-tools-freebsd-amd64","digest":"sha256:%x"}`, prefix, digest) + releaseJSON[end:]
+		}
+	}
+	if err := os.WriteFile(releaseJSONPath, []byte(releaseJSON), 0o644); err != nil {
 		t.Fatal(err)
 	}
 	if opts.existingBin != "" {
@@ -1160,6 +1176,8 @@ pr_err() { printf "[ERROR] %%s\n" "$*" >&2; }
 pr_warn() { printf "[WARN] %%s\n" "$*" >&2; }
 pr_info() { printf "[INFO] %%s\n" "$*"; }
 priv() { "$@"; }
+priv_rm() { [ -z "$1" ] || rm -f "$1"; }
+enforce_install_tree_perms() { return 0; }
 sudo() { "$@"; }
 user_shell() { echo "/bin/sh"; }
 assert_state_path_safe() { return 0; }
@@ -1254,7 +1272,15 @@ do_install "$version"
 	cmd := exec.Command("/bin/sh", "-c", fullScript)
 	cmd.Env = []string{"PATH=/usr/bin:/bin"}
 	if opts.noParser {
-		cmd.Env = []string{"PATH=" + pathWithoutParsers(t)}
+		path := pathWithoutParsers(t)
+		if opts.sha256sumOnly {
+			for _, name := range []string{"sha256", "openssl"} {
+				if err := os.Remove(filepath.Join(path, name)); err != nil && !os.IsNotExist(err) {
+					t.Fatal(err)
+				}
+			}
+		}
+		cmd.Env = []string{"PATH=" + path}
 	}
 	if opts.failBackup {
 		cmd.Env = append(cmd.Env, "FAIL_BACKUP=1")
@@ -1945,7 +1971,7 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
       "digest": "sha256:%s"
     }
   ]
-}`, tag, tag, strings.Repeat("a", 64), asset, digest)
+}`, tag, tag, hex.EncodeToString(sum[:]), asset, digest)
 	}
 
 	t.Run("digest_match_installs_with_base_tools", func(t *testing.T) {
@@ -1971,6 +1997,30 @@ func TestFreeBSDInstallerWithoutJSONParser(t *testing.T) {
 		}
 		if !strings.Contains(res.stdout, "Provider asset sha256 verified") {
 			t.Fatalf("missing digest-verified line:\n%s", res.stdout)
+		}
+	})
+
+	t.Run("sha256sum_verifies_both_assets", func(t *testing.T) {
+		if _, err := exec.LookPath("sha256sum"); err != nil {
+			t.Skip("sha256sum is not installed")
+		}
+		res := runFreeBSDInstaller(t, installerHarnessOpts{
+			tag: tag, releaseJSON: releaseFor(hex.EncodeToString(sum[:])),
+			tarballData: tarballContent, noParser: true, sha256sumOnly: true,
+		})
+		if res.exitCode != 0 || strings.TrimSpace(res.finalBin) != "extracted-new-binary" {
+			t.Fatalf("sha256sum-only install failed (exit=%d, bin=%q):\n%s", res.exitCode, res.finalBin, res.stdout)
+		}
+	})
+
+	t.Run("tool_digest_mismatch_preserves_provider", func(t *testing.T) {
+		metadata := strings.Replace(releaseFor(hex.EncodeToString(sum[:])), hex.EncodeToString(sum[:]), strings.Repeat("b", 64), 1)
+		res := runFreeBSDInstaller(t, installerHarnessOpts{
+			tag: tag, releaseJSON: metadata, tarballData: tarballContent,
+			noParser: true, existingBin: "old binary",
+		})
+		if res.exitCode == 0 || res.finalBin != "old binary" || !strings.Contains(res.stderr, "Cannot verify urnet-tools") {
+			t.Fatalf("tool mismatch did not preserve provider (exit=%d bin=%q):\n%s", res.exitCode, res.finalBin, res.stdout)
 		}
 	})
 

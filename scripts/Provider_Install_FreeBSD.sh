@@ -853,8 +853,6 @@ do_install() {
     priv chmod 755 "$staged"
     # The release tool is installed only when its digest can be verified.
     tool_asset="urnet-tools-freebsd-$goarch"
-    # jq prints "null" for a missing field, so accept only a real hex digest.
-    tool_digest=""
     release_json="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"
     tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")" || { rm -rf "$tmpdir"; exit 1; }
 
@@ -870,14 +868,7 @@ do_install() {
     priv cp "$tmpdir/$tool_asset" "$staged_tool" || { pr_err "Failed to stage urnet-tools"; exit 1; }
     priv chmod 755 "$staged_tool" || { pr_err "Failed to make urnet-tools executable"; exit 1; }
     # Verify the staged file itself, not only the downloaded source.
-    if command -v sha256 > /dev/null 2>&1; then
-        actual="$(sha256 -q "$staged_tool")"
-    elif command -v openssl > /dev/null 2>&1; then
-        actual="$(openssl dgst -sha256 "$staged_tool" | awk '{print $NF}')"
-    else
-        actual=""
-    fi
-    if [ -z "$actual" ] || [ "$actual" != "$tool_digest" ]; then
+    if ! verify_sha256_file "$staged_tool" "$tool_digest"; then
         pr_err "Cannot verify urnet-tools: digest mismatch or no checksum tool"
         exit 1
     fi
