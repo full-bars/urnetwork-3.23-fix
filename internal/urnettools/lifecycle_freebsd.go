@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"strings"
+	"syscall"
 )
 
 // FreeBSD lifecycle: an rc.d(8) service script plus a periodic auto-update
@@ -135,11 +136,34 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 	if interval == "off" {
 		return removeBSDUpdateCron(p)
 	}
-	line, err := bsdUpdateCronLine(toolExePath(), bsdLogDir(), interval)
+	euid := os.Geteuid()
+	if euid != 0 && bsdTreeOwnedByRoot(p.Binary) {
+		return fmt.Errorf("auto-update for %s must be scheduled as root: %s is in the root-owned install tree, so an unprivileged cron job cannot replace it (run: sudo urnet-tools auto-update %s)", providerLabel(p), p.Binary, interval)
+	}
+	tool, logDir, err := bsdScheduledUpdate(euid, bsdStagedToolIsRootOwned(), toolExePath(), bsdLogDir())
+	if err != nil {
+		return err
+	}
+	if err := os.MkdirAll(logDir, 0o755); err != nil {
+		return fmt.Errorf("auto-update: create log dir %s: %w", logDir, err)
+	}
+	line, err := bsdUpdateCronLine(tool, logDir, interval)
 	if err != nil {
 		return err
 	}
 	return writeBSDUpdateCron(p, line)
+}
+
+// bsdStagedToolIsRootOwned reports whether the installer's staged tool copy
+// exists as a regular file owned by root. Existence alone is not enough: a file
+// planted at that path by another user must not qualify it for root's crontab.
+func bsdStagedToolIsRootOwned() bool {
+	fi, err := os.Lstat(bsdRootToolPath)
+	if err != nil || !fi.Mode().IsRegular() {
+		return false
+	}
+	st, ok := fi.Sys().(*syscall.Stat_t)
+	return ok && st.Uid == 0 && fi.Mode().Perm()&0o022 == 0
 }
 
 // cleanupLifecycle removes the auto-update cron entry on uninstall. The rc.d

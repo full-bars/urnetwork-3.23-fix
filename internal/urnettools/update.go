@@ -1292,7 +1292,7 @@ func installBinary(src, dst, user string) error {
 	// exists for the user-session (systemd) layout, where the binary lives
 	// in the user's own tree and must be theirs to replace via updates run
 	// without root.
-	if user != "" && os.Geteuid() == 0 && !openrcTreeOwnedByRoot(dst) {
+	if user != "" && os.Geteuid() == 0 && !openrcTreeOwnedByRoot(dst) && !bsdTreeOwnedByRoot(dst) {
 		uid, gid, err := lookupUserIDs(user)
 		if err != nil {
 			tmpFile.Close()
