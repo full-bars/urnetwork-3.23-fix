@@ -567,6 +567,32 @@ The first run with a fresh volume adds `--allow-client-registration` because `AL
 
 The consolidation was checked with the Docker script suites and an old-versus-new offline equivalence matrix covering `BUILD` and `AUTH` conflicts, credentials, the auth-code alias, a positional JWT, `TURBO`, `PELICAN` and both restart loops. Live Pelican and arm64 execution were not part of that check.
 
+## 🧾 Startup Checks and Debug Output
+
+**The saved proxy configuration survives a start without `proxy.txt`.** The start script no longer deletes `~/.urnetwork/proxy` before it looks for `/app/proxy.txt`. If you start a container without mounting the file, the proxies saved on the state volume are kept and the log says so:
+
+```
+[INFO] Checking proxy configuration
+[INFO] No proxy.txt found; kept existing proxy configuration
+```
+
+When nothing was saved either, the second line reads `No proxy.txt found; none configured`.
+
+When `/app/proxy.txt` is mounted, it is imported into a staging directory first. After the import succeeds and produces valid servers, a malformed saved configuration is moved aside before the new configuration is installed. If the provider import fails or produces no valid servers, a malformed file stays at `~/.urnetwork/proxy`. A failed import keeps a usable saved configuration and the container carries on with it (`[WARN] Proxy import failed; kept the existing configuration`). If there is no usable saved configuration, the container stops with `[ERROR] Proxy import failed and no configuration is saved; refusing to start without the mounted proxy`, rather than start sending traffic from its own address.
+
+**`DEBUG=true` does not print your credentials.** With `DEBUG=true` the password-login path prints the auth command's exit code and output to help find a failed login. The account email and password are no longer echoed: you see whether each is set and how long it is, and the auth output is replaced by `[redacted]` when it contains either value.
+
+```
+DEBUG: USER_AUTH set=yes length=18
+DEBUG: PASSWORD set=yes length=12
+DEBUG: AUTH_EXIT_CODE=1
+DEBUG: AUTH_OUTPUT=[redacted]
+```
+
+This applies to the shared login loop and to the Pelican login. A debug log is still worth reading before you post it, but it no longer carries the credentials.
+
+**The IP checker reports a failed download as a failure.** With `ENABLE_IP_CHECKER=true` the script downloads the checker to a temporary file, checks that the download succeeded, and only then runs it. A failed download logs `[WARN] IP checker fetch failed` and nothing is run; a checker that runs and fails logs `[WARN] IP checker script failed`; success logs `[INFO] IP checker script ran successfully`.
+
 ## 🏛️ Legacy Variables
 
 The following variables are preserved for full backward compatibility:
