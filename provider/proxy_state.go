@@ -285,7 +285,7 @@ func plainHostPort(s string) bool {
 	for _, c := range host {
 		switch {
 		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
-			c == '.', c == '-', c == '_', c == ':', c == '%':
+			c == '.', c == '-', c == '_', c == ':':
 		default:
 			return false
 		}
