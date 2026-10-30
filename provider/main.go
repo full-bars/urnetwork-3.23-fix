@@ -711,7 +711,17 @@ func printNetworkIdCmd(opts docopt.Opts) {
 	fmt.Println(networkId)
 }
 
+type fileOwner struct {
+	uid, gid int
+}
+
+var chownFile = os.Chown
+
 func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
+	return atomicWriteFileOwned(path, data, perm, nil)
+}
+
+func atomicWriteFileOwned(path string, data []byte, perm os.FileMode, owner *fileOwner) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
@@ -728,6 +738,16 @@ func atomicWriteFile(path string, data []byte, perm os.FileMode) error {
 	if err := f.Close(); err != nil {
 		os.Remove(tmp)
 		return err
+	}
+	if err := os.Chmod(tmp, perm); err != nil {
+		os.Remove(tmp)
+		return err
+	}
+	if owner != nil {
+		if err := chownFile(tmp, owner.uid, owner.gid); err != nil {
+			os.Remove(tmp)
+			return fmt.Errorf("keep owner %d:%d of %s: %w", owner.uid, owner.gid, path, err)
+		}
 	}
 	return os.Rename(tmp, path)
 }
@@ -3582,9 +3602,9 @@ func provide(opts docopt.Opts) {
 						// labeling it a quality rejection would suppress the give-up/
 						// eviction/backoff machinery and the address would churn on
 						// every reload forever.
-						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, proxySettings.Address, score)
+						return "", connect.Id{}, false, fmt.Errorf("%w: %s (score %.2f)", errProxyURLBelowBar, redactedProxyAddress(proxySettings.Address), score)
 					}
-					err = fmt.Errorf("proxy unreachable: %s", proxySettings.Address)
+					err = fmt.Errorf("proxy unreachable: %s", redactedProxyAddress(proxySettings.Address))
 				} else {
 					// Weight this wait by the proxy's lifetime failure count
 					// (persists across the 15-minute URL-source requeue, unlike
@@ -3757,7 +3777,7 @@ func provide(opts docopt.Opts) {
 							// The outer handler recognizes the sentinel and
 							// backs off + requeues without RecordGiveUp, so a
 							// slow-but-working list entry is never evicted.
-							return "", connect.Id{}, false, fmt.Errorf("%w: %s", errProxyURLSlowCutShort, proxySettings.Address)
+							return "", connect.Id{}, false, fmt.Errorf("%w: %s", errProxyURLSlowCutShort, redactedProxyAddress(proxySettings.Address))
 						}
 						return "", connect.Id{}, false, fmt.Errorf("authentication failed after %d attempts — %s: %w", maxAuthFailures, cause, err)
 					}
@@ -4308,6 +4328,19 @@ func provide(opts docopt.Opts) {
 
 	// Load proxy.state to assign address-stable IDs. Known addresses keep their ID
 	// across restarts/reloads; new addresses get the next monotonic counter value.
+	// Startup imports identity/provenance into proxy.state and persists it. Take
+	// the cross-process lock across the read-modify-write so a clear or reload
+	// cannot replace this transaction with a stale snapshot.
+	// A hot swap execs in place: the pid survives and the previous image's
+	// proxy.lock would read as held-by-a-live-holder. Clear it before the lock
+	// is taken, or startup waits proxyStartLockWait and fatals before cleanup.
+	cleanStaleSelfProxyLock()
+	releaseProxyLock, err := acquireProxyLockWait(ctx, proxyStartLockWait)
+	if err != nil {
+		shmLogFatal(20, "[proxy] could not acquire proxy lock: %v", err)
+	}
+	defer releaseProxyLock()
+
 	proxyState, stateErr := readProxyState()
 	if stateErr != nil {
 		tlog("[proxy] warning: could not read proxy.state: %v\n", stateErr)
@@ -4549,6 +4582,7 @@ func provide(opts docopt.Opts) {
 	if err := writeProxyState(proxyState); err != nil {
 		tlog("[proxy] warning: could not write proxy.state: %v\n", err)
 	}
+	releaseProxyLock()
 
 	// Load persisted DoH server scores and start a warm-up probe so the
 	// server-scorer (P2-2) has signal before real DNS traffic arrives.
@@ -4670,10 +4704,6 @@ func provide(opts docopt.Opts) {
 	// user). Deliberately capture the same *connect.ProxySettings pointers
 	// the goroutines below run against.
 	reloader.seedRunningAuth(launchSettings)
-	// A hot swap execs in place: the pid survives and the previous image's
-	// proxy.lock would read as held-by-a-live-holder. Clear it before any
-	// reload path (watcher, watchdog, first reload) can observe it.
-	cleanStaleSelfProxyLock()
 	reloader.StartWatcher(ctx)
 	go superviseLoop(ctx, "reload_watchdog", func() { reloader.RunReloadWatchdog(ctx, func() time.Time { return nowFn() }) }, nil)
 	// Reconcile against the operator trim cap immediately at startup. The launch
@@ -4793,6 +4823,8 @@ func provide(opts docopt.Opts) {
 
 	printReadyUnlessCondensed()
 
+	<-ctx.Done()
+	quiesceForRun(ctx, reloader)
 	wg.Wait()
 
 	// All goroutines have finished. Log final status before exit.
@@ -5448,6 +5480,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 	description := providerDescription(nodeName)
 
 	currentNetworkId, haveCurrentNetworkId := jwtNetworkId(byJwt)
+	displayKey := proxyKeyDisplay(identityKey)
 	if hotRestartEnabled() {
 		if entry, ok := globalClientJWTStore.Get(identityKey); ok {
 			// If the account JWT has no network_id claim, fill it in from the stored entry
@@ -5464,7 +5497,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				}
 			}
 			if !haveCurrentNetworkId || (entry.NetworkID != "" && entry.NetworkID != currentNetworkId) {
-				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", identityKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
+				tlog("🔥 [hot-restart] %s: network_id mismatch (stored=%q current=%q have_current=%v), minting fresh\n", displayKey, entry.NetworkID, currentNetworkId, haveCurrentNetworkId)
 			} else if reuseErr := validateJWTExpiry(entry.ByClientJWT); reuseErr != nil {
 				// Stored client JWT expired: try renewal-with-same-client_id
 				// before falling through to fresh mint, so the operator's
@@ -5473,25 +5506,25 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
-						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", identityKey, parsedId)
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewed identity %s\n", displayKey, parsedId)
 						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 							ByClientJWT: renewedJwt,
 							ClientID:    entry.ClientID,
 							NetworkID:   currentNetworkId,
 							MintedAt:    time.Now(),
 						}); putErr != nil {
-							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", displayKey, putErr)
 						}
 						return renewedJwt, parsedId, true, nil
 					}
 					if isRenewalTransient(renewErr) {
-						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", displayKey, parsedId, renewErr)
 						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
 						return
 					}
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", identityKey, renewErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, renewal attempt failed (%v), minting fresh\n", displayKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT expired, invalid client_id %q (%v), minting fresh\n", displayKey, entry.ClientID, parseErr)
 				}
 			} else if !jwtContainsClientId(entry.ByClientJWT) {
 				// Stored JWT missing client_id claim in payload: prioritize salvaging the
@@ -5499,28 +5532,28 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 				if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr == nil {
 					renewedJwt, renewErr := renewClientJWTFn(ctx, apiUrl, byJwt, parsedId, description, clientStrategy)
 					if renewErr == nil {
-						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", identityKey, parsedId)
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, salvaged identity via renewal: %s\n", displayKey, parsedId)
 						if putErr := globalClientJWTStore.Put(identityKey, clientJWTEntry{
 							ByClientJWT: renewedJwt,
 							ClientID:    entry.ClientID,
 							NetworkID:   currentNetworkId,
 							MintedAt:    time.Now(),
 						}); putErr != nil {
-							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", identityKey, putErr)
+							tlog("⚠️ [jwt-store] failed to persist renewed client JWT for %s: %v\n", displayKey, putErr)
 						}
 						return renewedJwt, parsedId, true, nil
 					}
 					if isRenewalTransient(renewErr) {
-						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", identityKey, parsedId, renewErr)
+						tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal of identity %s failed without a verdict (%v); keeping the identity and retrying instead of minting a new one\n", displayKey, parsedId, renewErr)
 						returnErr = fmt.Errorf("renewal of %s deferred: %w", parsedId, renewErr)
 						return
 					}
-					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", identityKey, renewErr)
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, renewal salvage failed (%v), minting fresh\n", displayKey, renewErr)
 				} else {
-					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", identityKey)
+					tlog("🔥 [hot-restart] %s: stored client JWT missing client_id claim, minting fresh\n", displayKey)
 				}
 			} else if parsedId, parseErr := connect.ParseId(entry.ClientID); parseErr != nil {
-				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", identityKey, entry.ClientID, parseErr)
+				tlog("🔥 [hot-restart] %s: stored client_id %q failed to parse (%v), minting fresh\n", displayKey, entry.ClientID, parseErr)
 			} else {
 				reused = true
 				// Self-heal: stamp the current network_id onto legacy
@@ -5537,7 +5570,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 						NetworkID:   currentNetworkId,
 						MintedAt:    entry.MintedAt,
 					}); putErr != nil {
-						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", identityKey, putErr)
+						tlog("⚠️ [jwt-store] failed to self-heal network_id for %s: %v\n", displayKey, putErr)
 					}
 				}
 				return entry.ByClientJWT, parsedId, true, nil
@@ -5636,7 +5669,7 @@ func provideAuth(ctx context.Context, clientStrategy *connect.ClientStrategy, ap
 		NetworkID:   currentNetworkId,
 		MintedAt:    time.Now(),
 	}); putErr != nil {
-		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", identityKey, putErr)
+		tlog("⚠️ [jwt-store] failed to persist client JWT for %s: %v\n", displayKey, putErr)
 	}
 
 	return
@@ -5678,6 +5711,7 @@ var identityEvictionBlocked = connect.BackendDegraded
 // just re-signed it), so this watcher stops before it evicts the fresh entry
 // while the transport is still reconnecting.
 func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, proxyIndex int, revocationDone <-chan struct{}) {
+	displayKey := proxyKeyDisplay(identityKey)
 	ticker := time.NewTicker(revocationCheckInterval)
 	defer ticker.Stop()
 	for {
@@ -5685,7 +5719,7 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 		case <-ctx.Done():
 			return
 		case <-revocationDone:
-			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+			tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", displayKey)
 			return
 		case <-ticker.C:
 		}
@@ -5700,7 +5734,7 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 		if connect.ProxyAuthRejectionCount(proxyIndex) >= revokedIdentityAuthFailureThreshold && !identityEvictionBlocked() {
 			if !identityEvictionEnabled() {
 				tlog("⚠️ [jwt-store] identity for %s was refused %d times; NOT evicting it (automatic eviction is off, set URNETWORK_EVICT_REVOKED_IDENTITIES=1 to enable)\n",
-					identityKey, revokedIdentityAuthFailureThreshold)
+					displayKey, revokedIdentityAuthFailureThreshold)
 				return
 			}
 			// Re-check the renewal signal AFTER the failure-count check: the
@@ -5712,15 +5746,15 @@ func watchReusedIdentityForRevocation(ctx context.Context, identityKey string, p
 			// out from under the reconnecting transport.
 			select {
 			case <-revocationDone:
-				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", identityKey)
+				tlog("🛑 [jwt-store] identity for %s renewed successfully — revocation watcher standing down\n", displayKey)
 				return
 			default:
 			}
 			if delErr := globalClientJWTStore.Delete(identityKey); delErr != nil {
-				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", identityKey, delErr)
+				tlog("⚠️ [jwt-store] failed to evict possibly-revoked identity for %s: %v\n", displayKey, delErr)
 			} else {
 				tlog("⚠️ [jwt-store] reused client identity for %s never authenticated after %d transport auth failures — evicted, will mint fresh on next retry/restart\n",
-					identityKey, revokedIdentityAuthFailureThreshold)
+					displayKey, revokedIdentityAuthFailureThreshold)
 			}
 			return
 		}
@@ -6044,6 +6078,18 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 
 	allKeyAddress := proxyAddCollectAddresses(opts)
 
+	// Keep an existing source's permissions when replacing it. New sources
+	// contain credentials and must not be made world-readable.
+	perm := os.FileMode(0600)
+	var owner *fileOwner
+	if info, err := os.Stat(sourcePath); err == nil {
+		perm = info.Mode().Perm()
+		owner, _ = sourceOwnerOf(info)
+	} else if !os.IsNotExist(err) {
+		fmt.Fprintf(os.Stderr, "proxy add: could not stat %s: %v\n", sourcePath, err)
+		return
+	}
+
 	// Read existing file content, preserving comments/blank lines, and track
 	// which normalized proxy lines are already present.
 	existing := map[string]bool{}
@@ -6093,7 +6139,7 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	}
 
 	content := strings.Join(out, "\n") + "\n"
-	if err := atomicWriteFile(sourcePath, []byte(content), 0644); err != nil {
+	if err := atomicWriteFileOwned(sourcePath, []byte(content), perm, owner); err != nil {
 		fmt.Fprintf(os.Stderr, "proxy add: could not write %s: %v\n", sourcePath, err)
 		return
 	}
@@ -6119,29 +6165,37 @@ func proxyRemove(opts docopt.Opts) {
 	proxyConfig := readProxyConfig()
 
 	if all, _ := opts.Bool("--all"); all {
-		clear(proxyConfig.Servers)
+		defer triggerProxyReload()
 		// Take the cross-process lock so a concurrent daemon health-snapshot
 		// write can't clobber this reset and silently revive the removed
-		// proxies (finding #11). Proxy config write above is process-local;
-		// this serializes the proxy.state reset against the daemon.
+		// proxies (finding #11). Hold the lock across internal config write,
+		// proxy.state reset, and URL cache reset.
 		stateLockRelease, stateLockErr := acquireProxyLockWithRetry()
 		if stateLockErr != nil {
 			tlog("[proxy] warning: could not acquire proxy lock for state reset: %v\n", stateLockErr)
-			writeProxyConfig(proxyConfig)
+			fmt.Fprintf(os.Stderr, "could not acquire proxy lock: %v\n", stateLockErr)
 			return
 		}
+		defer stateLockRelease()
+
+		clear(proxyConfig.Servers)
+		writeProxyConfig(proxyConfig)
+
 		// Reset proxy.state so the next run starts ID assignment from 0.
-		// Without this, the monotonic counter resumes above whatever IDs were
-		// saved from previous runs, producing confusingly high and mixed IDs
-		// even when the same proxies are re-added.
-		if state, err := readProxyState(); err == nil {
+		// An unreadable proxy.state does not stop the URL cache reset, and it
+		// is surfaced: the operator must be told proxy.state was not cleared.
+		if state, err := readProxyState(); err != nil {
+			tlog("[proxy] warning: proxy.state not cleared: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: proxy.state not cleared: %v\n", err)
+		} else {
 			state.Proxies = map[string]ProxyEntry{}
 			state.NextID = 0
 			if err := writeProxyState(state); err != nil {
 				tlog("[proxy] warning: could not reset proxy.state: %v\n", err)
+				fmt.Fprintf(os.Stderr, "warning: could not reset proxy.state: %v\n", err)
 			}
 		}
-		stateLockRelease()
+
 		// Also clear the URL cache and source URLs so previously-fetched free
 		// proxies don't reappear after a restart. The user wants only the
 		// proxies they explicitly added; URL sources must be re-added if
@@ -6152,7 +6206,11 @@ func proxyRemove(opts docopt.Opts) {
 			if err := writeProxyURLState(urlState); err != nil {
 				tlog("[proxy] warning: could not clear proxy_url.json cache: %v\n", err)
 			}
+		} else if !os.IsNotExist(err) {
+			tlog("[proxy] warning: could not read proxy_url.json: %v\n", err)
+			fmt.Fprintf(os.Stderr, "warning: could not read proxy_url.json: %v\n", err)
 		}
+		return
 	} else {
 
 		allKeyAddress := []string{}
@@ -6208,7 +6266,7 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 		urlState = &ProxyURLState{}
 	}
 
-	addrsBySource, display := collectMatchingProxies(
+	_, display := collectMatchingProxies(
 		pattern, proxyConfig, stateProxies, stateSource, urlState.Cache)
 
 	if len(display) == 0 {
@@ -6236,23 +6294,13 @@ func proxyRemoveMatch(pattern string, opts docopt.Opts) {
 		return
 	}
 
-	if err := removeDeadProxies(state, addrsBySource); err != nil {
+	removed, err := removeMatchingProxies(pattern)
+	if err != nil {
 		fmt.Printf("removal failed: %v\n", err)
 		return
 	}
 
-	// Persist the exclude pattern so URL source refreshes cannot re-add
-	// matching proxies. Re-read to avoid clobbering the cache changes
-	// removeDeadProxies just wrote.
-	if urlState, err := readProxyURLState(); err == nil {
-		if addExcludePattern(urlState, pattern) {
-			if err := writeProxyURLState(urlState); err != nil {
-				fmt.Printf("warning: could not persist exclude pattern: %v\n", err)
-			}
-		}
-	}
-
-	fmt.Printf("Removed %d proxies matching %q. Pattern excluded from future URL fetches.\n", len(display), pattern)
+	fmt.Printf("Removed %d proxies matching %q. Pattern excluded from future URL fetches.\n", removed, pattern)
 	fmt.Println("The running provider will apply the change via hot reload (no restart).")
 }
 

@@ -7,14 +7,46 @@ on:
     paths:
       - 'docs/**'
       - 'LOG_REFERENCE.md'
+      - '.github/workflows/wiki-sync.yml'
   workflow_dispatch:
 
 permissions:
-  contents: write
+  contents: read
 
 jobs:
-  sync-wiki:
+  check-links:
     runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      # A relative "page.md" link inside the wiki resolves to a raw file and
+      # shows the operator unformatted markdown, which is how a rendered guide
+      # turns into a wall of text. Wiki pages are linked by page name.
+      - name: No relative markdown links
+        run: |
+          status=0
+          while IFS= read -r hit; do
+            echo "::error file=${hit%%:*}::relative markdown link; link the wiki page name instead: ${hit#*:}"
+            status=1
+          # Only the pages the wiki publishes: top-level docs/*.md. The
+          # archive, spec and design trees stay in the repository.
+          done < <(
+            for file in docs/*.md; do
+              [ -f "$file" ] || continue
+              sed -E -e "/^[[:space:]]*\`\`\`/,/^[[:space:]]*\`\`\`/s/.*//" \
+                     -e "/^[[:space:]]*~~~/,/^[[:space:]]*~~~/s/.*//" \
+                     -e "s/\`+[^\`]*\`+//g" "$file" \
+                | grep -noE '\]\([A-Za-z0-9_./-]+\.md(\)|#|[[:space:]]+("[^"]*"|'"'"'[^'"'"']*'"'"'|\([^)]*\))[[:space:]]*\))' \
+                | grep -vE '\]\((/|[a-z]+://)' \
+                | sed "s|^|${file}:|" || true
+            done
+          )
+          exit $status
+
+  sync-wiki:
+    needs: check-links
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
     steps:
       - name: Checkout main repository
         uses: actions/checkout@v4
