@@ -68,9 +68,9 @@ The installer does not create the account. Create it first, once, with `pw usera
 
 | What | Where |
 |---|---|
-| Provider binary | `~/.local/share/urnetwork-provider/bin/urnetwork` (service user's home) |
-| Installed version tag | `~/.local/share/urnetwork-provider/version` |
-| `urnet-tools` | `~/.local/share/urnetwork-provider/bin/urnet-tools` |
+| Provider binary | `/usr/local/libexec/urnetwork-provider/bin/urnetwork` (root-owned) |
+| Installed version tag | `/usr/local/libexec/urnetwork-provider/version` |
+| `urnet-tools` | `/usr/local/libexec/urnetwork-provider/bin/urnet-tools` (root-owned) |
 | State, including the login token | `~/.urnetwork` (service user's home) |
 | `rc.d` script | `/usr/local/etc/rc.d/urnetwork` |
 | Service output | `/var/log/urnetwork/stdout.log` |
@@ -264,7 +264,7 @@ sudo service urnetwork stop
 sudo sysrc -x urnetwork_enable urnetwork_user
 sudo rm -f /usr/local/etc/rc.d/urnetwork
 urnet-tools auto-update off
-rm -rf ~/.local/share/urnetwork-provider
+sudo rm -rf /usr/local/libexec/urnetwork-provider
 sudo rm -rf /var/log/urnetwork
 ```
 

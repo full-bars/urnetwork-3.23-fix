@@ -111,7 +111,7 @@ YYYY.M.D-<code>-fix.<N.M>
 
 A version that does not start with a real calendar date (every release before 34.2 sent the raw tag) is filed under `other` by the platform. The string is 64 characters or fewer, which is the limit the platform stores.
 
-It is set at build time with `-X main.AuthVersion=...`, computed from the release tag by `scripts/compute-app-version.sh <tag>`. A build without the flag, such as a local `make` build, a main-branch Docker image, or a test mint, reports its plain version instead. Everything else, including logs, metrics, hotswap and the update checks, keeps using the git tag.
+It is set at build time with `-X main.AuthVersion=...`, computed from the release tag by `scripts/compute-app-version.sh <tag>`. The Docker workflow computes it for every build, including `:main` and `:sha` images; a build without the flag, such as a local `make` build, reports its plain version instead. Everything else, including logs, metrics, hotswap and the update checks, keeps using the git tag.
 
 > [!NOTE]
 > This is how a node is recorded and counted by release. It is not what makes a node count as a modern provider: the platform's modern provider gate measures post-quantum encryption and resizable transfer windows on the wire and does not read the version.
