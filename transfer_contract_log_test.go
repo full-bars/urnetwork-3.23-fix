@@ -41,7 +41,7 @@ func TestCloseContractLineWithProxy(t *testing.T) {
 	proxyDesc := "proxy[15304] (203.0.113.21:1081)"
 
 	closed := closeContractLineWithProxy(false, 100, 200, 50, destination, proxyDesc)
-	if !strings.Contains(closed, "[contract] closed proxy[15304] (203.0.113.21:1081)") {
+	if !strings.Contains(closed, "[contract] closed | proxy[15304] (203.0.113.21:1081)") {
 		t.Fatalf("close line missing proxy: %q", closed)
 	}
 	if !strings.HasPrefix(closed, "🚪 ") {
@@ -49,7 +49,7 @@ func TestCloseContractLineWithProxy(t *testing.T) {
 	}
 
 	checkpointed := closeContractLineWithProxy(true, 100, 200, 50, destination, proxyDesc)
-	if !strings.Contains(checkpointed, "[contract] checkpointed proxy[15304] (203.0.113.21:1081)") {
+	if !strings.Contains(checkpointed, "[contract] checkpointed | proxy[15304] (203.0.113.21:1081)") {
 		t.Fatalf("checkpoint line missing proxy: %q", checkpointed)
 	}
 	if !strings.HasPrefix(checkpointed, "📍 ") {

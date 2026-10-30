@@ -24,12 +24,17 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
+// A fixed partition secret, so which partition a vantage is dealt is the same
+// on every run and a test can name vantages that are dealt apart.
+var testPartitionSecret = []byte("gossip-feed-test-partition-secret")
+
 // A directory whose clock never moves.
 func newTestPinnedDirectory(t *testing.T, rootKey *testKey) *connect.ExtenderDirectory {
 	t.Helper()
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	settings := connect.DefaultExtenderDirectorySettings()
 	settings.NetworkHosts = []string{testNetworkHost}
+	settings.PartitionSecret = testPartitionSecret
 	settings.Now = func() time.Time {
 		return now
 	}
@@ -200,6 +205,8 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 
 	rootKey := newTestKey(t)
 	directory := newTestPinnedDirectory(t, rootKey)
+	// a non-trivial open pool before any subscriber exists, so the partitions
+	// have something to partition; the streamed records grow it from 33 to 96
 	applyTestOpenFeedRecords(t, directory, rootKey, 32, 100)
 
 	settings := DefaultFeedServerSettings()
@@ -207,25 +214,17 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 	feed := NewFeedServer(ctx, directory, nil, settings)
 	t.Cleanup(feed.Close)
 
-	// two subscribers of one prefix, and one of another
-	first := newTestFeedClientAt(t, feed, "203.0.113.7:40000", &protocol.ExtenderFeedRequest{
-		SampleCount: 0,
-		Subscribe:   true,
-	})
-	first.readEndOfSample(t)
-	sibling := newTestFeedClientAt(t, feed, "203.0.113.200:40001", &protocol.ExtenderFeedRequest{
-		SampleCount: 0,
-		Subscribe:   true,
-	})
-	sibling.readEndOfSample(t)
-
-	// read both subscribers while the records are applied: the subscription
-	// buffer holds 64, and a reader that only starts after the applies can be
-	// disconnected as a slow subscriber, which makes the test scheduling
-	// dependent
+	// two subscribers of one prefix, and two of other prefixes
 	type streamResult struct {
-		keys []string
-		err  error
+		keys       []string
+		revocation *protocol.ExtenderRevocation
+		err        error
+	}
+	type subscriber struct {
+		name    string
+		vantage []byte
+		client  *testFeedClient
+		results chan streamResult
 	}
 	readStreamed := func(client *testFeedClient) streamResult {
 		streamed := []string{}
@@ -235,7 +234,7 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 				return streamResult{err: err}
 			}
 			if frame.GetRevocation() != nil {
-				return streamResult{keys: streamed}
+				return streamResult{keys: streamed, revocation: frame.GetRevocation()}
 			}
 			if frame.GetRecord() == nil {
 				continue
@@ -247,49 +246,139 @@ func TestGossipFeedStreamIsBoundToTheClientVantage(t *testing.T) {
 			streamed = append(streamed, hex.EncodeToString(body.PublicKey))
 		}
 	}
-	firstResult := make(chan streamResult, 1)
-	siblingResult := make(chan streamResult, 1)
-	go func() { firstResult <- readStreamed(first) }()
-	go func() { siblingResult <- readStreamed(sibling) }()
+	// The open pool runs from 33 to 96 records, which is 8 and then 16
+	// partitions. The foreign prefixes are picked to be dealt different
+	// partitions modulo 8, so they differ from the first, and from each other,
+	// at both sizes: whatever a foreign client is sent that the first is not
+	// owed is a leak, and the test cannot pass for want of a distinct vantage.
+	vantageOf := func(remote string) []byte {
+		addr, err := net.ResolveTCPAddr("tcp", remote)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return connect.ExtenderVantageKeyOfAddr(addr)
+	}
+	partitionOf := func(remote string) int {
+		return connect.ExtenderVantagePartition(testPartitionSecret, connect.ExtenderChannelFeed, vantageOf(remote), 8)
+	}
+	taken := map[int]bool{partitionOf("203.0.113.7:40000"): true}
+	foreign := []string{}
+	for octet := range 256 {
+		remote := fmt.Sprintf("198.18.%d.9:40002", octet)
+		if partition := partitionOf(remote); !taken[partition] {
+			taken[partition] = true
+			foreign = append(foreign, remote)
+		}
+		if len(foreign) == 2 {
+			break
+		}
+	}
+	if len(foreign) != 2 {
+		t.Fatal("no two foreign prefixes dealt different partitions")
+	}
+	subscribers := []*subscriber{}
+	for _, s := range []struct{ name, remote string }{
+		{"first", "203.0.113.7:40000"},
+		{"sibling", "203.0.113.200:40001"},
+		{"other-a", foreign[0]},
+		{"other-b", foreign[1]},
+	} {
+		client := newTestFeedClientAt(t, feed, s.remote, &protocol.ExtenderFeedRequest{
+			SampleCount: 0,
+			Subscribe:   true,
+		})
+		client.readEndOfSample(t)
+		sub := &subscriber{
+			name:    s.name,
+			vantage: vantageOf(s.remote),
+			client:  client,
+			results: make(chan streamResult, 1),
+		}
+		// each reader hands over one batch per revocation marker and stops at
+		// the first error, so the reader never blocks the server on a full pipe
+		go func() {
+			for {
+				result := readStreamed(sub.client)
+				select {
+				case sub.results <- result:
+				case <-ctx.Done():
+					return
+				}
+				if result.err != nil {
+					return
+				}
+			}
+		}()
+		subscribers = append(subscribers, sub)
+	}
 
-	appliedKeys := []*testKey{}
+	markerKey := newTestKey(t)
+	markerTime := uint64(time.Now().UnixMilli())
+	streamedCount := 0
+	// batches in which a foreign vantage was owed a different answer than the
+	// first, which is what gives the leak check something to catch
+	distinguishedCount := 0
 	for i := range 64 {
 		extenderKey := newTestKey(t)
 		applyTestFeedRecord(t, directory, rootKey, extenderKey, fmt.Sprintf("198.51.101.%d", 1+i))
-		appliedKeys = append(appliedKeys, extenderKey)
+		// What each vantage is owed for this record, from the directory's sample
+		// of the pool as it now stands rather than the stream's filter. Nothing
+		// changes the pool until every handler has passed this batch (the marker
+		// revokes a key that was never applied), so the answer cannot move
+		// between here and the handlers' own decisions.
+		owed := map[string][]string{}
+		for _, sub := range subscribers {
+			owed[sub.name] = []string{}
+			for _, message := range directory.SampleRecords(96, nil, sub.vantage) {
+				body, err := directory.RootKeys().VerifyRecord(message.GetRecord())
+				if err != nil {
+					t.Fatal(err)
+				}
+				if slices.Equal(body.PublicKey, extenderKey.publicKey) {
+					owed[sub.name] = append(owed[sub.name], hex.EncodeToString(extenderKey.publicKey))
+				}
+			}
+		}
+		revocation, err := connect.SignExtenderRevocation(rootKey.privateKey, &protocol.ExtenderRevocationBody{
+			PublicKey:   markerKey.publicKey,
+			IssueTimeMs: markerTime + uint64(i),
+			NetworkHost: testNetworkHost,
+		})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if changed, err := directory.ApplyRevocationSource(revocation, connect.ExtenderSourceGossip); err != nil || !changed {
+			t.Fatalf("apply marker %d: changed=%t err=%v", i, changed, err)
+		}
+		for _, sub := range subscribers {
+			result := <-sub.results
+			if result.err != nil {
+				t.Fatalf("%s batch %d: %v", sub.name, i, result.err)
+			}
+			// fails if the feed streamed a record outside this client's
+			// partition (a leak of another vantage's record), or withheld one
+			// inside it
+			if !slices.Equal(result.keys, owed[sub.name]) {
+				t.Fatalf("%s batch %d: streamed records %v, owed %v", sub.name, i, result.keys, owed[sub.name])
+			}
+			if !proto.Equal(result.revocation, revocation) {
+				t.Fatalf("%s batch %d: marker %v, want %v", sub.name, i, result.revocation, revocation)
+			}
+		}
+		streamedCount += len(owed["first"])
+		if !slices.Equal(owed["first"], owed["other-a"]) || !slices.Equal(owed["first"], owed["other-b"]) {
+			distinguishedCount += 1
+		}
+		// one prefix is one vantage: the sibling is owed exactly the same
+		if !slices.Equal(owed["first"], owed["sibling"]) {
+			t.Fatalf("batch %d: a sibling of the prefix is owed %v, the first %v", i, owed["sibling"], owed["first"])
+		}
 	}
-	// then a revocation, which marks the end of what the stream owes
-	revocation, err := connect.SignExtenderRevocation(rootKey.privateKey, &protocol.ExtenderRevocationBody{
-		PublicKey:   appliedKeys[0].publicKey,
-		IssueTimeMs: uint64(time.Now().Add(time.Second).UnixMilli()),
-		NetworkHost: testNetworkHost,
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := directory.ApplyRevocationSource(revocation, connect.ExtenderSourceGossip); err != nil {
-		t.Fatal(err)
-	}
-
-	firstStream := <-firstResult
-	if firstStream.err != nil {
-		t.Fatal(firstStream.err)
-	}
-	siblingStream := <-siblingResult
-	if siblingStream.err != nil {
-		t.Fatal(siblingStream.err)
-	}
-	if len(firstStream.keys) == 0 {
+	if streamedCount == 0 {
 		t.Fatal("the stream carried none of the applied records")
 	}
-	// ninety-six open records make sixteen partitions; a subscriber that was
-	// sent more than half of what was applied was not bound to one
-	if 32 < len(firstStream.keys) {
-		t.Fatalf("the stream carried %d of %d applied records", len(firstStream.keys), len(appliedKeys))
-	}
-	// one prefix is one vantage: the sibling was sent exactly the same
-	if !slices.Equal(siblingStream.keys, firstStream.keys) {
-		t.Fatalf("a sibling of the prefix was streamed %d records, expected the same %d", len(siblingStream.keys), len(firstStream.keys))
+	if distinguishedCount == 0 {
+		t.Fatal("every vantage was owed the same records, so the partitions were not tested")
 	}
 }
 

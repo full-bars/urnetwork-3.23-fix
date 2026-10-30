@@ -174,7 +174,6 @@ install_path="/usr/local/libexec/urnetwork-provider"
 provider_bin="$install_path/bin/urnetwork"
 state_dir="$service_home/.urnetwork"
 github_api="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
-github_raw="https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main"
 
 # --- rc.d ---
 
@@ -209,6 +208,7 @@ priv() {
 # a sudo that wants a password fails at once instead of blocking the exit on a
 # prompt nobody is watching.
 staged_bin=""
+staged_tool=""
 staged_version=""
 
 priv_rm() {
@@ -229,6 +229,7 @@ install_cleanup() {
     _status=$?
     trap - EXIT INT TERM HUP
     priv_rm "$staged_bin"
+    priv_rm "$staged_tool"
     priv_rm "$staged_version"
     # mktemp -d ran as the invoking user, so this removal needs no privilege.
     if [ -n "${tmpdir:-}" ]; then
@@ -272,21 +273,6 @@ set_rc_conf_default() {
     if [ -z "$_cur" ]; then
         priv sysrc "$_key=$_val"
     fi
-}
-
-# install_wrapper_tool downloads this script as the urnet-tools stand-in.
-# Staged to a temp file and renamed so a running tool is never truncated in
-# place (ETXTBSY would otherwise break `update` while the tool is executing).
-install_wrapper_tool() {
-    _td="$1"
-    http_fetch "$github_raw/scripts/Provider_Install_FreeBSD.sh" "$_td/urnet-tools.wrapper" 2>/dev/null || return 1
-    chmod 755 "$_td/urnet-tools.wrapper"
-    priv mv -f "$_td/urnet-tools.wrapper" "$install_path/bin/urnet-tools"
-    # mv keeps the invoker's ownership when the temp dir is on the same
-    # filesystem, so the owner must be set explicitly: see do_install.
-    priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
-        pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
-    priv chmod 755 "$install_path/bin/urnet-tools"
 }
 
 # --- rc.d script ---
@@ -508,6 +494,100 @@ assert_state_path_safe() {
     fi
 }
 
+# enforce_install_tree_perms <tree> <binary>
+#
+# Repair the install tree's ownership and traversal, or return nonzero with the
+# path and the failed repair in the message. Every command goes through priv,
+# so the gate runs the same way for root and for a sudo user, and it is a GATE
+# rather than best effort: rc.d starts the provider as root and daemon(8) drops
+# to the service user before exec, so a tree that stays writable by that user
+# crosses a privilege boundary and a tree it cannot traverse can never start.
+# A repair that cannot be made returns nonzero and the caller aborts instead of
+# writing the rc.d script and reporting success.
+enforce_install_tree_perms() {
+    _tree="$1"
+    _bin="$2"
+    _links=$(priv find "$_tree" -type l -print) || {
+        pr_err "could not scan %s for symlinks" "$_tree"
+        return 1
+    }
+    if [ -n "$_links" ]; then
+        pr_err "symlink in install tree; refusing to repair: %s" "$_links"
+        return 1
+    fi
+    _tree_conforms() {
+        _dirs=$(priv find "$_tree" -type d -print) || return 1
+        for _path in $_dirs; do
+            [ "$(priv stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            [ "$(priv stat -f %Lp "$_path" 2>/dev/null)" = 755 ] || return 1
+        done
+        # Every regular file, not only $_bin: bin/urnet-tools is root-executed
+        # too, and version is written by this run. Any group/other write bit
+        # fails, and so does a mode that does not parse as three octal digits.
+        _files=$(priv find "$_tree" -type f -print) || return 1
+        for _path in $_files; do
+            [ "$(priv stat -f %u "$_path" 2>/dev/null)" = 0 ] || return 1
+            _mode=$(priv stat -f %Lp "$_path" 2>/dev/null) || return 1
+            case "$_mode" in
+                [0-7][2367][0-7]|[0-7][0-7][2367]) return 1 ;;
+                [0-7][0-7][0-7]) ;;
+                *) return 1 ;;
+            esac
+        done
+        [ "$(priv stat -f %u "$_bin" 2>/dev/null)" = 0 ] || return 1
+        [ "$(priv stat -f %Lp "$_bin" 2>/dev/null)" = 755 ]
+    }
+    # :wheel is the FreeBSD convention, not what makes the tree safe, so retry
+    # with root alone before failing: the boundary is the OWNER, not the group.
+    if ! priv chown -R root:wheel "$_tree" 2>/dev/null; then
+        if ! priv chown -R root "$_tree" 2>/dev/null; then
+            if _tree_conforms; then
+                pr_info "chown -R root:wheel and chown -R root both failed; %s already conformed" "$_tree"
+            else
+                pr_err "could not make %s root-owned: chown -R root:wheel and chown -R root both failed" "$_tree"
+                return 1
+            fi
+        fi
+    fi
+    # Group/other write on a binary root executes is the boundary itself, so
+    # this is required rather than convenient.
+    if ! priv chmod -R go-w "$_tree" 2>/dev/null; then
+        if _tree_conforms; then
+            pr_info "chmod -R go-w failed; %s already conformed" "$_tree"
+        else
+            pr_err "could not remove group/other write access from %s: chmod -R go-w failed" "$_tree"
+            return 1
+        fi
+    fi
+    # One path per call so the message names the directory that failed: 0755 on
+    # bin/ is no use while the tree above it is still 0700.
+    for _dir in "$_tree" "$_tree/bin"; do
+        if ! priv chmod 755 "$_dir" 2>/dev/null; then
+            if _tree_conforms; then
+                pr_info "chmod 755 failed for %s; %s already conformed" "$_dir" "$_tree"
+            else
+                pr_err "could not make %s traversable by the service user: chmod 755 failed" "$_dir"
+                return 1
+            fi
+        fi
+    done
+    # The staged binary must be executable before it replaces the live image.
+    if ! priv chmod 755 "$_bin" 2>/dev/null; then
+        if _tree_conforms; then
+            pr_info "chmod 755 failed for %s; %s already conformed" "$_bin" "$_tree"
+        else
+            pr_err "could not make %s executable by the service user: chmod 755 failed" "$_bin"
+            return 1
+        fi
+    fi
+    # Successful repair commands alone do not prove ownership or modes.
+    if ! _tree_conforms; then
+        pr_err "could not verify ownership and permissions of %s" "$_tree"
+        return 1
+    fi
+    return 0
+}
+
 do_install() {
     # Every exit from here on removes a staged file that priv created, so the
     # cleanup runs on all of them. The signal traps exit normally (130 = SIGINT,
@@ -617,10 +697,6 @@ do_install() {
     # elevates instead of failing at the first mkdir. (This was a regression
     # from moving the tree out of the service user's home.)
     priv mkdir -p "$install_path/bin" || { pr_err "Failed to create %s" "$install_path"; rm -rf "$tmpdir"; exit 1; }
-    # A restrictive invoking umask can leave these 0700 even on the sudo path,
-    # and the root-only repair below never runs there. daemon -u must be able
-    # to traverse and execute.
-    priv chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
     # `cp` onto a running binary fails with ETXTBSY ("Text file busy"), which
     # is exactly the `update` case: the provider is still executing the file
     # being replaced. Staging next to the target and renaming is atomic, is
@@ -641,38 +717,9 @@ do_install() {
     staged_bin="$staged"
     priv cp "$provider_src" "$staged" || { pr_err "Failed to stage binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
     priv chmod 755 "$staged"
-    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
-    # Renamed into place: forget the name, or the EXIT trap would delete the
-    # binary that is now the installed provider.
-    staged_bin=""
-
-    # Same rename-not-follow rule as the binary above. A symlink planted at the
-    # version name would redirect the write, so stage beside it and rename over
-    # it: rename replaces the entry instead of following it.
-    ver_tmp="$install_path/.version.new.$$"
-    staged_version="$ver_tmp"
-    # Not fatal: the binary is already installed and the provider is about to
-    # start, so failing here would report a failed install for a working
-    # provider. The root-owned temp file still has to go with the failure, or
-    # every retry leaves .version.new.<pid> in the install tree.
-    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
-           priv mv -f "$ver_tmp" "$install_path/version"; }; then
-        priv_rm "$ver_tmp"
-        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
-    fi
-    staged_version=""
-    priv chmod 644 "$install_path/version" 2>/dev/null || true
-
-    # Install the tool: the Go urnet-tools binary shipped as a release asset,
-    # digest-verified; fall back to this shell script for releases that
-    # predate the Go asset.
+    # The release tool is installed only when its digest can be verified.
     tool_asset="urnet-tools-freebsd-$goarch"
-    # A release asset with no digest must read as ABSENT, not as the four
-    # characters "null". jq prints the string null for a missing or null field,
-    # which passed the -n test below and then failed the comparison, so every
-    # install silently fell back to the shell wrapper while reporting success.
-    # Select the asset first and require a real hex digest, so an unknown
-    # digest means "cannot verify" and takes the same deliberate path.
+    # jq prints "null" for a missing field, so accept only a real hex digest.
     tool_digest=""
     release_json="$(http_fetch "$github_api/releases/tags/$tag" 2>/dev/null)"
     if command -v jq > /dev/null 2>&1; then
@@ -699,43 +746,35 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
 ' "$tool_asset" 2>/dev/null || true)"
     fi
 
-    if [ -n "$tool_digest" ]; then
-        if http_fetch "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" "$tmpdir/$tool_asset" 2>/dev/null; then
-            # FreeBSD ships sha256(1); fall back to openssl where it is absent.
-            if command -v sha256 > /dev/null 2>&1; then
-                actual="$(sha256 -q "$tmpdir/$tool_asset")"
-            elif command -v openssl > /dev/null 2>&1; then
-                actual="$(openssl dgst -sha256 "$tmpdir/$tool_asset" | awk '{print $NF}')"
-            else
-                actual=""
-            fi
-            if [ -n "$actual" ] && [ "$actual" = "$tool_digest" ]; then
-                priv mv -f "$tmpdir/$tool_asset" "$install_path/bin/urnet-tools"
-                # the download ran as the INVOKING user, and mv is a
-                # rename (owner preserved) whenever $tmpdir shares the
-                # filesystem, so the owner has to be set here rather than
-                # inherited. The tool is run by root — `sudo urnet-tools
-                # update` and the weekly auto-update entry — so a
-                # SUDO_USER-owned copy would let the service user rewrite a
-                # binary root executes. The chown -R below is deliberately
-                # gated on id -u 0 and does not run on this sudo path.
-                priv chown root:wheel "$install_path/bin/urnet-tools" 2>/dev/null || \
-                    pr_warn "could not chown %s to root:wheel; a non-root owner can rewrite a binary root runs" "$install_path/bin/urnet-tools"
-                priv chmod 755 "$install_path/bin/urnet-tools"
-            else
-                pr_warn "urnet-tools sha256 mismatch, falling back to shell wrapper"
-                install_wrapper_tool "$tmpdir" || true
-            fi
-        else
-            pr_warn "urnet-tools download failed, falling back to shell wrapper"
-            install_wrapper_tool "$tmpdir" || true
-        fi
+    if [ -z "$tool_digest" ]; then
+        pr_err "Cannot verify urnet-tools: release digest is unavailable"
+        exit 1
+    fi
+    if ! http_fetch "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" "$tmpdir/$tool_asset" 2>/dev/null; then
+        pr_err "Failed to download urnet-tools"
+        exit 1
+    fi
+    staged_tool="$install_path/bin/.urnet-tools.new.$$"
+    priv cp "$tmpdir/$tool_asset" "$staged_tool" || { pr_err "Failed to stage urnet-tools"; exit 1; }
+    priv chmod 755 "$staged_tool" || { pr_err "Failed to make urnet-tools executable"; exit 1; }
+    # Verify the staged file itself, not only the downloaded source.
+    if command -v sha256 > /dev/null 2>&1; then
+        actual="$(sha256 -q "$staged_tool")"
+    elif command -v openssl > /dev/null 2>&1; then
+        actual="$(openssl dgst -sha256 "$staged_tool" | awk '{print $NF}')"
     else
-        # Without jq or python3 the digest cannot be read, and the wrapper is
-        # fetched from the branch, not from $tag. Say so rather than installing
-        # an unpinned script as if it were the release asset.
-        pr_warn "no jq or python3 on this host: cannot verify the urnet-tools digest, falling back to the shell wrapper fetched from the branch (not from %s)" "$tag"
-        install_wrapper_tool "$tmpdir" || true
+        actual=""
+    fi
+    if [ -z "$actual" ] || [ "$actual" != "$tool_digest" ]; then
+        pr_err "Cannot verify urnet-tools: digest mismatch or no checksum tool"
+        exit 1
+    fi
+
+    # On gate failure, live binaries stay untouched, permission repairs remain,
+    # and an error is reported. Check the tree before any live replacement.
+    if ! enforce_install_tree_perms "$install_path" "$staged"; then
+        rm -rf "$tmpdir"
+        exit 1
     fi
 
     # The install tree stays ROOT-OWNED and group/other-writable-never. The
@@ -765,14 +804,32 @@ print(val if re.fullmatch(r"[0-9a-fA-F]{64}", val) else "")
                 chmod 700 . 2>/dev/null || true
             fi
         fi
-        chown -R root:wheel "$install_path" 2>/dev/null || \
-            chown -R root "$install_path" 2>/dev/null || true
-        chmod -R go-w "$install_path" 2>/dev/null || true
-        # The binaries must stay executable by the service user while the
-        # directories above them are not writable by anyone else.
-        chmod 755 "$install_path" "$install_path/bin" 2>/dev/null || true
-        [ -f "$provider_bin" ] && chmod 755 "$provider_bin" 2>/dev/null || true
     fi
+
+    priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
+    staged_tool=""
+    priv mv -f "$staged" "$provider_bin" || { pr_err "Failed to install binary"; priv_rm "$staged"; rm -rf "$tmpdir"; exit 1; }
+    # Renamed into place: forget the name, or the EXIT trap would delete the
+    # binary that is now the installed provider.
+    staged_bin=""
+
+    # Same rename-not-follow rule as the binary above. A symlink planted at the
+    # version name would redirect the write, so stage beside it and rename over
+    # it: rename replaces the entry instead of following it.
+    ver_tmp="$install_path/.version.new.$$"
+    staged_version="$ver_tmp"
+    # Not fatal: the binary is already installed and the provider is about to
+    # start, so failing here would report a failed install for a working
+    # provider. The root-owned temp file still has to go with the failure, or
+    # every retry leaves .version.new.<pid> in the install tree.
+    if ! { printf '%s\n' "$tag" | priv tee "$ver_tmp" > /dev/null &&
+           priv mv -f "$ver_tmp" "$install_path/version"; }; then
+        priv_rm "$ver_tmp"
+        pr_warn "could not write %s; version keeps reporting the previous value" "$install_path/version"
+    fi
+    staged_version=""
+    priv chmod 644 "$install_path/version" 2>/dev/null || true
+
 
     if [ "$(id -u)" != "0" ]; then
         pr_info "Installing the rc.d service requires root; re-running that step with sudo..."

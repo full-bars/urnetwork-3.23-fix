@@ -36,7 +36,7 @@ Operators with **many distinct, stable public IP ranges** that are not shared wi
 The live figures below are read from the chains by CI, so this page does not carry hand-maintained numbers. The bullets after the table explain what each figure means.
 
 <!-- BEGIN SN25 LIVE NUMBERS (generated) -->
-_Live values · last changed 2026-10-29 22:02 UTC · refreshed automatically_
+_Live values · last changed 2026-10-30 10:28 UTC · refreshed automatically_
 
 | | Value |
 |---|---|

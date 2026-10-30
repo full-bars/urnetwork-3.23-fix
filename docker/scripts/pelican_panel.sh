@@ -140,10 +140,29 @@ func_do_login() {
         PANIC_LINE=$(echo "$AUTH_OUTPUT" | grep -E '^panic:' || true)
         
         if [ "${DEBUG:-false}" = "true" ]; then
-            echo "DEBUG: USER_AUTH=$USER_AUTH"
-            echo "DEBUG: PASSWORD=$PASSWORD"
+            if [ -n "$USER_AUTH" ]; then user_auth_set=yes; else user_auth_set=no; fi
+            if [ -n "$PASSWORD" ]; then password_set=yes; else password_set=no; fi
+            echo "DEBUG: USER_AUTH set=$user_auth_set length=${#USER_AUTH}"
+            echo "DEBUG: PASSWORD set=$password_set length=${#PASSWORD}"
             echo "DEBUG: AUTH_EXIT_CODE=$AUTH_EXIT_CODE"
-            echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            # Preserve the output line without exposing echoed credentials.
+            # The match ignores case: the server may echo the address normalized.
+            auth_output_secret=no
+            auth_output_lower=$(printf '%s' "$AUTH_OUTPUT" | tr '[:upper:]' '[:lower:]')
+            if [ -n "$USER_AUTH" ]; then
+                user_auth_trimmed=$(printf '%s' "$USER_AUTH" | sed -e 's/^[[:space:]]*//' -e 's/[[:space:]]*$//')
+                user_auth_lower=$(printf '%s' "$user_auth_trimmed" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$user_auth_lower"*) auth_output_secret=yes ;; esac
+            fi
+            if [ -n "$PASSWORD" ]; then
+                password_lower=$(printf '%s' "$PASSWORD" | tr '[:upper:]' '[:lower:]')
+                case "$auth_output_lower" in *"$password_lower"*) auth_output_secret=yes ;; esac
+            fi
+            if [ "$auth_output_secret" = yes ]; then
+                echo "DEBUG: AUTH_OUTPUT=[redacted]"
+            else
+                echo "DEBUG: AUTH_OUTPUT=$AUTH_OUTPUT"
+            fi
         fi
         
         # Check for success message in output
