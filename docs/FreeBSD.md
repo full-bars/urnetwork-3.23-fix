@@ -92,7 +92,7 @@ When the installer is run as an ordinary user, the `rc.d` and `sysrc` steps go t
 The login token has to land in the service user's `~/.urnetwork`. Get an auth code from <https://ur.io> and run the authentication as the service user:
 
 ```sh
-su -l urnet -c '$HOME/.local/share/urnetwork-provider/bin/urnetwork auth <code>'
+su -l urnet -c '/usr/local/libexec/urnetwork-provider/bin/urnetwork auth <code>'
 ```
 
 If you installed as your own account with `sudo`, that account is the service user and you can run `urnet-tools auth <code>` directly. Restart the service so the provider picks up the token:
