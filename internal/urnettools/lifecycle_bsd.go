@@ -77,7 +77,7 @@ logdir="/var/log/%[1]s"
             return 0
         fi
     fi
-    _pid="$(ps -axo pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
+    _pid="$(ps -U "${%[1]s_user}" -o pid=,args= 2>/dev/null | awk -v b='%[4]s' '$2 == b && $3 == "provide" {print $1; exit}')"
     if [ -n "$_pid" ]; then
         echo "$_pid"
         return 0

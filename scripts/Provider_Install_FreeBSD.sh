@@ -379,7 +379,7 @@ ${service_name}_running_pid()
     # string in its own argv, and "ps -U <service user>" lists that grep when
     # the caller is the service user. The grep then matches itself and a
     # stopped provider reports as running (and start skips a real start).
-    _pid="\$(ps -axo pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
+    _pid="\$(ps -U "\${${service_name}_user}" -o pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
     if [ -n "\$_pid" ]; then
         echo "\$_pid"
         return 0
