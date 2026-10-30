@@ -163,8 +163,10 @@ func TestTarRelPath(t *testing.T) {
 		t.Errorf("tarRelPath(windows, amd64) = %q, want %q", got, want)
 	}
 	// darwin and freebsd both ship their own directory in the universal tarball.
-	// The linux fallthrough would stage an ELF on those hosts, which the
-	// executable check then refuses, so the update fails after a good download.
+	// The linux fallthrough would stage the Linux ELF on those hosts. On darwin
+	// the Mach-O check refuses it, so the update stops after the download. On
+	// freebsd the ELF check accepts it, so the wrong binary is staged and may
+	// not start.
 	if got, want := tarRelPath("darwin", "arm64"), "darwin/arm64/provider"; got != want {
 		t.Errorf("tarRelPath(darwin, arm64) = %q, want %q", got, want)
 	}
