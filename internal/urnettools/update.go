@@ -1362,7 +1362,7 @@ func copyFile(src, dst string) error {
 	if err != nil {
 		return err
 	}
-	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, info.Mode())
+	out, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_EXCL, info.Mode())
 	if err != nil {
 		return err
 	}
@@ -1561,6 +1561,9 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		}
 	} else {
 		if err := os.Link(exePath, backup); err != nil {
+			if os.IsExist(err) {
+				return fmt.Errorf("backup tool: %w", err)
+			}
 			if err := copyFile(exePath, backup); err != nil {
 				return fmt.Errorf("backup tool: %w", err)
 			}
