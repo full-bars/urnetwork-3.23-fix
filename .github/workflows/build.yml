@@ -271,6 +271,8 @@ jobs:
           fi
           chmod +x docker/scripts/test_update_verify.sh
           ./docker/scripts/test_update_verify.sh
+          chmod +x docker/scripts/test_update_version_from_tag.sh
+          ./docker/scripts/test_update_version_from_tag.sh
 
       - name: Pelican egg checks (JSON validity, var contract, updater disabled)
         run: |

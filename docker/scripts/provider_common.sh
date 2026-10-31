@@ -658,8 +658,20 @@ func_check_update() {
     }
     log "[INFO] Expected digest: $EXPECTED_DIGEST"
 
-    LATEST_VERSION="$(printf '%s\n' "$DOWNLOAD_URL" \
-      | sed -E 's#.*/download/v([^/]+)/.*#\1#')"
+    # The version we record comes from the release we selected, never from the
+    # asset url. Scraping `.../download/v<tag>/...` out of the url went blind on
+    # any other shape - a mirror, a redirect, an api asset url - and passed the
+    # WHOLE url through to version.txt. The next check then compared that string
+    # with the real tag, decided the box was out of date, and re-downloaded the
+    # archive every single time, silently. The tag is already parsed and
+    # normalised above, so use it: one source of truth, no url assumptions.
+    LATEST_VERSION="$LATEST_VERSION_CHECK"
+    if [ -z "$LATEST_VERSION" ]; then
+        log "[ERROR] Selected release carries no tag; refusing to install an unversioned provider." >&2
+        log "[INFO] Update aborted; existing provider left untouched."
+        rm -rf "$UPDATE_TMP"
+        return 0
+    fi
     log "[INFO] Updating provider to ( $LATEST_VERSION )"
 
     ARCHIVE="$UPDATE_TMP/urnetwork-provider.tar.gz"
