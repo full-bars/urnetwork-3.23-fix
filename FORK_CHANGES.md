@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.34.0 — **Release in preparation**: v3.23.0-fix.34.1 (see [releases/v3.23.0-fix.34.1.md](releases/v3.23.0-fix.34.1.md))
+**Current Version**: v3.23.0-fix.35.1 — **Release in preparation**: v3.23.0-fix.35.2 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md))
 
 ---
 
@@ -3956,3 +3956,81 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 - **CFAA blocklist refresh**: IPv4 40,924 → 41,202, IPv6 546 → 593, across two upstream syncs. Data-only.
 
 **Impact**: operators see the counters continue across a restart, a node that updates carries the certificate block, and a script that still calls a retired report command now fails. The calendar string changes only what the platform records. Nothing else changes provider traffic behaviour.
+
+## 210. v34.3: Handshake Stage Metrics, Container Stop Handling, Lifetime Counter Fold and the Blocker Sync (PR #940 to #951)
+
+**Purpose**: Make the post-quantum handshake countable by stage and curve, let `docker stop` reach the provider's shutdown path, stop the lifetime session counters dropping when a proxy exits, and keep the two blocklist tables from drifting apart.
+
+**Files Modified**: `monitoring/grafana/dashboards/urnetwork-providers.json`, the Docker supervisor and nightly updater scripts, the `urnet-tools` release selection, the scheduled blocklist-sync workflow, plus tests and the Bittensor docs.
+
+**Change**:
+- **Handshake stages and negotiated curves are counted** (PR #944, #946): the `[pqe]` line reports `attempts`, `tls_ok`, `verified` and `identity_failed` and a per-curve histogram. `/metrics` carries `urnet_sessions_handshake_total{stage=...}` and `urnet_sessions_curve_total{curve=...}`, with two dashboard panels. A superseded epoch no longer reads as a TLS failure, and a failed identity proof is counted once, not by every concurrent verifier.
+- **`docker stop` reaches the shutdown path** (PR #940, #949): a shell as PID 1 has no default action for SIGTERM, so Docker SIGKILLed the container at the grace timeout. The supervisor forwards the signal and waits for the successor, and the wait is bounded below the stop timeout so PID 1 cannot exit while a hotswap successor is still draining. The nightly updater matches the tarball to this architecture.
+- **Release selection and api failures in `urnet-tools`** (PR #949): a stable release with only the fat tarball is skipped when the caller needs a `linux-<arch>` asset, and a non-200 api response is named instead of being reported as a missing tag.
+- **Lifetime session counters survive a proxy exit** (PR #946): a departing manager's counts fold into a provider-wide accumulator first, so a `_total` never decreases and `rate()` does not read a reset.
+- **The stop harness runs against a private app path** (PR #949), so it cannot signal a provider on the host.
+- **Both blocklist tables sync on schedule** (PR #947): the scheduled job pulled one file, so the IP blocker table drifted unseen. Both sync now and a check fails on drift. The SN25 head-tier cost table is regenerated from the chain on a schedule (PR #941).
+- **CFAA and IP blocker refresh** (PR #951): IPv4 41,202 → 46,733, IPv6 593 → 597, blocked hosts 163,972 → 164,212. Data-only.
+
+**Impact**: operators gain the handshake panels and a container that stops inside its grace period. No new setting.
+
+## 211. v35.0: Extender v2 and VLESS Carrier (Work in Progress, Off by Default), Switchable Chrome Hello, Contract Outcome Metrics (PR #955 to #977)
+
+**Purpose**: Bring in the extender library and server, a VLESS/Reality client carrier, a runtime TLS hello switch and the egress blocker hook, with observability for contract discovery. Every new network behaviour ships off.
+
+> [!NOTE]
+> The extender is a work in progress. It does not activate yet and is not reliable; enabling it logs activation and carrier errors that do not affect the rest of the provider. Nothing in this section should be read as a working extender.
+
+**Files Added**: the extender library and server, the VLESS carrier and the Go blocklist generator (paths are in the PR #971 and #975 diffs).
+
+**Change**:
+- **Extender v2, opt-in** (PR #971): signed records, a trust chain, a directory and feed client, tcp, quic and dns carriers, a feed and gossip layer and `host_sleep`. The serving role is enabled through `URNETWORK_EXTENDER`, runs on a direct slot only, binds tcp 443 before quic 443 and dns 4053, keeps its identity seed at `.provider.extender.key` and exports `urnet_extender_*` metrics. Off by default.
+- **VLESS/Reality client carrier** (PR #971): VLESS over tcp, TLS, Reality, WebSocket and HTTP upgrade, share-link import and export, and connection, request and admission limits.
+- **`tls_hello` runtime switch** (PR #972): `urnet-tools set tls-hello on|off` makes the normal and resilient dialers present Chrome's ClientHello on new connections, live; `URNETWORK_TLS_HELLO` is the startup default and a persisted `off` beats the environment. Off by default; open sessions keep their handshake.
+- **Contract discovery outcomes** (PR #977): `urnet_contract_attempts_total` and `urnet_contract_denied_total` carry outcome and refusal-reason labels, and a rate-limited line names why a data path did not appear.
+- **Egress TTL realism, DoH dial observation and H3 datagram auth** (PR #976): the TTL can be applied or shadowed with counters (inactive behind the zero mode), the H3 datagram auth negotiator is now called, and a redirect policy is scoped to one request instead of leaking headers and method into a later attempt.
+- **Protocol and API additions** (PR #975): lag ticket and report messages with extenders named by measurement id, opt-in auth request observations, wallet mapping consent calls and a control-result error reply treated as a refusal. The blocklist generator becomes a Go program run only through `go:generate`.
+- **The ad and tracker blocker is consulted on the packet path** (PR #974): a destination in its ranges or host set is dropped before the local-route, SMTP-guard and policy decisions. Nothing installs a blocker on this fork yet, so traffic is unaffected.
+- **URL proxies are no longer held an hour behind dead proxies** (PR #973): the warmup hold is bounded to five minutes in both the reload gate and the fetcher.
+- **Lifetime counters record when they began** (PR #967, #969): a start stamp is written once, with `urnet_lifetime_start_timestamp_seconds` and `urnet_lifetime_start_approximate` in the scrape.
+- **`urnet-tools proxy trim`** (PR #965, #966) reports the effective cap, its source and the held-back count.
+- **CI and docs** (PR #955, #957, #959 to #961, #963, #968): the client-id reuse checks restart the provider, the live-numbers job refuses unsigned commits, and `urnet-tools auto-update daily|weekly|monthly|off` replaces commands that never existed. The CFAA refresh is data-only: IPv4 46,733 → 47,632, IPv6 597 → 619, blocked hosts 164,212 → 164,225.
+
+**Impact**: a node that sets nothing behaves as before apart from the new metrics and the shorter URL-proxy hold.
+
+## 212. v35.1: Proxied H3 Outage-Egress Fix, Reaper Hold-Off, FreeBSD Installer and Symlink Hardening (PR #979 to #994)
+
+**Purpose**: Stop a silent bandwidth drain on proxied H3 nodes, stop the degraded reaper culling a pool it cannot rank, and give FreeBSD a real installer.
+
+**Files Added**: `scripts/Provider_Install_FreeBSD.sh`, `scripts/test_provider_install_shellrc_symlink.sh`, `internal/durablesync`.
+
+**Change**:
+- **Proxied H3 dials are budgeted** (PR #994): with `h3` set to `all`, a count or `auto`, an unanswered dial ran the whole QUIC retransmit ladder (about 33 KB) on each identity's timer, and the governor counted no QUIC bytes, so a node held `verdict=ok` while spending a flat 15.5 to 16.4 Mbit/s. H3 attempts now carry their handshake bytes, a canceled attempt's bytes count toward the failed-byte breaker, and a proxied identity's H3 waits on the shared budget like its H1. Nodes on the default `h3 direct` were not affected.
+- **The degraded reaper holds off on a tie** (PR #986): when the platform is unreachable the lifetime-bytes scores do not move, so every candidate tied and half the pool was dropped (249 of 498 on one node in the 2026-10-23 outage). A round where every candidate scores the same, or there are too few to rank, now culls nothing.
+- **A planned exit 75 is not logged as a rejected sign-in** (PR #988): the thrash watchdog and the liveness self-exit write a one-shot `thrash_exit.<pid>` marker the supervisor consumes. The exit code is unchanged, so systemd, container scripts and OpenRC keep restarting on it. Operator log line only.
+- **FreeBSD installer** (PR #979, #981, #984, #987): installs the per-architecture tarball and `urnet-tools` from the release, puts provider files in a system-wide location with service state in the service user's home, refuses a symlinked service path or a binary that is not a non-empty executable, reads the release tag with `jq`, then `python3`, then `sed`, and refuses to follow a symlinked shell rc. The universal autoinstaller routes FreeBSD to `install-freebsd.sh` (the `dl` worker deploys separately).
+- **Smaller fixes**: memory-headroom warning classified by source (PR #990), OOM-cap state write failure reported (PR #993), `psi_some_avg60` now read from the memory resource (PR #983), Windows hotkey wallet write no longer fails on the directory flush (PR #985), and five extender review findings (PR #980).
+- **Changed defaults**: the disk benchmark samples by time up to 256 MiB (PR #992), and `smart_dialer` is reclassified restart-required with zero idle cost while off (PR #989); its default is unchanged: off.
+
+**Impact**: proxied H3 operators recover the drained bandwidth, FreeBSD hosts get a documented installer, and `set smart_dialer` now says it takes effect at the next start.
+
+## 213. v35.2 (in preparation): Installer Verification, FreeBSD and macOS Correctness, Docker Startup Safety
+
+**Purpose**: Make the installers refuse what they cannot verify, make a FreeBSD host install with the base system alone, let macOS updates finish, and stop Docker startup discarding a saved proxy configuration. Source: `[Unreleased]` in `CHANGELOG.md`; the number is a placeholder until the tag is cut.
+
+**Files Modified**: `scripts/Provider_Install_FreeBSD.sh`, `scripts/Provider_Install_Linux.sh`, `internal/urnettools/update.go`, `internal/urnettools/lifecycle_freebsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `docker/scripts/provider_common.sh`, `docker/scripts/pelican_panel.sh`, the proxy-state code in `provider/`, plus tests.
+
+**Change**:
+- **Installers verify the download** (PR #1011): both fetch the release metadata first and stop with `refusing to install` when it is unreachable or does not list the asset. FreeBSD reads the digest with `jq`, `python3`, then an `awk` scanner that needs only the base system, refuses an asset whose digest cannot be established and checks the tarball's SHA-256 before extracting. Linux still needs `jq` or `python3` and warns `continuing without verification` when a release publishes no digest. Both stage the binary, back up the live one and refuse the replacement when the backup fails; `urnet-tools update` does the same for its own binary on Unix.
+- **FreeBSD `urnet-tools` is digest-checked and the tree is checked** (PR #1010): the shell fallback is gone; the `urnet-tools-freebsd-<arch>` asset installs only when its SHA-256 matches, and a symlink in the root-owned install tree stops the install with `symlink in install tree; refusing to repair`.
+- **FreeBSD installs without curl** (PR #1002): the dispatcher and installer try `curl`, then `fetch`, then `wget`.
+- **FreeBSD service handling** (PR #1005, #1007, #1009, #1019): discovery finds a stopped libexec install and requires an execute permission the invoking user holds; a restart no longer truncates the service log; an update keeps the root-owned tree root-owned; root's auto-update cron runs the staged copy and logs to `/var/log/urnetwork/auto-update.log`; the rc script's fallback scan covers only the service user's processes; and the installer's state-directory chown no longer runs in the launch directory.
+- **macOS updates finish** (PR #1018): `tarRelPath` maps `darwin` to `darwin/<arch>/provider` instead of falling through to the Linux entry the Mach-O guard refused. Unit-tested only.
+- **Docker startup** (PR #1014, PR #999): a container without `/app/proxy.txt` keeps its saved proxies, a mounted file is imported through a staging directory, `DEBUG=true` login output is redacted, a nightly container reuses a valid stored JWT, and every image reports a dated `app_version`.
+- **Proxy state under one lock** (PR #1013): startup, `proxy remove --match` and `--all` hold the cross-process lock across their read-modify-write, and shutdown signals the reloader before it waits.
+- **Probe, logs and prompts**: the probe asks every resolved address (PR #996); the RAM log trim stays off the writer's lock (PR #1003); the URL fetch failure reason stays in the important log (PR #997); the contract line reads `[contract] <verb> | proxy[<index>] (<address>)`; and the Windows paste prompt names Ctrl+Z (PR #1006).
+- **`--i-am-on-my-own-workstation` is removed from `urnet-tools wallet`** (PR #1017); passing it fails with a message that says so.
+- **CFAA and IP blocker refresh** (PR #1000, #1004, #1008): CFAA 48,764 IPv4 and 539 IPv6 ranges, 164,781 blocked-host records. Data-only.
+- **Extender**: an extender source that asks again at once is now answered (bc24ec5c). The extender remains a work in progress and does not activate yet.
+
+**Impact**: nodes need a redeploy for the provider, CLI and data changes, and the installers apply on the next run. Scripts that matched the old `[contract] acquired proxy[` text need the `|` separator. The FreeBSD and macOS changes are read from the code and unit-tested; none has had a recorded end-to-end run on a physical host.
