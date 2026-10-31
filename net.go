@@ -696,11 +696,31 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 			defer cancel()
 		}
 
+		// per-carrier v6 memory (net_carrier_ipv6.go): a dial that names v6
+		// through a carrier whose v6 keeps failing is refused at once, so the
+		// dial race falls to v4 instead of waiting out the timeout
+		dialFamily := dialNamesFamily(network, addr)
+		carrierKey := ""
+		carrierProbe := false
+		if dialFamily == 6 {
+			carrierKey = self.Key()
+			var allowed bool
+			allowed, carrierProbe = carrierIpv6.allow(carrierKey)
+			if !allowed {
+				return nil, errCarrierIpv6Suppressed
+			}
+		}
+
 		var conn net.Conn
 		if v, ok := proxyDialer.(proxy.ContextDialer); ok {
 			conn, err = v.DialContext(dialCtx, network, addr)
 		} else {
 			conn, err = proxyDialer.Dial(network, addr)
+		}
+		if dialFamily == 6 {
+			carrierIpv6.done(carrierKey, carrierProbe, err, err != nil && carrierIpv6Neutral(err))
+		} else if dialFamily == 4 && err != nil && !carrierIpv6Neutral(err) {
+			carrierIpv6.noteV4Failure(self.Key())
 		}
 		if err != nil {
 			// Every failure below this point happened to a SOCKS5 hop, which is
