@@ -72,9 +72,11 @@ Publishing the port is only half of it. The port also has to be open on the host
 
 On a bare-metal install, set the same variables in the service environment (for example `Environment="URNETWORK_EXTENDER=on"` in the systemd `override.conf`) and restart the provider.
 
-## Confirm the role came up
+## What the log shows when the role starts
 
-Follow the log (see [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md) for how to read the other lines). The first line that says the role is serving carries the carrier set and the forward policy:
+The role does not activate yet, so a working extender cannot be confirmed from this page. Setting `URNETWORK_EXTENDER=on` starts the listeners (`provider/main.go:4521`), and the lines below are what the role prints when they come up (`provider/extender_role.go:815`). Nothing in the provider registers the host with the network or sends clients to it, so these lines show that the listeners bound, not that clients can use them. For how to read the other lines, see [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
+
+The first line that says the role is serving carries the carrier set and the forward policy:
 
 ```text
 [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
@@ -88,11 +90,11 @@ With no allow list the same line ends `forwards are disabled: set URNETWORK_EXTE
 
 When TCP 443 is taken later by a retry, the role logs `[extender] serving on tcp, quic and dns` again.
 
-The role also exports its state to Prometheus, which is the better place to watch it over time. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
+The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
 
 ## What this does not tell you
 
-`serving on tcp` means the process bound the port inside itself. It does not mean the internet can reach it, and that is the difference between a role that answers and one that only looks healthy in the log. Test from another network, for example `nc -vz YOUR_PUBLIC_IP 443`.
+`serving on tcp` means the process bound the port inside itself. It does not mean the internet can reach the port, and it does not mean any client uses the role. This page does not describe a reachability test, because the role has no working path for clients yet.
 
 Nothing in the provider's own code registers the host with the network or decides whether clients are sent to it. This page documents what the provider binds and serves; whether and how a published address is chosen by clients is decided outside the provider.
 
