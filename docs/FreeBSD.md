@@ -6,12 +6,12 @@ The provider runs as an `rc.d` service named `urnetwork` under an unprivileged u
 
 ## Before you start
 
-FreeBSD's base system has no `jq` and no `python3`, and the installer needs one of them. The release tag can be read without either (`jq`, then `python3`, then a `sed` extraction that needs only the base system), but the SHA-256 digest of the `urnet-tools` release asset can only be read with `jq` or `python3`, and the installer refuses to install `urnet-tools` without it. On a host with neither, the install stops with `Cannot verify urnet-tools: release digest is unavailable` before it replaces anything. Install `jq` first (see [What the installer does](#what-the-installer-does)). This is read from the installer script; it has not been run on a bare FreeBSD host.
+FreeBSD's base system has no `jq` and no `python3`, and the installer does not need them. The release tag and the SHA-256 digests of the provider tarball and the `urnet-tools` asset are read with `jq`, then `python3`, then a `sed` and `awk` scanner that needs only the base system (see [What the installer does](#what-the-installer-does)). The installer does need to reach the GitHub release API: when the metadata cannot be fetched, or does not list the asset, it stops with `refusing to install` before it downloads anything. This is read from the installer script; it has not been run on a bare FreeBSD host.
 
-Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `fetch(1)` is in the base system, so no downloader is needed first, and `curl` and `wget` are optional. A JSON reader (`jq`, or `python3`) is not optional, for the reason above.
+Nothing is installed for you on FreeBSD: the installer never touches `pkg`. `fetch(1)` is in the base system, so no downloader is needed first, and `curl`, `wget`, `jq` and `python3` are optional.
 
 ```sh
-pkg install -y sudo jq
+pkg install -y sudo
 ```
 
 Run the installer as the account the provider should run as, with `sudo`, or as root with an explicit account (see [Service user](#service-user)).
@@ -31,7 +31,7 @@ That URL serves `scripts/Provider_Install_FreeBSD.sh` from `main`. `https://inst
 fetch -qo urnet-install.sh https://install.fullbars.xyz && sudo sh urnet-install.sh install
 ```
 
-FreeBSD's base system ships `fetch`, and the installer uses it when `curl` is not installed, so no downloader has to be added first. `curl` is preferred when it is present, and `wget` covers hosts that have neither. The install still needs `jq` or `python3`, which the base system does not ship (see Before you start).
+FreeBSD's base system ships `fetch`, and the installer uses it when `curl` is not installed, so no downloader has to be added first. `curl` is preferred when it is present, and `wget` covers hosts that have neither. `jq` and `python3` are not needed (see Before you start).
 
 To install a specific release instead of the latest:
 
@@ -78,9 +78,9 @@ The installer does not create the account. Create it first, once, with `pw usera
 
 The steps, in order:
 
-1. Downloads `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` from `dl.fullbars.xyz`, and from the GitHub release if that fails, and takes the `provider` binary from the archive root (or from `freebsd/<arch>/provider` in an older archive layout). The provider archive itself is not checked against a digest by this installer.
+1. Downloads `urnetwork-provider-<tag>-freebsd-<arch>.tar.gz` from `dl.fullbars.xyz`, and from the GitHub release if that fails, and takes the `provider` binary from the archive root (or from `freebsd/<arch>/provider` in an older archive layout). Before extracting it, the installer checks the archive's SHA-256 against the digest the release publishes for the asset and stops with `SHA-256 digest mismatch for provider asset` on a difference; a release that publishes no readable digest is refused, not skipped.
 2. Installs the binary by staging it beside the target and renaming it, so an update over a running provider never fails with "Text file busy".
-3. Installs `urnet-tools`, only when it can be verified. It downloads the `urnet-tools-freebsd-<arch>` release asset and installs it only if its SHA-256 matches the digest GitHub publishes for the asset, read with `jq` or, when `jq` is absent, `python3`. `sha256(1)` from the base system does the check, with `openssl` as a fallback. There is no fallback to a shell `urnet-tools` any more: if there is no digest (neither `jq` nor `python3`, or the release publishes none), the download fails, or the sum does not match, the installer stops with an error. The provider binary has been staged but is not renamed into place until the check passes, so a running install is left as it was.
+3. Installs `urnet-tools`, only when it can be verified. It downloads the `urnet-tools-freebsd-<arch>` release asset and installs it only if its SHA-256 matches the digest GitHub publishes for the asset, read from the release metadata with `jq`, then `python3`, then the base-system scanner. `sha256(1)` from the base system does the check, with `openssl` and then `sha256sum` as fallbacks. There is no fallback to a shell `urnet-tools` any more: if there is no digest (the release publishes none or the metadata is unreadable), the download fails, or the sum does not match, the installer stops with an error. The provider binary has been staged but is not renamed into place until the check passes, so a running install is left as it was.
 4. Writes the `rc.d` script and, with `sysrc`, sets `urnetwork_enable=YES` and `urnetwork_user=<service user>` only if they are not already set, so an operator's choice survives every update.
 5. Starts the service. On a fresh install it always starts; on `update` it restarts only a service that was already running, so a provider you stopped on purpose is not resurrected by an unattended update.
 6. Adds the install `bin` directory to the service user's shell profile once (`.profile`, `.zshrc`, `.bash_profile` or `.cshrc`, by the user's login shell).
@@ -240,7 +240,7 @@ EOF
 
 ## Platform notes
 
-- **No `jq` or `python3` in the base system.** The installer needs one of them to read the `urnet-tools` digest and stops without it (see step 3 above); `pkg install jq` fixes that.
+- **No `jq` or `python3` in the base system.** The installer does not need them: it falls back to a scanner built from base tools to read the release digests (see step 3 above).
 - **User database fields differ.** The installer reads home and shell with `getent passwd` and falls back to `pw usershow`, whose fields are numbered differently (home is field 9 and shell field 10, against 6 and 7 for `getent`). Use whichever your tooling expects.
 - **Swap comes from `swapinfo -k`.** The provider's memory-pressure checks read swap usage by running `swapinfo -k`, because FreeBSD does not expose a swap-used sysctl.
 - **ZFS ARC understates available memory.** The host's available memory is estimated from the free, inactive, cache and laundry page counters (`vm.stats.vm.v_*_count`). Memory held by the ZFS ARC is wired and is not counted, so on a ZFS host `top` can show plenty of reclaimable memory while the provider sees less. Cap the ARC with `vfs.zfs.arc_max` in `/boot/loader.conf` if memory headroom matters on a small box.

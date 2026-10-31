@@ -129,7 +129,7 @@ When you see a client ID logged, the provider has successfully authenticated wit
 
 - **Add your own proxy list** → see the [Intermediate Guide](intermediate.md)
 - **Tune for performance** → see the [Advanced Guide](advanced.md)
-- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On FreeBSD, `urnet-tools auto-update weekly|monthly|off` maintains a crontab entry, but that command belongs to the release `urnet-tools` binary: install `jq` or `python3` before installing, because on a bare host the installer falls back to a shell `urnet-tools` that has no `auto-update`. On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
+- **Just let it run** → auto-update is on by default on Linux (systemd timer; `urnet-tools auto-update` to check or change the schedule) and Windows (`urnet-tools auto-update daily|weekly|monthly|off`). On FreeBSD, `urnet-tools auto-update weekly|monthly|off` maintains a crontab entry, and the FreeBSD installer installs the release `urnet-tools` binary that provides it, or stops if that binary's digest cannot be verified. On macOS there's no auto-update yet — run `urnet-tools update` yourself when a new version ships.
 
 ---
 
