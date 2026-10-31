@@ -112,9 +112,42 @@ t "set the restart marker" assert_eq x "$([ -f "$HOME/.urnetwork/update-pending"
 func_check_update > "$WORK/run2.log" 2>&1
 t "second run skips: already at latest" assert_eq x "$(grep -c 'Already at latest provider version' "$WORK/run2.log")" "1"
 
+# 5. self-healing: a box whose version.txt already holds a URL (written by the
+#    old scraping code) must recover - one more download, then the bare tag,
+#    then it skips
+rm -f "$HOME/.urnetwork/update-pending" "$APP/urnetwork_amd64_nightly"
+printf '%s\n' "$ARCH_URL" > "$VERSION_FILE"
+func_check_update > "$WORK/heal.log" 2>&1
+t "self-heal: url in version.txt is replaced by the bare tag" assert_eq x "$(cat "$VERSION_FILE")" "$BARE"
+t "self-heal: re-downloaded and reinstalled the binary" assert_eq x "$([ -x "$APP/urnetwork_amd64_nightly" ] && echo ok || echo missing)" "ok"
+func_check_update > "$WORK/heal2.log" 2>&1
+t "self-heal: next run skips: already at latest" assert_eq x "$(grep -c 'Already at latest provider version' "$WORK/heal2.log")" "1"
+
+# 6. a selected release whose tag resolves to nothing must abort BEFORE any
+#    destructive step. Runs last, in the same shell as the cases above, so a
+#    LATEST_VERSION_CHECK left over from a previous release would be caught:
+#    the stale value would be recorded and a binary installed.
+printf '#!/bin/sh\necho old-provider\n' > "$APP/urnetwork_amd64_nightly"
+chmod +x "$APP/urnetwork_amd64_nightly"
+BIN_SUM_BEFORE=$(cksum < "$APP/urnetwork_amd64_nightly")
+printf '%s\n' "3.23.0-fix.30.0" > "$VERSION_FILE"
+rm -f "$HOME/.urnetwork/update-pending"
+# tag "v" survives release selection (assets are named after the tag) and
+# normalises to the empty string once the leading v is stripped
+sed "s/$TAG/v/g" "$WORK/releases.json" > "$WORK/releases-notag.json"
+cp "$WORK/releases.json" "$WORK/releases-good.json"
+cp "$WORK/releases-notag.json" "$WORK/releases.json"
+func_check_update > "$WORK/notag.log" 2>&1
+cp "$WORK/releases-good.json" "$WORK/releases.json"
+t "empty tag: update aborts" assert_eq x "$(grep -c 'refusing to install an unversioned provider' "$WORK/notag.log")" "1"
+t "empty tag: installed binary bytes untouched" assert_eq x "$(cksum < "$APP/urnetwork_amd64_nightly")" "$BIN_SUM_BEFORE"
+t "empty tag: version.txt untouched" assert_eq x "$(cat "$VERSION_FILE")" "3.23.0-fix.30.0"
+t "empty tag: no restart marker" assert_eq x "$([ -e "$HOME/.urnetwork/update-pending" ] && echo set || echo none)" "none"
+
 if [ "$FAILS" -ne 0 ]; then
     printf '\n%d assertion(s) failed\n' "$FAILS"
     printf '\n--- run.log ---\n'; cat "$WORK/run.log"
+    printf '\n--- notag.log ---\n'; cat "$WORK/notag.log" 2>/dev/null
     exit 1
 fi
 printf '\nall assertions passed\n'
