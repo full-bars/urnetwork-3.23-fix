@@ -144,6 +144,33 @@ t "empty tag: installed binary bytes untouched" assert_eq x "$(cksum < "$APP/urn
 t "empty tag: version.txt untouched" assert_eq x "$(cat "$VERSION_FILE")" "3.23.0-fix.30.0"
 t "empty tag: no restart marker" assert_eq x "$([ -e "$HOME/.urnetwork/update-pending" ] && echo set || echo none)" "none"
 
+# --- no jq: the release selector needs jq, so the updater must SKIP safely --
+# provider_common.sh parses the tag and selects the asset through jq. Without it
+# there is no safe way to know what to install, so the contract is "skip and
+# change nothing" - never "install something half-understood". Force the case by
+# hiding jq behind a PATH of symlinks to every other tool.
+NOJQ="$WORK/nojq-bin"
+mkdir -p "$NOJQ"
+# a minimal allowlist, NOT a copy of every tool on PATH: linking thousands of
+# binaries is slow and can exhaust limits mid-loop, which fails the test for a
+# reason that has nothing to do with the code under test
+for _t in sh sed grep tar cp mv cksum mktemp date ln cat awk tr head tail sort id \
+          dirname basename chmod mkdir rm touch sleep sha256sum find printf env; do
+    _p=$(command -v "$_t" 2>/dev/null) || continue
+    ln -sf "$_p" "$NOJQ/$_t" 2>/dev/null
+done
+if PATH="$NOJQ" command -v jq >/dev/null 2>&1; then
+    printf 'SKIP  no-jq case (jq could not be hidden)\n'
+else
+    PATH_SAVE=$PATH
+    PATH="$NOJQ"
+    func_check_update > "$WORK/nojq.log" 2>&1
+    PATH=$PATH_SAVE
+    t "no jq: update skips instead of installing blind" assert_eq x "$(grep -c 'Update skipped' "$WORK/nojq.log")" "1"
+    t "no jq: installed binary untouched" assert_eq x "$(cksum < "$APP/urnetwork_amd64_nightly")" "$BIN_SUM_BEFORE"
+    t "no jq: version.txt untouched" assert_eq x "$(cat "$VERSION_FILE")" "3.23.0-fix.30.0"
+fi
+
 if [ "$FAILS" -ne 0 ]; then
     printf '\n%d assertion(s) failed\n' "$FAILS"
     printf '\n--- run.log ---\n'; cat "$WORK/run.log"
