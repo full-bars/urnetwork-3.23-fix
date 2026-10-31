@@ -2,6 +2,9 @@
 
 An extender is a provider that also accepts connections on ports the internet can reach and relays what clients ask it for. The role is opt-in and off by default. This page covers what has to be true on the host, the Docker run that publishes the ports, the allow list that decides which destinations the extender will forward to, and the log lines and metrics that show whether the role came up.
 
+> [!NOTE]
+> **The extender is a work in progress.** It does not activate yet and is not reliable. If you turn it on, expect errors in the provider log about activation and about carriers not answering; they do not affect the rest of the provider. Treat everything on this page as the intended behaviour, not as a working feature. The provider runs and earns normally with the role off.
+
 ## Before you start
 
 The role needs a host where you can open inbound TCP 443. A host behind NAT with no port forward can start the role, but nothing outside can reach it.
