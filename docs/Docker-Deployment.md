@@ -409,7 +409,7 @@ docker exec -it <container> urnet-tools idle-update --window 0
 
 vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
-For traffic telemetry use the Prometheus `/metrics` endpoint on port `9100`, which starts by default.
+For traffic telemetry use the Prometheus `/metrics` endpoint. It is off until you turn it on: set `URNETWORK_METRICS` (for example `:9100`, which binds exactly that address), or run `urnet-tools metrics on`, which tries ports 9100 to 9103 in order and binds the first one free, so if 9100 is taken the endpoint is on 9101 to 9103.
 
 ## ⚙️ Environment Variables
 
@@ -422,6 +422,7 @@ For traffic telemetry use the Prometheus `/metrics` endpoint on port `9100`, whi
 | `HOST_HOSTNAME` | Optional | Host server name passed into the container for dashboard identification. |
 | `URNETWORK_NODE_NAME` | Optional | Custom label for webhook alerts and dashboard identification. |
 | `PROXY_URL` | Optional | Live proxy list URL, fetched and merged on interval (see [Proxy URL Sources](/full-bars/urnetwork-3.23-fix/wiki/Proxy-URL-Sources)). |
+| `PROXY_FILE` | Optional | Path inside the container to a proxy file, one `ip:port:user:pass` per line, for example `/app/proxies.txt` on a mounted volume. `provide` reads it as the proxy source when no `--proxy_file` or `--file` flag is given. A file that is missing, empty or has no valid proxy stops startup. |
 | `URNETWORK_RAMLOGS` | Optional | Set to `1` to redirect logs to in-memory `/dev/shm/urnetwork.log`. |
 | `URNETWORK_PROFILE` | Optional | Hardware profile (`auto`, `lowmem`, `eco`, `turbo-v4`, `turbo-v8`). |
 | `TURBO` | Optional | Shorthand for turbo mode (`v4` or `v8`). |
