@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net"
+	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -31,12 +33,39 @@ func newH3PacketConnFactory(proxySettings *connect.ProxySettings) func(context.C
 		// TCP does
 		switch result := globalProxyUDPCheck.Check(ctx, proxySettings, time.Now()); result.Status {
 		case proxyUDPNoRelay, proxyUDPExitMismatch:
-			return nil, fmt.Errorf("h3 not used through proxy %s: udp check %s", proxySettings.Address, result.Status)
+			return nil, fmt.Errorf("h3 not used through proxy %s: udp check %s", redactedProxyAddress(proxySettings.Address), result.Status)
 		}
 		relayed, err := dialSocks5UDP(ctx, proxySettings.Network, proxySettings.Address, proxySettings.Auth)
 		if err != nil {
-			return nil, fmt.Errorf("h3 through proxy %s: %w", proxySettings.Address, err)
+			// Do not wrap the dial error. It embeds the address the dialer was
+			// given, and a malformed address can carry userinfo or a token path,
+			// so wrapping would undo the redaction above. A cancellation stays
+			// matchable so callers can tell a shutdown or timeout from a dead
+			// relay.
+			if ctxErr := ctx.Err(); ctxErr != nil {
+				return nil, ctxErr
+			}
+			return nil, fmt.Errorf("h3 through proxy %s: relay dial failed: %s", redactedProxyAddress(proxySettings.Address), dialFailureClass(err))
 		}
 		return relayed, nil
 	}
+}
+
+// dialFailureClass names a dial failure without echoing the address the dialer
+// was given. The underlying net error carries that address verbatim (userinfo
+// and token path included) and this message reaches operator logs.
+func dialFailureClass(err error) string {
+	switch {
+	case errors.Is(err, context.DeadlineExceeded):
+		return "timed out"
+	case errors.Is(err, context.Canceled):
+		return "canceled"
+	case errors.Is(err, syscall.ECONNREFUSED):
+		return "connection refused"
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return "timed out"
+	}
+	return "dial error"
 }
