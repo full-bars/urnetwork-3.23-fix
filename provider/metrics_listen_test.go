@@ -352,3 +352,107 @@ func metricsServedAddrsOf(ln net.Listener) []string {
 	}
 	return []string{ln.Addr().String()}
 }
+
+// Exercise actual startup, restart, takeover and live-on paths. The bind hook
+// records attempts, including unsuccessful ones, rather than just listeners.
+func TestMetricsEnvironmentModes(t *testing.T) {
+	for _, tc := range []struct {
+		name, value string
+		disabled    bool
+	}{
+		{"off", "off", true},
+		{"uppercase", "OFF", true},
+		{"zero", "0", true},
+		{"false", "false", true},
+		{"no", "no", true},
+		{"none", "none", true},
+		{"empty", "", false},
+		{"address", "127.0.0.1:9100", false},
+		{"auto", "auto", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempHome(t)
+			port := stubMetricsAuto(t, noTailscale)
+			t.Setenv("URNETWORK_METRICS", tc.value)
+			state := newControlState()
+			if err := state.set("metrics", "on"); err != nil {
+				t.Fatal(err)
+			}
+			var attempts []string
+			original := metricsNetListen
+			metricsNetListen = func(network, addr string) (net.Listener, error) {
+				attempts = append(attempts, addr)
+				// Keep the fixed example deterministic even if port 9100 is busy.
+				if addr == "127.0.0.1:9100" {
+					return net.Listen(network, "127.0.0.1:0")
+				}
+				return net.Listen(network, addr)
+			}
+			t.Cleanup(func() {
+				_ = stopMetrics()
+				ClearCoordinatorClosers()
+				metricsNetListen = original
+				metricsHandoffPending.Store(false)
+			})
+			wantAddr := net.JoinHostPort("127.0.0.1", strconv.Itoa(port))
+			if tc.value == "127.0.0.1:9100" {
+				wantAddr = tc.value
+			}
+			check := func(phase string) {
+				t.Helper()
+				if tc.disabled {
+					if len(attempts) != 0 || metricsServer != nil {
+						t.Fatalf("%s: disabled but attempts=%v server=%v", phase, attempts, metricsServer)
+					}
+				} else if len(attempts) != 1 || attempts[0] != wantAddr || metricsServer == nil {
+					t.Fatalf("%s: attempts=%v server=%v, want bind %s", phase, attempts, metricsServer, wantAddr)
+				}
+			}
+			for _, phase := range []string{"startup", "restart"} {
+				attempts = nil
+				applyPersistedRuntimeTuning(state)
+				startEnvMetrics(false)
+				startDefaultMetrics(state, false)
+				check(phase)
+				if err := stopMetrics(); err != nil {
+					t.Fatal(err)
+				}
+			}
+			attempts = nil
+			metricsHandoffPending.Store(true)
+			applyPersistedRuntimeTuning(state)
+			startEnvMetrics(true)
+			startDefaultMetrics(state, true)
+			if len(attempts) != 0 {
+				t.Fatalf("candidate bound before takeover: %v", attempts)
+			}
+			startMetricsAfterTakeover(state)
+			check("takeover")
+			if metricsHandoffPending.Load() {
+				t.Fatal("handoff still pending")
+			}
+			if tc.disabled {
+				if err := applyMetricsLive("on"); err == nil {
+					t.Fatal("live metrics on should report env override")
+				}
+				check("live on")
+			}
+		})
+	}
+}
+
+// An explicit address is really bound, not just passed to the bind hook.
+func TestMetricsEnvironmentActualAddress(t *testing.T) {
+	addr := freeLoopbackAddr(t)
+	t.Setenv("URNETWORK_METRICS", addr)
+	t.Cleanup(func() { _ = stopMetrics(); ClearCoordinatorClosers() })
+	startEnvMetrics(false)
+	if metricsListener == nil || metricsListener.Addr().String() != addr {
+		t.Fatalf("listener = %v, want %s", metricsListener, addr)
+	}
+	conn, err := net.DialTimeout("tcp", addr, time.Second)
+	if err != nil {
+		t.Fatalf("connect to %s: %v", addr, err)
+	}
+	conn.Close()
+}

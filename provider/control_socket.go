@@ -1168,6 +1168,9 @@ func applyMetricsLive(value string) error {
 		if err != nil {
 			return fmt.Errorf("metrics on: %w", err)
 		}
+		if ln == nil {
+			return fmt.Errorf("metrics on: disabled by URNETWORK_METRICS")
+		}
 		serveMetrics(ln)
 	} else if !enabled && metricsServer != nil {
 		if err := stopMetrics(); err != nil {
@@ -1265,15 +1268,20 @@ func startMetricsAfterTakeover(state *controlState) {
 		tlog("[metrics] could not bind /metrics after hotswap takeover: %v\n", err)
 		return
 	}
-	serveMetrics(ln)
+	if ln != nil {
+		serveMetrics(ln)
+	}
 }
+
+// metricsNetListen is replaceable in tests to observe every bind attempt.
+var metricsNetListen = net.Listen
 
 // listenOrWait binds addr, retrying until wait elapses. wait of zero tries
 // once.
 func listenOrWait(addr string, wait time.Duration) (net.Listener, error) {
 	deadline := time.Now().Add(wait)
 	for {
-		ln, err := net.Listen("tcp", addr)
+		ln, err := metricsNetListen("tcp", addr)
 		if err == nil || !time.Now().Before(deadline) {
 			return ln, err
 		}
@@ -1333,8 +1341,32 @@ func metricsEnabledByState(state *controlState) bool {
 	return !strings.EqualFold(strings.TrimSpace(v), "off")
 }
 
+// startEnvMetrics applies an explicit environment setting at startup.
+func startEnvMetrics(hotSwapCandidate bool) {
+	addr := os.Getenv("URNETWORK_METRICS")
+	if addr == "" {
+		return
+	}
+	if metricsDisabledByEnv() {
+		tlog("[metrics] disabled by URNETWORK_METRICS\n")
+		return
+	}
+	if hotSwapCandidate {
+		return
+	}
+	tlog("[metrics] enabling Prometheus /metrics on %s\n", addr)
+	ln, err := listenMetrics(0)
+	if err != nil {
+		tlog("[metrics] listener failed: %v\n", err)
+		return
+	}
+	if ln != nil {
+		serveMetrics(ln)
+	}
+}
+
 // startDefaultMetrics starts /metrics at provider startup for a node that did
-// not choose: URNETWORK_METRICS (main.go binds that address itself), a persisted
+// not choose: URNETWORK_METRICS (startEnvMetrics handles it), a persisted
 // `metrics on` (applyPersistedRuntimeTuning) and a persisted `metrics off` all
 // take precedence. A HotSwap candidate skips it; startMetricsAfterTakeover binds
 // after takeover. A start failure is logged and never stops the provider.

@@ -15,7 +15,7 @@ import (
 
 // Where /metrics listens. In order of precedence:
 //
-//  1. URNETWORK_METRICS: exactly that address.
+//  1. URNETWORK_METRICS: disable, auto, or exactly that address.
 //  2. The metrics_listen setting (`urnet-tools metrics listen <ip:port>`):
 //     exactly that address, persisted across restarts and updates.
 //  3. "auto", the default:
@@ -173,8 +173,17 @@ func validateMetricsListen(value string) error {
 	return nil
 }
 
+func metricsDisabledByEnv() bool {
+	switch strings.ToLower(os.Getenv("URNETWORK_METRICS")) {
+	case "off", "false", "no", "0", "none":
+		return true
+	default:
+		return false
+	}
+}
+
 // listenMetrics binds the /metrics listener as described at the top of this
-// file. The listener comes back open: probing a port, closing it and
+// file. When disabled it returns (nil, nil). Otherwise the listener comes back open: probing a port, closing it and
 // binding it again let another process take it in between.
 //
 // wait is how long to keep retrying the preferred address (the explicit
@@ -182,10 +191,14 @@ func validateMetricsListen(value string) error {
 // next port; a HotSwap candidate uses it while the parent releases its
 // listener.
 func listenMetrics(wait time.Duration) (net.Listener, error) {
-	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
-		return listenOrWait(addr, wait)
+	if metricsDisabledByEnv() {
+		return nil, nil
 	}
-	if addr := metricsListenSetting(); addr != "" {
+	if addr := os.Getenv("URNETWORK_METRICS"); addr != "" {
+		if !strings.EqualFold(addr, "auto") {
+			return listenOrWait(addr, wait)
+		}
+	} else if addr := metricsListenSetting(); addr != "" {
 		return listenOrWait(addr, wait)
 	}
 
@@ -251,6 +264,9 @@ func applyMetricsListenLive() error {
 	ln, err := listenMetrics(2 * time.Second)
 	if err != nil {
 		return fmt.Errorf("metrics_listen: %w", err)
+	}
+	if ln == nil {
+		return nil
 	}
 	serveMetrics(ln)
 	return nil
