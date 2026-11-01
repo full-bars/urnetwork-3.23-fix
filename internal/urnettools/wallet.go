@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -13,15 +14,18 @@ import (
 // wrap theirs; sign runs the provider's own browser signing page. The consent is one
 // signature covering every provider client of the network, current and
 // future; a fleet node needs nothing. Signing material (a coldkey seed file)
-// never belongs on a fleet node: `wallet set --coldkey_seed_file` warns when it
-// sees one and carries on. The flag that used to gate this is gone; a fleet
-// node is still not the place to hold a seed.
+// never belongs on a fleet node: `wallet set --coldkey_seed_file` prints a loud
+// warning to stderr when it sees one and then carries on. It never asks and
+// never refuses, with or without a terminal: a seed on a node is the
+// operator's risk to take, and the tool's job is to make it unmissable. The
+// flag that used to gate this is gone and nothing replaces it.
 
 // seams for tests
 var (
-	discoverProvidersForWallet = Discover
-	discoverDockerForWallet    = DiscoverDocker
-	walletProviderSubcommand   = providerSubcommand
+	discoverProvidersForWallet           = Discover
+	discoverDockerForWallet              = DiscoverDocker
+	walletProviderSubcommand             = providerSubcommand
+	walletWarnWriter           io.Writer = os.Stderr
 )
 
 // fleetProviderEnvNames are the provider runtime environment markers that
@@ -77,7 +81,7 @@ const walletRemovedWorkstationFlag = "--i-am-on-my-own-workstation"
 func rejectRemovedWorkstationFlag(args []string) error {
 	for _, a := range args {
 		if a == walletRemovedWorkstationFlag || strings.HasPrefix(a, walletRemovedWorkstationFlag+"=") {
-			return fmt.Errorf("%s is gone: on a box that looks like a fleet node the seed-file form now asks a human at the terminal, and nothing can answer that for them", walletRemovedWorkstationFlag)
+			return fmt.Errorf("%s is gone: nothing gates the seed-file form any more, so there is nothing to bypass (on a box that looks like a fleet node it prints a warning and carries on)", walletRemovedWorkstationFlag)
 		}
 	}
 	return nil
@@ -97,28 +101,25 @@ func extractWalletToolFlags(args []string) (force bool, rest []string) {
 	return
 }
 
-// refuseSeedSigningOnFleetNode returns the refusal error when signing
-// material is about to be used on a fleet node. No flag skips this: a human
-// at the machine can say yes, and nothing else can.
-func refuseSeedSigningOnFleetNode(what string) error {
+// warnSeedSigningOnFleetNode prints a loud warning to stderr when signing
+// material is about to be used on what looks like a fleet node. It never asks
+// and never refuses: the command proceeds with or without a terminal, and no
+// flag silences the warning. stderr keeps stdout clean for machine-readable
+// output.
+func warnSeedSigningOnFleetNode(what string) {
 	if !onFleetNode() {
-		return nil
+		return
 	}
-	// A provider installed on this box does not make it a fleet node: the
-	// operator runs one on their own workstation too, so the detection alone
-	// is not a reason to refuse. Ask a human once instead.
-	if stdinIsInteractive() {
-		fmt.Fprintf(os.Stderr, "\n%s touches your coldkey's signing material. This box also runs a provider, which normally never holds one.\n", what)
-		line, err := confirmStdinRead("Continue on this machine? [y/N] ")
-		if err == nil {
-			switch strings.ToLower(strings.TrimSpace(line)) {
-			case "y", "yes":
-				return nil
-			}
-		}
-		return fmt.Errorf("cancelled: %s did not run", what)
-	}
-	return fmt.Errorf(`%s touches your coldkey's signing material and is for your OWN workstation, never a fleet node. This box looks like a fleet member (a provider service or provider environment is present), and a fleet node needs nothing here. Run it from a terminal on your own machine, where it will ask you to confirm`, what)
+	fmt.Fprintf(walletWarnWriter, `
+!!! WARNING: COLDKEY SEED ON A FLEET NODE !!!
+This box looks like a fleet member (a provider service, a docker provider or
+the provider environment is present), and %s is about to read
+a coldkey seed from a file on it.
+Anything that can read that file can sign as your coldkey and move its funds.
+A fleet node needs no seed. Delete the file when this command finishes.
+Carrying on: this is your risk to take, so the command is not blocked.
+
+`, what)
 }
 
 func newWalletCmd() *cobra.Command {
@@ -146,7 +147,7 @@ func newWalletCmd() *cobra.Command {
 		newWalletSubCmd(
 			"set <coldkey_ss58>",
 			"submit a signed consent (or legacy set)",
-			"Submit a signed network wallet consent for a coldkey: pass the message from 'wallet challenge' and its signature (--message with --signature), or sign with a local coldkey seed file (--coldkey_seed_file), which is FOR THE OPERATOR'S OWN WORKSTATION ONLY and never a fleet node: on a fleet member the tool asks before it uses one and refuses when nothing can answer. Without a proof this sends the legacy unsigned request, which the platform may refuse under its signed wallet rules. A later consent must start at a later epoch than the one before it.",
+			"Submit a signed network wallet consent for a coldkey: pass the message from 'wallet challenge' and its signature (--message with --signature), or sign with a local coldkey seed file (--coldkey_seed_file), which is FOR THE OPERATOR'S OWN WORKSTATION ONLY and never a fleet node: on a fleet member the tool prints a loud warning to stderr and carries on. It never asks and never refuses, with or without a terminal. Without a proof this sends the legacy unsigned request, which the platform may refuse under its signed wallet rules. A later consent must start at a later epoch than the one before it.",
 			"  urnet-tools wallet sign 5CvF...ss58                 # browser signing, seed stays in the extension\n  urnet-tools wallet set 5CvF...ss58 --message=<text> --signature=0x<128 hex>\n  urnet-tools wallet set 5CvF...ss58 --coldkey_seed_file=~/coldkey  # OWN workstation only",
 			cmdWalletSet,
 		),
@@ -251,9 +252,11 @@ Usage: urnet-tools wallet set <coldkey_ss58> [--message=<text> --signature=0x<he
 Submits the consent for the coldkey. Recommended: sign with 'urnet-tools
 wallet sign' (browser, seed stays in the extension) and let it call this.
 The --coldkey_seed_file form reads a seed from disk and is FOR THE
-OPERATOR'S OWN WORKSTATION ONLY, never a fleet node; on a fleet member the
-tool prints a warning and carries on. Without a
-proof this sends the legacy unsigned request. Provider flags pass through.
+OPERATOR'S OWN WORKSTATION ONLY, never a fleet node. On a fleet member the
+tool prints a loud warning to stderr and carries on: it never asks and never
+refuses, with or without a terminal, and the warning cannot be silenced.
+Without a proof this sends the legacy unsigned request. Provider flags pass
+through.
 `)
 		return nil
 	}
@@ -270,9 +273,10 @@ proof this sends the legacy unsigned request. Provider flags pass through.
 		return fmt.Errorf("wallet set requires a coldkey ss58 address: urnet-tools wallet set <coldkey_ss58> [--message --signature | --coldkey_seed_file]")
 	}
 	if walletSeedFileForm(rest) {
-		if err := refuseSeedSigningOnFleetNode("urnet-tools wallet set --coldkey_seed_file"); err != nil {
-			return err
-		}
+		warnSeedSigningOnFleetNode("urnet-tools wallet set --coldkey_seed_file")
+		// The warning replaces the typed "yes": this form must run without a
+		// terminal. The target line and --dry-run still apply.
+		force = true
 	}
 	ok, err := confirmGate("set the network wallet consent on "+providerLabel(p), p, force, dryRun)
 	if err != nil {

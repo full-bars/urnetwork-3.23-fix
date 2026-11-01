@@ -1,7 +1,7 @@
 package urnettools
 
 import (
-	"bufio"
+	"bytes"
 	"strings"
 	"testing"
 
@@ -9,7 +9,7 @@ import (
 )
 
 // The wallet group: help renders from the cobra tree (never by running the
-// tool), the fleet-node refusals guard the seed-bearing forms, and the
+// tool), the fleet-node warning covers the seed-bearing form without blocking it, and the
 // delegation passes the provider's own flags through untouched.
 
 func walletTestProvider() Provider {
@@ -126,24 +126,35 @@ func TestWalletChallengeRequiresAColdkey(t *testing.T) {
 	}
 }
 
-func TestWalletSetSeedFileRefusedOnFleetNode(t *testing.T) {
+// The seed-file form on a fleet node warns and proceeds. No -f and no
+// terminal: this is the exact case that used to refuse. The operation is
+// asserted by the delegation to the provider, not by the warning text.
+func TestWalletSetSeedFileProceedsOnFleetNodeWithoutTerminal(t *testing.T) {
 	var calls [][]string
 	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
-	err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
-	if err == nil || !strings.Contains(err.Error(), "never a fleet node") {
-		t.Fatalf("the seed-file form on a fleet node must refuse, got %v", err)
+	withWalletNoTerminal(t)
+	warned := withWalletWarnCapture(t)
+	err := cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
+	if err != nil {
+		t.Fatalf("the seed-file form on a fleet node must proceed, got %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
+	if len(calls) != 1 {
+		t.Fatalf("the seed-file form must delegate exactly once, got %v", calls)
 	}
-	// No flag bypasses the guard any more: the removed flag is rejected by
-	// name before anything reaches the provider.
+	if joined := strings.Join(calls[0], " "); joined != "wallet set 5CvF...ss58 --coldkey_seed_file=/tmp/seed" {
+		t.Fatalf("delegation args = %q", joined)
+	}
+	if !strings.Contains(warned.String(), "WARNING") {
+		t.Fatalf("a fleet node must get the warning, got %q", warned.String())
+	}
+	// The removed flag is still rejected by name before anything runs.
+	calls = nil
 	err = cmdWalletSet([]string{"-f", "--i-am-on-my-own-workstation", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
 	if err == nil || !strings.Contains(err.Error(), "is gone") {
 		t.Fatalf("a removed flag must be rejected by name, got %v", err)
 	}
 	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
+		t.Fatal("a rejected call must not delegate")
 	}
 	// the message/signature form is untouched by the fleet rule
 	calls = nil
@@ -156,32 +167,75 @@ func TestWalletSetSeedFileRefusedOnFleetNode(t *testing.T) {
 	}
 }
 
-func TestWalletFleetDetectionViaProviderEnv(t *testing.T) {
+// Off a fleet node there is no warning and still no prompt.
+func TestWalletSetSeedFileProceedsOnWorkstationWithoutTerminal(t *testing.T) {
 	var calls [][]string
-	// no discovered providers, but the provider runtime environment is present
-	withWalletSeams(t, nil, &calls, "", "")
-	t.Setenv("URNETWORK_PROFILE", "lowmem")
-	if err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"}); err == nil {
-		t.Fatal("the provider environment marker must count as a fleet node")
+	withWalletSeams(t, []Provider{walletWorkstationProvider()}, &calls, "", "")
+	withWalletNoTerminal(t)
+	warned := withWalletWarnCapture(t)
+	if err := cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"}); err != nil {
+		t.Fatalf("the seed-file form on a workstation must proceed, got %v", err)
 	}
-	if len(calls) != 0 {
-		t.Fatal("a refused set must not delegate")
+	if len(calls) != 1 {
+		t.Fatalf("must delegate, got %v", calls)
+	}
+	if warned.Len() != 0 {
+		t.Fatalf("a workstation must not get the fleet warning, got %q", warned.String())
 	}
 }
 
-// withWalletStdin feeds one answer to the guard as if stdin were a terminal.
-// It sets the override directly rather than calling the linux-tagged test
-// helper, so this file still builds on FreeBSD and Windows.
-func withWalletStdin(t *testing.T, answer string) {
+// --dry-run still stops before the provider: the warning does not bypass it.
+func TestWalletSetSeedFileDryRunStillDoesNotDelegate(t *testing.T) {
+	var calls [][]string
+	withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
+	withWalletNoTerminal(t)
+	withWalletWarnCapture(t)
+	if err := cmdWalletSet([]string{"--dry-run", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"}); err != nil {
+		t.Fatalf("dry-run: %v", err)
+	}
+	if len(calls) != 0 {
+		t.Fatalf("dry-run must not delegate, got %v", calls)
+	}
+}
+
+func TestWalletFleetDetectionViaProviderEnv(t *testing.T) {
+	var calls [][]string
+	// the discovered provider is workstation-shaped (not a unit), so only the
+	// provider runtime environment marks this box as a fleet member
+	withWalletSeams(t, []Provider{walletWorkstationProvider()}, &calls, "", "")
+	t.Setenv("URNETWORK_PROFILE", "lowmem")
+	withWalletNoTerminal(t)
+	warned := withWalletWarnCapture(t)
+	if err := cmdWalletSet([]string{"5CvF...ss58", "--coldkey_seed_file=/tmp/seed"}); err != nil {
+		t.Fatalf("the seed-file form must proceed: %v", err)
+	}
+	if !strings.Contains(warned.String(), "WARNING") {
+		t.Fatal("the provider environment marker must count as a fleet node and warn")
+	}
+	if len(calls) != 1 {
+		t.Fatalf("the set must delegate, got %v", calls)
+	}
+}
+
+// withWalletNoTerminal makes stdin look like no terminal at all, the case a
+// systemd unit, cron or an ssh command without -t presents. It sets the
+// override directly rather than calling the linux-tagged test helper, so this
+// file still builds on FreeBSD and Windows.
+func withWalletNoTerminal(t *testing.T) {
 	t.Helper()
-	oldInteractive := stdinIsInteractiveOverride
-	stdinIsInteractiveOverride = func() bool { return true }
-	oldReader := stdinReader
-	stdinReader = bufio.NewReader(strings.NewReader(answer))
-	t.Cleanup(func() {
-		stdinIsInteractiveOverride = oldInteractive
-		stdinReader = oldReader
-	})
+	old := stdinIsInteractiveOverride
+	stdinIsInteractiveOverride = func() bool { return false }
+	t.Cleanup(func() { stdinIsInteractiveOverride = old })
+}
+
+// withWalletWarnCapture redirects the warning writer and returns the buffer.
+func withWalletWarnCapture(t *testing.T) *bytes.Buffer {
+	t.Helper()
+	var buf bytes.Buffer
+	old := walletWarnWriter
+	walletWarnWriter = &buf
+	t.Cleanup(func() { walletWarnWriter = old })
+	return &buf
 }
 
 // The removed flag is rejected by name, on every subcommand, and never
@@ -216,45 +270,6 @@ func TestWalletSignNotGatedOnFleetNode(t *testing.T) {
 	}
 	if len(calls) != 1 {
 		t.Fatalf("wallet sign must delegate on a fleet node, got %v", calls)
-	}
-}
-
-// The seed-file form asks a human on a fleet node: yes proceeds, anything
-// else cancels and nothing is delegated.
-func TestWalletSetSeedFilePromptOnFleetNode(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		answer  string
-		proceed bool
-	}{
-		{"y", "y\n", true},
-		{"yes", "yes\n", true},
-		{"n", "n\n", false},
-		{"empty", "\n", false},
-		{"eof", "", false},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			var calls [][]string
-			withWalletSeams(t, []Provider{walletTestProvider()}, &calls, "", "")
-			t.Setenv("URNETWORK_PROFILE", "lowmem")
-			withWalletStdin(t, tc.answer)
-			err := cmdWalletSet([]string{"-f", "5CvF...ss58", "--coldkey_seed_file=/tmp/seed"})
-			if tc.proceed {
-				if err != nil {
-					t.Fatalf("answering %q must proceed: %v", tc.answer, err)
-				}
-				if len(calls) != 1 {
-					t.Fatalf("answering %q must delegate, got %v", tc.answer, calls)
-				}
-				return
-			}
-			if err == nil || !strings.Contains(err.Error(), "cancelled") {
-				t.Fatalf("answering %q must cancel, got %v", tc.answer, err)
-			}
-			if len(calls) != 0 {
-				t.Fatalf("a cancelled set must not delegate, got %v", calls)
-			}
-		})
 	}
 }
 
