@@ -76,7 +76,7 @@ The provider maintains identity keys, cryptographic signing states, and cached J
 > [!IMPORTANT]
 > **Key updates in this release:**
 > - **Authentication selector (`AUTH=userpass|authcode`)**: New preferred selector. `AUTH=authcode` uses `AUTHCODE` (or trailing argument), while `AUTH=userpass` uses `USER_AUTH` and `PASSWORD`. Existing `BUILD=stable|nightly|jwt` remains fully supported for backward compatibility (see [Legacy Variables](#-legacy-variables)).
-> - **vnStat retired**: The embedded vnStat traffic daemon, CGI scripts, and container port 8080 have been removed. Provider containers now operate with zero listening ports by default. For bandwidth and connection telemetry, use built-in Prometheus metrics (`URNETWORK_METRICS`) with the Grafana stack.
+> - **vnStat retired**: The embedded vnStat traffic daemon, CGI scripts, and container port 8080 have been removed. Provider containers open no inbound peer ports: they dial out only. The Prometheus metrics listener is on by default on ports 9100 to 9103, inside the container. For bandwidth and connection telemetry, use built-in Prometheus metrics (`URNETWORK_METRICS`) with the Grafana stack.
 > - **Volume mount path**: The state volume must be mounted at `/root/.urnetwork` (for example `-v urnetwork_data:/root/.urnetwork`). If unmounted or empty, startup logs a warning reminding you that a new identity will be generated across container recreations.
 > - **Payout wallet reminder**: To get paid on Bittensor SN25, sign one wallet consent from your own computer (`provider wallet sign <coldkey>`). Nothing changes in the container. See the [Bittensor Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start).
 
@@ -409,7 +409,7 @@ docker exec -it <container> urnet-tools idle-update --window 0
 
 vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
-For traffic telemetry use the Prometheus `/metrics` endpoint. It is on by default: the listen mode is `auto`, which takes the first free port from 9100 to 9103 on the loopback interface, so nothing is published publicly. Set `URNETWORK_METRICS` to pin one address (for example `100.64.0.10:9100`), or to `off` to disable it.
+For traffic telemetry use the Prometheus `/metrics` endpoint. It is on by default. The listen mode is `auto`, which takes the first free port from 9100 to 9103. In a container it binds `0.0.0.0` inside the container, so it is reachable only through a port you publish (none are published by default). With `--network host` on a box with no public address, that means the host's private addresses. Outside a container it binds loopback and Tailscale addresses, never a public interface. Set `URNETWORK_METRICS` to pin one address (for example `100.64.0.10:9100`). To turn the endpoint off, run `urnet-tools metrics off`; `URNETWORK_METRICS` does not accept `off`.
 
 ## ⚙️ Environment Variables
 
@@ -535,7 +535,7 @@ The following variables are preserved for full backward compatibility:
 |---|---|---|
 | `BUILD` | Deprecated | Legacy auth selector: `stable` (maps to `AUTH=userpass`), `jwt` (maps to `AUTH=authcode`), or `nightly`. Explicit `BUILD` takes precedence over `AUTH`. When `BUILD` is set without `AUTH`, a deprecation warning is logged advising use of `AUTH=userpass\|authcode`. |
 | `URNETWORK_AUTH_CODE` | Alias | Earlier variable name for `AUTHCODE`. Both `AUTHCODE` and `URNETWORK_AUTH_CODE` are accepted interchangeably. |
-| `ENABLE_VNSTAT` | Retired | vnStat and the port 8080 HTTP server have been removed. If set to `true`, a warning is logged advising migration to Prometheus metrics (`URNETWORK_METRICS`). The container continues running safely with zero listening ports. |
+| `ENABLE_VNSTAT` | Retired | vnStat and the port 8080 HTTP server have been removed. If set to `true`, a warning is logged advising migration to Prometheus metrics (`URNETWORK_METRICS`). The container continues running safely with no inbound peer ports; the metrics listener stays on its default (see the Optional section above). |
 | `ENABLE_IP_CHECKER` | Diagnostic | Opt-in public IP diagnostic script. Defaults to `false`. |
 
 ## 🐦 Pelican Panel

@@ -25,7 +25,7 @@ The healthcheck avoids a cold-start race where dependent nodes would otherwise l
 | 5 nodes | Moderate single-host scaling. |
 | 10 nodes | Larger hosts where you want a ready fleet file. |
 
-Each service needs a unique service name and container name. All nodes share `ur_config` for the JWT. The provider opens no listening ports, so the templates map none.
+Each service needs a unique service name and container name. All nodes share `ur_config` for the JWT. The provider needs no inbound peer ports, so the templates publish none. Each container still runs its metrics listener on 9100 to 9103 by default, and no template publishes those ports.
 
 ## 🚶 3-Node Walkthrough
 

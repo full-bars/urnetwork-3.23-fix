@@ -183,7 +183,7 @@ rm ~/.local/bin/urnet-docker     # non-root install
 
 ### 🐋 Docker (Production-Ready)
 
-Recommended for real deployments: includes auto-tuning, in-memory logs, and persistent config with zero listening ports:
+Recommended for real deployments: includes auto-tuning, in-memory logs, and persistent config. It opens no inbound peer ports; the Prometheus metrics listener is on by default inside the container:
 
 ```bash
 docker run -d \
@@ -213,7 +213,7 @@ docker run -d \
 - `UR_API_URL` / `UR_CONNECT_URL` - Point at a custom API + connect backend instead of `bringyour.com`. Must be set together; saved to the `~/.urnetwork` volume so it survives restarts. See [Configuration Reference](docs/Configuration.md).
 
 > [!TIP]
-> Providers do not require any listening ports. Outbound connections handle all traffic (vnStat has been retired; use Prometheus metrics via `URNETWORK_METRICS` for telemetry).
+> Providers need no inbound peer ports. Outbound connections handle all traffic (vnStat has been retired; Prometheus metrics are on by default and can be pinned with `URNETWORK_METRICS`).
 
 See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/password auth, Watchtower, multi-container, and advanced options.
 

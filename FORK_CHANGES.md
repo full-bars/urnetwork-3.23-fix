@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.35.2 — **Release in preparation**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md))
+**Current Version**: v3.23.0-fix.35.2 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md)) — **Release in preparation**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md))
 
 ---
 

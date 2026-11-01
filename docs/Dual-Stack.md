@@ -81,8 +81,10 @@ Enabling the same behavior in this line means:
   re-arms the cooldown. A cancelled dial is not counted, and a carrier that fails
   IPv4 too has its streak reset rather than blamed for IPv6.
 - **If you want per-proxy IPv6 earlier than that:** nothing to set. The verdict
-  is learned from traffic; an exit that gains IPv6 is re-offered it within the
-  cooldown window.
+  is learned from traffic. An exit that gains IPv6 is not offered it until the
+  cooldown ends. The first IPv6 dial through that carrier after the cooldown is
+  the probe, so the wait is at most 15 minutes from the last mark or failed
+  probe. No timer runs: the probe happens only on a dial that names IPv6.
 
 ## Status
 
