@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.35.2 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md)) — **Release in preparation**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md))
+**Current Version**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md))
 
 ---
 
@@ -4035,12 +4035,14 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **Impact**: nodes need a redeploy for the provider, CLI and data changes, and the installers apply on the next run. Scripts that matched the old `[contract] acquired proxy[` text need the `|` separator. The FreeBSD and macOS changes are read from the code and unit-tested; none has had a recorded end-to-end run on a physical host.
 
-## 214. v35.3 (in preparation): Per-Carrier IPv6 Verdicts, H3 Relay Redaction, Blocklist Refresh, Docker Updater Tag
+<a id="214-v353-in-preparation-per-carrier-ipv6-verdicts-h3-relay-redaction-blocklist-refresh-docker-updater-tag"></a>
 
-**Purpose**: Stop a proxy exit without IPv6 from costing a dial timeout on every request, keep proxy credentials out of the h3 relay log lines, and make the Docker auto-update record the release tag as its version. Source: `[Unreleased]` in `CHANGELOG.md`; the release notes are [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md).
+## 214. v35.3: Per-Carrier IPv6 Verdicts, H3 Relay Redaction, Blocklist Refresh, Docker Updater Tag
+
+**Purpose**: Avoid repeated explicit IPv6 dial timeouts through a proxy exit without IPv6, keep proxy credentials out of the h3 relay log lines, and make the Docker auto-update record the release tag as its version. Source: `[Unreleased]` in `CHANGELOG.md`; the release notes are [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md).
 
 **Change**:
-- **Per-carrier IPv6 verdict** (PR #1024): after three consecutive v6 dial failures through one proxy carrier, v6 is refused there for 15 minutes, and a failure streak has to happen inside ten minutes.
+- **Per-carrier IPv6 verdict** (PR #1024): after three consecutive explicit v6 dial failures through one proxy carrier, explicit v6 dials are refused there for 15 minutes. A gap over ten minutes between successive failures resets the streak. A hostname passed to the proxy does not reveal the exit family.
 - **h3 relay error redaction** (PR #1025): the h3 dial messages print the redacted address and a short failure class, never the userinfo or token path.
 - **FreeBSD backup removal warning** (PR #1025): a backup that cannot be removed is reported with its path after a successful start.
 - **Docker updater version from the tag** (PR #1023): `version.txt` records the release tag the release names, and a release without a tag is refused.

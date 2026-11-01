@@ -85,7 +85,7 @@ The Go files in the repo root are one package. Names start with the topic.
 
 ## Docs, wiki and releases
 
-Everything in `docs/*.md` is copied to the [GitHub wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki) by `.github/workflows/wiki-sync.yml` when it changes on `main`. The README, this file, `CHANGELOG.md`, `FORK_CHANGES.md` and `LOG_REFERENCE.md` live in the repo root and are not copied. See also [FORK_CHANGES](https://github.com/full-bars/urnetwork-3.23-fix/blob/main/FORK_CHANGES.md) for the detailed history of every change, and [LOG_REFERENCE](https://github.com/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md) for what each log line means.
+Everything in `docs/*.md` is copied to the [GitHub wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki) by `.github/workflows/wiki-sync.yml` when it changes on `main`. `LOG_REFERENCE.md` is also copied from the repo root as `Log-Message-Reference.md`. The README, `CHANGELOG.md` and `FORK_CHANGES.md` live in the repo root and are not copied. See also [FORK_CHANGES](https://github.com/full-bars/urnetwork-3.23-fix/blob/main/FORK_CHANGES.md) for the detailed history of every change, and [LOG_REFERENCE](https://github.com/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md) for what each log line means.
 
 ## The hub (removed)
 

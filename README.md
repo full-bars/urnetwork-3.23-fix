@@ -308,6 +308,8 @@ UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usa
 Prometheus metrics are built in and on by default. `urnet-tools metrics off` and
 `urnet-tools metrics on` switch them without a restart, and either prints the address to scrape: loopback plus the machine's Tailscale
 address by default, or any address you choose with `urnet-tools metrics listen`.
+To keep metrics off across restarts or HotSwap, also remove `URNETWORK_METRICS`
+from the provider's environment; a nonempty value starts the listener again.
 The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
 

@@ -28,14 +28,14 @@ Metrics: on
 Prometheus target: 100.64.0.10:9100
 ```
 
-The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again.
+The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again. `urnet-tools metrics off` stops the listener now, but a nonempty `URNETWORK_METRICS` starts it again on restart or HotSwap. Remove the environment variable as well to keep metrics off.
 
 ### Where the endpoint listens
 
 | Situation | Listens on |
 |---|---|
 | Bare metal or VM (default) | `127.0.0.1` plus this machine's Tailscale address, if it has one |
-| Docker container (default) | Every interface inside the container |
+| Docker container (default) | Every IPv4 interface inside the container, unless its network has a public address; then loopback and Tailscale only |
 | `urnet-tools metrics listen <ip:port>` | Exactly that address |
 | `URNETWORK_METRICS=<ip:port>` set in the environment | Exactly that address (overrides everything above) |
 
@@ -66,7 +66,7 @@ docker exec urnetwork urnet-tools metrics on
 Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is `100.64.0.10:9100`. For several containers on one host, publish each on its own host port (`-p 100.64.0.10:9101:9100`) and use that port as the target.
 
 > [!WARNING]
-> With `--network host`, the container shares the host's interfaces, so the default binds every host interface, including public ones. Use `urnet-tools metrics listen <tailscale-ip>:9100` there.
+> With `--network host`, the container shares the host's interfaces. If it detects a public address, auto mode binds loopback and Tailscale only. Otherwise it binds all IPv4 interfaces, including private host interfaces. Explicit listen addresses can expose metrics publicly.
 
 ## 2. Run the monitoring stack
 
