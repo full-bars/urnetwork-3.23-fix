@@ -1057,7 +1057,11 @@ RCSCRIPT
         rm -rf "$tmpdir"
         exit 1
     fi
-    [ "$had_old_binary" -eq 1 ] && priv rm -f "$provider_backup" 2>/dev/null || true
+    if [ "$had_old_binary" -eq 1 ] && ! priv rm -f "$provider_backup" 2>/dev/null; then
+        # The install is still good. Nothing later reads provider_backup, so say
+        # where the stray copy is rather than dropping the failure silently.
+        pr_warn "Could not remove the backup binary at %s; it is left on disk" "$provider_backup"
+    fi
 
     # Publish the version only after the service start/restart succeeded.
     ver_tmp="$install_path/.version.new.$$"
