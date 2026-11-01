@@ -4014,9 +4014,9 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **Impact**: proxied H3 operators recover the drained bandwidth, FreeBSD hosts get a documented installer, and `set smart_dialer` now says it takes effect at the next start.
 
-## 213. v35.2 (in preparation): Installer Verification, FreeBSD and macOS Correctness, Docker Startup Safety
+## 213. v35.2: Installer Verification, FreeBSD and macOS Correctness, Docker Startup Safety
 
-**Purpose**: Make the installers refuse what they cannot verify, make a FreeBSD host install with the base system alone, let macOS updates finish, and stop Docker startup discarding a saved proxy configuration. Source: `[Unreleased]` in `CHANGELOG.md`; the number is a placeholder until the tag is cut.
+**Purpose**: Make the installers refuse what they cannot verify, make a FreeBSD host install with the base system alone, let macOS updates finish, and stop Docker startup discarding a saved proxy configuration. Source: `[v3.23.0-fix.35.2]` in `CHANGELOG.md`.
 
 **Files Modified**: `scripts/Provider_Install_FreeBSD.sh`, `scripts/Provider_Install_Linux.sh`, `internal/urnettools/update.go`, `internal/urnettools/lifecycle_freebsd.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `docker/scripts/provider_common.sh`, `docker/scripts/pelican_panel.sh`, the proxy-state code in `provider/`, plus tests.
 
@@ -4034,3 +4034,17 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 - **Extender**: an extender source that asks again at once is now answered (bc24ec5c). The extender remains a work in progress and does not activate yet.
 
 **Impact**: nodes need a redeploy for the provider, CLI and data changes, and the installers apply on the next run. Scripts that matched the old `[contract] acquired proxy[` text need the `|` separator. The FreeBSD and macOS changes are read from the code and unit-tested; none has had a recorded end-to-end run on a physical host.
+
+## 214. v35.3 (in preparation): Per-Carrier IPv6 Verdicts, H3 Relay Redaction, Blocklist Refresh, Docker Updater Tag
+
+**Purpose**: Stop a proxy exit without IPv6 from costing a dial timeout on every request, keep proxy credentials out of the h3 relay log lines, and make the Docker auto-update record the release tag as its version. Source: `[Unreleased]` in `CHANGELOG.md`; the release notes are [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md).
+
+**Change**:
+- **Per-carrier IPv6 verdict** (PR #1024): after three consecutive v6 dial failures through one proxy carrier, v6 is refused there for 15 minutes, and a failure streak has to happen inside ten minutes.
+- **h3 relay error redaction** (PR #1025): the h3 dial messages print the redacted address and a short failure class, never the userinfo or token path.
+- **FreeBSD backup removal warning** (PR #1025): a backup that cannot be removed is reported with its path after a successful start.
+- **Docker updater version from the tag** (PR #1023): `version.txt` records the release tag the release names, and a release without a tag is refused.
+- **Blocklist refresh** (PR #1022): 164,912 blocked hosts; the CFAA table drops to 44,467 IPv4 and 271 IPv6 ranges.
+- **Docs** (PR #1026, PR #1029): the deployment page says vnStat is retired, and the Docker page gives the metrics port as 9100.
+
+**Impact**: nodes need a redeploy for the provider and updater changes, and the installer warning applies on the next installer run. The extender remains a work in progress and does not activate yet.
