@@ -405,78 +405,11 @@ docker exec -it <container> urnet-tools idle-update --window 0
 > [!NOTE]
 > If `billable_rate` isn't available yet (provider predates this feature, or hasn't written its first sample), `idle-update` treats the node as **not idle** rather than assuming it's safe to update - it fails closed.
 
-## 📊 Traffic Monitoring (vnStat Retired)
+## 📊 (Optional) Running with vnStat Bandwidth Monitor
 
-> [!NOTE]
-> **vnStat Retirement**:
-> The embedded vnStat traffic daemon, CGI scripts, and container port 8080 have been retired and removed from the Docker image as of `v3.23.0-fix`.
->
-> Production containers run with **zero listening ports** by default. All p2p tunnels and relay connections dial outbound.
->
-> For backward compatibility, the `ENABLE_VNSTAT` variable remains accepted so existing compose files do not error, but it logs a deprecation warning and does not start any HTTP server. For traffic monitoring, time-series graphs, and fleet dashboards, use the Prometheus `/metrics` endpoint and Grafana stack documented below.
+vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
-### Multi-Container Isolation Rule: Config Volumes (`/root/.urnetwork`)
-
-When running more than one provider container on the same host, you must keep their identity volumes isolated:
-
-> [!CAUTION]
-> **Isolate Provider Config Volumes (`/root/.urnetwork`):** Never share `/root/.urnetwork` between multiple running containers. The provider maintains process-local SQLite databases (`proxy.state`, `.client_jwts.json`, `lifetime`) and identity keys inside this directory. Sharing it across containers leads to lock contention and state corruption. Each container requires its own config volume (`ur_config_1`, `ur_config_2`).
-
-#### Multi-Container Compose Snippet:
-
-```yaml
-services:
-  node-1:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: urfix-1
-    environment:
-      - AUTH=authcode
-      - AUTHCODE=YOUR_AUTH_CODE_1
-    volumes:
-      - ur_config_1:/root/.urnetwork    # ISOLATED identity & state volume
-      - ./proxy-1.txt:/app/proxy.txt
-
-  node-2:
-    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
-    container_name: urfix-2
-    environment:
-      - AUTH=authcode
-      - AUTHCODE=YOUR_AUTH_CODE_2
-    volumes:
-      - ur_config_2:/root/.urnetwork    # ISOLATED identity & state volume
-      - ./proxy-2.txt:/app/proxy.txt
-
-volumes:
-  ur_config_1:
-  ur_config_2:
-```
-
----
-
-### 📊 Prometheus + Grafana monitoring bundle
-
-The repository ships a ready-made Prometheus + Grafana stack in the `monitoring/` directory. It scrapes each provider's built-in `/metrics` endpoint and draws one fleet dashboard. It is a separate stack from the provider compose file, so it can run on the same host or on any machine that can reach the providers.
-
-Set it up once, then start it:
-
-```bash
-cd monitoring
-./setup.sh                            # create .env and an empty target list
-./setup.sh 100.64.0.10:9100=node-1    # add a provider (repeat for more)
-docker compose up -d
-```
-
-What comes up:
-
-- **Prometheus** on `127.0.0.1:9090` (set `PROMETHEUS_PORT` to change it). It reads its targets from `monitoring/prometheus/targets/providers.yml` and picks up edits within a minute. The scrape interval is 30 seconds.
-- **Grafana** on port `3000` (set `GRAFANA_PORT`, and bind it with `GRAFANA_BIND`). The admin password is the random one `setup.sh` wrote to `monitoring/.env`.
-
-Each target is the host address and the port that reaches the provider. On bare metal, `urnet-tools metrics status` prints that address. Inside a container it prints the wildcard instead, because the provider listens on every interface of its own network namespace, so use the host address and the host-published port. Turn metrics on inside a container with `docker exec urnetwork urnet-tools metrics on`, or set `URNETWORK_METRICS=:9100` to listen on every interface at start.
-
-> [!TIP]
-> For several provider containers on one host, publish each on its own host port (for example `-p 100.64.0.10:9101:9100`) and add that host port as the target. Each container binds its own internal `9100`, so the port only moves up to `9103` when several processes share one network namespace, as on bare metal. Never expose the metrics endpoint on a public address: it lists every proxy address and its traffic.
-
-See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) for the full setup, the metric list and the alert rules. The [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration#-monitoring--telemetry) reference lists the telemetry variables.
+For traffic telemetry use the Prometheus `/metrics` endpoint on port `9091`, which starts by default.
 
 ## ⚙️ Environment Variables
 
