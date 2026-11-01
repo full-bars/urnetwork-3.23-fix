@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.35.1 — **Release in preparation**: v3.23.0-fix.35.2 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md))
+**Current Version**: v3.23.0-fix.35.2 — **Release in preparation**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.2.md](releases/v3.23.0-fix.35.2.md))
 
 ---
 
@@ -86,14 +86,14 @@ InitialContractTransferByteCount: 16 KiB → 2 MiB (fork default)
 **Purpose**: Production-ready containerization with traffic monitoring and multi-architecture support (amd64, arm64).
 
 **Files Modified**:
-- `Dockerfile` — Alpine base, multi-stage build, vnStat integration
+- `Dockerfile` — Alpine base, multi-stage build (vnStat was removed; use the Prometheus endpoint)
 - `provider/Makefile` — Multi-arch build targets
 - `.github/workflows/build.yml` — CI/CD for Docker image publishing
 - Entrypoint scripts: `start_jwt.sh`, `start_stable.sh`, `start_nightly.sh`
 
 **Changes**:
 - **Base Image**: Alpine Linux (minimal footprint)
-- **Traffic Monitoring**: vnStat listening on port 8080
+- **Traffic Monitoring**: Prometheus `/metrics` on port 9100, with auto fallback to 9101 to 9103. vnStat is retired and `ENABLE_VNSTAT` only warns
 - **Build Variants**: JWT, stable, nightly startup modes
 - **Environment Variables**:
   - `BUILD`: selects startup script
