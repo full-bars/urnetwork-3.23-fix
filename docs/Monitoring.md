@@ -2,7 +2,7 @@
 
 Every provider can serve Prometheus metrics at `/metrics`. The `monitoring/` bundle runs Prometheus and Grafana with a ready-made dashboard, so you can watch a whole fleet from one page.
 
-It takes two steps: turn metrics on at each provider, then start the bundle on any machine that can reach them.
+It takes two steps: confirm metrics is on at each provider (it is on by default, and `urnet-tools metrics on` turns it back on after an `off`), then start the bundle on any machine that can reach them.
 
 ## Before you set anything up: the built-in baseline
 

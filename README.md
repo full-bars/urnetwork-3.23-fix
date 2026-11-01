@@ -305,8 +305,8 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
 
-Prometheus metrics are built in. `urnet-tools metrics on` turns them on without a
-restart and prints the address to scrape: loopback plus the machine's Tailscale
+Prometheus metrics are built in and on by default. `urnet-tools metrics off` and
+`urnet-tools metrics on` switch them without a restart, and either prints the address to scrape: loopback plus the machine's Tailscale
 address by default, or any address you choose with `urnet-tools metrics listen`.
 The `monitoring/` bundle runs Prometheus and Grafana with a ready-made fleet
 dashboard. See [Monitoring](docs/Monitoring.md).
