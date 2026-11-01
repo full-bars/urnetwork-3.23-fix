@@ -272,6 +272,29 @@ func TestCarrierIpv6CooldownAllowsExactlyOneProbe(t *testing.T) {
 	}
 }
 
+func TestCarrierIpv6StaleStreakDoesNotReachThreshold(t *testing.T) {
+	clock, _ := withCarrierClock(t)
+	table := carrierIpv6
+	key := "host.example:1080+alice"
+
+	// two failures this morning
+	table.done(key, false, errors.New("v6 unreachable"), false)
+	table.done(key, false, errors.New("v6 unreachable"), false)
+	// a long quiet gap, then a third: not a pattern, so not a verdict
+	clock.Advance(carrierIpv6StreakWindow + time.Second)
+	table.done(key, false, errors.New("v6 unreachable"), false)
+	if ok, _ := table.allow(key); !ok {
+		t.Fatalf("three failures spread past the streak window must not suppress: %+v", table.entries[key])
+	}
+
+	// the same three failures inside the window do suppress
+	table.done(key, false, errors.New("v6 unreachable"), false)
+	table.done(key, false, errors.New("v6 unreachable"), false)
+	if ok, _ := table.allow(key); ok {
+		t.Fatalf("three failures inside the streak window must suppress: %+v", table.entries[key])
+	}
+}
+
 func TestCarrierIpv6CancelledProbeReleasesTheSlot(t *testing.T) {
 	clock, _ := withCarrierClock(t)
 	table := carrierIpv6

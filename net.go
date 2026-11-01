@@ -707,6 +707,11 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 			var allowed bool
 			allowed, carrierProbe = carrierIpv6.allow(carrierKey)
 			if !allowed {
+				// Deliberately not wrapped in proxyDialError. That type tells
+				// recordControlFamilyStrike the failure belonged to a proxy, and
+				// this error needs no such protection: it is not a path timeout,
+				// which is the only shape that strikes a family. Wrapping it would
+				// only log a strike refusal on every suppressed dial.
 				return nil, errCarrierIpv6Suppressed
 			}
 		}

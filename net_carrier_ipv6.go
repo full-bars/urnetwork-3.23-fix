@@ -42,13 +42,21 @@ const (
 	// instead of one per dial, short enough that an exit that gains v6 is
 	// re-offered it within a session.
 	carrierIpv6Cooldown = 15 * time.Minute
+	// carrierIpv6StreakWindow bounds a sub-threshold streak. Failures counted
+	// without a clock let two today and one a month later add up to a verdict,
+	// which is not a pattern, it is three unrelated moments.
+	carrierIpv6StreakWindow = 10 * time.Minute
 )
 
 var errCarrierIpv6Suppressed = errors.New("ipv6 suppressed for this proxy carrier (recent v6 dials through it failed)")
 
 type carrierIpv6Entry struct {
-	// consecutive v6 failures since the last v6 success
+	// consecutive v6 failures since the last v6 success, or since the streak
+	// window last expired
 	failures int
+	// when the most recent v6 failure was counted, so a stale streak cannot
+	// reach the threshold across a long quiet gap
+	lastFailure time.Time
 	// zero while not marked
 	suppressedUntil time.Time
 	// a probe dial is in flight after the cooldown
@@ -128,7 +136,16 @@ func (self *carrierIpv6Table) done(key string, probe bool, err error, neutral bo
 		entry = &carrierIpv6Entry{}
 		self.entries[key] = entry
 	}
+	now := self.now()
+	// A streak only means something while the failures are close together: two
+	// this morning and one tonight is three unrelated moments, not a pattern.
+	// A failed probe is exempt: it is a deliberate re-test of a carrier already
+	// marked, and it must re-arm the cooldown however long the cooldown was.
+	if !probe && !entry.lastFailure.IsZero() && now.Sub(entry.lastFailure) > carrierIpv6StreakWindow {
+		entry.failures = 0
+	}
 	entry.failures += 1
+	entry.lastFailure = now
 	entry.probing = false
 	if entry.failures < carrierIpv6FailureThreshold {
 		return
