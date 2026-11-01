@@ -73,9 +73,16 @@ Enabling the same behavior in this line means:
 
 ## What you need to do
 
-- **Today:** nothing. No flag, no setting, no fleet change.
-- **If you want per-proxy IPv6 now:** it is not in 33.x. It belongs to the
-  engine track, with a canary and a way to turn it back off.
+- **Today:** automatic, and no flag. Since `v3.23.0-fix.35.3` the provider keeps a
+  verdict per proxy carrier. After three consecutive IPv6 failures through one
+  carrier it refuses IPv6 there for 15 minutes and sends the dial race straight
+  to IPv4, then lets one probe through when the cooldown ends. A streak expires
+  after ten minutes, so old failures do not add up, and a probe that fails
+  re-arms the cooldown. A cancelled dial is not counted, and a carrier that fails
+  IPv4 too has its streak reset rather than blamed for IPv6.
+- **If you want per-proxy IPv6 earlier than that:** nothing to set. The verdict
+  is learned from traffic; an exit that gains IPv6 is re-offered it within the
+  cooldown window.
 
 ## Status
 
