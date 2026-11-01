@@ -45,6 +45,11 @@ func TestDialFailureClassCarriesNoAddress(t *testing.T) {
 // CodeRabbit asked for: a malformed proxy address must not surface its
 // credentials in the error the factory returns.
 func TestH3PacketConnFactoryErrorCarriesNoCredentials(t *testing.T) {
+	// Force the udp check to fall through so the test actually reaches the relay
+	// dial. Its own rejection message was already redacted before this fix, so
+	// letting it answer would satisfy the assertions without exercising the
+	// branch under test.
+	stubUdpCheck(t, proxyUDPUnknown)
 	settings := &connect.ProxySettings{Network: "tcp", Address: credentialsLeakingAddress()}
 	factory := newH3PacketConnFactory(settings)
 	if factory == nil {
@@ -59,6 +64,9 @@ func TestH3PacketConnFactoryErrorCarriesNoCredentials(t *testing.T) {
 		t.Skip("the dial unexpectedly succeeded; nothing to assert about the error")
 	}
 	msg := err.Error()
+	if !strings.Contains(msg, "relay dial failed") {
+		t.Fatalf("expected the relay-dial branch, got: %s", msg)
+	}
 	for _, leak := range []string{leakUser, leakSecret, leakToken} {
 		if strings.Contains(msg, leak) {
 			t.Fatalf("factory error leaks %q: %s", leak, msg)
