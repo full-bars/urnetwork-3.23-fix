@@ -409,7 +409,7 @@ docker exec -it <container> urnet-tools idle-update --window 0
 
 vnStat is retired. It is no longer built into the container, and `ENABLE_VNSTAT=true` now only prints a warning. Nothing listens on port 8080, and there is no `/var/lib/vnstat` volume to mount.
 
-For traffic telemetry use the Prometheus `/metrics` endpoint. It is off until you turn it on: set `URNETWORK_METRICS` (for example `:9100`, which binds exactly that address), or run `urnet-tools metrics on`, which tries ports 9100 to 9103 in order and binds the first one free, so if 9100 is taken the endpoint is on 9101 to 9103.
+For traffic telemetry use the Prometheus `/metrics` endpoint. It is on by default: the listen mode is `auto`, which takes the first free port from 9100 to 9103 on the loopback interface, so nothing is published publicly. Set `URNETWORK_METRICS` to pin one address (for example `100.64.0.10:9100`), or to `off` to disable it.
 
 ## ⚙️ Environment Variables
 
