@@ -8,6 +8,7 @@ import (
 	mathrand "math/rand"
 	"net"
 	"sync"
+	"sync/atomic"
 	"time"
 )
 
@@ -373,6 +374,43 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 	// Pool is sized once per batch at batch start; a batch in flight keeps
 	// its size even if pressure changes mid-batch.
 	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
+	// Progress reporting. This is the first slow step in a list fetch and it
+	// runs over every line, so without a heartbeat a working run of a few
+	// thousand addresses looks like a dead one.
+	total := len(lines)
+	start := time.Now()
+	var completed atomic.Int64
+	doneCh := make(chan struct{})
+	var progressWg sync.WaitGroup
+	if total > 0 {
+		tlog("[proxy][url] checking %d address(es) for basic reachability: a TCP dial, a SOCKS5 handshake, then one CONNECT to the API.\n", total)
+		tlog("[proxy][url] this is the first slow step and it is still working. A large list can take several minutes. Progress prints every 30 seconds.\n")
+		progressWg.Add(1)
+		go func() {
+			defer progressWg.Done()
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-doneCh:
+					return
+				case <-ticker.C:
+					n := int(completed.Load())
+					if n >= total {
+						continue
+					}
+					elapsed := time.Since(start)
+					left := ""
+					if n > 0 {
+						per := elapsed / time.Duration(n)
+						left = ", about " + (per * time.Duration(total-n)).Round(time.Second).String() + " left"
+					}
+					tlog("[proxy][url] still checking: %d of %d done (%d%%), %s elapsed%s\n",
+						n, total, 100*n/total, elapsed.Round(time.Second), left)
+				}
+			}
+		}()
+	}
 	var wg sync.WaitGroup
 
 	for i, line := range lines {
@@ -387,9 +425,15 @@ func probeAndFilterProxyURLLines(ctx context.Context, lines []string, apiHost st
 			defer wg.Done()
 			defer func() { <-sem }()
 			results[i] = result{i, probeProxy(ctx, address, user, password, apiHost, apiPort)}
+			completed.Add(1)
 		}(i, address, user, password)
 	}
 	wg.Wait()
+	close(doneCh)
+	progressWg.Wait()
+	if total > 0 {
+		tlog("[proxy][url] reachability check finished: %d address(es) in %s\n", total, time.Since(start).Round(time.Second))
+	}
 
 	for i, r := range results {
 		switch r.r {
