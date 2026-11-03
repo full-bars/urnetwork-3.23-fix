@@ -37,8 +37,9 @@ func writeH1PlusMetricsStats(b *strings.Builder, stats connect.H1PlusStatsSnapsh
 	for reason, value := range map[string]uint64{"rejected": stats.FallbackRejected, "invalid": stats.FallbackInvalid, "io": stats.FallbackIO, "proxy": stats.FallbackProxy} {
 		fmt.Fprintf(b, "urnet_h1plus_fallbacks_total{reason=%s} %d\n", connect.PrometheusLabelValue(reason), value)
 	}
-	fmt.Fprintf(b, "# HELP urnet_h1plus_handshake_failures_total H1+ upgrades that failed without falling back (TLS, authentication). Labeled series partition the total.\n# TYPE urnet_h1plus_handshake_failures_total counter\n")
+	fmt.Fprintf(b, "# HELP urnet_h1plus_handshake_failures_total H1+ upgrades that failed without falling back, all classes. The per-class breakdown is urnet_h1plus_handshake_failures_class_total; do not add the two together.\n# TYPE urnet_h1plus_handshake_failures_total counter\n")
 	fmt.Fprintf(b, "urnet_h1plus_handshake_failures_total %d\n", stats.HandshakeFailures)
+	fmt.Fprintf(b, "# HELP urnet_h1plus_handshake_failures_class_total H1+ handshake failures by class; the classes sum to urnet_h1plus_handshake_failures_total, so use one family or the other, never both.\n# TYPE urnet_h1plus_handshake_failures_class_total counter\n")
 	for _, c := range []struct {
 		class string
 		value uint64
@@ -51,7 +52,7 @@ func writeH1PlusMetricsStats(b *strings.Builder, stats connect.H1PlusStatsSnapsh
 		{"io", stats.HandshakeFailuresIO},
 		{"other", stats.HandshakeFailuresOther},
 	} {
-		fmt.Fprintf(b, "urnet_h1plus_handshake_failures_total{class=%s} %d\n", connect.PrometheusLabelValue(c.class), c.value)
+		fmt.Fprintf(b, "urnet_h1plus_handshake_failures_class_total{class=%s} %d\n", connect.PrometheusLabelValue(c.class), c.value)
 	}
 	counter("urnet_h1plus_auth_failures_total", "H1+ upgrades answered 401 or 403.", stats.AuthFailures)
 	counter("urnet_h1plus_handshake_seconds_total", "Time spent in H1+ handshakes, seconds.", stats.HandshakeNanos/1_000_000_000)

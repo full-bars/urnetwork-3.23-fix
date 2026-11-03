@@ -26,8 +26,14 @@ func TestH1PlusMetricsExposition(t *testing.T) {
 	writeH1PlusMetricsStats(&b, snap)
 	out := b.String()
 
-	if !strings.Contains(out, "# HELP urnet_h1plus_handshake_failures_total H1+ upgrades that failed without falling back (TLS, authentication). Labeled series partition the total.\n") {
+	if !strings.Contains(out, "# HELP urnet_h1plus_handshake_failures_total H1+ upgrades that failed without falling back, all classes. The per-class breakdown is urnet_h1plus_handshake_failures_class_total; do not add the two together.\n") {
 		t.Errorf("missing or incorrect HELP line for urnet_h1plus_handshake_failures_total")
+	}
+	if !strings.Contains(out, "# HELP urnet_h1plus_handshake_failures_class_total H1+ handshake failures by class; the classes sum to urnet_h1plus_handshake_failures_total, so use one family or the other, never both.\n") {
+		t.Errorf("missing or incorrect HELP line for urnet_h1plus_handshake_failures_class_total")
+	}
+	if !strings.Contains(out, "# TYPE urnet_h1plus_handshake_failures_class_total counter\n") {
+		t.Errorf("missing TYPE line for urnet_h1plus_handshake_failures_class_total")
 	}
 	if !strings.Contains(out, "# TYPE urnet_h1plus_handshake_failures_total counter\n") {
 		t.Errorf("missing TYPE line for urnet_h1plus_handshake_failures_total")
@@ -47,7 +53,7 @@ func TestH1PlusMetricsExposition(t *testing.T) {
 	}
 
 	for _, class := range expectedClasses {
-		expectedLine := fmt.Sprintf("urnet_h1plus_handshake_failures_total{class=%s}", connect.PrometheusLabelValue(class))
+		expectedLine := fmt.Sprintf("urnet_h1plus_handshake_failures_class_total{class=%s}", connect.PrometheusLabelValue(class))
 		if !strings.Contains(out, expectedLine) {
 			t.Errorf("missing expected class series: %s", expectedLine)
 		}
@@ -185,11 +191,63 @@ func TestH1PlusClassesCompleteness(t *testing.T) {
 
 	labeledCount := 0
 	for _, line := range strings.Split(out, "\n") {
-		if strings.HasPrefix(line, "urnet_h1plus_handshake_failures_total{class=") {
+		if strings.HasPrefix(line, "urnet_h1plus_handshake_failures_class_total{class=") {
 			labeledCount++
 		}
 	}
 	if labeledCount != 7 {
 		t.Errorf("expected exactly 7 labeled handshake failure series, got %d", labeledCount)
+	}
+}
+
+// sumSamples adds every sample whose metric name (the text before any label
+// set or space) is exactly name, the way a bare sum(name) would in PromQL.
+func sumSamples(t *testing.T, out string, name string) (sum uint64, samples int) {
+	t.Helper()
+	for _, line := range strings.Split(out, "\n") {
+		if strings.HasPrefix(line, "#") || line == "" {
+			continue
+		}
+		end := strings.IndexAny(line, "{ ")
+		if end < 0 || line[:end] != name {
+			continue
+		}
+		var v uint64
+		if _, err := fmt.Sscanf(line[strings.LastIndex(line, " ")+1:], "%d", &v); err != nil {
+			t.Fatalf("unparseable sample %q: %v", line, err)
+		}
+		sum += v
+		samples++
+	}
+	return
+}
+
+// A bare sum over the total's name must return the real count. When the
+// per-class children shared that name, the sum returned twice the count.
+func TestH1PlusFailureTotalDoesNotCollideWithClasses(t *testing.T) {
+	snap := connect.H1PlusStatsSnapshot{
+		HandshakeFailures:                10,
+		HandshakeFailuresTimeout:         3,
+		HandshakeFailuresTls:             2,
+		HandshakeFailuresProxyConnect:    1,
+		HandshakeFailuresAuth:            1,
+		HandshakeFailuresUpgradeRejected: 1,
+		HandshakeFailuresIO:              1,
+		HandshakeFailuresOther:           1,
+	}
+	var b strings.Builder
+	writeH1PlusMetricsStats(&b, snap)
+	out := b.String()
+
+	total, samples := sumSamples(t, out, "urnet_h1plus_handshake_failures_total")
+	if samples != 1 || total != 10 {
+		t.Errorf("sum over urnet_h1plus_handshake_failures_total = %d across %d samples; want 10 across 1", total, samples)
+	}
+	classTotal, classSamples := sumSamples(t, out, "urnet_h1plus_handshake_failures_class_total")
+	if classSamples != 7 || classTotal != 10 {
+		t.Errorf("sum over urnet_h1plus_handshake_failures_class_total = %d across %d samples; want 10 across 7", classTotal, classSamples)
+	}
+	if strings.Contains(out, "urnet_h1plus_handshake_failures_total{") {
+		t.Errorf("labeled series under the total's name: the family would double under sum()")
 	}
 }
