@@ -789,3 +789,67 @@ func ResetProxyHealthForTesting() {
 	proxyBaselineSet = false
 	proxyHealthMu.Unlock()
 }
+
+// RestartLiveProxyHealthDownClock moves a running down clock to at for the given
+// identities. Entries with no clock are left alone: only a new failure may start
+// one.
+func RestartLiveProxyHealthDownClock(keys []string, at time.Time) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, key := range keys {
+		h, ok := proxyHealthByKey[key]
+		if !ok || h.downSince.IsZero() {
+			continue
+		}
+		h.downSince = at
+	}
+}
+
+// NoteLiveProxyHealth records an observed health state for an identity (used
+// when a cycle learns health from the persisted state or a probe result).
+func NoteLiveProxyHealth(key, health string, downSince time.Time) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	h, ok := proxyHealthByKey[key]
+	if !ok {
+		h = &proxyHealth{key: key, address: key}
+		idx := len(proxyHealthByIndex) + 1
+		for proxyHealthByIndex[idx] != nil {
+			idx++
+		}
+		proxyHealthByIndex[idx] = h
+		proxyHealthByKey[key] = h
+	}
+	switch health {
+	case "up":
+		h.currentlyUp = true
+		h.everUp = true
+		h.downSince = time.Time{}
+	case "dead":
+		h.currentlyUp = false
+		h.everUp = false
+		h.downSince = time.Time{}
+	default:
+		h.currentlyUp = false
+		h.everUp = true
+		h.downSince = downSince
+	}
+}
+
+// UnregisterProxyByKey removes an identity from the health registry.
+func UnregisterProxyByKey(key string) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	h, ok := proxyHealthByKey[key]
+	if !ok {
+		return
+	}
+	delete(proxyHealthByKey, key)
+	for idx, entry := range proxyHealthByIndex {
+		if entry == h {
+			delete(proxyHealthByIndex, idx)
+			break
+		}
+	}
+}
+

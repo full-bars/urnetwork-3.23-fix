@@ -1,11 +1,34 @@
 package main
 
 import (
+	"errors"
+	"fmt"
 	"os"
+	"runtime"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
+
+func noteLiveProxyHealth(key, health string, downSince time.Time) {
+	connect.NoteLiveProxyHealth(key, health, downSince)
+}
+
+func noteLiveProxyHealthUp(key string) {
+	connect.NoteLiveProxyHealth(key, "up", time.Time{})
+}
+
+func noteLiveProxyHealthFailure(key string) {
+	connect.NoteLiveProxyHealth(key, "recently_offline", time.Now())
+}
+
+func resetProxyHealthReportStateForTest() {
+	connect.ResetProxyHealthForTesting()
+}
 
 // TestDegradedCleanup_UnsetThresholdRetiresNothing verifies that when
 // DegradedCleanupThreshold is unset or empty, degraded eviction is opt-in:
@@ -190,110 +213,303 @@ func TestDegradedCleanup_HiccupNotRetired(t *testing.T) {
 	}
 }
 
-// TestDegradedCleanup_LegacyEmptyDownSincePersisted verifies that a legacy member
-// with an empty DownSince gets stamped from the read moment, the stamp is persisted
-// to disk immediately, and a subsequent read sees the same persisted timestamp
-// rather than generating a fresh one.
-func TestDegradedCleanup_LegacyEmptyDownSincePersisted(t *testing.T) {
+// TestDegradedCleanup_LegacyDownSinceStampedOncePerPass verifies that the pass,
+// not the read, stamps legacy degraded members: every one gets the same single
+// timestamp, it reaches the disk, and a later pass keeps it rather than
+// generating a fresh one.
+func TestDegradedCleanup_LegacyDownSinceStampedOncePerPass(t *testing.T) {
 	withTempHome(t)
 
-	addr := "20.0.0.2:1080"
+	a, b := "20.0.0.2:1080", "20.0.0.3:1080"
 	if err := writeProxyState(&ProxyState{
 		Proxies: map[string]ProxyEntry{
-			addr: {
-				Health: "recently_offline",
-				Source: "url",
-			},
+			a: {Health: "recently_offline", Source: "url"},
+			b: {Health: "offline", Source: "url"},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// First read stamps DownSince and persists it to disk.
-	firstState, err := readProxyState()
+	runProxyURLCleanupOnce("url")
+	first, err := readProxyState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	firstStamp := firstState.Proxies[addr].DownSince
-	if firstStamp == "" {
-		t.Fatalf("%s DownSince was not stamped on first read", addr)
+	stamp := first.Proxies[a].DownSince
+	if stamp == "" {
+		t.Fatalf("%s DownSince was not stamped by the pass", a)
+	}
+	if got := first.Proxies[b].DownSince; got != stamp {
+		t.Fatalf("members stamped from different clocks: %q vs %q", got, stamp)
 	}
 
-	time.Sleep(15 * time.Millisecond)
-
-	// Second read must see the identical persisted timestamp, not a fresh reading moment.
-	secondState, err := readProxyState()
+	runProxyURLCleanupOnce("url")
+	second, err := readProxyState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	secondStamp := secondState.Proxies[addr].DownSince
-	if secondStamp != firstStamp {
-		t.Fatalf("second read saw fresh stamp %q, want persisted %q", secondStamp, firstStamp)
+	if got := second.Proxies[a].DownSince; got != stamp {
+		t.Fatalf("second pass re-stamped %s: %q, want persisted %q", a, got, stamp)
 	}
+}
 
-	// Verify the stamp is physically persisted in the disk file.
+// TestProxyState_ReadLeavesBytesUnchanged verifies a read never writes: a file
+// holding a degraded entry with no stamp is byte-identical after the read.
+func TestProxyState_ReadLeavesBytesUnchanged(t *testing.T) {
+	withTempHome(t)
+
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{
+			"20.0.0.4:1080": {Health: "recently_offline", Source: "url"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	path, err := proxyStatePath()
 	if err != nil {
 		t.Fatal(err)
 	}
-	raw, err := os.ReadFile(path)
+	before, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !strings.Contains(string(raw), firstStamp) {
-		t.Fatalf("persisted proxy.state does not contain timestamp %q:\n%s", firstStamp, string(raw))
+	st, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := st.Proxies["20.0.0.4:1080"].DownSince; got != "" {
+		t.Fatalf("read stamped DownSince = %q, want it left empty", got)
+	}
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(before) != string(after) {
+		t.Fatalf("read changed proxy.state:\nbefore: %s\nafter:  %s", before, after)
 	}
 }
 
-// TestDegradedCleanup_TrimHeldNotRetired verifies that a degraded member held
-// back by the trim cap is not retired, even if degraded past the threshold.
-func TestDegradedCleanup_TrimHeldNotRetired(t *testing.T) {
+// TestProxyState_ReaderCannotClobberLockedWriter races readers against a writer
+// that holds the state locks and commits a marker (NextID) each trial. The file
+// the writer commits always carries unstamped degraded entries, which is what
+// made the old read path write back its stale snapshot. A pure read can never
+// lose the writer's value. The interleaving is probabilistic with the old
+// code (a reader must land between the writer's commit and its own write) so
+// the file is large to widen that window; with the fix it cannot fail.
+func TestProxyState_ReaderCannotClobberLockedWriter(t *testing.T) {
 	withTempHome(t)
 
-	upAddr := "20.0.0.10:1080"
-	degradedAddr := "20.0.0.11:1080"
+	members := make(map[string]ProxyEntry, 3000)
+	for i := 0; i < 3000; i++ {
+		members[fmt.Sprintf("10.%d.%d.1:1080", i/250, i%250)] = ProxyEntry{Health: "recently_offline", Source: "url"}
+	}
+	for trial := 1; trial <= 100; trial++ {
+		stop := make(chan struct{})
+		var wg sync.WaitGroup
+		var reads atomic.Int64
+		for r := 0; r < 4; r++ {
+			wg.Add(1)
+			go func() {
+				defer wg.Done()
+				for {
+					select {
+					case <-stop:
+						return
+					default:
+						readProxyState()
+						reads.Add(1)
+					}
+				}
+			}()
+		}
+		// Commit only once the readers are in flight, so some read is
+		// concurrent with the commit.
+		for reads.Load() < 4 {
+			runtime.Gosched()
+		}
+		// Several commits back to back, each carrying unstamped entries, so a
+		// reader that read one is likely to write after the next.
+		var err error
+		for k := 0; k < 5 && err == nil; k++ {
+			proxyStateMu.Lock()
+			err = writeProxyState(&ProxyState{NextID: trial*10 + k, Proxies: members})
+			proxyStateMu.Unlock()
+		}
+		close(stop)
+		wg.Wait()
+		if err != nil {
+			t.Fatal(err)
+		}
+		st, err := readProxyState()
+		if err != nil {
+			t.Fatal(err)
+		}
+		if want := trial*10 + 4; st.NextID != want {
+			t.Fatalf("trial %d: writer's last NextID=%d was overwritten by a reader, file has %d", trial, want, st.NextID)
+		}
+	}
+}
+
+// TestDegradedCleanup_FailedStampWriteReportedOnce verifies a failed state
+// write is reported once for the pass, is not retried within it, and leaves the
+// freshly stamped members in place instead of retiring them.
+func TestDegradedCleanup_FailedStampWriteReportedOnce(t *testing.T) {
+	withTempHome(t)
 
 	if err := writeProxyURLState(&ProxyURLState{
-		Cache: map[string]ProxyURLEntry{
-			upAddr:       {},
-			degradedAddr: {},
-		},
+		DegradedCleanupThreshold: "1h",
+		Cache:                    map[string]ProxyURLEntry{"20.0.0.5:1080": {}, "20.0.0.6:1080": {}},
 	}); err != nil {
 		t.Fatal(err)
 	}
-
-	now := time.Now()
 	if err := writeProxyState(&ProxyState{
-		StartedAt: now.Add(-70 * time.Minute),
 		Proxies: map[string]ProxyEntry{
-			upAddr: {
-				Health: "up",
-				Source: "url",
-			},
-			degradedAddr: {
-				Health:    "recently_offline",
-				Source:    "url",
-				DownSince: now.Add(-24 * time.Hour).UTC().Format(time.RFC3339),
-			},
+			"20.0.0.5:1080": {Health: "recently_offline", Source: "url"},
+			"20.0.0.6:1080": {Health: "offline", Source: "url"},
 		},
 	}); err != nil {
 		t.Fatal(err)
 	}
 
-	// Set trim cap to 1. Total proxies = 2.
-	// degradedAddr has worse health rank than upAddr, so degradedAddr is held.
+	writes := 0
+	prev := cleanupWriteState
+	cleanupWriteState = func(*ProxyState) error {
+		writes++
+		return errors.New("disk full")
+	}
+	defer func() { cleanupWriteState = prev }()
+
+	var removed int
+	out := captureTlog(t, func() { removed = runProxyURLCleanupOnce("url") })
+	if writes != 1 {
+		t.Fatalf("state writes = %d, want exactly 1 per pass", writes)
+	}
+	if n := strings.Count(out, "could not persist down_since"); n != 1 {
+		t.Fatalf("warning logged %d times, want once:\n%s", n, out)
+	}
+	if !strings.Contains(out, "disk full") {
+		t.Fatalf("warning does not carry the reason:\n%s", out)
+	}
+	if removed != 0 {
+		t.Fatalf("removed = %d, want 0: members stamped this pass are not old", removed)
+	}
+}
+
+// TestDegradedCleanup_TrimHeldClockRestartsNotFrozen is the held-member case:
+// a degraded member the trim cap holds back is not running, so it accrues no
+// downtime. Its clock restarts each pass, and raising the cap does not collect
+// it on the age it had when it was held.
+func TestDegradedCleanup_TrimHeldClockRestartsNotFrozen(t *testing.T) {
+	withTempHome(t)
+
+	upAddr, heldAddr := "20.0.0.10:1080", "20.0.0.11:1080"
+	if err := writeProxyURLState(&ProxyURLState{
+		DegradedCleanupThreshold: "6h",
+		Cache:                    map[string]ProxyURLEntry{upAddr: {}, heldAddr: {}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{
+			upAddr:   {Health: "up", Source: "url"},
+			heldAddr: {Health: "recently_offline", Source: "url", DownSince: old},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 	if err := writeTrimTarget(1); err != nil {
 		t.Fatal(err)
 	}
 
-	removed := runProxyURLCleanupOnce("url")
-	if removed != 0 {
-		t.Fatalf("trim-held degraded member was retired: removed = %d, want 0", removed)
+	if removed := runProxyURLCleanupOnce("url"); removed != 0 {
+		t.Fatalf("held member retired under cap=1: removed = %d, want 0", removed)
+	}
+	st, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := time.Parse(time.RFC3339, st.Proxies[heldAddr].DownSince)
+	if err != nil || time.Since(ds) > time.Minute {
+		t.Fatalf("held member DownSince = %q, want it restarted to now (was %q)", st.Proxies[heldAddr].DownSince, old)
 	}
 
+	// Raise the cap without the member ever having run.
+	if err := writeTrimTarget(2); err != nil {
+		t.Fatal(err)
+	}
+	if removed := runProxyURLCleanupOnce("url"); removed != 0 {
+		t.Fatalf("raising the cap collected a never-relaunched member on stale age: removed = %d, want 0", removed)
+	}
 	urlState, _ := readProxyURLState()
-	if _, ok := urlState.Cache[degradedAddr]; !ok {
-		t.Fatalf("trim-held degraded member %s was evicted from cache", degradedAddr)
+	if _, ok := urlState.Cache[heldAddr]; !ok {
+		t.Fatalf("member %s evicted from the cache after the cap was raised", heldAddr)
+	}
+}
+
+// TestDegradedCleanup_TrimHeldDeadStillRetired verifies the hold covers only
+// the degraded branch: a dead member the cap holds back is still collected.
+func TestDegradedCleanup_TrimHeldDeadStillRetired(t *testing.T) {
+	withTempHome(t)
+
+	upAddr, deadAddr := "20.0.0.12:1080", "20.0.0.13:1080"
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache: map[string]ProxyURLEntry{upAddr: {}, deadAddr: {}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{
+			upAddr:   {Health: "up", Source: "url"},
+			deadAddr: {Health: "dead", Source: "url"},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+	if removed := runProxyURLCleanupOnce("url"); removed != 1 {
+		t.Fatalf("removed = %d, want the held dead member collected", removed)
+	}
+}
+
+// TestDegradedCleanup_HeldSetMatchesAdmission verifies cleanup holds exactly
+// what admission holds when the live health overlay disagrees with the disk:
+// the disk says A is degraded and B up, the live registry says the reverse.
+func TestDegradedCleanup_HeldSetMatchesAdmission(t *testing.T) {
+	withTempHome(t)
+	resetProxyHealthReportStateForTest()
+
+	a, b := "20.0.0.20:1080", "20.0.0.21:1080"
+	state := &ProxyState{Proxies: map[string]ProxyEntry{
+		a: {Health: "recently_offline", Source: "url", DownSince: time.Now().UTC().Format(time.RFC3339)},
+		b: {Health: "up", Source: "url"},
+	}}
+	noteLiveProxyHealthUp(a)
+	noteLiveProxyHealthFailure(b)
+
+	// Admission's inputs: the overlay applied to the state it ranks.
+	admitted := map[string]ProxyEntry{}
+	for k, e := range state.Proxies {
+		admitted[k] = e
+	}
+	overlayLiveProxyHealth(admitted)
+	all := []*connect.ProxySettings{
+		{Network: "tcp", Address: a},
+		{Network: "tcp", Address: b},
+	}
+	_, held := startupTrimSelection(all, 1, admitted, nil, nil)
+	if len(held) != 1 || held[0].Key() != b {
+		t.Fatalf("test premise broken: admission holds %v, want [%s]", held, b)
+	}
+
+	got := cleanupTrimHeld(state, map[string]bool{a: true, b: true}, 1, time.Now())
+	if len(got) != 1 || !got[b] {
+		t.Fatalf("cleanup holds %v, admission holds %s", got, b)
+	}
+	if state.Proxies[a].Health != "recently_offline" {
+		t.Fatalf("the overlay leaked into the persisted copy: %+v", state.Proxies[a])
 	}
 }
 
@@ -439,3 +655,72 @@ func TestDegradedCleanup_UptimeGuardHolds(t *testing.T) {
 		t.Fatalf("degraded member %s was not evicted after warmup elapsed", addr)
 	}
 }
+
+// TestDegradedCleanup_FrozenPoolDoesNotAgeTheClock: a degraded member that
+// ages past the window while the reaper is frozen has not been able to recover,
+// so releasing the freeze must not collect it on that age. It starts a fresh
+// window and is collected only once that window expires unfrozen.
+func TestDegradedCleanup_FrozenPoolDoesNotAgeTheClock(t *testing.T) {
+	withTempHome(t)
+
+	addr := "21.0.0.10:1080"
+	if err := writeProxyURLState(&ProxyURLState{
+		DegradedCleanupThreshold: "6h",
+		Cache:                    map[string]ProxyURLEntry{addr: {}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Now().Add(-48 * time.Hour).UTC().Format(time.RFC3339)
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{addr: {Health: "recently_offline", Source: "url", DownSince: old}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// The live registry carries the same old clock; a later health write would
+	// copy it back over the restarted stamp if the freeze left it alone.
+	noteLiveProxyHealth(addr, "recently_offline", time.Now().Add(-48*time.Hour))
+	t.Cleanup(func() {
+		connect.UnregisterProxyByKey(addr)
+	})
+
+	prev := degradedReaperFrozen
+	t.Cleanup(func() { degradedReaperFrozen = prev })
+	degradedReaperFrozen = func() bool { return true }
+	if removed := runProxyURLCleanupOnce("url"); removed != 0 {
+		t.Fatalf("frozen pass removed %d, want 0", removed)
+	}
+	liveDown := connect.ProxyHealthByKey()[addr].DownSince
+	if time.Since(liveDown) > time.Minute {
+		t.Fatalf("live registry DownSince = %v after a frozen pass, want it restarted to now", liveDown)
+	}
+	st, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	ds, err := time.Parse(time.RFC3339, st.Proxies[addr].DownSince)
+	if err != nil || time.Since(ds) > time.Minute {
+		t.Fatalf("DownSince after a frozen pass = %q, want it restarted to now (was %q)", st.Proxies[addr].DownSince, old)
+	}
+
+	degradedReaperFrozen = func() bool { return false }
+	if removed := runProxyURLCleanupOnce("url"); removed != 0 {
+		t.Fatalf("release collected a member on age it accrued while frozen: removed = %d, want 0", removed)
+	}
+
+	// The fresh window expires with the reaper unfrozen.
+	st, err = readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	e := st.Proxies[addr]
+	e.DownSince = time.Now().Add(-7 * time.Hour).UTC().Format(time.RFC3339)
+	st.Proxies[addr] = e
+	if err := writeProxyState(st); err != nil {
+		t.Fatal(err)
+	}
+	if removed := runProxyURLCleanupOnce("url"); removed != 1 {
+		t.Fatalf("member past its fresh window removed = %d, want 1", removed)
+	}
+}
+

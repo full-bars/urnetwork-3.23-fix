@@ -1502,13 +1502,154 @@ func readURLCacheSize() int {
 	return len(state.Cache)
 }
 
-// DefaultDegradedCleanupThreshold is the fallback duration for degraded
-// URL-proxy cleanup when proxy_url.json leaves degraded_cleanup_threshold
-// empty, unparsable or not positive. An unset key means the operator
-// accepted the standard retirement schedule, not that degraded members
-// should accumulate forever: abandoned URL proxies must age out so the
-// pool does not bloat indefinitely.
-const DefaultDegradedCleanupThreshold = 6 * time.Hour
+// cleanupWriteState persists the pass's down_since edits. A var so a test can
+// fail the write without depending on filesystem permissions.
+var cleanupWriteState = writeProxyState
+
+var restartLiveProxyHealthDownClock = connect.RestartLiveProxyHealthDownClock
+
+// stampLegacyDownSince gives every degraded entry that has no down_since the
+// pass's single timestamp, and reports whether it changed anything. LastGraded
+// must never stand in: it says when a member last worked, not when it went
+// down. The caller holds the state locks.
+func stampLegacyDownSince(state *ProxyState, at time.Time) bool {
+	stamp := at.UTC().Format(time.RFC3339)
+	changed := false
+	for k, e := range state.Proxies {
+		if isDegradedHealth(e.Health) && e.DownSince == "" {
+			e.DownSince = stamp
+			state.Proxies[k] = e
+			changed = true
+		}
+	}
+	return changed
+}
+
+// overlayLiveProxyHealth copies the live health registry into proxies (used
+// before ranking or reporting so decisions see live health rather than stale
+// disk state) and reports how many entries changed.
+func overlayLiveProxyHealth(proxies map[string]ProxyEntry) int {
+	if len(proxies) == 0 {
+		return 0
+	}
+	liveHealth := liveProxyHealthByKey()
+	if len(liveHealth) == 0 {
+		return 0
+	}
+	changed := 0
+	for key, entry := range proxies {
+		live, ok := liveHealth[key]
+		if !ok {
+			continue
+		}
+		health := live.Health
+		downSince := ""
+		if !live.DownSince.IsZero() {
+			downSince = live.DownSince.Format(time.RFC3339)
+		} else if isDegradedHealth(health) {
+			// The registry has no clock: a release from a reap hold cleared it
+			// on purpose (resetLiveProxyHealthDownClock). Keep the persisted
+			// stamp for the state copy and leave the registry alone, so an
+			// overlay cannot restart a clock that only a new failure may start.
+			downSince = entry.DownSince
+		}
+		if entry.Health == health && entry.DownSince == downSince && entry.AuthFailures == live.AuthFailures {
+			continue
+		}
+		entry.Health = health
+		entry.DownSince = downSince
+		entry.AuthFailures = live.AuthFailures
+		proxies[key] = entry
+		changed++
+	}
+	return changed
+}
+
+// cleanupTrimHeld returns the members admission would hold back right now. It
+// asks startupTrimHeldKeys, the function admission itself uses, with the same
+// inputs: the desired identities, persisted state with the live health overlay
+// applied (to a copy, so the overlay is never persisted), the grade resolver
+// and the decayed earnings.
+func cleanupTrimHeld(state *ProxyState, desired map[string]bool, trimCap int, now time.Time) map[string]bool {
+	if trimCap <= 0 || len(desired) <= trimCap {
+		return nil
+	}
+	ranked := make(map[string]ProxyEntry, len(state.Proxies))
+	for k, e := range state.Proxies {
+		ranked[k] = e
+	}
+	overlayLiveProxyHealth(ranked)
+	urlState, _ := readProxyURLState()
+	keys := make([]string, 0, len(desired))
+	for k := range desired {
+		keys = append(keys, k)
+	}
+	return startupTrimHeldKeys(keys, trimCap, ranked, buildTrimGradeResolver(state, urlState),
+		func(key string) float64 { return proxyEarningsScore(key, now) })
+}
+
+// restartHeldDownClock sets down_since to at for every held degraded member and
+// reports whether it changed anything.
+func restartHeldDownClock(state *ProxyState, held map[string]bool, at time.Time) bool {
+	stamp := at.UTC().Format(time.RFC3339)
+	changed := false
+	for k := range held {
+		e, ok := state.Proxies[k]
+		if !ok || !isDegradedHealth(e.Health) || e.DownSince == stamp {
+			continue
+		}
+		e.DownSince = stamp
+		state.Proxies[k] = e
+		changed = true
+	}
+	return changed
+}
+
+// restartDegradedDownClocks restarts the down clock of every degraded member in
+// scope to at, in one locked read-modify-write, and mirrors it into the live
+// health registry so the next health write does not put the older stamp back.
+// It runs on every frozen pass: while the backend is failing no member can
+// recover, so that time must not count toward a retirement window. A member
+// genuinely down before the freeze, with the freeze outlasting the window,
+// therefore starts a fresh window on release rather than being collected in
+// the first unfrozen pass. That is intended.
+func restartDegradedDownClocks(scope string, at time.Time) {
+	release, err := acquireProxyLock()
+	if err != nil {
+		tlog("[proxy][cleanup] warning: could not acquire proxy lock: %v\n", err)
+		return
+	}
+	defer release()
+	proxyStateMu.Lock()
+	defer proxyStateMu.Unlock()
+	state, err := readProxyState()
+	if err != nil {
+		tlog("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
+		return
+	}
+	keys := map[string]bool{}
+	for k, e := range state.Proxies {
+		if e.Source == "" || (scope == "url" && e.Source != "url") {
+			continue
+		}
+		if isDegradedHealth(e.Health) {
+			keys[k] = true
+		}
+	}
+	if len(keys) == 0 {
+		return
+	}
+	liveKeys := make([]string, 0, len(keys))
+	for k := range keys {
+		liveKeys = append(liveKeys, k)
+	}
+	restartLiveProxyHealthDownClock(liveKeys, at)
+	if restartHeldDownClock(state, keys, at) {
+		if err := cleanupWriteState(state); err != nil {
+			tlog("[proxy][cleanup] warning: could not persist down_since changes to proxy.state: %v\n", err)
+		}
+	}
+}
 
 // runProxyURLCleanupOnce removes dead/inactive/degraded proxies whose source
 // matches scope ("url" removes only url-sourced proxies; "all" removes any
@@ -1527,19 +1668,13 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	// then would empty the pool of good proxies. Hold off until it heals.
 	if degradedReaperFrozen() {
 		outageEvictionHoldLog("url cleanup")
-		return 0
-	}
-
-	state, err := readProxyState()
-	if err != nil {
-		tlog("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
+		restartDegradedDownClocks(scope, time.Now())
 		return 0
 	}
 
 	// For degraded cleanup, require the provider to have been running
 	// long enough to avoid killing proxies that just haven't authed yet
 	// during this startup cycle.
-	uptime := time.Since(state.StartedAt)
 	const minUptime = 65 * time.Minute
 
 	// Degraded eviction is opt-in. An unset threshold means degraded members are
@@ -1547,7 +1682,7 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	// Removing a degraded member is the operator's decision to make explicitly,
 	// because a member that cannot recover while the trim cap holds it would
 	// otherwise be deleted for the pool's own configuration. When a window is
-	// set, it is honoured as given, shorter or longer than the six hour default.
+	// set, it is honoured as given.
 	var degradedThreshold time.Duration
 	if urlState, err := readProxyURLState(); err == nil && urlState.DegradedCleanupThreshold != "" {
 		d, err := time.ParseDuration(urlState.DegradedCleanupThreshold)
@@ -1559,25 +1694,58 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		}
 	}
 
-	var heldMembers map[string]struct{}
-	if trimCap, _, err := effectiveTrimCapSource(); err == nil && trimCap > 0 && len(state.Proxies) > trimCap {
-		urlState, _ := readProxyURLState()
-		gradeFor := buildTrimGradeResolver(state, urlState)
-		traffic := make(map[string]uint64, len(state.Proxies))
-		now := time.Now()
-		keys := make([]string, 0, len(state.Proxies))
-		for key := range state.Proxies {
-			keys = append(keys, key)
-			if earned := proxyEarningsScore(key, now); earned > 0 {
-				traffic[key] = uint64(earned)
-			}
-		}
-		worst := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, keys, len(state.Proxies)-trimCap)
-		heldMembers = make(map[string]struct{}, len(worst))
-		for _, key := range worst {
-			heldMembers[key] = struct{}{}
+	// Inputs to the held set that need no state lock: the cap and the desired
+	// identities admission would rank. A cap with no readable desired set
+	// cannot say which members admission runs, so degraded eviction sits this
+	// tick out rather than guess.
+	trimCap, _, _ := effectiveTrimCapSource()
+	var desired map[string]bool
+	heldUnknown := false
+	if trimCap > 0 {
+		var derr error
+		if desired, derr = currentDesiredProxyIdentities(); derr != nil {
+			tlog("[proxy][cleanup] warning: trim cap %d is set but the desired set is unreadable (%v), skipping degraded eviction this pass\n", trimCap, derr)
+			heldUnknown = true
 		}
 	}
+
+	// One locked read-modify-write per pass, taken the way removeDeadProxies
+	// takes it: the cross-process lock, then proxyStateMu. Everything that
+	// edits proxy.state in this pass happens here, so no read path ever writes.
+	release, lockErr := acquireProxyLock()
+	if lockErr != nil {
+		tlog("[proxy][cleanup] warning: could not acquire proxy lock: %v\n", lockErr)
+		return 0
+	}
+	proxyStateMu.Lock()
+	state, err := readProxyState()
+	if err != nil {
+		proxyStateMu.Unlock()
+		release()
+		tlog("[proxy][cleanup] warning: could not read proxy.state: %v\n", err)
+		return 0
+	}
+	passAt := time.Now()
+	dirty := stampLegacyDownSince(state, passAt)
+	var heldMembers map[string]bool
+	if trimCap > 0 && !heldUnknown {
+		heldMembers = cleanupTrimHeld(state, desired, trimCap, passAt)
+		// Downtime accrues only while a member could serve. A held member is
+		// not running, so its clock restarts every pass instead of freezing:
+		// raising the cap later gives it a full fresh window.
+		if restartHeldDownClock(state, heldMembers, passAt) {
+			dirty = true
+		}
+	}
+	if dirty {
+		if err := cleanupWriteState(state); err != nil {
+			tlog("[proxy][cleanup] warning: could not persist down_since changes to proxy.state: %v\n", err)
+		}
+	}
+	proxyStateMu.Unlock()
+	release()
+
+	uptime := time.Since(state.StartedAt)
 
 	addrsBySource := map[string][]string{}
 	for addr, e := range state.Proxies {
@@ -1586,9 +1754,6 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 			continue
 		}
 		if scope == "url" && e.Source != "url" {
-			continue
-		}
-		if _, isHeld := heldMembers[addr]; isHeld {
 			continue
 		}
 
@@ -1611,12 +1776,12 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		}
 
 		// Degraded: only remove if:
-		//   1. A threshold is configured (or the 6h default applies)
+		//   1. A threshold is configured
 		//   2. The provider has been running long enough (>65 min)
 		//   3. DownSince is set AND the proxy has been down past the threshold
 		// This prevents killing proxies that are still warming up or whose
 		// DownSince is stale from a prior provider session.
-		if degradedThreshold > 0 && uptime > minUptime && isDegradedHealth(e.Health) {
+		if degradedThreshold > 0 && uptime > minUptime && isDegradedHealth(e.Health) && !heldUnknown && !heldMembers[addr] {
 			if e.DownSince != "" {
 				if ds, err := time.Parse(time.RFC3339, e.DownSince); err == nil && time.Since(ds) >= degradedThreshold {
 					addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)

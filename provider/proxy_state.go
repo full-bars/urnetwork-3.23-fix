@@ -121,6 +121,9 @@ func readProxyState() (*ProxyState, error) {
 	return readProxyStateFrom(path)
 }
 
+// readProxyStateFrom is a pure read: it never stamps, repairs or writes. A
+// writer that needs to change the file does so under proxyStateMu and the
+// cross-process lock (see runProxyURLCleanupOnce for the down_since stamp).
 func readProxyStateFrom(path string) (*ProxyState, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
@@ -135,25 +138,6 @@ func readProxyStateFrom(path string) (*ProxyState, error) {
 	}
 	if s.Proxies == nil {
 		s.Proxies = map[string]ProxyEntry{}
-	}
-	// Backfill DownSince for degraded members loaded without a down timestamp.
-	// LastGraded must never be used: it indicates when a member was last alive
-	// and working, not when it went down. DownSince starts from the read moment
-	// and is immediately persisted so the normal cleanup window ages the member
-	// into removal instead of either deleting on sight or staying immortal.
-	readAt := time.Now()
-	var stampedLegacy bool
-	for k, e := range s.Proxies {
-		if isDegradedHealth(e.Health) && e.DownSince == "" {
-			e.DownSince = readAt.UTC().Format(time.RFC3339)
-			s.Proxies[k] = e
-			stampedLegacy = true
-		}
-	}
-	if stampedLegacy {
-		if err := writeProxyStateTo(path, &s); err != nil {
-			tlog("[proxy] warning: could not persist legacy down_since stamp: %v\n", err)
-		}
 	}
 	return &s, nil
 }
