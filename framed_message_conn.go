@@ -489,6 +489,14 @@ func isProxyConnectFailure(err error) bool {
 	if errors.As(err, &opErr) && opErr.Op == "proxyconnect" {
 		return true
 	}
+	// This fork proxies through SOCKS5, not net/http's proxy, so a failed hop
+	// arrives as the proxyDialError that ProxySettings.NewDialContext wraps
+	// around it, never as a "proxyconnect" OpError. A hop that timed out is
+	// still counted as a timeout, which is checked before this class.
+	var proxyDialErr *proxyDialError
+	if errors.As(err, &proxyDialErr) {
+		return true
+	}
 	// Fallback to string matching when intermediate proxies or custom dialers
 	// return untyped errors indicating proxy CONNECT rejection or reachability failure.
 	msg := strings.ToLower(err.Error())
