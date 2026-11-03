@@ -17,7 +17,10 @@ var h1PlusProcessStats = &connect.H1PlusStats{}
 
 // writeH1PlusMetrics exports whether H1+ is switched on and what the dials did.
 func writeH1PlusMetrics(b *strings.Builder) {
-	stats := h1PlusProcessStats.Snapshot()
+	writeH1PlusMetricsStats(b, h1PlusProcessStats.Snapshot())
+}
+
+func writeH1PlusMetricsStats(b *strings.Builder, stats connect.H1PlusStatsSnapshot) {
 	enabled := 0
 	if connect.H1PlusAvailable() {
 		enabled = 1
@@ -34,7 +37,23 @@ func writeH1PlusMetrics(b *strings.Builder) {
 	for reason, value := range map[string]uint64{"rejected": stats.FallbackRejected, "invalid": stats.FallbackInvalid, "io": stats.FallbackIO, "proxy": stats.FallbackProxy} {
 		fmt.Fprintf(b, "urnet_h1plus_fallbacks_total{reason=%s} %d\n", connect.PrometheusLabelValue(reason), value)
 	}
-	counter("urnet_h1plus_handshake_failures_total", "H1+ upgrades that failed without falling back (TLS, authentication).", stats.HandshakeFailures)
+	fmt.Fprintf(b, "# HELP urnet_h1plus_handshake_failures_total H1+ upgrades that failed without falling back, all classes. The per-class breakdown is urnet_h1plus_handshake_failures_class_total; do not add the two together.\n# TYPE urnet_h1plus_handshake_failures_total counter\n")
+	fmt.Fprintf(b, "urnet_h1plus_handshake_failures_total %d\n", stats.HandshakeFailures)
+	fmt.Fprintf(b, "# HELP urnet_h1plus_handshake_failures_class_total H1+ handshake failures by class; the classes sum to urnet_h1plus_handshake_failures_total, so use one family or the other, never both.\n# TYPE urnet_h1plus_handshake_failures_class_total counter\n")
+	for _, c := range []struct {
+		class string
+		value uint64
+	}{
+		{"timeout", stats.HandshakeFailuresTimeout},
+		{"tls", stats.HandshakeFailuresTls},
+		{"proxy_connect", stats.HandshakeFailuresProxyConnect},
+		{"auth", stats.HandshakeFailuresAuth},
+		{"upgrade_rejected", stats.HandshakeFailuresUpgradeRejected},
+		{"io", stats.HandshakeFailuresIO},
+		{"other", stats.HandshakeFailuresOther},
+	} {
+		fmt.Fprintf(b, "urnet_h1plus_handshake_failures_class_total{class=%s} %d\n", connect.PrometheusLabelValue(c.class), c.value)
+	}
 	counter("urnet_h1plus_auth_failures_total", "H1+ upgrades answered 401 or 403.", stats.AuthFailures)
 	counter("urnet_h1plus_handshake_seconds_total", "Time spent in H1+ handshakes, seconds.", stats.HandshakeNanos/1_000_000_000)
 	counter("urnet_h1plus_messages_total", "Messages carried on H1+ connections.", stats.Messages)
@@ -45,13 +64,44 @@ func writeH1PlusMetrics(b *strings.Builder) {
 	counter("urnet_h1plus_write_errors_total", "Write errors on H1+ connections.", stats.WriteErrors)
 }
 
+func formatH1PlusHandshakeClasses(now, last connect.H1PlusStatsSnapshot) string {
+	failures := now.HandshakeFailures - last.HandshakeFailures
+	if failures == 0 {
+		return "handshake_classes(none)"
+	}
+	return fmt.Sprintf("handshake_classes(timeout=%d tls=%d proxy_connect=%d auth=%d upgrade_rejected=%d io=%d other=%d)",
+		now.HandshakeFailuresTimeout-last.HandshakeFailuresTimeout,
+		now.HandshakeFailuresTls-last.HandshakeFailuresTls,
+		now.HandshakeFailuresProxyConnect-last.HandshakeFailuresProxyConnect,
+		now.HandshakeFailuresAuth-last.HandshakeFailuresAuth,
+		now.HandshakeFailuresUpgradeRejected-last.HandshakeFailuresUpgradeRejected,
+		now.HandshakeFailuresIO-last.HandshakeFailuresIO,
+		now.HandshakeFailuresOther-last.HandshakeFailuresOther,
+	)
+}
+
+func formatH1PlusSummaryLine(now, last connect.H1PlusStatsSnapshot, maxMsgSeen int64, enabled bool) string {
+	avg := time.Duration(0)
+	if attempts := now.Attempts - last.Attempts; 0 < attempts {
+		avg = time.Duration((now.HandshakeNanos-last.HandshakeNanos)/attempts) * time.Nanosecond
+	}
+	failures := now.HandshakeFailures - last.HandshakeFailures
+	classes := formatH1PlusHandshakeClasses(now, last)
+	return fmt.Sprintf("[h1plus] last 10m: attempts=%d accepted=%d websocket=%d fallbacks(rejected=%d invalid=%d io=%d proxy=%d) handshake_failures=%d %s auth_failures=%d avg_handshake=%s messages=%d bytes=%dMiB flushes=%d errors(read=%d write=%d) largest_message=%dB enabled=%t",
+		now.Attempts-last.Attempts, now.Accepted-last.Accepted, now.WebSocketSelected-last.WebSocketSelected,
+		now.FallbackRejected-last.FallbackRejected, now.FallbackInvalid-last.FallbackInvalid, now.FallbackIO-last.FallbackIO, now.FallbackProxy-last.FallbackProxy,
+		failures, classes, now.AuthFailures-last.AuthFailures, avg.Round(time.Millisecond),
+		now.Messages-last.Messages, (now.Bytes-last.Bytes)>>20, now.Flushes-last.Flushes,
+		now.ReadErrors-last.ReadErrors, now.WriteErrors-last.WriteErrors, maxMsgSeen, enabled)
+}
+
 var h1PlusSummaryOnce sync.Once
 
 // startH1PlusSummaryLog writes one line every ten minutes saying how the H1 dials
 // of every identity ended, so the carrier in use shows in the log without a
 // metrics scrape:
 //
-//	[h1plus] last 10m: attempts=330 accepted=328 websocket=2 fallbacks(rejected=2 invalid=0 io=0 proxy=0) handshake_failures=0 auth_failures=0 avg_handshake=186ms messages=48210 bytes=61MiB flushes=9012 errors(read=3 write=1) largest_message=15999B
+//	[h1plus] last 10m: attempts=330 accepted=328 websocket=2 fallbacks(rejected=2 invalid=0 io=0 proxy=0) handshake_failures=0 handshake_classes(none) auth_failures=0 avg_handshake=186ms messages=48210 bytes=61MiB flushes=9012 errors(read=3 write=1) largest_message=15999B enabled=true
 func startH1PlusSummaryLog(ctx context.Context) {
 	h1PlusSummaryOnce.Do(func() {
 		go connect.HandleError(func() {
@@ -65,16 +115,7 @@ func startH1PlusSummaryLog(ctx context.Context) {
 				case <-ticker.C:
 				}
 				now := h1PlusProcessStats.Snapshot()
-				avg := time.Duration(0)
-				if attempts := now.Attempts - last.Attempts; 0 < attempts {
-					avg = time.Duration((now.HandshakeNanos-last.HandshakeNanos)/attempts) * time.Nanosecond
-				}
-				tlog("[h1plus] last 10m: attempts=%d accepted=%d websocket=%d fallbacks(rejected=%d invalid=%d io=%d proxy=%d) handshake_failures=%d auth_failures=%d avg_handshake=%s messages=%d bytes=%dMiB flushes=%d errors(read=%d write=%d) largest_message=%dB enabled=%t\n",
-					now.Attempts-last.Attempts, now.Accepted-last.Accepted, now.WebSocketSelected-last.WebSocketSelected,
-					now.FallbackRejected-last.FallbackRejected, now.FallbackInvalid-last.FallbackInvalid, now.FallbackIO-last.FallbackIO, now.FallbackProxy-last.FallbackProxy,
-					now.HandshakeFailures-last.HandshakeFailures, now.AuthFailures-last.AuthFailures, avg.Round(time.Millisecond),
-					now.Messages-last.Messages, (now.Bytes-last.Bytes)>>20, now.Flushes-last.Flushes,
-					now.ReadErrors-last.ReadErrors, now.WriteErrors-last.WriteErrors, connect.H1MaxMessageSeen(), connect.H1PlusAvailable())
+				tlog("%s\n", formatH1PlusSummaryLine(now, last, connect.H1MaxMessageSeen(), connect.H1PlusAvailable()))
 				last = now
 			}
 		})
