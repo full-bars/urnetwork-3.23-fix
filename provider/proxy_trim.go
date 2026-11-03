@@ -257,6 +257,33 @@ func previewViaControlSocket(count int) (string, error) {
 	return resp.Value, nil
 }
 
+// startupTrimHeldKeys is the held-set half of startupTrimSelection, split out so
+// every caller that must agree with admission asks the one function: the keys
+// the worst-first ranking holds back to bring len(keys) down to cap. A cap <= 0
+// or >= len(keys) holds nothing.
+func startupTrimHeldKeys(keys []string, cap int, state map[string]ProxyEntry, gradeFor func(string) (float64, bool), earnings func(string) float64) map[string]bool {
+	if cap <= 0 || len(keys) <= cap {
+		return nil
+	}
+	traffic := make(map[string]uint64, len(keys))
+	for _, k := range keys {
+		// Port hardening: v33 always passes a real earnings function (its own
+		// tests use a no-op), but a caller without the earnings store (tests,
+		// or a path that has not loaded it) passes nil. Treat nil as "no
+		// earnings" rather than panicking on the first key.
+		if earnings != nil {
+			if e := earnings(k); e > 0 {
+				traffic[k] = uint64(e)
+			}
+		}
+	}
+	heldSet := make(map[string]bool, len(keys)-cap)
+	for _, k := range selectWorstRunningProxies(state, gradeFor, traffic, keys, len(keys)-cap) {
+		heldSet[k] = true
+	}
+	return heldSet
+}
+
 // startupTrimSelection splits the desired list into the proxies to launch and
 // the proxies to hold back so a fresh provider never launches more than the
 // operator's trim cap. Nothing is running yet, so the "worst" are chosen from
@@ -269,18 +296,10 @@ func startupTrimSelection(all []*connect.ProxySettings, cap int, state map[strin
 		return all, nil
 	}
 	keys := make([]string, 0, len(all))
-	traffic := make(map[string]uint64, len(all))
 	for _, p := range all {
-		k := p.Key()
-		keys = append(keys, k)
-		if e := earnings(k); e > 0 {
-			traffic[k] = uint64(e)
-		}
+		keys = append(keys, p.Key())
 	}
-	heldSet := make(map[string]bool, len(all)-cap)
-	for _, k := range selectWorstRunningProxies(state, gradeFor, traffic, keys, len(all)-cap) {
-		heldSet[k] = true
-	}
+	heldSet := startupTrimHeldKeys(keys, cap, state, gradeFor, earnings)
 	launch = make([]*connect.ProxySettings, 0, cap)
 	held = make([]*connect.ProxySettings, 0, len(all)-cap)
 	for _, p := range all {

@@ -98,6 +98,13 @@ type ProxyEntry struct {
 	Pending bool `json:"pending,omitempty"`
 }
 
+// isDegradedHealth reports whether health belongs to the degraded family
+// (recently_offline, offline, long_offline), distinct from up, dead, inactive,
+// or parked.
+func isDegradedHealth(health string) bool {
+	return health == "recently_offline" || health == "offline" || health == "long_offline"
+}
+
 func proxyStatePath() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -114,6 +121,9 @@ func readProxyState() (*ProxyState, error) {
 	return readProxyStateFrom(path)
 }
 
+// readProxyStateFrom is a pure read: it never stamps, repairs or writes. A
+// writer that needs to change the file does so under proxyStateMu and the
+// cross-process lock (see runProxyURLCleanupOnce for the down_since stamp).
 func readProxyStateFrom(path string) (*ProxyState, error) {
 	b, err := os.ReadFile(path)
 	if errors.Is(err, os.ErrNotExist) {
