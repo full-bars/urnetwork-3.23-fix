@@ -1547,8 +1547,32 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	// the default, whether shorter or longer.
 	degradedThreshold := DefaultDegradedCleanupThreshold
 	if urlState, err := readProxyURLState(); err == nil && urlState.DegradedCleanupThreshold != "" {
-		if d, err := time.ParseDuration(urlState.DegradedCleanupThreshold); err == nil && d > 0 {
+		d, err := time.ParseDuration(urlState.DegradedCleanupThreshold)
+		if err != nil || d <= 0 {
+			tlog("[proxy][cleanup] warning: unparseable or negative degraded_cleanup_threshold %q, using %s fallback\n",
+				urlState.DegradedCleanupThreshold, degradedThreshold)
+		} else {
 			degradedThreshold = d
+		}
+	}
+
+	var heldMembers map[string]struct{}
+	if trimCap, _, err := effectiveTrimCapSource(); err == nil && trimCap > 0 && len(state.Proxies) > trimCap {
+		urlState, _ := readProxyURLState()
+		gradeFor := buildTrimGradeResolver(state, urlState)
+		traffic := make(map[string]uint64, len(state.Proxies))
+		now := time.Now()
+		keys := make([]string, 0, len(state.Proxies))
+		for key := range state.Proxies {
+			keys = append(keys, key)
+			if earned := proxyEarningsScore(key, now); earned > 0 {
+				traffic[key] = uint64(earned)
+			}
+		}
+		worst := selectWorstRunningProxies(state.Proxies, gradeFor, traffic, keys, len(state.Proxies)-trimCap)
+		heldMembers = make(map[string]struct{}, len(worst))
+		for _, key := range worst {
+			heldMembers[key] = struct{}{}
 		}
 	}
 
@@ -1559,6 +1583,9 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 			continue
 		}
 		if scope == "url" && e.Source != "url" {
+			continue
+		}
+		if _, isHeld := heldMembers[addr]; isHeld {
 			continue
 		}
 

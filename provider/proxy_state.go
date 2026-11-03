@@ -137,18 +137,22 @@ func readProxyStateFrom(path string) (*ProxyState, error) {
 		s.Proxies = map[string]ProxyEntry{}
 	}
 	// Backfill DownSince for degraded members loaded without a down timestamp.
-	// LastGraded is used when recorded; otherwise DownSince starts from the
-	// read moment so the normal cleanup window ages the member into removal
-	// instead of either deleting on sight or staying immortal.
+	// LastGraded must never be used: it indicates when a member was last alive
+	// and working, not when it went down. DownSince starts from the read moment
+	// and is immediately persisted so the normal cleanup window ages the member
+	// into removal instead of either deleting on sight or staying immortal.
 	readAt := time.Now()
+	var stampedLegacy bool
 	for k, e := range s.Proxies {
 		if isDegradedHealth(e.Health) && e.DownSince == "" {
-			if !e.LastGraded.IsZero() {
-				e.DownSince = e.LastGraded.UTC().Format(time.RFC3339)
-			} else {
-				e.DownSince = readAt.UTC().Format(time.RFC3339)
-			}
+			e.DownSince = readAt.UTC().Format(time.RFC3339)
 			s.Proxies[k] = e
+			stampedLegacy = true
+		}
+	}
+	if stampedLegacy {
+		if err := writeProxyStateTo(path, &s); err != nil {
+			tlog("[proxy] warning: could not persist legacy down_since stamp: %v\n", err)
 		}
 	}
 	return &s, nil

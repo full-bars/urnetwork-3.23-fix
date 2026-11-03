@@ -1,6 +1,8 @@
 package main
 
 import (
+	"os"
+	"strings"
 	"testing"
 	"time"
 )
@@ -146,122 +148,177 @@ func TestDegradedCleanup_ExplicitThresholdWins(t *testing.T) {
 	})
 }
 
-// TestDegradedCleanup_EmptyDownSinceBackfill verifies that a degraded member
-// without a DownSince is backfilled rather than deleted on sight on the first
-// pass, and ages into removal on a pass after the window.
-func TestDegradedCleanup_EmptyDownSinceBackfill(t *testing.T) {
+// TestDegradedCleanup_HiccupNotRetired verifies that a member graded seven hours
+// ago that blipped or degraded recently (e.g. 10m ago or legacy without DownSince)
+// is NOT retired based on LastGraded. LastGraded reflects when a proxy was alive
+// and working, not when it went down.
+func TestDegradedCleanup_HiccupNotRetired(t *testing.T) {
 	withTempHome(t)
 
+	addr := "20.0.0.1:1080"
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache: map[string]ProxyURLEntry{addr: {}},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
 	now := time.Now()
-
-	// Subtest 1: Degraded member with no DownSince and no LastGraded.
-	// First pass backfills DownSince to the read moment and does NOT remove it.
-	// After the window elapses, a subsequent pass removes it.
-	t.Run("backfill_from_reading_moment_not_deleted_on_first_pass", func(t *testing.T) {
-		addr := "20.0.0.1:1080"
-		if err := writeProxyURLState(&ProxyURLState{
-			Cache: map[string]ProxyURLEntry{addr: {}},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeProxyState(&ProxyState{
-			StartedAt: now.Add(-70 * time.Minute),
-			Proxies: map[string]ProxyEntry{
-				addr: {
-					Health: "recently_offline",
-					Source: "url",
-				},
+	// Member was last graded 7h ago while alive and working, and has empty DownSince on disk (legacy).
+	// It must NOT be backfilled from LastGraded and instantly deleted.
+	if err := writeProxyState(&ProxyState{
+		StartedAt: now.Add(-70 * time.Minute),
+		Proxies: map[string]ProxyEntry{
+			addr: {
+				Health:     "recently_offline",
+				Source:     "url",
+				LastGraded: now.Add(-7 * time.Hour),
 			},
-		}); err != nil {
-			t.Fatal(err)
-		}
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
 
-		// Verify backfill happens on read:
-		st, err := readProxyState()
-		if err != nil {
-			t.Fatal(err)
-		}
-		if st.Proxies[addr].DownSince == "" {
-			t.Fatalf("%s DownSince was not backfilled on read", addr)
-		}
-		ds, err := time.Parse(time.RFC3339, st.Proxies[addr].DownSince)
-		if err != nil || time.Since(ds) > time.Minute {
-			t.Fatalf("%s DownSince = %q, want recent reading moment", addr, st.Proxies[addr].DownSince)
-		}
+	removed := runProxyURLCleanupOnce("url")
+	if removed != 0 {
+		t.Fatalf("hiccup member was retired: removed = %d, want 0", removed)
+	}
 
-		// First pass: freshly backfilled down clock is within the 6h window -> not removed.
-		removed := runProxyURLCleanupOnce("url")
-		if removed != 0 {
-			t.Fatalf("first pass removed = %d, want 0 (must not delete on sight)", removed)
-		}
-		urlState, _ := readProxyURLState()
-		if _, ok := urlState.Cache[addr]; !ok {
-			t.Fatalf("member %s was deleted on sight instead of waiting for window", addr)
-		}
+	urlState, _ := readProxyURLState()
+	if _, ok := urlState.Cache[addr]; !ok {
+		t.Fatalf("hiccup member %s was evicted from cache", addr)
+	}
+}
 
-		// Simulate the member aging past the 6h default window:
-		st, _ = readProxyState()
-		entry := st.Proxies[addr]
-		entry.DownSince = now.Add(-7 * time.Hour).UTC().Format(time.RFC3339)
-		st.Proxies[addr] = entry
-		if err := writeProxyState(st); err != nil {
-			t.Fatal(err)
-		}
+// TestDegradedCleanup_LegacyEmptyDownSincePersisted verifies that a legacy member
+// with an empty DownSince gets stamped from the read moment, the stamp is persisted
+// to disk immediately, and a subsequent read sees the same persisted timestamp
+// rather than generating a fresh one.
+func TestDegradedCleanup_LegacyEmptyDownSincePersisted(t *testing.T) {
+	withTempHome(t)
 
-		// Second pass after aging: removed.
-		removed2 := runProxyURLCleanupOnce("url")
-		if removed2 != 1 {
-			t.Fatalf("second pass after aging removed = %d, want 1", removed2)
-		}
-		urlState2, _ := readProxyURLState()
-		if _, ok := urlState2.Cache[addr]; ok {
-			t.Fatalf("aged member %s should have been removed on second pass", addr)
-		}
-	})
-
-	// Subtest 2: Degraded member with no DownSince, but LastGraded is set 7h ago.
-	// Backfilled from LastGraded; since LastGraded > 6h ago, it is removed on the pass.
-	t.Run("backfill_from_last_graded", func(t *testing.T) {
-		addr := "20.0.0.2:1080"
-		if err := writeProxyURLState(&ProxyURLState{
-			Cache: map[string]ProxyURLEntry{addr: {}},
-		}); err != nil {
-			t.Fatal(err)
-		}
-		if err := writeProxyState(&ProxyState{
-			StartedAt: now.Add(-70 * time.Minute),
-			Proxies: map[string]ProxyEntry{
-				addr: {
-					Health:     "recently_offline",
-					Source:     "url",
-					LastGraded: now.Add(-7 * time.Hour),
-				},
+	addr := "20.0.0.2:1080"
+	if err := writeProxyState(&ProxyState{
+		Proxies: map[string]ProxyEntry{
+			addr: {
+				Health: "recently_offline",
+				Source: "url",
 			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// First read stamps DownSince and persists it to disk.
+	firstState, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	firstStamp := firstState.Proxies[addr].DownSince
+	if firstStamp == "" {
+		t.Fatalf("%s DownSince was not stamped on first read", addr)
+	}
+
+	time.Sleep(15 * time.Millisecond)
+
+	// Second read must see the identical persisted timestamp, not a fresh reading moment.
+	secondState, err := readProxyState()
+	if err != nil {
+		t.Fatal(err)
+	}
+	secondStamp := secondState.Proxies[addr].DownSince
+	if secondStamp != firstStamp {
+		t.Fatalf("second read saw fresh stamp %q, want persisted %q", secondStamp, firstStamp)
+	}
+
+	// Verify the stamp is physically persisted in the disk file.
+	path, err := proxyStatePath()
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), firstStamp) {
+		t.Fatalf("persisted proxy.state does not contain timestamp %q:\n%s", firstStamp, string(raw))
+	}
+}
+
+// TestDegradedCleanup_TrimHeldNotRetired verifies that a degraded member held
+// back by the trim cap is not retired, even if degraded past the threshold.
+func TestDegradedCleanup_TrimHeldNotRetired(t *testing.T) {
+	withTempHome(t)
+
+	upAddr := "20.0.0.10:1080"
+	degradedAddr := "20.0.0.11:1080"
+
+	if err := writeProxyURLState(&ProxyURLState{
+		Cache: map[string]ProxyURLEntry{
+			upAddr:       {},
+			degradedAddr: {},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	now := time.Now()
+	if err := writeProxyState(&ProxyState{
+		StartedAt: now.Add(-70 * time.Minute),
+		Proxies: map[string]ProxyEntry{
+			upAddr: {
+				Health: "up",
+				Source: "url",
+			},
+			degradedAddr: {
+				Health:    "recently_offline",
+				Source:    "url",
+				DownSince: now.Add(-24 * time.Hour).UTC().Format(time.RFC3339),
+			},
+		},
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	// Set trim cap to 1. Total proxies = 2.
+	// degradedAddr has worse health rank than upAddr, so degradedAddr is held.
+	if err := writeTrimTarget(1); err != nil {
+		t.Fatal(err)
+	}
+
+	removed := runProxyURLCleanupOnce("url")
+	if removed != 0 {
+		t.Fatalf("trim-held degraded member was retired: removed = %d, want 0", removed)
+	}
+
+	urlState, _ := readProxyURLState()
+	if _, ok := urlState.Cache[degradedAddr]; !ok {
+		t.Fatalf("trim-held degraded member %s was evicted from cache", degradedAddr)
+	}
+}
+
+// TestDegradedCleanup_UnparseableThresholdWarns verifies that when degraded_cleanup_threshold
+// cannot be parsed or is negative/non-positive, a warning naming the value and fallback window
+// is logged, and the default window is used.
+func TestDegradedCleanup_UnparseableThresholdWarns(t *testing.T) {
+	withTempHome(t)
+
+	for _, bad := range []string{"not-a-duration", "-5m", "0s"} {
+		if err := writeProxyURLState(&ProxyURLState{
+			DegradedCleanupThreshold: bad,
 		}); err != nil {
 			t.Fatal(err)
 		}
 
-		st, err := readProxyState()
-		if err != nil {
-			t.Fatal(err)
+		out := captureTlog(t, func() {
+			runProxyURLCleanupOnce("url")
+		})
+		if !strings.Contains(out, bad) {
+			t.Fatalf("expected warning for bad threshold %q, got:\n%s", bad, out)
 		}
-		if st.Proxies[addr].DownSince == "" {
-			t.Fatalf("%s DownSince was not backfilled", addr)
+		if !strings.Contains(out, DefaultDegradedCleanupThreshold.String()) {
+			t.Fatalf("expected warning to mention fallback window %v, got:\n%s", DefaultDegradedCleanupThreshold, out)
 		}
-		ds, err := time.Parse(time.RFC3339, st.Proxies[addr].DownSince)
-		if err != nil || time.Since(ds) < 6*time.Hour {
-			t.Fatalf("%s DownSince = %q, want ~7h ago from LastGraded", addr, st.Proxies[addr].DownSince)
-		}
-
-		removed := runProxyURLCleanupOnce("url")
-		if removed != 1 {
-			t.Fatalf("removed = %d, want 1 for member whose LastGraded was 7h ago", removed)
-		}
-		urlState, _ := readProxyURLState()
-		if _, ok := urlState.Cache[addr]; ok {
-			t.Fatalf("member %s with LastGraded 7h ago should have been removed", addr)
-		}
-	})
+	}
 }
 
 // TestDegradedCleanup_FreshlyDegradedUntouched verifies that a degraded member
