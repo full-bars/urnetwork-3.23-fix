@@ -1542,15 +1542,18 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	uptime := time.Since(state.StartedAt)
 	const minUptime = 65 * time.Minute
 
-	// Read degraded threshold from proxy_url.json (falls back to DefaultDegradedCleanupThreshold
-	// when unset, unparsable or not positive). An explicit configured duration wins over
-	// the default, whether shorter or longer.
-	degradedThreshold := DefaultDegradedCleanupThreshold
+	// Degraded eviction is opt-in. An unset threshold means degraded members are
+	// never removed automatically: only dead and inactive ones are, as before.
+	// Removing a degraded member is the operator's decision to make explicitly,
+	// because a member that cannot recover while the trim cap holds it would
+	// otherwise be deleted for the pool's own configuration. When a window is
+	// set, it is honoured as given, shorter or longer than the six hour default.
+	var degradedThreshold time.Duration
 	if urlState, err := readProxyURLState(); err == nil && urlState.DegradedCleanupThreshold != "" {
 		d, err := time.ParseDuration(urlState.DegradedCleanupThreshold)
 		if err != nil || d <= 0 {
-			tlog("[proxy][cleanup] warning: unparseable or negative degraded_cleanup_threshold %q, using %s fallback\n",
-				urlState.DegradedCleanupThreshold, degradedThreshold)
+			tlog("[proxy][cleanup] warning: unparseable or negative degraded_cleanup_threshold %q, leaving degraded eviction off\n",
+				urlState.DegradedCleanupThreshold)
 		} else {
 			degradedThreshold = d
 		}

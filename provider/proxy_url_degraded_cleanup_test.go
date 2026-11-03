@@ -7,11 +7,12 @@ import (
 	"time"
 )
 
-// TestDegradedCleanup_UnsetThresholdUsesDefault verifies that when
-// DegradedCleanupThreshold is unset or empty, the 6-hour default is used:
-// members degraded longer than 6h are removed, while members degraded less
-// than 6h are preserved.
-func TestDegradedCleanup_UnsetThresholdUsesDefault(t *testing.T) {
+// TestDegradedCleanup_UnsetThresholdRetiresNothing verifies that when
+// DegradedCleanupThreshold is unset or empty, degraded eviction is opt-in:
+// with no threshold configured, a member that has been degraded for longer
+// than any plausible window is still kept. Deleting proxy capacity must
+// never be the default behaviour.
+func TestDegradedCleanup_UnsetThresholdRetiresNothing(t *testing.T) {
 	withTempHome(t)
 
 	oldAddr := "1.1.1.1:1080"
@@ -47,16 +48,16 @@ func TestDegradedCleanup_UnsetThresholdUsesDefault(t *testing.T) {
 	}
 
 	removed := runProxyURLCleanupOnce("url")
-	if removed != 1 {
-		t.Fatalf("removed = %d, want 1", removed)
+	if removed != 0 {
+		t.Fatalf("removed = %d with no threshold configured, want 0", removed)
 	}
 
 	urlState, _ := readProxyURLState()
-	if _, ok := urlState.Cache[oldAddr]; ok {
-		t.Errorf("expected %s (degraded 7h) to be removed", oldAddr)
+	if _, ok := urlState.Cache[oldAddr]; !ok {
+		t.Errorf("expected %s (degraded 7h) to be KEPT when eviction is off", oldAddr)
 	}
 	if _, ok := urlState.Cache[youngAddr]; !ok {
-		t.Errorf("expected %s (degraded 5h) to be kept under 6h default", youngAddr)
+		t.Errorf("expected %s to be kept when eviction is off", youngAddr)
 	}
 }
 
@@ -298,7 +299,7 @@ func TestDegradedCleanup_TrimHeldNotRetired(t *testing.T) {
 
 // TestDegradedCleanup_UnparseableThresholdWarns verifies that when degraded_cleanup_threshold
 // cannot be parsed or is negative/non-positive, a warning naming the value and fallback window
-// is logged, and the default window is used.
+// is logged, and degraded eviction stays off.
 func TestDegradedCleanup_UnparseableThresholdWarns(t *testing.T) {
 	withTempHome(t)
 
@@ -315,8 +316,8 @@ func TestDegradedCleanup_UnparseableThresholdWarns(t *testing.T) {
 		if !strings.Contains(out, bad) {
 			t.Fatalf("expected warning for bad threshold %q, got:\n%s", bad, out)
 		}
-		if !strings.Contains(out, DefaultDegradedCleanupThreshold.String()) {
-			t.Fatalf("expected warning to mention fallback window %v, got:\n%s", DefaultDegradedCleanupThreshold, out)
+		if !strings.Contains(out, "leaving degraded eviction off") {
+			t.Fatalf("expected warning to say eviction stays off, got:\n%s", out)
 		}
 	}
 }
@@ -391,8 +392,11 @@ func TestDegradedCleanup_UptimeGuardHolds(t *testing.T) {
 	withTempHome(t)
 
 	addr := "50.0.0.1:1080"
+	// A window is configured on purpose: without one, eviction is off and this
+	// test would pass without ever exercising the warmup guard it exists for.
 	if err := writeProxyURLState(&ProxyURLState{
-		Cache: map[string]ProxyURLEntry{addr: {}},
+		Cache:                    map[string]ProxyURLEntry{addr: {}},
+		DegradedCleanupThreshold: "1h",
 	}); err != nil {
 		t.Fatal(err)
 	}
