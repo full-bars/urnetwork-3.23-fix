@@ -1,12 +1,19 @@
 package connect
 
 import (
+	"context"
+	"crypto/tls"
+	"crypto/x509"
 	"errors"
 	"fmt"
 	"io"
 	"math"
 	"net"
+	"net/http"
+	"os"
+	"strings"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/gorilla/websocket"
@@ -245,23 +252,81 @@ type H1PlusStats struct {
 	flushes, writes, messages, bytes, readErrors, writeErrors    atomic.Uint64
 	fallbackRejected, fallbackInvalid, fallbackIO, fallbackProxy atomic.Uint64
 	webSocketSelected, handshakeFailures                         atomic.Uint64
+	handshakeFailuresTimeout, handshakeFailuresTls               atomic.Uint64
+	handshakeFailuresProxyConnect, handshakeFailuresAuth         atomic.Uint64
+	handshakeFailuresUpgradeRejected, handshakeFailuresIO        atomic.Uint64
+	handshakeFailuresOther, handshakeFailureNanos                atomic.Uint64
 }
 type H1PlusStatsSnapshot struct {
 	Attempts, Accepted, Fallbacks, AuthFailures, HandshakeNanos  uint64
 	Flushes, Writes, Messages, Bytes, ReadErrors, WriteErrors    uint64
 	FallbackRejected, FallbackInvalid, FallbackIO, FallbackProxy uint64
 	WebSocketSelected, HandshakeFailures                         uint64
+
+	// HandshakeFailuresTimeout counts bounded handshakes that hit a dial,
+	// TLS, or upgrade response deadline. Distinguishes deadline exhaustion
+	// from explicit protocol refusals or stream resets.
+	HandshakeFailuresTimeout uint64
+	// HandshakeFailuresTls counts certificate validation errors, TLS alert
+	// rejections, or malformed TLS record headers. Distinguishes cryptographic
+	// or trust configuration failures from network dropouts.
+	HandshakeFailuresTls uint64
+	// HandshakeFailuresProxyConnect counts failures reaching the intermediate
+	// proxy or proxy refusals during HTTP CONNECT tunnel establishment.
+	// Distinguishes proxy hop failures from origin endpoint failures.
+	HandshakeFailuresProxyConnect uint64
+	// HandshakeFailuresAuth counts terminal HTTP 401 Unauthorized or 403
+	// Forbidden responses during upgrade handshake. Distinguishes credential
+	// rejections from other server refusals and protocol incompatibilities.
+	HandshakeFailuresAuth uint64
+	// HandshakeFailuresUpgradeRejected counts HTTP responses with status codes
+	// other than 401/403 refusing the upgrade request. Distinguishes edge
+	// gateway or server rejections (e.g. 502, 503, 400) from auth rejections.
+	HandshakeFailuresUpgradeRejected uint64
+	// HandshakeFailuresIO counts network read, write, unexpected EOF, closed
+	// pipe, or connection reset errors on the underlying connection.
+	// Distinguishes active stream drops from deadlines and HTTP refusals.
+	HandshakeFailuresIO uint64
+	// HandshakeFailuresOther counts failed bounded handshakes not classified into
+	// any other bounded category. Keeps remaining failures in a real bucket
+	// rather than silently dropping them.
+	HandshakeFailuresOther uint64
+	// HandshakeFailureNanos counts total nanoseconds elapsed across all failed
+	// bounded handshakes. Enables reading the average duration of failed
+	// handshakes beside avg_handshake.
+	HandshakeFailureNanos uint64
 }
 
 func (s *H1PlusStats) Snapshot() H1PlusStatsSnapshot {
 	if s == nil {
 		return H1PlusStatsSnapshot{}
 	}
+	// The failure total is derived from the classes, never loaded beside them.
+	// Recording increments the total and its class as two separate atomics, so
+	// reading both could report failures=1 with an empty breakdown; summing the
+	// classes the snapshot itself reports keeps the advertised invariant true
+	// for every reader, including one that samples mid-record.
+	failureTimeout := s.handshakeFailuresTimeout.Load()
+	failureTls := s.handshakeFailuresTls.Load()
+	failureProxyConnect := s.handshakeFailuresProxyConnect.Load()
+	failureAuth := s.handshakeFailuresAuth.Load()
+	failureUpgradeRejected := s.handshakeFailuresUpgradeRejected.Load()
+	failureIO := s.handshakeFailuresIO.Load()
+	failureOther := s.handshakeFailuresOther.Load()
 	return H1PlusStatsSnapshot{
 		Attempts: s.attempts.Load(), Accepted: s.accepted.Load(), Fallbacks: s.fallbacks.Load(), AuthFailures: s.authFailures.Load(), HandshakeNanos: s.handshakeNanos.Load(),
 		Flushes: s.flushes.Load(), Writes: s.writes.Load(), Messages: s.messages.Load(), Bytes: s.bytes.Load(), ReadErrors: s.readErrors.Load(), WriteErrors: s.writeErrors.Load(),
 		FallbackRejected: s.fallbackRejected.Load(), FallbackInvalid: s.fallbackInvalid.Load(), FallbackIO: s.fallbackIO.Load(), FallbackProxy: s.fallbackProxy.Load(),
-		WebSocketSelected: s.webSocketSelected.Load(), HandshakeFailures: s.handshakeFailures.Load(),
+		WebSocketSelected:                s.webSocketSelected.Load(),
+		HandshakeFailures:                failureTimeout + failureTls + failureProxyConnect + failureAuth + failureUpgradeRejected + failureIO + failureOther,
+		HandshakeFailuresTimeout:         failureTimeout,
+		HandshakeFailuresTls:             failureTls,
+		HandshakeFailuresProxyConnect:    failureProxyConnect,
+		HandshakeFailuresAuth:            failureAuth,
+		HandshakeFailuresUpgradeRejected: failureUpgradeRejected,
+		HandshakeFailuresIO:              failureIO,
+		HandshakeFailuresOther:           failureOther,
+		HandshakeFailureNanos:            s.handshakeFailureNanos.Load(),
 	}
 }
 
@@ -291,9 +356,190 @@ func RecordH1PlusSelection(stats *H1PlusStats, elapsed time.Duration, err error)
 		}
 	} else {
 		stats.handshakeFailures.Add(1)
+		stats.handshakeFailureNanos.Add(uint64(max(0, elapsed)))
 		var upgradeErr *HTTPUpgradeError
 		if errors.As(err, &upgradeErr) && (upgradeErr.StatusCode == 401 || upgradeErr.StatusCode == 403) {
 			stats.authFailures.Add(1)
 		}
+		switch classifyH1PlusFailure(err) {
+		case h1PlusFailureTimeout:
+			stats.handshakeFailuresTimeout.Add(1)
+		case h1PlusFailureTls:
+			stats.handshakeFailuresTls.Add(1)
+		case h1PlusFailureProxyConnect:
+			stats.handshakeFailuresProxyConnect.Add(1)
+		case h1PlusFailureAuth:
+			stats.handshakeFailuresAuth.Add(1)
+		case h1PlusFailureUpgradeRejected:
+			stats.handshakeFailuresUpgradeRejected.Add(1)
+		case h1PlusFailureIO:
+			stats.handshakeFailuresIO.Add(1)
+		case h1PlusFailureOther:
+			stats.handshakeFailuresOther.Add(1)
+		}
 	}
+}
+
+type h1PlusFailureClass uint8
+
+const (
+	h1PlusFailureTimeout h1PlusFailureClass = iota
+	h1PlusFailureTls
+	h1PlusFailureProxyConnect
+	h1PlusFailureAuth
+	h1PlusFailureUpgradeRejected
+	h1PlusFailureIO
+	h1PlusFailureOther
+)
+
+func classifyH1PlusFailure(err error) h1PlusFailureClass {
+	// A status the server actually sent is stronger evidence than a transport
+	// error joined onto it: the upgrade path joins its cleanup and context
+	// errors with the failure it was already returning, so a 401 followed by a
+	// deadline is an auth rejection, not a timeout. Classification therefore
+	// reads the HTTP evidence first and the transport causes after it.
+	if isAuthFailure(err) {
+		return h1PlusFailureAuth
+	}
+	if isUpgradeRejectedFailure(err) {
+		return h1PlusFailureUpgradeRejected
+	}
+	if isTimeoutFailure(err) {
+		return h1PlusFailureTimeout
+	}
+	if isTLSFailure(err) {
+		return h1PlusFailureTls
+	}
+	if isProxyConnectFailure(err) {
+		return h1PlusFailureProxyConnect
+	}
+	if isIOFailure(err) {
+		return h1PlusFailureIO
+	}
+	return h1PlusFailureOther
+}
+
+func isTimeoutFailure(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) ||
+		errors.Is(err, os.ErrDeadlineExceeded) ||
+		errors.Is(err, syscall.ETIMEDOUT) {
+		return true
+	}
+	var netErr net.Error
+	if errors.As(err, &netErr) && netErr.Timeout() {
+		return true
+	}
+	return false
+}
+
+func isTLSFailure(err error) bool {
+	var (
+		recHdrErr   *tls.RecordHeaderError
+		alertVal    tls.AlertError
+		alertPtr    *tls.AlertError
+		certVerErr  *tls.CertificateVerificationError
+		echErr      *tls.ECHRejectionError
+		certInvVal  x509.CertificateInvalidError
+		certInvPtr  *x509.CertificateInvalidError
+		hostVal     x509.HostnameError
+		hostPtr     *x509.HostnameError
+		unkAuthVal  x509.UnknownAuthorityError
+		unkAuthPtr  *x509.UnknownAuthorityError
+		sysRootsVal x509.SystemRootsError
+		sysRootsPtr *x509.SystemRootsError
+		constrVal   x509.ConstraintViolationError
+		constrPtr   *x509.ConstraintViolationError
+		insecVal    x509.InsecureAlgorithmError
+		insecPtr    *x509.InsecureAlgorithmError
+	)
+	if errors.As(err, &recHdrErr) ||
+		errors.As(err, &alertVal) ||
+		errors.As(err, &alertPtr) ||
+		errors.As(err, &certVerErr) ||
+		errors.As(err, &echErr) ||
+		errors.As(err, &certInvVal) ||
+		errors.As(err, &certInvPtr) ||
+		errors.As(err, &hostVal) ||
+		errors.As(err, &hostPtr) ||
+		errors.As(err, &unkAuthVal) ||
+		errors.As(err, &unkAuthPtr) ||
+		errors.As(err, &sysRootsVal) ||
+		errors.As(err, &sysRootsPtr) ||
+		errors.As(err, &constrVal) ||
+		errors.As(err, &constrPtr) ||
+		errors.As(err, &insecVal) ||
+		errors.As(err, &insecPtr) {
+		return true
+	}
+	// Fallback to error message prefix when the Go crypto/tls package returns
+	// untyped errors for protocol alerts or handshake negotiation failures.
+	msg := err.Error()
+	if strings.HasPrefix(msg, "tls: ") || strings.Contains(msg, ": tls: ") {
+		return true
+	}
+	return false
+}
+
+func isProxyConnectFailure(err error) bool {
+	var upgradeErr *HTTPUpgradeError
+	if errors.As(err, &upgradeErr) && upgradeErr.Reason == "http-proxy" {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) && opErr.Op == "proxyconnect" {
+		return true
+	}
+	// Fallback to string matching when intermediate proxies or custom dialers
+	// return untyped errors indicating proxy CONNECT rejection or reachability failure.
+	msg := strings.ToLower(err.Error())
+	if strings.Contains(msg, "proxyconnect") || strings.Contains(msg, "proxy connect") {
+		return true
+	}
+	return false
+}
+
+func isAuthFailure(err error) bool {
+	var upgradeErr *HTTPUpgradeError
+	if errors.As(err, &upgradeErr) {
+		if upgradeErr.StatusCode == http.StatusUnauthorized || upgradeErr.StatusCode == http.StatusForbidden {
+			return true
+		}
+	}
+	return false
+}
+
+func isUpgradeRejectedFailure(err error) bool {
+	var upgradeErr *HTTPUpgradeError
+	if errors.As(err, &upgradeErr) {
+		if upgradeErr.StatusCode == http.StatusUnauthorized || upgradeErr.StatusCode == http.StatusForbidden {
+			return false
+		}
+		if upgradeErr.Reason == "rejected" || (upgradeErr.StatusCode >= 200 && upgradeErr.StatusCode < 600) {
+			return true
+		}
+	}
+	return false
+}
+
+func isIOFailure(err error) bool {
+	var upgradeErr *HTTPUpgradeError
+	if errors.As(err, &upgradeErr) && upgradeErr.Reason == "response-io" {
+		return true
+	}
+	if errors.Is(err, io.EOF) ||
+		errors.Is(err, io.ErrUnexpectedEOF) ||
+		errors.Is(err, io.ErrClosedPipe) ||
+		errors.Is(err, net.ErrClosed) ||
+		errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EPIPE) ||
+		errors.Is(err, syscall.ECONNABORTED) {
+		return true
+	}
+	var opErr *net.OpError
+	if errors.As(err, &opErr) {
+		if opErr.Op == "read" || opErr.Op == "write" {
+			return true
+		}
+	}
+	return false
 }
