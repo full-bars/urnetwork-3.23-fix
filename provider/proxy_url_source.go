@@ -1502,6 +1502,14 @@ func readURLCacheSize() int {
 	return len(state.Cache)
 }
 
+// DefaultDegradedCleanupThreshold is the fallback duration for degraded
+// URL-proxy cleanup when proxy_url.json leaves degraded_cleanup_threshold
+// empty, unparsable or not positive. An unset key means the operator
+// accepted the standard retirement schedule, not that degraded members
+// should accumulate forever: abandoned URL proxies must age out so the
+// pool does not bloat indefinitely.
+const DefaultDegradedCleanupThreshold = 6 * time.Hour
+
 // runProxyURLCleanupOnce removes dead/inactive/degraded proxies whose source
 // matches scope ("url" removes only url-sourced proxies; "all" removes any
 // source; any other value, including "none", removes nothing and returns 0).
@@ -1534,8 +1542,10 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 	uptime := time.Since(state.StartedAt)
 	const minUptime = 65 * time.Minute
 
-	// Read degraded threshold from proxy_url.json (may be empty = disabled).
-	var degradedThreshold time.Duration
+	// Read degraded threshold from proxy_url.json (falls back to DefaultDegradedCleanupThreshold
+	// when unset, unparsable or not positive). An explicit configured duration wins over
+	// the default, whether shorter or longer.
+	degradedThreshold := DefaultDegradedCleanupThreshold
 	if urlState, err := readProxyURLState(); err == nil && urlState.DegradedCleanupThreshold != "" {
 		if d, err := time.ParseDuration(urlState.DegradedCleanupThreshold); err == nil && d > 0 {
 			degradedThreshold = d
@@ -1571,13 +1581,12 @@ func runProxyURLCleanupOnce(scope string) (removed int) {
 		}
 
 		// Degraded: only remove if:
-		//   1. A threshold is configured
+		//   1. A threshold is configured (or the 6h default applies)
 		//   2. The provider has been running long enough (>65 min)
 		//   3. DownSince is set AND the proxy has been down past the threshold
 		// This prevents killing proxies that are still warming up or whose
 		// DownSince is stale from a prior provider session.
-		if degradedThreshold > 0 && uptime > minUptime &&
-			(e.Health == "recently_offline" || e.Health == "offline" || e.Health == "long_offline") {
+		if degradedThreshold > 0 && uptime > minUptime && isDegradedHealth(e.Health) {
 			if e.DownSince != "" {
 				if ds, err := time.Parse(time.RFC3339, e.DownSince); err == nil && time.Since(ds) >= degradedThreshold {
 					addrsBySource[e.Source] = append(addrsBySource[e.Source], addr)
