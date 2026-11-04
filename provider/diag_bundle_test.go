@@ -176,13 +176,15 @@ func TestDiagRetentionKeepsFiveNewest(t *testing.T) {
 	if err != nil {
 		t.Fatalf("runDiag: %v", err)
 	}
-	if res.Pruned != 1 {
-		t.Fatalf("Pruned = %d, want 1", res.Pruned)
+	if res.Pruned != 2 {
+		t.Fatalf("Pruned = %d, want 2", res.Pruned)
 	}
-	if _, err := os.Stat(filepath.Join(root, old[0])); !os.IsNotExist(err) {
-		t.Fatalf("oldest bundle survived: %v", err)
+	for _, n := range old[:2] {
+		if _, err := os.Stat(filepath.Join(root, n)); !os.IsNotExist(err) {
+			t.Fatalf("old bundle %s survived: %v", n, err)
+		}
 	}
-	for _, n := range old[1:] {
+	for _, n := range old[2:] {
 		if _, err := os.Stat(filepath.Join(root, n)); err != nil {
 			t.Fatalf("bundle %s should survive: %v", n, err)
 		}
@@ -212,8 +214,8 @@ func TestDiagPruneIsNotRunMidCapture(t *testing.T) {
 	if _, err := runDiag(context.Background(), env); err != nil {
 		t.Fatal(err)
 	}
-	if seen != 5 {
-		t.Fatalf("bundles during the capture = %d, want 5 (pruned before it started)", seen)
+	if seen != 4 {
+		t.Fatalf("bundles during the capture = %d, want 4 (pruned before it started)", seen)
 	}
 }
 

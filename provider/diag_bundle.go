@@ -256,7 +256,7 @@ func runDiag(ctx context.Context, env diagEnv) (res diagResult, err error) {
 	removeDiagOrphans(root)
 	// Pruning is here, before the capture, and never during it. It also runs
 	// before the free-space check, because pruning is what frees space.
-	res.Pruned = pruneDiagBundles(root, env.keep)
+	res.Pruned = pruneDiagBundles(root, max(env.keep-1, 0))
 
 	before := env.stats()
 	need := uint64(diagMinFreeBytes)
