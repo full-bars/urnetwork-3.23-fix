@@ -336,8 +336,8 @@ func TestDiagStuckStopCPUProfileIsBounded(t *testing.T) {
 	if !strings.Contains(string(summary), "StopCPUProfile did not return within 50ms") {
 		t.Fatalf("summary.txt does not say the CPU capture overran:\n%s", summary)
 	}
-	if _, err := os.Stat(filepath.Join(res.Dir, "cpu.pb.gz")); err != nil {
-		t.Fatalf("the overrunning CPU profile was not kept: %v", err)
+	if _, err := os.Stat(filepath.Join(res.Dir, "cpu.pb.gz")); !os.IsNotExist(err) {
+		t.Fatalf("the unfinalized CPU profile was committed: %v", err)
 	}
 }
 

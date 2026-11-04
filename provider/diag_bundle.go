@@ -432,7 +432,12 @@ func captureDiagCPU(ctx context.Context, env diagEnv, path string) (note string,
 	select {
 	case <-stopped:
 	case <-grace.C:
-		note = fmt.Sprintf("StopCPUProfile did not return within %s; cpu.pb.gz was kept as written and is incomplete", env.cpuStopGrace)
+		// The goroutine owns the open descriptor until StopCPUProfile returns.
+		// Do not commit the unfinished profile as diagnostic evidence.
+		if err := os.Remove(path); err != nil && !errors.Is(err, os.ErrNotExist) {
+			return "", false, fmt.Errorf("diag: could not discard unfinished CPU profile: %w", err)
+		}
+		return fmt.Sprintf("StopCPUProfile did not return within %s; cpu.pb.gz was dropped because the profile could not be finalized", env.cpuStopGrace), false, nil
 	}
 	return note, true, nil
 }
