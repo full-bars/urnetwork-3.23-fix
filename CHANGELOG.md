@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+### Added
+
+- **`urnet-tools diag` captures memory and CPU evidence from a running provider**: it writes a heap profile, every goroutine's stack, a 30 second CPU profile and a plain-language `summary.txt` to `<state dir>/diag/<UTC timestamp>/`, with no restart and no listener (the request goes over the owner-only control socket). The bundle is written to a `.partial` directory and renamed only when complete; the five newest are kept; one capture runs at a time (a lock older than five minutes counts as left by a crash); the capture refuses to start when free space is below the larger of 256 MiB and eight times the heap in use; a hot swap during a capture aborts it and removes the partial files. The files are owner-only and can contain session tokens. Needs the provider updated and restarted, or hot-swapped, to take effect; an older provider answers `too old to know diag`.
+
 ### Fixed
 
 - **The auto-update records the release tag as its version** ([#1023](https://github.com/full-bars/urnetwork-3.23-fix/pull/1023)): the in-place updater took the version it wrote to `version.txt` from the asset URL. A URL not shaped `/download/v<tag>/`, such as a mirror, a redirect or an API asset URL, was written to the file whole, so every later check saw an older version and downloaded the archive again. The updater now records the tag the release names, and it refuses to install a release that carries no tag.
