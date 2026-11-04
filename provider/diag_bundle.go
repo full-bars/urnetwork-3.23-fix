@@ -501,12 +501,22 @@ func acquireDiagLock(root string, env diagEnv) (release func(), staleNote string
 		if !errors.Is(cerr, os.ErrExist) {
 			return nil, "", diagDirError(root, cerr)
 		}
+		original, rerr := os.ReadFile(path)
+		originalStat, serr := os.Lstat(path)
+		if rerr != nil || serr != nil {
+			return nil, "", diagBusyError(root, env)
+		}
 		info := readDiagLock(path)
 		if !info.known || env.now().Sub(info.started) <= env.staleLockAge {
 			return nil, "", diagBusyError(root, env)
 		}
 		staleNote = fmt.Sprintf("a lock from %s was older than %s, so it was treated as left behind by a crashed capture and replaced",
 			info.started.UTC().Format(time.RFC3339), env.staleLockAge)
+		current, rerr := os.ReadFile(path)
+		currentStat, serr := os.Lstat(path)
+		if rerr != nil || serr != nil || string(current) != string(original) || !os.SameFile(originalStat, currentStat) {
+			return nil, "", diagBusyError(root, env)
+		}
 		if rerr := os.Remove(path); rerr != nil && !errors.Is(rerr, os.ErrNotExist) {
 			return nil, "", diagDirError(root, rerr)
 		}
