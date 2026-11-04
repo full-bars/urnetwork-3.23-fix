@@ -50,6 +50,9 @@ type clientJWTStore struct {
 	// re-encodes and fsyncs the whole file, so callers that change many
 	// entries at once must batch them into a single flush.
 	flushes int
+	// skipped counts flushes whose merged result was byte-identical to the
+	// file already on disk, so nothing was written.
+	skipped int
 	// writeLog rate-limits the per-write cause line, one slot per distinct
 	// reason, so a flapping proxy cannot flood the journal while the first
 	// occurrence of every reason is still always logged.
@@ -353,6 +356,9 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 // its own stale map instead of merging: both Put calls would report success,
 // but only the last process's snapshot survives on disk (F-9).
 //
+// When the merged result is byte-identical to the file just read, nothing is
+// written: the caller's change is already durable exactly as it would be after
+// a rewrite, because the bytes on disk are the bytes we would have renamed in.
 // site and op only label the cause line.
 func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
@@ -375,11 +381,13 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 	// Reload the durable store now, under the lock, so any entries a
 	// concurrent process wrote since we last loaded are preserved.
 	merged := s.entries
+	var diskBytes []byte
 	var baseline map[string]clientJWTEntry
 	if data, err := os.ReadFile(s.path); err == nil && len(data) > 0 {
 		var onDisk map[string]clientJWTEntry
 		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
 			merged = onDisk
+			diskBytes = data
 			baseline = onDisk
 		}
 		// A corrupt on-disk file falls back to this process's in-memory
@@ -411,6 +419,11 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		return err
 	}
 
+	if diskBytes != nil && bytes.Equal(data, diskBytes) {
+		s.skipped++
+		s.logWriteLocked(site, op, "skip", len(merged), change, len(data))
+		return nil
+	}
 	s.flushes++
 	s.logWriteLocked(site, op, "write", len(merged), change, len(data))
 
