@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "diag", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -278,6 +278,11 @@ func handleControlConn(conn net.Conn, state *controlState) {
 		}
 
 		resp := handleControlRequest(state, req)
+		// A slow handler (diag runs for about 40 seconds) has used up the
+		// deadlines set above. Without a fresh write deadline its reply would
+		// fail on a connection that is perfectly healthy.
+		conn.SetReadDeadline(time.Now().Add(5 * time.Second))
+		conn.SetWriteDeadline(time.Now().Add(5 * time.Second))
 		// 7. Echo version in response for v>=1 requests.
 		if req.V >= 1 {
 			resp.Version = 1
@@ -601,6 +606,25 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		b, err := json.Marshal(entries)
 		if err != nil {
 			return controlResponse{OK: false, Error: fmt.Sprintf("ledger: %v", err)}
+		}
+		return controlResponse{OK: true, Value: string(b)}
+
+	case "diag":
+		// Writes a profile bundle to <state dir>/diag/ from inside this process.
+		// No listener is opened; this socket is the only way in. The reply is
+		// held until the capture ends (about 40 seconds), bounded by
+		// diagTotalDeadline.
+		dir, err := oomCapDir()
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("diag: cannot find the state directory: %v", err)}
+		}
+		res, err := diagRunner(dir)
+		if err != nil {
+			return controlResponse{OK: false, Error: err.Error()}
+		}
+		b, err := json.Marshal(res)
+		if err != nil {
+			return controlResponse{OK: false, Error: fmt.Sprintf("diag: %v", err)}
 		}
 		return controlResponse{OK: true, Value: string(b)}
 
@@ -928,6 +952,10 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		return controlResponse{OK: false, Error: fmt.Sprintf("unknown command %q", req.Cmd)}
 	}
 }
+
+// diagRunner is the capture the "diag" command runs; a variable so a test can
+// stand in a slow one without waiting out a real 30 second CPU window.
+var diagRunner = handleDiagRequest
 
 // dialControlSocket is a small client helper for urnet-tools (PR 3) and for
 // tests here: send one request, read one response, close the connection.

@@ -33,6 +33,7 @@ Core Commands:
   self-update             Update this tool binary itself
   status                  Show provider service status
   top [--interval D]      Live full-screen view of a provider (also: urtop)
+  diag                    Capture heap, goroutine and CPU profiles from the running provider
   logs [target] [N]       Show recent logs, then follow (N lines, default 250)
   dashboard               Status panel: state, settings, sources, warnings
   history [limit]         Show the provider's command audit trail
@@ -153,6 +154,7 @@ func buildRootCmd() *cobra.Command {
 		newProvidersCmd(),
 		newStatusCmd(),
 		newTopCmd(),
+		newDiagCmd(),
 		newSnStatusCmd(),
 		newStartCmd(),
 		newStopCmd(),
@@ -262,6 +264,12 @@ func newTopCmd() *cobra.Command {
 			return cmdTop(rest)
 		})
 	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop")
+}
+
+func newDiagCmd() *cobra.Command {
+	return withHelp(newCobraCmd("diag", "capture memory and CPU evidence from the running provider", nil, func(cmd *cobra.Command, args []string) error {
+		return cmdDiag(args)
+	}), "Ask the running provider to write a diagnostic bundle: a heap profile, every goroutine's stack, a 30 second CPU profile, and a plain-language summary.txt with the memory, goroutine and garbage-collector numbers. Use it when a provider is using a lot of memory or CPU and you want to know why, without restarting it (a restart resets the provider and destroys the state you wanted to see). The provider keeps serving traffic throughout and nothing is restarted. It takes no flags or arguments and opens no network port; the request goes over the owner-only control socket, so run it as the user the provider runs as, or with sudo. The files are written to <state dir>/diag/<UTC timestamp>/ with owner-only permissions; the five newest bundles are kept. It refuses to start when the disk holding the state directory has less free space than the larger of 256 MiB and eight times the heap in use, and only one capture runs at a time. The bundle can contain session tokens, so do not post it publicly.", "  urnet-tools diag")
 }
 
 func newSnStatusCmd() *cobra.Command {

@@ -611,6 +611,8 @@ func quiesceControlSocket() {
 	if f != nil {
 		f()
 	}
+	// Close the socket before aborting the in-flight capture.
+	abortDiagForHotSwap()
 }
 
 // recordHotSwapAndFlush records the handoff in the audit ring and flushes
