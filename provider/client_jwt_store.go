@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,61 @@ type clientJWTStore struct {
 	// re-encodes and fsyncs the whole file, so callers that change many
 	// entries at once must batch them into a single flush.
 	flushes int
+	// writeLog rate-limits the per-write cause line, one slot per distinct
+	// reason, so a flapping proxy cannot flood the journal while the first
+	// occurrence of every reason is still always logged.
+	writeLog map[string]*jwtWriteLogSlot
+	// logNow is the clock for writeLog; nil means time.Now.
+	logNow func() time.Time
+}
+
+// sameAs compares by value; MintedAt goes through Equal because a time read
+// back from JSON carries no monotonic reading and so never == the original.
+func (e clientJWTEntry) sameAs(o clientJWTEntry) bool {
+	return e.ByClientJWT == o.ByClientJWT && e.ClientID == o.ClientID &&
+		e.NetworkID == o.NetworkID && e.MintedAt.Equal(o.MintedAt)
+}
+
+// clientJWTWriteLogInterval is the minimum spacing between cause lines for the
+// same reason (call site, operation and kind of change).
+const clientJWTWriteLogInterval = time.Minute
+
+type jwtWriteLogSlot struct {
+	last       time.Time
+	suppressed int
+}
+
+// jwtChangeSet says what a flush did to the stored entries, measured against
+// the file that was on disk when the flush took the lock.
+type jwtChangeSet struct {
+	added, updated, removed, unchanged int
+}
+
+func (c jwtChangeSet) kinds() string {
+	var b strings.Builder
+	if c.added > 0 {
+		b.WriteByte('A')
+	}
+	if c.updated > 0 {
+		b.WriteByte('U')
+	}
+	if c.removed > 0 {
+		b.WriteByte('R')
+	}
+	if b.Len() == 0 {
+		return "none"
+	}
+	return b.String()
+}
+
+// callSite names the file:line that is skip frames above the caller of
+// callSite, so the cause line points at the code that asked for the save.
+func callSite(skip int) string {
+	_, file, line, ok := runtime.Caller(skip)
+	if !ok {
+		return "unknown"
+	}
+	return fmt.Sprintf("%s:%d", filepath.Base(file), line)
 }
 
 func newClientJWTStore(path string) *clientJWTStore {
@@ -236,7 +292,7 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushLocked(key, entry, false)
+	return s.flushBatchAt(callSite(2), "put", map[string]clientJWTEntry{key: entry}, nil)
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -273,37 +329,36 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushLocked(key, clientJWTEntry{}, true)
+	return s.flushBatchAt(callSite(2), "delete", nil, []string{key})
 }
 
-// flushLocked persists the single Put/Delete operation named by key
-// (entry/deleted) to disk. It reloads the durable store under the
-// inter-process lock and merges this operation into that reloaded state
-// before writing, rather than blindly marshaling s.entries (this process's
-// in-memory snapshot, potentially loaded before another process — e.g. a
-// HotSwap parent/candidate pair, each with its own clientJWTStore instance —
-// flushed a different key). Without the reload, the second process to reach
-// the lock would replace the first's update with its own stale map instead
-// of merging: both Put calls would report success, but only the last
-// process's snapshot survives on disk (F-9).
-func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted bool) error {
-	if deleted {
-		return s.flushBatchLocked(nil, []string{key})
-	}
-	return s.flushBatchLocked(map[string]clientJWTEntry{key: entry}, nil)
+// flushBatchLocked is flushBatchAt for callers that have no better cause to
+// name than their own call site.
+func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
+	return s.flushBatchAt(callSite(2), "batch", upserts, deletes)
 }
 
-// flushBatchLocked applies a set of upserts and deletes to the durable store
+// flushBatchAt applies a set of upserts and deletes to the durable store
 // with ONE read-merge-write-fsync cycle. The cost of a flush scales with the
 // whole store, not with the change, so changing N entries must cost one flush,
 // never N: a node with thousands of saved logins spent minutes at startup
 // rewriting a multi-megabyte file once per adopted entry.
-func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
+//
+// It reloads the durable store under the inter-process lock and merges the
+// operation into that reloaded state before writing, rather than blindly
+// marshaling s.entries (this process's in-memory snapshot, potentially loaded
+// before another process — e.g. a HotSwap parent/candidate pair, each with its
+// own clientJWTStore instance — flushed a different key). Without the reload,
+// the second process to reach the lock would replace the first's update with
+// its own stale map instead of merging: both Put calls would report success,
+// but only the last process's snapshot survives on disk (F-9).
+//
+// site and op only label the cause line.
+func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
 	}
-	s.flushes++
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -320,19 +375,33 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	// Reload the durable store now, under the lock, so any entries a
 	// concurrent process wrote since we last loaded are preserved.
 	merged := s.entries
+	var baseline map[string]clientJWTEntry
 	if data, err := os.ReadFile(s.path); err == nil && len(data) > 0 {
 		var onDisk map[string]clientJWTEntry
 		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
 			merged = onDisk
+			baseline = onDisk
 		}
 		// A corrupt on-disk file falls back to this process's in-memory
 		// entries (merged stays s.entries) rather than failing the flush —
 		// loadLocked already snapshotted the corrupt bytes for recovery.
 	}
+	var change jwtChangeSet
 	for _, key := range deletes {
+		if _, ok := merged[key]; ok && baseline != nil {
+			change.removed++
+		}
 		delete(merged, key)
 	}
 	for key, entry := range upserts {
+		switch prev, ok := baseline[key]; {
+		case !ok:
+			change.added++
+		case prev.sameAs(entry):
+			change.unchanged++
+		default:
+			change.updated++
+		}
 		merged[key] = entry
 	}
 	s.entries = merged
@@ -341,6 +410,9 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	if err != nil {
 		return err
 	}
+
+	s.flushes++
+	s.logWriteLocked(site, op, "write", len(merged), change, len(data))
 
 	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
 	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
@@ -370,6 +442,34 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	}
 
 	return os.Rename(tmpPath, s.path)
+}
+
+// logWriteLocked records why the store file was rewritten (or why a rewrite was
+// skipped). The first line for each distinct reason always prints; repeats of
+// the same reason print at most once per clientJWTWriteLogInterval and carry a
+// count of the lines held back.
+func (s *clientJWTStore) logWriteLocked(site, op, result string, entries int, c jwtChangeSet, size int) {
+	now := time.Now
+	if s.logNow != nil {
+		now = s.logNow
+	}
+	reason := site + " " + op + " " + result + " " + c.kinds()
+	if s.writeLog == nil {
+		s.writeLog = map[string]*jwtWriteLogSlot{}
+	}
+	slot, seen := s.writeLog[reason]
+	if !seen {
+		slot = &jwtWriteLogSlot{}
+		s.writeLog[reason] = slot
+	} else if now().Sub(slot.last) < clientJWTWriteLogInterval {
+		slot.suppressed++
+		return
+	}
+	suppressed := slot.suppressed
+	slot.suppressed = 0
+	slot.last = now()
+	tlog("💾 [jwt-store] %s site=%s op=%s entries=%d added=%d updated=%d removed=%d unchanged=%d bytes=%d suppressed=%d\n",
+		result, site, op, entries, c.added, c.updated, c.removed, c.unchanged, size, suppressed)
 }
 
 // jwtStoreKey is the client JWT store key for a proxy: its identity
