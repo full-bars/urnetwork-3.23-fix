@@ -35,3 +35,19 @@ func TestDiagSecondRequestDoesNotUnregisterFirst(t *testing.T) {
 	if still != first { t.Fatal("refused request displaced or cleared first capture") }
 }
 
+func TestQuiesceClosesSocketBeforeAbortingDiag(t *testing.T) {
+	env, _ := newDiagTestEnv(t)
+	env.cpuFor = time.Minute
+	started := make(chan struct{})
+	env.startCPU = func(w io.Writer) error { close(started); _, err := w.Write([]byte("cpu")); return err }
+	done := make(chan error, 1)
+	go func() { _, err := runDiagTracked(env); done <- err }()
+	<-started
+	var pending bool
+	setQuiesceHook(func() { select { case <-done: default: pending = true } })
+	t.Cleanup(func() { setQuiesceHook(nil) })
+	quiesceControlSocket()
+	if !pending { t.Fatal("capture was aborted before socket closed") }
+	<-done
+}
+
