@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -261,13 +262,31 @@ func (s *clientJWTStore) Find(key string) (resolved string, entry clientJWTEntry
 	return "", clientJWTEntry{}, candidates
 }
 
+// jwtStoreSite restricts attribution to known source files and never logs paths.
+func jwtStoreSite(file string, line int) string {
+	switch filepath.Base(file) {
+	case "main.go", "renewal_watcher.go", "client_jwt_store.go":
+		return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	default:
+		return "unknown"
+	}
+}
+
+func jwtStoreCaller() string {
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		return "unknown"
+	}
+	return jwtStoreSite(file, line)
+}
+
 // Put records entry for key and flushes the store to disk immediately.
 func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushBatchLocked(map[string]clientJWTEntry{key: entry}, nil)
+	return s.flushBatchAt(jwtStoreCaller(), "put", map[string]clientJWTEntry{key: entry}, nil)
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -304,7 +323,7 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushBatchLocked(nil, []string{key})
+	return s.flushBatchAt(jwtStoreCaller(), "delete", nil, []string{key})
 }
 
 // flushBatchLocked applies a set of upserts and deletes to the durable store
@@ -313,6 +332,10 @@ func (s *clientJWTStore) Delete(key string) error {
 // never N: a node with thousands of saved logins spent minutes at startup
 // rewriting a multi-megabyte file once per adopted entry.
 func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
+	return s.flushBatchAt(jwtStoreCaller(), "batch", upserts, deletes)
+}
+
+func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
@@ -409,7 +432,7 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 
 	if diskBytes != nil && bytes.Equal(data, diskBytes) {
 		s.skipped++
-		tlog("client_jwt_store: skip write %d entries (identical content)\n", len(merged))
+		tlog("client_jwt_store: skip write %d entries site=%s op=%s (identical content)\n", len(merged), site, op)
 		return nil
 	}
 	s.attempts++
@@ -450,7 +473,7 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	if dur < 0 {
 		dur = 0
 	}
-	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d added=%d removed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes, added, removed)
+	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d site=%s op=%s added=%d removed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes, site, op, added, removed)
 	return nil
 }
 
