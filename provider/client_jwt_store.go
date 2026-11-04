@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -52,13 +51,9 @@ type clientJWTStore struct {
 	flushes int
 	// skipped counts flushes whose merged result was byte-identical to the
 	// file already on disk, so nothing was written.
-	skipped int
-	// writeLog rate-limits the per-write cause line, one slot per distinct
-	// reason, so a flapping proxy cannot flood the journal while the first
-	// occurrence of every reason is still always logged.
-	writeLog map[string]*jwtWriteLogSlot
-	// logNow is the clock for writeLog; nil means time.Now.
-	logNow func() time.Time
+	skipped  int
+	attempts int
+	clock    func() time.Time
 }
 
 // sameAs compares by value; MintedAt goes through Equal because a time read
@@ -68,46 +63,11 @@ func (e clientJWTEntry) sameAs(o clientJWTEntry) bool {
 		e.NetworkID == o.NetworkID && e.MintedAt.Equal(o.MintedAt)
 }
 
-// clientJWTWriteLogInterval is the minimum spacing between cause lines for the
-// same reason (call site, operation and kind of change).
-const clientJWTWriteLogInterval = time.Minute
-
-type jwtWriteLogSlot struct {
-	last       time.Time
-	suppressed int
-}
-
-// jwtChangeSet says what a flush did to the stored entries, measured against
-// the file that was on disk when the flush took the lock.
-type jwtChangeSet struct {
-	added, updated, removed, unchanged int
-}
-
-func (c jwtChangeSet) kinds() string {
-	var b strings.Builder
-	if c.added > 0 {
-		b.WriteByte('A')
+func (s *clientJWTStore) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
 	}
-	if c.updated > 0 {
-		b.WriteByte('U')
-	}
-	if c.removed > 0 {
-		b.WriteByte('R')
-	}
-	if b.Len() == 0 {
-		return "none"
-	}
-	return b.String()
-}
-
-// callSite names the file:line that is skip frames above the caller of
-// callSite, so the cause line points at the code that asked for the save.
-func callSite(skip int) string {
-	_, file, line, ok := runtime.Caller(skip)
-	if !ok {
-		return "unknown"
-	}
-	return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	return time.Now()
 }
 
 func newClientJWTStore(path string) *clientJWTStore {
@@ -130,6 +90,24 @@ var globalClientJWTStore = func() *clientJWTStore {
 	}
 	return newClientJWTStore(filepath.Join(home, ".urnetwork", ".client_jwts.json"))
 }()
+
+// pruneStaleEntries returns a copy of entries with anything older than
+// clientJWTStaleAfter dropped. Shared by loadLocked and flushLocked so a
+// flush for one key can never resurrect entries that were already pruned in
+// memory: flushLocked reloads the raw on-disk map (to merge concurrent
+// writers, see its own comment) and, without re-applying this filter, would
+// write every stale entry straight back to disk the next time any other key
+// flushed.
+func pruneStaleEntries(entries map[string]clientJWTEntry) map[string]clientJWTEntry {
+	now := time.Now()
+	pruned := make(map[string]clientJWTEntry, len(entries))
+	for key, entry := range entries {
+		if now.Sub(entry.MintedAt) < clientJWTStaleAfter {
+			pruned[key] = entry
+		}
+	}
+	return pruned
+}
 
 func (s *clientJWTStore) loadLocked() {
 	if s.loaded {
@@ -158,13 +136,7 @@ func (s *clientJWTStore) loadLocked() {
 	// the previous identity set the operator had before this restart.
 	s.snapshotLocked(data, len(entries))
 
-	now := time.Now()
-	pruned := make(map[string]clientJWTEntry, len(entries))
-	for key, entry := range entries {
-		if now.Sub(entry.MintedAt) < clientJWTStaleAfter {
-			pruned[key] = entry
-		}
-	}
+	pruned := pruneStaleEntries(entries)
 	s.entries = pruned
 
 	// Log how many identities we're carrying forward — gives the operator a
@@ -295,7 +267,7 @@ func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushBatchAt(callSite(2), "put", map[string]clientJWTEntry{key: entry}, nil)
+	return s.flushBatchLocked(map[string]clientJWTEntry{key: entry}, nil)
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -332,39 +304,20 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushBatchAt(callSite(2), "delete", nil, []string{key})
+	return s.flushBatchLocked(nil, []string{key})
 }
 
-// flushBatchLocked is flushBatchAt for callers that have no better cause to
-// name than their own call site.
-func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
-	return s.flushBatchAt(callSite(2), "batch", upserts, deletes)
-}
-
-// flushBatchAt applies a set of upserts and deletes to the durable store
+// flushBatchLocked applies a set of upserts and deletes to the durable store
 // with ONE read-merge-write-fsync cycle. The cost of a flush scales with the
 // whole store, not with the change, so changing N entries must cost one flush,
 // never N: a node with thousands of saved logins spent minutes at startup
 // rewriting a multi-megabyte file once per adopted entry.
-//
-// It reloads the durable store under the inter-process lock and merges the
-// operation into that reloaded state before writing, rather than blindly
-// marshaling s.entries (this process's in-memory snapshot, potentially loaded
-// before another process — e.g. a HotSwap parent/candidate pair, each with its
-// own clientJWTStore instance — flushed a different key). Without the reload,
-// the second process to reach the lock would replace the first's update with
-// its own stale map instead of merging: both Put calls would report success,
-// but only the last process's snapshot survives on disk (F-9).
-//
-// When the merged result is byte-identical to the file just read, nothing is
-// written: the caller's change is already durable exactly as it would be after
-// a rewrite, because the bytes on disk are the bytes we would have renamed in.
-// site and op only label the cause line.
-func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]clientJWTEntry, deletes []string) error {
+func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
 	}
+	start := s.now()
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -388,31 +341,66 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
 			merged = onDisk
 			diskBytes = data
-			baseline = onDisk
+			baseline = make(map[string]clientJWTEntry, len(onDisk))
+			for k, v := range onDisk {
+				baseline[k] = v
+			}
 		}
 		// A corrupt on-disk file falls back to this process's in-memory
 		// entries (merged stays s.entries) rather than failing the flush —
 		// loadLocked already snapshotted the corrupt bytes for recovery.
 	}
-	var change jwtChangeSet
+	// Re-apply the same staleness filter loadLocked used at startup. Without
+	// this, the raw on-disk reload above resurrects every entry that was
+	// pruned in memory at load time: this flush is for an unrelated key, but
+	// it writes the whole merged map, so skipping the filter here would
+	// write the stale entries straight back to disk on the next flush of any
+	// key, forever undoing the prune.
+	merged = pruneStaleEntries(merged)
+
 	for _, key := range deletes {
-		if _, ok := merged[key]; ok && baseline != nil {
-			change.removed++
-		}
 		delete(merged, key)
 	}
 	for key, entry := range upserts {
-		switch prev, ok := baseline[key]; {
-		case !ok:
-			change.added++
-		case prev.sameAs(entry):
-			change.unchanged++
-		default:
-			change.updated++
-		}
 		merged[key] = entry
 	}
 	s.entries = merged
+
+	// Classify the actual before/after maps, including stale pruning. Replacement
+	// takes precedence, followed by combined additions and removals.
+	var added, replaced, removed int
+	var hasExpiredReplacement bool
+	for key, previous := range baseline {
+		entry, ok := merged[key]
+		if !ok {
+			removed++
+		} else if !previous.sameAs(entry) {
+			replaced++
+			if validateJWTExpiry(previous.ByClientJWT) != nil {
+				hasExpiredReplacement = true
+			}
+		}
+	}
+	for key := range merged {
+		if _, ok := baseline[key]; !ok {
+			added++
+		}
+	}
+	cause := "normalized"
+	switch {
+	case len(baseline) == 0 && len(merged) > 0:
+		cause = "initial"
+	case replaced > 0 && hasExpiredReplacement:
+		cause = "expired"
+	case replaced > 0:
+		cause = "refreshed"
+	case added > 0 && removed > 0:
+		cause = "added_removed"
+	case added > 0:
+		cause = "added"
+	case removed > 0:
+		cause = "removed"
+	}
 
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
@@ -421,11 +409,10 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 
 	if diskBytes != nil && bytes.Equal(data, diskBytes) {
 		s.skipped++
-		s.logWriteLocked(site, op, "skip", len(merged), change, len(data))
+		tlog("client_jwt_store: skip write %d entries (identical content)\n", len(merged))
 		return nil
 	}
-	s.flushes++
-	s.logWriteLocked(site, op, "write", len(merged), change, len(data))
+	s.attempts++
 
 	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
 	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
@@ -454,35 +441,17 @@ func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]client
 		return err
 	}
 
-	return os.Rename(tmpPath, s.path)
-}
-
-// logWriteLocked records why the store file was rewritten (or why a rewrite was
-// skipped). The first line for each distinct reason always prints; repeats of
-// the same reason print at most once per clientJWTWriteLogInterval and carry a
-// count of the lines held back.
-func (s *clientJWTStore) logWriteLocked(site, op, result string, entries int, c jwtChangeSet, size int) {
-	now := time.Now
-	if s.logNow != nil {
-		now = s.logNow
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		return err
 	}
-	reason := site + " " + op + " " + result + " " + c.kinds()
-	if s.writeLog == nil {
-		s.writeLog = map[string]*jwtWriteLogSlot{}
+	s.flushes++
+	dur := s.now().Sub(start)
+	if dur < 0 {
+		dur = 0
 	}
-	slot, seen := s.writeLog[reason]
-	if !seen {
-		slot = &jwtWriteLogSlot{}
-		s.writeLog[reason] = slot
-	} else if now().Sub(slot.last) < clientJWTWriteLogInterval {
-		slot.suppressed++
-		return
-	}
-	suppressed := slot.suppressed
-	slot.suppressed = 0
-	slot.last = now()
-	tlog("💾 [jwt-store] %s site=%s op=%s entries=%d added=%d updated=%d removed=%d unchanged=%d bytes=%d suppressed=%d\n",
-		result, site, op, entries, c.added, c.updated, c.removed, c.unchanged, size, suppressed)
+	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes)
+	return nil
 }
 
 // jwtStoreKey is the client JWT store key for a proxy: its identity
