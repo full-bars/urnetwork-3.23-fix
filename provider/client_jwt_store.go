@@ -450,7 +450,7 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	if dur < 0 {
 		dur = 0
 	}
-	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes)
+	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d added=%d removed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes, added, removed)
 	return nil
 }
 
