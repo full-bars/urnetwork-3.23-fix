@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"sort"
 	"strings"
 	"sync"
@@ -49,6 +50,25 @@ type clientJWTStore struct {
 	// re-encodes and fsyncs the whole file, so callers that change many
 	// entries at once must batch them into a single flush.
 	flushes int
+	// skipped counts flushes whose merged result was byte-identical to the
+	// file already on disk, so nothing was written.
+	skipped  int
+	attempts int
+	clock    func() time.Time
+}
+
+// sameAs compares by value; MintedAt goes through Equal because a time read
+// back from JSON carries no monotonic reading and so never == the original.
+func (e clientJWTEntry) sameAs(o clientJWTEntry) bool {
+	return e.ByClientJWT == o.ByClientJWT && e.ClientID == o.ClientID &&
+		e.NetworkID == o.NetworkID && e.MintedAt.Equal(o.MintedAt)
+}
+
+func (s *clientJWTStore) now() time.Time {
+	if s.clock != nil {
+		return s.clock()
+	}
+	return time.Now()
 }
 
 func newClientJWTStore(path string) *clientJWTStore {
@@ -71,6 +91,29 @@ var globalClientJWTStore = func() *clientJWTStore {
 	}
 	return newClientJWTStore(filepath.Join(home, ".urnetwork", ".client_jwts.json"))
 }()
+
+// pruneStaleEntries returns a copy of entries with anything older than
+// clientJWTStaleAfter dropped. Shared by loadLocked and flushLocked so a
+// flush for one key can never resurrect entries that were already pruned in
+// memory: flushLocked reloads the raw on-disk map (to merge concurrent
+// writers, see its own comment) and, without re-applying this filter, would
+// write every stale entry straight back to disk the next time any other key
+// flushed.
+func pruneStaleEntries(entries map[string]clientJWTEntry) map[string]clientJWTEntry {
+	now := time.Now()
+	pruned := make(map[string]clientJWTEntry, len(entries))
+	for key, entry := range entries {
+		// A zero MintedAt means the entry predates this field: it came from a
+		// store written before mint times were recorded, or from a caller that
+		// only knows the credential. Do not call it stale. Dropping it would
+		// discard every identity on the first start after an upgrade and force
+		// a re-auth for every proxy.
+		if entry.MintedAt.IsZero() || now.Sub(entry.MintedAt) < clientJWTStaleAfter {
+			pruned[key] = entry
+		}
+	}
+	return pruned
+}
 
 func (s *clientJWTStore) loadLocked() {
 	if s.loaded {
@@ -99,13 +142,7 @@ func (s *clientJWTStore) loadLocked() {
 	// the previous identity set the operator had before this restart.
 	s.snapshotLocked(data, len(entries))
 
-	now := time.Now()
-	pruned := make(map[string]clientJWTEntry, len(entries))
-	for key, entry := range entries {
-		if now.Sub(entry.MintedAt) < clientJWTStaleAfter {
-			pruned[key] = entry
-		}
-	}
+	pruned := pruneStaleEntries(entries)
 	s.entries = pruned
 
 	// Log how many identities we're carrying forward — gives the operator a
@@ -230,13 +267,31 @@ func (s *clientJWTStore) Find(key string) (resolved string, entry clientJWTEntry
 	return "", clientJWTEntry{}, candidates
 }
 
+// jwtStoreSite restricts attribution to known source files and never logs paths.
+func jwtStoreSite(file string, line int) string {
+	switch filepath.Base(file) {
+	case "main.go", "renewal_watcher.go", "client_jwt_store.go":
+		return fmt.Sprintf("%s:%d", filepath.Base(file), line)
+	default:
+		return "unknown"
+	}
+}
+
+func jwtStoreCaller() string {
+	_, file, line, ok := runtime.Caller(2)
+	if !ok {
+		return "unknown"
+	}
+	return jwtStoreSite(file, line)
+}
+
 // Put records entry for key and flushes the store to disk immediately.
 func (s *clientJWTStore) Put(key string, entry clientJWTEntry) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.loadLocked()
 	s.entries[key] = entry
-	return s.flushLocked(key, entry, false)
+	return s.flushBatchAt(jwtStoreCaller(), "put", map[string]clientJWTEntry{key: entry}, nil)
 }
 
 // AnyNetworkID scans loaded store entries and returns the unambiguous non-empty
@@ -273,24 +328,7 @@ func (s *clientJWTStore) Delete(key string) error {
 		return nil
 	}
 	delete(s.entries, key)
-	return s.flushLocked(key, clientJWTEntry{}, true)
-}
-
-// flushLocked persists the single Put/Delete operation named by key
-// (entry/deleted) to disk. It reloads the durable store under the
-// inter-process lock and merges this operation into that reloaded state
-// before writing, rather than blindly marshaling s.entries (this process's
-// in-memory snapshot, potentially loaded before another process — e.g. a
-// HotSwap parent/candidate pair, each with its own clientJWTStore instance —
-// flushed a different key). Without the reload, the second process to reach
-// the lock would replace the first's update with its own stale map instead
-// of merging: both Put calls would report success, but only the last
-// process's snapshot survives on disk (F-9).
-func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted bool) error {
-	if deleted {
-		return s.flushBatchLocked(nil, []string{key})
-	}
-	return s.flushBatchLocked(map[string]clientJWTEntry{key: entry}, nil)
+	return s.flushBatchAt(jwtStoreCaller(), "delete", nil, []string{key})
 }
 
 // flushBatchLocked applies a set of upserts and deletes to the durable store
@@ -299,11 +337,15 @@ func (s *clientJWTStore) flushLocked(key string, entry clientJWTEntry, deleted b
 // never N: a node with thousands of saved logins spent minutes at startup
 // rewriting a multi-megabyte file once per adopted entry.
 func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, deletes []string) error {
+	return s.flushBatchAt(jwtStoreCaller(), "batch", upserts, deletes)
+}
+
+func (s *clientJWTStore) flushBatchAt(site, op string, upserts map[string]clientJWTEntry, deletes []string) error {
 	// In-memory-only mode (HOME unavailable at init): nothing to persist.
 	if s.path == "" {
 		return nil
 	}
-	s.flushes++
+	start := s.now()
 	dir := filepath.Dir(s.path)
 	if err := os.MkdirAll(dir, 0700); err != nil {
 		return err
@@ -320,15 +362,30 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	// Reload the durable store now, under the lock, so any entries a
 	// concurrent process wrote since we last loaded are preserved.
 	merged := s.entries
+	var diskBytes []byte
+	var baseline map[string]clientJWTEntry
 	if data, err := os.ReadFile(s.path); err == nil && len(data) > 0 {
 		var onDisk map[string]clientJWTEntry
 		if jsonErr := json.Unmarshal(data, &onDisk); jsonErr == nil {
 			merged = onDisk
+			diskBytes = data
+			baseline = make(map[string]clientJWTEntry, len(onDisk))
+			for k, v := range onDisk {
+				baseline[k] = v
+			}
 		}
 		// A corrupt on-disk file falls back to this process's in-memory
 		// entries (merged stays s.entries) rather than failing the flush —
 		// loadLocked already snapshotted the corrupt bytes for recovery.
 	}
+	// Re-apply the same staleness filter loadLocked used at startup. Without
+	// this, the raw on-disk reload above resurrects every entry that was
+	// pruned in memory at load time: this flush is for an unrelated key, but
+	// it writes the whole merged map, so skipping the filter here would
+	// write the stale entries straight back to disk on the next flush of any
+	// key, forever undoing the prune.
+	merged = pruneStaleEntries(merged)
+
 	for _, key := range deletes {
 		delete(merged, key)
 	}
@@ -337,10 +394,53 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 	}
 	s.entries = merged
 
+	// Classify the actual before/after maps, including stale pruning. Replacement
+	// takes precedence, followed by combined additions and removals.
+	var added, replaced, removed int
+	var hasExpiredReplacement bool
+	for key, previous := range baseline {
+		entry, ok := merged[key]
+		if !ok {
+			removed++
+		} else if !previous.sameAs(entry) {
+			replaced++
+			if validateJWTExpiry(previous.ByClientJWT) != nil {
+				hasExpiredReplacement = true
+			}
+		}
+	}
+	for key := range merged {
+		if _, ok := baseline[key]; !ok {
+			added++
+		}
+	}
+	cause := "normalized"
+	switch {
+	case len(baseline) == 0 && len(merged) > 0:
+		cause = "initial"
+	case replaced > 0 && hasExpiredReplacement:
+		cause = "expired"
+	case replaced > 0:
+		cause = "refreshed"
+	case added > 0 && removed > 0:
+		cause = "added_removed"
+	case added > 0:
+		cause = "added"
+	case removed > 0:
+		cause = "removed"
+	}
+
 	data, err := json.MarshalIndent(s.entries, "", "  ")
 	if err != nil {
 		return err
 	}
+
+	if diskBytes != nil && bytes.Equal(data, diskBytes) {
+		s.skipped++
+		tlog("client_jwt_store: skip write %d entries site=%s op=%s (identical content)\n", len(merged), site, op)
+		return nil
+	}
+	s.attempts++
 
 	// Use unpredictable temp file to prevent collisions with concurrent writers (F-9)
 	tmpFile, err := os.CreateTemp(dir, ".client_jwts-*.tmp")
@@ -369,7 +469,17 @@ func (s *clientJWTStore) flushBatchLocked(upserts map[string]clientJWTEntry, del
 		return err
 	}
 
-	return os.Rename(tmpPath, s.path)
+	if err := os.Rename(tmpPath, s.path); err != nil {
+		os.Remove(tmpPath)
+		return err
+	}
+	s.flushes++
+	dur := s.now().Sub(start)
+	if dur < 0 {
+		dur = 0
+	}
+	tlog("client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d site=%s op=%s added=%d removed=%d\n", len(merged), cause, replaced, dur.Milliseconds(), s.attempts, s.flushes, site, op, added, removed)
+	return nil
 }
 
 // jwtStoreKey is the client JWT store key for a proxy: its identity

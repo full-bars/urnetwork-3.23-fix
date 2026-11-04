@@ -196,7 +196,7 @@ func TestClientJWTStoreAnyNetworkID(t *testing.T) {
 func TestClientJWTStoreFind(t *testing.T) {
 	store := newClientJWTStore(filepath.Join(t.TempDir(), ".client_jwts.json"))
 	put := func(key string) {
-		if err := store.Put(key, clientJWTEntry{ByClientJWT: "jwt-" + key}); err != nil {
+		if err := store.Put(key, clientJWTEntry{ByClientJWT: "jwt-" + key, MintedAt: time.Now()}); err != nil {
 			t.Fatal(err)
 		}
 	}
