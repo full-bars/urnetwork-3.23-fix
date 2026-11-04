@@ -1,8 +1,10 @@
 package main
 
 import (
+	"context"
 	"errors"
 	"io"
+	"strings"
 	"testing"
 	"time"
 )
@@ -49,5 +51,15 @@ func TestQuiesceClosesSocketBeforeAbortingDiag(t *testing.T) {
 	quiesceControlSocket()
 	if !pending { t.Fatal("capture was aborted before socket closed") }
 	<-done
+}
+
+func TestDiagFloorNoLongerScalesWithHeap(t *testing.T) {
+	env, _ := newDiagTestEnv(t)
+	env.stats = func() diagStats { return diagStats{HeapInuse: 4600 << 20} }
+	env.freeBytes = func(string) (uint64, error) { return 600 << 20, nil }
+	if _, err := runDiag(context.Background(), env); err != nil { t.Fatalf("600 MiB free should pass: %v", err) }
+	env.freeBytes = func(string) (uint64, error) { return 100 << 20, nil }
+	_, err := runDiag(context.Background(), env)
+	if err == nil || !strings.Contains(err.Error(), "need 512.0 MiB") { t.Fatalf("err = %v, want fixed floor refusal", err) }
 }
 
