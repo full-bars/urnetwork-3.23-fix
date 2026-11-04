@@ -723,4 +723,3 @@ func TestDegradedCleanup_FrozenPoolDoesNotAgeTheClock(t *testing.T) {
 		t.Fatalf("member past its fresh window removed = %d, want 1", removed)
 	}
 }
-
