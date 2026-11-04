@@ -551,8 +551,9 @@ func removeDiagOrphans(root string) {
 		return
 	}
 	for _, e := range entries {
-		if e.IsDir() && strings.HasSuffix(e.Name(), diagPartialExt) {
-			os.RemoveAll(filepath.Join(root, e.Name()))
+		name := e.Name()
+		if e.IsDir() && strings.HasSuffix(name, diagPartialExt) && diagStampRe.MatchString(strings.TrimSuffix(name, diagPartialExt)) {
+			os.RemoveAll(filepath.Join(root, name))
 		}
 	}
 }

@@ -17,3 +17,14 @@ func TestDiagRetentionIncludesNewBundle(t *testing.T) {
  if got := len(listDiagBundles(root)); got != env.keep { t.Fatalf("got %d bundles, want %d", got, env.keep) }
 }
 
+func TestDiagOrphanCleanupPreservesUnrelatedPartial(t *testing.T) {
+ env, _ := newDiagTestEnv(t)
+ root := diagRoot(env)
+ for _, name := range []string{"20261102T000000Z.partial", "operator-notes.partial"} {
+  if err := os.MkdirAll(filepath.Join(root,name), 0700); err != nil { t.Fatal(err) }
+ }
+ removeDiagOrphans(root)
+ if _, err := os.Stat(filepath.Join(root,"operator-notes.partial")); err != nil { t.Fatalf("unrelated data removed: %v",err) }
+ if _, err := os.Stat(filepath.Join(root,"20261102T000000Z.partial")); !os.IsNotExist(err) { t.Fatalf("orphan survived: %v",err) }
+}
+
