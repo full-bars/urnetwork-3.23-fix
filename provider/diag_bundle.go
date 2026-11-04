@@ -215,14 +215,19 @@ func runDiagTracked(env diagEnv) (diagResult, error) {
 	cctx, ccancel := context.WithCancelCause(ctx)
 	run := &diagRun{cancel: ccancel, done: make(chan struct{})}
 	diagActiveMu.Lock()
-	diagActive = run
+	ownsSlot := diagActive == nil
+	if ownsSlot {
+		diagActive = run
+	}
 	diagActiveMu.Unlock()
 	defer func() {
-		diagActiveMu.Lock()
-		if diagActive == run {
-			diagActive = nil
+		if ownsSlot {
+			diagActiveMu.Lock()
+			if diagActive == run {
+				diagActive = nil
+			}
+			diagActiveMu.Unlock()
 		}
-		diagActiveMu.Unlock()
 		ccancel(nil)
 		close(run.done)
 	}()
