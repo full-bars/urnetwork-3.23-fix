@@ -103,7 +103,12 @@ func pruneStaleEntries(entries map[string]clientJWTEntry) map[string]clientJWTEn
 	now := time.Now()
 	pruned := make(map[string]clientJWTEntry, len(entries))
 	for key, entry := range entries {
-		if now.Sub(entry.MintedAt) < clientJWTStaleAfter {
+		// A zero MintedAt means the entry predates this field: it came from a
+		// store written before mint times were recorded, or from a caller that
+		// only knows the credential. Do not call it stale. Dropping it would
+		// discard every identity on the first start after an upgrade and force
+		// a re-auth for every proxy.
+		if entry.MintedAt.IsZero() || now.Sub(entry.MintedAt) < clientJWTStaleAfter {
 			pruned[key] = entry
 		}
 	}
