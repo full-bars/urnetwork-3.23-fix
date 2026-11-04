@@ -118,8 +118,7 @@ func TestDiagCmdProviderNotRunning(t *testing.T) {
 }
 
 func TestDiagCmdSocketMissing(t *testing.T) {
-	dir, _ := os.MkdirTemp("/tmp", "dg")
-	t.Cleanup(func() { os.RemoveAll(dir) })
+	dir := t.TempDir()
 	_, _, err := runDiagForTest(t, nil, Provider{Unit: "urnetwork.service", StateDir: dir, Running: true})
 	if err == nil {
 		t.Fatal("want an error with no control socket")
