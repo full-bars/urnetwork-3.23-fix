@@ -4,6 +4,19 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 
 ---
 
+## Release diagnostics and network binding
+
+The following are literal format strings. The provider fills the `%` fields at runtime.
+
+```text
+client_jwt_store: save %d entries cause=%s replaced=%d duration=%dms attempts=%d completed=%d site=%s op=%s added=%d removed=%d
+client_jwt_store: skip write %d entries site=%s op=%s (identical content)
+handshake_classes(timeout=%d tls=%d proxy_connect=%d auth=%d upgrade_rejected=%d io=%d other=%d)
+[tr]egress bind failed, the platform connection may loop into the tunnel: %s
+```
+
+The JWT lines distinguish completed writes from unchanged content. The H1+ classes explain failures in the ten-minute summary. The egress warning means the existing H3 socket could not be pinned; the connection is still attempted. The first proxy-health line below is also a format string.
+
 ## 📊 System Auditor & Smart Auto
 
 ```
@@ -694,14 +707,14 @@ steps.
 In addition to the main `[health]` line, when running with a proxy list the provider emits proxy health lines:
 
 ```
-[health][proxies] up=1193 down=7 dead=4 degraded=3 recovered=5 lost=0 lifetime_recovered=51 lifetime_lost=39
+❤️ [health][proxies] up=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d (since-start %s)
 [health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
 [health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
 |---|---|
-| `up` / `down` | Current proxy state (`up` agrees with `proxies=N`). |
+| `up` | Current number of up proxies (`up` agrees with `proxies=N`). |
 | `dead` | Proxies that have never successfully authenticated (trustworthy after ~1h). |
 | `degraded` | Proxies that worked before but are currently down. |
 | `recovered` / `lost` | Down->up and up->down transitions since the last heartbeat. |

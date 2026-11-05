@@ -4050,3 +4050,13 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 - **Docs** (PR #1026, PR #1029): the deployment page says vnStat is retired, and the Docker page gives the metrics port as 9100.
 
 **Impact**: nodes need a redeploy for the provider and updater changes, and the installer warning applies on the next installer run. The extender remains a work in progress and does not activate yet.
+
+## 215. Provider diagnostics, persistence and egress correctness
+
+**Purpose**: Capture live evidence safely, reduce unnecessary storage writes and preserve the intended network and service lifecycle behaviour.
+
+**Files Modified**: `provider/diag_bundle.go`, `provider/control_socket.go`, `provider/hotswap.go`, `internal/urnettools/diag.go`, `provider/client_jwt_store.go`, `provider/proxy_url_source.go`, `provider/proxy_state.go`, `proxy_health.go`, `provider/h1plus_metrics.go`, `framed_message_conn.go`, `provider/metrics_listen.go`, `egress.go`, `egress_windows.go`, `ip.go`, `internal/tui/buffer.go`, `internal/urnettools/lifecycle_bsd.go`, `internal/urnettools/update_extender.go`, and the Linux, macOS and FreeBSD installers.
+
+**How to Identify in New Upstream**: Search for `diagMinFreeBytes`, `client_jwt_store: skip write`, `degraded_cleanup_threshold`, `urnet_h1plus_handshake_failures_class_total`, `metricsDisabledByEnv`, `errEgressIpv6Unpinned`, `installProviderBinaryWithRunner` and the exact FreeBSD `ps` argument match. Compare the shared UDP socket publication and clipped wide-character handling as well as installer capability restoration and macOS argument forwarding.
+
+**Status**: On main after v3.23.0-fix.35.3. The extender does not yet activate for clients. This tree has no production caller setting an egress interface index.

@@ -28,7 +28,7 @@ Metrics: on
 Prometheus target: 100.64.0.10:9100
 ```
 
-The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again. `urnet-tools metrics off` stops the listener now, but a nonempty `URNETWORK_METRICS` starts it again on restart or HotSwap. Remove the environment variable as well to keep metrics off.
+The setting survives restarts and updates. Run `urnet-tools metrics status` at any time to see it again. A nonempty `URNETWORK_METRICS` takes precedence at restart or HotSwap. Values `off`, `false`, `no`, `0` and `none` disable the listener and prevent `metrics on` from overriding the environment. `auto` selects the automatic listener; an address selects that address. Remove or change the environment setting if it conflicts with the desired state.
 
 ### Where the endpoint listens
 

@@ -28,6 +28,8 @@ A port that cannot be bound never stops the provider. If TCP 443 is taken or nee
 [extender] tcp 443 unavailable: listen tcp :443: bind: permission denied; retrying no faster than 3m0s; port 443 needs CAP_NET_BIND_SERVICE (setcap cap_net_bind_service=+ep <binary>) or root
 ```
 
+On Linux, replacing the provider binary can remove its file capability. The installer and `urnet-tools update` attempt to restore `cap_net_bind_service` after the swap. If they cannot verify it, they warn and print a command for the installed binary. The provider update still completes.
+
 ## Choose what the extender will forward
 
 An extender only forwards to destinations you name. `URNETWORK_EXTENDER_ALLOWED_HOSTS` is a comma-separated list of exact hostnames and `*.domain` wildcards, and an empty list refuses every forward request. Set it before you publish the ports:
