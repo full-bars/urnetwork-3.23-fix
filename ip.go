@@ -1909,11 +1909,13 @@ func (self *UdpSequence) startSharedSocket() bool {
 		self.cancel()
 		return true
 	}
+	// Registration makes the flow visible to the poller, which can close it.
+	self.sharedSocket = socket
 	if self.socketReadPoller == nil || !self.socketReadPoller.register(self, socket) {
+		self.sharedSocket = nil
 		self.closeSocket(socket)
 		return false
 	}
-	self.sharedSocket = socket
 	return true
 }
 
