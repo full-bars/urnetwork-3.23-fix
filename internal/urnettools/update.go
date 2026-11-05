@@ -767,7 +767,7 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	defer pruneBackups(p.Binary, 2)
 
 	// Swap with ownership preserved for the provider user.
-	if err := installBinary(staged, p.Binary, p.User); err != nil {
+	if err := installProviderBinary(staged, p.Binary, p.User); err != nil {
 		return fmt.Errorf("swap binary: %w", err)
 	}
 	fmt.Printf("swapped %s -> %s\n", staged, p.Binary)
@@ -1049,7 +1049,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		if backup != "" {
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
 			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
-			if rerr := installBinary(backup, p.Binary, p.User); rerr != nil {
+			if rerr := installProviderBinary(backup, p.Binary, p.User); rerr != nil {
 				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
 			} else {
 				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
