@@ -58,6 +58,29 @@ if [ "$PROVIDER_MODE" = "nightly" ]; then
 fi
 
 # === Logging Helper ===
+ensure_extender_cap ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    cap_file=$1
+    cap_present() {
+        command -v getcap >/dev/null 2>&1 || return 1
+        getcap "$cap_file" 2>/dev/null | awk '
+            { for (i=2; i<=NF; i++) {
+                split($i, parts, "="); split(parts[1], caps, ",")
+                for (c in caps) if (caps[c] == "cap_net_bind_service" && parts[2] ~ /e/ && parts[2] ~ /p/) found=1
+            } } END { exit !found }'
+    }
+    if cap_present; then
+        return 0
+    fi
+    if command -v setcap >/dev/null 2>&1 && setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
+        return 0
+    fi
+    quoted_file=$(printf '%s' "$cap_file" | sed "s/'/'\\\\''/g")
+    printf "WARNING: extender capability missing or unverified; run: sudo setcap cap_net_bind_service=+ep '%s'\n" "$quoted_file" >&2
+    return 0
+)
+
 log() {
   echo "$(date '+%Y-%m-%d %H:%M:%S') >>> UrNetwork >>> $*"
 }
@@ -731,6 +754,7 @@ func_check_update() {
         rm -rf "$UPDATE_TMP" "$STAGED"
         return 0
     fi
+    ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
     if ! echo "$LATEST_VERSION" > "$VERSION_FILE"; then
         log "[ERROR] Failed to record provider version." >&2
         log "[INFO] Update aborted; the previous provider binary is still installed."

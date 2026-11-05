@@ -11,6 +11,29 @@ if [ "$me" = "sh" ] || [ "$me" = "bash" ] || [ "$me" = "zsh" ]; then
     me="urnet-tools"
 fi
 
+ensure_extender_cap ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    cap_file=$1
+    cap_present() {
+        command -v getcap >/dev/null 2>&1 || return 1
+        getcap "$cap_file" 2>/dev/null | awk '
+            { for (i=2; i<=NF; i++) {
+                split($i, parts, "="); split(parts[1], caps, ",")
+                for (c in caps) if (caps[c] == "cap_net_bind_service" && parts[2] ~ /e/ && parts[2] ~ /p/) found=1
+            } } END { exit !found }'
+    }
+    if cap_present; then
+        return 0
+    fi
+    if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
+        return 0
+    fi
+    quoted_file=$(printf '%s' "$cap_file" | sed "s/'/'\\\\''/g")
+    printf "WARNING: extender capability missing or unverified; run: sudo setcap cap_net_bind_service=+ep '%s'\n" "$quoted_file" >&2
+    return 0
+)
+
 show_help ()
 {
     echo "Usage: $me [options] <command>"
@@ -1423,6 +1446,7 @@ EOF
             pr_err "Failed to restart urnetwork.service after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    ensure_extender_cap "$install_path/bin/urnetwork"
                     systemctl --user daemon-reload 2>/dev/null || true
                     systemctl --user start urnetwork.service 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
@@ -2032,6 +2056,7 @@ EOF
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    ensure_extender_cap "$install_path/bin/urnetwork"
                     rc-service urnetwork start 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
                 else
@@ -2635,10 +2660,13 @@ do_install ()
             pr_err "Failed to install provider binary"
             ${SUDO:-} rm -f "$staged_bin" 2>/dev/null || true
             if [ "$provider_swap_pending" -eq 1 ] && [ ! -f "$install_path/bin/urnetwork" ] && [ -f "$install_path/bin/urnetwork.old" ]; then
-                ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null || true
+                if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
+                    ensure_extender_cap "$install_path/bin/urnetwork"
+                fi
             fi
             exit 1
         fi
+        ensure_extender_cap "$install_path/bin/urnetwork"
     fi
 
     cd "$script_rundir" || exit 1
