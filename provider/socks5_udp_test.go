@@ -6,6 +6,7 @@ import (
 	"io"
 	"net"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -28,6 +29,11 @@ type fakeSocks5 struct {
 	// tcpExitBody, when set, is what a CONNECT-then-GET through this proxy
 	// answers (a stand-in for an "what is my address" service)
 	tcpExitBody string
+
+	// accepts counts control connections; associations counts the UDP
+	// associations that are open right now
+	accepts      atomic.Int64
+	associations atomic.Int64
 
 	mu        sync.Mutex
 	relayPort int
@@ -56,6 +62,7 @@ func startFakeSocks5(t *testing.T, user, password string, refuseUDP bool) *fakeS
 			if err != nil {
 				return
 			}
+			server.accepts.Add(1)
 			go server.serve(conn)
 		}
 	}()
@@ -144,6 +151,8 @@ func (self *fakeSocks5) serve(conn net.Conn) {
 		return
 	}
 	defer relay.Close()
+	self.associations.Add(1)
+	defer self.associations.Add(-1)
 	port := relay.LocalAddr().(*net.UDPAddr).Port
 	self.mu.Lock()
 	self.relayPort = port
