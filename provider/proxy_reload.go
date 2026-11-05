@@ -1055,30 +1055,14 @@ func (r *ProxyReloader) reload() {
 	}
 	proxyStateMu.Unlock()
 
-	// Load desired set from the source. On a read error in Workflow A, SKIP the
-	// reload entirely — proceeding would diff against zero proxies and cancel the
-	// entire running fleet over a transient file error.
-	var desired []*connect.ProxySettings
-	if r.sourcePath != "" {
-		settings, err := readProxySettingsFromFile(r.sourcePath)
-		if err != nil {
-			tlog("[proxy] reload skipped: could not read source: %v\n", err)
-			// Record the failure before returning. Without this the resolution
-			// stays pending, so the status line reads "starting: resolving
-			// proxies" instead of a source failure, and the snapshot's startup
-			// reason later reads as stuck rather than as an unreadable source.
-			// The running proxies are deliberately left alone.
-			setProxyResolutionStatus(proxyResolutionFailed, fmt.Sprintf("could not read %s: %v", r.sourcePath, err))
-			return
-		}
-		desired = settings
-	} else {
-		desired = readProxySettings()
-	}
-
+	// Load the desired set (primary source, then the URL cache) through the
+	// builder `proxy refresh` previews with. On a read error in Workflow A,
+	// SKIP the reload entirely: proceeding would diff against zero proxies and
+	// cancel the entire running fleet over a transient file error.
+	//
 	// desiredSet is keyed by proxy IDENTITY (ProxySettings.Key(): address,
 	// or address+user for a shared-gateway proxy where the same host:port
-	// serves multiple accounts — Decodo's model), not bare address. Keying
+	// serves multiple accounts - Decodo's model), not bare address. Keying
 	// by address alone let two different accounts at the same gateway
 	// address collide: Go's randomized map iteration order over the raw
 	// config picked a different "winner" on every reload, which looked
@@ -1087,28 +1071,21 @@ func (r *ProxyReloader) reload() {
 	// set derived from desiredSet below (running, cancelMap, runningAuth,
 	// drainingProxies, rotatedSet, removedSet, the launch-generation
 	// tracker) must stay keyed the same way for the same reason.
-	desiredSet := make(map[string]*connect.ProxySettings, len(desired))
-	sourceOf := make(map[string]string, len(desired))
-	primarySource := "internal"
-	if r.sourcePath != "" {
-		primarySource = "file"
+	resolved, err := resolveDesiredProxySet(r.sourcePath)
+	if err != nil {
+		tlog("[proxy] reload skipped: could not read source: %v\n", err)
+		// Record the failure before returning. Without this the resolution
+		// stays pending, so the status line reads "starting: resolving
+		// proxies" instead of a source failure, and the snapshot's startup
+		// reason later reads as stuck rather than as an unreadable source.
+		// The running proxies are deliberately left alone.
+		setProxyResolutionStatus(proxyResolutionFailed, fmt.Sprintf("could not read %s: %v", r.sourcePath, err))
+		return
 	}
-	for _, s := range desired {
-		desiredSet[s.Key()] = s
-		sourceOf[s.Key()] = primarySource
-	}
-
-	urlCacheLoaded := true
-	anySourceConfigured := r.sourcePath != ""
-	if urlState, err := readProxyURLState(); err != nil {
-		tlog("[proxy][url] warning: could not read proxy_url.json: %v\n", err)
-		urlCacheLoaded = false
-	} else {
-		if len(urlState.Sources) > 0 {
-			anySourceConfigured = true
-		}
-		mergeProxyURLCache(desiredSet, sourceOf, urlState)
-	}
+	desiredSet := resolved.set
+	sourceOf := resolved.sourceOf
+	urlCacheLoaded := resolved.urlCacheLoaded
+	anySourceConfigured := resolved.anySourceConfigured
 
 	// Migrate any legacy (pre-identity, bare-address-keyed) entries in the
 	// persisted stores to their new identity key, for every identity the
@@ -1118,10 +1095,7 @@ func (r *ProxyReloader) reload() {
 	// otherwise a not-yet-adopted legacy entry looks like "no longer
 	// desired" under the new identity-keyed desiredSet and gets silently
 	// deleted instead of adopted. Idempotent: safe every cycle.
-	desiredValues := make([]*connect.ProxySettings, 0, len(desiredSet))
-	for _, s := range desiredSet {
-		desiredValues = append(desiredValues, s)
-	}
+	desiredValues := resolved.values()
 	// a count setting ranks over the proxies this provider runs; when the ranked
 	// set moved, relaunch the proxies that joined or left it
 	// (the candidates are noted under every setting, so a later switch to a count
@@ -1271,7 +1245,7 @@ func (r *ProxyReloader) reload() {
 				continue
 			}
 			if !urlCacheLoaded {
-				if e, ok := r.state.Proxies[addr]; !ok || e.Source == "" || e.Source == "url" {
+				if urlProxyDesiredUnknown(r.state.Proxies, addr) {
 					continue
 				}
 			}
@@ -1435,7 +1409,7 @@ func (r *ProxyReloader) reload() {
 			// entry with no recorded source is treated as URL-sourced (the
 			// conservative reading for state written before sources were recorded).
 			if !urlCacheLoaded {
-				if e, ok := r.state.Proxies[addr]; !ok || e.Source == "" || e.Source == "url" {
+				if urlProxyDesiredUnknown(r.state.Proxies, addr) {
 					continue
 				}
 			}

@@ -6728,20 +6728,14 @@ func proxyRefresh(opts docopt.Opts) {
 	}
 	defer release()
 
-	var desired []*connect.ProxySettings
-	if state.Source != "" {
-		settings, err := readProxySettingsFromFile(state.Source)
-		if err != nil {
-			shmLogFatal(54, "could not read proxy file %s: %v", state.Source, err)
-		}
-		desired = settings
-	} else {
-		desired = readProxySettings()
-	}
-
+	// The reloader's own desired-set builder (primary source, then the URL
+	// cache), so this preview cannot list a removal the reload will not make.
 	// Diff by proxy identity (proxy.state keys are identity keys).
 	currentSet := state.Proxies
-	added, removed := planProxyRefresh(desired, currentSet)
+	added, removed, err := planProxyRefreshFromState(state)
+	if err != nil {
+		shmLogFatal(54, "could not read proxy file %s: %v", state.Source, err)
+	}
 
 	if len(added) == 0 && len(removed) == 0 {
 		fmt.Println("proxy list is already up to date. Nothing to do.")
