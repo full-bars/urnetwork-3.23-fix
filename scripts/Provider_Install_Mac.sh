@@ -579,9 +579,12 @@ do_proxy() {
         exit 1
     fi
 
-    case "$1" in
-        refresh)    "$provider_bin" proxy refresh;;
-        remove-dead) "$provider_bin" proxy remove-dead;;
+    cmd="${1:-}"
+    if [ $# -gt 0 ]; then shift; fi
+
+    case "$cmd" in
+        refresh)    "$provider_bin" proxy refresh "$@";;
+        remove-dead) "$provider_bin" proxy remove-dead "$@";;
         summary)    "$provider_bin" proxy summary;;
         *)
             pr_err "Usage: urnet-tools proxy <refresh|remove-dead|summary>"
