@@ -202,7 +202,10 @@ func (self *Buffer) Clone() *Buffer {
 		// A wide rune whose right half falls outside the view edge leaves
 		// no continuation in the clone: the left half would render as a
 		// dangling widow. Blank it like Resize does.
-		if self.w < self.stride && self.w > 0 && self.cells[self.index(self.w, y)].Continuation() {
+		if self.w > 0 && out.cells[y*self.w].Continuation() {
+			out.cells[y*self.w] = blankCell(out.cells[y*self.w].Style)
+		}
+		if self.w > 0 && self.ox+self.w < self.stride && self.cells[self.index(self.w, y)].Continuation() {
 			out.cells[y*self.w+self.w-1] = blankCell(out.cells[y*self.w+self.w-1].Style)
 		}
 	}
