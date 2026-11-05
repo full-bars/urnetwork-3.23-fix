@@ -2,9 +2,34 @@
 
 ## [Unreleased]
 
+_Based on v3.23.0-fix.35.3._
+
 ### Added
 
-- **`urnet-tools diag` captures memory and CPU evidence from a running provider**: it writes a heap profile, every goroutine's stack, a 30 second CPU profile and a plain-language `summary.txt` to `<state dir>/diag/<UTC timestamp>/`, with no restart and no listener (the request goes over the owner-only control socket). The bundle is written to a `.partial` directory and renamed only when complete; the five newest are kept; one capture runs at a time (a lock older than five minutes counts as left by a crash); the capture refuses to start when free space is below the larger of 256 MiB and eight times the heap in use; a hot swap during a capture aborts it and removes the partial files. The files are owner-only and can contain session tokens. Needs the provider updated and restarted, or hot-swapped, to take effect; an older provider answers `too old to know diag`.
+- **`urnet-tools diag` captures a running provider without a restart** ([#1034](https://github.com/full-bars/urnetwork-3.23-fix/pull/1034)): it writes a heap profile, goroutine stacks, a summary and, when available, a 30-second CPU profile under the state directory. It uses the owner-only control socket, requires 512 MiB free space, keeps five bundles and aborts an active capture on hot swap. Bundles may contain sensitive data.
+- **H1+ handshake failures have per-class metrics** ([#1032](https://github.com/full-bars/urnetwork-3.23-fix/pull/1032)): the ten-minute summary and `urnet_h1plus_handshake_failures_class_total` distinguish timeout, TLS, proxy connection, authentication, rejected upgrade, I/O and other failures. The classes sum to the existing total; do not add both metric families.
+
+### Fixed
+
+- **Windows IPv6 egress pins use the socket's actual family** ([#1039](https://github.com/full-bars/urnetwork-3.23-fix/pull/1039)): a successful IPv4 socket option no longer disguises a failed IPv6 pin. If an embedding caller configures an egress interface, the error reaches dial callers rather than silently using the tunnel route; the H3 UDP path logs a failure and still attempts the connection. This tree has no production caller that sets the interface index.
+- **The shared UDP socket is published before registration** ([#1038](https://github.com/full-bars/urnetwork-3.23-fix/pull/1038)): a terminal event from the poller can no longer consume the close before the flow owns the socket, leaving its descriptor open.
+- **The TUI clears a clipped wide character at the left edge** ([#1038](https://github.com/full-bars/urnetwork-3.23-fix/pull/1038)): a continuation cell no longer leaves a stray glyph.
+- **FreeBSD fallback PID scans include all users and match the provider's exact executable and `provide` argument** ([#1038](https://github.com/full-bars/urnetwork-3.23-fix/pull/1038)): this catches a starting provider when its pidfile is not ready without selecting a lookalike command.
+- **Linux provider binary swaps restore the extender bind capability** ([#1036](https://github.com/full-bars/urnetwork-3.23-fix/pull/1036)): the installer and updater attempt to restore `cap_net_bind_service` after replacement and warn if it cannot be verified. The extender remains optional and is not yet active for clients.
+- **The macOS wrapper forwards proxy command arguments** ([#1037](https://github.com/full-bars/urnetwork-3.23-fix/pull/1037)): arguments to refresh and remove-dead no longer disappear.
+- **The JWT store skips unchanged writes** ([#1033](https://github.com/full-bars/urnetwork-3.23-fix/pull/1033)): identical merged content is not rewritten, reducing disk writes. Completed writes report their cause and counts, and entries written before mint timestamps remain eligible for preservation.
+- **Metrics disable values now override persisted state** (7e377fca1): `URNETWORK_METRICS=off`, `false`, `no`, `0` or `none` disables the listener, and a live enable cannot override the environment. `auto` selects the automatic listener.
+- **A degraded URL proxy ages from its persisted down time** ([#1031](https://github.com/full-bars/urnetwork-3.23-fix/pull/1031)): the default window is six hours; trim-held members are protected and time frozen by a trim does not count. Invalid thresholds warn rather than silently evicting.
+
+### Changed
+
+- **The proxy health summary no longer duplicates the down count** ([#1030](https://github.com/full-bars/urnetwork-3.23-fix/pull/1030)): dead and degraded counts remain in the summary.
+- **SN25 live figures were refreshed** (92945d444): the scheduled updates refreshed the head-tier page.
+- **Go formatting and diagnostic regression coverage were updated** ([#1035](https://github.com/full-bars/urnetwork-3.23-fix/pull/1035), #1034, #1038): these changes do not add operator commands.
+
+## [v3.23.0-fix.35.3]
+
+_Released 2026-11-01. Notes: `releases/v3.23.0-fix.35.3.md`._
 
 ### Fixed
 

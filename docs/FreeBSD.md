@@ -124,6 +124,8 @@ The script does not use `rc.subr`'s own process tracking, which keys off `procna
 - **stop** sends `SIGTERM` to the pid and polls `kill -0` once a second for up to 30 seconds. If the provider is still alive after that it sends `SIGKILL`, then removes the pidfile. The 30 seconds covers the provider's connection drain.
 - **status** (`status_cmd`) prints `urnetwork is running as pid <pid>.` and exits 0, or `urnetwork is not running.` and exits 1.
 
+If the pidfile is not ready, the fallback scan checks processes across users and matches the configured provider executable and the `provide` argument exactly. This catches a provider still starting, but can also find a matching manually started process owned by another user. Review matching processes before running lifecycle commands on a shared host.
+
 `kill -0` on a process owned by another user fails with `EPERM`, so the installer's own status check runs through `sudo`. Run `service urnetwork status` as root, or through `sudo`, when you are not the service user.
 
 Boot start is controlled by `rc.conf`:

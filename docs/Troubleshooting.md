@@ -27,6 +27,10 @@
 
 ---
 
+## Egress interface pin failures on Windows and macOS
+
+The egress binding code can return a dial error if an embedding application sets an egress interface index and the socket cannot be pinned. Check the selected physical interface and its availability. Windows now checks the actual socket family, so an IPv4 pin cannot hide a failed IPv6 pin. This repository has no production caller that sets the index, so this is not a normally enabled provider setting. The H3 UDP path logs a bind failure and still tries the connection; it does not fail the dial at that point.
+
 ## 1. Exit Codes
 
 Every time the provider binary exits with a non-zero code, it prints a `FATAL [exit <code>]: ...` line to both stderr (visible in `docker logs`) and the ramlog file (`/dev/shm/urnetwork.log`, visible via `logs`). The message describes the failure and explains what happened.
