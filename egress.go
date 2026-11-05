@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"errors"
 	"net"
 	"sync/atomic"
 	"syscall"
@@ -44,6 +45,9 @@ func SetEgressInterfaceIndex(index4 uint32, index6 uint32) {
 func EgressInterfaceIndex() (uint32, uint32) {
 	return egressInterfaceIndex4.Load(), egressInterfaceIndex6.Load()
 }
+
+// errEgressIpv6Unpinned reports a socket with IPv4 pinned but IPv6 unpinned.
+var errEgressIpv6Unpinned = errors.New("connect: could not pin the socket's ipv6 traffic to the egress interface")
 
 // egressControl is a net.Dialer / net.ListenConfig Control callback that applies
 // the egress interface binding to a socket at creation time.
