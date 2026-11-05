@@ -3456,8 +3456,7 @@ func provide(opts docopt.Opts) {
 		// (before the first launch) it saw no limit at all on every auto, eco,
 		// turbo and default node, because the tier code sets GOMEMLIMIT here.
 		resourceConfigWarningsOnce()
-		localUserNatSettings.TcpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
-		localUserNatSettings.UdpBufferSettings.ConnectSettings = clientStrategySettings.ConnectSettings
+		applyIdentityNatConnectSettings(localUserNatSettings, clientStrategySettings.ConnectSettings, proxySettings, globalProxyUDPCheck)
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
 
 		clientStrategy := connect.NewClientStrategy(proxyCtx, clientStrategySettings)

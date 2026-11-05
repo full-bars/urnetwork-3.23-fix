@@ -313,23 +313,25 @@ The provider failed to authenticate a transport connection to the URnetwork plat
 
 ## 🛰️ Proxy UDP Relay Check (`[proxy][udp]`)
 
-Before a proxy is allowed to carry H3, the provider checks that UDP actually relays through it and that it exits where TCP does. One line is printed **per change of answer for an identity**, so a fleet of proxies produces one line each rather than one per attempt.
+Before a proxy is allowed to carry H3 or its identity's client UDP (DNS, STUN, QUIC, games), the provider checks that UDP actually relays through it and that it exits where TCP does. The check runs the first time either one is needed. One line is printed **per change of answer for an identity**, so a fleet of proxies produces one line each rather than one per attempt.
 
 ```
-[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay ok, exit 198.51.100.7 matches tcp; h3 allowed
-[proxy][udp] proxy[12] (198.51.100.7:1080) udp exits from 203.0.113.9 but tcp from 198.51.100.7; h3 not used for this proxy
-[proxy][udp] proxy[12] (198.51.100.7:1080) no udp relay (socks5: udp not supported); h3 not used for this proxy, tcp modes only
-[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay works (exit 198.51.100.7) but the tcp exit could not be learned (timeout); h3 allowed, checking again soon
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay ok, exit 198.51.100.7 matches tcp; h3 and client udp allowed
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp exits from 203.0.113.9 but tcp from 198.51.100.7; h3 and client udp not used for this proxy
+[proxy][udp] proxy[12] (198.51.100.7:1080) no udp relay (socks5: udp not supported); h3 and client udp not used for this proxy, tcp only
+[proxy][udp] proxy[12] (198.51.100.7:1080) client udp refused: no-relay (40 since the last line for this proxy)
+[proxy][udp] proxy[12] (198.51.100.7:1080) udp relay works (exit 198.51.100.7) but the tcp exit could not be learned (timeout); h3 and client udp allowed, checking again soon
 ```
 
 | Line | Meaning |
 |---|---|
-| `udp relay ok, exit X matches tcp; h3 allowed` | The proxy relays UDP and both protocols leave by the same address. H3 may be used through it. |
-| `udp exits from X but tcp from Y; h3 not used for this proxy` | UDP relays, but to a different exit than TCP. H3 is withheld: the two protocols would present different addresses, so a client that prefers H3 would appear to change identity. |
-| `no udp relay (<reason>); h3 not used for this proxy, tcp modes only` | UDP does not relay at all, usually a SOCKS or upstream that does not support it. The proxy still serves, on the TCP transports only. |
-| `udp relay works (exit X) but the tcp exit could not be learned (<error>); h3 allowed, checking again soon` | The UDP side is fine and TCP could not be measured at that moment, so H3 is allowed provisionally and the check repeats. Not a refusal. |
+| `udp relay ok, exit X matches tcp; h3 and client udp allowed` | The proxy relays UDP and both protocols leave by the same address. H3 and the identity's client UDP go through it. |
+| `udp exits from X but tcp from Y; h3 and client udp not used for this proxy` | UDP relays, but to a different exit than TCP. H3 and client UDP are withheld: the two protocols would present different addresses, so the identity would appear to change address. |
+| `no udp relay (<reason>); h3 and client udp not used for this proxy, tcp only` | UDP does not relay at all, usually a SOCKS or upstream that does not support it. The proxy still serves TCP, on the TCP transports only. Its clients' UDP is refused. |
+| `udp relay works (exit X) but the tcp exit could not be learned (<error>); h3 and client udp allowed, checking again soon` | The UDP side is fine and TCP could not be measured at that moment, so H3 and client UDP are allowed provisionally and the check repeats. Not a refusal. |
+| `client udp refused: <reason> (N since the last line for this proxy)` | A client UDP flow on this identity was refused: `no-relay` or `exit-mismatch` from the check above, `association failed` when the proxy would not open a UDP association for that flow in 15 seconds, or `ipv6 destination`. Printed at most once every 10 minutes per proxy and reason; N counts the refusals since the previous line. A refused flow is never sent from the host's own address instead. |
 
-None of these is an error, and none stops the proxy serving: a proxy that fails the check is simply not offered for H3, which is the intended fallback. A proxy that flips between lines is one whose UDP path is intermittent, and the last line is the common one on a slow or filtered network.
+None of these is an error, and none stops the proxy serving: a proxy that fails the check is simply not offered for H3, and its identity carries TCP only. To carry its clients' UDP, a proxy must support SOCKS5 UDP ASSOCIATE and exit UDP from the same address as TCP. Client UDP to IPv6 destinations is not relayed (the check only proves IPv4), so clients get a fast unreachable and fall back to IPv4. Proxied identities close a UDP flow after 120 seconds with no traffic in one direction, since each flow holds a connection on the proxy. A proxy that flips between lines is one whose UDP path is intermittent, and the last line is the common one on a slow or filtered network.
 
 ---
 

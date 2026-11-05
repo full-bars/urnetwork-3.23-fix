@@ -32,8 +32,9 @@ import (
 //	mismatch  the relay works but exits from another address than TCP does
 //	unknown   the relay works but the TCP exit could not be learned to compare
 //
-// H3 is allowed for ok and unknown (the relay is the proxy either way) and
-// refused for no-relay and mismatch. Unknown is re-checked sooner.
+// H3 and the identity's client udp (proxy_udp_egress.go) are allowed for ok
+// and unknown (the relay is the proxy either way) and refused for no-relay and
+// mismatch. Unknown is re-checked sooner.
 
 type proxyUDPStatus int
 
@@ -321,13 +322,23 @@ type proxyUDPCheckStore struct {
 	// reaches its first H3 attempt within seconds of starting
 	slots     chan struct{}
 	lastPrune time.Time
+	// detachedRuns holds the one detached check in flight per identity
+	// (checkDetached)
+	detachedRuns map[string]*proxyUDPCheckRun
+}
+
+// proxyUDPCheckRun is one check whose result is ready once done is closed.
+type proxyUDPCheckRun struct {
+	done   chan struct{}
+	result proxyUDPResult
 }
 
 func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) proxyUDPResult) *proxyUDPCheckStore {
 	return &proxyUDPCheckStore{
-		probe:   probe,
-		entries: map[string]*proxyUDPCheckEntry{},
-		slots:   make(chan struct{}, udpCheckMaxConcurrent),
+		probe:        probe,
+		entries:      map[string]*proxyUDPCheckEntry{},
+		slots:        make(chan struct{}, udpCheckMaxConcurrent),
+		detachedRuns: map[string]*proxyUDPCheckRun{},
 	}
 }
 
@@ -416,6 +427,37 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 	}
 }
 
+// checkDetached returns the identity's check, run apart from the caller's
+// context so its result is remembered even when the caller stops waiting. A
+// remembered result returns at once; otherwise at most one detached check per
+// identity runs, and every caller shares it, so a burst of flows on an
+// identity whose check is queued costs one goroutine, not one each.
+func (self *proxyUDPCheckStore) checkDetached(settings *connect.ProxySettings, now time.Time) *proxyUDPCheckRun {
+	key := settings.Key()
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if entry := self.entries[key]; entry != nil && entry.done == nil && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+		run := &proxyUDPCheckRun{done: make(chan struct{}), result: entry.result}
+		close(run.done)
+		return run
+	}
+	if run := self.detachedRuns[key]; run != nil {
+		return run
+	}
+	run := &proxyUDPCheckRun{done: make(chan struct{})}
+	self.detachedRuns[key] = run
+	go connect.HandleError(func() {
+		defer func() {
+			self.mu.Lock()
+			delete(self.detachedRuns, key)
+			self.mu.Unlock()
+			close(run.done)
+		}()
+		run.result = self.Check(context.Background(), settings, now)
+	})
+	return run
+}
+
 // logProxyUDPResult says so once per change of answer for an identity, so a
 // fleet of proxies produces one line each, not one per attempt.
 func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult, result proxyUDPResult) {
@@ -425,13 +467,13 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	index := settings.Index
 	switch result.Status {
 	case proxyUDPOK:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay ok, exit %s matches tcp; h3 allowed\n", index, settings.Address, result.UDPExit)
+		tlog("[proxy][udp] proxy[%d] (%s) udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", index, redactedProxyAddress(settings.Address), result.UDPExit)
 	case proxyUDPExitMismatch:
-		tlog("[proxy][udp] proxy[%d] (%s) udp exits from %s but tcp from %s; h3 not used for this proxy\n", index, settings.Address, result.UDPExit, result.TCPExit)
+		tlog("[proxy][udp] proxy[%d] (%s) udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.TCPExit)
 	case proxyUDPNoRelay:
-		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%v); h3 not used for this proxy, tcp modes only\n", index, settings.Address, result.Err)
+		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%v); h3 and client udp not used for this proxy, tcp only\n", index, redactedProxyAddress(settings.Address), result.Err)
 	default:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%v); h3 allowed, checking again soon\n", index, settings.Address, result.UDPExit, result.Err)
+		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%v); h3 and client udp allowed, checking again soon\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.Err)
 	}
 }
 
