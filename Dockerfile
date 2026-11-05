@@ -44,7 +44,7 @@ RUN apk update && apk add --no-cache \
     iptables net-tools bind-tools \
     ca-certificates \
     ca-certificates-bundle bash \
-    gosu \
+    gosu libcap-setcap libcap-getcap \
   && rm -rf /var/cache/apk/*
 
 # Copy TechRoy's scripts from our local docker/scripts folder
