@@ -515,13 +515,9 @@ ${service_name}_running_pid()
         fi
         # stale or foreign pid: fall through to the scan below
     fi
-    # -U selects processes by username; -u would only select the output
-    # format. The match is done in awk on the argv fields on purpose: a
-    # "grep -F '<binary> provide'" in this same pipeline carries the search
-    # string in its own argv, and "ps -U <service user>" lists that grep when
-    # the caller is the service user. The grep then matches itself and a
-    # stopped provider reports as running (and start skips a real start).
-    _pid="\$(ps -U "\${${service_name}_user}" -o pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
+    # Scan all users: daemon(8) can publish the pid before changing user.
+    # Match argv fields in awk so the scan cannot match its own command.
+    _pid="\$(ps -axo pid=,args= 2>/dev/null | awk -v b='$provider_bin' '\$2 == b && \$3 == "provide" {print \$1; exit}')"
     if [ -n "\$_pid" ]; then
         echo "\$_pid"
         return 0
