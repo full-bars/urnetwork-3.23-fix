@@ -17,6 +17,7 @@ class UninstallProcessGuardTest(unittest.TestCase):
         guard = source[source.index('$ProviderExe = Join-Path'):source.index('# Kill the legacy updater')]
         prefix = r'''
 $InstallDir = 'C:\Fake'
+$Arch = 'amd64'
 $script:queries = 0
 $script:clock = 0
 function Get-Date {
@@ -31,6 +32,7 @@ function Get-CimInstance {
     [CmdletBinding()] param($ClassName)
     $script:queries++
     if ($env:GUARD_SCENARIO -eq 'query-error' -or ($env:GUARD_SCENARIO -eq 'query-error-after' -and $script:queries -gt 1)) { Write-Error 'query failed'; return }
+    if ($env:GUARD_SCENARIO -eq 'legacy' -and $script:queries -eq 1) { return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = (Join-Path $InstallDir 'windows\amd64\urnetwork.exe'); ProcessId = 42 } }
     if ($env:GUARD_SCENARIO -eq 'unreadable') { return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = $null; ProcessId = 99 } }
     if ($env:GUARD_SCENARIO -eq 'other-provider') { return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = 'C:\Other\urnetwork.exe'; ProcessId = 99 } }
     if (($env:GUARD_SCENARIO -eq 'terminate-error' -or $env:GUARD_SCENARIO -eq 'terminate-nonzero' -or $env:GUARD_SCENARIO -eq 'still-alive') -or (($env:GUARD_SCENARIO -eq 'disappears' -or $env:GUARD_SCENARIO -eq 'vanished-before-terminate' -or $env:GUARD_SCENARIO -eq 'query-error-after') -and $script:queries -eq 1)) {
@@ -65,6 +67,12 @@ function Invoke-CimMethod { [CmdletBinding()] param($InputObject, $MethodName) W
 
     def test_process_vanishes_before_terminate(self):
         result = self.run_guard("vanished-before-terminate")
+        self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TERMINATED:42", result.stdout)
+        self.assertIn("CLEANUP_REACHED", result.stdout)
+
+    def test_legacy_installed_provider_is_stopped(self):
+        result = self.run_guard("legacy")
         self.assertEqual(result.returncode, 0, result.stderr)
         self.assertIn("TERMINATED:42", result.stdout)
         self.assertIn("CLEANUP_REACHED", result.stdout)

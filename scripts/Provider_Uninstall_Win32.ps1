@@ -43,13 +43,14 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
+$ProviderExes = @($ProviderExe, (Join-Path -Path $InstallDir -ChildPath "windows\$Arch\urnetwork.exe"))
 # Stop the installed provider and prove it has exited before removing files.
 # A failed process query is not evidence that no provider is running.
 try {
     $AllProviders = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
-    $OtherProviders = @($AllProviders | Where-Object { -not $_.ExecutablePath -or $_.ExecutablePath -ne $ProviderExe })
+    $OtherProviders = @($AllProviders | Where-Object { -not $_.ExecutablePath -or $ProviderExes -notcontains $_.ExecutablePath })
     if ($OtherProviders.Count -gt 0) { throw "Another provider is running or its path cannot be verified; stop it before uninstalling" }
-    $Processes = @($AllProviders | Where-Object { $_.ExecutablePath -eq $ProviderExe })
+    $Processes = @($AllProviders | Where-Object { $ProviderExes -contains $_.ExecutablePath })
     foreach ($Process in $Processes) {
         try {
             $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
