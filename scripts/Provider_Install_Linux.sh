@@ -34,7 +34,7 @@ ensure_extender_cap ()
     if ! cap_bindable; then
         if cap_present; then
             # setcap -r clears the whole xattr; never erase other capabilities.
-            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; exit !(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") }'; then
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
                 printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
                 return 1
             fi
@@ -1469,7 +1469,7 @@ EOF
             pr_err "Failed to restart urnetwork.service after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                     systemctl --user daemon-reload 2>/dev/null || true
                     systemctl --user start urnetwork.service 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
@@ -2079,7 +2079,7 @@ EOF
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                     rc-service urnetwork start 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
                 else
@@ -2684,12 +2684,12 @@ do_install ()
             ${SUDO:-} rm -f "$staged_bin" 2>/dev/null || true
             if [ "$provider_swap_pending" -eq 1 ] && [ ! -f "$install_path/bin/urnetwork" ] && [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                 fi
             fi
             exit 1
         fi
-        ensure_extender_cap "$install_path/bin/urnetwork"
+        ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
     fi
 
     cd "$script_rundir" || exit 1

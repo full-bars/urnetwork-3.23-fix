@@ -41,7 +41,7 @@ ensure_extender_cap ()
     if ! cap_bindable; then
         if cap_present; then
             # setcap -r clears the whole xattr; never erase other capabilities.
-            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; exit !(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") }'; then
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
                 printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
                 return 1
             fi
@@ -220,7 +220,7 @@ do_update() {
         exit 1
     fi
 
-    ensure_extender_cap "$provider_bin"
+    ensure_extender_cap "$provider_bin" || { echo "ERROR: Could not verify provider file capabilities; update stopped" >&2; rm -rf "$tmpdir"; exit 1; }
     echo "Provider binary updated to $version."
     rm -rf "$tmpdir"
 

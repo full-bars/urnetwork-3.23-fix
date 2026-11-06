@@ -81,7 +81,7 @@ ensure_extender_cap ()
     if ! cap_bindable; then
         if cap_present; then
             # setcap -r clears the whole xattr; never erase other capabilities.
-            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; exit !(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") }'; then
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
                 printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
                 return 1
             fi
@@ -777,7 +777,7 @@ func_check_update() {
         rm -rf "$UPDATE_TMP" "$STAGED"
         return 0
     fi
-    ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
+    ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}" || { log "[ERROR] Could not verify provider file capabilities; update stopped" >&2; rm -rf "$UPDATE_TMP"; return 1; }
     if ! echo "$LATEST_VERSION" > "$VERSION_FILE"; then
         log "[ERROR] Failed to record provider version." >&2
         log "[INFO] Update aborted; the previous provider binary is still installed."

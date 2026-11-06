@@ -41,11 +41,17 @@ class ExtenderCapabilityTest(unittest.TestCase):
                     raise RuntimeError(f"missing test dependency: {tool}")
                 (mock_path / tool).symlink_to(executable)
             env = dict(os.environ, STATE=str(state), CALLS=str(calls), PATH=str(mock_path),
-                       MODE=mode, PLATFORM=platform, BINARY=str(binary), SUDO="")
+                       MODE=mode, PLATFORM=platform, BINARY=str(binary), SUDO="", GETCAP_COUNT=str(Path(tmp) / "getcap_count"))
             harness = r'''
 set -eu
 uname() { printf '%s\n' "$PLATFORM"; }
-getcap() { printf '%s %s\n' "$1" "$(cat "$STATE")"; }
+getcap() {
+    if [ "$MODE" = disappearing-getcap ]; then
+        [ ! -e "$GETCAP_COUNT" ] || return 1
+        : > "$GETCAP_COUNT"
+    fi
+    printf '%s %s\n' "$1" "$(cat "$STATE")"
+}
 setcap() {
     printf '%s\n' "$*" >> "$CALLS"
     [ "$MODE" != fail ] || return 1
@@ -118,6 +124,19 @@ setcap() {
                 self.assertNotEqual(result.returncode, 0)
                 self.assertEqual(calls, "")
                 self.assertIn("other capabilities", result.stderr)
+
+    def test_caller_stops_when_capability_safety_check_fails(self):
+        for script in SCRIPTS:
+            for line in (ROOT / script).read_text().splitlines():
+                if 'ensure_extender_cap "' in line:
+                    self.assertIn(" || {", line, f"unguarded safety check in {script}: {line}")
+
+    def test_failed_reinspection_does_not_remove_capabilities(self):
+        for script in SCRIPTS:
+            with self.subTest(script=script):
+                result, calls, _ = self.run_helper(script, "cap_net_bind_service=ep", mode="disappearing-getcap", capbnd="00000000a80421fb")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, "")
 
     def test_all_provider_swap_sites_reapply(self):
         installer = (ROOT / SCRIPTS[0]).read_text()
