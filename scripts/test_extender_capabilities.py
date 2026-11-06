@@ -50,7 +50,7 @@ setcap() {
     printf '%s\n' "$*" >> "$CALLS"
     [ "$MODE" != fail ] || return 1
     [ "$MODE" != unverified ] || return 0
-    printf '%s' 'cap_net_bind_service=ep' > "$STATE"
+    if [ "$1" = -r ]; then printf '%s' '' > "$STATE"; else printf '%s' 'cap_net_bind_service=ep' > "$STATE"; fi
 }
 [ "$MODE" != missing-setcap ] || unset -f setcap
 [ "$MODE" != missing-getcap ] || unset -f getcap
@@ -106,8 +106,8 @@ setcap() {
     def test_existing_capability_outside_bounding_set_warns(self):
         for script in SCRIPTS:
             with self.subTest(script=script):
-                result, calls, _ = self.run_helper(script, "cap_net_bind_service=ep", capbnd="00000000a80421fb")
-                self.assertEqual(calls, "")
+                result, calls, binary = self.run_helper(script, "cap_net_bind_service=ep", capbnd="00000000a80421fb")
+                self.assertEqual(calls, f"-r {binary}\n")
                 self.assertIn("bounding set", result.stderr)
 
     def test_all_provider_swap_sites_reapply(self):

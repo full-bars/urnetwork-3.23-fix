@@ -39,6 +39,12 @@ ensure_extender_cap ()
             END { if (!seen) exit 0; exit !ok }' /proc/self/status
     }
     if ! cap_bindable; then
+        if cap_present; then
+            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
+                printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
+                return 1
+            fi
+        fi
         printf "WARNING: extender capability blocked; CAP_NET_BIND_SERVICE is not in this process's bounding set and the binary would fail to start\n" >&2
         return 0
     fi
