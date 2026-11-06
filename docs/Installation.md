@@ -216,11 +216,11 @@ irm https://dl.fullbars.xyz/uninstall-win.ps1 | iex
 
 | Component | Location |
 |-----------|----------|
-| Provider binary | `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\urnetwork.exe` |
+| Provider binary | `%LOCALAPPDATA%\urnetwork\provider\urnetwork.exe` |
 | Management tool | `urnet-tools` (Go binary, v3.23.0-fix.27.0+) |
 | State directory | `%USERPROFILE%\.urnetwork\` |
 | Startup (optional) | Task Scheduler logon task `urnetwork-autostart` |
-| PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\windows\<arch>\` |
+| PATH | User PATH updated to include `%LOCALAPPDATA%\urnetwork\provider\` |
 
 ### Post-install commands
 
@@ -260,22 +260,9 @@ urnet-tools update
 
 `urnet-tools` runs natively on Windows. It needs no `tail`, no `sudo` and no WSL: the log views use a built-in follower that survives log rotation, `urnet-tools start` creates `%USERPROFILE%\.urnetwork` before it launches the provider, and the commands that would need `sudo` on Linux are skipped. Rotating, clearing or updating a log no longer fails with "being used by another process", because the follower opens it with delete sharing.
 
-### 📦 Tarball Install (Alternative)
+### 📦 Release archives
 
-Starting with v3.23.0-fix.31.2, the Windows release tarball includes `urnet-tools` alongside the provider binary. If you prefer a manual or offline install:
-
-1. Download the release tarball from [GitHub Releases](https://github.com/full-bars/urnetwork-3.23-fix/releases).
-2. Extract the archive to your desired location (e.g. `%LOCALAPPDATA%\urnetwork`).
-3. Open **PowerShell** and run the included install script:
-
-```powershell
-.\Provider_Install_Win32.ps1
-```
-
-This registers the PATH entry and optional Task Scheduler logon task — the same result as the CDN installer, but sourced entirely from the tarball. No internet access is required at install time. The script detects `amd64`/`arm64` automatically and places the correct binaries.
-
-> [!TIP]
-> The tarball method is useful for air-gapped machines or when you want to pin a specific release version rather than always pulling `latest`.
+The [GitHub release page](https://github.com/full-bars/urnetwork-3.23-fix/releases) also offers provider archives and standalone `urnet-tools` binaries for Windows. The PowerShell installer above downloads the release assets; it is not an offline installer.
 
 ## 📊 System Auditor & Host Optimization
 
