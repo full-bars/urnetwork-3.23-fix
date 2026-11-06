@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/exec"
 	"runtime"
+	"strconv"
 	"strings"
 )
 
@@ -18,11 +19,26 @@ func installProviderBinary(src, dst, user string) error {
 }
 
 func installProviderBinaryWithRunner(src, dst, user, platform string, warnings io.Writer, run func(string, ...string) ([]byte, error)) error {
+	return installProviderBinaryWithRunnerAndStatus(src, dst, user, platform, warnings, run, "/proc/self/status")
+}
+
+func installProviderBinaryWithRunnerAndStatus(src, dst, user, platform string, warnings io.Writer, run func(string, ...string) ([]byte, error), statusPath string) error {
 	if err := installBinary(src, dst, user); err != nil {
 		return err
 	}
 	if platform != "linux" {
 		return nil
+	}
+	if data, err := os.ReadFile(statusPath); err == nil {
+		for _, line := range strings.Split(string(data), "\n") {
+			fields := strings.Fields(line)
+			if len(fields) == 2 && fields[0] == "CapBnd:" {
+				if mask, err := strconv.ParseUint(fields[1], 16, 64); err == nil && mask&(1<<10) == 0 {
+					fmt.Fprintln(warnings, "WARNING: extender capability blocked by the process bounding set")
+					return nil
+				}
+			}
+		}
 	}
 	if extenderCapabilityPresent(dst, run) {
 		return nil

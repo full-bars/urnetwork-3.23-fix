@@ -67,7 +67,7 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 				}
 			}
 			var warnings bytes.Buffer
-			if err := installProviderBinaryWithRunner(src, dst, "", "linux", &warnings, run); err != nil {
+			if err := installProviderBinaryWithRunnerAndStatus(src, dst, "", "linux", &warnings, run, filepath.Join(dir, "missing-status")); err != nil {
 				t.Fatalf("install failed: %v", err)
 			}
 			if checks == 0 || sets != tc.wantSetcap {
