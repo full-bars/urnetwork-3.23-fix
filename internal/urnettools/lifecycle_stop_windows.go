@@ -4,6 +4,7 @@ package urnettools
 
 import (
 	"fmt"
+	"net"
 	"os"
 	"path/filepath"
 	"syscall"
@@ -21,6 +22,9 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 
 	// When force==true, bypass graceful shutdown and go straight to kill.
 	if !force {
+		if err := refuseControlWhileProfileShared(p, "stop"); err != nil {
+			return err
+		}
 		// Attempt a graceful shutdown via the control socket.
 		fmt.Println("sending shutdown command...")
 		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "shutdown"})
@@ -125,11 +129,18 @@ func terminateProcess(pid int) error {
 }
 
 // cleanupStaleSocket removes a leftover provider.sock file after a forceful
-// termination or hard crash. The file is unreachable (nothing listening) at
-// this point; leaving it behind would block the next net.Listen on Windows.
+// termination or hard crash; leaving it behind would block the next
+// net.Listen on Windows. It first checks that nothing listens on it: a
+// second provider process can share the default state dir, and deleting
+// its live socket would cut it off from every control command.
 func cleanupStaleSocket(path string) {
 	if _, err := os.Stat(path); err != nil {
 		return // already gone
+	}
+	if conn, err := net.DialTimeout("unix", path, 500*time.Millisecond); err == nil {
+		conn.Close()
+		fmt.Printf("note: left %s in place: another provider process is still listening on it; stop that one too before restarting\n", path)
+		return
 	}
 	if err := os.Remove(path); err != nil {
 		fmt.Printf("warning: could not remove stale socket %s: %v\n", path, err)

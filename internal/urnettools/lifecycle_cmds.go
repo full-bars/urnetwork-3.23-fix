@@ -3,7 +3,6 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -120,21 +119,18 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 		return nil
 	}
 
-	if p.Unit != "" {
-		if isUserUnit(p.Unit) && p.User != "" {
-			args := append(systemctlUserArgs(p.User), "disable", "--now", p.Unit)
-			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
-			}
-		} else {
-			if out, err := exec.Command("systemctl", "disable", "--now", p.Unit).CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
-			}
+	// Windows has no unit to disable: stop the provider process itself and
+	// prove nothing still uses its files before any of them are removed.
+	if uninstallStopsProcesses {
+		if err := stopProviderBeforeUninstall(p); err != nil {
+			return err
 		}
+	} else if err := stopProviderUnixBeforeUninstall(p); err != nil {
+		return err
 	}
 	// Clean up platform lifecycle artifacts: on Unix the auto-update timer,
 	// on Windows the scheduled tasks (heavyweight review S7).
-	cleanupLifecycle(p)
+	cleanupLifecycleFn(p)
 	// Only remove paths that look like real install paths — never "/" or
 	// a bare relative path.
 	// Both guards clean the path so "/" and "/./" are caught identically.
@@ -161,7 +157,11 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 		return fmt.Errorf("uninstall %s: partial — some paths could not be removed (see warnings)", providerLabel(p))
 	}
 	if removedAny {
-		fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
+		if uninstallStopsProcesses {
+			fmt.Printf("Uninstalled %s (binary and state removed, scheduled tasks deleted)\n", providerLabel(p))
+		} else {
+			fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
+		}
 	} else {
 		fmt.Printf("Uninstall %s: nothing removable found (unit disabled if present)\n", providerLabel(p))
 	}

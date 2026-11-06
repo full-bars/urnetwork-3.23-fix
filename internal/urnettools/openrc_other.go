@@ -2,6 +2,8 @@
 
 package urnettools
 
+import "errors"
+
 // OpenRC is a Linux init system; every entry point is a no-op elsewhere so
 // the cross-platform call sites (cmdStart/cmdStop/cmdRestart, auto-start,
 // auto-update, restartProvider, hotSwapUnitOK, renderStatusBase) compile
@@ -60,3 +62,7 @@ func openrcStagedRootToolPath() string { return "" }
 // supervised by OpenRC's supervise-daemon; off Linux there is no OpenRC, so
 // it is always false. A var to mirror the Linux seam.
 var providerSupervisedByOpenRCFn = func(_ Provider) bool { return false }
+
+func openrcServiceArgv(string) []string { return nil }
+
+func runOpenRCCommand(...string) error { return errors.New("OpenRC is only available on Linux") }

@@ -48,6 +48,20 @@ $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
 # installed path only.
 Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
 
+# Terminate() returns before the process is gone. Wait for it, so the files
+# below are never removed under a live provider, and stop here if it stays.
+$Deadline = (Get-Date).AddSeconds(15)
+do {
+    $Alive = @(Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe })
+    if ($Alive.Count -eq 0) { break }
+    Start-Sleep -Milliseconds 250
+} while ((Get-Date) -lt $Deadline)
+if ($Alive.Count -gt 0) {
+    $Pids = ($Alive | ForEach-Object { $_.ProcessId }) -join ", "
+    Write-Error "The provider ($ProviderExe, PID $Pids) is still running. Nothing was removed. End it in Task Manager, then run this uninstaller again."
+    exit 1
+}
+
 # Kill the legacy updater process (PS1-era) if still running.
 # Read the PID file first — the process runs under powershell.exe,
 # not "urnetwork-updater", so Get-Process never matches.
