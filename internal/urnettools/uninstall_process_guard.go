@@ -38,10 +38,12 @@ func (pp providerProcess) mayShareProfile() bool {
 	return !pp.OwnerKnown || pp.OwnedByCaller
 }
 
-func (pp providerProcess) describe() string {
+// describe names the process for an error message; verb is the command
+// the operator should re-run elevated when the owner is unknown.
+func (pp providerProcess) describe(verb string) string {
 	s := fmt.Sprintf("pid %d (%s)", pp.PID, pp.Exe)
 	if !pp.OwnerKnown {
-		s += ", owner unknown: if it belongs to another Windows account, run uninstall from an elevated prompt so the tool can tell"
+		s += ", owner unknown: if it belongs to another Windows account, run " + verb + " from an elevated prompt so the tool can tell"
 	}
 	return s
 }
@@ -108,7 +110,7 @@ func stopProviderBeforeUninstall(p Provider) error {
 			targetLive = true
 			continue
 		}
-		others = append(others, pp.describe())
+		others = append(others, pp.describe("uninstall"))
 	}
 	if len(others) > 0 {
 		return fmt.Errorf("uninstall aborted: another provider process is running and may use the same state dir (%s):\n  %s\n%s; stop it first (%s stop, or end it in Task Manager), then run uninstall again",
@@ -150,7 +152,7 @@ func stopProviderBeforeUninstall(p Provider) error {
 
 	var still []string
 	for _, pp := range live {
-		still = append(still, pp.describe())
+		still = append(still, pp.describe("uninstall"))
 	}
 	if socketUp {
 		still = append(still, "a provider still answers on "+filepath.Join(p.StateDir, "provider.sock"))
