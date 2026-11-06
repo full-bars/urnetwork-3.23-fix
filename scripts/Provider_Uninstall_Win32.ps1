@@ -51,8 +51,15 @@ try {
     if ($OtherProviders.Count -gt 0) { throw "Another provider is running or its path cannot be verified; stop it before uninstalling" }
     $Processes = @($AllProviders | Where-Object { $_.ExecutablePath -eq $ProviderExe })
     foreach ($Process in $Processes) {
-        $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
-        if ($Result.ReturnValue -ne 0) { throw "Terminate returned $($Result.ReturnValue) for PID $($Process.ProcessId)" }
+        try {
+            $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
+            if ($Result.ReturnValue -ne 0) { throw "Terminate returned $($Result.ReturnValue) for PID $($Process.ProcessId)" }
+        } catch {
+            # A process may exit between discovery and termination. Only
+            # suppress the failure after a successful query proves the PID gone.
+            $SamePid = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -eq $Process.ProcessId })
+            if ($SamePid.Count -gt 0) { throw }
+        }
     }
     $Deadline = (Get-Date).AddSeconds(15)
     do {
