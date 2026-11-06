@@ -56,7 +56,7 @@ setcap() {
 [ "$MODE" != missing-getcap ] || unset -f getcap
 ''' + helper(script).replace("/proc/self/status", str(status)) + '\nensure_extender_cap "$BINARY"\n'
             result = subprocess.run(["/bin/sh", "-c", harness], env=env,
-                                    text=True, capture_output=True, check=True)
+                                    text=True, capture_output=True, check=False)
             return result, calls.read_text() if calls.exists() else "", str(binary)
 
     def test_scenarios(self):
@@ -109,6 +109,14 @@ setcap() {
                 result, calls, binary = self.run_helper(script, "cap_net_bind_service=ep", capbnd="00000000a80421fb")
                 self.assertEqual(calls, f"-r {binary}\n")
                 self.assertIn("bounding set", result.stderr)
+
+    def test_blocked_cap_does_not_remove_other_capabilities(self):
+        for script in SCRIPTS:
+            with self.subTest(script=script):
+                result, calls, _ = self.run_helper(script, "cap_chown,cap_net_bind_service=ep", capbnd="00000000a80421fb")
+                self.assertNotEqual(result.returncode, 0)
+                self.assertEqual(calls, "")
+                self.assertIn("other capabilities", result.stderr)
 
     def test_all_provider_swap_sites_reapply(self):
         installer = (ROOT / SCRIPTS[0]).read_text()

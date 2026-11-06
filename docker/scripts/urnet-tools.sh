@@ -40,6 +40,11 @@ ensure_extender_cap ()
     }
     if ! cap_bindable; then
         if cap_present; then
+            # setcap -r clears the whole xattr; never erase other capabilities.
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; exit !(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") }'; then
+                printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
+                return 1
+            fi
             if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
                 printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
                 return 1
