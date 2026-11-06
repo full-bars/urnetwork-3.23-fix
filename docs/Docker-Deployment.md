@@ -25,7 +25,7 @@ urnet-docker update --unit urfix     # update a provider container in place (no 
 urnet-tools self-update              # same, for the process/systemd tool
 ```
 
-Common host-side commands. `urnet-docker` cannot run `direct`, `usage`, `rename` or `sn-status`: it forwards them to the image's shell `urnet-tools`, which does not implement them. Run those on a systemd install.
+Common host-side commands. `urnet-docker` cannot run `direct`, `usage`, `rename` or `sn-status`: it forwards them to the image's shell `urnet-tools`, which does not implement them. `direct` and `sn-status` still work in Docker through the `provider` binary inside the container (see below). `usage` and `rename` have no `provider` command; run `usage` on a systemd install, and for `rename` see [Node-Identity](Node-Identity.md).
 
 ```sh
 urnet-docker providers                          # list provider containers
@@ -36,6 +36,14 @@ urnet-docker proxy trim --unit urfix 500        # hold running proxies at cap (A
 urnet-docker proxy refresh --unit urfix         # reload proxies without restart
 urnet-docker restart --unit urfix               # restart a container
 urnet-docker logs --unit urfix 100              # stream logs (RAMLOGS-aware)
+```
+
+`direct` and `sn-status` run inside the container, where the image puts `provider` on the PATH:
+
+```sh
+docker exec <container> provider direct status   # show direct IP providing state
+docker exec <container> provider direct off     # toggle direct IP (proxies only); on to re-enable
+docker exec <container> provider sn-status       # Subnet 25 status (add --json for JSON)
 ```
 
 > [!NOTE]
