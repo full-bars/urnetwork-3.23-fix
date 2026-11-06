@@ -78,11 +78,22 @@ ensure_extender_cap ()
         awk '/^CapBnd:/ { seen=1; h=$2; if (length(h) >= 3) ok = (substr(h, length(h) - 2, 1) ~ /[4-7cdefCDEF]/); else ok = 1 }
             END { if (!seen) exit 0; exit !ok }' /proc/self/status
     }
-    if cap_present; then
+    if ! cap_bindable; then
+        if cap_present; then
+            # setcap -r clears the whole xattr; never erase other capabilities.
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
+                printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
+                return 1
+            fi
+            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
+                printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
+                return 1
+            fi
+        fi
+        printf "WARNING: extender capability blocked by the process bounding set; check any existing file capabilities before starting\n" >&2
         return 0
     fi
-    if ! cap_bindable; then
-        printf "WARNING: extender capability not applied; CAP_NET_BIND_SERVICE is not in this process's bounding set and the binary would fail to start\n" >&2
+    if cap_present; then
         return 0
     fi
     if command -v setcap >/dev/null 2>&1 && setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
@@ -766,7 +777,7 @@ func_check_update() {
         rm -rf "$UPDATE_TMP" "$STAGED"
         return 0
     fi
-    ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}"
+    ensure_extender_cap "$APP_DIR/urnetwork_${A_SYS_ARCH}_${PROVIDER_FLAVOR}" || { log "[ERROR] Could not verify provider file capabilities; update stopped" >&2; rm -rf "$UPDATE_TMP"; return 1; }
     if ! echo "$LATEST_VERSION" > "$VERSION_FILE"; then
         log "[ERROR] Failed to record provider version." >&2
         log "[INFO] Update aborted; the previous provider binary is still installed."
