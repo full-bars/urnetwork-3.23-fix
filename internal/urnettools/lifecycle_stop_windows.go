@@ -22,6 +22,9 @@ func cmdStopWindows(p Provider, force, dryRun bool) error {
 
 	// When force==true, bypass graceful shutdown and go straight to kill.
 	if !force {
+		if err := refuseControlWhileProfileShared(p, "stop"); err != nil {
+			return err
+		}
 		// Attempt a graceful shutdown via the control socket.
 		fmt.Println("sending shutdown command...")
 		resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "shutdown"})
