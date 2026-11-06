@@ -60,11 +60,12 @@ docker run -e URNETWORK_NODE_NAME="us-east-1" ...
 #### Docker
 ```sh
 # Writes the label file the provider reads on its next tick (no restart).
-# /root/.urnetwork is the state directory inside the container.
-docker exec -it <container> sh -c 'echo us-east-1 > /root/.urnetwork/node_name'
+# $HOME/.urnetwork is the state directory inside the container; the single
+# quotes make the container's shell expand $HOME, not yours.
+docker exec -it <container> sh -c 'echo us-east-1 > "$HOME/.urnetwork/node_name"'
 
 # Clear the override (reverts to hostname)
-docker exec -it <container> rm -f /root/.urnetwork/node_name
+docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/node_name"'
 ```
 
 `urnet-docker rename` and `urnet-tools rename` inside the container do not work: `urnet-docker` forwards the call to the image's shell `urnet-tools`, which does not implement `rename`.
