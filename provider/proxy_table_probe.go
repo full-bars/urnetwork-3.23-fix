@@ -993,6 +993,48 @@ func probeAndGradeProxyURLLines(ctx context.Context, lines []string, apiHost str
 
 	sem := make(chan struct{}, scaledProbeConcurrency(currentPressure()))
 	stage1Results := make([]tableProbeResult, len(survivors))
+	// Progress reporting. A public list often holds thousands of stage-0
+	// survivors and the pool runs until every one is graded, so without this
+	// the operator sees nothing between the fetch and the final per-source
+	// summary and cannot tell slow work from a stuck fetch. Announce the work
+	// up front, then a heartbeat, then how long it actually took.
+	total := len(survivors)
+	var done atomic.Int64
+	probeStart := time.Now()
+	stopProgress := make(chan struct{})
+	var progressWg sync.WaitGroup
+	if total > 0 {
+		tlog("[proxy][url] testing %d address(es) now. Each one gets a real dial through the proxy and a grade.\n", total)
+		tlog("[proxy][url] this is the slow step and it is still working. A large list can take several minutes. Progress prints every 30 seconds.\n")
+		progressWg.Add(1)
+		go func() {
+			defer progressWg.Done()
+			ticker := time.NewTicker(30 * time.Second)
+			defer ticker.Stop()
+			for {
+				select {
+				case <-stopProgress:
+					return
+				case <-ticker.C:
+					n := done.Load()
+					if int(n) >= total {
+						continue
+					}
+					elapsed := time.Since(probeStart)
+					// An honest remaining-time estimate is what stops a
+					// working run from looking stalled. Early samples are
+					// rough, so say "about".
+					left := ""
+					if n > 0 {
+						per := elapsed / time.Duration(n)
+						left = ", about " + (per * time.Duration(int64(total)-n)).Round(time.Second).String() + " left"
+					}
+					tlog("[proxy][url] still testing: %d of %d done (%d%%), %s elapsed%s\n",
+						n, total, 100*n/int64(total), elapsed.Round(time.Second), left)
+				}
+			}
+		}()
+	}
 	var wg sync.WaitGroup
 	for i, address := range survivors {
 		creds := survivorCreds[address]
@@ -1002,9 +1044,15 @@ func probeAndGradeProxyURLLines(ctx context.Context, lines []string, apiHost str
 			defer wg.Done()
 			defer func() { <-sem }()
 			stage1Results[i] = probeTableThroughProxy(ctx, address, user, password, "", 0, cfg)
+			done.Add(1)
 		}(i, address, creds.user, creds.password)
 	}
 	wg.Wait()
+	close(stopProgress)
+	progressWg.Wait()
+	if total > 0 {
+		tlog("[proxy][url] probe finished: %d candidate(s) graded in %s\n", total, time.Since(probeStart).Round(time.Second))
+	}
 
 	grades := make(map[string]proxyURLGrade, len(lines))
 	for i, tr := range stage1Results {

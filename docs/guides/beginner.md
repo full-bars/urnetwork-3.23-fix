@@ -38,7 +38,13 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && \
 ```
 
 > [!NOTE]
-> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. `sudo` is not in the base system either: if the host does not have it, run the same commands from a root shell (`su -`) without `sudo`. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. `sudo` is not in the base system either: if the host does not have it, use a root shell (`su -`) and, when needed, the override shown below. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+>
+> The installer never runs the service as root. From a direct root login with no `urnetwork` account it refuses, so create a non-root service account first (`pw useradd -n urnet -m`; the installer does not create one) and name it with `SERVICE_USER_OVERRIDE`:
+>
+> ```sh
+> fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+> ```
 
 **Windows (PowerShell, no admin required):**
 ```powershell
@@ -79,6 +85,16 @@ It will download the provider binary and set it up as a background service (syst
 ---
 
 ## 3️⃣ Authenticate
+
+> [!IMPORTANT]
+> **FreeBSD, installed from a root shell:** the service runs as the account you named in `SERVICE_USER_OVERRIDE` (for example `urnet`) and reads its token from that account's `~/.urnetwork`. Authenticate as that account, then restart the service as root:
+>
+> ```sh
+> su -l urnet -c '/usr/local/libexec/urnetwork-provider/bin/urnetwork auth <your-auth-code>'
+> service urnetwork restart
+> ```
+>
+> Running `urnetwork auth` as root saves the token in root's home, which the service never reads. Other systems: use the commands below.
 
 Tell the provider who you are:
 

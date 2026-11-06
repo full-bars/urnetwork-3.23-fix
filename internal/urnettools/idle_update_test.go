@@ -143,6 +143,13 @@ func TestWaitForIdleTimeout(t *testing.T) {
 }
 
 func TestIdleUpdateDryRun(t *testing.T) {
+	// The release lookup must not reach the live repo: this repo's own releases
+	// are published separately, so a real fetch here would turn a network (or
+	// release-state) change into a test failure. A canned release keeps it
+	// hermetic. The body is a one-entry release LISTING because the stable
+	// lookup walks the releases pages rather than releases/latest.
+	tag := "v2026.9.22-1052862940-meso"
+	withRecordingTransport(t, `[{"tag_name":"`+tag+`","assets":[{"name":"urnetwork-provider-`+tag+`.tar.gz","digest":"sha256:abc"}]}]`)
 	err := Run([]string{"idle-update", "--dry-run", "--unit=urnetwork.service"})
 	if err != nil && err.Error() != "no providers found on this box" && !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("unexpected idle-update dry-run error: %v", err)

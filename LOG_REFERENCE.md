@@ -710,8 +710,8 @@ In addition to the main `[health]` line, when running with a proxy list the prov
 
 ```
 ❤️ [health][proxies] up=%d dead=%d degraded=%d recovered=%d lost=%d lifetime_recovered=%d lifetime_lost=%d (since-start %s)
-[health][proxies] dead: proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
-[health][proxies] degraded: proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
+[health][proxies] unreachable (dead): proxy[112] (203.0.113.11:1081), proxy[266] (203.0.113.14:1081), ... (+2 more)
+[health][proxies] failing (degraded): proxy[49] (203.0.113.16:1081), proxy[1037] (203.0.113.17:1081), proxy[660] (98.76.54.32:1081)
 ```
 
 | Field | Meaning |
@@ -1058,6 +1058,24 @@ Using 1000 proxy servers:
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
+- Without `/app/proxy.txt`, the startup script keeps the saved `~/.urnetwork/proxy` configuration. It only removes stale `.proxy-import.*` staging directories older than ten minutes.
+
+### Public IP checker and password-login debug output
+
+`ENABLE_IP_CHECKER=true` logs these messages around the external checker:
+
+```
+[INFO] Checking current public IP...
+[INFO] IP checker script ran successfully
+[WARN] IP checker script failed
+[WARN] IP checker fetch failed
+[WARN] IP checker fetch failed: could not create temporary file
+[INFO] IP checker disabled
+```
+
+The checker script is downloaded to a temporary file first, so `fetch failed` means the download itself failed and the script never ran, while `script failed` means it downloaded but exited non-zero.
+
+When `DEBUG=true`, the password-login path prints `DEBUG: USER_AUTH set=` and `DEBUG: PASSWORD set=`, each with its length, then `DEBUG: AUTH_EXIT_CODE=` and `DEBUG: AUTH_OUTPUT=`. The credential values are not printed. `DEBUG: AUTH_OUTPUT=[redacted]` replaces the output when it echoes a credential. The lengths still reveal something about the credentials, so do not share these logs unedited.
 
 ### `proxy.state` reconciliation
 

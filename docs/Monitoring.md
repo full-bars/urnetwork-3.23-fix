@@ -56,12 +56,13 @@ urnet-tools metrics listen auto   # back to the default
 
 ### Docker
 
-Publish the port on an address Prometheus can reach, then turn metrics on inside the container:
+Publish the port on an address Prometheus can reach. Metrics are on by default inside the container, so no command is needed after the container starts:
 
 ```bash
 docker run -d --name urnetwork -p 100.64.0.10:9100:9100 ... ghcr.io/full-bars/urnetwork-3.23-fix:latest
-docker exec urnetwork urnet-tools metrics on
 ```
+
+The container's `urnet-tools` is a shell wrapper that does not carry the `metrics` subcommand, so `docker exec urnetwork urnet-tools metrics on` fails.
 
 Here `100.64.0.10` is the host's Tailscale address, and the Prometheus target is `100.64.0.10:9100`. For several containers on one host, publish each on its own host port (`-p 100.64.0.10:9101:9100`) and use that port as the target.
 

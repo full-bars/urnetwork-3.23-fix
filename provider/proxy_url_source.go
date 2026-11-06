@@ -594,6 +594,10 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		perSource[i].Label = labels[i]
 	}
 	for i, url := range urls {
+		// Say which source is being downloaded before the request: a slow or
+		// large list otherwise looks like nothing is happening at all.
+		tlog("[proxy][url] fetching %s ...\n", labels[i])
+		fetchStart := time.Now()
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
 			perSource[i].Failed = true
@@ -603,6 +607,7 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 			warnProxySourceFailure(label, err.Error())
 			continue
 		}
+		tlog("[proxy][url] downloaded %d line(s) from %s in %s\n", len(lines), labels[i], time.Since(fetchStart).Round(time.Millisecond))
 		// Free public proxy lists are mostly dead entries. The staged probe
 		// checks TCP reachability, SOCKS5 protocol compliance, API CONNECT
 		// (stage 0), and — for survivors — a sampled table probe of real

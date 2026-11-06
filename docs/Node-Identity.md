@@ -59,15 +59,18 @@ docker run -e URNETWORK_NODE_NAME="us-east-1" ...
 
 #### Docker
 ```sh
-# Sets the dashboard identity label on the targeted container
-urnet-docker rename us-east-1 --unit my-provider
-
-# Or directly inside the container (does not affect the container's hostname)
-docker exec -it <container> urnet-tools rename us-east-1
+# Writes the label file the provider reads on its next tick (no restart).
+# $HOME/.urnetwork is the state directory inside the container; the single
+# quotes make the container's shell expand $HOME, not yours.
+docker exec -it <container> sh -c 'echo us-east-1 > "$HOME/.urnetwork/node_name"'
 
 # Clear the override (reverts to hostname)
-urnet-docker rename off --unit my-provider
+docker exec -it <container> sh -c 'rm -f "$HOME/.urnetwork/node_name"'
 ```
+
+> **A name set through the control socket wins over this file.** A name saved earlier with a native `urnet-tools set node-name <name>` (or `urnet-tools rename`) lives in `provider_state.json` in the state directory, and the provider reads it before `node_name`. If the container mounts a state directory from such an install, writing or removing the file changes nothing. Clear that name first with `urnet-tools set node-name off` on the native install. The image's shell `urnet-tools` and the `provider` binary have no command that clears it.
+
+`urnet-docker rename` and `urnet-tools rename` inside the container do not work: `urnet-docker` forwards the call to the image's shell `urnet-tools`, which does not implement `rename`.
 
 > **Note:** The `rename` command is a convenience alias for `urnet-tools set node-name <name>`. Both write to `~/.urnetwork/node_name`, which the provider re-reads on its next renewal tick. No restart is needed.
 

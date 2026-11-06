@@ -59,7 +59,7 @@ refusing to install a service that runs as root
 From a root shell, name a non-root account that already exists:
 
 ```sh
-SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
 The installer does not create the account. Create it first, once, with `pw useradd urnet -m -s /bin/sh`, or name any other existing non-root account. Nothing validates the name: the state directory comes from that user's home, read from the passwd database (`getent passwd`, then `pw usershow`), and when the account is missing that lookup falls back to `$HOME`, which under a root shell is root's. The install tree does not: it is at a fixed root-owned path.
