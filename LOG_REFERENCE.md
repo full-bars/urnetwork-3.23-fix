@@ -1058,6 +1058,24 @@ Using 1000 proxy servers:
 - Each `added server` line confirms a proxy was registered successfully
 - Credentials are partially redacted in logs (`***`)
 - `Using N proxy servers:` summarizes the loaded pool with index assignments
+- Without `/app/proxy.txt`, the startup script keeps the saved `~/.urnetwork/proxy` configuration. It only removes stale `.proxy-import.*` staging directories older than ten minutes.
+
+### Public IP checker and password-login debug output
+
+`ENABLE_IP_CHECKER=true` logs these messages around the external checker:
+
+```
+[INFO] Checking current public IP...
+[INFO] IP checker script ran successfully
+[WARN] IP checker script failed
+[WARN] IP checker fetch failed
+[WARN] IP checker fetch failed: could not create temporary file
+[INFO] IP checker disabled
+```
+
+The checker script is downloaded to a temporary file first, so `fetch failed` means the download itself failed and the script never ran, while `script failed` means it downloaded but exited non-zero.
+
+When `DEBUG=true`, the password-login path prints `DEBUG: USER_AUTH set=` and `DEBUG: PASSWORD set=`, each with its length, then `DEBUG: AUTH_EXIT_CODE=` and `DEBUG: AUTH_OUTPUT=`. The credential values are not printed. `DEBUG: AUTH_OUTPUT=[redacted]` replaces the output when it echoes a credential. The lengths still reveal something about the credentials, so do not share these logs unedited.
 
 ### `proxy.state` reconciliation
 

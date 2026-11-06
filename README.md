@@ -220,11 +220,11 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 > [!NOTE]
 > **Docker Management**: Use `urnet-docker` directly on the host (no `docker exec` wrapping needed):
 > - `urnet-docker status`
-> - `urnet-docker direct status` (or `urnet-docker direct off` for proxy-only mode)
-> - `urnet-docker usage` (or `urnet-docker usage graphs` for time-series history)
 > - `urnet-docker proxy add ~/proxies.txt`
 > - `cat proxies.txt | urnet-docker proxy paste`
 > - `urnet-docker proxy traffic`
+>
+> `direct` and `usage` are not available through `urnet-docker`: it forwards them to the image's shell `urnet-tools`, which does not implement them. Use a systemd install for those.
 
 ---
 
@@ -303,7 +303,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 
 ## 📡 Telemetry & Fleet Visibility
 
-UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` and `urnet-docker usage` (billable vs control plane accounting with hour/day/month historical graphs).
+UrNetwork Connect provides rich standalone metrics directly via `urnet-tools usage` (billable vs control plane accounting with hour/day/month historical graphs) on systemd installs. The Docker image does not implement `usage`.
 
 Prometheus metrics are built in and on by default. `urnet-tools metrics off` and
 `urnet-tools metrics on` switch them without a restart, and either prints the address to scrape: loopback plus the machine's Tailscale

@@ -38,7 +38,13 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && \
 ```
 
 > [!NOTE]
-> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. `sudo` is not in the base system either: if the host does not have it, run the same commands from a root shell (`su -`) without `sudo`. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+> On standard FreeBSD 13/14, `fetch(1)` is in the base system, so you do not need to install curl first. curl and wget are optional. `sudo` is not in the base system either: if the host does not have it, use a root shell (`su -`) and, when needed, the override shown below. See the [FreeBSD Guide](../FreeBSD.md) for the rc.d service and the sysctl tuning.
+>
+> The installer never runs the service as root. From a direct root login with no `urnetwork` account it refuses, so create a non-root service account first (`pw useradd -n urnet -m`; the installer does not create one) and name it with `SERVICE_USER_OVERRIDE`:
+>
+> ```sh
+> fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+> ```
 
 **Windows (PowerShell, no admin required):**
 ```powershell

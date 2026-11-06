@@ -86,7 +86,7 @@ The step is the same for everyone. Nothing changes on the nodes.
 
 1. Run `provider wallet status` again and match the result to the table in Step 1. The `receipt` line appears only when the platform returns a mapping hash, so a missing receipt is not a failure.
 2. Your nodes just need to be healthy and carrying traffic. Nothing Bittensor-specific runs on a node.
-3. Optional dashboard: `urnet-tools sn-status` (Docker: `urnet-docker sn-status`). Look for the green `Wallet consent` line. The "Global Rank" lines there are the URnetwork bandwidth leaderboard. They do **not** say whether you qualify for anything on Bittensor.
+3. Optional dashboard: `urnet-tools sn-status` (the Docker image does not implement `sn-status`). Look for the green `Wallet consent` line. The "Global Rank" lines there are the URnetwork bandwidth leaderboard. They do **not** say whether you qualify for anything on Bittensor.
 
 ## Changing your wallet
 

@@ -98,7 +98,7 @@ provider unbind-head --manifest=<file> --effective_epoch=<n> [--client_id=<hex16
 Optional. It is a read-only summary:
 
 ```bash
-urnet-tools sn-status          # or: urnet-docker sn-status, provider sn-status
+urnet-tools sn-status          # systemd installs; the Docker image does not implement sn-status
 urnet-tools sn-status --json
 ```
 
