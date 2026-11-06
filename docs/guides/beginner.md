@@ -86,6 +86,16 @@ It will download the provider binary and set it up as a background service (syst
 
 ## 3️⃣ Authenticate
 
+> [!IMPORTANT]
+> **FreeBSD, installed from a root shell:** the service runs as the account you named in `SERVICE_USER_OVERRIDE` (for example `urnet`) and reads its token from that account's `~/.urnetwork`. Authenticate as that account, then restart the service as root:
+>
+> ```sh
+> su -l urnet -c '/usr/local/libexec/urnetwork-provider/bin/urnetwork auth <your-auth-code>'
+> service urnetwork restart
+> ```
+>
+> Running `urnetwork auth` as root saves the token in root's home, which the service never reads. Other systems: use the commands below.
+
 Tell the provider who you are:
 
 ```sh
