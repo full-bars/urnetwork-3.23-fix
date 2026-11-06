@@ -22,11 +22,13 @@ function Get-CimInstance {
     param($ClassName, $ErrorAction)
     $script:queries++
     if ($env:GUARD_SCENARIO -eq 'query-error' -or ($env:GUARD_SCENARIO -eq 'query-error-after' -and $script:queries -gt 1)) { throw 'query failed' }
-    if (($env:GUARD_SCENARIO -eq 'disappears' -or $env:GUARD_SCENARIO -eq 'terminate-error' -or $env:GUARD_SCENARIO -eq 'query-error-after') -and $script:queries -eq 1) {
-        return [pscustomobject]@{ ExecutablePath = 'C:\Fake\urnetwork.exe'; ProcessId = 42 }
+    if ($env:GUARD_SCENARIO -eq 'unreadable') { return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = $null; ProcessId = 99 } }
+    if ($env:GUARD_SCENARIO -eq 'other-provider') { return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = 'C:\Other\urnetwork.exe'; ProcessId = 99 } }
+    if (($env:GUARD_SCENARIO -eq 'disappears' -or $env:GUARD_SCENARIO -eq 'terminate-error' -or $env:GUARD_SCENARIO -eq 'query-error-after' -or $env:GUARD_SCENARIO -eq 'terminate-nonzero') -and $script:queries -eq 1) {
+        return [pscustomobject]@{ Name = 'urnetwork.exe'; ExecutablePath = $ProviderExe; ProcessId = 42 }
     }
 }
-function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) if ($env:GUARD_SCENARIO -eq 'terminate-error') { throw 'terminate failed' }; return [pscustomobject]@{ ReturnValue = 0 } }
+function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) Write-Host "TERMINATED:$($InputObject.ProcessId)"; if ($env:GUARD_SCENARIO -eq 'terminate-error') { throw 'terminate failed' }; if ($env:GUARD_SCENARIO -eq 'terminate-nonzero') { return [pscustomobject]@{ ReturnValue = 2 } }; return [pscustomobject]@{ ReturnValue = 0 } }
 '''
         program = "$env:GUARD_SCENARIO = '" + scenario + "'\n" + prefix + guard + "\nWrite-Output 'CLEANUP_REACHED'\n"
         encoded = base64.b64encode(program.encode("utf-16le")).decode()
@@ -36,7 +38,7 @@ function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) if ($
                               env=env, capture_output=True, text=True)
 
     def test_query_failure_refuses_cleanup(self):
-        for scenario in ("query-error", "query-error-after", "terminate-error"):
+        for scenario in ("query-error", "query-error-after", "terminate-error", "terminate-nonzero", "unreadable", "other-provider"):
             with self.subTest(scenario=scenario):
                 result = self.run_guard(scenario)
                 self.assertNotEqual(result.returncode, 0, result.stdout)
@@ -45,6 +47,7 @@ function Invoke-CimMethod { param($InputObject, $MethodName, $ErrorAction) if ($
     def test_process_disappears_before_cleanup(self):
         result = self.run_guard("disappears")
         self.assertEqual(result.returncode, 0, result.stderr)
+        self.assertIn("TERMINATED:42", result.stdout)
         self.assertIn("CLEANUP_REACHED", result.stdout)
 
 

@@ -46,14 +46,17 @@ $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
 # Stop the installed provider and prove it has exited before removing files.
 # A failed process query is not evidence that no provider is running.
 try {
-    $Processes = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -eq $ProviderExe })
+    $AllProviders = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
+    $OtherProviders = @($AllProviders | Where-Object { -not $_.ExecutablePath -or $_.ExecutablePath -ne $ProviderExe })
+    if ($OtherProviders.Count -gt 0) { throw "Another provider is running or its path cannot be verified; stop it before uninstalling" }
+    $Processes = @($AllProviders | Where-Object { $_.ExecutablePath -eq $ProviderExe })
     foreach ($Process in $Processes) {
         $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
         if ($Result.ReturnValue -ne 0) { throw "Terminate returned $($Result.ReturnValue) for PID $($Process.ProcessId)" }
     }
     $Deadline = (Get-Date).AddSeconds(15)
     do {
-        $Alive = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ExecutablePath -eq $ProviderExe })
+        $Alive = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
         if ($Alive.Count -eq 0) { break }
         Start-Sleep -Milliseconds 250
     } while ((Get-Date) -lt $Deadline)
