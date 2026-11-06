@@ -169,7 +169,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 		return nil
 	}
 	if runtime.GOOS == "windows" {
-		return cmdStartWindows(p, force, dryRun)
+		return startProviderOnWindows(p, force, dryRun)
 	}
 	if runtime.GOOS == "freebsd" {
 		fmt.Printf("starting %s...\n", providerLabel(p))
