@@ -16,8 +16,15 @@ if ($ForAllUsers) {
     }
 }
 
-$Arch = (Get-CimInstance Win32_Processor).Architecture
-$Arch = switch ($Arch) {
+$Arch = (Get-CimInstance Win32_Processor -ErrorAction Stop).Architecture
+# Windows can report more than one physical processor. Use one architecture
+# only when every reported processor agrees; otherwise refuse removal.
+$Architectures = @($Arch | Where-Object { $null -ne $_ } | Select-Object -Unique)
+if ($Architectures.Count -ne 1) {
+    Write-Error "Could not determine a single processor architecture. Nothing was removed."
+    exit 1
+}
+$Arch = switch ($Architectures[0]) {
     9 { "amd64" }
     12 { "arm64" }
     default { "unsupported" }
@@ -43,22 +50,34 @@ if (-not (Test-Path $InstallDir)) {
 }
 
 $ProviderExe = Join-Path -Path $InstallDir -ChildPath "urnetwork.exe"
-# Terminate the running provider. The installer always places urnetwork.exe
-# flat in the install dir (the release tarball is flat), so match the exact
-# installed path only.
-Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe } | ForEach-Object { $_.Terminate() }
-
-# Terminate() returns before the process is gone. Wait for it, so the files
-# below are never removed under a live provider, and stop here if it stays.
-$Deadline = (Get-Date).AddSeconds(15)
-do {
-    $Alive = @(Get-WmiObject Win32_Process | Where-Object { $_.ExecutablePath -eq $ProviderExe })
-    if ($Alive.Count -eq 0) { break }
-    Start-Sleep -Milliseconds 250
-} while ((Get-Date) -lt $Deadline)
-if ($Alive.Count -gt 0) {
-    $Pids = ($Alive | ForEach-Object { $_.ProcessId }) -join ", "
-    Write-Error "The provider ($ProviderExe, PID $Pids) is still running. Nothing was removed. End it in Task Manager, then run this uninstaller again."
+$ProviderExes = @($ProviderExe, (Join-Path -Path $InstallDir -ChildPath "windows\$Arch\urnetwork.exe"))
+# Stop the installed provider and prove it has exited before removing files.
+# A failed process query is not evidence that no provider is running.
+try {
+    $AllProviders = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
+    $OtherProviders = @($AllProviders | Where-Object { -not $_.ExecutablePath -or $ProviderExes -notcontains $_.ExecutablePath })
+    if ($OtherProviders.Count -gt 0) { throw "Another provider is running or its path cannot be verified; stop it before uninstalling" }
+    $Processes = @($AllProviders | Where-Object { $ProviderExes -contains $_.ExecutablePath })
+    foreach ($Process in $Processes) {
+        try {
+            $Result = Invoke-CimMethod -InputObject $Process -MethodName Terminate -ErrorAction Stop
+            if ($Result.ReturnValue -ne 0) { throw "Terminate returned $($Result.ReturnValue) for PID $($Process.ProcessId)" }
+        } catch {
+            # A process may exit between discovery and termination. Only
+            # suppress the failure after a successful query proves the PID gone.
+            $SamePid = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.ProcessId -eq $Process.ProcessId })
+            if ($SamePid.Count -gt 0) { throw }
+        }
+    }
+    $Deadline = (Get-Date).AddSeconds(15)
+    do {
+        $Alive = @(Get-CimInstance Win32_Process -ErrorAction Stop | Where-Object { $_.Name -eq 'urnetwork.exe' })
+        if ($Alive.Count -eq 0) { break }
+        Start-Sleep -Milliseconds 250
+    } while ((Get-Date) -lt $Deadline)
+    if ($Alive.Count -gt 0) { throw "The provider is still running" }
+} catch {
+    Write-Error "Could not verify the provider has stopped. Nothing was removed. $($_.Exception.Message)"
     exit 1
 }
 

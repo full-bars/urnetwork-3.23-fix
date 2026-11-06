@@ -31,11 +31,22 @@ ensure_extender_cap ()
         awk '/^CapBnd:/ { seen=1; h=$2; if (length(h) >= 3) ok = (substr(h, length(h) - 2, 1) ~ /[4-7cdefCDEF]/); else ok = 1 }
             END { if (!seen) exit 0; exit !ok }' /proc/self/status
     }
-    if cap_present; then
+    if ! cap_bindable; then
+        if cap_present; then
+            # setcap -r clears the whole xattr; never erase other capabilities.
+            if ! getcap "$cap_file" 2>/dev/null | awk '{ v=$NF; safe=(v == "cap_net_bind_service=ep" || v == "cap_net_bind_service+ep") } END { exit !safe }'; then
+                printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
+                return 1
+            fi
+            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
+                printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
+                return 1
+            fi
+        fi
+        printf "WARNING: extender capability blocked by the process bounding set; check any existing file capabilities before starting\n" >&2
         return 0
     fi
-    if ! cap_bindable; then
-        printf "WARNING: extender capability not applied; CAP_NET_BIND_SERVICE is not in this process's bounding set and the binary would fail to start\n" >&2
+    if cap_present; then
         return 0
     fi
     if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
@@ -1458,7 +1469,7 @@ EOF
             pr_err "Failed to restart urnetwork.service after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                     systemctl --user daemon-reload 2>/dev/null || true
                     systemctl --user start urnetwork.service 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
@@ -2068,7 +2079,7 @@ EOF
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                     rc-service urnetwork start 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
                 else
@@ -2673,12 +2684,12 @@ do_install ()
             ${SUDO:-} rm -f "$staged_bin" 2>/dev/null || true
             if [ "$provider_swap_pending" -eq 1 ] && [ ! -f "$install_path/bin/urnetwork" ] && [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork"
+                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
                 fi
             fi
             exit 1
         fi
-        ensure_extender_cap "$install_path/bin/urnetwork"
+        ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
     fi
 
     cd "$script_rundir" || exit 1
