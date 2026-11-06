@@ -78,7 +78,7 @@ The FreeBSD installer downloads the provider and installs an `rc.d` service. See
 **🍎 macOS (launchd)**
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh -s -- install
 ```
 
 

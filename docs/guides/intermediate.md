@@ -101,7 +101,7 @@ The summary displays proxy source breakdown (file/URL/internal), health state co
 ### 1. Install
 
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh -s -- install
 ```
 
 This is the same installer as Linux but uses `launchd` instead of `systemd`. It creates:

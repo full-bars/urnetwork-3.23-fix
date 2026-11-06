@@ -91,7 +91,7 @@ urnet-tools proxy refresh
 The macOS installer is the equivalent of the Linux installer but uses `launchd` instead of `systemd`:
 
 ```bash
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh -s -- install
 ```
 
 Uninstall (manual — macOS uninstall script not yet available):

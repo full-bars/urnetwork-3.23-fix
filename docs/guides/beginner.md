@@ -28,7 +28,7 @@ curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 
 **macOS:**
 ```sh
-curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh
+curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh -s -- install
 ```
 
 **FreeBSD:**
