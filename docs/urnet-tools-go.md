@@ -51,7 +51,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `choose-network <api> <connect> [target]` | Point provider to custom API and WebSocket signaling endpoints. Use `--reset` to restore default bringyour endpoints. |
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
 | `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear a runtime provider override over the control socket. `urnet-tools set help` lists every key with its value domain and what it changes. The keys are `node-name`, `fast-auth`, `self-heal`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `hot-restart`, `oom-cap`, `smart-dialer`, `gomemlimit`, `gogc`, `profile`, `ramlogs`, `metrics`, `metrics-listen`, `h3`, `h3-datagram`, `h3-datagram-send`, `tls-hello`, `baseline` and `proxy-audit`. For `tls-hello`, `off` is a stored value, not a clear: it survives restarts and takes precedence over `URNETWORK_TLS_HELLO=on`. A control socket `clear` returns the key to `URNETWORK_TLS_HELLO`. Most apply live on the next tick; `profile`, `ramlogs` and `smart-dialer` need a restart. Queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
-| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. Writes `~/.urnetwork/node_name`, re-read on next tick — no restart. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. Inside a container, write `~/.urnetwork/node_name` directly, as in [Node-Identity](Node-Identity.md). |
+| `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. The setting persists in provider state and takes precedence over the legacy node name file. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. For container instructions, see [Node-Identity](Node-Identity.md). |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
 | `session load <file> [target] [--allow-different-account]` | Decrypt and load identity bundle into provider. Automatically backs up current state first. Verifies account identity unless bypassed. |
 | `self-heal [on\|off\|status] [target]` | Toggle or query resource-pressure self-healing monitor (`~/.urnetwork/proxy_self_heal`). |
@@ -281,9 +281,9 @@ Rejected changes log too, so a setting that did not take explains itself:
 ⚠️ [control] set gomemlimit=2GiB (was 1GiB) persisted but live apply failed, takes effect on restart: ...
 ```
 
-`rename` and `show-ip` do not go through the socket. Both take effect at the
-next renewal, and the provider reports the resulting dashboard label when it
-changes:
+`rename` uses the control socket, or queues the change if the provider is
+stopped. `show-ip` uses a marker file instead. The provider reports the
+resulting dashboard label when it changes at renewal:
 
 ```text
 🏷️ [identity] dashboard label changed: nyc-1 [...] -> nyc-2 [...]
