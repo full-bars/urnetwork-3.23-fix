@@ -781,7 +781,22 @@ func extractShellFunc(t *testing.T, script, name string) string {
 	if endIdx < 0 {
 		return ""
 	}
-	return rest[:endIdx]
+	body := rest[:endIdx]
+	// Isolated installer functions still need the real capability helper.
+	// The helper uses a subshell body rather than a brace-delimited body.
+	if strings.Contains(body, `ensure_extender_cap "`) {
+		const startMarker = "ensure_extender_cap ()\n(\n"
+		start := strings.Index(script, startMarker)
+		if start < 0 {
+			t.Fatal("installer capability helper missing")
+		}
+		end := strings.Index(script[start:], "\n)\n")
+		if end < 0 {
+			t.Fatal("installer capability helper has no closing subshell")
+		}
+		body = script[start:start+end+3] + "\n" + body
+	}
+	return body
 }
 
 // A release asset with no digest must read as ABSENT. jq prints the string
