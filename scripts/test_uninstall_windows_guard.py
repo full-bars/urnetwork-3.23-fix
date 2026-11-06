@@ -13,7 +13,7 @@ POWERSHELL = shutil.which("pwsh") or shutil.which("powershell.exe")
 @unittest.skipUnless(POWERSHELL, "PowerShell is unavailable")
 class UninstallProcessGuardTest(unittest.TestCase):
     def run_guard(self, scenario):
-        source = (ROOT / "scripts/Provider_Uninstall_Win32.ps1").read_text()
+        source = (ROOT / "scripts/Provider_Uninstall_Win32.ps1").read_text(encoding="utf-8")
         guard = source[source.index('$ProviderExe = Join-Path'):source.index('# Kill the legacy updater')]
         prefix = r'''
 $InstallDir = 'C:\Fake'
