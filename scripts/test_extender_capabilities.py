@@ -103,6 +103,13 @@ setcap() {
                         self.assertEqual(len(result.stderr.splitlines()), 1)
                         self.assertIn("bounding set", result.stderr)
 
+    def test_existing_capability_outside_bounding_set_warns(self):
+        for script in SCRIPTS:
+            with self.subTest(script=script):
+                result, calls, _ = self.run_helper(script, "cap_net_bind_service=ep", capbnd="00000000a80421fb")
+                self.assertEqual(calls, "")
+                self.assertIn("bounding set", result.stderr)
+
     def test_all_provider_swap_sites_reapply(self):
         installer = (ROOT / SCRIPTS[0]).read_text()
         self.assertEqual(installer.count('ensure_extender_cap "$install_path/bin/urnetwork"'), 4)
