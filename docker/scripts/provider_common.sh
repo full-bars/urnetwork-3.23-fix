@@ -70,7 +70,19 @@ ensure_extender_cap ()
                 for (c in caps) if (caps[c] == "cap_net_bind_service" && parts[2] ~ /e/ && parts[2] ~ /p/) found=1
             } } END { exit !found }'
     }
+    # A file capability outside the bounding set makes exec fail with EPERM.
+    # CAP_NET_BIND_SERVICE is bit 10: the 0x4 bit of the third hex digit from
+    # the right of the CapBnd mask.
+    cap_bindable() {
+        [ -r /proc/self/status ] || return 0
+        awk '/^CapBnd:/ { seen=1; h=$2; if (length(h) >= 3) ok = (substr(h, length(h) - 2, 1) ~ /[4-7cdefCDEF]/); else ok = 1 }
+            END { if (!seen) exit 0; exit !ok }' /proc/self/status
+    }
     if cap_present; then
+        return 0
+    fi
+    if ! cap_bindable; then
+        printf "WARNING: extender capability not applied; CAP_NET_BIND_SERVICE is not in this process's bounding set and the binary would fail to start\n" >&2
         return 0
     fi
     if command -v setcap >/dev/null 2>&1 && setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
