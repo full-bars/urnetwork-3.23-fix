@@ -102,6 +102,7 @@ setcap() {
                         self.assertEqual(calls, "")
                         self.assertEqual(len(result.stderr.splitlines()), 1)
                         self.assertIn("bounding set", result.stderr)
+                self.assertNotIn("would fail to start", result.stderr)
 
     def test_existing_capability_outside_bounding_set_warns(self):
         for script in SCRIPTS:

@@ -90,7 +90,7 @@ ensure_extender_cap ()
                 return 1
             fi
         fi
-        printf "WARNING: extender capability blocked; CAP_NET_BIND_SERVICE is not in this process's bounding set and the binary would fail to start\n" >&2
+        printf "WARNING: extender capability blocked by the process bounding set; check any existing file capabilities before starting\n" >&2
         return 0
     fi
     if cap_present; then
