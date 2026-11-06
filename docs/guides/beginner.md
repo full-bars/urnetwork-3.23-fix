@@ -43,7 +43,7 @@ fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && \
 > The installer never runs the service as root. From a direct root login with no `urnetwork` account it refuses, so create a non-root service account first (`pw useradd -n urnet -m`; the installer does not create one) and name it with `SERVICE_USER_OVERRIDE`:
 >
 > ```sh
-> fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+> fetch -qo urnet-install.sh https://dl.fullbars.xyz/install-freebsd.sh && env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 > ```
 
 **Windows (PowerShell, no admin required):**
