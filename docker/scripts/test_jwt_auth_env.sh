@@ -20,7 +20,7 @@ fi
 
 forwarded=$(grep -c 'auth "\$URNETWORK_AUTH_CODE" -f' "$script" || true)
 if [ "$forwarded" -ne 2 ]; then
-    echo "FAIL: expected 2 call sites forwarding $URNETWORK_AUTH_CODE, found $forwarded"
+    echo "FAIL: expected 2 call sites forwarding \$URNETWORK_AUTH_CODE, found $forwarded"
     fail=1
 else
     echo "PASS: both auth call sites forward the code"
