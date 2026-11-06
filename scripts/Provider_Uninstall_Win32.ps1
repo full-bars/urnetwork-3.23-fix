@@ -16,7 +16,7 @@ if ($ForAllUsers) {
     }
 }
 
-$Arch = (Get-CimInstance Win32_Processor).Architecture
+$Arch = (Get-CimInstance Win32_Processor -ErrorAction Stop).Architecture
 $Arch = switch ($Arch) {
     9 { "amd64" }
     12 { "arm64" }

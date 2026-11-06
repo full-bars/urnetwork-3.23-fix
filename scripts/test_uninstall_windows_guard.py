@@ -46,6 +46,16 @@ function Invoke-CimMethod { [CmdletBinding()] param($InputObject, $MethodName) W
         return subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded],
                               env=env, capture_output=True, text=True)
 
+    def test_architecture_query_failure_is_reported(self):
+        source = (ROOT / "scripts/Provider_Uninstall_Win32.ps1").read_text(encoding="utf-8")
+        segment = source[source.index('$Arch = (Get-CimInstance'):source.index('Write-Debug "Detected architecture:')]
+        program = "function Get-CimInstance { [CmdletBinding()] param($ClassName) Write-Error 'processor query failed' }\n" + segment + "\nWrite-Output 'ARCH_SUCCESS'\n"
+        encoded = base64.b64encode(program.encode("utf-16le")).decode()
+        result = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], capture_output=True, text=True)
+        self.assertNotEqual(result.returncode, 0, result.stdout)
+        self.assertNotIn("ARCH_SUCCESS", result.stdout)
+        self.assertIn("processor query failed", result.stderr)
+
     def test_query_failure_refuses_cleanup(self):
         for scenario in ("query-error", "query-error-after", "terminate-error", "terminate-nonzero", "unreadable", "other-provider", "still-alive"):
             with self.subTest(scenario=scenario):
