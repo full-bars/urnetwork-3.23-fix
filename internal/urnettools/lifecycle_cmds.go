@@ -3,7 +3,6 @@ package urnettools
 import (
 	"fmt"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"runtime"
 	"strings"
@@ -126,18 +125,8 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 		if err := stopProviderBeforeUninstall(p); err != nil {
 			return err
 		}
-	}
-	if p.Unit != "" {
-		if isUserUnit(p.Unit) && p.User != "" {
-			args := append(systemctlUserArgs(p.User), "disable", "--now", p.Unit)
-			if out, err := exec.Command("systemctl", args...).CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
-			}
-		} else {
-			if out, err := exec.Command("systemctl", "disable", "--now", p.Unit).CombinedOutput(); err != nil {
-				fmt.Fprintf(os.Stderr, "uninstall: warning: disable %s: %v (%s)\n", p.Unit, err, strings.TrimSpace(string(out)))
-			}
-		}
+	} else if err := stopProviderUnixBeforeUninstall(p); err != nil {
+		return err
 	}
 	// Clean up platform lifecycle artifacts: on Unix the auto-update timer,
 	// on Windows the scheduled tasks (heavyweight review S7).

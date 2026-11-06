@@ -56,7 +56,7 @@ var (
 	listProviderProcessesFn = listProviderProcesses
 	// uninstallStopFn stops the target. Graceful first; the Windows stop
 	// path escalates to TerminateProcess after its own timeout.
-	uninstallStopFn = func(p Provider) error { return cmdStopWindows(p, false, false) }
+	uninstallStopFn = defaultUninstallStop
 	// uninstallSocketReachableFn reports whether a provider still answers
 	// on the target's control socket.
 	uninstallSocketReachableFn = controlSocketReachable
