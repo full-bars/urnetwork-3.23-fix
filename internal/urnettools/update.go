@@ -1072,6 +1072,10 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 // restartProvider restarts the systemd unit (system or user level) that owns
 // the provider process. Falls back gracefully when systemd is unavailable.
 func restartProvider(p Provider) error {
+	if runtime.GOOS == "windows" {
+		// No unit owns the provider on Windows: stop/start it directly.
+		return restartProviderOnWindows(p)
+	}
 	if runtime.GOOS == "freebsd" {
 		// rc.d owns the service on FreeBSD; systemd never exists there. Without
 		// this branch an update swaps the binary and then fails to restart,
