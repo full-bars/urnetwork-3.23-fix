@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Current Version**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md))
+**Latest published release**: v3.23.0-fix.35.3 (see [releases/v3.23.0-fix.35.3.md](releases/v3.23.0-fix.35.3.md))
 
 ---
 
@@ -4060,3 +4060,19 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **How to Identify in New Upstream**: Search for `diagMinFreeBytes`, `client_jwt_store: skip write`, `degraded_cleanup_threshold`, `urnet_h1plus_handshake_failures_class_total`, `metricsDisabledByEnv`, `errEgressIpv6Unpinned`, `installProviderBinaryWithRunner` and the exact FreeBSD `ps` argument match. Compare the shared UDP socket publication and clipped wide-character handling as well as installer capability restoration and macOS argument forwarding.
 
 **Status**: On main after v3.23.0-fix.35.3. The extender does not yet activate for clients. This tree has no production caller setting an egress interface index.
+
+## 216. Proxied Client UDP and Lifecycle Safety
+
+**Purpose**: Carry a proxied identity's client UDP through its proxy, report long proxy-list operations and keep lifecycle commands from removing files while a provider may still be running.
+
+**Files Modified**: `provider/proxy_udp_egress.go`, `provider/proxy_udp_check.go`, `provider/proxy_url_source.go`, `internal/urnettools/lifecycle_cmds.go`, `internal/urnettools/start_windows_route.go`, `internal/urnettools/restart_windows_route.go`, `internal/urnettools/uninstall_process_guard.go`, `internal/urnettools/uninstall_unix.go`, the Linux and Windows installer scripts and Docker scripts.
+
+**Change**:
+- @Ryanmello07 contributed the client UDP relay in urfoundation/meso-miner#79; the 3.23 port is #1042. A confirmed missing relay or mismatched exit refuses the flow; an unknown check permits a relay attempt without a verified exit. A refused flow never falls back to the host. IPv6 destinations are refused, and either direction being idle for 120 seconds closes the flow.
+- Proxy-list downloads and probes report progress. The refresh preview uses the same desired set as the reloader (#1040, #1044).
+- Windows lifecycle commands avoid duplicate starts and protect shared profiles. Uninstall stops the target and checks its exit before removing files on Windows and Unix (#1043, #1044).
+- Provider swaps attempt to restore the extender bind capability. The Docker helper skips it when the bounding set blocks it (#1036, #1044). The extender remains a work in progress and does not activate for clients.
+
+**How to identify in new upstream**: Check `dialProxiedUdp`, `proxiedUdpFlowIdleTimeout`, `runProxyURLCleanupOnce`, `uninstall_process_guard.go` and the Windows start and restart routes. Compare the release notes and changelog for the full list.
+
+**Status**: On main after v3.23.0-fix.35.3; not yet tagged.

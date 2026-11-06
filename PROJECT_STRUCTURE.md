@@ -36,7 +36,7 @@ The `provider` binary authenticates with the platform, starts one connection per
 | Group | Files | What it does |
 | :--- | :--- | :--- |
 | Proxy lists and hot reload | `proxy_url*.go`, `proxy_reload.go`, `proxy_state.go`, `proxy_id.go`, `proxy_paste.go`, `proxy_match.go` | Read proxy files and live URL sources, reload them without a restart, remember state, and hand out stable proxy IDs. |
-| Proxy admission and health | `proxy_admission_gate.go`, `proxy_failure_history.go`, `proxy_auth_history.go`, `proxy_slow_retry.go`, `proxy_probe.go`, `proxy_table_probe.go`, `proxy_spread_sampler.go`, `proxy_benchmark.go`, `proxy_health_log.go`, `proxy_warmth.go`, `proxy_udp_check.go` | Decide which proxies start, retry dead ones slowly, probe them and log their health. |
+| Proxy admission and health | `proxy_admission_gate.go`, `proxy_failure_history.go`, `proxy_auth_history.go`, `proxy_slow_retry.go`, `proxy_probe.go`, `proxy_table_probe.go`, `proxy_spread_sampler.go`, `proxy_benchmark.go`, `proxy_health_log.go`, `proxy_warmth.go`, `proxy_udp_check.go`, `proxy_udp_egress.go` | Decide which proxies start, retry dead ones slowly, probe them and log their health. |
 | Proxy grading and trimming | `proxy_grade_*.go`, `proxy_audit*.go`, `proxy_scout.go`, `proxy_trim.go`, `proxy_direct_grade.go`, `proxy_earnings_store.go` | A to F reachability grades, the audit that parks bad proxies, the cap that sheds the worst first, and earnings per proxy. |
 | Login rate limiting | `auth_rate_limiter.go` | One shared limit on how fast proxies sign in. |
 | Identity and sessions | `client_jwt_store.go`, `jwt_store_lock_*.go`, `renewal_watcher.go`, `network*.go`, `node_internals.go`, `startup_banner.go` | Client identity reuse across restarts, the saved custom network, and the start-up banner. |
@@ -58,10 +58,11 @@ The `provider` binary authenticates with the platform, starts one connection per
 | :--- | :--- | :--- |
 | Command line | `cobra*.go`, `cli*.go`, `legacy_cmds.go`, `target.go`, `default_provider.go` | The commands, their help text and how a target provider is chosen. |
 | Finding providers | `discover*.go`, `docker*.go`, `namespace_guard.go`, `state_dir_*.go` | Look for providers in systemd, OpenRC, launchd, FreeBSD rc.d, Windows tasks and containers. |
-| Start, stop, restart | `lifecycle_*.go`, `openrc*.go`, `provider_recover*.go`, `restart_*.go`, `idle_update.go` | Per-OS service control. |
+| Start, stop, restart and uninstall | `lifecycle_*.go`, `openrc*.go`, `provider_recover*.go`, `restart_*.go`, `idle_update.go`, `uninstall_process_guard.go`, `uninstall_unix.go` | Per-OS service control and uninstall checks. |
 | Updating | `update.go`, `release.go`, `hotswap*.go`, `self_heal.go`, `tool_path_*.go` | Download a release, check its digest, swap the binary, and update the tool itself. |
 | Settings and proxies | `proxy*.go`, `config.go`, `session_cmds.go`, `control_client.go`, `pending_overrides_lock_*.go`, `ramlogs_detect.go`, `ip_detect.go` | Add and remove proxies, show every setting and where it came from, save and load a session. |
 | Status and history | `top_*.go`, `snapshot*.go`, `usage*.go`, `metrics_status.go`, `autopilot.go`, `baseline.go`, `enforcement.go`, `internals.go`, `log_stream.go` | `top`, `status`, traffic accounting, and the logs and history views. |
+| Diagnostics | `diag.go` in the tool, `provider/diag_bundle.go` | Capture profiles and diagnostic summaries through the provider control socket. |
 | Subnet 25 | `wallet.go`, `sn_status.go` | Wallet consent and `sn-status`. |
 
 The tests (`*_test.go`) sit next to the code they check.
@@ -85,7 +86,7 @@ The Go files in the repo root are one package. Names start with the topic.
 
 ## Docs, wiki and releases
 
-Everything in `docs/*.md` is copied to the [GitHub wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki) by `.github/workflows/wiki-sync.yml` when it changes on `main`. The README, this file, `CHANGELOG.md`, `FORK_CHANGES.md` and `LOG_REFERENCE.md` live in the repo root and are not copied. See also [FORK_CHANGES](FORK_CHANGES.md) for the detailed history of every change, and [LOG_REFERENCE](LOG_REFERENCE.md) for what each log line means.
+Everything in `docs/*.md` is copied to the [GitHub wiki](https://github.com/full-bars/urnetwork-3.23-fix/wiki) by `.github/workflows/wiki-sync.yml` when it changes on `main`. `LOG_REFERENCE.md` is also copied from the repo root as `Log-Message-Reference.md`. The README, this file, `CHANGELOG.md` and `FORK_CHANGES.md` are not copied. See also [FORK_CHANGES](FORK_CHANGES.md) for the detailed history of every change, and [LOG_REFERENCE](LOG_REFERENCE.md) for what each log line means.
 
 ## The hub (removed)
 

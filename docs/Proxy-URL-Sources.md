@@ -180,7 +180,7 @@ Every proxy is tagged internally with where it came from: `url`, `file`, or `int
 | `url` (default) | Automatic cleanup only ever removes dead proxies that came from a `--proxy_url` source. Your file/`proxy add` entries are never touched automatically. |
 | `all` | Automatic cleanup treats every source the same — equivalent to running `proxy remove-dead --all` once a day. |
 
-An automatic cleanup can also retire a URL-sourced proxy that was up and then stayed degraded. The default degraded window is six hours, measured from its persisted down time. A proxy held back by the trim cap is protected, and time while it is held does not count toward the window. An invalid threshold is warned about and does not enable degraded eviction.
+An automatic cleanup can also retire a URL-sourced proxy that was up and then stayed degraded. Degraded eviction is off unless you set `degraded_cleanup_threshold` in `proxy_url.json`. The configured window is measured from the proxy's persisted down time. A proxy held back by the trim cap is protected, and time while it is held does not count toward the window. An invalid threshold logs a warning and leaves degraded eviction off.
 
 Manual `urnet-tools proxy remove-dead` is unaffected by this setting in every case — it always lets you choose interactively, regardless of source.
 
