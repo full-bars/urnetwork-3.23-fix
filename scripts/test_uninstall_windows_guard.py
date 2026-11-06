@@ -16,6 +16,9 @@ class UninstallProcessGuardTest(unittest.TestCase):
         source = (ROOT / "scripts/Provider_Uninstall_Win32.ps1").read_text(encoding="utf-8")
         guard = source[source.index('$ProviderExe = Join-Path'):source.index('# Kill the legacy updater')]
         prefix = r'''
+if (-not (Get-PSDrive -Name C -ErrorAction SilentlyContinue)) {
+    New-PSDrive -Name C -PSProvider FileSystem -Root ([System.IO.Path]::GetTempPath()) | Out-Null
+}
 $InstallDir = 'C:\Fake'
 $Arch = 'amd64'
 $script:queries = 0
@@ -57,6 +60,25 @@ function Invoke-CimMethod { [CmdletBinding()] param($InputObject, $MethodName) W
         self.assertNotEqual(result.returncode, 0, result.stdout)
         self.assertNotIn("ARCH_SUCCESS", result.stdout)
         self.assertIn("processor query failed", result.stderr)
+
+    def test_architecture_processor_instances(self):
+        source = (ROOT / "scripts/Provider_Uninstall_Win32.ps1").read_text(encoding="utf-8")
+        segment = source[source.index('$Arch = (Get-CimInstance'):source.index('$DataDir =')]
+        cases = [([9], "amd64"), ([9, 9], "amd64"), ([12, 12], "arm64"),
+                 ([9, 12], None), ([0], None), ([], None)]
+        for values, expected in cases:
+            with self.subTest(values=values):
+                objects = "; ".join("[pscustomobject]@{Architecture = %s}" % v for v in values)
+                mock = "function Get-CimInstance { [CmdletBinding()] param($ClassName) @(" + objects + ") }\n"
+                program = mock + segment + "\nWrite-Output (\"ARCH_SUCCESS:$Arch\")\n"
+                encoded = base64.b64encode(program.encode("utf-16le")).decode()
+                result = subprocess.run([POWERSHELL, "-NoProfile", "-NonInteractive", "-EncodedCommand", encoded], capture_output=True, text=True)
+                if expected is None:
+                    self.assertNotEqual(result.returncode, 0, result.stdout)
+                    self.assertNotIn("ARCH_SUCCESS", result.stdout)
+                else:
+                    self.assertEqual(result.returncode, 0, result.stderr)
+                    self.assertEqual(result.stdout.strip(), "ARCH_SUCCESS:" + expected)
 
     def test_query_failure_refuses_cleanup(self):
         for scenario in ("query-error", "query-error-after", "terminate-error", "terminate-nonzero", "unreadable", "other-provider", "still-alive"):

@@ -17,7 +17,14 @@ if ($ForAllUsers) {
 }
 
 $Arch = (Get-CimInstance Win32_Processor -ErrorAction Stop).Architecture
-$Arch = switch ($Arch) {
+# Windows can report more than one physical processor. Use one architecture
+# only when every reported processor agrees; otherwise refuse removal.
+$Architectures = @($Arch | Where-Object { $null -ne $_ } | Select-Object -Unique)
+if ($Architectures.Count -ne 1) {
+    Write-Error "Could not determine a single processor architecture. Nothing was removed."
+    exit 1
+}
+$Arch = switch ($Architectures[0]) {
     9 { "amd64" }
     12 { "arm64" }
     default { "unsupported" }
