@@ -37,7 +37,7 @@ func controlSocketPath() (string, error) {
 // controlRequest is one line of the socket protocol: newline-delimited JSON,
 // one request per line, one response per line, in order.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "diag", "shutdown", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "version", "snapshot", "traffic", "internals", "goroutines", "trim_preview", "ledger", "diag", "extender", "shutdown", or "audit"
 	Key     string `json:"key"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`   // for "history" command
@@ -91,7 +91,10 @@ type controlResponse struct {
 	// ProxyAudit is the proxy audit engine's last completed tick, answered by
 	// "status" and "audit". Nil before its first tick or on a provider that predates it.
 	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
-	Audit      *proxyAuditStatus `json:"audit,omitempty"`
+	// Extender is the extender's whole picture, answered by the "extender"
+	// command (extender_status.go).
+	Extender *extenderControlReading `json:"extender,omitempty"`
+	Audit    *proxyAuditStatus       `json:"audit,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -337,6 +340,7 @@ var liveEffectKeys = map[string]bool{
 	"hot_restart":                 true,
 	"metrics":                     true,
 	"metrics_listen":              true,
+	"extender":                    true,
 	"proxy_target_family":         true,
 }
 
@@ -447,6 +451,12 @@ func validateControlValue(key, value string) error {
 		default:
 			return fmt.Errorf("metrics: must be on or off (got %q)", value)
 		}
+	case "extender":
+		switch valLower {
+		case "on", "off":
+		default:
+			return fmt.Errorf("extender: must be on or off (got %q)", value)
+		}
 	case "metrics_listen":
 		return validateMetricsListen(value)
 	case "node_name":
@@ -475,6 +485,8 @@ var liveDefaults = map[string]string{
 	// while the CLI reported success and no restart needed. That is the
 	// control an operator reaches for when scraping goes wrong.
 	"metrics": "off",
+	// The extender role is on unless an operator turned it off.
+	"extender": "on",
 	// Clearing an explicit address goes back to auto, rebinding a running
 	// listener on loopback plus Tailscale.
 	"metrics_listen": "auto",
@@ -514,6 +526,11 @@ func applyLiveDefault(key string, scoped ...*controlState) error {
 		// what a restart would use, so the live state matches the persisted one.
 		return applyLiveSideEffect(key, h3DefaultModeName())
 	}
+	if key == "extender" {
+		// Clearing hands the decision back to URNETWORK_EXTENDER (or the on
+		// default), which is what a restart would use.
+		return applyLiveSideEffect(key, extenderEnvDefaultName())
+	}
 	if key == "tls_hello" {
 		// The same for the client hello: clearing hands the decision back to
 		// URNETWORK_TLS_HELLO, so `set tls_hello off` on a box whose env says on
@@ -534,6 +551,12 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 	IncrControlCmd(req.Cmd)
 
 	switch req.Cmd {
+	case "extender":
+		// Read-only. Turning the extender on or off is the persisted `set
+		// extender on|off`, so there is one way to change it and it survives a
+		// restart.
+		reading := globalExtenderManager.Reading()
+		return controlResponse{OK: true, Extender: &reading}
 	case "version":
 		// The provider answering for itself. Every other way to learn a
 		// running provider's version infers it from the filesystem: read
@@ -1108,6 +1131,8 @@ func applyLiveSideEffect(key, value string) error {
 		return nil
 	case "metrics":
 		return applyMetricsLive(value)
+	case "extender":
+		return applyExtenderLive(value)
 	case "metrics_listen":
 		return applyMetricsListenLive()
 	case "h3":

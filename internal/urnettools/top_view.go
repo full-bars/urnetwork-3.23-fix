@@ -75,11 +75,27 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	// internals and the column is tall enough, Resources shrinks to its three
 	// rows and Internals takes the rest.
 	resRows := m.resourceRows() + 2
-	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+topInternalsRows
+	// The Extender box sits under Resources and ahead of Internals: whether the
+	// extender is on and listed is the thing an operator opens top to check, and
+	// it is left out (no empty box) for a provider that cannot report it.
+	extRows := 0
+	if m.hasExtender() {
+		extRows = m.extenderRows()
+	}
+	showExtender := 0 < extRows && cols[1].H >= nowRows+resRows+extRows
+	if !showExtender {
+		extRows = 0
+	}
+	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+extRows+topInternalsRows
 	var side []tui.Rect
-	if withInternals {
+	switch {
+	case showExtender && withInternals:
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Fixed(extRows), tui.Flex(1))
+	case showExtender:
+		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Fixed(extRows), tui.Flex(1))
+	case withInternals:
 		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Flex(1))
-	} else {
+	default:
 		// Resources takes its content, not the rest of the column: a box of blank
 		// rows says nothing. What is left stays empty.
 		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(min(resRows, max(cols[1].H-nowRows, 0))), tui.Flex(1))
@@ -104,12 +120,17 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	m.drawEvents(box(left[2], "Events"))
 	m.drawNow(box(side[0], "Now"))
 	m.drawResources(box(side[1], "Resources"))
+	internalsAt := 2
+	if showExtender {
+		m.drawExtender(box(side[2], "Extender"))
+		internalsAt = 3
+	}
 	if withInternals {
 		title := "Internals"
 		if m.rt.showing {
 			title = "Goroutines"
 		}
-		m.drawInternals(box(side[2], title))
+		m.drawInternals(box(side[internalsAt], title))
 	}
 }
 

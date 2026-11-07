@@ -484,7 +484,7 @@ func (self *ExtenderPingReporter) run() {
 		batch, wait := self.takeBatch(time.Now())
 		if 0 < len(batch) {
 			if err := self.post(batch); err != nil {
-				self.log.Infof("[extender]ping report err = %s\n", err)
+				self.log.Infof("🌉 [extender]ping report err = %s\n", err)
 				self.requeue(batch, time.Now())
 			}
 			// there may be more due; look again before waiting
@@ -578,7 +578,7 @@ func (self *ExtenderPingReporter) post(batch []*ExtenderPingReport) error {
 		return err
 	}
 	if result != nil && result.Error != "" {
-		self.log.Infof("[extender]ping report refused = %s\n", result.Error)
+		self.log.Infof("🌉 [extender]ping report refused = %s\n", result.Error)
 	}
 	return nil
 }

@@ -266,13 +266,16 @@ var setKeyHelps = []string{
 // URNETWORK_H3, which may be on, so the box an operator switched off would
 // come back on at the next start.
 //
+// extender is the same shape, and the sharper case: its default is ON, so
+// treating `extender off` as a clear would turn the extender back on.
+//
 // tls_hello is the same shape: a clear hands the hello back to
 // URNETWORK_TLS_HELLO, which may say on, so `set tls-hello off` must persist a
 // real off value or the box an operator switched back to Go's hello returns to
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender":
 		return false
 	}
 	return true
@@ -528,6 +531,7 @@ func formatSets(p Provider, want string) error {
 		{"profile", "profile"},
 		{"ramlogs", "ramlogs"},
 		{"metrics", "metrics"},
+		{"extender", "extender"},
 		{"metrics-listen", "metrics_listen"},
 		{"h3", "h3"},
 		{"tls-hello", "tls_hello"},

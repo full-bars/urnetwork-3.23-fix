@@ -96,6 +96,12 @@ func (self *relayEndpoint) dialContext(
 // answer before it writes it on, so every count of the session has landed when
 // this returns.
 func relayTestSession(fixture *extenderFixture, carrier string) error {
+	return relayTestSessionTo(fixture, carrier, testRelayHost)
+}
+
+// relayTestSessionTo is relayTestSession to another destination host, so a test
+// can ask for one the allow list refuses.
+func relayTestSessionTo(fixture *extenderFixture, carrier string, host string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	conn, _, err := connect.DialExtender(
@@ -103,7 +109,7 @@ func relayTestSession(fixture *extenderFixture, carrier string) error {
 		fixture.connectSettings(),
 		fixture.extenderConfig(carrier),
 		&connect.ExtenderDial{
-			DestinationHost: testRelayHost,
+			DestinationHost: host,
 			DestinationPort: 443,
 		},
 	)

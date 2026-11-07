@@ -36,11 +36,13 @@ import (
 // lane does not implement activation, the directory, gossip or probes.
 
 const (
-	// extenderEnv turns the role on. Off unless the value is on/1/true.
+	// extenderEnv is the optional environment default for the role: off/0/false
+	// turns it off. The control setting (urnet-tools extender) beats it.
 	extenderEnv = "URNETWORK_EXTENDER"
-	// extenderDns53Env also binds the dns carrier on 53, beside 4053. The
-	// bind is additive and never required, so an unprivileged provider still
-	// serves 4053.
+	// extenderDns53Env controls the second dns port. Like the miner, the role
+	// also tries 53 beside 4053 by default; off/0/false keeps it to 4053. The
+	// bind is additive and never required, so a provider that cannot bind 53
+	// (no capability, or another resolver holds it) still serves 4053.
 	extenderDns53Env = "URNETWORK_EXTENDER_DNS53"
 	// extenderKeyFileName is the identity seed of the serving role, alongside
 	// the provider's other state. The public half names the extender in every
@@ -54,7 +56,7 @@ const (
 
 // Extender role states, as published on the status line and in the
 // urnet_extender_state metric. "serving" means every configured carrier is
-// listening, "tcp_unavailable" means the udp carriers serve while tcp 443 is
+// listening, "tcp_unavailable" means tcp 443 cannot be bound, so nothing is open and it is
 // being retried, and "unavailable" means no carrier bound.
 const (
 	extenderStateOff            = "off"
@@ -81,25 +83,15 @@ var extenderRoleStates = []string{
 // state instead of dropping the series.
 var globalExtenderRole atomic.Pointer[extenderRole]
 
-// extenderRoleRequested reports whether the operator asked for the role.
-// Only an explicit affirmative starts it; a typo leaves it off rather than
-// binding a public port nobody meant to offer.
-func extenderRoleRequested(environ func(string) string) bool {
-	switch strings.ToLower(strings.TrimSpace(environ(extenderEnv))) {
-	case "on", "1", "true":
-		return true
-	}
-	return false
-}
-
 // extenderDnsPrivilegedPortRequested reports whether the dns carrier should
-// also try 53. It is meaningful only when the role itself is on.
+// also try 53: yes unless it is switched off. It is meaningful only when the
+// role itself is on.
 func extenderDnsPrivilegedPortRequested(environ func(string) string) bool {
 	switch strings.ToLower(strings.TrimSpace(environ(extenderDns53Env))) {
-	case "on", "1", "true":
-		return true
+	case "off", "0", "false", "no":
+		return false
 	}
-	return false
+	return true
 }
 
 // extenderRoleEligible reports whether a slot may hold the role. Only the
@@ -126,6 +118,12 @@ type extenderRoleConfig struct {
 	// request, which is the server's default and upstream's network-space
 	// behaviour; an open provider names its hosts here.
 	allowedHosts []string
+	// configureActivator, when set, adjusts the activation settings before the
+	// loop starts. Tests use it to pin the address families and shorten the
+	// backoff; production leaves it nil.
+	configureActivator func(*connect.ExtenderActivatorSettings)
+	// fetchHello, when set, replaces the GET of the platform's /hello (tests)
+	fetchHello func(ctx context.Context, inputs *extenderActivationInputs) ([]byte, error)
 }
 
 // extenderAllowedHostsFromEnv reads the comma-separated forward allow list.
@@ -235,8 +233,29 @@ type extenderRole struct {
 	// counts folded from retired servers, so the cumulative metrics do not
 	// drop when a server leaves r.servers
 	baseServiceCounts map[string]uint64
+	baseServedCounts  map[string]uint64
+	// tcpTried is set once tcp 443 has been attempted, so later failed attempts count as retries
+	tcpTried bool
+	// servers taken out of r.servers by shutdown whose counters are not yet folded
+	closing           []*extender.ExtenderServer
 	baseRefusalCounts map[string]uint64
 	tcpRetries        int64
+
+	// the activation loop, attached late by the direct slot (extender_activation.go)
+	activator       *connect.ExtenderActivator
+	activatorInputs *extenderActivationInputs
+	// serializes attach, detach and replacement of the activation (extender_activation.go)
+	activationMu sync.Mutex
+	// directory holds the platform's root keys, which verify the signed record each
+	// activation returns so renewals follow its lifetime. One per role, shared by
+	// every slot's activation.
+	directoryOnce sync.Once
+	directory     *connect.ExtenderDirectory
+	// the carrier set last reported to the activation, so a change is told to it once
+	carrierSigKnown bool
+	carrierSig      string
+	// when the "tcp 443 is still held" reminder was last written
+	lastTcpReminder time.Time
 
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -269,7 +288,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		config.listenPacket = net.ListenPacket
 	}
 	if len(config.allowedHosts) == 0 {
-		tlog("[extender] no forward hosts configured (URNETWORK_EXTENDER_ALLOWED_HOSTS); every forward request will be refused\n")
+		tlog("🌉⚠️ [extender] no forward hosts configured (URNETWORK_EXTENDER_ALLOWED_HOSTS); every forward request will be refused\n")
 	}
 	if config.forwardDialer == nil {
 		config.forwardDialer = &net.Dialer{
@@ -287,13 +306,14 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		carriers:          map[string]bool{},
 		listenErrors:      map[string]string{},
 		baseServiceCounts: map[string]uint64{},
+		baseServedCounts:  map[string]uint64{},
 		baseRefusalCounts: map[string]uint64{},
 		ready:             make(chan struct{}),
 		done:              make(chan struct{}),
 	}
 	r.setKeySeed(seed)
 	if created {
-		tlog("[extender] created identity key %s (0600)\n", keyPath)
+		tlog("🌉 [extender] created identity key %s (0600)\n", keyPath)
 	}
 	globalExtenderRole.Store(r)
 	go connect.HandleError(r.run, r.cancel)
@@ -338,7 +358,7 @@ func (r *extenderRole) run() {
 		if err != nil {
 			r.setError(err)
 			r.markReady()
-			tlog("[extender] role failed: %v; retrying no faster than %s\n", err, r.config.retryInterval)
+			tlog("🌉❌ [extender] role failed: %v; retrying no faster than %s\n", err, r.config.retryInterval)
 			if !r.waitRetry() {
 				return
 			}
@@ -361,8 +381,9 @@ func (r *extenderRole) run() {
 		r.markReady()
 		r.publishStatus("listening")
 
-		// tcp 443 may have failed while udp is serving. Retry it on its own
-		// server so a late tcp bind never interrupts the udp carriers.
+		// The primary server only exists once tcp 443 was bound. If that carrier is
+		// lost later while the role runs, retry it on its own server so rebinding it
+		// never interrupts the udp carriers.
 		tcpTimer := time.NewTimer(r.config.retryInterval)
 		tcpRetryC := tcpTimer.C
 		if r.tcpBound() {
@@ -429,10 +450,11 @@ func (r *extenderRole) run() {
 }
 
 // startPrimary constructs and starts the server that owns every carrier. It
-// tries tcp 443 first, by binding it here and handing the open listener to
-// the core through its Listen seam, so the operator-visible result of the
-// gating carrier is known before the udp carriers are attempted. A tcp
-// failure starts the udp-only server instead and does not fail the role.
+// binds tcp 443 first, the one port the platform requires (as upstream does),
+// and hands the open listener to the core through its Listen seam. While that
+// bind fails nothing else is bound: the host cannot be listed, so a udp or dns
+// port would only be exposed for no client. It returns no server then, and the
+// run loop tries again after the retry interval.
 func (r *extenderRole) startPrimary() (*extender.ExtenderServer, chan error, error) {
 	held, tcpErr := r.config.listen("tcp", fmt.Sprintf(":%d", connect.ExtenderTcpPort))
 	if tcpErr != nil {
@@ -440,8 +462,26 @@ func (r *extenderRole) startPrimary() (*extender.ExtenderServer, chan error, err
 			held.Close()
 		}
 		r.recordListenError(connect.ExtenderCarrierTcp, tcpErr)
-		held = nil
+		r.mu.Lock()
+		retried := r.tcpTried
+		r.tcpTried = true
+		if retried {
+			r.tcpRetries += 1
+		}
+		r.carriers = map[string]bool{}
+		r.dnsPorts = nil
+		if r.state != extenderStateError {
+			r.state = extenderStateTcpUnavailable
+		}
+		r.mu.Unlock()
+		if retried {
+			r.remindTcpStillHeld(tcpErr)
+		}
+		return nil, nil, nil
 	}
+	r.mu.Lock()
+	r.tcpTried = true
+	r.mu.Unlock()
 	ports := r.ports(held != nil)
 	if len(ports) == 0 {
 		return nil, nil, fmt.Errorf("no extender carrier is configured")
@@ -484,6 +524,7 @@ func (r *extenderRole) startTcpRetry() (*extender.ExtenderServer, chan error) {
 			held.Close()
 		}
 		r.recordListenError(connect.ExtenderCarrierTcp, err)
+		r.remindTcpStillHeld(err)
 		return nil, nil
 	}
 	server, err := r.newServer(map[int][]connect.ExtenderConnectMode{
@@ -513,6 +554,57 @@ func (r *extenderRole) startTcpRetry() (*extender.ExtenderServer, chan error) {
 		server.CloseAndWait()
 		return nil, nil
 	}
+}
+
+// extenderTcpReminderInterval is how often a still-blocked tcp 443 is repeated
+// in the log. The first failure is explained in full and the bind is retried
+// every few minutes; repeating every retry would bury the log.
+const extenderTcpReminderInterval = 30 * time.Minute
+
+// remindTcpStillHeld writes a short reminder, at most every
+// extenderTcpReminderInterval, that tcp 443 is still blocked, how many tries
+// have failed and when the next one is.
+func (r *extenderRole) remindTcpStillHeld(err error) {
+	r.mu.Lock()
+	if !r.lastTcpReminder.IsZero() && time.Since(r.lastTcpReminder) < extenderTcpReminderInterval {
+		r.mu.Unlock()
+		return
+	}
+	r.lastTcpReminder = time.Now()
+	tries := r.tcpRetries
+	r.mu.Unlock()
+	who := ""
+	if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
+		who = " (held by " + holder + ")"
+	}
+	importantLogf("🌉❌ [extender] STILL BLOCKED: tcp 443 is unavailable%s after %d retries (%v). This host is not listed and gets no clients until it is freed. Next attempt at %s.\n",
+		who, tries, err, clockLabel(time.Now().Add(r.config.retryInterval)))
+}
+
+// notifyActivatorOfCarriers tells the activation loop when the set of bound
+// carriers changed: the return of tcp 443 wakes the families that were held for
+// it, any other change makes the next pass re-offer the carriers. Called after
+// the role refreshed its carriers, outside r.mu.
+func (r *extenderRole) notifyActivatorOfCarriers(carriers []string) {
+	signature := strings.Join(carriers, ",")
+	r.mu.Lock()
+	known := r.carrierSigKnown
+	previous := r.carrierSig
+	r.carrierSigKnown = true
+	r.carrierSig = signature
+	activator := r.activator
+	r.mu.Unlock()
+	if activator == nil || !known || previous == signature {
+		return
+	}
+	hadTcp := strings.Contains(previous, connect.ExtenderCarrierTcp)
+	hasTcp := slices.Contains(carriers, connect.ExtenderCarrierTcp)
+	if hasTcp && !hadTcp {
+		importantLogf("🌉✅ [extender] tcp 443 is bound again: asking the platform to list this host now.\n")
+		activator.TcpCarrierReturned()
+		return
+	}
+	activator.CarriersChanged()
 }
 
 // ports returns the carrier map for one server. Without a held tcp listener
@@ -591,16 +683,46 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 		hint = "; port 443 needs CAP_NET_BIND_SERVICE (setcap cap_net_bind_service=+ep <binary>) or root"
 	}
 	if carrier == connect.ExtenderCarrierTcp {
-		tlog("[extender] tcp 443 unavailable: %v; retrying no faster than %s%s\n", err, r.config.retryInterval, hint)
+		who := ""
+		if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
+			who = " Port 443 is held by " + holder + "."
+		}
+		importantLogf("🌉❌ [extender] CANNOT USE tcp 443: %v.%s%s "+
+			"The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed "+
+			"and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. "+
+			"Free the port (stop or move whatever holds it). The bind is retried every %s; next attempt at %s.\n",
+			err, who, hint, r.config.retryInterval, clockLabel(time.Now().Add(r.config.retryInterval)))
+		r.mu.Lock()
+		r.lastTcpReminder = time.Now()
+		r.mu.Unlock()
 		return
 	}
 	if carrier == connect.ExtenderCarrierDns && strings.Contains(message, ":53") {
 		// 53 is the optional second dns port. Its failure never removes the
 		// carrier: 4053 is bound and serves.
-		tlog("[extender] dns 53 unavailable: %v; keeping %d\n", err, connect.ExtenderDnsPort)
+		tlog("🌉⚠️ [extender] dns 53 unavailable: %v; keeping %d\n", err, connect.ExtenderDnsPort)
 		return
 	}
-	tlog("[extender] %s carrier unavailable: %v%s\n", carrier, err, hint)
+	tlog("🌉❌ [extender] %s carrier unavailable: %v%s\n", carrier, err, hint)
+}
+
+// foldCountsLocked adds a retired or closed server's counters to the role's base
+// so the cumulative totals do not drop when it leaves r.servers. One helper for
+// every way a server leaves, so none of them can forget a counter.
+func (r *extenderRole) foldCountsLocked(stats extender.ExtenderStats, serviceCounts, servedCounts, refusalCounts map[string]uint64) {
+	r.baseStats.IngressByteCount += stats.IngressByteCount
+	r.baseStats.IngressReadCount += stats.IngressReadCount
+	r.baseStats.EgressByteCount += stats.EgressByteCount
+	r.baseStats.EgressReadCount += stats.EgressReadCount
+	for service, count := range serviceCounts {
+		r.baseServiceCounts[service] += count
+	}
+	for service, count := range servedCounts {
+		r.baseServedCounts[service] += count
+	}
+	for stage, count := range refusalCounts {
+		r.baseRefusalCounts[stage] += count
+	}
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
@@ -609,6 +731,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 	server.CloseAndWait()
 	stats := server.Stats()
 	serviceCounts := server.ServiceCounts()
+	servedCounts := server.ServedCounts()
 	refusalCounts := server.RefusalCounts()
 	r.mu.Lock()
 	defer r.mu.Unlock()
@@ -618,16 +741,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 		return
 	}
 	r.servers = slices.Delete(r.servers, index, index+1)
-	r.baseStats.IngressByteCount += stats.IngressByteCount
-	r.baseStats.IngressReadCount += stats.IngressReadCount
-	r.baseStats.EgressByteCount += stats.EgressByteCount
-	r.baseStats.EgressReadCount += stats.EgressReadCount
-	for service, count := range serviceCounts {
-		r.baseServiceCounts[service] += count
-	}
-	for stage, count := range refusalCounts {
-		r.baseRefusalCounts[stage] += count
-	}
+	r.foldCountsLocked(stats, serviceCounts, servedCounts, refusalCounts)
 	r.refreshLocked()
 }
 
@@ -657,7 +771,11 @@ func (r *extenderRole) refreshLocked() {
 	switch {
 	case len(r.servers) == 0 || len(carriers) == 0:
 		if r.state != extenderStateError {
-			r.state = extenderStateUnavailable
+			if listenErrors[connect.ExtenderCarrierTcp] != "" {
+				r.state = extenderStateTcpUnavailable
+			} else {
+				r.state = extenderStateUnavailable
+			}
 		}
 	case !carriers[connect.ExtenderCarrierTcp]:
 		r.state = extenderStateTcpUnavailable
@@ -700,24 +818,28 @@ func (r *extenderRole) shutdown() {
 	r.mu.Lock()
 	servers := slices.Clone(r.servers)
 	r.servers = nil
+	// still visible to snapshots until folded, so the totals never dip
+	r.closing = append(r.closing, servers...)
+	activator := r.activator
+	r.activator = nil
+	r.activatorInputs = nil
 	r.mu.Unlock()
-	// Capture the last counters before closing, so a scrape after shutdown
-	// still reports the traffic the role relayed rather than dropping to the
-	// pre-shutdown base.
-	stats := extender.ExtenderStats{}
+	// closing joins the activation loop, whose carrier closures take r.mu
+	if activator != nil {
+		activator.Close()
+	}
+	// Close every server first, then read its counters: they are atomic and
+	// survive close, and requests that finish while CloseAndWait drains must
+	// count. Reading before the close lost them, and the service and refusal
+	// counts were never folded at all, so a stopped role forgot its history.
 	for _, server := range servers {
-		serverStats := server.Stats()
-		stats.IngressByteCount += serverStats.IngressByteCount
-		stats.IngressReadCount += serverStats.IngressReadCount
-		stats.EgressByteCount += serverStats.EgressByteCount
-		stats.EgressReadCount += serverStats.EgressReadCount
 		server.CloseAndWait()
 	}
 	r.mu.Lock()
-	r.baseStats.IngressByteCount += stats.IngressByteCount
-	r.baseStats.IngressReadCount += stats.IngressReadCount
-	r.baseStats.EgressByteCount += stats.EgressByteCount
-	r.baseStats.EgressReadCount += stats.EgressReadCount
+	for _, server := range servers {
+		r.foldCountsLocked(server.Stats(), server.ServiceCounts(), server.ServedCounts(), server.RefusalCounts())
+	}
+	r.closing = slices.DeleteFunc(r.closing, func(c *extender.ExtenderServer) bool { return slices.Contains(servers, c) })
 	r.carriers = map[string]bool{}
 	r.dnsPorts = nil
 	r.state = extenderStateClosed
@@ -742,13 +864,16 @@ type extenderRoleSnapshot struct {
 	// per-service requests and per-stage refusals, summed over every server
 	// the role currently owns
 	ServiceCounts map[string]uint64
+	// requests accepted and handed a stream (extender.ExtenderServer.ServedCounts)
+	ServedCounts  map[string]uint64
 	RefusalCounts map[string]uint64
 }
 
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	r.mu.Lock()
-	servers := slices.Clone(r.servers)
+	servers := append(slices.Clone(r.servers), r.closing...)
 	baseServiceCounts := maps.Clone(r.baseServiceCounts)
+	baseServedCounts := maps.Clone(r.baseServedCounts)
 	baseRefusalCounts := maps.Clone(r.baseRefusalCounts)
 	snapshot := extenderRoleSnapshot{
 		Enabled:      true,
@@ -768,9 +893,13 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	// retired servers' counts are folded into the base maps, so the cumulative
 	// counters keep their totals when a server leaves
 	snapshot.ServiceCounts = baseServiceCounts
+	snapshot.ServedCounts = baseServedCounts
 	snapshot.RefusalCounts = baseRefusalCounts
 	if snapshot.ServiceCounts == nil {
 		snapshot.ServiceCounts = map[string]uint64{}
+	}
+	if snapshot.ServedCounts == nil {
+		snapshot.ServedCounts = map[string]uint64{}
 	}
 	if snapshot.RefusalCounts == nil {
 		snapshot.RefusalCounts = map[string]uint64{}
@@ -778,6 +907,9 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	for _, server := range servers {
 		for service, count := range server.ServiceCounts() {
 			snapshot.ServiceCounts[service] += count
+		}
+		for service, count := range server.ServedCounts() {
+			snapshot.ServedCounts[service] += count
 		}
 		for stage, count := range server.RefusalCounts() {
 			snapshot.RefusalCounts[stage] += count
@@ -794,6 +926,7 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 
 func (r *extenderRole) publishStatus(note string) {
 	snapshot := r.snapshot()
+	r.notifyActivatorOfCarriers(snapshot.Carriers)
 	summary := extenderRoleSummary(snapshot)
 	policy := r.forwardPolicySummary()
 
@@ -812,20 +945,25 @@ func (r *extenderRole) publishStatus(note string) {
 	// one line a human can read at 3am, then only when something changes:
 	// the counters live in /metrics, not in a repeated dump
 	if firstServing {
-		tlog("[extender] ready — %s; %s\n", summary, policy)
+		tlog("🌉✅ [extender] ready — %s; %s\n", summary, policy)
 		return
 	}
 	if !changed {
 		return
 	}
 	if snapshot.State == extenderStateServing {
-		tlog("[extender] %s\n", summary)
+		tlog("🌉✅ [extender] %s\n", summary)
 		return
 	}
 	if note == "" {
 		note = summary
 	}
-	tlog("[extender] %s — %s\n", snapshot.State, note)
+	mark := "🌉"
+	switch snapshot.State {
+	case extenderStateTcpUnavailable, extenderStateUnavailable, extenderStateError:
+		mark = "🌉❌"
+	}
+	tlog("%s [extender] %s — %s\n", mark, snapshot.State, note)
 }
 
 // extenderRoleSummary says what the role is serving in words, not keys.

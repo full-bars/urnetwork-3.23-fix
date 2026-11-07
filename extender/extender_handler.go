@@ -156,6 +156,12 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		return
 	}
 	defer clientConn.Close()
+	if probe == nil {
+		// authorized, admitted and answered, and the stream is ours: this is the
+		// point at which a request counts as served (a probe is the platform's
+		// own verification and is never a client)
+		server.usage.recordServed(extenderUsageServiceIndex(header.Service))
+	}
 
 	handleCtx, handleCancel := context.WithCancel(req.Context())
 	defer handleCancel()

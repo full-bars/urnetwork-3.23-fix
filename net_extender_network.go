@@ -781,7 +781,7 @@ func (self *ExtenderNetworkClient) refreshRootKeys() bool {
 	defer cancel()
 	helloResult, err := hello(ctx)
 	if err != nil {
-		self.log.Infof("[extender]hello err = %s\n", err)
+		self.log.Infof("🌉 [extender]hello err = %s\n", err)
 		return false
 	}
 	if helloResult == nil {
@@ -791,11 +791,11 @@ func (self *ExtenderNetworkClient) refreshRootKeys() bool {
 	// a list of blank entries is as empty as no list: installed, it would
 	// refuse every record until the next answer
 	if keySet, err := NewExtenderRootKeySetFromHex(helloResult.RootPublicKeyHexes...); err != nil {
-		self.log.Infof("[extender]hello root keys err = %s\n", err)
+		self.log.Infof("🌉 [extender]hello root keys err = %s\n", err)
 		answered = false
 	} else if 0 < keySet.Len() && !keySet.Equal(self.directory.RootKeys()) {
 		self.directory.SetRootKeys(keySet)
-		self.log.Infof("[extender]hello root keys installed (%d)\n", keySet.Len())
+		self.log.Infof("🌉 [extender]hello root keys installed (%d)\n", keySet.Len())
 		self.wakeMonitor.NotifyAll()
 	}
 	self.updateStatus(func(status *ExtenderNetworkClientStatus) {
@@ -907,13 +907,13 @@ func (self *ExtenderNetworkClient) bootstrap() *ExtenderRootKeySet {
 	rootKeySet := self.directory.RootKeys()
 	var txts []string
 	if rootKeySet.Len() == 0 {
-		self.log.V(1).Infof("[extender]bootstrap txt waits for root keys\n")
+		self.log.V(1).Infof("🌉 [extender]bootstrap txt waits for root keys\n")
 	} else {
 		var err error
 		txts, err = resolveTxt(ctx, self.settings.ExtenderDnsName)
 		if err != nil {
 			// not fatal: the address answers may still bootstrap, unverified
-			self.log.Infof("[extender]bootstrap txt err = %s\n", err)
+			self.log.Infof("🌉 [extender]bootstrap txt err = %s\n", err)
 		}
 		// keys installed while the answer was out judge it
 		rootKeySet = self.directory.RootKeys()
@@ -926,11 +926,11 @@ func (self *ExtenderNetworkClient) bootstrap() *ExtenderRootKeySet {
 	for _, txt := range txts {
 		message, err := DecodeExtenderDnsRecord(txt)
 		if err != nil {
-			self.log.Infof("[extender]bootstrap txt record ignored: %s\n", err)
+			self.log.Infof("🌉 [extender]bootstrap txt record ignored: %s\n", err)
 			continue
 		}
 		if _, err := self.directory.ApplySource(message, ExtenderSourceDns); err != nil {
-			self.log.Infof("[extender]bootstrap txt record refused: %s\n", err)
+			self.log.Infof("🌉 [extender]bootstrap txt record refused: %s\n", err)
 			continue
 		}
 		applied += 1
@@ -939,7 +939,7 @@ func (self *ExtenderNetworkClient) bootstrap() *ExtenderRootKeySet {
 		}
 	}
 	if 0 < len(txts) {
-		self.log.Infof("[extender]bootstrap applied %d of %d txt records\n", applied, len(txts))
+		self.log.Infof("🌉 [extender]bootstrap applied %d of %d txt records\n", applied, len(txts))
 	}
 	self.inferContinentHint(continentCounts)
 
@@ -1068,7 +1068,7 @@ func (self *ExtenderNetworkClient) sample() (bool, time.Time) {
 			return true, time.Time{}
 		}
 		if err != nil {
-			self.log.Infof("[extender]feed %s err = %s\n", candidate.Ip, err)
+			self.log.Infof("🌉 [extender]feed %s err = %s\n", candidate.Ip, err)
 			self.updateStatus(func(status *ExtenderNetworkClientStatus) {
 				status.FeedConnected = false
 				status.FeedIp = netip.Addr{}
@@ -1234,11 +1234,11 @@ func (self *ExtenderNetworkClient) runFeed(
 		switch {
 		case frame.GetRecord() != nil:
 			if _, err := self.directory.ApplyRecord(frame.GetRecord(), ExtenderSourceFeed); err != nil {
-				self.log.Infof("[extender]feed record err = %s\n", err)
+				self.log.Infof("🌉 [extender]feed record err = %s\n", err)
 			}
 		case frame.GetRevocation() != nil:
 			if _, err := self.directory.ApplyRevocation(frame.GetRevocation()); err != nil {
-				self.log.Infof("[extender]feed revocation err = %s\n", err)
+				self.log.Infof("🌉 [extender]feed revocation err = %s\n", err)
 			}
 		case frame.GetEndOfSample():
 			sampled = true
@@ -1467,7 +1467,7 @@ func (self *ExtenderNetworkClient) refreshHint() bool {
 	defer cancel()
 	result, err := hint(ctx)
 	if err != nil {
-		self.log.Infof("[extender]hint err = %s\n", err)
+		self.log.Infof("🌉 [extender]hint err = %s\n", err)
 		self.directory.ExpireCountryHint()
 		return false
 	}
@@ -1475,7 +1475,7 @@ func (self *ExtenderNetworkClient) refreshHint() bool {
 		result = &ExtenderHintResult{}
 	}
 	if countryCode := NormalizeSpoofCountryCode(result.CountryCode); self.directory.SetCountryHint(countryCode) {
-		self.log.Infof("[extender]country hint %s (operator)\n", countryCode)
+		self.log.Infof("🌉 [extender]country hint %s (operator)\n", countryCode)
 	}
 	continentCode := strings.ToUpper(strings.TrimSpace(result.ContinentCode))
 	if continentCode == "" {
@@ -1565,7 +1565,7 @@ func (self *ExtenderNetworkClient) setContinentHint(continentCode string, source
 			self.continentHintSetHook()
 		}
 		if self.directory.SetContinentHint(decidedContinentCode) {
-			self.log.Infof("[extender]continent hint %s (%s)\n", decidedContinentCode, decidedSource)
+			self.log.Infof("🌉 [extender]continent hint %s (%s)\n", decidedContinentCode, decidedSource)
 			// the order changed; what the pass should measure first may have too
 			self.probeWake.NotifyAll()
 		}
@@ -1612,7 +1612,7 @@ func (self *ExtenderNetworkClient) SetProbeAttestor(
 	reporter *ExtenderPingReporter,
 ) {
 	if attestor != nil && attestor.Kind() == "" {
-		self.log.Infof("[extender]probe attestor names no single identity; probes rank only\n")
+		self.log.Infof("🌉 [extender]probe attestor names no single identity; probes rank only\n")
 		attestor = nil
 	}
 	if attestor == nil {
@@ -1785,12 +1785,12 @@ func (self *ExtenderNetworkClient) probeFamily(
 		probed = true
 		rtt, outcome, err := self.probeCandidate(candidate, attestor, reporter)
 		if err != nil {
-			self.log.Infof("[extender]probe %s err = %s\n", candidate.Ip, err)
+			self.log.Infof("🌉 [extender]probe %s err = %s\n", candidate.Ip, err)
 			continue
 		}
 		self.directory.RecordLatency(candidate.Ip, rtt, outcome == ExtenderPingCosigned)
 		if self.log.V(1).Enabled() {
-			self.log.Infof("[extender]probe %s rtt=%s outcome=%q\n", candidate.Ip, rtt, outcome)
+			self.log.Infof("🌉 [extender]probe %s rtt=%s outcome=%q\n", candidate.Ip, rtt, outcome)
 		}
 	}
 	return probed

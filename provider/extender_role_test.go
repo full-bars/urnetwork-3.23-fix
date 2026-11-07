@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -15,35 +16,16 @@ import (
 	"github.com/urnetwork/connect/extender"
 )
 
-func TestExtenderRoleRequested(t *testing.T) {
-	tests := map[string]bool{
-		"":         false,
-		"off":      false,
-		"0":        false,
-		"false":    false,
-		"on":       true,
-		"ON":       true,
-		" 1 ":      true,
-		"true":     true,
-		"yes":      false,
-		"extender": false,
-	}
-	for value, want := range tests {
-		got := extenderRoleRequested(func(string) string { return value })
-		if got != want {
-			t.Errorf("URNETWORK_EXTENDER=%q: got %v, want %v", value, got, want)
-		}
-	}
-}
-
 func TestExtenderDnsPrivilegedPortRequested(t *testing.T) {
 	tests := map[string]bool{
-		"":    false,
-		"off": false,
-		"0":   false,
-		"on":  true,
-		"1":   true,
-		"yes": false,
+		"":      true,
+		"on":    true,
+		"1":     true,
+		"yes":   true,
+		"off":   false,
+		"0":     false,
+		"false": false,
+		"no":    false,
 	}
 	for value, want := range tests {
 		got := extenderDnsPrivilegedPortRequested(func(string) string { return value })
@@ -249,7 +231,7 @@ func TestExtenderRoleBindsAllCarriersAndStopsCleanly(t *testing.T) {
 	}
 }
 
-func TestExtenderRoleKeepsServingWhenTcpIsTaken(t *testing.T) {
+func TestExtenderRoleOpensNothingElseWhenTcpIsTaken(t *testing.T) {
 	config := testExtenderRoleConfig(t)
 	config.listen = func(network string, address string) (net.Listener, error) {
 		return nil, errors.New("bind: address already in use")
@@ -268,10 +250,9 @@ func TestExtenderRoleKeepsServingWhenTcpIsTaken(t *testing.T) {
 	if containsString(snapshot.Carriers, connect.ExtenderCarrierTcp) {
 		t.Fatalf("tcp is claimed listening: %v", snapshot.Carriers)
 	}
-	for _, carrier := range []string{connect.ExtenderCarrierQuic, connect.ExtenderCarrierDns} {
-		if !containsString(snapshot.Carriers, carrier) {
-			t.Fatalf("carrier %q is not listening; carriers=%v", carrier, snapshot.Carriers)
-		}
+	// tcp 443 gates the role (as upstream): while it fails, no other port opens
+	if len(snapshot.Carriers) != 0 || len(snapshot.DnsPorts) != 0 {
+		t.Fatalf("carriers are open without tcp 443: %v dns=%v", snapshot.Carriers, snapshot.DnsPorts)
 	}
 	if !strings.Contains(snapshot.ListenErrors[connect.ExtenderCarrierTcp], "address already in use") {
 		t.Fatalf("tcp listen error is not recorded: %v", snapshot.ListenErrors)
@@ -281,13 +262,49 @@ func TestExtenderRoleKeepsServingWhenTcpIsTaken(t *testing.T) {
 		`urnet_extender_state{state="tcp_unavailable"} 1`,
 		`urnet_extender_carrier_listening{carrier="tcp"} 0`,
 		`urnet_extender_carrier_listen_error{carrier="tcp"} 1`,
-		`urnet_extender_carrier_listening{carrier="quic"} 1`,
+		`urnet_extender_carrier_listening{carrier="quic"} 0`,
 	} {
 		if !strings.Contains(metrics, want) {
 			t.Fatalf("metrics are missing %q:\n%s", want, metrics)
 		}
 	}
 
+	closeExtenderRole(t, role)
+}
+
+// Once tcp 443 can be bound, the whole role comes up on the next attempt.
+func TestExtenderRoleOpensEverythingOnceTcpIsFree(t *testing.T) {
+	config := testExtenderRoleConfig(t)
+	config.retryInterval = 100 * time.Millisecond
+	var free atomic.Bool
+	config.listen = func(network string, address string) (net.Listener, error) {
+		if !free.Load() {
+			return nil, errors.New("bind: address already in use")
+		}
+		return net.Listen("tcp", "127.0.0.1:0")
+	}
+	role, err := startExtenderRole(context.Background(), config)
+	if err != nil {
+		t.Fatalf("start: %v", err)
+	}
+	waitExtenderRoleReady(t, role)
+	t.Cleanup(func() { globalExtenderRole.Store(nil) })
+	if len(role.snapshot().Carriers) != 0 {
+		t.Fatalf("carriers open while tcp is taken: %v", role.snapshot().Carriers)
+	}
+	free.Store(true)
+	deadline := time.Now().Add(10 * time.Second)
+	for role.snapshot().State != extenderStateServing {
+		if time.Now().After(deadline) {
+			t.Fatalf("role never came up after tcp was freed: %+v", role.snapshot())
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	for _, carrier := range []string{connect.ExtenderCarrierTcp, connect.ExtenderCarrierQuic, connect.ExtenderCarrierDns} {
+		if !containsString(role.snapshot().Carriers, carrier) {
+			t.Fatalf("carrier %q missing after recovery: %v", carrier, role.snapshot().Carriers)
+		}
+	}
 	closeExtenderRole(t, role)
 }
 

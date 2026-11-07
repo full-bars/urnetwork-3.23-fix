@@ -28,6 +28,9 @@ type topResult struct {
 	internals   *NodeInternals
 	isGroups    bool
 	groups      *GoroutineGroups
+	// the extender reading
+	isExtender bool
+	extender   ExtenderReading
 }
 
 // runTop drives the model on a screen until the user quits, ctx is cancelled
@@ -117,6 +120,24 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 
+	// The extender box is optional the same way.
+	extSrc, hasExtender := src.(topExtenderSource)
+	fetchExtender := func(gen int, p Provider) {
+		go func() {
+			res := topResult{gen: gen, isExtender: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.extender = ExtenderReading{Source: SourceUnknown}
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.extender = extSrc.FetchExtender(p)
+		}()
+	}
+
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
@@ -127,6 +148,11 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		if hasTraffic {
 			if gen, p, ok := m.wantTraffic(m.now()); ok {
 				fetchTraffic(gen, p)
+			}
+		}
+		if hasExtender {
+			if gen, p, ok := m.wantExtender(m.now()); ok {
+				fetchExtender(gen, p)
 			}
 		}
 		if hasRuntime {
@@ -155,6 +181,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			}
 		case r := <-results:
 			switch {
+			case r.isExtender:
+				m.applyExtender(r.gen, r.extender)
 			case r.isTraffic:
 				m.applyTraffic(r.gen, r.traffic, r.err)
 			case r.isInternals:

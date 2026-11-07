@@ -695,7 +695,7 @@ var extenderCarrierOrder = []string{
 type extenderLogWriter struct{}
 
 func (self extenderLogWriter) Write(b []byte) (int, error) {
-	log.Printf("[extender] http: %s", strings.TrimSpace(string(b)))
+	log.Printf("🌉 [extender] http: %s", strings.TrimSpace(string(b)))
 	return len(b), nil
 }
 
@@ -932,7 +932,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 			continue
 		}
 
-		log.Printf("[extender] listen tcp %d", port)
+		log.Printf("🌉 [extender] listen tcp %d", port)
 		listen := net.Listen
 		if self.settings.Listen != nil {
 			listen = self.settings.Listen
@@ -979,7 +979,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}
 		carrier := connect.ExtenderCarrierForConnectMode(connectMode)
 
-		log.Printf("[extender] listen udp %d (%s)", port, connectMode)
+		log.Printf("🌉 [extender] listen udp %d (%s)", port, connectMode)
 		listenPacket := net.ListenPacket
 		if self.settings.ListenPacket != nil {
 			listenPacket = self.settings.ListenPacket
@@ -1060,7 +1060,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 
 					conn, err := listener.Accept()
 					if err != nil {
-						log.Printf("[extender] accept error: %s", err)
+						log.Printf("🌉 [extender] accept error: %s", err)
 						return
 					}
 					self.startConnection(conn)
@@ -1081,7 +1081,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 			connect.HandleError(func() {
 				defer self.Close()
 				if err := self.serveQuicCarrier(connectMode, packetConn); err != nil {
-					log.Printf("[extender] udp carrier %s exited: %s", connectMode, err)
+					log.Printf("🌉 [extender] udp carrier %s exited: %s", connectMode, err)
 				}
 			}, self.cancel)
 		}()
@@ -1195,7 +1195,7 @@ func (self *ExtenderServer) addCarrier(carrier string) {
 // is unconditional because a bind that failed is a configuration fact an
 // operator needs, and the handler is what the sdk provider role reads.
 func (self *ExtenderServer) reportListenError(carrier string, err error) {
-	log.Printf("[extender] listen error (%s): %s", carrier, err)
+	log.Printf("🌉 [extender] listen error (%s): %s", carrier, err)
 	func() {
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
@@ -1545,17 +1545,28 @@ func (self *ExtenderServer) noteRefusal(stage string, err error) {
 		return
 	}
 	if count == 1 {
-		log.Printf("[extender] refused a request at %s: %v", stage, err)
+		log.Printf("🌉 [extender] refused a request at %s: %v", stage, err)
 		return
 	}
-	log.Printf("[extender] refused %d requests at %s in the last minute; latest: %v", count, stage, err)
+	log.Printf("🌉 [extender] refused %d requests at %s in the last minute; latest: %v", count, stage, err)
 }
 
 // extenderUsage counts requests by service and refusals by stage. Both are
 // cumulative for the life of the server and safe to read while it serves.
 type extenderUsage struct {
 	services [extenderUsageCount]atomic.Uint64
+	// served counts a request once it has passed authorization and admission and
+	// the stream has been handed over. `services` cannot say that: it counts when
+	// a header decodes, before the request is authorized or admitted, and its
+	// `proxy` entry counts every ordinary non-extender http request.
+	served   [extenderUsageCount]atomic.Uint64
 	refusals sync.Map // stage string -> *atomic.Uint64
+}
+
+func (self *extenderUsage) recordServed(index int) {
+	if 0 <= index && index < extenderUsageCount {
+		self.served[index].Add(1)
+	}
 }
 
 func (self *extenderUsage) recordService(index int) {
@@ -1574,6 +1585,20 @@ func (self *ExtenderServer) ServiceCounts() map[string]uint64 {
 	counts := map[string]uint64{}
 	for index, name := range extenderUsageServiceNames {
 		if count := self.usage.services[index].Load(); 0 < count {
+			counts[name] = count
+		}
+	}
+	return counts
+}
+
+// ServedCounts returns, by service name, the requests this server accepted and
+// handed a stream to: authorized, admitted and answered. A request refused at any
+// stage, and an ordinary web request answered by the decoy proxy, are not in it.
+// It only grows, so a reader folding it into a total never sees it go down.
+func (self *ExtenderServer) ServedCounts() map[string]uint64 {
+	counts := map[string]uint64{}
+	for index, name := range extenderUsageServiceNames {
+		if count := self.usage.served[index].Load(); 0 < count {
 			counts[name] = count
 		}
 	}
@@ -1900,6 +1925,9 @@ func (self *ExtenderServer) handleV1Connection(
 	if self.settings.HeaderHandler != nil {
 		self.settings.HeaderHandler(header)
 	}
+	// authorized, admitted and allowed: a v1 forward counts as served here
+	// v1 has no service field that means anything: every accepted header is a forward
+	self.usage.recordServed(extenderUsageForward)
 
 	if 0 < len(self.nlayerHops) {
 		// an NLayer extender relays the inner stream to another extender,

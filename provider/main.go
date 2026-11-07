@@ -943,6 +943,12 @@ func sanitizeRootPath() {
 }
 
 func main() {
+	if handled, ok := handleExtenderBindProbe(os.Args[1:], net.Listen, os.Stdout, os.Stderr); handled {
+		if !ok {
+			os.Exit(1)
+		}
+		return
+	}
 	// G-M2: sanitize PATH when running as root to prevent hijacking
 	// of exec.Command bare names (systemctl, docker, etc.) via attacker-writable
 	// directories earlier in root's PATH. Filter rather than replace so
@@ -2127,6 +2133,10 @@ func runHealthHeartbeat(ctx context.Context, startTime time.Time, profile string
 		healthLine += connect.TransportModeStats().HealthSuffix()
 		healthLine += connect.H3DatagramCounters().HealthSuffix()
 		tlog("%s\n", healthLine)
+		// The extender's whole standing on one line, so nobody sifts the log to
+		// learn whether it is on, which ports are up, what each address family
+		// is doing, and whom it is helping.
+		tlog("%s\n", formatExtenderHealthLine(globalExtenderManager.Reading(), time.Now()))
 
 		// Message-pool heartbeat: one aggregated line per tick, written so an
 		// operator who has never read message_pool.go can act on it. See
@@ -4259,7 +4269,11 @@ func provide(opts docopt.Opts) {
 		// and at startup if the reused token is already expired, preserving
 		// the client_id identity. On backends still issuing long-lived tokens
 		// the 12h threshold never fires — a no-op.
+		// The extender activation reads the live token through this holder,
+		// which the watcher updates on every renewal.
+		extenderJwt := newJwtHolder(byClientJwt)
 		go runProxyJWTWatcher(proxyCtx, proxyJWTWatcherConfig{
+			OnRenewed:   extenderJwt.Set,
 			IdentityKey: identityKey,
 			ClientID:    clientId,
 			CurrentJWT:  byClientJwt,
@@ -4279,6 +4293,19 @@ func provide(opts docopt.Opts) {
 			InstanceId:     instanceId,
 			RevocationDone: revocationDone,
 		})
+
+		// The extender role listens from process start but can only ask the
+		// platform to list this host once the direct slot has authenticated.
+		// Attach the activation now, with the live token and a strategy that
+		// can only dial direct. Only the direct slot qualifies.
+		if isNative && proxySettings == nil {
+			globalExtenderManager.AttachActivation(&extenderActivationInputs{
+				ctx:            proxyCtx,
+				apiUrl:         apiUrl,
+				byJwt:          extenderJwt.Get,
+				clientStrategy: newExtenderActivationStrategy(proxyCtx),
+			})
+		}
 
 		localUserNat := connect.NewLocalUserNat(proxyCtx, clientId.String(), bw, localUserNatSettings)
 		defer localUserNat.Close()
@@ -4512,29 +4539,14 @@ func provide(opts docopt.Opts) {
 	// The toggle file always wins — `provider direct on` re-enables direct
 	// even if the env var was set, and vice versa.
 	noDirect := !isDirectEnabled()
-	// The extender serving role is process-wide and opt-in. It needs the
-	// direct slot: only that slot's egress is this host's own address, which
-	// is the address its carriers answer on. A failed start (a corrupt
-	// identity file, say) disables the role and never the provider.
-	var extenderServeRole *extenderRole
-	if extenderRoleRequested(os.Getenv) {
-		if !extenderRoleEligible(nil, !noDirect) {
-			tlog("[extender] role not started: direct providing is disabled\n")
-		} else {
-			role, roleErr := startExtenderRole(ctx, defaultExtenderRoleConfig())
-			if roleErr != nil {
-				tlog("[extender] role disabled: %v\n", roleErr)
-			} else {
-				extenderServeRole = role
-				wg.Add(1)
-				go func() {
-					defer wg.Done()
-					<-ctx.Done()
-					extenderServeRole.CloseAndWait()
-				}()
-			}
-		}
-	}
+	// The extender serving role is process-wide and ON by default. The manager
+	// starts and stops it to match `urnet-tools extender on|off` and the direct
+	// slot (only that slot's egress is this host's own address, which is the
+	// address its carriers answer on). A failed start (a corrupt identity file,
+	// say) disables the role and never the provider, and every state change is
+	// announced in the log with its reason.
+	globalExtenderManager.SetApiUrl(apiUrl)
+	globalExtenderManager.Start(ctx, &wg)
 	// Published to the reloader below so a `direct off` before any reload
 	// has hot-toggled direct doesn't skip the bounded wait for this startup
 	// goroutine (it would otherwise unregister proxy[0] out from under a

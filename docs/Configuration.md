@@ -72,13 +72,13 @@ Quick jump:
 
 ### 🌐 Extender Serving Role
 
-> The extender is a work in progress and does not activate yet; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
+> The extender is ON by default and needs no variable. These only tune it. Turn it on or off at runtime with `urnet-tools extender on|off`; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |
-| `URNETWORK_EXTENDER` | `off` | Set to `on` to start the extender role on the provider's direct (unproxied) slot: tcp 443 first, then quic 443 and dns 4053. In this build the role does not take part in the network yet, because activation, the directory, gossip and the probes are not implemented. The listeners still answer: a bound dns carrier replies to ordinary DNS queries on udp 4053, resolved over DoH and rate limited per source, so firewall that port like any resolver you expose. The role keeps its own identity at `~/.urnetwork/.provider.extender.key` (0600, created on first use). Binding 443 needs `CAP_NET_BIND_SERVICE` or root; without it the tcp and quic carriers stay unavailable while dns 4053 still binds, and the role reports it in the `[extender] tcp_unavailable` status line and the `urnet_extender_*` metrics. See [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender). Opt-in and off by default. |
-| `URNETWORK_EXTENDER_ALLOWED_HOSTS` | - | Comma-separated forward allow list, exact hosts or `*.domain` wildcards. This is the forward authorization: an empty list refuses every forward request. The provider logs a warning at start when the list is empty. |
-| `URNETWORK_EXTENDER_DNS53` | `off` | Set to `on` to also bind the dns carrier on port 53 beside 4053. Needs the same privilege as 443. |
+| `URNETWORK_EXTENDER` | on | The extender role is ON by default on the provider's direct (unproxied) slot: it listens on tcp 443, quic 443 and dns 4053 and asks the platform to list the host so censored clients are sent to it. Set `off` to start with it off. The persisted control setting wins over this variable: `urnet-tools extender disable` turns it off and keeps it off across restarts, `urnet-tools extender enable` turns it back on, and `urnet-tools extender status` shows whether it is working. An unrecognised value is ignored and logged. The role keeps its identity at `~/.urnetwork/.provider.extender.key` (0600, created on first use; never copy it to another box). The dns carrier on udp 4053 also answers ordinary DNS queries, resolved over DoH and rate limited per source, so firewall that port like any resolver you expose if you do not want that. TCP 443 must be reachable from the internet for the platform to list the host; binding 443 needs `CAP_NET_BIND_SERVICE` or root. See [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender). |
+| `URNETWORK_EXTENDER_ALLOWED_HOSTS` | - | Extra hosts the extender may forward to, exact hosts or `*.domain` wildcards, comma-separated. They are added to the platform's own hosts (for `api.bringyour.com`: `bringyour.com` and `*.bringyour.com`), which are always allowed because the platform's activation proof forwards to its own API through the extender. |
+| `URNETWORK_EXTENDER_DNS53` | `on` | The dns carrier also tries port 53 beside 4053 (needs the same privilege as 443; a failed bind only logs a warning). Set to `off` to skip port 53. |
 
 ### 🩹 Self-Healing & Resource Pressure
 
