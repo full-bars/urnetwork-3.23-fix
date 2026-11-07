@@ -45,6 +45,12 @@ func newExtenderCmd() *cobra.Command {
 				return cmd.Help()
 			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
+				if len(rest) > 0 && rest[0] == "setup" {
+					if len(rest) != 1 {
+						return fmt.Errorf("usage: urnet-tools extender setup [-y|--yes] [-n|--dry-run]")
+					}
+					return fmt.Errorf("extender setup is not yet implemented; no changes were made")
+				}
 				return cmdExtender(rest, dryRun)
 			})
 		},
