@@ -133,7 +133,7 @@ Allow IPv6 separately if the provider's rules are per address family (GCP and AW
 
 A router in front of a home or office host needs the ports forwarded to it. A host behind carrier-grade NAT cannot receive inbound connections at all and cannot be an extender.
 
-You can tell what the platform could reach from the activation lines: `left out = dns:4053 … no answer` or `quic:443 … no answer` means that UDP port did not answer from outside (usually a firewall), and the host was listed over TCP only.
+You can tell what the platform could reach from the activation warning. For example, `the platform left out udp 443 (quic)` means that carrier failed the platform's probe even though the family activated. Check the named port in the host firewall and any cloud security group. The health line and status continue to show it as `bound, left out by the platform (probe failed)`. The next renewal retries it; a ✅ line says when the platform accepts it.
 
 ## IPv6
 
@@ -264,7 +264,7 @@ When it is off, it says why once at startup and how to turn it back on:
 The periodic `[health][extender]` line summarises everything:
 
 ```text
-🌉❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
+🌉❤️ [health][extender] serving | tcp 443 bound, udp 443 bound, dns 4053 bound | IPv4 ACTIVE 203.0.113.5; tcp 443 bound, accepted by the platform; udp 443 bound, left out by the platform (probe failed); dns 4053 bound, left out by the platform (probe failed) | IPv6 not active (failed): no public IPv6 address, next try 17:23; tcp 443 bound, platform status unknown; udp 443 bound, platform status unknown; dns 4053 bound, platform status unknown | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
 ```
 
 The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
@@ -277,7 +277,7 @@ The role also exports its state to Prometheus. Turn metrics on with `urnet-tools
 |---|---|---|
 | `CANNOT USE tcp 443 … address already in use` | Something else holds TCP 443 (often caddy or nginx). | Stop or move it. The extender retries every 3 minutes by itself. |
 | `CANNOT USE tcp 443 … permission denied` | The provider may not bind below 1024. | `sudo setcap cap_net_bind_service=+ep <provider binary>`, or run as root. |
-| IPv4 ACTIVE, `left out = dns:4053` or `quic:443 … no answer` | Those UDP ports do not answer from outside. | Allow UDP 443 and 4053 in the host firewall and the network in front of it, or ignore: TCP is enough. |
+| IPv4 ACTIVE, `bound, left out by the platform (probe failed)` | The named carrier was left out after its probe failed. | Check that port in the host firewall and any cloud security group. The next renewal retries it. |
 | `dns 53 unavailable … address already in use; keeping 4053` | Another resolver holds UDP 53. | Nothing to do, 4053 serves. `URNETWORK_EXTENDER_DNS53=off` silences it. |
 | IPv6 `failed … did not answer in time` | No IPv6 route out, or inbound IPv6 blocked. | `ip -6 route show default` and `curl -6 https://api.bringyour.com/hello` on the host. |
 | `the platform says this extender key belongs to ANOTHER network` | The identity file was copied from another box or account. | Stop the provider, delete `~/.urnetwork/.provider.extender.key`, start it again. |

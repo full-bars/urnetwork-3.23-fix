@@ -25,6 +25,7 @@ This release adds the extender. The extender helps clients in censored networks 
 
 ### Fixed
 
+- **Extender carrier status distinguishes binding from platform acceptance.** Activation warnings name carriers left out by the platform. The periodic health line and status show each family's carrier state, and a later acceptance logs a recovery.
 - **Three receive-loop panics are removed.** A peer's input could trigger each one, and each one stopped the whole client. A missing path in a sealed frame is now an error. A pack that belongs to another lane is now dropped. A stale head index is now healed, and the sequence opens.
 - **`urnet-tools logs` keeps following a trimmed RAM log.** With RAM logs on, the log file is trimmed by rename. `urnet-tools logs` could stop showing new lines. The command now follows the file across a trim, without repeating a fragment. In Docker it uses `tail -F`.
 - **Windows IPv6 egress pins use the socket's actual family** ([#1039](https://github.com/full-bars/urnetwork-3.23-fix/pull/1039)): a successful IPv4 socket option no longer disguises a failed IPv6 pin. If an embedding caller configures an egress interface, the error reaches dial callers rather than silently using the tunnel route; the H3 UDP path logs a failure and still attempts the connection. This tree has no production caller that sets the interface index.

@@ -728,23 +728,24 @@ Lower-level activation lines, useful when a refusal needs explaining:
 🌉 [extender]activate resumed after 2h0m0s asleep
 🌉 [extender] activate v4 refused carriers=dns,quic,tcp api=... last_remote=... elapsed=1s attempts=1 retry_after=1m35s error=<reason>
 🌉 [extender]activate v4 probe stopped at forward on port 443: timeout after 500ms with 500ms of the budget left when it started
-🌉 [extender]activate v4 left out = quic:443 after 6.4s (6.4s left): no answer
+🌉⚠️ [extender] IPv4 is active, but the platform left out udp 443 (quic) after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: quic:443 after 6.4s (6.4s left): no answer
+🌉✅ [extender] IPv4: the platform now accepts udp 443 (quic) after renewal.
 ```
 
 - `address A -> B` means the address the platform sees for this host changed; the activation is posted again.
-- `probe stopped at <step>` and `left out = <carrier>` come from the platform's own probe timings. A carrier that is `left out` (quic or dns that did not answer) does not stop the host being listed; it is just not offered to clients. Only tcp 443 and the forward through it are required.
+- `probe stopped at <step>` and the warning's probe details come from the platform. A carrier left out does not stop the host being listed; it is not offered to clients. Check the host firewall and any cloud security group. The health line repeats the carrier state, and a ✅ line reports when a renewal accepts it.
 
 ### Health line and the tally
 
 ```
-🌉❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
+🌉❤️ [health][extender] serving | tcp 443 bound, udp 443 bound, dns 4053 bound | IPv4 ACTIVE 203.0.113.5; tcp 443 bound, accepted by the platform; udp 443 bound, left out by the platform (probe failed); dns 4053 bound, left out by the platform (probe failed) | IPv6 not active (failed): no public IPv6 address, next try 17:23; tcp 443 bound, platform status unknown; udp 443 bound, platform status unknown; dns 4053 bound, platform status unknown | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
 🌉❤️ [health][extender] tcp unavailable | tcp 443 DOWN (address already in use), udp 443 DOWN, dns 4053 DOWN | tcp 443 is down, so this host is NOT listed and gets no clients | IPv4 not active (held until tcp 443 is bound) | IPv6 not active (held until tcp 443 is bound) | clients now 0, requests served 24h 0, 7d 0, lifetime 0
 🌉❤️ [health][extender] OFF: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on | served 24h 120, 7d 800, lifetime 5000 requests
 🌉⚠️ [extender] the saved request tally /home/user/.urnetwork/extender_tally.json could not be read (<error>); counting from zero. The file will be replaced.
 🌉⚠️ [extender] could not save the request tally to /home/user/.urnetwork/extender_tally.json: <error>
 ```
 
-- The `[health][extender]` line is written with the other `[health]` lines, about every five minutes. It reads left to right: role state, the three ports, each address family, then the clients.
+- The `[health][extender]` line is written with the other `[health]` lines, about every five minutes. It reads left to right: role state, the three ports, each address family, then the clients. `bound` means a local socket exists; each family's carrier state says whether the platform accepted it, left it out or has not supplied a known verdict.
 - `ACTIVE` means the platform listed this host on that family and the listing has not expired. A listing that expires without being renewed reads `not active (failed): the platform's listing of this host expired at ...`.
 - `held until tcp 443 is bound` means the activation is waiting for the port, not failing.
 - `clients now` is connections open over every carrier at this moment.
