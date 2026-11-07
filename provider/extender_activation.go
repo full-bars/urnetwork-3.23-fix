@@ -285,6 +285,14 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 	r.publishStatus("activation started")
 }
 
+// activationOwnedBy reports whether the running activation is the one built for
+// `inputs`.
+func (r *extenderRole) activationOwnedBy(inputs *extenderActivationInputs) bool {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activator != nil && r.activatorInputs == inputs
+}
+
 // StopActivation ends the loop that belongs to `inputs`, if it is the current
 // one. A loop for a newer slot is left alone.
 func (r *extenderRole) StopActivation(inputs *extenderActivationInputs) {

@@ -140,17 +140,21 @@ It is ON by default. Nothing to configure. To change it:
 PORTS
   tcp 443   REQUIRED. The platform proves this host is an extender by
             connecting back on tcp 443. If something else holds the port
-            (a web server such as caddy or nginx), the host is NOT listed and
-            gets no clients. The log says what holds it and when it retries.
+            (a web server such as caddy or nginx), the host cannot be newly
+            listed and gets no clients once an earlier listing expires. The
+            log says when it retries, and names what holds the port when the
+            host will tell it.
             A non-root provider also needs permission to use a port below
             1024: sudo setcap cap_net_bind_service=+ep <provider binary>
   udp 443   optional. QUIC carrier.
   udp 4053  optional. DNS carrier.
   udp 53    optional. A second DNS port, tried automatically. If another
             resolver already holds it, the extender logs one warning and
-            keeps using 4053. URNETWORK_EXTENDER_DNS53=off skips it.
+            keeps using 4053 (it may repeat the warning if the role restarts).
+            URNETWORK_EXTENDER_DNS53=off skips it.
   Without tcp 443 the extender opens none of the other ports: the platform
-  would never list this host, so nothing could use them. It retries tcp 443
+  could not list this host anew, so nothing could use them. (A listing the
+  platform made earlier stays valid until it expires.) It retries tcp 443
   every few minutes and opens the rest once it gets it.
 
 HOW IT BECOMES ACTIVE
@@ -158,6 +162,8 @@ HOW IT BECOMES ACTIVE
   for IPv6. The platform connects back to check it. A listing has an expiry
   and is renewed. Refusals are paced (the next try time is logged and
   survives a restart). IPv6 only works if this host has a public IPv6 address.
+  After a restart a listing that is still valid shows as active at once, and
+  the provider renews it within about an hour.
 
 WHAT IT EXPOSES
   The DNS ports also answer ordinary DNS questions from anyone, resolved

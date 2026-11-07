@@ -1926,7 +1926,8 @@ func (self *ExtenderServer) handleV1Connection(
 		self.settings.HeaderHandler(header)
 	}
 	// authorized, admitted and allowed: a v1 forward counts as served here
-	self.usage.recordServed(extenderUsageServiceIndex(header.Service))
+	// v1 has no service field that means anything: every accepted header is a forward
+	self.usage.recordServed(extenderUsageForward)
 
 	if 0 < len(self.nlayerHops) {
 		// an NLayer extender relays the inner stream to another extender,

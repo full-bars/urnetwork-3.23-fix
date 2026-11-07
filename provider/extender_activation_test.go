@@ -661,6 +661,58 @@ func TestExtenderManagerCancelledReplacementKeepsThePreviousSlot(t *testing.T) {
 	}
 }
 
+// A replacement whose slot ends right AFTER its activation was installed (A's loop
+// is already closed) must still be stopped: nothing may run for a dead slot.
+func TestExtenderManagerReplacementCancelledAfterInstallIsStopped(t *testing.T) {
+	withTempHome(t)
+	m := newExtenderManager()
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.newConfig = func() extenderRoleConfig { return testExtenderRoleConfig(t) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Reconcile("test")
+	role := m.Role()
+	if role == nil {
+		t.Fatal("role did not start")
+	}
+	defer m.stop("test over")
+	waitExtenderRoleReady(t, role)
+
+	newInputs := func() (*extenderActivationInputs, context.CancelFunc) {
+		slotCtx, endSlot := context.WithCancel(ctx)
+		t.Cleanup(endSlot)
+		return &extenderActivationInputs{
+			ctx:            slotCtx,
+			apiUrl:         "http://127.0.0.1:1",
+			byJwt:          newJwtHolder("jwt").Get,
+			clientStrategy: newExtenderActivationStrategy(slotCtx),
+		}, endSlot
+	}
+	a, _ := newInputs()
+	b, endB := newInputs()
+	m.AttachActivation(a)
+
+	m.attachAfterStartHook = func() { endB() }
+	m.AttachActivation(b)
+	m.attachAfterStartHook = nil
+
+	deadline := time.Now().Add(5 * time.Second)
+	for role.activationOwnedBy(b) || role.activationOwnedBy(a) {
+		if time.Now().After(deadline) {
+			t.Fatal("an activation is still running for an ended slot")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	m.mu.Lock()
+	tracked := m.inputs
+	m.mu.Unlock()
+	if tracked != nil {
+		t.Fatalf("the manager tracks %p after the only live replacement ended", tracked)
+	}
+}
+
 // An attach for a slot that has already ended is not tracked at all.
 func TestExtenderManagerDoesNotTrackAnEndedSlot(t *testing.T) {
 	withTempHome(t)

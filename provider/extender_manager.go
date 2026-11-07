@@ -42,7 +42,8 @@ type extenderManager struct {
 	attachMu sync.Mutex
 	// attachHook, when set by a test, runs between saving the inputs and installing
 	// the activation, to hold an attach there.
-	attachHook func()
+	attachAfterStartHook func()
+	attachHook           func()
 
 	// the last reason the role is not running, so a periodic check does not
 	// repeat a line that has not changed
@@ -235,7 +236,11 @@ func (m *extenderManager) AttachActivation(inputs *extenderActivationInputs) {
 	if role != nil {
 		role.StartActivation(inputs)
 	}
-	if inputs.ctx.Err() != nil {
+	if m.attachAfterStartHook != nil {
+		m.attachAfterStartHook()
+	}
+	installed := role != nil && role.activationOwnedBy(inputs)
+	if inputs.ctx.Err() != nil && !installed {
 		// This slot ended before its activation was installed, so the role
 		// skipped it and still runs the previous slot's. Track that slot again,
 		// so the manager and the role keep agreeing about who owns the loop.
@@ -251,6 +256,9 @@ func (m *extenderManager) AttachActivation(inputs *extenderActivationInputs) {
 		// an ended previous slot stops its own loop through its detach goroutine
 		return
 	}
+	// An installed activation always gets its detach watcher, even when the slot
+	// ended a moment after it was installed: the watcher then fires at once and
+	// stops it, leaving the role and the manager both without it.
 	go func() {
 		<-inputs.ctx.Done()
 		m.DetachActivation(inputs)

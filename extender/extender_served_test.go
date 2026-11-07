@@ -103,4 +103,16 @@ func TestExtenderServedCountsAnAcceptedV1Forward(t *testing.T) {
 	if got := fixture.server.ServedCounts()["forward"]; got != 1 {
 		t.Fatalf("an accepted v1 forward counts %d, want 1", got)
 	}
+
+	// v1 always forwards, whatever service value the header carries
+	odd := newTestExtenderHeader("dest.example", 443, testSecret)
+	odd.Service = 77
+	oddBytes, err := proto.Marshal(odd)
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendV1Header(t, fixture, oddBytes)
+	if got := fixture.server.ServedCounts()["forward"]; got != 2 {
+		t.Fatalf("a v1 forward with a nonzero service counts %d, want 2", got)
+	}
 }
