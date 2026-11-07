@@ -41,6 +41,12 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 	if len(plan) == 0 {
 		return nil
 	}
+	for _, c := range plan {
+		if c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "net.inet.ip.portrange.reservedhigh=0" {
+			fmt.Fprintln(out, "Warning: this removes privileged-port protection for all users on this host and persists it in /etc/sysctl.conf. Record the previous value first. To undo, remove the added assignment from /etc/sysctl.conf and restore the previous value with sysctl net.inet.ip.portrange.reservedhigh=<previous value>.")
+			break
+		}
+	}
 	fmt.Fprintln(out, "Commands to run:")
 	for _, c := range plan {
 		fmt.Fprintln(out, "  "+c.String())
