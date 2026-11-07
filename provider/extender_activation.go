@@ -173,6 +173,31 @@ func (quietVerbose) Infof(string, ...any) {}
 // Carriers and DnsPorts are closures over the role, read under its lock at
 // every pass, because there can be two servers (the primary and a tcp retry)
 // and the set changes while the loop runs.
+// extenderDirectoryFileName holds the platform's signed records the directory has
+// verified. The activator trusts a stored activation after a restart only when the
+// directory still holds the record, so without this file every restart would clear it.
+const extenderDirectoryFileName = "extender_directory.json"
+
+// extenderDirectoryFileStore is connect.ExtenderDirectoryStore over a JSON file in the
+// provider state directory.
+type extenderDirectoryFileStore struct {
+	path string
+}
+
+var _ connect.ExtenderDirectoryStore = extenderDirectoryFileStore{}
+
+func (s extenderDirectoryFileStore) Load() ([]byte, error) {
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	return b, err
+}
+
+func (s extenderDirectoryFileStore) Save(b []byte) error {
+	return atomicWriteFile(s.path, b, 0600)
+}
+
 // extenderFixedRenewalInterval is the renewal period used while the platform's root
 // keys are not loaded. The platform's record lasts 24 hours, so a 24 hour period
 // renews with about ten seconds to spare and a slow post lets the listing lapse.
@@ -181,10 +206,12 @@ const extenderFixedRenewalInterval = 12 * time.Hour
 // How often the root keys are read again once loaded, and the retry steps while
 // they cannot be read.
 const (
-	extenderRootKeysRefresh  = 12 * time.Hour
-	extenderRootKeysTimeout  = 30 * time.Second
-	extenderRootKeysRetryMin = 1 * time.Minute
-	extenderRootKeysRetryMax = 30 * time.Minute
+	extenderRootKeysRefresh = 12 * time.Hour
+	extenderRootKeysTimeout = 30 * time.Second
+	// the most a start waits for the keys before the activator is built
+	extenderRootKeysPrimeTimeout = 5 * time.Second
+	extenderRootKeysRetryMin     = 1 * time.Minute
+	extenderRootKeysRetryMax     = 30 * time.Minute
 )
 
 // rootKeyDirectory is the role's directory of platform root keys, created once.
@@ -197,6 +224,11 @@ func (r *extenderRole) rootKeyDirectory(apiUrl string) *connect.ExtenderDirector
 		settings := connect.DefaultExtenderDirectorySettings()
 		if apiHost, err := connect.ExtenderApiHostName(apiUrl); err == nil && net.ParseIP(apiHost) == nil {
 			settings.NetworkHosts = []string{connect.ExtenderNetworkHostName(apiHost)}
+		}
+		if path, err := providerStatePath(extenderDirectoryFileName); err != nil {
+			tlog("🌉⚠️ [extender] the platform's records will not survive a restart: no state directory: %v\n", err)
+		} else {
+			settings.Store = extenderDirectoryFileStore{path: path}
 		}
 		r.directory = connect.NewExtenderDirectory(r.ctx, settings)
 	})
@@ -247,6 +279,10 @@ func (r *extenderRole) loadRootKeys(inputs *extenderActivationInputs) {
 	for {
 		keySet, err := r.readRootKeys(inputs)
 		next := extenderRootKeysRefresh
+		if inputs.ctx.Err() != nil || r.ctx.Err() != nil {
+			// the slot ended (a startup restart, `direct off`): that is not a failure
+			return
+		}
 		if err != nil {
 			next = wait
 			if wait *= 2; extenderRootKeysRetryMax < wait {
@@ -275,6 +311,32 @@ func (r *extenderRole) loadRootKeys(inputs *extenderActivationInputs) {
 			return
 		case <-timer.C:
 		}
+	}
+}
+
+// primeRootKeys reads the root keys once, for at most `limit`, before the activator
+// starts, so the stored activation can be checked against the verified directory. A
+// failure is silent: the background loader reports it and retries.
+func (r *extenderRole) primeRootKeys(inputs *extenderActivationInputs, limit time.Duration) {
+	directory := r.rootKeyDirectory(inputs.apiUrl)
+	if 0 < directory.RootKeys().Len() {
+		return
+	}
+	done := make(chan *connect.ExtenderRootKeySet, 1)
+	go func() {
+		keySet, err := r.readRootKeys(inputs)
+		if err != nil {
+			keySet = nil
+		}
+		done <- keySet
+	}()
+	select {
+	case keySet := <-done:
+		if keySet != nil {
+			directory.SetRootKeys(keySet)
+		}
+	case <-time.After(limit):
+	case <-inputs.ctx.Done():
 	}
 }
 
@@ -391,6 +453,10 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 		previous.Close()
 	}
 
+	r.primeRootKeys(inputs, extenderRootKeysPrimeTimeout)
+	if inputs.ctx.Err() != nil {
+		return
+	}
 	activator := connect.NewExtenderActivator(r.ctx, r.activatorSettings(inputs))
 
 	r.mu.Lock()
