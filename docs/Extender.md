@@ -97,7 +97,7 @@ Lines carry the `[extender]` tag, and the platform's answers carry a 🌉 mark, 
 When the role starts, with the setting it follows:
 
 ```text
-[extender] starting (startup; setting from default). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.
+[extender] started (startup; setting from default). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.
 [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
 [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.
 ```

@@ -118,9 +118,9 @@ func (m *extenderManager) reconcileLocked(why string) {
 
 	switch {
 	case on && direct:
-		m.offReason = ""
-		m.lastOffLine = ""
 		if m.role == nil {
+			// a failed start keeps its reason and its dedupe marker, so a
+			// start that keeps failing is retried at every check but logged once
 			m.startLocked(why, source)
 		}
 	case m.role != nil:
@@ -148,7 +148,6 @@ func (m *extenderManager) notRunningReason(on bool, source string, direct bool) 
 }
 
 func (m *extenderManager) startLocked(why string, source string) {
-	importantLogf("[extender] starting (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
 	config := m.newConfig()
 	// the platform's own hosts are always allowed, with any the operator added
 	// on top: its activation probe forwards to its api host through this role
@@ -164,7 +163,9 @@ func (m *extenderManager) startLocked(why string, source string) {
 		return
 	}
 	m.role = role
+	m.offReason = ""
 	m.lastOffLine = ""
+	importantLogf("[extender] started (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
 	// the new role's counters start from zero
 	m.tallyRef().Rebase()
 	if m.inputs != nil {

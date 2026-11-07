@@ -182,7 +182,7 @@ func TestExtenderManagerFollowsSettingAndDirect(t *testing.T) {
 	mu.Lock()
 	joined := strings.Join(lines, "")
 	mu.Unlock()
-	for _, want := range []string{"starting", "stopping"} {
+	for _, want := range []string{"started", "stopping"} {
 		if !strings.Contains(joined, want) {
 			t.Errorf("log never said %q:\n%s", want, joined)
 		}
@@ -373,4 +373,36 @@ func TestExtenderActivationAgainstAFakePlatform(t *testing.T) {
 	mu.Lock()
 	defer mu.Unlock()
 	t.Fatalf("no post carried the renewed token; authorizations seen: %q", auths)
+}
+
+// A start that keeps failing (a corrupt identity file, say) is retried every poll,
+// but the log says it once. Writing a line per retry would put thousands a day in
+// the disk events log.
+func TestExtenderManagerRepeatedStartFailureLogsOnce(t *testing.T) {
+	withTempHome(t)
+	var lines []string
+	importantLogHook = func(line string) { lines = append(lines, line) }
+	t.Cleanup(func() { importantLogHook = nil })
+
+	attempts := 0
+	m := newExtenderManager()
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.startRole = func(context.Context, extenderRoleConfig) (*extenderRole, error) {
+		attempts++
+		return nil, fmt.Errorf("identity file is corrupt")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+
+	for i := 0; i < 5; i++ {
+		m.Reconcile("periodic check")
+	}
+	if attempts != 5 {
+		t.Fatalf("attempts = %d, want 5: a failed start must be retried at every check", attempts)
+	}
+	if len(lines) != 1 || !strings.Contains(lines[0], "FAILED to start") || !strings.Contains(lines[0], "identity file is corrupt") {
+		t.Fatalf("five failed attempts must log one FAILED line, got %d: %q", len(lines), lines)
+	}
 }
