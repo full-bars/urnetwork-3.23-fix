@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -307,6 +308,21 @@ func TestStreamLogFile_DrainsOldFileBeforeSwitching(t *testing.T) {
 	}
 }
 
+// replaceFile puts replacement at path, as the provider's trim does. Windows
+// refuses to replace a file that any handle has open, so there the old file is
+// moved aside first; that works for handles opened with FILE_SHARE_DELETE.
+func replaceFile(t *testing.T, replacement, path string) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		if err := os.Rename(path, path+".replaced"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+}
+
 func numberedLog(first, last int) string {
 	var b strings.Builder
 	for i := first; i <= last; i++ {
@@ -323,10 +339,7 @@ func TestStreamLogFile_TrimKeepsLinesOnce(t *testing.T) {
 			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
 				t.Fatal(err)
 			}
-			old, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
-			if err != nil {
-				t.Fatal(err)
-			}
+			old := openAppendShared(t, path)
 			defer old.Close()
 			if gap {
 				streamLogFileBeforeSwitch = func() {
@@ -342,9 +355,7 @@ func TestStreamLogFile_TrimKeepsLinesOnce(t *testing.T) {
 			if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)), 0644); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Rename(replacement, path); err != nil {
-				t.Fatal(err)
-			}
+			replaceFile(t, replacement, path)
 			first := 201
 			if gap {
 				first = 206
@@ -372,9 +383,7 @@ func TestStreamLogFile_UnrelatedReplacementBounded(t *testing.T) {
 		t.Fatal(err)
 	}
 	start := time.Now()
-	if err := os.Rename(replacement, path); err != nil {
-		t.Fatal(err)
-	}
+	replaceFile(t, replacement, path)
 	f.waitFor("replacement end\n")
 	elapsed := time.Since(start)
 	f.stop()
@@ -487,10 +496,7 @@ func TestStreamLogFile_SpuriousDifferentStatDoesNotReprint(t *testing.T) {
 // would print the fragment twice. The fragment must be skipped, once.
 func TestStreamLogFile_TrimMidLineDoesNotRepeatTheFragment(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log")
-	old, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
-	if err != nil {
-		t.Fatal(err)
-	}
+	old := openAppendShared(t, path)
 	defer old.Close()
 	if _, err := old.WriteString(numberedLog(1, 200) + "line 0201: the fragment that was already"); err != nil {
 		t.Fatal(err)
@@ -504,9 +510,7 @@ func TestStreamLogFile_TrimMidLineDoesNotRepeatTheFragment(t *testing.T) {
 	if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)+"line 0201: the fragment that was already"), 0644); err != nil {
 		t.Fatal(err)
 	}
-	if err := os.Rename(replacement, path); err != nil {
-		t.Fatal(err)
-	}
+	replaceFile(t, replacement, path)
 	appendLine(t, path, " printed once\n"+numberedLog(202, 220))
 	f.waitFor("line 0220:")
 	f.stop()
