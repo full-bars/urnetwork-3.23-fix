@@ -21,6 +21,9 @@ func TestExtenderPlatformAllowedHosts(t *testing.T) {
 		{"https://g2-api.bringyour.com", []string{"bringyour.com", "*.bringyour.com"}},
 		{"https://api-v4.bringyour.com:443", []string{"bringyour.com", "*.bringyour.com"}},
 		{"HTTPS://API.BringYour.COM", []string{"bringyour.com", "*.bringyour.com"}},
+		{"https://example.co.uk", []string{"example.co.uk"}},
+		{"https://example.github.io", []string{"example.github.io"}},
+		{"https://api.example.co.uk", []string{"example.co.uk", "*.example.co.uk"}},
 		// nothing to derive a space from: allow exactly that host, no wildcard
 		{"http://127.0.0.1:8080", []string{"127.0.0.1"}},
 		{"http://localhost:8080", []string{"localhost"}},

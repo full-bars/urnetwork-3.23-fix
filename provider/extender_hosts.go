@@ -6,6 +6,7 @@ import (
 	"strings"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/publicsuffix"
 )
 
 // extender_hosts.go decides which hosts the extender will forward to.
@@ -30,7 +31,8 @@ func extenderPlatformAllowedHosts(apiUrl string) []string {
 		return []string{apiHost}
 	}
 	space := connect.ExtenderNetworkHostName(apiHost)
-	if space == apiHost {
+	suffix, _ := publicsuffix.PublicSuffix(space)
+	if space == apiHost || space == suffix {
 		return []string{apiHost}
 	}
 	return []string{space, "*." + space}
