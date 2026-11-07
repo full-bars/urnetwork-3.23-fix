@@ -178,7 +178,10 @@ FIREWALL
                443 and 4053; ip6tables for IPv6; save the rules to keep them)
     nftables:  sudo nft add rule inet filter input tcp dport 443 accept
                (adjust the table and chain names to your ruleset)
-  A router or cloud security group in front of the host needs the same ports.
+  A router, or a cloud provider's own firewall (Oracle security list or
+  network security group, GCP VPC firewall rule, AWS security group, Azure
+  network security group) blocks inbound ports by default and needs the same
+  ports allowed too.
   If the log says "left out = dns:4053 ... no answer" or "quic:443 ... no
   answer", those udp ports did not answer from outside; tcp is enough.
 

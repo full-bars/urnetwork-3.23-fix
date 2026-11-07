@@ -119,7 +119,19 @@ sudo nft add rule inet filter input udp dport '{ 443, 4053 }' accept
 
 `iptables` and `nft` rules added this way are lost at reboot. Save them with your distribution's tool (`sudo netfilter-persistent save` on Debian and Ubuntu, `sudo service iptables save` on RHEL-style hosts, or write them into `/etc/nftables.conf`). ufw and firewalld (with `--permanent`) already persist. If you also have IPv6 enabled, make sure the rule covers it: ufw and firewalld cover both families by default, plain `iptables` does not. Other firewalls (a Windows host, a cloud provider's panel) need the equivalent inbound TCP 443 rule.
 
-A router or cloud security group in front of the host needs the same ports forwarded or allowed. A host behind carrier-grade NAT cannot receive inbound connections at all and cannot be an extender.
+### Cloud providers block inbound ports by default
+
+Most clouds put a second firewall in front of your VM, and it blocks inbound traffic until you allow it. Opening the port inside the VM is not enough; you must also allow inbound **TCP 443** (and optionally UDP 443 and UDP 4053) there:
+
+- **Oracle Cloud (OCI):** the subnet's security list or the instance's network security group. Oracle's Ubuntu images also ship with their own `iptables` rules that reject inbound ports, so you usually need the host rule as well.
+- **Google Cloud (GCP):** a VPC firewall rule allowing the ports to the instance (by network tag or service account). Ingress is denied by default.
+- **AWS:** the instance's security group (and the subnet's network ACL if you changed the default).
+- **Azure:** the network security group on the NIC or subnet.
+- **Other hosts:** look for a "firewall", "security group" or "network rules" panel in the provider's dashboard.
+
+Allow IPv6 separately if the provider's rules are per address family (GCP and AWS rules are; add an IPv6 source range `::/0` alongside IPv4 `0.0.0.0/0`). If activation works for IPv4 but not IPv6, or the log says the UDP ports did not answer, this is the first place to look.
+
+A router in front of a home or office host needs the ports forwarded to it. A host behind carrier-grade NAT cannot receive inbound connections at all and cannot be an extender.
 
 You can tell what the platform could reach from the activation lines: `left out = dns:4053 … no answer` or `quic:443 … no answer` means that UDP port did not answer from outside (usually a firewall), and the host was listed over TCP only.
 
