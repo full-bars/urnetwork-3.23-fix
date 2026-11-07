@@ -90,10 +90,15 @@ func queryExtenderFromSocket(p Provider) (*ExtenderReading, error) {
 	return &reading, nil
 }
 
+// errExtenderProviderNotRunning marks "there is no provider to ask", as opposed
+// to a provider that is up and cannot answer. A change queued while the provider
+// is down is a success; one that cannot be confirmed from a live provider is not.
+var errExtenderProviderNotRunning = errors.New("provider not running")
+
 func extenderSocketError(sockPath string, err error) error {
 	_, statErr := os.Stat(sockPath)
 	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(statErr, os.ErrNotExist) {
-		return fmt.Errorf("provider not running: no control socket: %w", err)
+		return fmt.Errorf("%w: no control socket: %v", errExtenderProviderNotRunning, err)
 	}
 	return fmt.Errorf("control socket unavailable: %w", err)
 }

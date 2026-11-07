@@ -146,12 +146,12 @@ func (m *extenderManager) Reading() extenderControlReading {
 			// one post covers both rows, so show its outcome on both.
 			family = families[0]
 		}
-		reading.Families = append(reading.Families, extenderFamilyReadingOf(ipVersion, family, activator != nil, tcpUp))
+		reading.Families = append(reading.Families, extenderFamilyReadingOf(ipVersion, family, activator != nil, tcpUp, time.Now()))
 	}
 	return reading
 }
 
-func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActivationStatus, attached bool, tcpUp bool) extenderFamilyReading {
+func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActivationStatus, attached bool, tcpUp bool, now time.Time) extenderFamilyReading {
 	reading := extenderFamilyReading{IpVersion: ipVersion, State: extenderFamilyWaiting}
 	if !attached {
 		reading.Detail = "waiting for the direct slot to sign in"
@@ -163,6 +163,12 @@ func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActiva
 		reading.ExpireUnixMs = unixMs(family.ExpireTime)
 	}
 	switch {
+	case family != nil && family.Activated && !family.ExpireTime.IsZero() && !family.ExpireTime.After(now):
+		// The activation flag stays set until a later failure clears it, but the
+		// platform's signed listing has an expiry. Past it, this host is no longer
+		// listed, so never show it as active.
+		reading.State = extenderFamilyFailed
+		reading.Detail = "the platform's listing of this host expired at " + clockLabel(family.ExpireTime) + " and has not been renewed"
 	case family != nil && family.Activated:
 		reading.State = extenderFamilyActivated
 		if family.Ip.IsValid() {

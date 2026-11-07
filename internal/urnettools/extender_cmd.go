@@ -1,7 +1,9 @@
 package urnettools
 
 import (
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 	"time"
@@ -80,8 +82,27 @@ func cmdExtender(args []string, dryRun bool) error {
 		}
 		// the provider starts or stops the role asynchronously
 		time.Sleep(1500 * time.Millisecond)
+		return finishExtenderChange(os.Stdout, p, action)
 	}
 	return printExtenderStatus(p)
+}
+
+// finishExtenderChange follows a change with the live status. With no provider
+// running the change was queued, which is a success: it says so and does not
+// ask for a status that cannot exist. A provider that is up but does not answer
+// is a real problem and still returns its error.
+func finishExtenderChange(out io.Writer, p Provider, action string) error {
+	reading, err := socketExtenderFn(p)
+	if errors.Is(err, errExtenderProviderNotRunning) {
+		fmt.Fprintf(out, "\nThe provider is not running, so the change is saved and applies when the provider starts (extender %s).\n", action)
+		return nil
+	}
+	if err != nil {
+		fmt.Fprintf(out, "\nExtender: unavailable: %v\n", err)
+		return err
+	}
+	formatExtenderBlock(out, *reading, time.Now())
+	return nil
 }
 
 // printExtenderStatus prints the block, and returns an error when the provider

@@ -235,6 +235,8 @@ type extenderRole struct {
 	// the activation loop, attached late by the direct slot (extender_activation.go)
 	activator       *connect.ExtenderActivator
 	activatorInputs *extenderActivationInputs
+	// serializes attach, detach and replacement of the activation (extender_activation.go)
+	activationMu sync.Mutex
 	// the carrier set last reported to the activation, so a change is told to it once
 	carrierSigKnown bool
 	carrierSig      string
@@ -774,23 +776,27 @@ func (r *extenderRole) shutdown() {
 	if activator != nil {
 		activator.Close()
 	}
-	// Capture the last counters before closing, so a scrape after shutdown
-	// still reports the traffic the role relayed rather than dropping to the
-	// pre-shutdown base.
-	stats := extender.ExtenderStats{}
+	// Close every server first, then read its counters: they are atomic and
+	// survive close, and requests that finish while CloseAndWait drains must
+	// count. Reading before the close lost them, and the service and refusal
+	// counts were never folded at all, so a stopped role forgot its history.
 	for _, server := range servers {
-		serverStats := server.Stats()
-		stats.IngressByteCount += serverStats.IngressByteCount
-		stats.IngressReadCount += serverStats.IngressReadCount
-		stats.EgressByteCount += serverStats.EgressByteCount
-		stats.EgressReadCount += serverStats.EgressReadCount
 		server.CloseAndWait()
 	}
 	r.mu.Lock()
-	r.baseStats.IngressByteCount += stats.IngressByteCount
-	r.baseStats.IngressReadCount += stats.IngressReadCount
-	r.baseStats.EgressByteCount += stats.EgressByteCount
-	r.baseStats.EgressReadCount += stats.EgressReadCount
+	for _, server := range servers {
+		stats := server.Stats()
+		r.baseStats.IngressByteCount += stats.IngressByteCount
+		r.baseStats.IngressReadCount += stats.IngressReadCount
+		r.baseStats.EgressByteCount += stats.EgressByteCount
+		r.baseStats.EgressReadCount += stats.EgressReadCount
+		for service, count := range server.ServiceCounts() {
+			r.baseServiceCounts[service] += count
+		}
+		for stage, count := range server.RefusalCounts() {
+			r.baseRefusalCounts[stage] += count
+		}
+	}
 	r.carriers = map[string]bool{}
 	r.dnsPorts = nil
 	r.state = extenderStateClosed

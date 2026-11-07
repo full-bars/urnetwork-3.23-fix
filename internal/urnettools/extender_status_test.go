@@ -2,7 +2,9 @@ package urnettools
 
 import (
 	"bytes"
+	"errors"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 )
@@ -114,5 +116,35 @@ func TestExtenderActionAliases(t *testing.T) {
 		if _, ok := normalizeExtenderAction(bad); ok {
 			t.Errorf("normalizeExtenderAction(%q) was accepted", bad)
 		}
+	}
+}
+
+// With the provider down, `extender off` queues the change; that is a success, so
+// the command must not then fail because it cannot read a live status.
+func TestExtenderChangeWithProviderDownSucceeds(t *testing.T) {
+	prev := socketExtenderFn
+	t.Cleanup(func() { socketExtenderFn = prev })
+	socketExtenderFn = func(Provider) (*ExtenderReading, error) {
+		return nil, extenderSocketError("/x/provider.sock", syscall.ECONNREFUSED)
+	}
+	var out bytes.Buffer
+	if err := finishExtenderChange(&out, Provider{StateDir: "/x"}, "off"); err != nil {
+		t.Fatalf("a queued change must succeed while the provider is down, got %v", err)
+	}
+	if !strings.Contains(out.String(), "applies when the provider starts") {
+		t.Fatalf("it must say the change applies at the next start, got %q", out.String())
+	}
+}
+
+// A provider that is up but cannot answer is a real problem and still fails.
+func TestExtenderChangeWithAnUnansweringProviderStillFails(t *testing.T) {
+	prev := socketExtenderFn
+	t.Cleanup(func() { socketExtenderFn = prev })
+	socketExtenderFn = func(Provider) (*ExtenderReading, error) {
+		return nil, errors.New("control socket unavailable: timeout")
+	}
+	var out bytes.Buffer
+	if err := finishExtenderChange(&out, Provider{StateDir: "/x"}, "on"); err == nil {
+		t.Fatal("an unanswering provider must still return an error")
 	}
 }

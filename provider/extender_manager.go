@@ -184,7 +184,6 @@ func (m *extenderManager) stopLocked(reason string) {
 		return
 	}
 	role := m.role
-	m.sampleTallyLocked(role)
 	m.role = nil
 	m.offReason = reason
 	// the stop line carries the reason, so the periodic check must not repeat
@@ -193,6 +192,9 @@ func (m *extenderManager) stopLocked(reason string) {
 	importantLogf("[extender] stopping: %s\n", reason)
 	// CloseAndWait joins the supervisor, which never takes the manager lock
 	role.CloseAndWait()
+	// sample AFTER the drain: requests that finish while it runs must count, and
+	// the closed role's snapshot keeps its folded counts
+	m.sampleTallyLocked(role)
 	importantLogf("[extender] stopped. It no longer listens, and the platform will stop sending clients to this host once its record expires.\n")
 }
 
@@ -278,7 +280,8 @@ func (m *extenderManager) sampleTally(role *extenderRole) {
 func (m *extenderManager) sampleTallyLocked(role *extenderRole) {
 	tally := m.tallyRef()
 	if role != nil {
-		tally.Observe(extenderRequestsServed(role.snapshot().ServiceCounts))
+		snapshot := role.snapshot()
+		tally.Observe(extenderRequestsServed(snapshot.ServiceCounts, snapshot.RefusalCounts))
 	}
 	if tally.path == "" || time.Since(m.tallyLastSave) < time.Minute {
 		return

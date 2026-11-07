@@ -106,8 +106,37 @@ func TestExtenderTallyOldBucketsArePruned(t *testing.T) {
 }
 
 func TestExtenderRequestsServedCountsClientServices(t *testing.T) {
-	counts := map[string]uint64{"proxy": 4, "forward": 3, "feed": 2, "probe": 50, "gossip": 9, "other": 1}
-	if got := extenderRequestsServed(counts); got != 9 {
-		t.Fatalf("requests served = %d, want 9 (proxy+forward+feed; the platform's own probes and mesh gossip are not clients)", got)
+	// proxy is ONLY ordinary non-extender http (scanners and browsers hitting 443,
+	// answered by the camouflage reverse proxy): never a client. probe is the
+	// platform's own verification and gossip is mesh traffic.
+	counts := map[string]uint64{"proxy": 400, "forward": 3, "feed": 2, "probe": 50, "gossip": 9, "other": 1}
+	if got := extenderRequestsServed(counts, nil); got != 5 {
+		t.Fatalf("requests served = %d, want 5 (forward+feed only)", got)
+	}
+	// refused requests were counted as a service before they were refused, so they
+	// are taken back out; refusals of requests that never decoded (h2, bad header)
+	// were never counted as a service and must not be subtracted
+	refusals := map[string]uint64{"destination authorization": 1, "request": 7, "header decode": 3}
+	if got := extenderRequestsServed(counts, refusals); got != 4 {
+		t.Fatalf("requests served with a refusal = %d, want 4", got)
+	}
+	// never negative
+	if got := extenderRequestsServed(map[string]uint64{"forward": 1}, map[string]uint64{"destination authorization": 9}); got != 0 {
+		t.Fatalf("requests served = %d, want 0", got)
+	}
+}
+
+// Hours are the bucket, so a window is accurate to the hour. The hour a window
+// starts inside is counted in full, never dropped: a 24h window read at 12:30
+// includes everything from yesterday's 12:00 hour on.
+func TestExtenderTallyWindowIncludesTheBoundaryHour(t *testing.T) {
+	now := time.Date(2026, 11, 2, 12, 30, 0, 0, time.UTC)
+	tally := newTestTally(t, &now)
+	// 3 requests land in the hour that starts 24h before the window's start hour
+	now = time.Date(2026, 11, 1, 12, 40, 0, 0, time.UTC)
+	tally.Observe(3)
+	now = time.Date(2026, 11, 2, 12, 30, 0, 0, time.UTC)
+	if w := tally.Windows(); w.Last24h != 3 {
+		t.Fatalf("last 24h = %d, want 3: the boundary hour must be counted, not dropped", w.Last24h)
 	}
 }

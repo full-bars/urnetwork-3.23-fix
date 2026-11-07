@@ -73,17 +73,32 @@ report_extender_port ()
         pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss is not installed.) $reach_hint $off_hint"
         return 0
     fi
-    tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null) || tcp_listeners=""
-    if [ -z "$tcp_listeners" ]; then
-        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. $reach_hint $off_hint"
+    if ! tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null); then
+        # a failed ss says nothing about the port: never call that "free"
+        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss failed.) $reach_hint $off_hint"
+    elif [ -z "$tcp_listeners" ]; then
+        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. It also answers DNS queries on UDP 4053 (rate limited), so firewall that port like any resolver you expose. $reach_hint $off_hint"
     else
         holder=$(printf '%s\n' "$tcp_listeners" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (pid \2)/p' | head -n 1)
+        holder_pid=$(printf '%s' "$holder" | sed -n 's/.*(pid \([0-9]*\))$/\1/p')
         case "$holder" in
-            "urnetwork "*)
-                pr_info "Extender: already listening on TCP 443 from this provider. $off_hint"
-                ;;
             "")
                 pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                ;;
+            "urnetwork "*)
+                # the name alone proves nothing: another program can be called
+                # urnetwork. Prove it is this provider by its executable. An update
+                # replaces the file, so a running old process reads "(deleted)".
+                holder_exe=$(readlink -f "/proc/$holder_pid/exe" 2>/dev/null) || holder_exe=""
+                holder_exe=${holder_exe% (deleted)}
+                own_exe=$(readlink -f "$provider_file" 2>/dev/null) || own_exe=""
+                if [ -z "$holder_exe" ]; then
+                    pr_warn "Extender: TCP 443 is in use by $holder; could not confirm it is this provider (its executable is not readable). If it is not, the extender cannot be listed until 443 is freed; it keeps retrying and starts by itself once it is. $off_hint"
+                elif [ "$holder_exe" = "$own_exe" ]; then
+                    pr_info "Extender: already listening on TCP 443 from this provider. $off_hint"
+                else
+                    pr_warn "Extender: TCP 443 is in use by $holder, which is a different program ($holder_exe). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                fi
                 ;;
             *)
                 pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"

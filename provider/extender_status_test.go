@@ -1,9 +1,12 @@
 package main
 
 import (
+	"net/netip"
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 func TestExtenderHealthLineWhenOff(t *testing.T) {
@@ -87,5 +90,31 @@ func TestExtenderHealthLineBeforeTheDirectSlotAttaches(t *testing.T) {
 	}, time.Now())
 	if !strings.Contains(line, "waiting") {
 		t.Errorf("a family with no outcome yet should read as waiting:\n%s", line)
+	}
+}
+
+// A listing the platform signed has an expiry. After it passes, a family that was
+// never re-activated is not ACTIVE, whatever the stale flag says.
+func TestExtenderFamilyReadingNeverShowsAnExpiredListingAsActive(t *testing.T) {
+	now := time.Date(2026, 11, 6, 18, 0, 0, 0, time.UTC)
+	active := func(expire time.Time) *connect.ExtenderFamilyActivationStatus {
+		return &connect.ExtenderFamilyActivationStatus{
+			IpVersion: 4, Activated: true, Ip: netip.MustParseAddr("203.0.113.5"), ExpireTime: expire,
+		}
+	}
+	fresh := extenderFamilyReadingOf(4, active(now.Add(time.Hour)), true, true, now)
+	if fresh.State != extenderFamilyActivated {
+		t.Fatalf("a valid listing must read activated, got %q", fresh.State)
+	}
+	stale := extenderFamilyReadingOf(4, active(now.Add(-time.Minute)), true, true, now)
+	if stale.State == extenderFamilyActivated {
+		t.Fatal("an expired listing still reads ACTIVE")
+	}
+	if !strings.Contains(stale.Detail, "expired") {
+		t.Fatalf("the reason must say the listing expired, got %q", stale.Detail)
+	}
+	// no expiry reported at all (older activator): trust the flag, as before
+	if got := extenderFamilyReadingOf(4, active(time.Time{}), true, true, now); got.State != extenderFamilyActivated {
+		t.Fatalf("a listing with no reported expiry must keep reading activated, got %q", got.State)
 	}
 }

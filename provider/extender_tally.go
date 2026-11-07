@@ -62,9 +62,32 @@ func newExtenderTally(path string) *extenderTally {
 }
 
 // extenderRequestsServed is the cumulative requests served for clients out of
-// one role's service counts.
-func extenderRequestsServed(serviceCounts map[string]uint64) uint64 {
-	return serviceCounts["proxy"] + serviceCounts["forward"] + serviceCounts["feed"]
+// one role's service and refusal counts.
+//
+// Only `forward` (traffic relayed for a client) and `feed` (the directory a
+// client bootstraps from) are client requests. `proxy` is deliberately left out:
+// the serving core increments it for every ordinary non-extender http request, so
+// on a public port 443 it is scanners and browsers answered by the camouflage
+// reverse proxy, never a client. `probe` is the platform's own verification and
+// `gossip` and `other` are not client traffic either.
+//
+// A request is counted as its service when its header decodes, before it is
+// authorized and admitted, so refused requests are taken back out. Refusals of
+// requests that never decoded (an h2 attempt, a bad header) were never counted as
+// a service and are not subtracted. The result is approximate, and never negative.
+func extenderRequestsServed(serviceCounts map[string]uint64, refusalCounts map[string]uint64) uint64 {
+	served := serviceCounts["forward"] + serviceCounts["feed"]
+	var refused uint64
+	for stage, count := range refusalCounts {
+		if stage == "request" || stage == "header decode" {
+			continue
+		}
+		refused += count
+	}
+	if refused >= served {
+		return 0
+	}
+	return served - refused
 }
 
 // Observe folds a cumulative reading into the buckets. The first reading of a
@@ -124,10 +147,12 @@ func (t *extenderTally) Windows() extenderTallyWindows {
 	since7 := now.Add(-7 * 24 * time.Hour).Truncate(extenderTallyBucket).Unix()
 	w := extenderTallyWindows{Lifetime: t.lifetime}
 	for hour, n := range t.hours {
-		if since24 < hour {
+		// hours are the bucket, so a window is accurate to the hour: the hour it
+		// starts inside is counted in full rather than dropped
+		if since24 <= hour {
 			w.Last24h += n
 		}
-		if since7 < hour {
+		if since7 <= hour {
 			w.Last7d += n
 		}
 	}

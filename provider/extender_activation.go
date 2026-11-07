@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"sync/atomic"
+	"time"
 
 	"github.com/urnetwork/connect"
 )
@@ -234,6 +235,17 @@ func (r *extenderRole) activationDnsPorts() []int {
 // StartActivation attaches the activation loop for one direct slot. Calling it
 // again for the same slot is a no-op; for a new slot it replaces the old loop.
 func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
+	// Attach, detach and replacement are one sequence: two of them interleaving
+	// could each read "no activator", each build one, and leave the loser
+	// running with nothing holding it. The lock is never taken by the loop (its
+	// closures take r.mu only), so closing a loop while holding it cannot deadlock.
+	r.activationMu.Lock()
+	defer r.activationMu.Unlock()
+	// A slot that has already ended gets no activation: its token is frozen and
+	// nothing would ever stop the loop short of the role closing.
+	if inputs.ctx.Err() != nil {
+		return
+	}
 	r.mu.Lock()
 	if r.activator != nil && r.activatorInputs == inputs {
 		r.mu.Unlock()
@@ -266,6 +278,8 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 // StopActivation ends the loop that belongs to `inputs`, if it is the current
 // one. A loop for a newer slot is left alone.
 func (r *extenderRole) StopActivation(inputs *extenderActivationInputs) {
+	r.activationMu.Lock()
+	defer r.activationMu.Unlock()
 	r.mu.Lock()
 	if r.activator == nil || r.activatorInputs != inputs {
 		r.mu.Unlock()
@@ -306,5 +320,10 @@ func extenderActivationStrategySettings() *connect.ClientStrategySettings {
 	settings.ExpandExtenderProfileCount = 0
 	settings.DisableManualExtenders = true
 	settings.DisableVless = true
+	// The platform's probe can take close to its own 10 s budget, and a busy
+	// answer can queue, so the post must be allowed at least the activator's own
+	// 60 s request budget. The default 15 s transport timeout cut a legitimate
+	// activation short, after the platform had already spent the attempt.
+	settings.ConnectSettings.RequestTimeout = 90 * time.Second
 	return settings
 }

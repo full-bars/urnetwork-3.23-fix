@@ -2,8 +2,10 @@ package main
 
 import (
 	"context"
+	"crypto/tls"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/http/httptest"
 	"path/filepath"
@@ -404,5 +406,123 @@ func TestExtenderManagerRepeatedStartFailureLogsOnce(t *testing.T) {
 	}
 	if len(lines) != 1 || !strings.Contains(lines[0], "FAILED to start") || !strings.Contains(lines[0], "identity file is corrupt") {
 		t.Fatalf("five failed attempts must log one FAILED line, got %d: %q", len(lines), lines)
+	}
+}
+
+// The platform's probe can take close to its own 10 s budget and a busy answer can
+// queue, so the activation post must be allowed at least the activator's own
+// request budget (60 s). The default 15 s transport timeout cut it short.
+func TestExtenderActivationStrategyAllowsTheActivatorsRequestBudget(t *testing.T) {
+	settings := extenderActivationStrategySettings()
+	if got := settings.ConnectSettings.RequestTimeout; got < 60*time.Second {
+		t.Fatalf("request timeout = %s, want at least the activator's 60s budget", got)
+	}
+}
+
+// A slot that ended before its activation could be installed must never get one.
+// Detach can run between the manager saving the inputs and the role installing the
+// activator; an activator for a dead slot would post with a frozen token for as
+// long as the role lives.
+func TestExtenderRoleDoesNotInstallAnActivationForAnEndedSlot(t *testing.T) {
+	withTempHome(t)
+	role, err := startExtenderRole(context.Background(), testExtenderRoleConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeExtenderRole(t, role)
+	waitExtenderRoleReady(t, role)
+
+	slotCtx, endSlot := context.WithCancel(context.Background())
+	endSlot()
+	role.StartActivation(&extenderActivationInputs{
+		ctx:            slotCtx,
+		apiUrl:         "http://127.0.0.1:1",
+		byJwt:          newJwtHolder("jwt").Get,
+		clientStrategy: newExtenderActivationStrategy(slotCtx),
+	})
+	if role.currentActivator() != nil {
+		t.Fatal("an activator was installed for a slot that had already ended")
+	}
+}
+
+// Attach, detach and replacement race freely in production (a direct slot is
+// toggled while another attaches). Whatever the interleaving, no loop may be left
+// running that nothing tracks: afterwards the role holds at most the last live
+// slot's activator, and closing the role leaves none.
+func TestExtenderRoleActivationAttachDetachRace(t *testing.T) {
+	withTempHome(t)
+	role, err := startExtenderRole(context.Background(), testExtenderRoleConfig(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitExtenderRoleReady(t, role)
+
+	var wg sync.WaitGroup
+	for i := 0; i < 24; i++ {
+		wg.Add(1)
+		go func(i int) {
+			defer wg.Done()
+			ctx, cancel := context.WithCancel(context.Background())
+			inputs := &extenderActivationInputs{
+				ctx:            ctx,
+				apiUrl:         "http://127.0.0.1:1",
+				byJwt:          newJwtHolder("jwt").Get,
+				clientStrategy: newExtenderActivationStrategy(ctx),
+			}
+			role.StartActivation(inputs)
+			if i%2 == 0 {
+				cancel()
+				role.StopActivation(inputs)
+			} else {
+				defer cancel()
+			}
+		}(i)
+	}
+	wg.Wait()
+
+	closeExtenderRole(t, role)
+	if role.currentActivator() != nil {
+		t.Fatal("an activator survived the role's close")
+	}
+}
+
+// Counts must survive the role stopping: `extender off` closes the role and the
+// final sample is taken after the drain, so requests that finish while it closes
+// still count. The role's own snapshot must keep them after close too.
+func TestExtenderRoleKeepsItsCountsAfterClose(t *testing.T) {
+	withTempHome(t)
+	config := testExtenderRoleConfig(t)
+	var mu sync.Mutex
+	var tcpAddr string
+	config.listen = func(network string, address string) (net.Listener, error) {
+		l, err := net.Listen("tcp", "127.0.0.1:0")
+		if err == nil {
+			mu.Lock()
+			tcpAddr = l.Addr().String()
+			mu.Unlock()
+		}
+		return l, err
+	}
+	role, err := startExtenderRole(context.Background(), config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	waitExtenderRoleReady(t, role)
+	mu.Lock()
+	addr := tcpAddr
+	mu.Unlock()
+
+	// an ordinary https request to the carrier: counted as the proxy service
+	client := &http.Client{Transport: &http.Transport{TLSClientConfig: &tls.Config{InsecureSkipVerify: true}}, Timeout: 5 * time.Second}
+	resp, err := client.Get("https://" + addr + "/")
+	if err == nil {
+		resp.Body.Close()
+	}
+	if got := role.snapshot().ServiceCounts["proxy"]; got != 1 {
+		t.Fatalf("before close: proxy count = %d, want 1 (err=%v)", got, err)
+	}
+	closeExtenderRole(t, role)
+	if got := role.snapshot().ServiceCounts["proxy"]; got != 1 {
+		t.Fatalf("after close: proxy count = %d, want 1: the count was lost when the role stopped", got)
 	}
 }

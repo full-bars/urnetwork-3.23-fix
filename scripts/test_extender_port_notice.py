@@ -23,7 +23,7 @@ def helper():
 
 
 class ExtenderPortNoticeTest(unittest.TestCase):
-    def run_notice(self, ss_output="", ss_present=True, uid="1000", cap_state="cap_net_bind_service=ep", platform="Linux"):
+    def run_notice(self, ss_output="", ss_present=True, uid="1000", cap_state="cap_net_bind_service=ep", platform="Linux", ss_exit="0", exe_of_pid=None):
         with tempfile.TemporaryDirectory() as tmp:
             mock = Path(tmp) / "bin"
             mock.mkdir()
@@ -34,12 +34,13 @@ class ExtenderPortNoticeTest(unittest.TestCase):
                 (mock / tool).symlink_to(executable)
             if ss_present:
                 ss = mock / "ss"
-                ss.write_text("#!/bin/sh\nprintf '%s' \"$SS_OUTPUT\"\n")
+                ss.write_text("#!/bin/sh\nprintf '%s' \"$SS_OUTPUT\"\nexit \"$SS_EXIT\"\n")
                 ss.chmod(0o755)
             binary = Path(tmp) / "urnetwork"
             binary.touch()
             env = dict(os.environ, PATH=str(mock), SS_OUTPUT=ss_output, UID_VALUE=uid,
-                       CAP_STATE=cap_state, PLATFORM=platform, BINARY=str(binary))
+                       CAP_STATE=cap_state, PLATFORM=platform, BINARY=str(binary), SS_EXIT=ss_exit,
+                       EXE_OF_PID=(str(binary) + " (deleted)" if exe_of_pid == "DELETED" else exe_of_pid if exe_of_pid is not None else str(binary)), EXE_UNREADABLE="1" if exe_of_pid == "" else "0")
             harness = r'''
 set -eu
 uname() { printf '%s\n' "$PLATFORM"; }
@@ -47,6 +48,12 @@ id() { printf '%s\n' "$UID_VALUE"; }
 getcap() { printf '%s %s\n' "$1" "$CAP_STATE"; }
 pr_info() { printf 'INFO: %s\n' "$*"; }
 pr_warn() { printf 'WARN: %s\n' "$*"; }
+readlink() {
+    case "$2" in
+        /proc/*/exe) [ "$EXE_UNREADABLE" = 1 ] && return 1; printf '%s\n' "$EXE_OF_PID" ;;
+        *) printf '%s\n' "$2" ;;
+    esac
+}
 ''' + helper() + '\nreport_extender_port "$BINARY"\n'
             result = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
             self.assertEqual(result.returncode, 0, result.stderr)
@@ -58,6 +65,7 @@ pr_warn() { printf 'WARN: %s\n' "$*"; }
         self.assertIn("443 is free", out)
         self.assertIn("on by default", out)
         self.assertIn("urnet-tools extender disable", out)
+        self.assertIn("UDP 4053", out)
         self.assertNotIn("WARN:", out)
 
     def test_taken_port_names_the_holder_and_says_it_will_keep_retrying(self):
@@ -73,9 +81,34 @@ pr_warn() { printf 'WARN: %s\n' "$*"; }
         self.assertIn("sudo ss -ltnp", out)
 
     def test_an_update_does_not_blame_the_providers_own_listener(self):
+        # the listener's executable is this provider's binary
         out = self.run_notice(ss_output='LISTEN 0 4096 *:443 *:* users:(("urnetwork",pid=10,fd=9))\n')
         self.assertNotIn("WARN:", out)
         self.assertIn("already", out)
+
+    def test_an_update_replaced_binary_is_still_the_providers_own_listener(self):
+        # an update replaces the file, so the running process's exe reads "(deleted)"
+        out = self.run_notice(ss_output='LISTEN 0 4096 *:443 *:* users:(("urnetwork",pid=10,fd=9))\n',
+                              exe_of_pid="DELETED")
+        self.assertIn("already", out)
+
+    def test_a_different_program_named_urnetwork_is_not_blamed_on_this_provider(self):
+        out = self.run_notice(ss_output='LISTEN 0 4096 *:443 *:* users:(("urnetwork",pid=10,fd=9))\n',
+                              exe_of_pid="/opt/other/urnetwork")
+        self.assertIn("WARN:", out)
+        self.assertIn("urnetwork (pid 10)", out)
+        self.assertNotIn("already listening", out)
+
+    def test_an_unreadable_executable_is_said_not_assumed(self):
+        out = self.run_notice(ss_output='LISTEN 0 4096 *:443 *:* users:(("urnetwork",pid=10,fd=9))\n', exe_of_pid="")
+        self.assertIn("WARN:", out)
+        self.assertIn("could not confirm", out)
+
+    def test_a_failed_ss_is_not_reported_as_a_free_port(self):
+        out = self.run_notice(ss_output="", ss_exit="1")
+        self.assertNotIn("TCP 443 is free", out)
+        self.assertIn("could not check", out)
+        self.assertIn("urnet-tools extender disable", out)
 
     def test_missing_bind_capability_is_said_plainly_for_a_non_root_user(self):
         out = self.run_notice(ss_output="", uid="1000", cap_state="")
