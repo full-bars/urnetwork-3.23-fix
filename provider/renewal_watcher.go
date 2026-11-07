@@ -83,6 +83,11 @@ type proxyJWTWatcherConfig struct {
 	// a renewed-but-not-yet-reconnected proxy could be evicted as
 	// "never authenticated" and the entry deleted under the fresh token.
 	RevocationDone chan struct{}
+	// OnRenewed, when set, receives every renewed JWT right after it is
+	// swapped into the OOB control and the transport. The extender activation
+	// reads the live token through it, so a post a day after the last one never
+	// carries a stale token.
+	OnRenewed func(jwt string)
 }
 
 // runProxyJWTWatcher renews the proxy's client JWT before it expires and
@@ -165,6 +170,9 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		}
 
 		cfg.OOB.SetByJwt(newJwt)
+		if cfg.OnRenewed != nil {
+			cfg.OnRenewed(newJwt)
+		}
 		if cfg.Transport != nil {
 			cfg.Transport.SetAuth(newProviderClientAuth(newJwt, cfg.InstanceId))
 		}

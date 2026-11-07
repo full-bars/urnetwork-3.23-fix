@@ -15,27 +15,6 @@ import (
 	"github.com/urnetwork/connect/extender"
 )
 
-func TestExtenderRoleRequested(t *testing.T) {
-	tests := map[string]bool{
-		"":         false,
-		"off":      false,
-		"0":        false,
-		"false":    false,
-		"on":       true,
-		"ON":       true,
-		" 1 ":      true,
-		"true":     true,
-		"yes":      false,
-		"extender": false,
-	}
-	for value, want := range tests {
-		got := extenderRoleRequested(func(string) string { return value })
-		if got != want {
-			t.Errorf("URNETWORK_EXTENDER=%q: got %v, want %v", value, got, want)
-		}
-	}
-}
-
 func TestExtenderDnsPrivilegedPortRequested(t *testing.T) {
 	tests := map[string]bool{
 		"":    false,

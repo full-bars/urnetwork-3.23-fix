@@ -1,0 +1,307 @@
+package main
+
+import (
+	"context"
+	"encoding/json"
+	"errors"
+	"fmt"
+	"os"
+	"slices"
+	"strings"
+	"sync/atomic"
+
+	"github.com/urnetwork/connect"
+)
+
+// extender_activation.go attaches the activation loop (net_extender_activate.go)
+// to the extender role.
+//
+// Listening is not enough: the platform sends censored clients only to an
+// extender it has listed, and it lists one only after it proves the extender
+// itself, by dialing back to the host's own address on tcp 443, requiring a
+// signed answer and forwarding a real request through it (server
+// controller/extender_controller.go, the required test). The activation loop
+// posts that request for each address family, renews it and backs off as the
+// platform asks.
+//
+// The loop needs three things that exist only once the direct slot has
+// authenticated, which is after the role starts: the api url, the live client
+// JWT and a strategy that only ever dials direct. They arrive as
+// extenderActivationInputs, attached late, and detached when the slot ends.
+
+// extenderActivationInputs is what the direct slot supplies.
+type extenderActivationInputs struct {
+	// ctx is the direct slot's context. The activation ends when it does, so
+	// `provider direct off` stops it and `direct on` starts a fresh one.
+	ctx    context.Context
+	apiUrl string
+	// byJwt returns the slot's CURRENT client JWT. It is a getter, never a
+	// value: the watcher renews the token about every 12 hours and an
+	// activation can fall a day after the last one.
+	byJwt func() string
+	// clientStrategy must dial direct and never through a proxy or an
+	// extender: the platform publishes the address it sees, so an activation
+	// that crossed one would list the wrong host.
+	clientStrategy *connect.ClientStrategy
+}
+
+// jwtHolder is the value the JWT renewal watcher updates and the activation
+// reads. An atomic pointer keeps the read lock-free on the activation path.
+type jwtHolder struct {
+	value atomic.Pointer[string]
+}
+
+func newJwtHolder(initial string) *jwtHolder {
+	h := &jwtHolder{}
+	h.Set(initial)
+	return h
+}
+
+func (h *jwtHolder) Set(jwt string) { h.value.Store(&jwt) }
+
+func (h *jwtHolder) Get() string {
+	if p := h.value.Load(); p != nil {
+		return *p
+	}
+	return ""
+}
+
+// extenderPacingFileName holds when each family may next post and how its last
+// attempt ended, so a restart or a reboot resumes the cadence the platform's
+// record set instead of posting both families at once.
+const extenderPacingFileName = "extender_pacing.json"
+
+// extenderPacingFileStore is connect.ExtenderActivationPacingStore over a JSON
+// file in the provider state directory.
+type extenderPacingFileStore struct {
+	path string
+}
+
+var _ connect.ExtenderActivationPacingStore = extenderPacingFileStore{}
+
+func newExtenderPacingFileStore() (extenderPacingFileStore, error) {
+	path, err := providerStatePath(extenderPacingFileName)
+	if err != nil {
+		return extenderPacingFileStore{}, err
+	}
+	return extenderPacingFileStore{path: path}, nil
+}
+
+// LoadPacing returns the stored pacing, nil when none was saved yet. A file
+// that cannot be read is an error, which starts the loop as a new process
+// would; the next save replaces it.
+func (s extenderPacingFileStore) LoadPacing() (*connect.ExtenderActivationPacingRecord, error) {
+	b, err := os.ReadFile(s.path)
+	if errors.Is(err, os.ErrNotExist) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	var record connect.ExtenderActivationPacingRecord
+	if err := json.Unmarshal(b, &record); err != nil {
+		return nil, fmt.Errorf("%s is not a valid pacing record: %w", s.path, err)
+	}
+	return &record, nil
+}
+
+func (s extenderPacingFileStore) SavePacing(record *connect.ExtenderActivationPacingRecord) error {
+	b, err := json.Marshal(record)
+	if err != nil {
+		return err
+	}
+	return atomicWriteFile(s.path, b, 0600)
+}
+
+// extenderActivatorLogger sends the activation loop's lines into the provider
+// log. The loop already writes plain sentences with a 🌉 mark and the
+// `[extender]` tag, which is an important-log marker. Outcomes (activated,
+// failed, refused) are also written to the disk events log, so they survive a
+// reboot wiping the ramlog; the five-minute "still not activated" reminder
+// stays in the ramlog only, so a long failure does not fill the disk log.
+type extenderActivatorLogger struct{}
+
+var _ connect.Logger = extenderActivatorLogger{}
+
+func (extenderActivatorLogger) emit(line string) {
+	if !strings.HasSuffix(line, "\n") {
+		line += "\n"
+	}
+	if strings.HasPrefix(line, "🌉 [extender] ") {
+		tlog("%s", line)
+		return
+	}
+	importantLogf("%s", line)
+}
+
+func (l extenderActivatorLogger) Info(args ...any) { l.emit(fmt.Sprint(args...)) }
+
+func (l extenderActivatorLogger) Infof(format string, args ...any) {
+	l.emit(fmt.Sprintf(format, args...))
+}
+
+func (l extenderActivatorLogger) Warningf(format string, args ...any) {
+	l.emit("⚠️ " + fmt.Sprintf(format, args...))
+}
+
+func (l extenderActivatorLogger) Errorf(format string, args ...any) {
+	l.emit("❌ " + fmt.Sprintf(format, args...))
+}
+
+func (extenderActivatorLogger) V(level int32) connect.Verbose { return quietVerbose{} }
+
+type quietVerbose struct{}
+
+func (quietVerbose) Enabled() bool        { return false }
+func (quietVerbose) Info(args ...any)     {}
+func (quietVerbose) Infof(string, ...any) {}
+
+// activatorSettings builds the loop's settings from the role's live state.
+// Carriers and DnsPorts are closures over the role, read under its lock at
+// every pass, because there can be two servers (the primary and a tcp retry)
+// and the set changes while the loop runs.
+func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *connect.ExtenderActivatorSettings {
+	settings := connect.DefaultExtenderActivatorSettings()
+	settings.Log = extenderActivatorLogger{}
+	settings.ApiUrl = inputs.apiUrl
+	settings.ApiUrlV4 = familyServiceUrl(inputs.apiUrl, 4)
+	settings.ApiUrlV6 = familyServiceUrl(inputs.apiUrl, 6)
+	settings.HelloUrl = inputs.apiUrl
+	settings.ByJwt = inputs.byJwt
+	settings.ClientStrategy = inputs.clientStrategy
+	settings.PublicKey = r.identityPublicKey()
+	settings.Carriers = r.activationCarriers
+	settings.DnsPorts = r.activationDnsPorts
+	if store, err := newExtenderPacingFileStore(); err != nil {
+		tlog("[extender] activation pacing will not survive a restart: no state directory: %v\n", err)
+	} else {
+		settings.PacingStore = store
+	}
+	settings.OnRefused = func(ipVersion int, result *connect.ExtenderActivateResult) {
+		if result != nil && result.KeyHeldByAnotherNetwork() {
+			importantLogf("[extender] %s: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. "+
+				"This happens when the identity file %s was copied from another box or account. Fix: stop the provider, delete that file so a new key is made for this network, and start it again.\n",
+				extenderFamilyLabel(ipVersion), extenderKeyFileName)
+		}
+	}
+	return settings
+}
+
+func extenderFamilyLabel(ipVersion int) string {
+	if ipVersion == 6 {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
+// identityPublicKey is the role's identity public key, which the platform
+// probes back against and signs the record for.
+func (r *extenderRole) identityPublicKey() []byte {
+	r.mu.Lock()
+	seed := slices.Clone(r.keySeed)
+	r.mu.Unlock()
+	key, err := connect.ExtenderPublicKeyFromSeed(seed)
+	if err != nil {
+		return nil
+	}
+	return key
+}
+
+// activationCarriers is the carrier list the loop offers: what is bound now.
+// With tcp missing the loop holds every post, so the role says so itself.
+func (r *extenderRole) activationCarriers() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	carriers := make([]string, 0, len(r.carriers))
+	for carrier, up := range r.carriers {
+		if up {
+			carriers = append(carriers, carrier)
+		}
+	}
+	slices.Sort(carriers)
+	return carriers
+}
+
+func (r *extenderRole) activationDnsPorts() []int {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.dnsPorts)
+}
+
+// StartActivation attaches the activation loop for one direct slot. Calling it
+// again for the same slot is a no-op; for a new slot it replaces the old loop.
+func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
+	r.mu.Lock()
+	if r.activator != nil && r.activatorInputs == inputs {
+		r.mu.Unlock()
+		return
+	}
+	previous := r.activator
+	r.activator = nil
+	r.activatorInputs = nil
+	r.mu.Unlock()
+	// closing joins the loop, whose carrier closures take r.mu: never hold it
+	if previous != nil {
+		previous.Close()
+	}
+
+	activator := connect.NewExtenderActivator(r.ctx, r.activatorSettings(inputs))
+
+	r.mu.Lock()
+	if r.ctx.Err() != nil {
+		r.mu.Unlock()
+		activator.Close()
+		return
+	}
+	r.activator = activator
+	r.activatorInputs = inputs
+	r.mu.Unlock()
+	importantLogf("[extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.\n")
+	r.publishStatus("activation started")
+}
+
+// StopActivation ends the loop that belongs to `inputs`, if it is the current
+// one. A loop for a newer slot is left alone.
+func (r *extenderRole) StopActivation(inputs *extenderActivationInputs) {
+	r.mu.Lock()
+	if r.activator == nil || r.activatorInputs != inputs {
+		r.mu.Unlock()
+		return
+	}
+	activator := r.activator
+	r.activator = nil
+	r.activatorInputs = nil
+	r.mu.Unlock()
+	activator.Close()
+	importantLogf("[extender] activation stopped: the direct slot it belonged to ended.\n")
+}
+
+// currentActivator is the running loop, nil before the direct slot attaches.
+func (r *extenderRole) currentActivator() *connect.ExtenderActivator {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.activator
+}
+
+// newExtenderActivationStrategy is the strategy every activation and hello is
+// posted through. It is built fresh and never shares the slot's strategy,
+// because the slot's defaults carry extender inputs (networks, hostnames, a
+// maximum count) that could route the post through another extender. The
+// platform publishes the address it sees, so a post that crossed an extender
+// would list the wrong host.
+func newExtenderActivationStrategy(ctx context.Context) *connect.ClientStrategy {
+	return connect.NewClientStrategy(ctx, extenderActivationStrategySettings())
+}
+
+// extenderActivationStrategySettings is the direct-only settings, apart from
+// the strategy so a test can pin that no extender input is left in them.
+func extenderActivationStrategySettings() *connect.ClientStrategySettings {
+	settings := connect.DefaultClientStrategySettings()
+	settings.ExtenderNetworks = nil
+	settings.ExtenderHostnames = nil
+	settings.MaxExtenderCount = 0
+	settings.ExpandExtenderProfileCount = 0
+	settings.DisableManualExtenders = true
+	settings.DisableVless = true
+	return settings
+}

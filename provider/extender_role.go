@@ -36,7 +36,8 @@ import (
 // lane does not implement activation, the directory, gossip or probes.
 
 const (
-	// extenderEnv turns the role on. Off unless the value is on/1/true.
+	// extenderEnv is the optional environment default for the role: off/0/false
+	// turns it off. The control setting (urnet-tools extender) beats it.
 	extenderEnv = "URNETWORK_EXTENDER"
 	// extenderDns53Env also binds the dns carrier on 53, beside 4053. The
 	// bind is additive and never required, so an unprivileged provider still
@@ -80,17 +81,6 @@ var extenderRoleStates = []string{
 // started. It stays set after close so /metrics keeps reporting a stable
 // state instead of dropping the series.
 var globalExtenderRole atomic.Pointer[extenderRole]
-
-// extenderRoleRequested reports whether the operator asked for the role.
-// Only an explicit affirmative starts it; a typo leaves it off rather than
-// binding a public port nobody meant to offer.
-func extenderRoleRequested(environ func(string) string) bool {
-	switch strings.ToLower(strings.TrimSpace(environ(extenderEnv))) {
-	case "on", "1", "true":
-		return true
-	}
-	return false
-}
 
 // extenderDnsPrivilegedPortRequested reports whether the dns carrier should
 // also try 53. It is meaningful only when the role itself is on.
@@ -237,6 +227,15 @@ type extenderRole struct {
 	baseServiceCounts map[string]uint64
 	baseRefusalCounts map[string]uint64
 	tcpRetries        int64
+
+	// the activation loop, attached late by the direct slot (extender_activation.go)
+	activator       *connect.ExtenderActivator
+	activatorInputs *extenderActivationInputs
+	// the carrier set last reported to the activation, so a change is told to it once
+	carrierSigKnown bool
+	carrierSig      string
+	// when the "tcp 443 is still held" reminder was last written
+	lastTcpReminder time.Time
 
 	ready     chan struct{}
 	readyOnce sync.Once
@@ -484,6 +483,7 @@ func (r *extenderRole) startTcpRetry() (*extender.ExtenderServer, chan error) {
 			held.Close()
 		}
 		r.recordListenError(connect.ExtenderCarrierTcp, err)
+		r.remindTcpStillHeld(err)
 		return nil, nil
 	}
 	server, err := r.newServer(map[int][]connect.ExtenderConnectMode{
@@ -513,6 +513,57 @@ func (r *extenderRole) startTcpRetry() (*extender.ExtenderServer, chan error) {
 		server.CloseAndWait()
 		return nil, nil
 	}
+}
+
+// extenderTcpReminderInterval is how often a still-blocked tcp 443 is repeated
+// in the log. The first failure is explained in full and the bind is retried
+// every few minutes; repeating every retry would bury the log.
+const extenderTcpReminderInterval = 30 * time.Minute
+
+// remindTcpStillHeld writes a short reminder, at most every
+// extenderTcpReminderInterval, that tcp 443 is still blocked, how many tries
+// have failed and when the next one is.
+func (r *extenderRole) remindTcpStillHeld(err error) {
+	r.mu.Lock()
+	if !r.lastTcpReminder.IsZero() && time.Since(r.lastTcpReminder) < extenderTcpReminderInterval {
+		r.mu.Unlock()
+		return
+	}
+	r.lastTcpReminder = time.Now()
+	tries := r.tcpRetries
+	r.mu.Unlock()
+	who := ""
+	if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
+		who = " (held by " + holder + ")"
+	}
+	importantLogf("[extender] STILL BLOCKED: tcp 443 is unavailable%s after %d retries (%v). This host is not listed and gets no clients until it is freed. Next attempt at %s.\n",
+		who, tries, err, clockLabel(time.Now().Add(r.config.retryInterval)))
+}
+
+// notifyActivatorOfCarriers tells the activation loop when the set of bound
+// carriers changed: the return of tcp 443 wakes the families that were held for
+// it, any other change makes the next pass re-offer the carriers. Called after
+// the role refreshed its carriers, outside r.mu.
+func (r *extenderRole) notifyActivatorOfCarriers(carriers []string) {
+	signature := strings.Join(carriers, ",")
+	r.mu.Lock()
+	known := r.carrierSigKnown
+	previous := r.carrierSig
+	r.carrierSigKnown = true
+	r.carrierSig = signature
+	activator := r.activator
+	r.mu.Unlock()
+	if activator == nil || !known || previous == signature {
+		return
+	}
+	hadTcp := strings.Contains(previous, connect.ExtenderCarrierTcp)
+	hasTcp := slices.Contains(carriers, connect.ExtenderCarrierTcp)
+	if hasTcp && !hadTcp {
+		importantLogf("[extender] tcp 443 is bound again: asking the platform to list this host now.\n")
+		activator.TcpCarrierReturned()
+		return
+	}
+	activator.CarriersChanged()
 }
 
 // ports returns the carrier map for one server. Without a held tcp listener
@@ -591,7 +642,18 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 		hint = "; port 443 needs CAP_NET_BIND_SERVICE (setcap cap_net_bind_service=+ep <binary>) or root"
 	}
 	if carrier == connect.ExtenderCarrierTcp {
-		tlog("[extender] tcp 443 unavailable: %v; retrying no faster than %s%s\n", err, r.config.retryInterval, hint)
+		who := ""
+		if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
+			who = " Port 443 is held by " + holder + "."
+		}
+		importantLogf("[extender] CANNOT USE tcp 443: %v.%s%s "+
+			"The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed "+
+			"and no clients will be sent to it, even though udp 443 and dns %d can still listen. "+
+			"Free the port (stop or move whatever holds it). The bind is retried every %s; next attempt at %s.\n",
+			err, who, hint, connect.ExtenderDnsPort, r.config.retryInterval, clockLabel(time.Now().Add(r.config.retryInterval)))
+		r.mu.Lock()
+		r.lastTcpReminder = time.Now()
+		r.mu.Unlock()
 		return
 	}
 	if carrier == connect.ExtenderCarrierDns && strings.Contains(message, ":53") {
@@ -700,7 +762,14 @@ func (r *extenderRole) shutdown() {
 	r.mu.Lock()
 	servers := slices.Clone(r.servers)
 	r.servers = nil
+	activator := r.activator
+	r.activator = nil
+	r.activatorInputs = nil
 	r.mu.Unlock()
+	// closing joins the activation loop, whose carrier closures take r.mu
+	if activator != nil {
+		activator.Close()
+	}
 	// Capture the last counters before closing, so a scrape after shutdown
 	// still reports the traffic the role relayed rather than dropping to the
 	// pre-shutdown base.
@@ -794,6 +863,7 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 
 func (r *extenderRole) publishStatus(note string) {
 	snapshot := r.snapshot()
+	r.notifyActivatorOfCarriers(snapshot.Carriers)
 	summary := extenderRoleSummary(snapshot)
 	policy := r.forwardPolicySummary()
 
