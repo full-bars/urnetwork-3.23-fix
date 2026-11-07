@@ -2119,7 +2119,13 @@ func (self *ExtenderActivator) activateUrl(
 	}
 	// Optional carriers omitted by the operator are not published.
 	if text := extenderActivateCarrierRefusalsText(result.RefusedCarriers); text != "" {
-		self.log.Infof("🌉 [extender]activate v%d left out = %s\n", ipVersion, activationLogText(text, jwt, apiUrl))
+		var leftOut []string
+		for _, refusal := range result.RefusedCarriers {
+			if refusal != nil {
+				leftOut = append(leftOut, extenderCarrierPortText(refusal.Carrier, refusal.Port))
+			}
+		}
+		self.log.Infof("🌉⚠️ [extender] %s is active, but the platform left out %s after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: %s\n", extenderFamilyName(ipVersion), strings.Join(leftOut, ", "), activationLogText(text, jwt, apiUrl))
 	}
 	if self.settings.OnActivated != nil {
 		self.settings.OnActivated(ipVersion, result)
@@ -2176,6 +2182,20 @@ func extenderActivateProbeStepsText(probeSteps []*ExtenderActivateProbeStep) str
 		))
 	}
 	return strings.Join(stepTexts, ", ")
+}
+
+// extenderCarrierPortText formats a known carrier without logging arbitrary input.
+func extenderCarrierPortText(carrier string, port int) string {
+	switch carrier {
+	case ExtenderCarrierTcp:
+		return fmt.Sprintf("tcp %d", port)
+	case ExtenderCarrierQuic:
+		return fmt.Sprintf("udp %d (quic)", port)
+	case ExtenderCarrierDns:
+		return fmt.Sprintf("udp %d (dns)", port)
+	default:
+		return fmt.Sprintf("unknown carrier on port %d", port)
+	}
 }
 
 // The carriers an activation left out on one line, in the order offered, each

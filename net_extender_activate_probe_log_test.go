@@ -136,8 +136,16 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 				{Carrier: ExtenderCarrierQuic, Port: 443, Error: "no answer", ElapsedMs: 6400, BudgetLeftMs: 6400},
 			},
 			expected: []string{
-				"🌉 [extender]activate v4 left out = quic:443 after 6.4s (6.4s left): no answer\n",
+				"🌉⚠️ [extender] IPv4 is active, but the platform left out udp 443 (quic) after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: quic:443 after 6.4s (6.4s left): no answer\n",
 			},
+		},
+		{
+			name: "two carriers left out",
+			refusedCarriers: []*ExtenderActivateCarrierRefusal{
+				{Carrier: ExtenderCarrierQuic, Port: 443, Error: "no answer"},
+				{Carrier: ExtenderCarrierDns, Port: 4053, Error: "no answer"},
+			},
+			expected: []string{"🌉⚠️ [extender] IPv4 is active, but the platform left out udp 443 (quic), udp 4053 (dns) after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: quic:443 after 0s (0s left): no answer; dns:4053 after 0s (0s left): no answer\n"},
 		},
 		{
 			name:            "none left out",
@@ -154,7 +162,7 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 			refusedCarriers: []*ExtenderActivateCarrierRefusal{
 				{Carrier: "dns", Port: 53, Error: "failed\nhttps://example.org/path?token=secret"},
 			},
-			expected: []string{"🌉 [extender]activate v4 left out = dns:53 after 0s (0s left): failed example.org\n"},
+			expected: []string{"🌉⚠️ [extender] IPv4 is active, but the platform left out udp 53 (dns) after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: dns:53 after 0s (0s left): failed example.org\n"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,7 +181,7 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 			if ipVersion := fixture.waitActivation(); ipVersion != 4 {
 				t.Fatalf("activated v%d, expected v4", ipVersion)
 			}
-			leftOutLines := log.linesWithPrefix("🌉 [extender]activate v4 left out = ")
+			leftOutLines := log.linesWithPrefix("🌉⚠️ [extender] IPv4 is active, but the platform left out ")
 			if strings.Join(leftOutLines, "") != strings.Join(c.expected, "") {
 				t.Fatalf("left out lines = %q, expected %q", leftOutLines, c.expected)
 			}
@@ -261,8 +269,8 @@ func TestExtenderActivatorLogsCarrierTimingPresenceFromJson(t *testing.T) {
 		if family := fixture.activator.Status().Family(4); family == nil || !family.Activated || family.LastRefused || family.LastError != "" {
 			t.Fatalf("%s: activation status = %+v, expected a success", c.name, family)
 		}
-		expectedLines = append(expectedLines, "🌉 [extender]activate v4 left out = quic:443"+c.timingText+": context deadline exceeded\n")
-		lines := log.linesWithPrefix("🌉 [extender]activate v4 left out = ")
+		expectedLines = append(expectedLines, "🌉⚠️ [extender] IPv4 is active, but the platform left out udp 443 (quic) after its probes. Check the host firewall and any cloud security group; the next renewal will retry. Probe details: quic:443"+c.timingText+": context deadline exceeded\n")
+		lines := log.linesWithPrefix("🌉⚠️ [extender] IPv4 is active, but the platform left out ")
 		if strings.Join(lines, "") != strings.Join(expectedLines, "") {
 			t.Fatalf("%s: left out lines = %q, expected %q", c.name, lines, expectedLines)
 		}
