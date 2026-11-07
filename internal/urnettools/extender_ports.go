@@ -194,18 +194,12 @@ func parseLsofOutput(out string, holder *PortHolder, targetPort int) {
 	lines := strings.Split(out, "\n")
 	for _, line := range lines {
 		fields := strings.Fields(line)
-		if len(fields) < 2 || fields[0] == "COMMAND" {
+		if len(fields) < 9 || fields[0] == "COMMAND" {
 			continue
 		}
-		portPattern := fmt.Sprintf(":%d", targetPort)
-		hasPort := false
-		for _, f := range fields[2:] {
-			if strings.Contains(f, portPattern) {
-				hasPort = true
-				break
-			}
-		}
-		if hasPort {
+		local, _, _ := strings.Cut(fields[8], "->")
+		colon := strings.LastIndex(local, ":")
+		if colon >= 0 && local[colon+1:] == strconv.Itoa(targetPort) {
 			holder.Held = true
 			holder.Process = fields[0]
 			if pid, err := strconv.Atoi(fields[1]); err == nil {
