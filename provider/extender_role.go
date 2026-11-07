@@ -39,9 +39,10 @@ const (
 	// extenderEnv is the optional environment default for the role: off/0/false
 	// turns it off. The control setting (urnet-tools extender) beats it.
 	extenderEnv = "URNETWORK_EXTENDER"
-	// extenderDns53Env also binds the dns carrier on 53, beside 4053. The
-	// bind is additive and never required, so an unprivileged provider still
-	// serves 4053.
+	// extenderDns53Env controls the second dns port. Like the miner, the role
+	// also tries 53 beside 4053 by default; off/0/false keeps it to 4053. The
+	// bind is additive and never required, so a provider that cannot bind 53
+	// (no capability, or another resolver holds it) still serves 4053.
 	extenderDns53Env = "URNETWORK_EXTENDER_DNS53"
 	// extenderKeyFileName is the identity seed of the serving role, alongside
 	// the provider's other state. The public half names the extender in every
@@ -83,13 +84,14 @@ var extenderRoleStates = []string{
 var globalExtenderRole atomic.Pointer[extenderRole]
 
 // extenderDnsPrivilegedPortRequested reports whether the dns carrier should
-// also try 53. It is meaningful only when the role itself is on.
+// also try 53: yes unless it is switched off. It is meaningful only when the
+// role itself is on.
 func extenderDnsPrivilegedPortRequested(environ func(string) string) bool {
 	switch strings.ToLower(strings.TrimSpace(environ(extenderDns53Env))) {
-	case "on", "1", "true":
-		return true
+	case "off", "0", "false", "no":
+		return false
 	}
-	return false
+	return true
 }
 
 // extenderRoleEligible reports whether a slot may hold the role. Only the

@@ -17,12 +17,14 @@ import (
 
 func TestExtenderDnsPrivilegedPortRequested(t *testing.T) {
 	tests := map[string]bool{
-		"":    false,
-		"off": false,
-		"0":   false,
-		"on":  true,
-		"1":   true,
-		"yes": false,
+		"":      true,
+		"on":    true,
+		"1":     true,
+		"yes":   true,
+		"off":   false,
+		"0":     false,
+		"false": false,
+		"no":    false,
 	}
 	for value, want := range tests {
 		got := extenderDnsPrivilegedPortRequested(func(string) string { return value })

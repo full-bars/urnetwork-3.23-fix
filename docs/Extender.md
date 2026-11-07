@@ -42,7 +42,7 @@ The role also keeps `~/.urnetwork/extender_pacing.json` (when each address famil
 - TCP 443 carries the TLS carrier. **Required** for the platform to list the host.
 - UDP 443 carries QUIC. Optional.
 - UDP 4053 carries the DNS carrier. Optional. It also answers ordinary DNS queries from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a rate-limited resolver (that is part of its camouflage). It is not limited to the platform's hosts: the allow list below governs forwards, not this. Firewall UDP 4053 like any resolver you expose if you do not want that.
-- UDP 53 is a second DNS port, bound only when `URNETWORK_EXTENDER_DNS53=on`. It needs the same privilege as 443 and usually collides with a resolver already on the host. If it cannot be bound the role keeps serving 4053.
+- UDP 53 is a second DNS port, tried by default like the miner does. It needs the same privilege as 443 and often collides with a resolver already on the host. If it cannot be bound the role logs one warning and keeps serving 4053. Set `URNETWORK_EXTENDER_DNS53=off` to skip it. It answers ordinary DNS queries like 4053 does, so the exposure note above applies, and port 53 is probed by scanners far more than 4053.
 
 A port that cannot be bound never stops the provider. If TCP 443 is taken or needs a privilege the process does not have, the role serves the UDP carriers and tries TCP 443 again no faster than every three minutes. It says so plainly, naming what holds the port when the host will tell it:
 
