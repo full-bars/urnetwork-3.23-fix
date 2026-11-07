@@ -31,7 +31,7 @@ func TestExtenderBlockServing(t *testing.T) {
 	})
 	for _, want := range []string{
 		"Extender:", "serving",
-		"tcp 443 up", "udp 443 up", "dns 4053 up",
+		"tcp 443 bound", "udp 443 bound", "dns 4053 bound",
 		"IPv4", "ACTIVE", "203.0.113.5",
 		"IPv6", "not active", "no public IPv6 address", "next try " + now.Add(23*time.Minute).Local().Format("15:04"),
 		"Clients now", "2",
@@ -63,7 +63,7 @@ func TestExtenderBlockCallsOutBlockedTcp(t *testing.T) {
 		Ports:    []ExtenderPort{{Name: "tcp 443", Up: false, Error: "address already in use"}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
 		Families: []ExtenderFamily{{IpVersion: 4, State: "held"}, {IpVersion: 6, State: "held"}},
 	})
-	for _, want := range []string{"tcp 443 DOWN", "address already in use", "NOT listed", "held"} {
+	for _, want := range []string{"tcp 443 not bound", "address already in use", "NOT listed", "held"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("blocked block is missing %q:\n%s", want, out)
 		}

@@ -30,15 +30,22 @@ type ExtenderPort struct {
 	Error string `json:"error,omitempty"`
 }
 
+// ExtenderFamilyPort is one carrier's platform state on one address family.
+type ExtenderFamilyPort struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
 // ExtenderFamily is one address family's activation state.
 type ExtenderFamily struct {
-	IpVersion         int    `json:"ip_version"`
-	State             string `json:"state"`
-	Ip                string `json:"ip,omitempty"`
-	Detail            string `json:"detail,omitempty"`
-	LastAttemptUnixMs int64  `json:"last_attempt_unix_ms,omitempty"`
-	NextAttemptUnixMs int64  `json:"next_attempt_unix_ms,omitempty"`
-	ExpireUnixMs      int64  `json:"expire_unix_ms,omitempty"`
+	IpVersion         int                  `json:"ip_version"`
+	State             string               `json:"state"`
+	Ip                string               `json:"ip,omitempty"`
+	Detail            string               `json:"detail,omitempty"`
+	Ports             []ExtenderFamilyPort `json:"ports,omitempty"`
+	LastAttemptUnixMs int64                `json:"last_attempt_unix_ms,omitempty"`
+	NextAttemptUnixMs int64                `json:"next_attempt_unix_ms,omitempty"`
+	ExpireUnixMs      int64                `json:"expire_unix_ms,omitempty"`
 }
 
 // ExtenderServed is requests served for clients over three windows.
@@ -205,11 +212,11 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	for _, port := range r.Ports {
 		switch {
 		case port.Up:
-			ports = append(ports, port.Name+" up")
+			ports = append(ports, port.Name+" bound")
 		case port.Error != "":
-			ports = append(ports, fmt.Sprintf("%s DOWN (%s)", port.Name, port.Error))
+			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, port.Error))
 		default:
-			ports = append(ports, port.Name+" DOWN")
+			ports = append(ports, port.Name+" not bound")
 		}
 	}
 	fmt.Fprintf(w, "  Ports:             %s\n", strings.Join(ports, ", "))
@@ -218,6 +225,9 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	}
 	for _, f := range r.Families {
 		fmt.Fprintf(w, "  %-18s %s\n", extenderFamilyName(f.IpVersion)+":", extenderFamilyLine(f, now))
+		for _, port := range f.Ports {
+			fmt.Fprintf(w, "    %s: %s\n", port.Name, port.State)
+		}
 	}
 	fmt.Fprintf(w, "  Clients now:       %d\n", r.LiveClients)
 	fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)

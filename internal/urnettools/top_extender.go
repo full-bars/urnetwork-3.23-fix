@@ -66,7 +66,7 @@ func extenderBoxRows(r ExtenderReading, now time.Time) []topExtenderRow {
 			name = short[0] // tcp, udp, dns: the ports are in the title row
 		}
 		if port.Up {
-			ports = append(ports, name+" up")
+			ports = append(ports, name+" bound")
 			continue
 		}
 		ports = append(ports, name+" DOWN")
@@ -97,6 +97,13 @@ func extenderBoxRows(r ExtenderReading, now time.Time) []topExtenderRow {
 				value += ": " + f.Detail
 			}
 			rows = append(rows, topExtenderRow{key, value + extenderNextTry(f, now), topWarn})
+		}
+		for _, port := range f.Ports {
+			level := topInfo
+			if strings.Contains(port.State, "left out") {
+				level = topWarn
+			}
+			rows = append(rows, topExtenderRow{key, port.Name + ": " + port.State, level})
 		}
 	}
 	rows = append(rows, topExtenderRow{"clients", fmt.Sprintf("%d now", r.LiveClients), topInfo})
