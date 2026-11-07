@@ -165,3 +165,69 @@ func TestExtenderUnrecognisedEnvWarnsOnceWhenOff(t *testing.T) {
 		t.Fatalf("expected warning logged again after clearing, got %d logs", len(logged))
 	}
 }
+
+func TestExtenderRoleRestartsWhenSupervisorStops(t *testing.T) {
+	withTempHome(t)
+	var logged []string
+	prevHook := importantLogHook
+	t.Cleanup(func() { importantLogHook = prevHook })
+	importantLogHook = func(line string) {
+		logged = append(logged, line)
+	}
+
+	roleStarts := 0
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	m := newExtenderManager()
+	m.ctx = ctx
+	m.environ = func(string) string { return "" } // default "on"
+	m.directEnabled = func() bool { return true }
+
+	var currentRoleDone chan struct{}
+	m.startRole = func(ctx context.Context, config extenderRoleConfig) (*extenderRole, error) {
+		roleStarts++
+		currentRoleDone = make(chan struct{})
+		r := &extenderRole{
+			done:   currentRoleDone,
+			cancel: func() {},
+		}
+		return r, nil
+	}
+
+	// 1. Initial reconcile starts the first role
+	m.Reconcile("startup")
+	if roleStarts != 1 {
+		t.Fatalf("roleStarts = %d, want 1", roleStarts)
+	}
+	firstDone := currentRoleDone
+
+	// 2. While supervisor is still running, reconcile does not restart it
+	m.Reconcile("periodic check 1")
+	if roleStarts != 1 {
+		t.Fatalf("roleStarts = %d, want 1 while role is alive", roleStarts)
+	}
+
+	// 3. Supervisor stops on its own (Done() closes)
+	close(firstDone)
+
+	// 4. Next reconcile must retire the dead role and start a replacement
+	m.Reconcile("periodic check 2")
+	if roleStarts != 2 {
+		t.Fatalf("roleStarts = %d, want 2 after supervisor stopped", roleStarts)
+	}
+	if currentRoleDone == firstDone {
+		t.Fatal("expected new role to be started")
+	}
+
+	foundLogged := false
+	for _, l := range logged {
+		if strings.Contains(l, "the role stopped on its own; starting it again") {
+			foundLogged = true
+			break
+		}
+	}
+	if !foundLogged {
+		t.Fatalf("expected restart line logged, got %v", logged)
+	}
+}

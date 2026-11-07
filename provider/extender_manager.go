@@ -132,6 +132,17 @@ func (m *extenderManager) reconcileLocked(why string) {
 
 	switch {
 	case on && direct:
+		if m.role != nil {
+			select {
+			case <-m.role.Done():
+				dead := m.role
+				m.role = nil
+				dead.CloseAndWait()
+				m.sampleTallyLocked(dead)
+				importantLogf("🌉❌ [extender] the role stopped on its own; starting it again\n")
+			default:
+			}
+		}
 		if m.role == nil {
 			// a failed start keeps its reason and its dedupe marker, so a
 			// start that keeps failing is retried at every check but logged once
