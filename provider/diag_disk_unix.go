@@ -1,4 +1,4 @@
-//go:build unix
+//go:build unix && !openbsd
 
 package main
 
@@ -11,5 +11,5 @@ func diskFreeBytes(dir string) (uint64, error) {
 	if err := syscall.Statfs(dir, &st); err != nil {
 		return 0, err
 	}
-	return uint64(st.Bavail) * uint64(st.Bsize), nil
+	return diagAvailableBytes(st.Bavail, uint64(st.Bsize)), nil
 }
