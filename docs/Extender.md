@@ -1,6 +1,25 @@
 # Run a provider as an extender
 
-An extender is a provider that also accepts connections on ports the internet can reach, so people in censored countries can reach URnetwork through it. It is the same idea as a Tor bridge: it does not earn, it helps clients get through. The role is **on by default** on the provider's direct slot, and it asks the platform to list the host so clients are sent to it. This page covers what has to be true on the host, how to see whether it is working, how to turn it off, what it will forward, and how to read the log.
+An extender is a provider that also accepts connections on ports the internet can reach, so people in censored countries can reach URnetwork through it. It is the same idea as a Tor bridge: it does not earn, it helps clients get through. The role is **on by default** on the provider's direct slot, and it asks the platform to list the host so clients are sent to it.
+
+You normally do nothing. This page covers how to see whether it is working, the few things the host must allow, how to turn it off, Docker, and what to do when it is not working.
+
+## Quick start
+
+```sh
+urnet-tools extender status     # is it working?
+urnet-tools extender about      # a plain-language explanation of the ports and how it works
+urnet-tools extender disable    # off, and it stays off across restarts
+urnet-tools extender enable     # back on
+```
+
+For it to work the host needs:
+
+1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
+2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
+3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
+
+UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP.
 
 ## Is it working?
 
@@ -12,48 +31,107 @@ shows whether the role is on, which ports are up, what each address family is do
 
 A family reads **ACTIVE** when the platform has listed this host on that address family. Until then the status says why: the platform said no (with its reason), the request failed, or the extender is waiting because TCP 443 is not bound.
 
-"Requests served" counts requests the extender handled for clients. It does not count distinct people; the provider does not record who asked.
+"Requests served" counts requests the extender handled, once a request has passed its checks and been handed a stream. It includes the platform's own activation check: when the platform lists the host it forwards one real request through it, so an idle host reads a few above zero (about one per activation per address family). Latency probes are not counted. It does not count distinct people; the provider does not record who asked. Use "clients now" for who is connected.
+
+## How activation works
+
+1. The extender binds TCP 443 first. If that fails, nothing else opens (see below).
+2. The provider asks the platform to list this host, once for IPv4 and once for IPv6. Each family is tried separately.
+3. The platform dials back to this host on TCP 443, asks for a signed answer, and forwards a real request through it to its own API. It also tries UDP 443 and the DNS port. If those do not answer in its 10 second budget it leaves them out of the listing and still lists the host.
+4. The platform returns a signed record that says when the listing expires. Today a listing lasts 24 hours. The provider checks the record against the platform's root keys (read from the platform's `/hello`) and renews it before it expires.
+5. A refused or failed attempt is retried later: 10 minutes at first, doubling up to 6 hours, or exactly when the platform says it has room again. A family that is refused does not delay the other.
+
+The platform limits how often a host may ask: 6 activations per client, per address family, per hour, counted when the platform starts probing, whether it then succeeds or not. Restarting repeatedly and failing can use that up. A refusal that says "try again in N minutes" is the platform telling the provider to wait, and the provider waits.
+
+### What survives a restart
+
+The role keeps four small files in `~/.urnetwork/` (in Docker, `/root/.urnetwork`, which must be a persistent volume):
+
+| File | What it holds |
+|---|---|
+| `.provider.extender.key` | The extender's identity (mode 0600, created on first use). Its public half names the extender, so the file must survive restarts. Never copy it to another box or account: the platform refuses a key that belongs to another network (`key_other_network`) and the log tells you to delete the file so a new one is made. |
+| `extender_pacing.json` | When each address family may next ask the platform, and whether its listing is valid. A restart resumes the schedule instead of asking everything at once. |
+| `extender_directory.json` | The platform's signed records, so a restart can recognise that a listing is still valid. |
+| `extender_tally.json` | The request counts for 24 hours, 7 days and lifetime. |
+
+After a restart a family whose listing is still valid shows ACTIVE straight away. The provider then asks the platform once more at a random moment in the next 30 minutes, so a fleet that restarts together does not ask together. A family with no valid listing asks as soon as it is allowed.
 
 ## Turn it on or off
 
 ```sh
-urnet-tools extender disable    # off, and it stays off across restarts
-urnet-tools extender enable     # back on
-urnet-tools extender about      # plain-language explanation of the ports and how it works (works with the provider stopped)
+urnet-tools extender disable
+urnet-tools extender enable
 ```
 
 `on` and `off` work too. Both apply to the running provider at once, with no restart and no unit file or drop-in. The setting is stored by the provider's control socket, so it survives restarts and updates.
 
-`URNETWORK_EXTENDER=off` in the environment still works as a startup default for existing installs. The control setting beats it, and an unrecognised value is ignored (the default, on, applies) and logged.
+`URNETWORK_EXTENDER=off` in the environment still works as a startup default. The control setting beats it, and an unrecognised value is ignored (the default, on, applies) and logged. In Docker, where `urnet-tools extender` is not available, use the environment variable and restart the container.
 
-The Linux installer prints one notice and asks nothing: whether TCP 443 is free, or what holds it, and how to turn the extender off.
+The role runs from the provider's direct slot, because only that slot's egress is this host's own address. Configured proxies do not prevent it, and a proxy can never be an extender: the platform would be dialing the proxy's address, where no part of this provider listens. Turning direct providing off (`urnet-tools direct off`) does stop it: the provider logs `[extender] off: direct providing is disabled` and carries on without the role.
 
-## Before you start
+## Ports
 
-The platform lists an extender only after it proves it from the outside. It dials back to this host's own address on **TCP 443**, requires a signed answer, and forwards a real request through it to its own API. So the host needs inbound TCP 443 that actually reaches the provider. A host behind NAT with no port forward can start the role, but the platform cannot reach it and will not list it. UDP alone is not enough: with TCP 443 down, the role still listens on UDP, but the status shows the host as not listed.
+| Port | Role | Notes |
+|---|---|---|
+| TCP 443 | TLS carrier | **Required.** The platform proves the host over this port. |
+| UDP 443 | QUIC carrier | Optional. |
+| UDP 4053 | DNS carrier | Optional. See the note on DNS below. |
+| UDP 53 | Second DNS port | Optional. Tried by default; skipped if something else holds it. `URNETWORK_EXTENDER_DNS53=off` skips it. |
 
-The role runs from the provider's direct slot, because only that slot's egress is this host's own address. Configured proxies do not prevent it. Turning direct providing off does: the provider logs `[extender] off: direct providing is disabled` and carries on without the role.
-
-The role keeps its own identity in `~/.urnetwork/.provider.extender.key` (mode 0600, created on first use). Its public half names the extender, so the file has to survive restarts. Do not copy it to another box or account: the platform refuses a key that belongs to another network (`key_other_network`) and the log tells you to delete the file so a new one is made. In Docker the state volume at `/root/.urnetwork` must be persistent, which the install docs already require.
-
-The role also keeps `~/.urnetwork/extender_pacing.json` (when each address family may next ask the platform, so a restart or reboot resumes the schedule instead of asking everything at once) and `~/.urnetwork/extender_tally.json` (the request counts).
-
-## What the role listens on
-
-- TCP 443 carries the TLS carrier. **Required** for the platform to list the host.
-- UDP 443 carries QUIC. Optional.
-- UDP 4053 carries the DNS carrier. Optional. It also answers ordinary DNS queries from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a rate-limited resolver (that is part of its camouflage). It is not limited to the platform's hosts: the allow list below governs forwards, not this. Firewall UDP 4053 like any resolver you expose if you do not want that.
-- UDP 53 is a second DNS port, tried by default like the miner does. It needs the same privilege as 443 and often collides with a resolver already on the host. If it cannot be bound the role logs one warning and keeps serving 4053. Set `URNETWORK_EXTENDER_DNS53=off` to skip it. It answers ordinary DNS queries like 4053 does, so the exposure note above applies, and port 53 is probed by scanners far more than 4053.
-
-A port that cannot be bound never stops the provider. If TCP 443 is taken or needs a privilege the process does not have, the role keeps every other port closed and tries TCP 443 again no faster than every three minutes. It says so plainly, naming what holds the port when the host will tell it:
+TCP 443 gates everything. The extender binds it first, and **while it fails no other port is opened**: the platform could not list the host anyway, so nothing could use them. It retries every three minutes and opens the rest once it has the port. It says so plainly, naming what holds the port when the host will tell it:
 
 ```text
-[extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
+🌉❌ [extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
 ```
 
-A reminder repeats every 30 minutes while the port stays blocked, and when it comes free the role asks the platform to list the host within a few minutes.
+A reminder repeats every 30 minutes while the port stays blocked. When it comes free, the log says `tcp 443 is bound again` and the platform is asked within a few minutes. (A listing the platform made earlier stays valid until it expires.)
 
-Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root, so the container case needs nothing extra. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. On Linux, replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+**About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
+
+Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+
+## The firewall
+
+Opening a port in the provider does not open it on the host. If the host has a firewall, allow what you want:
+
+Use whichever matches your host. Only TCP 443 is required; the UDP lines are optional.
+
+```sh
+# ufw (Ubuntu, Debian)
+sudo ufw allow 443/tcp
+sudo ufw allow 443/udp
+sudo ufw allow 4053/udp
+
+# firewalld (RHEL, Alma, Rocky, Fedora)
+sudo firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp --add-port=4053/udp
+sudo firewall-cmd --reload
+
+# iptables (plain)
+sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
+sudo iptables -I INPUT -p udp --dport 443 -j ACCEPT
+sudo iptables -I INPUT -p udp --dport 4053 -j ACCEPT
+sudo ip6tables -I INPUT -p tcp --dport 443 -j ACCEPT   # for IPv6, repeat the rules with ip6tables
+
+# nftables (adjust the table and chain names to your ruleset)
+sudo nft add rule inet filter input tcp dport 443 accept
+sudo nft add rule inet filter input udp dport '{ 443, 4053 }' accept
+```
+
+`iptables` and `nft` rules added this way are lost at reboot. Save them with your distribution's tool (`sudo netfilter-persistent save` on Debian and Ubuntu, `sudo service iptables save` on RHEL-style hosts, or write them into `/etc/nftables.conf`). ufw and firewalld (with `--permanent`) already persist. If you also have IPv6 enabled, make sure the rule covers it: ufw and firewalld cover both families by default, plain `iptables` does not. Other firewalls (a Windows host, a cloud provider's panel) need the equivalent inbound TCP 443 rule.
+
+A router or cloud security group in front of the host needs the same ports forwarded or allowed. A host behind carrier-grade NAT cannot receive inbound connections at all and cannot be an extender.
+
+You can tell what the platform could reach from the activation lines: `left out = dns:4053 … no answer` or `quic:443 … no answer` means that UDP port did not answer from outside (usually a firewall), and the host was listed over TCP only.
+
+## IPv6
+
+IPv6 activates separately. It needs a **public IPv6 address and a working IPv6 route out**. A host with an IPv6 address but no default route cannot reach the platform over IPv6, and the attempt times out after about a minute:
+
+```text
+🌉❌ [extender] IPv6 activation try 1 failed after 60.2s: the platform did not answer in time
+```
+
+Check on the host: `ip -6 route show default` should print a route, and `curl -6 https://api.bringyour.com/hello` should answer. If either fails, fix the host's IPv6 networking (your provider's gateway setting); the extender cannot work around it. IPv4 is unaffected.
 
 ## What the extender will forward
 
@@ -67,58 +145,97 @@ URNETWORK_EXTENDER_ALLOWED_HOSTS='example.com,*.example.org'
 
 ## Docker
 
-The default run command in [Docker Deployment](/full-bars/urnetwork-3.23-fix/wiki/Docker-Deployment) publishes no ports. To let the extender be reached, publish the carrier ports:
+The default run command in [Docker Deployment](/full-bars/urnetwork-3.23-fix/wiki/Docker-Deployment) publishes no ports, so the extender could not be reached. There are three ways to run it. Tested with Docker 26 on Debian 13.
+
+**1. Host networking (simplest, IPv4 and IPv6).** The container uses the host's addresses and ports directly. Both families activated on the first try.
 
 ```sh
-docker run -d \
-  --name=urfix \
-  --pull=always \
-  --restart=unless-stopped \
-  --cap-add=NET_ADMIN \
-  --cap-add=NET_RAW \
-  --sysctl net.ipv4.ip_forward=1 \
-  -p 443:443 \
-  -p 443:443/udp \
-  -p 4053:4053/udp \
-  -e AUTH=authcode \
-  -e AUTHCODE='YOUR_AUTH_CODE_HERE' \
-  -e HOST_HOSTNAME=$(hostname) \
+docker run -d --name=urfix --pull=always --restart=unless-stopped \
+  --network host --cap-add=NET_ADMIN --cap-add=NET_RAW \
+  -e AUTH=authcode -e AUTHCODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
   -v urnetwork_data:/root/.urnetwork \
   ghcr.io/full-bars/urnetwork-3.23-fix:latest
 ```
 
-No extender variable is needed. To keep the role off in a container, set `-e URNETWORK_EXTENDER=off`.
+**2. Published ports on the default bridge (IPv4 only).** The default Docker bridge has no IPv6, so only IPv4 activates.
 
-Publishing the port is only half of it. The port also has to be open on the host's firewall and forwarded by whatever sits in front of the host. On a home router that means a port forward for 443; a host behind carrier-grade NAT cannot receive it at all.
+```sh
+docker run -d --name=urfix --pull=always --restart=unless-stopped \
+  --cap-add=NET_ADMIN --cap-add=NET_RAW --sysctl net.ipv4.ip_forward=1 \
+  -p 443:443 -p 443:443/udp -p 4053:4053/udp \
+  -e AUTH=authcode -e AUTHCODE='YOUR_AUTH_CODE_HERE' -e HOST_HOSTNAME=$(hostname) \
+  -v urnetwork_data:/root/.urnetwork \
+  ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+**3. Published ports with IPv6 enabled on the bridge.** Turn on IPv6 in Docker's daemon config (`/etc/docker/daemon.json`), restart Docker, and run the same command as in (2). The container gets a private IPv6 address that Docker translates, and the platform could still reach it: both families activated on the first try.
+
+```json
+{
+  "ipv6": true,
+  "fixed-cidr-v6": "fd00:d0c:1::/64",
+  "ip6tables": true,
+  "experimental": true
+}
+```
+
+In every case:
+
+- The auth code is single-use. Keep `/root/.urnetwork` on a persistent volume: after the first start the saved login is used (`-e AUTH=authcode` with no code works), and the volume also keeps the extender identity and listing.
+- No extender variable is needed. To keep the role off in a container, set `-e URNETWORK_EXTENDER=off`.
+- `urnet-tools extender` is not available inside the container. Read the state with `docker logs <container> | grep 🌉` (the `[health][extender]` line repeats every few minutes) and control the role with the environment variable.
+- The port also has to be open on the host's firewall and forwarded by whatever sits in front of the host.
 
 ## Reading the log
 
-Lines carry the `[extender]` tag, and the platform's answers carry a 🌉 mark, so `grep 🌉` finds every activation line and `grep '🌉❌'` every failure. For the other lines see the [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
+Every extender line starts with a 🌉, with a mark for the outcome: ✅ worked, ⛔ the platform refused, ❌ failed, ⚠️ a warning. `grep 🌉` finds all of them and `grep '🌉❌'` every failure. For the full list see the [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
 
-When the role starts, with the setting it follows:
+When the role starts:
 
 ```text
-[extender] started (startup; setting from default). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.
-[extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
-[extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.
+🌉✅ [extender] started (startup; setting from default). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.
+🌉✅ [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
+🌉✅ [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.
+🌉✅ [extender] IPv4 activation try 1 worked in 10.2s
+🌉✅ [extender] IPv4 is now activated on try 1. The platform can reach this host over IPv4.
 ```
 
 When it is off, it says why once at startup and how to turn it back on:
 
 ```text
-[extender] off: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
+🌉 [extender] off: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
 ```
 
-Each activation attempt is logged with its outcome and, when it fails, the platform's reason and when the next try is. The periodic `[health][extender]` line summarises it:
+The periodic `[health][extender]` line summarises everything:
 
 ```text
-❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
+🌉❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
 ```
 
 The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
 
-## What the status does and does not tell you
-
 `serving on tcp` means the process bound the port inside itself. **ACTIVE** means the platform proved the host from the outside and listed it. Neither tells you that a particular client is using it; the live client count and the request totals do.
 
-If the role fails to start for a reason other than a bind, such as an unreadable identity file, the provider logs `[extender] FAILED to start: <reason>` and keeps providing without it, retrying every 15 seconds.
+## When it is not working
+
+| What you see | What it means | What to do |
+|---|---|---|
+| `CANNOT USE tcp 443 … address already in use` | Something else holds TCP 443 (often caddy or nginx). | Stop or move it. The extender retries every 3 minutes by itself. |
+| `CANNOT USE tcp 443 … permission denied` | The provider may not bind below 1024. | `sudo setcap cap_net_bind_service=+ep <provider binary>`, or run as root. |
+| IPv4 ACTIVE, `left out = dns:4053` or `quic:443 … no answer` | Those UDP ports do not answer from outside. | Allow UDP 443 and 4053 in the host firewall and the network in front of it, or ignore: TCP is enough. |
+| `dns 53 unavailable … address already in use; keeping 4053` | Another resolver holds UDP 53. | Nothing to do, 4053 serves. `URNETWORK_EXTENDER_DNS53=off` silences it. |
+| IPv6 `failed … did not answer in time` | No IPv6 route out, or inbound IPv6 blocked. | `ip -6 route show default` and `curl -6 https://api.bringyour.com/hello` on the host. |
+| `the platform says this extender key belongs to ANOTHER network` | The identity file was copied from another box or account. | Stop the provider, delete `~/.urnetwork/.provider.extender.key`, start it again. |
+| A family stays `waiting` | TCP 443 is not bound, the platform asked it to wait, or direct providing is off. | Read the status line; it says which. |
+| `off: direct providing is disabled` | `urnet-tools direct off` is set. | `urnet-tools direct on`. |
+| `FAILED to start: <reason>` | The role failed for a reason other than a port. | The provider keeps providing and retries every 15 seconds; fix the reason shown. |
+
+## FAQ
+
+**Does it earn?** No. It is a public service like a Tor bridge. It does not change what the provider earns.
+
+**Can a proxy be an extender?** No. The platform dials the address it sees; for a proxy that is the proxy's server, where nothing of this provider listens. Only the host the provider runs on can be an extender.
+
+**Can I run more than one on a box?** Only one process can hold TCP 443 on an address, so one extender per address.
+
+**Does restarting cost anything?** Each family asks the platform once more after a restart, spread over the next 30 minutes. That counts toward the platform's 6 per hour per family. A still-valid listing keeps showing ACTIVE meanwhile.

@@ -31,11 +31,14 @@ func newExtenderCmd() *cobra.Command {
 	return &cobra.Command{
 		Use:   "extender [status|about|on|off|enable|disable]",
 		Short: "show, turn on, or turn off the extender role",
-		Long: "The extender helps censored clients reach URnetwork: this host listens on tcp 443, udp 443 and dns 4053, and asks the platform to list it. " +
-			"It is ON by default. 'status' shows whether it is working: which ports are up, what each address family is doing, who it is helping, and what to fix if it is blocked. " +
+		Long: "The extender helps censored clients reach URnetwork: this host accepts their connections on tcp 443 (required), udp 443 and udp 4053 and relays them, and asks the platform to list it. " +
+			"It is ON by default and earns nothing; it is a public service like a Tor bridge. " +
+			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
+			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
+			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
-		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender disable\n  urnet-tools extender enable",
+		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender about\n  urnet-tools extender disable\n  urnet-tools extender enable",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -164,6 +167,31 @@ HOW IT BECOMES ACTIVE
   survives a restart). IPv6 only works if this host has a public IPv6 address.
   After a restart a listing that is still valid shows as active at once, and
   the provider refreshes it within about 30 minutes.
+
+FIREWALL
+  Opening a port in the provider does not open it on the host. If the host has
+  a firewall, allow tcp 443 (required) and optionally udp 443 and udp 4053:
+    ufw:       sudo ufw allow 443/tcp   (and 443/udp, 4053/udp)
+    firewalld: sudo firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp
+               --add-port=4053/udp && sudo firewall-cmd --reload
+    iptables:  sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT   (also udp
+               443 and 4053; ip6tables for IPv6; save the rules to keep them)
+    nftables:  sudo nft add rule inet filter input tcp dport 443 accept
+               (adjust the table and chain names to your ruleset)
+  A router or cloud security group in front of the host needs the same ports.
+  If the log says "left out = dns:4053 ... no answer" or "quic:443 ... no
+  answer", those udp ports did not answer from outside; tcp is enough.
+
+IPV6
+  IPv6 activates separately and needs a public IPv6 address AND a working
+  route out. Check: ip -6 route show default, and curl -6 https://api.bringyour.com/hello
+  A host with an address but no route times out after about a minute.
+
+DOCKER
+  Use --network host (IPv4 and IPv6), or publish -p 443:443 -p 443:443/udp
+  -p 4053:4053/udp (IPv4 only unless Docker's bridge has IPv6 enabled). Keep
+  /root/.urnetwork on a persistent volume. Read the state with
+  docker logs <container> | grep 🌉 and disable with -e URNETWORK_EXTENDER=off.
 
 WHAT IT EXPOSES
   The DNS ports also answer ordinary DNS questions from anyone, resolved

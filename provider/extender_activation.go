@@ -334,6 +334,7 @@ func (r *extenderRole) primeRootKeys(inputs *extenderActivationInputs, limit tim
 	case keySet := <-done:
 		if keySet != nil {
 			directory.SetRootKeys(keySet)
+			importantLogf("🌉✅ [extender] platform root keys loaded (%d): renewals now follow each signed record's lifetime.\n", keySet.Len())
 		}
 	case <-time.After(limit):
 	case <-inputs.ctx.Done():

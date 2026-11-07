@@ -72,7 +72,7 @@ Quick jump:
 
 ### 🌐 Extender Serving Role
 
-> The extender is a work in progress and does not activate yet; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
+> The extender is ON by default and needs no variable. These only tune it. Turn it on or off at runtime with `urnet-tools extender on|off`; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
 
 | Variable | Default | Description |
 | :--- | :--- | :--- |

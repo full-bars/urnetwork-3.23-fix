@@ -698,6 +698,9 @@ The platform lists an extender only after it proves it from the outside: it dial
 🌉 [extender] IPv4 ⛔  IPv4 not activated: 2 tries, 0 worked, 2 failed; next try in 20m at 18:40 UTC; last failure 3m ago: <reason>
 🌉⛔ [extender] IPv4: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. This happens when the identity file .provider.extender.key was copied from another box or account. Fix: stop the provider, delete that file so a new key is made for this network, and start it again.
 🌉 [extender] activation paused: this provider lost its connection to the platform, so it stops asking to be listed for now. It starts asking again by itself as soon as the connection is back.
+🌉✅ [extender] platform root keys loaded (1): renewals now follow each signed record's lifetime.
+🌉⚠️ [extender] could not read the platform's root keys (<error>): renewals use a fixed 12h0m0s interval until they load. Trying again in 1m0s.
+🌉⚠️ [extender] the platform's records will not survive a restart: no state directory: <error>
 🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: <error>
 ```
 
@@ -735,7 +738,7 @@ Lower-level activation lines, useful when a refusal needs explaining:
 
 ```
 🌉❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
-🌉❤️ [health][extender] tcp unavailable | tcp 443 DOWN (address already in use), udp 443 up, dns 4053 up | tcp 443 is down, so this host is NOT listed and gets no clients | IPv4 not active (held until tcp 443 is bound) | IPv6 not active (held until tcp 443 is bound) | clients now 0, requests served 24h 0, 7d 0, lifetime 0
+🌉❤️ [health][extender] tcp unavailable | tcp 443 DOWN (address already in use), udp 443 DOWN, dns 4053 DOWN | tcp 443 is down, so this host is NOT listed and gets no clients | IPv4 not active (held until tcp 443 is bound) | IPv6 not active (held until tcp 443 is bound) | clients now 0, requests served 24h 0, 7d 0, lifetime 0
 🌉❤️ [health][extender] OFF: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on | served 24h 120, 7d 800, lifetime 5000 requests
 🌉⚠️ [extender] the saved request tally /home/user/.urnetwork/extender_tally.json could not be read (<error>); counting from zero. The file will be replaced.
 🌉⚠️ [extender] could not save the request tally to /home/user/.urnetwork/extender_tally.json: <error>
@@ -745,7 +748,7 @@ Lower-level activation lines, useful when a refusal needs explaining:
 - `ACTIVE` means the platform listed this host on that family and the listing has not expired. A listing that expires without being renewed reads `not active (failed): the platform's listing of this host expired at ...`.
 - `held until tcp 443 is bound` means the activation is waiting for the port, not failing.
 - `clients now` is connections open over every carrier at this moment.
-- `requests served` counts requests the extender handled for clients over the last 24 hours, 7 days, and its lifetime, kept across restarts in `~/.urnetwork/extender_tally.json`. It counts relayed forwards and directory feed requests, minus any that were refused. It does **not** count ordinary web requests to port 443 (scanners and browsers are answered like a plain website) or the platform's own verification probes, and it counts requests, not distinct people: the provider does not record who asked. The windows are accurate to the hour.
+- `requests served` counts requests the extender handled over the last 24 hours, 7 days, and its lifetime, kept across restarts in `~/.urnetwork/extender_tally.json`. It counts relayed forwards and directory feed requests, minus any that were refused. It includes the platform's own activation check (one real forward per activation per family), so an idle host reads a few above zero. It does **not** count ordinary web requests to port 443 (scanners and browsers are answered like a plain website) or latency probes.
 
 ---
 
