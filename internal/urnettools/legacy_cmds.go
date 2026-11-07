@@ -528,16 +528,7 @@ func cmdLogs(args []string) error {
 			ramPath = "/dev/shm/urnetwork.log"
 		}
 		fmt.Printf("Streaming from RAM disk (%s, %d lines) — provider %s\n", ramPath, lines, providerLabel(p))
-		if runtime.GOOS == "windows" {
-			return streamLogFile(nil, ramPath, lines, os.Stdout)
-		}
-		if _, err := exec.LookPath("tail"); err != nil {
-			return streamLogFile(nil, ramPath, lines, os.Stdout)
-		}
-		cmd := exec.Command("tail", "-n", strconv.Itoa(lines), "-f", ramPath)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+		return streamLogFile(nil, ramPath, lines, os.Stdout)
 	}
 	// OpenRC: supervise-daemon redirects the provider's stdout/stderr to
 	// service-user-owned files under /var/log, so tailing the FILE is both more robust

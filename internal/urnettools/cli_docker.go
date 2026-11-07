@@ -755,7 +755,7 @@ func cmdDockerRestart(args []string, force, dryRun bool) error {
 
 // cmdDockerLogs tails logs for the targeted container: the last N lines
 // (default 250), then follow. When the container runs with URNETWORK_RAMLOGS
-// this streams /dev/shm/urnetwork.log via `docker exec <name> tail -n N -f`;
+// this streams /dev/shm/urnetwork.log via `docker exec <name> tail -n N -F`;
 // otherwise it falls back to `docker logs --tail N -f`. Multiple provider
 // containers with no target pop the interactive picker.
 func cmdDockerLogs(args []string) error {

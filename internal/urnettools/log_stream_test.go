@@ -3,6 +3,7 @@ package urnettools
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -303,6 +304,85 @@ func TestStreamLogFile_DrainsOldFileBeforeSwitching(t *testing.T) {
 	got := f.out.String()
 	if i, j := strings.Index(got, "tail of old"), strings.Index(got, "head of new"); i < 0 || j < 0 || i > j {
 		t.Fatalf("old file's last line must come before the new file's first: %q", got)
+	}
+}
+
+func numberedLog(first, last int) string {
+	var b strings.Builder
+	for i := first; i <= last; i++ {
+		fmt.Fprintf(&b, "line %04d: unique log entry for follower testing\n", i)
+	}
+	return b.String()
+}
+
+func TestStreamLogFile_TrimKeepsLinesOnce(t *testing.T) {
+	for _, gap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gap=%t", gap), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "log")
+			initial := numberedLog(1, 200)
+			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+				t.Fatal(err)
+			}
+			old, err := os.OpenFile(path, os.O_WRONLY|os.O_APPEND, 0)
+			if err != nil {
+				t.Fatal(err)
+			}
+			defer old.Close()
+			if gap {
+				streamLogFileBeforeSwitch = func() {
+					if _, err := old.WriteString(numberedLog(201, 205)); err != nil {
+						t.Errorf("write old inode: %v", err)
+					}
+				}
+				t.Cleanup(func() { streamLogFileBeforeSwitch = func() {} })
+			}
+			f := startFollower(t, path, 200)
+			f.waitFor("line 0200:")
+			replacement := path + ".new"
+			if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Rename(replacement, path); err != nil {
+				t.Fatal(err)
+			}
+			first := 201
+			if gap {
+				first = 206
+			}
+			appendLine(t, path, numberedLog(first, 250))
+			f.waitFor("line 0250:")
+			f.stop()
+			if got, want := f.out.String(), numberedLog(1, 250); got != want {
+				t.Fatalf("output differs: got %d lines, want %d; duplicate or missing lines", strings.Count(got, "\n"), strings.Count(want, "\n"))
+			}
+		})
+	}
+}
+
+func TestStreamLogFile_UnrelatedReplacementBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	if err := os.WriteFile(path, []byte(numberedLog(1, 200)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f := startFollower(t, path, 200)
+	f.waitFor("line 0200:")
+	replacement := path + ".new"
+	content := strings.Repeat("unrelated content\n", 200000) + "replacement end\n"
+	if err := os.WriteFile(replacement, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	f.waitFor("replacement end\n")
+	elapsed := time.Since(start)
+	f.stop()
+	if elapsed > 3*time.Second {
+		t.Fatalf("switch took %s", elapsed)
+	}
+	if got, want := f.out.String(), numberedLog(1, 200)+content; got != want {
+		t.Fatalf("unrelated replacement was not followed from its start: got %d bytes, want %d", len(got), len(want))
 	}
 }
 

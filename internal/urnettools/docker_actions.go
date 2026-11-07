@@ -69,9 +69,10 @@ func containerLogsFollow(name string, n int) error {
 
 // containerFollowFile tails a file inside a container via docker exec: the
 // last n lines, then follow. Used for the RAMLOG (/dev/shm) when the
-// container runs with URNETWORK_RAMLOGS.
+// container runs with URNETWORK_RAMLOGS. Following by name avoids stalls after
+// a trim, though tail may replay the retained content after a replacement.
 func containerFollowFile(name, path string, n int) error {
-	cmd := exec.Command(dockerCLI(), "exec", name, "tail", "-n", strconv.Itoa(n), "-f", path)
+	cmd := exec.Command(dockerCLI(), "exec", name, "tail", "-n", strconv.Itoa(n), "-F", path)
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	return cmd.Run()
