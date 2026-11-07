@@ -5067,6 +5067,17 @@ type receiveSequenceHeadKey struct {
 	EncryptionCompanion bool
 }
 
+var receiveHeadMismatchThrottle = newLogThrottle(time.Minute)
+
+func logReceiveHeadMismatch(log Logger, throttle *logThrottle, now time.Time, pack *ReceivePack) {
+	if v := log.V(1); v.Enabled() {
+		if allowed, suppressed := throttle.Allow(now); allowed {
+			v.Infof("[r]drop pack with mismatched sequence head %s (%s %s c=%t, %d suppressed)\n",
+				pack.SequenceId, pack.Source, pack.EncryptionRole, pack.EncryptionCompanion, suppressed)
+		}
+	}
+}
+
 type ReceiveBuffer struct {
 	ctx    context.Context
 	client *Client
@@ -5119,7 +5130,13 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 
 	initReceiveSequence := func(skip *ReceiveSequence) *ReceiveSequence {
 		self.mutex.Lock()
-		defer self.mutex.Unlock()
+		mismatch := false
+		defer func() {
+			self.mutex.Unlock()
+			if mismatch {
+				logReceiveHeadMismatch(self.log, receiveHeadMismatchThrottle, time.Now(), receivePack)
+			}
+		}()
 
 		receiveSequence, ok := self.receiveSequences[receiveSequenceId]
 		if ok {
@@ -5131,17 +5148,8 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 				// delete(self.headSequenceIds, headKey)
 			}
 			if headReceiveSequenceId := self.headReceiveSequenceIds[headKey]; headReceiveSequenceId != receiveSequenceId {
-				// The id's live sequence is not this pack's lane head: it opened on
-				// another lane (the lane flags are in the head key, not the id), and a
-				// sender never reuses an id across lanes. Drop the pack rather than
-				// panic the receive loop.
-				if v := self.log.V(1); v.Enabled() {
-					v.Infof(
-						"[r]drop pack of another lane for sequence %s (%s %s c=%t)\n",
-						receivePack.SequenceId, receivePack.Source,
-						receivePack.EncryptionRole, receivePack.EncryptionCompanion,
-					)
-				}
+				// The head index disagrees with the live sequence; drop the pack.
+				mismatch = true
 				MessagePoolReturn(receivePack.TransferFrameBytes)
 				return nil
 			}
@@ -5167,10 +5175,14 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 						v.Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
 					}
 					headReceiveSequence := self.receiveSequences[headReceiveSequenceId]
-					headReceiveSequence.Cancel()
-					// wait for exit to ensure receives are correctly ordered across sequence versions
-					headReceiveSequence.WaitForExit()
-					delete(self.receiveSequences, headReceiveSequenceId)
+					if headReceiveSequence != nil {
+						headReceiveSequence.Cancel()
+						// wait for exit to ensure receives are correctly ordered across sequence versions
+						headReceiveSequence.WaitForExit()
+						delete(self.receiveSequences, headReceiveSequenceId)
+					} else {
+						delete(self.headReceiveSequenceIds, headKey)
+					}
 				}
 			}
 		}

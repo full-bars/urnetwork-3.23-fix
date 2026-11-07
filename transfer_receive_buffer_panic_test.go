@@ -1,11 +1,11 @@
 package connect
 
-// Regression tests for two panics in ReceiveBuffer.Pack that a peer's packs could
-// reach. Pack runs on the client's receive loop, which runs under HandleError with
-// the client's cancel, so a panic there stops the whole client for every peer.
+// Regression tests inject inconsistent receive-buffer indexes directly.
+// Pack runs on the client's receive loop, so a panic can stop the client.
 
 import (
 	"context"
+	"runtime"
 	"testing"
 	"time"
 
@@ -42,6 +42,45 @@ func newPackPanicFixture(t *testing.T) (*ReceiveBuffer, *ReceivePack, receiveSeq
 	return buffer, receivePack, id, headKey, ctx
 }
 
+// Keep one reference to detect both a missing return and an extra return.
+func trackPackOwnership(pack *ReceivePack) []byte {
+	pack.TransferFrameBytes = MessagePoolGet(128)
+	return MessagePoolShareReadOnly(pack.TransferFrameBytes)
+}
+
+func assertPackOwnershipReleased(t *testing.T, retained []byte) {
+	t.Helper()
+	if !MessagePoolReturn(retained) {
+		t.Fatal("pack ownership was not returned exactly once")
+	}
+}
+
+func finishInstalledSequence(t *testing.T, buffer *ReceiveBuffer, id receiveSequenceId, headKey receiveSequenceHeadKey) {
+	t.Helper()
+	buffer.mutex.Lock()
+	sequence := buffer.receiveSequences[id]
+	if sequence == nil || buffer.headReceiveSequenceIds[headKey] != id {
+		buffer.mutex.Unlock()
+		t.Fatal("replacement sequence was not installed as head")
+	}
+	buffer.mutex.Unlock()
+	sequence.Cancel()
+	sequence.WaitForExit()
+	deadline := time.Now().Add(10 * time.Second)
+	for {
+		buffer.mutex.Lock()
+		finished := buffer.receiveSequences[id] != sequence
+		buffer.mutex.Unlock()
+		if finished {
+			return
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("sequence cleanup did not finish")
+		}
+		runtime.Gosched()
+	}
+}
+
 // The head index names this pack's own sequence id but no live sequence has it: a
 // stale index. It used to panic ("upgrade older sequence = "); it must heal the
 // index and carry on.
@@ -51,21 +90,13 @@ func TestReceiveBufferPackHealsAStaleHeadIndex(t *testing.T) {
 	buffer.headReceiveSequenceIds[headKey] = id
 	buffer.mutex.Unlock()
 
-	done := make(chan struct{})
-	var panicked interface{}
-	go func() {
-		defer close(done)
-		defer func() { panicked = recover() }()
-		buffer.Pack(receivePack, 50*time.Millisecond)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Pack did not return")
+	retained := trackPackOwnership(receivePack)
+	success, err := buffer.Pack(receivePack, time.Second)
+	if !success || err != nil {
+		t.Fatalf("Pack: success=%v err=%v", success, err)
 	}
-	if panicked != nil {
-		t.Fatalf("Pack panicked on a stale head index: %v", panicked)
-	}
+	finishInstalledSequence(t, buffer, id, headKey)
+	assertPackOwnershipReleased(t, retained)
 }
 
 // A live sequence exists under this pack's id, but the lane head names another id.
@@ -95,21 +126,23 @@ func TestReceiveBufferPackDropsAPackWhoseHeadIsAnotherLane(t *testing.T) {
 	}
 	buffer.mutex.Unlock()
 
-	done := make(chan struct{})
-	var panicked interface{}
-	go func() {
-		defer close(done)
-		defer func() { panicked = recover() }()
-		buffer.Pack(receivePack, 50*time.Millisecond)
-	}()
-	select {
-	case <-done:
-	case <-time.After(10 * time.Second):
-		t.Fatal("Pack did not return")
+	retained := trackPackOwnership(receivePack)
+	logger := &lockCheckingLogger{buffer: buffer}
+	buffer.log = logger
+	success, err := buffer.Pack(receivePack, time.Second)
+	if !success || err != nil {
+		t.Fatalf("Pack: success=%v err=%v", success, err)
 	}
-	if panicked != nil {
-		t.Fatalf("Pack panicked on a pack whose lane head is another sequence: %v", panicked)
+	if !logger.unlocked {
+		t.Fatal("mismatch diagnostic did not run outside the buffer lock")
 	}
+	buffer.mutex.Lock()
+	if buffer.receiveSequences[id] != sequence || buffer.headReceiveSequenceIds[headKey] == id {
+		buffer.mutex.Unlock()
+		t.Fatal("drop changed the existing sequence or head")
+	}
+	buffer.mutex.Unlock()
+	assertPackOwnershipReleased(t, retained)
 }
 
 // A sealed frame with no path used to dereference nil in TransferPathFromProtobuf and
