@@ -138,7 +138,15 @@ func (m *extenderManager) Reading() extenderControlReading {
 		}
 	}
 	for _, ipVersion := range []int{4, 6} {
-		reading.Families = append(reading.Families, extenderFamilyReadingOf(ipVersion, families[ipVersion], activator != nil, tcpUp))
+		family := families[ipVersion]
+		if family == nil {
+			// With no per-family api host (an IP-literal or single-label api
+			// url) the activator posts once a cycle to the plain url and tracks
+			// the outcome under family 0, until an answer names a family. That
+			// one post covers both rows, so show its outcome on both.
+			family = families[0]
+		}
+		reading.Families = append(reading.Families, extenderFamilyReadingOf(ipVersion, family, activator != nil, tcpUp))
 	}
 	return reading
 }

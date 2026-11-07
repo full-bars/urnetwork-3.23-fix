@@ -2,6 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"path/filepath"
 	"strings"
 	"sync"
@@ -261,4 +265,112 @@ func TestExtenderManagerAnnouncesOffAtStartupOnce(t *testing.T) {
 	if len(lines) != 1 || !strings.Contains(lines[0], "off:") || !strings.Contains(lines[0], "urnet-tools extender on") {
 		t.Fatalf("want one off line naming how to turn it on, got %q", lines)
 	}
+}
+
+// The real role and the real activation loop against a fake platform: the token
+// posted is the live one, a renewed token reaches the next post, a refusal is
+// shown with its reason and a next-try time, and the post offers the carriers
+// that are actually bound.
+func TestExtenderActivationAgainstAFakePlatform(t *testing.T) {
+	withTempHome(t)
+
+	var mu sync.Mutex
+	var auths []string
+	var bodies []string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/hello":
+			fmt.Fprint(w, `{"client_address":"203.0.113.9:4321"}`)
+		case "/network/extender-activate":
+			body, _ := io.ReadAll(r.Body)
+			mu.Lock()
+			auths = append(auths, r.Header.Get("Authorization"))
+			bodies = append(bodies, string(body))
+			mu.Unlock()
+			fmt.Fprint(w, `{"activated":false,"error":"the tcp carrier did not answer the challenge"}`)
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	config := testExtenderRoleConfig(t)
+	config.configureActivator = func(s *connect.ExtenderActivatorSettings) {
+		s.IpVersionSupported = func(ipVersion int) bool { return ipVersion == 4 }
+		s.MinBackoff = 50 * time.Millisecond
+		s.MaxBackoff = 100 * time.Millisecond
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	role, err := startExtenderRole(ctx, config)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer closeExtenderRole(t, role)
+	waitExtenderRoleReady(t, role)
+
+	m := newExtenderManager()
+	m.ctx = ctx
+	m.role = role
+
+	jwt := newJwtHolder("jwt-first")
+	role.StartActivation(&extenderActivationInputs{
+		ctx:            ctx,
+		apiUrl:         server.URL,
+		byJwt:          jwt.Get,
+		clientStrategy: newExtenderActivationStrategy(ctx),
+	})
+
+	// the refusal reaches the status with its reason
+	deadline := time.Now().Add(20 * time.Second)
+	var family extenderFamilyReading
+	for time.Now().Before(deadline) {
+		for _, f := range m.Reading().Families {
+			if f.IpVersion == 4 && f.State == extenderFamilyRefused {
+				family = f
+			}
+		}
+		if family.State != "" {
+			break
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	if family.State != extenderFamilyRefused {
+		t.Fatalf("IPv4 never showed the platform's refusal: %+v", m.Reading().Families)
+	}
+	if !strings.Contains(family.Detail, "tcp carrier did not answer") {
+		t.Errorf("the refusal's reason is missing: %q", family.Detail)
+	}
+	if family.NextAttemptUnixMs == 0 {
+		t.Error("a refused family must say when it tries next")
+	}
+
+	// the first post carried the first token and the carriers that are bound
+	mu.Lock()
+	firstAuth, firstBody := auths[0], bodies[0]
+	mu.Unlock()
+	if firstAuth != "Bearer jwt-first" {
+		t.Errorf("first post authorization = %q, want the live token", firstAuth)
+	}
+	for _, want := range []string{`"tcp"`, `"quic"`, `"dns"`} {
+		if !strings.Contains(firstBody, want) {
+			t.Errorf("the post did not offer %s: %s", want, firstBody)
+		}
+	}
+
+	// a renewed token reaches the next post
+	jwt.Set("jwt-renewed")
+	role.currentActivator().Reactivate()
+	for time.Now().Before(deadline) {
+		mu.Lock()
+		last := auths[len(auths)-1]
+		mu.Unlock()
+		if last == "Bearer jwt-renewed" {
+			return
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	t.Fatalf("no post carried the renewed token; authorizations seen: %q", auths)
 }

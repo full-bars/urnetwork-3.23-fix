@@ -116,6 +116,10 @@ type extenderRoleConfig struct {
 	// request, which is the server's default and upstream's network-space
 	// behaviour; an open provider names its hosts here.
 	allowedHosts []string
+	// configureActivator, when set, adjusts the activation settings before the
+	// loop starts. Tests use it to pin the address families and shorten the
+	// backoff; production leaves it nil.
+	configureActivator func(*connect.ExtenderActivatorSettings)
 }
 
 // extenderAllowedHostsFromEnv reads the comma-separated forward allow list.

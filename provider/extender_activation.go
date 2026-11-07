@@ -184,6 +184,9 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 				extenderFamilyLabel(ipVersion), extenderKeyFileName)
 		}
 	}
+	if r.config.configureActivator != nil {
+		r.config.configureActivator(settings)
+	}
 	return settings
 }
 
