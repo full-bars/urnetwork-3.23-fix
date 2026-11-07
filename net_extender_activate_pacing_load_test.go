@@ -28,11 +28,11 @@ func newTestPacingLoadActivator(
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	self := &ExtenderActivator{
-		ctx:           ctx,
-		cancel:        cancel,
-		log:           loggerOrDefault(nil),
-		settings:      settings,
-		changeMonitor: NewMonitorValue[uint64](0),
+		ctx:                    ctx,
+		cancel:                 cancel,
+		log:                    loggerOrDefault(nil),
+		settings:               settings,
+		changeMonitor:          NewMonitorValue[uint64](0),
 		families:               map[int]*ExtenderFamilyActivationStatus{4: {IpVersion: 4}},
 		schedules:              map[int]*extenderActivateSchedule{4: {backoff: settings.MinBackoff}},
 		pacing:                 map[int]ExtenderActivationPacing{},
