@@ -149,7 +149,6 @@ func TestExtenderChangeWithAnUnansweringProviderStillFails(t *testing.T) {
 	}
 }
 
-
 func TestExtenderAboutPrintsWithoutAProvider(t *testing.T) {
 	for _, word := range []string{"about", "help", "explain"} {
 		out := captureStdout(t, func() {
