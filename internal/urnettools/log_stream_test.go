@@ -315,6 +315,24 @@ func numberedLog(first, last int) string {
 	return b.String()
 }
 
+func TestResumeLogOffset_RepeatedAnchorKeepsNewWarning(t *testing.T) {
+	anchor := strings.Repeat("a", 1023) + "\n"
+	history := "unique old context\n" + anchor
+	content := history + "warning: new output\n" + anchor + "after\n"
+	path := filepath.Join(t.TempDir(), "replacement")
+	if err := os.WriteFile(path, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer f.Close()
+	if got, want := resumeLogOffset(f, []byte(history)), int64(len(history)); got != want {
+		t.Fatalf("offset %d, want %d; warning would be lost", got, want)
+	}
+}
+
 func TestStreamLogFile_TrimKeepsLinesOnce(t *testing.T) {
 	for _, gap := range []bool{false, true} {
 		t.Run(fmt.Sprintf("gap=%t", gap), func(t *testing.T) {

@@ -189,9 +189,7 @@ func resumeLogOffset(f *os.File, history []byte) int64 {
 		if start < 0 {
 			start = 0
 		}
-		anchor := history[start:end]
-		if i := bytes.LastIndex(content, anchor); i >= 0 {
-			pos := i + len(anchor)
+		if pos := longestHistoryOverlap(content, history[:end], end-start); pos >= 0 {
 			if candidates == 0 && len(fragment) > 0 && bytes.HasPrefix(content[pos:], fragment) {
 				pos += len(fragment)
 			}
@@ -200,6 +198,41 @@ func resumeLogOffset(f *os.File, history []byte) int64 {
 		end = bytes.LastIndexByte(history[:end-1], '\n') + 1
 	}
 	return 0
+}
+
+// longestHistoryOverlap selects the strongest suffix match, preferring the
+// earliest end when matches are indistinguishable so new output is not skipped.
+func longestHistoryOverlap(content, history []byte, minimum int) int {
+	pattern := make([]byte, len(history))
+	for i := range history {
+		pattern[i] = history[len(history)-1-i]
+	}
+	prefix := make([]int, len(pattern))
+	for i, j := 1, 0; i < len(pattern); i++ {
+		for j > 0 && pattern[i] != pattern[j] {
+			j = prefix[j-1]
+		}
+		if pattern[i] == pattern[j] {
+			j++
+		}
+		prefix[i] = j
+	}
+	bestLength, bestEnd, matched := 0, -1, 0
+	for i := len(content) - 1; i >= 0; i-- {
+		for matched > 0 && content[i] != pattern[matched] {
+			matched = prefix[matched-1]
+		}
+		if content[i] == pattern[matched] {
+			matched++
+		}
+		if matched >= minimum && (matched > bestLength || matched == bestLength && i+matched < bestEnd) {
+			bestLength, bestEnd = matched, i+matched
+		}
+		if matched == len(pattern) {
+			matched = prefix[matched-1]
+		}
+	}
+	return bestEnd
 }
 
 // printTailLines writes the last n lines of f to out exactly as they are in the
