@@ -148,3 +148,19 @@ func TestExtenderChangeWithAnUnansweringProviderStillFails(t *testing.T) {
 		t.Fatal("an unanswering provider must still return an error")
 	}
 }
+
+
+func TestExtenderAboutPrintsWithoutAProvider(t *testing.T) {
+	for _, word := range []string{"about", "help", "explain"} {
+		out := captureStdout(t, func() {
+			if err := cmdExtender([]string{word}, false); err != nil {
+				t.Fatalf("%s: %v", word, err)
+			}
+		})
+		for _, want := range []string{"tcp 443", "udp 4053", "udp 53", "extender off"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("%s output is missing %q", word, want)
+			}
+		}
+	}
+}

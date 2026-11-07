@@ -19,6 +19,7 @@ A family reads **ACTIVE** when the platform has listed this host on that address
 ```sh
 urnet-tools extender disable    # off, and it stays off across restarts
 urnet-tools extender enable     # back on
+urnet-tools extender about      # plain-language explanation of the ports and how it works (works with the provider stopped)
 ```
 
 `on` and `off` work too. Both apply to the running provider at once, with no restart and no unit file or drop-in. The setting is stored by the provider's control socket, so it survives restarts and updates.
