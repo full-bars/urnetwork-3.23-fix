@@ -440,3 +440,31 @@ func TestExtenderActivatorLoadKeepsAFamilyWhoseRecordWasSuperseded(t *testing.T)
 		t.Fatalf("expiry = %s, expected the directory's newer %s", got, newer)
 	}
 }
+
+// A newer record keeps the family only when it positively lists the stored address.
+func TestExtenderActivatorLoadClearsAFamilyWhenTheNewerRecordDoesNotListItsAddress(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	stored := f.now.Add(25 * time.Hour)
+	f.plant(t, stored.Add(10*time.Second), "198.51.100.99")
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(f.activatedPacing(stored)), nil)
+	if self.families[4].Activated || self.pacing[4].State != ExtenderPacingUnactivated {
+		t.Fatalf("family = %+v, pacing = %+v, expected the family to be cleared", self.families[4], self.pacing[4])
+	}
+}
+
+// The restart spread never runs past half of what is left of the record.
+func TestExtenderActivatorLoadBoundsTheRestartSpreadByTheRecordLifetime(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	// 20 minutes left, spread 1 hour: the draw is bounded to 10 minutes
+	expire := f.now.Add(20 * time.Minute)
+	f.plant(t, expire, testActivateIpv4)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.settings.ReplacedPostJitter = time.Hour
+	self.settings.postJitterForTest = func(maxJitter time.Duration) time.Duration { return maxJitter }
+	self.applyPacing(f.record(f.activatedPacing(expire)), nil)
+	next := self.schedules[4].nextActivateTime
+	if wait := next.Sub(f.now); wait < 0 || 10*time.Minute <= wait {
+		t.Fatalf("next post in %s, expected under 10m (half of the 20m left)", wait)
+	}
+}

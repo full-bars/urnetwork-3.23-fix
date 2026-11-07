@@ -201,7 +201,14 @@ func (self *ExtenderActivator) applyPacing(record *ExtenderActivationPacingRecor
 		holding := pacing.Hold && pacing.NextAllowedAttemptAt.After(now)
 		switch {
 		case !holding && valid && !replaced:
-			postTime := now.Add(uniformJitter(self.settings.ReplacedPostJitter, self.settings.postJitterForTest))
+			// The spread never runs past half of what is left of the record: a restart
+			// shortly before expiry must not draw a delay longer than the listing has
+			// (a record already due posts at once).
+			spread := self.settings.ReplacedPostJitter
+			if half := pacing.RecordExpireTime.Sub(now) / 2; half < spread {
+				spread = half
+			}
+			postTime := now.Add(uniformJitter(spread, self.settings.postJitterForTest))
 			// the renewal is sooner than the spread says: it is the post
 			if pacing.NextAllowedAttemptAt.After(now) && pacing.NextAllowedAttemptAt.Before(postTime) {
 				postTime = pacing.NextAllowedAttemptAt
@@ -258,6 +265,10 @@ func (self *ExtenderActivator) verifyPacing(pacing ExtenderActivationPacing, now
 		reason = "the directory's record does not list the stored address"
 	case expire.UnixMilli() == pacing.RecordExpireTime.UnixMilli():
 		// the record this family was kept for
+	case expire.After(pacing.RecordExpireTime) && !(pacing.Ip.IsValid() && slices.Contains(ips, pacing.Ip)):
+		// a newer record only keeps this family when it positively lists the stored
+		// address: a record with no usable addresses says nothing about this family
+		reason = "the directory's newer record does not list the stored address"
 	case expire.After(pacing.RecordExpireTime):
 		// The directory keeps one record per key, the newest. A host with both
 		// families posts twice, so the family that posted first sees a LATER record
