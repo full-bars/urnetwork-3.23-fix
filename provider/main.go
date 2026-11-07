@@ -4539,6 +4539,7 @@ func provide(opts docopt.Opts) {
 	// address its carriers answer on). A failed start (a corrupt identity file,
 	// say) disables the role and never the provider, and every state change is
 	// announced in the log with its reason.
+	globalExtenderManager.SetApiUrl(apiUrl)
 	globalExtenderManager.Start(ctx, &wg)
 	// Published to the reloader below so a `direct off` before any reload
 	// has hot-toggled direct doesn't skip the bounded wait for this startup

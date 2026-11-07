@@ -31,6 +31,10 @@ type extenderManager struct {
 	role   *extenderRole
 	inputs *extenderActivationInputs
 
+	// the platform api url, which names the platform's own hosts the extender
+	// must forward to for the platform to prove it (extender_hosts.go)
+	apiUrl string
+
 	// the last reason the role is not running, so a periodic check does not
 	// repeat a line that has not changed
 	lastOffLine string
@@ -58,6 +62,13 @@ func newExtenderManager() *extenderManager {
 // providing is enabled, which `provider direct on|off` changes without telling
 // the manager.
 const extenderManagerPollInterval = 15 * time.Second
+
+// SetApiUrl tells the manager which platform it serves. Call it before Start.
+func (m *extenderManager) SetApiUrl(apiUrl string) {
+	m.mu.Lock()
+	m.apiUrl = apiUrl
+	m.mu.Unlock()
+}
 
 // Start binds the manager to the process and starts the role if it should run.
 // It returns at once; the role binds its ports asynchronously. The role is
@@ -138,7 +149,11 @@ func (m *extenderManager) notRunningReason(on bool, source string, direct bool) 
 
 func (m *extenderManager) startLocked(why string, source string) {
 	importantLogf("[extender] starting (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
-	role, err := m.startRole(m.ctx, m.newConfig())
+	config := m.newConfig()
+	// the platform's own hosts are always allowed, with any the operator added
+	// on top: its activation probe forwards to its api host through this role
+	config.allowedHosts = mergeExtenderHosts(extenderPlatformAllowedHosts(m.apiUrl), config.allowedHosts)
+	role, err := m.startRole(m.ctx, config)
 	if err != nil {
 		m.offReason = "the role could not start: " + err.Error()
 		line := "[extender] FAILED to start: " + err.Error() + ". The extender is not running. It will be retried in " + extenderManagerPollInterval.String() + "."
