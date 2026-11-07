@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/tls"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -660,6 +661,55 @@ func TestExtenderManagerCancelledReplacementKeepsThePreviousSlot(t *testing.T) {
 	role.mu.Unlock()
 	if running != a || tracked != a {
 		t.Fatalf("slot A is live and should own the loop (running %p, tracked %p, A %p)", running, tracked, a)
+	}
+}
+
+func TestExtenderManagerReplacementCancelledDuringRootKeyLoad(t *testing.T) {
+	withTempHome(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	entered := make(chan struct{})
+	m := newExtenderManager()
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.newConfig = func() extenderRoleConfig {
+		config := testExtenderRoleConfig(t)
+		config.fetchHello = func(ctx context.Context, inputs *extenderActivationInputs) ([]byte, error) {
+			if inputs.apiUrl == "http://replacement.invalid" {
+				close(entered)
+				<-ctx.Done()
+			}
+			return nil, errors.New("unavailable")
+		}
+		return config
+	}
+	m.ctx = ctx
+	m.Reconcile("test")
+	role := m.Role()
+	if role == nil {
+		t.Fatal("role did not start")
+	}
+	defer m.stop("test over")
+	waitExtenderRoleReady(t, role)
+	newInputs := func(url string) (*extenderActivationInputs, context.CancelFunc) {
+		slotCtx, end := context.WithCancel(ctx)
+		return &extenderActivationInputs{ctx: slotCtx, apiUrl: url, byJwt: newJwtHolder("jwt").Get, clientStrategy: newExtenderActivationStrategy(slotCtx)}, end
+	}
+	a, endA := newInputs("http://127.0.0.1:1")
+	defer endA()
+	b, endB := newInputs("http://replacement.invalid")
+	defer endB()
+	m.AttachActivation(a)
+	done := make(chan struct{})
+	go func() { m.AttachActivation(b); close(done) }()
+	<-entered
+	endB()
+	<-done
+	m.mu.Lock()
+	tracked := m.inputs
+	m.mu.Unlock()
+	if tracked != a || !role.activationOwnedBy(a) {
+		t.Fatal("cancelled replacement displaced the live slot's activation")
 	}
 }
 

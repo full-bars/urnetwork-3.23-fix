@@ -443,6 +443,14 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 		r.mu.Unlock()
 		return
 	}
+	r.mu.Unlock()
+
+	// Keep the old loop alive while a replacement waits for the platform.
+	r.primeRootKeys(inputs, extenderRootKeysPrimeTimeout)
+	if inputs.ctx.Err() != nil {
+		return
+	}
+	r.mu.Lock()
 	previous := r.activator
 	r.activator = nil
 	r.activatorInputs = nil
@@ -452,10 +460,6 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 		previous.Close()
 	}
 
-	r.primeRootKeys(inputs, extenderRootKeysPrimeTimeout)
-	if inputs.ctx.Err() != nil {
-		return
-	}
 	activator := connect.NewExtenderActivator(r.ctx, r.activatorSettings(inputs))
 
 	r.mu.Lock()
