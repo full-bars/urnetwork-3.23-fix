@@ -149,9 +149,9 @@ PORTS
   udp 53    optional. A second DNS port, tried automatically. If another
             resolver already holds it, the extender logs one warning and
             keeps using 4053. URNETWORK_EXTENDER_DNS53=off skips it.
-  Without tcp 443 the other ports still open, but the platform never lists
-  this host, so no clients are ever sent to them. They do nothing useful
-  until tcp 443 is free.
+  Without tcp 443 the extender opens none of the other ports: the platform
+  would never list this host, so nothing could use them. It retries tcp 443
+  every few minutes and opens the rest once it gets it.
 
 HOW IT BECOMES ACTIVE
   The provider asks the platform to list this host, once for IPv4 and once

@@ -45,10 +45,10 @@ The role also keeps `~/.urnetwork/extender_pacing.json` (when each address famil
 - UDP 4053 carries the DNS carrier. Optional. It also answers ordinary DNS queries from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a rate-limited resolver (that is part of its camouflage). It is not limited to the platform's hosts: the allow list below governs forwards, not this. Firewall UDP 4053 like any resolver you expose if you do not want that.
 - UDP 53 is a second DNS port, tried by default like the miner does. It needs the same privilege as 443 and often collides with a resolver already on the host. If it cannot be bound the role logs one warning and keeps serving 4053. Set `URNETWORK_EXTENDER_DNS53=off` to skip it. It answers ordinary DNS queries like 4053 does, so the exposure note above applies, and port 53 is probed by scanners far more than 4053.
 
-A port that cannot be bound never stops the provider. If TCP 443 is taken or needs a privilege the process does not have, the role serves the UDP carriers and tries TCP 443 again no faster than every three minutes. It says so plainly, naming what holds the port when the host will tell it:
+A port that cannot be bound never stops the provider. If TCP 443 is taken or needs a privilege the process does not have, the role keeps every other port closed and tries TCP 443 again no faster than every three minutes. It says so plainly, naming what holds the port when the host will tell it:
 
 ```text
-[extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, even though udp 443 and dns 4053 can still listen. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
+[extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
 ```
 
 A reminder repeats every 30 minutes while the port stays blocked, and when it comes free the role asks the platform to list the host within a few minutes.
@@ -98,7 +98,7 @@ Lines carry the `[extender]` tag, and the platform's answers carry a 🌉 mark, 
 When the role starts, with the setting it follows:
 
 ```text
-[extender] started (startup; setting from default). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.
+[extender] started (startup; setting from default). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.
 [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
 [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.
 ```

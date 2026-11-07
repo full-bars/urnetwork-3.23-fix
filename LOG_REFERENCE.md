@@ -646,7 +646,7 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 ### Start, stop and the setting
 
 ```
-🌉✅ [extender] started (startup; setting from default). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.
+🌉✅ [extender] started (startup; setting from default). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.
 🌉 [extender] off: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
 🌉 [extender] off: direct providing is disabled, and the extender only runs on the direct slot. Turn direct back on with: provider direct on
 🌉 [extender] stopping: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
@@ -670,7 +670,7 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 🌉✅ [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
 🌉✅ [extender] serving on tcp, quic and dns
 🌉❌ [extender] tcp_unavailable — listening
-🌉❌ [extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, even though udp 443 and dns 4053 can still listen. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
+🌉❌ [extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
 🌉❌ [extender] STILL BLOCKED: tcp 443 is unavailable (held by caddy (pid 894)) after 6 retries (listen tcp :443: bind: address already in use). This host is not listed and gets no clients until it is freed. Next attempt at 18:12.
 🌉✅ [extender] tcp 443 is bound again: asking the platform to list this host now.
 🌉⚠️ [extender] dns 53 unavailable: <error>; keeping 4053
@@ -678,7 +678,7 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 🌉 [extender] created identity key /home/user/.urnetwork/.provider.extender.key (0600)
 ```
 
-- TCP 443 is the one port the platform requires. With it down the role still serves udp 443 and dns 4053, but the host is **not listed** and gets no clients, and the activation waits (it does not fail). `CANNOT USE tcp 443` says so in full the first time, names what holds the port when the host will tell it (`ss`; a process owned by another user may show no name), and gives the next retry time. `STILL BLOCKED` repeats at most every 30 minutes with the retry count. When the port comes free, `tcp 443 is bound again` follows, and the platform is asked within a few minutes.
+- TCP 443 is the one port the platform requires. With it down the role opens no other port (as upstream does: nothing else could be used, since the host is **not listed** and gets no clients), and the activation waits (it does not fail). `CANNOT USE tcp 443` says so in full the first time, names what holds the port when the host will tell it (`ss`; a process owned by another user may show no name), and gives the next retry time. `STILL BLOCKED` repeats at most every 30 minutes with the retry count. When the port comes free, `tcp 443 is bound again` follows, and the platform is asked within a few minutes.
 - A permission error on 443 adds the fix to the line: give the binary `cap_net_bind_service` (`sudo setcap cap_net_bind_service=+ep <binary>`) or run as root. The installer and `urnet-tools update` apply it.
 - `forwards allowed for N hosts` counts the allow list: the platform's own hosts (always) plus any in `URNETWORK_EXTENDER_ALLOWED_HOSTS`. The platform's proof forwards a request to its own API through the extender, so an empty list could never be listed. `🌉⚠️ no forward hosts configured` only appears if the provider's API address could not be read.
 - State lines after the first are logged only when something changes, as `<state> — <note>`. `tcp_unavailable`, `unavailable` and `error` carry `🌉❌`.

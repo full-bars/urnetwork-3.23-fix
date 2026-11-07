@@ -56,7 +56,7 @@ const (
 
 // Extender role states, as published on the status line and in the
 // urnet_extender_state metric. "serving" means every configured carrier is
-// listening, "tcp_unavailable" means the udp carriers serve while tcp 443 is
+// listening, "tcp_unavailable" means tcp 443 cannot be bound, so nothing is open and it is
 // being retried, and "unavailable" means no carrier bound.
 const (
 	extenderStateOff            = "off"
@@ -232,8 +232,10 @@ type extenderRole struct {
 	// drop when a server leaves r.servers
 	baseServiceCounts map[string]uint64
 	baseServedCounts  map[string]uint64
+	// tcpTried is set once tcp 443 has been attempted, so later failed attempts count as retries
+	tcpTried bool
 	// servers taken out of r.servers by shutdown whose counters are not yet folded
-	closing []*extender.ExtenderServer
+	closing           []*extender.ExtenderServer
 	baseRefusalCounts map[string]uint64
 	tcpRetries        int64
 
@@ -440,10 +442,11 @@ func (r *extenderRole) run() {
 }
 
 // startPrimary constructs and starts the server that owns every carrier. It
-// tries tcp 443 first, by binding it here and handing the open listener to
-// the core through its Listen seam, so the operator-visible result of the
-// gating carrier is known before the udp carriers are attempted. A tcp
-// failure starts the udp-only server instead and does not fail the role.
+// binds tcp 443 first, the one port the platform requires (as upstream does),
+// and hands the open listener to the core through its Listen seam. While that
+// bind fails nothing else is bound: the host cannot be listed, so a udp or dns
+// port would only be exposed for no client. It returns no server then, and the
+// run loop tries again after the retry interval.
 func (r *extenderRole) startPrimary() (*extender.ExtenderServer, chan error, error) {
 	held, tcpErr := r.config.listen("tcp", fmt.Sprintf(":%d", connect.ExtenderTcpPort))
 	if tcpErr != nil {
@@ -451,8 +454,26 @@ func (r *extenderRole) startPrimary() (*extender.ExtenderServer, chan error, err
 			held.Close()
 		}
 		r.recordListenError(connect.ExtenderCarrierTcp, tcpErr)
-		held = nil
+		r.mu.Lock()
+		retried := r.tcpTried
+		r.tcpTried = true
+		if retried {
+			r.tcpRetries += 1
+		}
+		r.carriers = map[string]bool{}
+		r.dnsPorts = nil
+		if r.state != extenderStateError {
+			r.state = extenderStateTcpUnavailable
+		}
+		r.mu.Unlock()
+		if retried {
+			r.remindTcpStillHeld(tcpErr)
+		}
+		return nil, nil, nil
 	}
+	r.mu.Lock()
+	r.tcpTried = true
+	r.mu.Unlock()
 	ports := r.ports(held != nil)
 	if len(ports) == 0 {
 		return nil, nil, fmt.Errorf("no extender carrier is configured")
@@ -660,9 +681,9 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 		}
 		importantLogf("🌉❌ [extender] CANNOT USE tcp 443: %v.%s%s "+
 			"The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed "+
-			"and no clients will be sent to it, even though udp 443 and dns %d can still listen. "+
+			"and no clients will be sent to it, so every other extender port stays closed until tcp 443 can be bound. "+
 			"Free the port (stop or move whatever holds it). The bind is retried every %s; next attempt at %s.\n",
-			err, who, hint, connect.ExtenderDnsPort, r.config.retryInterval, clockLabel(time.Now().Add(r.config.retryInterval)))
+			err, who, hint, r.config.retryInterval, clockLabel(time.Now().Add(r.config.retryInterval)))
 		r.mu.Lock()
 		r.lastTcpReminder = time.Now()
 		r.mu.Unlock()
@@ -742,7 +763,11 @@ func (r *extenderRole) refreshLocked() {
 	switch {
 	case len(r.servers) == 0 || len(carriers) == 0:
 		if r.state != extenderStateError {
-			r.state = extenderStateUnavailable
+			if listenErrors[connect.ExtenderCarrierTcp] != "" {
+				r.state = extenderStateTcpUnavailable
+			} else {
+				r.state = extenderStateUnavailable
+			}
 		}
 	case !carriers[connect.ExtenderCarrierTcp]:
 		r.state = extenderStateTcpUnavailable

@@ -174,7 +174,7 @@ func (m *extenderManager) startLocked(why string, source string) {
 	m.role = role
 	m.offReason = ""
 	m.lastOffLine = ""
-	importantLogf("🌉✅ [extender] started (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
+	importantLogf("🌉✅ [extender] started (%s; setting from %s). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
 	// the new role's counters start from zero
 	m.tallyRef().Rebase()
 	if m.inputs != nil {
