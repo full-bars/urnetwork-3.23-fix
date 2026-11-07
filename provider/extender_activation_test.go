@@ -727,3 +727,12 @@ func TestExtenderManagerDoesNotTrackAnEndedSlot(t *testing.T) {
 		t.Fatal("the manager tracks inputs of a slot that had already ended")
 	}
 }
+
+func TestExtenderActivatorSettingsSpreadTheRestartPostOverThirtyMinutes(t *testing.T) {
+	withTempHome(t)
+	r := &extenderRole{}
+	settings := r.activatorSettings(&extenderActivationInputs{apiUrl: "http://127.0.0.1:1"})
+	if settings.ReplacedPostJitter != 30*time.Minute {
+		t.Fatalf("restart post spread is %s, want 30m", settings.ReplacedPostJitter)
+	}
+}

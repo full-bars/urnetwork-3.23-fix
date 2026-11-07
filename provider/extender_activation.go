@@ -171,6 +171,9 @@ func (quietVerbose) Infof(string, ...any) {}
 // Carriers and DnsPorts are closures over the role, read under its lock at
 // every pass, because there can be two servers (the primary and a tcp retry)
 // and the set changes while the loop runs.
+// extenderRestartPostSpread is the window a restarted extender spreads its refresh post over.
+const extenderRestartPostSpread = 30 * time.Minute
+
 func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *connect.ExtenderActivatorSettings {
 	settings := connect.DefaultExtenderActivatorSettings()
 	settings.Log = extenderActivatorLogger{}
@@ -183,6 +186,12 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 	settings.PublicKey = r.identityPublicKey()
 	settings.Carriers = r.activationCarriers
 	settings.DnsPorts = r.activationDnsPorts
+	// After a restart a still-valid listing is posted once more at a random moment in
+	// this window, so a fleet that restarts together does not post together. The
+	// connect default is one hour. Most hosts on the network run this build, so a
+	// fleet-wide update restarts them together: the spread stays wide, but half the
+	// default refreshes the listing sooner.
+	settings.ReplacedPostJitter = extenderRestartPostSpread
 	if store, err := newExtenderPacingFileStore(); err != nil {
 		tlog("🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: %v\n", err)
 	} else {

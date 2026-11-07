@@ -163,7 +163,7 @@ HOW IT BECOMES ACTIVE
   and is renewed. Refusals are paced (the next try time is logged and
   survives a restart). IPv6 only works if this host has a public IPv6 address.
   After a restart a listing that is still valid shows as active at once, and
-  the provider renews it within about an hour.
+  the provider refreshes it within about 30 minutes.
 
 WHAT IT EXPOSES
   The DNS ports also answer ordinary DNS questions from anyone, resolved
