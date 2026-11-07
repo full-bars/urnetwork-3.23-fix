@@ -3,6 +3,7 @@ package urnettools
 import (
 	"bytes"
 	"context"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -306,6 +307,78 @@ func TestStreamLogFile_DrainsOldFileBeforeSwitching(t *testing.T) {
 	}
 }
 
+func numberedLog(first, last int) string {
+	var b strings.Builder
+	for i := first; i <= last; i++ {
+		fmt.Fprintf(&b, "line %04d: unique log entry for follower testing\n", i)
+	}
+	return b.String()
+}
+
+func TestStreamLogFile_TrimKeepsLinesOnce(t *testing.T) {
+	for _, gap := range []bool{false, true} {
+		t.Run(fmt.Sprintf("gap=%t", gap), func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "log")
+			initial := numberedLog(1, 200)
+			if err := os.WriteFile(path, []byte(initial), 0644); err != nil {
+				t.Fatal(err)
+			}
+			old := openAppendShared(t, path)
+			defer old.Close()
+			if gap {
+				streamLogFileBeforeSwitch = func() {
+					if _, err := old.WriteString(numberedLog(201, 205)); err != nil {
+						t.Errorf("write old inode: %v", err)
+					}
+				}
+				t.Cleanup(func() { streamLogFileBeforeSwitch = func() {} })
+			}
+			f := startFollower(t, path, 200)
+			f.waitFor("line 0200:")
+			replacement := path + ".new"
+			if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)), 0644); err != nil {
+				t.Fatal(err)
+			}
+			replaceFile(t, replacement, path)
+			first := 201
+			if gap {
+				first = 206
+			}
+			appendLine(t, path, numberedLog(first, 250))
+			f.waitFor("line 0250:")
+			f.stop()
+			if got, want := f.out.String(), numberedLog(1, 250); got != want {
+				t.Fatalf("output differs: got %d lines, want %d; duplicate or missing lines", strings.Count(got, "\n"), strings.Count(want, "\n"))
+			}
+		})
+	}
+}
+
+func TestStreamLogFile_UnrelatedReplacementBounded(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	if err := os.WriteFile(path, []byte(numberedLog(1, 200)), 0644); err != nil {
+		t.Fatal(err)
+	}
+	f := startFollower(t, path, 200)
+	f.waitFor("line 0200:")
+	replacement := path + ".new"
+	content := strings.Repeat("unrelated content\n", 200000) + "replacement end\n"
+	if err := os.WriteFile(replacement, []byte(content), 0644); err != nil {
+		t.Fatal(err)
+	}
+	start := time.Now()
+	replaceFile(t, replacement, path)
+	f.waitFor("replacement end\n")
+	elapsed := time.Since(start)
+	f.stop()
+	if elapsed > 5*time.Second {
+		t.Fatalf("switch took %s", elapsed)
+	}
+	if got, want := f.out.String(), numberedLog(1, 200)+content; got != want {
+		t.Fatalf("unrelated replacement was not followed from its start: got %d bytes, want %d", len(got), len(want))
+	}
+}
+
 // A truncated log is followed from its start again.
 func TestStreamLogFile_FollowsTruncate(t *testing.T) {
 	dir := t.TempDir()
@@ -398,5 +471,36 @@ func TestStreamLogFile_SpuriousDifferentStatDoesNotReprint(t *testing.T) {
 
 	if got, want := f.out.String(), "one\ntwo\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// The old file can end in the middle of a line when it is trimmed: the provider
+// writes the pipe in chunks. The follower has already printed that fragment, and
+// the new file holds the whole line, so resuming after the last complete line
+// would print the fragment twice. The fragment must be skipped, once.
+func TestStreamLogFile_TrimMidLineDoesNotRepeatTheFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	old := openAppendShared(t, path)
+	defer old.Close()
+	if _, err := old.WriteString(numberedLog(1, 200) + "line 0201: the fragment that was already"); err != nil {
+		t.Fatal(err)
+	}
+	f := startFollower(t, path, 300)
+	f.waitFor("the fragment that was already")
+
+	// the provider's trim: the kept tail (including the fragment) becomes a new
+	// file, then the rest of the line and later lines go to the new file
+	replacement := path + ".new"
+	if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)+"line 0201: the fragment that was already"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	replaceFile(t, replacement, path)
+	appendLine(t, path, " printed once\n"+numberedLog(202, 220))
+	f.waitFor("line 0220:")
+	f.stop()
+
+	want := numberedLog(1, 200) + "line 0201: the fragment that was already printed once\n" + numberedLog(202, 220)
+	if got := f.out.String(); got != want {
+		t.Fatalf("output differs (a repeated fragment or a missing line):\n got %d bytes, want %d\n tail: %q", len(got), len(want), got[max(0, len(got)-200):])
 	}
 }

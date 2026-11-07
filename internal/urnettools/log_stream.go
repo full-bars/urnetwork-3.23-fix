@@ -30,8 +30,9 @@ var statFollowPath = os.Stat
 //
 // It follows the PATH, not just the open file: if the path starts naming a
 // different file (the log was rotated or replaced) it finishes the old file and
-// then follows the new one from its start. A truncated file is followed from its
-// start. If the path is briefly missing it keeps the old file and looks again.
+// then resumes after matching previously printed content, or from its start if
+// there is no match. A truncated file is followed from its start. If the path
+// is briefly missing it keeps the old file and looks again.
 func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error {
 	f, err := openFollowFile(path)
 	if err != nil {
@@ -39,6 +40,8 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 	}
 	defer func() { f.Close() }()
 
+	history := &logHistory{out: out}
+	out = history
 	// follow from exactly where the tail stopped reading, so a line appended
 	// while the tail was being written is not skipped
 	offset := printTailLines(f, n, out)
@@ -117,15 +120,86 @@ func streamLogFile(ctx context.Context, path string, n int, out io.Writer) error
 					next.Close()
 					return err
 				}
+				offset = resumeLogOffset(next, history.data)
+				if _, err := next.Seek(offset, io.SeekStart); err != nil {
+					next.Close()
+					return err
+				}
 				f.Close()
 				f = next
-				offset = 0
 				if err := drain(); err != nil {
 					return err
 				}
 			}
 		}
 	}
+}
+
+const logHistoryLimit = 256 * 1024
+
+type logHistory struct {
+	out  io.Writer
+	data []byte
+}
+
+func (h *logHistory) Write(p []byte) (int, error) {
+	n, err := h.out.Write(p)
+	p = p[:n]
+	if len(p) >= logHistoryLimit {
+		h.data = append(h.data[:0], p[len(p)-logHistoryLimit:]...)
+	} else {
+		if excess := len(h.data) + len(p) - logHistoryLimit; excess > 0 {
+			copy(h.data, h.data[excess:])
+			h.data = h.data[:len(h.data)-excess]
+		}
+		h.data = append(h.data, p...)
+	}
+	return n, err
+}
+
+// resumeLogOffsetCandidates bounds how many line-ended windows are tried. The
+// step-back only has to cover the few lines the provider writes to the old inode
+// between copying the kept tail and swapping its descriptor, which is a handful at
+// most. Each miss scans the whole new file, so a smaller bound keeps an unrelated
+// replacement cheap.
+const resumeLogOffsetCandidates = 16
+
+// resumeLogOffset finds where in the new file the printed history ends, so the
+// follower resumes there instead of replaying the file. It searches line-ended
+// windows of the history from the end, stepping back over writes that reached the
+// old inode after the replacement was copied. 0 means no overlap: follow the new
+// file from its start.
+//
+// When the old file ended mid-line, the fragment was already printed and the new
+// file holds the whole line, so a match on the last window also skips that
+// fragment rather than printing it twice.
+func resumeLogOffset(f *os.File, history []byte) int64 {
+	const maxFile = 32 * 1024 * 1024
+	if len(history) == 0 {
+		return 0
+	}
+	content, err := io.ReadAll(io.LimitReader(f, maxFile+1))
+	if err != nil || len(content) > maxFile {
+		return 0
+	}
+	end := bytes.LastIndexByte(history, '\n') + 1
+	fragment := history[end:]
+	for candidates := 0; end > 0 && candidates < resumeLogOffsetCandidates; candidates++ {
+		start := end - 1024
+		if start < 0 {
+			start = 0
+		}
+		anchor := history[start:end]
+		if i := bytes.LastIndex(content, anchor); i >= 0 {
+			pos := i + len(anchor)
+			if candidates == 0 && len(fragment) > 0 && bytes.HasPrefix(content[pos:], fragment) {
+				pos += len(fragment)
+			}
+			return int64(pos)
+		}
+		end = bytes.LastIndexByte(history[:end-1], '\n') + 1
+	}
+	return 0
 }
 
 // printTailLines writes the last n lines of f to out exactly as they are in the

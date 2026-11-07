@@ -86,6 +86,28 @@ func TestContainerReadFileDecodesCPTar(t *testing.T) {
 // The docker shims below are POSIX shell scripts, so these tests are
 // unix-only.
 
+func TestContainerFollowFileUsesName(t *testing.T) {
+	dir := t.TempDir()
+	shim := filepath.Join(dir, "docker")
+	if err := os.WriteFile(shim, []byte("#!/bin/sh\nprintf '%s\\n' \"$@\" > \"$DOCKER_SHIM_LOG\"\n"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	log := filepath.Join(dir, "args")
+	t.Setenv("DOCKER_SHIM_LOG", log)
+	setDockerTestBin(shim)
+	t.Cleanup(func() { setDockerTestBin("") })
+	if err := containerFollowFile("provider", "/dev/shm/urnetwork.log", 50); err != nil {
+		t.Fatal(err)
+	}
+	got, err := os.ReadFile(log)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "exec\nprovider\ntail\n-n\n50\n-F\n/dev/shm/urnetwork.log\n"; string(got) != want {
+		t.Fatalf("arguments %q, want %q", got, want)
+	}
+}
+
 // TestContainerReadFilePrefersCP validates the CP-first read path used for
 // stopped-container identity discovery.
 func TestContainerReadFilePrefersCP(t *testing.T) {
