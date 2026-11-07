@@ -62,32 +62,17 @@ func newExtenderTally(path string) *extenderTally {
 }
 
 // extenderRequestsServed is the cumulative requests served for clients out of
-// one role's service and refusal counts.
+// one role's served counts (extender.ExtenderServer.ServedCounts).
 //
-// Only `forward` (traffic relayed for a client) and `feed` (the directory a
-// client bootstraps from) are client requests. `proxy` is deliberately left out:
-// the serving core increments it for every ordinary non-extender http request, so
-// on a public port 443 it is scanners and browsers answered by the camouflage
-// reverse proxy, never a client. `probe` is the platform's own verification and
-// `gossip` and `other` are not client traffic either.
-//
-// A request is counted as its service when its header decodes, before it is
-// authorized and admitted, so refused requests are taken back out. Refusals of
-// requests that never decoded (an h2 attempt, a bad header) were never counted as
-// a service and are not subtracted. The result is approximate, and never negative.
-func extenderRequestsServed(serviceCounts map[string]uint64, refusalCounts map[string]uint64) uint64 {
-	served := serviceCounts["forward"] + serviceCounts["feed"]
-	var refused uint64
-	for stage, count := range refusalCounts {
-		if stage == "request" || stage == "header decode" {
-			continue
-		}
-		refused += count
-	}
-	if refused >= served {
-		return 0
-	}
-	return served - refused
+// A request is served once it has passed authorization and admission and the
+// extender has handed it a stream, so refused requests, ordinary web requests
+// that scanners and browsers send to a public port 443 (answered like a plain
+// website), and the platform's own verification probes are never counted. Only
+// `forward` (traffic relayed for a client) and `feed` (the directory a client
+// bootstraps from) are client requests; `gossip` is mesh traffic between
+// extenders. It counts requests, not people: nothing records who asked.
+func extenderRequestsServed(servedCounts map[string]uint64) uint64 {
+	return servedCounts["forward"] + servedCounts["feed"]
 }
 
 // Observe folds a cumulative reading into the buckets. The first reading of a

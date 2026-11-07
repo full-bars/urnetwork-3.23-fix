@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -89,7 +90,9 @@ func TestExtenderPacingFileStoreRejectsGarbage(t *testing.T) {
 }
 
 // The loop's own outcome lines reach the disk events log; its five-minute
-// reminder stays in the ramlog so a long failure does not fill the disk log.
+// reminder (any family, including the shared-post "IPv0" wording) goes through
+// the ordinary log only, which still reaches the RAM log and the bounded
+// important log but not the events log, so a long failure cannot fill it.
 func TestExtenderActivatorLoggerRouting(t *testing.T) {
 	var mu sync.Mutex
 	var important []string
@@ -103,6 +106,8 @@ func TestExtenderActivatorLoggerRouting(t *testing.T) {
 	log := extenderActivatorLogger{}
 	log.Infof("🌉✅ [extender] IPv4 is now activated on try %d.\n", 1)
 	log.Infof("🌉 [extender] IPv4 ❌  still failing\n")
+	log.Infof("🌉 [extender] IPv6 ⛔  still refused\n")
+	log.Infof("🌉 [extender] IPv0 ⏳  nothing tried yet\n")
 	log.Errorf("[extender]activate boom\n")
 
 	mu.Lock()
@@ -521,8 +526,103 @@ func TestExtenderRoleKeepsItsCountsAfterClose(t *testing.T) {
 	if got := role.snapshot().ServiceCounts["proxy"]; got != 1 {
 		t.Fatalf("before close: proxy count = %d, want 1 (err=%v)", got, err)
 	}
+	// an ordinary web request is the proxy service but is never served
+	if served := role.snapshot().ServedCounts; len(served) != 0 {
+		t.Fatalf("an ordinary web request was counted as served: %v", served)
+	}
 	closeExtenderRole(t, role)
 	if got := role.snapshot().ServiceCounts["proxy"]; got != 1 {
 		t.Fatalf("after close: proxy count = %d, want 1: the count was lost when the role stopped", got)
+	}
+	if served := role.snapshot().ServedCounts; len(served) != 0 {
+		t.Fatalf("after close: served = %v, want none", served)
+	}
+}
+
+// Two slots attach at nearly the same time (a direct slot is restarted while the
+// last one's attach is still in flight). Whatever the order, the activation the
+// role runs must be the one the manager tracks: otherwise the older slot's loop
+// keeps running with nothing that will ever stop it when the newer slot ends.
+// The hook holds the first attach between saving its inputs and installing its
+// activator, which is exactly where the second one used to slip past.
+func TestExtenderManagerAttachOrderingKeepsTheRoleAndManagerAgreeing(t *testing.T) {
+	withTempHome(t)
+	m := newExtenderManager()
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.newConfig = func() extenderRoleConfig { return testExtenderRoleConfig(t) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Reconcile("test")
+	role := m.Role()
+	if role == nil {
+		t.Fatal("role did not start")
+	}
+	defer m.stop("test over")
+	waitExtenderRoleReady(t, role)
+
+	newInputs := func() *extenderActivationInputs {
+		slotCtx, endSlot := context.WithCancel(ctx)
+		t.Cleanup(endSlot)
+		return &extenderActivationInputs{
+			ctx:            slotCtx,
+			apiUrl:         "http://127.0.0.1:1",
+			byJwt:          newJwtHolder("jwt").Get,
+			clientStrategy: newExtenderActivationStrategy(slotCtx),
+		}
+	}
+	a, b := newInputs(), newInputs()
+
+	held := make(chan struct{})
+	release := make(chan struct{})
+	var first atomic.Bool
+	m.attachHook = func() {
+		// only the FIRST attach is held (sync.Once would make the second block
+		// inside the hook until the first returned, which hides the race)
+		if !first.CompareAndSwap(false, true) {
+			return
+		}
+		close(held)
+		// B tries to attach while A is held. A correct manager keeps B out
+		// until A is done, so this wait times out; a racy one lets B finish.
+		select {
+		case <-release:
+		case <-time.After(300 * time.Millisecond):
+		}
+	}
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+	go func() { defer wg.Done(); m.AttachActivation(a) }()
+	<-held
+	go func() { defer wg.Done(); m.AttachActivation(b) }()
+	time.Sleep(50 * time.Millisecond)
+	close(release)
+	wg.Wait()
+
+	m.mu.Lock()
+	tracked := m.inputs
+	m.mu.Unlock()
+	role.mu.Lock()
+	running := role.activatorInputs
+	role.mu.Unlock()
+	if running != tracked {
+		t.Fatalf("the role runs one slot's activation but the manager tracks another (running %p, tracked %p): the older loop would never be stopped", running, tracked)
+	}
+}
+
+// An attach for a slot that has already ended is not tracked at all.
+func TestExtenderManagerDoesNotTrackAnEndedSlot(t *testing.T) {
+	withTempHome(t)
+	m := newExtenderManager()
+	slotCtx, endSlot := context.WithCancel(context.Background())
+	endSlot()
+	m.AttachActivation(&extenderActivationInputs{ctx: slotCtx})
+	m.mu.Lock()
+	tracked := m.inputs
+	m.mu.Unlock()
+	if tracked != nil {
+		t.Fatal("the manager tracks inputs of a slot that had already ended")
 	}
 }

@@ -1555,7 +1555,18 @@ func (self *ExtenderServer) noteRefusal(stage string, err error) {
 // cumulative for the life of the server and safe to read while it serves.
 type extenderUsage struct {
 	services [extenderUsageCount]atomic.Uint64
+	// served counts a request once it has passed authorization and admission and
+	// the stream has been handed over. `services` cannot say that: it counts when
+	// a header decodes, before the request is authorized or admitted, and its
+	// `proxy` entry counts every ordinary non-extender http request.
+	served   [extenderUsageCount]atomic.Uint64
 	refusals sync.Map // stage string -> *atomic.Uint64
+}
+
+func (self *extenderUsage) recordServed(index int) {
+	if 0 <= index && index < extenderUsageCount {
+		self.served[index].Add(1)
+	}
 }
 
 func (self *extenderUsage) recordService(index int) {
@@ -1574,6 +1585,20 @@ func (self *ExtenderServer) ServiceCounts() map[string]uint64 {
 	counts := map[string]uint64{}
 	for index, name := range extenderUsageServiceNames {
 		if count := self.usage.services[index].Load(); 0 < count {
+			counts[name] = count
+		}
+	}
+	return counts
+}
+
+// ServedCounts returns, by service name, the requests this server accepted and
+// handed a stream to: authorized, admitted and answered. A request refused at any
+// stage, and an ordinary web request answered by the decoy proxy, are not in it.
+// It only grows, so a reader folding it into a total never sees it go down.
+func (self *ExtenderServer) ServedCounts() map[string]uint64 {
+	counts := map[string]uint64{}
+	for index, name := range extenderUsageServiceNames {
+		if count := self.usage.served[index].Load(); 0 < count {
 			counts[name] = count
 		}
 	}

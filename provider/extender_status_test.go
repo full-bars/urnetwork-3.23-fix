@@ -118,3 +118,21 @@ func TestExtenderFamilyReadingNeverShowsAnExpiredListingAsActive(t *testing.T) {
 		t.Fatalf("a listing with no reported expiry must keep reading activated, got %q", got.State)
 	}
 }
+
+// The status carries the expiry in two fields (the activation's and the record's).
+// Either one past means the listing lapsed, so a family with only the record's
+// expiry reported is held to it as well.
+func TestExtenderFamilyReadingUsesTheRecordExpiryWhenTheActivationHasNone(t *testing.T) {
+	now := time.Date(2026, 11, 6, 18, 0, 0, 0, time.UTC)
+	family := &connect.ExtenderFamilyActivationStatus{
+		IpVersion: 4, Activated: true, Ip: netip.MustParseAddr("203.0.113.5"),
+		RecordExpireTime: now.Add(-time.Minute),
+	}
+	if got := extenderFamilyReadingOf(4, family, true, true, now); got.State == extenderFamilyActivated {
+		t.Fatalf("a record that expired a minute ago still reads ACTIVE: %+v", got)
+	}
+	family.RecordExpireTime = now.Add(time.Hour)
+	if got := extenderFamilyReadingOf(4, family, true, true, now); got.State != extenderFamilyActivated {
+		t.Fatalf("a record that is still valid must read activated, got %q", got.State)
+	}
+}

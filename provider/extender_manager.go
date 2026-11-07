@@ -35,6 +35,15 @@ type extenderManager struct {
 	// must forward to for the platform to prove it (extender_hosts.go)
 	apiUrl string
 
+	// attachMu makes saving a slot's inputs and installing its activation one step,
+	// so two attaches cannot interleave and leave the role running one slot's
+	// activation while the manager tracks another. It is taken before m.mu and
+	// never while holding it.
+	attachMu sync.Mutex
+	// attachHook, when set by a test, runs between saving the inputs and installing
+	// the activation, to hold an attach there.
+	attachHook func()
+
 	// the last reason the role is not running, so a periodic check does not
 	// repeat a line that has not changed
 	lastOffLine string
@@ -92,7 +101,7 @@ func (m *extenderManager) Start(ctx context.Context, wg *sync.WaitGroup) {
 				return
 			case <-ticker.C:
 				m.Reconcile("periodic check")
-				m.sampleTally(m.Role())
+				m.sampleTally()
 			}
 		}
 	}()
@@ -204,10 +213,24 @@ func (m *extenderManager) stopLocked(reason string) {
 // role starts, so the activation is attached late. The activation stops when
 // the slot's context ends (for example `provider direct off`).
 func (m *extenderManager) AttachActivation(inputs *extenderActivationInputs) {
+	// Saving the inputs and installing the activation are one step. Without this,
+	// two attaches could interleave: the second saves and installs, then the first
+	// installs over it, leaving the role running the first slot's activation while
+	// the manager tracks the second, and nothing would stop the first when the
+	// second ends.
+	m.attachMu.Lock()
+	defer m.attachMu.Unlock()
+	// a slot that has already ended is not tracked, and gets no activation
+	if inputs.ctx.Err() != nil {
+		return
+	}
 	m.mu.Lock()
 	m.inputs = inputs
 	role := m.role
 	m.mu.Unlock()
+	if m.attachHook != nil {
+		m.attachHook()
+	}
 	if role != nil {
 		role.StartActivation(inputs)
 	}
@@ -269,19 +292,22 @@ func (m *extenderManager) tallyRef() *extenderTally {
 	return m.tally
 }
 
-// sampleTally folds the running role's request counters into the tally and
-// saves it at most once a minute.
-func (m *extenderManager) sampleTally(role *extenderRole) {
+// sampleTally folds the CURRENT role's served counters into the tally and saves
+// it at most once a minute. It reads the role under the manager lock rather than
+// taking one from the caller: a role handed in before a replacement would be
+// sampled after the tally had been rebased for its successor, and its cumulative
+// total would be counted a second time.
+func (m *extenderManager) sampleTally() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	m.sampleTallyLocked(role)
+	m.sampleTallyLocked(m.role)
 }
 
 func (m *extenderManager) sampleTallyLocked(role *extenderRole) {
 	tally := m.tallyRef()
 	if role != nil {
 		snapshot := role.snapshot()
-		tally.Observe(extenderRequestsServed(snapshot.ServiceCounts, snapshot.RefusalCounts))
+		tally.Observe(extenderRequestsServed(snapshot.ServedCounts))
 	}
 	if tally.path == "" || time.Since(m.tallyLastSave) < time.Minute {
 		return

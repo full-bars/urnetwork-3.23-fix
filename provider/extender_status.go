@@ -95,7 +95,7 @@ func (m *extenderManager) Reading() extenderControlReading {
 		reading.Served = m.tallyWindows()
 		return reading
 	}
-	m.sampleTally(role)
+	m.sampleTally()
 	snapshot := role.snapshot()
 	reading.Running = true
 	reading.RoleState = snapshot.State
@@ -163,12 +163,12 @@ func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActiva
 		reading.ExpireUnixMs = unixMs(family.ExpireTime)
 	}
 	switch {
-	case family != nil && family.Activated && !family.ExpireTime.IsZero() && !family.ExpireTime.After(now):
+	case family != nil && family.Activated && extenderListingExpired(family, now):
 		// The activation flag stays set until a later failure clears it, but the
 		// platform's signed listing has an expiry. Past it, this host is no longer
 		// listed, so never show it as active.
 		reading.State = extenderFamilyFailed
-		reading.Detail = "the platform's listing of this host expired at " + clockLabel(family.ExpireTime) + " and has not been renewed"
+		reading.Detail = "the platform's listing of this host expired at " + clockLabel(extenderListingExpiry(family)) + " and has not been renewed"
 	case family != nil && family.Activated:
 		reading.State = extenderFamilyActivated
 		if family.Ip.IsValid() {
@@ -268,4 +268,19 @@ func nextTryText(family extenderFamilyReading, now time.Time) string {
 		return ", next try due now"
 	}
 	return ", next try " + clockLabel(next)
+}
+
+// extenderListingExpiry is when the platform's signed listing of this family ends:
+// the activation's expiry, else the record's. Zero when neither is reported (an
+// older operator), in which case the activation flag is trusted.
+func extenderListingExpiry(family *connect.ExtenderFamilyActivationStatus) time.Time {
+	if !family.ExpireTime.IsZero() {
+		return family.ExpireTime
+	}
+	return family.RecordExpireTime
+}
+
+func extenderListingExpired(family *connect.ExtenderFamilyActivationStatus, now time.Time) bool {
+	expiry := extenderListingExpiry(family)
+	return !expiry.IsZero() && !expiry.After(now)
 }

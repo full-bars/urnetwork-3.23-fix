@@ -106,23 +106,16 @@ func TestExtenderTallyOldBucketsArePruned(t *testing.T) {
 }
 
 func TestExtenderRequestsServedCountsClientServices(t *testing.T) {
-	// proxy is ONLY ordinary non-extender http (scanners and browsers hitting 443,
-	// answered by the camouflage reverse proxy): never a client. probe is the
-	// platform's own verification and gossip is mesh traffic.
-	counts := map[string]uint64{"proxy": 400, "forward": 3, "feed": 2, "probe": 50, "gossip": 9, "other": 1}
-	if got := extenderRequestsServed(counts, nil); got != 5 {
+	// the served counts hold only requests that passed authorization and admission,
+	// so a refused request or an ordinary web request is never in them; of what is
+	// there, only forward and feed are client requests (gossip is mesh traffic
+	// between extenders, and a probe is the platform's own verification)
+	served := map[string]uint64{"forward": 3, "feed": 2, "gossip": 9, "probe": 50, "other": 1, "proxy": 400}
+	if got := extenderRequestsServed(served); got != 5 {
 		t.Fatalf("requests served = %d, want 5 (forward+feed only)", got)
 	}
-	// refused requests were counted as a service before they were refused, so they
-	// are taken back out; refusals of requests that never decoded (h2, bad header)
-	// were never counted as a service and must not be subtracted
-	refusals := map[string]uint64{"destination authorization": 1, "request": 7, "header decode": 3}
-	if got := extenderRequestsServed(counts, refusals); got != 4 {
-		t.Fatalf("requests served with a refusal = %d, want 4", got)
-	}
-	// never negative
-	if got := extenderRequestsServed(map[string]uint64{"forward": 1}, map[string]uint64{"destination authorization": 9}); got != 0 {
-		t.Fatalf("requests served = %d, want 0", got)
+	if got := extenderRequestsServed(nil); got != 0 {
+		t.Fatalf("requests served with nothing served = %d, want 0", got)
 	}
 }
 

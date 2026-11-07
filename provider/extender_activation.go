@@ -119,12 +119,16 @@ func (s extenderPacingFileStore) SavePacing(record *connect.ExtenderActivationPa
 // log. The loop already writes plain sentences with a 🌉 mark and the
 // `[extender]` tag, which is an important-log marker. Outcomes (activated,
 // failed, refused) are also written to the disk events log, so they survive a
-// reboot wiping the ramlog; the five-minute "still not activated" reminder
-// stays in the ramlog only, so a long failure does not fill the disk log.
+// reboot wiping the ramlog; the five-minute "still not activated" reminder goes
+// through the ordinary log only. That still reaches the RAM log and the bounded,
+// rotated important log (the `[extender]` tag is an important marker) but not the
+// events log, so a long failure cannot fill it.
 // extenderReminderLine matches the loop's five-minute "still not activated" line,
-// which is a family name and a status mark after the bridge. Every other line the
-// loop writes is an outcome and also goes to the disk events log.
-var extenderReminderLine = regexp.MustCompile(`^🌉 \[extender\] IPv[46] (✅|⛔|❌|⏳)`)
+// which is a family name and a status mark after the bridge. The family is a
+// digit rather than 4 or 6: with no per-family api host the loop tracks one
+// shared post as family 0 and names it IPv0. Every other line the loop writes is
+// an outcome and also goes to the disk events log.
+var extenderReminderLine = regexp.MustCompile(`^🌉 \[extender\] IPv\d (✅|⛔|❌|⏳)`)
 
 type extenderActivatorLogger struct{}
 

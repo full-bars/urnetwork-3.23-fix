@@ -641,7 +641,7 @@ grep '🌉❌' /dev/shm/urnetwork.log      # every failure
 urnet-tools logs --important             # the outcome lines and the health line
 ```
 
-Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (started, stopped, failed, refused, activated) are also written to the disk events log, so they survive a reboot; the five-minute reminder below stays in the RAM log only so a long failure does not fill the disk log.
+Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (started, stopped, failed, refused, activated) are also written to the disk events log, so they survive a reboot; the five-minute reminder below is written to the ordinary log only, so it reaches the RAM log and the important log (which is bounded and rotated) but not the events log, and a long failure cannot fill it.
 
 ### Start, stop and the setting
 
@@ -703,7 +703,7 @@ The platform lists an extender only after it proves it from the outside: it dial
 
 - `activation started` is logged when the direct slot has signed in and the activation attaches. Until then the status reads "waiting for the direct slot to sign in". It stops with the direct slot (`provider direct off`) and starts again with `provider direct on`.
 - `activation try N worked` / `is now activated` / `failed` are the outcome lines. `⛔` means the platform answered and said no (its reason is quoted); `❌` is any other failure (the request failed, no public address on that family, tcp 443 not answering). The first failure of a family adds the hint to check inbound TCP 443 and that the host has a public address of that family.
-- The `IPv4 ⛔  IPv4 not activated: ...` line is the reminder, at most every five minutes while a family is not activated. It names the tries so far, the reason, and when the next try is. It is written to the RAM log only. The marks after the bridge are `✅` activated, `⛔` the platform said no, `❌` the last try failed, `⏳` nothing tried yet.
+- The `IPv4 ⛔  IPv4 not activated: ...` line is the reminder, at most every five minutes while a family is not activated. It names the tries so far, the reason, and when the next try is. It reaches the RAM log and the important log, but not the events log. A family with no per-family api host is shown as `IPv0` (one shared post covers both). The marks after the bridge are `✅` activated, `⛔` the platform said no, `❌` the last try failed, `⏳` nothing tried yet.
 - The platform limits how often it will probe a host. A refusal can carry a wait (`retry_after`); the activation honours it and backs off, doubling up to six hours. A host that keeps failing posts about three times per family in its first hour, so do not restart the provider hoping to speed it up.
 - A family that never passes is normal for a host with no public address of that family (IPv6 on a box with only IPv4), or behind NAT without a port forward. That is the platform's answer, not a bug.
 - `key belongs to ANOTHER network` means the identity file was copied. Delete `~/.urnetwork/.provider.extender.key` (with the provider stopped) and start again.
