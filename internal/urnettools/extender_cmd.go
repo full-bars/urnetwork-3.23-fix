@@ -11,7 +11,8 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const extenderUsage = "usage: urnet-tools extender [status|about|on|off|enable|disable]"
+const extenderUsage = "usage: urnet-tools extender [status|about|on|off|enable|disable|setup]"
+const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [target]"
 
 // normalizeExtenderAction accepts enable and disable as plain names for on and
 // off. The second result is false for anything else.
@@ -27,29 +28,102 @@ func normalizeExtenderAction(action string) (string, bool) {
 	return "", false
 }
 
+func isExtenderSetupArgs(args []string) bool {
+	_, rest, err := parseTargetFlagsLenient(args)
+	if err != nil {
+		for _, a := range args {
+			if strings.EqualFold(strings.TrimSpace(a), "setup") {
+				return true
+			}
+		}
+		return false
+	}
+	for _, a := range rest {
+		switch a {
+		case "-f", "--force", "-y", "--yes", "-n", "--dry-run":
+			continue
+		default:
+			return strings.EqualFold(strings.TrimSpace(a), "setup")
+		}
+	}
+	return false
+}
+
+// parseExtenderSetupArgs parses flags specific to `urnet-tools extender setup`.
+func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err error) {
+	var filtered []string
+	for _, tok := range args {
+		switch tok {
+		case "-y", "--yes", "-f", "--force":
+			yes = true
+		case "-n", "--dry-run":
+			dryRun = true
+		default:
+			filtered = append(filtered, tok)
+		}
+	}
+	target, rest, err := parseTargetFlags(filtered)
+	if err != nil {
+		return false, false, Target{}, err
+	}
+	seenSetup := false
+	for _, tok := range rest {
+		if !seenSetup && strings.EqualFold(strings.TrimSpace(tok), "setup") {
+			seenSetup = true
+			continue
+		}
+		return false, false, Target{}, fmt.Errorf("%s (unexpected %q)", extenderSetupUsage, tok)
+	}
+	if !seenSetup {
+		return false, false, Target{}, fmt.Errorf("%s", extenderSetupUsage)
+	}
+	return yes, dryRun, target, nil
+}
+
+func cmdExtenderSetup(args []string) error {
+	yes, dryRun, target, err := parseExtenderSetupArgs(args)
+	if err != nil {
+		return err
+	}
+	argv := append([]string{"extender"}, args...)
+	if !yes {
+		argv = append(argv, "--yes")
+	}
+	return RunExtenderSetup(ExtenderSetupOptions{
+		Yes:    yes,
+		Force:  yes,
+		DryRun: dryRun,
+		Target: target,
+		Stdout: os.Stdout,
+		Stderr: os.Stderr,
+		Argv:   argv,
+	})
+}
+
 func newExtenderCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "extender [status|about|on|off|enable|disable]",
-		Short: "show, turn on, or turn off the extender role",
+		Use:   "extender [status|about|on|off|enable|disable|setup]",
+		Short: "show, turn on, turn off, or prepare the host for the extender role",
 		Long: "The extender helps censored clients reach URnetwork: this host accepts their connections on tcp 443 (required), udp 443 and udp 4053 and relays them, and asks the platform to list it. " +
 			"It is ON by default and earns nothing; it is a public service like a Tor bridge. " +
 			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
 			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
+			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
 			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
-		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender about\n  urnet-tools extender disable\n  urnet-tools extender enable",
+		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender about\n  urnet-tools extender setup\n  urnet-tools extender setup --yes\n  urnet-tools extender disable\n  urnet-tools extender enable",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
 				return cmd.Help()
 			}
+			if isExtenderSetupArgs(args) {
+				return cmdExtenderSetup(args)
+			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
-				if len(rest) > 0 && rest[0] == "setup" {
-					if len(rest) != 1 {
-						return fmt.Errorf("usage: urnet-tools extender setup [-y|--yes] [-n|--dry-run]")
-					}
-					return fmt.Errorf("extender setup is not yet implemented; no changes were made")
+				if force {
+					return fmt.Errorf("%s (only 'extender setup' accepts -y/--yes or -f/--force)", extenderUsage)
 				}
 				return cmdExtender(rest, dryRun)
 			})
@@ -145,6 +219,7 @@ It is ON by default. Nothing to configure. To change it:
   urnet-tools extender off      turn it off, and keep it off across restarts
   urnet-tools extender on       turn it back on
   urnet-tools extender status   what it is doing right now
+  urnet-tools extender setup    check port 443, binary capability and firewall rules
 
 PORTS
   tcp 443   REQUIRED. The platform proves this host is an extender by
@@ -175,8 +250,11 @@ HOW IT BECOMES ACTIVE
   the provider refreshes it within about 30 minutes.
 
 FIREWALL
-  Opening a port in the provider does not open it on the host. If the host has
-  a firewall, allow tcp 443 (required) and optionally udp 443 and udp 4053:
+  Opening a port in the provider does not open it on the host. Run
+  'urnet-tools extender setup' to inspect the binary capability and host
+  firewall, print the exact commands needed, and apply them after confirmation.
+  If you prefer to configure the host firewall manually, allow tcp 443
+  (required) and optionally udp 443 and udp 4053:
     ufw:       sudo ufw allow 443/tcp   (and 443/udp, 4053/udp)
     firewalld: sudo firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp
                --add-port=4053/udp && sudo firewall-cmd --reload
@@ -209,6 +287,7 @@ WHAT IT EXPOSES
 
 WHERE TO LOOK
   urnet-tools extender status    ports, IPv4 and IPv6, clients now, requests served
+  urnet-tools extender setup     prepare host capability and firewall rules
   urnet-tools top                the same, live
   urnet-tools logs               every extender line starts with the bridge emoji
   The health line [health][extender] repeats the summary every few minutes.
