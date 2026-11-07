@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 	"sync"
 	"testing"
@@ -305,21 +304,6 @@ func TestStreamLogFile_DrainsOldFileBeforeSwitching(t *testing.T) {
 	got := f.out.String()
 	if i, j := strings.Index(got, "tail of old"), strings.Index(got, "head of new"); i < 0 || j < 0 || i > j {
 		t.Fatalf("old file's last line must come before the new file's first: %q", got)
-	}
-}
-
-// replaceFile puts replacement at path, as the provider's trim does. Windows
-// refuses to replace a file that any handle has open, so there the old file is
-// moved aside first; that works for handles opened with FILE_SHARE_DELETE.
-func replaceFile(t *testing.T, replacement, path string) {
-	t.Helper()
-	if runtime.GOOS == "windows" {
-		if err := os.Rename(path, path+".replaced"); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if err := os.Rename(replacement, path); err != nil {
-		t.Fatal(err)
 	}
 }
 

@@ -16,3 +16,12 @@ func openAppendShared(t *testing.T, path string) *os.File {
 	}
 	return f
 }
+
+// replaceFile puts replacement at path in one atomic step, as the provider's
+// trim does, while other handles may have path open.
+func replaceFile(t *testing.T, replacement, path string) {
+	t.Helper()
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+}
