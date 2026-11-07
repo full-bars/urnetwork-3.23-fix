@@ -374,8 +374,9 @@ func (r *extenderRole) run() {
 		r.markReady()
 		r.publishStatus("listening")
 
-		// tcp 443 may have failed while udp is serving. Retry it on its own
-		// server so a late tcp bind never interrupts the udp carriers.
+		// The primary server only exists once tcp 443 was bound. If that carrier is
+		// lost later while the role runs, retry it on its own server so rebinding it
+		// never interrupts the udp carriers.
 		tcpTimer := time.NewTimer(r.config.retryInterval)
 		tcpRetryC := tcpTimer.C
 		if r.tcpBound() {
