@@ -2398,6 +2398,21 @@ func (self *ExtenderActivator) recordSuccess(
 	family.LastRefused = false
 	family.RevokedTime = time.Time{}
 	family.AllowedHosts = slices.Clone(result.AllowedHosts)
+	var recovered []string
+	for _, previous := range family.RefusedCarriers {
+		accepted := slices.Contains(result.Carriers, previous.Carrier)
+		if previous.Carrier == ExtenderCarrierDns {
+			accepted = accepted && slices.Contains(result.DnsPorts, previous.Port)
+		}
+		for _, refusal := range result.RefusedCarriers {
+			if refusal != nil && refusal.Carrier == previous.Carrier && refusal.Port == previous.Port {
+				accepted = false
+			}
+		}
+		if accepted {
+			recovered = append(recovered, extenderCarrierPortText(previous.Carrier, previous.Port))
+		}
+	}
 	family.Carriers = slices.Clone(result.Carriers)
 	family.DnsPorts = slices.Clone(result.DnsPorts)
 	family.RefusedCarriers = nil
@@ -2405,6 +2420,9 @@ func (self *ExtenderActivator) recordSuccess(
 		if refusal != nil {
 			family.RefusedCarriers = append(family.RefusedCarriers, ExtenderCarrierPort{Carrier: refusal.Carrier, Port: refusal.Port})
 		}
+	}
+	if len(recovered) != 0 {
+		self.log.Infof("🌉✅ [extender] %s: the platform now accepts %s after renewal.\n", extenderFamilyName(ipVersion), strings.Join(recovered, ", "))
 	}
 	family.ExpireTime = time.Time{}
 	if result.ExpireTime != nil {
