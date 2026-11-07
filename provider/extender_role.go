@@ -122,6 +122,8 @@ type extenderRoleConfig struct {
 	// loop starts. Tests use it to pin the address families and shorten the
 	// backoff; production leaves it nil.
 	configureActivator func(*connect.ExtenderActivatorSettings)
+	// fetchHello, when set, replaces the GET of the platform's /hello (tests)
+	fetchHello func(ctx context.Context, inputs *extenderActivationInputs) ([]byte, error)
 }
 
 // extenderAllowedHostsFromEnv reads the comma-separated forward allow list.
@@ -244,6 +246,11 @@ type extenderRole struct {
 	activatorInputs *extenderActivationInputs
 	// serializes attach, detach and replacement of the activation (extender_activation.go)
 	activationMu sync.Mutex
+	// directory holds the platform's root keys, which verify the signed record each
+	// activation returns so renewals follow its lifetime. One per role, shared by
+	// every slot's activation.
+	directoryOnce sync.Once
+	directory     *connect.ExtenderDirectory
 	// the carrier set last reported to the activation, so a change is told to it once
 	carrierSigKnown bool
 	carrierSig      string

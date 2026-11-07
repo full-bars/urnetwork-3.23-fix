@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net/http"
 	"os"
 	"regexp"
 	"slices"
@@ -171,6 +172,103 @@ func (quietVerbose) Infof(string, ...any) {}
 // Carriers and DnsPorts are closures over the role, read under its lock at
 // every pass, because there can be two servers (the primary and a tcp retry)
 // and the set changes while the loop runs.
+// extenderFixedRenewalInterval is the renewal period used while the platform's root
+// keys are not loaded. The platform's record lasts 24 hours, so a 24 hour period
+// renews with about ten seconds to spare and a slow post lets the listing lapse.
+const extenderFixedRenewalInterval = 12 * time.Hour
+
+// How often the root keys are read again once loaded, and the retry steps while
+// they cannot be read.
+const (
+	extenderRootKeysRefresh  = 12 * time.Hour
+	extenderRootKeysTimeout  = 30 * time.Second
+	extenderRootKeysRetryMin = 1 * time.Minute
+	extenderRootKeysRetryMax = 30 * time.Minute
+)
+
+// rootKeyDirectory is the role's directory of platform root keys, created once.
+func (r *extenderRole) rootKeyDirectory() *connect.ExtenderDirectory {
+	r.directoryOnce.Do(func() {
+		r.directory = connect.NewExtenderDirectoryWithDefaults(r.ctx)
+	})
+	return r.directory
+}
+
+// parseRootKeys reads the hex root keys out of the platform's /hello answer.
+func parseRootKeys(helloBytes []byte) (*connect.ExtenderRootKeySet, error) {
+	hello := &struct {
+		ExtenderRootPublicKeys []string `json:"extender_root_public_keys"`
+	}{}
+	if err := json.Unmarshal(helloBytes, hello); err != nil {
+		return nil, err
+	}
+	if len(hello.ExtenderRootPublicKeys) == 0 {
+		return nil, errors.New("the platform published no extender root keys")
+	}
+	return connect.NewExtenderRootKeySetFromHex(hello.ExtenderRootPublicKeys...)
+}
+
+func (r *extenderRole) readRootKeys(inputs *extenderActivationInputs) (*connect.ExtenderRootKeySet, error) {
+	ctx, cancel := context.WithTimeout(inputs.ctx, extenderRootKeysTimeout)
+	defer cancel()
+	var body []byte
+	var err error
+	if r.config.fetchHello != nil {
+		body, err = r.config.fetchHello(ctx, inputs)
+	} else {
+		var request *http.Request
+		request, err = connect.HelloRequestFromUrl(ctx, inputs.apiUrl, inputs.byJwt())
+		if err == nil {
+			body, err = connect.HttpGetWithStrategyRaw(ctx, inputs.clientStrategy, request.URL.String(), inputs.byJwt())
+		}
+	}
+	if err != nil {
+		return nil, err
+	}
+	return parseRootKeys(body)
+}
+
+// loadRootKeys reads the platform's root keys from /hello and installs them, then
+// reads them again every few hours. It ends with the slot. A failure is logged once
+// per streak and retried with a growing wait; the fixed renewal interval covers the gap.
+func (r *extenderRole) loadRootKeys(inputs *extenderActivationInputs) {
+	directory := r.rootKeyDirectory()
+	wait := extenderRootKeysRetryMin
+	failing := false
+	for {
+		keySet, err := r.readRootKeys(inputs)
+		next := extenderRootKeysRefresh
+		if err != nil {
+			next = wait
+			if wait *= 2; extenderRootKeysRetryMax < wait {
+				wait = extenderRootKeysRetryMax
+			}
+			if !failing {
+				failing = true
+				importantLogf("🌉⚠️ [extender] could not read the platform's root keys (%v): renewals use a fixed %s interval until they load. Trying again in %s.\n",
+					err, extenderFixedRenewalInterval, next)
+			}
+		} else {
+			if directory.RootKeys().Len() == 0 || failing {
+				importantLogf("🌉✅ [extender] platform root keys loaded (%d): renewals now follow each signed record's lifetime.\n", keySet.Len())
+			}
+			directory.SetRootKeys(keySet)
+			failing = false
+			wait = extenderRootKeysRetryMin
+		}
+		timer := time.NewTimer(next)
+		select {
+		case <-inputs.ctx.Done():
+			timer.Stop()
+			return
+		case <-r.ctx.Done():
+			timer.Stop()
+			return
+		case <-timer.C:
+		}
+	}
+}
+
 // extenderRestartPostSpread is the window a restarted extender spreads its refresh post over.
 const extenderRestartPostSpread = 30 * time.Minute
 
@@ -192,6 +290,11 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 	// fleet-wide update restarts them together: the spread stays wide, but half the
 	// default refreshes the listing sooner.
 	settings.ReplacedPostJitter = extenderRestartPostSpread
+	// The platform's root keys let the activator renew from the signed record's own
+	// lifetime. Until they are loaded it renews on this fixed interval, which must
+	// stay well inside the record's 24 hours (the platform issues exactly 24h).
+	settings.ActivateTimeout = extenderFixedRenewalInterval
+	settings.Directory = r.rootKeyDirectory()
 	if store, err := newExtenderPacingFileStore(); err != nil {
 		tlog("🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: %v\n", err)
 	} else {
@@ -290,6 +393,8 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 	r.activator = activator
 	r.activatorInputs = inputs
 	r.mu.Unlock()
+	// reads the platform's root keys for as long as this slot lives
+	go connect.HandleError(func() { r.loadRootKeys(inputs) }, r.cancel)
 	importantLogf("🌉✅ [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.\n")
 	r.publishStatus("activation started")
 }

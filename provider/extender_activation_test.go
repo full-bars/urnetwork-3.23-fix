@@ -2,7 +2,9 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"crypto/tls"
+	"encoding/hex"
 	"fmt"
 	"io"
 	"net"
@@ -730,9 +732,59 @@ func TestExtenderManagerDoesNotTrackAnEndedSlot(t *testing.T) {
 
 func TestExtenderActivatorSettingsSpreadTheRestartPostOverThirtyMinutes(t *testing.T) {
 	withTempHome(t)
-	r := &extenderRole{}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &extenderRole{ctx: ctx}
 	settings := r.activatorSettings(&extenderActivationInputs{apiUrl: "http://127.0.0.1:1"})
 	if settings.ReplacedPostJitter != 30*time.Minute {
 		t.Fatalf("restart post spread is %s, want 30m", settings.ReplacedPostJitter)
+	}
+}
+
+func TestParseRootKeysReadsTheHelloAnswer(t *testing.T) {
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(`{"extender_root_public_keys":["` + hex.EncodeToString(pub) + `"]}`)
+	keySet, err := parseRootKeys(body)
+	if err != nil || keySet.Len() != 1 {
+		t.Fatalf("want one key, got %v err %v", keySet, err)
+	}
+	if _, err := parseRootKeys([]byte(`{}`)); err == nil {
+		t.Fatal("an answer with no keys was accepted")
+	}
+	if _, err := parseRootKeys([]byte(`not json`)); err == nil {
+		t.Fatal("garbage was accepted")
+	}
+	if _, err := parseRootKeys([]byte(`{"extender_root_public_keys":["zz"]}`)); err == nil {
+		t.Fatal("a bad key was accepted")
+	}
+}
+
+func TestExtenderRoleLoadsRootKeysAndRetriesOnFailure(t *testing.T) {
+	withTempHome(t)
+	pub, _, err := ed25519.GenerateKey(nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	good := []byte(`{"extender_root_public_keys":["` + hex.EncodeToString(pub) + `"]}`)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &extenderRole{ctx: ctx, cancel: cancel}
+	r.config.fetchHello = func(ctx context.Context, inputs *extenderActivationInputs) ([]byte, error) { return good, nil }
+	slotCtx, endSlot := context.WithCancel(ctx)
+	defer endSlot()
+	inputs := &extenderActivationInputs{ctx: slotCtx, apiUrl: "http://127.0.0.1:1", byJwt: func() string { return "jwt" }}
+	go r.loadRootKeys(inputs)
+	deadline := time.Now().Add(5 * time.Second)
+	for r.rootKeyDirectory().RootKeys().Len() == 0 {
+		if time.Now().After(deadline) {
+			t.Fatal("root keys were never installed")
+		}
+		time.Sleep(20 * time.Millisecond)
+	}
+	if extenderFixedRenewalInterval >= 24*time.Hour {
+		t.Fatalf("fixed renewal %s must be inside the record's 24 hours", extenderFixedRenewalInterval)
 	}
 }
