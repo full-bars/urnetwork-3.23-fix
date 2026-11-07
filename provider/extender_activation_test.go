@@ -778,7 +778,7 @@ func TestExtenderRoleLoadsRootKeysAndRetriesOnFailure(t *testing.T) {
 	inputs := &extenderActivationInputs{ctx: slotCtx, apiUrl: "http://127.0.0.1:1", byJwt: func() string { return "jwt" }}
 	go r.loadRootKeys(inputs)
 	deadline := time.Now().Add(5 * time.Second)
-	for r.rootKeyDirectory().RootKeys().Len() == 0 {
+	for r.rootKeyDirectory(inputs.apiUrl).RootKeys().Len() == 0 {
 		if time.Now().After(deadline) {
 			t.Fatal("root keys were never installed")
 		}
@@ -786,5 +786,19 @@ func TestExtenderRoleLoadsRootKeysAndRetriesOnFailure(t *testing.T) {
 	}
 	if extenderFixedRenewalInterval >= 24*time.Hour {
 		t.Fatalf("fixed renewal %s must be inside the record's 24 hours", extenderFixedRenewalInterval)
+	}
+}
+
+// The directory must accept the platform's own records and reject another space's.
+func TestRootKeyDirectoryAcceptsOnlyThePlatformSpace(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r := &extenderRole{ctx: ctx}
+	directory := r.rootKeyDirectory("https://api.bringyour.com")
+	if !connect.ExtenderNetworkHostAllowed("bringyour.com", "bringyour.com") {
+		t.Fatal("test premise: the platform space host is allowed by name")
+	}
+	if got := r.rootKeyDirectory("https://api.other.example"); got != directory {
+		t.Fatal("the directory is created once")
 	}
 }

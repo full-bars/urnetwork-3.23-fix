@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"net"
 	"net/http"
 	"os"
 	"regexp"
@@ -187,9 +188,17 @@ const (
 )
 
 // rootKeyDirectory is the role's directory of platform root keys, created once.
-func (r *extenderRole) rootKeyDirectory() *connect.ExtenderDirectory {
+//
+// It accepts records only for the platform's own space host (the api host without
+// its api/api-v4/api-v6 label, so api.bringyour.com is bringyour.com). Without that
+// it rejects every record the platform returns, one log line each.
+func (r *extenderRole) rootKeyDirectory(apiUrl string) *connect.ExtenderDirectory {
 	r.directoryOnce.Do(func() {
-		r.directory = connect.NewExtenderDirectoryWithDefaults(r.ctx)
+		settings := connect.DefaultExtenderDirectorySettings()
+		if apiHost, err := connect.ExtenderApiHostName(apiUrl); err == nil && net.ParseIP(apiHost) == nil {
+			settings.NetworkHosts = []string{connect.ExtenderNetworkHostName(apiHost)}
+		}
+		r.directory = connect.NewExtenderDirectory(r.ctx, settings)
 	})
 	return r.directory
 }
@@ -232,7 +241,7 @@ func (r *extenderRole) readRootKeys(inputs *extenderActivationInputs) (*connect.
 // reads them again every few hours. It ends with the slot. A failure is logged once
 // per streak and retried with a growing wait; the fixed renewal interval covers the gap.
 func (r *extenderRole) loadRootKeys(inputs *extenderActivationInputs) {
-	directory := r.rootKeyDirectory()
+	directory := r.rootKeyDirectory(inputs.apiUrl)
 	wait := extenderRootKeysRetryMin
 	failing := false
 	for {
@@ -294,7 +303,7 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 	// lifetime. Until they are loaded it renews on this fixed interval, which must
 	// stay well inside the record's 24 hours (the platform issues exactly 24h).
 	settings.ActivateTimeout = extenderFixedRenewalInterval
-	settings.Directory = r.rootKeyDirectory()
+	settings.Directory = r.rootKeyDirectory(inputs.apiUrl)
 	if store, err := newExtenderPacingFileStore(); err != nil {
 		tlog("🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: %v\n", err)
 	} else {
