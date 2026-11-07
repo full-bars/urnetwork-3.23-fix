@@ -300,7 +300,7 @@ func (r *extenderRole) StopActivation(inputs *extenderActivationInputs) {
 	r.activatorInputs = nil
 	r.mu.Unlock()
 	activator.Close()
-	importantLogf("🌉 [extender] activation stopped: the direct slot it belonged to ended.\n")
+	importantLogf("🌉 [extender] activation paused: this provider lost its connection to the platform, so it stops asking to be listed for now. It starts asking again by itself as soon as the connection is back.\n")
 }
 
 // currentActivator is the running loop, nil before the direct slot attaches.

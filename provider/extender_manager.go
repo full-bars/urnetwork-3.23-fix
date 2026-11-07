@@ -225,6 +225,7 @@ func (m *extenderManager) AttachActivation(inputs *extenderActivationInputs) {
 		return
 	}
 	m.mu.Lock()
+	previous := m.inputs
 	m.inputs = inputs
 	role := m.role
 	m.mu.Unlock()
@@ -233,6 +234,22 @@ func (m *extenderManager) AttachActivation(inputs *extenderActivationInputs) {
 	}
 	if role != nil {
 		role.StartActivation(inputs)
+	}
+	if inputs.ctx.Err() != nil {
+		// This slot ended before its activation was installed, so the role
+		// skipped it and still runs the previous slot's. Track that slot again,
+		// so the manager and the role keep agreeing about who owns the loop.
+		m.mu.Lock()
+		if m.inputs == inputs {
+			if previous != nil && previous.ctx.Err() == nil {
+				m.inputs = previous
+			} else {
+				m.inputs = nil
+			}
+		}
+		m.mu.Unlock()
+		// an ended previous slot stops its own loop through its detach goroutine
+		return
 	}
 	go func() {
 		<-inputs.ctx.Done()

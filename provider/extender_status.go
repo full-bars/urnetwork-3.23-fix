@@ -160,7 +160,7 @@ func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActiva
 	if family != nil {
 		reading.LastAttemptUnixMs = unixMs(family.LastAttemptTime)
 		reading.NextAttemptUnixMs = unixMs(family.NextAttemptTime)
-		reading.ExpireUnixMs = unixMs(family.ExpireTime)
+		reading.ExpireUnixMs = unixMs(extenderListingExpiry(family))
 	}
 	switch {
 	case family != nil && family.Activated && extenderListingExpired(family, now):

@@ -13,6 +13,8 @@ import (
 	"net/http"
 	"testing"
 
+	"google.golang.org/protobuf/proto"
+
 	"github.com/urnetwork/connect"
 )
 
@@ -77,5 +79,28 @@ func TestExtenderServedIgnoresARefusedForward(t *testing.T) {
 	}
 	if refused := fixture.server.RefusalCounts()["destination authorization"]; refused != 1 {
 		t.Fatalf("destination authorization refusals = %d, want 1", refused)
+	}
+}
+
+// A legacy v1 forward counts once it is accepted; a refused one never does.
+func TestExtenderServedCountsAnAcceptedV1Forward(t *testing.T) {
+	fixture := newExtenderFixture(t, "127.0.0.1", nil)
+
+	refused, err := proto.Marshal(newTestExtenderHeader("blocked.example", 443, testSecret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendV1Header(t, fixture, refused)
+	if got := fixture.server.ServedCounts()["forward"]; got != 0 {
+		t.Fatalf("a refused v1 header counted as served: %d", got)
+	}
+
+	accepted, err := proto.Marshal(newTestExtenderHeader("dest.example", 443, testSecret))
+	if err != nil {
+		t.Fatal(err)
+	}
+	sendV1Header(t, fixture, accepted)
+	if got := fixture.server.ServedCounts()["forward"]; got != 1 {
+		t.Fatalf("an accepted v1 forward counts %d, want 1", got)
 	}
 }

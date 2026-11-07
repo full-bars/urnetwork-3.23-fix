@@ -230,6 +230,8 @@ type extenderRole struct {
 	// drop when a server leaves r.servers
 	baseServiceCounts map[string]uint64
 	baseServedCounts  map[string]uint64
+	// servers taken out of r.servers by shutdown whose counters are not yet folded
+	closing []*extender.ExtenderServer
 	baseRefusalCounts map[string]uint64
 	tcpRetries        int64
 
@@ -781,6 +783,8 @@ func (r *extenderRole) shutdown() {
 	r.mu.Lock()
 	servers := slices.Clone(r.servers)
 	r.servers = nil
+	// still visible to snapshots until folded, so the totals never dip
+	r.closing = append(r.closing, servers...)
 	activator := r.activator
 	r.activator = nil
 	r.activatorInputs = nil
@@ -800,6 +804,7 @@ func (r *extenderRole) shutdown() {
 	for _, server := range servers {
 		r.foldCountsLocked(server.Stats(), server.ServiceCounts(), server.ServedCounts(), server.RefusalCounts())
 	}
+	r.closing = slices.DeleteFunc(r.closing, func(c *extender.ExtenderServer) bool { return slices.Contains(servers, c) })
 	r.carriers = map[string]bool{}
 	r.dnsPorts = nil
 	r.state = extenderStateClosed
@@ -831,7 +836,7 @@ type extenderRoleSnapshot struct {
 
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	r.mu.Lock()
-	servers := slices.Clone(r.servers)
+	servers := append(slices.Clone(r.servers), r.closing...)
 	baseServiceCounts := maps.Clone(r.baseServiceCounts)
 	baseServedCounts := maps.Clone(r.baseServedCounts)
 	baseRefusalCounts := maps.Clone(r.baseRefusalCounts)

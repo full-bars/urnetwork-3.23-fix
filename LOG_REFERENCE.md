@@ -697,7 +697,7 @@ The platform lists an extender only after it proves it from the outside: it dial
 🌉❌ [extender] IPv6 failed for the first time. Check that inbound TCP 443 reaches this host and that it has a public IPv6 address.
 🌉 [extender] IPv4 ⛔  IPv4 not activated: 2 tries, 0 worked, 2 failed; next try in 20m at 18:40 UTC; last failure 3m ago: <reason>
 🌉⛔ [extender] IPv4: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. This happens when the identity file .provider.extender.key was copied from another box or account. Fix: stop the provider, delete that file so a new key is made for this network, and start it again.
-🌉 [extender] activation stopped: the direct slot it belonged to ended.
+🌉 [extender] activation paused: this provider lost its connection to the platform, so it stops asking to be listed for now. It starts asking again by itself as soon as the connection is back.
 🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: <error>
 ```
 

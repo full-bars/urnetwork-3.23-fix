@@ -612,6 +612,55 @@ func TestExtenderManagerAttachOrderingKeepsTheRoleAndManagerAgreeing(t *testing.
 	}
 }
 
+// A replacement whose slot ends while it is being attached must not leave the
+// manager tracking nothing while the role still runs the previous slot's loop.
+func TestExtenderManagerCancelledReplacementKeepsThePreviousSlot(t *testing.T) {
+	withTempHome(t)
+	m := newExtenderManager()
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.newConfig = func() extenderRoleConfig { return testExtenderRoleConfig(t) }
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	m.ctx = ctx
+	m.Reconcile("test")
+	role := m.Role()
+	if role == nil {
+		t.Fatal("role did not start")
+	}
+	defer m.stop("test over")
+	waitExtenderRoleReady(t, role)
+
+	newInputs := func() (*extenderActivationInputs, context.CancelFunc) {
+		slotCtx, endSlot := context.WithCancel(ctx)
+		t.Cleanup(endSlot)
+		return &extenderActivationInputs{
+			ctx:            slotCtx,
+			apiUrl:         "http://127.0.0.1:1",
+			byJwt:          newJwtHolder("jwt").Get,
+			clientStrategy: newExtenderActivationStrategy(slotCtx),
+		}, endSlot
+	}
+	a, _ := newInputs()
+	b, endB := newInputs()
+	m.AttachActivation(a)
+
+	m.attachHook = func() { endB() }
+	m.AttachActivation(b)
+	m.attachHook = nil
+
+	time.Sleep(100 * time.Millisecond)
+	m.mu.Lock()
+	tracked := m.inputs
+	m.mu.Unlock()
+	role.mu.Lock()
+	running := role.activatorInputs
+	role.mu.Unlock()
+	if running != a || tracked != a {
+		t.Fatalf("slot A is live and should own the loop (running %p, tracked %p, A %p)", running, tracked, a)
+	}
+}
+
 // An attach for a slot that has already ended is not tracked at all.
 func TestExtenderManagerDoesNotTrackAnEndedSlot(t *testing.T) {
 	withTempHome(t)
