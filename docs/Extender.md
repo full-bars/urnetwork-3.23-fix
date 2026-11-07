@@ -200,7 +200,7 @@ In every case:
 
 ## Reading the log
 
-Every extender line starts with a 🌉, with a mark for the outcome: ✅ worked, ⛔ the platform refused, ❌ failed, ⚠️ a warning. `grep 🌉` finds all of them and `grep '🌉❌'` every failure. For the full list see the [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
+Every extender line starts with a 🌉. A line that reports an outcome adds a mark: ✅ worked, ⛔ the platform refused, ❌ failed, ⚠️ a warning. `grep 🌉` finds all of them and `grep '🌉❌'` every failure. For the full list see the [Log Message Reference](/full-bars/urnetwork-3.23-fix/blob/main/LOG_REFERENCE.md).
 
 When the role starts:
 
