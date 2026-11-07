@@ -623,12 +623,140 @@ Nothing is graded once and trusted forever.
 
 The net effect is that a proxy holds its place only by continuing to pass. The A to F funnel admits the best first on every fill, and the re-grading keeps re-ordering the pool against reality rather than against a snapshot from days ago.
 
+## 🌉 Extender (`[extender]`, `[health][extender]`)
+
+The extender helps people in censored countries reach URnetwork through this host. It is on by default; `urnet-tools extender status` shows whether it is working, and `urnet-tools extender disable|enable` turns it off and on (see [Extender](docs/Extender.md)). Every extender line opens with the bridge, then an outcome mark where one applies, so one grep finds all of them:
+
+| Mark | Meaning |
+| :--- | :--- |
+| `🌉` | State or progress, nothing to act on |
+| `🌉✅` | It worked (started, bound, activated) |
+| `🌉⛔` | The platform refused this host |
+| `🌉❌` | It failed or is blocked, and you may need to act |
+| `🌉⚠️` | A warning: it keeps running, but something is degraded |
+
+```
+grep 🌉 /dev/shm/urnetwork.log          # every extender line
+grep '🌉❌' /dev/shm/urnetwork.log      # every failure
+urnet-tools logs --important             # the outcome lines and the health line
+```
+
+Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (started, stopped, failed, refused, activated) are also written to the disk events log, so they survive a reboot; the five-minute reminder below stays in the RAM log only so a long failure does not fill the disk log.
+
+### Start, stop and the setting
+
+```
+🌉✅ [extender] started (startup; setting from default). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.
+🌉 [extender] off: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
+🌉 [extender] off: direct providing is disabled, and the extender only runs on the direct slot. Turn direct back on with: provider direct on
+🌉 [extender] stopping: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on
+🌉 [extender] stopped. It no longer listens, and the platform will stop sending clients to this host once its record expires.
+🌉❌ [extender] FAILED to start: <error>. The extender is not running. It will be retried in 15s.
+🌉⚠️ [extender] ignoring URNETWORK_EXTENDER="maybe": it is not on or off, so the default (on) applies. Use `urnet-tools extender off` to turn the extender off.
+⚙️ [control] set extender=off (was unset)
+```
+
+- `started (<why>; setting from <source>)` is logged once when the role starts. `<source>` says which setting decided it: `default`, the `URNETWORK_EXTENDER` environment variable, or the control socket.
+- `off: ...` says why the role is not running and how to change that. It is logged once at start, and again only if the reason changes; the 15 second check does not repeat it.
+- `FAILED to start` is logged once per distinct error, however long it keeps failing (a corrupt identity file, say). The provider keeps working, and the start is retried every 15 seconds, so fixing the cause brings the extender up by itself.
+- `⚙️ [control] set extender=...` is the usual control-socket confirmation. `urnet-tools extender disable` sends `off` and `enable` sends `on`, and the change applies at once with no restart.
+
+### Ports
+
+```
+🌉 [extender] listen tcp 443
+🌉 [extender] listen udp 443 (quic)
+🌉 [extender] listen udp 4053 (dns)
+🌉✅ [extender] ready — serving on tcp, quic and dns; forwards allowed for 2 hosts
+🌉✅ [extender] serving on tcp, quic and dns
+🌉❌ [extender] tcp_unavailable — listening
+🌉❌ [extender] CANNOT USE tcp 443: listen tcp :443: bind: address already in use. Port 443 is held by caddy (pid 894). The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed and no clients will be sent to it, even though udp 443 and dns 4053 can still listen. Free the port (stop or move whatever holds it). The bind is retried every 3m0s; next attempt at 17:42.
+🌉❌ [extender] STILL BLOCKED: tcp 443 is unavailable (held by caddy (pid 894)) after 6 retries (listen tcp :443: bind: address already in use). This host is not listed and gets no clients until it is freed. Next attempt at 18:12.
+🌉✅ [extender] tcp 443 is bound again: asking the platform to list this host now.
+🌉⚠️ [extender] dns 53 unavailable: <error>; keeping 4053
+🌉❌ [extender] <carrier> carrier unavailable: <error>
+🌉 [extender] created identity key /home/user/.urnetwork/.provider.extender.key (0600)
+```
+
+- TCP 443 is the one port the platform requires. With it down the role still serves udp 443 and dns 4053, but the host is **not listed** and gets no clients, and the activation waits (it does not fail). `CANNOT USE tcp 443` says so in full the first time, names what holds the port when the host will tell it (`ss`; a process owned by another user may show no name), and gives the next retry time. `STILL BLOCKED` repeats at most every 30 minutes with the retry count. When the port comes free, `tcp 443 is bound again` follows, and the platform is asked within a few minutes.
+- A permission error on 443 adds the fix to the line: give the binary `cap_net_bind_service` (`sudo setcap cap_net_bind_service=+ep <binary>`) or run as root. The installer and `urnet-tools update` apply it.
+- `forwards allowed for N hosts` counts the allow list: the platform's own hosts (always) plus any in `URNETWORK_EXTENDER_ALLOWED_HOSTS`. The platform's proof forwards a request to its own API through the extender, so an empty list could never be listed. `🌉⚠️ no forward hosts configured` only appears if the provider's API address could not be read.
+- State lines after the first are logged only when something changes, as `<state> — <note>`. `tcp_unavailable`, `unavailable` and `error` carry `🌉❌`.
+- The extender server also writes `🌉 [extender] listen error (<carrier>): <error>`, `accept error`, `udp carrier <mode> exited: <reason>`, and `refused a request at <stage>: <error>` (rate limited to `refused N requests at <stage> in the last minute; latest: <error>`). Refusals are normal on a public port: scanners and ordinary browsers are answered like a plain website, and malformed or unauthorized requests are refused.
+
+### Activation: asking the platform to list this host
+
+The platform lists an extender only after it proves it from the outside: it dials back to this host on tcp 443, requires a signed answer, then forwards a real request through it to its own API. IPv4 and IPv6 are tried separately.
+
+```
+🌉✅ [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.
+🌉✅ [extender] IPv4 activation try 1 worked in 2.3s
+🌉✅ [extender] IPv4 is now activated on try 1. The platform can reach this host over IPv4.
+🌉❌ [extender] IPv6 activation try 1 failed after 1.1s: <reason>
+🌉⛔ [extender] IPv4 activation try 2 failed after 0.4s: <the platform's reason>
+🌉❌ [extender] IPv6 failed for the first time. Check that inbound TCP 443 reaches this host and that it has a public IPv6 address.
+🌉 [extender] IPv4 ⛔  IPv4 not activated: 2 tries, 0 worked, 2 failed; next try in 20m at 18:40 UTC; last failure 3m ago: <reason>
+🌉⛔ [extender] IPv4: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. This happens when the identity file .provider.extender.key was copied from another box or account. Fix: stop the provider, delete that file so a new key is made for this network, and start it again.
+🌉 [extender] activation stopped: the direct slot it belonged to ended.
+🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: <error>
+```
+
+- `activation started` is logged when the direct slot has signed in and the activation attaches. Until then the status reads "waiting for the direct slot to sign in". It stops with the direct slot (`provider direct off`) and starts again with `provider direct on`.
+- `activation try N worked` / `is now activated` / `failed` are the outcome lines. `⛔` means the platform answered and said no (its reason is quoted); `❌` is any other failure (the request failed, no public address on that family, tcp 443 not answering). The first failure of a family adds the hint to check inbound TCP 443 and that the host has a public address of that family.
+- The `IPv4 ⛔  IPv4 not activated: ...` line is the reminder, at most every five minutes while a family is not activated. It names the tries so far, the reason, and when the next try is. It is written to the RAM log only. The marks after the bridge are `✅` activated, `⛔` the platform said no, `❌` the last try failed, `⏳` nothing tried yet.
+- The platform limits how often it will probe a host. A refusal can carry a wait (`retry_after`); the activation honours it and backs off, doubling up to six hours. A host that keeps failing posts about three times per family in its first hour, so do not restart the provider hoping to speed it up.
+- A family that never passes is normal for a host with no public address of that family (IPv6 on a box with only IPv4), or behind NAT without a port forward. That is the platform's answer, not a bug.
+- `key belongs to ANOTHER network` means the identity file was copied. Delete `~/.urnetwork/.provider.extender.key` (with the provider stopped) and start again.
+- The activation keeps its schedule in `~/.urnetwork/extender_pacing.json`, so a restart or reboot resumes the cadence instead of asking both families at once. If it cannot be read or written, these lines appear:
+
+```
+🌉 [extender]activate pacing load err = <error>
+🌉 [extender]activate pacing load timed out after 2s, starting fresh
+🌉 [extender]activate pacing v4 cleared: <why>
+🌉 [extender]activate pacing save err = <error>
+```
+
+Lower-level activation lines, useful when a refusal needs explaining:
+
+```
+🌉 [extender]activate run = 8c4e941f787b5996 start = 2026-11-07T01:34:56Z previous exit = ""
+🌉 [extender]activate hello err = <error>
+🌉 [extender]activate address 203.0.113.5 -> 203.0.113.9
+🌉 [extender]activate resumed after 2h0m0s asleep
+🌉 [extender] activate v4 refused carriers=dns,quic,tcp api=... last_remote=... elapsed=1s attempts=1 retry_after=1m35s error=<reason>
+🌉 [extender]activate v4 probe stopped at forward on port 443: timeout after 500ms with 500ms of the budget left when it started
+🌉 [extender]activate v4 left out = quic:443 after 6.4s (6.4s left): no answer
+```
+
+- `address A -> B` means the address the platform sees for this host changed; the activation is posted again.
+- `probe stopped at <step>` and `left out = <carrier>` come from the platform's own probe timings. A carrier that is `left out` (quic or dns that did not answer) does not stop the host being listed; it is just not offered to clients. Only tcp 443 and the forward through it are required.
+
+### Health line and the tally
+
+```
+🌉❤️ [health][extender] serving | tcp 443 up, udp 443 up, dns 4053 up | IPv4 ACTIVE 203.0.113.5 | IPv6 not active (failed): no public IPv6 address, next try 17:23 | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
+🌉❤️ [health][extender] tcp unavailable | tcp 443 DOWN (address already in use), udp 443 up, dns 4053 up | tcp 443 is down, so this host is NOT listed and gets no clients | IPv4 not active (held until tcp 443 is bound) | IPv6 not active (held until tcp 443 is bound) | clients now 0, requests served 24h 0, 7d 0, lifetime 0
+🌉❤️ [health][extender] OFF: turned off by control socket (urnet-tools extender off). Turn it back on with: urnet-tools extender on | served 24h 120, 7d 800, lifetime 5000 requests
+🌉⚠️ [extender] the saved request tally /home/user/.urnetwork/extender_tally.json could not be read (<error>); counting from zero. The file will be replaced.
+🌉⚠️ [extender] could not save the request tally to /home/user/.urnetwork/extender_tally.json: <error>
+```
+
+- The `[health][extender]` line is written with the other `[health]` lines, about every five minutes. It reads left to right: role state, the three ports, each address family, then the clients.
+- `ACTIVE` means the platform listed this host on that family and the listing has not expired. A listing that expires without being renewed reads `not active (failed): the platform's listing of this host expired at ...`.
+- `held until tcp 443 is bound` means the activation is waiting for the port, not failing.
+- `clients now` is connections open over every carrier at this moment.
+- `requests served` counts requests the extender handled for clients over the last 24 hours, 7 days, and its lifetime, kept across restarts in `~/.urnetwork/extender_tally.json`. It counts relayed forwards and directory feed requests, minus any that were refused. It does **not** count ordinary web requests to port 443 (scanners and browsers are answered like a plain website) or the platform's own verification probes, and it counts requests, not distinct people: the provider does not record who asked. The windows are accurate to the hour.
+
+---
+
 ## 💓 Health Heartbeat
 
 ```
 [health][build] v3.23.0-fix.31.8 profile=auto host=node-a
 [health] uptime=15m0s profile=auto heap=80MiB sys=255MiB goroutines=2156 connections=998 proxies=1150
 ```
+
+With the extender on, a `🌉❤️ [health][extender]` line follows each tick (ports, each address family, clients and requests served). See [Extender](#-extender-extender-healthextender).
 
 The `[health][build]` line leads every heartbeat tick. It exists so a log tail
 or a pasted excerpt identifies the build that produced it: the startup banner
