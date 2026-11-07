@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 )
@@ -106,5 +107,61 @@ func TestControlSocketExtenderStatusAnswersWhenOff(t *testing.T) {
 	}
 	if !strings.Contains(resp.Extender.SettingSource, "control socket") {
 		t.Fatalf("setting source %q does not name the control socket", resp.Extender.SettingSource)
+	}
+}
+
+func TestExtenderUnrecognisedEnvWarnsOnceWhenOff(t *testing.T) {
+	var logged []string
+	prevHook := importantLogHook
+	t.Cleanup(func() { importantLogHook = prevHook })
+	importantLogHook = func(line string) {
+		if strings.Contains(line, "ignoring URNETWORK_EXTENDER") {
+			logged = append(logged, line)
+		}
+	}
+
+	envVal := "banana"
+	m := &extenderManager{
+		environ: func(key string) string {
+			if key == extenderEnv {
+				return envVal
+			}
+			return ""
+		},
+		directEnabled: func() bool { return false },
+		ctx:           context.Background(),
+	}
+
+	// First reconcile logs the warning
+	m.Reconcile("check 1")
+	if len(logged) != 1 || !strings.Contains(logged[0], "ignoring URNETWORK_EXTENDER=\"banana\"") {
+		t.Fatalf("expected 1 warning line, got %v", logged)
+	}
+
+	// Second reconcile with same bad value must NOT repeat the warning
+	m.Reconcile("check 2")
+	if len(logged) != 1 {
+		t.Fatalf("warning must be logged once for the same bad value, got %d times", len(logged))
+	}
+
+	// Changed bad value logs once
+	envVal = "apple"
+	m.Reconcile("check 3")
+	if len(logged) != 2 || !strings.Contains(logged[1], "ignoring URNETWORK_EXTENDER=\"apple\"") {
+		t.Fatalf("expected warning for apple, got %v", logged)
+	}
+
+	// Valid or empty value clears the marker
+	envVal = ""
+	m.Reconcile("check 4")
+	if len(logged) != 2 {
+		t.Fatalf("no warning expected for valid/empty value, got %d logs", len(logged))
+	}
+
+	// Re-introducing banana logs again
+	envVal = "banana"
+	m.Reconcile("check 5")
+	if len(logged) != 3 {
+		t.Fatalf("expected warning logged again after clearing, got %d logs", len(logged))
 	}
 }

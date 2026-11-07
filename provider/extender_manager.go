@@ -48,6 +48,7 @@ type extenderManager struct {
 	// the last reason the role is not running, so a periodic check does not
 	// repeat a line that has not changed
 	lastOffLine string
+	lastBadEnv  string
 	// why the role is off, for status. Empty while it runs.
 	offReason string
 
@@ -121,7 +122,10 @@ func (m *extenderManager) reconcileLocked(why string) {
 		return
 	}
 	on, source := extenderSetting(m.environ)
-	if bad := extenderUnrecognisedEnv(m.environ); bad != "" && m.role == nil {
+	if bad := extenderUnrecognisedEnv(m.environ); bad == "" {
+		m.lastBadEnv = ""
+	} else if m.role == nil && bad != m.lastBadEnv {
+		m.lastBadEnv = bad
 		importantLogf("🌉⚠️ [extender] ignoring %s=%q: it is not on or off, so the default (on) applies. Use `urnet-tools extender off` to turn the extender off.\n", extenderEnv, bad)
 	}
 	direct := m.directEnabled()
