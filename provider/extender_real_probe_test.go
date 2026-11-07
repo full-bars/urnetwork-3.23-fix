@@ -9,6 +9,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"os"
 	"os/exec"
 	"path/filepath"
 	"strconv"
@@ -37,7 +38,21 @@ type realProbeResult struct {
 	Error     string
 }
 
+// TestExtenderRealPlatformProbe runs the platform's own probe code (upstream
+// connect's net_extender_probe.go and net_extender_camouflage_probe.go, built as a
+// separate pinned module under testdata/realprobe) against this repo's real
+// extender role, so the activation's required test is exercised by the code the
+// real platform runs, not by a stand-in.
+//
+// It is opt-in. It builds a -race subprocess and fetches the pinned upstream
+// module, so it needs the network and takes about a minute. Run it before a
+// release, and whenever upstream connect's probe or the extender server changes:
+//
+//	URNETWORK_REAL_PROBE_TEST=1 go test -race -count=1 -run TestExtenderRealPlatformProbe ./provider/
 func TestExtenderRealPlatformProbe(t *testing.T) {
+	if os.Getenv("URNETWORK_REAL_PROBE_TEST") == "" {
+		t.Skip("opt-in: set URNETWORK_REAL_PROBE_TEST=1 (needs the network, about a minute)")
+	}
 	// The subprocess is built with race instrumentation too. Its independent
 	// module uses the platform's actual connect, not this fork's dialer.
 	binary := filepath.Join(t.TempDir(), "realprobe")
