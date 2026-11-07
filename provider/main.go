@@ -943,6 +943,12 @@ func sanitizeRootPath() {
 }
 
 func main() {
+	if handled, ok := handleExtenderBindProbe(os.Args[1:], net.Listen, os.Stdout, os.Stderr); handled {
+		if !ok {
+			os.Exit(1)
+		}
+		return
+	}
 	// G-M2: sanitize PATH when running as root to prevent hijacking
 	// of exec.Command bare names (systemctl, docker, etc.) via attacker-writable
 	// directories earlier in root's PATH. Filter rather than replace so
