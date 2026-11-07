@@ -191,6 +191,49 @@ docker run -d --name=urfix --pull=always --restart=unless-stopped \
 }
 ```
 
+**Compose.** The same three modes as a Compose file. With published ports (use this with the IPv6 daemon setting from (3) to get both families, or as is for IPv4 only):
+
+```yaml
+services:
+  urnetwork:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    restart: unless-stopped
+    cap_add: [NET_ADMIN, NET_RAW]
+    sysctls:
+      net.ipv4.ip_forward: "1"
+    ports:
+      - "443:443"
+      - "443:443/udp"
+      - "4053:4053/udp"
+    environment:
+      AUTH: authcode
+      AUTHCODE: "YOUR_AUTH_CODE_HERE"
+      HOST_HOSTNAME: my-host
+    volumes:
+      - urnetwork_data:/root/.urnetwork
+volumes:
+  urnetwork_data:
+```
+
+With host networking, drop `ports` and `sysctls` and add `network_mode: host`:
+
+```yaml
+services:
+  urnetwork:
+    image: ghcr.io/full-bars/urnetwork-3.23-fix:latest
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_RAW]
+    environment:
+      AUTH: authcode
+      AUTHCODE: "YOUR_AUTH_CODE_HERE"
+      HOST_HOSTNAME: my-host
+    volumes:
+      - urnetwork_data:/root/.urnetwork
+volumes:
+  urnetwork_data:
+```
+
 In every case:
 
 - The auth code is single-use. Keep `/root/.urnetwork` on a persistent volume: after the first start the saved login is used (`-e AUTH=authcode` with no code works), and the volume also keeps the extender identity and listing.
