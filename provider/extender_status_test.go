@@ -57,8 +57,8 @@ func TestExtenderHealthLineServing(t *testing.T) {
 	}
 }
 
-// A blocked tcp 443 is the failure that kept a production host off the platform. The line
-// must say so in words, not leave the operator to infer it from a missing "up".
+// A blocked tcp 443 keeps the host from being listed. The line must say so in
+// words, and not leave the operator to infer it from a missing "up".
 func TestExtenderHealthLineNamesBlockedTcp(t *testing.T) {
 	line := formatExtenderHealthLine(extenderControlReading{
 		Known: true, Setting: "on", Running: true, RoleState: extenderStateTcpUnavailable,

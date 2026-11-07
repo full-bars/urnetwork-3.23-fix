@@ -546,7 +546,7 @@ func TestExtenderRoleKeepsItsCountsAfterClose(t *testing.T) {
 // role runs must be the one the manager tracks: otherwise the older slot's loop
 // keeps running with nothing that will ever stop it when the newer slot ends.
 // The hook holds the first attach between saving its inputs and installing its
-// activator, which is exactly where the second one used to slip past.
+// activator, which is where a second attach could otherwise slip in.
 func TestExtenderManagerAttachOrderingKeepsTheRoleAndManagerAgreeing(t *testing.T) {
 	withTempHome(t)
 	m := newExtenderManager()

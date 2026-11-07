@@ -356,11 +356,9 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 	settings.PublicKey = r.identityPublicKey()
 	settings.Carriers = r.activationCarriers
 	settings.DnsPorts = r.activationDnsPorts
-	// After a restart a still-valid listing is posted once more at a random moment in
-	// this window, so a fleet that restarts together does not post together. The
-	// connect default is one hour. Most hosts on the network run this build, so a
-	// fleet-wide update restarts them together: the spread stays wide, but half the
-	// default refreshes the listing sooner.
+	// After a restart a still-valid listing is posted once more at a random moment
+	// within this window, so many hosts that restart together do not all post at
+	// the same time. It is half of connect's default window of one hour.
 	settings.ReplacedPostJitter = extenderRestartPostSpread
 	// The platform's root keys let the activator renew from the signed record's own
 	// lifetime. Until they are loaded it renews on this fixed interval, which must
