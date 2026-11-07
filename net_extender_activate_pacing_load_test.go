@@ -354,38 +354,70 @@ func (self *testReleasablePacingStore) SavePacing(record *ExtenderActivationPaci
 }
 
 func TestExtenderActivatorReleasedStoreDuringReplacement(t *testing.T) {
-	store := &testReleasablePacingStore{testPacingStore: *newTestPacingStore()}
-	fixture := newTestActivatorFixtureActivated(t, func(settings *ExtenderActivatorSettings) {
-		settings.PacingStore = store
-	})
-	fixture.step(time.Minute)
-	_, savesBefore := store.family(4)
+	for _, c := range []struct {
+		name     string
+		helloDue bool
+	}{
+		{name: "address check due", helloDue: true},
+		{name: "address check not due", helloDue: false},
+	} {
+		t.Run(c.name, func(t *testing.T) {
+			store := &testReleasablePacingStore{testPacingStore: *newTestPacingStore()}
+			fixture := newTestActivatorFixtureActivated(t, func(settings *ExtenderActivatorSettings) {
+				settings.PacingStore = store
+			})
+			fixture.step(time.Minute)
+			_, savesBefore := store.family(4)
 
-	// the role is replaced and its store is released before the new activator reads it
-	store.release()
-	fixture.replaceActivator(func(settings *ExtenderActivatorSettings) {
-		settings.postJitterForTest = func(time.Duration) time.Duration { return 30 * time.Minute }
-	})
-	select {
-	case <-fixture.activator.Ready():
-	case <-time.After(30 * time.Second):
-		t.Fatal("the replacement was not ready with its store released")
-	}
-	// what the old activator held carries over
-	if status := fixture.activator.Status().Family(4); !status.Activated {
-		t.Fatalf("v4 status = %+v, expected the record carried over", status)
-	}
-	fixture.waitPass()
-	fixture.step(30 * time.Minute)
-	fixture.waitPost()
-	fixture.waitPost()
-	// a later pass proves the one that posted has finished
-	fixture.step(time.Minute)
-	// the pacing stands in memory though no save lands
-	if pacing := fixture.activator.Pacing()[4]; pacing.State != ExtenderPacingActivated {
-		t.Fatalf("pacing = %+v, expected activated in memory", pacing)
-	}
-	if _, saves := store.family(4); saves != savesBefore {
-		t.Fatalf("saves = %d, expected none after the release (%d)", saves, savesBefore)
+			// A pass can finish without a hello when the carried address check is not due.
+			passEnded := make(chan time.Duration, 64)
+			store.release()
+			fixture.replaceActivator(func(settings *ExtenderActivatorSettings) {
+				settings.postJitterForTest = func(time.Duration) time.Duration { return 30 * time.Minute }
+				settings.ResumeCheckTimeout = 0
+				settings.PassAfter = func(wait time.Duration) <-chan time.Time {
+					passEnded <- wait
+					return nil
+				}
+				settings.PreviousState.nextAddressCheckTime = fixture.clock.Now()
+				if !c.helloDue {
+					settings.PreviousState.nextAddressCheckTime = fixture.clock.Now().Add(time.Minute)
+				}
+			})
+			select {
+			case <-fixture.activator.Ready():
+			case <-time.After(30 * time.Second):
+				t.Fatal("the replacement was not ready with its store released")
+			}
+			if status := fixture.activator.Status().Family(4); !status.Activated {
+				t.Fatalf("v4 status = %+v, expected the record carried over", status)
+			}
+			select {
+			case <-passEnded:
+			case <-time.After(30 * time.Second):
+				t.Fatal("the replacement did not finish its first pass")
+			}
+			select {
+			case <-fixture.operator.hellos:
+				if !c.helloDue {
+					t.Fatal("an address check ran before its deadline")
+				}
+			default:
+				if c.helloDue {
+					t.Fatal("the due address check did not run")
+				}
+			}
+			fixture.step(30 * time.Minute)
+			fixture.waitPost()
+			fixture.waitPost()
+			// A later pass proves the one that posted has finished.
+			fixture.step(time.Minute)
+			if pacing := fixture.activator.Pacing()[4]; pacing.State != ExtenderPacingActivated {
+				t.Fatalf("pacing = %+v, expected activated in memory", pacing)
+			}
+			if _, saves := store.family(4); saves != savesBefore {
+				t.Fatalf("saves = %d, expected none after the release (%d)", saves, savesBefore)
+			}
+		})
 	}
 }
