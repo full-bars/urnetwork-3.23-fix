@@ -57,6 +57,54 @@ ensure_extender_cap ()
     return 0
 )
 
+# report_extender_port says, at install time, what the extender will do on this
+# host. The extender is ON by default, so this never asks a question: it prints
+# whether TCP 443 (the port the platform must reach to list this host) is free or
+# who holds it, and how to turn the extender off. It never fails the install.
+# A listener that is this provider's own (an update keeps the old process up) is
+# not blamed.
+report_extender_port ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    provider_file=$1
+    off_hint="To turn it off at any time: urnet-tools extender disable"
+    reach_hint="Inbound TCP 443 must also reach this host (check any firewall or router)."
+    if ! command -v ss >/dev/null 2>&1; then
+        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss is not installed.) $reach_hint $off_hint"
+        return 0
+    fi
+    tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null) || tcp_listeners=""
+    if [ -z "$tcp_listeners" ]; then
+        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. $reach_hint $off_hint"
+    else
+        holder=$(printf '%s\n' "$tcp_listeners" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (pid \2)/p' | head -n 1)
+        case "$holder" in
+            "urnetwork "*)
+                pr_info "Extender: already listening on TCP 443 from this provider. $off_hint"
+                ;;
+            "")
+                pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                ;;
+            *)
+                pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                ;;
+        esac
+    fi
+    if [ "$(id -u 2>/dev/null)" != 0 ]; then
+        have_cap=0
+        if command -v getcap >/dev/null 2>&1; then
+            case "$(getcap "$provider_file" 2>/dev/null)" in
+                *cap_net_bind_service*) have_cap=1 ;;
+            esac
+        fi
+        if [ "$have_cap" -eq 0 ]; then
+            quoted_file=$(printf '%s' "$provider_file" | sed "s/'/'\\\\''/g")
+            pr_warn "Extender: this provider is not root and lacks permission to bind port 443, so the extender cannot start yet. Run: sudo setcap cap_net_bind_service=+ep '$quoted_file'"
+        fi
+    fi
+    return 0
+)
+
 show_help ()
 {
     echo "Usage: $me [options] <command>"
@@ -2691,6 +2739,7 @@ do_install ()
         fi
         ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
     fi
+    report_extender_port "$install_path/bin/urnetwork" || true
 
     cd "$script_rundir" || exit 1
 

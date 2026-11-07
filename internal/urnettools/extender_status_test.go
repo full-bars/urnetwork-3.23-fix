@@ -96,3 +96,23 @@ func TestExtenderOffIsNotAClear(t *testing.T) {
 		t.Fatal("`extender off` would clear the setting and return to the default, which is on")
 	}
 }
+
+// `enable` and `disable` are plain-language names for on and off.
+func TestExtenderActionAliases(t *testing.T) {
+	tests := map[string]string{
+		"status": "status", "on": "on", "off": "off",
+		"enable": "on", "disable": "off",
+		"ENABLE": "on", " Disable ": "off",
+	}
+	for in, want := range tests {
+		got, ok := normalizeExtenderAction(in)
+		if !ok || got != want {
+			t.Errorf("normalizeExtenderAction(%q) = %q, %v, want %q", in, got, ok, want)
+		}
+	}
+	for _, bad := range []string{"", "maybe", "start", "enabled"} {
+		if _, ok := normalizeExtenderAction(bad); ok {
+			t.Errorf("normalizeExtenderAction(%q) was accepted", bad)
+		}
+	}
+}

@@ -54,7 +54,7 @@ Performance & Tuning:
   config [--json]         Show all provider settings with source and age
   profile [<name>]        Show or set the memory/GC tuning profile
   metrics [on|off|listen] Prometheus /metrics: status, toggle, listen address
-  extender [on|off]       Extender role (helps censored clients): status, turn on or off
+  extender [on|off]       Extender role (helps censored clients): status, enable or disable
   smart-dialer [on|off]   Adapt transport choice to the network: skip DPI-circumvention cost when it is not needed
 
 Session & Identity:
