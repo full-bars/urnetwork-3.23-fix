@@ -162,6 +162,12 @@ func cmdExtender(args []string, dryRun bool) error {
 		return fmt.Errorf("provider %s has no resolvable state dir", providerLabel(p))
 	}
 
+	if !dryRun {
+		if elevated, err := maybeElevateForCrossUser("extender", p, args, false, dryRun); elevated {
+			return err
+		}
+	}
+
 	if action != "status" {
 		// `off` is a real persisted value, never a clear: the default is on
 		// (see treatsOffAsClear).

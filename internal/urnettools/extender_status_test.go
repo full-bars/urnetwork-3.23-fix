@@ -149,6 +149,46 @@ func TestExtenderChangeWithAnUnansweringProviderStillFails(t *testing.T) {
 	}
 }
 
+func TestCmdExtenderCrossUserElevation(t *testing.T) {
+	tempDir := t.TempDir()
+	origProc, origStop := discoverProcessesFn, discoverStoppedFn
+	origPriv := isPrivileged
+	origE := elevateSelfFunc
+	t.Cleanup(func() {
+		discoverProcessesFn, discoverStoppedFn = origProc, origStop
+		isPrivileged = origPriv
+		elevateSelfFunc = origE
+	})
+	discoverProcessesFn = func() []Provider {
+		return []Provider{{Unit: "other.service", User: "other-user", StateDir: tempDir}}
+	}
+	discoverStoppedFn = func([]Provider) []Provider { return nil }
+	isPrivileged = func() bool { return false }
+
+	var elevatedArgv []string
+	elevateSelfFunc = func(args []string) error {
+		elevatedArgv = append([]string{}, args...)
+		return nil
+	}
+
+	// Normal run targeting another user must re-execute under sudo.
+	if err := cmdExtender([]string{"off"}, false); err != nil {
+		t.Fatalf("cmdExtender failed: %v", err)
+	}
+	if len(elevatedArgv) == 0 || elevatedArgv[0] != "extender" {
+		t.Fatalf("expected elevation with subcommand 'extender', got %v", elevatedArgv)
+	}
+
+	// Dry run must NOT elevate.
+	elevatedArgv = nil
+	if err := cmdExtender([]string{"off"}, true); err != nil {
+		t.Fatalf("cmdExtender dry-run failed: %v", err)
+	}
+	if len(elevatedArgv) != 0 {
+		t.Fatalf("dry run must not elevate, got %v", elevatedArgv)
+	}
+}
+
 func TestExtenderAboutPrintsWithoutAProvider(t *testing.T) {
 	for _, word := range []string{"about", "help", "explain"} {
 		out := captureStdout(t, func() {
