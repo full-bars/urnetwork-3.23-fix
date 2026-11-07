@@ -791,6 +791,24 @@ func TestExtenderActivatorSettingsSpreadTheRestartPostOverThirtyMinutes(t *testi
 	}
 }
 
+func TestExtenderRootKeyFailureLogOmitsResponseBody(t *testing.T) {
+	withTempHome(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	lines := make(chan string, 1)
+	importantLogHook = func(line string) { lines <- line; cancel() }
+	defer func() { importantLogHook = nil }()
+	role := &extenderRole{ctx: ctx, config: extenderRoleConfig{fetchHello: func(context.Context, *extenderActivationInputs) ([]byte, error) {
+		return nil, &connect.HttpStatusError{StatusCode: 503, Status: "503 https://secret.example/token", Body: []byte("token=secret\nforged log line")}
+	}}}
+	inputs := &extenderActivationInputs{ctx: ctx, apiUrl: "https://api.example.org"}
+	role.loadRootKeys(inputs)
+	line := <-lines
+	if !strings.Contains(line, "503") || strings.Contains(line, "secret") || strings.Contains(line, "forged") {
+		t.Fatalf("unsafe root key log: %q", line)
+	}
+}
+
 func TestParseRootKeysReadsTheHelloAnswer(t *testing.T) {
 	pub, _, err := ed25519.GenerateKey(nil)
 	if err != nil {

@@ -290,8 +290,13 @@ func (r *extenderRole) loadRootKeys(inputs *extenderActivationInputs) {
 			}
 			if !failing {
 				failing = true
-				importantLogf("🌉⚠️ [extender] could not read the platform's root keys (%v): renewals use a fixed %s interval until they load. Trying again in %s.\n",
-					err, extenderFixedRenewalInterval, next)
+				var status *connect.HttpStatusError
+				reason := "request failed"
+				if errors.As(err, &status) && status.StatusCode >= 100 && status.StatusCode <= 599 {
+					reason = fmt.Sprintf("HTTP %d", status.StatusCode)
+				}
+				importantLogf("🌉⚠️ [extender] could not read the platform's root keys (%s): renewals use a fixed %s interval until they load. Trying again in %s.\n",
+					reason, extenderFixedRenewalInterval, next)
 			}
 		} else {
 			if directory.RootKeys().Len() == 0 || failing {
