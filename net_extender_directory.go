@@ -1284,7 +1284,7 @@ func (self *ExtenderDirectory) RecordSuccess(ip netip.Addr, connectMode Extender
 	address.firstFailureTime = time.Time{}
 	address.holdUntilTime = time.Time{}
 	if self.log.V(2).Enabled() {
-		self.log.Infof("[extender]success %s %s\n", ip, connectMode)
+		self.log.Infof("🌉 [extender]success %s %s\n", ip, connectMode)
 	}
 	self.tierUpdateAddressWithLock(address, now)
 	self.changedWithLock()
@@ -1315,7 +1315,7 @@ func (self *ExtenderDirectory) RecordFailure(ip netip.Addr, connectMode Extender
 	}
 	address.holdUntilTime = now.Add(self.holdTimeout(address.consecutiveFailureCount))
 	if self.log.V(2).Enabled() {
-		self.log.Infof("[extender]failure %s %s consecutive=%d\n", ip, connectMode, address.consecutiveFailureCount)
+		self.log.Infof("🌉 [extender]failure %s %s consecutive=%d\n", ip, connectMode, address.consecutiveFailureCount)
 	}
 	if self.shouldRemoveWithLock(address, now) {
 		delete(self.ipAddresses, ip)
@@ -1358,7 +1358,7 @@ func (self *ExtenderDirectory) RecordLimited(ip netip.Addr, retryAfter time.Dura
 		address.limitedUntilTime = limitedUntilTime
 	}
 	if self.log.V(2).Enabled() {
-		self.log.Infof("[extender]limited %s until %s\n", ip, address.limitedUntilTime)
+		self.log.Infof("🌉 [extender]limited %s until %s\n", ip, address.limitedUntilTime)
 	}
 	self.changedWithLock()
 	return address.limitedUntilTime
@@ -1562,7 +1562,7 @@ func (self *ExtenderDirectory) RecordLatency(ip netip.Addr, rtt time.Duration, a
 	address.latencyRefreshDue = false
 	address.probeCount += 1
 	if self.log.V(2).Enabled() {
-		self.log.Infof("[extender]latency %s %s attested=%t\n", ip, rtt, attested)
+		self.log.Infof("🌉 [extender]latency %s %s attested=%t\n", ip, rtt, attested)
 	}
 	// a measured record is preferred by the active cap
 	self.tierUpdateAddressWithLock(address, now)
@@ -2925,7 +2925,7 @@ func (self *ExtenderDirectory) Reset(rootKeySet *ExtenderRootKeySet) {
 		self.changedWithLock()
 	}()
 	self.initialSampleMonitor.Set(ExtenderInitialSampleNone)
-	self.log.Infof("[extender]directory reset\n")
+	self.log.Infof("🌉 [extender]directory reset\n")
 	self.save()
 }
 
@@ -3098,7 +3098,7 @@ func (self *ExtenderDirectory) save() {
 		return err
 	}()
 	if err != nil {
-		self.log.Infof("[extender]directory save err = %s\n", err)
+		self.log.Infof("🌉 [extender]directory save err = %s\n", err)
 		return
 	}
 	if stateBytes == nil {
@@ -3122,7 +3122,7 @@ func (self *ExtenderDirectory) save() {
 	}
 	// the store is an external object, so it is called with no state lock
 	if err := self.settings.Store.Save(stateBytes); err != nil {
-		self.log.Infof("[extender]directory save err = %s\n", err)
+		self.log.Infof("🌉 [extender]directory save err = %s\n", err)
 		return
 	}
 	self.stateLock.Lock()
@@ -3145,7 +3145,7 @@ func (self *ExtenderDirectory) load() {
 	}
 	state := &extenderDirectoryStoreState{}
 	if err := json.Unmarshal(stateBytes, state); err != nil {
-		self.log.Infof("[extender]directory load err = %s\n", err)
+		self.log.Infof("🌉 [extender]directory load err = %s\n", err)
 		return
 	}
 	if state.Version != ExtenderDirectoryStoreVersion {
@@ -3242,7 +3242,7 @@ func (self *ExtenderDirectory) load() {
 		}
 		storeCountryHint := &extenderDirectoryStoreCountryHint{}
 		if err := json.Unmarshal(state.CountryHint, storeCountryHint); err != nil {
-			self.log.Infof("[extender]directory country load err = %s\n", err)
+			self.log.Infof("🌉 [extender]directory country load err = %s\n", err)
 			return
 		}
 		if storeCountryHint.Version != extenderDirectoryStoreCountryHintVersion {
@@ -3257,7 +3257,7 @@ func (self *ExtenderDirectory) load() {
 		self.countryHintTime = countryHintTime
 		self.countryHintCurrent = false
 		self.log.Infof(
-			"[extender]country hint %s (stored, %s old)\n",
+			"🌉 [extender]country hint %s (stored, %s old)\n",
 			countryCode,
 			now.Sub(countryHintTime).Round(time.Minute),
 		)

@@ -274,7 +274,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		config.listenPacket = net.ListenPacket
 	}
 	if len(config.allowedHosts) == 0 {
-		tlog("[extender] no forward hosts configured (URNETWORK_EXTENDER_ALLOWED_HOSTS); every forward request will be refused\n")
+		tlog("🌉⚠️ [extender] no forward hosts configured (URNETWORK_EXTENDER_ALLOWED_HOSTS); every forward request will be refused\n")
 	}
 	if config.forwardDialer == nil {
 		config.forwardDialer = &net.Dialer{
@@ -298,7 +298,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 	}
 	r.setKeySeed(seed)
 	if created {
-		tlog("[extender] created identity key %s (0600)\n", keyPath)
+		tlog("🌉 [extender] created identity key %s (0600)\n", keyPath)
 	}
 	globalExtenderRole.Store(r)
 	go connect.HandleError(r.run, r.cancel)
@@ -343,7 +343,7 @@ func (r *extenderRole) run() {
 		if err != nil {
 			r.setError(err)
 			r.markReady()
-			tlog("[extender] role failed: %v; retrying no faster than %s\n", err, r.config.retryInterval)
+			tlog("🌉❌ [extender] role failed: %v; retrying no faster than %s\n", err, r.config.retryInterval)
 			if !r.waitRetry() {
 				return
 			}
@@ -542,7 +542,7 @@ func (r *extenderRole) remindTcpStillHeld(err error) {
 	if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
 		who = " (held by " + holder + ")"
 	}
-	importantLogf("[extender] STILL BLOCKED: tcp 443 is unavailable%s after %d retries (%v). This host is not listed and gets no clients until it is freed. Next attempt at %s.\n",
+	importantLogf("🌉❌ [extender] STILL BLOCKED: tcp 443 is unavailable%s after %d retries (%v). This host is not listed and gets no clients until it is freed. Next attempt at %s.\n",
 		who, tries, err, clockLabel(time.Now().Add(r.config.retryInterval)))
 }
 
@@ -565,7 +565,7 @@ func (r *extenderRole) notifyActivatorOfCarriers(carriers []string) {
 	hadTcp := strings.Contains(previous, connect.ExtenderCarrierTcp)
 	hasTcp := slices.Contains(carriers, connect.ExtenderCarrierTcp)
 	if hasTcp && !hadTcp {
-		importantLogf("[extender] tcp 443 is bound again: asking the platform to list this host now.\n")
+		importantLogf("🌉✅ [extender] tcp 443 is bound again: asking the platform to list this host now.\n")
 		activator.TcpCarrierReturned()
 		return
 	}
@@ -652,7 +652,7 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 		if holder := tcpPortHolder(fmt.Sprint(connect.ExtenderTcpPort)); holder != "" {
 			who = " Port 443 is held by " + holder + "."
 		}
-		importantLogf("[extender] CANNOT USE tcp 443: %v.%s%s "+
+		importantLogf("🌉❌ [extender] CANNOT USE tcp 443: %v.%s%s "+
 			"The platform proves an extender by dialing back to it on tcp 443, so while that port is taken this host will NOT be listed "+
 			"and no clients will be sent to it, even though udp 443 and dns %d can still listen. "+
 			"Free the port (stop or move whatever holds it). The bind is retried every %s; next attempt at %s.\n",
@@ -665,10 +665,10 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 	if carrier == connect.ExtenderCarrierDns && strings.Contains(message, ":53") {
 		// 53 is the optional second dns port. Its failure never removes the
 		// carrier: 4053 is bound and serves.
-		tlog("[extender] dns 53 unavailable: %v; keeping %d\n", err, connect.ExtenderDnsPort)
+		tlog("🌉⚠️ [extender] dns 53 unavailable: %v; keeping %d\n", err, connect.ExtenderDnsPort)
 		return
 	}
-	tlog("[extender] %s carrier unavailable: %v%s\n", carrier, err, hint)
+	tlog("🌉❌ [extender] %s carrier unavailable: %v%s\n", carrier, err, hint)
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
@@ -892,20 +892,25 @@ func (r *extenderRole) publishStatus(note string) {
 	// one line a human can read at 3am, then only when something changes:
 	// the counters live in /metrics, not in a repeated dump
 	if firstServing {
-		tlog("[extender] ready — %s; %s\n", summary, policy)
+		tlog("🌉✅ [extender] ready — %s; %s\n", summary, policy)
 		return
 	}
 	if !changed {
 		return
 	}
 	if snapshot.State == extenderStateServing {
-		tlog("[extender] %s\n", summary)
+		tlog("🌉✅ [extender] %s\n", summary)
 		return
 	}
 	if note == "" {
 		note = summary
 	}
-	tlog("[extender] %s — %s\n", snapshot.State, note)
+	mark := "🌉"
+	switch snapshot.State {
+	case extenderStateTcpUnavailable, extenderStateUnavailable, extenderStateError:
+		mark = "🌉❌"
+	}
+	tlog("%s [extender] %s — %s\n", mark, snapshot.State, note)
 }
 
 // extenderRoleSummary says what the role is serving in words, not keys.

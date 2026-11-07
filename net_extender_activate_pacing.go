@@ -153,7 +153,7 @@ func (self *ExtenderActivator) startPacingLoad() {
 		case result := <-results:
 			self.applyPacing(result.record, result.err)
 		case <-timer.C:
-			self.log.Infof("[extender]activate pacing load timed out after %s, starting fresh\n", timeout)
+			self.log.Infof("🌉 [extender]activate pacing load timed out after %s, starting fresh\n", timeout)
 		case <-self.ctx.Done():
 		}
 	}()
@@ -173,7 +173,7 @@ func (self *ExtenderActivator) startPacingLoad() {
 // continueFrom set it, so only a hold stands against that.
 func (self *ExtenderActivator) applyPacing(record *ExtenderActivationPacingRecord, err error) {
 	if err != nil {
-		self.log.Infof("[extender]activate pacing load err = %s\n", activationLogError(err.Error()))
+		self.log.Infof("🌉 [extender]activate pacing load err = %s\n", activationLogError(err.Error()))
 		return
 	}
 	if record == nil || !bytes.Equal(record.PublicKey, self.settings.PublicKey) {
@@ -193,7 +193,7 @@ func (self *ExtenderActivator) applyPacing(record *ExtenderActivationPacingRecor
 			var verdict string
 			pacing, verdict = self.verifyPacing(pacing, now)
 			if verdict != "" {
-				self.log.Infof("[extender]activate pacing v%d cleared: %s\n", key, verdict)
+				self.log.Infof("🌉 [extender]activate pacing v%d cleared: %s\n", key, verdict)
 			}
 		}
 		self.pacing[key] = pacing
@@ -374,6 +374,6 @@ func (self *ExtenderActivator) savePacing() {
 	}
 	self.stateLock.Unlock()
 	if err := store.SavePacing(record); err != nil {
-		self.log.Infof("[extender]activate pacing save err = %s\n", activationLogError(err.Error()))
+		self.log.Infof("🌉 [extender]activate pacing save err = %s\n", activationLogError(err.Error()))
 	}
 }

@@ -946,7 +946,7 @@ func NewExtenderActivator(
 	// the run every post reports, so a host log names the run the operator's
 	// activation rows carry (G3)
 	self.log.Infof(
-		"[extender]activate run = %s start = %s previous exit = %q\n",
+		"🌉 [extender]activate run = %s start = %s previous exit = %q\n",
 		settings.Run.Id,
 		settings.Run.StartTime.UTC().Format(time.RFC3339),
 		settings.Run.PreviousExit,
@@ -1192,7 +1192,7 @@ func (self *ExtenderActivator) run() {
 			if err != nil {
 				// a failed check retries on the backoff floor rather than on
 				// every wake, which a directory change would otherwise be
-				self.log.Infof("[extender]activate hello err = %s\n", activationLogError(httpRequestErrorWithCauses(err)))
+				self.log.Infof("🌉 [extender]activate hello err = %s\n", activationLogError(httpRequestErrorWithCauses(err)))
 				self.nextAddressCheckTime = now.Add(self.settings.MinBackoff)
 			} else {
 				self.nextAddressCheckTime = now.Add(self.settings.AddressCheckTimeout)
@@ -1249,7 +1249,7 @@ func (self *ExtenderActivator) run() {
 					schedule.carrierTickTime = pullForward(schedule.carrierTickTime)
 				}
 				self.nextAddressCheckTime = pullForward(self.nextAddressCheckTime)
-				self.log.Infof("[extender]activate resumed after %s asleep\n", sleep.Round(time.Second))
+				self.log.Infof("🌉 [extender]activate resumed after %s asleep\n", sleep.Round(time.Second))
 				waiting = false
 			}
 		}
@@ -1434,7 +1434,7 @@ func (self *ExtenderActivator) checkAddress(clientAddress string) {
 	}
 	// the operator published an address this host no longer has; the record
 	// must be reissued for the new one
-	self.log.Infof("[extender]activate address %s -> %s\n", previous, clientAddress)
+	self.log.Infof("🌉 [extender]activate address %s -> %s\n", previous, clientAddress)
 	self.schedules[key].nextActivateTime = time.Time{}
 }
 
@@ -2047,7 +2047,7 @@ func (self *ExtenderActivator) activateUrl(
 		}
 		// the causes of every attempt, which an exhausted request's own
 		// message hides (connect#229)
-		self.log.Infof("[extender] activate v%d failed carriers=%s api=%s last_remote=%s elapsed=%s attempts=%d error=%s\n", ipVersion, strings.Join(carriers, ","), activationLogAddress(apiUrl), trace.remote.Load(), duration.Round(time.Millisecond), trace.attempts.Load(), activationLogText(httpRequestErrorWithCauses(err), jwt, apiUrl))
+		self.log.Infof("🌉 [extender] activate v%d failed carriers=%s api=%s last_remote=%s elapsed=%s attempts=%d error=%s\n", ipVersion, strings.Join(carriers, ","), activationLogAddress(apiUrl), trace.remote.Load(), duration.Round(time.Millisecond), trace.attempts.Load(), activationLogText(httpRequestErrorWithCauses(err), jwt, apiUrl))
 		self.recordFailure(ipVersion, now, activationLogText(err.Error(), jwt, apiUrl), false, duration)
 		return extenderActivateAnswer{outcome: extenderActivateFailed}
 	}
@@ -2067,7 +2067,7 @@ func (self *ExtenderActivator) activateUrl(
 		if 0 < result.RetryAfterSeconds {
 			retryAfter = time.Duration(result.RetryAfterSeconds) * time.Second
 		}
-		self.log.Infof("[extender] activate v%d refused carriers=%s api=%s last_remote=%s elapsed=%s attempts=%d retry_after=%s error=%s\n", ipVersion, strings.Join(carriers, ","), activationLogAddress(apiUrl), trace.remote.Load(), duration.Round(time.Millisecond), trace.attempts.Load(), retryAfter, activationLogText(message, jwt, apiUrl))
+		self.log.Infof("🌉 [extender] activate v%d refused carriers=%s api=%s last_remote=%s elapsed=%s attempts=%d retry_after=%s error=%s\n", ipVersion, strings.Join(carriers, ","), activationLogAddress(apiUrl), trace.remote.Load(), duration.Round(time.Millisecond), trace.attempts.Load(), retryAfter, activationLogText(message, jwt, apiUrl))
 		// where the operator's probe spent its budget. A refusal reads the
 		// same whether the extender answered late or never, and the step
 		// timings are the only thing that tells them apart (connect#230).
@@ -2111,11 +2111,11 @@ func (self *ExtenderActivator) activateUrl(
 	}
 	renewal, err := self.renewalTime(result, self.settings.Now())
 	if err != nil {
-		self.log.Infof("[extender] activate v%d cannot use signed record for renewal (%s); using fixed activation interval\n", ipVersion, err)
+		self.log.Infof("🌉 [extender] activate v%d cannot use signed record for renewal (%s); using fixed activation interval\n", ipVersion, err)
 	}
 	// Optional carriers omitted by the operator are not published.
 	if text := extenderActivateCarrierRefusalsText(result.RefusedCarriers); text != "" {
-		self.log.Infof("[extender]activate v%d left out = %s\n", ipVersion, activationLogText(text, jwt, apiUrl))
+		self.log.Infof("🌉 [extender]activate v%d left out = %s\n", ipVersion, activationLogText(text, jwt, apiUrl))
 	}
 	if self.settings.OnActivated != nil {
 		self.settings.OnActivated(ipVersion, result)
@@ -2238,16 +2238,16 @@ func (self *ExtenderActivator) applyRecords(result *ExtenderActivateResult) {
 	apply := func(recordBase64 string) {
 		recordBytes, err := base64.StdEncoding.DecodeString(recordBase64)
 		if err != nil {
-			self.log.Infof("[extender]activate record err = %s\n", err)
+			self.log.Infof("🌉 [extender]activate record err = %s\n", err)
 			return
 		}
 		record := &protocol.ExtenderRecord{}
 		if err := proto.Unmarshal(recordBytes, record); err != nil {
-			self.log.Infof("[extender]activate record err = %s\n", err)
+			self.log.Infof("🌉 [extender]activate record err = %s\n", err)
 			return
 		}
 		if _, err := self.settings.Directory.ApplyRecord(record, ExtenderSourceBootstrap); err != nil {
-			self.log.Infof("[extender]activate record err = %s\n", err)
+			self.log.Infof("🌉 [extender]activate record err = %s\n", err)
 		}
 	}
 	if result.Record != "" {
@@ -2284,7 +2284,7 @@ func (self *ExtenderActivator) logProbeSteps(ipVersion int, probeSteps []*Extend
 		refusingIpVersion = refusing.IpVersion
 	}
 	self.log.Infof(
-		"[extender]activate v%d probe stopped at %s on port %d: %s after %dms with %dms of the budget left when it started\n",
+		"🌉 [extender]activate v%d probe stopped at %s on port %d: %s after %dms with %dms of the budget left when it started\n",
 		refusingIpVersion,
 		refusing.Name,
 		refusing.Port,
@@ -2299,7 +2299,7 @@ func (self *ExtenderActivator) logProbeSteps(ipVersion int, probeSteps []*Extend
 		// the step list is debug output, so it goes to the verbose sink rather
 		// than the info one: an embedder may route the two apart
 		self.log.V(1).Infof(
-			"[extender]activate v%d probe step %s ipv%d port=%d outcome=%s elapsed_ms=%d budget_left_ms=%d\n",
+			"🌉 [extender]activate v%d probe step %s ipv%d port=%d outcome=%s elapsed_ms=%d budget_left_ms=%d\n",
 			ipVersion,
 			step.Name,
 			step.IpVersion,

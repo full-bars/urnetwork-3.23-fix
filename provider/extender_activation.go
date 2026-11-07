@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"regexp"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -120,6 +121,11 @@ func (s extenderPacingFileStore) SavePacing(record *connect.ExtenderActivationPa
 // failed, refused) are also written to the disk events log, so they survive a
 // reboot wiping the ramlog; the five-minute "still not activated" reminder
 // stays in the ramlog only, so a long failure does not fill the disk log.
+// extenderReminderLine matches the loop's five-minute "still not activated" line,
+// which is a family name and a status mark after the bridge. Every other line the
+// loop writes is an outcome and also goes to the disk events log.
+var extenderReminderLine = regexp.MustCompile(`^🌉 \[extender\] IPv[46] (✅|⛔|❌|⏳)`)
+
 type extenderActivatorLogger struct{}
 
 var _ connect.Logger = extenderActivatorLogger{}
@@ -128,7 +134,7 @@ func (extenderActivatorLogger) emit(line string) {
 	if !strings.HasSuffix(line, "\n") {
 		line += "\n"
 	}
-	if strings.HasPrefix(line, "🌉 [extender] ") {
+	if extenderReminderLine.MatchString(line) {
 		tlog("%s", line)
 		return
 	}
@@ -174,13 +180,13 @@ func (r *extenderRole) activatorSettings(inputs *extenderActivationInputs) *conn
 	settings.Carriers = r.activationCarriers
 	settings.DnsPorts = r.activationDnsPorts
 	if store, err := newExtenderPacingFileStore(); err != nil {
-		tlog("[extender] activation pacing will not survive a restart: no state directory: %v\n", err)
+		tlog("🌉⚠️ [extender] activation pacing will not survive a restart: no state directory: %v\n", err)
 	} else {
 		settings.PacingStore = store
 	}
 	settings.OnRefused = func(ipVersion int, result *connect.ExtenderActivateResult) {
 		if result != nil && result.KeyHeldByAnotherNetwork() {
-			importantLogf("[extender] %s: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. "+
+			importantLogf("🌉⛔ [extender] %s: the platform says this extender key belongs to ANOTHER network, so this host cannot be listed. "+
 				"This happens when the identity file %s was copied from another box or account. Fix: stop the provider, delete that file so a new key is made for this network, and start it again.\n",
 				extenderFamilyLabel(ipVersion), extenderKeyFileName)
 		}
@@ -271,7 +277,7 @@ func (r *extenderRole) StartActivation(inputs *extenderActivationInputs) {
 	r.activator = activator
 	r.activatorInputs = inputs
 	r.mu.Unlock()
-	importantLogf("[extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.\n")
+	importantLogf("🌉✅ [extender] activation started: this host now asks the platform to list it for IPv4 and IPv6. Each family is tried separately; results are logged as they happen.\n")
 	r.publishStatus("activation started")
 }
 
@@ -290,7 +296,7 @@ func (r *extenderRole) StopActivation(inputs *extenderActivationInputs) {
 	r.activatorInputs = nil
 	r.mu.Unlock()
 	activator.Close()
-	importantLogf("[extender] activation stopped: the direct slot it belonged to ended.\n")
+	importantLogf("🌉 [extender] activation stopped: the direct slot it belonged to ended.\n")
 }
 
 // currentActivator is the running loop, nil before the direct slot attaches.

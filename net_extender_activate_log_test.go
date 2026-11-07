@@ -157,7 +157,7 @@ func TestExtenderActivatorRefusalLog(t *testing.T) {
 		}
 	}
 	lines := logger.linesContaining("refused")
-	if len(lines) != 1 || !strings.HasPrefix(lines[0], "[extender] activate v4 refused ") {
+	if len(lines) != 1 || !strings.HasPrefix(lines[0], "🌉 [extender] activate v4 refused ") {
 		t.Fatalf("refusal lines: %v", lines)
 	}
 	line := lines[0]

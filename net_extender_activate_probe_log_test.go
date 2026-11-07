@@ -88,7 +88,7 @@ func TestExtenderActivatorLogsTheProbeStepsOfARefusal(t *testing.T) {
 				{Name: "forward", IpVersion: 4, Port: 443, ElapsedMs: 500, BudgetLeftMs: 500, Outcome: "timeout"},
 			},
 			expected: []string{
-				"[extender]activate v4 probe stopped at forward on port 443: timeout after 500ms with 500ms of the budget left when it started\n",
+				"🌉 [extender]activate v4 probe stopped at forward on port 443: timeout after 500ms with 500ms of the budget left when it started\n",
 			},
 		},
 		{
@@ -111,10 +111,10 @@ func TestExtenderActivatorLogsTheProbeStepsOfARefusal(t *testing.T) {
 				},
 			)
 			fixture.waitOutcome(0)
-			if refused := log.linesWithPrefix("[extender] activate v4 refused "); len(refused) != 1 {
+			if refused := log.linesWithPrefix("🌉 [extender] activate v4 refused "); len(refused) != 1 {
 				t.Fatalf("refused lines = %q, expected the operator's words once", refused)
 			}
-			probeLines := log.linesWithPrefix("[extender]activate v4 probe stopped at ")
+			probeLines := log.linesWithPrefix("🌉 [extender]activate v4 probe stopped at ")
 			if strings.Join(probeLines, "") != strings.Join(c.expected, "") {
 				t.Fatalf("probe lines = %q, expected %q", probeLines, c.expected)
 			}
@@ -136,7 +136,7 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 				{Carrier: ExtenderCarrierQuic, Port: 443, Error: "no answer", ElapsedMs: 6400, BudgetLeftMs: 6400},
 			},
 			expected: []string{
-				"[extender]activate v4 left out = quic:443 after 6.4s (6.4s left): no answer\n",
+				"🌉 [extender]activate v4 left out = quic:443 after 6.4s (6.4s left): no answer\n",
 			},
 		},
 		{
@@ -154,7 +154,7 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 			refusedCarriers: []*ExtenderActivateCarrierRefusal{
 				{Carrier: "dns", Port: 53, Error: "failed\nhttps://example.org/path?token=secret"},
 			},
-			expected: []string{"[extender]activate v4 left out = dns:53 after 0s (0s left): failed example.org\n"},
+			expected: []string{"🌉 [extender]activate v4 left out = dns:53 after 0s (0s left): failed example.org\n"},
 		},
 	} {
 		t.Run(c.name, func(t *testing.T) {
@@ -173,7 +173,7 @@ func TestExtenderActivatorLogsTheCarriersAnActivationLeftOut(t *testing.T) {
 			if ipVersion := fixture.waitActivation(); ipVersion != 4 {
 				t.Fatalf("activated v%d, expected v4", ipVersion)
 			}
-			leftOutLines := log.linesWithPrefix("[extender]activate v4 left out = ")
+			leftOutLines := log.linesWithPrefix("🌉 [extender]activate v4 left out = ")
 			if strings.Join(leftOutLines, "") != strings.Join(c.expected, "") {
 				t.Fatalf("left out lines = %q, expected %q", leftOutLines, c.expected)
 			}
@@ -261,8 +261,8 @@ func TestExtenderActivatorLogsCarrierTimingPresenceFromJson(t *testing.T) {
 		if family := fixture.activator.Status().Family(4); family == nil || !family.Activated || family.LastRefused || family.LastError != "" {
 			t.Fatalf("%s: activation status = %+v, expected a success", c.name, family)
 		}
-		expectedLines = append(expectedLines, "[extender]activate v4 left out = quic:443"+c.timingText+": context deadline exceeded\n")
-		lines := log.linesWithPrefix("[extender]activate v4 left out = ")
+		expectedLines = append(expectedLines, "🌉 [extender]activate v4 left out = quic:443"+c.timingText+": context deadline exceeded\n")
+		lines := log.linesWithPrefix("🌉 [extender]activate v4 left out = ")
 		if strings.Join(lines, "") != strings.Join(expectedLines, "") {
 			t.Fatalf("%s: left out lines = %q, expected %q", c.name, lines, expectedLines)
 		}

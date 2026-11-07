@@ -342,7 +342,7 @@ func (self *ExtenderDirectory) enforceActiveRecordCapWithLock(now time.Time) (ch
 			}
 		}
 		if self.log.V(2).Enabled() {
-			self.log.Infof("[extender]evicted record %s for the active cap\n", keyHex)
+			self.log.Infof("🌉 [extender]evicted record %s for the active cap\n", keyHex)
 		}
 		self.tierRemoveWithLock(keyHex, keyRecord)
 		if keyRecord.revocation != nil {

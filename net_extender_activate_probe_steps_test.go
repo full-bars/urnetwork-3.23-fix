@@ -181,7 +181,7 @@ func TestLogProbeStepsAtInfo(t *testing.T) {
 	}
 	line := log.lines[0]
 	for _, expected := range []string{
-		"[extender]activate v4 probe stopped at forward on port 443",
+		"🌉 [extender]activate v4 probe stopped at forward on port 443",
 		"timeout after 500ms",
 		"500ms of the budget left",
 	} {

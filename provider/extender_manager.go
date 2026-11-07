@@ -112,7 +112,7 @@ func (m *extenderManager) reconcileLocked(why string) {
 	}
 	on, source := extenderSetting(m.environ)
 	if bad := extenderUnrecognisedEnv(m.environ); bad != "" && m.role == nil {
-		importantLogf("[extender] ignoring %s=%q: it is not on or off, so the default (on) applies. Use `urnet-tools extender off` to turn the extender off.\n", extenderEnv, bad)
+		importantLogf("🌉⚠️ [extender] ignoring %s=%q: it is not on or off, so the default (on) applies. Use `urnet-tools extender off` to turn the extender off.\n", extenderEnv, bad)
 	}
 	direct := m.directEnabled()
 
@@ -129,7 +129,7 @@ func (m *extenderManager) reconcileLocked(why string) {
 	default:
 		reason := m.notRunningReason(on, source, direct)
 		m.offReason = reason
-		line := "[extender] off: " + reason
+		line := "🌉 [extender] off: " + reason
 		if line != m.lastOffLine {
 			m.lastOffLine = line
 			importantLogf("%s\n", line)
@@ -155,7 +155,7 @@ func (m *extenderManager) startLocked(why string, source string) {
 	role, err := m.startRole(m.ctx, config)
 	if err != nil {
 		m.offReason = "the role could not start: " + err.Error()
-		line := "[extender] FAILED to start: " + err.Error() + ". The extender is not running. It will be retried in " + extenderManagerPollInterval.String() + "."
+		line := "🌉❌ [extender] FAILED to start: " + err.Error() + ". The extender is not running. It will be retried in " + extenderManagerPollInterval.String() + "."
 		if line != m.lastOffLine {
 			m.lastOffLine = line
 			importantLogf("%s\n", line)
@@ -165,7 +165,7 @@ func (m *extenderManager) startLocked(why string, source string) {
 	m.role = role
 	m.offReason = ""
 	m.lastOffLine = ""
-	importantLogf("[extender] started (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
+	importantLogf("🌉✅ [extender] started (%s; setting from %s). It listens for censored clients on tcp 443, udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)
 	// the new role's counters start from zero
 	m.tallyRef().Rebase()
 	if m.inputs != nil {
@@ -188,14 +188,14 @@ func (m *extenderManager) stopLocked(reason string) {
 	m.offReason = reason
 	// the stop line carries the reason, so the periodic check must not repeat
 	// it as an "off:" line
-	m.lastOffLine = "[extender] off: " + reason
-	importantLogf("[extender] stopping: %s\n", reason)
+	m.lastOffLine = "🌉 [extender] off: " + reason
+	importantLogf("🌉 [extender] stopping: %s\n", reason)
 	// CloseAndWait joins the supervisor, which never takes the manager lock
 	role.CloseAndWait()
 	// sample AFTER the drain: requests that finish while it runs must count, and
 	// the closed role's snapshot keeps its folded counts
 	m.sampleTallyLocked(role)
-	importantLogf("[extender] stopped. It no longer listens, and the platform will stop sending clients to this host once its record expires.\n")
+	importantLogf("🌉 [extender] stopped. It no longer listens, and the platform will stop sending clients to this host once its record expires.\n")
 }
 
 // AttachActivation hands the manager what the activation needs from the direct
@@ -262,7 +262,7 @@ func (m *extenderManager) tallyRef() *extenderTally {
 		m.tallyLoaded = true
 		if m.tally.path != "" {
 			if err := m.tally.Load(); err != nil {
-				importantLogf("[extender] the saved request tally %s could not be read (%v); counting from zero. The file will be replaced.\n", m.tally.path, err)
+				importantLogf("🌉⚠️ [extender] the saved request tally %s could not be read (%v); counting from zero. The file will be replaced.\n", m.tally.path, err)
 			}
 		}
 	}
@@ -288,7 +288,7 @@ func (m *extenderManager) sampleTallyLocked(role *extenderRole) {
 	}
 	m.tallyLastSave = time.Now()
 	if err := tally.Save(); err != nil {
-		tlog("[extender] could not save the request tally to %s: %v\n", tally.path, err)
+		tlog("🌉⚠️ [extender] could not save the request tally to %s: %v\n", tally.path, err)
 	}
 }
 
@@ -307,6 +307,6 @@ func (m *extenderManager) SaveTally() {
 		return
 	}
 	if err := tally.Save(); err != nil {
-		tlog("[extender] could not save the request tally to %s: %v\n", tally.path, err)
+		tlog("🌉⚠️ [extender] could not save the request tally to %s: %v\n", tally.path, err)
 	}
 }

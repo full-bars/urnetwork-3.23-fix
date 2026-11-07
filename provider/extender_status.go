@@ -190,7 +190,7 @@ func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActiva
 // formatExtenderHealthLine is the single line written with the periodic
 // [health] lines.
 func formatExtenderHealthLine(reading extenderControlReading, now time.Time) string {
-	const tag = "❤️ [health][extender]"
+	const tag = "🌉❤️ [health][extender]"
 	if !reading.Known {
 		return tag + " unavailable"
 	}

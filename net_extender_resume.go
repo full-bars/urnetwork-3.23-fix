@@ -31,7 +31,7 @@ import (
 // follows. Nothing else changes: the holds, limits and failure counts stay,
 // and so do the hint, its country and hello.
 func (self *ExtenderNetworkClient) hostResumed(now time.Time, sleep time.Duration) {
-	self.log.Infof("[extender]resumed after %s asleep\n", sleep.Round(time.Second))
+	self.log.Infof("🌉 [extender]resumed after %s asleep\n", sleep.Round(time.Second))
 	minSleep := self.settings.ResumeMinSleep
 	self.directory.RefreshSleptLatencies(minSleep)
 
