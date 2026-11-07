@@ -90,6 +90,9 @@ func (self *ExtenderDirectory) CurrentRecordNamesFamily(publicKey []byte, ipVers
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
+	if self.rootKeySet.Len() == 0 {
+		return false
+	}
 	keyRecord := self.keyHexRecords[keyHex]
 	if keyRecord == nil || keyRecord.recordBody == nil {
 		return false

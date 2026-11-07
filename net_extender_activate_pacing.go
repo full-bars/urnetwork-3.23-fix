@@ -180,7 +180,8 @@ func (self *ExtenderActivator) applyPacing(record *ExtenderActivationPacingRecor
 		return
 	}
 	now := self.settings.Now()
-	replaced := self.settings.PreviousState != nil
+	replaced := self.settings.PreviousState != nil &&
+		slices.Equal(self.settings.PreviousState.publicKey, self.settings.PublicKey)
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	for key, pacing := range record.Families {
@@ -188,45 +189,96 @@ func (self *ExtenderActivator) applyPacing(record *ExtenderActivationPacingRecor
 		if !ok {
 			continue
 		}
-		if !replaced {
-			pacing = clampPacing(pacing, now)
-			var verdict string
-			pacing, verdict = self.verifyPacing(pacing, now)
-			if verdict != "" {
-				self.log.Infof("🌉 [extender]activate pacing v%d cleared: %s\n", key, verdict)
+		pacing = clampPacing(pacing, now)
+		if pacing.RecordValid(now) && self.settings.Directory != nil && self.settings.Directory.RootKeys().Len() == 0 {
+			self.unverifiedPacing[key] = pacing
+			self.lastPeriodicLogTimes[key] = now
+			self.pacing[key] = ExtenderActivationPacing{
+				State:                ExtenderPacingUnactivated,
+				LastAttemptAt:        pacing.LastAttemptAt,
+				NextAllowedAttemptAt: pacing.NextAllowedAttemptAt,
+				Hold:                 pacing.Hold,
 			}
-		}
-		self.pacing[key] = pacing
-		valid := pacing.RecordValid(now)
-		holding := pacing.Hold && pacing.NextAllowedAttemptAt.After(now)
-		switch {
-		case !holding && valid && !replaced:
-			// The spread never runs past half of what is left of the record: a restart
-			// shortly before expiry must not draw a delay longer than the listing has
-			// (a record already due posts at once).
-			spread := self.settings.ReplacedPostJitter
-			if half := pacing.RecordExpireTime.Sub(now) / 2; half < spread {
-				spread = half
+			if (pacing.Hold || !replaced) && schedule.nextActivateTime.Before(pacing.NextAllowedAttemptAt) {
+				schedule.nextActivateTime = pacing.NextAllowedAttemptAt
 			}
-			postTime := now.Add(uniformJitter(spread, self.settings.postJitterForTest))
-			// the renewal is sooner than the spread says: it is the post
-			if pacing.NextAllowedAttemptAt.After(now) && pacing.NextAllowedAttemptAt.Before(postTime) {
-				postTime = pacing.NextAllowedAttemptAt
-			}
-			schedule.nextActivateTime = postTime
-		case (pacing.Hold || !replaced) && schedule.nextActivateTime.Before(pacing.NextAllowedAttemptAt):
-			schedule.nextActivateTime = pacing.NextAllowedAttemptAt
+			continue
 		}
-		if valid && !replaced {
-			schedule.postedCarriers = slices.Clone(pacing.PostedCarriers)
-			schedule.postedDnsPorts = slices.Clone(pacing.PostedDnsPorts)
+		var verdict string
+		pacing, verdict = self.verifyPacing(pacing, now)
+		if verdict != "" {
+			self.log.Infof("🌉 [extender]activate pacing v%d cleared: %s\n", key, verdict)
 		}
-		if family, ok := self.families[key]; ok && !family.Activated && valid {
-			family.Activated = true
-			family.ExpireTime = pacing.RecordExpireTime
-			family.LastActivationTime = pacing.LastAttemptAt
-			family.Ip = pacing.Ip
+		self.adoptPacingWithLock(key, schedule, pacing, now, replaced)
+	}
+	self.changedWithLock()
+}
+
+func (self *ExtenderActivator) adoptPacingWithLock(
+	key int,
+	schedule *extenderActivateSchedule,
+	pacing ExtenderActivationPacing,
+	now time.Time,
+	replaced bool,
+) {
+	self.pacing[key] = pacing
+	valid := pacing.RecordValid(now)
+	holding := pacing.Hold && pacing.NextAllowedAttemptAt.After(now)
+	switch {
+	case !holding && valid && !replaced:
+		// The spread never runs past half of what is left of the record: a restart
+		// shortly before expiry must not draw a delay longer than the listing has
+		// (a record already due posts at once).
+		spread := self.settings.ReplacedPostJitter
+		if half := pacing.RecordExpireTime.Sub(now) / 2; half < spread {
+			spread = half
 		}
+		postTime := now.Add(uniformJitter(spread, self.settings.postJitterForTest))
+		// the renewal is sooner than the spread says: it is the post
+		if pacing.NextAllowedAttemptAt.After(now) && pacing.NextAllowedAttemptAt.Before(postTime) {
+			postTime = pacing.NextAllowedAttemptAt
+		}
+		schedule.nextActivateTime = postTime
+	case (pacing.Hold || !replaced) && schedule.nextActivateTime.Before(pacing.NextAllowedAttemptAt):
+		schedule.nextActivateTime = pacing.NextAllowedAttemptAt
+	}
+	if valid && !replaced {
+		schedule.postedCarriers = slices.Clone(pacing.PostedCarriers)
+		schedule.postedDnsPorts = slices.Clone(pacing.PostedDnsPorts)
+	}
+	if family, ok := self.families[key]; ok && !family.Activated && valid {
+		family.Activated = true
+		family.ExpireTime = pacing.RecordExpireTime
+		family.LastActivationTime = pacing.LastAttemptAt
+		family.Ip = pacing.Ip
+	}
+}
+
+// Resolves any stored pacing records that were held back until the directory had
+// root keys to verify them against.
+func (self *ExtenderActivator) resolveUnverifiedPacing(now time.Time) {
+	if self.settings.Directory == nil || self.settings.Directory.RootKeys().Len() == 0 {
+		return
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if len(self.unverifiedPacing) == 0 {
+		return
+	}
+	for key, pacing := range self.unverifiedPacing {
+		delete(self.unverifiedPacing, key)
+		schedule, ok := self.schedules[key]
+		if !ok {
+			continue
+		}
+		var verdict string
+		pacing, verdict = self.verifyPacing(pacing, now)
+		if verdict != "" {
+			self.log.Infof("🌉 [extender]activate pacing v%d cleared: %s\n", key, verdict)
+			delete(self.lastPeriodicLogTimes, key)
+		}
+		schedule.nextActivateTime = time.Time{}
+		self.adoptPacingWithLock(key, schedule, pacing, now, false)
 	}
 	self.changedWithLock()
 }
@@ -252,7 +304,17 @@ func clampPacing(pacing ExtenderActivationPacing, now time.Time) ExtenderActivat
 // on when to come back. With no directory the answer is not known, and the record
 // stands: the post every restart makes re-verifies it.
 func (self *ExtenderActivator) verifyPacing(pacing ExtenderActivationPacing, now time.Time) (ExtenderActivationPacing, string) {
-	if !pacing.RecordValid(now) || self.settings.Directory == nil {
+	hasRecord := !pacing.RecordExpireTime.IsZero() ||
+		pacing.State == ExtenderPacingActivated ||
+		pacing.State == ExtenderPacingRenewalRefused ||
+		pacing.State == ExtenderPacingRenewalFailed
+	if !hasRecord {
+		return pacing, ""
+	}
+	if !pacing.RecordValid(now) {
+		return clearPacingRecord(pacing), "the stored record has expired"
+	}
+	if self.settings.Directory == nil {
 		return pacing, ""
 	}
 	reason := ""
@@ -284,6 +346,10 @@ func (self *ExtenderActivator) verifyPacing(pacing ExtenderActivationPacing, now
 	if reason == "" {
 		return pacing, ""
 	}
+	return clearPacingRecord(pacing), reason
+}
+
+func clearPacingRecord(pacing ExtenderActivationPacing) ExtenderActivationPacing {
 	pacing.State = ExtenderPacingUnactivated
 	pacing.RecordExpireTime = time.Time{}
 	pacing.Ip = netip.Addr{}
@@ -292,7 +358,7 @@ func (self *ExtenderActivator) verifyPacing(pacing ExtenderActivationPacing, now
 	if !pacing.Hold {
 		pacing.NextAllowedAttemptAt = time.Time{}
 	}
-	return pacing, reason
+	return pacing
 }
 
 // Puts a hold back on the schedules the triggers have made due. It runs ahead of the
@@ -302,7 +368,8 @@ func (self *ExtenderActivator) applyPacingHold(now time.Time) {
 	defer self.stateLock.Unlock()
 	for key, pacing := range self.pacing {
 		schedule, ok := self.schedules[key]
-		if !ok || !pacing.Hold || pacing.AttemptAllowed(now) {
+		_, unverified := self.unverifiedPacing[key]
+		if !ok || (!pacing.Hold && !unverified) || pacing.AttemptAllowed(now) {
 			continue
 		}
 		if schedule.nextActivateTime.Before(pacing.NextAllowedAttemptAt) {
@@ -324,6 +391,7 @@ func (self *ExtenderActivator) recordPacing(
 	postedDnsPorts []int,
 ) {
 	self.stateLock.Lock()
+	delete(self.unverifiedPacing, key)
 	previous := self.pacing[key]
 	pacing := ExtenderActivationPacing{
 		State:                ExtenderPacingUnactivated,
@@ -391,9 +459,13 @@ func (self *ExtenderActivator) savePacing() {
 		return
 	}
 	self.stateLock.Lock()
+	families := maps.Clone(self.pacing)
+	for key, unverified := range self.unverifiedPacing {
+		families[key] = unverified
+	}
 	record := &ExtenderActivationPacingRecord{
 		PublicKey: slices.Clone(self.settings.PublicKey),
-		Families:  maps.Clone(self.pacing),
+		Families:  families,
 	}
 	self.stateLock.Unlock()
 	if err := store.SavePacing(record); err != nil {

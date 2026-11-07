@@ -641,20 +641,27 @@ func (self *ExtenderDirectory) SetRootKeys(keySet *ExtenderRootKeySet) {
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
 
+		hadRootKeys := 0 < self.rootKeySet.Len()
 		self.rootKeySet = keySet
 		if keySet.Len() == 0 {
 			return
 		}
 		for keyHex, keyRecord := range self.keyHexRecords {
 			if keyRecord.record != nil {
-				if _, err := keySet.VerifyRecord(keyRecord.record); err != nil {
+				body, err := keySet.VerifyRecord(keyRecord.record)
+				if err != nil ||
+					!slices.Equal(body.PublicKey, keyRecord.publicKey) ||
+					!ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 					keyRecord.record = nil
 					keyRecord.recordBody = nil
 					changed = true
 				}
 			}
 			if keyRecord.revocation != nil {
-				if _, err := keySet.VerifyRevocation(keyRecord.revocation); err != nil {
+				body, err := keySet.VerifyRevocation(keyRecord.revocation)
+				if err != nil ||
+					!slices.Equal(body.PublicKey, keyRecord.publicKey) ||
+					!ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 					keyRecord.revocation = nil
 					keyRecord.revocationBody = nil
 					changed = true
@@ -675,6 +682,14 @@ func (self *ExtenderDirectory) SetRootKeys(keySet *ExtenderRootKeySet) {
 		if changed {
 			self.tierRebuildWithLock(self.settings.Now())
 			self.changedWithLock()
+		} else if !hadRootKeys {
+			if self.savedVersion == self.version {
+				self.version += 1
+				self.savedVersion = self.version
+				self.changeMonitor.Set(self.version)
+			} else {
+				self.changedWithLock()
+			}
 		}
 	}()
 }
@@ -2636,6 +2651,9 @@ func (self *ExtenderDirectory) IsActiveKey(publicKey []byte) bool {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
+	if self.rootKeySet.Len() == 0 {
+		return false
+	}
 	keyRecord := self.keyHexRecords[keyHex]
 	if keyRecord == nil || keyRecord.recordBody == nil {
 		return false
@@ -2661,6 +2679,9 @@ func (self *ExtenderDirectory) ActiveRecordOf(publicKey []byte) (expireTime time
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
+	if self.rootKeySet.Len() == 0 {
+		return time.Time{}, nil, false
+	}
 	keyRecord := self.keyHexRecords[keyHex]
 	if keyRecord == nil || keyRecord.recordBody == nil {
 		return time.Time{}, nil, false
@@ -2881,13 +2902,19 @@ func (self *ExtenderDirectory) Reset(rootKeySet *ExtenderRootKeySet) {
 			// judged again as SetRootKeys judges, an empty set judging nothing
 			if 0 < rootKeySet.Len() {
 				if keyRecord.record != nil {
-					if _, err := rootKeySet.VerifyRecord(keyRecord.record); err != nil {
+					body, err := rootKeySet.VerifyRecord(keyRecord.record)
+					if err != nil ||
+						!slices.Equal(body.PublicKey, keyRecord.publicKey) ||
+						!ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 						keyRecord.record = nil
 						keyRecord.recordBody = nil
 					}
 				}
 				if keyRecord.revocation != nil {
-					if _, err := rootKeySet.VerifyRevocation(keyRecord.revocation); err != nil {
+					body, err := rootKeySet.VerifyRevocation(keyRecord.revocation)
+					if err != nil ||
+						!slices.Equal(body.PublicKey, keyRecord.publicKey) ||
+						!ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 						keyRecord.revocation = nil
 						keyRecord.revocationBody = nil
 					}
@@ -3167,7 +3194,9 @@ func (self *ExtenderDirectory) load() {
 			record := &protocol.ExtenderRecord{}
 			body := &protocol.ExtenderRecordBody{}
 			if proto.Unmarshal(storeRecord.Record, record) == nil &&
-				proto.Unmarshal(record.Body, body) == nil {
+				proto.Unmarshal(record.Body, body) == nil &&
+				slices.Equal(body.PublicKey, publicKey) &&
+				ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 				keyRecord.record = record
 				keyRecord.recordBody = body
 				keyRecord.applySerial = self.nextApplySerial
@@ -3183,7 +3212,9 @@ func (self *ExtenderDirectory) load() {
 			revocation := &protocol.ExtenderRevocation{}
 			body := &protocol.ExtenderRevocationBody{}
 			if proto.Unmarshal(storeRecord.Revocation, revocation) == nil &&
-				proto.Unmarshal(revocation.Body, body) == nil {
+				proto.Unmarshal(revocation.Body, body) == nil &&
+				slices.Equal(body.PublicKey, publicKey) &&
+				ExtenderNetworkHostAllowed(body.NetworkHost, self.settings.NetworkHosts...) {
 				keyRecord.revocation = revocation
 				keyRecord.revocationBody = body
 			}
