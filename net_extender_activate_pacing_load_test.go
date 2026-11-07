@@ -1,0 +1,391 @@
+package connect
+
+import (
+	"context"
+	"errors"
+	"net/netip"
+	"sync"
+	"testing"
+	"time"
+)
+
+// An activator that has not started its loop, for the tests of what applyPacing makes
+// of a stored record. Nothing here reads a clock or the network.
+func newTestPacingLoadActivator(
+	publicKey []byte,
+	directory *ExtenderDirectory,
+	now time.Time,
+	previous bool,
+) *ExtenderActivator {
+	settings := DefaultExtenderActivatorSettings()
+	settings.PublicKey = publicKey
+	settings.Directory = directory
+	settings.Now = func() time.Time { return now }
+	settings.postJitterForTest = func(time.Duration) time.Duration { return 10 * time.Minute }
+	if previous {
+		settings.PreviousState = &ExtenderActivatorState{}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	self := &ExtenderActivator{
+		ctx:           ctx,
+		cancel:        cancel,
+		log:           loggerOrDefault(nil),
+		settings:      settings,
+		changeMonitor: NewMonitorValue[uint64](0),
+		families:      map[int]*ExtenderFamilyActivationStatus{4: {IpVersion: 4}},
+		schedules:     map[int]*extenderActivateSchedule{4: {backoff: settings.MinBackoff}},
+		pacing:        map[int]ExtenderActivationPacing{},
+		pacingReady:   make(chan struct{}),
+	}
+	return self
+}
+
+type testPacingLoadFixture struct {
+	now       time.Time
+	publicKey []byte
+	directory *ExtenderDirectory
+	fixture   *testActivatorFixture
+}
+
+// A fixture only for its directory, operator and key; its activator is closed.
+func newTestPacingLoadFixture(t *testing.T) *testPacingLoadFixture {
+	t.Helper()
+	fixture := newTestActivatorFixtureWithPrepare(t, nil, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrlV4 = ""
+		settings.ApiUrlV6 = ""
+	})
+	fixture.activator.Close()
+	return &testPacingLoadFixture{
+		now:       fixture.clock.Now(),
+		publicKey: fixture.publicKey,
+		directory: fixture.directory,
+		fixture:   fixture,
+	}
+}
+
+func (self *testPacingLoadFixture) record(pacing ExtenderActivationPacing) *ExtenderActivationPacingRecord {
+	return &ExtenderActivationPacingRecord{
+		PublicKey: self.publicKey,
+		Families:  map[int]ExtenderActivationPacing{4: pacing},
+	}
+}
+
+func (self *testPacingLoadFixture) activatedPacing(expire time.Time) ExtenderActivationPacing {
+	return ExtenderActivationPacing{
+		State:                ExtenderPacingActivated,
+		RecordExpireTime:     expire,
+		Ip:                   netip.MustParseAddr(testActivateIpv4),
+		LastAttemptAt:        self.now.Add(-time.Hour),
+		NextAllowedAttemptAt: self.now.Add(19 * time.Hour),
+	}
+}
+
+func (self *testPacingLoadFixture) plant(t *testing.T, expire time.Time, ips ...string) {
+	t.Helper()
+	applyTestOperatorRecord(t, self.directory, self.fixture.operator, self.publicKey, self.now, expire, ips...)
+}
+
+// A stored record the directory does not hold is no activation (F2): the family is
+// unactivated and due at once, whatever the store says of its expiry.
+func TestExtenderActivatorLoadClearsARecordTheDirectoryLacks(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	expire := f.now.Add(25 * time.Hour)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(f.activatedPacing(expire)), nil)
+
+	if family := self.families[4]; family.Activated {
+		t.Fatalf("family = %+v, expected unactivated", family)
+	}
+	pacing := self.pacing[4]
+	if pacing.State != ExtenderPacingUnactivated || !pacing.RecordExpireTime.IsZero() || pacing.Ip.IsValid() {
+		t.Fatalf("pacing = %+v, expected cleared", pacing)
+	}
+	if next := self.schedules[4].nextActivateTime; !next.IsZero() {
+		t.Fatalf("next post at %s, expected at once", next)
+	}
+}
+
+// The directory holds a record, but not the one stored: another expiry, or an address
+// the stored one was not kept for.
+func TestExtenderActivatorLoadClearsARecordThatDoesNotMatch(t *testing.T) {
+	cases := []struct {
+		name  string
+		plant func(f *testPacingLoadFixture, t *testing.T, expire time.Time)
+	}{
+		{"another expiry", func(f *testPacingLoadFixture, t *testing.T, expire time.Time) {
+			f.plant(t, expire.Add(time.Hour), testActivateIpv4)
+		}},
+		{"another address", func(f *testPacingLoadFixture, t *testing.T, expire time.Time) {
+			f.plant(t, expire, "198.51.100.99")
+		}},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			f := newTestPacingLoadFixture(t)
+			expire := f.now.Add(25 * time.Hour)
+			c.plant(f, t, expire)
+			self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+			self.applyPacing(f.record(f.activatedPacing(expire)), nil)
+			if self.families[4].Activated || self.pacing[4].State != ExtenderPacingUnactivated {
+				t.Fatalf("family = %+v, pacing = %+v, expected unactivated", self.families[4], self.pacing[4])
+			}
+			if next := self.schedules[4].nextActivateTime; !next.IsZero() {
+				t.Fatalf("next post at %s, expected at once", next)
+			}
+		})
+	}
+}
+
+// A hold is the operator's word on when to come back, and it outlives the record it
+// was set beside.
+func TestExtenderActivatorLoadKeepsAHoldWhenItClearsTheRecord(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	pacing := f.activatedPacing(f.now.Add(25 * time.Hour))
+	pacing.State = ExtenderPacingRenewalRefused
+	pacing.Hold = true
+	pacing.NextAllowedAttemptAt = f.now.Add(2 * time.Hour)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(pacing), nil)
+	if self.families[4].Activated {
+		t.Fatal("family stands activated on a record the directory lacks")
+	}
+	if next := self.schedules[4].nextActivateTime; !next.Equal(f.now.Add(2 * time.Hour)) {
+		t.Fatalf("next post at %s, expected the hold", next)
+	}
+}
+
+// With no directory the record cannot be judged, and the record stands: the post
+// every restart makes will verify it.
+func TestExtenderActivatorLoadTrustsARecordWithNoDirectory(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	self := newTestPacingLoadActivator(f.publicKey, nil, f.now, false)
+	self.applyPacing(f.record(f.activatedPacing(f.now.Add(25*time.Hour))), nil)
+	if !self.families[4].Activated {
+		t.Fatalf("family = %+v, expected activated", self.families[4])
+	}
+	if next := self.schedules[4].nextActivateTime; !next.Equal(f.now.Add(10 * time.Minute)) {
+		t.Fatalf("next post at %s, expected the jittered post", next)
+	}
+}
+
+// A record the directory holds stands, and its family posts at the jittered time.
+func TestExtenderActivatorLoadKeepsARecordTheDirectoryHolds(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	expire := f.now.Add(25 * time.Hour)
+	f.plant(t, expire, testActivateIpv4)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(f.activatedPacing(expire)), nil)
+	if !self.families[4].Activated || self.pacing[4].State != ExtenderPacingActivated {
+		t.Fatalf("family = %+v, pacing = %+v", self.families[4], self.pacing[4])
+	}
+	if next := self.schedules[4].nextActivateTime; !next.Equal(f.now.Add(10 * time.Minute)) {
+		t.Fatalf("next post at %s, expected the jittered post", next)
+	}
+}
+
+// What the standing post offered comes back with the record, so a carrier the new
+// process serves that the record lacks is still seen as off it.
+func TestExtenderActivatorLoadRestoresThePostedCarriers(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	expire := f.now.Add(25 * time.Hour)
+	f.plant(t, expire, testActivateIpv4)
+	pacing := f.activatedPacing(expire)
+	pacing.PostedCarriers = []string{ExtenderCarrierTcp}
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(pacing), nil)
+	schedule := self.schedules[4]
+	if !schedule.missesACarrier([]string{ExtenderCarrierTcp, ExtenderCarrierQuic}, nil) {
+		t.Fatal("a carrier off the record went unseen after the load")
+	}
+	if schedule.missesACarrier([]string{ExtenderCarrierTcp}, nil) {
+		t.Fatal("the carriers of the record read as off it")
+	}
+}
+
+// A time saved by a clock that was ahead is brought back to what this clock can have
+// written (F3): the family is not silent for as long as the stored time says.
+func TestExtenderActivatorLoadClampsTimesFromAClockThatWasAhead(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(ExtenderActivationPacing{
+		State:                ExtenderPacingFailed,
+		LastAttemptAt:        f.now.Add(400 * 24 * time.Hour),
+		NextAllowedAttemptAt: f.now.Add(400 * 24 * time.Hour),
+	}), nil)
+	pacing := self.pacing[4]
+	if !pacing.NextAllowedAttemptAt.Equal(f.now.Add(24 * time.Hour)) {
+		t.Fatalf("next allowed = %s, expected a day ahead", pacing.NextAllowedAttemptAt.Sub(f.now))
+	}
+	if !pacing.LastAttemptAt.Equal(f.now) {
+		t.Fatalf("last attempt = %s, expected now", pacing.LastAttemptAt.Sub(f.now))
+	}
+	if next := self.schedules[4].nextActivateTime; !next.Equal(f.now.Add(24 * time.Hour)) {
+		t.Fatalf("next post in %s, expected a day", next.Sub(f.now))
+	}
+}
+
+// A store that blocks its load until released (F4).
+type testBlockingPacingStore struct {
+	testPacingStore
+	release  chan struct{}
+	returned chan struct{}
+	late     *ExtenderActivationPacingRecord
+}
+
+func (self *testBlockingPacingStore) LoadPacing() (*ExtenderActivationPacingRecord, error) {
+	<-self.release
+	defer close(self.returned)
+	return self.late, nil
+}
+
+// An activator whose store answers after the timeout starts ready and posts fresh; the
+// late answer is dropped.
+func TestExtenderActivatorLoadTimeoutDropsALateAnswer(t *testing.T) {
+	store := &testBlockingPacingStore{
+		testPacingStore: *newTestPacingStore(),
+		release:         make(chan struct{}),
+		returned:        make(chan struct{}),
+	}
+	releaseOnce := sync.Once{}
+	release := func() { releaseOnce.Do(func() { close(store.release) }) }
+	t.Cleanup(release)
+	fixture := newTestActivatorFixtureWithPrepare(
+		t,
+		func(fixture *testActivatorFixture) {
+			store.late = &ExtenderActivationPacingRecord{
+				PublicKey: fixture.publicKey,
+				Families: map[int]ExtenderActivationPacing{4: {
+					State:                ExtenderPacingRefused,
+					NextAllowedAttemptAt: fixture.clock.Now().Add(24 * time.Hour),
+					Hold:                 true,
+				}},
+			}
+		},
+		func(settings *ExtenderActivatorSettings) {
+			settings.ApiUrlV6 = ""
+			settings.PacingStore = store
+			settings.PacingLoadTimeout = 20 * time.Millisecond
+		},
+	)
+	select {
+	case <-fixture.activator.Ready():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the activator was not ready after the load timeout")
+	}
+	// it posts as a new process does, though the store said to hold a day
+	fixture.waitPass()
+	fixture.waitPost()
+	fixture.waitActivation()
+
+	release()
+	select {
+	case <-store.returned:
+	case <-time.After(30 * time.Second):
+		t.Fatal("the store did not return")
+	}
+	fixture.step(time.Minute)
+	if pacing := fixture.activator.Pacing()[4]; pacing.State != ExtenderPacingActivated || pacing.Hold {
+		t.Fatalf("pacing = %+v, expected the post's, not the late answer's", pacing)
+	}
+}
+
+// A store that fails its load starts the activator as a new process does, and the
+// activator is ready.
+func TestExtenderActivatorLoadErrorStartsFresh(t *testing.T) {
+	store := &testReleasablePacingStore{testPacingStore: *newTestPacingStore()}
+	store.release()
+	fixture := newTestActivatorFixtureWithPrepare(t, nil, func(settings *ExtenderActivatorSettings) {
+		settings.ApiUrlV6 = ""
+		settings.PacingStore = store
+	})
+	select {
+	case <-fixture.activator.Ready():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the activator was not ready after a failed load")
+	}
+	fixture.waitPass()
+	fixture.waitPost()
+}
+
+// Ready is closed from the start with no store.
+func TestExtenderActivatorReadyWithNoStore(t *testing.T) {
+	fixture := newTestActivatorFixture(t, nil)
+	select {
+	case <-fixture.activator.Ready():
+	default:
+		t.Fatal("an activator with no store is not ready")
+	}
+}
+
+// A store released under the activator, as a role's is when it is replaced: its load and
+// its saves answer with an error, which is logged, and the pacing stands in memory.
+type testReleasablePacingStore struct {
+	testPacingStore
+	releasedLock sync.Mutex
+	released     bool
+}
+
+var errTestPacingStoreReleased = errors.New("the pacing store is released")
+
+func (self *testReleasablePacingStore) release() {
+	self.releasedLock.Lock()
+	defer self.releasedLock.Unlock()
+	self.released = true
+}
+
+func (self *testReleasablePacingStore) isReleased() bool {
+	self.releasedLock.Lock()
+	defer self.releasedLock.Unlock()
+	return self.released
+}
+
+func (self *testReleasablePacingStore) LoadPacing() (*ExtenderActivationPacingRecord, error) {
+	if self.isReleased() {
+		return nil, errTestPacingStoreReleased
+	}
+	return self.testPacingStore.LoadPacing()
+}
+
+func (self *testReleasablePacingStore) SavePacing(record *ExtenderActivationPacingRecord) error {
+	if self.isReleased() {
+		return errTestPacingStoreReleased
+	}
+	return self.testPacingStore.SavePacing(record)
+}
+
+func TestExtenderActivatorReleasedStoreDuringReplacement(t *testing.T) {
+	store := &testReleasablePacingStore{testPacingStore: *newTestPacingStore()}
+	fixture := newTestActivatorFixtureActivated(t, func(settings *ExtenderActivatorSettings) {
+		settings.PacingStore = store
+	})
+	fixture.step(time.Minute)
+	_, savesBefore := store.family(4)
+
+	// the role is replaced and its store is released before the new activator reads it
+	store.release()
+	fixture.replaceActivator(func(settings *ExtenderActivatorSettings) {
+		settings.postJitterForTest = func(time.Duration) time.Duration { return 30 * time.Minute }
+	})
+	select {
+	case <-fixture.activator.Ready():
+	case <-time.After(30 * time.Second):
+		t.Fatal("the replacement was not ready with its store released")
+	}
+	// what the old activator held carries over
+	if status := fixture.activator.Status().Family(4); !status.Activated {
+		t.Fatalf("v4 status = %+v, expected the record carried over", status)
+	}
+	fixture.waitPass()
+	fixture.step(30 * time.Minute)
+	fixture.waitPost()
+	fixture.waitPost()
+	// a later pass proves the one that posted has finished
+	fixture.step(time.Minute)
+	// the pacing stands in memory though no save lands
+	if pacing := fixture.activator.Pacing()[4]; pacing.State != ExtenderPacingActivated {
+		t.Fatalf("pacing = %+v, expected activated in memory", pacing)
+	}
+	if _, saves := store.family(4); saves != savesBefore {
+		t.Fatalf("saves = %d, expected none after the release (%d)", saves, savesBefore)
+	}
+}

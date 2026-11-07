@@ -461,6 +461,14 @@ type ExtenderActivatorSettings struct {
 	// the spread. Its result is held to [0, maxJitter).
 	postJitterForTest func(maxJitter time.Duration) time.Duration
 
+	// Where the activation pacing survives a restart (ExtenderActivationPacingStore).
+	// Nil keeps it in memory, as before: a new process posts every family.
+	PacingStore ExtenderActivationPacingStore
+	// How long the first read of the store may take. A store that has not answered by
+	// then is started without, as a new process does, and its late answer is dropped.
+	// Zero takes the default.
+	PacingLoadTimeout time.Duration
+
 	// Backoff of a family after its failure, doubling to the max (G3). Each
 	// family keeps its own.
 	MinBackoff time.Duration
@@ -549,6 +557,12 @@ type ExtenderFamilyActivationStatus struct {
 	RevokedTime  time.Time
 	ExpireTime   time.Time
 	AllowedHosts []string
+	// The pacing (ExtenderActivationPacing): how the last attempt ended, and when
+	// the next is allowed. Zero before the family has posted.
+	PacingState      string
+	NextAttemptTime  time.Time
+	LastAttemptTime  time.Time
+	RecordExpireTime time.Time
 }
 
 // The whole activation state, one entry per family in ip version order.
@@ -625,7 +639,12 @@ type ExtenderActivator struct {
 	// one post a cycle of the fallback mode; and the address the caller address
 	// check last saw on each family. Both are read and written by the loop
 	// goroutine alone.
-	schedules      map[int]*extenderActivateSchedule
+	schedules map[int]*extenderActivateSchedule
+	// the pacing of each family by schedule key (ExtenderActivationPacing), under
+	// stateLock
+	pacing map[int]ExtenderActivationPacing
+	// closed once the pacing store has been read, timed out or failed (Ready)
+	pacingReady    chan struct{}
 	helloAddresses map[int]netip.Addr
 	// when the caller address is next checked. The loop's, and handed over
 	// (State).
@@ -898,6 +917,9 @@ func NewExtenderActivator(
 	if copied.RequestTimeout <= 0 {
 		copied.RequestTimeout = 60 * time.Second
 	}
+	if copied.PacingLoadTimeout <= 0 {
+		copied.PacingLoadTimeout = extenderPacingLoadTimeout
+	}
 	if copied.Run == nil {
 		copied.Run = ExtenderProcessRun()
 	}
@@ -914,6 +936,8 @@ func NewExtenderActivator(
 		wakeMonitor:            NewMonitor(),
 		families:               map[int]*ExtenderFamilyActivationStatus{},
 		schedules:              map[int]*extenderActivateSchedule{},
+		pacing:                 map[int]ExtenderActivationPacing{},
+		pacingReady:            make(chan struct{}),
 		helloAddresses:         map[int]netip.Addr{},
 		counters:               map[int]*ExtenderFamilyCounters{},
 		lastPeriodicLogTimes:   map[int]time.Time{},
@@ -942,6 +966,7 @@ func NewExtenderActivator(
 	if settings.PreviousState != nil {
 		self.continueFrom(settings.PreviousState)
 	}
+	self.startPacingLoad()
 
 	addNetworkChangeListener := settings.AddNetworkChangeListener
 	if addNetworkChangeListener == nil {
@@ -1009,6 +1034,17 @@ func (self *ExtenderActivator) Status() *ExtenderActivatorStatus {
 		}
 		copied := *family
 		copied.AllowedHosts = slices.Clone(family.AllowedHosts)
+		pacing, ok := self.pacing[ipVersion]
+		if !ok && self.fallback {
+			// the one post a cycle of the plain api url paces under key 0
+			pacing, ok = self.pacing[0]
+		}
+		if ok {
+			copied.PacingState = pacing.State
+			copied.NextAttemptTime = pacing.NextAllowedAttemptAt
+			copied.LastAttemptTime = pacing.LastAttemptAt
+			copied.RecordExpireTime = pacing.RecordExpireTime
+		}
 		status.Families = append(status.Families, &copied)
 	}
 	return status
@@ -1105,6 +1141,13 @@ func (self *ExtenderActivator) run() {
 		self.settings.Now(),
 	)
 
+	// no post goes ahead of what the store says
+	select {
+	case <-self.pacingReady:
+	case <-self.ctx.Done():
+		return
+	}
+
 	for {
 		select {
 		case <-self.ctx.Done():
@@ -1158,6 +1201,7 @@ func (self *ExtenderActivator) run() {
 		}
 
 		self.skipCarrierPostsNotOwed(now)
+		self.applyPacingHold(now)
 		if due := self.dueScheduleKeys(now); 0 < len(due) {
 			self.activate(now, due)
 		}
@@ -1623,6 +1667,7 @@ func (self *ExtenderActivator) activate(now time.Time, due []int) {
 	}
 
 	activated := []int{}
+	persist := false
 	for i, key := range due {
 		schedule := self.schedules[key]
 		answer := answers[i]
@@ -1672,6 +1717,24 @@ func (self *ExtenderActivator) activate(now time.Time, due []int) {
 		default:
 			schedule.hold(now, self.settings)
 		}
+		switch answer.outcome {
+		case extenderActivateActivated, extenderActivateFailed, extenderActivateRefused:
+			// a budget refusal is the operator's word on when it has room: it holds
+			// against the triggers too
+			self.recordPacing(
+				key,
+				now,
+				answer.outcome,
+				schedule.nextActivateTime,
+				answer.outcome == extenderActivateRefused && 0 < answer.retryAfter,
+				schedule.postedCarriers,
+				schedule.postedDnsPorts,
+			)
+			persist = true
+		}
+	}
+	if persist {
+		self.savePacing()
 	}
 	if 0 < len(activated) && !followUp && !measurementCarried {
 		self.followMeasurementCsr(activated)
@@ -2342,7 +2405,11 @@ func (self *ExtenderActivator) recordFailure(
 		return
 	}
 	for _, family := range families {
-		family.Activated = false
+		// a failed renewal does not clear the record: the family stays activated
+		// while the record it holds is valid, and the error says what the renewal met
+		if !(family.Activated && now.Before(family.ExpireTime)) {
+			family.Activated = false
+		}
 		family.LastActivationTime = now
 		family.LastError = message
 		family.LastRefused = refused

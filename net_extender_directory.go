@@ -2646,6 +2646,36 @@ func (self *ExtenderDirectory) IsActiveKey(publicKey []byte) bool {
 	return !self.keyRecordExpiredWithLock(keyRecord, now)
 }
 
+// The newest record held for `publicKey` while it is valid (verified, not revoked,
+// not expired, as IsActiveKey): when it expires and the addresses it lists. False
+// when the directory holds no such record. It is what the activation pacing judges a
+// stored record by, since only a record the directory holds is one the platform
+// serves.
+func (self *ExtenderDirectory) ActiveRecordOf(publicKey []byte) (expireTime time.Time, ips []netip.Addr, ok bool) {
+	if len(publicKey) != ed25519.PublicKeySize {
+		return time.Time{}, nil, false
+	}
+	keyHex := hex.EncodeToString(publicKey)
+	now := self.settings.Now()
+
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+
+	keyRecord := self.keyHexRecords[keyHex]
+	if keyRecord == nil || keyRecord.recordBody == nil {
+		return time.Time{}, nil, false
+	}
+	if self.keyRecordRevokedWithLock(keyRecord) || self.keyRecordExpiredWithLock(keyRecord, now) {
+		return time.Time{}, nil, false
+	}
+	for _, recordAddress := range keyRecord.recordBody.Addresses {
+		if ip, err := netip.ParseAddr(recordAddress.Ip); err == nil && ip.IsValid() {
+			ips = append(ips, ip.Unmap())
+		}
+	}
+	return time.UnixMilli(int64(keyRecord.recordBody.ExpireTimeMs)), ips, true
+}
+
 // The dialable form of one address for a strategy pinned to it (K10): what
 // `AddressUsable` admits, except that a hold does not count, because a pinned
 // stay waits out a failed dial on its own transport's schedule. Nil when the

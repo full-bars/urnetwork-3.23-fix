@@ -230,25 +230,25 @@ func TestExtenderActivatorActivationLineOncePerTransition(t *testing.T) {
 	// Now transition away from activated via refusal.
 	fixture.operator.setFamilyRefusal(4, "temporary failure")
 	status := fixture.forceActivation()
-	if status.Family(4).Activated {
-		t.Fatal("v4 status expected unactivated after refusal")
+	// the record the family holds is valid for a day yet, and a refused renewal does
+	// not clear it: the family stays activated and says what the renewal met
+	if !status.Family(4).Activated || !status.Family(4).LastRefused {
+		t.Fatal("v4 status expected activated with the refusal after a refused renewal")
 	}
 
-	// Now transition back to activated.
+	// Now transition back to activated, once the refused renewal's hold is over.
+	fixture.clock.advance(10 * time.Minute)
 	fixture.operator.setFamilyRefusal(4, "")
 	status = fixture.forceActivation()
 	if !status.Family(4).Activated {
 		t.Fatal("v4 status expected activated")
 	}
 
-	// Activation line should now have printed a second time (once per transition).
-	activatedLines = waitForLogLines(t, log, "[extender] IPv4 is now activated on try ", 2)
-	if len(activatedLines) != 2 {
-		t.Fatalf("activatedLines count after re-activation = %d, expected 2", len(activatedLines))
-	}
-	expectedSecond := "[extender] IPv4 is now activated on try 3. The platform can reach this host over IPv4.\n"
-	if !strings.Contains(activatedLines[1], expectedSecond) {
-		t.Fatalf("activatedLine 2 = %q, expected %q", activatedLines[1], expectedSecond)
+	// The refused renewal never left the activated state, so there is no second
+	// transition to print: the line stays at one.
+	activatedLines = log.linesContaining("[extender] IPv4 is now activated on try ")
+	if len(activatedLines) != 1 {
+		t.Fatalf("activatedLines count after re-activation = %d, expected 1", len(activatedLines))
 	}
 }
 

@@ -368,6 +368,13 @@ func (self *testActivateOperator) setAnswerHold(answerHold chan struct{}) {
 	self.answerHold = answerHold
 }
 
+// How long the records signed from now on live.
+func (self *testActivateOperator) setRecordLifetime(lifetime time.Duration) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.recordLifetime = lifetime
+}
+
 func (self *testActivateOperator) setRetryAfterSeconds(retryAfterSeconds int) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
@@ -1454,6 +1461,9 @@ type testActivateOutcome struct {
 	activated bool
 	lastError string
 	refused   bool
+	// the clock moves this far before the attempt, past the hold a refused renewal
+	// leaves
+	advance time.Duration
 }
 
 // The carriers seam of an outcome sequence: every carrier while `listening`
@@ -1498,6 +1508,7 @@ func (self *testActivatorFixture) expectOutcomes(
 ) {
 	self.t.Helper()
 	for i, outcome := range outcomes {
+		self.clock.advance(outcome.advance)
 		listening.Store(outcome.listening)
 		self.operator.setRefusal(outcome.refusal)
 		self.operator.setAnswer(outcome.answer)
@@ -1627,10 +1638,12 @@ func TestExtenderActivatorTellsAPlainApiUrlRefusalFromAFailure(t *testing.T) {
 		},
 		{
 			// a refusal names no family, so it lands on the family there is
+			// the record it holds is valid, and a refused renewal does not clear it
 			name:      "refused after the activation",
 			listening: true,
 			refusal:   refusal,
 			ipVersion: 4,
+			activated: true,
 			lastError: refusal,
 			refused:   true,
 		},
@@ -1639,6 +1652,7 @@ func TestExtenderActivatorTellsAPlainApiUrlRefusalFromAFailure(t *testing.T) {
 			listening: true,
 			ipVersion: 4,
 			activated: true,
+			advance:   10 * time.Minute,
 		},
 	})
 }
