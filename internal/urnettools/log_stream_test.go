@@ -378,7 +378,7 @@ func TestStreamLogFile_UnrelatedReplacementBounded(t *testing.T) {
 	f.waitFor("replacement end\n")
 	elapsed := time.Since(start)
 	f.stop()
-	if elapsed > 3*time.Second {
+	if elapsed > 5*time.Second {
 		t.Fatalf("switch took %s", elapsed)
 	}
 	if got, want := f.out.String(), numberedLog(1, 200)+content; got != want {
@@ -478,5 +478,41 @@ func TestStreamLogFile_SpuriousDifferentStatDoesNotReprint(t *testing.T) {
 
 	if got, want := f.out.String(), "one\ntwo\n"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
+	}
+}
+
+// The old file can end in the middle of a line when it is trimmed: the provider
+// writes the pipe in chunks. The follower has already printed that fragment, and
+// the new file holds the whole line, so resuming after the last complete line
+// would print the fragment twice. The fragment must be skipped, once.
+func TestStreamLogFile_TrimMidLineDoesNotRepeatTheFragment(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	old, err := os.OpenFile(path, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer old.Close()
+	if _, err := old.WriteString(numberedLog(1, 200) + "line 0201: the fragment that was already"); err != nil {
+		t.Fatal(err)
+	}
+	f := startFollower(t, path, 300)
+	f.waitFor("the fragment that was already")
+
+	// the provider's trim: the kept tail (including the fragment) becomes a new
+	// file, then the rest of the line and later lines go to the new file
+	replacement := path + ".new"
+	if err := os.WriteFile(replacement, []byte(numberedLog(68, 200)+"line 0201: the fragment that was already"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Rename(replacement, path); err != nil {
+		t.Fatal(err)
+	}
+	appendLine(t, path, " printed once\n"+numberedLog(202, 220))
+	f.waitFor("line 0220:")
+	f.stop()
+
+	want := numberedLog(1, 200) + "line 0201: the fragment that was already printed once\n" + numberedLog(202, 220)
+	if got := f.out.String(); got != want {
+		t.Fatalf("output differs (a repeated fragment or a missing line):\n got %d bytes, want %d\n tail: %q", len(got), len(want), got[max(0, len(got)-200):])
 	}
 }

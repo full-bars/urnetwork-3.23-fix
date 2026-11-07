@@ -157,8 +157,22 @@ func (h *logHistory) Write(p []byte) (int, error) {
 	return n, err
 }
 
-// resumeLogOffset searches bounded line-ended windows, stepping back over
-// writes that reached the old inode after the replacement was copied.
+// resumeLogOffsetCandidates bounds how many line-ended windows are tried. The
+// step-back only has to cover the few lines the provider writes to the old inode
+// between copying the kept tail and swapping its descriptor, which is a handful at
+// most. Each miss scans the whole new file, so a smaller bound keeps an unrelated
+// replacement cheap.
+const resumeLogOffsetCandidates = 16
+
+// resumeLogOffset finds where in the new file the printed history ends, so the
+// follower resumes there instead of replaying the file. It searches line-ended
+// windows of the history from the end, stepping back over writes that reached the
+// old inode after the replacement was copied. 0 means no overlap: follow the new
+// file from its start.
+//
+// When the old file ended mid-line, the fragment was already printed and the new
+// file holds the whole line, so a match on the last window also skips that
+// fragment rather than printing it twice.
 func resumeLogOffset(f *os.File, history []byte) int64 {
 	const maxFile = 32 * 1024 * 1024
 	if len(history) == 0 {
@@ -169,14 +183,19 @@ func resumeLogOffset(f *os.File, history []byte) int64 {
 		return 0
 	}
 	end := bytes.LastIndexByte(history, '\n') + 1
-	for candidates := 0; end > 0 && candidates < 64; candidates++ {
+	fragment := history[end:]
+	for candidates := 0; end > 0 && candidates < resumeLogOffsetCandidates; candidates++ {
 		start := end - 1024
 		if start < 0 {
 			start = 0
 		}
 		anchor := history[start:end]
 		if i := bytes.LastIndex(content, anchor); i >= 0 {
-			return int64(i + len(anchor))
+			pos := i + len(anchor)
+			if candidates == 0 && len(fragment) > 0 && bytes.HasPrefix(content[pos:], fragment) {
+				pos += len(fragment)
+			}
+			return int64(pos)
 		}
 		end = bytes.LastIndexByte(history[:end-1], '\n') + 1
 	}
