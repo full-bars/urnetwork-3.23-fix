@@ -21,7 +21,7 @@ import (
 
 // controlRequest is one line of the control socket protocol.
 type controlRequest struct {
-	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", "traffic", "internals", "goroutines", "ledger", "diag", or "audit"
+	Cmd     string `json:"cmd"` // "set", "clear", "get", "status", "history", "snapshot", "traffic", "internals", "goroutines", "ledger", "diag", "extender", or "audit"
 	Key     string `json:"key,omitempty"`
 	Value   string `json:"value,omitempty"`
 	Limit   int    `json:"limit,omitempty"`
@@ -82,6 +82,8 @@ type controlResponse struct {
 	Entries      []AuditEntry           `json:"entries,omitempty"`
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]SettingInfo `json:"settings,omitempty"`
+	// Extender answers the "extender" command (extender_status.go).
+	Extender *ExtenderReading `json:"extender,omitempty"`
 	// StartupValues maps restart-required keys to the values the running
 	// provider actually started with (from env vars set at startup).
 	// The dashboard compares these against current control-state values
@@ -170,6 +172,7 @@ var controlKeyCanonical = map[string]string{
 	"ram-logs":                    "ramlogs",
 	"metrics":                     "metrics",
 	"metrics_listen":              "metrics_listen",
+	"extender":                    "extender",
 	"metrics-listen":              "metrics_listen",
 }
 
@@ -251,6 +254,12 @@ func validateControlValue(canonicalKey, value string) error {
 		case "on", "off":
 		default:
 			return fmt.Errorf("metrics: must be on or off (got %q)", value)
+		}
+	case "extender":
+		switch strings.ToLower(value) {
+		case "on", "off":
+		default:
+			return fmt.Errorf("extender: must be on or off (got %q)", value)
 		}
 	case "metrics_listen":
 		if strings.EqualFold(value, "auto") || strings.EqualFold(value, "off") {

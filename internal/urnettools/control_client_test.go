@@ -302,6 +302,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"h1-plus", "h1_plus", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},
+		{"extender", "extender", "on"},
 		{"metrics-listen", "metrics_listen", "auto"},
 	}
 

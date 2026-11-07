@@ -519,6 +519,7 @@ func cmdStatus(args []string) error {
 		return err
 	}
 	printLiveBlock(p)
+	printExtenderBlock(p)
 	return nil
 }
 

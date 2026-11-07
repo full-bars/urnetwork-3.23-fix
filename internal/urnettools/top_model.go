@@ -155,6 +155,12 @@ type topModel struct {
 	lastErr   string
 	events    []topEvent
 
+	// extender is the last reading the control socket gave for the current
+	// provider, fetched off the UI loop (see wantExtender)
+	extender     ExtenderReading
+	extenderBusy bool
+	lastExtender time.Time
+
 	// gen names the current provider selection. A fetch started for an earlier
 	// selection can finish after Tab and must not be applied to the new one.
 	gen       int

@@ -1,0 +1,224 @@
+package urnettools
+
+import (
+	"errors"
+	"fmt"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"syscall"
+	"time"
+)
+
+// extender_status.go reads the provider's extender picture from its control
+// socket and renders it for `urnet-tools status`, `urnet-tools top` and
+// `urnet-tools extender status`. Nothing is inferred from files or logs: the
+// provider answers, or the extender is reported as unavailable. Unavailable is
+// never shown as "off", because a provider that cannot be reached tells you
+// nothing about whether its extender is on.
+
+const (
+	SourceControlSocket = "control socket"
+	SourceUnknown       = "unavailable"
+)
+
+// ExtenderPort is one carrier port.
+type ExtenderPort struct {
+	Name  string `json:"name"`
+	Up    bool   `json:"up"`
+	Error string `json:"error,omitempty"`
+}
+
+// ExtenderFamily is one address family's activation state.
+type ExtenderFamily struct {
+	IpVersion         int    `json:"ip_version"`
+	State             string `json:"state"`
+	Ip                string `json:"ip,omitempty"`
+	Detail            string `json:"detail,omitempty"`
+	LastAttemptUnixMs int64  `json:"last_attempt_unix_ms,omitempty"`
+	NextAttemptUnixMs int64  `json:"next_attempt_unix_ms,omitempty"`
+	ExpireUnixMs      int64  `json:"expire_unix_ms,omitempty"`
+}
+
+// ExtenderServed is requests served for clients over three windows.
+type ExtenderServed struct {
+	Last24h  uint64 `json:"last_24h"`
+	Last7d   uint64 `json:"last_7d"`
+	Lifetime uint64 `json:"lifetime"`
+}
+
+// ExtenderReading mirrors the provider's extenderControlReading.
+type ExtenderReading struct {
+	// Source is where the reading came from; set by this package.
+	Source string `json:"-"`
+
+	Known         bool             `json:"known"`
+	Setting       string           `json:"setting"`
+	SettingSource string           `json:"setting_source,omitempty"`
+	Running       bool             `json:"running"`
+	RoleState     string           `json:"role_state,omitempty"`
+	OffReason     string           `json:"off_reason,omitempty"`
+	Note          string           `json:"note,omitempty"`
+	Activating    bool             `json:"activating"`
+	Ports         []ExtenderPort   `json:"ports,omitempty"`
+	DnsPorts      []int            `json:"dns_ports,omitempty"`
+	TcpRetries    int64            `json:"tcp_retries,omitempty"`
+	Families      []ExtenderFamily `json:"families,omitempty"`
+	LiveClients   int              `json:"live_clients"`
+	Served        ExtenderServed   `json:"served"`
+
+	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+}
+
+var socketExtenderFn = queryExtenderFromSocket
+
+func queryExtenderFromSocket(p Provider) (*ExtenderReading, error) {
+	if p.StateDir == "" {
+		return nil, errors.New("no state directory")
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "extender"})
+	if err != nil {
+		return nil, extenderSocketError(sockPath, err)
+	}
+	if !resp.OK || resp.Extender == nil || !resp.Extender.Known {
+		return nil, errors.New("this provider build does not report extender status (update it)")
+	}
+	reading := *resp.Extender
+	reading.Source = SourceControlSocket
+	return &reading, nil
+}
+
+func extenderSocketError(sockPath string, err error) error {
+	_, statErr := os.Stat(sockPath)
+	if errors.Is(err, os.ErrNotExist) || errors.Is(err, syscall.ECONNREFUSED) || errors.Is(statErr, os.ErrNotExist) {
+		return fmt.Errorf("provider not running: no control socket: %w", err)
+	}
+	return fmt.Errorf("control socket unavailable: %w", err)
+}
+
+// ReadExtenderStatus asks the provider; a failure is the unavailable reading.
+func ReadExtenderStatus(p Provider) ExtenderReading {
+	if reading, err := socketExtenderFn(p); err == nil && reading != nil {
+		return *reading
+	}
+	return ExtenderReading{Source: SourceUnknown}
+}
+
+func extenderFamilyName(ipVersion int) string {
+	if ipVersion == 6 {
+		return "IPv6"
+	}
+	return "IPv4"
+}
+
+// extenderTcpDown reports whether the tcp carrier is down, with its error.
+func extenderTcpDown(r ExtenderReading) (bool, string) {
+	for _, port := range r.Ports {
+		if strings.HasPrefix(port.Name, "tcp") && !port.Up {
+			return true, port.Error
+		}
+	}
+	return false, ""
+}
+
+// extenderFamilyLine is the one-line state of a family.
+func extenderFamilyLine(f ExtenderFamily, now time.Time) string {
+	switch f.State {
+	case "activated":
+		line := "ACTIVE"
+		if f.Ip != "" {
+			line += " " + f.Ip
+		}
+		if f.ExpireUnixMs != 0 {
+			if left := time.UnixMilli(f.ExpireUnixMs).Sub(now); 0 < left {
+				line += fmt.Sprintf(" (listing renews within %s)", left.Round(time.Minute))
+			}
+		}
+		return line
+	case "held":
+		return "not active: held until tcp 443 is bound"
+	case "waiting":
+		line := "waiting"
+		if f.Detail != "" {
+			line += " (" + f.Detail + ")"
+		}
+		return line + extenderNextTry(f, now)
+	default:
+		line := "not active"
+		if f.State != "" {
+			line += " (" + f.State + ")"
+		}
+		if f.Detail != "" {
+			line += ": " + f.Detail
+		}
+		return line + extenderNextTry(f, now)
+	}
+}
+
+func extenderNextTry(f ExtenderFamily, now time.Time) string {
+	if f.NextAttemptUnixMs == 0 {
+		return ""
+	}
+	next := time.UnixMilli(f.NextAttemptUnixMs)
+	if !next.After(now) {
+		return ", next try due now"
+	}
+	return ", next try " + next.Format("15:04")
+}
+
+// formatExtenderBlock renders the reading. `now` is a parameter so the output
+// is deterministic in tests.
+func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
+	if r.Source != SourceControlSocket {
+		fmt.Fprintln(w, "\nExtender: unavailable (the provider did not answer on its control socket)")
+		return
+	}
+	fmt.Fprintln(w, "\nExtender:")
+	setting := r.Setting
+	if r.SettingSource != "" {
+		setting += "  (" + r.SettingSource + ")"
+	}
+	fmt.Fprintf(w, "  Setting:           %s\n", setting)
+	if !r.Running {
+		reason := r.OffReason
+		if reason == "" {
+			reason = "not running"
+		}
+		fmt.Fprintf(w, "  State:             OFF: %s\n", reason)
+		fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
+		return
+	}
+	state := strings.ReplaceAll(r.RoleState, "_", " ")
+	if !r.Activating {
+		state += " (waiting for the direct slot to sign in before asking to be listed)"
+	}
+	fmt.Fprintf(w, "  State:             %s\n", state)
+
+	var ports []string
+	for _, port := range r.Ports {
+		switch {
+		case port.Up:
+			ports = append(ports, port.Name+" up")
+		case port.Error != "":
+			ports = append(ports, fmt.Sprintf("%s DOWN (%s)", port.Name, port.Error))
+		default:
+			ports = append(ports, port.Name+" DOWN")
+		}
+	}
+	fmt.Fprintf(w, "  Ports:             %s\n", strings.Join(ports, ", "))
+	if down, _ := extenderTcpDown(r); down {
+		fmt.Fprintf(w, "  Problem:           tcp 443 is down, so this host is NOT listed and gets no clients. Free the port; it is retried every 3 minutes.\n")
+	}
+	for _, f := range r.Families {
+		fmt.Fprintf(w, "  %-18s %s\n", extenderFamilyName(f.IpVersion)+":", extenderFamilyLine(f, now))
+	}
+	fmt.Fprintf(w, "  Clients now:       %d\n", r.LiveClients)
+	fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
+}
+
+// printExtenderBlock appends the extender block to `urnet-tools status`.
+func printExtenderBlock(p Provider) {
+	formatExtenderBlock(os.Stdout, ReadExtenderStatus(p), time.Now())
+}
