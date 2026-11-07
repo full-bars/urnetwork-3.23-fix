@@ -535,6 +535,12 @@ func DefaultExtenderActivatorSettings() *ExtenderActivatorSettings {
 	}
 }
 
+// ExtenderCarrierPort identifies an optional carrier and its port.
+type ExtenderCarrierPort struct {
+	Carrier string `json:"carrier"`
+	Port    int    `json:"port"`
+}
+
 // The activation state of one family, which the sdk provider status renders
 // (F3). `AllowedHosts` is what the operator last said this extender may
 // forward to (A5); the extender's own whitelist is configured, not taken from
@@ -557,6 +563,10 @@ type ExtenderFamilyActivationStatus struct {
 	RevokedTime  time.Time
 	ExpireTime   time.Time
 	AllowedHosts []string
+	// The carriers and ports in the last successful activation response.
+	Carriers        []string
+	DnsPorts        []int
+	RefusedCarriers []ExtenderCarrierPort
 	// The pacing (ExtenderActivationPacing): how the last attempt ended, and when
 	// the next is allowed. Zero before the family has posted.
 	PacingState      string
@@ -1037,6 +1047,9 @@ func (self *ExtenderActivator) Status() *ExtenderActivatorStatus {
 		}
 		copied := *family
 		copied.AllowedHosts = slices.Clone(family.AllowedHosts)
+		copied.Carriers = slices.Clone(family.Carriers)
+		copied.DnsPorts = slices.Clone(family.DnsPorts)
+		copied.RefusedCarriers = slices.Clone(family.RefusedCarriers)
 		pacing, ok := self.pacing[ipVersion]
 		if !ok && self.fallback {
 			// the one post a cycle of the plain api url paces under key 0
@@ -2385,6 +2398,14 @@ func (self *ExtenderActivator) recordSuccess(
 	family.LastRefused = false
 	family.RevokedTime = time.Time{}
 	family.AllowedHosts = slices.Clone(result.AllowedHosts)
+	family.Carriers = slices.Clone(result.Carriers)
+	family.DnsPorts = slices.Clone(result.DnsPorts)
+	family.RefusedCarriers = nil
+	for _, refusal := range result.RefusedCarriers {
+		if refusal != nil {
+			family.RefusedCarriers = append(family.RefusedCarriers, ExtenderCarrierPort{Carrier: refusal.Carrier, Port: refusal.Port})
+		}
+	}
 	family.ExpireTime = time.Time{}
 	if result.ExpireTime != nil {
 		family.ExpireTime = *result.ExpireTime

@@ -43,7 +43,7 @@ func TestExtenderHealthLineServing(t *testing.T) {
 	}, now)
 	for _, want := range []string{
 		"serving",
-		"tcp 443 up", "udp 443 up", "dns 4053 up",
+		"tcp 443 bound", "udp 443 bound", "dns 4053 bound",
 		"IPv4 ACTIVE 203.0.113.5",
 		"IPv6 not active", "no public IPv6 address", "next try",
 		"clients now 2", "24h 120", "7d 800", "lifetime 5000",

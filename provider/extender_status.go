@@ -2,6 +2,8 @@ package main
 
 import (
 	"fmt"
+	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -34,16 +36,23 @@ type extenderPortReading struct {
 	Error string `json:"error,omitempty"`
 }
 
+// extenderFamilyPortReading reports listing state for a bound carrier.
+type extenderFamilyPortReading struct {
+	Name  string `json:"name"`
+	State string `json:"state"`
+}
+
 // extenderFamilyReading is one address family's activation state.
 type extenderFamilyReading struct {
 	IpVersion int    `json:"ip_version"`
 	State     string `json:"state"`
 	Ip        string `json:"ip,omitempty"`
 	// why it is not active, in the platform's or the system's words
-	Detail            string `json:"detail,omitempty"`
-	LastAttemptUnixMs int64  `json:"last_attempt_unix_ms,omitempty"`
-	NextAttemptUnixMs int64  `json:"next_attempt_unix_ms,omitempty"`
-	ExpireUnixMs      int64  `json:"expire_unix_ms,omitempty"`
+	Detail            string                      `json:"detail,omitempty"`
+	Ports             []extenderFamilyPortReading `json:"ports,omitempty"`
+	LastAttemptUnixMs int64                       `json:"last_attempt_unix_ms,omitempty"`
+	NextAttemptUnixMs int64                       `json:"next_attempt_unix_ms,omitempty"`
+	ExpireUnixMs      int64                       `json:"expire_unix_ms,omitempty"`
 }
 
 // extenderControlReading is the whole extender picture, and the JSON the
@@ -124,7 +133,15 @@ func (m *extenderManager) Reading() extenderControlReading {
 		{fmt.Sprintf("dns %d", connect.ExtenderDnsPort), connect.ExtenderCarrierDns},
 	} {
 		up, listenError := portUp(port.carrier)
+		if port.carrier == connect.ExtenderCarrierDns {
+			up = slices.Contains(snapshot.DnsPorts, connect.ExtenderDnsPort)
+		}
 		reading.Ports = append(reading.Ports, extenderPortReading{Name: port.name, Up: up, Error: listenError})
+	}
+	for _, dnsPort := range snapshot.DnsPorts {
+		if dnsPort != connect.ExtenderDnsPort {
+			reading.Ports = append(reading.Ports, extenderPortReading{Name: fmt.Sprintf("dns %d", dnsPort), Up: true})
+		}
 	}
 	tcpUp, _ := portUp(connect.ExtenderCarrierTcp)
 
@@ -146,9 +163,40 @@ func (m *extenderManager) Reading() extenderControlReading {
 			// one post covers both rows, so show its outcome on both.
 			family = families[0]
 		}
-		reading.Families = append(reading.Families, extenderFamilyReadingOf(ipVersion, family, activator != nil, tcpUp, time.Now()))
+		familyReading := extenderFamilyReadingOf(ipVersion, family, activator != nil, tcpUp, time.Now())
+		familyReading.Ports = extenderFamilyPorts(reading.Ports, family, familyReading.State == extenderFamilyActivated)
+		reading.Families = append(reading.Families, familyReading)
 	}
 	return reading
+}
+
+func extenderFamilyPorts(ports []extenderPortReading, family *connect.ExtenderFamilyActivationStatus, active bool) []extenderFamilyPortReading {
+	var out []extenderFamilyPortReading
+	for _, port := range ports {
+		state := "not bound"
+		if port.Up {
+			state = "bound, platform status unknown"
+			fields := strings.Fields(port.Name)
+			if active && family != nil && len(fields) == 2 {
+				number, _ := strconv.Atoi(fields[1])
+				carrier := map[string]string{"tcp": connect.ExtenderCarrierTcp, "udp": connect.ExtenderCarrierQuic, "dns": connect.ExtenderCarrierDns}[fields[0]]
+				accepted := slices.Contains(family.Carriers, carrier)
+				if carrier == connect.ExtenderCarrierDns {
+					accepted = accepted && slices.Contains(family.DnsPorts, number)
+				}
+				if accepted {
+					state = "bound, accepted by the platform"
+				}
+				for _, refused := range family.RefusedCarriers {
+					if refused.Carrier == carrier && refused.Port == number {
+						state = "bound, left out by the platform (probe failed)"
+					}
+				}
+			}
+		}
+		out = append(out, extenderFamilyPortReading{Name: port.Name, State: state})
+	}
+	return out
 }
 
 func extenderFamilyReadingOf(ipVersion int, family *connect.ExtenderFamilyActivationStatus, attached bool, tcpUp bool, now time.Time) extenderFamilyReading {
@@ -211,7 +259,7 @@ func formatExtenderHealthLine(reading extenderControlReading, now time.Time) str
 	for _, port := range reading.Ports {
 		switch {
 		case port.Up:
-			ports = append(ports, port.Name+" up")
+			ports = append(ports, port.Name+" bound")
 		case port.Error != "":
 			ports = append(ports, fmt.Sprintf("%s DOWN (%s)", port.Name, port.Error))
 		default:
@@ -251,6 +299,9 @@ func formatExtenderHealthLine(reading extenderControlReading, now time.Time) str
 				b.WriteString(": " + family.Detail)
 			}
 			b.WriteString(nextTryText(family, now))
+		}
+		for _, port := range family.Ports {
+			fmt.Fprintf(&b, "; %s %s", port.Name, port.State)
 		}
 	}
 
