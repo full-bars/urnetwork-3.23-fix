@@ -105,15 +105,16 @@ func TestExtenderActivatorLoadClearsARecordTheDirectoryLacks(t *testing.T) {
 	}
 }
 
-// The directory holds a record, but not the one stored: another expiry, or an address
-// the stored one was not kept for.
+// The directory holds a record, but not the one stored: an earlier expiry, or an address
+// the stored one was not kept for. (A LATER record for the same key is the other
+// family's newer post: see TestExtenderActivatorLoadKeepsAFamilyWhoseRecordWasSuperseded.)
 func TestExtenderActivatorLoadClearsARecordThatDoesNotMatch(t *testing.T) {
 	cases := []struct {
 		name  string
 		plant func(f *testPacingLoadFixture, t *testing.T, expire time.Time)
 	}{
-		{"another expiry", func(f *testPacingLoadFixture, t *testing.T, expire time.Time) {
-			f.plant(t, expire.Add(time.Hour), testActivateIpv4)
+		{"an earlier expiry", func(f *testPacingLoadFixture, t *testing.T, expire time.Time) {
+			f.plant(t, expire.Add(-time.Hour), testActivateIpv4)
 		}},
 		{"another address", func(f *testPacingLoadFixture, t *testing.T, expire time.Time) {
 			f.plant(t, expire, "198.51.100.99")
@@ -419,5 +420,23 @@ func TestExtenderActivatorReleasedStoreDuringReplacement(t *testing.T) {
 				t.Fatalf("saves = %d, expected none after the release (%d)", saves, savesBefore)
 			}
 		})
+	}
+}
+
+// A host with both families posts twice and the directory keeps the newest record. The
+// family that posted first finds a LATER record that still lists its address: its
+// activation stands, and it adopts that record's expiry.
+func TestExtenderActivatorLoadKeepsAFamilyWhoseRecordWasSuperseded(t *testing.T) {
+	f := newTestPacingLoadFixture(t)
+	stored := f.now.Add(25 * time.Hour)
+	newer := stored.Add(10 * time.Second)
+	f.plant(t, newer, testActivateIpv4)
+	self := newTestPacingLoadActivator(f.publicKey, f.directory, f.now, false)
+	self.applyPacing(f.record(f.activatedPacing(stored)), nil)
+	if !self.families[4].Activated || self.pacing[4].State != ExtenderPacingActivated {
+		t.Fatalf("family = %+v, pacing = %+v, expected the activation to stand", self.families[4], self.pacing[4])
+	}
+	if got := self.pacing[4].RecordExpireTime; got.UnixMilli() != newer.UnixMilli() {
+		t.Fatalf("expiry = %s, expected the directory's newer %s", got, newer)
 	}
 }

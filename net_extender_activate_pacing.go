@@ -250,13 +250,25 @@ func (self *ExtenderActivator) verifyPacing(pacing ExtenderActivationPacing, now
 	}
 	reason := ""
 	expire, ips, ok := self.settings.Directory.ActiveRecordOf(self.settings.PublicKey)
+	listsAddress := !pacing.Ip.IsValid() || len(ips) == 0 || slices.Contains(ips, pacing.Ip)
 	switch {
 	case !ok:
 		reason = "the directory holds no valid record of this key"
-	case expire.UnixMilli() != pacing.RecordExpireTime.UnixMilli():
-		reason = "the directory's record expires at another time"
-	case pacing.Ip.IsValid() && 0 < len(ips) && !slices.Contains(ips, pacing.Ip):
+	case !listsAddress:
 		reason = "the directory's record does not list the stored address"
+	case expire.UnixMilli() == pacing.RecordExpireTime.UnixMilli():
+		// the record this family was kept for
+	case expire.After(pacing.RecordExpireTime):
+		// The directory keeps one record per key, the newest. A host with both
+		// families posts twice, so the family that posted first sees a LATER record
+		// than the one it stored: the platform's newer signed record still lists
+		// this address and outlives the stored one, so the activation stands. Adopt
+		// its expiry, so the next check against the directory agrees.
+		pacing.RecordExpireTime = expire
+	default:
+		// the directory's record ends before the one stored: the stored one is not
+		// what the platform holds
+		reason = "the directory's record expires at another time"
 	}
 	if reason == "" {
 		return pacing, ""
