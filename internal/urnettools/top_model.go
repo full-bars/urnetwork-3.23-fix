@@ -604,6 +604,9 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
+	m.extender = ExtenderReading{}
+	m.extenderBusy = false
+	m.lastExtender = time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
 	m.zoom.reset()
 	m.scaleB.reset()

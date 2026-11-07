@@ -101,6 +101,39 @@ func TestTopModelExtenderFetchIsThrottledAndGenerationChecked(t *testing.T) {
 	}
 }
 
+func TestTopModelExtenderStateResetOnSelectProvider(t *testing.T) {
+	m := &topModel{
+		providers: []Provider{{StateDir: "/a"}, {StateDir: "/b"}},
+		interval:  time.Second,
+	}
+	now := time.Now()
+	gen, _, ok := m.wantExtender(now)
+	if !ok {
+		t.Fatal("expected first extender fetch to be wanted")
+	}
+	if !m.extenderBusy {
+		t.Fatal("expected extenderBusy to be true while fetch is in flight")
+	}
+
+	m.extender = ExtenderReading{Source: SourceControlSocket, Known: true}
+	m.selectProvider(1)
+	if m.extenderBusy || m.extender.Known || !m.lastExtender.IsZero() {
+		t.Fatal("provider switch did not reset extender state")
+	}
+	newGen, _, ok := m.wantExtender(now)
+	if !ok {
+		t.Fatal("expected a fetch for the new provider")
+	}
+	m.applyExtender(gen, ExtenderReading{Source: SourceControlSocket, Known: true})
+	if !m.extenderBusy || m.extender.Known {
+		t.Fatal("stale response changed the new provider's in-flight fetch")
+	}
+	m.applyExtender(newGen, ExtenderReading{Source: SourceControlSocket, Known: true})
+	if m.extenderBusy || !m.extender.Known {
+		t.Fatal("new provider's response was not applied")
+	}
+}
+
 // The box is on screen, under Resources, with the numbers an operator reads.
 func TestTopRendersTheExtenderBox(t *testing.T) {
 	m := modelWithProxies(t, 1, 0, 0, 0)
