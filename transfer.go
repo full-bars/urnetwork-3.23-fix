@@ -5131,7 +5131,19 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 				// delete(self.headSequenceIds, headKey)
 			}
 			if headReceiveSequenceId := self.headReceiveSequenceIds[headKey]; headReceiveSequenceId != receiveSequenceId {
-				panic(fmt.Errorf("[r]incorrect head sequence %s != %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId))
+				// The id's live sequence is not this pack's lane head: it opened on
+				// another lane (the lane flags are in the head key, not the id), and a
+				// sender never reuses an id across lanes. Drop the pack rather than
+				// panic the receive loop.
+				if v := self.log.V(1); v.Enabled() {
+					v.Infof(
+						"[r]drop pack of another lane for sequence %s (%s %s c=%t)\n",
+						receivePack.SequenceId, receivePack.Source,
+						receivePack.EncryptionRole, receivePack.EncryptionCompanion,
+					)
+				}
+				MessagePoolReturn(receivePack.TransferFrameBytes)
+				return nil
 			}
 		} else if headReceiveSequenceId, ok := self.headReceiveSequenceIds[headKey]; ok {
 			if receivePack.SequenceId.LessThan(headReceiveSequenceId.SequenceId) {
@@ -5146,16 +5158,20 @@ func (self *ReceiveBuffer) Pack(receivePack *ReceivePack, timeout time.Duration)
 			} else {
 				// newer sequence for source
 				if headReceiveSequenceId.SequenceId == receivePack.SequenceId {
-					panic(fmt.Errorf("[r]upgrade older sequence %s = %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId))
+					// The id has no live sequence (looked up above), so an index naming
+					// it is stale. Heal it and open the sequence, instead of panicking
+					// the receive loop.
+					delete(self.headReceiveSequenceIds, headKey)
+				} else {
+					if v := self.log.V(2); v.Enabled() {
+						v.Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
+					}
+					headReceiveSequence := self.receiveSequences[headReceiveSequenceId]
+					headReceiveSequence.Cancel()
+					// wait for exit to ensure receives are correctly ordered across sequence versions
+					headReceiveSequence.WaitForExit()
+					delete(self.receiveSequences, headReceiveSequenceId)
 				}
-				if v := self.log.V(2); v.Enabled() {
-					v.Infof("[r]upgrade older sequence %s < %s\n", headReceiveSequenceId.SequenceId, receivePack.SequenceId)
-				}
-				headReceiveSequence := self.receiveSequences[headReceiveSequenceId]
-				headReceiveSequence.Cancel()
-				// wait for exit to ensure receives are correctly ordered across sequence versions
-				headReceiveSequence.WaitForExit()
-				delete(self.receiveSequences, headReceiveSequenceId)
 			}
 		}
 
