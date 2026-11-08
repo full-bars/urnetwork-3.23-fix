@@ -300,6 +300,36 @@ func initSHMLogger() {
 		go func() {
 			for {
 				time.Sleep(500 * time.Millisecond)
+				// Another process may have renamed a trimmed file over the log
+				// path (a HotSwap parent and its candidate share one path), or an
+				// operator may have removed it. This descriptor then names an
+				// unlinked inode and every write is lost; follow the path.
+				fMu.Lock()
+				if next, swapped, err := reopenIfOrphaned(shmLogPath, logFile, 0644); err != nil {
+					fMu.Unlock()
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
+				} else if swapped {
+					previous := logFile
+					logFile = next
+					fMu.Unlock()
+					previous.Close()
+				} else {
+					fMu.Unlock()
+				}
+				if impEnabled && impPath != shmImportantLogPath {
+					fImpMu.Lock()
+					if next, swapped, err := reopenIfOrphaned(impPath, fImp, 0600); err != nil {
+						fImpMu.Unlock()
+						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, err)
+					} else if swapped {
+						previous := fImp
+						fImp = next
+						fImpMu.Unlock()
+						previous.Close()
+					} else {
+						fImpMu.Unlock()
+					}
+				}
 				// An fsync on an append-only descriptor is safe beside a
 				// concurrent write, so the sync reads the current descriptor
 				// under the lock and then flushes outside it. Holding the lock

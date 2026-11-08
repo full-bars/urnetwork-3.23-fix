@@ -185,3 +185,31 @@ func trimRAMLogByRename(path string, maxSize int64, ratio int64) (bool, error) {
 	}
 	return true, nil
 }
+
+// reopenIfOrphaned reports whether cur no longer names the file at path and, if
+// so, opens the file now at path for appending.
+//
+// Two processes share one log path during a HotSwap handoff, and a trim by
+// either one renames a new file over that path (trimRAMLogByRename). The other
+// process still holds the old inode, which no path refers to any more: its
+// writes succeed and land nowhere, and nothing ever trims that file because the
+// trimmer works by path. The same happens if an operator removes the file. The
+// descriptor therefore has to be compared with the path from time to time.
+//
+// A missing path counts as orphaned and is recreated, so the log reappears
+// instead of staying silent. It returns (nil, false, nil) when cur still names
+// the file at path.
+func reopenIfOrphaned(path string, cur *os.File, mode os.FileMode) (*os.File, bool, error) {
+	curInfo, err := cur.Stat()
+	if err != nil {
+		return nil, false, fmt.Errorf("stat open log: %w", err)
+	}
+	if pathInfo, err := os.Stat(path); err == nil && os.SameFile(curInfo, pathInfo) {
+		return nil, false, nil
+	}
+	next, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, mode)
+	if err != nil {
+		return nil, false, fmt.Errorf("reopen orphaned log: %w", err)
+	}
+	return next, true, nil
+}
