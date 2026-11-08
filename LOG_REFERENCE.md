@@ -663,7 +663,7 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 
 ### Extender setup
 
-`urnet-tools extender setup` is new in this release. It inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints exact commands and asks before applying them. Only explicit `--yes` or `--force` approval allows non-interactive changes. UDP 53 is optional and user-managed; setup does not open it. On firewalld, setup plans runtime and permanent rules separately and does not reload the service. When setup adds `cap_net_bind_service`, it preserves the binary's existing file capabilities.
+`urnet-tools extender setup` is new in this release. It inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints exact commands and asks before applying them. Only explicit `--yes` (`-y`) or `--force` approval allows non-interactive changes. UDP 53 is optional and user-managed; setup does not open it. On firewalld, setup plans runtime and permanent rules separately and does not reload the service. When setup adds `cap_net_bind_service`, it preserves the binary's existing file capabilities.
 
 FreeBSD extender setup is untested this release and print-only. It prints the `sysctl` commands and their undo, and makes no changes. Regular providing on FreeBSD is unaffected. The Docker RAM log follower may replay retained lines after a trim. The hot-swap candidate bind race is not fixed in this release.
 

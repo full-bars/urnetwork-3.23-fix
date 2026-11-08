@@ -269,7 +269,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | `urnet-tools proxy trim <count>` | You want to enforce a hard cap, shedding worst A-F reachability graded proxies first |
 | `urnet-tools proxy traffic` | You want to see active clients, bandwidth, and **Max Age** per proxy |
 | `urnet-tools proxy health` | You need to see which proxies are `DEAD` vs `DEGRADED` vs `UP` |
-| `urnet-tools extender setup` | New in this release. Checks TCP 443, binary bind capability and the host firewall, prints exact commands, and asks before changing anything. Only explicit `--yes` or `--force` approves non-interactive changes. |
+| `urnet-tools extender setup` | New in this release. Checks TCP 443, binary bind capability and the host firewall, prints exact commands, and asks before changing anything. Only explicit `--yes` (`-y`) or `--force` approves non-interactive changes. |
 | `urnet-tools logs` | You want to stream the current RAMLOGS buffer |
 | `urnet-tools optimize` | You just added many proxies and need to tune kernel `ulimits` |
 | `urnet-tools summary` | You want a single-pane fleet overview -- sources, health, URL cache status |

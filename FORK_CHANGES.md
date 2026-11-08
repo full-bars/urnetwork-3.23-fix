@@ -6,7 +6,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
 **Latest published release**: v3.23.0-fix.35.4 (see [releases/v3.23.0-fix.35.4.md](releases/v3.23.0-fix.35.4.md))
 
-**Latest release notes:** The next release adds interactive extender host setup. The tool inspects TCP 443, binary bind capability and the host firewall, then prints exact commands and asks before applying them. FreeBSD setup is print-only and untested this release; regular providing on FreeBSD is unaffected. UDP 53 remains optional and user-managed. Firewalld rules are planned separately for runtime and permanent configuration, without a reload. Linux setup preserves existing file capabilities when adding the bind capability. Known limitations remain the Docker log follower and hot-swap candidate bind race.
+**Latest release notes:** The next release adds interactive extender host setup. The tool inspects TCP 443, binary bind capability and the host firewall, then prints exact commands and asks before applying them. Only explicit `--yes` (`-y`) or `--force` approval permits non-interactive changes. FreeBSD setup is print-only and untested this release; regular providing on FreeBSD is unaffected. UDP 53 remains optional and user-managed. Firewalld rules are planned separately for runtime and permanent configuration, without a reload. Linux setup preserves existing file capabilities when adding the bind capability. Known limitations remain the Docker log follower and hot-swap candidate bind race.
 
 ---
 
