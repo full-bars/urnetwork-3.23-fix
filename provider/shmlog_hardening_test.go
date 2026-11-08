@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"sync"
 	"testing"
+	"time"
 )
 
 func TestSafeReopenRejectsHostilePath(t *testing.T) {
@@ -50,6 +51,33 @@ func TestSafeReopenRejectsHostilePath(t *testing.T) {
 			}
 		})
 	}
+}
+
+func TestConcurrentTrimAndReopenWarnings(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "missing", "log")
+	f := openLogForTest(t, filepath.Join(t.TempDir(), "old"))
+	var mu sync.Mutex
+	var warned bool
+	var when time.Time
+	start := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 30; i++ {
+		wg.Add(2)
+		go func() {
+			defer wg.Done()
+			<-start
+			_, err := trimRAMLogByRename(path, 10, 3)
+			reportTrimFailure(&warned, &when, path, err)
+		}()
+		go func() {
+			defer wg.Done()
+			<-start
+			c := checkLogPaths(path, &f, &mu, "", nil, nil, false, func(string) {})
+			reportTrimFailure(&warned, &when, path, c.mainErr)
+		}()
+	}
+	close(start)
+	wg.Wait()
 }
 
 func TestTrimSwapRejectsStaleInterleaving(t *testing.T) {

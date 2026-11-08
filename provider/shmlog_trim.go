@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync"
 	"syscall"
 	"time"
 
@@ -16,6 +17,7 @@ import (
 // mainTrimWarned and impTrimWarned track failure state so warnings repeat at
 // a bounded rate rather than being silenced permanently.
 var (
+	trimWarnMu       sync.Mutex
 	mainTrimWarned   bool
 	mainTrimWarnTime time.Time
 	impTrimWarned    bool
@@ -97,11 +99,14 @@ func trimRAMLog(f *os.File, maxSize int64, ratio int64) error {
 // does not permanently silence the warning.
 func reportTrimFailure(warned *bool, warnTime *time.Time, path string, err error) {
 	now := time.Now()
+	trimWarnMu.Lock()
 	if *warned && now.Sub(*warnTime) < 5*time.Minute {
+		trimWarnMu.Unlock()
 		return
 	}
 	*warned = true
 	*warnTime = now
+	trimWarnMu.Unlock()
 	fmt.Fprintf(os.Stderr, "[ramlogs] warning: cannot trim %s, leaving it oversized rather than losing history: %v\n", path, err)
 }
 
