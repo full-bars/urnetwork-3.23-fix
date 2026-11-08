@@ -298,6 +298,7 @@ func initSHMLogger() {
 
 		// Periodically sync to ensure tail -F sees updates quickly
 		go func() {
+			var mainReopenNotice, impReopenNotice time.Time
 			for {
 				time.Sleep(500 * time.Millisecond)
 				// Another process may have renamed a trimmed file over the log
@@ -313,6 +314,7 @@ func initSHMLogger() {
 					logFile = next
 					fMu.Unlock()
 					previous.Close()
+					reportLogReopened(&mainReopenNotice, shmLogPath)
 				} else {
 					fMu.Unlock()
 				}
@@ -326,6 +328,7 @@ func initSHMLogger() {
 						fImp = next
 						fImpMu.Unlock()
 						previous.Close()
+						reportLogReopened(&impReopenNotice, impPath)
 					} else {
 						fImpMu.Unlock()
 					}
@@ -342,6 +345,17 @@ func initSHMLogger() {
 			}
 		}()
 	})
+}
+
+// reportLogReopened runs only after releasing the descriptor locks: stderr is
+// the pipe drained by the goroutine that also needs those locks.
+func reportLogReopened(last *time.Time, path string) {
+	now := time.Now()
+	if !last.IsZero() && now.Sub(*last) < 5*time.Minute {
+		return
+	}
+	*last = now
+	fmt.Fprintf(os.Stderr, "[ramlogs] log file at %s was replaced or removed; reopened\n", path)
 }
 
 func shmLogFatal(code int, format string, args ...any) {

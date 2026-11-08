@@ -17,6 +17,14 @@ handshake_classes(timeout=%d tls=%d proxy_connect=%d auth=%d upgrade_rejected=%d
 
 The JWT lines distinguish completed writes from unchanged content. The H1+ classes explain failures in the ten-minute summary. The egress warning means the existing H3 socket could not be pinned; the connection is still attempted. The first proxy-health line below is also a format string.
 
+## RAM log reopen
+
+```
+[ramlogs] log file at <path> was replaced or removed; reopened
+```
+
+The provider resumed writing to the named file after it was replaced or removed, including during a HotSwap. Notices are limited to one per path every five minutes.
+
 ## 📊 System Auditor & Smart Auto
 
 ```
