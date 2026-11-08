@@ -349,6 +349,14 @@ func socketDeadline(start time.Time, timeout time.Duration) time.Time { return s
 // polling commands use a short one so a struggling provider is not also left
 // holding their sockets and goroutines.
 func sendSocketRequestTimeout(sockPath string, req controlRequest, timeout time.Duration) (controlResponse, error) {
+	return sendSocketRequestChecked(sockPath, req, timeout, nil)
+}
+
+// sendSocketRequestChecked is sendSocketRequestTimeout with an optional check
+// on the connection, run after the dial and before anything is sent or read. A
+// failing check abandons the exchange, so a process that is not the one the
+// caller expects never sees the request and its reply is never parsed.
+func sendSocketRequestChecked(sockPath string, req controlRequest, timeout time.Duration, check func(net.Conn) error) (controlResponse, error) {
 	// One deadline for the whole exchange, fixed before dialing: what the dial
 	// uses comes out of the request's budget, it is not added to it.
 	deadline := socketDeadline(time.Now(), timeout)
@@ -358,6 +366,11 @@ func sendSocketRequestTimeout(sockPath string, req controlRequest, timeout time.
 	}
 	defer conn.Close()
 	_ = conn.SetDeadline(deadline)
+	if check != nil {
+		if err := check(conn); err != nil {
+			return controlResponse{}, err
+		}
+	}
 
 	if err := json.NewEncoder(conn).Encode(req); err != nil {
 		return controlResponse{}, err
@@ -668,6 +681,33 @@ func providerVersionFromSocket(p Provider) (string, bool) {
 	}
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
 	resp, err := sendSocketRequest(sockPath, controlRequest{Cmd: "version"})
+	if err != nil || !resp.OK || resp.BuildVersion == "" {
+		return "", false
+	}
+	return resp.BuildVersion, true
+}
+
+// providerVersionFromSocketForPID is providerVersionFromSocket for a caller that
+// must know WHICH process answered. It accepts a reply only when the kernel
+// says the listener was created by wantPID, rejecting a stale parent or a
+// planted listener. A listener passed to another process retains its original
+// credentials; provider HotSwap binds a fresh listener after takeover.
+// Where peer credentials are unavailable it fails closed (ok=false).
+func providerVersionFromSocketForPID(p Provider, wantPID int) (string, bool) {
+	if p.StateDir == "" || wantPID <= 0 {
+		return "", false
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err := sendSocketRequestChecked(sockPath, controlRequest{Cmd: "version"}, 5*time.Second, func(conn net.Conn) error {
+		got, err := socketPeerPID(conn)
+		if err != nil {
+			return err
+		}
+		if got != wantPID {
+			return fmt.Errorf("control socket is owned by pid %d, not pid %d", got, wantPID)
+		}
+		return nil
+	})
 	if err != nil || !resp.OK || resp.BuildVersion == "" {
 		return "", false
 	}

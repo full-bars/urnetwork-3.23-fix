@@ -26,7 +26,7 @@ var (
 	verifyRunningImageHandleFn = runningImageHandle
 	verifyRunningImagePathFn   = runningImagePath
 	verifyProviderVersionFn    = providerVersion
-	verifySocketVersionFn      = providerVersionFromSocket
+	verifySocketVersionFn      = providerVersionFromSocketForPID
 	verifyPidIsAliveFn         = pidIsAlive
 	verifyPruneBackupsFn       = pruneBackups
 	verifySleepFn              = time.Sleep
@@ -963,7 +963,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if i > 0 && i%5 == 0 {
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
-				} else if sockVersion, ok := verifySocketVersionFn(rp); ok && sockVersion == cfg.Tag && rp.PID != oldPID {
+				} else if sockVersion, ok := verifySocketVersionFn(rp, rp.PID); ok && sockVersion == cfg.Tag && rp.PID != oldPID {
 					// The running image cannot be read, which is the normal case
 					// for a provider whose binary carries file capabilities (for
 					// example the extender's bind capability): the kernel marks

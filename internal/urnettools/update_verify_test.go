@@ -42,7 +42,7 @@ func stubVerifyLoop(t *testing.T) {
 
 	// Default stubs: no-op sleep, always-alive PID, no-op side effects.
 	verifySleepFn = func(d time.Duration) { /* no-op */ }
-	verifySocketVersionFn = func(Provider) (string, bool) { return "", false }
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "", false }
 	verifyPidIsAliveFn = func(pid int) bool { return true }
 	verifyPruneBackupsFn = func(string, int) {}
 	verifyRecordSuccessFn = func(string) {}
@@ -639,7 +639,7 @@ func TestUpdateVerification_UnreadableImageConfirmedBySocketVersion(t *testing.T
 	verifyRunningImageHandleFn = func(pid int) (string, error) {
 		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
 	}
-	verifySocketVersionFn = func(Provider) (string, bool) { return cfg.Tag, true }
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return cfg.Tag, true }
 	verifyRecordSuccessFn = func(string) { recorded = true }
 	verifyPruneBackupsFn = func(string, int) { pruned = true }
 
@@ -670,7 +670,7 @@ func TestUpdateVerification_SocketVersionFromTheOldPidIsNotAHandoff(t *testing.T
 	verifyRunningImageHandleFn = func(pid int) (string, error) {
 		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
 	}
-	verifySocketVersionFn = func(Provider) (string, bool) { return cfg.Tag, true }
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return cfg.Tag, true }
 
 	var err error
 	captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
@@ -692,7 +692,7 @@ func TestUpdateVerification_SocketReportsWrongVersionStillFails(t *testing.T) {
 	verifyRunningImageHandleFn = func(pid int) (string, error) {
 		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
 	}
-	verifySocketVersionFn = func(Provider) (string, bool) { return "v3.23.0-fix.35.4", true }
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "v3.23.0-fix.35.4", true }
 
 	var err error
 	captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
