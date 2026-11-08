@@ -166,7 +166,7 @@ The former `[eco]` memory monitor lines are retired. Their host available RAM si
 
 ## 🎚️ Capacity Control: Trim, OOM Cap, Memory Headroom
 
-Every line here is mirrored to the important log (`~/.urnetwork/important.log`, on disk, 10 MB plus one rotated `.1`; `urnet-tools logs -i`) and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
+Every line here is mirrored to the important log (`~/.urnetwork/important.log`, on disk, 10 MB plus one rotated `.1`) and to `~/.urnetwork/events.log` (1 MB, one rotation), so they survive a reboot and a full RAM buffer.
 
 ```text
 [proxy][trim] received: cap=2000 (was none); 4127 running, 4127 desired, applying
@@ -638,7 +638,7 @@ The extender helps people in censored countries reach URnetwork through this hos
 ```
 grep 🌉 /dev/shm/urnetwork.log          # every extender line
 grep '🌉❌' /dev/shm/urnetwork.log      # every failure
-urnet-tools logs --important             # the outcome lines and the health line
+urnet-tools logs                         # recent provider logs, then follow
 ```
 
 Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (started, stopped, failed, refused, activated) are also written to the disk events log, so they survive a reboot; the five-minute reminder below is written to the ordinary log only, so it reaches the RAM log and the important log (which is bounded and rotated) but not the events log, and a long failure cannot fill it.
