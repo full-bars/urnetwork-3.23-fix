@@ -26,6 +26,7 @@ var (
 	verifyRunningImageHandleFn = runningImageHandle
 	verifyRunningImagePathFn   = runningImagePath
 	verifyProviderVersionFn    = providerVersion
+	verifySocketVersionFn      = providerVersionFromSocket
 	verifyPidIsAliveFn         = pidIsAlive
 	verifyPruneBackupsFn       = pruneBackups
 	verifySleepFn              = time.Sleep
@@ -962,11 +963,28 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if i > 0 && i%5 == 0 {
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
+				} else if sockVersion, ok := verifySocketVersionFn(rp); ok && sockVersion == cfg.Tag && rp.PID != oldPID {
+					// The running image cannot be read, which is the normal case
+					// for a provider whose binary carries file capabilities (for
+					// example the extender's bind capability): the kernel marks
+					// such a process non-dumpable, so /proc/<pid>/exe is owned by
+					// root and unreadable even to the same user. The provider
+					// itself answers "what version are you" on its control
+					// socket inside its own state dir, so a matching reply from a
+					// NEW pid proves the handoff landed. Say plainly how it was
+					// confirmed.
+					fmt.Printf("verified %s running %s (pid %d; the provider reported this version on its control socket, its running image is not readable: %v)\n", providerLabel(p), cfg.Tag, rp.PID, perr)
+					if hotSwapTriggered {
+						verifyRecordSuccessFn(p.StateDir)
+					}
+					verifyPruneBackupsFn(p.Binary, 2)
+					return nil
 				} else if i > 0 && i%5 == 0 {
 					// A ready entry exists but its running image could
 					// not be read (e.g. the process exited between
-					// discovery and the read). Without this the
-					// iteration prints nothing at all — the same silent
+					// discovery and the read) and the provider did not report
+					// the expected version on its control socket. Without this
+					// the iteration prints nothing at all — the same silent
 					// wait these diagnostics exist to remove.
 					fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
 				}
@@ -1044,7 +1062,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		// would use, and "live provider was never killed" would be false —
 		// so skip the rollback and report the real (unknown) state instead.
 		if !verifyPidIsAliveFn(oldPID) {
-			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*3)
+			return fmt.Errorf("update %s: the HotSwap candidate took over and PID %d finished draining, but within %ds I could not confirm that it runs %s: its running image could not be read and its control socket did not report that version. The binary was NOT rolled back because ownership already moved. Run `urnet-tools status` to see the version that is running now; the metrics endpoint also reports it as urnet_info{version=...}", providerLabel(p), oldPID, maxIterations*3, cfg.Tag)
 		}
 		if backup != "" {
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
