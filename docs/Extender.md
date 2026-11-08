@@ -8,7 +8,7 @@ You normally do nothing. This page covers how to see whether it is working, the 
 
 ```sh
 urnet-tools extender status     # is it working?
-urnet-tools extender setup      # check port 443, capability and firewall; ask before changing
+urnet-tools extender setup      # new in this release; inspect and prepare the host
 urnet-tools extender about      # a plain-language explanation of the ports and how it works
 urnet-tools extender disable    # off, and it stays off across restarts
 urnet-tools extender enable     # back on
@@ -17,7 +17,7 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024.** On Linux, a non-root provider can use `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it. FreeBSD setup is manual and untested; see below.
+2. **Permission to use a port below 1024.** On Linux, a non-root provider can use `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it. The new extender setup command checks the binary capability; FreeBSD setup is print-only and untested this release, and regular providing on FreeBSD is unaffected.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
 UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP. UDP 53 is user-managed: setup does not open it.
@@ -89,7 +89,7 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-On Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal Linux install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+On Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal Linux install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Setup preserves the binary's existing file capabilities when it adds this bind capability. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
 
 ## Prepare the host with `urnet-tools extender setup`
 
@@ -99,12 +99,12 @@ urnet-tools extender setup --dry-run
 urnet-tools extender setup --yes
 ```
 
-`urnet-tools extender setup` on supported platforms inspects the host and proposes missing privilege and firewall steps. FreeBSD extender setup is untested this release and print-only: it does not elevate, inspect or change the host. Regular providing is unaffected.
+`urnet-tools extender setup` is new in this release. On supported platforms it checks whether TCP 443 is occupied, whether the provider binary can bind it, and whether the host firewall allows the required and optional ports. It prints the exact commands and asks before changing anything. Only explicit `--yes` or `--force` approval skips that confirmation; non-interactive setup without either flag does not apply changes. FreeBSD setup is untested this release and print-only: it prints the `sysctl` command and its undo, and makes no changes. Regular providing on FreeBSD is unaffected.
 
 1. **Port 443 occupancy.** Checks whether another process holds TCP 443 and stops if it does. If the holder is hidden from an unprivileged user, setup checks again after elevation.
 2. **Low-port bind privilege.** On Linux, checks the provider binary's capability and the process capability bounding set, then plans the missing grant. On FreeBSD, setup prints temporary `reservedhigh=0` and undo commands for the operator. This removes privileged-port protection for all users. The temporary change does not edit `/etc/sysctl.conf`; for a non-root provider, status also requires the setting persisted there. Manage any persistent change and its undo yourself.
 3. **Host firewall rules.** On supported platforms, inspects the active local firewall for TCP 443, UDP 443 and UDP 4053 and plans missing rules. UDP 53 is optional and user-managed. On FreeBSD, apply and undo pf or ipfw rules yourself using your ruleset's procedure.
-4. **Confirmation gate.** If elevation is needed, interactive setup first asks to re-run under sudo. The elevated run rechecks the host, prints its current plan and asks `Apply these changes? [y/N]:` before applying it. `--yes` or `--force` explicitly approves; without it, non-interactive setup does not apply changes. `--dry-run` (`-n`) prints the plan without applying it. When a manual elevated rerun is needed, setup prints the command with the original options.
+4. **Confirmation gate.** If elevation is needed, interactive setup first asks to re-run under sudo. The elevated run rechecks the host, prints its current plan and asks `Apply these changes? [y/N]:` before applying it. Only explicit `--yes` or `--force` approval permits non-interactive changes. Without either flag, non-interactive setup does not apply changes. `--dry-run` (`-n`) prints the plan without applying it. When a manual elevated rerun is needed, setup prints the command with the original options.
 5. **Bind verification.** On Linux, after capability checks, runs `<provider-binary> --extender-bind-probe` as the provider's user (`sudo -n -u <user>`) when TCP 443 is free to confirm a live low-port bind. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, `setup` states plainly that the live TCP 443 bind was not tested.
 
 Docker containers are not modified by `extender setup`; publish the ports on `docker run` or use `--network host` as shown below, and allow the ports in the host firewall.
@@ -122,8 +122,13 @@ sudo ufw allow 443/udp
 sudo ufw allow 4053/udp
 
 # firewalld (RHEL, Alma, Rocky, Fedora)
-sudo firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp --add-port=4053/udp
-sudo firewall-cmd --reload
+# Setup adds missing runtime and permanent rules separately. It does not reload.
+sudo firewall-cmd --zone=public --add-port=443/tcp
+sudo firewall-cmd --permanent --zone=public --add-port=443/tcp
+sudo firewall-cmd --zone=public --add-port=443/udp
+sudo firewall-cmd --permanent --zone=public --add-port=443/udp
+sudo firewall-cmd --zone=public --add-port=4053/udp
+sudo firewall-cmd --permanent --zone=public --add-port=4053/udp
 
 # iptables (plain)
 sudo iptables -I INPUT -p tcp --dport 443 -j ACCEPT
@@ -254,6 +259,11 @@ volumes:
 ```
 
 The published-port examples do not publish UDP 53. If you want it and the host port is free, add `-p 53:53/udp` to `docker run` or `"53:53/udp"` to the Compose ports list. Manage the host firewall yourself. Host networking uses the host's ports directly.
+
+### Known limitations
+
+- The Docker RAM log follower may replay retained lines after the log is trimmed.
+- A hot-swap candidate can race the old provider while it still holds a listening socket. This release does not fix that race.
 
 In every case:
 
