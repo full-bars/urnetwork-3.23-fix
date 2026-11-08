@@ -857,8 +857,9 @@ func TestExtenderRoleLoadsRootKeysAndRetriesOnFailure(t *testing.T) {
 	}
 }
 
-// The directory must accept the platform's own records and reject another space's.
-func TestRootKeyDirectoryAcceptsOnlyThePlatformSpace(t *testing.T) {
+// rootKeyDirectory is created once for the first API host.
+func TestRootKeyDirectoryIsCreatedOnce(t *testing.T) {
+	withTempHome(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	r := &extenderRole{ctx: ctx}
