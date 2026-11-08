@@ -23,7 +23,7 @@ func TestFreeBSDSetupPrintOnlyAllModes(t *testing.T) {
 			if err != nil || calls != 0 {
 				t.Errorf("root=%v dry=%v: err=%v calls=%d", root, dry, err, calls)
 			}
-			for _, want := range []string{"untested this release", "sysctl -n net.inet.ip.portrange.reservedhigh", "sysctl net.inet.ip.portrange.reservedhigh=0", "Undo", "sysctl net.inet.ip.portrange.reservedhigh=\"$previous_reservedhigh\""} {
+			for _, want := range []string{"untested this release", "\n  previous_reservedhigh=$(sysctl -n net.inet.ip.portrange.reservedhigh) && sysctl net.inet.ip.portrange.reservedhigh=0\n", "\n  sysctl net.inet.ip.portrange.reservedhigh=\"$previous_reservedhigh\"\n", "status requires", "ruleset-specific", "UDP 53 is optional and user-managed"} {
 				if !strings.Contains(out.String(), want) {
 					t.Errorf("root=%v dry=%v missing %q: %s", root, dry, want, out.String())
 				}

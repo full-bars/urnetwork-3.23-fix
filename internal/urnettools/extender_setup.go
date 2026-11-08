@@ -122,7 +122,13 @@ Run in the same root POSIX sh shell and save the previous value for undo:
   previous_reservedhigh=$(sysctl -n net.inet.ip.portrange.reservedhigh) && sysctl net.inet.ip.portrange.reservedhigh=0
 Undo in the same shell:
   sysctl net.inet.ip.portrange.reservedhigh="$previous_reservedhigh"
-These commands are temporary and do not change /etc/sysctl.conf. Configure and undo firewall rules manually for your existing pf or ipfw policy. Allow TCP 443 and, optionally, UDP 443 and UDP 4053.`)
+These commands are temporary and do not change /etc/sysctl.conf. For a non-root
+provider, status requires both the live value and persistence in /etc/sysctl.conf;
+it can report not configured after the temporary change. If persistence is
+wanted, manage and undo the assignment in that file yourself.
+Manage your firewall manually: allow TCP 443 and optionally UDP 443 and UDP 4053.
+UDP 53 is optional and user-managed. Applying and undoing pf or ipfw rules is
+ruleset-specific; use the procedures for your existing policy.`)
 		return nil
 	}
 
