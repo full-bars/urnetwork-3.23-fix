@@ -7,6 +7,8 @@ offer_extender_capability is the one place that may ask: it offers a single
 `sudo setcap` when this user cannot bind TCP 443, and only with a terminal.
 """
 import os
+import pty
+import select
 from pathlib import Path
 import shutil
 import subprocess
@@ -171,7 +173,7 @@ readlink() {
 
 class ExtenderCapabilityOfferTest(unittest.TestCase):
     def run_offer(self, answer="y", uid="1000", has_cap=False, tty="ok", force="0",
-                  sudo="ok", platform="Linux"):
+                  sudo="ok", platform="Linux", piped=False):
         """tty: "ok" (a file holding the answer), "none" (nothing to open).
         sudo: "ok" (setcap succeeds and sets the capability), "fail", "absent"."""
         with tempfile.TemporaryDirectory() as tmp:
@@ -205,9 +207,25 @@ getcap() { [ -f "$CAPFILE" ] && printf '%s cap_net_bind_service=ep\n' "$1"; retu
 pr_info() { printf 'INFO: %s\n' "$*"; }
 pr_warn() { printf 'WARN: %s\n' "$*"; }
 ''' + sudo_fn + ports_note() + subshell_fn("offer_extender_capability") + '\noffer_extender_capability "$BINARY"\n'
-            result = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
+            if piped:
+                result = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
+                output = result.stdout
+            else:
+                master, slave = pty.openpty()
+                try:
+                    result = subprocess.run(["sh", "-c", harness], env=env, stdin=slave, stdout=slave, stderr=subprocess.PIPE, text=True)
+                    output = os.read(master, 16384).decode().replace("\r\n", "\n") if select.select([master], [], [], 0)[0] else ""
+                finally:
+                    os.close(master)
+                    os.close(slave)
             self.assertEqual(result.returncode, 0, result.stderr)
-            return result.stdout, mark.exists()
+            return output, mark.exists()
+
+    def test_pipe_does_not_prompt_even_if_controlling_terminal_exists(self):
+        out, called = self.run_offer(piped=True)
+        self.assertFalse(called)
+        self.assertNotIn("[y/N]", out)
+        self.assertIn("To allow it, run once:", out)
 
     def test_it_says_only_the_extender_needs_this_and_asks_before_using_sudo(self):
         out, sudo_called = self.run_offer(answer="n")

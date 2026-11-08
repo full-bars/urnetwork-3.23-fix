@@ -157,7 +157,7 @@ report_extender_port ()
 # asks first, runs ONE command (sudo setcap on the provider file) and verifies it.
 # It never prompts without a terminal (the update timer, a container, FORCE=1):
 # there it prints the command instead. Declining or failing never fails the
-# install. The prompt reads /dev/tty, not stdin, so it works under `curl | sh`.
+# install. A pipe or redirected output is never treated as interactive.
 offer_extender_capability ()
 (
     [ "$(uname -s)" = Linux ] || return 0
@@ -175,7 +175,7 @@ offer_extender_capability ()
     # Probe by OPENING the terminal: a readable /dev/tty node can still fail to open.
     # A subshell, not a brace group: a failed redirect on the special builtin ":"
     # makes a POSIX-mode shell (bash run as sh) exit instead of returning false.
-    if [ "${FORCE:-0}" = "1" ] || ! ( : < "$ext_tty" ) 2>/dev/null || ! command -v sudo >/dev/null 2>&1; then
+    if [ "${FORCE:-0}" = "1" ] || [ ! -t 0 ] || [ ! -t 1 ] || ! ( : < "$ext_tty" ) 2>/dev/null || ! command -v sudo >/dev/null 2>&1; then
         pr_info "To allow it, run once: $cmd"
         return 0
     fi
