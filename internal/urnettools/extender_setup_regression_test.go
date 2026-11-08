@@ -198,7 +198,9 @@ func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
 		return RunExtenderSetup(ExtenderSetupOptions{
 			Platform: "linux", PlatformCfg: cfg, IsRoot: func() bool { return root },
 			Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Yes: true, Force: true,
-			LookPath: func(string) (string, error) { return "/usr/bin/sudo", nil },
+			NonInteractive: true,
+			ElevateFunc:    func([]string) error { t.Error("unexpected elevation"); return nil },
+			LookPath:       func(string) (string, error) { return "/usr/bin/sudo", nil },
 			PortChecker: &PortChecker{Platform: "linux", ExecCmd: func(name string, args ...string) ([]byte, error) {
 				if args[0] == "-tlnp" {
 					return []byte(ssOut), nil
