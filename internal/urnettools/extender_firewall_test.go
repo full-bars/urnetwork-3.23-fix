@@ -53,6 +53,20 @@ func TestExtenderFirewallFirewalldRejectsUnknown(t *testing.T) {
 	}
 }
 
+func TestExtenderFirewallFirewalldApplyReportsInspectionFailure(t *testing.T) {
+	fm := &FirewallManager{ExecCmd: func(string, ...string) ([]byte, error) {
+		t.Fatal("Apply must not execute commands without a verified plan")
+		return nil, nil
+	}}
+	_, err := fm.Apply(FirewallStatus{
+		Kind:    FirewallFirewalld,
+		Message: "cannot query firewalld port 443/tcp: permission denied",
+	})
+	if err == nil || !strings.Contains(err.Error(), "cannot query firewalld port 443/tcp: permission denied") {
+		t.Fatalf("Apply error = %v, want inspection failure", err)
+	}
+}
+
 func TestExtenderFirewallUFWPlan(t *testing.T) {
 	status := `Status: active
 

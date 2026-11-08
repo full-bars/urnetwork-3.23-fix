@@ -496,7 +496,7 @@ func (fm *FirewallManager) Apply(status FirewallStatus) (applied bool, err error
 		}
 		cmds := fm.Plan(status)
 		if len(cmds) == 0 {
-			return false, fmt.Errorf("firewalld rules are unverified; no safe plan available")
+			return false, fmt.Errorf("firewalld rules are unverified; no safe plan available (%s)", status.Message)
 		}
 		applied := false
 		for _, c := range cmds {
