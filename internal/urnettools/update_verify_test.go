@@ -194,8 +194,8 @@ func TestUpdateVerification_OldPidDiesNoNewProvider(t *testing.T) {
 }
 
 // TestUpdateVerification_HotSwapDecline verifies that when hotSwapTriggered
-// is true and verification fails, the decline is recorded and the error
-// mentions "HotSwap candidate".
+// is true and verification fails, the decline is recorded and diagnostics
+// distinguish an unconfirmed handoff from the observed discovery result.
 func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 	stubVerifyLoop(t)
 
@@ -212,7 +212,8 @@ func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 		}
 	}
 
-	err := verifyRestartLoop(p, cfg, true, "")
+	var err error
+	out := captureStdout(t, func() { err = verifyRestartLoop(p, cfg, true, "") })
 
 	if err == nil {
 		t.Fatal("expected error for hotswap verification failure")
@@ -220,8 +221,13 @@ func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 	if !declined {
 		t.Error("expected recordHotswapDecline to be called")
 	}
-	if !strings.Contains(err.Error(), "HotSwap candidate") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, want := range []string{"no matching provider entry was discovered", "normally means", "takeover is not confirmed", "not rolled back"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+	if !strings.Contains(out, "Could not confirm the HotSwap handoff") {
+		t.Errorf("unexpected output: %s", out)
 	}
 }
 
