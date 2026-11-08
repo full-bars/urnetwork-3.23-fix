@@ -446,7 +446,11 @@ func (sp *SystemPlatformConfigurer) applyDarwin() (bool, string, error) {
 	return sp.checkDarwin()
 }
 
-// UserCanBindTCP443 determines whether the current user on the platform can bind port 443.
+// UserCanBindTCP443 reports a conservative platform check for the current user.
+// On Linux, the default configurer has no binary path here, so a non-root user
+// returns false even when a particular provider binary has a bind capability.
+// Use CheckRequirement with that binary path and VerifyBind to check a provider.
+// A false result does not prove that binding would fail.
 func UserCanBindTCP443(cfg PlatformConfigurer, user string) bool {
 	switch cfg.Platform() {
 	case "windows":
