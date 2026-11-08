@@ -52,6 +52,45 @@ func TestSafeReopenRejectsHostilePath(t *testing.T) {
 	}
 }
 
+func TestTrimSwapRejectsStaleInterleaving(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "log")
+	f := openLogForTest(t, path)
+	var mu sync.Mutex
+	if err := os.Rename(path, path+".old"); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, []byte("trim"), 0644); err != nil {
+		t.Fatal(err)
+	}
+	err := swapTrimmedLog(path, &f, &mu, func() (*os.File, error) {
+		next, err := openSafeLog(path, 0644)
+		if err != nil {
+			return nil, err
+		}
+		if err := os.Rename(path, path+".trimmed"); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte("new"), 0644); err != nil {
+			t.Fatal(err)
+		}
+		changed, err := followLogPath(path, &f, &mu, 0644, reopenIfOrphaned)
+		if err != nil || !changed {
+			t.Fatalf("tick: %v %v", changed, err)
+		}
+		return next, nil
+	})
+	if err == nil {
+		t.Fatal("stale trim descriptor installed")
+	}
+	if _, err := f.WriteString(" retained"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || string(b) != "new retained" {
+		t.Fatalf("path %q %v", b, err)
+	}
+}
+
 func TestSlowReopenDoesNotBlockWriter(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "log")
 	f := openLogForTest(t, path)

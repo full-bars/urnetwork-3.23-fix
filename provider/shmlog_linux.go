@@ -282,16 +282,10 @@ func initSHMLogger() {
 					}
 					pendingSwap = true
 				}
-				next, err := openSafeLog(shmLogPath, 0644)
-				if err != nil {
+				if err := swapTrimmedLog(shmLogPath, &logFile, &fMu, func() (*os.File, error) { return openSafeLog(shmLogPath, 0644) }); err != nil {
 					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
 					continue
 				}
-				fMu.Lock()
-				previous := logFile
-				logFile = next
-				fMu.Unlock()
-				previous.Close()
 				pendingSwap = false
 			}
 		}()
@@ -356,6 +350,14 @@ func checkLogPaths(mainPath string, mainFile **os.File, mainMu *sync.Mutex, impP
 		report(impPath)
 	}
 	return changes
+}
+
+func swapTrimmedLog(path string, file **os.File, mu *sync.Mutex, open func() (*os.File, error)) error {
+	_, err := followLogPath(path, file, mu, 0644, func(_ string, _ *os.File, _ os.FileMode) (*os.File, bool, error) {
+		next, err := open()
+		return next, err == nil, err
+	})
+	return err
 }
 
 // followLogPath opens outside the writer lock and commits only an unchanged path.
