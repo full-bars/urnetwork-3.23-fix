@@ -7,7 +7,10 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"syscall"
 	"time"
+
+	"golang.org/x/sys/unix"
 )
 
 // mainTrimWarned and impTrimWarned track failure state so warnings repeat at
@@ -204,12 +207,34 @@ func reopenIfOrphaned(path string, cur *os.File, mode os.FileMode) (*os.File, bo
 	if err != nil {
 		return nil, false, fmt.Errorf("stat open log: %w", err)
 	}
-	if pathInfo, err := os.Stat(path); err == nil && os.SameFile(curInfo, pathInfo) {
+	if pathInfo, err := os.Lstat(path); err == nil && os.SameFile(curInfo, pathInfo) {
 		return nil, false, nil
 	}
-	next, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, mode)
+	next, err := openSafeLog(path, mode)
 	if err != nil {
 		return nil, false, fmt.Errorf("reopen orphaned log: %w", err)
 	}
 	return next, true, nil
+}
+
+// openSafeLog refuses links, special files, foreign ownership and permissions
+// broader than the requested mode. NONBLOCK prevents a planted FIFO hanging open.
+func openSafeLog(path string, mode os.FileMode) (*os.File, error) {
+	fd, err := unix.Open(path, unix.O_CREAT|unix.O_RDWR|unix.O_APPEND|unix.O_CLOEXEC|unix.O_NOFOLLOW|unix.O_NONBLOCK, uint32(mode.Perm()))
+	if err != nil {
+		return nil, err
+	}
+	f := os.NewFile(uintptr(fd), path)
+	info, err := f.Stat()
+	if err == nil {
+		stat, ok := info.Sys().(*syscall.Stat_t)
+		if !ok || !info.Mode().IsRegular() || stat.Uid != uint32(os.Geteuid()) || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || info.Mode().Perm() & ^mode.Perm() != 0 {
+			err = fmt.Errorf("unsafe log file ownership, type or permissions")
+		}
+	}
+	if err != nil {
+		f.Close()
+		return nil, err
+	}
+	return f, nil
 }

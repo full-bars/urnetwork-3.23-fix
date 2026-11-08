@@ -113,7 +113,7 @@ func initSHMLogger() {
 		// to read the newest portion back out before truncating; on a
 		// write-only descriptor that read fails with EBADF and the trim
 		// destroys the history it is supposed to keep.
-		f, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+		f, err := openSafeLog(shmLogPath, 0644)
 		if err != nil {
 			fmt.Fprintf(os.Stderr, "failed to open shm log: %v\n", err)
 			return
@@ -282,7 +282,7 @@ func initSHMLogger() {
 					}
 					pendingSwap = true
 				}
-				next, err := os.OpenFile(shmLogPath, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0644)
+				next, err := openSafeLog(shmLogPath, 0644)
 				if err != nil {
 					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
 					continue
@@ -340,20 +340,12 @@ type logPathChanges struct {
 // checkLogPaths follows replacements and reports only after both locks are free.
 func checkLogPaths(mainPath string, mainFile **os.File, mainMu *sync.Mutex, impPath string, impFile **os.File, impMu *sync.Mutex, impEnabled bool, report func(string)) logPathChanges {
 	check := func(path string, file **os.File, mu *sync.Mutex, mode os.FileMode) (bool, error) {
-		mu.Lock()
-		next, swapped, err := reopenIfOrphaned(path, *file, mode)
-		var old *os.File
-		if swapped {
-			old, *file = *file, next
-		}
-		mu.Unlock()
-		if old != nil {
-			old.Close()
-		}
-		return swapped, err
+		return followLogPath(path, file, mu, mode, reopenIfOrphaned)
 	}
 	var changes logPathChanges
 	changes.main, changes.mainErr = check(mainPath, mainFile, mainMu, 0644)
+	// The disk opener removes the stale RAM file; reopening that fallback
+	// would resurrect it and expose stale data to operators.
 	if impEnabled && impPath != shmImportantLogPath {
 		changes.important, changes.importantErr = check(impPath, impFile, impMu, 0600)
 	}
@@ -364,6 +356,33 @@ func checkLogPaths(mainPath string, mainFile **os.File, mainMu *sync.Mutex, impP
 		report(impPath)
 	}
 	return changes
+}
+
+// followLogPath opens outside the writer lock and commits only an unchanged path.
+func followLogPath(path string, file **os.File, mu *sync.Mutex, mode os.FileMode, reopen func(string, *os.File, os.FileMode) (*os.File, bool, error)) (bool, error) {
+	mu.Lock()
+	observed := *file
+	mu.Unlock()
+	next, changed, err := reopen(path, observed, mode)
+	if err != nil || !changed {
+		return false, err
+	}
+	info, err := next.Stat()
+	if err != nil {
+		next.Close()
+		return false, err
+	}
+	mu.Lock()
+	pathInfo, pathErr := os.Lstat(path)
+	if *file != observed || pathErr != nil || !os.SameFile(info, pathInfo) {
+		mu.Unlock()
+		next.Close()
+		return false, fmt.Errorf("log path changed during reopen")
+	}
+	*file = next
+	mu.Unlock()
+	observed.Close()
+	return true, nil
 }
 
 // reportLogReopened runs only after releasing the descriptor locks: stderr is
