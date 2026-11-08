@@ -9,6 +9,7 @@ import (
 	"net"
 	"os"
 	"os/exec"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -113,7 +114,11 @@ func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setu
 				return nil, fmt.Errorf("cap_net_bind_service is excluded from the process bounding set")
 			}
 		}
-		return []setupCommand{{name: "setcap", args: []string{"cap_net_bind_service=+ep", binary}}}, nil
+		args, err := sp.linuxCapabilityArgs(binary)
+		if err != nil {
+			return nil, err
+		}
+		return []setupCommand{{name: "setcap", args: args}}, nil
 	case "freebsd":
 		if user == "root" {
 			return nil, nil
@@ -246,6 +251,46 @@ func linuxHasBindCapability(binary, output string) bool {
 	return false
 }
 
+var linuxCapabilityClause = regexp.MustCompile(`^(?:cap_[a-z0-9_]+(?:,cap_[a-z0-9_]+)*[=+][eip]*|=)$`)
+
+// linuxCapabilityArgs reads the whole file capability set, including its namespace owner.
+func (sp *SystemPlatformConfigurer) linuxCapabilityArgs(binary string) ([]string, error) {
+	out, err := sp.ExecCmd("getcap", "-n", binary)
+	if err != nil {
+		return nil, fmt.Errorf("cannot read existing file capabilities for %s: %w", binary, err)
+	}
+	text := strings.TrimSpace(string(out))
+	if text == "" {
+		return []string{"cap_net_bind_service=+ep", binary}, nil
+	}
+	if !strings.HasPrefix(text, binary+" ") {
+		return nil, fmt.Errorf("cannot parse existing file capabilities for %s", binary)
+	}
+	fields := strings.Fields(strings.TrimPrefix(text, binary))
+	var args []string
+	if len(fields) > 0 && strings.HasPrefix(fields[len(fields)-1], "[rootid=") {
+		root := strings.TrimSuffix(strings.TrimPrefix(fields[len(fields)-1], "[rootid="), "]")
+		if !strings.HasSuffix(fields[len(fields)-1], "]") {
+			return nil, fmt.Errorf("cannot parse capability namespace owner")
+		}
+		id, err := strconv.ParseUint(root, 10, 32)
+		if err != nil || id == 0 {
+			return nil, fmt.Errorf("cannot parse capability namespace owner")
+		}
+		args = append(args, "-n", root)
+		fields = fields[:len(fields)-1]
+	}
+	if len(fields) == 0 {
+		return nil, fmt.Errorf("cannot parse existing file capabilities for %s", binary)
+	}
+	for _, field := range fields {
+		if !linuxCapabilityClause.MatchString(field) {
+			return nil, fmt.Errorf("cannot parse existing file capabilities for %s", binary)
+		}
+	}
+	return append(args, strings.Join(fields, " ")+" cap_net_bind_service+ep", binary), nil
+}
+
 func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, error) {
 	if binary == "" {
 		return false, "", fmt.Errorf("cannot apply cap_net_bind_service: no provider binary path known")
@@ -268,9 +313,13 @@ func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, err
 			return false, "", fmt.Errorf("cap_net_bind_service is excluded from the process bounding set")
 		}
 	}
-	// Apply capability
-	if out, err := sp.ExecCmd("setcap", "cap_net_bind_service=+ep", binary); err != nil {
-		return false, "", fmt.Errorf("setcap cap_net_bind_service=+ep %s failed: %s: %w", binary, strings.TrimSpace(string(out)), err)
+	// Re-read the complete current set before applying; setcap replaces it.
+	args, err := sp.linuxCapabilityArgs(binary)
+	if err != nil {
+		return false, "", err
+	}
+	if out, err := sp.ExecCmd("setcap", args...); err != nil {
+		return false, "", fmt.Errorf("setcap %s failed: %s: %w", binary, strings.TrimSpace(string(out)), err)
 	}
 
 	// Verify re-reading getcap
