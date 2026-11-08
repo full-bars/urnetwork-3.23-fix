@@ -30,6 +30,16 @@ func TestFreeBSDPortInspectionUsesSockstat(t *testing.T) {
 		t.Fatalf("calls=%v", calls)
 	}
 }
+func TestFreeBSDSockstatDualStack(t *testing.T) {
+	for _, proto := range []string{"tcp", "udp"} {
+		var holder PortHolder
+		parseSockstatOutput("www server 99 5 "+proto+"46 *:443 *:*", &holder, 443, proto)
+		if !holder.Held || holder.PID != 99 {
+			t.Fatalf("%s: %+v", proto, holder)
+		}
+	}
+}
+
 func TestFreeBSDPortInspectionErrors(t *testing.T) {
 	failure := errors.New("unavailable")
 	c := &PortChecker{Platform: "freebsd", ExecCmd: func(string, ...string) ([]byte, error) { return nil, failure }}

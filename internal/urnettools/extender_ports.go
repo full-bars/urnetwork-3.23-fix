@@ -190,7 +190,7 @@ func (c *PortChecker) checkFreeBSD(ports *ExtenderPorts) error {
 func parseSockstatOutput(output string, holder *PortHolder, port int, proto string) {
 	for _, line := range strings.Split(output, "\n") {
 		fields := strings.Fields(line)
-		if len(fields) < 7 || (fields[4] != proto+"4" && fields[4] != proto+"6") {
+		if len(fields) < 7 || (fields[4] != proto+"4" && fields[4] != proto+"6" && fields[4] != proto+"46") {
 			continue
 		}
 		local := fields[5]
