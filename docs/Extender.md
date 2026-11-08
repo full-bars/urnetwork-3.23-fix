@@ -40,7 +40,7 @@ A family reads **ACTIVE** when the platform has listed this host on that address
 2. The provider asks the platform to list this host, once for IPv4 and once for IPv6. Each family is tried separately.
 3. The platform dials back to this host on TCP 443, asks for a signed answer, and forwards a real request through it to its own API. It also tries UDP 443 and the DNS port. If those do not answer in its 10 second budget it leaves them out of the listing and still lists the host.
 4. The platform returns a signed record that says when the listing expires. Today a listing lasts 24 hours. The provider checks the record against the platform's root keys (read from the platform's `/hello`) and renews it before it expires.
-5. A refused or failed attempt is retried later: 10 minutes at first, doubling up to 6 hours, or exactly when the platform says it has room again. A family that is refused does not delay the other.
+5. Most refused or failed attempts are retried after 10 minutes at first, doubling up to 6 hours, or when the platform says it has room again. If a family has not activated and the platform cannot reach TCP 443, the provider can wait 12 hours before retrying. A family that is refused does not delay the other.
 
 The platform limits how often a host may ask: 6 activations per client, per address family, per hour, counted when the platform starts probing, whether it then succeeds or not. Restarting repeatedly and failing can use that up. A refusal that says "try again in N minutes" is the platform telling the provider to wait, and the provider waits.
 
