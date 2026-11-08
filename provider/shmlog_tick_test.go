@@ -4,11 +4,55 @@ package main
 
 import (
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"sync"
 	"testing"
 )
+
+func TestLogPathTickForeignProcess(t *testing.T) {
+	if path := os.Getenv("RAMLOG_TEST_TRIM_PATH"); path != "" {
+		ok, err := trimRAMLogByRename(path, 64, 3)
+		if err != nil || !ok {
+			t.Fatalf("child trim: %v %v", ok, err)
+		}
+		return
+	}
+	path := filepath.Join(t.TempDir(), "main")
+	f, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR|os.O_APPEND, 0600)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer func() { f.Close() }()
+	if _, err := f.WriteString(strings.Repeat("a line\n", 30)); err != nil {
+		t.Fatal(err)
+	}
+	var mu, impMu sync.Mutex
+	var imp *os.File
+	count := 0
+	tick := func() logPathChanges {
+		return checkLogPaths(path, &f, &mu, "", &imp, &impMu, false, func(string) { count++ })
+	}
+	if c := tick(); c.main || c.mainErr != nil {
+		t.Fatalf("initial tick: %+v", c)
+	}
+	cmd := exec.Command(os.Args[0], "-test.run=^TestLogPathTickForeignProcess$")
+	cmd.Env = append(os.Environ(), "RAMLOG_TEST_TRIM_PATH="+path)
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("foreign trim: %v: %s", err, out)
+	}
+	if c := tick(); !c.main || c.mainErr != nil {
+		t.Fatalf("foreign tick: %+v", c)
+	}
+	if _, err := f.WriteString("child trim followed\n"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil || !strings.Contains(string(b), "child trim followed\n") || count != 1 {
+		t.Fatalf("path=%q notices=%d err=%v", b, count, err)
+	}
+}
 
 func TestLogPathTick(t *testing.T) {
 	dir := t.TempDir()

@@ -25,6 +25,12 @@ The JWT lines distinguish completed writes from unchanged content. The H1+ class
 
 The provider resumed writing to the named file after it was replaced or removed, including during a HotSwap. Notices are limited to one per path every five minutes.
 
+### Other append logs
+
+The retention writer for `proxy_health.log` compares its open file with the path before each batch and reopens after a replacement. Its other writer opens and closes the file per batch. `events.log` and fatal log records open and close per call. Enforcement, usage history, action ledger, baseline and grade logs likewise open and close for each append. These short-lived descriptors can still race with a concurrent rotation for an individual record, but do not remain orphaned across subsequent appends.
+
+The important log's RAM fallback is excluded from periodic reopen checks. It is trimmed in place, but removal or replacement by another process can still orphan its descriptor.
+
 ## 📊 System Auditor & Smart Auto
 
 ```
