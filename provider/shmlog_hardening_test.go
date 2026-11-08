@@ -135,9 +135,27 @@ func TestSlowReopenDoesNotBlockWriter(t *testing.T) {
 		})
 	}()
 	<-started
-	mu.Lock()
-	_, err := f.WriteString("drained")
-	mu.Unlock()
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	defer w.Close()
+	drained := make(chan error, 1)
+	go func() {
+		buf := make([]byte, 16)
+		n, err := r.Read(buf)
+		if err == nil {
+			mu.Lock()
+			_, err = f.Write(buf[:n])
+			mu.Unlock()
+		}
+		drained <- err
+	}()
+	if _, err := w.Write([]byte("drained")); err != nil {
+		t.Fatal(err)
+	}
+	err = <-drained
 	close(release)
 	<-done
 	if err != nil {
