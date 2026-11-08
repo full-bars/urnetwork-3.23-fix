@@ -217,10 +217,33 @@ func (sp *SystemPlatformConfigurer) checkLinux(binary string) (bool, string, err
 		return false, fmt.Sprintf("getcap %s failed: %v", binary, err), nil
 	}
 	capOut := string(out)
-	if strings.Contains(capOut, "cap_net_bind_service=ep") || strings.Contains(capOut, "cap_net_bind_service+ep") {
+	if linuxHasBindCapability(binary, capOut) {
 		return true, fmt.Sprintf("cap_net_bind_service=+ep already set on %s", binary), nil
 	}
 	return false, fmt.Sprintf("cap_net_bind_service=+ep missing on %s", binary), nil
+}
+
+// linuxHasBindCapability parses the capability clauses, not substrings of names.
+func linuxHasBindCapability(binary, output string) bool {
+	if !strings.HasPrefix(output, binary+" ") {
+		return false
+	}
+	for _, clause := range strings.Fields(strings.TrimPrefix(output, binary)) {
+		i := strings.IndexAny(clause, "=+")
+		if i < 0 {
+			continue
+		}
+		flags := clause[i+1:]
+		if !strings.Contains(flags, "e") || !strings.Contains(flags, "p") {
+			continue
+		}
+		for _, name := range strings.Split(clause[:i], ",") {
+			if name == "cap_net_bind_service" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, error) {
@@ -256,7 +279,7 @@ func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, err
 		return false, "", fmt.Errorf("re-reading getcap %s failed: %w", binary, err)
 	}
 	capOut := string(out)
-	if !strings.Contains(capOut, "cap_net_bind_service=ep") && !strings.Contains(capOut, "cap_net_bind_service+ep") {
+	if !linuxHasBindCapability(binary, capOut) {
 		return false, "", fmt.Errorf("re-reading getcap %s: capability cap_net_bind_service=+ep not present (got %q)", binary, strings.TrimSpace(capOut))
 	}
 
