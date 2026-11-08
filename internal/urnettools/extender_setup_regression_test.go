@@ -195,7 +195,7 @@ func TestExtenderSetup_AlreadyConfigured(t *testing.T) {
 func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
 	ssOut := "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\nLISTEN 0 4096 *:443 *:*\n"
 	run := func(root bool) error {
-		cfg := &mockPlatformConfigurer{platform: "linux"}
+		cfg := &mockPlatformConfigurer{platform: "linux", configured: true}
 		return RunExtenderSetup(ExtenderSetupOptions{
 			Platform: "linux", PlatformCfg: cfg, IsRoot: func() bool { return root },
 			Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Yes: true, Force: true,
@@ -209,7 +209,7 @@ func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
 			FirewallMgr: &FirewallManager{Platform: "linux", LookPath: func(string) (string, error) { return "", errors.New("missing") }},
 		})
 	}
-	if err := run(false); err != nil && (strings.Contains(err.Error(), "port TCP 443 is held") || !strings.Contains(err.Error(), "requires root privileges")) {
+	if err := run(false); err == nil || strings.Contains(err.Error(), "port TCP 443 is held") || !strings.Contains(err.Error(), "requires root privileges") {
 		t.Fatalf("hidden holder aborted setup before elevation: %v", err)
 	}
 	if err := run(true); err == nil || !strings.Contains(err.Error(), "port TCP 443 is held") {
