@@ -107,7 +107,7 @@ func newExtenderCmd() *cobra.Command {
 			"It is ON by default and earns nothing; it is a public service like a Tor bridge. " +
 			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
 			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
-			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). " +
+			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). UDP 53 is optional and user-managed; setup does not open it. FreeBSD extender setup is untested and prints manual instructions only. " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
 			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
@@ -237,14 +237,14 @@ PORTS
             1024: sudo setcap cap_net_bind_service=+ep <provider binary>
   udp 443   optional. QUIC carrier.
   udp 4053  optional. DNS carrier.
-  udp 53    optional. A second DNS port, tried automatically. If another
-            resolver already holds it, the extender logs one warning and
-            keeps using 4053 (it may repeat the warning if the role restarts).
-            URNETWORK_EXTENDER_DNS53=off skips it.
+  udp 53    optional and user-managed. Setup does not open UDP 53. It is tried
+            automatically; if a resolver holds it, the extender warns and
+            keeps using 4053. URNETWORK_EXTENDER_DNS53=off skips it.
   Without tcp 443 the extender opens none of the other ports: the platform
   could not list this host anew, so nothing could use them. (A listing the
   platform made earlier stays valid until it expires.) It retries tcp 443
-  every few minutes and opens the rest once it gets it.
+  every few minutes and opens the rest once it gets it. A hot-swap can race
+  the old process releasing the bind; the retry can delay extender recovery.
 
 HOW IT BECOMES ACTIVE
   The provider asks the platform to list this host, once for IPv4 and once
@@ -258,6 +258,8 @@ FIREWALL
   Opening a port in the provider does not open it on the host. Run
   'urnet-tools extender setup' to inspect the binary capability and host
   firewall, print the exact commands needed, and apply them after confirmation.
+  FreeBSD extender setup is untested this release and prints manual commands
+  only; it does not elevate or change the host.
   If you prefer to configure the host firewall manually, allow tcp 443
   (required) and optionally udp 443 and udp 4053:
     ufw:       sudo ufw allow 443/tcp   (and 443/udp, 4053/udp)
@@ -280,10 +282,16 @@ IPV6
   A host with an address but no route times out after about a minute.
 
 DOCKER
-  Use --network host (IPv4 and IPv6), or publish -p 443:443 -p 443:443/udp
-  -p 4053:4053/udp (IPv4 only unless Docker's bridge has IPv6 enabled). Keep
-  /root/.urnetwork on a persistent volume. Read the state with
+  Use --network host, or publish -p 443:443 -p 443:443/udp and
+  -p 4053:4053/udp. The latter does not publish UDP 53; add -p 53:53/udp
+  only if you want it and the host port is free. Manage firewall rules yourself.
+  For Compose IPv6, enable IPv6 on its network and configure routing and port
+  publishing; changing only Docker's default bridge does not configure a
+  Compose-created network. Verify reachability from outside.
+  Keep /root/.urnetwork on a persistent volume. Read the state with
   docker logs <container> | grep 🌉 and disable with -e URNETWORK_EXTENDER=off.
+  Known limitation: the Docker RAM log follower may replay retained lines after
+  the log is trimmed.
 
 WHAT IT EXPOSES
   The DNS ports also answer ordinary DNS questions from anyone, resolved

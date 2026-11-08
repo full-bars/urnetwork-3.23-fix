@@ -77,7 +77,7 @@ report_extender_port ()
         # a failed ss says nothing about the port: never call that "free"
         pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss failed.) $reach_hint $off_hint"
     elif [ -z "$tcp_listeners" ]; then
-        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. It also answers DNS queries on UDP 4053 (rate limited), so firewall that port like any resolver you expose. $reach_hint $off_hint"
+        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. It also answers DNS queries on UDP 4053 and may use UDP 53 (rate limited); UDP 53 is optional and user-managed. Firewall any DNS ports you expose. $reach_hint $off_hint"
     else
         holder=$(printf '%s\n' "$tcp_listeners" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (pid \2)/p' | head -n 1)
         holder_pid=$(printf '%s' "$holder" | sed -n 's/.*(pid \([0-9]*\))$/\1/p')

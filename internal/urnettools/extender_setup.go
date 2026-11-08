@@ -131,6 +131,7 @@ UDP 53 is optional and user-managed. Applying and undoing pf or ipfw rules is
 ruleset-specific; use the procedures for your existing policy.`)
 		return nil
 	}
+	fmt.Fprintln(out, "UDP 53 is optional and user-managed; setup does not open it.")
 
 	checker := opts.PortChecker
 	if checker == nil {
