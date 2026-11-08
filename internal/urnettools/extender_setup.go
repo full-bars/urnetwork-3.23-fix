@@ -115,6 +115,16 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	if platform == "" {
 		platform = runtime.GOOS
 	}
+	if platform == "freebsd" {
+		fmt.Fprintln(out, `FreeBSD extender setup is untested this release. No changes were made.
+For a non-root provider, the following removes privileged-port protection for all users.
+Run in the same root POSIX sh shell and save the previous value for undo:
+  previous_reservedhigh=$(sysctl -n net.inet.ip.portrange.reservedhigh) && sysctl net.inet.ip.portrange.reservedhigh=0
+Undo in the same shell:
+  sysctl net.inet.ip.portrange.reservedhigh="$previous_reservedhigh"
+These commands are temporary and do not change /etc/sysctl.conf. Configure and undo firewall rules manually for your existing pf or ipfw policy. Allow TCP 443 and, optionally, UDP 443 and UDP 4053.`)
+		return nil
+	}
 
 	checker := opts.PortChecker
 	if checker == nil {
