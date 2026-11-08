@@ -99,7 +99,9 @@ func (c *PortChecker) CheckPorts() (ExtenderPorts, error) {
 	switch c.Platform {
 	case "windows":
 		err = c.checkWindows(&result)
-	case "darwin", "freebsd":
+	case "freebsd":
+		err = c.checkFreeBSD(&result)
+	case "darwin":
 		err = c.checkBSDOrDarwin(&result)
 	default: // "linux" and other unix
 		err = c.checkLinux(&result)
@@ -168,6 +170,39 @@ func parseSSLineForPort(line string, targetPort int) bool {
 	portStr := localAddr[idx+1:]
 	p, err := strconv.Atoi(portStr)
 	return err == nil && p == targetPort
+}
+
+func (c *PortChecker) checkFreeBSD(ports *ExtenderPorts) error {
+	tcp, err := c.ExecCmd("sockstat", "-46l", "-P", "tcp", "-p", "443")
+	if err != nil {
+		return fmt.Errorf("sockstat TCP inspection: %w", err)
+	}
+	parseSockstatOutput(string(tcp), &ports.TCP443, 443, "tcp")
+	udp, err := c.ExecCmd("sockstat", "-46", "-P", "udp", "-p", "443,4053")
+	if err != nil {
+		return fmt.Errorf("sockstat UDP inspection: %w", err)
+	}
+	parseSockstatOutput(string(udp), &ports.UDP443, 443, "udp")
+	parseSockstatOutput(string(udp), &ports.UDP4053, 4053, "udp")
+	return nil
+}
+
+func parseSockstatOutput(output string, holder *PortHolder, port int, proto string) {
+	for _, line := range strings.Split(output, "\n") {
+		fields := strings.Fields(line)
+		if len(fields) < 7 || (fields[4] != proto+"4" && fields[4] != proto+"6") {
+			continue
+		}
+		local := fields[5]
+		colon := strings.LastIndex(local, ":")
+		if colon < 0 || local[colon+1:] != strconv.Itoa(port) {
+			continue
+		}
+		holder.Held = true
+		holder.Process = fields[1]
+		holder.PID, _ = strconv.Atoi(fields[2])
+		return
+	}
 }
 
 func (c *PortChecker) checkBSDOrDarwin(ports *ExtenderPorts) error {
