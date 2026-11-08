@@ -298,7 +298,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		}
 		args := opts.Argv
 		if len(args) == 0 {
-			args = []string{"extender", "setup", "--yes"}
+			args = []string{"extender", "setup"}
 		}
 		return elevateFn(args)
 	}
@@ -314,7 +314,7 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 	}
 
 	if len(plan) > 0 {
-		yes := opts.Yes || opts.Force || os.Getenv(urnetElevatedEnv) == "1"
+		yes := opts.Yes || opts.Force
 		confirmFn := opts.ConfirmFunc
 		if confirmFn == nil {
 			confirmFn = func() (bool, error) {

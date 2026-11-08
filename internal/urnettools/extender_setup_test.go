@@ -50,6 +50,9 @@ func TestExtenderSetupConfirmation(t *testing.T) {
 }
 
 func TestRunExtenderSetupConfirmFirstAndUFW(t *testing.T) {
+	// An elevated rerun must confirm its newly computed plan, unless the
+	// operator explicitly supplied --yes or --force.
+	t.Setenv(urnetElevatedEnv, "1")
 	bin := filepath.Join(t.TempDir(), "urnetwork")
 	if err := os.WriteFile(bin, []byte("binary"), 0o755); err != nil {
 		t.Fatal(err)
