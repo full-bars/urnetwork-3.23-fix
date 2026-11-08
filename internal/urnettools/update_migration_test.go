@@ -190,8 +190,8 @@ func TestMigrateUnitToNotify_TypeDeterminationFails(t *testing.T) {
 	})
 	p := Provider{Unit: "urnetwork.service", User: "testuser"}
 	migrated, err := migrateUnitToNotify(p)
-	if err != nil {
-		t.Errorf("expected nil when unit type cannot be determined, got %v", err)
+	if err == nil || !strings.Contains(err.Error(), "permission denied") {
+		t.Errorf("expected the unit query failure, got %v", err)
 	}
 	if migrated {
 		t.Error("expected migrated=false when unit type cannot be determined")
@@ -438,20 +438,12 @@ func TestMigrateUnitToNotify_LogsSkipReason(t *testing.T) {
 
 	t.Run("UnitTypeQueryFailure", func(t *testing.T) {
 		setupMigrateMocks(t, migrateTestDeps{unitTypeErr: os.ErrPermission})
-		out := captureStdout(t, func() {
-			migrated, err := migrateUnitToNotify(p)
-			if err != nil {
-				t.Errorf("expected nil error, got %v", err)
-			}
-			if migrated {
-				t.Error("expected migrated=false when the unit type cannot be read")
-			}
-		})
-		if !strings.Contains(out, "unit migration skipped: cannot read urnetwork.service unit type:") {
-			t.Errorf("expected the unit-type query failure to be logged, got: %q", out)
+		migrated, err := migrateUnitToNotify(p)
+		if err == nil || !strings.Contains(err.Error(), "query unit type for urnetwork.service: permission denied") {
+			t.Errorf("expected the query failure, got: %v", err)
 		}
-		if !strings.Contains(out, "permission denied") {
-			t.Errorf("expected the underlying error in the log, got: %q", out)
+		if migrated {
+			t.Error("expected migrated=false when the unit type cannot be read")
 		}
 	})
 
