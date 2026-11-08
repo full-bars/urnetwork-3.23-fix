@@ -13,13 +13,15 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 	for _, tc := range []struct {
 		name        string
 		present     bool
+		readFails   bool
 		applyFails  bool
 		wantSetcap  int
 		wantWarning bool
 	}{
-		{name: "missing", wantSetcap: 1},
-		{name: "present", present: true},
-		{name: "apply failure", applyFails: true, wantSetcap: 1, wantWarning: true},
+		{name: "missing", wantWarning: true},
+		{name: "unreadable", readFails: true, wantWarning: true},
+		{name: "present", present: true, wantSetcap: 1},
+		{name: "apply failure", present: true, applyFails: true, wantSetcap: 1, wantWarning: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			dir := t.TempDir()
@@ -31,11 +33,27 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 			if err := os.WriteFile(dst, []byte("old"), 0o755); err != nil {
 				t.Fatal(err)
 			}
-			present, sets, checks := tc.present, 0, 0
+			present, sets, checks := false, 0, 0
 			run := func(name string, args ...string) ([]byte, error) {
 				data, err := os.ReadFile(dst)
-				if err != nil || string(data) != "new" {
-					t.Fatalf("%s before capability check: %q %v", name, data, err)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if string(data) == "old" {
+					if name != "getcap" {
+						t.Fatalf("unexpected %s before swap", name)
+					}
+					checks++
+					if tc.readFails {
+						return nil, fmt.Errorf("getcap unavailable")
+					}
+					if tc.present {
+						return []byte(dst + " cap_net_bind_service=ep"), nil
+					}
+					return nil, nil
+				}
+				if string(data) != "new" {
+					t.Fatalf("unexpected binary contents %q", data)
 				}
 				switch name {
 				case "getcap":
@@ -73,7 +91,7 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 			if checks == 0 || sets != tc.wantSetcap {
 				t.Fatalf("getcap=%d setcap=%d", checks, sets)
 			}
-			if tc.wantSetcap == 1 && !tc.applyFails && checks != 2 {
+			if tc.wantSetcap == 1 && !tc.applyFails && checks != 3 {
 				t.Fatalf("successful apply not verified: %d checks", checks)
 			}
 			if got := warnings.String(); tc.wantWarning != strings.Contains(got, "WARNING:") {
@@ -82,6 +100,9 @@ func TestInstallProviderBinaryExtenderCapability(t *testing.T) {
 			if tc.wantWarning {
 				quoted := "'" + strings.ReplaceAll(dst, "'", "'\\''") + "'"
 				want := "WARNING: extender capability missing or unverified for " + fmt.Sprintf("%q", dst) + "; run: sudo setcap cap_net_bind_service=+ep " + quoted + "\n"
+				if !tc.present {
+					want = "WARNING: previous extender capability absent or unverified; to enable it run: sudo setcap cap_net_bind_service=+ep " + quoted + "\n"
+				}
 				if warnings.String() != want {
 					t.Fatalf("warning=%q, want %q", warnings.String(), want)
 				}

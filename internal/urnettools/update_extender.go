@@ -23,10 +23,16 @@ func installProviderBinaryWithRunner(src, dst, user, platform string, warnings i
 }
 
 func installProviderBinaryWithRunnerAndStatus(src, dst, user, platform string, warnings io.Writer, run func(string, ...string) ([]byte, error), statusPath string) error {
+	hadCapability := platform == "linux" && extenderCapabilityPresent(dst, run)
 	if err := installBinary(src, dst, user); err != nil {
 		return err
 	}
 	if platform != "linux" {
+		return nil
+	}
+	quoted := "'" + strings.ReplaceAll(dst, "'", "'\\''") + "'"
+	if !hadCapability {
+		fmt.Fprintf(warnings, "WARNING: previous extender capability absent or unverified; to enable it run: sudo setcap cap_net_bind_service=+ep %s\n", quoted)
 		return nil
 	}
 	if data, err := os.ReadFile(statusPath); err == nil {
@@ -34,7 +40,7 @@ func installProviderBinaryWithRunnerAndStatus(src, dst, user, platform string, w
 			fields := strings.Fields(line)
 			if len(fields) == 2 && fields[0] == "CapBnd:" {
 				if mask, err := strconv.ParseUint(fields[1], 16, 64); err == nil && mask&(1<<10) == 0 {
-					fmt.Fprintln(warnings, "WARNING: extender capability blocked by the process bounding set")
+					fmt.Fprintf(warnings, "WARNING: extender capability blocked by the process bounding set; after fixing that, run: sudo setcap cap_net_bind_service=+ep %s\n", quoted)
 					return nil
 				}
 			}
