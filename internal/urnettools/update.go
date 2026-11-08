@@ -1656,10 +1656,12 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 		fmt.Printf("unit migration skipped: cannot read %s unit type: %v\n", p.Unit, err)
 		return false, nil
 	}
+	if typ == "notify" {
+		fmt.Printf("HotSwap unit migration not needed: %s is already Type=notify\n", p.Unit)
+		return false, nil
+	}
 	if typ != "simple" {
-		// Already notify, oneshot, or other type — nothing to migrate.
-		// Report the skip for the same reason.
-		fmt.Printf("unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
+		fmt.Printf("HotSwap unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
 		return false, nil
 	}
 

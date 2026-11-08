@@ -466,8 +466,21 @@ func TestMigrateUnitToNotify_LogsSkipReason(t *testing.T) {
 				t.Error("expected migrated=false when the unit is not Type=simple")
 			}
 		})
-		if !strings.Contains(out, "unit migration skipped: urnetwork.service is Type=notify, not simple") {
+		if !strings.Contains(out, "HotSwap unit migration not needed: urnetwork.service is already Type=notify") {
 			t.Errorf("expected the non-simple Type= to be logged, got: %q", out)
+		}
+	})
+
+	t.Run("OtherType", func(t *testing.T) {
+		setupMigrateMocks(t, migrateTestDeps{unitType: "forking"})
+		out := captureStdout(t, func() {
+			migrated, err := migrateUnitToNotify(p)
+			if err != nil || migrated {
+				t.Errorf("expected no migration, got %v, %v", migrated, err)
+			}
+		})
+		if !strings.Contains(out, "HotSwap unit migration skipped: urnetwork.service is Type=forking, not simple") {
+			t.Errorf("expected other type to be reported, got: %q", out)
 		}
 	})
 }
