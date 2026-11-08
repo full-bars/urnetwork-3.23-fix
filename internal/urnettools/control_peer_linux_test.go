@@ -10,6 +10,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -25,6 +26,23 @@ func TestPeerVersionRealSocket(t *testing.T) {
 	}
 	if got, ok := providerVersionFromSocketForPID(Provider{StateDir: t.TempDir()}, os.Getpid()); ok {
 		t.Fatalf("missing socket accepted: %q", got)
+	}
+}
+
+// A verified peer reporting the wrong version must not confirm the update.
+func TestPeerWrongVersion(t *testing.T) {
+	stubVerifyLoop(t)
+	dir := t.TempDir()
+	startVersionMockServer(t, filepath.Join(dir, "provider.sock"), controlResponse{OK: true, BuildVersion: "old"})
+	p := testProvider(dir, os.Getpid()+1000000)
+	verifyDiscoverFn = func() []Provider { return []Provider{testProvider(dir, os.Getpid())} }
+	verifyRunningImageHandleFn = func(int) (string, error) { return "", fmt.Errorf("unreadable") }
+	verifySocketVersionFn = providerVersionFromSocketForPID
+	verifyPidIsAliveFn = func(int) bool { return false }
+	var err error
+	captureStdout(t, func() { err = verifyRestartLoop(p, testConfig("new"), true, "") })
+	if err == nil || !strings.Contains(err.Error(), `control socket reported version "old"`) {
+		t.Fatalf("wrong socket version was not reported: %v", err)
 	}
 }
 
