@@ -10,7 +10,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | :--- | :--- |
 | `provider/` | The provider program, the relay node you run. |
 | `cmd/` | The three small programs built from this repo: `urnet-tools`, `urnet-docker` and `fake-provider` (a test double). |
-| `internal/urnettools/` | The code behind `urnet-tools` and `urnet-docker`. |
+| `internal/urnettools/` | The code behind `urnet-tools` and `urnet-docker`, including the extender host setup, firewall planner and FreeBSD print-only setup. |
 | `internal/` (others) | Small shared helpers: `tui`, `promtext`, `verdictfeed`, `durablepath`, `durablehead`, `durablefixture`. |
 | `./*.go` (repo root) | The core network stack: transports, contracts, IP relay and security, DNS-over-HTTPS. Details below. |
 | `extender/` | The extender transport. |

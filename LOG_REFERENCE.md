@@ -661,6 +661,12 @@ Lines tagged `[extender]` are mirrored into the important buffer. Outcomes (star
 - `FAILED to start` is logged once per distinct error, however long it keeps failing (a corrupt identity file, say). The provider keeps working, and the start is retried every 15 seconds, so fixing the cause brings the extender up by itself.
 - `⚙️ [control] set extender=...` is the usual control-socket confirmation. `urnet-tools extender disable` sends `off` and `enable` sends `on`, and the change applies at once with no restart.
 
+### Extender setup
+
+`urnet-tools extender setup` is new in this release. It inspects TCP 443 occupancy, the provider binary's bind capability and the host firewall. It prints exact commands and asks before applying them. Only explicit `--yes` or `--force` approval allows non-interactive changes. UDP 53 is optional and user-managed; setup does not open it. On firewalld, setup plans runtime and permanent rules separately and does not reload the service. When setup adds `cap_net_bind_service`, it preserves the binary's existing file capabilities.
+
+FreeBSD extender setup is untested this release and print-only. It prints the `sysctl` commands and their undo, and makes no changes. Regular providing on FreeBSD is unaffected. The Docker RAM log follower may replay retained lines after a trim. The hot-swap candidate bind race is not fixed in this release.
+
 ### Ports
 
 ```
