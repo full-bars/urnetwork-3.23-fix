@@ -1595,7 +1595,7 @@ EOF
         else
             pr_err "Could not enable the newly installed systemd service"
             [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
-            pr_info "The new files are installed, but the service was not enabled or restarted. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service"
+            pr_info "The new binary and unit files are installed; service enable failed and this installer has not restarted the service. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
     fi
@@ -1604,22 +1604,30 @@ EOF
         if [ "$(id -u)" -ne 0 ]; then
             pr_err "Could not enable the newly installed update timer"
             [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
-            pr_info "Finish with: systemctl --user enable --now urnetwork-update.timer"
+            pr_info "The new binary and unit files are installed. The service enable succeeded but this installer has not restarted it; the timer enable/start did not complete. Finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
     fi
 
     if [ "$start" -eq 1 ]; then
-        systemctl --user daemon-reload
+        if ! systemctl --user daemon-reload; then
+            pr_err "systemctl --user daemon-reload failed. The new binary and unit files are installed, but this installer did not restart the service. Finish with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
+            exit 1
+        fi
         
         if ! systemctl --user start urnetwork.service; then
-            pr_err "Failed to restart urnetwork.service after update"
+            pr_err "Failed to restart urnetwork.service after update. The new binary and unit files are installed; the service start command failed. Retry with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
                     ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
-                    systemctl --user daemon-reload 2>/dev/null || true
-                    systemctl --user start urnetwork.service 2>/dev/null || true
                     pr_err "Restored previous binary after service restart failure"
+                    if ! systemctl --user daemon-reload; then
+                        pr_err "Reload after restoring the binary failed; the previous binary is installed but its service has not been restarted. Run: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
+                    elif ! systemctl --user start urnetwork.service; then
+                        pr_err "Starting the restored binary failed; run: systemctl --user start urnetwork.service"
+                    else
+                        pr_info "The restored provider service started."
+                    fi
                 else
                     if [ -f "$install_path/bin/urnetwork.old" ] && [ -f "$install_path/bin/urnetwork" ]; then
                         pr_err "Failed to restore previous binary; backup remains at %s and replacement at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
