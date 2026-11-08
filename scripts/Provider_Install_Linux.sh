@@ -1536,27 +1536,11 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
-# Type=simple (the default), deliberately NOT Type=notify.
-#
-# Type=notify makes \`systemctl start\` block until the provider sends
-# sd_notify(READY=1), and provide() only sends it from provideWithProxy --
-# i.e. after a proxy (or the direct/native path) has brought up a transport.
-# That is unbounded: the per-proxy auth retry loop backs off legitimately for
-# hours on a rate-limited or unreachable API, and a provider with direct
-# disabled and no proxies configured never sends it at all.
-#
-# Worse, the unit file and the provider binary ship through different
-# channels (this script from git, the binary from a GitHub release), so any
-# skew -- a fresh install that lands an older release, or a rollback via
-# \`urnet-tools update --tag\` -- pairs a Type=notify unit with a binary that
-# has no sd_notify support whatsoever, and every start/restart hangs forever.
-# That is what wedged the pre-release shakedown for 2h until the CI watchdog
-# killed it (exit 124).
-#
-# HotSwap's MainPID transfer needs NOTIFY_SOCKET and is therefore unavailable
-# under Type=simple; internal/urnettools/hotswap.go already gates on the
-# unit's Type= and declines cleanly with an operator message, and
-# provider/hotswap.go aborts the handoff rather than corrupting MainPID.
+# The systemd default is Type=simple. HotSwap needs Type=notify and
+# NotifyAccess=all so it can transfer MainPID to the replacement process.
+# This template still uses the default to allow older provider releases that
+# do not send READY=1 to start; urnet-tools can migrate compatible binaries.
+# Current providers send READY=1 at the startup barrier before proxy retries.
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=on-failure
