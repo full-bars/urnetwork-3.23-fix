@@ -17,10 +17,10 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024**, which a non-root provider gets from `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it.
+2. **Permission to use a port below 1024.** On Linux, a non-root provider can use `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it. FreeBSD setup is manual and untested; see below.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
-UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP.
+UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP. UDP 53 is user-managed: setup does not open it.
 
 ## Is it working?
 
@@ -77,7 +77,7 @@ The role runs from the provider's direct slot, because only that slot's egress i
 | TCP 443 | TLS carrier | **Required.** The platform proves the host over this port. |
 | UDP 443 | QUIC carrier | Optional. |
 | UDP 4053 | DNS carrier | Optional. See the note on DNS below. |
-| UDP 53 | Second DNS port | Optional. Tried by default; skipped if something else holds it. `URNETWORK_EXTENDER_DNS53=off` skips it. |
+| UDP 53 | Second DNS port | Optional and user-managed. Setup does not open it. Tried by default; skipped if something else holds it. `URNETWORK_EXTENDER_DNS53=off` skips it. |
 
 TCP 443 gates everything. The extender binds it first, and **while it fails no other port is opened**: the platform could not list the host anyway, so nothing could use them. It retries every three minutes and opens the rest once it has the port. It says so plainly, naming what holds the port when the host will tell it:
 
@@ -89,7 +89,7 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-Binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+On Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal Linux install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
 
 ## Prepare the host with `urnet-tools extender setup`
 
@@ -99,12 +99,12 @@ urnet-tools extender setup --dry-run
 urnet-tools extender setup --yes
 ```
 
-`urnet-tools extender setup` inspects the host and proposes only the missing privilege and firewall steps:
+`urnet-tools extender setup` on supported platforms inspects the host and proposes missing privilege and firewall steps. FreeBSD extender setup is untested this release and print-only: it does not elevate, inspect or change the host. Regular providing is unaffected.
 
-1. **Port 443 occupancy.** Checks whether another process already holds TCP 443 and stops with the holder's name and PID if one does.
-2. **Low-port bind privilege.** On Linux, checks `getcap` on the installed provider binary (resolving symlinks) and the process capability bounding set (`/proc/self/status` `CapBnd`), and plans `setcap cap_net_bind_service=+ep <binary>` when missing. On FreeBSD, setup can set `net.inet.ip.portrange.reservedhigh=0` and persist it in `/etc/sysctl.conf`. This removes privileged-port protection for all users on the host. Record the previous value before confirming. To undo, remove the added assignment from `/etc/sysctl.conf` and restore the previous value with `sysctl net.inet.ip.portrange.reservedhigh=<previous value>`.
-3. **Host firewall rules.** Inspects the active local firewall (`ufw`, `firewalld`, `iptables`/`ip6tables`, `nftables`, `pf`/`ipfw`, or Windows Firewall) for inbound TCP 443 (required TLS carrier), UDP 443 (optional QUIC carrier) and UDP 4053 (optional DNS carrier), and plans only the rules that are not already present. For example, if `ufw` is active and already allows `443/tcp` while `443/udp` and `4053/udp` are missing, it proposes only `ufw allow 443/udp` and `ufw allow 4053/udp`.
-4. **Confirmation gate.** Prints the port summary and every command it will run under `Commands to run:`, then asks `Apply these changes? [y/N]:` before changing anything. In a non-interactive session without `--yes` (or `--force`) it executes nothing and exits with an error; `--dry-run` (`-n`) prints the plan and exits without prompting.
+1. **Port 443 occupancy.** Checks whether another process holds TCP 443 and stops if it does. If the holder is hidden from an unprivileged user, setup checks again after elevation.
+2. **Low-port bind privilege.** On Linux, checks the provider binary's capability and the process capability bounding set, then plans the missing grant. On FreeBSD, setup prints temporary `reservedhigh=0` and undo commands for the operator. This removes privileged-port protection for all users. The temporary change does not edit `/etc/sysctl.conf`; for a non-root provider, status also requires the setting persisted there. Manage any persistent change and its undo yourself.
+3. **Host firewall rules.** On supported platforms, inspects the active local firewall for TCP 443, UDP 443 and UDP 4053 and plans missing rules. UDP 53 is optional and user-managed. On FreeBSD, apply and undo pf or ipfw rules yourself using your ruleset's procedure.
+4. **Confirmation gate.** If elevation is needed, interactive setup first asks to re-run under sudo. The elevated run rechecks the host, prints its current plan and asks `Apply these changes? [y/N]:` before applying it. `--yes` or `--force` explicitly approves; without it, non-interactive setup does not apply changes. `--dry-run` (`-n`) prints the plan without applying it. When a manual elevated rerun is needed, setup prints the command with the original options.
 5. **Bind verification.** On Linux, after capability checks, runs `<provider-binary> --extender-bind-probe` as the provider's user (`sudo -n -u <user>`) when TCP 443 is free to confirm a live low-port bind. When the running provider already holds TCP 443 or the probe cannot run without a password prompt, `setup` states plainly that the live TCP 443 bind was not tested.
 
 Docker containers are not modified by `extender setup`; publish the ports on `docker run` or use `--network host` as shown below, and allow the ports in the host firewall.
@@ -210,7 +210,7 @@ docker run -d --name=urfix --pull=always --restart=unless-stopped \
 }
 ```
 
-**Compose.** The same three modes as a Compose file. With published ports (use this with the IPv6 daemon setting from (3) to get both families, or as is for IPv4 only):
+**Compose.** The following example publishes ports. Changing Docker's default bridge settings in (3) does not configure the separate network that Compose creates. For IPv6, enable IPv6 on the Compose network, configure routing and port publishing, and verify reachability from outside. The example below does not configure IPv6:
 
 ```yaml
 services:
@@ -252,6 +252,8 @@ services:
 volumes:
   urnetwork_data:
 ```
+
+The published-port examples do not publish UDP 53. If you want it and the host port is free, add `-p 53:53/udp` to `docker run` or `"53:53/udp"` to the Compose ports list. Manage the host firewall yourself. Host networking uses the host's ports directly.
 
 In every case:
 
