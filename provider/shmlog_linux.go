@@ -305,33 +305,18 @@ func initSHMLogger() {
 				// path (a HotSwap parent and its candidate share one path), or an
 				// operator may have removed it. This descriptor then names an
 				// unlinked inode and every write is lost; follow the path.
-				fMu.Lock()
-				if next, swapped, err := reopenIfOrphaned(shmLogPath, logFile, 0644); err != nil {
-					fMu.Unlock()
-					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, err)
-				} else if swapped {
-					previous := logFile
-					logFile = next
-					fMu.Unlock()
-					previous.Close()
-					reportLogReopened(&mainReopenNotice, shmLogPath)
-				} else {
-					fMu.Unlock()
-				}
-				if impEnabled && impPath != shmImportantLogPath {
-					fImpMu.Lock()
-					if next, swapped, err := reopenIfOrphaned(impPath, fImp, 0600); err != nil {
-						fImpMu.Unlock()
-						reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, err)
-					} else if swapped {
-						previous := fImp
-						fImp = next
-						fImpMu.Unlock()
-						previous.Close()
-						reportLogReopened(&impReopenNotice, impPath)
+				changes := checkLogPaths(shmLogPath, &logFile, &fMu, impPath, &fImp, &fImpMu, impEnabled, func(path string) {
+					if path == shmLogPath {
+						reportLogReopened(&mainReopenNotice, path)
 					} else {
-						fImpMu.Unlock()
+						reportLogReopened(&impReopenNotice, path)
 					}
+				})
+				if changes.mainErr != nil {
+					reportTrimFailure(&mainTrimWarned, &mainTrimWarnTime, shmLogPath, changes.mainErr)
+				}
+				if changes.importantErr != nil {
+					reportTrimFailure(&impTrimWarned, &impTrimWarnTime, impPath, changes.importantErr)
 				}
 				// An fsync on an append-only descriptor is safe beside a
 				// concurrent write, so the sync reads the current descriptor
@@ -345,6 +330,40 @@ func initSHMLogger() {
 			}
 		}()
 	})
+}
+
+type logPathChanges struct {
+	main, important       bool
+	mainErr, importantErr error
+}
+
+// checkLogPaths follows replacements and reports only after both locks are free.
+func checkLogPaths(mainPath string, mainFile **os.File, mainMu *sync.Mutex, impPath string, impFile **os.File, impMu *sync.Mutex, impEnabled bool, report func(string)) logPathChanges {
+	check := func(path string, file **os.File, mu *sync.Mutex, mode os.FileMode) (bool, error) {
+		mu.Lock()
+		next, swapped, err := reopenIfOrphaned(path, *file, mode)
+		var old *os.File
+		if swapped {
+			old, *file = *file, next
+		}
+		mu.Unlock()
+		if old != nil {
+			old.Close()
+		}
+		return swapped, err
+	}
+	var changes logPathChanges
+	changes.main, changes.mainErr = check(mainPath, mainFile, mainMu, 0644)
+	if impEnabled && impPath != shmImportantLogPath {
+		changes.important, changes.importantErr = check(impPath, impFile, impMu, 0600)
+	}
+	if changes.main {
+		report(mainPath)
+	}
+	if changes.important {
+		report(impPath)
+	}
+	return changes
 }
 
 // reportLogReopened runs only after releasing the descriptor locks: stderr is
