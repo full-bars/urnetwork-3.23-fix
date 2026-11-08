@@ -80,16 +80,15 @@ func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err
 	return yes, dryRun, target, nil
 }
 
+var runExtenderSetupFn = RunExtenderSetup
+
 func cmdExtenderSetup(args []string) error {
 	yes, dryRun, target, err := parseExtenderSetupArgs(args)
 	if err != nil {
 		return err
 	}
 	argv := append([]string{"extender"}, args...)
-	if !yes {
-		argv = append(argv, "--yes")
-	}
-	return RunExtenderSetup(ExtenderSetupOptions{
+	return runExtenderSetupFn(ExtenderSetupOptions{
 		Yes:    yes,
 		Force:  yes,
 		DryRun: dryRun,
