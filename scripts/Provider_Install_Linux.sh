@@ -52,38 +52,69 @@ ensure_extender_cap ()
     if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
         return 0
     fi
+    # The install path passes "quiet": it explains the missing capability once, in
+    # the extender notice, instead of printing the same warning twice.
+    [ "${2:-}" = quiet ] && return 0
     quoted_file=$(printf '%s' "$cap_file" | sed "s/'/'\\\\''/g")
     printf "WARNING: extender capability missing or unverified; run: sudo setcap cap_net_bind_service=+ep '%s'\n" "$quoted_file" >&2
     return 0
 )
+
+# extender_ports_note prints the ports the extender uses, in plain terms: which
+# one is required and which are optional. Only the extender needs them; the
+# provider earns the same without any of them.
+extender_ports_note ()
+{
+    printf '%s\n' \
+        "  Ports the extender uses (the provider itself needs none of these):" \
+        "    TCP 443   required. The extender cannot run without it. Allow it in your firewall and router." \
+        "    UDP 443   optional. QUIC, an alternative path." \
+        "    UDP 4053  optional. A DNS-style way in for networks that block the others. It answers DNS" \
+        "              queries from anyone who can reach it (rate limited), so open it only if you want that." \
+        "    UDP 53    optional. Used only if nothing else on this host is using it." \
+        "  To check your firewall and open the ports, run: urnet-tools extender setup" \
+        "  (it shows the exact commands and asks before changing anything)."
+}
+
+# extender_what_note says what the extender is and, first, that it does not touch
+# earnings. It is a short block so it reads as a list, not a wall of text.
+extender_what_note ()
+{
+    printf '%s\n' \
+        "  It helps people in censored countries reach URnetwork through this host." \
+        "  It relays only to URnetwork's own servers and does not change your earnings:" \
+        "  the provider earns the same with it off." \
+        "  Turn it off at any time: urnet-tools extender disable"
+}
 
 # report_extender_port says, at install time, what the extender will do on this
 # host. The extender is ON by default, so this never asks a question: it prints
 # whether TCP 443 (the port the platform must reach to list this host) is free or
 # who holds it, and how to turn the extender off. It never fails the install.
 # A listener that is this provider's own (an update keeps the old process up) is
-# not blamed.
+# not blamed. Whether this user may bind 443 is handled by
+# offer_extender_capability, which runs right after.
 report_extender_port ()
 (
     [ "$(uname -s)" = Linux ] || return 0
     provider_file=$1
     off_hint="To turn it off at any time: urnet-tools extender disable"
-    reach_hint="Inbound TCP 443 must also reach this host (check any firewall or router)."
     if ! command -v ss >/dev/null 2>&1; then
-        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss is not installed.) $reach_hint $off_hint"
-        return 0
-    fi
-    if ! tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null); then
+        pr_info "Extender: on by default. Could not check whether TCP 443 is free (ss is not installed)."
+        extender_what_note
+    elif ! tcp_listeners=$(ss -ltnpH 'sport = :443' 2>/dev/null); then
         # a failed ss says nothing about the port: never call that "free"
-        pr_info "Extender: on by default. It helps people in censored countries reach URnetwork through this host, and needs TCP 443. (could not check whether 443 is free: ss failed.) $reach_hint $off_hint"
+        pr_info "Extender: on by default. Could not check whether TCP 443 is free (ss failed)."
+        extender_what_note
     elif [ -z "$tcp_listeners" ]; then
-        pr_info "Extender: TCP 443 is free, so the extender is on by default. It helps people in censored countries reach URnetwork through this host, and relays only to URnetwork's own servers. It also answers DNS queries on UDP 4053 and may use UDP 53 (rate limited); UDP 53 is optional and user-managed. Firewall any DNS ports you expose. $reach_hint $off_hint"
+        pr_info "Extender: on by default. TCP 443 is free."
+        extender_what_note
     else
         holder=$(printf '%s\n' "$tcp_listeners" | sed -n 's/.*users:(("\([^"]*\)",pid=\([0-9]*\).*/\1 (pid \2)/p' | head -n 1)
         holder_pid=$(printf '%s' "$holder" | sed -n 's/.*(pid \([0-9]*\))$/\1/p')
         case "$holder" in
             "")
-                pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                pr_warn "Extender: TCP 443 is in use by another process (its name is hidden; run: sudo ss -ltnp 'sport = :443'). The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 ;;
             "urnetwork "*)
                 # the name alone proves nothing: another program can be called
@@ -93,30 +124,79 @@ report_extender_port ()
                 holder_exe=${holder_exe% (deleted)}
                 own_exe=$(readlink -f "$provider_file" 2>/dev/null) || own_exe=""
                 if [ -z "$holder_exe" ]; then
-                    pr_warn "Extender: TCP 443 is in use by $holder; could not confirm it is this provider (its executable is not readable). If it is not, the extender cannot be listed until 443 is freed; it keeps retrying and starts by itself once it is. $off_hint"
+                    pr_warn "Extender: TCP 443 is in use by $holder; could not confirm it is this provider (its executable is not readable). If it is not, the extender cannot run until 443 is freed; it keeps retrying and starts by itself once it is. $off_hint"
                 elif [ "$holder_exe" = "$own_exe" ]; then
                     pr_info "Extender: already listening on TCP 443 from this provider. $off_hint"
                 else
-                    pr_warn "Extender: TCP 443 is in use by $holder, which is a different program ($holder_exe). The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                    pr_warn "Extender: TCP 443 is in use by $holder, which is a different program ($holder_exe). The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 fi
                 ;;
             *)
-                pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot be listed until that is freed. It will keep retrying and start by itself once it is. $off_hint"
+                pr_warn "Extender: TCP 443 is in use by $holder. The extender needs 443, so it cannot run until that is freed. It keeps retrying and starts by itself once it is. $off_hint"
                 ;;
         esac
     fi
+    # Where this user may bind 443 already (root, or the capability is set), the
+    # extender can run now: say which ports it uses. Otherwise
+    # offer_extender_capability prints the same note after it fixes that.
+    can_bind=1
     if [ "$(id -u 2>/dev/null)" != 0 ]; then
-        have_cap=0
+        can_bind=0
         if command -v getcap >/dev/null 2>&1; then
             case "$(getcap "$provider_file" 2>/dev/null)" in
-                *cap_net_bind_service*) have_cap=1 ;;
+                *cap_net_bind_service*) can_bind=1 ;;
             esac
         fi
-        if [ "$have_cap" -eq 0 ]; then
-            quoted_file=$(printf '%s' "$provider_file" | sed "s/'/'\\\\''/g")
-            pr_warn "Extender: this provider is not root and lacks permission to bind port 443, so the extender cannot start yet. Run: sudo setcap cap_net_bind_service=+ep '$quoted_file'"
-        fi
     fi
+    [ "$can_bind" -eq 1 ] && extender_ports_note
+    return 0
+)
+
+# offer_extender_capability fixes the one thing a non-root user cannot do alone:
+# listen on TCP 443. Only the extender needs it; the provider is unaffected. It
+# asks first, runs ONE command (sudo setcap on the provider file) and verifies it.
+# It never prompts without a terminal (the update timer, a container, FORCE=1):
+# there it prints the command instead. Declining or failing never fails the
+# install. The prompt reads /dev/tty, not stdin, so it works under `curl | sh`.
+offer_extender_capability ()
+(
+    [ "$(uname -s)" = Linux ] || return 0
+    provider_file=$1
+    [ "$(id -u 2>/dev/null)" != 0 ] || return 0
+    if command -v getcap >/dev/null 2>&1; then
+        case "$(getcap "$provider_file" 2>/dev/null)" in
+            *cap_net_bind_service*) return 0 ;;
+        esac
+    fi
+    quoted_file=$(printf '%s' "$provider_file" | sed "s/'/'\\\\''/g")
+    cmd="sudo setcap cap_net_bind_service=+ep '$quoted_file'"
+    ext_tty=${extender_tty:-/dev/tty}
+    pr_warn "Extender: not running yet. It needs TCP 443, and this user is not allowed to listen on that port. Only the extender needs this: the provider itself is not affected."
+    # Probe by OPENING the terminal: a readable /dev/tty node can still fail to open.
+    # A subshell, not a brace group: a failed redirect on the special builtin ":"
+    # makes a POSIX-mode shell (bash run as sh) exit instead of returning false.
+    if [ "${FORCE:-0}" = "1" ] || ! ( : < "$ext_tty" ) 2>/dev/null || ! command -v sudo >/dev/null 2>&1; then
+        pr_info "To allow it, run once: $cmd"
+        return 0
+    fi
+    printf '\n  I can allow it with one command:\n      %s\n  This asks for your sudo password once. Run it now? [y/N] ' "$cmd"
+    ans=""
+    read -r ans < "$ext_tty" || ans=""
+    printf '\n'
+    case "$ans" in
+        [Yy]*)
+            if sudo setcap cap_net_bind_service=+ep "$provider_file" && getcap "$provider_file" 2>/dev/null | grep -q cap_net_bind_service; then
+                pr_info "Extender: port 443 is allowed. It takes effect when the provider next starts."
+                extender_ports_note
+                pr_info "An update replaces the provider file and removes this permission. The installer and urnet-tools update try to restore it, and tell you if they cannot."
+            else
+                pr_warn "Extender: setcap did not succeed, so port 443 is still blocked. The provider is unaffected. To try again, run: $cmd"
+            fi
+            ;;
+        *)
+            pr_info "Skipped. The provider runs normally. To allow the extender later, run: $cmd"
+            ;;
+    esac
     return 0
 )
 
@@ -1509,18 +1589,22 @@ Persistent=true
 WantedBy=default.target
 EOF
 
-    if ! systemctl --user enable urnetwork.service 2>/dev/null; then
+    if ! enable_out=$(systemctl --user enable urnetwork.service 2>&1); then
         if [ "$(id -u)" -eq 0 ]; then
             pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
         else
             pr_err "Could not enable the newly installed systemd service"
+            [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
+            pr_info "The new files are installed, but the service was not enabled or restarted. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service"
             exit 1
         fi
     fi
 
-    if ! systemctl --user enable --now urnetwork-update.timer 2>/dev/null; then
+    if ! enable_out=$(systemctl --user enable --now urnetwork-update.timer 2>&1); then
         if [ "$(id -u)" -ne 0 ]; then
             pr_err "Could not enable the newly installed update timer"
+            [ -n "$enable_out" ] && pr_err "systemctl said: %s" "$enable_out"
+            pr_info "Finish with: systemctl --user enable --now urnetwork-update.timer"
             exit 1
         fi
     fi
@@ -2752,9 +2836,10 @@ do_install ()
             fi
             exit 1
         fi
-        ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
+        ensure_extender_cap "$install_path/bin/urnetwork" quiet || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
     fi
     report_extender_port "$install_path/bin/urnetwork" || true
+    offer_extender_capability "$install_path/bin/urnetwork" || true
 
     cd "$script_rundir" || exit 1
 
