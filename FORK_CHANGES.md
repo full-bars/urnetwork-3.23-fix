@@ -2197,6 +2197,8 @@ A follow-up review finding was addressed before merge: if `proxy_url.json` fails
 
 **Files Changed**: `provider/main.go`, `provider/main_test.go` (`TestIsLongRunningSubcommand`), `provider/shmlog_linux.go`
 
+The reopen-visibility change also emits `[ramlogs] log file at <path> was replaced or removed; reopened` when a log path is followed after replacement or removal. See [Log Message Reference](LOG_REFERENCE.md#ram-log-reopen).
+
 **Status**: ✅ Merged `main` (2026-08-02). PR #306. v3.23.0-fix.26.5.
 
 ---
