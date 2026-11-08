@@ -273,10 +273,19 @@ func TestReportExtenderBindWarnsWhenUnitSetsNoNewPrivileges(t *testing.T) {
 	}
 }
 
+func TestExtenderSetupManualCommandKeepsArguments(t *testing.T) {
+	opts := ExtenderSetupOptions{Argv: []string{"extender", "setup", "--yes", "--state-dir", "/home/example/a b"}}
+	got := formatSetupSudoCommand(opts)
+	if !strings.Contains(got, "extender setup --yes --state-dir '/home/example/a b'") {
+		t.Fatalf("manual command lost arguments or shell quoting: %q", got)
+	}
+}
+
 func TestExtenderSetupWindowsNonAdminDoesNotSuggestSudo(t *testing.T) {
 	var errOut bytes.Buffer
 	err := RunExtenderSetup(ExtenderSetupOptions{
 		Platform: "windows", PlatformCfg: &mockPlatformConfigurer{platform: "windows"},
+		Argv:   []string{"extender", "setup", "--yes", "--user", "example user"},
 		IsRoot: func() bool { return false }, Stdout: &bytes.Buffer{}, Stderr: &errOut,
 		LookPath:    func(string) (string, error) { return "C:\\sudo.exe", nil },
 		PortChecker: &PortChecker{Platform: "windows", ExecCmd: func(string, ...string) ([]byte, error) { return nil, nil }},
@@ -286,7 +295,7 @@ func TestExtenderSetupWindowsNonAdminDoesNotSuggestSudo(t *testing.T) {
 		t.Fatal("a non-admin Windows run must not proceed")
 	}
 	for _, text := range []string{err.Error(), errOut.String()} {
-		if strings.Contains(text, "sudo") || !strings.Contains(text, "Administrator") || !strings.Contains(text, "extender setup") {
+		if strings.Contains(text, "sudo") || !strings.Contains(text, "Administrator") || !strings.Contains(text, "extender setup --yes --user 'example user'") {
 			t.Fatalf("message = %q", text)
 		}
 	}

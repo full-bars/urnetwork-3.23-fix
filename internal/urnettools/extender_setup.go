@@ -275,8 +275,8 @@ func RunExtenderSetup(opts ExtenderSetupOptions) error {
 		sudoAvailable := sudoErr == nil
 
 		if platform == "windows" {
-			cmd := fmt.Sprintf("%s extender setup", resolvedExecutablePath())
-			fmt.Fprintf(errOut, "extender setup requires Administrator privileges. Re-run from an elevated terminal (Run as administrator):\n  %s\n", cmd)
+			cmd := formatSetupPowerShellCommand(opts)
+			fmt.Fprintf(errOut, "extender setup requires Administrator privileges. Re-run from an elevated PowerShell terminal (Run as administrator):\n  %s\n", cmd)
 			return fmt.Errorf("extender setup requires Administrator privileges; run from an elevated terminal: %s", cmd)
 		}
 		if opts.NonInteractive || !stdinIsInteractive() || !sudoAvailable {
@@ -437,9 +437,30 @@ func warnUnitNoNewPrivileges(out io.Writer, cfg PlatformConfigurer, p Provider) 
 	}
 }
 
+func setupManualArgs(opts ExtenderSetupOptions) []string {
+	if len(opts.Argv) == 0 {
+		return []string{"extender", "setup"}
+	}
+	return opts.Argv
+}
+
 // formatSetupSudoCommand is the exact command to run by hand.
-func formatSetupSudoCommand(ExtenderSetupOptions) string {
-	return fmt.Sprintf("sudo %s extender setup", resolvedExecutablePath())
+func formatSetupSudoCommand(opts ExtenderSetupOptions) string {
+	return setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, setupManualArgs(opts)...)}.String()
+}
+
+func formatSetupPowerShellCommand(opts ExtenderSetupOptions) string {
+	quote := func(s string) string {
+		if setupShellWord(s) == s {
+			return s
+		}
+		return "'" + strings.ReplaceAll(s, "'", "''") + "'"
+	}
+	words := []string{"&", quote(resolvedExecutablePath())}
+	for _, arg := range setupManualArgs(opts) {
+		words = append(words, quote(arg))
+	}
+	return strings.Join(words, " ")
 }
 
 // setupTargets lists the providers setup configures: the explicit target when
