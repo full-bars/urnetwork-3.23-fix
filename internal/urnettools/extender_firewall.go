@@ -69,36 +69,16 @@ func (fm *FirewallManager) detectLinux() FirewallStatus {
 	// 1. firewalld
 	if _, err := fm.LookPath("firewall-cmd"); err == nil {
 		if out, err := fm.ExecCmd("firewall-cmd", "--state"); err == nil && strings.TrimSpace(string(out)) == "running" {
-			var missing []string
-			for _, port := range []string{"443/tcp", "443/udp", "4053/udp"} {
-				if q, err := fm.ExecCmd("firewall-cmd", "--query-port="+port); err != nil || strings.TrimSpace(string(q)) != "yes" {
-					missing = append(missing, port)
-				}
-			}
-			open := len(missing) == 0
-			var planned []setupCommand
-			if !open {
-				addArgs := []string{"--permanent"}
-				for _, port := range missing {
-					addArgs = append(addArgs, "--add-port="+port)
-				}
-				planned = []setupCommand{
-					{name: "firewall-cmd", args: addArgs},
-					{name: "firewall-cmd", args: []string{"--reload"}},
-				}
-			}
-			rules := []string{
-				"firewall-cmd --permanent --add-port=443/tcp --add-port=443/udp --add-port=4053/udp",
-				"firewall-cmd --reload",
-			}
-			if len(planned) > 0 {
-				rules = make([]string, 0, len(planned))
-				for _, c := range planned {
-					rules = append(rules, c.String())
-				}
+			planned, planErr := extenderFirewalldPlan(fm.ExecCmd)
+			open := planErr == nil && len(planned) == 0
+			var rules []string
+			for _, c := range planned {
+				rules = append(rules, c.String())
 			}
 			msg := "firewalld is active"
-			if open {
+			if planErr != nil {
+				msg = fmt.Sprintf("firewalld is active but its rules could not be inspected: %v; verify manually", planErr)
+			} else if open {
 				msg = "firewalld is active; ports 443/tcp, 443/udp, 4053/udp are open"
 			}
 			return FirewallStatus{
@@ -487,13 +467,7 @@ func (fm *FirewallManager) Plan(status FirewallStatus) []setupCommand {
 	}
 	switch status.Kind {
 	case FirewallFirewalld:
-		if len(status.PlannedCommands) > 0 {
-			return append([]setupCommand(nil), status.PlannedCommands...)
-		}
-		return []setupCommand{
-			{name: "firewall-cmd", args: []string{"--permanent", "--add-port=443/tcp", "--add-port=443/udp", "--add-port=4053/udp"}},
-			{name: "firewall-cmd", args: []string{"--reload"}},
-		}
+		return append([]setupCommand(nil), status.PlannedCommands...)
 	case FirewallUFW:
 		if len(status.PlannedCommands) > 0 {
 			return append([]setupCommand(nil), status.PlannedCommands...)
@@ -521,15 +495,17 @@ func (fm *FirewallManager) Apply(status FirewallStatus) (applied bool, err error
 			return false, nil
 		}
 		cmds := fm.Plan(status)
+		if len(cmds) == 0 {
+			return false, fmt.Errorf("firewalld rules are unverified; no safe plan available")
+		}
+		applied := false
 		for _, c := range cmds {
 			if _, err := fm.ExecCmd(c.name, c.args...); err != nil {
-				if len(c.args) > 0 && c.args[0] == "--reload" {
-					return false, fmt.Errorf("firewall-cmd reload failed: %w", err)
-				}
-				return false, fmt.Errorf("firewall-cmd add-port failed: %w", err)
+				return applied, fmt.Errorf("firewall-cmd add-port failed: %w", err)
 			}
+			applied = true
 		}
-		return true, nil
+		return applied, nil
 
 	case FirewallUFW:
 		if status.PortsOpen {

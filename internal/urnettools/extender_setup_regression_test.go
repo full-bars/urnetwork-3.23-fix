@@ -388,10 +388,18 @@ func TestExtenderSetupFirewallApplyFailure(t *testing.T) {
 		if args[0] == "--state" {
 			return []byte("running"), nil
 		}
+		if args[0] == "--get-default-zone" {
+			return []byte("public"), nil
+		}
+		for _, arg := range args {
+			if strings.HasPrefix(arg, "--query-port=") {
+				return []byte("no"), errors.New("not enabled")
+			}
+		}
 		if args[0] == "--permanent" {
 			return nil, failure
 		}
-		return []byte("no"), nil
+		return []byte("ok"), nil
 	}}
 	err := RunExtenderSetup(opts)
 	if !errors.Is(err, failure) {
