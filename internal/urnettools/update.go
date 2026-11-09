@@ -803,12 +803,8 @@ func updateProvider(p Provider, cfg updateConfig) error {
 	// unit, which DOES set NOTIFY_SOCKET, so the new process starts
 	// correctly.
 	migratedUnit := false
-	if migrated, err := reconcileUnitTypeForBinary(p, providerVersion(p.Binary)); err != nil {
-		// Migration failure is non-fatal: log and continue with the
-		// normal restart path. HotSwap will still decline on
-		// Type=simple, but the binary was already swapped so a
-		// restart will pick it up.
-		fmt.Printf("unit migration note: %v\n", err)
+	if migrated, err := reconcileUnitTypeForBinary(p, verifyProviderVersionFn(p.Binary)); err != nil {
+		return fmt.Errorf("update %s: binary %s was swapped, but unit reconciliation failed: %w; no restart or HotSwap was attempted and the running process was left alone. The installed binary and unit may be incompatible. Do not restart until repaired: for a user unit run `systemctl --user edit %s`, or for a system unit run `sudo systemctl edit %s`; set [Service] Type=simple, then run the corresponding `systemctl --user daemon-reload` or `sudo systemctl daemon-reload`", providerLabel(p), p.Binary, err, updateQuoteUnit(p.Unit), updateQuoteUnit(p.Unit))
 	} else {
 		migratedUnit = migrated
 	}
@@ -1061,8 +1057,8 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
 			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
 			if rerr := installProviderBinary(backup, p.Binary, p.User); rerr != nil {
-				rollback = fmt.Sprintf("binary rollback failed: %v", rerr)
 				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
+				return fmt.Errorf("update %s: could not confirm HotSwap version %s: %s; rollback from %s failed: %w; the installed binary remains at %s; provider PID %d was not restarted", providerLabel(p), cfg.Tag, observation, backup, rerr, p.Binary, oldPID)
 			} else {
 				rollback = "previous binary restored"
 				fmt.Printf("✅ Previous binary restored; PID %d passed the earlier liveness check.\n", oldPID)
@@ -1071,12 +1067,12 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 				// next start under Type=notify would fail.
 				if !isHotSwapSupportedVersion(verifyProviderVersionFn(p.Binary)) {
 					if _, derr := demoteUnitToSimple(p); derr != nil {
-						fmt.Printf("warning: could not restore Type=simple for the rolled-back binary: %v\n", derr)
+						return fmt.Errorf("update %s: could not confirm HotSwap version %s: %s; previous binary restored at %s; live provider PID %d was not restarted, but unit demotion failed: %w. Do not restart until repaired: for a user unit run `systemctl --user edit %s`, or for a system unit run `sudo systemctl edit %s`; set [Service] Type=simple, then run the corresponding `systemctl --user daemon-reload` or `sudo systemctl daemon-reload`", providerLabel(p), cfg.Tag, observation, p.Binary, oldPID, derr, updateQuoteUnit(p.Unit), updateQuoteUnit(p.Unit))
 					}
 				}
 			}
 		}
-		return fmt.Errorf("update %s: could not confirm HotSwap version %s: %s; %s. PID %d passed the liveness check; check provider status and logs", providerLabel(p), cfg.Tag, observation, rollback, oldPID)
+		return fmt.Errorf("update %s: could not confirm HotSwap version %s: %s; %s; provider PID %d passed the liveness check and was not restarted; check provider status and logs", providerLabel(p), cfg.Tag, observation, rollback, oldPID)
 	}
 
 	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect or could not be verified: %s; check the provider's logs", providerLabel(p), cfg.Tag, observation)
@@ -1652,8 +1648,8 @@ func fileSHA256(path string) (string, error) {
 // Returns (migrated, err): migrated is true when the unit file was rewritten
 // (meaning the caller must use a standard restart instead of HotSwap, because
 // the ALREADY-RUNNING process lacks NOTIFY_SOCKET in its environment — HotSwap
-// would fail with sd_notify timeout). Non-fatal by design: any error is
-// logged and the update continues with the normal restart path.
+// would fail with sd_notify timeout). A query, write, or reload error must
+// abort the update before any restart.
 func migrateUnitToNotify(p Provider) (bool, error) {
 	if p.Unit == "" {
 		return false, nil // no unit, nothing to migrate
@@ -1662,17 +1658,17 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	// Check current type: only migrate from Type=simple.
 	typ, err := unitTypeFunc(p)
 	if err != nil {
-		// Can't determine type — skip migration rather than block
-		// the update. The systemctl call can fail when the user bus
-		// is unreachable or systemctl is missing. Report the skip so
-		// the update log shows which restart path was taken.
-		fmt.Printf("unit migration skipped: cannot read %s unit type: %v\n", p.Unit, err)
+		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
+	}
+	if typ == "" {
+		return false, fmt.Errorf("query unit type for %s returned an empty type", p.Unit)
+	}
+	if typ == "notify" {
+		fmt.Printf("HotSwap unit migration not needed: %s is already Type=notify\n", p.Unit)
 		return false, nil
 	}
 	if typ != "simple" {
-		// Already notify, oneshot, or other type — nothing to migrate.
-		// Report the skip for the same reason.
-		fmt.Printf("unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
+		fmt.Printf("HotSwap unit migration skipped: %s is Type=%s, not simple\n", p.Unit, typ)
 		return false, nil
 	}
 
@@ -1716,14 +1712,10 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	}
 	fmt.Printf("migrated %s from Type=simple to Type=notify\n", unitPath)
 
-	// Daemon-reload so systemd picks up the rewritten unit. Best-effort:
-	// failure here means the running unit still has the old Type= but the
-	// file on disk is correct — the next restart or reboot will pick it up.
 	if err := daemonReloadFunc(p); err != nil {
-		fmt.Printf("warning: daemon-reload after unit migration failed: %v\n", err)
-	} else {
-		fmt.Println("daemon-reload completed after unit migration")
+		return true, fmt.Errorf("daemon-reload after unit migration: %w", err)
 	}
+	fmt.Println("daemon-reload completed after unit migration")
 
 	// CRITICAL: Return true so the caller knows migration happened. The
 	// already-running process does NOT have NOTIFY_SOCKET in its
@@ -1856,6 +1848,10 @@ var (
 	daemonReloadFunc = daemonReloadForUnit
 )
 
+func updateQuoteUnit(unit string) string {
+	return "'" + strings.ReplaceAll(unit, "'", "'\\''") + "'"
+}
+
 // reconcileUnitTypeForBinary makes the unit's Type= safe for the binary
 // about to run under it. A binary that sends READY=1 at its startup barrier
 // (v3.23.0-fix.31.0+) gets Type=notify so HotSwap can transfer MainPID.
@@ -1970,7 +1966,10 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
 	}
-	if typ != "notify" {
+	if typ == "" {
+		return false, fmt.Errorf("query unit type for %s returned an empty type", p.Unit)
+	}
+	if typ != "notify" && typ != "notify-reload" {
 		return false, nil
 	}
 	unitPath, err := unitFilePathFunc(p)
@@ -1986,7 +1985,7 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	}
 	newContent, changed := rewriteUnitContentToSimple(string(content))
 	if !changed {
-		return false, nil
+		return false, fmt.Errorf("unit %s is effectively Type=notify but %s has no Type=notify to demote; check its drop-ins", p.Unit, unitPath)
 	}
 	if err := replaceUnitFileIn(p.StateHome, unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write unit file %s: %w", unitPath, err)
@@ -1994,6 +1993,13 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	fmt.Printf("restored %s to Type=simple\n", unitPath)
 	if err := daemonReloadFunc(p); err != nil {
 		return true, fmt.Errorf("daemon-reload after restoring Type=simple: %w", err)
+	}
+	if effective, err := unitTypeFunc(p); err != nil {
+		return true, fmt.Errorf("verify unit type for %s: %w", p.Unit, err)
+	} else if effective == "" {
+		return true, fmt.Errorf("verify unit type for %s returned an empty type", p.Unit)
+	} else if effective == "notify" || effective == "notify-reload" {
+		return true, fmt.Errorf("%s remains Type=notify after reload; check its drop-ins", p.Unit)
 	}
 	return true, nil
 }

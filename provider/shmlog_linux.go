@@ -375,6 +375,9 @@ func followLogPath(path string, file **os.File, mu *sync.Mutex, mode os.FileMode
 		return false, err
 	}
 	mu.Lock()
+	// Keep the path identity check atomic with the swap to prevent stale
+	// descriptors. The main log is on tmpfs /dev/shm; the disk important
+	// log already does Write, Rename and OpenFile under this mutex.
 	pathInfo, pathErr := os.Lstat(path)
 	if *file != observed || pathErr != nil || !os.SameFile(info, pathInfo) {
 		mu.Unlock()

@@ -24,7 +24,10 @@ func TestInstallProviderBinaryBoundingSet(t *testing.T) {
 			if err := os.WriteFile(src, []byte("new"), 0755); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.WriteFile(status, []byte("CapBnd:\t"+tc.mask+"\n"), 0600); err != nil {
+			if err := os.WriteFile(dst, []byte("old"), 0755); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(status, []byte("CapBnd:	"+tc.mask+"\n"), 0600); err != nil {
 				t.Fatal(err)
 			}
 			var set bool
@@ -34,7 +37,8 @@ func TestInstallProviderBinaryBoundingSet(t *testing.T) {
 					set = true
 					return nil, nil
 				}
-				if set {
+				old, _ := os.ReadFile(dst)
+				if string(old) == "old" || set {
 					return []byte(dst + " cap_net_bind_service=ep"), nil
 				}
 				return nil, nil

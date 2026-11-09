@@ -16,10 +16,8 @@ import (
 )
 
 // fakeCapTools puts recording getcap/setcap/sudo stand-ins first on PATH and
-// returns the log they append to. getcap always reports no capability, so a
-// call site that routes through installProviderBinary must try to apply it
-// (one setcap/sudo line naming the destination), while a call site that
-// falls back to plain installBinary leaves the log empty.
+// returns the log they append to. The first getcap reports a capability on
+// the old binary, so a provider swap must try to restore it.
 func fakeCapTools(t *testing.T) string {
 	t.Helper()
 	if runtime.GOOS != "linux" {
@@ -29,7 +27,11 @@ func fakeCapTools(t *testing.T) string {
 	log := filepath.Join(dir, "calls.log")
 	script := "#!/bin/sh\necho \"$(basename \"$0\") $*\" >> '" + log + "'\n"
 	for _, name := range []string{"getcap", "setcap", "sudo"} {
-		if err := os.WriteFile(filepath.Join(dir, name), []byte(script), 0o755); err != nil {
+		body := script
+		if name == "getcap" {
+			body += "if [ ! -f '" + log + ".checked' ]; then touch '" + log + ".checked'; printf '%s cap_net_bind_service=ep\\n' \"$1\"; fi\n"
+		}
+		if err := os.WriteFile(filepath.Join(dir, name), []byte(body), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
