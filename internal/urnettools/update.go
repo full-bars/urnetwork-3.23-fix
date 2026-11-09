@@ -1786,11 +1786,11 @@ func rewriteUnitContent(content string) (string, bool) {
 		}
 	}
 
-	// Provider_Install_Linux.sh (since #546) writes NO Type= line: the unit is
-	// Type=simple by systemd's default and only a comment says so. With no
-	// explicit Type= anywhere there is nothing to rewrite, so add the line
-	// under [Service]; without this the migration was a silent no-op on every
-	// node the current installer set up. A unit that does carry some other
+	// Legacy Provider_Install_Linux.sh (since #546) wrote NO Type= line: the unit was
+	// Type=simple by systemd's default and only a comment said so (the installer now
+	// writes Type=notify directly). With no explicit Type= anywhere there is nothing
+	// to rewrite, so add the line under [Service]; without this the migration was a
+	// silent no-op on nodes legacy installers set up. A unit that does carry some other
 	// Type= (oneshot, forking, ...) is left alone.
 	if !changed && !hasTypeKey && serviceIdx >= 0 {
 		insert := []string{"Type=notify"}

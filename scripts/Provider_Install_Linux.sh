@@ -1624,11 +1624,18 @@ EOF
                     fi
                 fi
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
+                    if ! ensure_extender_cap "$install_path/bin/urnetwork"; then
+                        if [ "$restored_unit" -eq 1 ]; then
+                            pr_err "Could not verify provider file capabilities; update stopped. Previous binary and systemd unit were restored but service is stopped."
+                        else
+                            pr_err "Could not verify provider file capabilities; update stopped. Previous binary was restored (new unit remains in place) but service is stopped."
+                        fi
+                        exit 1
+                    fi
                     if [ "$restored_unit" -eq 1 ]; then
                         pr_err "Restored previous binary and systemd unit after service restart failure"
                     else
-                        pr_err "Restored previous binary after service restart failure"
+                        pr_err "Restored previous binary after service restart failure; previous systemd unit was not restored and the new unit remains in place"
                     fi
                     if ! systemctl --user daemon-reload; then
                         pr_err "Reload after restoring the binary failed; the previous binary is installed but its service has not been restarted. Run: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
@@ -2303,9 +2310,16 @@ EOF
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
-                    rc-service urnetwork start 2>/dev/null || true
+                    if ! ensure_extender_cap "$install_path/bin/urnetwork"; then
+                        pr_err "Could not verify provider file capabilities; update stopped. Previous binary was restored but service is stopped."
+                        exit 1
+                    fi
                     pr_err "Restored previous binary after service restart failure"
+                    if ! rc-service urnetwork start; then
+                        pr_err "Failed to restart urnetwork after restoring the previous binary; run: sudo rc-service urnetwork start"
+                    else
+                        pr_info "The restored provider service started."
+                    fi
                 else
                     if [ -f "$install_path/bin/urnetwork.old" ] && [ -f "$install_path/bin/urnetwork" ]; then
                         pr_err "Failed to restore previous binary; backup remains at %s and replacement at %s" "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork"
@@ -3406,7 +3420,17 @@ confirm_restart ()
         return 0
     fi
     if ! ( : < /dev/tty ) 2>/dev/null; then
-        pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or use -y to approve. The provider was not restarted."
+        if [ "$operation" = "restart" ]; then
+            pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or pass -y before the subcommand (e.g. urnet-tools -y restart) or after restart (e.g. urnet-tools restart -y) to approve. The provider was not restarted."
+        elif [ "$operation" = "optimize" ]; then
+            pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or pass -y (e.g. urnet-tools -y optimize or urnet-tools optimize -y) to approve. The provider was not restarted."
+        elif [ "$operation" = "update" ]; then
+            pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or pass --force (e.g. urnet-tools update --force) to approve. The provider was not restarted."
+        elif [ -n "$operation" ]; then
+            pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or pass -y before the subcommand (e.g. urnet-tools -y %s) to approve. The provider was not restarted." "$operation"
+        else
+            pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or pass -y before the subcommand (e.g. urnet-tools -y ...) to approve. The provider was not restarted."
+        fi
         exit 1
     fi
 
@@ -4411,7 +4435,11 @@ do_optimize ()
             return $?
         fi
         if sudo -n "$0" "$@" "$operation"; then return 0; fi
-        pr_err "Non-interactive sudo failed. Run from a terminal: sudo %s %s %s" "$0" "$*" "$operation"
+        if [ "$FORCE" = "1" ]; then
+            pr_err "Non-interactive sudo failed. Run from a terminal: sudo '%s' -y %s" "$0" "$operation"
+        else
+            pr_err "Non-interactive sudo failed. Run from a terminal: sudo '%s' %s" "$0" "$operation"
+        fi
         return 1
     fi
 
@@ -4463,7 +4491,7 @@ do_optimize ()
     confirm () {
         if [ "$FORCE" = "1" ]; then return 0; fi
         if [ ! -t 0 ] || [ ! -t 1 ]; then
-            pr_warn "Skipping confirmation without a terminal; rerun interactively or use -y to approve."
+            pr_warn "Skipping confirmation without a terminal; rerun interactively or pass -y (e.g. urnet-tools -y optimize or urnet-tools optimize -y) to approve."
             return 1
         fi
         printf "  [?] " && printf '%s [y/N]: ' "$1"

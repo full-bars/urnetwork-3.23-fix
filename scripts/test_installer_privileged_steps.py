@@ -103,19 +103,82 @@ pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
         self.assertIn("Command aborted. Provider was NOT restarted and your warmup is safe.", out)
 
     def test_restart_confirmation_refuses_without_controlling_terminal(self):
-        harness = '''
+        cases = [
+            ("restart", "pass -y before the subcommand (e.g. urnet-tools -y restart) or after restart (e.g. urnet-tools restart -y) to approve"),
+            ("eco", "pass -y before the subcommand (e.g. urnet-tools -y eco) to approve"),
+            ("update", "pass --force (e.g. urnet-tools update --force) to approve"),
+        ]
+        for op, want in cases:
+            with self.subTest(operation=op):
+                harness = f'''
 FORCE=0
-pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+operation="{op}"
+pr_err() {{ fmt="$1"; shift; printf "$fmt\\n" "$@"; }}
 ''' + function("confirm_restart") + '\nconfirm_restart test\n'
-        result = subprocess.run(
-            ["sh", "-c", harness],
-            preexec_fn=os.setsid,
-            text=True,
-            capture_output=True,
-        )
-        self.assertNotEqual(result.returncode, 0)
-        self.assertIn("without a terminal; rerun interactively or use -y to approve", result.stdout)
-        self.assertNotIn("Are you absolutely sure", result.stdout)
+                result = subprocess.run(
+                    ["sh", "-c", harness],
+                    preexec_fn=os.setsid,
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("without a terminal; rerun interactively or " + want, result.stdout)
+                self.assertNotIn("Are you absolutely sure", result.stdout)
+
+    def test_optimizer_non_interactive_sudo_failure_formatting(self):
+        for force, want in [(0, "sudo '/test/path/urnet-tools' optimize"), (1, "sudo '/test/path/urnet-tools' -y optimize")]:
+            with self.subTest(force=force):
+                harness = f'''
+FORCE={force}
+operation="optimize"
+id() {{ if [ "$1" = "-u" ]; then printf '1000\\n'; fi; return 0; }}
+sudo() {{ return 1; }}
+pr_info() {{ :; }}
+pr_err() {{ fmt="$1"; shift; printf "$fmt\\n" "$@"; }}
+''' + function("do_optimize") + '\ndo_optimize\n'
+                result = subprocess.run(
+                    ["sh", "-c", harness, "/test/path/urnet-tools"],
+                    text=True,
+                    capture_output=True,
+                )
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn(f"Non-interactive sudo failed. Run from a terminal: {want}", result.stdout)
+                self.assertNotIn("  optimize", result.stdout)
+
+    def test_openrc_rollback_restart_failure_reports_exact_command(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin").mkdir(parents=True)
+            (root / "bin/urnetwork.old").write_text("old_binary")
+            (root / "bin/urnetwork").write_text("broken_new_binary")
+            harness = '''
+install_path="$1"; openrc_install_root="$1"; openrc_user=alice; openrc_initd_file="$1/init"
+openrc_units_stopped=1
+openrc_user_home() { printf '%s\\n' "$install_path"; }
+openrc_restore_update_entry() { :; }
+openrc_finalize_root_paths() { return 0; }
+id() { if [ "$1" = -u ]; then printf '0\\n'; fi; return 0; }
+chmod() { return 0; }
+rc-update() { return 0; }
+ensure_extender_cap() { return 0; }
+rc-service() {
+    # Fail both initial start and rollback start
+    printf 'rc-service start failed\\n' >&2
+    return 1
+}
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+''' + function("install_openrc_units") + '\ninstall_openrc_units\n'
+            result = subprocess.run(
+                ["sh", "-c", harness, "sh", tmp],
+                text=True,
+                capture_output=True,
+            )
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Restored previous binary after service restart failure", result.stdout)
+            self.assertIn("Failed to restart urnetwork after restoring the previous binary; run: sudo rc-service urnetwork start", result.stdout)
+            self.assertEqual((root / "bin/urnetwork").read_text(), "old_binary")
 
     def test_linger_failure_prints_error_and_recovery(self):
         harness = '''
