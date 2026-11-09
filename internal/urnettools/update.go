@@ -880,6 +880,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	}
 
 	pidChanged := false
+	imageFallbackReported := false
 	missReported := false
 	notReadyReported := false
 	var observedEntry bool
@@ -967,21 +968,22 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
 				} else {
+					if !imageFallbackReported {
+						fmt.Println("verify: the updater cannot read the provider's image (normal for a provider with the port-443 permission); asking the provider for its own version")
+						imageFallbackReported = true
+					}
 					sockVersion, ok := verifySocketVersionFn(rp, rp.PID)
-					observation = fmt.Sprintf("pid %d's running image was unreadable (%v); no verified socket answer from that pid", rp.PID, perr)
+					observation = fmt.Sprintf("pid %d's running image was unreadable; no verified socket answer from that pid", rp.PID)
 					if ok {
-						observation = fmt.Sprintf("pid %d's running image was unreadable (%v); its control socket reported version %q", rp.PID, perr, sockVersion)
+						observation = fmt.Sprintf("pid %d's running image was unreadable; its control socket reported version %q", rp.PID, sockVersion)
 					}
 					if ok && sockVersion == cfg.Tag && rp.PID != oldPID {
-						fmt.Printf("verified %s running %s (pid %d; the provider reported this version on its control socket, its running image is not readable: %v)\n", providerLabel(p), cfg.Tag, rp.PID, perr)
+						fmt.Printf("verified %s running %s (pid %d; the provider reported this version on its control socket)\n", providerLabel(p), cfg.Tag, rp.PID)
 						if hotSwapTriggered {
 							verifyRecordSuccessFn(p.StateDir)
 						}
 						verifyPruneBackupsFn(p.Binary, 2)
 						return nil
-					}
-					if i > 0 && i%5 == 0 {
-						fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
 					}
 				}
 			}

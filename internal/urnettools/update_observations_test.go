@@ -35,7 +35,7 @@ func TestUpdateVerification_HotSwapObservations(t *testing.T) {
 				if tc.imageReadable {
 					return "/image", nil
 				}
-				return "", fmt.Errorf("unreadable")
+				return "", fmt.Errorf("readlink /proc/200/exe: permission denied")
 			}
 			verifyProviderVersionFn = func(string) string { return "old" }
 			verifySocketVersionFn = func(p Provider, pid int) (string, bool) {
@@ -51,6 +51,9 @@ func TestUpdateVerification_HotSwapObservations(t *testing.T) {
 			}
 			if strings.Contains(out, "failed to take over") {
 				t.Fatalf("unproven output: %s", out)
+			}
+			if strings.Contains(out, "permission denied") || strings.Contains(err.Error(), "permission denied") {
+				t.Fatalf("raw readlink error leaked: stdout=%s error=%v", out, err)
 			}
 		})
 	}

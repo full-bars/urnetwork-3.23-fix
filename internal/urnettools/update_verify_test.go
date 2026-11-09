@@ -546,9 +546,8 @@ func TestUpdateVerification_NotReadyTakesPrecedenceOverListing(t *testing.T) {
 	}
 }
 
-// TestUpdateVerification_ImageReadFailureLogs pins the third diagnostic
-// shape: an entry satisfies the readiness predicate but its running image
-// cannot be read, which used to leave the iteration silent.
+// TestUpdateVerification_ImageReadFailureLogs reports the socket fallback
+// once when the running image cannot be read, without exposing the errno.
 func TestUpdateVerification_ImageReadFailureLogs(t *testing.T) {
 	stubVerifyLoop(t)
 
@@ -567,11 +566,11 @@ func TestUpdateVerification_ImageReadFailureLogs(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error when the running image is never readable")
 	}
-	if !strings.Contains(out, "running image unreadable") {
-		t.Errorf("expected the unreadable-image diagnostic, got:\n%s", out)
+	if got := strings.Count(out, "asking the provider for its own version"); got != 1 {
+		t.Errorf("expected one fallback notice, got %d:\n%s", got, out)
 	}
-	if got := strings.Count(out, "running image unreadable"); got != 5 {
-		t.Errorf("expected 5 bounded diagnostics (iterations 6/11/16/21/26), got %d:\n%s", got, out)
+	if strings.Contains(out, "permission denied") {
+		t.Errorf("raw readlink error reached stdout:\n%s", out)
 	}
 	// The entry is matched, so the unmatched-entry diagnostics must stay
 	// silent — if `matched` ever regressed to false here, both families
@@ -588,9 +587,7 @@ func TestUpdateVerification_ImageReadFailureLogs(t *testing.T) {
 }
 
 // TestUpdateVerification_TransientImageReadFailureThenSuccess pins recovery
-// from a transient running-image read failure: the failure persists through
-// the first heartbeat-gated iteration (printed once there), then the read
-// succeeds and the loop returns without further diagnostics.
+// after repeated image read failures and a single fallback notice.
 func TestUpdateVerification_TransientImageReadFailureThenSuccess(t *testing.T) {
 	stubVerifyLoop(t)
 
@@ -619,8 +616,8 @@ func TestUpdateVerification_TransientImageReadFailureThenSuccess(t *testing.T) {
 	if err != nil {
 		t.Fatalf("expected success after the transient read failure, got: %v", err)
 	}
-	if got := strings.Count(out, "running image unreadable"); got != 1 {
-		t.Errorf("expected the unreadable-image line once (iteration 6), got %d:\n%s", got, out)
+	if got := strings.Count(out, "asking the provider for its own version"); got != 1 {
+		t.Errorf("expected the fallback notice once, got %d:\n%s", got, out)
 	}
 	if got := strings.Count(out, "no matching provider yet"); got != 0 {
 		t.Errorf("expected no heartbeats for a matched entry, got %d:\n%s", got, out)
@@ -656,6 +653,12 @@ func TestUpdateVerification_UnreadableImageConfirmedBySocketVersion(t *testing.T
 	}
 	if !strings.Contains(out, "reported this version on its control socket") {
 		t.Errorf("success line must say how the version was confirmed:\n%s", out)
+	}
+	if strings.Contains(out, "permission denied") || strings.Contains(out, "readlink") {
+		t.Errorf("raw readlink error reached stdout:\n%s", out)
+	}
+	if got := strings.Count(out, "asking the provider for its own version"); got != 1 {
+		t.Errorf("expected one fallback notice, got %d:\n%s", got, out)
 	}
 	if !recorded || !pruned {
 		t.Errorf("success side effects missing: recorded=%v pruned=%v", recorded, pruned)
