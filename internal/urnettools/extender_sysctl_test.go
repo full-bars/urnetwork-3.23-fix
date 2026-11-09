@@ -13,7 +13,7 @@ import (
 func TestExtenderSysctlRecoveryUnknownAndApplyFailure(t *testing.T) {
 	cfg := &SystemPlatformConfigurer{PlatformName: "linux", Route: "sysctl", ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }, WriteFile: func(string, []byte, os.FileMode) error { return nil }, ExecCmd: func(string, ...string) ([]byte, error) { return []byte("denied"), os.ErrPermission }}
 	_, _, err := cfg.ApplyRequirement("/provider", "provider")
-	if err == nil || !strings.Contains(err.Error(), "sysctl -w net.ipv4.ip_unprivileged_port_start=1024") || !strings.Contains(err.Error(), "prior value unknown") {
+	if err == nil || !strings.Contains(err.Error(), "sysctl net.ipv4.ip_unprivileged_port_start") || !strings.Contains(err.Error(), "Prior live value unknown") || strings.Contains(err.Error(), "sysctl -w net.ipv4.ip_unprivileged_port_start=1024") {
 		t.Fatalf("missing safe recovery on apply failure: %v", err)
 	}
 }
@@ -370,6 +370,9 @@ func TestExtenderSetupSysctlIdempotence(t *testing.T) {
 			if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
 				return []byte("443\n"), nil
 			}
+			if path == extenderSysctlDropin {
+				return []byte(extenderSysctlContent), nil
+			}
 			return nil, os.ErrNotExist
 		},
 		LookupPath: func(string) (string, error) { return "/usr/bin/sudo", nil },
@@ -429,6 +432,9 @@ func TestExtenderSetupSysctlAlreadyLowerValue(t *testing.T) {
 		ReadFile: func(path string) ([]byte, error) {
 			if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
 				return []byte("80\n"), nil
+			}
+			if path == extenderSysctlDropin {
+				return []byte(extenderSysctlContent), nil
 			}
 			return nil, os.ErrNotExist
 		},

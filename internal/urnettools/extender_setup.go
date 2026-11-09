@@ -48,7 +48,7 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 		}
 		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
 			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
-			undo := (&SystemPlatformConfigurer{}).sysctlRecovery()
+			undo, _ := (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
 			if len(recovery) > 0 {
 				undo = recovery[0]
 			}
@@ -312,10 +312,13 @@ ruleset-specific; use the procedures for your existing policy.`)
 	var recovery string
 	if route == "sysctl" && len(needPlatformTargets) > 0 {
 		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
-			recovery = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			recovery, err = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			if err != nil {
+				return fmt.Errorf("planning sysctl recovery: %w", err)
+			}
 			sp.SysctlUndo = recovery
 		} else {
-			recovery = (&SystemPlatformConfigurer{}).sysctlRecovery()
+			recovery, _ = (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
 		}
 	}
 
