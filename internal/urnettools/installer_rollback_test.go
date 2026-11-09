@@ -38,6 +38,10 @@ func TestLinuxInstallerRollbackReporting(t *testing.T) {
 				if fn == "" {
 					t.Fatal("installer function missing")
 				}
+				prepare := ""
+				if init == "systemd" {
+					prepare = "install_systemd_units prepare\n"
+				}
 				harness := `
 pr_err() { printf "$@"; printf '\n'; }
 pr_info() { :; }
@@ -59,7 +63,7 @@ openrc_units_stopped=1
 openrc_user=testuser
 openrc_home="$TEST_DIR"
 openrc_initd_file="$TEST_DIR/initd"
-` + fn + "\ninstall_" + init + "_units\n"
+` + fn + "\n" + prepare + "install_" + init + "_units\n"
 				cmd := exec.Command("/bin/sh", "-c", harness)
 				cmd.Env = append(os.Environ(), "TEST_DIR="+dir, "MOVE_MODE="+mode, "PATH="+bin+string(os.PathListSeparator)+os.Getenv("PATH"))
 				out, err := cmd.CombinedOutput()
@@ -67,6 +71,12 @@ openrc_initd_file="$TEST_DIR/initd"
 					t.Fatalf("restart failure must exit nonzero: %s", out)
 				}
 				text := string(out)
+				if init == "systemd" {
+					unit, err := os.ReadFile(filepath.Join(dir, "service"))
+					if err != nil || !strings.Contains(string(unit), "Type=notify") {
+						t.Fatalf("systemd unit was not installed before rollback: %q, %v; output: %s", unit, err, text)
+					}
+				}
 				live, liveErr := os.ReadFile(filepath.Join(bin, "urnetwork"))
 				old, oldErr := os.ReadFile(filepath.Join(bin, "urnetwork.old"))
 				starts, err := os.ReadFile(filepath.Join(dir, "starts"))
