@@ -43,6 +43,13 @@ systemctl() {
     case "$FAILURE:$*" in
         service:'--user enable urnetwork.service'|timer:'--user enable --now urnetwork-update.timer'|reload:'--user daemon-reload') printf 'stub failure\n' >&2; return 1 ;;
         start:'--user start urnetwork.service') printf 'stub failure\n' >&2; return 1 ;;
+        start_once:'--user start urnetwork.service')
+            if [ ! -f "$ROOT/started_once" ]; then
+                touch "$ROOT/started_once"
+                printf 'stub failure\n' >&2
+                return 1
+            fi
+            ;;
     esac
     return 0
 }
@@ -93,6 +100,28 @@ systemctl() {
         self.assertIn("Restored previous binary", result.stdout)
         self.assertIn("Starting the restored binary failed", result.stdout)
         self.assertNotIn("restored provider service started", result.stdout)
+        self.assertEqual(calls.count("--user start urnetwork.service"), 2)
+
+    def test_rollback_restores_prior_simple_unit_and_reloads(self):
+        result, binary, calls, unit = self.run_install("start_once", backup=True, existing_unit=True, stopped=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(binary, "old")
+        self.assertIn("Type=simple", unit)
+        self.assertNotIn("Type=notify", unit)
+        self.assertIn("Restored previous binary and systemd unit after service restart failure", result.stdout)
+        self.assertIn("The restored provider service started.", result.stdout)
+        self.assertEqual(calls.count("--user daemon-reload"), 2)
+        self.assertEqual(calls.count("--user start urnetwork.service"), 2)
+
+    def test_failed_rollback_with_existing_simple_unit_keeps_restored_unit(self):
+        result, binary, calls, unit = self.run_install("start", backup=True, existing_unit=True, stopped=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertEqual(binary, "old")
+        self.assertIn("Type=simple", unit)
+        self.assertNotIn("Type=notify", unit)
+        self.assertIn("Restored previous binary and systemd unit after service restart failure", result.stdout)
+        self.assertIn("Starting the restored binary failed", result.stdout)
+        self.assertEqual(calls.count("--user daemon-reload"), 2)
         self.assertEqual(calls.count("--user start urnetwork.service"), 2)
 
 

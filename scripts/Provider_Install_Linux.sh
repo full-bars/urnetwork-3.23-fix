@@ -1530,6 +1530,10 @@ install_systemd_units ()
 
     pr_info "Installing urnetwork.service in %s" "$systemd_service"
     mkdir -p "$systemd_userdir"
+    if [ -f "$systemd_service" ]; then
+        cp -p "$systemd_service" "$systemd_service.old" 2>/dev/null || \
+            cp "$systemd_service" "$systemd_service.old" 2>/dev/null || true
+    fi
     
     cat > "$systemd_service" <<EOF
 [Unit]
@@ -1601,9 +1605,19 @@ EOF
         if ! systemctl --user start urnetwork.service; then
             pr_err "Failed to restart urnetwork.service after update. The new binary and unit files are installed; the service start command failed. Retry with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
+                restored_unit=0
+                if [ -f "$systemd_service.old" ]; then
+                    if mv -f "$systemd_service.old" "$systemd_service" 2>/dev/null; then
+                        restored_unit=1
+                    fi
+                fi
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
                     ensure_extender_cap "$install_path/bin/urnetwork" || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
-                    pr_err "Restored previous binary after service restart failure"
+                    if [ "$restored_unit" -eq 1 ]; then
+                        pr_err "Restored previous binary and systemd unit after service restart failure"
+                    else
+                        pr_err "Restored previous binary after service restart failure"
+                    fi
                     if ! systemctl --user daemon-reload; then
                         pr_err "Reload after restoring the binary failed; the previous binary is installed but its service has not been restarted. Run: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
                     elif ! systemctl --user start urnetwork.service; then
@@ -1622,6 +1636,9 @@ EOF
             exit 1
         fi
         ${SUDO:-} rm -f "$install_path/bin/urnetwork.old" 2>/dev/null || true
+        rm -f "$systemd_service.old" 2>/dev/null || true
+    else
+        rm -f "$systemd_service.old" 2>/dev/null || true
     fi
 }
 
