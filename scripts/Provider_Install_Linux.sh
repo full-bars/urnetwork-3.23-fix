@@ -1946,16 +1946,15 @@ openrc_finalize_root_paths ()
     # host files — e.g. chmod -R a+rX on a link pointing at /etc/shadow.
     # The install tree is built by this installer and must contain no
     # symlinks by construction, so deleting any that appear is fail-closed.
-    if ${SUDO:-} find "$install_path" -type l -delete 2>/dev/null; then
-        :
-    else
-        pr_warn "could not strip symlinks from %s" "$install_path"
+    if ! ${SUDO:-} find "$install_path" -type l -delete; then
+        pr_err "Could not strip symlinks; inspect the tree and retry: sudo find '%s' -type l -delete" "$install_path"
+        return 1
     fi
     # These two are the security property of the whole layout; a failure must
     # stop the install, not warn-and-continue into a service whose tree the
     # service user can modify.
-    if ! ${SUDO:-} chown -R "root:root" "$install_path" 2>/dev/null; then
-        pr_err "could not set root ownership on %s; refusing to install the service" "$install_path"
+    if ! ${SUDO:-} chown -R "root:root" "$install_path"; then
+        pr_err "Could not set root ownership; retry: sudo chown -R root:root '%s'" "$install_path"
         return 1
     fi
     # go-w: mkdir -p inherits the caller's umask, which on a 002 system
@@ -1963,8 +1962,14 @@ openrc_finalize_root_paths ()
     # service user can rename entries inside a o+w directory. a+rX keeps
     # everything readable/executable so the service user can still run the
     # provider. The root dir is pinned 0755, not mode-dependent.
-    ${SUDO:-} chmod -R go-w,a+rX "$install_path" 2>/dev/null || pr_warn "could not relax permissions on %s" "$install_path"
-    ${SUDO:-} chmod 0755 "$install_path" 2>/dev/null || pr_warn "could not set mode on %s" "$install_path"
+    if ! ${SUDO:-} chmod -R go-w,a+rX "$install_path"; then
+        pr_err "Could not secure install tree permissions; retry: sudo chmod -R go-w,a+rX '%s'" "$install_path"
+        return 1
+    fi
+    if ! ${SUDO:-} chmod 0755 "$install_path"; then
+        pr_err "Could not set install directory mode; retry: sudo chmod 0755 '%s'" "$install_path"
+        return 1
+    fi
 
     # The STATE dir is the one thing that must stay somewhere the service
     # user can write — the provider writes its JWT and live state there.
@@ -2192,15 +2197,19 @@ EOF
     if [ "$(id -u)" -ne 0 ]; then
         if command -v sudo > /dev/null 2>&1 && sudo -n true > /dev/null 2>&1; then
             pr_info "Completing the service setup with sudo."
-            if sudo cp "$openrc_staged" "$openrc_initd_file" \
-               && sudo chmod 755 "$openrc_initd_file" \
-               && sudo rc-update add urnetwork default \
-               && SUDO=sudo openrc_finalize_root_paths \
-               && sudo rc-service urnetwork start; then
+            if ! SUDO='sudo -n' openrc_finalize_root_paths; then
+                pr_err "OpenRC path preparation failed; the new provider binary is installed, service setup is incomplete and the service may be stopped. Fix the error above and rerun the installer."
+                return 1
+            fi
+            if sudo -n cp "$openrc_staged" "$openrc_initd_file" \
+               && sudo -n chmod 755 "$openrc_initd_file" \
+               && sudo -n rc-update add urnetwork default \
+               && sudo -n rc-service urnetwork start; then
                 pr_info "Service urnetwork installed, enabled and started."
                 return 0
             fi
-            pr_err "The sudo service setup failed; finishing by hand."
+            pr_err "OpenRC service setup failed after path preparation; the new provider binary is installed, the service may be stopped and the init script or runlevel may have changed. Check the error above and rerun the installer."
+            return 1
         fi
         pr_warn "Installing a system service needs root, and sudo could not run non-interactively."
         pr_info "To finish, run these commands:"
@@ -2211,7 +2220,10 @@ EOF
         return 0
     fi
 
-    openrc_finalize_root_paths
+    if ! openrc_finalize_root_paths; then
+        pr_err "OpenRC path preparation failed; the new provider binary is installed, service setup is incomplete and the service may be stopped. Fix the error above and rerun the installer."
+        return 1
+    fi
 
     if ! cp "$openrc_staged" "$openrc_initd_file"; then
         pr_err "Failed to install %s" "$openrc_initd_file"
@@ -2985,7 +2997,7 @@ do_install ()
     fi
 
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
-        install_openrc_units
+        install_openrc_units || exit 1
     fi
 
     echo "$version_to_install" > "$install_path/.version"

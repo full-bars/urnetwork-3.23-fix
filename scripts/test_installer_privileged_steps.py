@@ -13,6 +13,8 @@ def function(name):
     script = INSTALLER.read_text()
     marker = name + ("() {\n" if name == "firewall_hint" else " ()\n{\n")
     start = script.index(marker)
+    if name == "install_openrc_units":
+        return script[start:script.index("\n# Run a command string as another user", start)]
     if name == "openrc_finalize_root_paths":
         return script[start:script.index("\n# install_openrc_units:", start)]
     return script[start:script.index("\n}\n", start) + 3]
@@ -118,6 +120,48 @@ sysctl() { printf 'denied %s\\n' "$2" >&2; return 1; }
         for setting in ("fs.inotify.max_user_watches=524288", "fs.inotify.max_user_instances=512", "fs.file-max=2097152"):
             self.assertIn("sudo sysctl -w " + setting, result.stdout)
             self.assertIn("denied " + setting, result.stderr)
+
+    def test_openrc_security_failure_prevents_service_install(self):
+        for root_mode in (True, False):
+            with self.subTest(root=root_mode), tempfile.TemporaryDirectory() as tmp:
+                harness = '''
+install_path="$1"; openrc_install_root="$1"; openrc_user=alice; openrc_initd_file="$1/init"
+openrc_user_home() { printf '%s\\n' "$install_path"; }
+openrc_restore_update_entry() { :; }
+openrc_finalize_root_paths() { printf 'security denied\\n' >&2; return 1; }
+id() { if [ "$1" = -u ]; then printf '%s\\n' "$ROOT_ID"; fi; return 0; }
+chmod() { :; }
+sudo() { if [ "$1" = -n ]; then return 0; fi; printf 'unexpected sudo %s\\n' "$*" >&2; return 1; }
+cp() { printf 'unexpected install\\n' >&2; return 1; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+''' + function("install_openrc_units") + '\ninstall_openrc_units\n'
+                result = subprocess.run(["sh", "-c", harness, "sh", tmp],
+                                        env={"ROOT_ID": "0" if root_mode else "1000"},
+                                        text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("security denied", result.stderr)
+                self.assertNotIn("unexpected", result.stderr)
+                self.assertIn("service may be stopped", result.stdout)
+                self.assertNotIn("rc-service urnetwork start", result.stdout)
+
+    def test_openrc_security_operations_fail_closed(self):
+        for failed_step in ("find", "chown", "chmod"):
+            with self.subTest(step=failed_step):
+                harness = '''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+find() { [ "$FAIL" != find ]; }
+chown() { [ "$FAIL" != chown ]; }
+chmod() { [ "$FAIL" != chmod ]; }
+mkdir() { :; }; touch() { :; }; tee() { :; }
+openrc_stage_root_owned_tool() { :; }
+pr_info() { :; }; pr_warn() { :; }
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+                result = subprocess.run(["sh", "-c", harness], env={"FAIL": failed_step}, text=True, capture_output=True)
+                self.assertNotEqual(result.returncode, 0)
+                self.assertIn("sudo " + failed_step, result.stdout)
 
     def test_openrc_staging_chown_failure_never_reports_success(self):
         with tempfile.TemporaryDirectory() as tmp:
