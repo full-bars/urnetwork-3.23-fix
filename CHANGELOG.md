@@ -1,5 +1,11 @@
 # Changelog
 
+## [Unreleased]
+
+### Added
+
+- **Extender setup offers a sysctl route for low-port access** (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`). On Linux hosts, `urnet-tools extender setup` offers `net.ipv4.ip_unprivileged_port_start=443` written to `/etc/sysctl.d/99-urnetwork-extender.conf` as the recommended route for single-purpose hosts, alongside the existing binary file capability route and skip. The sysctl route leaves provider binaries dumpable and eliminates permission issues during update verification.
+
 ## [v3.23.0-fix.35.6]
 
 _Released 2026-11-08. Based on v3.23.0-fix.35.5. Notes: `releases/v3.23.0-fix.35.6.md`._
