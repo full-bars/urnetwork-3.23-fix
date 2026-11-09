@@ -330,6 +330,126 @@ openrc_stage_root_owned_tool() { return 1; }
         self.assertIn("sudo chown 'alice' /var/log/urnetwork.log /var/log/urnetwork.err", result.stdout)
         self.assertNotIn("Staged the auto-update tool", result.stdout)
 
+    def test_openrc_install_dir_chmod_0755_failure(self):
+        harness = '''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+find() { return 0; }
+chown() { return 0; }
+chmod() {
+    if [ "$1" = "0755" ]; then
+        printf 'chmod 0755 denied\\n' >&2
+        return 1
+    fi
+    return 0
+}
+mkdir() { :; }; touch() { :; }; tee() { :; }
+openrc_stage_root_owned_tool() { :; }
+pr_info() { :; }; pr_warn() { :; }
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not set install directory mode; retry: sudo chmod 0755 '/stub'", result.stdout)
+        self.assertIn("chmod 0755 denied", result.stderr)
+
+    def test_openrc_install_dir_chmod_0755_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            chmod_log = Path(tmp) / "chmod.log"
+            harness = f'''
+install_path=/stub_install; openrc_home=/stub_home; openrc_user=alice
+pr_err() {{ fmt="$1"; shift; printf "$fmt\\n" "$@"; }}
+find() {{ return 0; }}
+chown() {{ return 0; }}
+chmod() {{
+    printf '%s\\n' "$*" >> "{chmod_log}"
+    return 0
+}}
+mkdir() {{ :; }}; touch() {{ :; }}; tee() {{ :; }}
+openrc_stage_root_owned_tool() {{ :; }}
+pr_info() {{ :; }}; pr_warn() {{ :; }}
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+            result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0)
+            calls = chmod_log.read_text().splitlines()
+            self.assertIn("0755 /stub_install", calls)
+
+    def test_openrc_log_touch_failure_fails_closed(self):
+        harness = '''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+find() { return 0; }
+chown() { return 0; }
+chmod() { return 0; }
+mkdir() { return 0; }
+touch() {
+    printf 'touch denied\\n' >&2
+    return 1
+}
+tee() { :; }
+openrc_stage_root_owned_tool() { :; }
+pr_info() { :; }; pr_warn() { :; }
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not create /var/log/urnetwork.log; run: sudo touch '/var/log/urnetwork.log'", result.stdout)
+        self.assertIn("touch denied", result.stderr)
+
+    def test_openrc_log_touch_and_chmod_executed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            touch_log = Path(tmp) / "touch.log"
+            chmod_log = Path(tmp) / "chmod.log"
+            harness = f'''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_err() {{ fmt="$1"; shift; printf "$fmt\\n" "$@"; }}
+find() {{ return 0; }}
+chown() {{ return 0; }}
+chmod() {{
+    printf '%s\\n' "$*" >> "{chmod_log}"
+    return 0
+}}
+mkdir() {{ return 0; }}
+touch() {{
+    printf '%s\\n' "$*" >> "{touch_log}"
+    return 0
+}}
+tee() {{ :; }}
+openrc_stage_root_owned_tool() {{ :; }}
+pr_info() {{ :; }}; pr_warn() {{ :; }}
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+            result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+            self.assertEqual(result.returncode, 0)
+            touches = touch_log.read_text().splitlines()
+            self.assertIn("/var/log/urnetwork.log", touches)
+            self.assertIn("/var/log/urnetwork.err", touches)
+            chmods = chmod_log.read_text().splitlines()
+            self.assertIn("0644 /var/log/urnetwork.log /var/log/urnetwork.err", chmods)
+
+    def test_openrc_log_chmod_failure_fails_closed(self):
+        harness = '''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+find() { return 0; }
+chown() { return 0; }
+mkdir() { return 0; }
+touch() { return 0; }
+chmod() {
+    case "$*" in
+        *0644*urnetwork.log*)
+            printf 'chmod log denied\\n' >&2
+            return 1
+            ;;
+    esac
+    return 0
+}
+tee() { :; }
+openrc_stage_root_owned_tool() { :; }
+pr_info() { :; }; pr_warn() { :; }
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err", result.stdout)
+        self.assertIn("chmod log denied", result.stderr)
+
     def test_linger_success_is_silent(self):
         harness = '''
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
@@ -370,7 +490,14 @@ printf 'alice\n'
         harness = '''
 TEST_HOME="$1"
 actual_user=alice; actual_home="$1"; SUDO_USER=alice
-has_openrc=0; has_systemd=1; is_container=0
+has_openrc=${HAS_OPENRC:-0}; has_systemd=${HAS_SYSTEMD:-1}; is_container=0
+[ () {
+    if /usr/bin/[ "$1" = "-f" ] && /usr/bin/[ "$2" = "/etc/init.d/urnetwork" ]; then
+        /usr/bin/[ "${HAS_OPENRC:-0}" = "1" ]
+        return $?
+    fi
+    /usr/bin/[ "$@"
+}
 id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
 pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
 pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
@@ -383,7 +510,8 @@ swapon() { if [ "${ZRAM_OK:-1}" = "1" ]; then printf "/dev/zram0 partition\\n"; 
 setup_zram_manual() { return 1; }
 installer_apply_sysctl_config() { if [ "${SYSCTL_OK:-1}" = "1" ]; then return 0; else return 1; fi; }
 systemctl() { return 0; }
-installer_enable_linger() { return 0; }
+rc-service() { if [ "${RC_SERVICE_OK:-1}" = "1" ]; then return 0; else return 1; fi; }
+installer_enable_linger() { if [ "${LINGER_OK:-1}" = "1" ]; then return 0; else return 1; fi; }
 dd() { printf "100 MB/s\\n"; }
 sudo() { return 0; }
 chown() { return 0; }
@@ -424,6 +552,31 @@ mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
             self.assertEqual(result.returncode, 0)
             self.assertIn("Optimization applied successfully.", result.stdout)
             self.assertNotIn("Optimization completed with partial success", result.stdout)
+
+    def test_optimizer_reports_failure_on_linger_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"SYSCTL_OK": "1", "ZRAM_OK": "1", "LINGER_OK": "0"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Optimization completed with partial success", result.stdout)
+            self.assertIn("Systemd lingering (alice)", result.stdout)
+            self.assertIn("sudo loginctl enable-linger 'alice'", result.stdout)
+            self.assertNotIn("Optimization applied successfully.", result.stdout)
+
+    def test_optimizer_reports_failure_on_openrc_restart_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"HAS_OPENRC": "1", "RC_SERVICE_OK": "0"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Optimization completed with partial success", result.stdout)
+            self.assertIn("Service restart (OpenRC)", result.stdout)
+            self.assertIn("sudo rc-service urnetwork restart", result.stdout)
+            self.assertNotIn("Optimization applied successfully.", result.stdout)
+
+    def test_optimizer_reports_success_on_openrc_when_restart_succeeds(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"HAS_OPENRC": "1", "RC_SERVICE_OK": "1"})
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("Optimization applied successfully.", result.stdout)
+            self.assertIn("Service restarted with the new limits.", result.stdout)
 
     def test_optimizer_harness_safety_and_hygiene(self):
         with tempfile.TemporaryDirectory() as tmp:
