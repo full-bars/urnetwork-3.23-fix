@@ -169,6 +169,10 @@ The installation includes the `urnet-tools` suite for management. Since v3.23.0-
 | `urnet-tools update` | Upgrade to the latest version (prompts before restarting the provider). |
 | `urnet-tools update -f` | Non-interactive upgrade: stop, update, and restart the provider with no prompts. Use in scripts/automation. |
 
+From 35.7, when a newer tool is available, `urnet-tools update` installs and reruns it before updating the provider. If that fails, the current tool continues. The update from 35.6 to 35.7 still uses the 35.6 tool's order. On 35.5 with port-443 file permission, run `urnet-tools self-update` first to avoid the old tool's possible false failure.
+
+For the Linux installer, restart confirmation reads the terminal even when the script is piped. Without a terminal, pass `-y` to approve restart. OpenRC tree preparation must succeed before service installation; a failed systemd restart attempts to restore both the previous unit and binary.
+
 > [!NOTE]
 > **Release selection (shipped in v3.23.0-fix.34.0).** `urnet-tools update` walks the release listing from newest to oldest. It never selects a draft, a pre-release (whether GitHub flags it or its tag is named like one, for example `-rc1`, `-beta2` or `-nightly`), or a release that does not publish the provider tarball with a sha256 digest. An explicit `urnet-tools update --tag=<tag>` bypasses the stable filter, so a named pre-release is selected if it exists.
 

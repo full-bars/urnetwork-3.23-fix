@@ -1,10 +1,25 @@
 # Changelog
 
-## [Unreleased]
+## [v3.23.0-fix.35.7]
+
+_Released 2026-11-08. Based on v3.23.0-fix.35.6. Notes: `releases/v3.23.0-fix.35.7.md`._
 
 ### Added
 
-- **Extender setup offers a sysctl route for low-port access** (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`). On Linux hosts, `urnet-tools extender setup` offers `net.ipv4.ip_unprivileged_port_start=443` written to `/etc/sysctl.d/99-urnetwork-extender.conf` as the recommended route for single-purpose hosts, alongside the existing binary file capability route and skip. The sysctl route leaves provider binaries dumpable and eliminates permission issues during update verification.
+- **Extender setup offers a sysctl route for TCP 443** (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`). Linux setup offers `net.ipv4.ip_unprivileged_port_start=443` in `/etc/sysctl.d/99-urnetwork-extender.conf` alongside the file capability route. Any local user can bind ports 443 and above when this setting is active. Status reports the active route.
+
+### Fixed
+
+- **Updates can run the newer tool first** (`internal/urnettools/update.go`, `internal/urnettools/update_tool_first.go`). The tool installs and reruns a newer tool before updating providers when available. Failed installation or rerun falls back to the running tool. A marker prevents loops and preserves prior confirmation. Updates from 35.6 use the old order; subsequent updates can use the new order.
+- **Unreadable image verification is clearer** (`internal/urnettools/update.go`). The updater explains the image read once and asks the provider for its version, without printing the raw permission error. Updating directly from 35.5 with the port capability can still report a false failure; run `urnet-tools self-update` first to avoid it.
+- **The updater respects the sysctl route** (`internal/urnettools/update_extender.go`). When the live setting permits unprivileged TCP 443, updates and rollbacks skip capability checks and setcap warnings. Rollback also demotes `Type=notify-reload` units when needed.
+- **Installer approval, rollback and reporting are safer** (`scripts/Provider_Install_Linux.sh`). Restart confirmation can read the terminal through a pipe, and `-y` approval survives sudo and dispatch. OpenRC tree preparation fails closed before service install. Failed systemd restarts attempt to restore the previous unit with the binary. The optimizer tracks completed, skipped and failed work, and more failures report recovery commands.
+
+### Known limits
+
+- Some installer cleanup and ZRAM package and service errors remain suppressed. The legacy shell optimizer checks whether ZRAM is active and tries a manual fallback, but its success summary does not prove every step succeeded.
+- Alpine BusyBox `find -delete` and the non-root OpenRC sudo path have not been verified on a real host. The `.version` write after tree preparation is unchecked.
+- A full two-process HotSwap on a real host has not verified the RAM log fix.
 
 ## [v3.23.0-fix.35.6]
 
