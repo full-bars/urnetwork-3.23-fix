@@ -11,6 +11,9 @@ INSTALLER = Path(__file__).resolve().parent / "Provider_Install_Linux.sh"
 
 def function(name):
     script = INSTALLER.read_text()
+    if name == "ensure_extender_cap":
+        start = script.index("ensure_extender_cap ()\n(\n")
+        return script[start:script.index("\n)\n", start) + 3]
     marker = name + ("() {\n" if name == "firewall_hint" else " ()\n{\n")
     start = script.index(marker)
     if name == "do_optimize":
@@ -188,7 +191,7 @@ cp() { printf 'unexpected copy\\n' >&2; return 1; }
         harness = '''
 install_path=/stub; openrc_home=/stub; openrc_user=alice
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
-pr_err() { printf "$@\\n"; }
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 pr_info() { printf "$@\\n"; }
 find() { :; }; mkdir() { :; }; chmod() { :; }; touch() { :; }; tee() { :; }
 chown() { case "$*" in *urnetwork.log*) printf 'log denied\\n' >&2; return 1 ;; esac; }
@@ -262,6 +265,31 @@ mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
             self.assertEqual(result.returncode, 0)
             self.assertIn("Optimization applied successfully.", result.stdout)
             self.assertNotIn("Optimization completed with partial success", result.stdout)
+
+    def test_ensure_extender_cap_failure_exposes_error(self):
+        harness = '''
+uname() { printf 'Linux\n'; }
+cap_bindable() { return 0; }
+cap_present() { return 1; }
+setcap() { printf 'setcap: Operation not permitted\n' >&2; return 1; }
+''' + function("ensure_extender_cap") + '\nensure_extender_cap /opt/urnetwork/bin/urnetwork\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertIn("WARNING: setcap failed: setcap: Operation not permitted", result.stderr)
+        self.assertIn("WARNING: extender capability missing or unverified", result.stderr)
+
+    def test_openrc_state_dir_mkdir_failure_fails_closed(self):
+        harness = '''
+install_path=/stub; openrc_home=/stub; openrc_user=alice
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+find() { :; }; chown() { :; }; chmod() { :; }; touch() { :; }; tee() { :; }
+mkdir() { case "$*" in */stub/.urnetwork*) printf 'mkdir denied\n' >&2; return 1 ;; esac; }
+''' + function("openrc_finalize_root_paths") + '\nopenrc_finalize_root_paths\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("mkdir denied", result.stderr)
+        self.assertIn("Could not create state directory", result.stdout)
 
 
 if __name__ == "__main__":

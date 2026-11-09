@@ -38,7 +38,14 @@ ensure_extender_cap ()
                 printf "WARNING: blocked file has other capabilities or unrecognized flags; refusing to remove them\n" >&2
                 return 1
             fi
-            if ! command -v setcap >/dev/null 2>&1 || ! ${SUDO:-} setcap -r "$cap_file" 2>/dev/null || cap_present; then
+            if ! command -v setcap >/dev/null 2>&1; then
+                printf "WARNING: setcap tool not found; could not remove blocked file capability; provider may not start\n" >&2
+                return 1
+            fi
+            if ! setcap_out=$(${SUDO:-} setcap -r "$cap_file" 2>&1) || cap_present; then
+                if [ -n "$setcap_out" ]; then
+                    printf "WARNING: setcap -r failed: %s\n" "$setcap_out" >&2
+                fi
                 printf "WARNING: could not remove blocked file capability; provider may not start\n" >&2
                 return 1
             fi
@@ -49,8 +56,13 @@ ensure_extender_cap ()
     if cap_present; then
         return 0
     fi
-    if command -v setcap >/dev/null 2>&1 && ${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>/dev/null && cap_present; then
-        return 0
+    if command -v setcap >/dev/null 2>&1; then
+        if setcap_err=$(${SUDO:-} setcap cap_net_bind_service=+ep "$cap_file" 2>&1) && cap_present; then
+            return 0
+        fi
+        if [ -n "$setcap_err" ] && [ "${2:-}" != "quiet" ]; then
+            printf "WARNING: setcap failed: %s\n" "$setcap_err" >&2
+        fi
     fi
     # The install path passes "quiet": it explains the missing capability once, in
     # the extender notice, instead of printing the same warning twice.
@@ -2006,21 +2018,34 @@ openrc_finalize_root_paths ()
         openrc_state_target="$(readlink -f "$openrc_home/.urnetwork" 2>/dev/null || true)"
         case "$openrc_state_target" in
             "$openrc_home"/*)
-                ${SUDO:-} mkdir -p "$openrc_state_target" 2>/dev/null || true
-                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_state_target"
+                if ! ${SUDO:-} mkdir -p "$openrc_state_target"; then
+                    pr_err "Could not create state directory; run: sudo mkdir -p '%s'" "$openrc_state_target"
+                    return 1
+                fi
+                if ! ${SUDO:-} chown "$openrc_user" "$openrc_state_target"; then
+                    pr_err "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_state_target"
+                    return 1
+                fi
                 ;;
             *)
                 if [ -z "$openrc_state_target" ]; then
-                    pr_warn "%s/.urnetwork is a DANGEROUS symlink (unresolvable); refusing to change ownership through it" "$openrc_home"
+                    pr_err "%s/.urnetwork is a DANGEROUS symlink (unresolvable); refusing to change ownership through it" "$openrc_home"
                 else
-                    pr_warn "%s/.urnetwork points OUTSIDE the home (%s) — refusing to change ownership through it" "$openrc_home" "$openrc_state_target"
+                    pr_err "%s/.urnetwork points OUTSIDE the home (%s) — refusing to change ownership through it" "$openrc_home" "$openrc_state_target"
                 fi
-                pr_warn "remove the symlink and re-run the installer, or chown the target yourself"
+                pr_err "remove the symlink and re-run the installer, or chown the target yourself"
+                return 1
                 ;;
         esac
     else
-        ${SUDO:-} mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
-        ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_home/.urnetwork"
+        if ! ${SUDO:-} mkdir -p "$openrc_home/.urnetwork"; then
+            pr_err "Could not create state directory; run: sudo mkdir -p '%s/.urnetwork'" "$openrc_home"
+            return 1
+        fi
+        if ! ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork"; then
+            pr_err "Could not set state ownership; run: sudo chown '%s' '%s/.urnetwork'" "$openrc_user" "$openrc_home"
+            return 1
+        fi
     fi
 
     # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
@@ -2036,14 +2061,26 @@ openrc_finalize_root_paths ()
     # service user, so they cannot create, rename or replace a name in it - a
     # symlink planted there is impossible. All they can do is write the log file
     # they were given, which is what a log is for.
-    ${SUDO:-} mkdir -p /var/log 2>/dev/null || true
+    if ! ${SUDO:-} mkdir -p /var/log; then
+        pr_err "Could not create /var/log directory; run: sudo mkdir -p /var/log"
+        return 1
+    fi
     for openrc_log in /var/log/urnetwork.log /var/log/urnetwork.err; do
         if [ ! -e "$openrc_log" ]; then
-            ${SUDO:-} touch "$openrc_log" 2>/dev/null || pr_warn "could not create %s" "$openrc_log"
+            if ! ${SUDO:-} touch "$openrc_log"; then
+                pr_err "Could not create %s; run: sudo touch '%s'" "$openrc_log" "$openrc_log"
+                return 1
+            fi
         fi
     done
-    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log ownership; run: sudo chown '%s' /var/log/urnetwork.log /var/log/urnetwork.err" "$openrc_user"
-    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err"
+    if ! ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err; then
+        pr_err "Could not set log ownership; run: sudo chown '%s' /var/log/urnetwork.log /var/log/urnetwork.err" "$openrc_user"
+        return 1
+    fi
+    if ! ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err; then
+        pr_err "Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err"
+        return 1
+    fi
 
     # Stage the root-owned tool the weekly cron will execute (see the function
     # comment: root must never exec anything reachable through a user-writable
@@ -2059,7 +2096,7 @@ openrc_finalize_root_paths ()
     # package, but the rule is harmless to install even before that package
     # exists, so write it unconditionally.
     if [ -d /etc/logrotate.d ]; then
-        ${SUDO:-} tee /etc/logrotate.d/urnetwork > /dev/null <<'ROTATE'
+        if ${SUDO:-} tee /etc/logrotate.d/urnetwork > /dev/null <<'ROTATE'
 /var/log/urnetwork.log /var/log/urnetwork.err {
     weekly
     rotate 4
@@ -2071,7 +2108,11 @@ openrc_finalize_root_paths ()
     delaycompress
 }
 ROTATE
-        ${SUDO:-} chmod 0644 /etc/logrotate.d/urnetwork 2>/dev/null || true
+        then
+            ${SUDO:-} chmod 0644 /etc/logrotate.d/urnetwork || pr_warn "Could not set mode on /etc/logrotate.d/urnetwork; run: sudo chmod 0644 /etc/logrotate.d/urnetwork"
+        else
+            pr_warn "Could not write /etc/logrotate.d/urnetwork"
+        fi
     fi
 }
 
@@ -2907,12 +2948,18 @@ do_install ()
             fi
             exit 1
         fi
-        ensure_extender_cap "$install_path/bin/urnetwork" quiet || { pr_err "Could not verify provider file capabilities; update stopped"; exit 1; }
+        ensure_extender_cap "$install_path/bin/urnetwork" quiet || {
+            pr_err "Could not verify provider file capabilities. The new provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo setcap cap_net_bind_service=+ep '%s'" "$install_path/bin/urnetwork"
+            exit 1
+        }
     fi
     report_extender_port "$install_path/bin/urnetwork" || true
     offer_extender_capability "$install_path/bin/urnetwork" || true
 
-    cd "$script_rundir" || exit 1
+    cd "$script_rundir" || {
+        pr_err "Could not return to initial working directory. The new provider binary is installed; service setup has not finished and the service may be stopped."
+        exit 1
+    }
 
     # --- urnet-tools install ---
     # The tool is now a Go binary shipped as a standalone release asset
@@ -2986,7 +3033,10 @@ do_install ()
             fi
         fi
 
-        cd "$workdir" || exit 1
+        cd "$workdir" || {
+            pr_err "Could not enter temporary work directory. The new provider binary is installed; service setup has not finished and the service may be stopped."
+            exit 1
+        }
 
         if [ -f "urnet-tools" ]; then
             script_override="$(cat "urnet-tools" 2>/dev/null)"
@@ -2996,13 +3046,34 @@ do_install ()
         fi
 
         if [ -z "$script" ]; then
-            pr_err "Invalid script contents"
+            pr_err "Could not read urnet-tools script. The new provider binary is installed; service setup has not finished and the service may be stopped."
             exit 1
         fi
 
-        rm -f "$install_path/bin/urnet-tools"
-        printf "%s\n" "$script" > "$install_path/bin/urnet-tools"
-        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
+        staged_tool="$install_path/bin/.urnet-tools.new.$$"
+        tool_target="$install_path/bin/urnet-tools"
+        if ! printf "%s\n" "$script" > "$staged_tool"; then
+            pr_err "Could not write urnet-tools script. The new provider binary is installed; service setup has not finished and the service may be stopped."
+            rm -f "$staged_tool" 2>/dev/null || true
+            exit 1
+        fi
+        if ! chmod 755 "$staged_tool"; then
+            pr_err "Could not make urnet-tools executable. The new provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo chmod 755 '%s'" "$tool_target"
+            rm -f "$staged_tool" 2>/dev/null || true
+            exit 1
+        fi
+        if [ -e "$tool_target" ]; then
+            if ! mv -f "$tool_target" "$tool_target.old"; then
+                pr_err "Could not back up urnet-tools. The new provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo mv -f '%s' '%s'" "$tool_target" "$tool_target.old"
+                rm -f "$staged_tool" 2>/dev/null || true
+                exit 1
+            fi
+        fi
+        if ! mv -f "$staged_tool" "$tool_target"; then
+            pr_err "Could not install urnet-tools. The new provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo mv -f '%s' '%s'" "$staged_tool" "$tool_target"
+            exit 1
+        fi
+        rm -f "$tool_target.old" 2>/dev/null || true
 
         # Note: the GitHub-fetched script above (from main branch) is the canonical
         # version. The tarball copy is NOT used here to avoid overwriting with stale
