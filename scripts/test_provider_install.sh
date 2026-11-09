@@ -601,9 +601,17 @@ test_openrc_sudo_finalizes_before_start() {
         openrc_user_home() { echo "$PT_ROOT/home"; }
         id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
         sudo() {
+            # The installer runs every privileged step as `sudo -n <cmd>` so
+            # it can never stop at a password prompt. Record any call without
+            # -n, then drop the flag so the log holds the command itself.
+            if [ "$1" = -n ]; then
+                shift
+            else
+                echo "$*" >> "$PT_ROOT/prompting"
+            fi
             echo "$*" >> "$PT_ROOT/privileged"
             case "$1" in
-                -n|chown|rc-update) return 0 ;;
+                true|chown|rc-update) return 0 ;;
                 id) echo 0 ;;
                 rc-service)
                     test -x "$openrc_root_tool_path" &&
@@ -617,6 +625,7 @@ test_openrc_sudo_finalizes_before_start() {
         install_openrc_units
     ')"
     assert_eq "1" "$(echo "$out" | grep -c '^STARTED$')" "sudo finalizes and stages the tool before service start"
+    assert_eq "0" "$(cat "$tmpd/prompting" 2>/dev/null | wc -l | tr -d ' ')" "every sudo call is non-interactive (sudo -n)"
     assert_eq "existing stdout" "$(cat "$tmpd/log/urnetwork.log")" "finalization preserves existing logs"
     assert_eq "1" "$(grep -c "^touch $tmpd/log/urnetwork.err$" "$tmpd/privileged")" "missing log creation uses sudo"
     assert_eq "0" "$(grep -c "^touch $tmpd/log/urnetwork.log$" "$tmpd/privileged" || true)" "existing log is not recreated"
@@ -684,6 +693,7 @@ test_openrc_install_tree_is_root_owned_location() {
         install_path="$HOME/.local/share/urnetwork-provider"
         openrc_user_home() { echo /home/urnet; }
         id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_migrating=0  # the installer sets this before every call
         openrc_maybe_redirect_install_path
         echo "install_path=$install_path"
     ')"
@@ -706,6 +716,7 @@ test_openrc_install_path_respects_explicit_choice() {
         install_path=/opt/mine
         openrc_user_home() { echo /home/urnet; }
         id() { if [ "$1" = -u ]; then echo 0; else return 0; fi; }
+        openrc_migrating=0  # the installer sets this before every call
         openrc_maybe_redirect_install_path
         echo "explicit=$install_path"
     ')"
@@ -720,6 +731,7 @@ test_openrc_install_path_respects_explicit_choice() {
         install_path=/home/urnet/.local/share/urnetwork-provider
         openrc_user_home() { echo /home/urnet; }
         id() { if [ "$1" = -u ]; then echo 1000; else return 0; fi; }
+        openrc_migrating=0  # the installer sets this before every call
         openrc_maybe_redirect_install_path
         echo "nonroot=$install_path"
     ')"
@@ -732,11 +744,14 @@ test_openrc_install_path_respects_explicit_choice
 # installer must not change ownership THROUGH a symlink planted there. A
 # pre-planted .urnetwork -> /etc would otherwise hand /etc to the service user.
 test_openrc_refuses_symlinked_state_dir() {
-    local tmpd out
+    local tmpd out rc
     tmpd="$(mktemp -d)"
     mkdir -p "$tmpd/home/install/bin" "$tmpd/victim"
     printf '#!/bin/sh\nexit 0\n' > "$tmpd/home/install/bin/urnet-tools"
     ln -s "$tmpd/victim" "$tmpd/home/.urnetwork"
+    # The refusal fails closed (non-zero), so capture the status instead of
+    # letting `set -e` end the whole suite at this assignment.
+    rc=0
     out="$(PT_ROOT="$tmpd" bash -c '
             . /tmp/urnet_provider_lib.sh
             install_path="$PT_ROOT/home/install"
@@ -753,8 +768,9 @@ test_openrc_refuses_symlinked_state_dir() {
             SUDO=sudo
             sudo() { echo "$*" >> "$PT_ROOT/privileged"; case "$1" in id) echo 0 ;; *) return 0 ;; esac; }
             openrc_finalize_root_paths
-        ' 2>&1)"
-        assert_eq "1" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
+        ' 2>&1)" || rc=$?
+    assert_eq "1" "$rc" "a symlinked state dir fails the finalization closed"
+    assert_eq "1" "$(echo "$out" | grep -c 'refusing to change ownership through it')" \
         "a symlinked state dir is reported instead of silently followed"
     assert_eq "0" "$(grep -c "chown testuser $tmpd/home/.urnetwork" "$tmpd/privileged" 2>/dev/null || true)" \
         "ownership is never changed through the planted symlink"
