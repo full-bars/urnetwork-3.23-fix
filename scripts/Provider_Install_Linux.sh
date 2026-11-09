@@ -1624,14 +1624,14 @@ EOF
                     fi
                 fi
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    if ! ensure_extender_cap "$install_path/bin/urnetwork"; then
+                    ensure_extender_cap "$install_path/bin/urnetwork" || {
                         if [ "$restored_unit" -eq 1 ]; then
                             pr_err "Could not verify provider file capabilities; update stopped. Previous binary and systemd unit were restored but service is stopped."
                         else
                             pr_err "Could not verify provider file capabilities; update stopped. Previous binary was restored (new unit remains in place) but service is stopped."
                         fi
                         exit 1
-                    fi
+                    }
                     if [ "$restored_unit" -eq 1 ]; then
                         pr_err "Restored previous binary and systemd unit after service restart failure"
                     else
@@ -2310,10 +2310,10 @@ EOF
             pr_err "Failed to restart urnetwork after update"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
-                    if ! ensure_extender_cap "$install_path/bin/urnetwork"; then
+                    ensure_extender_cap "$install_path/bin/urnetwork" || {
                         pr_err "Could not verify provider file capabilities; update stopped. Previous binary was restored but service is stopped."
                         exit 1
-                    fi
+                    }
                     pr_err "Restored previous binary after service restart failure"
                     if ! rc-service urnetwork start; then
                         pr_err "Failed to restart urnetwork after restoring the previous binary; run: sudo rc-service urnetwork start"
