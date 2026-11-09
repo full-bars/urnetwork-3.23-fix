@@ -4387,6 +4387,9 @@ installer_apply_immediate_sysctls ()
     for setting in fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512 fs.file-max=2097152; do
         if ! sysctl -w "$setting" >/dev/null; then
             pr_warn "Could not apply immediate kernel setting; run: sudo sysctl -w %s" "$setting"
+            if command -v record_opt_failure >/dev/null 2>&1; then
+                record_opt_failure "Immediate kernel setting ($setting)" "sudo sysctl -w $setting"
+            fi
         fi
     done
 }
@@ -4427,9 +4430,6 @@ do_optimize ()
         confirm_restart "Applying kernel limits and OS optimizations requires restarting the URNetwork provider to bind the new system ulimits."
     fi
 
-    ulimit -n 1048576 2>/dev/null || true
-    installer_apply_immediate_sysctls
-
     opt_failed=0
     opt_completed=""
     opt_skipped=""
@@ -4449,6 +4449,9 @@ do_optimize ()
             opt_retry_cmds="${opt_retry_cmds}\n  $2"
         fi
     }
+
+    ulimit -n 1048576 2>/dev/null || true
+    installer_apply_immediate_sysctls
 
     pr_info "⚡ Starting System Optimizer..."
 
@@ -4658,8 +4661,6 @@ EOF
         fi
 
         override_dir="$actual_home/.config/systemd/user/urnetwork.service.d"
-        mkdir -p "$override_dir"
-        chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null
         override_file="$override_dir/override.conf"
     fi
 
@@ -4684,17 +4685,50 @@ EOF
     # Update ulimits in the systemd drop-in (skipped when the OpenRC rc_ulimit
     # path above already handled it).
     if [ -n "$override_file" ]; then
-        if [ ! -f "$override_file" ]; then
-            printf "[Service]\n" > "$override_file"
+        dropin_ok=1
+        if ! mkdir -p "$override_dir"; then
+            pr_warn "Could not create systemd override directory: %s" "$override_dir"
+            record_opt_failure "File descriptor limit ($override_dir)" "sudo mkdir -p '$override_dir'"
+            dropin_ok=0
         fi
 
-        if ! grep -q "LimitNOFILE=" "$override_file"; then
-            sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"
-        else
-            sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
+        if [ "$dropin_ok" -eq 1 ] && [ ! -f "$override_file" ]; then
+            if ! printf "[Service]\n" > "$override_file"; then
+                pr_warn "Could not initialize systemd override file: %s" "$override_file"
+                record_opt_failure "File descriptor limit ($override_file)" "printf '[Service]\\n' | sudo tee '$override_file'"
+                dropin_ok=0
+            fi
         fi
-        chown "$actual_user":"$actual_user" "$override_file"
-        record_opt_success "File descriptor limit ($ulimit_val in $override_file)"
+
+        if [ "$dropin_ok" -eq 1 ]; then
+            if ! grep -q "LimitNOFILE=" "$override_file"; then
+                if ! sed -i "/\[Service\]/a LimitNOFILE=$ulimit_val" "$override_file"; then
+                    pr_warn "Could not set LimitNOFILE in %s" "$override_file"
+                    record_opt_failure "File descriptor limit ($override_file)" "sudo sed -i '/\\[Service\\]/a LimitNOFILE=$ulimit_val' '$override_file'"
+                    dropin_ok=0
+                fi
+            else
+                if ! sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"; then
+                    pr_warn "Could not update LimitNOFILE in %s" "$override_file"
+                    record_opt_failure "File descriptor limit ($override_file)" "sudo sed -i 's|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|' '$override_file'"
+                    dropin_ok=0
+                fi
+            fi
+        fi
+
+        if [ "$dropin_ok" -eq 1 ]; then
+            if ! chown "$actual_user":"$actual_user" "$override_file"; then
+                pr_warn "Could not set ownership of %s to %s" "$override_file" "$actual_user"
+                record_opt_failure "File descriptor limit ($override_file ownership)" "sudo chown '$actual_user':'$actual_user' '$override_file'"
+                dropin_ok=0
+            else
+                chown -R "$actual_user":"$actual_user" "$actual_home/.config/systemd" 2>/dev/null || true
+            fi
+        fi
+
+        if [ "$dropin_ok" -eq 1 ]; then
+            record_opt_success "File descriptor limit ($ulimit_val in $override_file)"
+        fi
     fi
 
     if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
@@ -4716,9 +4750,14 @@ EOF
 
         # Run as the actual user to access their systemd bus
         sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload 2>/dev/null || true
-        if sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service 2>/dev/null; then
-            pr_info "Service restarted with the new limits."
-            record_opt_success "Service restart (systemd)"
+        if sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user is-active --quiet urnetwork.service 2>/dev/null; then
+            if sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service; then
+                pr_info "Service restarted with the new limits."
+                record_opt_success "Service restart (systemd)"
+            else
+                pr_warn "Could not restart urnetwork.service; run: sudo -u '%s' DBUS_SESSION_BUS_ADDRESS=\"unix:path=/run/user/\$(id -u '%s')/bus\" systemctl --user restart urnetwork.service" "$actual_user" "$actual_user"
+                record_opt_failure "Service restart (systemd)" "sudo -u '$actual_user' DBUS_SESSION_BUS_ADDRESS=\"unix:path=/run/user/\$(id -u '$actual_user')/bus\" systemctl --user restart urnetwork.service"
+            fi
         else
             pr_info "Note: Service not running; ulimits will apply on next start."
             record_opt_skipped "Service restart" "service not running; ulimits will apply on next start"

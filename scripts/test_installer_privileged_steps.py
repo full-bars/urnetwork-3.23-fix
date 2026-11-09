@@ -295,7 +295,10 @@ installer_apply_sysctl_config() { if [ "${SYSCTL_OK:-1}" = "1" ]; then return 0;
 systemctl() { return 0; }
 installer_enable_linger() { return 0; }
 dd() { printf "100 MB/s\\n"; }
+getent() { printf "alice:x:1000:1000::%s:/bin/sh\\n" "$actual_home"; }
+logname() { printf "alice\\n"; }
 sudo() { return 0; }
+chown() { return 0; }
 mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
 ''' + function("do_optimize") + '\ndo_optimize -y\n'
         env = {
@@ -330,6 +333,141 @@ mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
             self.assertEqual(result.returncode, 0)
             self.assertIn("Optimization applied successfully.", result.stdout)
             self.assertNotIn("Optimization completed with partial success", result.stdout)
+
+    def test_optimizer_reports_failure_on_active_service_restart_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = '''
+FORCE=1
+actual_user=alice; actual_home="$1"; SUDO_USER=alice
+has_openrc=0; has_systemd=1; is_container=0
+id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
+pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_err() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+confirm_restart() { :; }
+installer_apply_immediate_sysctls() { :; }
+detect_mem_limit_mib() { printf "1024\\n"; }
+modprobe() { return 0; }
+swapon() { printf "/dev/zram0 partition\\n"; }
+setup_zram_manual() { return 1; }
+installer_apply_sysctl_config() { return 0; }
+installer_enable_linger() { return 0; }
+dd() { printf "100 MB/s\\n"; }
+getent() { printf "alice:x:1000:1000::%s:/bin/sh\\n" "$actual_home"; }
+logname() { printf "alice\\n"; }
+sudo() {
+    while [ $# -gt 0 ]; do
+        case "$1" in
+            -u) shift 2 ;;
+            *=* ) shift ;;
+            *) break ;;
+        esac
+    done
+    "$@"
+}
+systemctl() {
+    case "$*" in
+        *"is-active"*) return 0 ;;
+        *"restart"*) printf 'Failed to restart urnetwork.service: unit failed\\n' >&2; return 1 ;;
+        *) return 0 ;;
+    esac
+}
+''' + function("do_optimize") + '\ndo_optimize -y\n'
+            env = {
+                "PATH": os.environ["PATH"],
+                "MODULES_LOAD_DIR": tmp + "/modules",
+                "SYSCTL_CONF": tmp + "/sysctl.conf",
+            }
+            res = subprocess.run(["sh", "-c", harness, "sh", tmp], env=env, text=True, capture_output=True)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Optimization completed with partial success", res.stdout)
+            self.assertIn("Service restart (systemd)", res.stdout)
+            self.assertIn("systemctl --user restart urnetwork.service", res.stdout)
+            self.assertNotIn("Optimization applied successfully.", res.stdout)
+
+    def test_optimizer_reports_failure_on_immediate_sysctl_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = '''
+FORCE=1
+actual_user=alice; actual_home="$1"; SUDO_USER=alice
+has_openrc=0; has_systemd=1; is_container=0
+id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
+pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_err() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+confirm_restart() { :; }
+detect_mem_limit_mib() { printf "1024\\n"; }
+modprobe() { return 0; }
+swapon() { printf "/dev/zram0 partition\\n"; }
+setup_zram_manual() { return 1; }
+installer_apply_sysctl_config() { return 0; }
+installer_enable_linger() { return 0; }
+dd() { printf "100 MB/s\\n"; }
+getent() { printf "alice:x:1000:1000::%s:/bin/sh\\n" "$actual_home"; }
+logname() { printf "alice\\n"; }
+sudo() { return 0; }
+systemctl() { return 0; }
+sysctl() {
+    if [ "$1" = "-w" ]; then
+        printf 'sysctl denied %s\\n' "$2" >&2
+        return 1
+    fi
+    return 0
+}
+''' + function("installer_apply_immediate_sysctls") + function("do_optimize") + '\ndo_optimize -y\n'
+            env = {
+                "PATH": os.environ["PATH"],
+                "MODULES_LOAD_DIR": tmp + "/modules",
+                "SYSCTL_CONF": tmp + "/sysctl.conf",
+            }
+            res = subprocess.run(["sh", "-c", harness, "sh", tmp], env=env, text=True, capture_output=True)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Optimization completed with partial success", res.stdout)
+            self.assertIn("Immediate kernel setting", res.stdout)
+            self.assertIn("sudo sysctl -w", res.stdout)
+            self.assertNotIn("Optimization applied successfully.", res.stdout)
+
+    def test_optimizer_reports_failure_on_dropin_write_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            harness = '''
+FORCE=1
+actual_user=alice; actual_home="$1"; SUDO_USER=alice
+has_openrc=0; has_systemd=1; is_container=0
+id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
+pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_err() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+confirm_restart() { :; }
+installer_apply_immediate_sysctls() { :; }
+detect_mem_limit_mib() { printf "1024\\n"; }
+modprobe() { return 0; }
+swapon() { printf "/dev/zram0 partition\\n"; }
+setup_zram_manual() { return 1; }
+installer_apply_sysctl_config() { return 0; }
+installer_enable_linger() { return 0; }
+dd() { printf "100 MB/s\\n"; }
+getent() { printf "alice:x:1000:1000::%s:/bin/sh\\n" "$actual_home"; }
+logname() { printf "alice\\n"; }
+sudo() { return 0; }
+systemctl() { return 0; }
+chown() {
+    case "$*" in
+        *"override.conf"*) printf 'chown: operation not permitted\\n' >&2; return 1 ;;
+        *) return 0 ;;
+    esac
+}
+''' + function("do_optimize") + '\ndo_optimize -y\n'
+            env = {
+                "PATH": os.environ["PATH"],
+                "MODULES_LOAD_DIR": tmp + "/modules",
+                "SYSCTL_CONF": tmp + "/sysctl.conf",
+            }
+            res = subprocess.run(["sh", "-c", harness, "sh", tmp], env=env, text=True, capture_output=True)
+            self.assertNotEqual(res.returncode, 0)
+            self.assertIn("Optimization completed with partial success", res.stdout)
+            self.assertIn("File descriptor limit", res.stdout)
+            self.assertIn("sudo chown", res.stdout)
+            self.assertNotIn("Optimization applied successfully.", res.stdout)
 
     def test_ensure_extender_cap_failure_exposes_error(self):
         harness = '''
