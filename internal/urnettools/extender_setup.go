@@ -440,13 +440,21 @@ ruleset-specific; use the procedures for your existing policy.`)
 	}
 
 	// STEP 6: Apply platform requirement and firewall rules
+	sysctlApplied := false
 	for _, p := range needPlatformTargets {
+		// The sysctl route is host-wide: one write covers every provider. A
+		// second apply would back up the drop-in setup itself just wrote, or
+		// refuse because the backup of the real prior file already exists.
+		if route == "sysctl" && sysctlApplied {
+			continue
+		}
 		applied, applyDesc, err := platformCfg.ApplyRequirement(p.Binary, p.User)
 		if err != nil {
 			return fmt.Errorf("applying platform requirement: %w", err)
 		}
 		if applied {
 			fmt.Fprintf(out, "extender: %s\n", applyDesc)
+			sysctlApplied = sysctlApplied || route == "sysctl"
 		}
 	}
 
