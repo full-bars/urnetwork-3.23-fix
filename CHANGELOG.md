@@ -1,6 +1,22 @@
 # Changelog
 
-## [Unreleased]
+## [v3.23.0-fix.35.6]
+
+_Released 2026-11-08. Based on v3.23.0-fix.35.5. Notes: `releases/v3.23.0-fix.35.6.md`._
+
+### Fixed
+
+- **RAM logs follow a replaced or removed path** (`provider/shmlog_linux.go`, `provider/shmlog_trim.go`). This covers the main RAM log and the important log in the state directory. Reopens reject unsafe files and report successful replacements at a bounded rate. A child-process trim and deterministic tests cover the checks; a full two-process HotSwap on a host has not been verified. An outgoing process from an older release still uses its old log code.
+- **Updater verification can use the control socket when the running image is unreadable** (`internal/urnettools/update.go`, `internal/urnettools/control_peer_linux.go`). The listener credentials must match the new process and the reported version must match the release. An unconfirmed handoff reports the observed state rather than claiming takeover failed.
+- **Unsafe unit reconciliation stops the update before restart** (`internal/urnettools/update.go`). The updater reports the installed binary and repair instructions; failed rollback reports the backup and that the provider was not restarted. An empty or unreadable unit type is rejected.
+- **Updater capability restoration preserves the previous setting** (`internal/urnettools/update_extender.go`). The tool attempts to restore the Linux extender bind capability only when the old binary had it. A non-root caller uses non-interactive sudo; otherwise the tool prints the manual command when the capability is absent, unverified or cannot be restored.
+- **Linux installer privileged steps report more clearly** (`scripts/Provider_Install_Linux.sh`). The extender permission offer is skipped on piped or redirected input or output. Systemd partial failures and rollback failures print the state and recovery commands. The extender notice explains its role and ports.
+
+### Known limits
+
+- Fresh installs still use systemd's default `Type=simple`. Some installer and optimize steps still hide errors, including login linger, OpenRC ownership, sysctl tuning and firewall detection; follow-up work is planned.
+
+## [v3.23.0-fix.35.5]
 
 _Based on v3.23.0-fix.35.4._
 

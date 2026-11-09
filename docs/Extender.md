@@ -17,7 +17,7 @@ urnet-tools extender enable     # back on
 For it to work the host needs:
 
 1. **Inbound TCP 443 that reaches the provider.** This is the one required port. If a web server (caddy, nginx, apache) holds it, the extender cannot be listed until you free or move that service.
-2. **Permission to use a port below 1024.** On Linux, a non-root provider can use `cap_net_bind_service` on the binary. The installer and `urnet-tools update` apply it. The new extender setup command checks the binary capability; FreeBSD setup is print-only and untested this release, and regular providing on FreeBSD is unaffected.
+2. **Permission to use a port below 1024.** On Linux, a non-root provider can use `cap_net_bind_service` on the binary. The installer may offer to grant it on an interactive terminal. The updater attempts to restore it only if the old binary had a verified capability. Both print a manual command when needed. The extender setup command checks the binary capability; FreeBSD setup is print-only and untested this release, and regular providing on FreeBSD is unaffected.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
 UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP. UDP 53 is user-managed: setup does not open it.
@@ -89,7 +89,7 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
-On Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal Linux install the installer and `urnet-tools update` apply `cap_net_bind_service` to the binary, and the log gives the exact `setcap` command if the provider is not root and lacks it. Setup preserves the binary's existing file capabilities when it adds this bind capability. Replacing the provider binary can remove the file capability; the installer restores it after a swap and warns if it cannot verify it.
+On Linux, binding below 1024 needs root or `CAP_NET_BIND_SERVICE`. The Docker image runs as root. On a bare-metal Linux install the installer may offer to grant `cap_net_bind_service` on an interactive terminal, or print the command to run later. After replacing the provider binary, `urnet-tools update` attempts to restore the capability only if it verified it on the old binary, and prints the manual command when needed. The installer also attempts restoration after a swap. Setup preserves the binary's existing file capabilities when it adds this bind capability.
 
 ## Prepare the host with `urnet-tools extender setup`
 

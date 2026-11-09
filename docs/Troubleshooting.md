@@ -140,9 +140,9 @@ The update prints `hotswap trigger unavailable (...); falling back to service re
 process aborts whenever systemd started it (`INVOCATION_ID` is set) but
 `NOTIFY_SOCKET` is empty, which is exactly what a `Type=simple` unit looks like.
 `Provider_Install_Linux.sh` deliberately writes a unit with **no `Type=` line**
-(systemd's default, `simple`), because `Type=notify` blocks `systemctl start`
-until the provider is ready and can wedge every start when the binary and the
-unit come from different releases. Instead, `urnet-tools update` migrates the
+(systemd's default, `simple`), so older binaries that do not send readiness
+can still start. Current providers signal readiness before proxy retries.
+Instead, `urnet-tools update` migrates the
 unit to `Type=notify` when the binary it installs can signal readiness
 (v3.23.0-fix.31.0 or newer). That first update is a normal restart; later ones
 hotswap.

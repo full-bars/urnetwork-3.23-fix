@@ -4,9 +4,9 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Latest published release**: v3.23.0-fix.35.4 (see [releases/v3.23.0-fix.35.4.md](releases/v3.23.0-fix.35.4.md))
+**Previous release**: v3.23.0-fix.35.5 (see [releases/v3.23.0-fix.35.5.md](releases/v3.23.0-fix.35.5.md))
 
-**Latest release notes:** The next release adds interactive extender host setup. The tool inspects TCP 443, binary bind capability and the host firewall, then prints exact commands and asks before applying them. Only explicit `--yes` (`-y`) or `--force` approval permits non-interactive changes. FreeBSD setup is print-only and untested this release; regular providing on FreeBSD is unaffected. UDP 53 remains optional and user-managed. Firewalld rules are planned separately for runtime and permanent configuration, without a reload. Linux setup preserves existing file capabilities when adding the bind capability. Known limitations remain the Docker log follower and hot-swap candidate bind race.
+**Next release notes:** v3.23.0-fix.35.6 repairs RAM log reopening across path replacement, verifies unreadable running images through a process-bound control socket on Linux, and makes updater and installer failures clearer. See [release notes](releases/v3.23.0-fix.35.6.md) for the known limits.
 
 ---
 
@@ -4080,3 +4080,19 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **How to identify in new upstream**: Check `dialProxiedUdp`, `proxiedUdpFlowIdleTimeout`, `runProxyURLCleanupOnce`, `uninstall_process_guard.go` and the Windows start and restart routes. Compare the release notes and changelog for the full list.
 
 **Status**: On main after v3.23.0-fix.35.3; not yet tagged.
+
+## 217. RAM log and update safety
+
+**Purpose**: Keep Linux log writers attached to replaced paths and report update verification and privileged-step failures accurately.
+
+**Files modified**: `provider/shmlog_linux.go`, `provider/shmlog_trim.go`, `internal/urnettools/update.go`, `internal/urnettools/control_client.go`, `internal/urnettools/control_peer_linux.go`, `internal/urnettools/update_extender.go`, `scripts/Provider_Install_Linux.sh` and their tests.
+
+**Changes**:
+- Reopen replaced or removed RAM and state-directory important logs with safe open checks and a path identity check at the descriptor swap. Successful reopens have a rate-limited notice.
+- Verify an unreadable running image by version through a control socket bound to the discovered new process by Linux peer credentials. Report the observed verification state rather than asserting an unconfirmed takeover failed.
+- Stop before restart when unit and binary reconciliation fails. On rollback failure, report the backup and that the provider was not restarted. Restore the extender capability only when it was verified on the previous binary, using non-interactive sudo for a non-root updater.
+- Skip the Linux installer capability prompt when input or output is redirected. Describe systemd partial failures and recovery commands.
+
+**Limits**: Fresh systemd installs still use `Type=simple`. Some linger, OpenRC ownership, sysctl tuning and firewall detection errors remain hidden. The log fix has deterministic and child-process trim tests, not a full two-process HotSwap on a host; the outgoing process in an upgrade from an older release still uses its old log code.
+
+**Status**: Prepared for v3.23.0-fix.35.6.

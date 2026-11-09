@@ -83,6 +83,8 @@ provider urnetwork.service handed off (pid <old> -> <new>), waiting for version 
 verified urnetwork.service running <tag> (pid <new>; running image ... matches)
 ```
 
+If the running image cannot be read, the updater can instead check the version reported by the control socket. On Linux, it accepts that reply only when the listener's kernel credentials match the discovered new process. If verification cannot confirm the handoff, the message reports the last observation; it does not by itself prove takeover failed. If unit reconciliation fails after the binary swap, the updater stops before restarting and prints repair instructions.
+
 If the unit is not eligible you get `hotswap trigger unavailable (...); falling back to service restart` and a normal restart instead. The provider log shows the handoff:
 
 ```text
