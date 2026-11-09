@@ -23,6 +23,7 @@ import (
 // override without touching production call sites.
 var (
 	verifyDiscoverFn           = Discover
+	updateDiscoverFn           = Discover
 	verifyRunningImageHandleFn = runningImageHandle
 	verifyRunningImagePathFn   = runningImagePath
 	verifyProviderVersionFn    = providerVersion
@@ -108,11 +109,15 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	var include, exclude []string
 	all := false
 	interactive := forceInteractive(force) // -f implies non-interactive: no pickers
+	reexecuted := os.Getenv(urnetUpdateReexecEnv) != ""
+	if reexecuted {
+		interactive = false
+	}
 	// Deliberately a separate question from `interactive`: whether anything
 	// is authorized to skip the confirmation prompts. Tying the two together
 	// would enable the numbered picker for a piped run, which cannot answer
 	// it; the picker must stay gated on a real terminal.
-	unattended := unattendedUpdate(force)
+	unattended := reexecuted || unattendedUpdate(force)
 	for i := 0; i < len(rest); i++ {
 		switch rest[i] {
 		case "--tag":
@@ -174,7 +179,18 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		}
 	}
 
-	providers := Discover()
+	providers := updateDiscoverFn()
+	if reexecuted && (t.Unit != "" || t.StateDir != "") {
+		matches := 0
+		for _, p := range providers {
+			if t.matchProvider(p) {
+				matches++
+			}
+		}
+		if matches != 1 {
+			return fmt.Errorf("re-exec provider selection changed or became ambiguous; nothing updated")
+		}
+	}
 	var chosen []Provider
 	if all {
 		// --all means every provider on the box, no ambiguity. It conflicts
@@ -191,6 +207,14 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 		var err error
 		chosen, err = selectTargets(providers, t, include, exclude, interactive)
 		if err != nil {
+			if reexecuted {
+				return fmt.Errorf("re-exec provider selection changed: %v; nothing updated", err)
+			}
+			return err
+		}
+	}
+	if reexecuted {
+		if err := checkReexecSelection(providers, chosen, os.Getenv(urnetUpdatePinnedEnv)); err != nil {
 			return err
 		}
 	}
@@ -297,13 +321,24 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	stagedTool := stageToolForEscalationFn(cfg)
 
 	toolUpdatedFirst := false
-	if stagedTool != "" && os.Getenv(urnetUpdateReexecEnv) == "" && isToolNewerThanRunning(cfg.Tag, cfg.ToolDigest) {
-		if err := selfUpdateToolFn(cfg); err != nil {
+	if stagedTool != "" && !reexecuted && isToolNewerThanRunning(cfg.Tag, cfg.ToolDigest) {
+		if err := validateReexecSelection(providers, chosen); err != nil {
+			fmt.Printf("tool-first re-exec skipped (%v); continuing update with current tool\n", err)
+		} else if err := selfUpdateToolFn(cfg); err != nil {
 			fmt.Printf("tool-first self-update failed (%v); continuing update with current tool\n", err)
 		} else {
 			toolUpdatedFirst = true
-			reexecArgs := buildReexecArgs(os.Args, chosen, all, cfg.Tag)
-			reexecEnv := append(os.Environ(), urnetUpdateReexecEnv+"=1")
+			argChosen := chosen
+			if len(chosen) == 1 {
+				target, _ := reexecSingleTarget(providers, chosen[0])
+				if target.Unit == "" {
+					p := chosen[0]
+					p.Unit = ""
+					argChosen = []Provider{p}
+				}
+			}
+			reexecArgs := buildReexecArgs(os.Args, argChosen, all, cfg.Tag)
+			reexecEnv := reexecEnvironment(os.Environ(), chosen)
 			exe := resolvedExecutablePath()
 			_ = os.RemoveAll(stageDir)
 			if err := reExecToolFn(exe, reexecArgs, reexecEnv); err != nil {

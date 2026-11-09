@@ -63,10 +63,10 @@ func TestBuildReexecArgs(t *testing.T) {
 		t.Errorf("expected tag and unit added, got: %v", args1)
 	}
 
-	// Case 2: existing --tag and --all preserved without duplication
+	// Case 2: existing --tag is preserved and --all becomes a pinned target
 	args2 := buildReexecArgs([]string{"urnet-tools", "update", "--tag", "v3.23.0-fix.35.6", "--all"}, chosen, true, "v3.23.0-fix.35.6")
-	if strings.Count(strings.Join(args2, " "), "--tag") != 1 || strings.Count(strings.Join(args2, " "), "--all") != 1 {
-		t.Errorf("expected no duplication of --tag or --all, got: %v", args2)
+	if strings.Count(strings.Join(args2, " "), "--tag") != 1 || strings.Contains(strings.Join(args2, " "), "--all") || !strings.Contains(strings.Join(args2, " "), "--unit urnetwork.service") {
+		t.Errorf("expected preserved tag and pinned unit, got: %v", args2)
 	}
 
 	// Case 3: multi-target picks -> adds --include
@@ -78,6 +78,14 @@ func TestBuildReexecArgs(t *testing.T) {
 	joined3 := strings.Join(args3, " ")
 	if !strings.Contains(joined3, "--include u1.service,u2.service") {
 		t.Errorf("expected --include with labels, got: %v", args3)
+	}
+}
+
+func TestBuildReexecExcludePinsChosen(t *testing.T) {
+	args := buildReexecArgs([]string{"urnet-tools", "update", "--exclude", "C.service"}, []Provider{{Unit: "B.service"}}, false, "v3.23.0-fix.35.7")
+	joined := strings.Join(args, " ")
+	if strings.Contains(joined, "--exclude") || !strings.Contains(joined, "--unit B.service") {
+		t.Fatalf("expected only confirmed B pinned, got %v", args)
 	}
 }
 
@@ -135,10 +143,10 @@ func TestUpdate_ToolFirstOrdering(t *testing.T) {
 	ToolVersion = "v3.23.0-fix.35.5"
 	t.Cleanup(func() { ToolVersion = origToolVersion })
 
-	origDisc := verifyDiscoverFn
+	origDisc := updateDiscoverFn
 	p := Provider{Unit: "urnetwork.service", Binary: filepath.Join(tempDir, "provider"), StateDir: tempDir}
-	verifyDiscoverFn = func() []Provider { return []Provider{p} }
-	t.Cleanup(func() { verifyDiscoverFn = origDisc })
+	updateDiscoverFn = func() []Provider { return []Provider{p} }
+	t.Cleanup(func() { updateDiscoverFn = origDisc })
 
 	var reExecCalled bool
 	var reExecExe string
@@ -251,9 +259,9 @@ func TestUpdate_ToolFirstLoopGuard(t *testing.T) {
 	t.Cleanup(func() { ToolVersion = origToolVersion })
 
 	p := Provider{Unit: "urnetwork.service", Binary: filepath.Join(tempDir, "provider"), StateDir: tempDir}
-	origDisc := verifyDiscoverFn
-	verifyDiscoverFn = func() []Provider { return []Provider{p} }
-	t.Cleanup(func() { verifyDiscoverFn = origDisc })
+	origDisc := updateDiscoverFn
+	updateDiscoverFn = func() []Provider { return []Provider{p} }
+	t.Cleanup(func() { updateDiscoverFn = origDisc })
 
 	// Set loop guard in environment
 	t.Setenv(urnetUpdateReexecEnv, "1")
@@ -316,9 +324,9 @@ func TestUpdate_ToolFirstFailureFallsBackToRunningTool(t *testing.T) {
 	t.Cleanup(func() { ToolVersion = origToolVersion })
 
 	p := Provider{Unit: "urnetwork.service", Binary: filepath.Join(tempDir, "provider"), StateDir: tempDir}
-	origDisc := verifyDiscoverFn
-	verifyDiscoverFn = func() []Provider { return []Provider{p} }
-	t.Cleanup(func() { verifyDiscoverFn = origDisc })
+	origDisc := updateDiscoverFn
+	updateDiscoverFn = func() []Provider { return []Provider{p} }
+	t.Cleanup(func() { updateDiscoverFn = origDisc })
 
 	origReExec := reExecToolFn
 	reExecToolFn = func(exe string, args []string, env []string) error {
@@ -380,9 +388,9 @@ func TestUpdate_ToolFirstReExecFailureFallsBackToRunningTool(t *testing.T) {
 	t.Cleanup(func() { ToolVersion = origToolVersion })
 
 	p := Provider{Unit: "urnetwork.service", Binary: filepath.Join(tempDir, "provider"), StateDir: tempDir}
-	origDisc := verifyDiscoverFn
-	verifyDiscoverFn = func() []Provider { return []Provider{p} }
-	t.Cleanup(func() { verifyDiscoverFn = origDisc })
+	origDisc := updateDiscoverFn
+	updateDiscoverFn = func() []Provider { return []Provider{p} }
+	t.Cleanup(func() { updateDiscoverFn = origDisc })
 
 	origStage := stageToolForEscalationFn
 	stageToolForEscalationFn = func(cfg updateConfig) string {

@@ -1,6 +1,8 @@
 package urnettools
 
 import (
+	"encoding/json"
+	"fmt"
 	"strconv"
 	"strings"
 )
@@ -11,6 +13,129 @@ import (
 // re-exec) and a signal that the operator's update confirmation was already
 // obtained in the parent process.
 const urnetUpdateReexecEnv = "URNET_TOOLS_UPDATE_REEXEC"
+const urnetUpdatePinnedEnv = "URNET_TOOLS_UPDATE_PINNED"
+
+type reexecIdentity struct {
+	Unit, StateDir, User string
+}
+
+func reexecIdentities(providers []Provider) []reexecIdentity {
+	ids := make([]reexecIdentity, 0, len(providers))
+	for _, p := range providers {
+		ids = append(ids, reexecIdentity{p.Unit, p.StateDir, p.User})
+	}
+	return ids
+}
+
+func sameReexecProviders(a, b []Provider) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	counts := map[reexecIdentity]int{}
+	for _, id := range reexecIdentities(a) {
+		counts[id]++
+	}
+	for _, id := range reexecIdentities(b) {
+		counts[id]--
+	}
+	for _, n := range counts {
+		if n != 0 {
+			return false
+		}
+	}
+	return true
+}
+
+func reexecSingleTarget(providers []Provider, p Provider) (Target, error) {
+	for _, target := range []Target{{Unit: p.Unit}, {StateDir: p.StateDir}} {
+		if target.Unit == "" && target.StateDir == "" {
+			continue
+		}
+		var matches []Provider
+		for _, candidate := range providers {
+			if target.matchProvider(candidate) {
+				matches = append(matches, candidate)
+			}
+		}
+		if sameReexecProviders(matches, []Provider{p}) {
+			return target, nil
+		}
+	}
+	return Target{}, fmt.Errorf("provider selection is ambiguous or changed")
+}
+
+// validateReexecSelection checks the actual parser's matching rules against the
+// full inventory, including collisions with providers outside the selection.
+func validateReexecSelection(providers, chosen []Provider) error {
+	if len(chosen) == 0 {
+		return fmt.Errorf("empty provider selection")
+	}
+	for _, p := range chosen {
+		if p.Unit == "" && p.StateDir == "" {
+			return fmt.Errorf("provider has neither unit nor state directory")
+		}
+	}
+	var resolved []Provider
+	var err error
+	if len(chosen) == 1 {
+		_, err = reexecSingleTarget(providers, chosen[0])
+		if err != nil {
+			return err
+		}
+		resolved = chosen
+	} else {
+		labels := make([]string, 0, len(chosen))
+		for _, p := range chosen {
+			label := providerLabel(p)
+			if label == "" || strings.Contains(label, ",") || strings.TrimSpace(label) != label {
+				return fmt.Errorf("provider label cannot be represented in an include list")
+			}
+			labels = append(labels, label)
+		}
+		resolved, err = selectByLabels(providers, labels)
+		if err != nil {
+			return err
+		}
+	}
+	if !sameReexecProviders(resolved, chosen) {
+		return fmt.Errorf("provider selection is ambiguous or changed")
+	}
+	return nil
+}
+
+func encodeReexecSelection(chosen []Provider) string {
+	data, _ := json.Marshal(reexecIdentities(chosen))
+	return string(data)
+}
+
+func reexecEnvironment(env []string, chosen []Provider) []string {
+	out := make([]string, 0, len(env)+2)
+	for _, entry := range env {
+		if strings.HasPrefix(entry, urnetUpdateReexecEnv+"=") || strings.HasPrefix(entry, urnetUpdatePinnedEnv+"=") {
+			continue
+		}
+		out = append(out, entry)
+	}
+	return append(out, urnetUpdateReexecEnv+"=1", urnetUpdatePinnedEnv+"="+encodeReexecSelection(chosen))
+}
+
+func checkReexecSelection(providers, chosen []Provider, encoded string) error {
+	var expected []reexecIdentity
+	if err := json.Unmarshal([]byte(encoded), &expected); err != nil || len(expected) == 0 {
+		return fmt.Errorf("re-exec has no valid pinned provider selection; nothing updated")
+	}
+	var pinned []Provider
+	for _, id := range expected {
+		pinned = append(pinned, Provider{Unit: id.Unit, StateDir: id.StateDir, User: id.User})
+	}
+	if !sameReexecProviders(pinned, chosen) {
+		return fmt.Errorf("re-exec provider selection changed; nothing updated")
+	}
+	if err := validateReexecSelection(providers, chosen); err != nil {
+		return fmt.Errorf("re-exec provider selection changed: %v; nothing updated", err)
+	}
+	return nil
+}
 
 var (
 	reExecToolFn     = reExecTool
@@ -128,45 +253,42 @@ func buildReexecArgs(origArgs []string, chosen []Provider, all bool, tag string)
 	}
 
 	hasTag := false
-	hasTarget := false
-	for _, arg := range base {
+	filtered := make([]string, 0, len(base))
+	selectors := map[string]bool{"--unit": true, "--state-dir": true, "--user": true, "--network": true, "--network-id": true, "--pid": true, "--include": true, "--exclude": true}
+	for i := 0; i < len(base); i++ {
+		arg := base[i]
 		if arg == "--tag" || strings.HasPrefix(arg, "--tag=") {
 			hasTag = true
 		}
-		if arg == "--all" || arg == "-all" ||
-			arg == "--unit" || strings.HasPrefix(arg, "--unit=") ||
-			arg == "--user" || strings.HasPrefix(arg, "--user=") ||
-			arg == "--network" || strings.HasPrefix(arg, "--network=") ||
-			arg == "--network-id" || strings.HasPrefix(arg, "--network-id=") ||
-			arg == "--state-dir" || strings.HasPrefix(arg, "--state-dir=") ||
-			arg == "--include" || strings.HasPrefix(arg, "--include=") ||
-			arg == "--exclude" || strings.HasPrefix(arg, "--exclude=") {
-			hasTarget = true
+		if arg == "--all" || arg == "-all" {
+			continue
 		}
+		key, _, hasValue := strings.Cut(arg, "=")
+		if selectors[key] {
+			if !hasValue && i+1 < len(base) {
+				i++
+			}
+			continue
+		}
+		filtered = append(filtered, arg)
 	}
-
 	if !hasTag && tag != "" {
-		base = append(base, "--tag", tag)
+		filtered = append(filtered, "--tag", tag)
 	}
-
-	if !hasTarget {
-		if all {
-			base = append(base, "--all")
-		} else if len(chosen) == 1 {
-			if chosen[0].Unit != "" {
-				base = append(base, "--unit", chosen[0].Unit)
-			} else if chosen[0].StateDir != "" {
-				base = append(base, "--state-dir", chosen[0].StateDir)
-			}
-		} else if len(chosen) > 1 {
-			labels := make([]string, 0, len(chosen))
-			for _, p := range chosen {
-				labels = append(labels, providerLabel(p))
-			}
-			base = append(base, "--include", strings.Join(labels, ","))
+	if len(chosen) == 1 {
+		if chosen[0].Unit != "" {
+			filtered = append(filtered, "--unit", chosen[0].Unit)
+		} else {
+			filtered = append(filtered, "--state-dir", chosen[0].StateDir)
 		}
+	} else if len(chosen) > 1 {
+		labels := make([]string, 0, len(chosen))
+		for _, p := range chosen {
+			labels = append(labels, providerLabel(p))
+		}
+		filtered = append(filtered, "--include", strings.Join(labels, ","))
 	}
-	return base
+	return filtered
 }
 
 func containsArg(args []string, target string) bool {
