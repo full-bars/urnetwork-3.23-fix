@@ -2260,6 +2260,21 @@ func_run_as_user ()
     fi
 }
 
+# Enable lingering without suppressing errors or prompting for credentials.
+installer_enable_linger ()
+{
+    linger_user="$1"
+    if command -v loginctl >/dev/null 2>&1; then
+        if loginctl enable-linger "$linger_user"; then
+            return 0
+        fi
+        pr_warn "loginctl enable-linger failed; the service may stop on logout. Run: sudo loginctl enable-linger %s" "$linger_user"
+    else
+        pr_warn "loginctl not found; the service may stop on logout. Install it, then run: sudo loginctl enable-linger %s" "$linger_user"
+    fi
+    return 1
+}
+
 # Distro-agnostic creation of a dedicated unprivileged user, then finish the
 # install in that user's systemd context. Called only from the interactive
 # root path; exits the script.
@@ -2301,11 +2316,7 @@ func_assisted_user_setup ()
     runtime="/run/user/$uid"
 
     # Lingering starts the user's systemd + D-Bus without a login session.
-    if command -v loginctl >/dev/null 2>&1; then
-        loginctl enable-linger "$newuser" 2>/dev/null || pr_warn "enable-linger failed; the service may stop on logout."
-    else
-        pr_warn "'loginctl' not found; cannot enable lingering automatically."
-    fi
+    installer_enable_linger "$newuser" || :
 
     # Wait for the per-user bus socket to appear (logind creates it asynchronously).
     i=0
@@ -4492,8 +4503,8 @@ EOF
         sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
 
         # Enable lingering for the user so services persist after logout
-        if command -v loginctl > /dev/null; then
-            loginctl enable-linger "$actual_user" 2>/dev/null && pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+        if installer_enable_linger "$actual_user"; then
+            pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
         fi
     fi
 }
