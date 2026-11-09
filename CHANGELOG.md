@@ -1,5 +1,14 @@
 # Changelog
 
+## [v3.23.0-fix.35.8]
+
+_Released 2026-11-08. Based on v3.23.0-fix.35.7. Notes: `releases/v3.23.0-fix.35.8.md`._
+
+### Fixed
+
+- **The hotswap unit-type message names the old installer script** (`internal/urnettools/hotswap.go`). It says older versions of `Provider_Install_Linux.sh` wrote `Type=simple`.
+- **CI is green again so the Docker image builds.** The installer test stub handles `sudo -n` and the suite no longer stops early (`scripts/test_provider_install.sh`). The hidden port holder extender test stubs provider discovery, and a new test covers the anonymous elevation target (`internal/urnettools/extender_setup_regression_test.go`, `internal/urnettools/extender_elevation_test.go`).
+
 ## [v3.23.0-fix.35.7]
 
 _Released 2026-11-08. Based on v3.23.0-fix.35.6. Notes: `releases/v3.23.0-fix.35.7.md`._
