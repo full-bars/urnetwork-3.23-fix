@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Exercise privileged installer helpers with shell stubs."""
-from pathlib import Path
+import fcntl
 import os
+from pathlib import Path
+import pty
 import subprocess
 import tempfile
+import termios
 import unittest
 
 INSTALLER = Path(__file__).resolve().parent / "Provider_Install_Linux.sh"
@@ -46,14 +49,72 @@ class PrivilegedSteps(unittest.TestCase):
                     self.assertNotEqual(result.returncode, 0)
                     self.assertIn(f"SUDO:-n {INSTALLER} -y optimize", result.stdout)
 
-    def test_restart_confirmation_does_not_prompt_on_pipe(self):
+    def _run_confirm_restart_pty(self, user_input: bytes):
+        master, slave = pty.openpty()
+        pipe_r, pipe_w = os.pipe()
         harness = '''
 FORCE=0
-pr_err() { printf '%s\\n' "$*"; }
+hot_restart_is_enabled() { return 1; }
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+''' + function("confirm_restart") + '\nconfirm_restart test_action\n'
+
+        def preexec():
+            os.setsid()
+            fcntl.ioctl(slave, termios.TIOCSCTTY, 0)
+
+        proc = subprocess.Popen(
+            ["sh", "-c", harness],
+            stdin=pipe_r,
+            stdout=slave,
+            stderr=slave,
+            preexec_fn=preexec,
+            close_fds=False,
+        )
+        os.close(slave)
+        os.close(pipe_r)
+        os.write(pipe_w, b"piped stdin payload\n")
+        os.close(pipe_w)
+
+        os.write(master, user_input)
+        chunks = []
+        while True:
+            try:
+                data = os.read(master, 1024)
+                if not data:
+                    break
+                chunks.append(data)
+            except OSError:
+                break
+        proc.wait()
+        os.close(master)
+        output = b"".join(chunks).decode(errors="replace").replace("\r\n", "\n")
+        return proc.returncode, output
+
+    def test_restart_confirmation_piped_stdin_with_pty_answers_yes(self):
+        rc, out = self._run_confirm_restart_pty(b"y\n")
+        self.assertEqual(rc, 0, f"Expected 0 on 'y' response, got {rc}. Output:\n{out}")
+        self.assertIn("Are you absolutely sure you want to proceed and restart the provider?", out)
+        self.assertNotIn("Cannot ask for restart confirmation without a terminal", out)
+
+    def test_restart_confirmation_piped_stdin_with_pty_answers_no(self):
+        rc, out = self._run_confirm_restart_pty(b"n\n")
+        self.assertNotEqual(rc, 0)
+        self.assertIn("Command aborted. Provider was NOT restarted and your warmup is safe.", out)
+
+    def test_restart_confirmation_refuses_without_controlling_terminal(self):
+        harness = '''
+FORCE=0
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 ''' + function("confirm_restart") + '\nconfirm_restart test\n'
-        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        result = subprocess.run(
+            ["sh", "-c", harness],
+            preexec_fn=os.setsid,
+            text=True,
+            capture_output=True,
+        )
         self.assertNotEqual(result.returncode, 0)
-        self.assertIn("without a terminal", result.stdout)
+        self.assertIn("without a terminal; rerun interactively or use -y to approve", result.stdout)
         self.assertNotIn("Are you absolutely sure", result.stdout)
 
     def test_linger_failure_prints_error_and_recovery(self):

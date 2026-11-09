@@ -3405,7 +3405,7 @@ confirm_restart ()
     if [ "$FORCE" = "1" ]; then
         return 0
     fi
-    if [ ! -t 0 ] || [ ! -t 1 ]; then
+    if ! ( : < /dev/tty ) 2>/dev/null; then
         pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or use -y to approve. The provider was not restarted."
         exit 1
     fi
