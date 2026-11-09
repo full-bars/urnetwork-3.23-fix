@@ -10,6 +10,31 @@ import (
 	"strings"
 )
 
+const extenderSysctlPortStartPath = "/proc/sys/net/ipv4/ip_unprivileged_port_start"
+
+var updateSysctlReadFile = os.ReadFile
+
+// extenderSysctlRouteActive reports whether port 443 is available to unprivileged
+// users via net.ipv4.ip_unprivileged_port_start <= 443 on Linux.
+func extenderSysctlRouteActive(platform ...string) bool {
+	plat := runtime.GOOS
+	if len(platform) > 0 && platform[0] != "" {
+		plat = platform[0]
+	}
+	if plat != "linux" {
+		return false
+	}
+	data, err := updateSysctlReadFile(extenderSysctlPortStartPath)
+	if err != nil {
+		return false
+	}
+	val, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil {
+		return false
+	}
+	return val >= 0 && val <= 443
+}
+
 // installProviderBinary restores the Linux extender capability after a swap.
 // Tool self-updates use installBinary directly and do not need this capability.
 func installProviderBinary(src, dst, user string) error {
@@ -23,11 +48,15 @@ func installProviderBinaryWithRunner(src, dst, user, platform string, warnings i
 }
 
 func installProviderBinaryWithRunnerAndStatus(src, dst, user, platform string, warnings io.Writer, run func(string, ...string) ([]byte, error), statusPath string) error {
-	hadCapability := platform == "linux" && extenderCapabilityPresent(dst, run)
+	sysctlActive := extenderSysctlRouteActive(platform)
+	var hadCapability bool
+	if platform == "linux" && !sysctlActive {
+		hadCapability = extenderCapabilityPresent(dst, run)
+	}
 	if err := installBinary(src, dst, user); err != nil {
 		return err
 	}
-	if platform != "linux" {
+	if platform != "linux" || sysctlActive {
 		return nil
 	}
 	quoted := "'" + strings.ReplaceAll(dst, "'", "'\\''") + "'"
