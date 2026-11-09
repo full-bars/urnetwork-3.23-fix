@@ -53,7 +53,7 @@ systemctl() {
     esac
     return 0
 }
-''' + script[start:end] + '\ninstall_systemd_units\n'
+''' + script[start:end] + '\ninstall_systemd_units prepare\ninstall_systemd_units\n'
             result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp, FAILURE=failure, STOPPED=str(int(stopped))), text=True, capture_output=True)
             unit = (root / "units/urnetwork.service").read_text()
             binary = (root / "bin/urnetwork").read_text()
@@ -89,7 +89,7 @@ pr_warn() { printf 'WARN: %s\n' "$*"; }
 pr_err() { printf 'ERROR: %s\n' "$*"; }
 cp() { printf 'simulated copy failure\n' >&2; return 1; }
 systemctl() { printf '%s\n' "$*" >> "$ROOT/calls"; return 0; }
-''' + script[start:end] + '\ninstall_systemd_units\n'
+''' + script[start:end] + '\ninstall_systemd_units prepare\ninstall_systemd_units\n'
             result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp), text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0, result.stdout)
             self.assertEqual(unit.read_text(), "[Service]\nType=simple\n")
@@ -132,7 +132,7 @@ systemctl() {
     esac
     return 0
 }
-''' + script[start:end] + '\ninstall_systemd_units\n'
+''' + script[start:end] + '\ninstall_systemd_units prepare\ninstall_systemd_units\n'
             env = dict(os.environ, ROOT=tmp, FAILURE="service")
             first = subprocess.run(["sh", "-c", harness], env=env, text=True, capture_output=True)
             self.assertNotEqual(first.returncode, 0, first.stdout)

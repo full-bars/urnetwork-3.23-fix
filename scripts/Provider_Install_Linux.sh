@@ -1536,13 +1536,13 @@ remove_tool_links ()
 
 install_systemd_units ()
 {
-    start="$systemd_units_stopped"
-
-    sanitize_restart_dropins
-
-    pr_info "Installing urnetwork.service in %s" "$systemd_service"
-    mkdir -p "$systemd_userdir"
+    if [ "${1:-}" = prepare ]; then
+    mkdir -p "$systemd_userdir" || {
+        pr_err "Could not create the systemd user directory; the binary and unit remain unchanged. Run: mkdir -p '%s'" "$systemd_userdir"
+        exit 1
+    }
     unit_backup_made=0
+    unit_changed=1
     unit_candidate=$(mktemp "$systemd_service.new.XXXXXXXX") || {
         pr_err "Could not create a temporary systemd unit; existing unit was not replaced. Check permissions with: ls -ld '%s'" "$systemd_userdir"
         exit 1
@@ -1566,6 +1566,7 @@ WantedBy=default.target
 EOF
     if [ -f "$systemd_service" ] && cmp -s "$systemd_service" "$unit_candidate"; then
         rm -f "$unit_candidate"
+        unit_changed=0
     else
         if [ -f "$systemd_service" ]; then
             unit_backup_tmp=$(mktemp "$systemd_service.backup.XXXXXXXX") || {
@@ -1575,7 +1576,7 @@ EOF
             }
             if ! cp -p "$systemd_service" "$unit_backup_tmp"; then
                 pr_err "Could not back up the previous systemd unit; it remains in place. Run: cp -p '%s' '%s'" "$systemd_service" "$systemd_service.old"
-                pr_err "The provider binary may already have been replaced; check '%s' and '%s'." "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old"
+                pr_err "The provider binary and systemd unit remain unchanged."
                 rm -f "$unit_candidate" "$unit_backup_tmp"
                 exit 1
             fi
@@ -1590,6 +1591,14 @@ EOF
             pr_err "Could not set the new systemd unit permissions. Run: chmod 644 '%s'" "$unit_candidate"
             exit 1
         fi
+    fi
+    return
+    fi
+
+    start="$systemd_units_stopped"
+    sanitize_restart_dropins
+    pr_info "Installing urnetwork.service in %s" "$systemd_service"
+    if [ "$unit_changed" -eq 1 ]; then
         if [ -e "$systemd_service" ]; then
             if ! mv -f "$unit_candidate" "$systemd_service"; then
                 pr_err "Could not install the new systemd unit. Run: mv -f '%s' '%s'" "$unit_candidate" "$systemd_service"
@@ -2943,6 +2952,7 @@ do_install ()
     fi
 	
     if [ "$has_systemd" -eq 1 ]; then
+        install_systemd_units prepare
         stop_systemd_units
     fi
 
