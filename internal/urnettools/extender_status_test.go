@@ -3,6 +3,7 @@ package urnettools
 import (
 	"bytes"
 	"errors"
+	"os"
 	"strings"
 	"syscall"
 	"testing"
@@ -201,5 +202,104 @@ func TestExtenderAboutPrintsWithoutAProvider(t *testing.T) {
 				t.Errorf("%s output is missing %q", word, want)
 			}
 		}
+	}
+}
+
+func TestExtenderStatusPortRoute(t *testing.T) {
+	for _, tc := range []struct {
+		name      string
+		running   bool
+		bindRoute string
+		want      string
+	}{
+		{
+			name:      "sysctl",
+			running:   true,
+			bindRoute: "sysctl: port is available without a file capability (ip_unprivileged_port_start=443)",
+			want:      "Port route:        sysctl: port is available without a file capability (ip_unprivileged_port_start=443)",
+		},
+		{
+			name:      "capability",
+			running:   true,
+			bindRoute: "capability on the binary (cap_net_bind_service)",
+			want:      "Port route:        capability on the binary (cap_net_bind_service)",
+		},
+		{
+			name:      "neither",
+			running:   true,
+			bindRoute: "neither",
+			want:      "Port route:        neither",
+		},
+		{
+			name:      "sysctl_when_off",
+			running:   false,
+			bindRoute: "sysctl: port is available without a file capability (ip_unprivileged_port_start=443)",
+			want:      "Port route:        sysctl: port is available without a file capability (ip_unprivileged_port_start=443)",
+		},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			out := renderExtender(t, ExtenderReading{
+				Source:    SourceControlSocket,
+				Known:     true,
+				Setting:   "on",
+				Running:   tc.running,
+				RoleState: "serving",
+				BindRoute: tc.bindRoute,
+			})
+			if !strings.Contains(out, tc.want) {
+				t.Fatalf("output missing %q:\n%s", tc.want, out)
+			}
+		})
+	}
+}
+
+func TestDetectBindRoute(t *testing.T) {
+	// 1. Sysctl <= 443
+	got := detectBindRouteWith("linux", "/bin/urnetwork", "provider", func(path string) ([]byte, error) {
+		if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
+			return []byte("443\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}, func(string, ...string) ([]byte, error) { return nil, nil })
+	if !strings.Contains(got, "sysctl") || !strings.Contains(got, "port is available without a file capability") {
+		t.Fatalf("expected sysctl route, got %q", got)
+	}
+
+	// 2. Capability
+	got = detectBindRouteWith("linux", "/bin/urnetwork", "provider", func(path string) ([]byte, error) {
+		if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
+			return []byte("1024\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}, func(name string, args ...string) ([]byte, error) {
+		if name == "getcap" {
+			return []byte("/bin/urnetwork cap_net_bind_service=ep\n"), nil
+		}
+		return nil, nil
+	})
+	if !strings.Contains(got, "capability on the binary") {
+		t.Fatalf("expected capability on the binary, got %q", got)
+	}
+
+	// 3. Neither
+	got = detectBindRouteWith("linux", "/bin/urnetwork", "provider", func(path string) ([]byte, error) {
+		if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
+			return []byte("1024\n"), nil
+		}
+		return nil, os.ErrNotExist
+	}, func(name string, args ...string) ([]byte, error) {
+		if name == "getcap" {
+			return []byte(""), nil
+		}
+		return nil, nil
+	})
+	if got != "neither" {
+		t.Fatalf("expected neither, got %q", got)
+	}
+
+	// 4. Non-linux
+	got = detectBindRouteWith("freebsd", "/bin/urnetwork", "provider", nil, nil)
+	if got != "" {
+		t.Fatalf("expected empty for freebsd, got %q", got)
 	}
 }

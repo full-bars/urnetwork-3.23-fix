@@ -5,7 +5,10 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strconv"
 	"strings"
 	"syscall"
 	"time"
@@ -76,6 +79,47 @@ type ExtenderReading struct {
 	Served        ExtenderServed   `json:"served"`
 
 	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+
+	BindRoute string `json:"bind_route,omitempty"`
+}
+
+var (
+	portRoutePlatformFn = func() string { return runtime.GOOS }
+	portRouteReadFileFn = os.ReadFile
+	portRouteExecCmdFn  = func(name string, args ...string) ([]byte, error) {
+		return exec.Command(name, args...).CombinedOutput()
+	}
+)
+
+func detectBindRoute(binary, user string) string {
+	return detectBindRouteWith(portRoutePlatformFn(), binary, user, portRouteReadFileFn, portRouteExecCmdFn)
+}
+
+func detectBindRouteWith(platform, binary, user string, readFile func(string) ([]byte, error), execCmd func(string, ...string) ([]byte, error)) string {
+	if platform != "linux" {
+		return ""
+	}
+	if user == "root" {
+		return "root (no capability or sysctl needed)"
+	}
+	// 1. Sysctl
+	if readFile != nil {
+		if data, err := readFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+			if val, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && val >= 0 && val <= 443 {
+				return fmt.Sprintf("sysctl: port is available without a file capability (ip_unprivileged_port_start=%d)", val)
+			}
+		}
+	}
+	// 2. Capability on binary
+	if binary != "" && execCmd != nil {
+		if out, err := execCmd("getcap", binary); err == nil {
+			if linuxHasBindCapability(binary, string(out)) {
+				return "capability on the binary (cap_net_bind_service)"
+			}
+		}
+	}
+	// 3. Neither
+	return "neither"
 }
 
 var socketExtenderFn = queryExtenderFromSocket
@@ -112,10 +156,14 @@ func extenderSocketError(sockPath string, err error) error {
 
 // ReadExtenderStatus asks the provider; a failure is the unavailable reading.
 func ReadExtenderStatus(p Provider) ExtenderReading {
-	if reading, err := socketExtenderFn(p); err == nil && reading != nil {
-		return *reading
+	reading := ExtenderReading{Source: SourceUnknown}
+	if r, err := socketExtenderFn(p); err == nil && r != nil {
+		reading = *r
 	}
-	return ExtenderReading{Source: SourceUnknown}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
+	}
+	return reading
 }
 
 func extenderFamilyName(ipVersion int) string {
@@ -199,6 +247,9 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 			reason = "not running"
 		}
 		fmt.Fprintf(w, "  State:             OFF: %s\n", reason)
+		if r.BindRoute != "" {
+			fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+		}
 		fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
 		return
 	}
@@ -207,6 +258,9 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		state += " (waiting for the direct slot to sign in before asking to be listed)"
 	}
 	fmt.Fprintf(w, "  State:             %s\n", state)
+	if r.BindRoute != "" {
+		fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+	}
 
 	var ports []string
 	for _, port := range r.Ports {

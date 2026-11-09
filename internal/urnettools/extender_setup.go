@@ -46,6 +46,11 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 			fmt.Fprintln(out, "Warning: this removes privileged-port protection for all users on this host and persists it in /etc/sysctl.conf. Record the previous value first. To undo, remove the added assignment from /etc/sysctl.conf and restore the previous value with sysctl net.inet.ip.portrange.reservedhigh=<previous value>.")
 			break
 		}
+		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
+			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
+			fmt.Fprintln(out, "Recovery command: sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system")
+			break
+		}
 	}
 	fmt.Fprintln(out, "Commands to run:")
 	for _, c := range plan {
@@ -91,6 +96,9 @@ type ExtenderSetupOptions struct {
 	ConfirmFunc func() (bool, error)
 	ElevateFunc func(args []string) error
 	Argv        []string
+
+	Route           string
+	SelectRouteFunc func() (string, error)
 }
 
 // RunExtenderSetup executes the extender setup workflow in order:
@@ -246,6 +254,58 @@ ruleset-specific; use the procedures for your existing policy.`)
 	}
 
 	// STEP 3: Build the exact command plan and explain which ports and why
+	var route string
+	if len(needPlatformTargets) > 0 && platform == "linux" {
+		route = opts.Route
+		if route == "" {
+			if opts.SelectRouteFunc != nil {
+				r, err := opts.SelectRouteFunc()
+				if err != nil {
+					return fmt.Errorf("route selection cancelled: %w", err)
+				}
+				route = r
+			} else if os.Getenv(urnetElevatedEnv) == "1" || opts.ConfirmFunc != nil {
+				// In an elevated re-run or when an execution confirmation double is supplied,
+				// the route was already selected or defaults to the existing capability route.
+				route = "capability"
+			} else if !opts.Yes && !opts.Force && (opts.NonInteractive || !stdinIsInteractive()) {
+				return fmt.Errorf("extender setup requires an interactive TTY to choose between sysctl and capability routes; cannot run unattended (use --route=sysctl|capability|skip)")
+			} else if !opts.Yes && !opts.Force {
+				r, err := promptExtenderRoute(errOut)
+				if err != nil {
+					return err
+				}
+				route = r
+			} else {
+				// Non-interactive run with explicit --yes/--force defaults to existing capability route
+				route = "capability"
+			}
+		}
+		route = strings.ToLower(strings.TrimSpace(route))
+		switch route {
+		case "sysctl", "1":
+			route = "sysctl"
+			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+				sp.Route = "sysctl"
+			}
+		case "capability", "cap", "2":
+			route = "capability"
+			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+				sp.Route = "capability"
+			}
+		case "skip", "3":
+			route = "skip"
+			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+				sp.Route = "skip"
+			}
+			needPlatformTargets = nil
+			fmt.Fprintln(out, "extender: port 443 binding setup skipped")
+		default:
+			return fmt.Errorf("invalid route %q (must be sysctl, capability, or skip)", route)
+		}
+		opts.Route = route
+	}
+
 	var plan []setupCommand
 	seenCmd := map[string]bool{}
 	addCmd := func(c setupCommand) {
@@ -265,7 +325,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 				addCmd(c)
 			}
 		} else {
-			for _, c := range fallbackPlatformPlan(platform, p) {
+			for _, c := range fallbackPlatformPlan(platform, p, route) {
 				addCmd(c)
 			}
 		}
@@ -317,6 +377,18 @@ ruleset-specific; use the procedures for your existing policy.`)
 		args := opts.Argv
 		if len(args) == 0 {
 			args = []string{"extender", "setup"}
+		}
+		if opts.Route != "" {
+			hasRoute := false
+			for _, a := range args {
+				if strings.HasPrefix(a, "--route") {
+					hasRoute = true
+					break
+				}
+			}
+			if !hasRoute {
+				args = append(args, "--route="+opts.Route)
+			}
 		}
 		return elevateFn(args)
 	}
@@ -392,11 +464,49 @@ ruleset-specific; use the procedures for your existing policy.`)
 	return nil
 }
 
-func fallbackPlatformPlan(platform string, p Provider) []setupCommand {
+func promptExtenderRoute(w io.Writer) (string, error) {
+	fmt.Fprintln(w, `Port 443 binding setup (Linux):
+An unprivileged provider cannot bind TCP 443 without configuration.
+
+Available routes:
+  1) sysctl (recommended for single-purpose hosts)
+     Configures net.ipv4.ip_unprivileged_port_start=443 via /etc/sysctl.d/99-urnetwork-extender.conf
+     Trade-off: allows any local user on this host to bind ports 443 and above.
+     Survives provider updates and preserves process dumpability (/proc/<pid>/exe readable).
+  2) capability
+     Sets cap_net_bind_service=+ep on the provider binary.
+     Restricted to this binary, but must be re-applied after each update and makes the
+     process non-dumpable (/proc/<pid>/exe unreadable by unprivileged processes).
+  3) skip
+     Do not configure port binding now.`)
+	ans, err := confirmStdinRead("Select route [1=sysctl (recommended), 2=capability, 3=skip]: ")
+	if err != nil {
+		return "", fmt.Errorf("extender setup cancelled; no route selected: %w", err)
+	}
+	trimmed := strings.ToLower(strings.TrimSpace(ans))
+	switch trimmed {
+	case "1", "sysctl", "s":
+		return "sysctl", nil
+	case "2", "capability", "c", "cap":
+		return "capability", nil
+	case "3", "skip":
+		return "skip", nil
+	default:
+		return "", fmt.Errorf("extender setup cancelled; invalid route %q", trimmed)
+	}
+}
+
+func fallbackPlatformPlan(platform string, p Provider, route string) []setupCommand {
 	switch platform {
 	case "linux":
-		if p.User == "root" {
+		if p.User == "root" || route == "skip" {
 			return nil
+		}
+		if route == "sysctl" {
+			return []setupCommand{
+				{name: "sh", args: []string{"-c", "echo net.ipv4.ip_unprivileged_port_start=443 > " + extenderSysctlDropin}},
+				{name: "sysctl", args: []string{"--system"}},
+			}
 		}
 		bin := p.Binary
 		if bin == "" {
@@ -456,9 +566,26 @@ func warnUnitNoNewPrivileges(out io.Writer, cfg PlatformConfigurer, p Provider) 
 
 func setupManualArgs(opts ExtenderSetupOptions) []string {
 	if len(opts.Argv) == 0 {
-		return []string{"extender", "setup"}
+		base := []string{"extender", "setup"}
+		if opts.Route != "" {
+			base = append(base, "--route="+opts.Route)
+		}
+		return base
 	}
-	return opts.Argv
+	base := append([]string{}, opts.Argv...)
+	if opts.Route != "" {
+		hasRoute := false
+		for _, a := range base {
+			if strings.HasPrefix(a, "--route") {
+				hasRoute = true
+				break
+			}
+		}
+		if !hasRoute {
+			base = append(base, "--route="+opts.Route)
+		}
+	}
+	return base
 }
 
 // formatSetupSudoCommand is the exact command to run by hand.

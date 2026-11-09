@@ -20,6 +20,7 @@
 | `[proxy][resources] low memory headroom`, or kernel OOM kills | The box is short of memory. Connected clients drive memory, so this can happen with no change in the proxy count | Read the decisions with `urnet-tools autopilot log`. Lower the pool with `urnet-tools proxy trim <N>`, or let the provider cap itself after a kill with `urnet-tools set oom-cap on` (default is `shadow`: it logs only). |
 | `last restart: unclean` after a plain restart | Expected in 32.8: a plain `systemctl restart` reads `unclean`, the same as a crash | An in-place `urnet-tools update` reads `update`. A real crash also reads `unclean`. Telling a plain restart from a crash is tracked in [#707](https://github.com/full-bars/urnetwork-3.23-fix/issues/707). |
 | `last restart: unclean` after an update on a build older than 32.8 | Old builds read a version change as a crash | Fixed in 32.8: an upgrade reads `update`. |
+| Update verification reports `read /proc/<pid>/exe: permission denied` | Binary has file capabilities (`cap_net_bind_service=ep`), marking the process non-dumpable | Switch to sysctl route: run `urnet-tools extender setup` and choose sysctl (or configure `net.ipv4.ip_unprivileged_port_start=443`), then remove binary capability with `sudo setcap -r <binary>`. See [Updater image verification and process dumpability](#8-updater-image-verification-and-process-dumpability). |
 | Update restarts instead of hotswapping, `low_memory` outcome | The box cannot hold two providers at once | Expected on a small box. See [HotSwap](/full-bars/urnetwork-3.23-fix/wiki/HotSwap). |
 
 > [!NOTE]
@@ -250,3 +251,25 @@ These come from the hotkey delegation, the claim daemons and the fleet group. Th
 | `fleet status does not match the canonical manifest` | The chain differs from the manifest (a missing publish or binding, or a newer generation). Re-run the write, then status again. |
 | `N of M authenticated operators do not adopt the head yet; ...` | The hotkey submission failed at the operator it resolved. Set the same message and signature again to retry. |
 | `private seed file custody is unsupported on this platform` | Seed-bearing commands (`wallet hotkey`, the `fleet` writes) run on Linux or macOS only. |
+
+---
+
+## 8. Updater Image Verification and Process Dumpability
+
+**Symptom**: During `urnet-tools update`, the update fails or reports an image verification warning with `read /proc/<pid>/exe: permission denied`.
+
+**Cause**: When the extender capability route is used, the provider binary carries a Linux file capability (`setcap cap_net_bind_service=+ep`). Under Linux kernel security rules (`prctl(PR_SET_DUMPABLE, 0)`), any process started from a file with capabilities is marked non-dumpable. For non-dumpable processes, the `/proc/<pid>/exe` symlink is restricted to root ownership with mode 0000, preventing unprivileged users from reading it. When the updater runs unprivileged and verifies the running process image via `/proc/<pid>/exe`, the readlink check fails with `permission denied`.
+
+**Fix**: Use the sysctl route instead of the file capability route.
+1. Run `urnet-tools extender setup` on an interactive terminal and select the recommended sysctl route, or manually write `/etc/sysctl.d/99-urnetwork-extender.conf`:
+   ```sh
+   echo 'net.ipv4.ip_unprivileged_port_start=443' | sudo tee /etc/sysctl.d/99-urnetwork-extender.conf
+   sudo sysctl --system
+   ```
+2. Remove the file capability from the provider binary:
+   ```sh
+   sudo setcap -r <path-to-provider-binary>
+   ```
+3. Restart the provider service.
+
+Because the binary no longer carries a file capability, the kernel keeps the process dumpable, `/proc/<pid>/exe` remains readable by the service user, and `urnet-tools update` verifies the running image without permission errors.
