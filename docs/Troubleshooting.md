@@ -261,15 +261,14 @@ These come from the hotkey delegation, the claim daemons and the fleet group. Th
 **Cause**: When the extender capability route is used, the provider binary carries a Linux file capability (`setcap cap_net_bind_service=+ep`). Under Linux kernel security rules (`prctl(PR_SET_DUMPABLE, 0)`), any process started from a file with capabilities is marked non-dumpable. For non-dumpable processes, the `/proc/<pid>/exe` symlink is restricted to root ownership with mode 0000, preventing unprivileged users from reading it. When the updater runs unprivileged and verifies the running process image via `/proc/<pid>/exe`, the readlink check fails with `permission denied`.
 
 **Fix**: Use the sysctl route instead of the file capability route.
-1. Run `urnet-tools extender setup` on an interactive terminal and select the recommended sysctl route, or manually write `/etc/sysctl.d/99-urnetwork-extender.conf`:
+1. Run `urnet-tools extender setup --route=sysctl` on an interactive terminal. Before applying it, setup records the live prior value and prints a recovery command that removes `/etc/sysctl.d/99-urnetwork-extender.conf` and restores the live value with `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=<prior value>`. If the prior value cannot be read, it prints 1024 as the usual default and says the prior value is unknown. For manual setup, record your host's live value *before* making a change:
    ```sh
+   cat /proc/sys/net/ipv4/ip_unprivileged_port_start
    echo 'net.ipv4.ip_unprivileged_port_start=443' | sudo tee /etc/sysctl.d/99-urnetwork-extender.conf
    sudo sysctl --system
    ```
-2. Remove the file capability from the provider binary:
-   ```sh
-   sudo setcap -r <path-to-provider-binary>
-   ```
-3. Restart the provider service.
+   To undo a manual change, remove the drop-in and restore the value you recorded with `sudo sysctl -w net.ipv4.ip_unprivileged_port_start=<recorded value>`. `sysctl --system` alone does not restore the live value after removing the file.
+2. Check `getcap -n <path-to-provider-binary>` first. If the bind capability is its only file capability, remove it with `sudo setcap -r <path-to-provider-binary>`. That command removes *all* file capabilities; if others are present, preserve them and remove the bind capability manually rather than running `-r`.
+3. Restart or hand off the provider. Removing a file capability does not change an already-running process.
 
 Because the binary no longer carries a file capability, the kernel keeps the process dumpable, `/proc/<pid>/exe` remains readable by the service user, and `urnet-tools update` verifies the running image without permission errors.

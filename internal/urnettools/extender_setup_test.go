@@ -149,6 +149,7 @@ To                         Action      From
 			var out, errOut bytes.Buffer
 			err := RunExtenderSetup(ExtenderSetupOptions{
 				Platform:       "linux",
+				Route:          "capability",
 				Yes:            tc.yes,
 				Force:          tc.force,
 				NonInteractive: tc.nonInteractive,

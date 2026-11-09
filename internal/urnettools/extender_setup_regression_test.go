@@ -135,6 +135,7 @@ func TestExtenderSetup_UDPBusyOnly(t *testing.T) {
 		Stdout:      &stdout,
 		Stderr:      &stderr,
 		Yes:         true,
+		Route:       "capability",
 	})
 	if err != nil {
 		t.Fatalf("expected success with UDP busy, got err: %v", err)
@@ -177,6 +178,7 @@ func TestExtenderSetup_AlreadyConfigured(t *testing.T) {
 		FirewallMgr:    fwMgr,
 		IsRoot:         func() bool { return false },
 		NonInteractive: true,
+		Route:          "capability",
 		Stdout:         &stdout,
 		Stderr:         &stderr,
 	})
@@ -199,6 +201,7 @@ func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
 			Platform: "linux", PlatformCfg: cfg, IsRoot: func() bool { return root },
 			Stdout: &bytes.Buffer{}, Stderr: &bytes.Buffer{}, Yes: true, Force: true,
 			NonInteractive: true,
+			Route:          "capability",
 			ElevateFunc:    func([]string) error { t.Error("unexpected elevation"); return nil },
 			LookPath:       func(string) (string, error) { return "/usr/bin/sudo", nil },
 			PortChecker: &PortChecker{Platform: "linux", ExecCmd: func(name string, args ...string) ([]byte, error) {
@@ -375,6 +378,7 @@ func TestExtenderBindOutcomes(t *testing.T) {
 func setupRegressionOptions() ExtenderSetupOptions {
 	return ExtenderSetupOptions{
 		Platform:    "linux",
+		Route:       "capability",
 		PlatformCfg: &mockPlatformConfigurer{platform: "linux"},
 		IsRoot:      func() bool { return false },
 		Stdout:      &bytes.Buffer{},

@@ -10,6 +10,14 @@ import (
 	"testing"
 )
 
+func TestExtenderSysctlRecoveryUnknownAndApplyFailure(t *testing.T) {
+	cfg := &SystemPlatformConfigurer{PlatformName: "linux", Route: "sysctl", ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }, WriteFile: func(string, []byte, os.FileMode) error { return nil }, ExecCmd: func(string, ...string) ([]byte, error) { return []byte("denied"), os.ErrPermission }}
+	_, _, err := cfg.ApplyRequirement("/provider", "provider")
+	if err == nil || !strings.Contains(err.Error(), "sysctl -w net.ipv4.ip_unprivileged_port_start=1024") || !strings.Contains(err.Error(), "prior value unknown") {
+		t.Fatalf("missing safe recovery on apply failure: %v", err)
+	}
+}
+
 func TestExtenderSysctlFallback(t *testing.T) {
 	for _, value := range []string{"1024", "invalid", "-1"} {
 		t.Run(value, func(t *testing.T) {
@@ -58,7 +66,7 @@ func TestExtenderSysctlPlanAndApply(t *testing.T) {
 	var writtenPath string
 	var writtenData []byte
 	var execCalls []string
-	liveVal := "1024\n"
+	liveVal := "1234\n"
 
 	cfg := &SystemPlatformConfigurer{
 		PlatformName: "linux",
@@ -111,7 +119,7 @@ func TestExtenderSysctlPlanAndApply(t *testing.T) {
 	if !strings.Contains(string(writtenData), "net.ipv4.ip_unprivileged_port_start=443") {
 		t.Fatalf("written data %q does not contain setting", string(writtenData))
 	}
-	if !strings.Contains(desc, "sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system") {
+	if !strings.Contains(desc, "sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1234") {
 		t.Fatalf("desc missing undo recovery command: %s", desc)
 	}
 }
@@ -132,7 +140,7 @@ func TestExtenderSetupSysctlRouteSelection(t *testing.T) {
 			var out, errOut bytes.Buffer
 			var mutating []string
 			var writtenFile string
-			liveVal := "1024\n"
+			liveVal := "1234\n"
 			capSet := false
 
 			execFake := func(name string, args ...string) ([]byte, error) {
@@ -205,7 +213,7 @@ func TestExtenderSetupSysctlRouteSelection(t *testing.T) {
 				if writtenFile != "/etc/sysctl.d/99-urnetwork-extender.conf" {
 					t.Fatalf("expected sysctl dropin write, got %q", writtenFile)
 				}
-				if !strings.Contains(out.String(), "sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system") {
+				if !strings.Contains(out.String(), "Recovery command: sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=1234") || strings.Contains(out.String(), "Recovery command: sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system") {
 					t.Fatalf("output missing recovery undo command: %s", out.String())
 				}
 			case "capability":
@@ -375,6 +383,7 @@ func TestExtenderSetupSysctlIdempotence(t *testing.T) {
 		Yes:         true,
 		IsRoot:      func() bool { return true },
 		Stdout:      &out,
+		Route:       "sysctl",
 		PortChecker: &PortChecker{Platform: "linux", ExecCmd: func(string, ...string) ([]byte, error) { return nil, nil }},
 		PlatformCfg: cfg,
 		FirewallMgr: &FirewallManager{
@@ -434,6 +443,7 @@ func TestExtenderSetupSysctlAlreadyLowerValue(t *testing.T) {
 		Yes:         true,
 		IsRoot:      func() bool { return true },
 		Stdout:      &out,
+		Route:       "sysctl",
 		PortChecker: &PortChecker{Platform: "linux", ExecCmd: func(string, ...string) ([]byte, error) { return nil, nil }},
 		PlatformCfg: cfg,
 		FirewallMgr: &FirewallManager{

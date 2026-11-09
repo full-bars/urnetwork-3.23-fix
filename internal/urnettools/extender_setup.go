@@ -37,7 +37,7 @@ func (c setupCommand) String() string {
 }
 
 // executeExtenderSetupPlan prints and confirms the complete plan before running it.
-func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bool, confirm func() (bool, error), run func(setupCommand) error) error {
+func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bool, confirm func() (bool, error), run func(setupCommand) error, recovery ...string) error {
 	if len(plan) == 0 {
 		return nil
 	}
@@ -48,7 +48,11 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 		}
 		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
 			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
-			fmt.Fprintln(out, "Recovery command: sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system")
+			undo := (&SystemPlatformConfigurer{}).sysctlRecovery()
+			if len(recovery) > 0 {
+				undo = recovery[0]
+			}
+			fmt.Fprintln(out, "Recovery command:", undo)
 			break
 		}
 	}
@@ -97,8 +101,10 @@ type ExtenderSetupOptions struct {
 	ElevateFunc func(args []string) error
 	Argv        []string
 
-	Route           string
-	SelectRouteFunc func() (string, error)
+	Route                       string
+	SelectRouteFunc             func() (string, error)
+	InteractiveFunc             func() bool
+	RemoveCapabilityConfirmFunc func() (bool, error)
 }
 
 // RunExtenderSetup executes the extender setup workflow in order:
@@ -160,6 +166,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 	if isRootFn == nil {
 		isRootFn = isPrivileged
 	}
+	opts.IsRoot = isRootFn
 
 	lookPathFn := opts.LookPath
 	if lookPathFn == nil {
@@ -216,6 +223,45 @@ ruleset-specific; use the procedures for your existing policy.`)
 		fmt.Fprintf(errOut, "warn: %s\n", w)
 	}
 
+	// Select the route before checking whether that particular route is satisfied.
+	// Root providers do not need a low-port route.
+	route := strings.ToLower(strings.TrimSpace(opts.Route))
+	needsRoute := false
+	for _, p := range targets {
+		needsRoute = needsRoute || p.User != "root"
+	}
+	if platform == "linux" && needsRoute {
+		if route == "" {
+			if opts.SelectRouteFunc != nil {
+				route, err = opts.SelectRouteFunc()
+				if err != nil {
+					return fmt.Errorf("route selection cancelled: %w", err)
+				}
+			} else if opts.NonInteractive || !stdinIsInteractive() {
+				return fmt.Errorf("extender setup requires an interactive TTY to choose a route; use --route=sysctl|capability|skip")
+			} else {
+				route, err = promptExtenderRoute(errOut)
+				if err != nil {
+					return err
+				}
+			}
+		}
+		switch strings.ToLower(strings.TrimSpace(route)) {
+		case "sysctl", "1":
+			route = "sysctl"
+		case "capability", "cap", "2":
+			route = "capability"
+		case "skip", "3":
+			route = "skip"
+		default:
+			return fmt.Errorf("invalid route %q (must be sysctl, capability, or skip)", route)
+		}
+		opts.Route = route
+		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+			sp.Route = route
+		}
+	}
+
 	// STEP 2: Detect platform requirement and firewall state (read-only)
 	configured := true
 	var descs []string
@@ -241,7 +287,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 	}
 
 	// Check if already configured on host
-	if configured && fwConfigured && !holderHidden {
+	if configured && fwConfigured && !holderHidden && route != "skip" {
 		if !opts.DryRun {
 			for _, p := range targets {
 				if err := reportExtenderBind(out, platformCfg, p, ports.TCP443.Held); err != nil {
@@ -250,60 +296,27 @@ ruleset-specific; use the procedures for your existing policy.`)
 			}
 		}
 		fmt.Fprintf(out, "extender: already configured (%s)\n", desc)
+		if route == "sysctl" && !opts.DryRun {
+			if err := offerExtenderCapabilityRemoval(out, platformCfg, targets, opts); err != nil {
+				return err
+			}
+		}
 		return nil
 	}
 
 	// STEP 3: Build the exact command plan and explain which ports and why
-	var route string
-	if len(needPlatformTargets) > 0 && platform == "linux" {
-		route = opts.Route
-		if route == "" {
-			if opts.SelectRouteFunc != nil {
-				r, err := opts.SelectRouteFunc()
-				if err != nil {
-					return fmt.Errorf("route selection cancelled: %w", err)
-				}
-				route = r
-			} else if os.Getenv(urnetElevatedEnv) == "1" || opts.ConfirmFunc != nil {
-				// In an elevated re-run or when an execution confirmation double is supplied,
-				// the route was already selected or defaults to the existing capability route.
-				route = "capability"
-			} else if !opts.Yes && !opts.Force && (opts.NonInteractive || !stdinIsInteractive()) {
-				return fmt.Errorf("extender setup requires an interactive TTY to choose between sysctl and capability routes; cannot run unattended (use --route=sysctl|capability|skip)")
-			} else if !opts.Yes && !opts.Force {
-				r, err := promptExtenderRoute(errOut)
-				if err != nil {
-					return err
-				}
-				route = r
-			} else {
-				// Non-interactive run with explicit --yes/--force defaults to existing capability route
-				route = "capability"
-			}
+	if route == "skip" {
+		needPlatformTargets = nil
+		fmt.Fprintln(out, "extender: port 443 binding setup skipped")
+	}
+	var recovery string
+	if route == "sysctl" && len(needPlatformTargets) > 0 {
+		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
+			recovery = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			sp.SysctlUndo = recovery
+		} else {
+			recovery = (&SystemPlatformConfigurer{}).sysctlRecovery()
 		}
-		route = strings.ToLower(strings.TrimSpace(route))
-		switch route {
-		case "sysctl", "1":
-			route = "sysctl"
-			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
-				sp.Route = "sysctl"
-			}
-		case "capability", "cap", "2":
-			route = "capability"
-			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
-				sp.Route = "capability"
-			}
-		case "skip", "3":
-			route = "skip"
-			if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
-				sp.Route = "skip"
-			}
-			needPlatformTargets = nil
-			fmt.Fprintln(out, "extender: port 443 binding setup skipped")
-		default:
-			return fmt.Errorf("invalid route %q (must be sysctl, capability, or skip)", route)
-		}
-		opts.Route = route
 	}
 
 	var plan []setupCommand
@@ -339,7 +352,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 	// STEP 4: Privilege check
 	if !isRootFn() {
 		if len(plan) > 0 {
-			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil })
+			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil }, recovery)
 		}
 		if opts.DryRun {
 			fmt.Fprintf(out, "[dry-run] would apply platform requirement on %s\n", platform)
@@ -396,7 +409,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 	// STEP 5: Dry-run or print-and-ask confirmation gate before mutating anything
 	if opts.DryRun {
 		if len(plan) > 0 {
-			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil })
+			_ = executeExtenderSetupPlan(out, plan, false, true, nil, func(setupCommand) error { return nil }, recovery)
 		}
 		fmt.Fprintf(out, "[dry-run] would apply platform requirement on %s\n", platform)
 		fmt.Fprintf(out, "[dry-run] would configure firewall (%s)\n", fwStatus.Kind)
@@ -419,7 +432,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 				return trimmed == "y" || trimmed == "yes", nil
 			}
 		}
-		if err := executeExtenderSetupPlan(out, plan, yes, false, confirmFn, func(setupCommand) error { return nil }); err != nil {
+		if err := executeExtenderSetupPlan(out, plan, yes, false, confirmFn, func(setupCommand) error { return nil }, recovery); err != nil {
 			return err
 		}
 	}
@@ -432,6 +445,12 @@ ruleset-specific; use the procedures for your existing policy.`)
 		}
 		if applied {
 			fmt.Fprintf(out, "extender: %s\n", applyDesc)
+		}
+	}
+
+	if route == "sysctl" {
+		if err := offerExtenderCapabilityRemoval(out, platformCfg, targets, opts); err != nil {
+			return err
 		}
 	}
 
@@ -461,6 +480,71 @@ ruleset-specific; use the procedures for your existing policy.`)
 		return nil
 	}
 	fmt.Fprintf(out, "extender: setup complete\n")
+	return nil
+}
+
+func offerExtenderCapabilityRemoval(out io.Writer, cfg PlatformConfigurer, targets []Provider, opts ExtenderSetupOptions) error {
+	sp, ok := cfg.(*SystemPlatformConfigurer)
+	if !ok || sp.ExecCmd == nil {
+		return nil
+	}
+	seen := map[string]bool{}
+	for _, p := range targets {
+		if p.Binary == "" || seen[p.Binary] {
+			continue
+		}
+		seen[p.Binary] = true
+		caps, err := sp.ExecCmd("getcap", p.Binary)
+		if err != nil {
+			fmt.Fprintf(out, "warn: cannot inspect file capabilities on %s: %v\n", p.Binary, err)
+			continue
+		}
+		if !linuxHasBindCapability(p.Binary, string(caps)) {
+			continue
+		}
+		cmd := setupCommand{name: "sudo", args: []string{"setcap", "-r", p.Binary}}.String()
+		fmt.Fprintf(out, "warn: %s still carries a file capability. A provider started with it is non-dumpable and may be unreadable to the updater. Restart or hand off the provider after removing the capability; the running process will not change.\n", p.Binary)
+		if strings.TrimSpace(string(caps)) != p.Binary+" cap_net_bind_service=ep" {
+			fmt.Fprintf(out, "warn: %s has other or unrecognized file capabilities (%s); %s would remove ALL of them. No automatic removal; inspect with getcap -n %s and manage capabilities manually.\n", p.Binary, strings.TrimSpace(string(caps)), cmd, setupShellWord(p.Binary))
+			continue
+		}
+		fmt.Fprintf(out, "Remove the bind capability with: %s\n", cmd)
+		interactive := stdinIsInteractive()
+		if opts.InteractiveFunc != nil {
+			interactive = opts.InteractiveFunc()
+		}
+		if opts.NonInteractive || !interactive || opts.DryRun || (opts.IsRoot != nil && !opts.IsRoot()) {
+			continue
+		}
+		confirm := opts.RemoveCapabilityConfirmFunc
+		if confirm == nil {
+			confirm = func() (bool, error) {
+				a, e := confirmStdinRead("Remove all file capabilities now? [y/N] ")
+				return strings.EqualFold(strings.TrimSpace(a), "y") || strings.EqualFold(strings.TrimSpace(a), "yes"), e
+			}
+		}
+		yes, err := confirm()
+		if err != nil {
+			return fmt.Errorf("sysctl applied; capability removal confirmation failed: %w; run %s", err, cmd)
+		}
+		if !yes {
+			continue
+		}
+		if sp.Lstat != nil {
+			info, err := sp.Lstat(p.Binary)
+			if err != nil || !info.Mode().IsRegular() {
+				return fmt.Errorf("sysctl applied; refusing capability removal on non-regular binary %s; inspect it and run %s", p.Binary, cmd)
+			}
+		}
+		current, err := sp.ExecCmd("getcap", p.Binary)
+		if err != nil || strings.TrimSpace(string(current)) != p.Binary+" cap_net_bind_service=ep" {
+			return fmt.Errorf("sysctl applied; file capabilities changed or cannot be read on %s; inspect with getcap -n %s before removing anything", p.Binary, setupShellWord(p.Binary))
+		}
+		if result, err := sp.ExecCmd("setcap", "-r", p.Binary); err != nil {
+			return fmt.Errorf("sysctl applied; %s failed: %s: %w", cmd, strings.TrimSpace(string(result)), err)
+		}
+		fmt.Fprintf(out, "extender: removed file capabilities from %s; restart the provider to make the change effective\n", p.Binary)
+	}
 	return nil
 }
 
