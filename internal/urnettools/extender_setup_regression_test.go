@@ -279,7 +279,7 @@ func TestReportExtenderBindWarnsWhenUnitSetsNoNewPrivileges(t *testing.T) {
 
 func TestExtenderSetupManualCommandKeepsArguments(t *testing.T) {
 	opts := ExtenderSetupOptions{Argv: []string{"extender", "setup", "--yes", "--state-dir", "/home/example/a b"}}
-	got := formatSetupSudoCommand(opts)
+	got := formatSetupSudoCommand(opts, "")
 	if !strings.Contains(got, "extender setup --yes --state-dir '/home/example/a b'") {
 		t.Fatalf("manual command lost arguments or shell quoting: %q", got)
 	}
