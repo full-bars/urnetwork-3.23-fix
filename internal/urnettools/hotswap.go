@@ -70,7 +70,7 @@ var ErrHotSwapNotSupported = errors.New("zero-downtime hotswap unavailable: the 
 // updateProvider migrates the unit to Type=notify once the installed binary
 // sends READY=1 at startup, so an operator sees this on legacy units during
 // the update that performs the migration, or when the migration could not run.
-var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the provider's systemd unit is Type=simple (as Provider_Install_Linux.sh writes it); `urnet-tools update` migrates it to Type=notify, after which updates can hot swap. This update uses a service restart")
+var ErrHotSwapUnitNotNotify = errors.New("zero-downtime hotswap unavailable: the provider's systemd unit is Type=simple (older installers wrote it); `urnet-tools update` migrates it to Type=notify, after which updates can hot swap. This update uses a service restart")
 
 // hotSwapPreflight reports WHY the handoff cannot run, or nil when it can.
 // It is the single source of that decision: triggerHotSwap calls it before
