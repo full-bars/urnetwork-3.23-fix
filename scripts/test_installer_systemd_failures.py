@@ -10,7 +10,7 @@ INSTALLER = Path(__file__).resolve().parent / "Provider_Install_Linux.sh"
 
 
 class InstallerSystemdFailures(unittest.TestCase):
-    def run_install(self, failure, backup=False):
+    def run_install(self, failure, backup=False, existing_unit=False, stopped=True):
         script = INSTALLER.read_text()
         start = script.index("install_systemd_units ()\n{\n")
         end = script.index("\n}\n", start) + 3
@@ -20,9 +20,12 @@ class InstallerSystemdFailures(unittest.TestCase):
             (root / "bin/urnetwork").write_text("new")
             if backup:
                 (root / "bin/urnetwork.old").write_text("old")
+            if existing_unit:
+                (root / "units").mkdir()
+                (root / "units/urnetwork.service").write_text("[Service]\nType=simple\n")
             harness = r'''
 set -eu
-systemd_units_stopped=1
+systemd_units_stopped="$STOPPED"
 systemd_userdir="$ROOT/units"
 systemd_service="$systemd_userdir/urnetwork.service"
 systemd_update_service="$systemd_userdir/urnetwork-update.service"
@@ -44,13 +47,23 @@ systemctl() {
     return 0
 }
 ''' + script[start:end] + '\ninstall_systemd_units\n'
-            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp, FAILURE=failure), text=True, capture_output=True)
+            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp, FAILURE=failure, STOPPED=str(int(stopped))), text=True, capture_output=True)
+            unit = (root / "units/urnetwork.service").read_text()
             binary = (root / "bin/urnetwork").read_text()
             calls = (root / "calls").read_text()
-            return result, binary, calls
+            return result, binary, calls, unit
+
+    def test_fresh_and_existing_simple_units_become_notify(self):
+        for existing, stopped in ((False, False), (True, True), (True, False)):
+            with self.subTest(existing=existing, stopped=stopped):
+                result, _, _, unit = self.run_install("", existing_unit=existing, stopped=stopped)
+                self.assertEqual(result.returncode, 0, result.stderr)
+                self.assertIn("\nType=notify\nNotifyAccess=all\n", unit)
+                self.assertNotIn("Type=simple", unit)
+                self.assertNotIn("TimeoutStartSec=", unit)
 
     def test_service_enable_failure_explains_partial_state(self):
-        result, binary, calls = self.run_install("service")
+        result, binary, calls, _ = self.run_install("service")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(binary, "new")
         self.assertIn("service enable failed", result.stdout)
@@ -59,7 +72,7 @@ systemctl() {
         self.assertNotIn("--user start", calls)
 
     def test_timer_failure_explains_partial_state(self):
-        result, binary, calls = self.run_install("timer")
+        result, binary, calls, _ = self.run_install("timer")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(binary, "new")
         self.assertIn("timer enable/start did not complete", result.stdout)
@@ -67,14 +80,14 @@ systemctl() {
         self.assertNotIn("--user start", calls)
 
     def test_reload_failure_explains_partial_state(self):
-        result, binary, calls = self.run_install("reload")
+        result, binary, calls, _ = self.run_install("reload")
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(binary, "new")
         self.assertIn("daemon-reload failed", result.stdout)
         self.assertNotIn("--user start", calls)
 
     def test_failed_restart_reports_failed_rollback_start(self):
-        result, binary, calls = self.run_install("start", backup=True)
+        result, binary, calls, _ = self.run_install("start", backup=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertEqual(binary, "old")
         self.assertIn("Restored previous binary", result.stdout)

@@ -1536,11 +1536,10 @@ install_systemd_units ()
 Description=URnetwork Provider
 
 [Service]
-# The systemd default is Type=simple. HotSwap needs Type=notify and
-# NotifyAccess=all so it can transfer MainPID to the replacement process.
-# This template still uses the default to allow older provider releases that
-# do not send READY=1 to start; urnet-tools can migrate compatible binaries.
-# Current providers send READY=1 at the startup barrier before proxy retries.
+# HotSwap needs notify and NotifyAccess=all to transfer MainPID.
+# All supported providers send READY=1 at the startup barrier.
+Type=notify
+NotifyAccess=all
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=on-failure
