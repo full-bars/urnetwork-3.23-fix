@@ -1904,14 +1904,30 @@ openrc_stage_root_owned_tool ()
 {
     [ "$(${SUDO:-} id -u)" -eq 0 ] || return 1
     [ -f "$install_path/bin/urnet-tools" ] || return 1
-    ${SUDO:-} mkdir -p "$openrc_root_tool_dir" 2>/dev/null || return 1
-    ${SUDO:-} chown root:root "$openrc_root_tool_dir" 2>/dev/null || true
-    ${SUDO:-} chmod 0755 "$openrc_root_tool_dir" 2>/dev/null || true
-    if ${SUDO:-} cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path" 2>/dev/null; then
-        ${SUDO:-} chown root:root "$openrc_root_tool_path" 2>/dev/null || true
-        ${SUDO:-} chmod 0755 "$openrc_root_tool_path" 2>/dev/null || true
+    if ! ${SUDO:-} mkdir -p "$openrc_root_tool_dir"; then
+        pr_warn "Could not create auto-update tool directory; run: sudo mkdir -p '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ! ${SUDO:-} chown root:root "$openrc_root_tool_dir"; then
+        pr_warn "Could not secure auto-update tool directory; run: sudo chown root:root '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ! ${SUDO:-} chmod 0755 "$openrc_root_tool_dir"; then
+        pr_warn "Could not set auto-update tool directory mode; run: sudo chmod 0755 '%s'" "$openrc_root_tool_dir"
+        return 1
+    fi
+    if ${SUDO:-} cp "$install_path/bin/urnet-tools" "$openrc_root_tool_path"; then
+        if ! ${SUDO:-} chown root:root "$openrc_root_tool_path"; then
+            pr_warn "Could not secure auto-update tool; run: sudo chown root:root '%s'" "$openrc_root_tool_path"
+            return 1
+        fi
+        if ! ${SUDO:-} chmod 0755 "$openrc_root_tool_path"; then
+            pr_warn "Could not set auto-update tool mode; run: sudo chmod 0755 '%s'" "$openrc_root_tool_path"
+            return 1
+        fi
         return 0
     fi
+    pr_warn "Could not stage auto-update tool; run: sudo cp '%s' '%s'" "$install_path/bin/urnet-tools" "$openrc_root_tool_path"
     return 1
 }
 
@@ -1969,7 +1985,7 @@ openrc_finalize_root_paths ()
         case "$openrc_state_target" in
             "$openrc_home"/*)
                 ${SUDO:-} mkdir -p "$openrc_state_target" 2>/dev/null || true
-                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" 2>/dev/null || true
+                ${SUDO:-} chown "$openrc_user" "$openrc_state_target" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_state_target"
                 ;;
             *)
                 if [ -z "$openrc_state_target" ]; then
@@ -1982,7 +1998,7 @@ openrc_finalize_root_paths ()
         esac
     else
         ${SUDO:-} mkdir -p "$openrc_home/.urnetwork" 2>/dev/null || true
-        ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" 2>/dev/null || true
+        ${SUDO:-} chown "$openrc_user" "$openrc_home/.urnetwork" || pr_warn "Could not set state ownership; run: sudo chown '%s' '%s'" "$openrc_user" "$openrc_home/.urnetwork"
     fi
 
     # Create the log targets in /var/log, OWNED BY THE SERVICE USER.
@@ -2004,8 +2020,8 @@ openrc_finalize_root_paths ()
             ${SUDO:-} touch "$openrc_log" 2>/dev/null || pr_warn "could not create %s" "$openrc_log"
         fi
     done
-    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
-    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err 2>/dev/null || true
+    ${SUDO:-} chown "$openrc_user" /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log ownership; run: sudo chown '%s' /var/log/urnetwork.log /var/log/urnetwork.err" "$openrc_user"
+    ${SUDO:-} chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err || pr_warn "Could not set log modes; run: sudo chmod 0644 /var/log/urnetwork.log /var/log/urnetwork.err"
 
     # Stage the root-owned tool the weekly cron will execute (see the function
     # comment: root must never exec anything reachable through a user-writable
