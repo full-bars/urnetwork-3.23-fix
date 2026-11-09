@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Exercise privileged installer helpers with shell stubs."""
 from pathlib import Path
+import os
 import subprocess
 import tempfile
 import unittest
@@ -18,6 +19,36 @@ def function(name):
 
 
 class PrivilegedSteps(unittest.TestCase):
+    def test_optimize_dispatch_preserves_approval_through_sudo(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            for name, content in {
+                "id": "#!/bin/sh\nprintf '1000\\n'\n",
+                "sudo": "#!/bin/sh\nprintf 'SUDO:%s\\n' \"$*\"\nexit 73\n",
+            }.items():
+                stub = root / name
+                stub.write_text(content)
+                stub.chmod(0o755)
+            env = os.environ.copy()
+            env["PATH"] = tmp + os.pathsep + env["PATH"]
+            for args in (("-y", "optimize"), ("optimize", "-y"),
+                         ("--force", "optimize"), ("optimize", "--yes")):
+                with self.subTest(args=args):
+                    result = subprocess.run(["sh", str(INSTALLER), *args],
+                                            env=env, text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn(f"SUDO:-n {INSTALLER} -y optimize", result.stdout)
+
+    def test_restart_confirmation_does_not_prompt_on_pipe(self):
+        harness = '''
+FORCE=0
+pr_err() { printf '%s\\n' "$*"; }
+''' + function("confirm_restart") + '\nconfirm_restart test\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("without a terminal", result.stdout)
+        self.assertNotIn("Are you absolutely sure", result.stdout)
+
     def test_linger_failure_prints_error_and_recovery(self):
         harness = '''
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }

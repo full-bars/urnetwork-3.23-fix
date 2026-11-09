@@ -1092,7 +1092,7 @@ while [ $# -gt 0 ]; do
             shift 2
             ;;
 
-        -f|--force)
+        -y|--yes|-f|--force)
             FORCE=1
             shift
             ;;
@@ -3305,6 +3305,10 @@ confirm_restart ()
     if [ "$FORCE" = "1" ]; then
         return 0
     fi
+    if [ ! -t 0 ] || [ ! -t 1 ]; then
+        pr_err "Cannot ask for restart confirmation without a terminal; rerun interactively or use -y to approve. The provider was not restarted."
+        exit 1
+    fi
 
     if hot_restart_is_enabled; then
         printf "\n\e[1;33m🔄 WARNING: A Hot Restart Will Be Attempted 🔄\e[0m\n"
@@ -4289,9 +4293,23 @@ installer_apply_immediate_sysctls ()
 
 do_optimize ()
 {
+    while [ "$#" -gt 0 ]; do
+        case "$1" in
+            -y|--yes|-f|--force) FORCE=1 ;;
+            *) pr_err "Unknown optimize option: %s" "$1"; return 1 ;;
+        esac
+        shift
+    done
     if [ "$(id -u)" -ne 0 ]; then
         pr_info "Elevation required. Re-running with sudo..."
-        exec sudo "$0" "$operation" "$@"
+        if [ "$FORCE" = "1" ]; then set -- -y; else set --; fi
+        if [ -t 0 ] && [ -t 1 ]; then
+            sudo "$0" "$@" "$operation"
+            return $?
+        fi
+        if sudo -n "$0" "$@" "$operation"; then return 0; fi
+        pr_err "Non-interactive sudo failed. Run from a terminal: sudo %s %s %s" "$0" "$*" "$operation"
+        return 1
     fi
 
     # Detect if we are in a container
@@ -4299,11 +4317,6 @@ do_optimize ()
     if [ -f "/.dockerenv" ] || grep -qa container= /proc/1/environ 2>/dev/null; then
         is_container=1
     fi
-
-    # 0. Immediate Pre-Optimization (prevents failures during the optimization itself)
-    # Increase ulimit and inotify limits immediately for the session to prevent "Too many open files"
-    ulimit -n 1048576 2>/dev/null || true
-    installer_apply_immediate_sysctls
 
     # When running via sudo, we need to find the original user's home
     actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")
@@ -4314,6 +4327,9 @@ do_optimize ()
         confirm_restart "Applying kernel limits and OS optimizations requires restarting the URNetwork provider to bind the new system ulimits."
     fi
 
+    ulimit -n 1048576 2>/dev/null || true
+    installer_apply_immediate_sysctls
+
     pr_info "⚡ Starting System Optimizer..."
 
     if [ "$is_container" -eq 1 ]; then
@@ -4323,8 +4339,12 @@ do_optimize ()
     # Helper for interactive confirmation
     confirm () {
         if [ "$FORCE" = "1" ]; then return 0; fi
+        if [ ! -t 0 ] || [ ! -t 1 ]; then
+            pr_warn "Skipping confirmation without a terminal; rerun interactively or use -y to approve."
+            return 1
+        fi
         printf "  [?] " && printf '%s [y/N]: ' "$1"
-        read -r response
+        read -r response || return 1
         case "$response" in
             [yY][eE][sS]|[yY]) return 0 ;;
             *) return 1 ;;
@@ -4865,8 +4885,8 @@ case "$operation" in
         ;;
 
     optimize)
-        do_optimize
-        exit 0
+        do_optimize "$@"
+        exit $?
         ;;
 
     auth)
