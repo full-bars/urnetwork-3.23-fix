@@ -1001,10 +1001,13 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					// root-privilege escalation by construction. Any loss of
 					// verification fidelity is the price of not exec'ing a
 					// binary we do not own: fail closed on an unknown version
-					// rather than run it.
-					procVersion := verifyProviderVersionFn(procExe)
+					// rather than run it. The resolver is chosen up front so
+					// the exec-capable one is never even called on this path.
+					var procVersion string
 					if rp.Supervisor == "openrc" || providerSupervisedByOpenRCFn(rp) {
 						procVersion = providerVersionReadOnly(procExe)
+					} else {
+						procVersion = verifyProviderVersionFn(procExe)
 					}
 					observation = fmt.Sprintf("pid %d's running image reported version %q", rp.PID, procVersion)
 					if procVersion == cfg.Tag {
