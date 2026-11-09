@@ -20,6 +20,7 @@ func stubVerifyLoop(t *testing.T) {
 	origHandle := verifyRunningImageHandleFn
 	origPath := verifyRunningImagePathFn
 	origVersion := verifyProviderVersionFn
+	origSocket := verifySocketVersionFn
 	origAlive := verifyPidIsAliveFn
 	origPrune := verifyPruneBackupsFn
 	origSleep := verifySleepFn
@@ -31,6 +32,7 @@ func stubVerifyLoop(t *testing.T) {
 		verifyRunningImageHandleFn = origHandle
 		verifyRunningImagePathFn = origPath
 		verifyProviderVersionFn = origVersion
+		verifySocketVersionFn = origSocket
 		verifyPidIsAliveFn = origAlive
 		verifyPruneBackupsFn = origPrune
 		verifySleepFn = origSleep
@@ -40,6 +42,7 @@ func stubVerifyLoop(t *testing.T) {
 
 	// Default stubs: no-op sleep, always-alive PID, no-op side effects.
 	verifySleepFn = func(d time.Duration) { /* no-op */ }
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "", false }
 	verifyPidIsAliveFn = func(pid int) bool { return true }
 	verifyPruneBackupsFn = func(string, int) {}
 	verifyRecordSuccessFn = func(string) {}
@@ -191,8 +194,8 @@ func TestUpdateVerification_OldPidDiesNoNewProvider(t *testing.T) {
 }
 
 // TestUpdateVerification_HotSwapDecline verifies that when hotSwapTriggered
-// is true and verification fails, the decline is recorded and the error
-// mentions "HotSwap candidate".
+// is true and verification fails, the decline is recorded and diagnostics
+// distinguish an unconfirmed handoff from the observed discovery result.
 func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 	stubVerifyLoop(t)
 
@@ -209,7 +212,8 @@ func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 		}
 	}
 
-	err := verifyRestartLoop(p, cfg, true, "")
+	var err error
+	out := captureStdout(t, func() { err = verifyRestartLoop(p, cfg, true, "") })
 
 	if err == nil {
 		t.Fatal("expected error for hotswap verification failure")
@@ -217,8 +221,13 @@ func TestUpdateVerification_HotSwapDecline(t *testing.T) {
 	if !declined {
 		t.Error("expected recordHotswapDecline to be called")
 	}
-	if !strings.Contains(err.Error(), "HotSwap candidate") {
-		t.Fatalf("unexpected error: %v", err)
+	for _, want := range []string{"no matching provider entry was discovered", "normally means", "takeover is not confirmed", "not rolled back"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("missing %q in %v", want, err)
+		}
+	}
+	if !strings.Contains(out, "Could not confirm the HotSwap handoff") {
+		t.Errorf("unexpected output: %s", out)
 	}
 }
 
@@ -615,5 +624,85 @@ func TestUpdateVerification_TransientImageReadFailureThenSuccess(t *testing.T) {
 	}
 	if got := strings.Count(out, "no matching provider yet"); got != 0 {
 		t.Errorf("expected no heartbeats for a matched entry, got %d:\n%s", got, out)
+	}
+}
+
+// A provider whose binary carries file capabilities is non-dumpable, so its
+// /proc/<pid>/exe cannot be read by the updater. The provider's own control
+// socket reports the version instead, and a match on a new pid is a verified
+// handoff, not a failure.
+func TestUpdateVerification_UnreadableImageConfirmedBySocketVersion(t *testing.T) {
+	stubVerifyLoop(t)
+
+	p := testProvider("/home/user/.urnetwork", 100)
+	cfg := testConfig("v3.23.0-fix.35.5")
+	recorded := false
+	pruned := false
+
+	verifyDiscoverFn = func() []Provider {
+		return []Provider{testProvider(p.StateDir, 200)}
+	}
+	verifyRunningImageHandleFn = func(pid int) (string, error) {
+		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
+	}
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return cfg.Tag, true }
+	verifyRecordSuccessFn = func(string) { recorded = true }
+	verifyPruneBackupsFn = func(string, int) { pruned = true }
+
+	var err error
+	out := captureStdout(t, func() { err = verifyRestartLoop(p, cfg, true, "") })
+	if err != nil {
+		t.Fatalf("expected success via the control socket, got: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "reported this version on its control socket") {
+		t.Errorf("success line must say how the version was confirmed:\n%s", out)
+	}
+	if !recorded || !pruned {
+		t.Errorf("success side effects missing: recorded=%v pruned=%v", recorded, pruned)
+	}
+}
+
+// The socket must not confirm the OLD process: the same version string from the
+// pid we started from is not proof that the handoff landed.
+func TestUpdateVerification_SocketVersionFromTheOldPidIsNotAHandoff(t *testing.T) {
+	stubVerifyLoop(t)
+
+	p := testProvider("/home/user/.urnetwork", 100)
+	cfg := testConfig("v3.23.0-fix.35.5")
+
+	verifyDiscoverFn = func() []Provider {
+		return []Provider{testProvider(p.StateDir, 100)}
+	}
+	verifyRunningImageHandleFn = func(pid int) (string, error) {
+		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
+	}
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return cfg.Tag, true }
+
+	var err error
+	captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
+	if err == nil {
+		t.Fatal("a socket reply from the unchanged pid must not verify an update")
+	}
+}
+
+// A socket that reports a different version keeps the loop waiting, then fails.
+func TestUpdateVerification_SocketReportsWrongVersionStillFails(t *testing.T) {
+	stubVerifyLoop(t)
+
+	p := testProvider("/home/user/.urnetwork", 100)
+	cfg := testConfig("v3.23.0-fix.35.5")
+
+	verifyDiscoverFn = func() []Provider {
+		return []Provider{testProvider(p.StateDir, 200)}
+	}
+	verifyRunningImageHandleFn = func(pid int) (string, error) {
+		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
+	}
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "v3.23.0-fix.35.4", true }
+
+	var err error
+	captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
+	if err == nil {
+		t.Fatal("a socket reporting the old version must not verify the update")
 	}
 }

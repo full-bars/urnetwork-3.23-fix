@@ -26,6 +26,7 @@ var (
 	verifyRunningImageHandleFn = runningImageHandle
 	verifyRunningImagePathFn   = runningImagePath
 	verifyProviderVersionFn    = providerVersion
+	verifySocketVersionFn      = providerVersionFromSocketForPID
 	verifyPidIsAliveFn         = pidIsAlive
 	verifyPruneBackupsFn       = pruneBackups
 	verifySleepFn              = time.Sleep
@@ -885,6 +886,8 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	pidChanged := false
 	missReported := false
 	notReadyReported := false
+	var observedEntry bool
+	observation := "no matching provider entry was discovered"
 	for i := 0; i < maxIterations; i++ {
 		// Adaptive sleep: poll every 2s while waiting for the restart to
 		// land (old PID still alive), then every 3s once a new PID appears
@@ -898,6 +901,10 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		providers := verifyDiscoverFn()
 		matched := false
 		for _, rp := range providers {
+			if rp.StateDir == p.StateDir && rp.StateDir != "" && !observedEntry {
+				observedEntry = true
+				observation = "a matching provider entry was found but was not ready for verification"
+			}
 			// Check matching state directory and verify running image
 			if rp.StateDir == p.StateDir && rp.StateDir != "" && rp.PID != 0 && !rp.BinaryDeleted {
 				matched = true
@@ -940,6 +947,7 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if rp.Supervisor == "openrc" || providerSupervisedByOpenRCFn(rp) {
 						procVersion = providerVersionReadOnly(procExe)
 					}
+					observation = fmt.Sprintf("pid %d's running image reported version %q", rp.PID, procVersion)
 					if procVersion == cfg.Tag {
 						// Report the image's real path, not the /proc
 						// handle the version was read through.
@@ -962,13 +970,23 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 					if i > 0 && i%5 == 0 {
 						fmt.Printf("still waiting for %s (pid %d running %q, iteration %d/%d)...\n", cfg.Tag, rp.PID, procVersion, i+1, maxIterations)
 					}
-				} else if i > 0 && i%5 == 0 {
-					// A ready entry exists but its running image could
-					// not be read (e.g. the process exited between
-					// discovery and the read). Without this the
-					// iteration prints nothing at all — the same silent
-					// wait these diagnostics exist to remove.
-					fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
+				} else {
+					sockVersion, ok := verifySocketVersionFn(rp, rp.PID)
+					observation = fmt.Sprintf("pid %d's running image was unreadable (%v); no verified socket answer from that pid", rp.PID, perr)
+					if ok {
+						observation = fmt.Sprintf("pid %d's running image was unreadable (%v); its control socket reported version %q", rp.PID, perr, sockVersion)
+					}
+					if ok && sockVersion == cfg.Tag && rp.PID != oldPID {
+						fmt.Printf("verified %s running %s (pid %d; the provider reported this version on its control socket, its running image is not readable: %v)\n", providerLabel(p), cfg.Tag, rp.PID, perr)
+						if hotSwapTriggered {
+							verifyRecordSuccessFn(p.StateDir)
+						}
+						verifyPruneBackupsFn(p.Binary, 2)
+						return nil
+					}
+					if i > 0 && i%5 == 0 {
+						fmt.Printf("verify: matching entry (pid %d) found but running image unreadable: %v (iteration %d/%d)\n", rp.PID, perr, i+1, maxIterations)
+					}
 				}
 			}
 		}
@@ -1032,27 +1050,22 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 		// Verification timed out — record the decline with reason
 		// "takeover_failed" so operators can see it in Prometheus.
 		verifyRecordDeclineFn(p.StateDir, "takeover_failed")
-		fmt.Printf("❌ HotSwap candidate failed to take over within %ds.\n", maxIterations*3)
-		// oldPID's process exits (via its drain-timeout goroutine) only after
-		// the candidate confirmed active takeover — the same handoff gate
-		// hotswap.go's ACK-then-yield ordering guarantees. So oldPID being
-		// gone here means ownership already transferred to some process
-		// (the candidate, or its own successor), even though this loop
-		// couldn't confirm which one is on cfg.Tag in time. Rolling back the
-		// disk binary in that state doesn't touch the already-running
-		// process, but it does silently revert the image a future restart
-		// would use, and "live provider was never killed" would be false —
-		// so skip the rollback and report the real (unknown) state instead.
+		fmt.Printf("❌ Could not confirm the HotSwap handoff during the verification window.\n")
+		// A failed liveness probe does not prove an exit: on Unix even a
+		// permission error fails the probe. Do not roll back in that case.
 		if !verifyPidIsAliveFn(oldPID) {
-			return fmt.Errorf("update %s: HotSwap candidate ACKed takeover and PID %d exited its drain, but verification could not confirm the new process is running %s within %ds; binary NOT rolled back (ownership already transferred) — check the provider's logs/dashboard to confirm which version is actually live", providerLabel(p), oldPID, cfg.Tag, maxIterations*3)
+			return fmt.Errorf("update %s: previous PID %d did not pass the liveness check; if it exited after HotSwap, that normally means takeover occurred, but takeover is not confirmed. Could not confirm version %s: %s. The binary was not rolled back because the previous process could not be confirmed alive. Check `urnet-tools status` and the provider logs", providerLabel(p), oldPID, cfg.Tag, observation)
 		}
+		rollback := "no backup was supplied; binary was not rolled back"
 		if backup != "" {
 			fmt.Printf("🔄 Restoring previous binary from backup %s...\n", backup)
 			// Route rollback through installBinary for atomic temp+rename, never in-place truncate (F-4)
 			if rerr := installProviderBinary(backup, p.Binary, p.User); rerr != nil {
+				rollback = fmt.Sprintf("binary rollback failed: %v", rerr)
 				fmt.Printf("warning: atomic rollback failed: %v\n", rerr)
 			} else {
-				fmt.Printf("✅ Previous binary restored. Live provider (PID %d) was never killed and remains active.\n", oldPID)
+				rollback = "previous binary restored"
+				fmt.Printf("✅ Previous binary restored; PID %d passed the earlier liveness check.\n", oldPID)
 				// The unit must not outlive the binary it was migrated for:
 				// if the restored binary cannot send READY=1 at startup, its
 				// next start under Type=notify would fail.
@@ -1063,10 +1076,10 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 				}
 			}
 		}
-		return fmt.Errorf("update %s: HotSwap candidate failed to take over; binary rolled back; live provider PID %d was never killed and remains active", providerLabel(p), oldPID)
+		return fmt.Errorf("update %s: could not confirm HotSwap version %s: %s; %s. PID %d passed the liveness check; check provider status and logs", providerLabel(p), cfg.Tag, observation, rollback, oldPID)
 	}
 
-	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect — the running process is still the old version or the unit failed to start; check the provider's logs", providerLabel(p), cfg.Tag)
+	return fmt.Errorf("update %s: binary swapped to %s but restart did not take effect or could not be verified: %s; check the provider's logs", providerLabel(p), cfg.Tag, observation)
 }
 
 // restartProvider restarts the systemd unit (system or user level) that owns
