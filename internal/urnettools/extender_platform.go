@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -42,6 +43,10 @@ type SystemPlatformConfigurer struct {
 	Lstat      func(name string) (os.FileInfo, error)
 	Route      string
 	SysctlUndo string
+	// SysctlDirs and SysctlConf override the sysctl search path for tests.
+	// Nil or empty means the documented default.
+	SysctlDirs []string
+	SysctlConf string
 }
 
 // NewSystemPlatformConfigurer returns a SystemPlatformConfigurer for the platform.
@@ -161,27 +166,69 @@ func (sp *SystemPlatformConfigurer) sysctlRecovery() (string, error) {
 	return command + "\nAfter undo, check: sysctl net.ipv4.ip_unprivileged_port_start. Prior live value unknown; set the value your distribution uses (usually 1024).", nil
 }
 
-// A live low threshold alone does not survive reboot. Check the supported
-// sysctl directories plus /etc/sysctl.conf; conflicting assignments fail closed.
+// extenderSysctlDirs is the systemd sysctl.d(5) search path, highest
+// precedence first. A file name in an earlier directory masks the same name in
+// a later one.
+var extenderSysctlDirs = []string{"/etc/sysctl.d", "/run/sysctl.d", "/usr/local/lib/sysctl.d", "/usr/lib/sysctl.d", "/lib/sysctl.d"}
+
+const extenderSysctlConf = "/etc/sysctl.conf"
+
+// sysctlFiles lists the files systemd-sysctl applies, in application order:
+// the merged *.conf set sorted by name (same-named files in earlier
+// directories mask later ones), then /etc/sysctl.conf. The last assignment
+// applied wins.
+func (sp *SystemPlatformConfigurer) sysctlFiles() ([]string, bool) {
+	dirs, conf := sp.SysctlDirs, sp.SysctlConf
+	if len(dirs) == 0 {
+		dirs = extenderSysctlDirs
+	}
+	if conf == "" {
+		conf = extenderSysctlConf
+	}
+	var paths []string
+	if sp.ReadDir == nil {
+		paths = append(paths, extenderSysctlDropin)
+	} else {
+		byName := map[string]string{}
+		for _, dir := range dirs {
+			entries, err := sp.ReadDir(dir)
+			if err != nil && !os.IsNotExist(err) {
+				return nil, false
+			}
+			for _, entry := range entries {
+				name := entry.Name()
+				if !strings.HasSuffix(name, ".conf") || entry.IsDir() {
+					continue
+				}
+				if _, masked := byName[name]; !masked {
+					byName[name] = filepath.Join(dir, name)
+				}
+			}
+		}
+		names := make([]string, 0, len(byName))
+		for name := range byName {
+			names = append(names, name)
+		}
+		sort.Strings(names)
+		for _, name := range names {
+			paths = append(paths, byName[name])
+		}
+	}
+	return append(paths, conf), true
+}
+
+// A live low threshold alone does not survive reboot. Scan the sysctl
+// configuration the way systemd-sysctl applies it; the last assignment wins
+// and must be at most 443. Unreadable files and unparsable values fail closed.
 func (sp *SystemPlatformConfigurer) sysctlPersisted() bool {
 	if sp.ReadFile == nil {
 		return false
 	}
-	paths := []string{"/etc/sysctl.conf", extenderSysctlDropin}
-	if sp.ReadDir != nil {
-		for _, dir := range []string{"/etc/sysctl.d", "/usr/lib/sysctl.d", "/run/sysctl.d", "/lib/sysctl.d"} {
-			entries, err := sp.ReadDir(dir)
-			if err != nil && !os.IsNotExist(err) {
-				return false
-			}
-			for _, entry := range entries {
-				if strings.HasSuffix(entry.Name(), ".conf") && !entry.IsDir() {
-					paths = append(paths, filepath.Join(dir, entry.Name()))
-				}
-			}
-		}
+	paths, ok := sp.sysctlFiles()
+	if !ok {
+		return false
 	}
-	found := false
+	last, found := 0, false
 	for _, path := range paths {
 		b, err := sp.ReadFile(path)
 		if os.IsNotExist(err) {
@@ -202,13 +249,13 @@ func (sp *SystemPlatformConfigurer) sysctlPersisted() bool {
 				continue
 			}
 			v, err := strconv.Atoi(strings.TrimSpace(val))
-			if err != nil || v < 0 || v > 443 {
+			if err != nil {
 				return false
 			}
-			found = true
+			last, found = v, true
 		}
 	}
-	return found
+	return found && last >= 0 && last <= 443
 }
 
 // PlanRequirement returns the exact commands that ApplyRequirement will run.
