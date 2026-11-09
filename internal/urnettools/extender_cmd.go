@@ -12,7 +12,7 @@ import (
 )
 
 const extenderUsage = "usage: urnet-tools extender [status|about|on|off|enable|disable|setup]"
-const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [target]"
+const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [--route=sysctl|capability|skip] [target]"
 
 // normalizeExtenderAction accepts enable and disable as plain names for on and
 // off. The second result is false for anything else.
@@ -50,21 +50,33 @@ func isExtenderSetupArgs(args []string) bool {
 }
 
 // parseExtenderSetupArgs parses flags specific to `urnet-tools extender setup`.
-func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err error) {
+func parseExtenderSetupArgs(args []string) (yes, dryRun bool, route string, target Target, err error) {
 	var filtered []string
-	for _, tok := range args {
-		switch tok {
-		case "-y", "--yes", "-f", "--force":
+	for i := 0; i < len(args); i++ {
+		tok := args[i]
+		switch {
+		case tok == "-y" || tok == "--yes" || tok == "-f" || tok == "--force":
 			yes = true
-		case "-n", "--dry-run":
+		case tok == "-n" || tok == "--dry-run":
 			dryRun = true
+		case tok == "--route" && i+1 < len(args):
+			i++
+			route = strings.ToLower(strings.TrimSpace(args[i]))
+			if route != "sysctl" && route != "capability" && route != "skip" {
+				return false, false, "", Target{}, fmt.Errorf("%s (invalid route %q; must be sysctl, capability, or skip)", extenderSetupUsage, route)
+			}
+		case strings.HasPrefix(tok, "--route="):
+			route = strings.ToLower(strings.TrimSpace(strings.TrimPrefix(tok, "--route=")))
+			if route != "sysctl" && route != "capability" && route != "skip" {
+				return false, false, "", Target{}, fmt.Errorf("%s (invalid route %q; must be sysctl, capability, or skip)", extenderSetupUsage, route)
+			}
 		default:
 			filtered = append(filtered, tok)
 		}
 	}
 	target, rest, err := parseTargetFlags(filtered)
 	if err != nil {
-		return false, false, Target{}, err
+		return false, false, "", Target{}, err
 	}
 	seenSetup := false
 	for _, tok := range rest {
@@ -72,18 +84,18 @@ func parseExtenderSetupArgs(args []string) (yes, dryRun bool, target Target, err
 			seenSetup = true
 			continue
 		}
-		return false, false, Target{}, fmt.Errorf("%s (unexpected %q)", extenderSetupUsage, tok)
+		return false, false, "", Target{}, fmt.Errorf("%s (unexpected %q)", extenderSetupUsage, tok)
 	}
 	if !seenSetup {
-		return false, false, Target{}, fmt.Errorf("%s", extenderSetupUsage)
+		return false, false, "", Target{}, fmt.Errorf("%s", extenderSetupUsage)
 	}
-	return yes, dryRun, target, nil
+	return yes, dryRun, route, target, nil
 }
 
 var runExtenderSetupFn = RunExtenderSetup
 
 func cmdExtenderSetup(args []string) error {
-	yes, dryRun, target, err := parseExtenderSetupArgs(args)
+	yes, dryRun, route, target, err := parseExtenderSetupArgs(args)
 	if err != nil {
 		return err
 	}
@@ -92,6 +104,7 @@ func cmdExtenderSetup(args []string) error {
 		Yes:    yes,
 		Force:  yes,
 		DryRun: dryRun,
+		Route:  route,
 		Target: target,
 		Stdout: os.Stdout,
 		Stderr: os.Stderr,
@@ -197,6 +210,9 @@ func finishExtenderChange(out io.Writer, p Provider, action string) error {
 		fmt.Fprintf(out, "\nExtender: unavailable: %v\n", err)
 		return err
 	}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
+	}
 	formatExtenderBlock(out, *reading, time.Now())
 	return nil
 }
@@ -208,6 +224,9 @@ func printExtenderStatus(p Provider) error {
 	if err != nil {
 		fmt.Fprintf(os.Stdout, "\nExtender: unavailable: %v\n", err)
 		return err
+	}
+	if reading.BindRoute == "" {
+		reading.BindRoute = detectBindRoute(p.Binary, p.User)
 	}
 	formatExtenderBlock(os.Stdout, *reading, time.Now())
 	return nil

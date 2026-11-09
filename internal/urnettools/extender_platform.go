@@ -38,6 +38,7 @@ type SystemPlatformConfigurer struct {
 	// Lstat inspects the provider binary without following a symlink. Nil
 	// skips the check, for test doubles that name no real file.
 	Lstat func(name string) (os.FileInfo, error)
+	Route string
 }
 
 // NewSystemPlatformConfigurer returns a SystemPlatformConfigurer for the platform.
@@ -87,11 +88,26 @@ func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool,
 	}
 }
 
+const (
+	extenderSysctlDropin   = "/etc/sysctl.d/99-urnetwork-extender.conf"
+	extenderSysctlContent  = "net.ipv4.ip_unprivileged_port_start=443\n"
+	extenderSysctlRecovery = "sudo rm /etc/sysctl.d/99-urnetwork-extender.conf && sudo sysctl --system"
+)
+
 // PlanRequirement returns the exact commands that ApplyRequirement will run.
 func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setupCommand, error) {
 	switch sp.PlatformName {
 	case "linux":
 		if user == "root" {
+			return nil, nil
+		}
+		if sp.Route == "sysctl" {
+			return []setupCommand{
+				{name: "sh", args: []string{"-c", "echo net.ipv4.ip_unprivileged_port_start=443 > " + extenderSysctlDropin}},
+				{name: "sysctl", args: []string{"--system"}},
+			}, nil
+		}
+		if sp.Route == "skip" {
 			return nil, nil
 		}
 		if binary == "" {
@@ -119,6 +135,9 @@ func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setu
 	case "freebsd":
 		return nil, nil
 	case "windows":
+		if sp.ExecCmd == nil {
+			return nil, nil
+		}
 		return planWindowsRules(sp.ExecCmd), nil
 	case "darwin":
 		_, _, err := sp.checkDarwin()
@@ -134,6 +153,12 @@ func (sp *SystemPlatformConfigurer) ApplyRequirement(binary, user string) (bool,
 	case "linux":
 		if user == "root" {
 			return false, "provider running as root (no file capability needed)", nil
+		}
+		if sp.Route == "sysctl" {
+			return sp.applyLinuxSysctl()
+		}
+		if sp.Route == "skip" {
+			return false, "port 443 binding setup skipped", nil
 		}
 		return sp.applyLinux(binary)
 	case "freebsd":
@@ -208,6 +233,18 @@ func bindCapabilityBlocked(status []byte) bool {
 // --- Linux implementation ---
 
 func (sp *SystemPlatformConfigurer) checkLinux(binary string) (bool, string, error) {
+	if sp.ReadFile != nil {
+		if data, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
+			if value, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && value >= 0 {
+				if value < 443 {
+					return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443)", value), nil
+				}
+				if value == 443 {
+					return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443)", nil
+				}
+			}
+		}
+	}
 	if binary == "" {
 		return false, "no provider binary path known", nil
 	}
@@ -327,6 +364,38 @@ func (sp *SystemPlatformConfigurer) applyLinux(binary string) (bool, string, err
 	}
 
 	return true, fmt.Sprintf("applied cap_net_bind_service=+ep on %s (verified with getcap)", binary), nil
+}
+
+func (sp *SystemPlatformConfigurer) applyLinuxSysctl() (bool, string, error) {
+	if sp.WriteFile == nil {
+		return false, "", fmt.Errorf("cannot write sysctl config: WriteFile unavailable")
+	}
+	if err := sp.WriteFile(extenderSysctlDropin, []byte(extenderSysctlContent), 0o644); err != nil {
+		return false, "", fmt.Errorf("writing %s: %w", extenderSysctlDropin, err)
+	}
+	var applyErr error
+	if sp.ExecCmd != nil {
+		out, err := sp.ExecCmd("sysctl", "--system")
+		if err != nil {
+			applyErr = fmt.Errorf("sysctl --system failed (%s: %w)", strings.TrimSpace(string(out)), err)
+			out2, err2 := sp.ExecCmd("sysctl", "-w", "net.ipv4.ip_unprivileged_port_start=443")
+			if err2 != nil {
+				return false, "", fmt.Errorf("applying sysctl failed: %v; fallback sysctl -w also failed: %s: %w", applyErr, strings.TrimSpace(string(out2)), err2)
+			}
+		}
+	}
+	if sp.ReadFile != nil {
+		data, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start")
+		if err != nil {
+			return false, "", fmt.Errorf("verifying sysctl live value: %w", err)
+		}
+		val, err := strconv.Atoi(strings.TrimSpace(string(data)))
+		if err != nil || val > 443 {
+			return false, "", fmt.Errorf("sysctl live verification failed: net.ipv4.ip_unprivileged_port_start is %s (want <= 443)", strings.TrimSpace(string(data)))
+		}
+		return true, fmt.Sprintf("applied sysctl drop-in %s (net.ipv4.ip_unprivileged_port_start=%d); undo with: %s", extenderSysctlDropin, val, extenderSysctlRecovery), nil
+	}
+	return true, fmt.Sprintf("applied sysctl drop-in %s; undo with: %s", extenderSysctlDropin, extenderSysctlRecovery), nil
 }
 
 // --- FreeBSD implementation ---
