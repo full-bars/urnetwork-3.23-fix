@@ -10,7 +10,8 @@ INSTALLER = Path(__file__).resolve().parent / "Provider_Install_Linux.sh"
 
 def function(name):
     script = INSTALLER.read_text()
-    start = script.index(name + " ()\n{\n")
+    marker = name + ("() {\n" if name == "firewall_hint" else " ()\n{\n")
+    start = script.index(marker)
     if name == "openrc_finalize_root_paths":
         return script[start:script.index("\n# install_openrc_units:", start)]
     return script[start:script.index("\n}\n", start) + 3]
@@ -27,6 +28,19 @@ loginctl() { printf 'stub loginctl failure\\n' >&2; return 1; }
         self.assertIn("stub loginctl failure", result.stderr)
         self.assertIn("sudo loginctl enable-linger alice", result.stdout)
         self.assertIn("may stop on logout", result.stdout)
+
+    def test_firewall_queries_expose_failure_and_recovery(self):
+        for name, expected in (("firewall-cmd", "sudo firewall-cmd --state"), ("nft", "sudo nft list tables")):
+            with self.subTest(name=name):
+                with tempfile.TemporaryDirectory() as tmp:
+                    stub = Path(tmp) / name
+                    stub.write_text("#!/bin/sh\nprintf 'query denied\\n' >&2\nexit 1\n")
+                    stub.chmod(0o755)
+                    harness = function("firewall_hint") + '\nfirewall_hint 443 tcp\n'
+                    result = subprocess.run(["/bin/sh", "-c", harness], env={"PATH": tmp}, text=True, capture_output=True)
+                    self.assertNotEqual(result.returncode, 0)
+                    self.assertIn("query denied", result.stderr)
+                    self.assertIn(expected, result.stderr)
 
     def test_immediate_sysctls_report_each_failure_and_continue(self):
         harness = '''

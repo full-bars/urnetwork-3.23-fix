@@ -3590,9 +3590,15 @@ firewall_hint() {
     port="$1"
     proto="${2:-tcp}"
 
-    if command -v firewall-cmd > /dev/null && firewall-cmd --state 2>/dev/null | grep -q running; then
-        printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
-        return 0
+    if command -v firewall-cmd > /dev/null; then
+        if firewall_state=$(firewall-cmd --state); then
+            if [ "$firewall_state" = running ]; then
+                printf '  sudo firewall-cmd --add-port=%s/%s --permanent && sudo firewall-cmd --reload\n' "$port" "$proto"
+                return 0
+            fi
+        else
+            printf '  Firewall state check failed; inspect with: sudo firewall-cmd --state\n' >&2
+        fi
     fi
 
     if command -v ufw > /dev/null; then
@@ -3605,9 +3611,15 @@ firewall_hint() {
         return 0
     fi
 
-    if command -v nft > /dev/null && nft list tables 2>/dev/null | grep -q .; then
-        printf '  sudo nft add rule inet filter input %s dport %s accept\n' "$proto" "$port"
-        return 0
+    if command -v nft > /dev/null; then
+        if nft_tables=$(nft list tables); then
+            if [ -n "$nft_tables" ]; then
+                printf '  Inspect the active rules and add an appropriate rule for %s/%s: sudo nft list ruleset\n' "$port" "$proto"
+                return 0
+            fi
+        else
+            printf '  nftables query failed; inspect with: sudo nft list tables\n' >&2
+        fi
     fi
 
     return 1
