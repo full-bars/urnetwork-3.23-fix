@@ -4265,6 +4265,19 @@ do_auth ()
     exit "$exit_code"
 }
 
+installer_apply_sysctl_config ()
+{
+    sysctl_file="$1"
+    if sysctl -p "$sysctl_file" >/dev/null; then
+        pr_info "sysctl settings applied."
+    elif sysctl --system >/dev/null; then
+        pr_info "sysctl settings applied (system-wide)."
+    else
+        pr_warn "Some sysctl settings could not be applied. Check and retry: sudo sysctl -p '%s'" "$sysctl_file"
+        return 1
+    fi
+}
+
 installer_apply_immediate_sysctls ()
 {
     for setting in fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512 fs.file-max=2097152; do
@@ -4461,13 +4474,7 @@ EOF
         # the next boot. Apply the file we just wrote instead: -p FILE is
         # supported by both BusyBox and procps. Fall back to --system for the
         # case where a host has procps and reads other drop-ins too.
-        if sysctl -p "$sysctl_conf" >/dev/null 2>&1; then
-            pr_info "sysctl settings applied."
-        elif sysctl --system >/dev/null 2>&1; then
-            pr_info "sysctl settings applied (system-wide)."
-        else
-            pr_warn "Warning: some sysctl settings could not be applied (they will apply at next boot)."
-        fi
+        installer_apply_sysctl_config "$sysctl_conf" || :
     fi
 
     # 4. Apply Ulimits — backend-aware.

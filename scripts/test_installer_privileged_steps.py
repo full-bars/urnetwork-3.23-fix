@@ -64,6 +64,19 @@ cp() { printf 'copy denied\\n' >&2; return 1; }
                     self.assertIn("query denied", result.stderr)
                     self.assertIn(expected, result.stderr)
 
+    def test_sysctl_config_failure_does_not_claim_success(self):
+        harness = '''
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+sysctl() { printf 'failed %s\\n' "$*" >&2; return 1; }
+''' + function("installer_apply_sysctl_config") + '\ninstaller_apply_sysctl_config /etc/sysctl.d/99-urnetwork.conf\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertNotEqual(result.returncode, 0)
+        self.assertIn("failed -p", result.stderr)
+        self.assertIn("failed --system", result.stderr)
+        self.assertIn("sudo sysctl -p '/etc/sysctl.d/99-urnetwork.conf'", result.stdout)
+        self.assertNotIn("settings applied", result.stdout)
+
     def test_immediate_sysctls_report_each_failure_and_continue(self):
         harness = '''
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
