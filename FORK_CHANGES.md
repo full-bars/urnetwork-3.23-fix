@@ -3362,7 +3362,7 @@ Deliberately NOT resetting `everUp`/`downSince` in `RegisterProxy` — that woul
 - **Drain liveness gated on an actual child**: `Wait` returns immediately for a session with no child process, which left that case and `ctx.Done()` both ready in the drain select; Go chose at random, so a successful handoff could report a dead candidate and exit non-zero (PR #552).
 
 > [!IMPORTANT]
-> Only `install_systemd_units` writes `Type=notify`, and `urnet-tools update` never rewrites the unit, so **every node installed before v3.23.0-fix.31.0 still runs `Type=simple` and will decline HotSwap**. Those nodes update correctly via the restart fallback; a reinstall is required to get zero-downtime.
+> Historic note: when this shipped, only `install_systemd_units` wrote `Type=notify` and `urnet-tools update` never rewrote the unit, so **every node installed before v3.23.0-fix.31.0 still ran `Type=simple` and declined HotSwap**. From v3.23.0-fix.35.6 the installer writes `Type=notify` for new installs and reinstalls, and `urnet-tools update` migrates older units. Those nodes update correctly via the restart fallback; a reinstall is required to get zero-downtime.
 
 **Impact**: Zero-downtime upgrades on newly installed nodes, and a safe, explicit fallback everywhere else.
 

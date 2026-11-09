@@ -48,7 +48,7 @@ urnet-tools update --tag v3.23.0-fix.31.2   # a specific release (a downgrade wo
 
 ### Which update hotswaps
 
-A node qualifies when the running provider and the new binary are both **v3.23.0-fix.31.0 or newer** and the provider was started by a systemd unit that is `Type=notify`. The installer writes a unit with no `Type=` line (systemd's default, `simple`), so a fresh or older node is not eligible yet. `urnet-tools update` fixes that for you:
+A node qualifies when the running provider and the new binary are both **v3.23.0-fix.31.0 or newer** and the provider was started by a systemd unit that is `Type=notify`. From v3.23.0-fix.35.6 the installer writes `Type=notify` and `NotifyAccess=all`. A node installed before that release can still have a `Type=simple` unit and is not eligible yet. `urnet-tools update` fixes that for you:
 
 | Update | What `urnet-tools update` does | Downtime |
 |---|---|---|

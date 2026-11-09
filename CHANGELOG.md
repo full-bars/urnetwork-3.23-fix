@@ -12,9 +12,12 @@ _Released 2026-11-08. Based on v3.23.0-fix.35.5. Notes: `releases/v3.23.0-fix.35
 - **Updater capability restoration preserves the previous setting** (`internal/urnettools/update_extender.go`). The tool attempts to restore the Linux extender bind capability only when the old binary had it. A non-root caller uses non-interactive sudo; otherwise the tool prints the manual command when the capability is absent, unverified or cannot be restored.
 - **Linux installer privileged steps report more clearly** (`scripts/Provider_Install_Linux.sh`). The extender permission offer is skipped on piped or redirected input or output. Systemd partial failures and rollback failures print the state and recovery commands. The extender notice explains its role and ports.
 
+- **Fresh installs write `Type=notify` units** (`scripts/Provider_Install_Linux.sh`). The generated user unit has `Type=notify` and `NotifyAccess=all`, which HotSwap needs. The update timer unit stays `Type=oneshot`.
+- **More installer steps report their failures** (`scripts/Provider_Install_Linux.sh`). Login linger, OpenRC ownership, immediate and persistent sysctl, firewall detection and downloaded tool install now print what failed and the command to run, instead of staying silent.
+
 ### Known limits
 
-- Fresh installs still use systemd's default `Type=simple`. Some installer and optimize steps still hide errors, including login linger, OpenRC ownership, sysctl tuning and firewall detection; follow-up work is planned.
+- Some installer steps still hide errors: the legacy shell tool fallback, OpenRC state and log setup, capability setup and ZRAM tuning. The optimizer still prints a success line when a step failed. These are planned for the next release, together with non-interactive approval for restart and optimize and the OpenRC sudo-path failure handling.
 
 ## [v3.23.0-fix.35.5]
 
