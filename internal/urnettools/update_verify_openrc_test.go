@@ -2,8 +2,23 @@ package urnettools
 
 import (
 	"os"
+	"runtime"
 	"testing"
 )
+
+// nativeExecutableMagic returns a header that isRecognizedExecutable accepts
+// on the running OS: ELF on linux and the BSDs, Mach-O on darwin, PE on
+// windows.
+func nativeExecutableMagic() []byte {
+	switch runtime.GOOS {
+	case "darwin":
+		return []byte{0xcf, 0xfa, 0xed, 0xfe, 0, 0, 0, 0}
+	case "windows":
+		return []byte("MZ\x90\x00\x03\x00\x00\x00")
+	default:
+		return []byte("\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00")
+	}
+}
 
 // Under OpenRC the running image can be a file the service user influenced,
 // so the verify loop must read its version without running it. The
@@ -12,7 +27,12 @@ import (
 // resolver, because the release build strips build info.
 func TestUpdateVerification_OpenRCNeverCallsExecResolver(t *testing.T) {
 	const tag = "v3.23.0-fix.35.9"
-	stamped := append([]byte("\x7fELF\x02\x01\x01\x00\x00\x00\x00\x00\x00\x00\x00\x00"), []byte("\n"+versionStampPrefix+tag+"\n")...)
+	// The read-only resolver only scans files that start with the running
+	// OS's native executable magic, so the fixtures do too. A fixed ELF header
+	// would be refused on Windows and macOS before the stamp is ever read.
+	native := nativeExecutableMagic()
+	stamped := append(append([]byte{}, native...), []byte("\n"+versionStampPrefix+tag+"\n")...)
+	unstamped := append(append([]byte{}, native...), []byte("\nno stamp here\n")...)
 	script := []byte("#!/bin/sh\necho " + tag + "\n")
 
 	for _, tc := range []struct {
@@ -25,8 +45,8 @@ func TestUpdateVerification_OpenRCNeverCallsExecResolver(t *testing.T) {
 	}{
 		{name: "openrc field, stamped image verifies", image: stamped, supervisor: "openrc", wantOK: true},
 		{name: "openrc detected from the process, stamped image verifies", image: stamped, viaFn: true, wantOK: true},
-		{name: "openrc field, unstamped image fails closed", image: script, supervisor: "openrc"},
-		{name: "openrc detected from the process, unstamped image fails closed", image: script, viaFn: true},
+		{name: "openrc field, unstamped image fails closed", image: unstamped, supervisor: "openrc"},
+		{name: "openrc detected from the process, unstamped image fails closed", image: unstamped, viaFn: true},
 		{name: "other supervisor keeps the exec-capable resolver", image: script, wantOK: true, wantExec: true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
