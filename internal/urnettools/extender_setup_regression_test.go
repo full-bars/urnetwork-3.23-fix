@@ -194,6 +194,15 @@ func TestExtenderSetup_AlreadyConfigured(t *testing.T) {
 }
 
 func TestExtenderSetupHiddenPortHolderDefersToElevation(t *testing.T) {
+	// Setup refuses to elevate unless the resolved provider has a unique unit
+	// or state dir, so the fixture must supply one. Without this seam the test
+	// resolves against whatever provider the host happens to run: it passed on
+	// a machine with a provider installed and failed on a CI runner without one.
+	oldDiscover := setupDiscoverFn
+	defer func() { setupDiscoverFn = oldDiscover }()
+	setupDiscoverFn = func() []Provider {
+		return []Provider{{Unit: "urnetwork.service", User: "provider", Binary: "/provider"}}
+	}
 	ssOut := "State Recv-Q Send-Q Local Address:Port Peer Address:Port Process\nLISTEN 0 4096 *:443 *:*\n"
 	run := func(root bool) error {
 		cfg := &mockPlatformConfigurer{platform: "linux", configured: true}

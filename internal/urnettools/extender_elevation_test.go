@@ -89,3 +89,22 @@ func TestExtenderSetupElevationRefusesUnrepresentableSet(t *testing.T) {
 		t.Fatalf("err=%v stderr=%q", err, stderr.String())
 	}
 }
+
+// With no discoverable provider the resolved target is an anonymous one with
+// no unit and no state dir. A non-root run cannot tell which provider root
+// would configure, so it must print the inspect hint and never elevate.
+func TestExtenderSetupElevationRefusesAnonymousTarget(t *testing.T) {
+	oldDiscover := setupDiscoverFn
+	defer func() { setupDiscoverFn = oldDiscover }()
+	setupDiscoverFn = func() []Provider { return nil }
+	opts := setupRegressionOptions()
+	opts.IsRoot = func() bool { return false }
+	opts.Yes = true
+	opts.Argv = []string{"extender", "setup", "--yes", "--route=capability"}
+	opts.ElevateFunc = func([]string) error { t.Fatal("must not elevate an anonymous target"); return nil }
+	opts.LookPath = func(string) (string, error) { return "sudo", nil }
+	err := RunExtenderSetup(opts)
+	if err == nil || !strings.Contains(err.Error(), "cannot safely elevate") || !strings.Contains(err.Error(), "no unique --unit or --state-dir") {
+		t.Fatalf("err=%v", err)
+	}
+}
