@@ -2441,6 +2441,30 @@ download_asset ()
     return 1
 }
 
+install_downloaded_tool ()
+{
+    tool_source="$1"
+    tool_target="$install_path/bin/urnet-tools"
+    if [ -e "$tool_target" ]; then
+        if ! mv -f "$tool_target" "$tool_target.old"; then
+            pr_err "Could not back up urnet-tools. The provider binary is installed; service setup has not finished and the service may be stopped. Run: sudo mv -f '%s' '%s'" "$tool_target" "$tool_target.old"
+            return 1
+        fi
+    fi
+    if ! cp "$tool_source" "$tool_target"; then
+        trap - EXIT
+        pr_err "Could not copy urnet-tools. The provider binary is installed; service setup has not finished and the service may be stopped. Previous tool, if any, is at %s. Download retained at %s. Run: sudo cp '%s' '%s'" "$tool_target.old" "$tool_source" "$tool_source" "$tool_target"
+        return 1
+    fi
+    if ! chmod 755 "$tool_target"; then
+        pr_err "Could not make urnet-tools executable. The provider binary and tool are installed; service setup has not finished and the service may be stopped. Run: sudo chmod 755 '%s'" "$tool_target"
+        return 1
+    fi
+    if [ -e "$tool_target.old" ]; then
+        rm -f "$tool_target.old" || pr_warn "Could not remove the old tool backup; run: sudo rm -f '%s'" "$tool_target.old"
+    fi
+}
+
 do_install ()
 {
     : "${tag:=latest}"
@@ -2885,11 +2909,7 @@ do_install ()
             pr_info "Installing Go urnet-tools binary (%s)..." "$tool_asset"
             if download_asset "$tool_dl_url" "$workdir/$tool_asset"; then
                 if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
-                    # Bypass 'Text file busy' like the provider swap above.
-                    mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                    cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                    chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                    rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                    install_downloaded_tool "$workdir/$tool_asset" || exit 1
                     tool_installed=1
                 else
                     pr_warn "urnet-tools sha256 mismatch, falling back to shell script"
@@ -2898,10 +2918,7 @@ do_install ()
                 pr_warn "Primary tool download failed, trying GitHub mirror..."
                 if download_asset "$tool_mirror_url" "$workdir/$tool_asset"; then
                     if verify_sha256_file "$workdir/$tool_asset" "$tool_digest"; then
-                        mv -f "$install_path/bin/urnet-tools" "$install_path/bin/urnet-tools.old" 2>/dev/null || true
-                        cp "$workdir/$tool_asset" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        chmod 755 "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools binary"; exit 1; }
-                        rm -f "$install_path/bin/urnet-tools.old" 2>/dev/null || true
+                        install_downloaded_tool "$workdir/$tool_asset" || exit 1
                         tool_installed=1
                     else
                         pr_warn "urnet-tools sha256 mismatch (mirror), falling back to shell script"

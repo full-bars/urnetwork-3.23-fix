@@ -29,6 +29,28 @@ loginctl() { printf 'stub loginctl failure\\n' >&2; return 1; }
         self.assertIn("sudo loginctl enable-linger alice", result.stdout)
         self.assertIn("may stop on logout", result.stdout)
 
+    def test_tool_copy_failure_preserves_backup_and_reports_state(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            (root / "bin").mkdir()
+            (root / "bin/urnet-tools").write_text("old")
+            source = root / "download"
+            source.write_text("new")
+            harness = '''
+install_path="$1"
+pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+cp() { printf 'copy denied\\n' >&2; return 1; }
+''' + function("install_downloaded_tool") + '\ninstall_downloaded_tool "$1/download"\n'
+            result = subprocess.run(["sh", "-c", harness, "sh", tmp], text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertEqual((root / "bin/urnet-tools.old").read_text(), "old")
+            self.assertTrue(source.exists())
+            self.assertIn("copy denied", result.stderr)
+            self.assertIn("provider binary is installed", result.stdout)
+            self.assertIn("service may be stopped", result.stdout)
+            self.assertIn("sudo cp", result.stdout)
+
     def test_firewall_queries_expose_failure_and_recovery(self):
         for name, expected in (("firewall-cmd", "sudo firewall-cmd --state"), ("nft", "sudo nft list tables")):
             with self.subTest(name=name):
