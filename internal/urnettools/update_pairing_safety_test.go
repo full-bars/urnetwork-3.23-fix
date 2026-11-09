@@ -114,6 +114,16 @@ func TestRollbackDemotionFailureLeavesProviderAlone(t *testing.T) {
 	}
 }
 
+func TestReconcileRejectsEmptyUnitType(t *testing.T) {
+	p, _, _ := fakeUnit(t, simpleUnit)
+	unitTypeFunc = func(Provider) (string, error) { return "", nil }
+	for _, version := range []string{"v3.23.0-fix.30.9", "v3.23.0-fix.31.1"} {
+		if _, err := reconcileUnitTypeForBinary(p, version); err == nil || !strings.Contains(err.Error(), "empty type") {
+			t.Fatalf("version %s: got %v", version, err)
+		}
+	}
+}
+
 func TestDemotionRejectsNotifyDropIn(t *testing.T) {
 	p, _, _ := fakeUnit(t, "[Service]\nType=notify\n")
 	unitTypeFunc = func(Provider) (string, error) { return "notify", nil }

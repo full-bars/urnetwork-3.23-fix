@@ -1650,6 +1650,9 @@ func migrateUnitToNotify(p Provider) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
 	}
+	if typ == "" {
+		return false, fmt.Errorf("query unit type for %s returned an empty type", p.Unit)
+	}
 	if typ == "notify" {
 		fmt.Printf("HotSwap unit migration not needed: %s is already Type=notify\n", p.Unit)
 		return false, nil
@@ -1953,6 +1956,9 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	if err != nil {
 		return false, fmt.Errorf("query unit type for %s: %w", p.Unit, err)
 	}
+	if typ == "" {
+		return false, fmt.Errorf("query unit type for %s returned an empty type", p.Unit)
+	}
 	if typ != "notify" && typ != "notify-reload" {
 		return false, nil
 	}
@@ -1980,6 +1986,8 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	}
 	if effective, err := unitTypeFunc(p); err != nil {
 		return true, fmt.Errorf("verify unit type for %s: %w", p.Unit, err)
+	} else if effective == "" {
+		return true, fmt.Errorf("verify unit type for %s returned an empty type", p.Unit)
 	} else if effective == "notify" || effective == "notify-reload" {
 		return true, fmt.Errorf("%s remains Type=notify after reload; check its drop-ins", p.Unit)
 	}
