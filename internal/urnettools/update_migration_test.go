@@ -404,6 +404,14 @@ func TestRewriteUnitContent_NoTypeLineGetsNotify(t *testing.T) {
 	}
 }
 
+func TestRewriteUnitContentToSimple_NotifyReload(t *testing.T) {
+	in := "[Service]\nType=notify-reload\nNotifyAccess=all\nExecStart=/usr/bin/urnetwork provide\n"
+	back, ok := rewriteUnitContentToSimple(in)
+	if !ok || !strings.Contains(back, "Type=simple") || strings.Contains(back, "Type=notify-reload") {
+		t.Fatalf("demote did not restore Type=simple from notify-reload:\n%s", back)
+	}
+}
+
 func TestRewriteUnitContent_NoTypeLineKeepsExistingNotifyAccess(t *testing.T) {
 	in := "[Service]\nNotifyAccess=main\nExecStart=/x\n"
 	got, changed := rewriteUnitContent(in)

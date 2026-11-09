@@ -58,6 +58,20 @@ ExecStart=/usr/bin/urnetwork provide
 Restart=on-failure
 `
 
+func TestDemoteNotifyReloadToSimple(t *testing.T) {
+	p, path, reloads := fakeUnit(t, "[Service]\nType=notify-reload\nExecStart=/usr/bin/urnetwork provide\n")
+	changed, err := demoteUnitToSimple(p)
+	if err != nil || !changed {
+		t.Fatalf("demote notify-reload: changed=%v err=%v", changed, err)
+	}
+	if got := readUnit(t, path); !strings.Contains(got, "\nType=simple\n") || strings.Contains(got, "Type=notify-reload") {
+		t.Fatalf("unit not demoted: %s", got)
+	}
+	if *reloads != 1 {
+		t.Fatalf("daemon-reload ran %d times, want 1", *reloads)
+	}
+}
+
 func TestRewriteUnitContentToSimple(t *testing.T) {
 	migrated, changed := rewriteUnitContent(simpleUnit)
 	if !changed {

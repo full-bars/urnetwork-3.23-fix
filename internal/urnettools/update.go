@@ -1987,7 +1987,7 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	}
 	newContent, changed := rewriteUnitContentToSimple(string(content))
 	if !changed {
-		return false, fmt.Errorf("unit %s is effectively Type=notify but %s has no Type=notify to demote; check its drop-ins", p.Unit, unitPath)
+		return false, fmt.Errorf("unit %s is effectively Type=%s but %s has no matching notify type to demote; check its drop-ins", p.Unit, typ, unitPath)
 	}
 	if err := replaceUnitFileIn(p.StateHome, unitPath, []byte(newContent)); err != nil {
 		return false, fmt.Errorf("write unit file %s: %w", unitPath, err)
@@ -2001,7 +2001,7 @@ func demoteUnitToSimple(p Provider) (bool, error) {
 	} else if effective == "" {
 		return true, fmt.Errorf("verify unit type for %s returned an empty type", p.Unit)
 	} else if effective == "notify" || effective == "notify-reload" {
-		return true, fmt.Errorf("%s remains Type=notify after reload; check its drop-ins", p.Unit)
+		return true, fmt.Errorf("%s remains Type=%s after reload; check its drop-ins", p.Unit, effective)
 	}
 	return true, nil
 }
@@ -2088,7 +2088,7 @@ func rewriteUnitContentToSimple(content string) (string, bool) {
 		if !ok {
 			continue
 		}
-		if strings.EqualFold(strings.TrimSpace(key), "Type") && strings.EqualFold(strings.TrimSpace(val), "notify") {
+		if strings.EqualFold(strings.TrimSpace(key), "Type") && (strings.EqualFold(strings.TrimSpace(val), "notify") || strings.EqualFold(strings.TrimSpace(val), "notify-reload")) {
 			lines[i] = "Type=simple"
 			changed = true
 		}
