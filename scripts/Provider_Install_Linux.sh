@@ -4236,6 +4236,15 @@ do_auth ()
     exit "$exit_code"
 }
 
+installer_apply_immediate_sysctls ()
+{
+    for setting in fs.inotify.max_user_watches=524288 fs.inotify.max_user_instances=512 fs.file-max=2097152; do
+        if ! sysctl -w "$setting" >/dev/null; then
+            pr_warn "Could not apply immediate kernel setting; run: sudo sysctl -w %s" "$setting"
+        fi
+    done
+}
+
 do_optimize ()
 {
     if [ "$(id -u)" -ne 0 ]; then
@@ -4252,9 +4261,7 @@ do_optimize ()
     # 0. Immediate Pre-Optimization (prevents failures during the optimization itself)
     # Increase ulimit and inotify limits immediately for the session to prevent "Too many open files"
     ulimit -n 1048576 2>/dev/null || true
-    sysctl -w fs.inotify.max_user_watches=524288 >/dev/null 2>&1 || true
-    sysctl -w fs.inotify.max_user_instances=512 >/dev/null 2>&1 || true
-    sysctl -w fs.file-max=2097152 >/dev/null 2>&1 || true
+    installer_apply_immediate_sysctls
 
     # When running via sudo, we need to find the original user's home
     actual_user=$(logname 2>/dev/null || echo "$SUDO_USER" || echo "$USER")

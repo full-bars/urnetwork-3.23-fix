@@ -28,6 +28,17 @@ loginctl() { printf 'stub loginctl failure\\n' >&2; return 1; }
         self.assertIn("sudo loginctl enable-linger alice", result.stdout)
         self.assertIn("may stop on logout", result.stdout)
 
+    def test_immediate_sysctls_report_each_failure_and_continue(self):
+        harness = '''
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+sysctl() { printf 'denied %s\\n' "$2" >&2; return 1; }
+''' + function("installer_apply_immediate_sysctls") + '\ninstaller_apply_immediate_sysctls\n'
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertEqual(result.returncode, 0)
+        for setting in ("fs.inotify.max_user_watches=524288", "fs.inotify.max_user_instances=512", "fs.file-max=2097152"):
+            self.assertIn("sudo sysctl -w " + setting, result.stdout)
+            self.assertIn("denied " + setting, result.stderr)
+
     def test_openrc_staging_chown_failure_never_reports_success(self):
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
