@@ -276,17 +276,44 @@ loginctl() { return 0; }
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout + result.stderr, "")
 
-    def _run_optimize_harness(self, tmp, env_vars):
+    def _run_optimize_harness(self, tmp, env_vars=None):
+        if env_vars is None:
+            env_vars = {}
+        stub_bin = Path(tmp) / "stub_bin"
+        stub_bin.mkdir(exist_ok=True)
+        pkg_log = Path(tmp) / "pkg_mgr.log"
+        for name in ("pacman", "apt-get", "dnf", "apk", "zypper"):
+            stub = stub_bin / name
+            stub.write_text(f'''#!/bin/sh
+printf '%s %s\\n' "$(basename "$0")" "$*" >> "{pkg_log}"
+exit 0
+''')
+            stub.chmod(0o755)
+
+        getent_stub = stub_bin / "getent"
+        getent_stub.write_text(f'''#!/bin/sh
+user="${{2:-alice}}"
+printf '%s:x:1000:1000::{tmp}:/bin/sh\\n' "$user"
+''')
+        getent_stub.chmod(0o755)
+
+        logname_stub = stub_bin / "logname"
+        logname_stub.write_text('''#!/bin/sh
+printf 'alice\n'
+''')
+        logname_stub.chmod(0o755)
+
+        opt_args = env_vars.get("OPTIMIZE_ARGS", "-y")
         harness = '''
-FORCE=1
+TEST_HOME="$1"
 actual_user=alice; actual_home="$1"; SUDO_USER=alice
 has_openrc=0; has_systemd=1; is_container=0
 id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
 pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
 pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
 pr_err() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
-confirm_restart() { :; }
-installer_apply_immediate_sysctls() { :; }
+confirm_restart() { actual_user=alice; actual_home="$TEST_HOME"; }
+installer_apply_immediate_sysctls() { actual_user=alice; actual_home="$TEST_HOME"; }
 detect_mem_limit_mib() { printf "1024\\n"; }
 modprobe() { return 0; }
 swapon() { if [ "${ZRAM_OK:-1}" = "1" ]; then printf "/dev/zram0 partition\\n"; fi; }
@@ -295,16 +322,17 @@ installer_apply_sysctl_config() { if [ "${SYSCTL_OK:-1}" = "1" ]; then return 0;
 systemctl() { return 0; }
 installer_enable_linger() { return 0; }
 dd() { printf "100 MB/s\\n"; }
-getent() { printf "alice:x:1000:1000::%s:/bin/sh\\n" "$actual_home"; }
-logname() { printf "alice\\n"; }
 sudo() { return 0; }
 chown() { return 0; }
 mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
-''' + function("do_optimize") + '\ndo_optimize -y\n'
+''' + function("do_optimize") + f'\ndo_optimize {opt_args}\n'
         env = {
-            "PATH": os.environ["PATH"],
+            "PATH": str(stub_bin) + os.pathsep + os.environ["PATH"],
+            "HOME": tmp,
+            "TEST_HOME": tmp,
             "MODULES_LOAD_DIR": tmp + "/modules",
             "SYSCTL_CONF": tmp + "/sysctl.conf",
+            "PKG_MGR_LOG": str(pkg_log),
         }
         env.update(env_vars)
         return subprocess.run(["sh", "-c", harness, "sh", tmp], env=env, text=True, capture_output=True)
@@ -333,6 +361,42 @@ mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
             self.assertEqual(result.returncode, 0)
             self.assertIn("Optimization applied successfully.", result.stdout)
             self.assertNotIn("Optimization completed with partial success", result.stdout)
+
+    def test_optimizer_harness_safety_and_hygiene(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            sentinel_files = [
+                Path("/etc/systemd/zram-generator.conf"),
+                Path("/etc/default/zramswap"),
+                Path("/etc/modules-load.d/urnetwork.conf"),
+                Path("/etc/sysctl.d/99-urnetwork.conf"),
+            ]
+            before_mtimes = {p: p.stat().st_mtime for p in sentinel_files if p.exists()}
+            before_exists = {p: p.exists() for p in sentinel_files}
+
+            result = self._run_optimize_harness(
+                tmp,
+                {"SYSCTL_OK": "1", "ZRAM_OK": "1", "OPTIMIZE_ARGS": ""}
+            )
+            self.assertEqual(result.returncode, 0, f"Harness failed:\nstdout:\n{result.stdout}\nstderr:\n{result.stderr}")
+            self.assertIn("Optimization applied successfully.", result.stdout)
+
+            # Assert no package manager was called with a mutating verb
+            pkg_log = Path(tmp) / "pkg_mgr.log"
+            mutating_verbs = {"install", "update", "upgrade", "remove", "purge", "-S", "-Sy", "-Syu", "-R", "add", "del"}
+            if pkg_log.exists():
+                for line in pkg_log.read_text().splitlines():
+                    tokens = set(line.split())
+                    intersect = tokens.intersection(mutating_verbs)
+                    self.assertFalse(intersect, f"Mutating verb {intersect} called on package manager stub: {line}")
+
+            # Assert no sentinel files outside temp dir were created or modified
+            for p in sentinel_files:
+                self.assertEqual(p.exists(), before_exists[p], f"File outside temp dir was created/deleted: {p}")
+                if p.exists():
+                    self.assertEqual(p.stat().st_mtime, before_mtimes[p], f"File outside temp dir was modified: {p}")
+
+            # Assert home directory used was inside the temporary directory
+            self.assertTrue((Path(tmp) / ".config").exists(), "Expected .config directory inside temp HOME")
 
     def test_optimizer_reports_failure_on_active_service_restart_failure(self):
         with tempfile.TemporaryDirectory() as tmp:
