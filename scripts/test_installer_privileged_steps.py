@@ -72,18 +72,22 @@ loginctl() { printf 'stub loginctl failure\\n' >&2; return 1; }
             root = Path(tmp)
             (root / "bin").mkdir()
             (root / "bin/urnet-tools").write_text("old")
-            source = root / "download"
+            workdir = root / "work"
+            workdir.mkdir()
+            source = workdir / "download"
             source.write_text("new")
             harness = '''
 install_path="$1"
+workdir="$1/work"
+trap 'rm -rf "$workdir"' EXIT
 pr_err() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
 cp() { printf 'copy denied\\n' >&2; return 1; }
-''' + function("install_downloaded_tool") + '\ninstall_downloaded_tool "$1/download"\n'
+''' + function("install_downloaded_tool") + '\ninstall_downloaded_tool "$workdir/download"\nexit $?\n'
             result = subprocess.run(["sh", "-c", harness, "sh", tmp], text=True, capture_output=True)
             self.assertNotEqual(result.returncode, 0)
             self.assertEqual((root / "bin/urnet-tools.old").read_text(), "old")
-            self.assertTrue(source.exists())
+            self.assertTrue(source.exists(), "Download was deleted by EXIT trap; trap - EXIT did not disarm cleanup")
             self.assertIn("copy denied", result.stderr)
             self.assertIn("provider binary is installed", result.stdout)
             self.assertIn("service may be stopped", result.stdout)

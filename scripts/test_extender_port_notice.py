@@ -214,10 +214,22 @@ pr_warn() { printf 'WARN: %s\n' "$*"; }
                 master, slave = pty.openpty()
                 try:
                     result = subprocess.run(["sh", "-c", harness], env=env, stdin=slave, stdout=slave, stderr=subprocess.PIPE, text=True)
-                    output = os.read(master, 16384).decode().replace("\r\n", "\n") if select.select([master], [], [], 0)[0] else ""
+                    os.close(slave)
+                    slave = None
+                    chunks = []
+                    while True:
+                        try:
+                            data = os.read(master, 16384)
+                            if not data:
+                                break
+                            chunks.append(data)
+                        except OSError:
+                            break
+                    output = b"".join(chunks).decode(errors="replace").replace("\r\n", "\n")
                 finally:
                     os.close(master)
-                    os.close(slave)
+                    if slave is not None:
+                        os.close(slave)
             self.assertEqual(result.returncode, 0, result.stderr)
             return output, mark.exists()
 
