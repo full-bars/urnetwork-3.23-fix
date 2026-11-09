@@ -253,6 +253,28 @@ func TestExtenderStatusPortRoute(t *testing.T) {
 	}
 }
 
+func TestExtenderStatusWarningWhenSocketUnavailable(t *testing.T) {
+	route := detectBindRouteWith("linux", "/bin/provider", "provider", func(string) ([]byte, error) { return []byte("443"), nil }, func(string, ...string) ([]byte, error) { return []byte("/bin/provider cap_net_bind_service=ep"), nil })
+	out := renderExtender(t, ExtenderReading{Source: SourceUnknown, BindRoute: route})
+	if !strings.Contains(out, "unavailable") || !strings.Contains(out, "sudo setcap -r /bin/provider") {
+		t.Fatalf("missing warning when provider unavailable: %s", out)
+	}
+}
+
+func TestExtenderStatusSysctlAndCapabilityWarning(t *testing.T) {
+	got := detectBindRouteWith("linux", "/bin/provider", "provider", func(string) ([]byte, error) { return []byte("443\n"), nil }, func(name string, args ...string) ([]byte, error) {
+		if name != "getcap" {
+			t.Fatalf("unexpected command %s %v", name, args)
+		}
+		return []byte("/bin/provider cap_net_bind_service=ep"), nil
+	})
+	for _, want := range []string{"sysctl", "sudo setcap -r /bin/provider", "restart", "non-dumpable"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("route %q missing %q", got, want)
+		}
+	}
+}
+
 func TestDetectBindRoute(t *testing.T) {
 	// 1. Sysctl <= 443
 	got := detectBindRouteWith("linux", "/bin/urnetwork", "provider", func(path string) ([]byte, error) {

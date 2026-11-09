@@ -106,7 +106,17 @@ func detectBindRouteWith(platform, binary, user string, readFile func(string) ([
 	if readFile != nil {
 		if data, err := readFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
 			if val, err := strconv.Atoi(strings.TrimSpace(string(data))); err == nil && val >= 0 && val <= 443 {
-				return fmt.Sprintf("sysctl: port is available without a file capability (ip_unprivileged_port_start=%d)", val)
+				route := fmt.Sprintf("sysctl: port is available without a file capability (ip_unprivileged_port_start=%d)", val)
+				if binary != "" && execCmd != nil {
+					if out, err := execCmd("getcap", binary); err == nil && linuxHasBindCapability(binary, string(out)) {
+						cmd := setupCommand{name: "sudo", args: []string{"setcap", "-r", binary}}.String()
+						route += "; warning: binary still has a file capability, so a provider started with it is non-dumpable and may be unreadable to the updater. You must restart or hand off the provider after removing it. " + cmd
+						if strings.TrimSpace(string(out)) != binary+" cap_net_bind_service=ep" {
+							route += " removes ALL file capabilities; inspect getcap -n first and preserve other capabilities"
+						}
+					}
+				}
+				return route
 			}
 		}
 	}
@@ -233,6 +243,9 @@ func extenderNextTry(f ExtenderFamily, now time.Time) string {
 func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	if r.Source != SourceControlSocket {
 		fmt.Fprintln(w, "\nExtender: unavailable (the provider did not answer on its control socket)")
+		if r.BindRoute != "" {
+			fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
+		}
 		return
 	}
 	fmt.Fprintln(w, "\nExtender:")
