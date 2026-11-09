@@ -13,6 +13,8 @@ def function(name):
     script = INSTALLER.read_text()
     marker = name + ("() {\n" if name == "firewall_hint" else " ()\n{\n")
     start = script.index(marker)
+    if name == "do_optimize":
+        return script[start:script.index("\ndo_session ()\n{\n", start)]
     if name == "install_openrc_units":
         return script[start:script.index("\n# Run a command string as another user", start)]
     if name == "openrc_finalize_root_paths":
@@ -205,6 +207,61 @@ loginctl() { return 0; }
         result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
         self.assertEqual(result.returncode, 0)
         self.assertEqual(result.stdout + result.stderr, "")
+
+    def _run_optimize_harness(self, tmp, env_vars):
+        harness = '''
+FORCE=1
+actual_user=alice; actual_home="$1"; SUDO_USER=alice
+has_openrc=0; has_systemd=1; is_container=0
+id() { if [ "${1:-}" = "-u" ]; then printf "0\\n"; else printf "alice\\n"; fi; }
+pr_info() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_warn() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+pr_err() { if [ $# -eq 1 ]; then printf "%s\\n" "$1"; else fmt="$1"; shift; printf "$fmt\\n" "$@"; fi; }
+confirm_restart() { :; }
+installer_apply_immediate_sysctls() { :; }
+detect_mem_limit_mib() { printf "1024\\n"; }
+modprobe() { return 0; }
+swapon() { if [ "${ZRAM_OK:-1}" = "1" ]; then printf "/dev/zram0 partition\\n"; fi; }
+setup_zram_manual() { return 1; }
+installer_apply_sysctl_config() { if [ "${SYSCTL_OK:-1}" = "1" ]; then return 0; else return 1; fi; }
+systemctl() { return 0; }
+installer_enable_linger() { return 0; }
+dd() { printf "100 MB/s\\n"; }
+sudo() { return 0; }
+mkdir -p "$actual_home/.config/systemd/user/urnetwork.service.d"
+''' + function("do_optimize") + '\ndo_optimize -y\n'
+        env = {
+            "PATH": os.environ["PATH"],
+            "MODULES_LOAD_DIR": tmp + "/modules",
+            "SYSCTL_CONF": tmp + "/sysctl.conf",
+        }
+        env.update(env_vars)
+        return subprocess.run(["sh", "-c", harness, "sh", tmp], env=env, text=True, capture_output=True)
+
+    def test_optimizer_reports_partial_success_and_retry_on_sysctl_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"SYSCTL_OK": "0", "ZRAM_OK": "1"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Optimization completed with partial success", result.stdout)
+            self.assertIn("Persistent sysctl", result.stdout)
+            self.assertIn("sudo sysctl -p", result.stdout)
+            self.assertNotIn("Optimization applied successfully.", result.stdout)
+
+    def test_optimizer_reports_partial_success_and_retry_on_zram_failure(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"SYSCTL_OK": "1", "ZRAM_OK": "0"})
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("Optimization completed with partial success", result.stdout)
+            self.assertIn("ZRAM auto-enable", result.stdout)
+            self.assertIn("sudo systemctl restart zramswap", result.stdout)
+            self.assertNotIn("Optimization applied successfully.", result.stdout)
+
+    def test_optimizer_reports_success_when_all_succeed(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            result = self._run_optimize_harness(tmp, {"SYSCTL_OK": "1", "ZRAM_OK": "1"})
+            self.assertEqual(result.returncode, 0)
+            self.assertIn("Optimization applied successfully.", result.stdout)
+            self.assertNotIn("Optimization completed with partial success", result.stdout)
 
 
 if __name__ == "__main__":

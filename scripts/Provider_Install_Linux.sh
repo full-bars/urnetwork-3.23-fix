@@ -4359,6 +4359,26 @@ do_optimize ()
     ulimit -n 1048576 2>/dev/null || true
     installer_apply_immediate_sysctls
 
+    opt_failed=0
+    opt_completed=""
+    opt_skipped=""
+    opt_failed_ops=""
+    opt_retry_cmds=""
+
+    record_opt_success () {
+        opt_completed="${opt_completed}\n  - $1"
+    }
+    record_opt_skipped () {
+        opt_skipped="${opt_skipped}\n  - $1: $2"
+    }
+    record_opt_failure () {
+        opt_failed=$((opt_failed + 1))
+        opt_failed_ops="${opt_failed_ops}\n  - $1"
+        if [ -n "$2" ]; then
+            opt_retry_cmds="${opt_retry_cmds}\n  $2"
+        fi
+    }
+
     pr_info "⚡ Starting System Optimizer..."
 
     if [ "$is_container" -eq 1 ]; then
@@ -4423,8 +4443,13 @@ do_optimize ()
 
     # Persistence for module (solves race condition on reboot)
     pr_info "Configuring early module loading..."
-    mkdir -p /etc/modules-load.d
-    echo "nf_conntrack" > /etc/modules-load.d/urnetwork.conf
+    modules_load_dir="${MODULES_LOAD_DIR:-/etc/modules-load.d}"
+    mkdir -p "$modules_load_dir" 2>/dev/null || true
+    if echo "nf_conntrack" > "$modules_load_dir/urnetwork.conf" 2>/dev/null; then
+        record_opt_success "Early module loading (nf_conntrack)"
+    else
+        record_opt_failure "Early module loading" "echo nf_conntrack | sudo tee /etc/modules-load.d/urnetwork.conf"
+    fi
 
     # 2. ZRAM Optimization
     pr_info "Checking for ZRAM (Compressed RAM Swap)..."
@@ -4434,11 +4459,13 @@ do_optimize ()
     if ! modprobe -n zram >/dev/null 2>&1; then
         pr_warn "Your kernel does not support ZRAM. Skipping compressed memory optimization."
         skip_zram=1
+        record_opt_skipped "ZRAM" "kernel does not support zram module"
     elif swapon --show | grep -q "zram"; then
         pr_info "ZRAM is already active."
         if ! confirm "ZRAM is already configured. Re-apply URNetwork's 80% zstd optimization?"; then
             pr_info "Skipping ZRAM configuration (respecting existing setup)."
             skip_zram=1
+            record_opt_skipped "ZRAM" "existing configuration retained"
         fi
     fi
 
@@ -4473,11 +4500,14 @@ do_optimize ()
         # Verify ZRAM activation, with manual fallback
         if swapon --show | grep -q "zram"; then
             pr_info "ZRAM enabled successfully."
+            record_opt_success "ZRAM compressed RAM swap (80% RAM, zstd)"
         else
             if setup_zram_manual; then
                 pr_info "ZRAM enabled via manual fallback."
+                record_opt_success "ZRAM compressed RAM swap (fallback)"
             else
                 pr_warn "ZRAM could not be auto-enabled. You may need to restart the zram service manually."
+                record_opt_failure "ZRAM auto-enable" "sudo systemctl restart zramswap 2>/dev/null || sudo modprobe zram"
             fi
         fi
     fi
@@ -4489,7 +4519,7 @@ do_optimize ()
     timeout=3600
     ulimit_val=1048576
 
-    sysctl_conf="/etc/sysctl.d/99-urnetwork.conf"
+    sysctl_conf="${SYSCTL_CONF:-/etc/sysctl.d/99-urnetwork.conf}"
     skip_sysctl=0
 
     # Check if a non-URNetwork file already has high conntrack settings
@@ -4499,6 +4529,7 @@ do_optimize ()
         if ! confirm "System already has high limits. Apply URNetwork's specific sysctl overrides anyway?"; then
             pr_info "Skipping sysctl configuration (respecting existing tuning)."
             skip_sysctl=1
+            record_opt_skipped "Sysctl tuning" "existing high limits retained"
         fi
     fi
 
@@ -4523,7 +4554,11 @@ EOF
         # the next boot. Apply the file we just wrote instead: -p FILE is
         # supported by both BusyBox and procps. Fall back to --system for the
         # case where a host has procps and reads other drop-ins too.
-        installer_apply_sysctl_config "$sysctl_conf" || :
+        if installer_apply_sysctl_config "$sysctl_conf"; then
+            record_opt_success "Persistent sysctl ($sysctl_conf)"
+        else
+            record_opt_failure "Persistent sysctl ($sysctl_conf)" "sudo sysctl -p '$sysctl_conf'"
+        fi
     fi
 
     # 4. Apply Ulimits — backend-aware.
@@ -4543,6 +4578,7 @@ EOF
         fi
         chmod 0644 "$conf_d"
         pr_info "Ulimit %s written to %s (rc_ulimit)." "$ulimit_val" "$conf_d"
+        record_opt_success "File descriptor limit ($ulimit_val in $conf_d)"
         override_file=""   # nothing else may try to use it
     else
         # Ensure everything in the home folder touched by root is restored to user ownership
@@ -4587,9 +4623,8 @@ EOF
             sed -i "s|LimitNOFILE=.*|LimitNOFILE=$ulimit_val|" "$override_file"
         fi
         chown "$actual_user":"$actual_user" "$override_file"
+        record_opt_success "File descriptor limit ($ulimit_val in $override_file)"
     fi
-
-    pr_info "Optimization applied successfully."
 
     if [ "$has_openrc" -eq 1 ] && [ -f /etc/init.d/urnetwork ]; then
         # OpenRC: restart through rc-service as root. rc_ulimit is read by
@@ -4597,8 +4632,10 @@ EOF
         pr_info "Restarting the urnetwork service to apply ulimits..."
         if rc-service urnetwork restart >/dev/null 2>&1 || rc-service urnetwork start >/dev/null 2>&1; then
             pr_info "Service restarted with the new limits."
+            record_opt_success "Service restart (OpenRC)"
         else
             pr_warn "Could not restart the service; run: rc-service urnetwork restart"
+            record_opt_failure "Service restart (OpenRC)" "sudo rc-service urnetwork restart"
         fi
         # No lingering equivalent exists (and none is needed): OpenRC has no
         # per-user service manager, and the service lives in the default
@@ -4607,14 +4644,45 @@ EOF
         pr_info "Restarting URnetwork service to apply ulimits..."
 
         # Run as the actual user to access their systemd bus
-        sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload
-        sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service || pr_info "Note: Service not running; ulimits will apply on next start."
+        sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user daemon-reload 2>/dev/null || true
+        if sudo -u "$actual_user" DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u $actual_user)/bus" systemctl --user restart urnetwork.service 2>/dev/null; then
+            pr_info "Service restarted with the new limits."
+            record_opt_success "Service restart (systemd)"
+        else
+            pr_info "Note: Service not running; ulimits will apply on next start."
+            record_opt_skipped "Service restart" "service not running; ulimits will apply on next start"
+        fi
 
         # Enable lingering for the user so services persist after logout
         if installer_enable_linger "$actual_user"; then
             pr_info "✓ Systemd lingering enabled for '$actual_user' (provider will persist after logout)"
+            record_opt_success "Systemd lingering ($actual_user)"
+        else
+            record_opt_failure "Systemd lingering ($actual_user)" "sudo loginctl enable-linger '$actual_user'"
         fi
     fi
+
+    printf "\n"
+    if [ "$opt_failed" -eq 0 ]; then
+        pr_info "Optimization applied successfully."
+        if [ -n "$opt_skipped" ]; then
+            printf "Skipped operations:%b\n" "$opt_skipped"
+        fi
+        return 0
+    fi
+
+    pr_warn "Optimization completed with partial success (%d failed operation(s))." "$opt_failed"
+    if [ -n "$opt_completed" ]; then
+        printf "Completed operations:%b\n" "$opt_completed"
+    fi
+    if [ -n "$opt_skipped" ]; then
+        printf "Skipped operations:%b\n" "$opt_skipped"
+    fi
+    printf "Failed operations:%b\n" "$opt_failed_ops"
+    if [ -n "$opt_retry_cmds" ]; then
+        printf "\nTo retry failed operations, run:%b\n" "$opt_retry_cmds"
+    fi
+    return 1
 }
 
 do_session ()
