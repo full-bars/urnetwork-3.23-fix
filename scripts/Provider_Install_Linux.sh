@@ -1542,12 +1542,12 @@ install_systemd_units ()
 
     pr_info "Installing urnetwork.service in %s" "$systemd_service"
     mkdir -p "$systemd_userdir"
-    if [ -f "$systemd_service" ]; then
-        cp -p "$systemd_service" "$systemd_service.old" 2>/dev/null || \
-            cp "$systemd_service" "$systemd_service.old" 2>/dev/null || true
-    fi
-    
-    cat > "$systemd_service" <<EOF
+    unit_backup_made=0
+    unit_candidate=$(mktemp "$systemd_service.new.XXXXXXXX") || {
+        pr_err "Could not create a temporary systemd unit; existing unit was not replaced. Check permissions with: ls -ld '%s'" "$systemd_userdir"
+        exit 1
+    }
+    cat > "$unit_candidate" <<EOF
 [Unit]
 Description=URnetwork Provider
 
@@ -1564,6 +1564,45 @@ RestartSec=5
 [Install]
 WantedBy=default.target
 EOF
+    if [ -f "$systemd_service" ] && cmp -s "$systemd_service" "$unit_candidate"; then
+        rm -f "$unit_candidate"
+    else
+        if [ -f "$systemd_service" ]; then
+            unit_backup_tmp=$(mktemp "$systemd_service.backup.XXXXXXXX") || {
+                pr_err "Could not create a temporary unit backup; the existing unit remains in place. Check permissions with: ls -ld '%s'" "$systemd_userdir"
+                rm -f "$unit_candidate"
+                exit 1
+            }
+            if ! cp -p "$systemd_service" "$unit_backup_tmp"; then
+                pr_err "Could not back up the previous systemd unit; it remains in place. Run: cp -p '%s' '%s'" "$systemd_service" "$systemd_service.old"
+                pr_err "The provider binary may already have been replaced; check '%s' and '%s'." "$install_path/bin/urnetwork" "$install_path/bin/urnetwork.old"
+                rm -f "$unit_candidate" "$unit_backup_tmp"
+                exit 1
+            fi
+            if ! mv -f "$unit_backup_tmp" "$systemd_service.old"; then
+                pr_err "Could not install the unit backup; the existing unit remains in place. Run: mv -f '%s' '%s'" "$unit_backup_tmp" "$systemd_service.old"
+                rm -f "$unit_candidate"
+                exit 1
+            fi
+            unit_backup_made=1
+        fi
+        if ! chmod 644 "$unit_candidate"; then
+            pr_err "Could not set the new systemd unit permissions. Run: chmod 644 '%s'" "$unit_candidate"
+            exit 1
+        fi
+        if [ -e "$systemd_service" ]; then
+            if ! mv -f "$unit_candidate" "$systemd_service"; then
+                pr_err "Could not install the new systemd unit. Run: mv -f '%s' '%s'" "$unit_candidate" "$systemd_service"
+                exit 1
+            fi
+        else
+            if ! cp "$unit_candidate" "$systemd_service"; then
+                pr_err "Could not install the new systemd unit. Run: cp '%s' '%s'" "$unit_candidate" "$systemd_service"
+                exit 1
+            fi
+            rm -f "$unit_candidate"
+        fi
+    fi
     
     pr_info "Installing urnetwork-update.service in %s" "$systemd_update_service"
     cat > "$systemd_update_service" <<EOF
@@ -1618,10 +1657,14 @@ EOF
             pr_err "Failed to restart urnetwork.service after update. The new binary and unit files are installed; the service start command failed. Retry with: systemctl --user daemon-reload && systemctl --user start urnetwork.service"
             if [ -f "$install_path/bin/urnetwork.old" ]; then
                 restored_unit=0
-                if [ -f "$systemd_service.old" ]; then
-                    if mv -f "$systemd_service.old" "$systemd_service" 2>/dev/null; then
+                if [ "$unit_backup_made" -eq 1 ] && [ -f "$systemd_service.old" ]; then
+                    if mv -f "$systemd_service.old" "$systemd_service"; then
                         restored_unit=1
+                    else
+                        pr_err "Could not restore this run's unit backup. Run: mv -f '%s' '%s'" "$systemd_service.old" "$systemd_service"
                     fi
+                else
+                    pr_err "No usable systemd unit backup was made by this run; the new Type=notify unit remains in place. Edit it to restore the previous settings with: systemctl --user edit --full urnetwork.service"
                 fi
                 if ${SUDO:-} mv -f "$install_path/bin/urnetwork.old" "$install_path/bin/urnetwork" 2>/dev/null; then
                     ensure_extender_cap "$install_path/bin/urnetwork" || {
@@ -1655,8 +1698,10 @@ EOF
             exit 1
         fi
         ${SUDO:-} rm -f "$install_path/bin/urnetwork.old" 2>/dev/null || true
-        rm -f "$systemd_service.old" 2>/dev/null || true
-    else
+        if [ "$unit_backup_made" -eq 1 ]; then
+            rm -f "$systemd_service.old" 2>/dev/null || true
+        fi
+    elif [ "$unit_backup_made" -eq 1 ]; then
         rm -f "$systemd_service.old" 2>/dev/null || true
     fi
 }
