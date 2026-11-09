@@ -6,7 +6,7 @@ _Released 2026-11-08. Based on v3.23.0-fix.35.6. Notes: `releases/v3.23.0-fix.35
 
 ### Added
 
-- **Extender setup offers a sysctl route for TCP 443** (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`). Linux setup offers `net.ipv4.ip_unprivileged_port_start=443` in `/etc/sysctl.d/99-urnetwork-extender.conf` alongside the file capability route. Any local user can bind ports 443 and above when this setting is active. Status reports the active route.
+- **Extender setup offers a sysctl route for TCP 443** (`internal/urnettools/extender_setup.go`, `internal/urnettools/extender_platform.go`). Linux setup offers `net.ipv4.ip_unprivileged_port_start=443` in `/etc/sysctl.d/99-urnetwork-extender.conf` alongside the file capability route. It preserves any previous drop-in as `.conf.pre-urnetwork` with its mode; undo restores that backup, or removes only a newly created drop-in. An unknown prior live value is not replaced with an assumed default. Setup requires both a live and a persistent low threshold before reporting the sysctl route configured. Any local user can bind ports 443 and above when active. Sudo reruns bind the inspected provider target and refuse if root resolves a different one. Status reports the active route.
 
 ### Fixed
 

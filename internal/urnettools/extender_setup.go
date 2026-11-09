@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"os"
@@ -48,7 +49,7 @@ func executeExtenderSetupPlan(out io.Writer, plan []setupCommand, yes, dryRun bo
 		}
 		if (c.name == "sysctl" && len(c.args) == 1 && c.args[0] == "--system") || (c.name == "sh" && len(c.args) == 2 && strings.Contains(c.args[1], "99-urnetwork-extender.conf")) {
 			fmt.Fprintln(out, "Notice: net.ipv4.ip_unprivileged_port_start=443 removes privileged-port protection for ports 443-1023 for all users on this host.")
-			undo := (&SystemPlatformConfigurer{}).sysctlRecovery()
+			undo, _ := (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
 			if len(recovery) > 0 {
 				undo = recovery[0]
 			}
@@ -173,9 +174,17 @@ ruleset-specific; use the procedures for your existing policy.`)
 		lookPathFn = exec.LookPath
 	}
 
-	targets, err := setupTargets(setupDiscoverFn(), opts.Target)
+	// Re-resolve the exact inspected set under sudo, never the original no-target
+	// argv: root can discover providers the caller could not inspect.
+	discovered := setupDiscoverFn()
+	targets, err := setupTargets(discovered, opts.Target)
 	if err != nil {
 		return fmt.Errorf("resolving target provider: %w", err)
+	}
+	if isRootFn() && os.Getenv(urnetExtenderSetupTargetEnv) != "" {
+		if got := setupTargetIdentity(targets); got != os.Getenv(urnetExtenderSetupTargetEnv) {
+			return fmt.Errorf("elevated extender setup target changed after discovery; refusing to configure any provider (expected %s, resolved %s)", os.Getenv(urnetExtenderSetupTargetEnv), got)
+		}
 	}
 
 	// STEP 1: Check ports first (read-only)
@@ -312,10 +321,13 @@ ruleset-specific; use the procedures for your existing policy.`)
 	var recovery string
 	if route == "sysctl" && len(needPlatformTargets) > 0 {
 		if sp, ok := platformCfg.(*SystemPlatformConfigurer); ok {
-			recovery = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			recovery, err = sp.sysctlRecovery() // snapshot before any write or sysctl apply
+			if err != nil {
+				return fmt.Errorf("planning sysctl recovery: %w", err)
+			}
 			sp.SysctlUndo = recovery
 		} else {
-			recovery = (&SystemPlatformConfigurer{}).sysctlRecovery()
+			recovery, _ = (&SystemPlatformConfigurer{ReadFile: func(string) ([]byte, error) { return nil, os.ErrNotExist }}).sysctlRecovery()
 		}
 	}
 
@@ -360,15 +372,21 @@ ruleset-specific; use the procedures for your existing policy.`)
 			return nil
 		}
 
-		exactCommand := formatSetupSudoCommand(opts)
-		_, sudoErr := lookPathFn("sudo")
-		sudoAvailable := sudoErr == nil
-
 		if platform == "windows" {
 			cmd := formatSetupPowerShellCommand(opts)
 			fmt.Fprintf(errOut, "extender setup requires Administrator privileges. Re-run from an elevated PowerShell terminal (Run as administrator):\n  %s\n", cmd)
 			return fmt.Errorf("extender setup requires Administrator privileges; run from an elevated terminal: %s", cmd)
 		}
+		args, bindErr := setupBoundArgs(opts, discovered, targets)
+		if bindErr != nil {
+			inventory := setupCommand{name: "sudo", args: []string{resolvedExecutablePath(), "providers", "--all"}}.String()
+			return fmt.Errorf("cannot safely elevate extender setup: %w; inspect providers with: %s; then run an explicit --unit or --state-dir setup command", bindErr, inventory)
+		}
+		opts.Argv = args
+		exactCommand := formatSetupSudoCommand(opts)
+		_, sudoErr := lookPathFn("sudo")
+		sudoAvailable := sudoErr == nil
+
 		if opts.NonInteractive || !stdinIsInteractive() || !sudoAvailable {
 			fmt.Fprintf(errOut, "extender setup requires root privileges. Run:\n  %s\n", exactCommand)
 			return fmt.Errorf("extender setup requires root privileges; run: %s", exactCommand)
@@ -385,23 +403,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 
 		elevateFn := opts.ElevateFunc
 		if elevateFn == nil {
-			elevateFn = elevateSelf
-		}
-		args := opts.Argv
-		if len(args) == 0 {
-			args = []string{"extender", "setup"}
-		}
-		if opts.Route != "" {
-			hasRoute := false
-			for _, a := range args {
-				if strings.HasPrefix(a, "--route") {
-					hasRoute = true
-					break
-				}
-			}
-			if !hasRoute {
-				args = append(args, "--route="+opts.Route)
-			}
+			elevateFn = func(args []string) error { return elevateExtenderSetup(args, setupTargetIdentity(targets)) }
 		}
 		return elevateFn(args)
 	}
@@ -689,6 +691,84 @@ func formatSetupPowerShellCommand(opts ExtenderSetupOptions) string {
 		words = append(words, quote(arg))
 	}
 	return strings.Join(words, " ")
+}
+
+const urnetExtenderSetupTargetEnv = "URNET_TOOLS_EXTENDER_SETUP_TARGET"
+
+// Only stable, action-relevant fields are compared; newly readable JWT claims
+// under sudo cannot make a valid target appear different.
+func setupTargetIdentity(providers []Provider) string {
+	type identity struct{ Unit, StateDir, User, Binary string }
+	values := make([]identity, 0, len(providers))
+	for _, p := range providers {
+		values = append(values, identity{p.Unit, p.StateDir, p.User, p.Binary})
+	}
+	encoded, _ := json.Marshal(values)
+	return string(encoded)
+}
+
+func setupBoundArgs(opts ExtenderSetupOptions, discovered, selected []Provider) ([]string, error) {
+	if len(selected) != 1 {
+		return nil, fmt.Errorf("resolved %d providers; setup accepts one exact selector per run", len(selected))
+	}
+	p := selected[0]
+	var flag, value string
+	for _, candidate := range []struct{ flag, value string }{{"--unit", p.Unit}, {"--state-dir", p.StateDir}} {
+		if candidate.value == "" {
+			continue
+		}
+		matches := 0
+		for _, other := range discovered {
+			if (candidate.flag == "--unit" && other.Unit == candidate.value) || (candidate.flag == "--state-dir" && other.StateDir == candidate.value) {
+				matches++
+			}
+		}
+		if matches == 1 {
+			flag, value = candidate.flag, candidate.value
+			break
+		}
+	}
+	if flag == "" {
+		return nil, fmt.Errorf("resolved provider has no unique --unit or --state-dir")
+	}
+	args := setupManualArgs(opts)
+	// A user/network/default selector was already resolved here; retaining it
+	// beside the bound selector would either conflict or change the selection.
+	var clean []string
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		removed := false
+		for _, targetFlag := range []string{"--unit", "--user", "--network", "--network-id", "--state-dir", "--pid"} {
+			if a == targetFlag {
+				i++
+				removed = true
+				break
+			}
+			if strings.HasPrefix(a, targetFlag+"=") {
+				removed = true
+				break
+			}
+		}
+		if !removed {
+			clean = append(clean, a)
+		}
+	}
+	return append(clean, flag, value), nil
+}
+
+// The marker is supplied only to the sudo child; the parent process's
+// environment is never changed (other commands may run concurrently).
+func elevateExtenderSetup(args []string, target string) error {
+	sudo, err := exec.LookPath("sudo")
+	if err != nil {
+		return fmt.Errorf("sudo unavailable; run: %s", setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, args...)}.String())
+	}
+	cmd := exec.Command(sudo, append([]string{"--", "/usr/bin/env", urnetElevatedEnv + "=1", urnetExtenderSetupTargetEnv + "=" + target, resolvedExecutablePath()}, args...)...)
+	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("elevated extender setup failed: %w", err)
+	}
+	return nil
 }
 
 // setupTargets lists the providers setup configures: the explicit target when

@@ -111,7 +111,12 @@ func TestExtenderRouteSysctlWithExistingCapability(t *testing.T) {
 		}
 		return nil, nil
 	}
-	cfg := &SystemPlatformConfigurer{PlatformName: "linux", ExecCmd: execFake, ReadFile: func(string) ([]byte, error) { return []byte(live), nil }, WriteFile: func(string, []byte, os.FileMode) error { wrote = true; return nil }}
+	cfg := &SystemPlatformConfigurer{PlatformName: "linux", ExecCmd: execFake, ReadFile: func(path string) ([]byte, error) {
+		if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
+			return []byte(live), nil
+		}
+		return nil, os.ErrNotExist
+	}, WriteFile: func(string, []byte, os.FileMode) error { wrote = true; return nil }}
 	var out bytes.Buffer
 	err := RunExtenderSetup(ExtenderSetupOptions{Platform: "linux", Route: "sysctl", Yes: true, NonInteractive: true, IsRoot: func() bool { return true }, Stdout: &out, PlatformCfg: cfg, PortChecker: &PortChecker{Platform: "linux", ExecCmd: execFake}, FirewallMgr: &FirewallManager{Platform: "linux", LookPath: func(string) (string, error) { return "", os.ErrNotExist }, ExecCmd: execFake}})
 	if err != nil {
