@@ -174,6 +174,8 @@ func printRestartElevationGuidance(p Provider) {
 // escalation leg could never fire in production). Best effort: returns ""
 // when the release has no tool asset or download/verify/chmod fails; the
 // ladder then skips escalation and prints guidance.
+var stageToolForEscalationFn = stageToolForEscalation
+
 func stageToolForEscalation(cfg updateConfig) string {
 	if cfg.ToolDigest == "" || cfg.ToolAsset == "" || cfg.StageDir == "" {
 		return ""

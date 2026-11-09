@@ -294,7 +294,29 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// predates its own restart-flow fixes; retrying through the staged copy
 	// makes this release's fixes live during this very update. Best effort:
 	// unavailability only disables the escalation leg.
-	stagedTool := stageToolForEscalation(cfg)
+	stagedTool := stageToolForEscalationFn(cfg)
+
+	toolUpdatedFirst := false
+	if stagedTool != "" && os.Getenv(urnetUpdateReexecEnv) == "" && isToolNewerThanRunning(cfg.Tag, cfg.ToolDigest) {
+		if err := selfUpdateToolFn(cfg); err != nil {
+			fmt.Printf("tool-first self-update failed (%v); continuing update with current tool\n", err)
+		} else {
+			toolUpdatedFirst = true
+			reexecArgs := buildReexecArgs(os.Args, chosen, all, cfg.Tag)
+			reexecEnv := append(os.Environ(), urnetUpdateReexecEnv+"=1")
+			exe := resolvedExecutablePath()
+			_ = os.RemoveAll(stageDir)
+			if err := reExecToolFn(exe, reexecArgs, reexecEnv); err != nil {
+				fmt.Printf("tool re-exec failed (%v); continuing update with current tool\n", err)
+				if newDir, nerr := newStageDir(); nerr == nil {
+					cfg.StageDir = newDir
+					stagedTool = stageToolForEscalationFn(cfg)
+				}
+			} else {
+				return nil
+			}
+		}
+	}
 
 	failures := 0
 	for _, p := range chosen {
@@ -359,8 +381,13 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 	// reported but does NOT fail the command — providers were the primary
 	// job and may have succeeded; the tool can be retried (e.g.
 	// `urnet-tools self-update`) without touching providers.
-	if err := runToolSelfUpdate(cfg); err != nil {
-		fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
+	//
+	// When tool-first update ran or this is the re-executed tool process,
+	// the tool was already updated at the start — do not run it twice.
+	if !toolUpdatedFirst && os.Getenv(urnetUpdateReexecEnv) == "" {
+		if err := runToolSelfUpdate(cfg); err != nil {
+			fmt.Fprintf(os.Stderr, "tool self-update failed: %v\n", err)
+		}
 	}
 
 	// Make the tool findable from non-interactive shells and from root.
@@ -557,7 +584,7 @@ func forceInteractive(force bool) bool {
 // interactive question is skipped, and the per-provider "already on <tag>"
 // check still short-circuits a run that has nothing to do.
 func unattendedUpdate(force bool) bool {
-	if force {
+	if force || os.Getenv(urnetUpdateReexecEnv) == "1" {
 		return true
 	}
 	if stdinIsInteractive() {
