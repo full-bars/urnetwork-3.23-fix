@@ -314,6 +314,7 @@ The role also exports its state to Prometheus. Turn metrics on with `urnet-tools
 | IPv6 `failed … did not answer in time` | No IPv6 route out, or inbound IPv6 blocked. | `ip -6 route show default` and `curl -6 https://api.bringyour.com/hello` on the host. |
 | `the platform says this extender key belongs to ANOTHER network` | The identity file was copied from another box or account. | Stop the provider, delete `~/.urnetwork/.provider.extender.key`, start it again. |
 | A family stays `waiting` | TCP 443 is not bound, the platform asked it to wait, or direct providing is off. | Read the status line; it says which. |
+| `elevated extender setup target changed after discovery; refusing to configure any provider` | Root resolved a different provider than the one you inspected. The sudo command that setup prints carries the inspected identity, so root refuses a same-named unit owned by another user. Root also refuses when it cannot list a stopped user unit through its user manager. | Safe, nothing was changed. Check `sudo urnet-tools providers --all`, then run the printed command again with an explicit `--unit` or `--state-dir`. |
 | `off: direct providing is disabled` | `urnet-tools direct off` is set. | `urnet-tools direct on`. |
 | `FAILED to start: <reason>` | The role failed for a reason other than a port. | The provider keeps providing and retries every 15 seconds; fix the reason shown. |
 

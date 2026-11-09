@@ -383,7 +383,7 @@ ruleset-specific; use the procedures for your existing policy.`)
 			return fmt.Errorf("cannot safely elevate extender setup: %w; inspect providers with: %s; then run an explicit --unit or --state-dir setup command", bindErr, inventory)
 		}
 		opts.Argv = args
-		exactCommand := formatSetupSudoCommand(opts)
+		exactCommand := formatSetupSudoCommand(opts, setupTargetIdentity(targets))
 		_, sudoErr := lookPathFn("sudo")
 		sudoAvailable := sudoErr == nil
 
@@ -674,9 +674,29 @@ func setupManualArgs(opts ExtenderSetupOptions) []string {
 	return base
 }
 
-// formatSetupSudoCommand is the exact command to run by hand.
-func formatSetupSudoCommand(opts ExtenderSetupOptions) string {
-	return setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, setupManualArgs(opts)...)}.String()
+// formatSetupSudoCommand is the exact command to run by hand. A non-empty
+// target pins the provider identity the parent resolved, exactly as the
+// automatic elevation does, so root refuses a same-named provider owned by
+// another user instead of configuring its binary.
+func formatSetupSudoCommand(opts ExtenderSetupOptions, target string) string {
+	args := setupManualArgs(opts)
+	if target == "" {
+		return setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, args...)}.String()
+	}
+	return setupCommand{name: "sudo", args: setupElevatedArgv(args, target, false)}.String()
+}
+
+// setupElevatedArgv is the argument list after sudo. The identity travels as an
+// environment assignment run through env, which works under any sudoers
+// env_reset policy. marker also sets the elevated-child flag for the
+// automatic path; a hand-run root shell does not need it.
+func setupElevatedArgv(args []string, target string, marker bool) []string {
+	argv := []string{"--", "/usr/bin/env"}
+	if marker {
+		argv = append(argv, urnetElevatedEnv+"=1")
+	}
+	argv = append(argv, urnetExtenderSetupTargetEnv+"="+target, resolvedExecutablePath())
+	return append(argv, args...)
 }
 
 func formatSetupPowerShellCommand(opts ExtenderSetupOptions) string {
@@ -761,9 +781,9 @@ func setupBoundArgs(opts ExtenderSetupOptions, discovered, selected []Provider) 
 func elevateExtenderSetup(args []string, target string) error {
 	sudo, err := exec.LookPath("sudo")
 	if err != nil {
-		return fmt.Errorf("sudo unavailable; run: %s", setupCommand{name: "sudo", args: append([]string{resolvedExecutablePath()}, args...)}.String())
+		return fmt.Errorf("sudo unavailable; run: %s", setupCommand{name: "sudo", args: setupElevatedArgv(args, target, false)}.String())
 	}
-	cmd := exec.Command(sudo, append([]string{"--", "/usr/bin/env", urnetElevatedEnv + "=1", urnetExtenderSetupTargetEnv + "=" + target, resolvedExecutablePath()}, args...)...)
+	cmd := exec.Command(sudo, setupElevatedArgv(args, target, true)...)
 	cmd.Stdin, cmd.Stdout, cmd.Stderr = os.Stdin, os.Stdout, os.Stderr
 	if err := cmd.Run(); err != nil {
 		return fmt.Errorf("elevated extender setup failed: %w", err)
