@@ -10,6 +10,7 @@ const ROUTES = {
   '/install-mac.sh': '/Provider_Install_Mac.sh',
   '/install-win.ps1': '/Provider_Install_Win32.ps1',
   '/install-freebsd.sh': '/Provider_Install_FreeBSD.sh',
+  '/install-openbsd.sh': '/Provider_Install_OpenBSD.sh',
   '/urnet-docker.sh': '/install-urnet-docker.sh',
   '/uninstall.sh': '/Provider_Uninstall_Linux.sh',
   '/uninstall-win.ps1': '/Provider_Uninstall_Win32.ps1',
@@ -21,6 +22,7 @@ const INSTALL_ALIASES = {
   '/install-win.ps1': 'https://dl.fullbars.xyz/install-win.ps1',
   '/win.ps1': 'https://dl.fullbars.xyz/install-win.ps1',
   '/install-freebsd.sh': 'https://dl.fullbars.xyz/install-freebsd.sh',
+  '/install-openbsd.sh': 'https://dl.fullbars.xyz/install-openbsd.sh',
 };
 
 const DISPATCHER = `#!/bin/sh
@@ -30,13 +32,14 @@ case "$os" in
   Linux*)   script="https://dl.fullbars.xyz/install.sh" ;;
   Darwin*)  script="https://dl.fullbars.xyz/install-mac.sh" ;;
   FreeBSD*) script="https://dl.fullbars.xyz/install-freebsd.sh" ;;
+  OpenBSD*) script="https://dl.fullbars.xyz/install-openbsd.sh" ;;
   MINGW*|MSYS*|CYGWIN*)
     echo "Detected Windows (Git Bash/MSYS/Cygwin). Launching PowerShell installer..."
     exec powershell.exe -NoProfile -ExecutionPolicy Bypass -Command "irm https://dl.fullbars.xyz/install-win.ps1 | iex"
     ;;
   *)
     echo "Unsupported OS: $os"
-    echo "FreeBSD is supported through install-freebsd.sh; if this host reports another BSD, use that script directly."
+    echo "FreeBSD and OpenBSD are supported through install-freebsd.sh and install-openbsd.sh. If this host reports another BSD, use one of those scripts directly."
     echo "Windows users - run this in PowerShell instead:"
     echo "  irm https://dl.fullbars.xyz/install-win.ps1 | iex"
     exit 1
@@ -53,8 +56,11 @@ elif command -v fetch > /dev/null 2>&1; then
   fetch -q -o "$tmp" "$script"
 elif command -v wget > /dev/null 2>&1; then
   wget -q -O "$tmp" "$script"
+elif command -v ftp > /dev/null 2>&1; then
+  # OpenBSD base ships ftp(1) with HTTPS support and no curl, fetch or wget.
+  ftp -o "$tmp" "$script"
 else
-  echo "need curl, fetch or wget to download the installer" >&2
+  echo "need curl, fetch, wget or ftp to download the installer" >&2
   exit 1
 fi || { echo "download failed" >&2; exit 1; }
 sh "$tmp" "$@"
@@ -92,9 +98,9 @@ const LANDING_PAGE = `<!doctype html>
     <h1>Install URnetwork Provider</h1>
     <p class="sub">One-liner installer for the full-bars provider fork. Always fetches the latest release.</p>
 
-    <h2>Linux, macOS, FreeBSD</h2>
+    <h2>Linux, macOS, FreeBSD, OpenBSD</h2>
     <pre>curl -fsSL https://install.fullbars.xyz | sh</pre>
-    <div class="note">Detects the host and runs the matching official installer: Provider_Install_Linux.sh (systemd or OpenRC, so Alpine is covered), Provider_Install_Mac.sh, or Provider_Install_FreeBSD.sh (rc.d). Add <code>sudo</code> before <code>sh</code> if you want root-aware behavior (the installer will guide you).</div>
+    <div class="note">Detects the host and runs the matching official installer: Provider_Install_Linux.sh (systemd or OpenRC, so Alpine is covered), Provider_Install_Mac.sh, or Provider_Install_FreeBSD.sh (rc.d), or Provider_Install_OpenBSD.sh (rc.d with rcctl). Add <code>sudo</code> before <code>sh</code> if you want root-aware behavior (the installer will guide you).</div>
 
     <h2>Windows (PowerShell)</h2>
     <pre>irm https://install.fullbars.xyz/win.ps1 | iex</pre>
@@ -106,6 +112,8 @@ const LANDING_PAGE = `<!doctype html>
       Direct script links: <a href="https://dl.fullbars.xyz/install.sh">install.sh</a> ·
       <a href="https://dl.fullbars.xyz/install-mac.sh">install-mac.sh</a> ·
       <a href="https://dl.fullbars.xyz/install-win.ps1">install-win.ps1</a> ·
+      <a href="https://dl.fullbars.xyz/install-freebsd.sh">install-freebsd.sh</a> ·
+      <a href="https://dl.fullbars.xyz/install-openbsd.sh">install-openbsd.sh</a> ·
       <a href="https://dl.fullbars.xyz/urnet-docker.sh">urnet-docker.sh</a>
     </div>
   </div>

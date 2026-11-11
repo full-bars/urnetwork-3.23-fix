@@ -20,9 +20,17 @@ The installer must reach the GitHub release API. When the metadata cannot be fet
 Download the installer with `ftp` and run it as the account the provider should run as:
 
 ```sh
-ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_OpenBSD.sh
+ftp -o urnet-install.sh https://dl.fullbars.xyz/install-openbsd.sh
 doas sh urnet-install.sh install
 ```
+
+The `install.fullbars.xyz` one-liner also detects OpenBSD and runs the same script. It downloads with `ftp` when `curl`, `fetch` and `wget` are missing:
+
+```sh
+ftp -o - https://install.fullbars.xyz | doas sh -s -- install
+```
+
+`dl.fullbars.xyz/install-openbsd.sh` serves `scripts/Provider_Install_OpenBSD.sh` from the `main` branch.
 
 The release also ships the same script as `urnet-tools` inside each `urnetwork-provider-<version>-openbsd-<arch>.tar.gz` asset. To install a specific release, pass the tag:
 
