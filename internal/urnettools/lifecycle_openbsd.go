@@ -3,18 +3,99 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"os/exec"
+	"strings"
 )
 
-// FreeBSD's rc.d scripts and sysrc commands are not OpenBSD rcctl scripts.
-// Refuse lifecycle changes rather than installing an incompatible service.
-func setAutoStart(_ Provider, _ bool) error {
-	return fmt.Errorf("auto-start is not supported on OpenBSD; configure an rc.d service with rcctl")
+// OpenBSD lifecycle: an rc.d(8) script in /etc/rc.d driven by rcctl(8), plus
+// the cron-driven auto-update shared with FreeBSD (lifecycle_bsd_cron_unix.go).
+//
+// rcctl is the OpenBSD analogue of systemctl. `rcctl enable <svc>` adds a
+// non-base service to pkg_scripts in /etc/rc.conf.local, which is what
+// setAutoStart toggles. FreeBSD's sysrc and `service` commands do not exist.
+
+// bsdServiceRunFn runs a service-control command. Package var so tests can
+// intercept the invocation without a live rc.d.
+var bsdServiceRunFn = func(name string, args ...string) ([]byte, error) {
+	return exec.Command(name, args...).CombinedOutput()
 }
 
-func setAutoUpdateSchedule(_ Provider, _, _ string) error {
-	return fmt.Errorf("auto-update scheduling is not supported on OpenBSD; configure cron manually")
+// openbsdRcctl runs `rcctl <args...>`, escalating through doas or sudo when the
+// caller is not root, and returns the command output.
+func openbsdRcctl(args ...string) ([]byte, error) {
+	_, hasDoas := exec.LookPath("doas")
+	_, hasSudo := exec.LookPath("sudo")
+	name, argv, err := openbsdRcctlArgv(os.Geteuid(), hasDoas == nil, hasSudo == nil, args...)
+	if err != nil {
+		return nil, err
+	}
+	return bsdServiceRunFn(name, argv...)
 }
 
-func cleanupLifecycle(_ Provider) {
-	fmt.Fprintln(os.Stderr, "Warning: remove any manually configured rcctl service and cron jobs for this provider")
+// openbsdRequireRcScript returns an error unless an rc.d script exists for the
+// service. rcctl enable would otherwise add a service that does not exist to
+// pkg_scripts, and every boot would then report it as failed.
+func openbsdRequireRcScript(p Provider, service string) error {
+	if _, err := os.Stat(openbsdRcScriptPath(service)); err != nil {
+		return fmt.Errorf("no rc.d script at %s for provider %s - install it first (the installer script)",
+			openbsdRcScriptPath(service), providerLabel(p))
+	}
+	return nil
+}
+
+// bsdServiceControl runs `rcctl <action> <name>` for the provider's rc.d
+// service. The name is shared with FreeBSD so the generic call sites in
+// update, start, stop, restart and uninstall need no OpenBSD branch of their own.
+func bsdServiceControl(p Provider, action string) error {
+	service := bsdRcServiceName(p.Binary)
+	if err := openbsdRequireRcScript(p, service); err != nil {
+		return err
+	}
+	out, err := openbsdRcctl(action, service)
+	if err != nil {
+		return fmt.Errorf("rcctl %s %s: %w (%s)", action, service, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// setAutoStart enables or disables boot-time start with rcctl.
+func setAutoStart(p Provider, on bool) error {
+	service := bsdRcServiceName(p.Binary)
+	if err := openbsdRequireRcScript(p, service); err != nil {
+		return err
+	}
+	action := "disable"
+	if on {
+		action = "enable"
+	}
+	if out, err := openbsdRcctl(action, service); err != nil {
+		return fmt.Errorf("auto-start %s: rcctl %s %s: %w (%s)",
+			providerLabel(p), action, service, err, strings.TrimSpace(string(out)))
+	}
+	return nil
+}
+
+// cleanupLifecycle removes the auto-update cron entry on uninstall. The rc.d
+// script is removed by the uninstall command's own service handling.
+func cleanupLifecycle(p Provider) {
+	_ = removeBSDUpdateCron(p)
+}
+
+// renderOpenBSDStatus runs `rcctl check <name>`, the OpenBSD equivalent of
+// `systemctl status <unit>`. It is installed into the shared seam so `status`
+// prefers the real service view and falls back to the panel only when this
+// returns an error. check needs no privilege.
+func renderOpenBSDStatus(p Provider) error {
+	service := bsdRcServiceName(p.Binary)
+	if err := openbsdRequireRcScript(p, service); err != nil {
+		return err
+	}
+	cmd := exec.Command("rcctl", "check", service)
+	cmd.Stdout = stdoutWriter()
+	cmd.Stderr = stderrWriter()
+	return cmd.Run()
+}
+
+func init() {
+	renderSystemctlStatus = renderOpenBSDStatus
 }

@@ -1,30 +1,60 @@
 # OpenBSD
 
-This page covers the initial OpenBSD build support for the URnetwork provider and `urnet-tools`. For FreeBSD, see the [FreeBSD guide](/full-bars/urnetwork-3.23-fix/wiki/FreeBSD). For other platforms, see the [Installation Guide](/full-bars/urnetwork-3.23-fix/wiki/Installation).
+This page covers running the URnetwork provider and `urnet-tools` on OpenBSD (amd64 and arm64). For FreeBSD, see the [FreeBSD guide](/full-bars/urnetwork-3.23-fix/wiki/FreeBSD). For other platforms, see the [Installation Guide](/full-bars/urnetwork-3.23-fix/wiki/Installation).
 
 > [!IMPORTANT]
-> OpenBSD support is build-only. The binaries and service setup have not been verified on an OpenBSD host. There is no OpenBSD installer or OpenBSD release asset in this tree. The existing BSD installer is specific to FreeBSD; do not run it on OpenBSD.
+> The OpenBSD installer, `rc.d` script and release assets are verified by reading the scripts and by cross-compiling. They have not been run on an OpenBSD host. The installer and the FreeBSD installer are different scripts: do not run one on the other's platform.
 
 ## Before you start
 
-Use a non-root account for the provider. Install the Go version required by `go.mod` and Git with OpenBSD's package manager, if they are not already installed:
+OpenBSD's base system has `ftp(1)`, `sha256(1)`, `tar`, `awk` and `rcctl`, so the installer needs no extra package. `curl`, `wget`, `jq` and `python3` are optional. The installer reads the release tag and the SHA-256 digests with `jq`, then `python3`, then an `awk` scanner. It never runs `pkg_add` for you.
 
-```sh
-doas pkg_add go git
-```
+The installer needs root for the install tree and the `rc.d` script. It uses `doas` first and `sudo` as a fallback. If neither is configured, add a rule to `/etc/doas.conf` (for example `permit persist youruser`) or run from a root shell.
 
-Check `go version` against `go.mod`. The package version must meet the module's Go requirement. Configure `doas` separately if your account cannot use it.
+The provider must not run as root. The installer picks the service account from `SERVICE_USER_OVERRIDE`, `URNETWORK_USER`, an existing `urnetwork` account, `DOAS_USER`, `SUDO_USER`, then the login name, in that order. It stops with `refusing to install a service that runs as root` when the result is `root`.
+
+The installer must reach the GitHub release API. When the metadata cannot be fetched or does not list the asset, it stops with `refusing to install` before it downloads anything.
 
 ## Install
 
-There is no automated install yet. Build from a checkout of this branch on an OpenBSD host:
+Download the installer with `ftp` and run it as the account the provider should run as:
 
 ```sh
+ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/main/scripts/Provider_Install_OpenBSD.sh
+doas sh urnet-install.sh install
+```
+
+The release also ships the same script as `urnet-tools` inside each `urnetwork-provider-<version>-openbsd-<arch>.tar.gz` asset. To install a specific release, pass the tag:
+
+```sh
+doas sh urnet-install.sh install v3.23.0-fix.32.7
+```
+
+From a root shell, name an existing non-root account:
+
+```sh
+env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
+```
+
+The installer:
+
+- downloads `urnetwork-provider-<tag>-openbsd-<arch>.tar.gz` and verifies its SHA-256 digest before it extracts anything
+- installs the provider to `/usr/local/libexec/urnetwork-provider/bin/urnetwork`, owned by root
+- installs `urnet-tools` after verifying its digest
+- writes `/etc/rc.d/urnetwork`, runs `rcctl enable urnetwork` on a fresh install, and starts the service
+- keeps state in the service account's `~/.urnetwork`
+
+An update leaves the operator's `rcctl enable` or `disable` choice alone.
+
+To build from source instead, use a checkout on an OpenBSD host:
+
+```sh
+doas pkg_add go git
 go build -o urnetwork ./provider
 go build -o urnet-tools-openbsd ./cmd/urnet-tools
 ```
 
-These commands leave the binaries in the checkout. Move them to a location your service account can execute, using root-owned directories that the service account cannot modify. This build procedure has not been tested on OpenBSD.
+Check `go version` against `go.mod` first. Put the binaries in a root-owned directory that the service account cannot modify.
 
 ## Authenticate
 
@@ -38,19 +68,32 @@ The provider stores its state in that account's home directory under `~/.urnetwo
 
 ## Service commands
 
+The `rc.d` service is named `urnetwork`. Use `rcctl`:
+
+```sh
+doas rcctl start urnetwork
+doas rcctl stop urnetwork
+doas rcctl restart urnetwork
+rcctl check urnetwork
+doas rcctl enable urnetwork
+doas rcctl disable urnetwork
+```
+
+Extra provider flags go in the service flags: `doas rcctl set urnetwork flags "<flags>"`. The provider output goes to `/var/log/urnetwork/stdout.log`.
+
+The installer script offers the same commands as the other platforms: `install`, `start`, `stop`, `restart`, `status`, `update`, `version`, `hot-restart`, `self-heal`, `session` and `proxy`. Run `sh urnet-install.sh --help` for the full list.
+
+`urnet-tools auto-start on|off` runs `rcctl enable|disable urnetwork`. It needs an installed `rc.d` script and fails with a clear message when there is none.
+
 For a foreground test, run as the service account:
 
 ```sh
 ./urnetwork provide
 ```
 
-OpenBSD uses `rcctl` and its own `rc.d` service scripts. No OpenBSD service script is provided yet. If you create and test one, use `doas rcctl enable <service>` to enable it and `doas rcctl start <service>` to start it. Use the actual service name in place of `<service>`. Do not use the FreeBSD service script or `sysrc` instructions.
-
-`urnet-tools auto-start` is not supported on OpenBSD. It does not create or configure a service.
-
 ## Updates and auto-update
 
-Rebuild and replace the binaries manually. There is no OpenBSD installer or tested update path. `urnet-tools auto-update` scheduling is not supported; it reports an error. A manual cron schedule would need an independently tested update procedure.
+Run `doas sh urnet-install.sh update` (or `install` again) to move to a new release. `urnet-tools auto-update` schedules the update in the service account's cron, the same way it does on FreeBSD. `urnet-tools update` needs a discoverable binary (see Platform notes).
 
 ## Sysctl tuning
 
@@ -59,7 +102,7 @@ There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysct
 ## Platform notes
 
 - **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks standard install locations for an executable, but that path is not proof of the running image. If none is found, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install the intended binary in a standard location, or run its proxy commands directly. There is no `--binary` override. A standard-path candidate may differ from the running binary; verify the install before using it.
-- **Lifecycle:** `urnet-tools start` and `restart` are not supported; use your service manager or start the provider manually. `stop` sends a signal to a discovered process without a unit; it does not control an `rcctl` service and has not been tested on OpenBSD.
+- **Lifecycle:** `urnet-tools start`, `stop`, `restart` and `status` drive the `rc.d` service through `rcctl`, using `doas` or `sudo` when you are not root. `status` runs `rcctl check`.
 - **Memory:** Total physical memory comes from `hw.physmem` when available. Available host memory is not reported. Host memory-pressure and swap checks use the unsupported fallback.
 - **Control socket:** Peer credential verification is a no-op on OpenBSD. The control socket relies on its file permissions instead. Keep the service account and its state directory private.
 - **Disk diagnostics:** Free space uses the OpenBSD `statfs` interface.
@@ -69,8 +112,17 @@ The checked locations are `/usr/local/libexec/urnetwork-provider/bin/urnetwork`,
 
 ## Release assets
 
-The build support does not add OpenBSD binaries to the release pipeline. Build from source until OpenBSD assets are published.
+Each release publishes `urnetwork-provider-<version>-openbsd-amd64.tar.gz` and `-openbsd-arm64.tar.gz`, plus `urnet-tools-openbsd-amd64` and `urnet-tools-openbsd-arm64`. The combined provider tarball also carries an `openbsd/` tree.
 
 ## Uninstall
 
-There is no OpenBSD uninstaller. Stop any service you created, disable it with `rcctl` and remove its script and manually installed binaries. The service account's `~/.urnetwork` contains login and proxy state. Remove it only if you no longer need that data.
+Stop and disable the service, then remove its script and binaries:
+
+```sh
+doas rcctl stop urnetwork
+doas rcctl disable urnetwork
+doas rm /etc/rc.d/urnetwork
+doas rm -r /usr/local/libexec/urnetwork-provider
+```
+
+`urnet-tools uninstall` removes the auto-update cron entry. The service account's `~/.urnetwork` holds login and proxy state. Remove it only if you no longer need that data.
