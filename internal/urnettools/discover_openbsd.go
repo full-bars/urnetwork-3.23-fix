@@ -1,8 +1,11 @@
 package urnettools
 
 import (
+	"errors"
+	"io/fs"
 	"os"
 	"os/user"
+	"path/filepath"
 	"time"
 )
 
@@ -22,6 +25,9 @@ func discoverProcesses() []Provider {
 			p.StateDir = resolveDiscoveredStateDir(u.HomeDir, "")
 			if p.StateDir != "" {
 				p.StateHome = u.HomeDir
+				var jwtErr error
+				p.Network, p.NetworkID, p.JWTExpires, jwtErr = decodeJWT(filepath.Join(p.StateDir, "jwt"))
+				p.IdentityRestricted = errors.Is(jwtErr, fs.ErrPermission)
 			}
 		}
 		providers = append(providers, p)

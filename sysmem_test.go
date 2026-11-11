@@ -10,6 +10,14 @@ func TestHostMemoryReaders(t *testing.T) {
 	avail, aok := HostMemoryAvailableBytes()
 	switch runtime.GOOS {
 	case "linux", "darwin", "windows", "freebsd":
+	case "openbsd":
+		if tok && total <= 0 {
+			t.Fatalf("non-positive total: %d", total)
+		}
+		if aok && (avail < 0 || (tok && avail > total)) {
+			t.Fatalf("invalid available memory: %d (total %d)", avail, total)
+		}
+		return
 	default:
 		if tok || aok {
 			t.Fatalf("expected unavailable on %s, got total=%v avail=%v", runtime.GOOS, tok, aok)
