@@ -45,9 +45,7 @@ func TestRestartProviderPIDSignalFailure(t *testing.T) {
 }
 
 // TestCmdProxyHealthTargetNoSnapshot: with no state files present,
-// cmdProxyHealthTarget must return cleanly (nil) rather than blocking on
-// `tail -f` — it only starts following the log if the log file actually
-// exists.
+// cmdProxyHealthTarget must return cleanly (nil) with no state files present.
 func TestCmdProxyHealthTargetNoSnapshot(t *testing.T) {
 	p := Provider{StateDir: t.TempDir()}
 	if err := cmdProxyHealthTarget(p); err != nil {
