@@ -1,6 +1,6 @@
 # 📦 Installation Guide
 
-This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools. Alpine Linux (OpenRC) and FreeBSD have their own pages: [OpenRC](/full-bars/urnetwork-3.23-fix/wiki/OpenRC) and [FreeBSD](/full-bars/urnetwork-3.23-fix/wiki/FreeBSD).
+This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools. Alpine Linux (OpenRC), FreeBSD and OpenBSD have their own pages: [OpenRC](/full-bars/urnetwork-3.23-fix/wiki/OpenRC), [FreeBSD](/full-bars/urnetwork-3.23-fix/wiki/FreeBSD) and [OpenBSD](/full-bars/urnetwork-3.23-fix/wiki/OpenBSD). OpenBSD support is build-only; there is no OpenBSD installer yet.
 
 ## 🚀 Quick Start
 
@@ -9,7 +9,7 @@ The provider is designed to run as a **non-privileged user service** for maximum
 > [!IMPORTANT]
 > Recommended: run this command as your normal non-root user. If run as root, the installer will guide you through creating a dedicated service user named `urnet`.
 
-Install on any supported platform, with the installer detected for you:
+On Linux, macOS and FreeBSD, the installer detects the platform. OpenBSD is build-only and cannot use this installer:
 
 ```bash
 curl -fSsL https://install.fullbars.xyz | sh -s -- install
@@ -29,6 +29,7 @@ From a root shell drop the `sudo`, but name a non-root account that already exis
 | Linux with OpenRC (Alpine and friends) | the same Linux installer, which uses `rc-service` instead of `systemctl` |
 | macOS | `Provider_Install_Mac.sh` |
 | FreeBSD | `Provider_Install_FreeBSD.sh` |
+| OpenBSD | No installer; [build from source](/full-bars/urnetwork-3.23-fix/wiki/OpenBSD) |
 | Windows from Git Bash, MSYS or Cygwin | hands over to the PowerShell installer |
 
 Windows has no `sh`, so a normal PowerShell window uses that installer directly:
@@ -85,6 +86,7 @@ urnet-tools proxy refresh
 
 - **Alpine Linux (OpenRC):** the same install command, run from a root shell, installs a system service under `supervise-daemon`. See the [Alpine Linux (OpenRC) guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/OpenRC).
 - **FreeBSD:** installs an `rc.d` service from the FreeBSD installer script. See the [FreeBSD guide](https://github.com/full-bars/urnetwork-3.23-fix/wiki/FreeBSD).
+- **OpenBSD:** build-only support. There is no installer or tested service setup. See the [OpenBSD guide](/full-bars/urnetwork-3.23-fix/wiki/OpenBSD).
 
 ## 🍎 macOS Installation
 
