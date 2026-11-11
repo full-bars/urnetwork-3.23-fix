@@ -8,6 +8,16 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ---
 
+## OpenBSD build support
+
+**Purpose**: Allow the provider and `urnet-tools` to build for OpenBSD.
+
+**Files added**: `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/discover_openbsd_parse_test.go`, `internal/urnettools/lifecycle_openbsd.go`, `provider/diag_disk_openbsd.go`, `provider/diag_disk_openbsd_test.go` and `sysmem_openbsd.go`. Build tags also changed in `provider/diag_disk_unix.go` and `sysmem_other.go`.
+
+**Impact**: Running process discovery, disk space and physical memory use OpenBSD interfaces. Auto-start and update scheduling return unsupported errors. Available memory, host memory-pressure checks and peer credential verification are not implemented. Support is build-only; there is no OpenBSD installer or release asset. See [docs/OpenBSD.md](docs/OpenBSD.md).
+
+---
+
 ## 1. Enhanced Logging — `[net][s]select` Visibility
 
 **Purpose**: Make the provider's control-plane connectivity observable in logs without `-v` (debug mode). Critical for warmup monitoring, proxy health checks, and outage detection.
