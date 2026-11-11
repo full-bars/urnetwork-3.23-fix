@@ -24,8 +24,9 @@ var bsdServiceRunFn = func(name string, args ...string) ([]byte, error) {
 // caller is not root, and returns the command output.
 func openbsdRcctl(args ...string) ([]byte, error) {
 	_, hasDoas := exec.LookPath("doas")
+	_, doasConfigErr := os.Stat("/etc/doas.conf")
 	_, hasSudo := exec.LookPath("sudo")
-	name, argv, err := openbsdRcctlArgv(os.Geteuid(), hasDoas == nil, hasSudo == nil, args...)
+	name, argv, err := openbsdRcctlArgv(os.Geteuid(), hasDoas == nil && doasConfigErr == nil, hasSudo == nil, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -75,10 +76,13 @@ func setAutoStart(p Provider, on bool) error {
 	return nil
 }
 
-// cleanupLifecycle removes the auto-update cron entry on uninstall. The rc.d
-// script is removed by the uninstall command's own service handling.
+// cleanupLifecycle removes the invoking user's auto-update cron entry. OpenBSD
+// does not yet remove or disable manually configured services during uninstall.
 func cleanupLifecycle(p Provider) {
-	_ = removeBSDUpdateCron(p)
+	if err := removeBSDUpdateCron(p); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: could not remove auto-update cron entry: %v\n", err)
+	}
+	fmt.Fprintln(os.Stderr, "uninstall: remove or disable any manually configured rc.d service and cron jobs")
 }
 
 // renderOpenBSDStatus runs `rcctl check <name>`, the OpenBSD equivalent of

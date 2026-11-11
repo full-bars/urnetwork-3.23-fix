@@ -329,7 +329,7 @@ github_api="https://api.github.com/repos/full-bars/urnetwork-3.23-fix"
 priv() {
     if [ "$(id -u)" = "0" ]; then
         "$@"
-    elif command -v doas > /dev/null 2>&1; then
+    elif command -v doas > /dev/null 2>&1 && [ -f /etc/doas.conf ]; then
         doas ${PRIV_NOPROMPT:+-n} "$@"
     elif command -v sudo > /dev/null 2>&1; then
         sudo ${PRIV_NOPROMPT:+-n} "$@"
@@ -420,7 +420,7 @@ enable_service() {
 # into the file.
 
 write_rc_script() {
-    write_rc_script_body "${1:-$(resolve_service_user)}" > "$rc_script"
+    write_rc_script_body "${1:-$(resolve_service_user)}" > "$rc_script" || return 1
     chmod 755 "$rc_script"
 }
 
@@ -1084,9 +1084,9 @@ do_install_service() {
         pr_err "re-run as a normal user, or set SERVICE_USER_OVERRIDE=<user>"
         exit 1
     fi
-    mkdir -p "$(dirname "$rc_script")"
-    write_rc_script "$service_user"
-    rcctl enable "$service_name"
+    mkdir -p "$(dirname "$rc_script")" || { pr_err "cannot create service directory"; exit 1; }
+    write_rc_script "$service_user" || { pr_err "cannot write %s" "$rc_script"; exit 1; }
+    rcctl enable "$service_name" || { pr_err "rcctl enable %s failed" "$service_name"; exit 1; }
     pr_info "Service installed at %s (runs as %s)" "$rc_script" "$service_user"
 }
 

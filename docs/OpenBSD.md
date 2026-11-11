@@ -17,17 +17,17 @@ The installer must reach the GitHub release API. When the metadata cannot be fet
 
 ## Install
 
-Download the installer with `ftp` and run it as the account the provider should run as:
+Choose an existing non-root service account and replace `urnet` in these commands with its name. Pass it explicitly so an existing `urnetwork` account is not selected instead:
 
 ```sh
 ftp -o urnet-install.sh https://dl.fullbars.xyz/install-openbsd.sh
-doas sh urnet-install.sh install
+doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
 The `install.fullbars.xyz` one-liner also detects OpenBSD and runs the same script. It downloads with `ftp` when `curl`, `fetch` and `wget` are missing:
 
 ```sh
-ftp -o - https://install.fullbars.xyz | doas sh -s -- install
+ftp -o - https://install.fullbars.xyz | doas env SERVICE_USER_OVERRIDE=urnet sh -s -- install
 ```
 
 `dl.fullbars.xyz/install-openbsd.sh` serves `scripts/Provider_Install_OpenBSD.sh` from the `main` branch.
@@ -35,7 +35,7 @@ ftp -o - https://install.fullbars.xyz | doas sh -s -- install
 The release also ships the same script as `urnet-tools` inside each `urnetwork-provider-<version>-openbsd-<arch>.tar.gz` asset. To install a specific release, pass the tag:
 
 ```sh
-doas sh urnet-install.sh install v3.23.0-fix.32.7
+doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install v3.23.0-fix.32.7
 ```
 
 From a root shell, name an existing non-root account:
@@ -69,7 +69,7 @@ Check `go version` against `go.mod` first. Put the binaries in a root-owned dire
 Run authentication as the same non-root account that will run the provider. Get a single-use auth code from <https://ur.io>:
 
 ```sh
-./urnetwork auth <code>
+/usr/local/libexec/urnetwork-provider/bin/urnetwork auth <code>
 ```
 
 The provider stores its state in that account's home directory under `~/.urnetwork`. Keep this directory private. Replace the example path with the installed binary path if you moved the binary.
@@ -96,12 +96,12 @@ The installer script offers the same commands as the other platforms: `install`,
 For a foreground test, run as the service account:
 
 ```sh
-./urnetwork provide
+/usr/local/libexec/urnetwork-provider/bin/urnetwork provide
 ```
 
 ## Updates and auto-update
 
-Run `doas sh urnet-install.sh update` (or `install` again) to move to a new release. `urnet-tools auto-update` schedules the update in the service account's cron, the same way it does on FreeBSD. `urnet-tools update` needs a discoverable binary (see Platform notes).
+Run `doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh update` to move to a new release, using the same account as installation. Use `update`, not `install`, to preserve a stopped or disabled service. For the root-owned install, run `doas urnet-tools auto-update daily` to schedule updates in root's crontab. `urnet-tools update` needs a discoverable binary (see Platform notes).
 
 ## Sysctl tuning
 
@@ -110,7 +110,7 @@ There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysct
 ## Platform notes
 
 - **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks standard install locations for an executable, but that path is not proof of the running image. If none is found, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install the intended binary in a standard location, or run its proxy commands directly. There is no `--binary` override. A standard-path candidate may differ from the running binary; verify the install before using it.
-- **Lifecycle:** `urnet-tools start`, `stop`, `restart` and `status` drive the `rc.d` service through `rcctl`, using `doas` or `sudo` when you are not root. `status` runs `rcctl check`.
+- **Lifecycle:** Use the installer script or `rcctl` to start, stop and restart the service. `urnet-tools start` and `restart` are not supported on OpenBSD, and `stop` signals the discovered process rather than using `rcctl`. `urnet-tools status` can run `rcctl check`.
 - **Memory:** Total physical memory comes from `hw.physmem` when available. Available host memory is not reported. Host memory-pressure and swap checks use the unsupported fallback.
 - **Control socket:** Peer credential verification is a no-op on OpenBSD. The control socket relies on its file permissions instead. Keep the service account and its state directory private.
 - **Disk diagnostics:** Free space uses the OpenBSD `statfs` interface.
@@ -124,7 +124,13 @@ Each release publishes `urnetwork-provider-<version>-openbsd-amd64.tar.gz` and `
 
 ## Uninstall
 
-Stop and disable the service, then remove its script and binaries:
+First remove the auto-update entry from root's crontab without deleting provider state. While the provider is running and discoverable:
+
+```sh
+doas urnet-tools auto-update off
+```
+
+If the provider is already stopped, edit root's crontab with `doas crontab -e` and remove the URnetwork auto-update line. Then stop and disable the service and remove its script and binaries:
 
 ```sh
 doas rcctl stop urnetwork
@@ -133,4 +139,4 @@ doas rm /etc/rc.d/urnetwork
 doas rm -r /usr/local/libexec/urnetwork-provider
 ```
 
-`urnet-tools uninstall` removes the auto-update cron entry. The service account's `~/.urnetwork` holds login and proxy state. Remove it only if you no longer need that data.
+`urnet-tools uninstall` also removes the discovered provider's state directory after confirmation, including login and proxy state. The service account's `~/.urnetwork` holds that data; remove it only if you no longer need it.
