@@ -11,6 +11,7 @@ func TestHostMemoryReaders(t *testing.T) {
 	switch runtime.GOOS {
 	case "linux", "darwin", "windows", "freebsd":
 	case "openbsd":
+		// Allow unknown readings until the sysctl width is verified on a host.
 		if tok && total <= 0 {
 			t.Fatalf("non-positive total: %d", total)
 		}

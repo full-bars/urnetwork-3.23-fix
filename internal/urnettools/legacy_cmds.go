@@ -153,6 +153,9 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
+	if runtime.GOOS == "openbsd" {
+		return fmt.Errorf("start is not supported on OpenBSD; use rcctl or start the provider manually")
+	}
 	// OpenRC hosts have no systemd unit: start the service through
 	// rc-service instead (detection-based, never GOOS-based).
 	if handled, err := openrcRouteLifecycle("start", args, force, dryRun); handled {
@@ -324,6 +327,9 @@ func logsUnitlessProvider(p Provider, lines int) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
+	if runtime.GOOS == "openbsd" {
+		return fmt.Errorf("restart is not supported on OpenBSD; use rcctl or restart the provider manually")
+	}
 	if handled, err := openrcRouteLifecycle("restart", args, force, dryRun); handled {
 		return err
 	}
@@ -947,6 +953,9 @@ func tuneControlKeyValue(profile, mode string) (key, value string, err error) {
 // providers found" because Discover() runs as root and cannot see user-session
 // units owned by the ubuntu user.
 func cmdOptimize(args []string, force, dryRun bool) error {
+	if runtime.GOOS == "openbsd" {
+		return optimizeFor("openbsd")()
+	}
 	// Ignore provider target flags — optimize is host-wide. If unknown flags
 	// are present parseTargetFlags will still error on malformed input.
 	_, remaining, err := parseTargetFlags(args)
@@ -991,6 +1000,8 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 // (root-requiring, host-mutating) implementations.
 func optimizeFor(goos string) func() error {
 	switch goos {
+	case "openbsd":
+		return func() error { return fmt.Errorf("optimize is not supported on OpenBSD; tune sysctls manually") }
 	case "windows":
 		return optimizeWindows
 	case "darwin":

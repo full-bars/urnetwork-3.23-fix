@@ -20,7 +20,7 @@ Check `go version` against `go.mod`. The package version must meet the module's 
 There is no automated install yet. Build from a checkout of this branch on an OpenBSD host:
 
 ```sh
-go build -o provider-openbsd ./provider
+go build -o urnetwork ./provider
 go build -o urnet-tools-openbsd ./cmd/urnet-tools
 ```
 
@@ -31,7 +31,7 @@ These commands leave the binaries in the checkout. Move them to a location your 
 Run authentication as the same non-root account that will run the provider. Get a single-use auth code from <https://ur.io>:
 
 ```sh
-./provider-openbsd auth <code>
+./urnetwork auth <code>
 ```
 
 The provider stores its state in that account's home directory under `~/.urnetwork`. Keep this directory private. Replace the example path with the installed binary path if you moved the binary.
@@ -41,7 +41,7 @@ The provider stores its state in that account's home directory under `~/.urnetwo
 For a foreground test, run as the service account:
 
 ```sh
-./provider-openbsd provide
+./urnetwork provide
 ```
 
 OpenBSD uses `rcctl` and its own `rc.d` service scripts. No OpenBSD service script is provided yet. If you create and test one, use `doas rcctl enable <service>` to enable it and `doas rcctl start <service>` to start it. Use the actual service name in place of `<service>`. Do not use the FreeBSD service script or `sysrc` instructions.
@@ -54,15 +54,18 @@ Rebuild and replace the binaries manually. There is no OpenBSD installer or test
 
 ## Sysctl tuning
 
-There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysctl names must not be assumed to work on OpenBSD. Inspect the host's limits with `sysctl` and consult the OpenBSD manual before changing them. Do not run `urnet-tools optimize` on OpenBSD: it falls through to the Linux implementation, not an OpenBSD tuner.
+There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysctl names must not be assumed to work on OpenBSD. Inspect the host's limits with `sysctl` and consult the OpenBSD manual before changing them. `urnet-tools optimize` is not supported and returns an error; tune sysctls manually.
 
 ## Platform notes
 
-- **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. Commands that need that path can be limited.
+- **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks standard install locations for an executable, but that path is not proof of the running image. If none is found, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install the intended binary in a standard location, or run its proxy commands directly. There is no `--binary` override. A standard-path candidate may differ from the running binary; verify the install before using it.
+- **Lifecycle:** `urnet-tools start` and `restart` are not supported; use your service manager or start the provider manually. `stop` sends a signal to a discovered process without a unit; it does not control an `rcctl` service and has not been tested on OpenBSD.
 - **Memory:** Total physical memory comes from `hw.physmem` when available. Available host memory is not reported. Host memory-pressure and swap checks use the unsupported fallback.
 - **Control socket:** Peer credential verification is a no-op on OpenBSD. The control socket relies on its file permissions instead. Keep the service account and its state directory private.
 - **Disk diagnostics:** Free space uses the OpenBSD `statfs` interface.
 - **UDP:** OpenBSD uses the portable socket reader, not the platform-specific poller.
+
+The checked locations are `/usr/local/libexec/urnetwork-provider/bin/urnetwork`, `~/.local/share/urnetwork-provider/bin/urnetwork` and `~/.urnetwork/urnetwork`, in that order. The shared location must be executable by other users.
 
 ## Release assets
 

@@ -218,6 +218,9 @@ func TestOptimizeForDispatch(t *testing.T) {
 	if got, want := fnPtr(optimizeFor("freebsd")), fnPtr(optimizeFreeBSD); got != want {
 		t.Errorf("optimizeFor(freebsd) did not dispatch to optimizeFreeBSD")
 	}
+	if err := optimizeFor("openbsd")(); err == nil || err.Error() != "optimize is not supported on OpenBSD; tune sysctls manually" {
+		t.Errorf("optimizeFor(openbsd) = %v, want unsupported error", err)
+	}
 	// Unknown GOOSes still fall back to the Linux path rather than erroring.
 	if got, want := fnPtr(optimizeFor("plan9")), fnPtr(optimizeLinux); got != want {
 		t.Errorf("optimizeFor(plan9) should default to optimizeLinux")
