@@ -1270,9 +1270,8 @@ func optimizeDarwin() error {
 	return nil
 }
 
-// cmdProxyHealthTarget prints the provider's proxy health state + streams
-// the event log (state files in the provider's state dir). Takes a resolved
-// Provider (targeting happens in the caller).
+// cmdProxyHealthTarget prints the provider's proxy health snapshot and recent events.
+// Takes a resolved Provider (targeting happens in the caller).
 func cmdProxyHealthTarget(p Provider) error {
 	state := filepath.Join(p.StateDir, "proxy_health.state")
 	logf := filepath.Join(p.StateDir, "proxy_health.log")
@@ -1281,20 +1280,33 @@ func cmdProxyHealthTarget(p Provider) error {
 	} else {
 		fmt.Printf("No snapshot yet at %s (waiting for first heartbeat?)\n", state)
 	}
-	if _, err := os.Stat(logf); err == nil {
-		fmt.Printf("Streaming proxy health events (%s). Ctrl-C to stop.\n", logf)
-		if runtime.GOOS == "windows" {
-			return streamLogFile(nil, logf, 20, os.Stdout)
-		}
-		if _, err := exec.LookPath("tail"); err != nil {
-			return streamLogFile(nil, logf, 20, os.Stdout)
-		}
-		cmd := exec.Command("tail", "-n", "20", "-f", logf)
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		return cmd.Run()
+	f, err := os.Open(logf)
+	if os.IsNotExist(err) {
+		fmt.Printf("No event log yet at %s.\n", logf)
+		return nil
 	}
-	fmt.Printf("No event log yet at %s.\n", logf)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+
+	fmt.Printf("Recent proxy health events (%s, last 20 lines):\n", logf)
+	var tail bytes.Buffer
+	printTailLines(f, 20, &tail)
+	omitted := 0
+	for _, line := range strings.SplitAfter(tail.String(), "\n") {
+		if strings.Contains(line, "RETAIN") || strings.Contains(line, "retain_ack") {
+			omitted++
+			continue
+		}
+		fmt.Print(line)
+	}
+	if omitted > 0 {
+		if tail.Len() > 0 && !strings.HasSuffix(tail.String(), "\n") {
+			fmt.Println()
+		}
+		fmt.Printf("(%d RETAIN/retain_ack lines omitted)\n", omitted)
+	}
 	return nil
 }
 
