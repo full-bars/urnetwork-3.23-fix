@@ -481,6 +481,8 @@ rc_pre() {
     fi
 }
 
+rc_bg=YES
+
 rc_start() {
     rc_exec "\${daemon} provide \${daemon_flags} >>'\$logfile' 2>&1"
 }
