@@ -13,6 +13,8 @@ func TestOpenBSDInstalledProvider(t *testing.T) {
 	old := openbsdLibexecProviderPath
 	openbsdLibexecProviderPath = root
 	t.Cleanup(func() { openbsdLibexecProviderPath = old })
+	oldUID := openbsdProviderOwnerUID
+	t.Cleanup(func() { openbsdProviderOwnerUID = oldUID })
 	write := func(path string, mode os.FileMode) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Dir(path), 0755); err != nil {
@@ -37,8 +39,29 @@ func TestOpenBSDInstalledProvider(t *testing.T) {
 		t.Fatalf("group-writable = %q", got)
 	}
 	write(root, 0755)
+	// The test file is owned by the current user, so root ownership rejects it.
+	openbsdProviderOwnerUID = uint32(os.Getuid()) + 1
+	if got := installedOpenBSDProvider(); got != "" {
+		t.Fatalf("non-root owner = %q", got)
+	}
+	openbsdProviderOwnerUID = uint32(os.Getuid())
 	if got := installedOpenBSDProvider(); got != root {
 		t.Fatalf("accepted = %q, want %q", got, root)
+	}
+}
+
+func TestStateDirIsSymlink(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real")
+	link := filepath.Join(dir, "link")
+	if err := os.Mkdir(real, 0700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if stateDirIsSymlink(real) || !stateDirIsSymlink(link) || stateDirIsSymlink("") || stateDirIsSymlink(filepath.Join(dir, "none")) {
+		t.Fatal("unexpected symlink verdicts")
 	}
 }
 

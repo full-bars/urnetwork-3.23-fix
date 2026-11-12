@@ -101,7 +101,7 @@ For a foreground test, run as the service account:
 
 ## Updates and auto-update
 
-Run `doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh update` to move to a new release, using the same account as installation. Use `update`, not `install`, to preserve a stopped or disabled service. For the root-owned install, run `doas urnet-tools auto-update daily` to schedule updates in root's crontab. `urnet-tools update` needs a discoverable binary (see Platform notes).
+Run `doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh update` to move to a new release, using the same account as installation. Use `update`, not `install`, to preserve a stopped or disabled service. For the root-owned install, run `doas urnet-tools auto-update daily` to schedule updates in root's crontab. `urnet-tools update` needs a discoverable binary (see Platform notes). It installs the `openbsd/<arch>/provider` file from the release tarball and restarts the service with `rcctl`. This is untested on a real OpenBSD host, so check `urnet-tools version` after the first update.
 
 ## Sysctl tuning
 
@@ -110,7 +110,7 @@ There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysct
 ## Platform notes
 
 - **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks the standard libexec location for an executable, but that path is not proof of the running image. If the binary is not there, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install it in that location, or run its proxy commands directly. There is no `--binary` override. The libexec binary may differ from the running binary; verify the install before using it.
-- **Lifecycle:** Use the installer script or `rcctl` to start, stop and restart the service. `urnet-tools start` and `restart` are not supported on OpenBSD, and `stop` signals the discovered process rather than using `rcctl`. `urnet-tools status` can run `rcctl check`.
+- **Lifecycle:** Use the installer script or `rcctl` to start, stop and restart the service. `urnet-tools start`, `stop` and `restart` run `rcctl` for the `urnetwork` service and need the `/etc/rc.d/urnetwork` script. `urnet-tools status` can run `rcctl check`. The `rc.d` start command is untested on a real OpenBSD host.
 - **Memory:** Total physical memory comes from `hw.physmem` when available. Available host memory is not reported. Host memory-pressure and swap checks use the unsupported fallback.
 - **Control socket:** Peer credential verification is a no-op on OpenBSD. The control socket relies on its file permissions instead. Keep the service account and its state directory private.
 - **Disk diagnostics:** Free space uses the OpenBSD `statfs` interface.
@@ -130,7 +130,7 @@ First remove the auto-update entry from root's crontab without deleting provider
 doas urnet-tools auto-update off
 ```
 
-If the provider is already stopped, edit root's crontab with `doas crontab -e` and remove the URnetwork auto-update line. Then stop and disable the service and remove its script and binaries:
+If the provider is already stopped, edit root's crontab with `doas crontab -e` and remove the URnetwork auto-update line. `urnet-tools uninstall` also runs `rcctl stop` and `rcctl disable` as a best-effort step. To do it by hand, stop and disable the service and remove its script and binaries:
 
 ```sh
 doas rcctl stop urnetwork

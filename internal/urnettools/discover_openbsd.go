@@ -6,6 +6,7 @@ import (
 	"os"
 	"os/user"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"golang.org/x/sys/unix"
@@ -25,6 +26,11 @@ func discoverProcesses() []Provider {
 		if u, err := user.LookupId(row.uid); err == nil {
 			p.User = u.Username
 			p.StateDir = resolveDiscoveredStateDir(u.HomeDir, "")
+			if stateDirIsSymlink(p.StateDir) {
+				// A symlinked state dir could redirect root's reads and
+				// writes anywhere, so the provider gets no identity.
+				p.StateDir = ""
+			}
 			if p.StateDir != "" {
 				p.StateHome = u.HomeDir
 				var jwtErr error
@@ -43,10 +49,19 @@ func discoverProcesses() []Provider {
 // resolved and executed.
 var openbsdLibexecProviderPath = "/usr/local/libexec/urnetwork-provider/bin/urnetwork"
 
+// openbsdProviderOwnerUID is the uid that must own the provider binary. It is
+// a var so tests, which cannot create root-owned files, can override it.
+var openbsdProviderOwnerUID uint32 = 0
+
 func installedOpenBSDProvider() string {
 	path := openbsdLibexecProviderPath
 	info, err := os.Stat(path)
 	if err != nil || !info.Mode().IsRegular() {
+		return ""
+	}
+	// Must be owned by root: a binary owned by another user could be swapped
+	// by that user and then executed by root.
+	if st, ok := info.Sys().(*syscall.Stat_t); !ok || st.Uid != openbsdProviderOwnerUID {
 		return ""
 	}
 	// Must be executable by others and not writable by group or others.
@@ -58,6 +73,15 @@ func installedOpenBSDProvider() string {
 		return path
 	}
 	return ""
+}
+
+// stateDirIsSymlink reports whether dir itself is a symbolic link.
+func stateDirIsSymlink(dir string) bool {
+	if dir == "" {
+		return false
+	}
+	fi, err := os.Lstat(dir)
+	return err == nil && fi.Mode()&os.ModeSymlink != 0
 }
 
 // Stopped services are not enumerated yet.

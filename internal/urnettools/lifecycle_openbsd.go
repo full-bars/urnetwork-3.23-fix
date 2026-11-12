@@ -76,13 +76,23 @@ func setAutoStart(p Provider, on bool) error {
 	return nil
 }
 
-// cleanupLifecycle removes the invoking user's auto-update cron entry. OpenBSD
-// does not yet remove or disable manually configured services during uninstall.
+// cleanupLifecycle removes the invoking user's auto-update cron entry, then
+// stops and disables the rc.d service with rcctl. Each step is best-effort and
+// only warns on failure, so uninstall continues.
 func cleanupLifecycle(p Provider) {
 	if err := removeBSDUpdateCron(p); err != nil {
 		fmt.Fprintf(os.Stderr, "uninstall: could not remove auto-update cron entry: %v\n", err)
 	}
-	fmt.Fprintln(os.Stderr, "uninstall: remove or disable any manually configured rc.d service and cron jobs")
+	service := bsdRcServiceName(p.Binary)
+	if _, err := os.Stat(openbsdRcScriptPath(service)); err != nil {
+		return
+	}
+	for _, action := range []string{"stop", "disable"} {
+		if out, err := openbsdRcctl(action, service); err != nil {
+			fmt.Fprintf(os.Stderr, "uninstall: rcctl %s %s failed: %v (%s)\n",
+				action, service, err, strings.TrimSpace(string(out)))
+		}
+	}
 }
 
 // renderOpenBSDStatus runs `rcctl check <name>`, the OpenBSD equivalent of

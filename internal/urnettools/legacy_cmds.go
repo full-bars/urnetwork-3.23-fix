@@ -153,9 +153,6 @@ func selectLifecycleTarget(verb string, args []string, force, dryRun bool) (Prov
 
 // cmdStart starts the provider's owning unit.
 func cmdStart(args []string, force, dryRun bool) error {
-	if runtime.GOOS == "openbsd" {
-		return fmt.Errorf("start is not supported on OpenBSD; use rcctl or start the provider manually")
-	}
 	// OpenRC hosts have no systemd unit: start the service through
 	// rc-service instead (detection-based, never GOOS-based).
 	if handled, err := openrcRouteLifecycle("start", args, force, dryRun); handled {
@@ -174,7 +171,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return startProviderOnWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		fmt.Printf("starting %s...\n", providerLabel(p))
 		if err := bsdServiceControl(p, "start"); err != nil {
 			fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
@@ -206,7 +203,7 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		// rc.d, not systemd: go through the service so the provider drains
 		// under its own stop semantics rather than being signalled directly.
 		fmt.Printf("stopping %s...\n", providerLabel(p))
@@ -327,9 +324,6 @@ func logsUnitlessProvider(p Provider, lines int) error {
 
 // cmdRestart restarts the provider's owning unit (destructive gate applies).
 func cmdRestart(args []string, force, dryRun bool) error {
-	if runtime.GOOS == "openbsd" {
-		return fmt.Errorf("restart is not supported on OpenBSD; use rcctl or restart the provider manually")
-	}
 	if handled, err := openrcRouteLifecycle("restart", args, force, dryRun); handled {
 		return err
 	}
@@ -349,7 +343,7 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdRestartOnWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		fmt.Printf("restarting %s...\n", providerLabel(p))
 		if err := bsdServiceControl(p, "restart"); err != nil {
 			fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)

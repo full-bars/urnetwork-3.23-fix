@@ -10,11 +10,11 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ## OpenBSD build support
 
-**Purpose**: Allow the provider and `urnet-tools` to build for OpenBSD.
+**Purpose**: Build the provider and `urnet-tools` for OpenBSD, and install and run them with an installer, release assets and an `rc.d` service.
 
-**Files added**: `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/discover_openbsd_parse_test.go`, `internal/urnettools/lifecycle_openbsd.go`, `provider/diag_disk_openbsd.go`, `provider/diag_disk_openbsd_test.go` and `sysmem_openbsd.go`. Build tags also changed in `provider/diag_disk_unix.go` and `sysmem_other.go`.
+**Files added**: `internal/urnettools/discover_openbsd.go`, `internal/urnettools/discover_openbsd_parse.go`, `internal/urnettools/discover_openbsd_parse_test.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/discover_openbsd_test.go`, `internal/urnettools/jwt_read_openbsd.go`, `internal/urnettools/jwt_read_openbsd_test.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `provider/diag_disk_openbsd.go`, `provider/diag_disk_openbsd_test.go`, `sysmem_openbsd.go`, `scripts/Provider_Install_OpenBSD.sh` and `docs/OpenBSD.md`. Build tags also changed in `provider/diag_disk_unix.go` and `sysmem_other.go`. The `/install-openbsd.sh` route is in `workers/dl/src/index.js`, and `.github/workflows/release.yml` builds the OpenBSD assets.
 
-**Impact**: Running process discovery, disk space and physical memory use OpenBSD interfaces. Auto-start and update scheduling return unsupported errors. Available memory, host memory-pressure checks and peer credential verification are not implemented. Support is build-only; there is no OpenBSD installer or release asset. See [docs/OpenBSD.md](docs/OpenBSD.md).
+**Impact**: Running process discovery, disk space and physical memory use OpenBSD interfaces. Auto-start uses `rcctl`, and update scheduling uses cron. `start`, `stop`, `restart`, `update` and `uninstall` go through `rcctl`. Available memory, host memory-pressure checks and peer credential verification are not implemented, and `optimize` is not supported. The `rc.d` script and update path are untested on a real OpenBSD host. See [docs/OpenBSD.md](docs/OpenBSD.md).
 
 ---
 
