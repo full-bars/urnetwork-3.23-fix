@@ -1152,8 +1152,8 @@ func restartProvider(p Provider) error {
 		// No unit owns the provider on Windows: stop/start it directly.
 		return restartProviderOnWindows(p)
 	}
-	if runtime.GOOS == "freebsd" {
-		// rc.d owns the service on FreeBSD; systemd never exists there. Without
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
+		// rc.d owns the service on FreeBSD and OpenBSD (rcctl); systemd never exists there. Without
 		// this branch an update swaps the binary and then fails to restart,
 		// leaving the old image running and the new one on disk.
 		return bsdServiceControl(p, "restart")
@@ -1278,6 +1278,11 @@ func verifySHA256(path, want string) error {
 func tarRelPath(goos, arch string) string {
 	if goos == "windows" {
 		return path.Join("windows", arch, "provider.exe")
+	}
+	if goos == "openbsd" {
+		// The universal tarball ships openbsd/<arch>/provider. Without this
+		// case the fallthrough stages the LINUX ELF on an OpenBSD box.
+		return path.Join("openbsd", arch, "provider")
 	}
 	if goos == "freebsd" {
 		// The universal tarball ships freebsd/<arch>/provider. Without this

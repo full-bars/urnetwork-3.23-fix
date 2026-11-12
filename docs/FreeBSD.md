@@ -1,5 +1,7 @@
 # 😈 FreeBSD
 
+For OpenBSD, see the [OpenBSD guide](/full-bars/urnetwork-3.23-fix/wiki/OpenBSD). The FreeBSD installer does not install OpenBSD.
+
 This page is the complete guide to running the URnetwork provider on FreeBSD (amd64 and arm64): install, the `rc.d` service, updates, the required sysctl tuning, and the platform differences you will run into. For the other platforms and the general installer, see the [Installation Guide](/full-bars/urnetwork-3.23-fix/wiki/Installation).
 
 The provider runs as an `rc.d` service named `urnetwork` under an unprivileged user. There is a hosted one-liner: `https://install.fullbars.xyz` detects FreeBSD and runs this repository's FreeBSD installer, and fetching the script straight from the mirror installs the same thing. Either way it downloads the release for your architecture.

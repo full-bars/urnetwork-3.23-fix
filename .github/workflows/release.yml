@@ -12,7 +12,7 @@ jobs:
     runs-on: ubuntu-latest
     strategy:
       matrix:
-        goos: [linux, darwin, windows, freebsd]
+        goos: [linux, darwin, windows, freebsd, openbsd]
         goarch: [amd64, arm64]
     steps:
       - name: Checkout code
@@ -217,6 +217,18 @@ jobs:
           name: provider-freebsd-arm64
           path: release_tmp/freebsd/arm64/
 
+      - name: Download provider openbsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-openbsd-amd64
+          path: release_tmp/openbsd/amd64/
+
+      - name: Download provider openbsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-openbsd-arm64
+          path: release_tmp/openbsd/arm64/
+
       - name: Download urnet-tools linux amd64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -264,6 +276,18 @@ jobs:
         with:
           name: urnet-tools-freebsd-arm64
           path: tool_tmp/freebsd/arm64/
+
+      - name: Download urnet-tools openbsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-openbsd-amd64
+          path: tool_tmp/openbsd/amd64/
+
+      - name: Download urnet-tools openbsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-openbsd-arm64
+          path: tool_tmp/openbsd/arm64/
 
       - name: Download urnet-docker linux amd64 artifact
         uses: actions/download-artifact@v4
@@ -356,6 +380,12 @@ jobs:
             cp "tool_tmp/freebsd/$arch/urnet-tools" "urnet-tools-freebsd-$arch"
           done
 
+          # OpenBSD: same layout and same fail-before-publish rule as FreeBSD.
+          for arch in amd64 arm64; do
+            test -f "release_tmp/openbsd/$arch/provider"
+            cp "tool_tmp/openbsd/$arch/urnet-tools" "urnet-tools-openbsd-$arch"
+          done
+
       - name: Create provider tarballs
         run: |
           VERSION=${GITHUB_REF_NAME:-latest}
@@ -368,7 +398,7 @@ jobs:
           # Universal tarball — scripts match this via ^urnetwork-provider-
           cp scripts/Provider_Install_Linux.sh release_tmp/urnet-tools
           cd release_tmp
-          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ windows/ freebsd/ urnet-tools
+          tar -czf ../urnetwork-provider-${VERSION}.tar.gz linux/ darwin/ windows/ freebsd/ openbsd/ urnet-tools
           cd ..
 
           # Per-platform tarballs — flat (no subdirs), each with its own script
@@ -403,6 +433,14 @@ jobs:
             mkdir -p "per-platform/${plat}"
             cp "release_tmp/freebsd/${arch}/provider" "per-platform/${plat}/"
             cp scripts/Provider_Install_FreeBSD.sh "per-platform/${plat}/urnet-tools"
+            cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
+          done
+
+          for plat in openbsd-amd64 openbsd-arm64; do
+            arch="${plat#openbsd-}"
+            mkdir -p "per-platform/${plat}"
+            cp "release_tmp/openbsd/${arch}/provider" "per-platform/${plat}/"
+            cp scripts/Provider_Install_OpenBSD.sh "per-platform/${plat}/urnet-tools"
             cd "per-platform/${plat}" && tar -czf "../../urnetwork-provider-${VERSION}-${plat}.tar.gz" * && cd ../..
           done
 
@@ -595,6 +633,26 @@ jobs:
         with:
           name: urnet-tools-freebsd-arm64
           path: release_tmp/freebsd/arm64/
+      - name: Download provider openbsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-openbsd-amd64
+          path: release_tmp/openbsd/amd64/
+      - name: Download provider openbsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-openbsd-arm64
+          path: release_tmp/openbsd/arm64/
+      - name: Download urnet-tools openbsd amd64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-openbsd-amd64
+          path: release_tmp/openbsd/amd64/
+      - name: Download urnet-tools openbsd arm64 artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-openbsd-arm64
+          path: release_tmp/openbsd/arm64/
 
       - name: VirusTotal scan of release binaries
         env:
@@ -641,7 +699,11 @@ jobs:
             release_tmp/freebsd/amd64/provider \
             release_tmp/freebsd/arm64/provider \
             release_tmp/freebsd/amd64/urnet-tools \
-            release_tmp/freebsd/arm64/urnet-tools
+            release_tmp/freebsd/arm64/urnet-tools \
+            release_tmp/openbsd/amd64/provider \
+            release_tmp/openbsd/arm64/provider \
+            release_tmp/openbsd/amd64/urnet-tools \
+            release_tmp/openbsd/arm64/urnet-tools
           # Non-blocking: a FAIL here does NOT cancel the release. It exits
           # non-zero so the job is red, and the comment step below still runs
           # (if: always()) to surface the verdict on the release.

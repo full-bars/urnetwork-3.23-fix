@@ -159,11 +159,13 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	if removedAny {
 		if uninstallStopsProcesses {
 			fmt.Printf("Uninstalled %s (binary and state removed, scheduled tasks deleted)\n", providerLabel(p))
+		} else if runtime.GOOS == "openbsd" {
+			fmt.Printf("Uninstalled %s (check the service and cron warnings above)\n", providerLabel(p))
 		} else {
 			fmt.Printf("Uninstalled %s (binary removed, unit disabled)\n", providerLabel(p))
 		}
 	} else {
-		fmt.Printf("Uninstall %s: nothing removable found (unit disabled if present)\n", providerLabel(p))
+		fmt.Printf("Uninstall %s: nothing removable found (check lifecycle configuration manually)\n", providerLabel(p))
 	}
 	return nil
 }

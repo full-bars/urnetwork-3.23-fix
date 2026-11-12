@@ -171,7 +171,7 @@ func cmdStart(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return startProviderOnWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		fmt.Printf("starting %s...\n", providerLabel(p))
 		if err := bsdServiceControl(p, "start"); err != nil {
 			fmt.Printf("FAILED to start %s: %v\n", providerLabel(p), err)
@@ -203,7 +203,7 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		// rc.d, not systemd: go through the service so the provider drains
 		// under its own stop semantics rather than being signalled directly.
 		fmt.Printf("stopping %s...\n", providerLabel(p))
@@ -343,7 +343,7 @@ func cmdRestart(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdRestartOnWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" {
+	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
 		fmt.Printf("restarting %s...\n", providerLabel(p))
 		if err := bsdServiceControl(p, "restart"); err != nil {
 			fmt.Printf("FAILED to restart %s: %v\n", providerLabel(p), err)
@@ -938,6 +938,9 @@ func tuneControlKeyValue(profile, mode string) (key, value string, err error) {
 // providers found" because Discover() runs as root and cannot see user-session
 // units owned by the ubuntu user.
 func cmdOptimize(args []string, force, dryRun bool) error {
+	if runtime.GOOS == "openbsd" {
+		return optimizeFor("openbsd")()
+	}
 	// Ignore provider target flags — optimize is host-wide. If unknown flags
 	// are present parseTargetFlags will still error on malformed input.
 	_, remaining, err := parseTargetFlags(args)
@@ -982,6 +985,8 @@ func cmdOptimize(args []string, force, dryRun bool) error {
 // (root-requiring, host-mutating) implementations.
 func optimizeFor(goos string) func() error {
 	switch goos {
+	case "openbsd":
+		return func() error { return fmt.Errorf("optimize is not supported on OpenBSD; tune sysctls manually") }
 	case "windows":
 		return optimizeWindows
 	case "darwin":

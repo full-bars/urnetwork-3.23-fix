@@ -176,6 +176,12 @@ func TestTarRelPath(t *testing.T) {
 	if got, want := tarRelPath("freebsd", "amd64"), "freebsd/amd64/provider"; got != want {
 		t.Errorf("tarRelPath(freebsd, amd64) = %q, want %q", got, want)
 	}
+	if got, want := tarRelPath("openbsd", "amd64"), "openbsd/amd64/provider"; got != want {
+		t.Errorf("tarRelPath(openbsd, amd64) = %q, want %q", got, want)
+	}
+	if got, want := tarRelPath("openbsd", "arm64"), "openbsd/arm64/provider"; got != want {
+		t.Errorf("tarRelPath(openbsd, arm64) = %q, want %q", got, want)
+	}
 	if strings.ContainsRune(tarRelPath("windows", "amd64"), '\\') {
 		t.Errorf("tarRelPath must never emit backslashes, got %q", tarRelPath("windows", "amd64"))
 	}
@@ -217,6 +223,9 @@ func TestOptimizeForDispatch(t *testing.T) {
 	// freebsd->linux mutation passed unnoticed on Linux CI.
 	if got, want := fnPtr(optimizeFor("freebsd")), fnPtr(optimizeFreeBSD); got != want {
 		t.Errorf("optimizeFor(freebsd) did not dispatch to optimizeFreeBSD")
+	}
+	if err := optimizeFor("openbsd")(); err == nil || err.Error() != "optimize is not supported on OpenBSD; tune sysctls manually" {
+		t.Errorf("optimizeFor(openbsd) = %v, want unsupported error", err)
 	}
 	// Unknown GOOSes still fall back to the Linux path rather than erroring.
 	if got, want := fnPtr(optimizeFor("plan9")), fnPtr(optimizeLinux); got != want {

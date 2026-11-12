@@ -41,6 +41,14 @@ func TestOptimizeLinuxRootCheck(t *testing.T) {
 // tuning and MUST succeed without requiring any discovered provider units
 // or running processes on the box (regression test for "no providers found").
 func TestCmdOptimizeNoProviderRequired(t *testing.T) {
+	if runtime.GOOS == "openbsd" {
+		for _, err := range []error{Run([]string{"optimize", "-n"}), cmdOptimize([]string{"--unit", "foo"}, false, true)} {
+			if err == nil || !strings.Contains(err.Error(), "not supported") {
+				t.Fatalf("expected OpenBSD unsupported error, got: %v", err)
+			}
+		}
+		return
+	}
 	// Full CLI Run dispatch with dry-run flag.
 	if err := Run([]string{"optimize", "-n"}); err != nil {
 		t.Errorf("Run([optimize -n]) failed: %v", err)
