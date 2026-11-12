@@ -417,7 +417,7 @@ func createContractResult(
 	destinationId Id,
 ) (*protocol.Frame, error) {
 	contractId := NewId()
-	contractByteCount := 8 * 1024 * 1024 * 1024
+	const contractByteCount uint64 = 8 * 1024 * 1024 * 1024
 
 	storedContract := &protocol.StoredContract{
 		ContractId:        contractId.Bytes(),
