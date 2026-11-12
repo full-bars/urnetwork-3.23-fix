@@ -310,6 +310,13 @@ rc_script="/etc/rc.d/$service_name"
 # (with chmod go-w), while the state directory (~/.urnetwork) lives in the
 # service user's home.
 service_user="$(resolve_service_user)"
+if [ -f "$rc_script" ]; then
+    service_user="$(awk -F'"' '/^[[:space:]]*daemon_user="[^"]+"[[:space:]]*$/ {print $2; exit}' "$rc_script")"
+    if [ -z "$service_user" ] || ! id -u "$service_user" >/dev/null 2>&1; then
+        pr_err "Cannot determine a valid daemon_user from %s" "$rc_script"
+        exit 1
+    fi
+fi
 service_home="$(user_home "$service_user")"
 install_path="/usr/local/libexec/urnetwork-provider"
 provider_bin="$install_path/bin/urnetwork"
@@ -758,7 +765,7 @@ do_install() {
     tool_asset="urnet-tools-openbsd-$goarch"
     tool_digest="$(get_asset_digest_from_api_response "$release_json" "$tool_asset")"
     if [ -z "$tool_digest" ]; then
-        pr_err "Cannot verify urnet-tools: release %s publishes no readable sha256 digest for '%s'" "$tag" "$tool_asset"
+        pr_err "Cannot verify urnet-tools: release %s publishes no readable sha256 digest for '%s'; no binary was replaced" "$tag" "$tool_asset"
         exit 1
     fi
     if ! http_fetch "https://github.com/full-bars/urnetwork-3.23-fix/releases/download/$tag/$tool_asset" "$tmpdir/$tool_asset" 2>/dev/null; then
@@ -867,6 +874,14 @@ do_install() {
        ! priv chmod 755 "$rc_script"; then
         pr_warn "Could not write %s. Install the service manually as root:" "$rc_script"
         pr_warn "  %s install-service" "$me"
+        if [ "$had_old_binary" -eq 1 ] && [ -f "$provider_backup" ]; then
+            if ! priv mv -f "$provider_backup" "$provider_bin"; then
+                pr_err "Could not restore the previous binary from %s; restore it manually to %s" "$provider_backup" "$provider_bin"
+            else
+                pr_warn "Restored previous binary after rc.d write failure"
+            fi
+        fi
+        rm -rf "$tmpdir"
         exit 1
     fi
     if [ "${UPDATING:-0}" != "1" ]; then
@@ -1055,6 +1070,15 @@ do_install_service() {
     # because the box was logged into as root, would be a privilege
     # escalation the operator never asked for: refuse and say what to do.
     service_user="$(resolve_service_user)"
+    if [ -f "$rc_script" ]; then
+        service_user="$(awk -F'"' '/^[[:space:]]*daemon_user="[^"]+"[[:space:]]*$/ {print $2; exit}' "$rc_script")"
+        if [ -z "$service_user" ] || ! id -u "$service_user" >/dev/null 2>&1; then
+            pr_err "Cannot determine a valid daemon_user from %s" "$rc_script"
+            exit 1
+        fi
+    fi
+    service_home="$(user_home "$service_user")"
+    state_dir="$service_home/.urnetwork"
     if [ "$service_user" = "root" ]; then
         pr_err "refusing to install a service that runs as root"
         pr_err "re-run as a normal user, or set SERVICE_USER_OVERRIDE=<user>"

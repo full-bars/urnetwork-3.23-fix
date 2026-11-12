@@ -20,9 +20,13 @@ func discoverProcesses() []Provider {
 	if err != nil {
 		return nil
 	}
+	managedPID := openbsdServicePID()
 	var providers []Provider
 	for _, row := range parseOpenBSDProcesses(string(out)) {
 		p := Provider{PID: row.pid, Running: true}
+		if managedPID > 0 && row.pid == managedPID {
+			p.Supervisor = "openbsd-rcd"
+		}
 		if u, err := user.LookupId(row.uid); err == nil {
 			p.User = u.Username
 			p.StateDir = resolveDiscoveredStateDir(u.HomeDir, "")

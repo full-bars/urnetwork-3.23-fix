@@ -39,8 +39,9 @@ func bsdUpdateCronLine(tool, logDir, interval string) (string, error) {
 	default:
 		return "", fmt.Errorf("invalid interval %q", interval)
 	}
-	return fmt.Sprintf("%s %s update -f >> %s 2>&1",
-		spec, shellQuote(tool), shellQuote(filepath.Join(logDir, "auto-update.log"))), nil
+	command := fmt.Sprintf("%s update -f >> %s 2>&1",
+		shellQuote(tool), shellQuote(filepath.Join(logDir, "auto-update.log")))
+	return spec + " " + strings.ReplaceAll(command, "%", `''\%`), nil
 }
 
 // shellQuote wraps s in single quotes for inclusion in a crontab line, which is
@@ -56,12 +57,12 @@ func shellQuote(s string) string {
 // its own name from the service instead, matching how the Linux timer name is
 // derived from the provider unit rather than from the label.
 func setAutoUpdateSchedule(p Provider, label, interval string) error {
-	if interval == "off" {
-		return removeBSDUpdateCron(p)
-	}
 	euid := os.Geteuid()
 	if euid != 0 && bsdTreeOwnedByRoot(p.Binary) {
 		return fmt.Errorf("auto-update for %s must be scheduled as root: %s is in the root-owned install tree, so an unprivileged cron job cannot replace it (run: sudo urnet-tools auto-update %s)", providerLabel(p), p.Binary, interval)
+	}
+	if interval == "off" {
+		return removeBSDUpdateCron(p)
 	}
 	tool, logDir, err := bsdScheduledUpdate(euid, bsdStagedToolIsRootOwned(), toolExePath(), bsdLogDir())
 	if err != nil {
@@ -86,7 +87,7 @@ func bsdStagedToolIsRootOwned() bool {
 		return false
 	}
 	st, ok := fi.Sys().(*syscall.Stat_t)
-	return ok && st.Uid == 0 && fi.Mode().Perm()&0o022 == 0
+	return ok && st.Uid == 0 && fi.Mode().Perm()&0o022 == 0 && fi.Mode().Perm()&0o111 != 0
 }
 
 // bsdLogDir is where the unattended update log is written: the provider's state
