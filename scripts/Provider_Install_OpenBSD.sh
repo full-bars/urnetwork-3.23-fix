@@ -446,45 +446,21 @@ write_rc_script_body() {
 #   rcctl start|stop|restart|check $service_name
 #   rcctl set $service_name flags "<flags>"   extra flags, added after "provide"
 
-daemon="$provider_bin"
+# The default process expression includes "provide" from daemon.
+daemon="$provider_bin provide"
 daemon_user="$run_user"
 logdir="/var/log/$service_name"
-logfile="\$logdir/stdout.log"
 
 . /etc/rc.d/rc.subr
 
-# The provider stays in the foreground, so rc.subr must start it in the
-# background or the boot sequence would wait for it forever. OpenBSD has no
-# daemon(8), so the start command below redirects the output itself and ends
-# with an explicit "&".
+daemon_logger="daemon.info"
+
+# Let the version-specific default rc_start background the foreground provider.
 rc_bg=YES
 rc_reload=NO
 
-# rc.subr stops and checks the service with pkill/pgrep on this expression, which
-# is the full command line (it is anchored). The default would omit "provide".
-pexp="\$daemon provide.*"
-
 rc_pre() {
-    install -d -o root -g wheel -m 755 "\$logdir" || return 1
-    # The log is opened by root through su, so it must be a regular file. A
-    # symlink planted here would send root's writes somewhere else.
-    if [ -L "\$logfile" ]; then
-        echo "refusing to start: \$logfile is a symlink" >&2
-        return 1
-    fi
-    # Keep an existing log only while it is a plain file with one link that the
-    # service user owns. A fifo, a hard link or a foreign owner is replaced.
-    if [ -e "\$logfile" ] && [ "\$(stat -f '%HT %l %Su' "\$logfile" 2>/dev/null)" != "Regular File 1 \$daemon_user" ]; then
-        rm -f "\$logfile" || return 1
-    fi
-    # Create it only when missing, so a restart keeps the previous run's output.
-    if [ ! -e "\$logfile" ]; then
-        install -o "\$daemon_user" -m 640 /dev/null "\$logfile" || return 1
-    fi
-}
-
-rc_start() {
-    \${rcexec} "\${daemon} provide \${daemon_flags} >>'\$logfile' 2>&1 &"
+    install -d -o root -g wheel -m 755 "\$logdir"
 }
 
 rc_cmd \$1
