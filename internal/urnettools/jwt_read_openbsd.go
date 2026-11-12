@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
+	"strings"
 
 	"golang.org/x/sys/unix"
 )
@@ -11,7 +13,30 @@ import (
 const maxJWTBytes = 1024 * 1024
 
 func readJWTFile(path string) ([]byte, error) {
-	fd, err := unix.Open(path, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	clean := filepath.Clean(path)
+	base := "."
+	if filepath.IsAbs(clean) {
+		base = "/"
+	}
+	dirfd, err := unix.Open(base, unix.O_RDONLY|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+	if err != nil {
+		return nil, &os.PathError{Op: "open", Path: path, Err: err}
+	}
+	parts := strings.Split(strings.TrimPrefix(clean, "/"), "/")
+	for _, part := range parts[:len(parts)-1] {
+		if part == ".." {
+			unix.Close(dirfd)
+			return nil, &os.PathError{Op: "open", Path: path, Err: unix.EINVAL}
+		}
+		next, err := unix.Openat(dirfd, part, unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_DIRECTORY|unix.O_CLOEXEC, 0)
+		unix.Close(dirfd)
+		if err != nil {
+			return nil, &os.PathError{Op: "open", Path: path, Err: err}
+		}
+		dirfd = next
+	}
+	fd, err := unix.Openat(dirfd, parts[len(parts)-1], unix.O_RDONLY|unix.O_NOFOLLOW|unix.O_NONBLOCK|unix.O_CLOEXEC, 0)
+	unix.Close(dirfd)
 	if err != nil {
 		return nil, &os.PathError{Op: "open", Path: path, Err: err}
 	}

@@ -46,6 +46,14 @@ for target in linux/amd64 linux/arm64 windows/amd64 windows/arm64 darwin/amd64 d
   echo "  ok $target"
 done
 
+echo "== go vet OpenBSD provider packages"
+for arch in amd64 arm64; do
+  (cd provider && files=$(GOOS=openbsd GOARCH=$arch go list -f '{{range .GoFiles}}{{.}} {{end}}' .) &&
+    GOOS=openbsd GOARCH=$arch go vet $files >/dev/null)
+  GOOS=openbsd GOARCH=$arch go vet ./internal/connectx/ ./internal/urnettools/ >/dev/null
+  echo "  ok openbsd/$arch"
+done
+
 echo "== shard partition covers every package"
 ./.github/scripts/test_shard.sh --verify
 
