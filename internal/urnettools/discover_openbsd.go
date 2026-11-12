@@ -30,7 +30,7 @@ func discoverProcesses() []Provider {
 				var jwtErr error
 				p.Network, p.NetworkID, p.JWTExpires, jwtErr = decodeJWT(filepath.Join(p.StateDir, "jwt"))
 				p.IdentityRestricted = errors.Is(jwtErr, fs.ErrPermission)
-				p.Binary = installedOpenBSDProviderIn(u.HomeDir)
+				p.Binary = installedOpenBSDProvider()
 			}
 		}
 		providers = append(providers, p)
@@ -38,30 +38,24 @@ func discoverProcesses() []Provider {
 	return providers
 }
 
+// openbsdLibexecProviderPath is the only binary path accepted. urnet-tools
+// often runs as root, so a binary in a user-writable home must never be
+// resolved and executed.
 var openbsdLibexecProviderPath = "/usr/local/libexec/urnetwork-provider/bin/urnetwork"
 
-func openbsdProviderCandidates(home string) []string {
-	paths := []string{openbsdLibexecProviderPath}
-	if home != "" {
-		paths = append(paths,
-			filepath.Join(home, ".local", "share", "urnetwork-provider", "bin", "urnetwork"),
-			filepath.Join(home, ".urnetwork", "urnetwork"))
+func installedOpenBSDProvider() string {
+	path := openbsdLibexecProviderPath
+	info, err := os.Stat(path)
+	if err != nil || !info.Mode().IsRegular() {
+		return ""
 	}
-	return paths
-}
-
-func installedOpenBSDProviderIn(home string) string {
-	for _, path := range openbsdProviderCandidates(home) {
-		info, err := os.Stat(path)
-		if err != nil || !info.Mode().IsRegular() {
-			continue
-		}
-		if path == openbsdLibexecProviderPath && info.Mode().Perm()&0o001 == 0 {
-			continue
-		}
-		if unix.Access(path, unix.X_OK) == nil {
-			return path
-		}
+	// Must be executable by others and not writable by group or others.
+	perm := info.Mode().Perm()
+	if perm&0o001 == 0 || perm&0o022 != 0 {
+		return ""
+	}
+	if unix.Access(path, unix.X_OK) == nil {
+		return path
 	}
 	return ""
 }

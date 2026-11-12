@@ -109,14 +109,14 @@ There are no tested OpenBSD tuning targets in this repository. The FreeBSD sysct
 
 ## Platform notes
 
-- **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks standard install locations for an executable, but that path is not proof of the running image. If none is found, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install the intended binary in a standard location, or run its proxy commands directly. There is no `--binary` override. A standard-path candidate may differ from the running binary; verify the install before using it.
+- **Process discovery:** `urnet-tools` uses `ps` to find running providers by process name. It does not discover stopped services or infer a binary path from process arguments. It checks the standard libexec location for an executable, but that path is not proof of the running image. If the binary is not there, `update` and delegated proxy commands such as `add`, `remove`, `trim` and `paste` cannot resolve the binary. Install it in that location, or run its proxy commands directly. There is no `--binary` override. The libexec binary may differ from the running binary; verify the install before using it.
 - **Lifecycle:** Use the installer script or `rcctl` to start, stop and restart the service. `urnet-tools start` and `restart` are not supported on OpenBSD, and `stop` signals the discovered process rather than using `rcctl`. `urnet-tools status` can run `rcctl check`.
 - **Memory:** Total physical memory comes from `hw.physmem` when available. Available host memory is not reported. Host memory-pressure and swap checks use the unsupported fallback.
 - **Control socket:** Peer credential verification is a no-op on OpenBSD. The control socket relies on its file permissions instead. Keep the service account and its state directory private.
 - **Disk diagnostics:** Free space uses the OpenBSD `statfs` interface.
 - **UDP:** OpenBSD uses the portable socket reader, not the platform-specific poller.
 
-The checked locations are `/usr/local/libexec/urnetwork-provider/bin/urnetwork`, `~/.local/share/urnetwork-provider/bin/urnetwork` and `~/.urnetwork/urnetwork`, in that order. The shared location must be executable by other users.
+`urnet-tools` accepts only `/usr/local/libexec/urnetwork-provider/bin/urnetwork`. The file must be executable by other users and not writable by group or others. Binaries in a home directory are ignored, because `urnet-tools` often runs as root.
 
 ## Release assets
 
