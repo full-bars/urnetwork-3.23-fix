@@ -453,9 +453,11 @@ logfile="\$logdir/stdout.log"
 
 . /etc/rc.d/rc.subr
 
-# The provider stays in the foreground and OpenBSD has no daemon(8), so the start
-# command below uses rc_exec and redirects the output itself.
-# UNVERIFIED on a real host: confirm that "rcctl start" returns instead of waiting.
+# The provider stays in the foreground, so rc.subr must start it in the
+# background or the boot sequence would wait for it forever. OpenBSD has no
+# daemon(8), so the start command below redirects the output itself and ends
+# with an explicit "&".
+rc_bg=YES
 rc_reload=NO
 
 # rc.subr stops and checks the service with pkill/pgrep on this expression, which
@@ -481,10 +483,8 @@ rc_pre() {
     fi
 }
 
-rc_bg=YES
-
 rc_start() {
-    rc_exec "\${daemon} provide \${daemon_flags} >>'\$logfile' 2>&1"
+    \${rcexec} "\${daemon} provide \${daemon_flags} >>'\$logfile' 2>&1 &"
 }
 
 rc_cmd \$1
@@ -1066,8 +1066,7 @@ SHELLRC_END
     pr_info "  Service: %s" "$rc_script"
     pr_info "  Data:    %s" "$state_dir"
     pr_info ""
-    pr_info "Service:   rcctl start|stop|restart|check urnetwork"
-    pr_info "Commands:  urnet-tools start|stop|restart|status|session|proxy"
+    pr_info "Commands:  urnet-tools start|stop|restart|status|hot-restart|session|proxy"
     pr_info "Restart your terminal or run 'hash -r' for urnet-tools to be found"
 }
 
