@@ -632,8 +632,33 @@ func NewRemoteUserNatMultiClient(
 			settings,
 			multiClient.clientFlowCount,
 		)
+		multiClient.windows[WindowTypeLimited] = newMultiClientWindow(
+			cancelCtx,
+			cancel,
+			generator,
+			multiClient.clientReceivePacket,
+			multiClient.clientDialFailure,
+			multiClient.ingressSecurityPolicy,
+			multiClient.removeClient,
+			WindowTypeLimited,
+			settings,
+			multiClient.clientFlowCount,
+		)
 	}
 	// else only keep the quality window for fixed destination
+
+	// Publish only after the windows map is complete; resize goroutines may
+	// read it as soon as the hooks become visible.
+	if limitedWindow := multiClient.windows[WindowTypeLimited]; limitedWindow != nil {
+		hooks := &limitedWindowHooks{
+			sizing: multiClient.limitedWindowSizing,
+			wake:   func() { limitedWindow.resizeMonitor.NotifyAll() },
+		}
+		for _, window := range multiClient.windows {
+			window.limitedHooks.Store(hooks)
+		}
+		limitedWindow.resizeMonitor.NotifyAll()
+	}
 
 	multiClient.localUserNatUnsub = localUserNat.AddReceivePacketCallback(receivePacketCallback)
 
