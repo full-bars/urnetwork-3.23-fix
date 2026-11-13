@@ -82,3 +82,89 @@ func (self *multiClientWindow) publishedSizingSnapshot() windowSizing {
 	defer self.stateLock.Unlock()
 	return self.publishedSizing
 }
+
+// limitedWindowSizing reads normal-window snapshots without holding two locks.
+func (self *RemoteUserNatMultiClient) limitedWindowSizing() limitedSizing {
+	sizing := limitedSizing{fraction: self.LimitedWindowSizeFraction(), sizeMax: self.settings.LimitedWindowSizeMax}
+	generator, capable := self.generator.(MultiClientGeneratorWithCapabilities)
+	if !capable {
+		return sizing
+	}
+	if mode, known := generator.SelectorMode(); known && !mode {
+		return sizing
+	}
+	sizing.enabled = true
+	for windowType, window := range self.windows {
+		if windowType == WindowTypeLimited {
+			continue
+		}
+		published := window.publishedSizingSnapshot()
+		if !published.published {
+			sizing.targetSize = 0
+			return sizing
+		}
+		if !published.active {
+			continue
+		}
+		sizing.targetSize = max(sizing.targetSize, published.targetSize)
+		if published.hardMax <= 0 {
+			sizing.hardMaxUnbounded = true
+		} else {
+			sizing.hardMax = max(sizing.hardMax, published.hardMax)
+		}
+	}
+	return sizing
+}
+
+func (self *multiClientWindow) limitedWindowSize() WindowSizeSettings {
+	hooks := self.limitedHooks.Load()
+	if hooks == nil || self.stickyExit() {
+		return limitedWindowSize(limitedSizing{})
+	}
+	return limitedWindowSize(hooks.sizing())
+}
+
+// LimitedWindowSize returns the number of live limited exits, including warned exits.
+func (self *RemoteUserNatMultiClient) LimitedWindowSize() int {
+	window := self.windows[WindowTypeLimited]
+	if window == nil {
+		return 0
+	}
+	count := 0
+	for _, client := range window.unorderedClients() {
+		if !client.IsDone() {
+			count++
+		}
+	}
+	return count
+}
+
+// LimitedWindowTargetSize returns the target from the last resize pass.
+func (self *RemoteUserNatMultiClient) LimitedWindowTargetSize() int {
+	window := self.windows[WindowTypeLimited]
+	if window == nil {
+		return 0
+	}
+	window.stateLock.Lock()
+	defer window.stateLock.Unlock()
+	return max(0, window.requestTargetCount)
+}
+
+// LimitedWindowSizeFraction returns the configured or overridden fraction.
+func (self *RemoteUserNatMultiClient) LimitedWindowSizeFraction() float64 {
+	return math.Float64frombits(self.limitedWindowSizeFractionBits.Load())
+}
+
+// SetLimitedWindowSizeFraction updates the fraction and wakes the window.
+func (self *RemoteUserNatMultiClient) SetLimitedWindowSizeFraction(fraction float64) {
+	previous := math.Float64frombits(self.limitedWindowSizeFractionBits.Swap(math.Float64bits(fraction)))
+	window := self.windows[WindowTypeLimited]
+	if window == nil {
+		return
+	}
+	if limitedWindowFractionEnabled(previous) && !limitedWindowFractionEnabled(fraction) {
+		window.shuffle()
+		return
+	}
+	window.resizeMonitor.NotifyAll()
+}

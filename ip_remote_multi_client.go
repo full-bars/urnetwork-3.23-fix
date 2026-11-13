@@ -500,8 +500,9 @@ type RemoteUserNatMultiClient struct {
 	settings *MultiClientSettings
 	log      Logger
 
-	windows map[WindowType]*multiClientWindow
-	monitor MultiClientMonitor
+	windows                       map[WindowType]*multiClientWindow
+	monitor                       MultiClientMonitor
+	limitedWindowSizeFractionBits atomic.Uint64
 
 	noCompatibleStats WindowClientStats
 
@@ -598,6 +599,7 @@ func NewRemoteUserNatMultiClient(
 		clientUpdates:         map[*multiClientChannel]map[*multiClientChannelUpdate]bool{},
 		localUserNat:          localUserNat,
 	}
+	multiClient.limitedWindowSizeFractionBits.Store(math.Float64bits(settings.LimitedWindowSizeFraction))
 	multiClient.config.Store(&multiClientConfig{
 		performanceProfile:  multiClient.overrideAllowDirect(settings.DefaultPerformanceProfile),
 		localSecurityBypass: false,

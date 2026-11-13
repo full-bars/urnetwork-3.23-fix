@@ -5,6 +5,27 @@ import (
 	"testing"
 )
 
+func TestLimitedWindowFractionWithoutWindow(t *testing.T) {
+	client := &RemoteUserNatMultiClient{}
+	client.SetLimitedWindowSizeFraction(.25)
+	if client.LimitedWindowSizeFraction() != .25 || client.LimitedWindowSize() != 0 || client.LimitedWindowTargetSize() != 0 {
+		t.Fatal("fraction or absent window state incorrect")
+	}
+	client.SetLimitedWindowSizeFraction(math.NaN())
+	if !math.IsNaN(client.LimitedWindowSizeFraction()) {
+		t.Fatal("NaN fraction was not preserved")
+	}
+}
+
+func TestLimitedWindowSizingWithoutCapabilityGenerator(t *testing.T) {
+	client := &RemoteUserNatMultiClient{settings: &MultiClientSettings{LimitedWindowSizeMax: 3}}
+	client.SetLimitedWindowSizeFraction(.5)
+	got := client.limitedWindowSizing()
+	if got.enabled || got.fraction != .5 || got.sizeMax != 3 {
+		t.Fatalf("unexpected sizing: %+v", got)
+	}
+}
+
 func TestLimitedWindowSize(t *testing.T) {
 	tests := []struct {
 		name         string
