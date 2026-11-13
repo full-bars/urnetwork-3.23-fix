@@ -97,6 +97,8 @@ const (
 	WindowTypeAuto    WindowType = 0
 	WindowTypeQuality WindowType = 1
 	WindowTypeSpeed   WindowType = 2
+	// STUB: WindowTypeLimited is a TCP-only window using capability-aware discovery
+	WindowTypeLimited WindowType = 3
 )
 
 // for each `NewClientArgs`,
@@ -116,6 +118,33 @@ type MultiClientGenerator interface {
 	NewClientSettings() *ClientSettings
 	NewClient(ctx context.Context, args *MultiClientGeneratorClientArgs, clientSettings *ClientSettings) (*Client, error)
 	FixedDestinationSize() (int, bool)
+}
+
+// STUB: MultiClientGeneratorWithCapabilities extends MultiClientGenerator with
+// capability-aware discovery (server selector mode, FP2-PROTOCOL.md §7)
+type MultiClientGeneratorWithCapabilities interface {
+	MultiClientGenerator
+	// NextDestinationsWithCapabilities queries for exits matching the given
+	// capability filter and returns them with their labels
+	NextDestinationsWithCapabilities(
+		count int,
+		excludeDestinations []MultiHopId,
+		rankMode string,
+		capabilities ProviderCapabilities,
+	) (map[MultiHopId]DestinationStats, error)
+}
+
+// STUB: MultiClientGeneratorWithIpFamily extends MultiClientGenerator with
+// family-aware discovery (older FP2 mode before selector)
+type MultiClientGeneratorWithIpFamily interface {
+	MultiClientGenerator
+	// NextDestinationsWithIpFamily queries for exits matching the given ip family filter
+	NextDestinationsWithIpFamily(
+		count int,
+		excludeDestinations []MultiHopId,
+		rankMode string,
+		ipFamilyFilter IpFamilyFilter,
+	) (map[MultiHopId]DestinationStats, error)
 }
 
 func defaultMultiRaceClientCount() int {
@@ -176,12 +205,16 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		// WindowExpandMaxOvershotScale: 2.0,
 		// WindowRevisitTimeout:      2 * time.Minute,
 		WindowExpandArgsTimeout:   2 * time.Minute,
+		// STUB: default generator deadline
+		WindowGeneratorTimeout:    15 * time.Second,
 		StatsWindowDuration:       30 * time.Second,
 		StatsWindowBucketDuration: 1 * time.Second,
 		StatsSampleWeightsCount:   8,
 		// percentile
 		StatsSourceCountSelection: 0.9,
 		// ClientAffinityTimeout:        0 * time.Second,
+		// STUB: default retry timeout for v6-capable exit admission
+		IpFamilyStarvedRetryTimeout: 30 * time.Second,
 
 		MultiRaceSetOnNoResponseTimeout:      5 * time.Second,
 		MultiRaceSetOnResponseTimeout:        2 * time.Second,
@@ -259,9 +292,14 @@ type MultiClientSettings struct {
 	// WindowExpandMaxOvershotScale float64
 	// WindowRevisitTimeout      time.Duration
 	WindowExpandArgsTimeout   time.Duration
+	// STUB: WindowGeneratorTimeout is the deadline for each NextDestinations call
+	WindowGeneratorTimeout    time.Duration
 	StatsWindowDuration       time.Duration
 	StatsWindowBucketDuration time.Duration
 	StatsSampleWeightsCount   int
+	// STUB: IpFamilyStarvedRetryTimeout is how long to wait before retrying
+	// v6-capable exit admission after a starved condition
+	IpFamilyStarvedRetryTimeout time.Duration
 	// percentile
 	StatsSourceCountSelection float64
 	// lower affinity is more private
@@ -2132,6 +2170,27 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 	})
 }
 
+// STUB: noopWindowStats is a stub stats collector
+type noopWindowStats struct{}
+
+func (s *noopWindowStats) addNoCompatible(*IpPath) {}
+
+// STUB: windowClientStats returns the stats collector for this multi-client
+func (self *RemoteUserNatMultiClient) windowClientStats() interface{ addNoCompatible(*IpPath) } {
+	// Stub: return a no-op stats collector
+	return &noopWindowStats{}
+}
+
+// STUB: deliverReceivePacket delivers a packet on the receive path
+func (self *RemoteUserNatMultiClient) deliverReceivePacket(
+	source TransferPath,
+	provideMode protocol.ProvideMode,
+	ipPath *IpPath,
+	packet []byte,
+) {
+	// Stub: no-op until receive path is wired
+}
+
 func (self *RemoteUserNatMultiClient) Shuffle() {
 	for _, window := range self.windows {
 		window.shuffle()
@@ -3211,6 +3270,40 @@ func (self *multiClientWindow) removeClients(removedClients ...*multiClientChann
 	}
 }
 
+// STUB: flowCount returns the number of active flows for a given client
+func (self *multiClientWindow) flowCount(client *multiClientChannel) int {
+	// Stub: return 0 until real flow-counting is wired
+	return 0
+}
+
+// STUB: requestRankMode returns this window's rank mode string
+func (self *multiClientWindow) requestRankMode() string {
+	return self.windowType.RankMode()
+}
+
+// STUB: enumerateStickyRedial returns one sticky destination to redial if available
+func (self *multiClientWindow) enumerateStickyRedial(excludeDestinations []MultiHopId, rankMode string) (enumeratedDestination, bool, error) {
+	// Stub: return false until sticky-redial logic is implemented
+	return enumeratedDestination{}, false, nil
+}
+
+// STUB: enumerateRecentExits returns recently-lost exits alongside discovery results
+func (self *multiClientWindow) enumerateRecentExits(excludeDestinations []MultiHopId, rankMode string, discover func(excludeDestinations []MultiHopId) ([]enumeratedDestination, error)) ([]enumeratedDestination, error) {
+	// Stub: fall back to discover() until recent-exit tracking is implemented
+	return discover(excludeDestinations)
+}
+
+// STUB: discoverDestinationsWithCapabilities queries a capability-aware generator
+func (self *multiClientWindow) discoverDestinationsWithCapabilities(
+	generator MultiClientGeneratorWithCapabilities,
+	excludeDestinations []MultiHopId,
+	probeOnly bool,
+	rankMode string,
+) ([]enumeratedDestination, error) {
+	// Stub: return empty until capability-aware discovery is implemented
+	return nil, nil
+}
+
 type multiClientChannelArgs struct {
 	MultiClientGeneratorClientArgs
 
@@ -3384,6 +3477,10 @@ type multiClientChannel struct {
 	// established flows.
 	dialFailureTimes    []time.Time
 	connectSuccessTimes []time.Time
+	// STUB: connectSuccessVersions runs parallel to connectSuccessTimes:
+	// the upstream version that each successful connect proved (from capability
+	// discovery). Kept entry-aligned by pruneDialStrikesWithLock.
+	connectSuccessVersions []int
 	// dialFailureDestinations runs parallel to dialFailureTimes: the
 	// destination ip each failed dial was for. A single retransmitting
 	// destination must not starve-warn the exit by itself, so dialStarved

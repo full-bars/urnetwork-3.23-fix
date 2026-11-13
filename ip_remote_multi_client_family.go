@@ -15,6 +15,8 @@ package connect
 // only reached from the resize pass with no lock held.
 
 import (
+	"context"
+	"fmt"
 	"slices"
 	"time"
 
@@ -33,6 +35,28 @@ type enumeratedDestination struct {
 	// Marks an exit the window lost to an outage of ours, asked for by name
 	// alongside discovery (see enumerateRecentExits)
 	recentExit bool
+}
+
+// STUB: relEvent formats an event message with key-value pairs for logging
+func relEvent(name string, keysAndValues ...interface{}) string {
+	result := name
+	for i := 0; i < len(keysAndValues); i += 2 {
+		if i+1 < len(keysAndValues) {
+			result += fmt.Sprintf(" %v=%v", keysAndValues[i], keysAndValues[i+1])
+		}
+	}
+	return result
+}
+
+// STUB: windowGeneratorCall wraps a generator call with context and timeout
+func windowGeneratorCall(
+	ctx context.Context,
+	timeout time.Duration,
+	f func() (map[MultiHopId]DestinationStats, error),
+	onTimeout func(),
+) (map[MultiHopId]DestinationStats, error) {
+	// Stub: just call f directly until context deadline handling is implemented
+	return f()
 }
 
 // --- exit category ---
