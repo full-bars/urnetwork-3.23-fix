@@ -603,6 +603,7 @@ func NewRemoteUserNatMultiClient(
 		multiClient.removeClient,
 		WindowTypeQuality,
 		settings,
+		multiClient.clientFlowCount,
 	)
 	if _, fixed := generator.FixedDestinationSize(); !fixed {
 		multiClient.windows[WindowTypeSpeed] = newMultiClientWindow(
@@ -615,6 +616,7 @@ func NewRemoteUserNatMultiClient(
 			multiClient.removeClient,
 			WindowTypeSpeed,
 			settings,
+			multiClient.clientFlowCount,
 		)
 	}
 	// else only keep the quality window for fixed destination
@@ -636,6 +638,12 @@ func (self *RemoteUserNatMultiClient) SecurityPolicyStats(reset bool) SecurityPo
 
 func (self *RemoteUserNatMultiClient) Monitor() MultiClientMonitor {
 	return self.monitor
+}
+
+func (self *RemoteUserNatMultiClient) clientFlowCount(client *multiClientChannel) int {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return len(self.clientUpdates[client])
 }
 
 func (self *RemoteUserNatMultiClient) AddContractStatusCallback(contractStatusCallback ContractStatusFunction) func() {
@@ -2382,6 +2390,11 @@ type multiClientWindow struct {
 
 	settings *MultiClientSettings
 
+	// flowCountFunc reads how many live flows the parent currently has bound
+	// to a window client (the clientUpdates bookkeeping, read under the parent
+	// stateLock). nil (bare test windows) reads as 0.
+	flowCountFunc func(*multiClientChannel) int
+
 	clientChannelArgs chan *multiClientChannelArgs
 
 	monitor *RemoteUserNatMultiClientMonitor
@@ -2420,6 +2433,7 @@ func newMultiClientWindow(
 	clientRemoveCallback func(client *multiClientChannel),
 	windowType WindowType,
 	settings *MultiClientSettings,
+	flowCountFunc func(*multiClientChannel) int,
 ) *multiClientWindow {
 	window := &multiClientWindow{
 		ctx:                         ctx,
@@ -2432,6 +2446,7 @@ func newMultiClientWindow(
 		clientRemoveCallback:        clientRemoveCallback,
 		windowType:                  windowType,
 		settings:                    settings,
+		flowCountFunc:               flowCountFunc,
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
 		monitor:                     NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
 		contractStatusCallbacks:     NewCallbackList[*contractStatusCallbackWorker](),
@@ -3270,10 +3285,14 @@ func (self *multiClientWindow) removeClients(removedClients ...*multiClientChann
 	}
 }
 
-// STUB: flowCount returns the number of active flows for a given client
+// flowCount reads the parent's live flow count for a window client. nil func
+// (a bare test window) reads as 0. Must not be called with the window
+// stateLock or any channel lock held.
 func (self *multiClientWindow) flowCount(client *multiClientChannel) int {
-	// Stub: return 0 until real flow-counting is wired
-	return 0
+	if self.flowCountFunc == nil {
+		return 0
+	}
+	return self.flowCountFunc(client)
 }
 
 // STUB: requestRankMode returns this window's rank mode string
