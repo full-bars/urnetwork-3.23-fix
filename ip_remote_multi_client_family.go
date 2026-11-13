@@ -37,6 +37,12 @@ type enumeratedDestination struct {
 	recentExit bool
 }
 
+// capabilityDiscovery holds one selector-mode discovery result.
+type capabilityDiscovery struct {
+	destinations map[MultiHopId]DestinationStats
+	selectorMode bool
+}
+
 // STUB: relEvent formats an event message with key-value pairs for logging
 func relEvent(name string, keysAndValues ...interface{}) string {
 	result := name
@@ -318,6 +324,16 @@ func (self *multiClientWindow) hasIpv6CandidateReady() bool {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return self.ipv6CandidateReady
+}
+
+// destinationsCarryIpv6 checks whether any destination in the map supports IPv6.
+func destinationsCarryIpv6(destinations map[MultiHopId]DestinationStats) bool {
+	for _, stats := range destinations {
+		if stats.IpFamily.SupportsIpv6() {
+			return true
+		}
+	}
+	return false
 }
 
 // ipv6FillFailureStarveCount is how many consecutive failed v6-capable

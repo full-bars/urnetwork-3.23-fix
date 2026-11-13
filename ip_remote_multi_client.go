@@ -125,13 +125,18 @@ type MultiClientGenerator interface {
 type MultiClientGeneratorWithCapabilities interface {
 	MultiClientGenerator
 	// NextDestinationsWithCapabilities queries for exits matching the given
-	// capability filter and returns them with their labels
+	// capability selector and returns them with their labels. The bool return
+	// is whether the server echoed selector mode (FP2-PROTOCOL.md §7.4).
 	NextDestinationsWithCapabilities(
 		count int,
 		excludeDestinations []MultiHopId,
 		rankMode string,
-		capabilities ProviderCapabilities,
-	) (map[MultiHopId]DestinationStats, error)
+		ipFamily IpFamilyFilter,
+		providerSelect FindProvidersSelect,
+	) (map[MultiHopId]DestinationStats, bool, error)
+	// SelectorMode returns whether the server is known to support selector
+	// mode and whether this is known (may be unknown until first answer).
+	SelectorMode() (selectorMode bool, known bool)
 }
 
 // STUB: MultiClientGeneratorWithIpFamily extends MultiClientGenerator with
@@ -2411,6 +2416,13 @@ type multiClientWindow struct {
 	generatorMonitor *Monitor
 	resizeMonitor    *Monitor
 
+	// requestTargetCount is the target provider count the resize pass computed
+	// (before standing reserve). Used by providerSelect for capability discovery.
+	requestTargetCount int
+	// requestDualstackTargetCount is the dualstack (IPv6-capable) provider
+	// count the resize pass requested. Used by providerSelect.
+	requestDualstackTargetCount int
+
 	// ipv6Shortfall is the v6-capable shortfall the resize pass last
 	// computed: how many requested v6-capable exits the window still lacks
 	ipv6Shortfall    int
@@ -3295,6 +3307,47 @@ func (self *multiClientWindow) flowCount(client *multiClientChannel) int {
 	return self.flowCountFunc(client)
 }
 
+// providerSelect builds the capability selection criteria for this window's
+// generator requests. Normal windows request dualstack+dualproto; limited
+// windows request ipv4+tcp only.
+func (self *multiClientWindow) providerSelect() FindProvidersSelect {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	providerSelect := FindProvidersSelect{
+		Ip:                   ProviderIpCapabilityDualstack,
+		Protocol:             ProviderProtocolCapabilityDualproto,
+		TargetCount:          max(1, self.requestTargetCount),
+		DualstackTargetCount: max(0, self.requestDualstackTargetCount),
+	}
+	if self.windowType == WindowTypeLimited {
+		providerSelect.Ip = ProviderIpCapabilityIpv4
+		providerSelect.Protocol = ProviderProtocolCapabilityTcp
+		providerSelect.DualstackTargetCount = 0
+	}
+	for _, client := range self.clients {
+		if client == nil || client.IsDone() || client.isWarning() {
+			continue
+		}
+		capabilities := client.capabilities()
+		if capabilities.Protocol == providerSelect.Protocol {
+			providerSelect.HeldCount += 1
+		}
+		if capabilities.Ip == ProviderIpCapabilityDualstack {
+			providerSelect.HeldDualstackCount += 1
+		}
+	}
+	return providerSelect
+}
+
+// admitsCapabilities checks whether a provider with the given capabilities
+// may join this window. The limited window admits only TCP providers.
+func (self *multiClientWindow) admitsCapabilities(capabilities ProviderCapabilities) bool {
+	if self.windowType != WindowTypeLimited {
+		return true
+	}
+	return capabilities.Normalize().Protocol == ProviderProtocolCapabilityTcp
+}
+
 // STUB: requestRankMode returns this window's rank mode string
 func (self *multiClientWindow) requestRankMode() string {
 	return self.windowType.RankMode()
@@ -3312,15 +3365,120 @@ func (self *multiClientWindow) enumerateRecentExits(excludeDestinations []MultiH
 	return discover(excludeDestinations)
 }
 
-// STUB: discoverDestinationsWithCapabilities queries a capability-aware generator
+// discoverDestinationsWithCapabilities queries a capability-aware generator
+// with the window's selector criteria (FP2-PROTOCOL.md §7.4).
 func (self *multiClientWindow) discoverDestinationsWithCapabilities(
 	generator MultiClientGeneratorWithCapabilities,
 	excludeDestinations []MultiHopId,
 	probeOnly bool,
 	rankMode string,
 ) ([]enumeratedDestination, error) {
-	// Stub: return empty until capability-aware discovery is implemented
-	return nil, nil
+	providerSelect := self.providerSelect()
+	call := func(count int, ipFamily IpFamilyFilter) (capabilityDiscovery, error) {
+		return windowGeneratorCall(
+			self.ctx,
+			self.settings.WindowGeneratorTimeout,
+			func() (capabilityDiscovery, error) {
+				destinations, selectorMode, err := generator.NextDestinationsWithCapabilities(
+					count,
+					excludeDestinations,
+					rankMode,
+					ipFamily,
+					providerSelect,
+				)
+				return capabilityDiscovery{
+					destinations: destinations,
+					selectorMode: selectorMode,
+				}, err
+			},
+			nil,
+		)
+	}
+	ordered := []enumeratedDestination{}
+	seen := map[MultiHopId]bool{}
+	appendAll := func(destinations map[MultiHopId]DestinationStats) {
+		for destination, stats := range destinations {
+			if seen[destination] || !self.admitsCapabilities(stats.Capabilities) {
+				continue
+			}
+			seen[destination] = true
+			ordered = append(ordered, enumeratedDestination{
+				destination: destination,
+				stats:       stats,
+			})
+		}
+		if providerSelect.HeldDualstackCount < providerSelect.DualstackTargetCount {
+			// Keep v6-capable candidates ahead of IPv4 fill before bounded
+			// evaluation consumes the whole pass budget.
+			slices.SortStableFunc(ordered, func(a enumeratedDestination, b enumeratedDestination) int {
+				if a.stats.IpFamily.SupportsIpv6() == b.stats.IpFamily.SupportsIpv6() {
+					return 0
+				}
+				if a.stats.IpFamily.SupportsIpv6() {
+					return -1
+				}
+				return 1
+			})
+		}
+	}
+
+	if self.windowType == WindowTypeLimited {
+		if probeOnly {
+			return ordered, nil
+		}
+		answer, err := call(self.settings.WindowExpandBlockCount, IpFamilyFilterV4Capable)
+		if err != nil {
+			return nil, err
+		}
+		appendAll(answer.destinations)
+		return ordered, nil
+	}
+
+	now := time.Now()
+	wanted := self.ipv6FillWanted(now)
+	ipv6Fill := func() error {
+		answer, err := call(wanted, IpFamilyFilterV6Capable)
+		if err != nil {
+			return err
+		}
+		if len(answer.destinations) == 0 {
+			self.noteIpv6Starved(now)
+		} else {
+			appendAll(answer.destinations)
+		}
+		return nil
+	}
+	if probeOnly {
+		if 0 < wanted {
+			if err := ipv6Fill(); err != nil {
+				return nil, err
+			}
+		}
+		return ordered, nil
+	}
+	selectorMode, known := generator.SelectorMode()
+	legacyServer := known && !selectorMode
+	if 0 < wanted && legacyServer {
+		if err := ipv6Fill(); err != nil {
+			return nil, err
+		}
+	}
+	answer, err := call(self.settings.WindowExpandBlockCount, IpFamilyFilterV4Capable)
+	if err != nil {
+		return nil, err
+	}
+	appendAll(answer.destinations)
+	if 0 < wanted && !legacyServer {
+		if !answer.selectorMode {
+			// the answer that first shows a server without selector mode
+			if err := ipv6Fill(); err != nil {
+				return nil, err
+			}
+		} else if !destinationsCarryIpv6(answer.destinations) {
+			self.noteIpv6Starved(now)
+		}
+	}
+	return ordered, nil
 }
 
 type multiClientChannelArgs struct {
