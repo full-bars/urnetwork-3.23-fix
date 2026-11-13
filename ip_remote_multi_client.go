@@ -3008,17 +3008,22 @@ func (self *multiClientWindow) resize() {
 			}
 		}
 
+		// the hard minimum treats a window of only v6-only exits as empty, so
+		// expansion keeps looking for a v4-capable exit. A healthy v6-only exit
+		// still holds its slot, and WindowSizeHardMax still bounds the window.
+		hardCount := hardMinimumCount(clients, fixedDestination)
+
 		addedCount := 0
 		if len(clients) < targetWindowSize && !isBackendDegraded() {
 			// expand
 			n := targetWindowSize - len(clients)
 			self.monitor.AddWindowExpandEvent(
-				windowSizeMin <= len(clients),
+				windowSizeMin <= hardCount,
 				targetWindowSize+len(warnedClients),
 			)
 			addedCount = self.expand(
 				windowSize,
-				len(clients),
+				hardCount,
 				p2pOnlyWindowSize,
 				targetWindowSize,
 				windowSizeMin,
@@ -3028,14 +3033,14 @@ func (self *multiClientWindow) resize() {
 		}
 		if 0 < windowSize.WindowSizeHardMax && windowSize.WindowSizeHardMax < len(clients)+len(warnedClients)+addedCount {
 			self.monitor.AddWindowExpandEvent(
-				windowSizeMin <= len(clients)+addedCount,
+				windowSizeMin <= hardCount+addedCount,
 				windowSize.WindowSizeHardMax,
 			)
 			collapseLowestWeighted(max(0, windowSize.WindowSizeHardMax-addedCount))
 			self.log.V(1).Infof("[multi]window collapse -%d ->%d\n", (len(clients)+len(warnedClients)+addedCount)-windowSize.WindowSizeHardMax, windowSize.WindowSizeHardMax)
 		} else {
 			self.monitor.AddWindowExpandEvent(
-				windowSizeMin <= len(clients)+addedCount,
+				windowSizeMin <= hardCount+addedCount,
 				len(clients)+len(warnedClients)+addedCount,
 			)
 		}
