@@ -24,14 +24,9 @@ var bsdServiceRunFn = func(name string, args ...string) ([]byte, error) {
 // openbsdRcctl runs `rcctl <args...>`, escalating through doas or sudo when the
 // caller is not root, and returns the command output.
 func openbsdRcctl(args ...string) ([]byte, error) {
-	doas, doasErr := exec.LookPath("doas")
+	_, doasErr := exec.LookPath("doas")
 	_, sudoErr := exec.LookPath("sudo")
-	permitted := false
-	if os.Geteuid() != 0 && doasErr == nil {
-		checkArgs := append([]string{"-C", "/etc/doas.conf", "rcctl"}, args...)
-		permitted = exec.Command(doas, checkArgs...).Run() == nil
-	}
-	name, argv, err := openbsdRcctlArgv(os.Geteuid(), permitted, sudoErr == nil, args...)
+	name, argv, err := openbsdRcctlArgv(os.Geteuid(), doasErr == nil, sudoErr == nil, args...)
 	if err != nil {
 		return nil, err
 	}

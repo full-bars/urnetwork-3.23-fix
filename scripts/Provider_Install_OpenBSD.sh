@@ -313,8 +313,20 @@ service_user="$(resolve_service_user)"
 if [ -f "$rc_script" ]; then
     service_user="$(awk -F'"' '/^[[:space:]]*daemon_user="[^"]+"[[:space:]]*$/ {print $2; exit}' "$rc_script")"
     if [ -z "$service_user" ] || ! id -u "$service_user" >/dev/null 2>&1; then
-        pr_err "Cannot determine a valid daemon_user from %s" "$rc_script"
-        exit 1
+        repair_operation=""
+        for arg in "$@"; do
+            case "$arg" in
+                -f|--force) continue ;;
+                *) repair_operation="$arg"; break ;;
+            esac
+        done
+        if [ "$repair_operation" = "install-service" ] && [ -n "${SERVICE_USER_OVERRIDE:-}" ] &&
+            repair_uid="$(id -u "$SERVICE_USER_OVERRIDE" 2>/dev/null)" && [ "$repair_uid" != "0" ]; then
+            service_user="$SERVICE_USER_OVERRIDE"
+        else
+            pr_err "Cannot determine a valid daemon_user from %s" "$rc_script"
+            exit 1
+        fi
     fi
 fi
 service_home="$(user_home "$service_user")"
@@ -1069,14 +1081,7 @@ do_install_service() {
     # Running the provider as root because a bootstrap was run with sudo, or
     # because the box was logged into as root, would be a privilege
     # escalation the operator never asked for: refuse and say what to do.
-    service_user="$(resolve_service_user)"
-    if [ -f "$rc_script" ]; then
-        service_user="$(awk -F'"' '/^[[:space:]]*daemon_user="[^"]+"[[:space:]]*$/ {print $2; exit}' "$rc_script")"
-        if [ -z "$service_user" ] || ! id -u "$service_user" >/dev/null 2>&1; then
-            pr_err "Cannot determine a valid daemon_user from %s" "$rc_script"
-            exit 1
-        fi
-    fi
+    # service_user was resolved and, for an existing script, validated above.
     service_home="$(user_home "$service_user")"
     state_dir="$service_home/.urnetwork"
     if [ "$service_user" = "root" ]; then

@@ -57,12 +57,12 @@ func shellQuote(s string) string {
 // its own name from the service instead, matching how the Linux timer name is
 // derived from the provider unit rather than from the label.
 func setAutoUpdateSchedule(p Provider, label, interval string) error {
+	if interval == "off" {
+		return removeBSDUpdateCron(p)
+	}
 	euid := os.Geteuid()
 	if euid != 0 && bsdTreeOwnedByRoot(p.Binary) {
 		return fmt.Errorf("auto-update for %s must be scheduled as root: %s is in the root-owned install tree, so an unprivileged cron job cannot replace it (run: sudo urnet-tools auto-update %s)", providerLabel(p), p.Binary, interval)
-	}
-	if interval == "off" {
-		return removeBSDUpdateCron(p)
 	}
 	tool, logDir, err := bsdScheduledUpdate(euid, bsdStagedToolIsRootOwned(), toolExePath(), bsdLogDir())
 	if err != nil {
