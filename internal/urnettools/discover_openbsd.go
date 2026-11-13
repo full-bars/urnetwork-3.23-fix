@@ -142,6 +142,9 @@ func parseOpenBSDRcDaemonUser(script string) string {
 // the rc.d-managed one, the binary passes the root-ownership checks, and the
 // script names a real service user that owns a non-symlink state directory.
 func discoverStopped(running []Provider) []Provider {
+	if openbsdServicePID() != 0 {
+		return nil
+	}
 	for _, r := range running {
 		if r.Supervisor == "openbsd-rcd" {
 			return nil

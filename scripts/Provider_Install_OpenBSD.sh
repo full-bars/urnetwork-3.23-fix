@@ -1328,7 +1328,8 @@ do_session() {
 do_proxy() {
     require_tool
     case "${1:-}" in
-        refresh|remove-dead|summary) "$tool_bin" proxy "$@" ;;
+        summary) shift; "$tool_bin" summary "$@" ;;
+        refresh|remove-dead) "$tool_bin" proxy "$@" ;;
         *) pr_err "Usage: urnet-tools proxy <refresh|remove-dead|summary>"; exit 1 ;;
     esac
 }

@@ -42,6 +42,27 @@ pr_warn() { :; }
 	}
 }
 
+func TestOpenBSDProxyDispatch(t *testing.T) {
+	skipWithoutPOSIXShell(t)
+	data, err := os.ReadFile("../../scripts/Provider_Install_OpenBSD.sh")
+	if err != nil {
+		t.Fatal(err)
+	}
+	fn := extractShellFunc(t, string(data), "do_proxy")
+	for _, tc := range []struct{ input, want string }{
+		{"summary --user alice", "summary --user alice"},
+		{"refresh --user alice", "proxy refresh --user alice"},
+		{"remove-dead", "proxy remove-dead"},
+	} {
+		cmd := exec.Command("/bin/sh", "-c", "require_tool() { :; }; tool() { printf '<%s>' \"$@\"; }; tool_bin=tool; "+fn+"\ndo_proxy "+tc.input)
+		out, err := cmd.CombinedOutput()
+		want := "<" + strings.ReplaceAll(tc.want, " ", "><") + ">"
+		if err != nil || strings.TrimSpace(string(out)) != want {
+			t.Fatalf("%s: got %q, %v", tc.input, out, err)
+		}
+	}
+}
+
 func TestOpenBSDInstallServicePreservesAccount(t *testing.T) {
 	skipWithoutPOSIXShell(t)
 	data, err := os.ReadFile("../../scripts/Provider_Install_OpenBSD.sh")
