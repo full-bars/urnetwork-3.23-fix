@@ -663,8 +663,10 @@ func NewRemoteUserNatMultiClient(
 	multiClient.localUserNatUnsub = localUserNat.AddReceivePacketCallback(receivePacketCallback)
 
 	monitors := []MultiClientMonitor{}
-	for _, window := range multiClient.windows {
-		monitors = append(monitors, window.monitor)
+	for windowType, window := range multiClient.windows {
+		if windowType != WindowTypeLimited {
+			monitors = append(monitors, window.monitor)
+		}
 	}
 	multiClient.monitor = NewMergedMultiClientMonitor(monitors)
 
@@ -2483,6 +2485,7 @@ func newMultiClientWindow(
 		ingressSecurityPolicy:       ingressSecurityPolicy,
 		clientRemoveCallback:        clientRemoveCallback,
 		windowType:                  windowType,
+		performanceProfile:          settings.DefaultPerformanceProfile,
 		settings:                    settings,
 		flowCountFunc:               flowCountFunc,
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
@@ -2577,6 +2580,19 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 
 	for {
 		generatorNotify := self.generatorMonitor.NotifyChannel()
+		if self.windowType == WindowTypeLimited {
+			self.stateLock.Lock()
+			held := self.requestTargetCount <= 0
+			self.stateLock.Unlock()
+			if held {
+				select {
+				case <-self.ctx.Done():
+					return
+				case <-generatorNotify:
+					continue
+				}
+			}
+		}
 
 		// exclude healthy destinations that are already in the window
 		windowDestinations := func() map[MultiHopId]bool {
@@ -2927,7 +2943,13 @@ func (self *multiClientWindow) resize() {
 			})
 		}
 		// what this window's find-providers2 requests carry
+		self.stateLock.Lock()
+		previousTarget := self.requestTargetCount
+		self.stateLock.Unlock()
 		self.setRequestSizing(targetWindowSize, dualstackTargetCount)
+		if self.windowType == WindowTypeLimited && previousTarget > 0 && targetWindowSize <= 0 {
+			self.shuffle()
+		}
 
 		// at capacity a v6-capable candidate can only enter by taking the slot
 		// of an exit that cannot carry v6 (see selectFamilySwapVictim). The
@@ -3510,6 +3532,11 @@ func (self *multiClientWindow) discoverDestinationsWithCapabilities(
 					ipFamily,
 					providerSelect,
 				)
+				if err == nil {
+					if hooks := self.limitedHooks.Load(); hooks != nil {
+						hooks.wake()
+					}
+				}
 				return capabilityDiscovery{
 					destinations: destinations,
 					selectorMode: selectorMode,
