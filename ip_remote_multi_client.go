@@ -209,7 +209,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		// WindowMaxScale:              4.0,
 		// WindowExpandMaxOvershotScale: 2.0,
 		// WindowRevisitTimeout:      2 * time.Minute,
-		WindowExpandArgsTimeout:   2 * time.Minute,
+		WindowExpandArgsTimeout: 2 * time.Minute,
 		// STUB: default generator deadline
 		WindowGeneratorTimeout:    15 * time.Second,
 		StatsWindowDuration:       30 * time.Second,
@@ -296,7 +296,7 @@ type MultiClientSettings struct {
 	// WindowMaxScale              float64
 	// WindowExpandMaxOvershotScale float64
 	// WindowRevisitTimeout      time.Duration
-	WindowExpandArgsTimeout   time.Duration
+	WindowExpandArgsTimeout time.Duration
 	// STUB: WindowGeneratorTimeout is the deadline for each NextDestinations call
 	WindowGeneratorTimeout    time.Duration
 	StatsWindowDuration       time.Duration
@@ -497,6 +497,8 @@ type RemoteUserNatMultiClient struct {
 
 	windows map[WindowType]*multiClientWindow
 	monitor MultiClientMonitor
+
+	noCompatibleStats WindowClientStats
 
 	securityPolicyStats   *SecurityPolicyStatsCollector
 	securityPolicy        SecurityPolicy
@@ -2183,15 +2185,9 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 	})
 }
 
-// STUB: noopWindowStats is a stub stats collector
-type noopWindowStats struct{}
-
-func (s *noopWindowStats) addNoCompatible(*IpPath) {}
-
-// STUB: windowClientStats returns the stats collector for this multi-client
-func (self *RemoteUserNatMultiClient) windowClientStats() interface{ addNoCompatible(*IpPath) } {
-	// Stub: return a no-op stats collector
-	return &noopWindowStats{}
+// The counters of flows no window could place.
+func (self *RemoteUserNatMultiClient) windowClientStats() *WindowClientStats {
+	return &self.noCompatibleStats
 }
 
 // STUB: deliverReceivePacket delivers a packet on the receive path
@@ -2386,6 +2382,9 @@ type multiClientWindow struct {
 	cancel context.CancelFunc
 	log    Logger
 
+	// the exit a sticky window lost, asked for again ahead of discovery
+	stickyRedial stickyRedial
+
 	generator                   MultiClientGenerator
 	clientReceivePacketCallback clientReceivePacketFunction
 	dialFailureCallback         dialFailureFunction
@@ -2528,6 +2527,7 @@ func (self *multiClientWindow) SetPerformanceProfile(performanceProfile *Perform
 	defer self.stateLock.Unlock()
 
 	self.performanceProfile = performanceProfile
+	self.stickyRedial.Forget()
 }
 
 func (self *multiClientWindow) randomEnumerateClientArgs() {
@@ -3133,6 +3133,7 @@ func (self *multiClientWindow) expand(
 }
 
 func (self *multiClientWindow) shuffle() {
+	self.stickyRedial.Forget()
 	for _, client := range self.unorderedClients() {
 		client.Cancel()
 	}
@@ -3351,12 +3352,6 @@ func (self *multiClientWindow) admitsCapabilities(capabilities ProviderCapabilit
 // STUB: requestRankMode returns this window's rank mode string
 func (self *multiClientWindow) requestRankMode() string {
 	return self.windowType.RankMode()
-}
-
-// STUB: enumerateStickyRedial returns one sticky destination to redial if available
-func (self *multiClientWindow) enumerateStickyRedial(excludeDestinations []MultiHopId, rankMode string) (enumeratedDestination, bool, error) {
-	// Stub: return false until sticky-redial logic is implemented
-	return enumeratedDestination{}, false, nil
 }
 
 // STUB: enumerateRecentExits returns recently-lost exits alongside discovery results
