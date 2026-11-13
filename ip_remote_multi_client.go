@@ -2664,16 +2664,20 @@ func (self *multiClientWindow) resize() {
 
 		var windowSize WindowSizeSettings
 		var fixedWindowType *WindowType
-		func() {
-			self.stateLock.Lock()
-			defer self.stateLock.Unlock()
-			if profileWindowType, profileWindowSize, ok := self.performanceProfile.FixedWindow(); ok {
-				fixedWindowType = &profileWindowType
-				windowSize = profileWindowSize
-			} else {
-				windowSize = self.settings.WindowSizes[self.windowType]
-			}
-		}()
+		if self.windowType == WindowTypeLimited {
+			windowSize = self.limitedWindowSize()
+		} else {
+			func() {
+				self.stateLock.Lock()
+				defer self.stateLock.Unlock()
+				if profileWindowType, profileWindowSize, ok := self.performanceProfile.FixedWindow(); ok {
+					fixedWindowType = &profileWindowType
+					windowSize = profileWindowSize
+				} else {
+					windowSize = self.settings.WindowSizes[self.windowType]
+				}
+			}()
+		}
 
 		startTime := time.Now()
 
