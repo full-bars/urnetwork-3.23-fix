@@ -43,17 +43,6 @@ type capabilityDiscovery struct {
 	selectorMode bool
 }
 
-// STUB: relEvent formats an event message with key-value pairs for logging
-func relEvent(name string, keysAndValues ...interface{}) string {
-	result := name
-	for i := 0; i < len(keysAndValues); i += 2 {
-		if i+1 < len(keysAndValues) {
-			result += fmt.Sprintf(" %v=%v", keysAndValues[i], keysAndValues[i+1])
-		}
-	}
-	return result
-}
-
 // generatorCallResult holds the value and error from a generator call.
 type generatorCallResult[T any] struct {
 	value T
