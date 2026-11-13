@@ -182,18 +182,18 @@ func TestMultiClientDialFailureReraceOffForwardsTheSignal(t *testing.T) {
 func TestMultiClientChannelDialStarvedWindow(t *testing.T) {
 	channel := &multiClientChannel{}
 
-	channel.addDialFailure("203.0.113.7")
-	channel.addDialFailure("203.0.113.7")
+	channel.addDialFailure("203.0.113.7", 4)
+	channel.addDialFailure("203.0.113.7", 4)
 	if channel.dialStarved() {
 		t.Fatal("two failures must not count as starved")
 	}
 	// three failures spanning two distinct destinations with no successes
-	channel.addDialFailure("203.0.113.8")
+	channel.addDialFailure("203.0.113.8", 4)
 	if !channel.dialStarved() {
 		t.Fatal("three failures across two destinations with no successes must count as starved")
 	}
 	// one proven connect in the window clears it
-	channel.addConnectSuccess()
+	channel.addConnectSuccess(4)
 	if channel.dialStarved() {
 		t.Fatal("a proven connect must clear starvation")
 	}
@@ -220,14 +220,14 @@ func TestMultiClientChannelDialStarvedRequiresDistinctDestinations(t *testing.T)
 	channel := &multiClientChannel{}
 
 	for i := 0; i < 4; i++ {
-		channel.addDialFailure("203.0.113.7")
+		channel.addDialFailure("203.0.113.7", 4)
 	}
 	if channel.dialStarved() {
 		t.Fatal("one destination's repeated failures must not starve-warn the exit")
 	}
 
 	// a second destination makes the strikes evidence about the exit
-	channel.addDialFailure("198.51.100.9")
+	channel.addDialFailure("198.51.100.9", 4)
 	if !channel.dialStarved() {
 		t.Fatal("strikes spanning two destinations with no successes must count as starved")
 	}

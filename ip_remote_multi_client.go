@@ -1942,7 +1942,7 @@ func (self *RemoteUserNatMultiClient) clientReceivePacket(
 	// channel; it resets the dial-strike window. Recorded outside every lock
 	// held above.
 	if connectSucceeded {
-		sourceClient.addConnectSuccess()
+		sourceClient.addConnectSuccess(ipPath.Version)
 	}
 	if 0 < len(abandonedClients) {
 		if rstPacket, ok := ipOosRst(ipPath); ok {
@@ -2042,7 +2042,7 @@ func (self *RemoteUserNatMultiClient) clientDialFailure(sourceClient *multiClien
 	// path must not starve-warn the exit by itself. net.IP.String() on a nil
 	// ip yields a stable "<nil>" key, so a pathological signal still records
 	// safely rather than panicking.
-	sourceClient.addDialFailure(egressIpPath.DestinationIp.String())
+	sourceClient.addDialFailure(egressIpPath.DestinationIp.String(), egressIpPath.Version)
 
 	if rerace {
 		self.flowReraced()
@@ -2161,7 +2161,7 @@ func (self *RemoteUserNatMultiClient) scheduleCompleteRace(
 			// else the client is on a new race
 		})
 		if connectSucceeded {
-			connectSucceededClient.addConnectSuccess()
+			connectSucceededClient.addConnectSuccess(ipPath.Version)
 		}
 		if 0 < len(abandonedClients) {
 			if rstPacket, ok := ipOosRst(ipPath); ok {
@@ -2752,6 +2752,12 @@ func (self *multiClientWindow) resize() {
 						printStats("client drain")
 						client.setWarning(remove)
 						warnClient(client, stats)
+					} else if client.isFamilySwapVictim() {
+						// chosen to give up its slot to a v6-capable candidate:
+						// the mark persists so the warning survives every pass
+						printStats("client family swap")
+						client.setWarning(true)
+						warnClient(client, stats)
 					} else {
 						printStats("client ok")
 						windowSizeUlimit := self.settings.DefaultUlimit
@@ -2897,6 +2903,36 @@ func (self *multiClientWindow) resize() {
 
 		// what this window's find-providers2 requests carry
 		self.setRequestSizing(targetWindowSize, dualstackTargetCount)
+
+		// at capacity a v6-capable candidate can only enter by taking the slot
+		// of an exit that cannot carry v6 (see selectFamilySwapVictim). The
+		// swap is an expansion by another name, so it waits out a degraded
+		// backend like expand does. This fork has no strict hard max, so the
+		// candidate is admitted one over target and the victim is shed later.
+		withinCeiling := windowSize.WindowSizeHardMax <= 0 ||
+			len(clients)+len(warnedClients) <= windowSize.WindowSizeHardMax
+		if !isBackendDegraded() && 0 < ipv6Shortfall && targetWindowSize <= len(clients) &&
+			!self.ipv6Starved(startTime) && !self.hasFamilySwapVictim() {
+			victim, flowless := self.selectFamilySwapVictim(clients, weights)
+			if victim != nil && !self.hasIpv6CandidateReady() {
+				// ask before giving anything up
+				self.requestIpv6Probe()
+			} else if victim != nil {
+				targetWindowSize = len(clients) + 1
+				if !flowless {
+					// a loaded victim is drain-warned: new flows avoid it
+					victim.markFamilySwapVictim()
+					victim.setWarning(true)
+					clients = slices.DeleteFunc(clients, func(c *multiClientChannel) bool { return c == victim })
+					warnedClients = append(warnedClients, victim)
+				}
+			}
+		} else if ipv6Shortfall == 0 && withinCeiling && self.hasFamilySwapVictim() {
+			// the shortfall closed: a draining victim returns to service
+			for _, client := range warnedClients {
+				client.clearFamilySwapVictim()
+			}
+		}
 
 		addedCount := 0
 		if len(clients) < targetWindowSize && !isBackendDegraded() {
@@ -3728,6 +3764,9 @@ type multiClientChannel struct {
 	// dialStarvedMinDestinations). Kept entry-aligned by
 	// pruneDialStrikesWithLock.
 	dialFailureDestinations []string
+	// dialFailureVersions runs parallel to dialFailureTimes: the ip version of
+	// each failed dial. Kept entry-aligned by pruneDialStrikesWithLock.
+	dialFailureVersions []int
 
 	// Marks an exit the resize pass chose to give up its slot to a
 	// v6-capable candidate (selectFamilySwapVictim). Atomic: read
@@ -3917,13 +3956,14 @@ func (self *multiClientChannel) pruneDialStrikesWithLock(horizon time.Time) {
 	if 0 < i {
 		self.dialFailureTimes = self.dialFailureTimes[i:]
 		self.dialFailureDestinations = self.dialFailureDestinations[min(i, len(self.dialFailureDestinations)):]
+		self.dialFailureVersions = self.dialFailureVersions[min(i, len(self.dialFailureVersions)):]
 	}
 }
 
 // addDialFailure records one intercepted dial failure for this channel,
 // alongside the destination ip the failed dial was for (see
 // dialFailureDestinations for why the destination matters).
-func (self *multiClientChannel) addDialFailure(destination string) {
+func (self *multiClientChannel) addDialFailure(destination string, ipVersion int) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
@@ -3931,12 +3971,13 @@ func (self *multiClientChannel) addDialFailure(destination string) {
 	self.pruneDialStrikesWithLock(now.Add(-dialStrikeWindow))
 	self.dialFailureTimes = append(self.dialFailureTimes, now)
 	self.dialFailureDestinations = append(self.dialFailureDestinations, destination)
+	self.dialFailureVersions = append(self.dialFailureVersions, ipVersion)
 }
 
 // addConnectSuccess records one proven upstream connect for this channel (a
 // flow that received its first inbound data). A single success in the window
 // clears dialStarved.
-func (self *multiClientChannel) addConnectSuccess() {
+func (self *multiClientChannel) addConnectSuccess(ipVersion int) {
 	// once per channel: how long it took to become usable, and which window it
 	// serves. One compare-and-swap, so the per-packet path is untouched.
 	if self.firstConnectAt.CompareAndSwap(0, time.Now().UnixNano()) {
@@ -3964,6 +4005,7 @@ func (self *multiClientChannel) addConnectSuccess() {
 	now := time.Now()
 	self.pruneConnectSuccessesWithLock(now.Add(-dialStrikeWindow))
 	self.connectSuccessTimes = append(self.connectSuccessTimes, now)
+	self.connectSuccessVersions = append(self.connectSuccessVersions, ipVersion)
 }
 
 // dialStarved reports whether this channel's upstream is refusing work: at

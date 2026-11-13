@@ -154,3 +154,23 @@ func TestRequestRankMode(t *testing.T) {
 	assert.Equal(t, limited.requestTargetCount, 5)
 	assert.Equal(t, limited.requestDualstackTargetCount, 2)
 }
+
+func TestAddStrikesRecordIpVersionsInStep(t *testing.T) {
+	channel := &multiClientChannel{}
+	channel.addConnectSuccess(4)
+	channel.addConnectSuccess(6)
+	channel.addDialFailure("2001:db8::1", 6)
+	channel.addDialFailure("203.0.113.7", 4)
+	assert.Equal(t, channel.connectSuccessVersions, []int{4, 6})
+	assert.Equal(t, channel.dialFailureVersions, []int{6, 4})
+	assert.Equal(t, len(channel.dialFailureTimes), 2)
+}
+
+func TestFamilySwapVictimMarkAndClear(t *testing.T) {
+	channel := &multiClientChannel{}
+	assert.Equal(t, channel.isFamilySwapVictim(), false)
+	channel.markFamilySwapVictim()
+	assert.Equal(t, channel.isFamilySwapVictim(), true)
+	channel.clearFamilySwapVictim()
+	assert.Equal(t, channel.isFamilySwapVictim(), false)
+}
