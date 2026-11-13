@@ -2832,15 +2832,32 @@ func (self *multiClientWindow) resize() {
 		}
 
 		p2pOnlyWindowSize := 0
+		ipv6CapableCount := 0
 		for _, client := range clients {
 			if client.IsP2pOnly() {
 				p2pOnlyWindowSize += 1
 			}
+			if client.IpFamily().SupportsIpv6() {
+				ipv6CapableCount += 1
+			}
 		}
+		fixedDestinationSize, fixedDestination := self.generator.FixedDestinationSize()
+		inactive := !fixedDestination && fixedWindowType != nil && self.windowType != *fixedWindowType
+		dualstackTargetCount := requestDualstackTargetCount(self.windowType, fixedWindowType, windowSize)
+		if fixedDestination || inactive {
+			dualstackTargetCount = 0
+		}
+		ipv6Shortfall := ipv6CapableShortfall(
+			dualstackTargetCount,
+			fixedDestination,
+			inactive,
+			ipv6CapableCount,
+		)
+		self.setIpv6Shortfall(ipv6Shortfall)
 
 		var windowSizeMin int
 		var targetWindowSize int
-		if fixedDestinationSize, fixed := self.generator.FixedDestinationSize(); fixed {
+		if fixedDestination {
 			targetWindowSize = fixedDestinationSize
 			windowSizeMin = targetWindowSize
 		} else if 0 < windowSize.FixedWindowSize {
@@ -2862,6 +2879,11 @@ func (self *multiClientWindow) resize() {
 			if n := windowSize.WindowSizeMinP2pOnly - p2pOnlyWindowSize; 0 < n {
 				targetWindowSize += n
 			}
+			// the soft v6-capable minimum raises the target by its shortfall
+			// like the p2p-only minimum above, bounded by WindowSizeMax below
+			if 0 < ipv6Shortfall {
+				targetWindowSize += ipv6Shortfall
+			}
 
 			targetWindowSize = min(
 				windowSize.WindowSizeMax,
@@ -2872,6 +2894,9 @@ func (self *multiClientWindow) resize() {
 			)
 			windowSizeMin = windowSize.WindowSizeMin
 		}
+
+		// what this window's find-providers2 requests carry
+		self.setRequestSizing(targetWindowSize, dualstackTargetCount)
 
 		addedCount := 0
 		if len(clients) < targetWindowSize && !isBackendDegraded() {
@@ -3351,9 +3376,50 @@ func (self *multiClientWindow) admitsCapabilities(capabilities ProviderCapabilit
 	return capabilities.Normalize().Protocol == ProviderProtocolCapabilityTcp
 }
 
-// STUB: requestRankMode returns this window's rank mode string
+// limitedWindowRankMode is the rank mode the limited window asks with: the
+// performance profile's window type, quality in auto.
+func limitedWindowRankMode(performanceProfile *PerformanceProfile) string {
+	if windowType, _, ok := performanceProfile.FixedWindow(); ok {
+		return windowType.RankMode()
+	}
+	return WindowTypeQuality.RankMode()
+}
+
+// requestRankMode is the rank mode this window's find-providers2 requests
+// carry: a normal window's own, and the profile's for the limited window, read
+// when each request is built.
 func (self *multiClientWindow) requestRankMode() string {
-	return self.windowType.RankMode()
+	if self.windowType != WindowTypeLimited {
+		return self.windowType.RankMode()
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return limitedWindowRankMode(self.performanceProfile)
+}
+
+// requestDualstackTargetCount is the ipv6 minimum a window's requests carry:
+// its WindowSizeMinIpv6Capable, but at least 1 for the window an ipv6 flow
+// depends on (the quality window in auto, the profile's window when it fixes
+// one). The limited window has no ipv6 need.
+func requestDualstackTargetCount(windowType WindowType, fixedWindowType *WindowType, windowSize WindowSizeSettings) int {
+	if windowType == WindowTypeLimited {
+		return 0
+	}
+	dualstackTargetCount := max(0, windowSize.WindowSizeMinIpv6Capable)
+	if (fixedWindowType == nil && windowType == WindowTypeQuality) ||
+		(fixedWindowType != nil && *fixedWindowType == windowType) {
+		dualstackTargetCount = max(1, dualstackTargetCount)
+	}
+	return dualstackTargetCount
+}
+
+// setRequestSizing sets what this window's requests carry from its resize
+// pass. Must be called with no lock held.
+func (self *multiClientWindow) setRequestSizing(targetCount int, dualstackTargetCount int) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	self.requestTargetCount = targetCount
+	self.requestDualstackTargetCount = dualstackTargetCount
 }
 
 // STUB: enumerateRecentExits returns recently-lost exits alongside discovery results
@@ -3651,9 +3717,9 @@ type multiClientChannel struct {
 	// established flows.
 	dialFailureTimes    []time.Time
 	connectSuccessTimes []time.Time
-	// STUB: connectSuccessVersions runs parallel to connectSuccessTimes:
-	// the upstream version that each successful connect proved (from capability
-	// discovery). Kept entry-aligned by pruneDialStrikesWithLock.
+	// connectSuccessVersions runs parallel to connectSuccessTimes: the ip
+	// version each successful connect proved. Pruned with the same prefix cut
+	// by pruneConnectSuccessesWithLock.
 	connectSuccessVersions []int
 	// dialFailureDestinations runs parallel to dialFailureTimes: the
 	// destination ip each failed dial was for. A single retransmitting
@@ -3896,7 +3962,8 @@ func (self *multiClientChannel) addConnectSuccess() {
 	defer self.stateLock.Unlock()
 
 	now := time.Now()
-	self.connectSuccessTimes = append(pruneStrikeTimes(self.connectSuccessTimes, now.Add(-dialStrikeWindow)), now)
+	self.pruneConnectSuccessesWithLock(now.Add(-dialStrikeWindow))
+	self.connectSuccessTimes = append(self.connectSuccessTimes, now)
 }
 
 // dialStarved reports whether this channel's upstream is refusing work: at
@@ -3912,7 +3979,7 @@ func (self *multiClientChannel) dialStarved() bool {
 
 	horizon := time.Now().Add(-dialStrikeWindow)
 	self.pruneDialStrikesWithLock(horizon)
-	self.connectSuccessTimes = pruneStrikeTimes(self.connectSuccessTimes, horizon)
+	self.pruneConnectSuccessesWithLock(horizon)
 	if len(self.dialFailureTimes) < dialStarvedFailureThreshold || 0 < len(self.connectSuccessTimes) {
 		return false
 	}

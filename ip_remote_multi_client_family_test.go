@@ -106,3 +106,51 @@ func TestReplyIpv6NoRouteDeliversPacket(t *testing.T) {
 	assert.Equal(t, gotPath == ipPath, true)
 	assert.Equal(t, multiClient.Ipv6NoRouteCount(), uint64(1))
 }
+
+func TestPruneConnectSuccessesCutsVersionsInStep(t *testing.T) {
+	now := time.Now()
+	channel := &multiClientChannel{
+		connectSuccessTimes:    []time.Time{now.Add(-3 * time.Minute), now.Add(-2 * time.Minute), now},
+		connectSuccessVersions: []int{4, 6, 4},
+	}
+	channel.pruneConnectSuccessesWithLock(now.Add(-time.Minute))
+	assert.Equal(t, len(channel.connectSuccessTimes), 1)
+	assert.Equal(t, channel.connectSuccessVersions, []int{4})
+}
+
+func TestPruneConnectSuccessesClampsShortVersions(t *testing.T) {
+	now := time.Now()
+	channel := &multiClientChannel{
+		connectSuccessTimes: []time.Time{now.Add(-3 * time.Minute), now},
+	}
+	channel.pruneConnectSuccessesWithLock(now.Add(-time.Minute))
+	assert.Equal(t, len(channel.connectSuccessTimes), 1)
+	assert.Equal(t, len(channel.connectSuccessVersions), 0)
+}
+
+func TestRequestDualstackTargetCount(t *testing.T) {
+	quality := WindowTypeQuality
+	speed := WindowTypeSpeed
+	size := WindowSizeSettings{WindowSizeMinIpv6Capable: 0}
+	// auto: only the quality window needs one
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeQuality, nil, size), 1)
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeSpeed, nil, size), 0)
+	// fixed profile: only its window needs one
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeSpeed, &speed, size), 1)
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeQuality, &speed, size), 0)
+	// the setting wins when larger
+	size.WindowSizeMinIpv6Capable = 3
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeSpeed, &quality, size), 3)
+	// the limited window has no ipv6 need
+	assert.Equal(t, requestDualstackTargetCount(WindowTypeLimited, nil, size), 0)
+}
+
+func TestRequestRankMode(t *testing.T) {
+	window := &multiClientWindow{windowType: WindowTypeSpeed}
+	assert.Equal(t, window.requestRankMode(), "speed")
+	limited := &multiClientWindow{windowType: WindowTypeLimited}
+	assert.Equal(t, limited.requestRankMode(), "quality")
+	limited.setRequestSizing(5, 2)
+	assert.Equal(t, limited.requestTargetCount, 5)
+	assert.Equal(t, limited.requestDualstackTargetCount, 2)
+}
