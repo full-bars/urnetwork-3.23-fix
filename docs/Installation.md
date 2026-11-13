@@ -38,6 +38,8 @@ Windows has no `sh`, so a normal PowerShell window uses that installer directly:
 irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
 
+Linux releases support amd64, arm64 and 32-bit ARMv7 (armv7l). ARMv6 is not supported.
+
 Linux on its own, systemd or OpenRC:
 
 ```bash

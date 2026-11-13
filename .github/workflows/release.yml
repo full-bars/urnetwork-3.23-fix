@@ -14,6 +14,11 @@ jobs:
       matrix:
         goos: [linux, darwin, windows, freebsd, openbsd]
         goarch: [amd64, arm64]
+        include:
+          - goos: linux
+            goarch: arm
+    env:
+      GOARM: '7,softfloat'
     steps:
       - name: Checkout code
         uses: actions/checkout@v6
@@ -175,6 +180,12 @@ jobs:
           name: provider-linux-amd64
           path: release_tmp/linux/amd64/
 
+      - name: Download provider linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-linux-arm
+          path: release_tmp/linux/arm/
+
       - name: Download provider linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -234,6 +245,12 @@ jobs:
         with:
           name: urnet-tools-linux-amd64
           path: tool_tmp/linux/amd64/
+
+      - name: Download urnet-tools linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-arm
+          path: tool_tmp/linux/arm/
 
       - name: Download urnet-tools linux arm64 artifact
         uses: actions/download-artifact@v4
@@ -295,6 +312,12 @@ jobs:
           name: urnet-docker-linux-amd64
           path: tool_tmp/linux/amd64/
 
+      - name: Download urnet-docker linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-arm
+          path: tool_tmp/linux/arm/
+
       - name: Download urnet-docker linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -343,6 +366,9 @@ jobs:
           # self-update + installers fetch exactly this name from the release.
           find tool_tmp -type f \( -name "urnet-tools*" -o -name "urnet-docker*" \) -exec chmod +x {} \;
           # linux
+          test -f release_tmp/linux/arm/provider
+          cp tool_tmp/linux/arm/urnet-tools urnet-tools-linux-arm
+          cp tool_tmp/linux/arm/urnet-docker urnet-docker-linux-arm
           cp tool_tmp/linux/amd64/urnet-tools urnet-tools-linux-amd64
           cp tool_tmp/linux/arm64/urnet-tools urnet-tools-linux-arm64
           cp tool_tmp/linux/amd64/urnet-docker urnet-docker-linux-amd64
@@ -404,7 +430,7 @@ jobs:
           # Per-platform tarballs — flat (no subdirs), each with its own script
           mkdir -p per-platform
 
-          for plat in linux-amd64 linux-arm64; do
+          for plat in linux-amd64 linux-arm64 linux-arm; do
             arch="${plat#linux-}"
             mkdir -p "per-platform/${plat}"
             cp "release_tmp/linux/${arch}/provider" "per-platform/${plat}/"
@@ -528,6 +554,12 @@ jobs:
         with:
           name: provider-linux-amd64
           path: release_tmp/linux/amd64/
+      - name: Download provider linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: provider-linux-arm
+          path: release_tmp/linux/arm/
+
       - name: Download provider linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -558,6 +590,12 @@ jobs:
         with:
           name: urnet-tools-linux-amd64
           path: release_tmp/linux/amd64/
+      - name: Download urnet-tools linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-tools-linux-arm
+          path: release_tmp/linux/arm/
+
       - name: Download urnet-tools linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -588,6 +626,12 @@ jobs:
         with:
           name: urnet-docker-linux-amd64
           path: release_tmp/linux/amd64/
+      - name: Download urnet-docker linux arm artifact
+        uses: actions/download-artifact@v4
+        with:
+          name: urnet-docker-linux-arm
+          path: release_tmp/linux/arm/
+
       - name: Download urnet-docker linux arm64 artifact
         uses: actions/download-artifact@v4
         with:
@@ -678,6 +722,9 @@ jobs:
           fi
           VERSION=${GITHUB_REF_NAME:-latest}
           python3 .github/scripts/vt-scan.py \
+            release_tmp/linux/arm/provider \
+            release_tmp/linux/arm/urnet-tools \
+            release_tmp/linux/arm/urnet-docker \
             release_tmp/linux/amd64/provider \
             release_tmp/linux/arm64/provider \
             release_tmp/darwin/amd64/provider \
