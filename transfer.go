@@ -3027,7 +3027,7 @@ func (self *SendSequence) observePeerCapabilityAck(ack *protocol.Ack) {
 	recorder := self.client.peerCapabilityRecorder
 	peerId := self.destination.DestinationId
 	if ack.ReceiveWindowByteCount != nil {
-		window := *ack.ReceiveWindowByteCount
+		window := min(*ack.ReceiveWindowByteCount, uint64(1<<32-1))
 		self.ackSeen.Store(true)
 		for {
 			max := self.peerReceiveWindowMax.Load()

@@ -620,6 +620,7 @@ func NewRemoteUserNatMultiClient(
 		multiClient.removeClient,
 		WindowTypeQuality,
 		settings,
+		multiClient.config.Load().performanceProfile,
 		multiClient.clientFlowCount,
 	)
 	if _, fixed := generator.FixedDestinationSize(); !fixed {
@@ -633,6 +634,7 @@ func NewRemoteUserNatMultiClient(
 			multiClient.removeClient,
 			WindowTypeSpeed,
 			settings,
+			multiClient.config.Load().performanceProfile,
 			multiClient.clientFlowCount,
 		)
 		multiClient.windows[WindowTypeLimited] = newMultiClientWindow(
@@ -645,6 +647,7 @@ func NewRemoteUserNatMultiClient(
 			multiClient.removeClient,
 			WindowTypeLimited,
 			settings,
+			multiClient.config.Load().performanceProfile,
 			multiClient.clientFlowCount,
 		)
 	}
@@ -2479,6 +2482,7 @@ func newMultiClientWindow(
 	clientRemoveCallback func(client *multiClientChannel),
 	windowType WindowType,
 	settings *MultiClientSettings,
+	performanceProfile *PerformanceProfile,
 	flowCountFunc func(*multiClientChannel) int,
 ) *multiClientWindow {
 	window := &multiClientWindow{
@@ -2491,7 +2495,7 @@ func newMultiClientWindow(
 		ingressSecurityPolicy:       ingressSecurityPolicy,
 		clientRemoveCallback:        clientRemoveCallback,
 		windowType:                  windowType,
-		performanceProfile:          settings.DefaultPerformanceProfile,
+		performanceProfile:          performanceProfile,
 		settings:                    settings,
 		flowCountFunc:               flowCountFunc,
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
@@ -2652,7 +2656,9 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 						continue
 					}
 
+					_, fixedDestination := self.generator.FixedDestinationSize()
 					args := &multiClientChannelArgs{
+						FixedDestination:               fixedDestination,
 						Destination:                    destination,
 						DestinationStats:               stats,
 						MultiClientGeneratorClientArgs: *clientArgs,
@@ -3182,15 +3188,23 @@ func (self *multiClientWindow) expand(
 							if err == nil {
 								self.log.V(1).Infof("[multi]expand new client\n")
 
-								self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
 								var replacedClient *multiClientChannel
-								func() {
+								admitted := func() bool {
 									self.stateLock.Lock()
 									defer self.stateLock.Unlock()
+									if self.windowType == WindowTypeLimited && self.requestTargetCount <= 0 {
+										return false
+									}
 									clientId := client.ClientId()
 									replacedClient = self.clients[clientId]
 									self.clients[clientId] = client
+									return true
 								}()
+								if !admitted {
+									fail()
+									return
+								}
+								self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
 								if replacedClient != nil {
 									replacedClient.Cancel()
 									self.clientRemoveCallback(replacedClient)

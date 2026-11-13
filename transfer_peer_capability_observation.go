@@ -343,7 +343,9 @@ func (self *PeerCapabilityRecorder) observeE2eSealed(peerId Id, keyExchange tls.
 		capability.e2eSealed = true
 		capability.keyExchange = keyExchange
 		capability.keyExchangeSealed = true
-		capability.sealedSession = weak.Make(session)
+		if session != nil && !session.companion {
+			capability.sealedSession = weak.Make(session)
+		}
 		capability.lastObservationTime = now
 		return true
 	}()

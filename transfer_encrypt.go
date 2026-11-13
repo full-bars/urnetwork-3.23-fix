@@ -1247,7 +1247,7 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 		if epochId := self.epochIdOf(e); epochId != (Id{}) {
 			ec.EpochId = epochId.Bytes()
 		}
-		self.sendEncryptedControl(ec)
+		self.sendEncryptedControl(ec, afterSent...)
 	}
 }
 
