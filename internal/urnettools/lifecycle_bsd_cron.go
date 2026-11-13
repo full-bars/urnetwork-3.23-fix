@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"path/filepath"
 	"strings"
 )
 
@@ -62,4 +63,58 @@ func bsdScheduledUpdate(euid int, stagedToolOK bool, runningTool, userLogDir str
 		return "", "", fmt.Errorf("refusing to install root's auto-update: no root-owned urnet-tools at %s, so install it there first (the installer stages it) or run auto-update as your own user", bsdRootToolPath)
 	}
 	return bsdRootToolPath, bsdRootLogDir, nil
+}
+
+// bsdUpdateCronLine returns the crontab line for an auto-update interval.
+//
+// The command runs `urnet-tools update -f <selector>`, the same thing the
+// systemd timer runs plus an explicit target, and appends to a log so an
+// unattended update that fails leaves a trail
+// instead of vanishing. An unknown interval is rejected rather than defaulted:
+// silently installing a daily schedule for someone who asked for weekly is worse
+// than an error.
+func bsdUpdateCronLine(tool, logDir, interval string, selector []string) (string, error) {
+	var spec string
+	switch interval {
+	case "daily":
+		spec = "17 3 * * *"
+	case "weekly":
+		// Sunday 03:17.
+		spec = "17 3 * * 0"
+	case "monthly":
+		// The 1st of the month at 03:17.
+		spec = "17 3 1 * *"
+	default:
+		return "", fmt.Errorf("invalid interval %q", interval)
+	}
+	args := "-f"
+	for _, a := range selector {
+		args += " " + shellQuote(a)
+	}
+	command := fmt.Sprintf("%s update %s >> %s 2>&1",
+		shellQuote(tool), args, shellQuote(filepath.Join(logDir, "auto-update.log")))
+	// Empty shell quotes separate a preceding backslash from cron's escape.
+	return spec + " " + strings.ReplaceAll(command, "%", `''\%`), nil
+}
+
+// bsdUpdateSelector names the provider the scheduled update must act on. Without
+// it `update -f` resolves its target at run time (a persisted default, or the
+// caller's only running provider), so a marker on the crontab line would not
+// pin the entry to its provider. The state dir is unique per provider, so it is
+// preferred over the user name.
+func bsdUpdateSelector(p Provider) ([]string, error) {
+	switch {
+	case p.StateDir != "":
+		return []string{"--state-dir", p.StateDir}, nil
+	case p.User != "":
+		return []string{"--user", p.User}, nil
+	}
+	return nil, fmt.Errorf("auto-update for %s: the provider has no state dir or user to target, so the schedule would not name its provider", providerLabel(p))
+}
+
+// shellQuote wraps s in single quotes for inclusion in a crontab line, which is
+// executed by /bin/sh. A path containing a space or a quote must not break the
+// schedule.
+func shellQuote(s string) string {
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }

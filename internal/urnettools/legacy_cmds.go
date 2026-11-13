@@ -203,7 +203,9 @@ func cmdStop(args []string, force, dryRun bool) error {
 	if runtime.GOOS == "windows" {
 		return cmdStopWindows(p, force, dryRun)
 	}
-	if runtime.GOOS == "freebsd" || runtime.GOOS == "openbsd" {
+	// On OpenBSD only the verified rc.d-managed provider goes through rcctl.
+	// Any other process falls through to the bare-process SIGTERM path below.
+	if runtime.GOOS == "freebsd" || (runtime.GOOS == "openbsd" && p.Supervisor == "openbsd-rcd") {
 		// rc.d, not systemd: go through the service so the provider drains
 		// under its own stop semantics rather than being signalled directly.
 		fmt.Printf("stopping %s...\n", providerLabel(p))

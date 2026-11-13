@@ -423,12 +423,6 @@ func TestLifecycleCmds_EmptySystemdBoxNoTargetNoDockerHint(t *testing.T) {
 	stubDiscovery(t, nil, []Provider{dockerProv})
 
 	err := cmdStart(nil, false, true)
-	if runtime.GOOS == "openbsd" {
-		if err == nil || !strings.Contains(err.Error(), "start is not supported on OpenBSD") {
-			t.Fatalf("expected OpenBSD unsupported error, got: %v", err)
-		}
-		return
-	}
 	if err == nil {
 		t.Fatal("empty box must error")
 	}

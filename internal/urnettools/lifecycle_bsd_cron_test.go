@@ -75,3 +75,27 @@ func TestBSDScheduledUpdate(t *testing.T) {
 		t.Errorf("non-root = (%q, %q, %v)", tool, logDir, err)
 	}
 }
+
+// The scheduled command must name its provider, because `update -f` alone
+// resolves its target at run time and would update the wrong provider.
+func TestBSDUpdateCronLineNamesProvider(t *testing.T) {
+	sel, err := bsdUpdateSelector(Provider{User: "alice", StateDir: "/home/alice/.urnetwork"})
+	if err != nil || len(sel) != 2 || sel[0] != "--state-dir" || sel[1] != "/home/alice/.urnetwork" {
+		t.Fatalf("state dir selector = %v, %v", sel, err)
+	}
+	sel, err = bsdUpdateSelector(Provider{User: "alice"})
+	if err != nil || len(sel) != 2 || sel[0] != "--user" || sel[1] != "alice" {
+		t.Fatalf("user selector = %v, %v", sel, err)
+	}
+	if _, err := bsdUpdateSelector(Provider{}); err == nil {
+		t.Fatal("a provider with no state dir or user must be refused")
+	}
+	line, err := bsdUpdateCronLine("/t/urnet-tools", "/l", "daily", []string{"--state-dir", "/home/a b/.urnetwork"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "17 3 * * * '/t/urnet-tools' update -f '--state-dir' '/home/a b/.urnetwork' >> '/l/auto-update.log' 2>&1"
+	if line != want {
+		t.Fatalf("line = %q, want %q", line, want)
+	}
+}

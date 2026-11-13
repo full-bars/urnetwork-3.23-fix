@@ -18,39 +18,6 @@ import (
 // that was down at the scheduled minute does not update on the next boot the
 // way a systemd timer would have.
 
-// bsdUpdateCronLine returns the crontab line for an auto-update interval.
-//
-// The command runs `urnet-tools update -f`, the same thing the systemd timer
-// runs, and appends to a log so an unattended update that fails leaves a trail
-// instead of vanishing. An unknown interval is rejected rather than defaulted:
-// silently installing a daily schedule for someone who asked for weekly is worse
-// than an error.
-func bsdUpdateCronLine(tool, logDir, interval string) (string, error) {
-	var spec string
-	switch interval {
-	case "daily":
-		spec = "17 3 * * *"
-	case "weekly":
-		// Sunday 03:17.
-		spec = "17 3 * * 0"
-	case "monthly":
-		// The 1st of the month at 03:17.
-		spec = "17 3 1 * *"
-	default:
-		return "", fmt.Errorf("invalid interval %q", interval)
-	}
-	command := fmt.Sprintf("%s update -f >> %s 2>&1",
-		shellQuote(tool), shellQuote(filepath.Join(logDir, "auto-update.log")))
-	return spec + " " + strings.ReplaceAll(command, "%", `''\%`), nil
-}
-
-// shellQuote wraps s in single quotes for inclusion in a crontab line, which is
-// executed by /bin/sh. A path containing a space or a quote must not break the
-// schedule.
-func shellQuote(s string) string {
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
-}
-
 // setAutoUpdateSchedule installs or removes the cron entry for auto-update.
 //
 // label is the platform-neutral identifier the caller computed. FreeBSD derives
@@ -71,7 +38,11 @@ func setAutoUpdateSchedule(p Provider, label, interval string) error {
 	if err := os.MkdirAll(logDir, 0o755); err != nil {
 		return fmt.Errorf("auto-update: create log dir %s: %w", logDir, err)
 	}
-	line, err := bsdUpdateCronLine(tool, logDir, interval)
+	selector, err := bsdUpdateSelector(p)
+	if err != nil {
+		return err
+	}
+	line, err := bsdUpdateCronLine(tool, logDir, interval, selector)
 	if err != nil {
 		return err
 	}
@@ -161,11 +132,7 @@ func readUserCrontab() ([]string, error) {
 		return nil, fmt.Errorf("crontab -l: %w: %s", err, detail)
 	}
 	var lines []string
-	for _, l := range strings.Split(string(out), "\n") {
-		if strings.TrimSpace(l) != "" {
-			lines = append(lines, l)
-		}
-	}
+	lines = strings.Split(strings.TrimSuffix(string(out), "\n"), "\n")
 	return lines, nil
 }
 
