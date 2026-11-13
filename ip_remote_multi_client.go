@@ -2190,14 +2190,15 @@ func (self *RemoteUserNatMultiClient) windowClientStats() *WindowClientStats {
 	return &self.noCompatibleStats
 }
 
-// STUB: deliverReceivePacket delivers a packet on the receive path
+// deliverReceivePacket hands a synthetic packet (a no-route reply) to the
+// app's receive callback, the same boundary the dial-failure signal uses.
 func (self *RemoteUserNatMultiClient) deliverReceivePacket(
 	source TransferPath,
 	provideMode protocol.ProvideMode,
 	ipPath *IpPath,
 	packet []byte,
 ) {
-	// Stub: no-op until receive path is wired
+	self.receivePacketCallback(source, provideMode, ipPath, packet)
 }
 
 func (self *RemoteUserNatMultiClient) Shuffle() {
@@ -2564,10 +2565,9 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			return windowDestinations
 		}
 
-		destinations, err := self.generator.NextDestinations(
-			self.settings.WindowExpandBlockCount,
+		destinations, err := self.enumerateDestinations(
 			maps.Keys(windowDestinations()),
-			self.windowType.RankMode(),
+			false,
 		)
 		if err != nil {
 			self.log.Infof("[multi]window enumerate error timeout = %s\n", err)
@@ -2582,7 +2582,9 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 		func() {
 			// destinations must be used by `expirationTime`
 			expirationTime := time.Now().Add(self.settings.WindowExpandArgsTimeout)
-			for destination, stats := range destinations {
+			for _, enumerated := range destinations {
+				destination := enumerated.destination
+				stats := enumerated.stats
 
 				for {
 					timeout := expirationTime.Sub(time.Now())
