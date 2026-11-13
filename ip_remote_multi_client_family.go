@@ -48,15 +48,62 @@ func relEvent(name string, keysAndValues ...interface{}) string {
 	return result
 }
 
-// STUB: windowGeneratorCall wraps a generator call with context and timeout
-func windowGeneratorCall(
+// generatorCallResult holds the value and error from a generator call.
+type generatorCallResult[T any] struct {
+	value T
+	err   error
+}
+
+// windowGeneratorCall wraps a generator call with context deadline handling.
+// If the call completes within timeout, returns its result. If ctx is canceled
+// or the timeout expires, abandons the call and returns an error. The
+// abandoned call's eventual result is drained off-path; if lateResult is not
+// nil, it is called with that result.
+func windowGeneratorCall[T any](
 	ctx context.Context,
 	timeout time.Duration,
-	f func() (map[MultiHopId]DestinationStats, error),
-	onTimeout func(),
-) (map[MultiHopId]DestinationStats, error) {
-	// Stub: just call f directly until context deadline handling is implemented
-	return f()
+	call func() (T, error),
+	lateResult func(value T, err error),
+) (T, error) {
+	if timeout <= 0 {
+		return call()
+	}
+	startTime := time.Now()
+	// cap 1: the producer's single send never blocks, so an abandoned call's
+	// goroutine exits as soon as the call itself returns
+	out := make(chan generatorCallResult[T], 1)
+	go HandleError(func() {
+		value, err := call()
+		out <- generatorCallResult[T]{value: value, err: err}
+	}, func(err error) {
+		// the call panicked before producing a result: convert it to an error
+		// result so the waiter (or the late drain below) is never parked
+		out <- generatorCallResult[T]{err: err}
+	})
+	canceled := false
+	select {
+	case result := <-out:
+		return result.value, result.err
+	case <-ctx.Done():
+		canceled = true
+	case <-time.After(timeout):
+	}
+	// abandoned: drain the eventual result off-path
+	go HandleError(func() {
+		result := <-out
+		if lateResult != nil {
+			lateResult(result.value, result.err)
+		}
+	})
+	var zero T
+	if canceled {
+		// ctx cancel is local teardown, not a hung generator, and it fires
+		// however little time has passed - stamping this path with the
+		// configured timeout produced logs claiming a 20s abandonment for a
+		// wait that lasted milliseconds
+		return zero, fmt.Errorf("generator call canceled")
+	}
+	return zero, fmt.Errorf("generator call abandoned after %s", time.Since(startTime))
 }
 
 // --- exit category ---
