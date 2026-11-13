@@ -652,6 +652,31 @@ func collapseFamilyOrder(a *multiClientChannel, b *multiClientChannel) int {
 	}
 }
 
+// collapseKeepOrder orders clients as the capacity collapse keeps them, for a
+// sort whose tail is shed: dualstack exits ahead of single-family ones, then
+// descending weight, then descending duration.
+func collapseKeepOrder(
+	a *multiClientChannel,
+	b *multiClientChannel,
+	weights map[*multiClientChannel]float32,
+	durations map[*multiClientChannel]time.Duration,
+) int {
+	if c := collapseFamilyOrder(a, b); c != 0 {
+		return c
+	}
+	if aWeight, bWeight := weights[a], weights[b]; aWeight < bWeight {
+		return 1
+	} else if bWeight < aWeight {
+		return -1
+	}
+	if aDuration, bDuration := durations[a], durations[b]; aDuration < bDuration {
+		return 1
+	} else if bDuration < aDuration {
+		return -1
+	}
+	return 0
+}
+
 // --- parent ---
 
 // Whether any window, the limited one included, holds an added, unwarned exit

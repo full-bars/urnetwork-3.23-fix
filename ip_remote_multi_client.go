@@ -2805,23 +2805,9 @@ func (self *multiClientWindow) resize() {
 				if 0 < n && 0 < len(cs) {
 					m := min(len(cs), n)
 					if 0 < m {
+						// the tail is what is shed
 						slices.SortFunc(cs, func(a *multiClientChannel, b *multiClientChannel) int {
-							// descending weight
-							aWeight := weights[a]
-							bWeight := weights[b]
-							if aWeight < bWeight {
-								return 1
-							} else if bWeight < aWeight {
-								return -1
-							}
-							aDuration := durations[a]
-							bDuration := durations[b]
-							if aDuration < bDuration {
-								return 1
-							} else if bDuration < aDuration {
-								return -1
-							}
-							return 0
+							return collapseKeepOrder(a, b, weights, durations)
 						})
 
 						for _, client := range cs[len(cs)-m : len(cs)] {

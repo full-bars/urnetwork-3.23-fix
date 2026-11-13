@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"net"
+	"slices"
 	"testing"
 	"time"
 
@@ -173,4 +174,34 @@ func TestFamilySwapVictimMarkAndClear(t *testing.T) {
 	assert.Equal(t, channel.isFamilySwapVictim(), true)
 	channel.clearFamilySwapVictim()
 	assert.Equal(t, channel.isFamilySwapVictim(), false)
+}
+
+func TestCollapseKeepOrderShedsSingleFamilyFirst(t *testing.T) {
+	channel := func(family IpFamily) *multiClientChannel {
+		c := &multiClientChannel{args: &multiClientChannelArgs{}}
+		c.args.DestinationStats.IpFamily = family
+		return c
+	}
+	dualstack := channel(IpFamilyDualstack)
+	v4 := channel(IpFamilyLegacy)
+	// the single-family exit outweighs and outlasts the dualstack one, yet
+	// the family key still puts it at the shed tail
+	weights := map[*multiClientChannel]float32{dualstack: 0, v4: 10}
+	durations := map[*multiClientChannel]time.Duration{dualstack: time.Second, v4: time.Hour}
+
+	cs := []*multiClientChannel{v4, dualstack}
+	slices.SortFunc(cs, func(a *multiClientChannel, b *multiClientChannel) int {
+		return collapseKeepOrder(a, b, weights, durations)
+	})
+	if cs[0] != dualstack || cs[1] != v4 {
+		t.Fatalf("expected dualstack kept first and single-family shed last")
+	}
+
+	// same class falls through to descending weight
+	other := channel(IpFamilyLegacy)
+	weights[other] = 20
+	durations[other] = time.Second
+	if collapseKeepOrder(other, v4, weights, durations) != -1 {
+		t.Fatalf("expected higher weight kept ahead within a family")
+	}
 }

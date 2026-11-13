@@ -2207,7 +2207,11 @@ type SendSequence struct {
 	destination       TransferPath
 	intermediaryIds   MultiHopId
 	companionContract bool
-	forceStream       bool
+	// ackSeen and peerReceiveWindowMax gate the peer capability observations
+	// so the recorder is only called on the first ack and on window increases
+	ackSeen              atomic.Bool
+	peerReceiveWindowMax atomic.Uint64
+	forceStream          bool
 	// encryptionRole is the per-peer session role this send sequence uses:
 	// client for normal application data (the default), server for
 	// EncryptedControl carriers and server-session replies.
@@ -3014,6 +3018,37 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	}
 }
 
+// Records peer capability evidence from an acknowledgement: that the peer
+// answers, and the largest receive window it advertises.
+func (self *SendSequence) observePeerCapabilityAck(ack *protocol.Ack) {
+	if self.client == nil || self.client.peerCapabilityRecorder == nil {
+		return
+	}
+	recorder := self.client.peerCapabilityRecorder
+	peerId := self.destination.DestinationId
+	if ack.ReceiveWindowByteCount != nil {
+		window := *ack.ReceiveWindowByteCount
+		self.ackSeen.Store(true)
+		for {
+			max := self.peerReceiveWindowMax.Load()
+			if window <= max && max != 0 {
+				return
+			}
+			if self.peerReceiveWindowMax.CompareAndSwap(max, window) {
+				// the first advertisement or an increase; the recorder marks
+				// the acknowledgement itself observed in the same step
+				recorder.observeReceiveWindow(peerId, ByteCount(window))
+				return
+			}
+		}
+	}
+	if !self.ackSeen.Swap(true) {
+		// the first acknowledgement carries no window: the peer answers and
+		// does not advertise
+		recorder.observeAck(peerId)
+	}
+}
+
 func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, error) {
 	self.ackMutex.Lock()
 	defer self.ackMutex.Unlock()
@@ -3026,6 +3061,7 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 		// ack is for a different send sequence that no longer exists
 		return false, nil
 	}
+	self.observePeerCapabilityAck(ack)
 
 	select {
 	case <-self.ctx.Done():
