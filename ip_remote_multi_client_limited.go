@@ -124,6 +124,43 @@ func (self *multiClientWindow) limitedWindowSize() WindowSizeSettings {
 	return limitedWindowSize(hooks.sizing())
 }
 
+// raceField collects compatible candidates from the first usable normal window
+// and the limited window. The normal candidates keep priority at the race cap.
+func (self *RemoteUserNatMultiClient) raceField(windowTypes []WindowType, need flowNeed) []*multiClientChannel {
+	var clients []*multiClientChannel
+	for _, windowType := range windowTypes {
+		if window := self.windows[windowType]; window != nil && windowType != WindowTypeLimited {
+			clients = candidatesForFlow(window.OrderedClients(), need)
+			if len(clients) > 0 {
+				break
+			}
+		}
+	}
+	if window := self.windows[WindowTypeLimited]; window != nil {
+		clients = append(clients, candidatesForFlow(window.OrderedClients(), need)...)
+	}
+	return limitedClientsLast(clients)
+}
+
+// limitedClientsLast keeps normal exits ahead when the race is bounded.
+func limitedClientsLast(clients []*multiClientChannel) []*multiClientChannel {
+	ordered := make([]*multiClientChannel, 0, len(clients))
+	for _, client := range clients {
+		if client.windowType() != WindowTypeLimited {
+			ordered = append(ordered, client)
+		}
+	}
+	if len(ordered) == len(clients) || len(ordered) == 0 {
+		return clients
+	}
+	for _, client := range clients {
+		if client.windowType() == WindowTypeLimited {
+			ordered = append(ordered, client)
+		}
+	}
+	return ordered
+}
+
 // LimitedWindowSize returns the number of live limited exits, including warned exits.
 func (self *RemoteUserNatMultiClient) LimitedWindowSize() int {
 	window := self.windows[WindowTypeLimited]

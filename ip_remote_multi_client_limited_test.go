@@ -5,6 +5,59 @@ import (
 	"testing"
 )
 
+func TestRaceFieldFiltersAndAddsLimited(t *testing.T) {
+	settings := DefaultMultiClientSettings()
+	normal := testingNewEmptyMultiClientChannel(t, settings)
+	limited := testingNewEmptyMultiClientChannel(t, settings)
+	limited.args.windowType = WindowTypeLimited
+	limited.args.DestinationStats.Capabilities.Protocol = ProviderProtocolCapabilityTcp
+	window := func(c *multiClientChannel) *multiClientWindow {
+		return &multiClientWindow{settings: settings, log: loggerOrDefault(settings.Log), clients: map[Id]*multiClientChannel{c.ClientId(): c}}
+	}
+	client := &RemoteUserNatMultiClient{windows: map[WindowType]*multiClientWindow{
+		WindowTypeQuality: window(normal), WindowTypeLimited: window(limited),
+	}}
+	for _, tt := range []struct {
+		name string
+		need flowNeed
+		want []*multiClientChannel
+	}{
+		{"tcp", flowNeed{ipVersion: 4, ipProtocol: IpProtocolTcp}, []*multiClientChannel{normal, limited}},
+		{"udp", flowNeed{ipVersion: 4, ipProtocol: IpProtocolUdp}, []*multiClientChannel{normal}},
+		{"ipv6", flowNeed{ipVersion: 6, ipProtocol: IpProtocolTcp}, nil},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			got := client.raceField([]WindowType{WindowTypeQuality}, tt.need)
+			if len(got) != len(tt.want) {
+				t.Fatalf("got %d candidates, want %d", len(got), len(tt.want))
+			}
+			for i := range got {
+				if got[i] != tt.want[i] {
+					t.Fatalf("candidate %d differs", i)
+				}
+			}
+		})
+	}
+}
+
+func TestLimitedClientsLast(t *testing.T) {
+	normalA := &multiClientChannel{args: &multiClientChannelArgs{windowType: WindowTypeQuality}}
+	normalB := &multiClientChannel{args: &multiClientChannelArgs{windowType: WindowTypeSpeed}}
+	limitedA := &multiClientChannel{args: &multiClientChannelArgs{windowType: WindowTypeLimited}}
+	limitedB := &multiClientChannel{args: &multiClientChannelArgs{windowType: WindowTypeLimited}}
+	input := []*multiClientChannel{limitedA, normalA, limitedB, normalB}
+	got := limitedClientsLast(input)
+	want := []*multiClientChannel{normalA, normalB, limitedA, limitedB}
+	for i := range want {
+		if got[i] != want[i] {
+			t.Fatalf("candidate %d out of order", i)
+		}
+	}
+	if input[0] != limitedA {
+		t.Fatal("input was mutated")
+	}
+}
+
 func TestLimitedWindowFractionWithoutWindow(t *testing.T) {
 	client := &RemoteUserNatMultiClient{}
 	client.SetLimitedWindowSizeFraction(.25)

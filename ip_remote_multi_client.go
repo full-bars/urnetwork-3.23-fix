@@ -1729,15 +1729,7 @@ func (self *RemoteUserNatMultiClient) sendPacket(
 		}
 
 		coalesceOrderedClients := func() []*multiClientChannel {
-			for _, windowType := range self.selectWindowTypes(sendPacket) {
-				if window, ok := self.windows[windowType]; ok {
-					orderedClients := window.OrderedClients()
-					if 0 < len(orderedClients) {
-						return orderedClients
-					}
-				}
-			}
-			return []*multiClientChannel{}
+			return self.raceField(self.selectWindowTypes(sendPacket), flowNeedOf(sendPacket.ipPath))
 		}
 
 		raceClients(coalesceOrderedClients(), 0)
