@@ -212,6 +212,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		WindowExpandArgsTimeout: 2 * time.Minute,
 		// default generator deadline
 		WindowGeneratorTimeout:    15 * time.Second,
+		LimitedWindowSizeFraction: 0.5,
 		StatsWindowDuration:       30 * time.Second,
 		StatsWindowBucketDuration: 1 * time.Second,
 		StatsSampleWeightsCount:   8,
@@ -261,6 +262,10 @@ type MultiClientSettings struct {
 	SequenceBufferSize  int
 	SequenceIdleTimeout time.Duration
 	WindowSizes         map[WindowType]WindowSizeSettings
+	// LimitedWindowSizeFraction scales the largest active normal window target.
+	LimitedWindowSizeFraction float64
+	// LimitedWindowSizeMax caps the limited window; non-positive means no cap.
+	LimitedWindowSizeMax int
 	// ClientNackInitialLimit int
 	// ClientNackMaxLimit int
 	// ClientNackScale float64
@@ -2415,6 +2420,8 @@ type multiClientWindow struct {
 
 	generatorMonitor *Monitor
 	resizeMonitor    *Monitor
+	limitedHooks     atomic.Pointer[limitedWindowHooks]
+	publishedSizing  windowSizing // guarded by stateLock
 
 	// requestTargetCount is the target provider count the resize pass computed
 	// (before standing reserve). Used by providerSelect for capability discovery.
@@ -2887,6 +2894,15 @@ func (self *multiClientWindow) resize() {
 			windowSizeMin = windowSize.WindowSizeMin
 		}
 
+		// Publish before any family-swap expansion changes this pass's target.
+		if self.windowType != WindowTypeLimited {
+			self.publishSizing(windowSizing{
+				published:  true,
+				active:     !inactive,
+				targetSize: targetWindowSize,
+				hardMax:    windowSize.WindowSizeHardMax,
+			})
+		}
 		// what this window's find-providers2 requests carry
 		self.setRequestSizing(targetWindowSize, dualstackTargetCount)
 
