@@ -1515,6 +1515,12 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
+		if self.role == sequenceTlsRoleClient {
+			// capability evidence for a session this client initiated, as the
+			// handshake's is, recorded before the callbacks below so a Sealed
+			// event's consumer already reads it
+			self.client.peerCapabilityRecorder.observeE2eSealed(self.peerId, pqeCurveOf(e), self)
+		}
 		if manager := self.manager; manager != nil {
 			var report bool
 			self.stateLock.Lock()
@@ -2010,6 +2016,24 @@ func (self *peerEncryptionSession) OptimisticallyDeliverHandshake(payload []byte
 	// more.
 	if e := self.currentEpoch(); e != nil && e.transport != nil && !isClosed(e.handshakeDone) {
 		e.transport.Deliver(payload)
+	}
+}
+func (self *peerEncryptionSession) capabilitySession() PeerCapabilitySession {
+	if self.role != sequenceTlsRoleClient || self.companion || self.ctx.Err() != nil {
+		return PeerCapabilitySession{}
+	}
+	clientId := self.client.ClientId()
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if self.establishedEpoch == nil || self.establishedEpoch.derivedTlsCipher == nil {
+		return PeerCapabilitySession{}
+	}
+	curveId := pqeCurveOf(self.establishedEpoch)
+	return PeerCapabilitySession{
+		ClientId:    clientId,
+		EpochId:     self.establishedEpoch.epochId,
+		KeyExchange: tlsKeyExchangeName(curveId),
+		PostQuantum: isPostQuantumKeyExchange(curveId),
 	}
 }
 

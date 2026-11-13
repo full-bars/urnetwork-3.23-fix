@@ -66,6 +66,14 @@ type dialFailureFunction func(sourceClient *multiClientChannel, egressIpPath *Ip
 type DestinationStats struct {
 	EstimatedBytesPerSecond ByteCount
 	Tier                    int
+	// The provider's address-family category from find-providers2, or its
+	// proven ip_family for fixed/restored destinations and older servers
+	IpFamily IpFamily
+	// The provider's labels from find-providers2: from capabilities when
+	// echoed, else from ip_family with dualproto
+	Capabilities ProviderCapabilities
+	// 1 for a tcp provider the server gave a dualproto request as overflow
+	OverflowStep int
 }
 
 type WindowType int
@@ -326,6 +334,8 @@ type WindowSizeSettings struct {
 	WindowSizeMin int
 	// the minimumum number of items in the windows that must be connected via p2p only
 	WindowSizeMinP2pOnly int
+	// the minimum number of ipv6-capable exits the window keeps while forming
+	WindowSizeMinIpv6Capable int
 	// inclusive
 	WindowSizeMax     int
 	WindowSizeHardMax int
@@ -467,6 +477,12 @@ type RemoteUserNatMultiClient struct {
 	// between them is failures that matched no live flow (late or stale).
 	dialFailures atomic.Uint64
 	flowsReraced atomic.Uint64
+
+	// ipv6NoRouteCount counts v6 flows answered with no-route because no
+	// v6-capable exit existed
+	ipv6NoRouteCount atomic.Uint64
+	// udpNoRouteCount counts udp flows answered with port unreachable
+	udpNoRouteCount atomic.Uint64
 
 	// config is an immutable snapshot of the rarely-changed routing config
 	// (performance profile + local security bypass). it is rebuilt under
@@ -2322,6 +2338,17 @@ type multiClientWindow struct {
 
 	generatorMonitor *Monitor
 	resizeMonitor    *Monitor
+
+	// ipv6Shortfall is the v6-capable shortfall the resize pass last
+	// computed: how many requested v6-capable exits the window still lacks
+	ipv6Shortfall    int
+	ipv6StarvedUntil time.Time
+	// ipv6ProbeRequested is set when a probe is requested
+	ipv6ProbeRequested bool
+	// ipv6CandidateReady marks whether a probe's v6-capable candidate is ready
+	ipv6CandidateReady bool
+	// ipv6FillFailures counts consecutive failed v6-capable evaluations
+	ipv6FillFailures int
 }
 
 func newMultiClientWindow(
@@ -2895,7 +2922,7 @@ func (self *multiClientWindow) expand(
 				self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
 				self.monitor.AddProviderEvent(args.ClientId, ProviderStateEvaluationFailed)
 			} else {
-				client.windowType = self.windowType
+				args.windowType = self.windowType
 				recordPathChannelCreated(self.windowType)
 
 				// send an initial ping on the client and let the ack timeout close it
@@ -3189,6 +3216,12 @@ type multiClientChannelArgs struct {
 
 	Destination MultiHopId
 	DestinationStats
+
+	// FixedDestination marks an exit of a fixed-destination window
+	FixedDestination bool
+
+	// The window that admitted this exit
+	windowType WindowType
 }
 
 type multiClientEventType int
@@ -3307,7 +3340,6 @@ type multiClientChannel struct {
 	ingressSecurityPolicy       SecurityPolicy
 	performanceProfile          *PerformanceProfile
 	createTime                  time.Time
-	windowType                  WindowType
 	// set once, when the channel first reaches its provider
 	firstConnectAt atomic.Int64
 
@@ -3359,6 +3391,11 @@ type multiClientChannel struct {
 	// dialStarvedMinDestinations). Kept entry-aligned by
 	// pruneDialStrikesWithLock.
 	dialFailureDestinations []string
+
+	// Marks an exit the resize pass chose to give up its slot to a
+	// v6-capable candidate (selectFamilySwapVictim). Atomic: read
+	// on the placement path, written by the resize pass.
+	familySwapVictim atomic.Bool
 }
 
 func newMultiClientChannel(
@@ -3567,7 +3604,7 @@ func (self *multiClientChannel) addConnectSuccess() {
 	// serves. One compare-and-swap, so the per-packet path is untouched.
 	if self.firstConnectAt.CompareAndSwap(0, time.Now().UnixNano()) {
 		elapsed := time.Since(self.createTime)
-		recordPathChannelConnected(self.windowType, elapsed)
+		recordPathChannelConnected(self.windowType(), elapsed)
 		// a channel built outside a window (tests, direct construction) has no
 		// args yet; its identity is not worth a panic
 		providerId := "unknown"
@@ -3579,7 +3616,7 @@ func (self *multiClientChannel) addConnectSuccess() {
 		}
 		loggerOrDefault(self.log).Infof(
 			"[path] %s channel connected in %s (provider %s)\n",
-			pathDiscoveryWindowName(self.windowType),
+			pathDiscoveryWindowName(self.windowType()),
 			elapsed.Round(time.Millisecond),
 			providerId,
 		)

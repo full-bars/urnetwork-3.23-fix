@@ -462,6 +462,12 @@ type ClientSettings struct {
 	ProtocolVersion int
 
 	DefaultTransferOpts TransferOptions
+
+	// PeerCapabilityRecorder, when set, records per-peer wire evidence of
+	// transfer capabilities (end-to-end sessions, resizable windows). Opt-in:
+	// the zero value records nothing. Set one per owner (multi-client window)
+	// so every client toward the same peer sees that peer's evidence.
+	PeerCapabilityRecorder *PeerCapabilityRecorder
 }
 
 // MinimumMessageLenLimit returns the smallest per-transport framer
@@ -522,6 +528,7 @@ type Client struct {
 	forwardBuffer            *ForwardBuffer
 	clientKeyManager         *ClientKeyManager
 	encryptionSessionManager *EncryptionSessionManager
+	peerCapabilityRecorder   *PeerCapabilityRecorder
 
 	// ready is closed by NewClientWithTag right before it returns, once every
 	// manager, buffer, callback, and the `run` loop are wired up. See
@@ -752,17 +759,18 @@ func NewClientWithTag(
 	cancelCtx, cancel := context.WithCancel(ctx)
 	log := loggerOrDefault(settings.Log)
 	client := &Client{
-		ctx:              cancelCtx,
-		cancel:           cancel,
-		clientId:         clientId,
-		clientTag:        clientTag,
-		clientOob:        clientOob,
-		log:              log,
-		settings:         settings,
-		receiveCallbacks: NewCallbackList[ReceiveFunction](),
-		forwardCallbacks: NewCallbackList[ForwardFunction](),
-		loopback:         make(chan *SendPack),
-		ready:            make(chan struct{}),
+		ctx:                    cancelCtx,
+		cancel:                 cancel,
+		clientId:               clientId,
+		clientTag:              clientTag,
+		clientOob:              clientOob,
+		log:                    log,
+		settings:               settings,
+		receiveCallbacks:       NewCallbackList[ReceiveFunction](),
+		forwardCallbacks:       NewCallbackList[ForwardFunction](),
+		loopback:               make(chan *SendPack),
+		ready:                  make(chan struct{}),
+		peerCapabilityRecorder: settings.PeerCapabilityRecorder,
 	}
 
 	routeManager := NewRouteManagerWithLogger(ctx, clientTag, log)
