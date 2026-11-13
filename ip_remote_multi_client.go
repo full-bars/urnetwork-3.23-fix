@@ -97,7 +97,7 @@ const (
 	WindowTypeAuto    WindowType = 0
 	WindowTypeQuality WindowType = 1
 	WindowTypeSpeed   WindowType = 2
-	// STUB: WindowTypeLimited is a TCP-only window using capability-aware discovery
+	// WindowTypeLimited is a TCP-only window using capability-aware discovery
 	WindowTypeLimited WindowType = 3
 )
 
@@ -120,7 +120,7 @@ type MultiClientGenerator interface {
 	FixedDestinationSize() (int, bool)
 }
 
-// STUB: MultiClientGeneratorWithCapabilities extends MultiClientGenerator with
+// MultiClientGeneratorWithCapabilities extends MultiClientGenerator with
 // capability-aware discovery (server selector mode, FP2-PROTOCOL.md §7)
 type MultiClientGeneratorWithCapabilities interface {
 	MultiClientGenerator
@@ -139,7 +139,7 @@ type MultiClientGeneratorWithCapabilities interface {
 	SelectorMode() (selectorMode bool, known bool)
 }
 
-// STUB: MultiClientGeneratorWithIpFamily extends MultiClientGenerator with
+// MultiClientGeneratorWithIpFamily extends MultiClientGenerator with
 // family-aware discovery (older FP2 mode before selector)
 type MultiClientGeneratorWithIpFamily interface {
 	MultiClientGenerator
@@ -210,7 +210,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		// WindowExpandMaxOvershotScale: 2.0,
 		// WindowRevisitTimeout:      2 * time.Minute,
 		WindowExpandArgsTimeout: 2 * time.Minute,
-		// STUB: default generator deadline
+		// default generator deadline
 		WindowGeneratorTimeout:    15 * time.Second,
 		StatsWindowDuration:       30 * time.Second,
 		StatsWindowBucketDuration: 1 * time.Second,
@@ -218,7 +218,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		// percentile
 		StatsSourceCountSelection: 0.9,
 		// ClientAffinityTimeout:        0 * time.Second,
-		// STUB: default retry timeout for v6-capable exit admission
+		// default retry timeout for v6-capable exit admission
 		IpFamilyStarvedRetryTimeout: 30 * time.Second,
 
 		MultiRaceSetOnNoResponseTimeout:      5 * time.Second,
@@ -297,12 +297,12 @@ type MultiClientSettings struct {
 	// WindowExpandMaxOvershotScale float64
 	// WindowRevisitTimeout      time.Duration
 	WindowExpandArgsTimeout time.Duration
-	// STUB: WindowGeneratorTimeout is the deadline for each NextDestinations call
+	// WindowGeneratorTimeout is the deadline for each NextDestinations call
 	WindowGeneratorTimeout    time.Duration
 	StatsWindowDuration       time.Duration
 	StatsWindowBucketDuration time.Duration
 	StatsSampleWeightsCount   int
-	// STUB: IpFamilyStarvedRetryTimeout is how long to wait before retrying
+	// IpFamilyStarvedRetryTimeout is how long to wait before retrying
 	// v6-capable exit admission after a starved condition
 	IpFamilyStarvedRetryTimeout time.Duration
 	// percentile
