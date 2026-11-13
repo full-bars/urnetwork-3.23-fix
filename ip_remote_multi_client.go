@@ -2618,9 +2618,11 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			return windowDestinations
 		}
 
+		// the resize pass asked for a probe: the v6-capable request alone
+		probe := self.takeIpv6ProbeRequest()
 		destinations, err := self.enumerateDestinations(
 			maps.Keys(windowDestinations()),
-			false,
+			probe,
 		)
 		if err != nil {
 			self.log.Infof("[multi]window enumerate error timeout = %s\n", err)
@@ -2632,6 +2634,14 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 			continue
 		}
 
+		if probe {
+			// a probe that found a v6-capable candidate lets the resize pass
+			// admit it over target, by giving up a v4-only exit's slot
+			if 0 < len(destinations) {
+				self.setIpv6CandidateReady(true)
+				self.resizeMonitor.NotifyAll()
+			}
+		}
 		func() {
 			// destinations must be used by `expirationTime`
 			expirationTime := time.Now().Add(self.settings.WindowExpandArgsTimeout)
@@ -2678,6 +2688,10 @@ func (self *multiClientWindow) randomEnumerateClientArgs() {
 				}
 			}
 		}()
+		if probe {
+			// every candidate was taken by expand or expired
+			self.setIpv6CandidateReady(false)
+		}
 
 		select {
 		case <-self.ctx.Done():
