@@ -212,6 +212,7 @@ func DefaultMultiClientSettings() *MultiClientSettings {
 		WindowExpandArgsTimeout: 2 * time.Minute,
 		// default generator deadline
 		WindowGeneratorTimeout:    15 * time.Second,
+		RecentExitMemoryTimeout:   5 * time.Minute,
 		LimitedWindowSizeFraction: 0.5,
 		StatsWindowDuration:       30 * time.Second,
 		StatsWindowBucketDuration: 1 * time.Second,
@@ -303,7 +304,9 @@ type MultiClientSettings struct {
 	// WindowRevisitTimeout      time.Duration
 	WindowExpandArgsTimeout time.Duration
 	// WindowGeneratorTimeout is the deadline for each NextDestinations call
-	WindowGeneratorTimeout    time.Duration
+	WindowGeneratorTimeout time.Duration
+	// RecentExitMemoryTimeout bounds how long an outage-lost exit is remembered.
+	RecentExitMemoryTimeout   time.Duration
 	StatsWindowDuration       time.Duration
 	StatsWindowBucketDuration time.Duration
 	StatsSampleWeightsCount   int
@@ -2411,6 +2414,9 @@ type multiClientWindow struct {
 
 	// the exit a sticky window lost, asked for again ahead of discovery
 	stickyRedial stickyRedial
+	recentExits  recentExitMemory
+	// A failed discovery suppresses parallel by-id lookups until recovery.
+	recentDiscoveryFailed atomic.Bool
 
 	generator                   MultiClientGenerator
 	clientReceivePacketCallback clientReceivePacketFunction
@@ -2558,6 +2564,7 @@ func (self *multiClientWindow) SetPerformanceProfile(performanceProfile *Perform
 
 	self.performanceProfile = performanceProfile
 	self.stickyRedial.Forget()
+	self.recentExits.Forget()
 }
 
 func (self *multiClientWindow) randomEnumerateClientArgs() {
@@ -3244,6 +3251,7 @@ func (self *multiClientWindow) expand(
 
 func (self *multiClientWindow) shuffle() {
 	self.stickyRedial.Forget()
+	self.recentExits.Forget()
 	for _, client := range self.unorderedClients() {
 		client.Cancel()
 	}
@@ -3383,6 +3391,7 @@ func (self *multiClientWindow) statsSampleWeights(weights map[*multiClientChanne
 }
 
 func (self *multiClientWindow) Close() {
+	self.recentExits.Forget()
 	var removedClients []*multiClientChannel
 	func() {
 		self.stateLock.Lock()
@@ -3503,12 +3512,6 @@ func (self *multiClientWindow) setRequestSizing(targetCount int, dualstackTarget
 	defer self.stateLock.Unlock()
 	self.requestTargetCount = targetCount
 	self.requestDualstackTargetCount = dualstackTargetCount
-}
-
-// STUB: enumerateRecentExits returns recently-lost exits alongside discovery results
-func (self *multiClientWindow) enumerateRecentExits(excludeDestinations []MultiHopId, rankMode string, discover func(excludeDestinations []MultiHopId) ([]enumeratedDestination, error)) ([]enumeratedDestination, error) {
-	// Stub: fall back to discover() until recent-exit tracking is implemented
-	return discover(excludeDestinations)
 }
 
 // discoverDestinationsWithCapabilities queries a capability-aware generator
