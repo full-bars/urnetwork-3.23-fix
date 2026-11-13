@@ -6,6 +6,7 @@ import (
 	"math"
 	"runtime"
 	"testing"
+	"time"
 
 	"github.com/urnetwork/connect/protocol"
 )
@@ -41,6 +42,22 @@ func TestFP2CompanionSealPreservesOrdinarySession(t *testing.T) {
 	}
 	runtime.KeepAlive(ordinary)
 	runtime.KeepAlive(companion)
+}
+
+func TestFP2ReceiveWindowZeroRecordedOnce(t *testing.T) {
+	r := NewPeerCapabilityRecorder(1)
+	calls := 0
+	r.nowForTest = func() time.Time { calls++; return time.Unix(int64(calls), 0) }
+	s := &SendSequence{client: &Client{peerCapabilityRecorder: r}, destination: DestinationId(NewId())}
+	zero, one := uint64(0), uint64(1)
+	s.observePeerCapabilityAck(&protocol.Ack{})
+	s.observePeerCapabilityAck(&protocol.Ack{ReceiveWindowByteCount: &zero})
+	s.observePeerCapabilityAck(&protocol.Ack{ReceiveWindowByteCount: &zero})
+	s.observePeerCapabilityAck(&protocol.Ack{ReceiveWindowByteCount: &one})
+	s.observePeerCapabilityAck(&protocol.Ack{ReceiveWindowByteCount: &one})
+	if calls != 3 {
+		t.Fatalf("recorded %d observations, want ack, first zero and increase", calls)
+	}
 }
 
 func TestFP2ReceiveWindowClamp(t *testing.T) {

@@ -2209,9 +2209,10 @@ type SendSequence struct {
 	companionContract bool
 	// ackSeen and peerReceiveWindowMax gate the peer capability observations
 	// so the recorder is only called on the first ack and on window increases
-	ackSeen              atomic.Bool
-	peerReceiveWindowMax atomic.Uint64
-	forceStream          bool
+	ackSeen               atomic.Bool
+	peerReceiveWindowMax  atomic.Uint64
+	peerReceiveWindowSeen atomic.Bool
+	forceStream           bool
 	// encryptionRole is the per-peer session role this send sequence uses:
 	// client for normal application data (the default), server for
 	// EncryptedControl carriers and server-session replies.
@@ -3029,9 +3030,10 @@ func (self *SendSequence) observePeerCapabilityAck(ack *protocol.Ack) {
 	if ack.ReceiveWindowByteCount != nil {
 		window := min(*ack.ReceiveWindowByteCount, uint64(1<<32-1))
 		self.ackSeen.Store(true)
+		first := !self.peerReceiveWindowSeen.Swap(true)
 		for {
 			max := self.peerReceiveWindowMax.Load()
-			if window <= max && max != 0 {
+			if window <= max && !first {
 				return
 			}
 			if self.peerReceiveWindowMax.CompareAndSwap(max, window) {
