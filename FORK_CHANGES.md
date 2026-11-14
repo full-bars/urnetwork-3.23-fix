@@ -4,9 +4,8 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Previous release**: v3.23.0-fix.35.6 (see [releases/v3.23.0-fix.35.6.md](releases/v3.23.0-fix.35.6.md))
+**Latest published release**: v3.23.0-fix.35.9 (see [releases/v3.23.0-fix.35.9.md](releases/v3.23.0-fix.35.9.md))
 
-**Next release notes:** v3.23.0-fix.35.7 adds tool-first updates and a Linux sysctl route for extender TCP 443. It also improves installer approval, rollback and failure reporting. See [release notes](releases/v3.23.0-fix.35.7.md) for the trade-offs and known limits.
 
 ---
 
