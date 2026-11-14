@@ -149,12 +149,14 @@ func (self *testRelayMesh) publish(message *protocol.ExtenderGossipMessage) {
 	}
 }
 
-// Waits until the member sees the operator in the topic, which is the barrier
-// a publish needs: gossipsub floods a locally published message to every topic
-// peer it knows.
+// Waits until each node sees the other in the topic. The publisher must see
+// the member before Publish or it can send before the subscription arrives.
 func (self *testRelayMesh) waitForTopic(t *testing.T) {
 	t.Helper()
-	waitForNodeStatus(t, self.member, "the operator in the topic", func(status NodeStatus) bool {
+	waitForNodeStatus(t, self.member, "the operator in the member topic", func(status NodeStatus) bool {
+		return 1 <= status.MeshPeerCount
+	})
+	waitForNodeStatus(t, self.operator, "the member in the operator topic", func(status NodeStatus) bool {
 		return 1 <= status.MeshPeerCount
 	})
 }
