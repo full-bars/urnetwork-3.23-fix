@@ -38,7 +38,7 @@ Windows has no `sh`, so a normal PowerShell window uses that installer directly:
 irm https://dl.fullbars.xyz/install-win.ps1 | iex
 ```
 
-Linux releases support amd64, arm64 and 32-bit ARMv7 (armv7l). ARMv6 is not supported.
+Linux releases support amd64, arm64 and 32-bit ARMv7 (armv7l). ARMv6 is not supported. To check your machine, run `uname -m`. An ARMv7 host reports `armv7l`. The ARM release uses software floating point, so it also starts on hosts without a floating-point unit.
 
 Linux on its own, systemd or OpenRC:
 

@@ -9,7 +9,7 @@ Some proxy-list endpoints publish new `ip:port` entries on a rolling basis — s
 ## ⚡ What It Does
 
 Point the provider at a URL and it will:
-- 🌱 **Fetch on an interval** (default every 15 minutes) and add any genuinely new proxies — entries already running, by address, are skipped. This never disturbs already-warmed-up proxies.
+- 🌱 **Fetch on an interval** (default every hour) and add any genuinely new proxies. Entries already running, by address, are skipped. This never disturbs already-warmed-up proxies.
 - 🧹 **Optionally clean up dead entries** on a much slower, separate cadence (default once a day) — and only the ones that came from a URL, by default. Proxies you added yourself via a file or `proxy add` are left alone unless you explicitly widen the cleanup scope.
 - 🤝 **Coexist with your existing proxy file.** A URL source is additive — you can run `--proxy_file` and `--proxy_url` at the same time. They share one hot-reload pipeline (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management)).
 
@@ -213,6 +213,8 @@ This is independent of the daily dead-proxy cleanup (`--proxy_dead_cleanup_scope
 ---
 
 ## 🛡️ Overlapping Fetch Prevention
+
+During a shutdown the provider can log `fetch cycle cancelled after N of M sources`. The line marks the end of the cycle. It does not mean a source failed. The provider keeps the results of the sources that finished, and it does not warn about the sources that were left.
 
 Concurrent fetch cycles for the same URL are now prevented. If a fetch is already in progress when the refresh interval fires, the new cycle is skipped with a log line (`[proxy-url] fetch already in progress for <url>, skipping`). This prevents accidental thundering-herd when multiple triggers fire near-simultaneously (e.g., a `--proxy_url` interval coinciding with a `add-source` command).
 

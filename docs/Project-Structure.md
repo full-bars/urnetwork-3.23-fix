@@ -14,6 +14,10 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `internal/` (others) | Small shared helpers: `tui`, `promtext`, `verdictfeed`, `durablepath`, `durablehead`, `durablefixture`. |
 | `./*.go` (repo root) | The core network stack: transports, contracts, IP relay and security, DNS-over-HTTPS. Details below. |
 | `extender/` | The extender transport. |
+| `extenderrole/` | Composes the discovery plane a served extender runs: the feed server, the in-process listener and the mesh node that fills the directory. |
+| `gossip/` | The libp2p gossip mesh that carries signed extender records, with the peering loop and the feed server. The root package never imports it. |
+| `fingerprint/` | A drift-conformance harness. It compares our Chrome-like TCP and UDP handshake packets with captured ones. See `fingerprint/README.md`. |
+| `res/`, `testdata/` | Binary resources and test fixtures. |
 | `protocol/` | Protocol Buffer definitions. Generated Go code is not edited by hand. |
 | `api/` | API endpoint definitions. |
 | `blocker/`, `security/` | Generators for the built-in blocklist data. [Blocklist Sync](Blocklist-Sync) explains how the tables stay current. |
@@ -21,7 +25,8 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `third_party/` | Vendored dependencies we patch (see `THIRD_PARTY_LICENSES.md`). |
 | `connectctl/`, `emoji/` | Upstream tools copied in as they are. |
 | `docker/scripts/` | Start-up and helper scripts baked into the Docker image. |
-| `scripts/` | Installers and uninstallers for Linux, FreeBSD, macOS and Windows, plus test and release-check scripts. |
+| `scripts/` | Installers and uninstallers for Linux, FreeBSD, OpenBSD, macOS and Windows, plus test and release-check scripts. `scripts/pre-tag-check.sh` is the gate that runs before a tag. |
+| `.github/scripts/` | The CI, installer, release and blocklist sync helpers. |
 | `monitoring/` | The Prometheus and Grafana bundle. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring). |
 | `pelican/` | The Pelican game-server panel egg. |
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
