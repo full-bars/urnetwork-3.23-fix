@@ -507,6 +507,44 @@ jobs:
           echo "APP_VERSION=${APP_VERSION}"
           echo "APP_VERSION=${APP_VERSION}" >> $GITHUB_OUTPUT
 
+      - name: Build the image filesystem for the ClamAV scan
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/build-push-action@v7
+        with:
+          context: .
+          platforms: linux/amd64,linux/arm64
+          build-args: |
+            VERSION=${{ steps.version.outputs.VERSION }}
+            APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
+          cache-from: type=gha
+          outputs: type=local,dest=${{ runner.temp }}/image_fs
+          cache-to: type=gha,mode=max
+
+      # Gate: ClamAV scans the root filesystem of every platform image before anything
+      # is pushed. The push step below reuses the layers built here from the cache.
+      # A detection, a scanner failure or a failed definition refresh stops the push.
+      - name: ClamAV gate (blocks the image push)
+        if: ${{ github.event_name != 'pull_request' }}
+        env:
+          CLAMAV_REPORT_FILE: ${{ runner.temp }}/clamav-image-report.md
+          CLAMAV_MIN_FILES: '100'
+        run: |
+          set -euo pipefail
+          if ! command -v clamscan >/dev/null 2>&1 || ! command -v freshclam >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clamav clamav-freshclam >/dev/null
+          fi
+          ls "${RUNNER_TEMP}/image_fs"
+          bash .github/scripts/clamav-scan.sh "${RUNNER_TEMP}/image_fs"
+
+      - name: ClamAV image scan report
+        if: ${{ always() && (github.event_name != 'pull_request') }}
+        run: |
+          if [ -f "${RUNNER_TEMP}/clamav-image-report.md" ]; then
+            cat "${RUNNER_TEMP}/clamav-image-report.md" >> "$GITHUB_STEP_SUMMARY"
+          fi
+          rm -rf "${RUNNER_TEMP}/image_fs"
+
       - name: Build and push Docker image
         uses: docker/build-push-action@v7
         with:
@@ -519,7 +557,7 @@ jobs:
             VERSION=${{ steps.version.outputs.VERSION }}
             APP_VERSION=${{ steps.version.outputs.APP_VERSION }}
           cache-from: type=gha
-          cache-to: type=gha,mode=min
+          cache-to: type=gha,mode=max
 
       # Post-push assertion, NOT a pre-push expectation. The 2026-09-08 incident
       # happened because the gating logic was reasoned about rather than

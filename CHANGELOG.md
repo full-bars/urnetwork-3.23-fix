@@ -7,6 +7,7 @@ Everything merged after `v3.23.0-fix.35.10`.
 ### Changed
 
 - **ClamAV gates the release** (`.github/workflows/release.yml`, `.github/scripts/clamav-scan.sh`, `.github/scripts/test-clamav-scan.sh`). The `create-release` job scans the exact files it uploads before it publishes, with definitions fetched by `freshclam` just before the scan. A detection, a scanner failure, a stale database or a failed refresh stops the release. Before this change the step reported clean without examining any file, because the runner has no signature database, and it could not fail. VirusTotal still runs after publication and never gates. [no redeploy]
+- **ClamAV gates the Docker images** (`.github/workflows/build.yml`). Before a push, the job builds the image filesystem for each platform and scans it with `.github/scripts/clamav-scan.sh`, with definitions fetched just before the scan. A detection, a scanner failure or a failed refresh stops the push, so no tag moves. The push step reuses the layers from the build cache. [no redeploy]
 
 ## [v3.23.0-fix.35.10]
 
