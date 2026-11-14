@@ -3245,7 +3245,8 @@ func (self *multiClientWindow) expand(
 						self.log.Infof("[multi]create client ping error = %s\n", err)
 						fail(!errors.Is(err, context.Canceled))
 					} else if !success {
-						fail(true)
+						// the ping never entered the send queue, so the provider saw nothing
+						fail(false)
 					} else {
 						// async wait for the ping
 						go HandleError(func() {
