@@ -17,7 +17,7 @@ SHA="${1:?upstream sha}"
 TABLES=(ip_security_cfaa_block.go ip_blocker_block.go)
 # the code that defines the format, the tables themselves are not listed
 FORMAT_PATHS=(ip_blocker.go ip_security_cfaa.go blocker)
-TEST_RUN='Blocker|Cfaa|CFAA|Packed|Generated|Provenance'
+TEST_RUN='Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security'
 LOG=/tmp/cfaa_format_check.log
 INFO=/tmp/cfaa_sync_info.json
 
