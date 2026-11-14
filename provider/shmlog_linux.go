@@ -49,10 +49,18 @@ var hotswapStderrDetached bool
 var hotswapStdoutInheritedPipe bool
 var hotswapSafeStderr *os.File
 
+// ramlogsRequested reports whether this process will redirect its output to
+// the RAM log, the same test initGlog applies. Without RAM logs an inherited
+// stderr pipe belongs to a real supervisor and must stay as it is.
+func ramlogsRequested() bool {
+	profile := os.Getenv("URNETWORK_PROFILE")
+	return os.Getenv("URNETWORK_RAMLOGS") == "1" || profile == "lowmem" || profile == "eco"
+}
+
 // Keep a successor-owned reader on stderr. Forward while the inherited pipe
 // works, then keep draining if the old parent and its reader have gone away.
 func prepareHotswapStderr() {
-	if os.Getenv(EnvHotSwap) != "1" {
+	if os.Getenv(EnvHotSwap) != "1" || !ramlogsRequested() {
 		return
 	}
 	var stderr, stdout unix.Stat_t

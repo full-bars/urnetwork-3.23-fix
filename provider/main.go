@@ -241,7 +241,10 @@ var VersionStamp string
 // when -trimpath strips buildinfo. The stamp is read by urnet-tools from the
 // binary file to detect the provider version without executing it.
 func init() {
-	protectLogPipes()
+	if isLongRunningSubcommand() {
+		// One-shot commands keep the default SIGPIPE behavior, so a pipe to head ends them.
+		protectLogPipes()
+	}
 	prepareHotswapStderr()
 	// debug.SetGCPercent(10)
 
