@@ -38,5 +38,13 @@ URN runs over UDP for performance, but it provides a reliable stream to the user
 *   **Duplicate Sends:** If a packet is lost or delayed, the node will retransmit it.
 *   **The Gap:** Your proxy bills you for every byte sent (including the retry). URN only credits you for the "effective" bytes that were successfully acknowledged once.
 
+## 📏 How to measure it
+
+The provider exports counters for each part of this gap. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring) for how to reach the metrics endpoint.
+
+* Compare `urnet_transfer_send_bytes_total` (first sends and resends) with `urnet_transfer_acked_bytes_total`.
+* Read `urnet_socket_bytes_total` by `phase` to see the bytes spent on handshakes and other overhead.
+* Platform speed tests also use proxy bandwidth. Read `urnet_speedtest_total` and `urnet_speedtest_echo_bytes_total`.
+
 ## 🎯 Conclusion
 The gap between proxy consumption and dashboard credits is caused by a mix of intentional "racing" for performance and unoptimized failure handling in the upstream code. While custom builds can mitigate some of these leaks, the nature of the protocol ensures that proxy usage will always be significantly higher than billable credits, especially during periods of network instability.

@@ -30,4 +30,4 @@ New to this? Start with the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bit
 | Client ID | One node or proxy slot's identity on URnetwork. |
 | Generation | One version of a signed consent. A new signature with a new coldkey makes the next generation. Old epochs keep the generation that covered them. |
 | Relayer key | An EVM key that pays the gas to send a transaction for you. It gets no ownership of what it sends. |
-| Settlement v1 / v2 | How pool earnings are paid. v1 covers the earliest epochs, and its claims stay open for 8 epochs plus 1 epoch of grace. v2 is planned for epoch 3 (about 2026-10-23), subject to release gates; its credit never expires once v2 is active. |
+| Settlement v1 / v2 | How pool earnings are paid. v1 covers the earliest epochs, and its claims stay open for 8 epochs plus 1 epoch of grace. v2 was set to start at epoch 3 (about 2026-10-23), subject to release gates. See [Bittensor Operations](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Operations) for the current status; its credit never expires once v2 is active. |

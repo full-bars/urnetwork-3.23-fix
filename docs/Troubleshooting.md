@@ -93,7 +93,7 @@ If your container exits unexpectedly:
 
 1. **Check the exit code**: `docker inspect <name> --format '{{.State.ExitCode}}'`
 2. **Look up the code** in the tables above for the likely cause.
-3. **Read the ramlogs**: `docker exec <name> logs`
+3. **Read the log**: run `docker exec <name> logs` if RAM logs are on. If it prints `RAMLOGS are not enabled`, run `docker logs <name>` instead.
 4. **Exit 0** means a clean shutdown (SIGTERM or manual stop).
 5. **Exit 78** means the JWT expired (the script attempted automatic re-authentication). Verify `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` are set correctly.
 6. **Exit 75** has two causes, so read the exit log before diagnosing. A planned restart is not a fault: the swap-thrash watchdog (or the liveness watchdog, when the process has made no progress) asks for it, the start scripts restart the provider after 5 seconds, and the JWT is left alone, because the set-aside token on disk decides the next sign-in. A rejected network sign-in set aside for a fresh sign-in shares the code and is not a restart: check `USER_AUTH`/`PASSWORD` or `URNETWORK_AUTH_CODE` before touching the token. A one-shot `thrash_exit.<pid>` marker beside `thrash_cap.json` marks the planned restart, and `provide --all-operators` names the cause it saw in the operator log.

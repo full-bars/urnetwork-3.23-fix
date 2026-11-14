@@ -106,7 +106,7 @@ Add any of these to `.env`, then run `docker compose up -d`:
 - **Traffic:** billable and total bytes per second, clients per node, and the top 15 proxies by billable traffic.
 - **Proxies:** pool status, grades, recoveries and losses, and contract outcomes.
 - **Node health:** errors by category, resource pressure, memory, goroutines, sessions, and DNS-over-HTTPS failures. Two panels plot memory and file descriptors against their limits (the limit is a dashed line).
-- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, datagram messages received and dropped per second, and the WhoDis DNS and DNS-pump transports (connections up, attempts and failures). Auto mode does not start the DNS modes, so that panel stays at zero unless a transport was built with one of those target modes.
+- **Transport (H1 and H3):** payload bytes per second by transport mode and direction, the share of outbound frames carried by H3, H3 connections up, H3 connect attempts, failures and drops per hour, how many connections offered and had QUIC DATAGRAM accepted, datagram messages received and dropped per second, and the WhoDis DNS and DNS-pump transports (connections up, attempts and failures). Those panels stay at zero until an identity falls back to one of these transports.
 - **Lifecycle:** restarts by reason, uptime per node, HotSwap outcomes per hour, and version skew (each version in the fleet and how many nodes run it).
 
 The transport panels need a provider that exports the `urnet_transport_*` and `urnet_h3_*` series. On older providers they stay empty, and the H3 and DATAGRAM series only move once `h3` and `h3_datagram` are switched on.
@@ -233,7 +233,7 @@ Two line families appear while transports are being changed, and both are expect
 ```
 
 - The `[h3] <setting>: relaunching N proxies` line is emitted once when the setting changes. Seeing it repeatedly without a `urnet-tools set h3` in between means the setting is being rewritten by something else.
-- The `[h3] <setting>: N proxies have clients, retrying in 1m0s` line repeats once a minute for each proxy that is too busy to relaunch. On a node whose proxies always carry clients this repeats indefinitely, which is the designed behaviour (the proxy is not cut off) but means the widening never completes. Prefer a top-N over `all` on such a node.
+- The `[h3] <setting>: N proxies have clients, retrying in 1m0s` line repeats once a minute for each proxy that is too busy to relaunch. The provider retries once a minute for up to 60 passes. A proxy that still has clients after that picks up the setting at its next restart. The provider never cuts a proxy off, so on a node whose proxies always carry clients the widening can take a long time. Prefer a top-N over `all` on such a node.
 - The four `[proxy][udp]` lines are printed **per proxy per change of answer**, so their count is bounded by the number of proxies. A proxy that alternates between the "ok" and "could not be learned" lines has an intermittent UDP path; one that reports "no udp relay" or an exit mismatch is simply not offered for H3, which is the intended fallback and needs no action.
 - None of these lines is an error, and none counts as a backend or proxy auth failure, so they should not be wired into the existing error-rate alerts. Watch them as a transport-settling signal only.
 
@@ -254,7 +254,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_connections_active` | gauge | | Active connections |
 | `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded, persisted across restarts |
 | `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts |
-| `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. This is the fair comparison for H3, which runs for that identity alone; `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
+| `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. In the default setting this is the fair comparison for H3, which then runs for that identity alone. Under `auto`, a number or `all`, proxies can run H3 too. `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
 | `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only, persisted across restarts |
 | `urnet_h3_up` | gauge | | H3 connections up now |
 | `urnet_h3_connect_attempts_total` | counter | | H3 connect attempts, persisted across restarts |

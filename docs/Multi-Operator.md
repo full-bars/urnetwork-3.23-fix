@@ -87,7 +87,7 @@ Back up the `operators/` tree, or at least each `operators/<domain>/.urnetwork` 
 
 Check the list and credentials with `provider operators`; `jwt present` means the child can start.
 
-Awaiting-auth recovery: write the operator's network token at `operators/<domain>/.urnetwork/jwt`. The supervisor rechecks it every 5 minutes and starts the child as soon as the token is there; no restart of the supervisor is needed.
+Awaiting-auth recovery: run `provider auth --operator=<domain>` as the supervisor's user. You can also write the operator's network token at `operators/<domain>/.urnetwork/jwt`. Then run `provider operators` again and look for `jwt present`. The supervisor rechecks every 5 minutes and starts the child as soon as the token is there. You do not need to restart the supervisor.
 
 Refresh: the supervisor takes list changes on the next refresh. New operators start, a child whose URLs changed is restarted with the new URLs, and a delisted operator's child is stopped (SIGTERM, then SIGKILL 60s later) while its state directory stays.
 

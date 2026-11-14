@@ -6,15 +6,15 @@ Use `urnet-tools diag` to capture evidence from a running provider without resta
 urnet-tools diag
 ```
 
-The provider writes a heap profile, goroutine stacks, `summary.txt` and, when available, a 30-second CPU profile under `<state dir>/diag/<UTC timestamp>/`. The request uses the provider's owner-only control socket. Update the provider first if it does not support this command.
+The provider writes a heap profile (`heap.pb.gz`), goroutine stacks (`goroutine.txt`), `summary.txt` and, when available, a 30-second CPU profile (`cpu.pb.gz`) under `<state dir>/diag/<UTC timestamp>/`. The request uses the provider's owner-only control socket. Update the provider first if it does not support this command.
 
-The capture needs at least 512 MiB of free space on the state filesystem. Only one capture runs at a time. The provider keeps the five newest bundles and removes an incomplete capture if a hot swap interrupts it.
+The capture needs at least 512 MiB of free space on the state filesystem. Only one capture runs at a time. The provider keeps the five newest bundles and removes an incomplete capture if a hot swap interrupts it. The provider removes old bundles before it checks free space, so a capture that fails the space check can still delete an older bundle. Copy any bundle you want to keep to a private place first.
 
 Treat the bundle as sensitive. Profiles can contain session tokens or other private data. Review it before sharing and use a private channel.
 
 ## What you see and what to do when it fails
 
-Run `urnet-tools diag` as the user that runs the provider. The command prints progress and takes about 40 seconds. On success, it prints `Diagnostic bundle:` followed by a path, then the memory use, the goroutine count and the file names. Read `summary.txt` in that directory first.
+Run `urnet-tools diag` as the user that runs the provider. The command prints progress and takes about 40 seconds. On success, it prints `Diagnostic bundle:` followed by a path, then the memory use, the goroutine count and the file names. Read `summary.txt` in that directory first. Open a profile with `go tool pprof heap.pb.gz` or `go tool pprof cpu.pb.gz`.
 
 | Message | What to do |
 | :--- | :--- |

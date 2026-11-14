@@ -75,7 +75,7 @@ Both install only the `urnet-docker` CLI on the Docker host. They resolve the
 latest release, download the binary for your OS and architecture (amd64 / arm64),
 verify its SHA-256 against the release API, and install it to `/usr/local/bin`
 (or `~/.local/bin` when not run as root). The tool self-updates afterwards with
-`urnet-docker update`. Neither fetches the provider nor a systemd unit.
+`urnet-docker self-update`. Neither fetches the provider nor a systemd unit.
 
 The installer supports Linux and macOS hosts. On a **Windows** Docker host,
 download the matching release asset directly instead:
@@ -206,7 +206,7 @@ lockout applies). Verify with `urnet-docker proxy traffic --unit urfix` or
 > time with a bind mount, for example `-v /path/to/proxy.txt:/app/proxy.txt`.
 > That is useful when the list already exists before you start the container.
 > For a running container, whether its list is mounted or not, `urnet-docker
-> proxy add` (Option A) or `urnet-docker proxy paste` (Option B) is the simplest way to add or replace proxies.
+> proxy add` (Option A) or `urnet-docker proxy paste` (Option B) is the simplest way to add proxies. Both commands add to the list. See Proxy Management to remove proxies.
 
 ## Tidying up
 

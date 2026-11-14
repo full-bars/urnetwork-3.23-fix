@@ -30,7 +30,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `monitoring/` | The Prometheus and Grafana bundle. See [Monitoring](/full-bars/urnetwork-3.23-fix/wiki/Monitoring). |
 | `pelican/` | The Pelican game-server panel egg. |
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
-| `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
+| `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**`, `LOG_REFERENCE.md` or `.github/workflows/wiki-sync.yml` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
 | `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. See [Blocklist Sync](Blocklist-Sync). |
 
@@ -62,7 +62,7 @@ The `provider` binary authenticates with the platform, starts one connection per
 | Group | Files | What it does |
 | :--- | :--- | :--- |
 | Command line | `cobra*.go`, `cli*.go`, `legacy_cmds.go`, `target.go`, `default_provider.go` | The commands, their help text and how a target provider is chosen. |
-| Finding providers | `discover*.go`, `docker*.go`, `namespace_guard.go`, `state_dir_*.go` | Look for providers in systemd, OpenRC, launchd, FreeBSD rc.d, Windows tasks and containers. |
+| Finding providers | `discover*.go`, `docker*.go`, `namespace_guard.go`, `state_dir_*.go` | Look for providers in systemd, OpenRC, launchd, FreeBSD and OpenBSD rc.d, Windows tasks and containers. |
 | Start, stop, restart and uninstall | `lifecycle_*.go`, `openrc*.go`, `provider_recover*.go`, `restart_*.go`, `idle_update.go`, `uninstall_process_guard.go`, `uninstall_unix.go` | Per-OS service control and uninstall checks. |
 | Updating | `update.go`, `release.go`, `hotswap*.go`, `self_heal.go`, `tool_path_*.go` | Download a release, check its digest, swap the binary, and update the tool itself. |
 | Settings and proxies | `proxy*.go`, `config.go`, `session_cmds.go`, `control_client.go`, `pending_overrides_lock_*.go`, `ramlogs_detect.go`, `ip_detect.go` | Add and remove proxies, show every setting and where it came from, save and load a session. |

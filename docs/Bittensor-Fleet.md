@@ -180,6 +180,8 @@ Mainnet fleet writes open their journals through an owner-local storage declarat
 provider fleet register --manifest=/path/to/fleet-manifest.json --hotkey_seed_file=/path/to/hotkey.seed --coldkey_seed_file=/path/to/coldkey.seed --substrate=<ws_url> --durable-volumes=/path/to/owner-local-volumes.json --durable-volumes-sha256=sha256:<declaration_sha256>
 ```
 
+A mainnet write also needs `--mainnet-runtime-authority=<path>` and `--mainnet-runtime-authority-sha256=<hex>`. The [Head Tier](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Head-Tier) guide shows the full command.
+
 The declaration uses the owner-local schema `urnetwork-owner-local-volumes-v2` and lists the pre-provisioned state roots the journals may live under. The CLI never creates, enrolls or infers storage, and both flags must be given together. Without them a mainnet write fails early with `explicit durable-volume declaration and hash are required`.
 
 > [!NOTE]

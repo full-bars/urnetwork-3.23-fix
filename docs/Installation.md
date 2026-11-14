@@ -7,7 +7,7 @@ This guide covers the Linux installer, user-level systemd service, post-install 
 The provider is designed to run as a **non-privileged user service** for maximum security and reliability.
 
 > [!IMPORTANT]
-> Recommended: run this command as your normal non-root user. If run as root, the installer will guide you through creating a dedicated service user named `urnet`.
+> Recommended: run this command as your normal non-root user. If run as root, the installer will guide you through creating a dedicated service user named `urnet`. Without a terminal, a root install installs the tools only.
 
 On Linux, macOS, FreeBSD and OpenBSD, the installer detects the platform:
 
@@ -314,4 +314,4 @@ After optimization, your Docker container should restart and report:
 ```
 
 > [!NOTE]
-> If you only run Docker and do not intend to use the systemd provider service, the installer still offers just the tools. Choose `n` when prompted to enable the systemd service.
+> If you only run Docker and do not want the systemd provider service, run the installer as root on a systemd host and choose option 3 (continue as root, install tools only). Without a terminal, a root install installs the tools and skips the service by itself. Look for the line `continuing with tools only` in the installer output.

@@ -10,7 +10,7 @@ Some proxy-list endpoints publish new `ip:port` entries on a rolling basis — s
 
 Point the provider at a URL and it will:
 - 🌱 **Fetch on an interval** (default every hour) and add any genuinely new proxies. Entries already running, by address, are skipped. This never disturbs already-warmed-up proxies.
-- 🧹 **Optionally clean up dead entries** on a much slower, separate cadence (default once a day) — and only the ones that came from a URL, by default. Proxies you added yourself via a file or `proxy add` are left alone unless you explicitly widen the cleanup scope.
+- 🧹 **Optionally clean up dead entries** on a much slower, separate cadence (default every six hours). By default, it acts only on proxies that came from a URL. Proxies you added yourself via a file or `proxy add` are left alone unless you explicitly widen the cleanup scope.
 - 🤝 **Coexist with your existing proxy file.** A URL source is additive — you can run `--proxy_file` and `--proxy_url` at the same time. They share one hot-reload pipeline (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management)).
 
 ---
@@ -146,7 +146,7 @@ docker run -d \
 | :--- | :--- | :--- | :--- |
 | `--proxy_url=<url>` | `PROXY_URL` | — | The live source. Pass multiple times (or comma-separate the env var) for more than one source. |
 | `--proxy_url_refresh=<duration>` | `PROXY_URL_REFRESH` | `1h` | How often to fetch and add new entries. |
-| `--proxy_url_max=<n>` | `PROXY_URL_MAX` | `500` | Caps total URL-sourced proxies. `0` = unlimited. Once hit, new entries are skipped until cleanup or restart frees room — existing proxies are never evicted to make space. |
+| `--proxy_url_max=<n>` | `PROXY_URL_MAX` | `500` | Caps total URL-sourced proxies. `0` = unlimited. Once hit, a new entry replaces the lowest-ranked cached entry only if it ranks higher. Other new entries are skipped until cleanup or restart frees room. |
 | `--proxy_dead_cleanup_scope=url\|all\|none` | `PROXY_DEAD_CLEANUP_SCOPE` | `url` | Which proxies the **automatic** cleanup is allowed to remove. `url` (default) means only URL-sourced dead proxies are cleaned. `none` disables it entirely. `all` treats every source the same. Manual `proxy remove-dead` always works regardless. |
 | `--proxy_dead_cleanup_interval=<duration>` | `PROXY_DEAD_CLEANUP_INTERVAL` | `6h` | How often the automatic cleanup runs, when scope isn't `none`. |
 
@@ -172,13 +172,13 @@ Blank lines and `#` comments are ignored. Lines with a non-`socks5://` protocol 
 
 ## 🧹 How Cleanup Scope Works
 
-Every proxy is tagged internally with where it came from: `url`, `file`, or `internal` (i.e. added via `proxy add`). The `--proxy_dead_cleanup_scope` flag controls which of those tags the **automatic** daily job is allowed to act on:
+Every proxy is tagged internally with where it came from: `url`, `file`, or `internal` (i.e. added via `proxy add`). The `--proxy_dead_cleanup_scope` flag controls which of those tags the **automatic** cleanup job is allowed to act on:
 
 | Scope | Behavior |
 | :--- | :--- |
 | `none` | Automatic cleanup never runs. You prune dead proxies yourself with `urnet-tools proxy remove-dead`. |
 | `url` (default) | Automatic cleanup only ever removes dead proxies that came from a `--proxy_url` source. Your file/`proxy add` entries are never touched automatically. |
-| `all` | Automatic cleanup treats every source the same — equivalent to running `proxy remove-dead --all` once a day. |
+| `all` | Automatic cleanup treats every source the same. This equals running `proxy remove-dead --all` on every cleanup run. |
 
 An automatic cleanup can also retire a URL-sourced proxy that was up and then stayed degraded. Degraded eviction is off unless you set `degraded_cleanup_threshold` in `proxy_url.json`. The configured window is measured from the proxy's persisted down time. A proxy held back by the trim cap is protected, and time while it is held does not count toward the window. An invalid threshold logs a warning and leaves degraded eviction off.
 
@@ -208,7 +208,7 @@ After **4 give-up cycles**, the address is **permanently evicted**: removed from
 > [!NOTE]
 > Eviction is permanent and survives restarts. If a previously-blacklisted address genuinely comes back to life (e.g. the upstream fixes the password), remove it from the `Blacklist` map in `proxy_url.json` and restart, or it will keep being skipped.
 
-This is independent of the daily dead-proxy cleanup (`--proxy_dead_cleanup_scope`): backoff/eviction is driven by repeated **auth give-ups**, while cleanup acts on proxies marked **dead** by the health tracker.
+This is independent of the automatic dead-proxy cleanup (`--proxy_dead_cleanup_scope`): backoff/eviction is driven by repeated **auth give-ups**, while cleanup acts on proxies marked **dead** by the health tracker.
 
 ---
 
@@ -251,4 +251,4 @@ The fetch cycle is skipped with a logged warning. Already-added proxies from tha
 `proxy clear` (which calls `proxy remove --all`) now wipes the entire `proxy_url.json` — cache, blacklist, and source URLs — alongside the internal config and `proxy.state`. After a clear, no URL-sourced proxies will be fetched unless a source is re-added via `urnet-tools proxy add-source <url>`. This ensures a clean slate when you want only the proxies you explicitly add.
 
 **Does this validate proxies before adding them?**
-No — newly added proxies go through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately — it backs off on an escalating schedule and is permanently evicted after 4 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).
+Yes, before a proxy gets client traffic. A new proxy must pass the stage-0 check and the [stage-1 quality gate](#-stage-1-quality-gate) first. After that, it goes through the same warmup and health-tracking lifecycle as any other proxy (see [Proxy Management & Hot-Reloading](/full-bars/urnetwork-3.23-fix/wiki/Proxy-Management#-removing-dead-proxies-interactively)). If a fetched proxy never connects, it'll show as `dead` in `proxy health` and get swept up by cleanup (if scope allows) or by a manual `remove-dead`. An address that connects but repeatedly fails auth is handled separately. It backs off on an escalating schedule and is permanently evicted after 4 give-up cycles (see [Auth Give-Up Backoff & Permanent Eviction](#-auth-give-up-backoff--permanent-eviction)).

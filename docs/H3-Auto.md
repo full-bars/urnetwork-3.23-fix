@@ -49,7 +49,7 @@ Growth is at most 4 proxies per sample, about 8 minutes from zero to 64 on a lar
 
 ## What changes and when
 
-A target change re-ranks through the existing sticky ranking. Proxies that remain eligible keep their place; only vacancies are filled, by grade score, then decayed earnings, then key. Only the proxies whose eligibility changed are relaunched, through the existing relaunch path, a few at a time. A proxy carrying live clients is not cut for this and picks up the new set on its next natural restart.
+A target change re-ranks through the existing sticky ranking. Proxies that remain eligible keep their place; only vacancies are filled, by grade score, then decayed earnings, then key. Only the proxies whose eligibility changed are relaunched, through the existing relaunch path, a few at a time. A proxy carrying live clients is not cut for this. The provider retries it once a minute for up to 60 passes. If it stays busy, it picks up the new set on its next restart.
 
 The controller runs from the pressure monitor, which sweeps whether or not self-heal is on, so `h3 auto` does not depend on self-heal. When the key is not `auto`, the path reads the control state once per sweep and returns before reading a sensor.
 

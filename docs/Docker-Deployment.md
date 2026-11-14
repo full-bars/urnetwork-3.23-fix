@@ -420,7 +420,7 @@ For traffic telemetry use the Prometheus `/metrics` endpoint. It is on by defaul
 | Variable | Requirement | Description |
 |---|---|---|
 | `AUTH` | Optional | Authentication mode: `authcode` (auth code from ur.io) or `userpass` (email/password). Defaults to `userpass` when credentials are provided, or `authcode` when an auth code is present. |
-| `AUTHCODE` | Required for `AUTH=authcode` | Single-use authentication code from https://ur.io. Exchanged on first start and stored to `/root/.urnetwork/jwt` on the persistent volume. |
+| `AUTHCODE` | Required on first start for `AUTH=authcode`, unless the state volume already holds a session | Single-use authentication code from https://ur.io. Exchanged on first start and stored to `/root/.urnetwork/jwt` on the persistent volume. |
 | `USER_AUTH` | Required for `AUTH=userpass` | Account email or username. |
 | `PASSWORD` | Required for `AUTH=userpass` | Account password. |
 | `HOST_HOSTNAME` | Optional | Host server name passed into the container for dashboard identification. |

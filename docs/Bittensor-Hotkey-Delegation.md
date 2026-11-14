@@ -4,7 +4,7 @@
 > **Most operators can stop here.** If you log in with a website account and have signed the network consent (see the [Quick Start](/full-bars/urnetwork-3.23-fix/wiki/Bittensor-Quick-Start)), you do not need hotkey delegation. There is one operator in the published list today, and your network consent already covers you there.
 
 > [!NOTE]
-> Checked against upstream sn `83e6f48c2` (2026-10-21). This build pins sn `6608298ead6b`, and the hotkey wallet code (`hotkeywallet/`, `miner/hotkey_wallet_cmd.go`, `protocol/earning_wallet.go`) is unchanged between the two.
+> This build implements the hotkey wallet commands in `provider/hotkey_wallet.go`.
 
 ## Do I need this?
 
@@ -140,7 +140,7 @@ provider wallet hotkey status [--hotkey_seed_file=<path>] [--operators-url=<url>
 - Generation 1 takes its subnet (chain, genesis hash and netuid) from the authenticated operator. Later generations keep it.
 - Without epoch flags, generation 1 covers epochs 0 through 65535. A later generation starts at the operator's current epoch plus 1, or just after the previous generation's start if that is later.
 - A delegation starts at the operator's current epoch plus 2, or just after the previous delegation's start if that is later.
-- Every window ends 65,535 epochs after its start, with or without the epoch flags.
+- By default, the window ends 65,535 epochs after its start. If you set both epoch flags, the window ends at the through epoch you choose. The through epoch can be at most 65,535 epochs after the from epoch.
 
 ## Safety
 

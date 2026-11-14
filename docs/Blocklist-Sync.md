@@ -20,7 +20,7 @@ The workflow runs twice a day, at 04:00 and 16:00 UTC. You can also start it by 
 
 Upstream can change the table format and the decoder in the same window. If we copied only the tables, our decoder could not read them. The format check prevents that.
 
-`.github/scripts/cfaa_format_check.sh <upstream-sha>` writes the upstream tables into the working tree, runs the tests, and then restores the tree. The tests are the ones that match this pattern:
+`.github/scripts/cfaa_format_check.sh <upstream-sha>` writes the upstream tables into the working tree, runs the tests, and then restores both table files from the index. Run it only in a clean, disposable checkout, because it discards unstaged edits to those two files. The tests are the ones that match this pattern:
 
 ```sh
 go test -count=1 -run 'Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security' . ./blocker/...
@@ -39,7 +39,7 @@ While the sync is blocked, the tables stay at the last refresh that passed. The 
 
 ## Reviewing a sync pull request
 
-A sync pull request changes generated data only. Before you merge it, run the test command above on its branch. If the tests pass, merge it.
+A sync pull request changes generated data only. A pull request opened by the workflow does not start the CI checks. Before you merge it, review the table changes and the workflow result, and run the test command above on its branch. If the tests pass, merge it.
 
 ## Related files
 

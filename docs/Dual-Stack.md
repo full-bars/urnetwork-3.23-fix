@@ -4,10 +4,10 @@ Plain-language answer to "are we dual stack, and what does that mean per proxy?"
 
 ## The short version
 
-The provider supports both IPv4 and IPv6. There is exactly one gap: when the
+The provider supports both IPv4 and IPv6. By default there is exactly one gap: when the
 provider dials **through a proxy**, it resolves the target to IPv4 first and
 hands the proxy an IPv4 address. So a proxy that could use IPv6 still carries
-that session over IPv4.
+that session over IPv4. The `proxy_target_family` setting removes this gap. Set it to `proxy` and the proxy resolves the hostname and picks the family.
 
 Nothing needs to be configured for this today, and it does not affect earnings.
 
@@ -29,7 +29,7 @@ Nothing needs to be configured for this today, and it does not affect earnings.
 
 ## The one gap: the provider's egress *through* a proxy
 
-In this line (v3.23.0-fix.33.x), `ProxySettings.NewDialContext` resolves a
+By default in this line (v3.23.0-fix.33.x), `ProxySettings.NewDialContext` resolves a
 hostname target itself, with an **A (IPv4) query only**, and rewrites the
 SOCKS5 CONNECT target to an IPv4 literal (`net.go`, `lookupProxyTarget`). The
 proxy therefore never chooses the family for that connection.
@@ -51,28 +51,22 @@ lookup rather than per process, so one lookup's attempts walk consecutive
 entries of the paired v4-then-v6 list however many other lookups resolve at
 the same time.
 
-## What changes when we flip it
+## Let the proxy choose the family
 
-The v2026 engine already does it the other way: `ProxySettings.NewDialContext`
-passes the hostname straight to the proxy, so SOCKS5 carries the domain name
-and the **proxy's** resolver picks A or AAAA. Its control-family policy
-(`control_family.go`) explicitly does not govern that path — the tunnelled data
-plane carries both families and each packet keeps its own version.
+The `proxy_target_family` setting is live. The v2026 engine passes the hostname straight to the proxy. With `proxy`, this line does the same. SOCKS5 carries the domain name and the **proxy's** resolver picks A or AAAA. To turn it on, run:
 
-Enabling the same behavior in this line means:
+```sh
+urnet-tools set proxy-target-family proxy
+```
 
-1. Remove the A-only rewrite (ideally behind a setting such as
-   `proxy_target_family=proxy|v4`, defaulting to `v4` during rollout).
-2. Accept that the proxy's resolver becomes authoritative: a proxy with broken
-   DNS now fails where local IPv4 resolution previously saved it.
-3. Add per-proxy evidence if selection should care: SOCKS5 never reports the
-   upstream family, so proving a proxy is v6-capable needs a probe through it.
-4. Keep family accounting honest: a dial failure through a proxy must never be
-   counted as an IPv4 family strike. That accounting bug is what demoted IPv4
-   for six hours on a production box. Since rc2, a proxied TLS handshake that
-   fails is also never retried on another family: the family of the hop to the
-   proxy says nothing about the destination.
-5. Canary first — it changes DNS behavior for every proxied dial.
+To return to the default, run `urnet-tools set proxy-target-family v4`. The change applies to the next dial. Connections that are already open keep their address, so no session drops. Try it on one node first, because it changes how every proxied dial resolves DNS.
+
+Keep these points in mind:
+
+1. The proxy's resolver becomes authoritative. A proxy with broken DNS now fails where local IPv4 resolution used to save it.
+2. SOCKS5 never reports the upstream family. To prove that a proxy can use IPv6, you need a probe through it.
+
+The [Configuration](/full-bars/urnetwork-3.23-fix/wiki/Configuration) guide lists the setting and the `URNETWORK_PROXY_TARGET_FAMILY` startup default.
 
 ## Providers without UDP or IPv6 are offered for the traffic they carry
 
@@ -116,7 +110,7 @@ This line carries the client side of the design as the multi client window: IPv6
 
 | Line | Provider platform connection | Proxy egress family | Proxy data plane |
 |---|---|---|---|
-| v3.23.0-fix.33.x | v4 + v6, v4 primary | IPv4 pinned by the provider | v4 and v6 |
+| v3.23.0-fix.33.x | v4 + v6, v4 primary | IPv4 by default, chosen by the proxy with `proxy_target_family=proxy` | v4 and v6 |
 | v2026 engine | v4 + v6, v4 primary, demotion ledger | chosen by the proxy | v4 and v6 |
 
 The IPv6 and dual-stack rollout is still in its early stages. IPv4 remains the

@@ -99,6 +99,8 @@ This creates/removes `~/.urnetwork/disable_ip_autodetect` — a marker file the 
 export URNETWORK_PUBLIC_IP=192.0.2.5
 ```
 
+Set the variable in the provider's own service or container environment, then restart the provider. An `export` in your shell does not reach a provider that is already running.
+
 ## App Version Reported to the Platform
 
 The dashboard label above shows the build's own version, such as `[v3.23.0-fix.34.2]`. The provider also sends a separate **`app_version`** in its connect auth (and the `X-UR-AppVersion` header), and that is what the platform records against the node. Since v3.23.0-fix.34.2 it is written in the platform's own format instead of the git tag:
@@ -126,9 +128,9 @@ It is set at build time with `-X main.AuthVersion=...`, computed from the releas
 The provider is designed to give you flexibility in how you identify your nodes without compromising privacy:
 
 - **Redacted IP**: Only `first.x.x.last` is ever reported — the full IP is never sent to the backend or shown in the dashboard.
-- **Custom names**: Use `urnet-tools rename <name>` to label nodes however you want — no IP exposure at all.
+- **Custom names**: Use `urnet-tools rename <name>` to label nodes however you want. While the provider detects an IP, the label still shows `<name> @ first.x.x.last`. Turn IP detection off to show the name alone.
 - **Hostname passthrough**: Docker users can pass the host's real hostname via `HOST_HOSTNAME` for fleet-wide consistency.
-- **Opt out entirely**: Run `urnet-tools ip-detect off` to report only the node name without any IP.
+- **Opt out entirely**: Run `urnet-tools ip-detect off` to report only the node name without any IP. If `URNETWORK_PUBLIC_IP` is set, it wins over this setting, so remove it from the provider environment too.
 
 Besides the redacted IP, you can also have it report either the server's hostname or something entirely custom that you choose — so there are multiple ways to identify your own nodes without resorting to a full IP address. The provider is designed to give users that flexibility without compromising privacy.
 

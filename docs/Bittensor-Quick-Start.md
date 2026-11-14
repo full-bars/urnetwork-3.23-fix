@@ -30,7 +30,7 @@ What the answer means:
 
 | You see | What it means | What to do |
 |---|---|---|
-| `network consent for the network: coldkey 5..., epochs N through M (generation G), in effect now` | You are set up and being paid to that coldkey. | Nothing. You are done. |
+| `network consent for the network: coldkey 5..., epochs N through M (generation G), in effect now` | Your consent for this coldkey is in effect. Payouts also depend on your earnings and claims, which this command does not check. | Nothing. You are done. |
 | The same line ending in `starts in 1 epoch(s)` | You are set up. Payouts to this coldkey start at the next epoch. | Nothing. Wait for the epoch to turn. |
 | The same line ending in `ended` | The consent's epoch range is over. This only happens if a shorter range was chosen on purpose. | Sign again (Step 2). |
 | `provider consent for client <id>: ...` | A consent for one single node. For that node it wins over the network consent. | Nothing, unless you meant to pay that node to the network coldkey. See [Changing your wallet](#changing-your-wallet). |
@@ -101,7 +101,7 @@ The step is the same for everyone. Nothing changes on the nodes.
 |---|---|
 | `wallet status` says you are not logged in | The node's saved login lives in `~/.urnetwork/jwt` (or under `URNETWORK_STATE_DIR` if set). The command must run as the same user that owns it. For Docker, check which user the container runs as. This is not confirmed for every setup. |
 | The message expired before you signed | Each message is valid for 5 minutes. Click **New message** on the page to get a fresh one. |
-| The signing page closed | The page closes after 15 minutes. Run `provider wallet sign` again. Nothing was stored. |
+| The signing page closed | The page closes after 15 minutes. It also closes a moment after you sign. Run `provider wallet status` to see whether the consent was stored. If it was not, run `provider wallet sign` again. |
 | `signature_mismatch` | The signature came from a different account than the coldkey you named. Pick the same account in the extension, or leave out the address and choose it on the page. |
 | Refused because the account is not the network owner | Network consent needs the owner's login (the auth code from the website), not a single node's client login. Run `provider auth` on your own computer. |
 

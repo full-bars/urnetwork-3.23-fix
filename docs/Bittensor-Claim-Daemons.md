@@ -77,6 +77,8 @@ poll_seconds: 30
 lookback_epochs: 2
 ```
 
+The `lookback_epochs` value sets how far back the first discovery reaches. The first discovery starts at the last claimable epoch minus this count, plus one. Set it high enough to cover every earlier epoch that you still need to claim.
+
 ```bash
 provider claim-daemon --config=/etc/urnetwork/claim-daemon-v1.yml \
   --durable-volumes=/etc/urnetwork/durable-volumes.json \

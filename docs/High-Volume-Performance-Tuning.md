@@ -34,7 +34,7 @@ A provider deploying many proxies can easily saturate default OS limits, even be
 urnet-tools optimize
 ```
 
-The provider binary also includes a **System Auditor** that checks these limits on every startup. It also performs a **Disk I/O Latency Test** (cache-busting sync write with a dynamic file size up to 1 GB). 
+The provider binary also includes a **System Auditor** that checks these limits on every startup. It also performs a **Disk I/O Latency Test** (cache-busting sync write with a write size of at most 256 MiB or one sixty-fourth of the free space, whichever is smaller). 
 
 **Auto-Optimization:**
 *   If `URNETWORK_PROFILE=auto` is set and disk speed is below **50 MB/s**, the provider will **automatically enable RAM logging** (`/dev/shm`) to prevent I/O wait from bottlenecking the network stack.
@@ -109,16 +109,16 @@ The `auto` profile is the recommended setting for most users. It detects availab
 
 ### 🏎️ Turbo Mode (V4 / V8)
 
-The default 1 MiB TCP Accordion window creates a theoretical per-connection throughput ceiling based on latency: `ceiling = window / RTT`. At a typical 10ms RTT, the protocol is mathematically capped at ~100 Mbps regardless of available bandwidth. Turbo mode raises this mathematical ceiling by scaling the window and all dependent buffers.
+The default 1 MiB TCP Accordion window creates a theoretical per-connection throughput ceiling based on latency: `ceiling = window / RTT`. At a typical 10ms RTT, the protocol is mathematically capped at about 840 Mbps regardless of available bandwidth. Turbo mode raises this mathematical ceiling by scaling the window and all dependent buffers.
 
 **Theoretical Window Ceilings (Mathematical Maximums):**
 
 | RTT (Latency) | Fork Default (4 MiB) | Turbo V4 (4 MiB) | Turbo V8 (8 MiB) |
 | :--- | :--- | :--- | :--- |
-| 5 ms | ~6.4 Gbps | ~6.4 Gbps | ~12.8 Gbps |
-| 10 ms | ~400 Mbps | ~400 Mbps | ~800 Mbps |
-| 20 ms | ~200 Mbps | ~200 Mbps | ~400 Mbps |
-| 50 ms | ~80 Mbps | ~80 Mbps | ~160 Mbps |
+| 5 ms | ~6.7 Gbps | ~6.7 Gbps | ~13.4 Gbps |
+| 10 ms | ~3.4 Gbps | ~3.4 Gbps | ~6.7 Gbps |
+| 20 ms | ~1.7 Gbps | ~1.7 Gbps | ~3.4 Gbps |
+| 50 ms | ~670 Mbps | ~670 Mbps | ~1.3 Gbps |
 
 *Actual throughput will always be lower due to packet loss, processing overhead, and network congestion.*
 

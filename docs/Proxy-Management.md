@@ -116,6 +116,8 @@ urnet-tools proxy remove --match=bad-isp.example        # exclude pattern (persi
 
 Active exclusion patterns also appear in `urnet-tools summary` under **URL Sources**.
 
+To list the patterns, run `provider proxy exclude`. To remove one, run `provider proxy exclude <pattern> --remove`. Run both as the user that runs the provider, so they read the right state.
+
 ## ✂️ Persistent Proxy Trim (Hard Cap & A-F Worst-First Shedding)
 
 Since `v3.23.0-fix.30.4`, operators can enforce a hard ceiling on running proxies without restarting the provider or wiping configuration files:

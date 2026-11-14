@@ -190,6 +190,6 @@ rm -f /var/log/urnetwork.log /var/log/urnetwork.err
 
 ## Limitations
 
-- **Updates need root.** Every update restarts the service and replaces root-owned files, so run `urnet-tools update` from a root shell. There is no rootless update path on OpenRC.
+- **Updates need root.** An update that installs new files restarts the service and replaces root-owned files, so run `urnet-tools update` from a root shell. If the installed version is already current, the updater skips the replacement and the restart. There is no rootless update path on OpenRC.
 - **No zero-downtime HotSwap.** See [HotSwap is not available](#hotswap-is-not-available).
 - **Auto-update needs `crond`.** The entry does nothing while `crond` is stopped.
