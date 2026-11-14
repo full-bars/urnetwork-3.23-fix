@@ -535,6 +535,11 @@ func readURLStateForMerge() (*ProxyURLState, bool) {
 	return state, true
 }
 
+// logURLCycleCancelled records a shutdown without reporting a source failure.
+func logURLCycleCancelled(ctx context.Context, done, total int) {
+	tlog("[proxy][url] fetch cycle cancelled after %d of %d sources: %v\n", done, total, context.Cause(ctx))
+}
+
 func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
@@ -594,12 +599,20 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		perSource[i].Label = labels[i]
 	}
 	for i, url := range urls {
+		if ctx.Err() != nil {
+			logURLCycleCancelled(ctx, i, len(urls))
+			break
+		}
 		// Say which source is being downloaded before the request: a slow or
 		// large list otherwise looks like nothing is happening at all.
 		tlog("[proxy][url] fetching %s ...\n", labels[i])
 		fetchStart := time.Now()
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
+			if ctx.Err() != nil {
+				logURLCycleCancelled(ctx, i, len(urls))
+				break
+			}
 			perSource[i].Failed = true
 			label := labels[i]
 			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", label, err)
