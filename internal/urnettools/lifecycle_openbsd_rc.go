@@ -40,6 +40,12 @@ func openbsdScriptServesBinary(script, binary string) bool {
 	return false
 }
 
+// openbsdDoasUsable treats an inaccessible configuration as unknown, not
+// denied. Only a missing configuration rules out an installed doas.
+func openbsdDoasUsable(lookupErr, configErr error) bool {
+	return lookupErr == nil && !os.IsNotExist(configErr)
+}
+
 // openbsdRcctlArgv builds the command that runs `rcctl <args...>`, escalating
 // when the caller is not root. doas is the OpenBSD default and is preferred over
 // sudo. A caller that is neither root nor able to escalate gets an error that
@@ -53,7 +59,7 @@ func openbsdRcctlArgv(euid int, hasDoas, hasSudo bool, args ...string) (name str
 	case hasSudo:
 		return "sudo", append([]string{"rcctl"}, args...), nil
 	}
-	return "", nil, fmt.Errorf("`rcctl %s` needs root and neither doas nor sudo is installed - run it as root", joinArgs(args))
+	return "", nil, fmt.Errorf("`rcctl %s` needs root and neither configured doas nor sudo is available - run it as root", joinArgs(args))
 }
 
 func joinArgs(args []string) string {
