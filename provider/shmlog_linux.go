@@ -5,6 +5,7 @@ package main
 import (
 	"bytes"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -46,9 +47,10 @@ var ramlogOrigStdout, ramlogOrigStderr = -1, -1
 var ramlogStdioMu sync.Mutex
 var hotswapStderrDetached bool
 var hotswapStdoutInheritedPipe bool
+var hotswapSafeStderr *os.File
 
-// An older parent can hand us its own ramlog pipe. No reader is guaranteed to
-// survive the handoff, so detach before logging and use our own pipe below.
+// Keep a successor-owned reader on stderr. Forward while the inherited pipe
+// works, then keep draining if the old parent and its reader have gone away.
 func prepareHotswapStderr() {
 	if os.Getenv(EnvHotSwap) != "1" {
 		return
@@ -61,13 +63,36 @@ func prepareHotswapStderr() {
 	if err != nil {
 		return
 	}
-	defer null.Close()
-	if unix.Fstat(1, &stdout) == nil && stdout.Dev == stderr.Dev && stdout.Ino == stderr.Ino {
-		hotswapStdoutInheritedPipe = true
+	old, err := dupCloseOnExec(2)
+	if err != nil {
+		null.Close()
+		return
 	}
-	if dup2(int(null.Fd()), 2) == nil {
-		hotswapStderrDetached = true
+	sink := os.NewFile(uintptr(old), "inherited-stderr")
+	r, w, err := os.Pipe()
+	if err != nil {
+		sink.Close()
+		null.Close()
+		return
 	}
+	shared := unix.Fstat(1, &stdout) == nil && stdout.Dev == stderr.Dev && stdout.Ino == stderr.Ino
+	if err := dup2(int(w.Fd()), 2); err != nil {
+		r.Close()
+		w.Close()
+		sink.Close()
+		null.Close()
+		return
+	}
+	w.Close()
+	hotswapStdoutInheritedPipe = shared
+	hotswapSafeStderr = null
+	hotswapStderrDetached = true
+	go func() {
+		_, _ = io.Copy(sink, r)
+		sink.Close()
+		_, _ = io.Copy(io.Discard, r)
+		r.Close()
+	}()
 }
 
 // hotswapStdio returns owned duplicates so command startup cannot close the
@@ -191,11 +216,16 @@ func initSHMLogger() {
 
 		// Save the actual descriptor numbers. os.Stderr can alias os.Stdout.
 		ramlogStdioMu.Lock()
-		stdoutFD := 1
+		stdoutFD, stderrFD := 1, 2
+		if hotswapStderrDetached {
+			// The forwarding pipe is owned by this process, so it cannot be
+			// passed to another successor as its original stderr.
+			stderrFD = int(hotswapSafeStderr.Fd())
+		}
 		if hotswapStdoutInheritedPipe && hotswapStderrDetached {
 			// The original stdout may belong to the old process too. A later
 			// hotswap must not inherit it after our RAM log replaces it.
-			stdoutFD = 2
+			stdoutFD = stderrFD
 		}
 		out, err := dupCloseOnExec(stdoutFD)
 		if err != nil {
@@ -205,7 +235,7 @@ func initSHMLogger() {
 			f.Close()
 			return
 		}
-		errfd, err := dupCloseOnExec(2)
+		errfd, err := dupCloseOnExec(stderrFD)
 		if err != nil {
 			unix.Close(out)
 			ramlogStdioMu.Unlock()
