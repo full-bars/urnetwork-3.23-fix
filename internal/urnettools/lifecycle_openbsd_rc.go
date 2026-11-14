@@ -40,6 +40,11 @@ func openbsdScriptServesBinary(script, binary string) bool {
 	return false
 }
 
+// openbsdDoasUsable leaves unknown configuration errors to doas.
+func openbsdDoasUsable(lookupErr, configErr error) bool {
+	return lookupErr == nil && !os.IsNotExist(configErr)
+}
+
 // openbsdRcctlArgv builds the command that runs `rcctl <args...>`, escalating
 // when the caller is not root. doas is the OpenBSD default and is preferred over
 // sudo. A caller that is neither root nor able to escalate gets an error that
