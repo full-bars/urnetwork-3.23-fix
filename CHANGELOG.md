@@ -2,7 +2,11 @@
 
 ## [Unreleased]
 
-Everything merged after `v3.23.0-fix.35.9`.
+Everything merged after `v3.23.0-fix.35.10`.
+
+## [v3.23.0-fix.35.10]
+
+_Released 2026-11-14. Based on v3.23.0-fix.35.9. Notes: `releases/v3.23.0-fix.35.10.md`._
 
 This update has three parts. It ports the client side of the network operator's FP2 provider selection, it closes a handshake bug where one forged id could wedge a peer session, and it moves the build to Go 1.27.4. Redeploy after the update, because the handshake fix changes the binary.
 
