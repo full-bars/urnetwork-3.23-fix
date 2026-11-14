@@ -16,9 +16,12 @@ Nothing needs to be configured for this today, and it does not affect earnings.
 - **The provider's own platform connection** runs both families. The v33 line
   has family-pinned v4 and v6 transports; both are attempted, and IPv4 stays
   the primary control plane.
-- **The proxy data plane** understands both families. The SOCKS5 UDP relay
-  handles IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1 and
-  4).
+- **The proxy data plane** understands both families. The SOCKS5 UDP packet
+  format carries IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1
+  and 4). For a proxied identity, the provider relays IPv4 UDP only. It refuses
+  an IPv6 destination with `proxy udp: ipv6 destinations are not relayed`,
+  because the relay check proves the relay over IPv4 and most relays have no
+  IPv6 exit. The provider logs `client udp refused` for a refused flow.
 - **Clients reaching a proxy over IPv6** works when that proxy's endpoint is
   registered/advertised that way; the provider does not block it.
 - **The direct identity** is dual stack, with IPv4 primary and IPv6 as a
