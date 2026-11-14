@@ -241,6 +241,8 @@ var VersionStamp string
 // when -trimpath strips buildinfo. The stamp is read by urnet-tools from the
 // binary file to detect the provider version without executing it.
 func init() {
+	protectLogPipes()
+	prepareHotswapStderr()
 	// debug.SetGCPercent(10)
 
 	// Must run before initGlog(): initGlog reads URNETWORK_PROFILE/

@@ -16,8 +16,14 @@ func initSHMLogger() {
 	// No-op for non-Linux platforms
 }
 
+func prepareHotswapStderr() {}
+
 // restoreStdioBeforeExec is a no-op where there is no ramlog pipe redirect.
 func restoreStdioBeforeExec() {}
+
+func hotswapStdio() (*os.File, *os.File, func(), error) {
+	return os.Stdout, os.Stderr, func() {}, nil
+}
 
 func shmLogFatal(code int, format string, args ...any) {
 	msg := fmt.Sprintf("FATAL [exit %d]: %s\n", code, fmt.Sprintf(format, args...))

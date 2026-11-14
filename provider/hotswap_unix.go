@@ -88,12 +88,19 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 	// Sanitize args: candidate must never re-run auth or re-authenticate with old credentials (F-3)
 	cleanArgs := sanitizeCandidateArgs(args)
 
+	stdout, stderr, closeStdio, err := hotswapStdio()
+	if err != nil {
+		parentFile.Close()
+		return nil, fmt.Errorf("prepare candidate stdio: %w", err)
+	}
+	defer closeStdio()
+
 	cmd := exec.Command(exe, cleanArgs...)
 	cmd.Env = append(os.Environ(), EnvHotSwap+"=1")
 	// ExtraFiles[0] becomes file descriptor 3 in the child process
 	cmd.ExtraFiles = []*os.File{childFile}
-	cmd.Stdout = os.Stdout
-	cmd.Stderr = os.Stderr
+	cmd.Stdout = stdout
+	cmd.Stderr = stderr
 
 	if err := cmd.Start(); err != nil {
 		// Self-healing: if binary lacks execute permission, repair with chmod 0755 and retry
@@ -103,8 +110,8 @@ func spawnHotSwapCandidate(exe string, args []string) (*HotswapParentSession, er
 				cmd = exec.Command(exe, cleanArgs...)
 				cmd.Env = append(os.Environ(), EnvHotSwap+"=1")
 				cmd.ExtraFiles = []*os.File{childFile}
-				cmd.Stdout = os.Stdout
-				cmd.Stderr = os.Stderr
+				cmd.Stdout = stdout
+				cmd.Stderr = stderr
 				if retryErr := cmd.Start(); retryErr == nil {
 					tlog("⚡ [hotswap-heal] Successfully spawned candidate after permission repair (PID %d)\n", cmd.Process.Pid)
 					return &HotswapParentSession{
