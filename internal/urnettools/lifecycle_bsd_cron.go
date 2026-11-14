@@ -2,7 +2,7 @@ package urnettools
 
 import (
 	"fmt"
-	"path/filepath"
+	"path"
 	"strings"
 )
 
@@ -92,7 +92,7 @@ func bsdUpdateCronLine(tool, logDir, interval string, selector []string) (string
 		args += " " + shellQuote(a)
 	}
 	command := fmt.Sprintf("%s update %s >> %s 2>&1",
-		shellQuote(tool), args, shellQuote(filepath.Join(logDir, "auto-update.log")))
+		shellQuote(tool), args, shellQuote(path.Join(logDir, "auto-update.log")))
 	// Empty shell quotes separate a preceding backslash from cron's escape.
 	return spec + " " + strings.ReplaceAll(command, "%", `''\%`), nil
 }
