@@ -1110,6 +1110,37 @@ test_sanitize_restart_dropins_effective_statuses() {
 }
 test_sanitize_restart_dropins_effective_statuses
 
+test_sanitize_restart_dropins_sigpipe() {
+    local tmp d out
+    tmp="$(mktemp -d)"
+    d="$tmp/systemd/user/urnetwork.service.d"
+    mkdir -p "$d"
+    out="$tmp/warns.txt"
+    pr_warn() { printf '%s\n' "$*" >> "$out"; }
+
+    printf '[Service]\nRestartForceExitStatus=\nRestart=\n' > "$d/10-reset.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(rg -c SIGPIPE "$out")" "empty force list warns even after empty Restart"
+
+    printf '[Service]\nRestart=always\n' > "$d/20-always.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "later always handles SIGPIPE"
+
+    printf '[Service]\nRestartPreventExitStatus=SIGPIPE\n' > "$d/30-prevent.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(rg -c SIGPIPE "$out")" "SIGPIPE prevention beats always"
+
+    printf '[Service]\nRestartPreventExitStatus=\n' > "$d/40-clear.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "later prevention reset clears warning"
+    rm -rf "$tmp"
+}
+test_sanitize_restart_dropins_sigpipe
+
 echo "======================================"
 if [ $FAILS -eq 0 ]; then
     echo "🎉 All tests passed!"

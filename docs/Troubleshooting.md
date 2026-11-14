@@ -1,5 +1,9 @@
 # Troubleshooting Guide
 
+## Provider stopped after SIGPIPE
+
+If `systemctl --user status urnetwork.service` shows `code=killed, signal=PIPE` and the provider stays inactive, systemd may have treated the signal as a clean exit. Start the provider with `urnet-tools start`. Re-run the Linux installer to install the SIGPIPE restart setting, and check its warnings for conflicting overrides. An override can prevent recovery even after reinstalling.
+
 ## 🚨 Incident Quick Diagnosis Matrix
 
 > [!NOTE]
