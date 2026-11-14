@@ -1563,6 +1563,7 @@ NotifyAccess=all
 Environment="HOST_HOSTNAME=$(hostname)"
 ExecStart=$install_path/bin/urnetwork provide
 Restart=on-failure
+RestartForceExitStatus=SIGPIPE
 RestartSec=5
 
 [Install]

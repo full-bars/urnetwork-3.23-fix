@@ -154,6 +154,7 @@ systemctl() {
                 result, _, _, unit = self.run_install("", existing_unit=existing, stopped=stopped)
                 self.assertEqual(result.returncode, 0, result.stderr)
                 self.assertIn("\nType=notify\nNotifyAccess=all\n", unit)
+                self.assertIn("\nRestart=on-failure\nRestartForceExitStatus=SIGPIPE\n", unit)
                 self.assertNotIn("Type=simple", unit)
                 self.assertNotIn("TimeoutStartSec=", unit)
 
