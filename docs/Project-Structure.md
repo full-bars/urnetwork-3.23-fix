@@ -16,7 +16,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `extender/` | The extender transport. |
 | `protocol/` | Protocol Buffer definitions. Generated Go code is not edited by hand. |
 | `api/` | API endpoint definitions. |
-| `blocker/`, `security/` | Generators for the built-in blocklist data. |
+| `blocker/`, `security/` | Generators for the built-in blocklist data. [Blocklist Sync](Blocklist-Sync) explains how the tables stay current. |
 | `durablesys/`, `durablevolume/`, `hotkeywallet/` | Storage and wallet helpers used by the Bittensor claim tools. |
 | `third_party/` | Vendored dependencies we patch (see `THIRD_PARTY_LICENSES.md`). |
 | `connectctl/`, `emoji/` | Upstream tools copied in as they are. |
@@ -27,7 +27,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
 | `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
-| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. |
+| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. See [Blocklist Sync](Blocklist-Sync). |
 
 ## The provider (`provider/`)
 
