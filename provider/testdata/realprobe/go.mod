@@ -1,6 +1,6 @@
 module extender-real-probe-test
 
-go 1.27.3
+go 1.27.4
 
 require github.com/urnetwork/connect v0.0.0-20261107011806-b1bee8132573
 
