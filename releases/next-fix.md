@@ -35,11 +35,14 @@ ftp -o urnet-install.sh https://dl.fullbars.xyz/install-openbsd.sh
 doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
 
-On Windows, use PowerShell:
+Install on Windows in PowerShell. Windows Defender can flag the one-line form as a false positive, because the script downloads and unpacks a program. The safer way has two steps. Download the script, read it, then run it from disk:
 
 ```powershell
-irm https://dl.fullbars.xyz/install-win.ps1 | iex
+irm https://dl.fullbars.xyz/install-win.ps1 -OutFile "$env:TEMP\install-win.ps1"
+powershell -NoProfile -ExecutionPolicy Bypass -File "$env:TEMP\install-win.ps1"
 ```
+
+The Installation guide lists the Defender labels you may see and what to do about them.
 
 Run the provider in Docker with a persistent volume and a single-use auth code from https://ur.io:
 
@@ -61,8 +64,8 @@ This release is the provider line. For miner setup, use the separate miner relea
 
 ### Fixed
 
-- **A forged handshake generation id cannot wedge a peer session. [redeploy]** A peer could send a ClientHello with a high id and make the responder drop every later ClientHello that carried a lower id. The responder now takes an id only from a ClientHello, ignores foreign proofs and responses, and orders ids only while a handshake attempt is in flight.
-- **OpenBSD service and installer guards. [redeploy] [installer]** `urnet-tools` tells an absent service from an ambiguous process match before it runs `rcctl`, keeps manually started providers on the direct stop path, and checks that an `rcctl` action targets the right provider. The installer checks the service user of an existing `rc.d` script and keeps a working provider when a step fails.
+- **A forged handshake generation id cannot wedge a peer session. [redeploy]** A peer could send a ClientHello with a high id and make the responder drop every later ClientHello that carried a lower id. The responder now takes an id only from a ClientHello. It ignores foreign proofs and responses. It orders ids only while a handshake attempt is in flight.
+- **OpenBSD service and installer guards. [redeploy] [installer]** `urnet-tools` tells an absent service from an ambiguous process match before it runs `rcctl`. It keeps manually started providers on the direct stop path. It checks that an `rcctl` action targets the right provider. The installer checks the service user of an existing `rc.d` script. It keeps a working provider when a step fails.
 - **The BSD cron log path uses forward slashes on every build host. [no redeploy]**
 - **A shutdown during the URL proxy source cycle no longer fails every source. [redeploy]** Before, a cancel marked every remaining source failed, set the resolution status to failed and warned once per source. The cycle now stops and logs one line with the cause. The results of finished sources are kept.
 
@@ -73,8 +76,8 @@ This release is the provider line. For miner setup, use the separate miner relea
 
 ## Known limits
 
-- The blocklist tables stay at the refresh before 2026-11-13. Upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table.
+- The blocklist tables stay at the refresh before 2026-11-13. Upstream's tables from that day use a new format. They list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table.
 - With a fixed window size of one and a single IPv6-only exit, the window does not look for an IPv4 exit until it has room. Upstream behaves the same way.
-- This line has no receive-sequence rejection records, so the handshake fix covers the handshake only. Whether an invalid contract can block lower sequence ids for good here is not verified.
+- This line has no receive-sequence rejection records, so the handshake fix covers the handshake only. I did not verify whether an invalid contract can block lower sequence ids for good here.
 - Recent exit memory and the sticky redial of a fixed exit are idle in this line, because it lacks the transport-loss signal they need.
 - The OpenBSD runtime was not run on a real OpenBSD host.

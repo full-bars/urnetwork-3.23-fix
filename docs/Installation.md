@@ -121,7 +121,7 @@ rm -rf ~/.urnetwork
 
 ### Post-install commands
 
-All `urnet-tools` commands work identically to Linux:
+Most `urnet-tools` commands work the same as on Linux. `eco`, `ramlogs` and `optimize` tune Linux kernel settings, so they do not work on macOS:
 
 ```bash
 # Start/stop

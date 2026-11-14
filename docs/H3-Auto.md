@@ -75,7 +75,7 @@ The usual H3 signals still apply: the `[health]` fields (`h3_up`, `h3_tx_share`,
 
 ## Canary guidance
 
-The initial constants are conservative beta values, not measured guarantees. Run `h3 auto` on a 2 to 4 GiB canary first and compare it with a box on `direct` over the same window. Watch resident memory, `h3_connect_attempts_total` and the platform speed-test cost, since every added proxy is a redial.
+The initial constants are conservative beta values, not measured guarantees. Run `h3 auto` on a 2 to 4 GiB canary first and compare it with a box on `direct` over the same window. Watch resident memory, `urnet_h3_connect_attempts_total` and the platform speed-test cost, since every added proxy is a redial.
 
 Known risks:
 
