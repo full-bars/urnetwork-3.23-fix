@@ -224,6 +224,9 @@ jobs:
       - name: App version string test
         run: bash scripts/test_compute_app_version.sh
 
+      - name: ClamAV scanner script test
+        run: bash .github/scripts/test-clamav-scan.sh
+
       - name: Run Installer Script Tests
         run: |
           chmod +x scripts/test_provider_install.sh

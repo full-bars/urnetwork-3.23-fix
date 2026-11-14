@@ -499,6 +499,32 @@ jobs:
             echo "auto=true" >> "$GITHUB_OUTPUT"
           fi
 
+      - name: Test the ClamAV scanner script
+        run: bash .github/scripts/test-clamav-scan.sh
+
+      # Gate: nothing is published until ClamAV has scanned the exact files that
+      # the Release step uploads. The script refreshes the definitions first and
+      # fails closed, so a detection or a scanner failure stops the release.
+      - name: ClamAV gate (blocks the release)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          CLAMAV_REPORT_FILE: ${{ github.workspace }}/clamav-scan-report.md
+          CLAMAV_MIN_FILES: '20'
+        run: |
+          set -euo pipefail
+          if ! command -v clamscan >/dev/null 2>&1 || ! command -v freshclam >/dev/null 2>&1; then
+            sudo apt-get update -qq
+            sudo apt-get install -y -qq clamav clamav-freshclam >/dev/null
+          fi
+          rm -rf clamav_stage
+          mkdir clamav_stage
+          shopt -s nullglob
+          for f in urnetwork-provider-*.tar.gz urnetwork-monitoring-*.tar.gz urnet-tools-* urnet-docker-*; do
+            if [ -f "$f" ]; then cp -p "$f" clamav_stage/; fi
+          done
+          ls -l clamav_stage
+          bash .github/scripts/clamav-scan.sh clamav_stage/
+
       - name: Release
         uses: softprops/action-gh-release@v2
         if: startsWith(github.ref, 'refs/tags/')
@@ -512,6 +538,31 @@ jobs:
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           body_path: ${{ steps.body_src.outputs.path }}
           generate_release_notes: ${{ steps.body_src.outputs.auto }}
+
+      - name: Post ClamAV verdict to release
+        if: startsWith(github.ref, 'refs/tags/')
+        # The release is already published. A failure to write the report must not
+        # fail the job and skip the VirusTotal scan that follows.
+        continue-on-error: true
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python3 - "$GITHUB_REF_NAME" << 'PY'
+          import json, os, sys, urllib.request
+          ver = sys.argv[1]
+          api = "https://api.github.com/repos/" + os.environ["GITHUB_REPOSITORY"]
+          headers = {"Authorization": "Bearer " + os.environ["GITHUB_TOKEN"], "Accept": "application/vnd.github+json"}
+          with open(os.path.join(os.environ["GITHUB_WORKSPACE"], "clamav-scan-report.md")) as f:
+              report = f.read()
+          req = urllib.request.Request(f"{api}/releases/tags/{ver}", headers=headers)
+          with urllib.request.urlopen(req, timeout=30) as resp:
+              rel = json.load(resp)
+          # Append to the existing body so the release notes stay.
+          body_new = (rel.get("body") or "") + "\n\n## ClamAV Scan (blocks the release)\n\n" + report
+          req2 = urllib.request.Request(f"{api}/releases/{rel['id']}", data=json.dumps({"body": body_new}).encode(), headers=headers, method="PATCH")
+          with urllib.request.urlopen(req2, timeout=30) as resp2:
+              print("ClamAV verdict appended to the release body (HTTP", resp2.status, ")")
+          PY
 
       - name: Notify Discord on tagged release
         if: ${{ startsWith(github.ref, 'refs/tags/v') }}
@@ -537,9 +588,9 @@ jobs:
           }')" "$BUILD_NOTIFY"
 
   scan:
-    name: Security Scan (parallel, non-blocking)
-    needs: build
-    if: always()
+    name: VirusTotal Scan (advisory)
+    needs: [build, create-release]
+    if: always() && needs.create-release.result == 'success'
     runs-on: ubuntu-latest
     permissions:
       contents: write
@@ -755,28 +806,6 @@ jobs:
           # non-zero so the job is red, and the comment step below still runs
           # (if: always()) to surface the verdict on the release.
 
-      - name: ClamAV scan of release binaries
-        # The VirusTotal step runs set -euo pipefail; a VT FAIL (deliberately
-        # non-blocking) would skip ClamAV entirely without this.
-        if: always()
-        run: |
-          set -euo pipefail
-          VERSION=${GITHUB_REF_NAME:-latest}
-          if command -v clamscan >/dev/null 2>&1; then
-            echo "ClamAV already installed"
-          else
-            sudo apt-get update -qq
-            sudo apt-get install -y -qq clamav >/dev/null
-          fi
-          # EICAR self-test: the scanner must actually detect.
-          printf 'X5O!P%%@AP[4\PZX54(P^)7CC)7}$EICAR-STANDARD-ANTIVIRUS-TEST-FILE!$H+H*' > /tmp/eicar.txt
-          if clamscan /tmp/eicar.txt 2>/dev/null | grep -q "FOUND"; then
-            echo "EICAR self-test passed (scanner active)"
-          else
-            echo "::warning::EICAR self-test did not FOUND — ClamAV may be broken"
-          fi
-          clamscan --no-summary -r release_tmp/ 2>/dev/null | grep "FOUND" && echo "::error::ClamAV found malware in release artifacts" || echo "ClamAV: clean"
-
       - name: Post scan verdict to release
         if: always() && startsWith(github.ref, 'refs/tags/')
         env:
@@ -784,7 +813,7 @@ jobs:
         run: |
           # Post the scan result as a release comment. NEVER gates the release.
           VER=${GITHUB_REF_NAME}
-          BODY="## Security Scan (parallel, non-blocking)"
+          BODY=""
           if [ -f "${GITHUB_WORKSPACE}/vt-scan-report.md" ]; then
             BODY="${BODY}"$'\n'"$(cat "${GITHUB_WORKSPACE}/vt-scan-report.md")"
           else
