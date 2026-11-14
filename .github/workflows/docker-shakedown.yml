@@ -167,7 +167,7 @@ jobs:
           # catchable 124 exit (so the verdict logic below works) instead of
           # a raw job kill that leaves no report.
           set +e
-          sudo -E timeout 6600 bash .github/scripts/docker-shakedown.sh /tmp/gauntlet.jwt > /tmp/docker-shakedown.out 2>&1
+          sudo --preserve-env=EXPECTED_VERSION,GAUNTLET_USER,GAUNTLET_PW timeout 6600 bash .github/scripts/docker-shakedown.sh /tmp/gauntlet.jwt > /tmp/docker-shakedown.out 2>&1
           DS_EXIT=$?
           set -e
           echo "::group::Docker Shakedown Report"

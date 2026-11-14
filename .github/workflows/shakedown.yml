@@ -171,7 +171,7 @@ jobs:
           # 2's last sample, before remove-dead/AB/shutdown ran at all.
           set +e
           RUN_HOME=$(mktemp -d)
-          sudo -E env HOME="$RUN_HOME" timeout 10800 bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
+          sudo --preserve-env=EXPECTED_VERSION env HOME="$RUN_HOME" timeout 10800 bash .github/scripts/shakedown.sh /tmp/gauntlet.jwt > /tmp/shakedown.out 2>&1
           SHAKE_EXIT=$?
           set -e
           echo "::group::Shakedown Report"
