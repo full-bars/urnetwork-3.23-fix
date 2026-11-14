@@ -452,6 +452,8 @@ type ExtenderServer struct {
 	// what the role is actually used for, by service and by refusal reason
 	usage extenderUsage
 
+	serviceHandlers extenderServiceHandlers
+
 	// refusal logging state: a flood must not bury the log it writes to
 	refusalLogLock  sync.Mutex
 	refusalLogState map[string]*extenderRefusalLogState
@@ -601,6 +603,8 @@ func NewExtenderServer(
 		admission:                newExtenderAdmission(settings),
 		settings:                 settings,
 	}
+	self.serviceHandlers.gossip = settings.GossipConnHandler
+	self.serviceHandlers.feed = settings.FeedConnHandler
 	if 0 < len(self.nlayerHops) {
 		self.nlayerConnectSettings = self.newNLayerConnectSettings()
 	}

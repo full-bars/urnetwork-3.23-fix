@@ -91,10 +91,11 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 			self.limit(w, req, "nlayer limited", fmt.Errorf("every NLayer hop is limited"), retryAfter)
 			return
 		}
-	case connect.ExtenderServiceGossip:
-		serviceConnHandler = server.settings.GossipConnHandler
-	case connect.ExtenderServiceFeed:
-		serviceConnHandler = server.settings.FeedConnHandler
+	case connect.ExtenderServiceGossip, connect.ExtenderServiceFeed:
+		serviceConnHandler = server.admitServiceStream(header.Service)
+		if serviceConnHandler != nil {
+			defer server.endServiceStream()
+		}
 	case connect.ExtenderServiceProbe:
 		// the depth bound comes first, as for a forward: a probe relayed
 		// around a loop of NLayer extenders ends here (A11, GEOMAP §2.9)
