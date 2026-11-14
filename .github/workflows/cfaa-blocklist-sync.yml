@@ -93,6 +93,22 @@ jobs:
         run: |
           echo "Both blocklists are already in sync. Nothing to do."
 
+      - name: Set up Go
+        if: steps.fetch.outputs.files_identical == 'false'
+        uses: actions/setup-go@v5
+        with:
+          go-version-file: go.mod
+          cache: true
+
+      # Upstream can change the table format together with its decoder. A PR opened with the
+      # GITHUB_TOKEN does not trigger CI, so the decoder tests run here. When they fail no
+      # branch and no PR is created, and the notification lists the upstream commits to port.
+      - name: Check the fork reads the upstream tables
+        if: steps.fetch.outputs.files_identical == 'false'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: bash .github/scripts/cfaa_format_check.sh "${{ steps.fetch.outputs.upstream_sha }}"
+
       - name: Import GPG key
         if: steps.fetch.outputs.files_identical == 'false'
         env:
