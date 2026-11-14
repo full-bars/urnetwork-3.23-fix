@@ -202,6 +202,11 @@ func TestHotSwapCandidateUsesOriginalStderr(t *testing.T) {
 		t.Fatal(err)
 	}
 	defer orig.Close()
+	origOut, err := os.Create(filepath.Join(t.TempDir(), "original-stdout"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer origOut.Close()
 	r, w, err := os.Pipe()
 	if err != nil {
 		t.Fatal(err)
@@ -214,7 +219,7 @@ func TestHotSwapCandidateUsesOriginalStderr(t *testing.T) {
 		ramlogOrigStdout, ramlogOrigStderr = oldSavedOut, oldSavedErr
 	}()
 	os.Stdout, os.Stderr = w, w
-	ramlogOrigStdout, ramlogOrigStderr = int(orig.Fd()), int(orig.Fd())
+	ramlogOrigStdout, ramlogOrigStderr = int(origOut.Fd()), int(orig.Fd())
 	t.Setenv("TEST_HOTSWAP_STDERR", "spawned")
 	exe, err := os.Executable()
 	if err != nil {
