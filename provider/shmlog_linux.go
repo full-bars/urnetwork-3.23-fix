@@ -45,6 +45,7 @@ var ramlogsDockerEnvPath = "/.dockerenv"
 var ramlogOrigStdout, ramlogOrigStderr = -1, -1
 var ramlogStdioMu sync.Mutex
 var hotswapStderrDetached bool
+var hotswapStdoutInheritedPipe bool
 
 // An older parent can hand us its own ramlog pipe. No reader is guaranteed to
 // survive the handoff, so detach before logging and use our own pipe below.
@@ -62,7 +63,7 @@ func prepareHotswapStderr() {
 	}
 	defer null.Close()
 	if unix.Fstat(1, &stdout) == nil && stdout.Dev == stderr.Dev && stdout.Ino == stderr.Ino {
-		_ = dup2(int(null.Fd()), 1)
+		hotswapStdoutInheritedPipe = true
 	}
 	if dup2(int(null.Fd()), 2) == nil {
 		hotswapStderrDetached = true
@@ -190,7 +191,13 @@ func initSHMLogger() {
 
 		// Save the actual descriptor numbers. os.Stderr can alias os.Stdout.
 		ramlogStdioMu.Lock()
-		out, err := dupCloseOnExec(1)
+		stdoutFD := 1
+		if hotswapStdoutInheritedPipe && hotswapStderrDetached {
+			// The original stdout may belong to the old process too. A later
+			// hotswap must not inherit it after our RAM log replaces it.
+			stdoutFD = 2
+		}
+		out, err := dupCloseOnExec(stdoutFD)
 		if err != nil {
 			ramlogStdioMu.Unlock()
 			r.Close()

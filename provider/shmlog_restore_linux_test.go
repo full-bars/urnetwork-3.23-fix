@@ -94,6 +94,12 @@ func TestHotSwapStderrHelper(t *testing.T) {
 		signal.Notify(ch, syscall.SIGPIPE)
 		signal.Stop(ch)
 	}
+	if mode == "successor-stdout" {
+		if _, err := os.Stdout.Write([]byte("candidate stdout\n")); err != nil {
+			os.Exit(4)
+		}
+		os.Exit(0)
+	}
 	if mode == "spawned" {
 		var b [1]byte
 		if _, err := syscall.Read(3, b[:]); err != nil {
@@ -163,6 +169,30 @@ func TestHotSwapNormalStderrUnchanged(t *testing.T) {
 	got, err := io.ReadAll(r)
 	if err != nil || string(got) != "candidate stderr\n" {
 		t.Fatalf("normal stderr = %q, %v", got, err)
+	}
+}
+
+func TestHotSwapSuccessorPreservesStdout(t *testing.T) {
+	r, w, err := os.Pipe()
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestHotSwapStderrHelper$")
+	cmd.Stdout, cmd.Stderr = w, w
+	cmd.Env = append(os.Environ(), "TEST_HOTSWAP_STDERR=successor-stdout", EnvHotSwap+"=1")
+	err = cmd.Run()
+	w.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := io.ReadAll(r)
+	if err != nil || string(got) != "candidate stdout\n" {
+		t.Fatalf("successor stdout = %q, %v", got, err)
 	}
 }
 
