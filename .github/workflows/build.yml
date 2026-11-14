@@ -221,6 +221,9 @@ jobs:
               sys.exit(1)
           PYEOF
 
+      - name: App version string test
+        run: bash scripts/test_compute_app_version.sh
+
       - name: Run Installer Script Tests
         run: |
           chmod +x scripts/test_provider_install.sh

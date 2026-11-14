@@ -103,18 +103,19 @@ Set the variable in the provider's own service or container environment, then re
 
 ## App Version Reported to the Platform
 
-The dashboard label above shows the build's own version, such as `[v3.23.0-fix.34.2]`. The provider also sends a separate **`app_version`** in its connect auth (and the `X-UR-AppVersion` header), and that is what the platform records against the node. Since v3.23.0-fix.34.2 it is written in the platform's own format instead of the git tag:
+The dashboard label above shows the build's own version, such as `[v3.23.0-fix.34.2]`. The provider also sends a separate **`app_version`** in its connect auth (and the `X-UR-AppVersion` header), and that is what the platform records against the node. Since v3.23.0-fix.34.2 it is written in the platform's own format instead of the git tag. From v3.23.0-fix.35.10 the release number comes before a `-meso` suffix. Earlier releases ended in `-fix.<N.M>`:
 
 ```
-YYYY.M.D-<code>-fix.<N.M>
-2026.10.20-1076955500-fix.34.1
+YYYY.M.D-<code>-<N.M>-meso
+2026.11.14-1098545590-35.10-meso
 ```
 
 | Part | Meaning |
 |------|---------|
 | `YYYY.M.D` | UTC commit date of the tagged commit, no zero padding. The platform's provider rollout gauge keeps only this part. |
 | `<code>` | The house build code, `(seconds since 2023-05-23T00:00:00Z) x 10`, taken at the tagged commit's time. The same formula gives upstream's own tag codes. Stored by the platform, not read. |
-| `fix.<N.M>` | This line's release number. Keeps the node identifiable as a 3.23-fix provider. |
+| `<N.M>` | This line's release number. The platform stores it and does not read it. |
+| `meso` | A fixed suffix. 3.23 builds and meso-miner builds report in one family, so the suffix does not tell the lines apart. |
 
 A version that does not start with a real calendar date (every release before 34.2 sent the raw tag) is filed under `other` by the platform. The string is 64 characters or fewer, which is the limit the platform stores.
 

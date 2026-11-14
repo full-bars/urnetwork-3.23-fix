@@ -71,6 +71,7 @@ This release is the provider line. For miner setup, use the separate miner relea
 
 ### Changed
 
+- **The provider reports `YYYY.M.D-<code>-<N.M>-meso` to the backend. [redeploy]** Earlier releases ended in `-fix.<N.M>`. The platform reads only the date. 3.23 and meso-miner builds now share the suffix.
 - **The build is Go 1.27.4. [redeploy]**
 - **The blocklist sync runs the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. [no redeploy]** When they fail, the sync stops and posts the failing tests.
 

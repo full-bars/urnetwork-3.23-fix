@@ -23,6 +23,7 @@ This update has three parts. It ports the client side of the network operator's 
 
 ### Changed
 
+- **The provider reports `YYYY.M.D-<code>-<N.M>-meso` to the backend** (`scripts/compute-app-version.sh`, `docs/Node-Identity.md`). Releases up to `v3.23.0-fix.35.9` reported `-fix.<N.M>`. The platform reads only the date, so this changes nothing for rollout. 3.23 and meso-miner builds now share the suffix. [redeploy]
 - **The build is Go 1.27.4** (`go.mod`, `Dockerfile`, the workflows). The network operator's server and the sn line already require it.
 - **The blocklist sync checks the decoder before it opens a PR** (`.github/workflows/cfaa-blocklist-sync.yml`, `.github/scripts/cfaa_format_check.sh`). Upstream can change the generated table format together with its decoder, and the sync copied only the tables. The sync job now writes the tables into the tree and runs the blocker, CFAA, Telegram and security tests first. A PR opened by the workflow does not trigger CI, so that run is the test. When the tests fail, the job opens no branch and no PR, and the Discord message lists the failing tests and the upstream commits that changed the format code.
 

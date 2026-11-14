@@ -2,7 +2,11 @@
 # compute-app-version.sh — prints the upstream-style app_version a provider
 # release reports to the backend in its connect auth.
 #
-# Shape: YYYY.M.D-<code>-fix.<N.M>   e.g. 2026.10.20-1076956260-fix.34.1
+# Shape: YYYY.M.D-<code>-<N.M>-meso   e.g. 2026.11.14-1098545590-35.10-meso
+#
+# The backend discards everything after the date, so the release number and the
+# -meso suffix are for people. The -meso suffix puts 3.23 builds and meso-miner
+# builds in one family. Releases up to v3.23.0-fix.35.9 used -fix.<N.M> here.
 #
 # The backend (server/connect/transport_announce_provider_version.go) keeps
 # only YYYY.M.D for its rollout gauge and stores the whole string in
@@ -30,4 +34,4 @@ suffix="${tag#v3.23.0-fix.}"
 epoch="${2:-$(git log -1 --format=%ct "$tag" 2>/dev/null || git log -1 --format=%ct)}"
 
 code=$(((epoch - FOUNDING_EPOCH) * 10))
-echo "$(date -u -d "@${epoch}" +%Y.%-m.%-d)-${code}-fix.${suffix}"
+echo "$(date -u -d "@${epoch}" +%Y.%-m.%-d)-${code}-${suffix}-meso"
