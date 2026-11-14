@@ -71,6 +71,29 @@ Enabling the same behavior in this line means:
    proxy says nothing about the destination.
 5. Canary first — it changes DNS behavior for every proxied dial.
 
+## Providers without UDP or IPv6 are offered for the traffic they carry
+
+On 2026-11-13 the network operator announced a change to provider selection. It takes effect with the operator's next server release and the next app releases. The notice is on the operator's mainnet page, `ur.xyz/mainnet`.
+
+The operator's quality probe loads test sites through every provider about every 24 minutes and judges each provider on its checks of the last 8 hours. Where a site serves HTTP/3, the probe loads it over HTTPS (TCP) and over HTTP/3 (QUIC, which runs over UDP). Where a provider's connections prove IPv6, it loads the site over IPv6 as well. A check passes only when every load passes, and at least 4 in 5 checks must pass. So a provider that carried TCP and IPv4 well but no UDP, or whose IPv6 failed, failed its checks and clients were offered it rarely. On 2026-11-12 about 20,700 providers failed only because of their HTTP/3 loads.
+
+After the change clients are offered these providers for the traffic they carry:
+
+- A provider whose checks failed only over HTTP/3 (UDP) is offered for TCP traffic. Clients never send it UDP.
+- A provider whose connections prove IPv6 and whose checks failed only over IPv6 is offered for IPv4 traffic.
+- A provider with no failed check over UDP or IPv6 is offered for both, as before.
+- A provider that regains UDP or IPv6 is offered for it again within 8 hours, when its failed checks leave the window.
+
+Apps from before these releases keep the old selection, so these providers gain traffic as the apps update. Scoring, weights and payouts do not change. Pool rewards are still split by completed usage.
+
+### What it means for this fleet
+
+- A proxy with no UDP relay fits the first case, because the identity's UDP cannot leave through that proxy. The provider already logs it as `no udp relay ... tcp only` (see the Proxy UDP Relay Check in `LOG_REFERENCE.md`). As I read the notice, such an identity can now earn TCP traffic.
+- A host that blocks UDP can carry UDP again. Fix the network and update the provider, because the notice says some older builds do not route UDP.
+- There is no setting to change. The provider's status in the apps shows how many of its checks failed only over HTTP/3 or only over IPv6, and what it is offered for.
+
+This line carries the client side of the design as the multi client window: IPv6 admission and a TCP-only window. SDK and proxy clients built on this tree use it. The provider binary does not.
+
 ## What you need to do
 
 - **Today:** automatic, and no flag. Since `v3.23.0-fix.35.3` the provider keeps a

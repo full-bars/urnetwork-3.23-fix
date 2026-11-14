@@ -349,6 +349,22 @@ A proxy with a confirmed missing relay or mismatched exit is not offered for H3 
 
 ---
 
+## 🧱 Window Events (`[rel]`)
+
+The multi client window prints structured lines. Every line starts with `[rel] ` and holds `event=<name>` followed by lowercase `key=value` pairs. Durations are whole milliseconds, booleans are `1` or `0`, and a client id shows as its last 8 hex characters. The provider binary does not run the window, so you see these lines from SDK and proxy clients built on this tree. Filter one event with `grep '\[rel\] event=family_starved'`.
+
+```
+[rel] event=family_starved window=quality family=v6-capable retry=30000 released=1
+```
+
+| Event | Fields | Meaning |
+|---|---|---|
+| `family_starved` | `window`, `family`, `retry`, `released` | The platform returned no IPv6-capable provider, or two IPv6 candidates in a row failed their evaluation. The window stops asking for IPv6 candidates for `retry` milliseconds (30000 by default, `IpFamilyStarvedRetryTimeout`). `released` counts the exits that were marked for a swap and went back into service, because the IPv6 provider they were to make room for is not coming. |
+
+Two more events are defined and do not appear yet in this line. `recent_exit` (fields `provider`, `action`, `reason`, `age`) belongs to the recent exit memory, and `sticky_redial` (fields `provider`, `action`) belongs to the redial of a fixed exit. Nothing records a lost exit, so both stay silent until a later release adds the transport-loss signal they need.
+
+---
+
 ## 🔌 H3 (QUIC) Beside H1 (beta, `URNETWORK_H3` or the `h3` key)
 
 Only a box that runs H3 logs these, and only for the direct identity. H3 is off by default. It starts when `URNETWORK_H3` is set at startup, or when the `h3` control key is switched on live with `urnet-tools set h3 on`.

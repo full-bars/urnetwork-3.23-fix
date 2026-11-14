@@ -27,7 +27,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
 | `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
-| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. |
+| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. |
 
 ## The provider (`provider/`)
 

@@ -320,7 +320,7 @@ The role also exports its state to Prometheus. Turn metrics on with `urnet-tools
 
 ## FAQ
 
-**Does it earn?** No. It is a public service like a Tor bridge. It does not change what the provider earns.
+**Does it earn?** The role itself does not change what the provider earns. It is a public service like a Tor bridge. The network operator announced on 2026-11-12 an extender pool for SN25 that starts with epoch 8, around 2026-11-27. An extender in that pool can earn alpha, whose value changes and can fall. Eligibility at the end of an epoch needs the extender to be in the active pool, to have an address that passes the five-minute challenge, to have a payout wallet, to stay outside a top-level miner's fleet and to stay off the operator's own networks. From 2026-11-12 an extender also counts as a contract hop only when it can have relayed that contract. Read the notices on `ur.xyz/mainnet` before you rely on this, because the operator sets the rules and can change them. This release adds no support for the pool.
 
 **Can a proxy be an extender?** No. The platform dials the address it sees; for a proxy that is the proxy's server, where nothing of this provider listens. Only the host the provider runs on can be an extender.
 

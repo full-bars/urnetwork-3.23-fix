@@ -9,7 +9,7 @@ This page covers running the URnetwork provider and `urnet-tools` on OpenBSD (am
 
 OpenBSD's base system has `ftp(1)`, `sha256(1)`, `tar`, `awk` and `rcctl`, so the installer needs no extra package. `curl`, `wget`, `jq` and `python3` are optional. The installer reads the release tag and the SHA-256 digests with `jq`, then `python3`, then an `awk` scanner. It never runs `pkg_add` for you.
 
-The installer needs root for the install tree and the `rc.d` script. It uses `doas` first and `sudo` as a fallback. If neither is configured, add a rule to `/etc/doas.conf` (for example `permit persist youruser`) or run from a root shell.
+The installer needs root for the install tree and the `rc.d` script. It uses `doas` first and `sudo` as a fallback. `urnet-tools` follows the same order for service commands, and it uses `sudo` when `/etc/doas.conf` does not exist. If neither is configured, add a rule to `/etc/doas.conf` (for example `permit persist youruser`) or run from a root shell.
 
 The provider must not run as root. The installer picks the service account from `SERVICE_USER_OVERRIDE`, `URNETWORK_USER`, an existing `urnetwork` account, `DOAS_USER`, `SUDO_USER`, then the login name, in that order. It stops with `refusing to install a service that runs as root` when the result is `root`.
 
