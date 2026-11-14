@@ -535,6 +535,11 @@ func readURLStateForMerge() (*ProxyURLState, bool) {
 	return state, true
 }
 
+// logURLCycleCancelled records a shutdown without reporting a source failure.
+func logURLCycleCancelled(ctx context.Context, done, total int) {
+	tlog("[proxy][url] fetch cycle cancelled after %d of %d sources: %v\n", done, total, context.Cause(ctx))
+}
+
 func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, apiHost string, apiPort uint16) {
 	if len(urls) == 0 {
 		return
@@ -594,12 +599,20 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		perSource[i].Label = labels[i]
 	}
 	for i, url := range urls {
+		if ctx.Err() != nil {
+			logURLCycleCancelled(ctx, i, len(urls))
+			break
+		}
 		// Say which source is being downloaded before the request: a slow or
 		// large list otherwise looks like nothing is happening at all.
 		tlog("[proxy][url] fetching %s ...\n", labels[i])
 		fetchStart := time.Now()
 		lines, err := fetchProxyURLLines(ctx, url)
 		if err != nil {
+			if ctx.Err() != nil {
+				logURLCycleCancelled(ctx, i, len(urls))
+				break
+			}
 			perSource[i].Failed = true
 			label := labels[i]
 			tlog("[proxy][url] fetch failed for %s: %v (skipping this cycle)\n", label, err)
@@ -700,14 +713,22 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		// all three buckets are empty on the healthiest possible cycle, and
 		// gating on len(lines) fires a false "all unparseable or dead" on
 		// every source (finding MEDIUM #1).
-		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(probeLines) > 0 {
+		if len(qualified) == 0 && len(belowBar) == 0 && len(socks5Only) == 0 && len(probeLines) > 0 && ctx.Err() == nil {
 			// The fetch itself succeeded but every NEW line was unparseable
 			// or dead — distinct from the fetch-failed case above (N3).
+			// A cancelled probe reports lines dead during shutdown, not source failure.
 			tlog("[proxy][url] %s: fetched %d lines, %d new, all unparseable or dead\n", labels[i], len(lines), len(probeLines))
 			warnProxySourceFailure(labels[i], fmt.Sprintf("fetched %d lines, %d new, all unparseable or dead", len(lines), len(probeLines)))
 		}
 		tlog("[proxy][url] probed %s: %d/%d new qualified (%d cached, skipped), %d below-bar, %d socks5-only\n",
 			labels[i], len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
+		// A cancel that landed while this source was read or probed ends the
+		// cycle here and says why. Without this check the last source would end
+		// the loop with no cancellation line. The results above are still merged.
+		if ctx.Err() != nil {
+			logURLCycleCancelled(ctx, i+1, len(urls))
+			break
+		}
 	}
 	if skippedCached > 0 {
 		// Cached-skip is the main efficiency change of this PR; the

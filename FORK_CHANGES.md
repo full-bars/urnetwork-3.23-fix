@@ -19,6 +19,16 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ---
 
+## Stop the URL proxy source cycle cleanly on shutdown
+
+**Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
+
+**Files changed**: `provider/proxy_url_source.go`, `provider/proxy_url_cycle_shutdown_test.go`.
+
+**Impact**: `fetchAndMergeProxyURLs` checks its context before each source, after a failed fetch and after each source. A cancel logs one `fetch cycle cancelled after N of M sources` line with the cause and stops the cycle. The results of finished sources are still merged. A probe that ends because of the cancel no longer logs "all unparseable or dead" and no longer warns. The sn line has the same logic.
+
+---
+
 ## 1. Enhanced Logging — `[net][s]select` Visibility
 
 **Purpose**: Make the provider's control-plane connectivity observable in logs without `-v` (debug mode). Critical for warmup monitoring, proxy health checks, and outage detection.
