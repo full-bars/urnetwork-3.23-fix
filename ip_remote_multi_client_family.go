@@ -329,6 +329,14 @@ func destinationsCarryIpv6(destinations map[MultiHopId]DestinationStats) bool {
 // evaluations starve the family for a retry period.
 const ipv6FillFailureStarveCount = 2
 
+// noteIpv6EvaluationFailed excludes cancellations and failures outside an active
+// v6 fill before recording a provider evaluation failure.
+func (self *multiClientWindow) noteIpv6EvaluationFailed(family IpFamily, providerFailure bool) {
+	if providerFailure && self.ctx.Err() == nil && family.SupportsIpv6() && self.ipv6FillWanted(time.Now()) > 0 {
+		self.noteIpv6CandidateFailed()
+	}
+}
+
 // noteIpv6CandidateFailed counts a v6-capable candidate that failed its
 // evaluation while the shortfall was open, and starves the family once the
 // count reaches ipv6FillFailureStarveCount: a candidate the platform keeps

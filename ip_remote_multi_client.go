@@ -3158,7 +3158,7 @@ func (self *multiClientWindow) expand(
 				pendingPingDones = append(pendingPingDones, pingDone)
 
 				// must be called with mutex
-				fail := func() {
+				fail := func(providerFailure bool) {
 					select {
 					case <-pingDone.Done():
 						// already done
@@ -3166,6 +3166,7 @@ func (self *multiClientWindow) expand(
 					default:
 					}
 
+					self.noteIpv6EvaluationFailed(client.IpFamily(), providerFailure)
 					pingCancel()
 					client.Cancel()
 					self.generator.RemoveClientArgs(&args.MultiClientGeneratorClientArgs)
@@ -3220,8 +3221,11 @@ func (self *multiClientWindow) expand(
 									return true
 								}()
 								if !admitted {
-									fail()
+									fail(false)
 									return
+								}
+								if client.IpFamily().SupportsIpv6() {
+									self.noteIpv6CandidateAdmitted()
 								}
 								self.monitor.AddProviderEvent(args.ClientId, ProviderStateAdded)
 								if replacedClient != nil {
@@ -3233,15 +3237,15 @@ func (self *multiClientWindow) expand(
 								pingCancel()
 							} else {
 								self.log.V(1).Infof("[multi]create ping error = %s\n", err)
-								fail()
+								fail(!errors.Is(err, context.Canceled))
 							}
 						},
 					)
 					if err != nil {
 						self.log.Infof("[multi]create client ping error = %s\n", err)
-						fail()
+						fail(!errors.Is(err, context.Canceled))
 					} else if !success {
-						fail()
+						fail(true)
 					} else {
 						// async wait for the ping
 						go HandleError(func() {
@@ -3252,7 +3256,7 @@ func (self *multiClientWindow) expand(
 								func() {
 									mutex.Lock()
 									defer mutex.Unlock()
-									fail()
+									fail(true)
 								}()
 							}
 						}, client.Cancel)
