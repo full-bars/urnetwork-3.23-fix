@@ -1121,7 +1121,7 @@ test_sanitize_restart_dropins_sigpipe() {
     printf '[Service]\nRestartForceExitStatus=\nRestart=\n' > "$d/10-reset.conf"
     : > "$out"
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
-    assert_eq "1" "$(rg -c SIGPIPE "$out")" "empty force list warns even after empty Restart"
+    assert_eq "1" "$(case "$(< "$out")" in *SIGPIPE*) printf 1;; *) printf 0;; esac)" "empty force list warns even after empty Restart"
 
     printf '[Service]\nRestart=always\n' > "$d/20-always.conf"
     : > "$out"
@@ -1131,7 +1131,7 @@ test_sanitize_restart_dropins_sigpipe() {
     printf '[Service]\nRestartPreventExitStatus=SIGPIPE\n' > "$d/30-prevent.conf"
     : > "$out"
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
-    assert_eq "1" "$(rg -c SIGPIPE "$out")" "SIGPIPE prevention beats always"
+    assert_eq "1" "$(case "$(< "$out")" in *SIGPIPE*) printf 1;; *) printf 0;; esac)" "SIGPIPE prevention beats always"
 
     printf '[Service]\nRestartPreventExitStatus=\n' > "$d/40-clear.conf"
     : > "$out"
