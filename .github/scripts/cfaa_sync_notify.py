@@ -148,6 +148,36 @@ def post_to_discord(webhook: str, info: dict, summary: str) -> None:
             f.write(payload)
 
 
+def post_blocked_to_discord(webhook: str, info: dict) -> None:
+    """Post that upstream changed the table format and the fork cannot read the new tables."""
+    failed = info.get("failed_tests", [])
+    commits = info.get("format_commits", [])
+    fields = [
+        {"name": "Upstream SHA", "value": info.get("upstream_sha", "N/A"), "inline": False},
+        {"name": "Failing tests", "value": (", ".join(failed) or "see the job log")[:1000], "inline": False},
+        {"name": "Upstream commits that changed the format code", "value": ("\n".join(commits) or "none found, see the job log")[:1000], "inline": False},
+    ]
+    embed = {
+        "title": "CFAA Blocklist Sync Blocked: table format changed",
+        "description": "The fork decoder cannot read the upstream blocklist tables. No branch and no PR were created. Port the decoder and generator change, then run the sync again.",
+        "color": 0xD93F3F,
+        "fields": fields,
+        "footer": {"text": "URNetwork CFAA Sync \u2022 Automated"},
+    }
+    payload = json.dumps({"embeds": [embed]})
+    req = urllib.request.Request(
+        webhook,
+        data=payload.encode("utf-8"),
+        headers={"Content-Type": "application/json", "User-Agent": USER_AGENT},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(req, timeout=20) as resp:
+            print(f"[CFAA-NOTIFY] Discord POST (blocked): HTTP {resp.status}")
+    except Exception as e:
+        print(f"[CFAA-NOTIFY] Discord POST failed: {e}", file=sys.stderr)
+
+
 def main() -> int:
     info_path = "/tmp/cfaa_sync_info.json"
 
@@ -160,6 +190,13 @@ def main() -> int:
 
     api_key = os.environ.get("OPENROUTER_API_KEY", "")
     webhook = os.environ.get("DISCORD_WEBHOOK", "")
+
+    if info.get("format_blocked"):
+        if webhook:
+            post_blocked_to_discord(webhook, info)
+        else:
+            print("[CFAA-NOTIFY] DISCORD_WEBHOOK not set, skipping notification")
+        return 0
 
     summary = ""
     if api_key:
