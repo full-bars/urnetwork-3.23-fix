@@ -594,10 +594,10 @@ type EncryptionSettings struct {
 	// plaintext. Sessions never block sequences; whether to accept plaintext
 	// is the caller's choice via `Encrypt`.
 	//
-	// A negative value disables the timeout: the handshake runs until it
-	// completes or the session is closed. The shipped default is 60s (bounded
-	// establishment); the watcher is armed only for a strictly positive
-	// duration.
+	// A nonpositive value disables the timeout: the handshake runs until it
+	// completes or the session is closed. Without this bound, a responder
+	// accepts a different ClientHello regardless of its epoch id ordering.
+	// The shipped default is 60s.
 	TlsTimeout time.Duration
 	// NewPeerClientPublicKeyFetcher, when non-nil, is invoked once per per-peer
 	// session at creation with the peer's ClientId. The returned per-session
@@ -1007,35 +1007,6 @@ func (self *peerEncryptionSession) epochIdOf(e *tlsHandshakeEpoch) Id {
 	return e.epochId
 }
 
-// adoptEpochId binds the responder's current epoch to the initiator's
-// generation name. Returns false when the epoch already carries a DIFFERENT
-// id, which means this control belongs to another generation and the caller
-// must reset onto it rather than feeding it to the wrong TLS state.
-func (self *peerEncryptionSession) adoptEpochId(e *tlsHandshakeEpoch, epochId Id) bool {
-	if e == nil || epochId == (Id{}) {
-		return true
-	}
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-	if e.epochId == (Id{}) {
-		e.epochId = epochId
-		return true
-	}
-	return e.epochId == epochId
-}
-
-// convergeToPeerEpoch rebuilds this session's epoch when the peer is
-// provably on a NEWER generation. Unlike `restartHandshake` this bypasses the
-// initial-retry cooldown: that cooldown rate-limits blind retries against a
-// possibly-absent peer, while a control stamped with a newer epoch is positive
-// evidence the peer is live and has moved on — waiting out the cooldown would
-// leave both sides mutually undecryptable for its duration.
-func (self *peerEncryptionSession) convergeToPeerEpoch() {
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-	self.buildAndStartEpochWithLock()
-}
-
 // startEpoch ensures a handshake epoch exists, creating the first one if
 // none has been started. Idempotent: a no-op when an epoch is already
 // present. Called from the inbound-delivery paths, which reuse rather than
@@ -1217,6 +1188,16 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 			"[tls]%s outbox batch %d: %d bytes (record type 0x%02x)\n",
 			self.logTag, batchIndex, len(b), firstByte,
 		)
+		var afterSent []func()
+		if batchIndex == 0 && self.role == sequenceTlsRoleClient &&
+			self.client.peerCapabilityRecorder != nil {
+			// a client-role epoch's first batch is its ClientHello: capability
+			// evidence that this client asked the peer for a session, recorded
+			// once the send path has accepted it rather than when produced
+			afterSent = append(afterSent, func() {
+				self.client.peerCapabilityRecorder.observeE2eAttempt(self.peerId)
+			})
+		}
 		batchIndex += 1
 		// In TLS-server role the first outbox batch is the server flight
 		// (containing the server's Finished). Mark the "awaiting client
@@ -1237,7 +1218,7 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 		if epochId := self.epochIdOf(e); epochId != (Id{}) {
 			ec.EpochId = epochId.Bytes()
 		}
-		self.sendEncryptedControl(ec)
+		self.sendEncryptedControl(ec, afterSent...)
 	}
 }
 
@@ -1300,7 +1281,7 @@ func peerCertificatesOfEpoch(log Logger, e *tlsHandshakeEpoch) []*x509.Certifica
 // flow to this session's peer. If the pack cannot be enqueued (all
 // SendSequences for this destination closed), the session is closed so
 // that the next Acquire creates a fresh session with a fresh handshake.
-func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedControl) {
+func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedControl, afterSent ...func()) {
 	if self.client == nil || self.client.sendBuffer == nil {
 		return
 	}
@@ -1311,6 +1292,10 @@ func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedCo
 		// identity `companion` that keys the session and tags the EC.
 		if !self.client.sendBuffer.SendEncryptedControl(self.ctx, self.peerId, self.role, ec, self.companion, self.carrierCompanion) {
 			self.close()
+			return
+		}
+		for _, f := range afterSent {
+			f()
 		}
 	}, self.cancel)
 }
@@ -1364,6 +1349,13 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 	// here would make a successful TLS handshake look like a failure.
 	if err == nil && self.manager != nil {
 		self.manager.notePqeEstablished(pqeCurveOf(e))
+	}
+	if err == nil && self.role == sequenceTlsRoleClient {
+		// capability evidence: the peer's responder answered this client's
+		// ClientHello with this group, whether or not a newer epoch has since
+		// replaced this one. A handshake the peer initiated is not evidence of
+		// its responder: its group is this client's choice, not the peer's.
+		self.client.peerCapabilityRecorder.observeE2eHandshake(self.peerId, pqeCurveOf(e))
 	}
 	// If this epoch has already been reset out from under us, don't emit
 	// an identity proof bound to a dead handshake.
@@ -1515,6 +1507,12 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
+		if self.role == sequenceTlsRoleClient {
+			// capability evidence for a session this client initiated, as the
+			// handshake's is, recorded before the callbacks below so a Sealed
+			// event's consumer already reads it
+			self.client.peerCapabilityRecorder.observeE2eSealed(self.peerId, pqeCurveOf(e), self)
+		}
 		if manager := self.manager; manager != nil {
 			var report bool
 			self.stateLock.Lock()
@@ -1751,68 +1749,39 @@ func (self *peerEncryptionSession) DeliverEncryptedControl(ec *protocol.Encrypte
 	}
 }
 
-// deliverHandshake feeds inbound TLS handshake bytes into the current
-// epoch's transport.
-//
-// A fresh ClientHello arriving at the TLS-server role after the current epoch
-// has finished means the peer (the TLS-client) restarted the handshake —
-// typically because a client-role SendSequence resumed and reset its side. We
-// swap in a fresh epoch and feed the ClientHello to it, re-handshaking on the
-// existing (still-referenced) session rather than dropping the bytes (point b).
-// A ClientHello arriving mid-handshake is the initial or HelloRetryRequest
-// ClientHello for the in-flight epoch and is fed as-is.
-//
-// Non-ClientHello handshake bytes arriving after the handshake completed are
-// stale post-completion records; dropped rather than re-fed to a closed TLS
-// state machine.
+// deliverHandshake routes TLS bytes to their generation. Only a server
+// receiving ClientHello may adopt an id or replace its current handshake.
+// Ordering filters stragglers only during an attempt with a positive timeout;
+// unauthenticated epoch ids cannot establish a permanent ordering floor.
 func (self *peerEncryptionSession) deliverHandshake(payload []byte, epochId Id) {
-	// A control naming a DIFFERENT generation than the epoch we hold is the
-	// peer having restarted its handshake. Reset onto the new generation
-	// instead of feeding foreign bytes to the current TLS state (which would
-	// desync the pair: our exporter would never match their proof).
-	if epochId != (Id{}) {
-		if e := self.currentEpoch(); e != nil {
-			if current := self.epochIdOf(e); current != (Id{}) && current != epochId {
-				newer := current.LessThan(epochId)
-				if self.client.log.V(1).Enabled() {
-					self.client.log.Infof(
-						"[tls]%s handshake for epoch %s != current %s (peer newer=%t)\n",
-						self.logTag, epochId, current, newer,
-					)
-				}
-				if !newer {
-					// straggling bytes from a superseded generation: dropping
-					// them protects the live epoch's TLS state
-					return
-				}
-				self.reset()
+	e := func() *tlsHandshakeEpoch {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		if self.ctx.Err() != nil {
+			return nil
+		}
+		e := self.epoch
+		if self.role == sequenceTlsRoleServer && isClientHelloRecord(payload) {
+			inFlight := e != nil && !isClosed(e.handshakeDone) && !e.identityFailed && e.ctx.Err() == nil
+			foreign := e != nil && epochId != (Id{}) && e.epochId != (Id{}) && e.epochId != epochId
+			if foreign && inFlight && self.settings != nil && 0 < self.settings.TlsTimeout && epochId.LessThan(e.epochId) {
+				return nil
+			}
+			if !inFlight || foreign {
+				self.buildAndStartEpochWithLock()
+				e = self.epoch
+			}
+			if e != nil && e.epochId == (Id{}) {
+				e.epochId = epochId
 			}
 		}
-	}
-	if self.role == sequenceTlsRoleServer && isClientHelloRecord(payload) {
-		if e := self.currentEpoch(); e == nil || isClosed(e.handshakeDone) {
-			self.client.log.V(1).Infof(
-				"[tls]%s inbound ClientHello after prior handshake — resetting to a new handshake\n",
-				self.logTag,
-			)
-			self.reset()
+		if e == nil || e.transport == nil || isClosed(e.handshakeDone) || e.identityFailed || e.ctx.Err() != nil ||
+			(epochId != (Id{}) && e.epochId != epochId) {
+			return nil
 		}
-	} else if e := self.currentEpoch(); e != nil && isClosed(e.handshakeDone) {
-		self.client.log.V(2).Infof(
-			"[tls]%s DeliverEncryptedControl(Handshake) %d bytes — skipped, handshake already done\n",
-			self.logTag, len(payload),
-		)
-		return
-	}
-	self.startEpoch()
-	e := self.currentEpoch()
-	if e == nil || e.transport == nil {
-		return
-	}
-	// bind this epoch to the initiator's generation name (responder side);
-	// a mismatch here means a newer generation raced in — drop rather than
-	// cross-feed, the sender's resend lands on the adopted epoch
-	if !self.adoptEpochId(e, epochId) {
+		return e
+	}()
+	if e == nil {
 		return
 	}
 	var firstByte byte
@@ -1842,17 +1811,8 @@ func (self *peerEncryptionSession) receivePeerIdentityProof(payload []byte) {
 	self.receivePeerIdentityProofForEpoch(payload, Id{})
 }
 
-// receivePeerIdentityProofForEpoch is receivePeerIdentityProof with the
-// control's generation (see EncryptedControl.epoch_id).
-//
-// The proof signs the TLS exporter of the epoch that produced it. Verifying it
-// against a DIFFERENT epoch's exporter always fails — and that failure is
-// indistinguishable from a manipulated proof, so it used to tombstone the
-// session terminally while the peer (established on its own epoch) kept
-// encrypting into it: a permanent data stall. With the generation on the wire
-// a mismatch is diagnosed instead: the peer has moved to a new epoch, so
-// restart the handshake to converge, and never let a foreign-epoch proof mark
-// this one failed.
+// receivePeerIdentityProofForEpoch routes a proof only to a matching epoch.
+// A proof does not authenticate its outer id and cannot name or reset an epoch.
 func (self *peerEncryptionSession) receivePeerIdentityProofForEpoch(payload []byte, epochId Id) {
 	// The proof binds the current epoch's exporter; ensure an epoch exists to
 	// buffer it against (a proof can race ahead of our handshake completing).
@@ -1861,33 +1821,12 @@ func (self *peerEncryptionSession) receivePeerIdentityProofForEpoch(payload []by
 	if e == nil {
 		return
 	}
-	if epochId != (Id{}) {
-		current := self.epochIdOf(e)
-		if current == (Id{}) {
-			// responder that has not yet adopted a generation (proof arrived
-			// before/without its handshake): adopt so the pair agrees
-			self.adoptEpochId(e, epochId)
-		} else if current != epochId {
-			// epoch ids are ulids (time-ordered), so the generations compare:
-			// an OLDER proof is a straggler from a superseded epoch — ignore
-			// it (never let it judge, or tombstone, this epoch); a NEWER one
-			// means the peer re-handshaked and we must converge onto it.
-			newer := current.LessThan(epochId)
-			if self.client.log.V(1).Enabled() {
-				self.client.log.Infof(
-					"[tls]%s identity proof for epoch %s != current %s (peer newer=%t)\n",
-					self.logTag, epochId, current, newer,
-				)
-			}
-			if newer {
-				self.convergeToPeerEpoch()
-			}
-			return
-		}
-	}
 	stored, skipReason := func() (bool, string) {
 		self.stateLock.Lock()
 		defer self.stateLock.Unlock()
+		if self.epoch != e || (epochId != (Id{}) && e.epochId != epochId) {
+			return false, "foreign handshake generation"
+		}
 		if e.peerIdentityVerified {
 			return false, "already verified"
 		}
@@ -1961,13 +1900,10 @@ func (self *peerEncryptionSession) receivePeerIdentityProofForEpoch(payload []by
 // duplicate, applies correctly if new — its sequence-number bookkeeping is what
 // makes feeding bytes to the TLS state machine safe).
 func (self *peerEncryptionSession) OptimisticallyDeliverHandshake(payload []byte) {
-	if !self.IsAwaitingClientFinished() {
-		self.client.log.V(2).Infof(
-			"[tls]%s OptimisticallyDeliverHandshake skipped: not awaiting client Finished\n",
-			self.logTag,
-		)
-		return
-	}
+	self.optimisticallyDeliverHandshakeForEpoch(payload, Id{})
+}
+
+func (self *peerEncryptionSession) optimisticallyDeliverHandshakeForEpoch(payload []byte, epochId Id) {
 	// isClientSecondFlightPrefix: the first byte of `payload` is a TLS 1.3
 	// record content type that can start a legitimate client second flight: 20
 	// (legacy ChangeCipherSpec) or 23 (encrypted application_data carrying
@@ -2001,15 +1937,36 @@ func (self *peerEncryptionSession) OptimisticallyDeliverHandshake(payload []byte
 		"[tls]%s OptimisticallyDeliverHandshake: feeding %d bytes (record type 0x%02x) to TLS state\n",
 		self.logTag, len(payload), payload[0],
 	)
-	// Only complete an already in-flight handshake; never create or restart an
-	// epoch from the optimistic path. This runs on every EC frame the receive
-	// loop sees — including stale, reordered, and retransmitted ones — so it
-	// must not mutate epoch lifecycle state. IsAwaitingClientFinished already
-	// established that a current in-flight epoch (server flight sent, handshake
-	// not yet done) exists; deliver the client second flight to it and nothing
-	// more.
-	if e := self.currentEpoch(); e != nil && e.transport != nil && !isClosed(e.handshakeDone) {
+	e := func() *tlsHandshakeEpoch {
+		self.stateLock.Lock()
+		defer self.stateLock.Unlock()
+		e := self.epoch
+		if self.role != sequenceTlsRoleServer || e == nil || e.transport == nil ||
+			!e.serverFlightSent || isClosed(e.handshakeDone) || e.epochId != epochId {
+			return nil
+		}
+		return e
+	}()
+	if e != nil {
 		e.transport.Deliver(payload)
+	}
+}
+func (self *peerEncryptionSession) capabilitySession() PeerCapabilitySession {
+	if self.role != sequenceTlsRoleClient || self.companion || self.ctx.Err() != nil {
+		return PeerCapabilitySession{}
+	}
+	clientId := self.client.ClientId()
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if self.establishedEpoch == nil || self.establishedEpoch.derivedTlsCipher == nil {
+		return PeerCapabilitySession{}
+	}
+	curveId := pqeCurveOf(self.establishedEpoch)
+	return PeerCapabilitySession{
+		ClientId:    clientId,
+		EpochId:     self.establishedEpoch.epochId,
+		KeyExchange: tlsKeyExchangeName(curveId),
+		PostQuantum: isPostQuantumKeyExchange(curveId),
 	}
 }
 

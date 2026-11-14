@@ -329,6 +329,7 @@ type FindProviders2Args struct {
 	ExcludeClientIds    []Id            `json:"exclude_client_ids"`
 	ExcludeDestinations [][]Id          `json:"exclude_destinations,omitempty"`
 	RankMode            string          `json:"rank_mode"`
+	IpFamily            IpFamilyFilter  `json:"ip_family,omitempty"`
 }
 
 type FindProviders2Result struct {
@@ -341,6 +342,7 @@ type FindProvidersProvider struct {
 	HasEstimatedBytesPerSecond bool      `json:"has_estimated_bytes_per_second"`
 	Tier                       int       `json:"tier"`
 	IntermediaryIds            []Id      `json:"intermediary_ids,omitempty"`
+	IpFamily                   IpFamily  `json:"ip_family,omitempty"`
 }
 
 func (self *BringYourApi) FindProviders2(findProviders2 *FindProviders2Args, callback FindProviders2Callback) {

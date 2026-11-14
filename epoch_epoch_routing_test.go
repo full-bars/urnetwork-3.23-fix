@@ -22,37 +22,17 @@ func epochRoutingSession(t *testing.T, role sequenceTlsRole, epochId Id) (*peerE
 	if sess.epoch != nil && sess.epoch.cancel != nil {
 		sess.epoch.cancel()
 	}
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 	e := &tlsHandshakeEpoch{
+		ctx:           ctx,
+		cancel:        cancel,
 		handshakeDone: make(chan struct{}),
 		epochId:       epochId,
 	}
 	sess.epoch = e
 	sess.stateLock.Unlock()
 	return sess, e
-}
-
-// TestAdoptEpochIdBindsResponder verifies a responder session adopts the
-// initiator's generation the first time, and rejects a conflicting one.
-func TestAdoptEpochIdBindsResponder(t *testing.T) {
-	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, Id{})
-	genA := NewId()
-	genB := NewId()
-
-	// First adoption binds.
-	if !sess.adoptEpochId(e, genA) {
-		t.Fatal("expected first adoption to succeed")
-	}
-	// Same id: ok (idempotent).
-	if !sess.adoptEpochId(e, genA) {
-		t.Fatal("expected same-id adoption to be accepted")
-	}
-	// Different id: rejected -> caller must reset onto it.
-	if sess.adoptEpochId(e, genB) {
-		t.Fatal("expected conflicting id to be rejected (caller resets)")
-	}
-	if e.epochId != genA {
-		t.Fatalf("epoch id changed unexpectedly: got %s want %s", e.epochId, genA)
-	}
 }
 
 // TestEpochRoutingDropsStaleGeneration verifies deliverHandshake drops bytes
@@ -114,7 +94,7 @@ func TestEpochRoutingResetsOntoNewerGeneration(t *testing.T) {
 	sess, e1, cleanup := epochRoutingLiveSession(t, sequenceTlsRoleServer, older)
 	defer cleanup()
 
-	sess.deliverHandshake([]byte("fresh handshake bytes"), newer)
+	sess.deliverHandshake([]byte{22, 3, 3, 0, 100, 1, 0, 0, 96}, newer)
 
 	e2 := sess.currentEpoch()
 	if e2 == e1 {
@@ -145,27 +125,16 @@ func TestEpochRoutingLegacyControlSkipsRouting(t *testing.T) {
 	}
 }
 
-// TestConvergeToPeerEpochOnNewerIdentityProof verifies an identity proof
-// naming a NEWER generation than the one currently held converges the
-// session onto a fresh epoch (via convergeToPeerEpoch) rather than being fed
-// to — or failing verification against — the superseded epoch's exporter.
+// A foreign identity proof cannot select a generation or restart the session.
 func TestConvergeToPeerEpochOnNewerIdentityProof(t *testing.T) {
-	older := NewId()
-	newer := NewId()
+	older := Id{15: 1}
+	newer := Id{15: 2}
 
 	sess, e1, cleanup := epochRoutingLiveSession(t, sequenceTlsRoleServer, older)
 	defer cleanup()
-
-	// The payload's shape is irrelevant here: a generation mismatch is
-	// diagnosed, and resolved, before the payload is ever inspected.
 	sess.receivePeerIdentityProofForEpoch([]byte("irrelevant"), newer)
-
-	e2 := sess.currentEpoch()
-	if e2 == e1 {
-		t.Fatal("expected a newer-generation identity proof to converge onto a fresh epoch")
-	}
-	if e1.identityFailed {
-		t.Fatal("the superseded epoch must not be marked failed by a foreign-generation proof")
+	if sess.currentEpoch() != e1 || e1.identityFailed {
+		t.Fatal("a foreign proof changed the current epoch")
 	}
 }
 
@@ -189,24 +158,6 @@ func TestIdentityProofOlderGenerationIgnored(t *testing.T) {
 	}
 	if e.identityFailed {
 		t.Fatal("an older generation's proof must never be evaluated")
-	}
-}
-
-// TestAdoptEpochIdNoopCases covers adoptEpochId's two trivial-success paths:
-// a nil epoch (nothing to bind) and a zero epoch id (a legacy control),
-// neither of which should touch an existing binding.
-func TestAdoptEpochIdNoopCases(t *testing.T) {
-	gen := NewId()
-	sess, e := epochRoutingSession(t, sequenceTlsRoleServer, gen)
-
-	if !sess.adoptEpochId(nil, NewId()) {
-		t.Fatal("expected adoptEpochId(nil, ...) to be a trivial success")
-	}
-	if !sess.adoptEpochId(e, Id{}) {
-		t.Fatal("expected a zero epoch id to be accepted as a no-op")
-	}
-	if e.epochId != gen {
-		t.Fatalf("adoptEpochId with a zero id must not change the existing binding: got %s want %s", e.epochId, gen)
 	}
 }
 
@@ -303,7 +254,7 @@ func TestDeliverEncryptedControlResetsOntoNewerGeneration(t *testing.T) {
 
 	ec := &protocol.EncryptedControl{
 		ControlType: protocol.EncryptedControlType_EncryptedControlHandshake,
-		Payload:     []byte("fresh handshake bytes"),
+		Payload:     []byte{22, 3, 3, 0, 100, 1, 0, 0, 96},
 		EpochId:     newer.Bytes(),
 	}
 	sess.DeliverEncryptedControl(ec)
