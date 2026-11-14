@@ -1607,11 +1607,17 @@ func (self *Client) run() {
 						if session == nil {
 							continue
 						}
+						var controlEpochId Id
+						if raw := ec.GetEpochId(); len(raw) > 0 {
+							parsed, err := IdFromBytes(raw)
+							if err != nil || parsed == (Id{}) {
+								continue
+							}
+							controlEpochId = parsed
+						}
 						switch ec.ControlType {
 						case protocol.EncryptedControlType_EncryptedControlHandshake:
-							if session.IsAwaitingClientFinished() {
-								session.OptimisticallyDeliverHandshake(ec.Payload)
-							}
+							session.optimisticallyDeliverHandshakeForEpoch(ec.Payload, controlEpochId)
 						case protocol.EncryptedControlType_EncryptedControlIdentityProof:
 							// Optimistic path must not create epoch state from a
 							// stale/reordered/retransmitted proof; only deliver
@@ -1620,7 +1626,7 @@ func (self *Client) run() {
 							// that races ahead of the local handshake by creating
 							// the epoch to buffer it.
 							if session.currentEpoch() != nil {
-								session.receivePeerIdentityProof(ec.Payload)
+								session.receivePeerIdentityProofForEpoch(ec.Payload, controlEpochId)
 							}
 						}
 					}
