@@ -119,3 +119,22 @@ func TestFetchAndMergeProxyURLs_FullCycleManySources(t *testing.T) {
 		t.Errorf("fetched %d of %d sources", tr.hits, len(urls))
 	}
 }
+
+// A shutdown that lands while the LAST source is read has no later iteration to
+// notice it. The body is complete, so the fetch succeeds and the cancel is first
+// seen afterwards. The cycle must still say it was cancelled.
+func TestFetchAndMergeProxyURLs_ShutdownDuringLastSourceIsLogged(t *testing.T) {
+	ctx, _ := prepareShutdownCycle(t, "body")
+	out := captureTlog(t, func() {
+		fetchAndMergeProxyURLs(ctx, []string{"http://source.invalid/first"}, 0, "", 0)
+	})
+	if !strings.Contains(out, "fetch cycle cancelled after 1 of 1 sources") {
+		t.Errorf("the cancelled cycle was not logged: %s", out)
+	}
+	proxySourceWarnings.mu.Lock()
+	warned := !proxySourceWarnings.lastWarn.IsZero()
+	proxySourceWarnings.mu.Unlock()
+	if warned {
+		t.Error("source-failure warning fired during shutdown")
+	}
+}

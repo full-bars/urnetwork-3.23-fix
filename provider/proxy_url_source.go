@@ -722,6 +722,13 @@ func fetchAndMergeProxyURLs(ctx context.Context, urls []string, maxTotal int, ap
 		}
 		tlog("[proxy][url] probed %s: %d/%d new qualified (%d cached, skipped), %d below-bar, %d socks5-only\n",
 			labels[i], len(qualified), len(probeLines), skippedThisSource, len(belowBar), len(socks5Only))
+		// A cancel that landed while this source was read or probed ends the
+		// cycle here and says why. Without this check the last source would end
+		// the loop with no cancellation line. The results above are still merged.
+		if ctx.Err() != nil {
+			logURLCycleCancelled(ctx, i+1, len(urls))
+			break
+		}
 	}
 	if skippedCached > 0 {
 		// Cached-skip is the main efficiency change of this PR; the
