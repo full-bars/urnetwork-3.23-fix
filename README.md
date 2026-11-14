@@ -360,7 +360,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 ## 🏗 Build Info
 
 - **Base engine:** UrNetwork v3.23, with the v2026 engine changes ported in (v34)
-- **Language:** Go 1.27.3, built on Alpine
+- **Language:** Go 1.27.4, built on Alpine
 - **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), FreeBSD (amd64 and arm64), macOS and Windows. FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md). Alpine setup: [docs/OpenRC.md](docs/OpenRC.md)
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. Each release also attaches `darwin/amd64` + `darwin/arm64`, `windows/amd64` + `windows/arm64` and `freebsd/amd64` + `freebsd/arm64` binaries.
 - **Bridge-friendly:** runs on standard Docker bridge networks. The extender role needs its ports published (`-p 443:443 -p 443:443/udp -p 4053:4053/udp`), and the default bridge has no IPv6, so on it the role activates for IPv4 only. For IPv6, either turn on IPv6 on the bridge in Docker's daemon config and publish the same ports, or run with `--network host`. `docker run` and Compose examples for both: [docs/Extender.md](docs/Extender.md#docker)

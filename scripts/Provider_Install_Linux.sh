@@ -288,6 +288,10 @@ get_arch ()
         aarch64)
             arch=arm64
             ;;
+
+        armv7l)
+            arch=arm
+            ;;
     esac
 
     echo "$arch"

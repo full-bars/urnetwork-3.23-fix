@@ -135,7 +135,7 @@ func (self linuxHost) Filesystem(directory *os.File) (Filesystem, error) {
 	if state.Bsize <= 0 || state.Bavail > math.MaxUint64/uint64(state.Bsize) {
 		return Filesystem{}, errors.New("filesystem available-byte arithmetic is invalid")
 	}
-	return Filesystem{Id: state.Fsid.X__val, Type: state.Type, ReadOnly: state.Flags&1 != 0,
+	return Filesystem{Id: state.Fsid.X__val, Type: int64(uint32(state.Type)), ReadOnly: state.Flags&1 != 0,
 		AvailableBytes: state.Bavail * uint64(state.Bsize), AvailableInodes: state.Ffree}, nil
 }
 

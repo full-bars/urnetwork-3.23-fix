@@ -35,6 +35,21 @@ func TestOpenBSDServiceControlRejectsWrongProcess(t *testing.T) {
 	}
 }
 
+func TestOpenBSDManagedStoppedAndAmbiguous(t *testing.T) {
+	oldPID := openbsdServicePID
+	t.Cleanup(func() { openbsdServicePID = oldPID })
+	stopped := Provider{Supervisor: "openbsd-rcd"}
+	for _, tc := range []struct {
+		pid  int
+		want bool
+	}{{0, true}, {-1, false}, {123, false}} {
+		openbsdServicePID = func() int { return tc.pid }
+		if got := openbsdRequireManaged(stopped) == nil; got != tc.want {
+			t.Fatalf("service PID %d: accepted = %v, want %v", tc.pid, got, tc.want)
+		}
+	}
+}
+
 // After uninstall stops the provider its PID is gone, so cleanup must rely on
 // the identity recorded at discovery and never touch an unmanaged provider.
 func TestOpenBSDCleanupServiceSkipsUnmanaged(t *testing.T) {

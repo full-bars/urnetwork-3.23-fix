@@ -25,9 +25,9 @@ var bsdServiceRunFn = func(name string, args ...string) ([]byte, error) {
 // caller is not root, and returns the command output.
 func openbsdRcctl(args ...string) ([]byte, error) {
 	_, doasErr := exec.LookPath("doas")
-	_, sudoErr := exec.LookPath("sudo")
 	_, configErr := os.Stat("/etc/doas.conf")
-	name, argv, err := openbsdRcctlArgv(os.Geteuid(), openbsdDoasUsable(doasErr, configErr), sudoErr == nil, args...)
+	_, sudoErr := exec.LookPath("sudo")
+	name, argv, err := openbsdRcctlArgv(os.Geteuid(), doasErr == nil && configErr == nil, sudoErr == nil, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -49,16 +49,26 @@ func openbsdRequireRcScript(p Provider, service string) error {
 
 var openbsdServicePID = func() int {
 	data, err := os.ReadFile("/var/run/rc.d/urnetwork")
-	if err != nil {
+	if os.IsNotExist(err) {
 		return 0
+	}
+	if err != nil {
+		return -1
 	}
 	return openbsdManagedPID(string(data), func(table, pattern string) ([]byte, error) {
 		return execWithTimeout(5*time.Second, "pgrep", "-T", table, "-xf", pattern)
 	})
 }
 
+// openbsdRequireManaged accepts only the provider rc.d manages. A running row
+// must be the uniquely matched process. A stopped row (from discoverStopped)
+// is accepted only while rc.d matches no process at all.
 func openbsdRequireManaged(p Provider) error {
-	if p.Supervisor != "openbsd-rcd" || p.PID <= 0 || openbsdServicePID() != p.PID {
+	pid := openbsdServicePID()
+	if p.Supervisor == "openbsd-rcd" && !p.Running && p.PID == 0 && pid == 0 {
+		return nil
+	}
+	if p.Supervisor != "openbsd-rcd" || p.PID <= 0 || pid != p.PID {
 		return fmt.Errorf("%s is not the uniquely matched rc.d-managed provider; refusing service action", providerLabel(p))
 	}
 	return nil
@@ -87,6 +97,9 @@ func bsdServiceControl(p Provider, action string) error {
 
 // setAutoStart enables or disables boot-time start with rcctl.
 func setAutoStart(p Provider, on bool) error {
+	if err := openbsdRequireManaged(p); err != nil {
+		return err
+	}
 	service := bsdRcServiceName(p.Binary)
 	if err := openbsdRequireRcScript(p, service); err != nil {
 		return err

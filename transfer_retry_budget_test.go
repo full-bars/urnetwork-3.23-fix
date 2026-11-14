@@ -51,7 +51,7 @@ func TestRetryBudget_FloorRefillsOverTimeSoQuietFlowsStillRecover(t *testing.T) 
 func TestRetryBudget_BurstIsCapped(t *testing.T) {
 	b, now := newTestRetryBudget()
 	b.reset(0)
-	b.earn(1 << 40)
+	b.earn(1 << 30)
 	*now = now.Add(24 * time.Hour)
 	if !b.allow(retryBudgetBurstBytes) {
 		t.Fatal("a full bucket must pay out its burst")
