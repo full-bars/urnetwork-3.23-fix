@@ -373,3 +373,15 @@ func currentExtenderDiscoverySnapshot() extenderDiscoverySnapshot {
 	}
 	return role.discoverySnapshot()
 }
+
+// extenderDiscoverySavedForStart reports that a control command for the key
+// found no extender role in this process. The value is saved and applies when
+// the role starts, so the command is complete: nothing waits for a restart and
+// the normal confirmation and audit entry still follow.
+func extenderDiscoverySavedForStart(key string, value string, err error) bool {
+	if key != "extender_discovery" || !errors.Is(err, errExtenderDiscoveryNoRole) {
+		return false
+	}
+	tlog("⚙️ [control] extender_discovery=%s saved: it applies when the extender role starts\n", value)
+	return true
+}

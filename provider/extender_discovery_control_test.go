@@ -25,7 +25,9 @@ func TestExtenderDiscoveryControlQueuedAndLive(t *testing.T) {
 		t.Fatal("accepted invalid mode")
 	}
 	response := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_discovery", Value: "on"})
-	if !response.OK || !response.NeedsRestart {
+	// With no extender role the value is saved and applies when the role
+	// starts, so the command is complete and nothing waits for a restart.
+	if !response.OK || response.NeedsRestart {
 		t.Fatalf("setting with no role: %+v", response)
 	}
 	if value, found := state.get("extender_discovery"); !found || value != "on" {

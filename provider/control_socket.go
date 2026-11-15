@@ -733,10 +733,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// immediate effect for it would contradict that and, for smart_dialer,
 		// flip selection onto a measurement stream no probe loop is feeding.
 		if liveEffectKeys[req.Key] {
-			if err := applyLiveSideEffect(req.Key, req.Value); err != nil {
-				if req.Key == "extender_discovery" && errors.Is(err, errExtenderDiscoveryNoRole) {
-					return controlResponse{OK: true, NeedsRestart: true}
-				}
+			if err := applyLiveSideEffect(req.Key, req.Value); err != nil && !extenderDiscoverySavedForStart(req.Key, req.Value, err) {
 				// Persisted fine — it'll take effect on the next restart — but
 				// the immediate, no-restart-needed part of it failed. Surface
 				// that distinction rather than claiming full success.
@@ -787,10 +784,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key, state); err != nil {
-				if req.Key == "extender_discovery" && errors.Is(err, errExtenderDiscoveryNoRole) {
-					return controlResponse{OK: true, NeedsRestart: true}
-				}
+			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, extenderDiscoveryOff, err) {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process
