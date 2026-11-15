@@ -17,7 +17,7 @@ Everything merged after `v3.23.0-fix.35.10`.
 ### Changed
 
 - The systemd shakedown checks hotswap survival after the old process drains in both RAM log modes. It disables the test unit's start limit for rapid restart checks.
-
+- **Existing systemd units gain SIGPIPE restart protection during update.** The tool checks effective settings, installs a drop-in when needed and warns if operator settings defeat it. It does not restart the provider for this change.
 - **OpenBSD service commands retain doas when its configuration cannot be inspected.** A missing configuration still selects sudo; other inspection errors are left to doas to report.
 - **ClamAV gates the release** (`.github/workflows/release.yml`, `.github/scripts/clamav-scan.sh`, `.github/scripts/test-clamav-scan.sh`). The `create-release` job scans the exact files it uploads before it publishes, with definitions fetched by `freshclam` just before the scan. A detection, a scanner failure, a stale database or a failed refresh stops the release. Before this change the step reported clean without examining any file, because the runner has no signature database, and it could not fail. VirusTotal still runs after publication and never gates. [no redeploy]
 - **ClamAV gates the Docker images** (`.github/workflows/build.yml`). Before a push, the job builds the image filesystem for each platform and scans it with `.github/scripts/clamav-scan.sh`, with definitions fetched just before the scan. A detection, a scanner failure or a failed refresh stops the push, so no tag moves. The push step reuses the layers from the build cache. [no redeploy]

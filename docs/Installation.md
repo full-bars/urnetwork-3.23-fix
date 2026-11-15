@@ -6,7 +6,7 @@ This guide covers the Linux installer, user-level systemd service, post-install 
 
 The provider is designed to run as a **non-privileged user service** for maximum security and reliability.
 
-The Linux installer adds `RestartForceExitStatus=SIGPIPE` to its systemd unit. This lets systemd restart the provider after a SIGPIPE death even though it normally treats that signal as a clean exit. An operator override can still prevent the restart, and systemd start rate limits still apply.
+The Linux installer adds `RestartForceExitStatus=SIGPIPE` to its systemd unit. This lets systemd restart the provider after a SIGPIPE death even though it normally treats that signal as a clean exit. `urnet-tools update` also reconciles existing systemd units with a managed drop-in when needed. It reloads systemd and checks the effective settings; it warns when an operator override prevents protection. This reconciliation does not restart the provider. Systemd start rate limits still apply.
 
 > [!IMPORTANT]
 > Recommended: run this command as your normal non-root user. If run as root, the installer will guide you through creating a dedicated service user named `urnet`. Without a terminal, a root install installs the tools only.
