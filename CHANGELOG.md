@@ -6,6 +6,7 @@ Everything merged after `v3.23.0-fix.35.10`.
 
 ### Added
 
+- **Per-carrier extender statistics** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts served and refused requests per carrier (`tcp-443`, `udp-443`, `udp-4053`, `udp-53`) and by refusal stage with bounded atomic counters. Rate-limited refusal log lines include the carrier label, and active minutes emit a per-carrier summary line. `urnet-tools extender status` displays the per-carrier counts and refusal reasons, and `/metrics` exports `urnet_extender_carrier_requests_total` and `urnet_extender_carrier_refused_total`.
 - Extender discovery serves the directory feed and can join the gossip mesh. It is off by default. Use `urnet-tools set extender-discovery on` to turn it on.
 
 ### Fixed
