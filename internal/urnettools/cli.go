@@ -515,6 +515,7 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
+	printSigpipeRestartWarning(p)
 	if err := renderStatusBase(p); err != nil {
 		return err
 	}
@@ -523,14 +524,19 @@ func cmdStatus(args []string) error {
 	return nil
 }
 
+// printSigpipeRestartWarning prints a warning line when the effective unit would leave a SIGPIPE death dead.
+func printSigpipeRestartWarning(p Provider) {
+	if risk, err := sigpipeRestartRisk(p); err != nil || !risk {
+		return
+	}
+	fmt.Fprintf(os.Stderr, "warning: %s: its unit can leave a SIGPIPE death dead (RestartForceExitStatus=SIGPIPE not effective). Run `urnet-tools update` to install the restart drop-in, then restart the provider with `systemctl --user restart %s` (user unit) or `sudo systemctl restart %s` (system unit).\n", p.Unit, p.Unit, p.Unit)
+}
+
 // renderStatusBase is the pre-existing status output, unchanged: the styled
-// panel on Windows and macOS, `systemctl status` on Linux, and the table when
-// no unit can be resolved.
+// panel on Windows and macOS, `systemctl status <unit>`, and the table when
+// no unit can be resolved (bare process).
 func renderStatusBase(p Provider) error {
-	// Windows and macOS get the styled panel. Linux restores the OLD
-	// systemd status view: `systemctl status <unit>` (the pre-rewrite tool's
-	// show_status was literally `systemctl --user status urnetwork.service`).
-	// Falls back to the table when a unit can't be resolved (bare process).
+	// Windows and macOS get the styled panel.
 	if runtime.GOOS == "windows" || runtime.GOOS == "darwin" {
 		renderStatusPanel(p)
 		return nil

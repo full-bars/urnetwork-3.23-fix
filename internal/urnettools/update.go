@@ -873,6 +873,16 @@ func updateProvider(p Provider, cfg updateConfig) error {
 		migratedUnit = migrated
 	}
 
+	// Existing units written before this tool shipped RestartForceExitStatus=SIGPIPE
+	// leave a SIGPIPE-killed provider dead. Reconcile idempotently: prefer a
+	// small drop-in the tool owns over rewriting the operator's main unit, and
+	// never restart the provider for this (a restart would need the operator's
+	// consent and is not required for a drop-in to take effect on the next
+	// start). Other supervisors have no equivalent and are skipped.
+	if _, err := ensureSigpipeRestartDropIn(p); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: SIGPIPE restart drop-in not installed: %v\n", p.Unit, err)
+	}
+
 	// Leave the restart reason for the provider's next start, whichever of
 	// HotSwap or a plain restart follows (best effort, never aborts the update).
 	recordRestartReason(p, restartReasonUpdate)
@@ -2032,6 +2042,10 @@ func reportAlreadyCurrent(p Provider, cfg updateConfig) {
 // Returns whether the unit was migrated (never true for a demotion — see
 // reconcileUnitTypeForBinary) and any error from the migration or restart.
 func reconcileUnitTypeAndRestart(p Provider) (bool, error) {
+	// Always ensure SIGPIPE restart drop-in, independent of type migration.
+	if _, err := ensureSigpipeRestartDropIn(p); err != nil {
+		fmt.Fprintf(os.Stderr, "warning: %s: SIGPIPE restart drop-in not installed: %v\n", p.Unit, err)
+	}
 	migrated, err := reconcileUnitTypeForBinary(p, verifyProviderVersionFn(p.Binary))
 	if err != nil || !migrated {
 		return migrated, err
