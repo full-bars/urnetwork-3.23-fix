@@ -110,7 +110,7 @@ type SnapshotProxies struct {
 	Degraded   int `json:"degraded"`
 	Connecting int `json:"connecting"`
 	Dead       int `json:"dead"`
-	Parked     int `json:"parked"`
+	Parked     int `json:"parked,omitempty"`
 	// Configured is the pool size before the trim cap; TrimCap is the
 	// effective cap on running proxies (0 = none) and TrimCapSource says who
 	// set it (operator, oomcap, thrashcap). Omitted before the first trim
