@@ -578,7 +578,7 @@ func refuseRequest(
 	carrier := extenderRequestCarrier(req)
 	server.usage.recordRefusal(stage)
 	server.usage.recordCarrierRefusal(carrier, stage)
-	server.noteRefusal(stage, err)
+	server.noteCarrierRefusal(carrier, stage, err)
 	server.reportError(stage, err)
 	if req.ProtoMajor == 1 {
 		w.Header().Set("Connection", "close")

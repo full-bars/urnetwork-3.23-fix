@@ -455,9 +455,13 @@ type ExtenderServer struct {
 
 	serviceHandlers extenderServiceHandlers
 
-	// refusal logging state: a flood must not bury the log it writes to
-	refusalLogLock  sync.Mutex
-	refusalLogState map[string]*extenderRefusalLogState
+	// refusal and carrier summary logging state: a flood must not bury the log it writes to
+	refusalLogLock        sync.Mutex
+	carrierRefusalLog     [extenderCarrierPortCount][extenderRefusalStageCount]extenderRefusalLogState
+	otherRefusalLog       [extenderRefusalStageCount]extenderRefusalLogState
+	carrierSummaryLastLog time.Time
+	carrierSummaryServed  [extenderCarrierPortCount]uint64
+	carrierSummaryRefused [extenderCarrierPortCount]uint64
 
 	// the camouflage counts of P7, cumulative for the life of the server and
 	// surfaced beside the admission counts. A spliced byte is never added to the
@@ -1633,19 +1637,101 @@ type extenderRefusalLogState struct {
 	lastLog time.Time
 }
 
+func formatCarrierRefusalLogLine(carrier string, stage string, count int, err error) string {
+	if carrier != "" {
+		if count == 1 {
+			return fmt.Sprintf("🌉 [extender] refused a request at %s on %s: %v", stage, carrier, err)
+		}
+		return fmt.Sprintf("🌉 [extender] refused %d requests at %s on %s in the last minute; latest: %v", count, stage, carrier, err)
+	}
+	if count == 1 {
+		return fmt.Sprintf("🌉 [extender] refused a request at %s: %v", stage, err)
+	}
+	return fmt.Sprintf("🌉 [extender] refused %d requests at %s in the last minute; latest: %v", count, stage, err)
+}
+
+func (self *ExtenderServer) refusalLogNow() time.Time {
+	if self.settings != nil && self.settings.AdmissionNow != nil {
+		return self.settings.AdmissionNow()
+	}
+	return time.Now()
+}
+
+// FlushCarrierSummaryLog returns the interval summary line for traffic since the
+// previous interval, or the empty string when the interval had no traffic.
+func (self *ExtenderServer) FlushCarrierSummaryLog(now time.Time) string {
+	self.refusalLogLock.Lock()
+	defer self.refusalLogLock.Unlock()
+	return self.flushCarrierSummaryLocked(now)
+}
+
+func (self *ExtenderServer) flushCarrierSummaryLocked(now time.Time) string {
+	self.carrierSummaryLastLog = now
+	var parts [extenderCarrierPortCount]string
+	var totalDelta uint64
+	for cIdx, carrier := range extenderCarrierPortNames {
+		served := self.usage.carrierServed[cIdx].Load()
+		var refused uint64
+		for sIdx := 0; sIdx < extenderRefusalStageCount; sIdx++ {
+			refused += self.usage.carrierRefusals[cIdx][sIdx].Load()
+		}
+		servedDelta := served - self.carrierSummaryServed[cIdx]
+		refusedDelta := refused - self.carrierSummaryRefused[cIdx]
+		self.carrierSummaryServed[cIdx] = served
+		self.carrierSummaryRefused[cIdx] = refused
+		totalDelta += servedDelta + refusedDelta
+		parts[cIdx] = fmt.Sprintf("%s served %d refused %d", carrier, servedDelta, refusedDelta)
+	}
+	if totalDelta == 0 {
+		return ""
+	}
+	return "🌉 [extender] last minute: " + strings.Join(parts[:], " | ")
+}
+
+func (self *ExtenderServer) noteCarrierServed(carrier string) {
+	now := self.refusalLogNow()
+	var summaryLine string
+	self.refusalLogLock.Lock()
+	if self.carrierSummaryLastLog.IsZero() {
+		self.carrierSummaryLastLog = now
+	} else if time.Minute <= now.Sub(self.carrierSummaryLastLog) {
+		summaryLine = self.flushCarrierSummaryLocked(now)
+	}
+	self.refusalLogLock.Unlock()
+	if summaryLine != "" {
+		log.Print(summaryLine)
+	}
+}
+
 // noteRefusal logs a refusal at most once a minute per stage, with the number
 // of refusals it stands for, so the operator sees why clients are being turned
 // away without the log filling up under a bad deploy.
 func (self *ExtenderServer) noteRefusal(stage string, err error) {
-	now := time.Now()
-	self.refusalLogLock.Lock()
-	if self.refusalLogState == nil {
-		self.refusalLogState = map[string]*extenderRefusalLogState{}
+	self.noteCarrierRefusal("", stage, err)
+}
+
+func (self *ExtenderServer) noteCarrierRefusal(carrier string, stage string, err error) {
+	now := self.refusalLogNow()
+	sIdx := extenderRefusalStageIndex(stage)
+	canonicalStage := extenderRefusalStageNames[sIdx]
+	canonicalCarrier := ""
+	cIdx, hasCarrier := extenderCarrierPortIndex(carrier)
+	if hasCarrier {
+		canonicalCarrier = extenderCarrierPortNames[cIdx]
 	}
-	state := self.refusalLogState[stage]
-	if state == nil {
-		state = &extenderRefusalLogState{}
-		self.refusalLogState[stage] = state
+
+	var summaryLine string
+	self.refusalLogLock.Lock()
+	if self.carrierSummaryLastLog.IsZero() {
+		self.carrierSummaryLastLog = now
+	} else if time.Minute <= now.Sub(self.carrierSummaryLastLog) {
+		summaryLine = self.flushCarrierSummaryLocked(now)
+	}
+	var state *extenderRefusalLogState
+	if hasCarrier {
+		state = &self.carrierRefusalLog[cIdx][sIdx]
+	} else {
+		state = &self.otherRefusalLog[sIdx]
 	}
 	state.count++
 	emit := state.lastLog.IsZero() || time.Minute <= now.Sub(state.lastLog)
@@ -1655,14 +1741,13 @@ func (self *ExtenderServer) noteRefusal(stage string, err error) {
 		state.lastLog = now
 	}
 	self.refusalLogLock.Unlock()
+	if summaryLine != "" {
+		log.Print(summaryLine)
+	}
 	if !emit {
 		return
 	}
-	if count == 1 {
-		log.Printf("🌉 [extender] refused a request at %s: %v", stage, err)
-		return
-	}
-	log.Printf("🌉 [extender] refused %d requests at %s in the last minute; latest: %v", count, stage, err)
+	log.Print(formatCarrierRefusalLogLine(canonicalCarrier, canonicalStage, count, err))
 }
 
 // extenderUsage counts requests by service and refusals by stage. Both are
@@ -1920,7 +2005,7 @@ func (self *ExtenderServer) refuseV1(ctx context.Context, stage string, err erro
 	}
 	self.usage.recordRefusal(stage)
 	self.usage.recordCarrierRefusal(carrier, stage)
-	self.noteRefusal(stage, err)
+	self.noteCarrierRefusal(carrier, stage, err)
 	self.reportError(stage, err)
 }
 
@@ -2154,7 +2239,12 @@ func (self *ExtenderServer) handleV1Connection(
 	// authorized, admitted and allowed: a v1 forward counts as served here
 	// v1 has no service field that means anything: every accepted header is a forward
 	self.usage.recordServed(extenderUsageForward)
-	self.usage.recordCarrierServed(extenderContextCarrier(ctx))
+	carrier := extenderContextCarrier(ctx)
+	if carrier == "" {
+		carrier = ExtenderCarrierTcp443
+	}
+	self.usage.recordCarrierServed(carrier)
+	self.noteCarrierServed(carrier)
 
 	if 0 < len(self.nlayerHops) {
 		// an NLayer extender relays the inner stream to another extender,

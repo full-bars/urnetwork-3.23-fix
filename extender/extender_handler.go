@@ -161,8 +161,10 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		// authorized, admitted and answered, and the stream is ours: this is the
 		// point at which a request counts as served (a probe is the platform's
 		// own verification and is never a client)
+		carrier := extenderRequestCarrier(req)
 		server.usage.recordServed(extenderUsageServiceIndex(header.Service))
-		server.usage.recordCarrierServed(extenderRequestCarrier(req))
+		server.usage.recordCarrierServed(carrier)
+		server.noteCarrierServed(carrier)
 	}
 
 	handleCtx, handleCancel := context.WithCancel(req.Context())
