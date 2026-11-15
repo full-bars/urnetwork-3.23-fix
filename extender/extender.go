@@ -438,6 +438,7 @@ type ExtenderServer struct {
 
 	connectionCount        int
 	sourceConnectionCounts map[string]int
+	quicConnCarriers       map[*quic.Conn]string
 
 	// the relayed traffic of O1, summed over every carrier and cumulative for
 	// the life of the server. They are taken at the relay copy of each
@@ -588,6 +589,7 @@ func NewExtenderServer(
 		connections:              map[*extenderOwnedConnection]bool{},
 		closers:                  map[*extenderOwnedCloser]bool{},
 		sourceConnectionCounts:   map[string]int{},
+		quicConnCarriers:         map[*quic.Conn]string{},
 		allowedSecrets:           allowedSecrets,
 		allowedHosts:             allowedHosts,
 		ports:                    ports,
@@ -659,10 +661,14 @@ func NewExtenderServer(
 		// along with the per-connection proxy budget (A3, A5)
 		ConnContext: func(ctx context.Context, conn net.Conn) context.Context {
 			serverName := ""
+			carrier := extenderContextCarrier(ctx)
 			if requestConn, ok := conn.(*connWithInitialBytes); ok {
 				serverName = requestConn.serverName
+				if requestConn.carrier != "" {
+					carrier = requestConn.carrier
+				}
 			}
-			return newExtenderRequestContext(ctx, serverName)
+			return newExtenderRequestContextWithCarrier(ctx, serverName, carrier)
 		},
 	}
 	// h2 support is configured through the standard path even though the
@@ -676,14 +682,71 @@ func NewExtenderServer(
 		Handler:     handler,
 		IdleTimeout: settings.QuicIdleTimeout,
 		// the udp carriers take the sni from the request, which carries the
-		// terminated connection state, so only the proxy budget is per
-		// connection here
+		// terminated connection state, so only the proxy budget and carrier
+		// identity are per connection here
 		ConnContext: func(ctx context.Context, quicConn *quic.Conn) context.Context {
-			return newExtenderRequestContext(ctx, "")
+			return newExtenderRequestContextWithCarrier(ctx, "", self.quicConnCarrier(quicConn))
 		},
 	}
 
 	return self
+}
+
+const (
+	ExtenderCarrierTcp443  = "tcp-443"
+	ExtenderCarrierUdp443  = "udp-443"
+	ExtenderCarrierUdp4053 = "udp-4053"
+	ExtenderCarrierUdp53   = "udp-53"
+)
+
+func extenderCarrierPortLabel(connectMode connect.ExtenderConnectMode, port int) string {
+	switch connectMode {
+	case connect.ExtenderConnectModeTcpTls:
+		return ExtenderCarrierTcp443
+	case connect.ExtenderConnectModeQuic:
+		return ExtenderCarrierUdp443
+	case connect.ExtenderConnectModeDns:
+		if port == connect.DefaultDnsPort {
+			return ExtenderCarrierUdp53
+		}
+		return ExtenderCarrierUdp4053
+	default:
+		return ""
+	}
+}
+
+func (self *ExtenderServer) setQuicConnCarrier(quicConn *quic.Conn, carrier string) {
+	if quicConn == nil || carrier == "" {
+		return
+	}
+	self.stateLock.Lock()
+	if self.quicConnCarriers == nil {
+		self.quicConnCarriers = map[*quic.Conn]string{}
+	}
+	self.quicConnCarriers[quicConn] = carrier
+	self.stateLock.Unlock()
+}
+
+func (self *ExtenderServer) clearQuicConnCarrier(quicConn *quic.Conn) {
+	if quicConn == nil {
+		return
+	}
+	self.stateLock.Lock()
+	delete(self.quicConnCarriers, quicConn)
+	self.stateLock.Unlock()
+}
+
+func (self *ExtenderServer) quicConnCarrier(quicConn *quic.Conn) string {
+	if quicConn == nil {
+		return ExtenderCarrierUdp443
+	}
+	self.stateLock.Lock()
+	carrier := self.quicConnCarriers[quicConn]
+	self.stateLock.Unlock()
+	if carrier == "" {
+		return ExtenderCarrierUdp443
+	}
+	return carrier
 }
 
 // The carrier names in wire order, which is the order Carriers reports (A4).
@@ -913,6 +976,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 	// one bound udp endpoint and the carrier it serves
 	type boundPacketConn struct {
 		connectMode connect.ExtenderConnectMode
+		port        int
 		packetConn  net.PacketConn
 		ownedCloser *extenderOwnedCloser
 	}
@@ -1010,6 +1074,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 		}
 		boundPacketConns = append(boundPacketConns, &boundPacketConn{
 			connectMode: connectMode,
+			port:        port,
 			packetConn:  packetConn,
 			ownedCloser: ownedCloser,
 		})
@@ -1075,6 +1140,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 
 	for _, bound := range boundPacketConns {
 		connectMode := bound.connectMode
+		port := bound.port
 		packetConn := bound.packetConn
 		if !self.beginWorker() {
 			// shutdown started while binding, which is not a bind failure
@@ -1084,7 +1150,7 @@ func (self *ExtenderServer) ListenAndServe() error {
 			defer self.endWorker()
 			connect.HandleError(func() {
 				defer self.Close()
-				if err := self.serveQuicCarrier(connectMode, packetConn); err != nil {
+				if err := self.serveQuicCarrier(connectMode, port, packetConn); err != nil {
 					log.Printf("🌉 [extender] udp carrier %s exited: %s", connectMode, err)
 				}
 			}, self.cancel)
@@ -1214,8 +1280,10 @@ func (self *ExtenderServer) reportListenError(carrier string, err error) {
 // decode53 packet translation, so both carriers share this loop (A1).
 func (self *ExtenderServer) serveQuicCarrier(
 	connectMode connect.ExtenderConnectMode,
+	port int,
 	packetConn net.PacketConn,
 ) error {
+	carrier := extenderCarrierPortLabel(connectMode, port)
 	carrierPacketConn := packetConn
 	if connectMode == connect.ExtenderConnectModeDns {
 		ptSettings := connect.DefaultPacketTranslationSettings()
@@ -1320,8 +1388,10 @@ func (self *ExtenderServer) serveQuicCarrier(
 			self.endConnection(quicConn.RemoteAddr())
 			return self.ctx.Err()
 		}
+		self.setQuicConnCarrier(quicConn, carrier)
 		go func() {
 			defer func() {
+				self.clearQuicConnCarrier(quicConn)
 				quicConn.CloseWithError(0, "")
 				self.removeCloser(connCloser)
 				self.endConnection(quicConn.RemoteAddr())
@@ -1728,6 +1798,9 @@ func (self *ExtenderServer) reportError(stage string, err error) {
 // serves whatever is inside: the v1 framing, or an http request that carries
 // the extender header. The connection is closed when this returns.
 func (self *ExtenderServer) HandleExtenderConnection(ctx context.Context, conn net.Conn) {
+	if extenderContextCarrier(ctx) == "" {
+		ctx = withExtenderCarrier(ctx, ExtenderCarrierTcp443)
+	}
 	handleCtx, handleCancel := context.WithCancel(ctx)
 	defer handleCancel()
 
@@ -1864,7 +1937,7 @@ func (self *ExtenderServer) serveTerminatedConnection(
 		self.reportError("header length", err)
 		return
 	}
-	requestConn := newConnWithInitialBytes(clientConn, initialBytes, serverName)
+	requestConn := newConnWithInitialBytesAndCarrier(clientConn, initialBytes, serverName, extenderContextCarrier(ctx))
 	self.serveHttpConnection(ctx, requestConn, negotiatedProtocol)
 }
 
@@ -1880,7 +1953,7 @@ func (self *ExtenderServer) serveHttpConnection(
 		// h2 never reaches the ConnContext of the http server, so the request
 		// context is built here instead
 		self.http2Server.ServeConn(requestConn, &http2.ServeConnOpts{
-			Context:    newExtenderRequestContext(ctx, requestConn.serverName),
+			Context:    newExtenderRequestContextWithCarrier(ctx, requestConn.serverName, requestConn.carrier),
 			BaseConfig: self.httpServer,
 			Handler:    self.httpServer.Handler,
 		})

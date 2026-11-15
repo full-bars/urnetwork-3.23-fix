@@ -497,13 +497,48 @@ func (self *extenderProxyConn) takeRelayBudget(maxByteCount int64, byteCount int
 }
 
 // The connection values every request of a terminated connection carries: the
-// requested name, which is not on the request itself on tcp (A3), and the
-// proxy budget of that connection (A5).
+// requested name, which is not on the request itself on tcp (A3), the carrier
+// port identity, and the proxy budget of that connection (A5).
 type extenderServerNameContextKey struct{}
+type extenderCarrierContextKey struct{}
 type extenderProxyConnContextKey struct{}
 
+func withExtenderCarrier(ctx context.Context, carrier string) context.Context {
+	if carrier == "" {
+		return ctx
+	}
+	return context.WithValue(ctx, extenderCarrierContextKey{}, carrier)
+}
+
+func extenderContextCarrier(ctx context.Context) string {
+	if ctx == nil {
+		return ""
+	}
+	if carrier, ok := ctx.Value(extenderCarrierContextKey{}).(string); ok {
+		return carrier
+	}
+	return ""
+}
+
+func extenderRequestCarrier(req *http.Request) string {
+	if req != nil {
+		if carrier := extenderContextCarrier(req.Context()); carrier != "" {
+			return carrier
+		}
+		if req.ProtoMajor == 3 {
+			return ExtenderCarrierUdp443
+		}
+	}
+	return ExtenderCarrierTcp443
+}
+
 func newExtenderRequestContext(ctx context.Context, serverName string) context.Context {
+	return newExtenderRequestContextWithCarrier(ctx, serverName, extenderContextCarrier(ctx))
+}
+
+func newExtenderRequestContextWithCarrier(ctx context.Context, serverName string, carrier string) context.Context {
 	ctx = context.WithValue(ctx, extenderServerNameContextKey{}, serverName)
+	ctx = withExtenderCarrier(ctx, carrier)
 	return context.WithValue(ctx, extenderProxyConnContextKey{}, newExtenderProxyConn())
 }
 

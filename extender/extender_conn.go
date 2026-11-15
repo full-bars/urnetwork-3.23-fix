@@ -28,6 +28,7 @@ type connWithInitialBytes struct {
 	net.Conn
 	initialBytes []byte
 	serverName   string
+	carrier      string
 	closeOnce    sync.Once
 	closed       chan struct{}
 }
@@ -37,10 +38,20 @@ func newConnWithInitialBytes(
 	initialBytes []byte,
 	serverName string,
 ) *connWithInitialBytes {
+	return newConnWithInitialBytesAndCarrier(conn, initialBytes, serverName, "")
+}
+
+func newConnWithInitialBytesAndCarrier(
+	conn net.Conn,
+	initialBytes []byte,
+	serverName string,
+	carrier string,
+) *connWithInitialBytes {
 	return &connWithInitialBytes{
 		Conn:         conn,
 		initialBytes: initialBytes,
 		serverName:   serverName,
+		carrier:      carrier,
 		closed:       make(chan struct{}),
 	}
 }
