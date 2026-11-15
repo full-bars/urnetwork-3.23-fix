@@ -8,14 +8,16 @@ Everything merged after `v3.23.0-fix.35.10`.
 
 - **Per-carrier extender statistics** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts served and refused requests per carrier (`tcp-443`, `udp-443`, `udp-4053`, `udp-53`) and by refusal stage with bounded atomic counters. Rate-limited refusal log lines include the carrier label, and active minutes emit a per-carrier summary line. `urnet-tools extender status` displays the per-carrier counts and refusal reasons, and `/metrics` exports `urnet_extender_carrier_requests_total` and `urnet_extender_carrier_refused_total`.
 - Extender discovery serves the directory feed and can join the gossip mesh. It is off by default. Use `urnet-tools set extender-discovery on` to turn it on.
+- **Loopback diagnostics are on by default.** The pprof listener starts at `127.0.0.1:6060`, loopback only, so a stuck or heavy provider can be inspected without a restart. `urnet-tools set pprof off` turns it off and `urnet-tools set pprof <ip:port>` moves it, live and persisted. An explicit `URNETWORK_PPROF` still decides the address when it is set. If the port is taken, the listener uses a free port and moves onto its own port when the holder exits.
 
 ### Fixed
 
 - Trim-held proxies no longer count as down in the status snapshot. The live view reports the actual parked count separately and retains clients on draining proxies.
-
 - **urnet-tools update reports "failed to update" when the restarted provider binary carries file capabilities** (`internal/urnettools/update.go`, `internal/urnettools/process_start_linux.go`). A non-dumpable provider makes `/proc/<pid>/exe` unreadable, which the updater treated as "restart did not land" and failed the update. The verifier now also accepts the process start time after the binary swap, the installed binary's version stamp, and the pid change as proof the restart landed. Tests cover the pass and fail paths.
 - **urnet-tools providers/status/update only knew `urnetwork.service`** (`internal/urnettools/discover.go`). A leftover `urnetwork@ipv6.service` template instance (same binary, same state dir) was never listed, so it stayed on an old version and consumed memory. Discovery now also recognizes `urnetwork@*.service` instances. No unit is deleted or disabled; single-provider output is unchanged.
 - **Restart after SIGPIPE** (`scripts/Provider_Install_Linux.sh`). The systemd unit forces a restart after SIGPIPE, which systemd normally treats as a clean exit. The installer warns when a restart override defeats this protection. Start rate limits still apply.
+- **A hotswap on a host with RAM logs no longer kills the new provider.** The new process inherited the old process's log pipe as its error output. When the old process finished draining and exited, the next write to that pipe ended the new process with SIGPIPE. systemd counts that as a clean exit, so a unit with `Restart=on-failure` stayed dead. The old process now hands the new one the original logging destination. A new process that still inherits an orphaned pipe from an older binary drops it at startup when RAM logs are on. The long-running `provide` command ignores SIGPIPE, so a broken log pipe cannot end it.
+- **A UDP readiness shard no longer holds an OS thread** (`ip_udp_socket_poller_epoll.go`). The shards wait through the Go network poller and park as goroutines. A blocking `epoll_wait` held one thread per shard for the life of the process, which put about two thousand threads on a node that runs the shards for a thousand proxies. The shards are off by default in this line (`SocketReadShardCount` is 0), so this protects the profiles that turn them on.
 
 ### Changed
 
@@ -24,15 +26,6 @@ Everything merged after `v3.23.0-fix.35.10`.
 - **OpenBSD service commands retain doas when its configuration cannot be inspected.** A missing configuration still selects sudo; other inspection errors are left to doas to report.
 - **ClamAV gates the release** (`.github/workflows/release.yml`, `.github/scripts/clamav-scan.sh`, `.github/scripts/test-clamav-scan.sh`). The `create-release` job scans the exact files it uploads before it publishes, with definitions fetched by `freshclam` just before the scan. A detection, a scanner failure, a stale database or a failed refresh stops the release. Before this change the step reported clean without examining any file, because the runner has no signature database, and it could not fail. VirusTotal still runs after publication and never gates. [no redeploy]
 - **ClamAV gates the Docker images** (`.github/workflows/build.yml`). Before a push, the job builds the image filesystem for each platform and scans it with `.github/scripts/clamav-scan.sh`, with definitions fetched just before the scan. A detection, a scanner failure or a failed refresh stops the push, so no tag moves. The push step reuses the layers from the build cache. [no redeploy]
-
-### Fixed
-
-- **A hotswap on a host with RAM logs no longer kills the new provider.** The new process inherited the old process's log pipe as its error output. When the old process finished draining and exited, the next write to that pipe ended the new process with SIGPIPE. systemd counts that as a clean exit, so a unit with `Restart=on-failure` stayed dead. The old process now hands the new one the original logging destination. A new process that still inherits an orphaned pipe from an older binary drops it at startup when RAM logs are on. The long-running `provide` command ignores SIGPIPE, so a broken log pipe cannot end it.
-- **A UDP readiness shard no longer holds an OS thread** (`ip_udp_socket_poller_epoll.go`). The shards wait through the Go network poller and park as goroutines. A blocking `epoll_wait` held one thread per shard for the life of the process, which put about two thousand threads on a node that runs the shards for a thousand proxies. The shards are off by default in this line (`SocketReadShardCount` is 0), so this protects the profiles that turn them on.
-
-### Added
-
-- **Loopback diagnostics are on by default.** The pprof listener starts at `127.0.0.1:6060`, loopback only, so a stuck or heavy provider can be inspected without a restart. `urnet-tools set pprof off` turns it off and `urnet-tools set pprof <ip:port>` moves it, live and persisted. An explicit `URNETWORK_PPROF` still decides the address when it is set. If the port is taken, the listener uses a free port and moves onto its own port when the holder exits.
 
 ## [v3.23.0-fix.35.10]
 
