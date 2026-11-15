@@ -1564,7 +1564,7 @@ type extenderUsage struct {
 	// a header decodes, before the request is authorized or admitted, and its
 	// `proxy` entry counts every ordinary non-extender http request.
 	served   [extenderUsageCount]atomic.Uint64
-	refusals sync.Map // stage string -> *atomic.Uint64
+	refusals [extenderRefusalStageCount]atomic.Uint64
 }
 
 func (self *extenderUsage) recordServed(index int) {
@@ -1579,9 +1579,27 @@ func (self *extenderUsage) recordService(index int) {
 	}
 }
 
+// Refusal stages are bounded so a request does not allocate a counter.
+var extenderRefusalStageNames = [...]string{
+	"request", "header decode", "header authorization", "admission subnets",
+	"admission source", "hop count", "destination authorization", "nlayer limited",
+	"probe", "service", "response", "proxy name", "proxy limit", "proxy request",
+	"proxy upstream", "other",
+}
+
+const extenderRefusalStageCount = 16
+
+func extenderRefusalStageIndex(stage string) int {
+	for i, name := range extenderRefusalStageNames {
+		if stage == name {
+			return i
+		}
+	}
+	return extenderRefusalStageCount - 1
+}
+
 func (self *extenderUsage) recordRefusal(stage string) {
-	counter, _ := self.refusals.LoadOrStore(stage, &atomic.Uint64{})
-	counter.(*atomic.Uint64).Add(1)
+	self.refusals[extenderRefusalStageIndex(stage)].Add(1)
 }
 
 // ServiceCounts returns the per-service request counts by name.
@@ -1612,10 +1630,11 @@ func (self *ExtenderServer) ServedCounts() map[string]uint64 {
 // RefusalCounts returns the per-stage refusal counts by stage name.
 func (self *ExtenderServer) RefusalCounts() map[string]uint64 {
 	counts := map[string]uint64{}
-	self.usage.refusals.Range(func(key, value any) bool {
-		counts[key.(string)] = value.(*atomic.Uint64).Load()
-		return true
-	})
+	for index, name := range extenderRefusalStageNames {
+		if count := self.usage.refusals[index].Load(); count > 0 {
+			counts[name] = count
+		}
+	}
 	return counts
 }
 

@@ -11,7 +11,6 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"sync"
-	"sync/atomic"
 	"testing"
 	"time"
 
@@ -79,8 +78,7 @@ func TestServiceHandlersAttachDetachAndInitialSettings(t *testing.T) {
 			}
 			set(nil)
 			checkRefusal()
-			counter, ok := server.usage.refusals.Load("service")
-			if !ok || counter.(*atomic.Uint64).Load() != 2 || server.usage.services[extenderUsageServiceIndex(service)].Load() != 3 || server.usage.served[extenderUsageServiceIndex(service)].Load() != 1 {
+			if server.RefusalCounts()["service"] != 2 || server.usage.services[extenderUsageServiceIndex(service)].Load() != 3 || server.usage.served[extenderUsageServiceIndex(service)].Load() != 1 {
 				t.Fatal("service request, served, or refusal counters changed")
 			}
 		})
