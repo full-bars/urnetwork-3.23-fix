@@ -575,7 +575,9 @@ func refuseRequest(
 	stage string,
 	err error,
 ) {
+	carrier := extenderRequestCarrier(req)
 	server.usage.recordRefusal(stage)
+	server.usage.recordCarrierRefusal(carrier, stage)
 	server.noteRefusal(stage, err)
 	server.reportError(stage, err)
 	if req.ProtoMajor == 1 {

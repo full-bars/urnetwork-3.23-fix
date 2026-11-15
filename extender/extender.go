@@ -699,6 +699,46 @@ const (
 	ExtenderCarrierUdp53   = "udp-53"
 )
 
+const (
+	extenderCarrierTcp443Index = iota
+	extenderCarrierUdp443Index
+	extenderCarrierUdp4053Index
+	extenderCarrierUdp53Index
+	extenderCarrierPortCount
+)
+
+var extenderCarrierPortNames = [extenderCarrierPortCount]string{
+	extenderCarrierTcp443Index:  ExtenderCarrierTcp443,
+	extenderCarrierUdp443Index:  ExtenderCarrierUdp443,
+	extenderCarrierUdp4053Index: ExtenderCarrierUdp4053,
+	extenderCarrierUdp53Index:   ExtenderCarrierUdp53,
+}
+
+// ExtenderCarrierPorts returns the carrier port labels in canonical order.
+func ExtenderCarrierPorts() []string {
+	return []string{
+		ExtenderCarrierTcp443,
+		ExtenderCarrierUdp443,
+		ExtenderCarrierUdp4053,
+		ExtenderCarrierUdp53,
+	}
+}
+
+func extenderCarrierPortIndex(carrier string) (int, bool) {
+	switch carrier {
+	case ExtenderCarrierTcp443, connect.ExtenderCarrierTcp, "tcp 443", "tcp443":
+		return extenderCarrierTcp443Index, true
+	case ExtenderCarrierUdp443, connect.ExtenderCarrierQuic, "udp 443", "quic 443", "quic443", "udp443":
+		return extenderCarrierUdp443Index, true
+	case ExtenderCarrierUdp4053, connect.ExtenderCarrierDns, "dns 4053", "udp 4053", "dns4053", "udp4053":
+		return extenderCarrierUdp4053Index, true
+	case ExtenderCarrierUdp53, "dns 53", "udp 53", "dns53", "udp53":
+		return extenderCarrierUdp53Index, true
+	default:
+		return 0, false
+	}
+}
+
 func extenderCarrierPortLabel(connectMode connect.ExtenderConnectMode, port int) string {
 	switch connectMode {
 	case connect.ExtenderConnectModeTcpTls:
@@ -1633,13 +1673,21 @@ type extenderUsage struct {
 	// the stream has been handed over. `services` cannot say that: it counts when
 	// a header decodes, before the request is authorized or admitted, and its
 	// `proxy` entry counts every ordinary non-extender http request.
-	served   [extenderUsageCount]atomic.Uint64
-	refusals [extenderRefusalStageCount]atomic.Uint64
+	served          [extenderUsageCount]atomic.Uint64
+	refusals        [extenderRefusalStageCount]atomic.Uint64
+	carrierServed   [extenderCarrierPortCount]atomic.Uint64
+	carrierRefusals [extenderCarrierPortCount][extenderRefusalStageCount]atomic.Uint64
 }
 
 func (self *extenderUsage) recordServed(index int) {
 	if 0 <= index && index < extenderUsageCount {
 		self.served[index].Add(1)
+	}
+}
+
+func (self *extenderUsage) recordCarrierServed(carrier string) {
+	if index, ok := extenderCarrierPortIndex(carrier); ok {
+		self.carrierServed[index].Add(1)
 	}
 }
 
@@ -1670,6 +1718,12 @@ func extenderRefusalStageIndex(stage string) int {
 
 func (self *extenderUsage) recordRefusal(stage string) {
 	self.refusals[extenderRefusalStageIndex(stage)].Add(1)
+}
+
+func (self *extenderUsage) recordCarrierRefusal(carrier string, stage string) {
+	if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
+		self.carrierRefusals[cIdx][extenderRefusalStageIndex(stage)].Add(1)
+	}
 }
 
 // ServiceCounts returns the per-service request counts by name.
@@ -1706,6 +1760,71 @@ func (self *ExtenderServer) RefusalCounts() map[string]uint64 {
 		}
 	}
 	return counts
+}
+
+// ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
+type ExtenderCarrierStats struct {
+	Served          uint64            `json:"served"`
+	Refused         uint64            `json:"refused"`
+	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+}
+
+// CarrierServedCounts returns the cumulative served request counts by carrier name.
+func (self *ExtenderServer) CarrierServedCounts() map[string]uint64 {
+	counts := map[string]uint64{}
+	for index, name := range extenderCarrierPortNames {
+		if count := self.usage.carrierServed[index].Load(); count > 0 {
+			counts[name] = count
+		}
+	}
+	return counts
+}
+
+// CarrierRefusalCounts returns the cumulative per-stage refusal counts by carrier name.
+func (self *ExtenderServer) CarrierRefusalCounts() map[string]map[string]uint64 {
+	counts := map[string]map[string]uint64{}
+	for cIdx, carrier := range extenderCarrierPortNames {
+		var stageCounts map[string]uint64
+		for sIdx, stage := range extenderRefusalStageNames {
+			if count := self.usage.carrierRefusals[cIdx][sIdx].Load(); count > 0 {
+				if stageCounts == nil {
+					stageCounts = map[string]uint64{}
+				}
+				stageCounts[stage] = count
+			}
+		}
+		if len(stageCounts) > 0 {
+			counts[carrier] = stageCounts
+		}
+	}
+	return counts
+}
+
+// CarrierStats returns the cumulative served and refused counts by carrier name.
+func (self *ExtenderServer) CarrierStats() map[string]ExtenderCarrierStats {
+	stats := map[string]ExtenderCarrierStats{}
+	for cIdx, carrier := range extenderCarrierPortNames {
+		served := self.usage.carrierServed[cIdx].Load()
+		var refused uint64
+		var byStage map[string]uint64
+		for sIdx, stage := range extenderRefusalStageNames {
+			if count := self.usage.carrierRefusals[cIdx][sIdx].Load(); count > 0 {
+				refused += count
+				if byStage == nil {
+					byStage = map[string]uint64{}
+				}
+				byStage[stage] = count
+			}
+		}
+		if served > 0 || refused > 0 {
+			stats[carrier] = ExtenderCarrierStats{
+				Served:          served,
+				Refused:         refused,
+				RefusalsByStage: byStage,
+			}
+		}
+	}
+	return stats
 }
 
 type ExtenderStats struct {
@@ -1792,6 +1911,17 @@ func (self *ExtenderServer) reportError(stage string, err error) {
 	if self.settings.ErrorHandler != nil {
 		self.settings.ErrorHandler(stage, err)
 	}
+}
+
+func (self *ExtenderServer) refuseV1(ctx context.Context, stage string, err error) {
+	carrier := extenderContextCarrier(ctx)
+	if carrier == "" {
+		carrier = ExtenderCarrierTcp443
+	}
+	self.usage.recordRefusal(stage)
+	self.usage.recordCarrierRefusal(carrier, stage)
+	self.noteRefusal(stage, err)
+	self.reportError(stage, err)
 }
 
 // HandleExtenderConnection terminates the outer tls of one tcp connection and
@@ -1995,27 +2125,27 @@ func (self *ExtenderServer) handleV1Connection(
 
 	header := &protocol.ExtenderHeader{}
 	if err := proto.Unmarshal(headerBytes, header); err != nil {
-		self.reportError("header decode", err)
+		self.refuseV1(ctx, "header decode", err)
 		return
 	}
 
 	if !self.IsAllowedSecret(header) {
-		self.reportError("header authorization", fmt.Errorf("secret signature is not allowed"))
+		self.refuseV1(ctx, "header authorization", fmt.Errorf("secret signature is not allowed"))
 		return
 	}
 	// a v1 header is an action like any other (A12), refused by the close
 	// since v1 has no status to answer with
 	if limit, _ := self.admitAction(remoteAddressString(clientConn.RemoteAddr()), 0 < len(self.allowedSecrets)); limit != extenderAdmitted {
-		self.reportError(extenderAdmissionStage(limit), fmt.Errorf("the source is over its admission limit"))
+		self.refuseV1(ctx, extenderAdmissionStage(limit), fmt.Errorf("the source is over its admission limit"))
 		return
 	}
 	// v1 has no refusal but the close, and a v1 header is always a forward
 	if err := self.checkNLayerDepth(header); err != nil {
-		self.reportError("hop count", err)
+		self.refuseV1(ctx, "hop count", err)
 		return
 	}
 	if !self.IsAllowedHost(header.DestinationHost) {
-		self.reportError("destination authorization", fmt.Errorf("host %q is not allowed", header.DestinationHost))
+		self.refuseV1(ctx, "destination authorization", fmt.Errorf("host %q is not allowed", header.DestinationHost))
 		return
 	}
 	if self.settings.HeaderHandler != nil {
@@ -2024,6 +2154,7 @@ func (self *ExtenderServer) handleV1Connection(
 	// authorized, admitted and allowed: a v1 forward counts as served here
 	// v1 has no service field that means anything: every accepted header is a forward
 	self.usage.recordServed(extenderUsageForward)
+	self.usage.recordCarrierServed(extenderContextCarrier(ctx))
 
 	if 0 < len(self.nlayerHops) {
 		// an NLayer extender relays the inner stream to another extender,

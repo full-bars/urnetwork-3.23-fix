@@ -162,6 +162,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		// point at which a request counts as served (a probe is the platform's
 		// own verification and is never a client)
 		server.usage.recordServed(extenderUsageServiceIndex(header.Service))
+		server.usage.recordCarrierServed(extenderRequestCarrier(req))
 	}
 
 	handleCtx, handleCancel := context.WithCancel(req.Context())
