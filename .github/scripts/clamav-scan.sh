@@ -16,7 +16,8 @@
 #        CLAMAV_DB_DIR           signature directory (default /var/lib/clamav)
 #        CLAMAV_MAX_DB_AGE_DAYS  fail if the newest database is older (default 3)
 #        CLAMAV_MIN_FILES        fail if fewer files were scanned (default 1)
-#        CLAMAV_MAX_FILESIZE, CLAMAV_MAX_SCANSIZE   scan limits
+#        CLAMAV_MAX_FILESIZE, CLAMAV_MAX_SCANSIZE   scan limits (defaults 3000M and 8000M, sized so the
+#                                combined release archive is scanned, not flagged as over the limit)
 # A file over a limit is reported as a detection (--alert-exceeds-max), so a
 # large file is never skipped and assumed clean.
 set -euo pipefail
@@ -26,8 +27,8 @@ target=${1:?scan target is required}
 db_dir=${CLAMAV_DB_DIR:-/var/lib/clamav}
 max_db_age=${CLAMAV_MAX_DB_AGE_DAYS:-3}
 min_files=${CLAMAV_MIN_FILES:-1}
-max_filesize=${CLAMAV_MAX_FILESIZE:-1000M}
-max_scansize=${CLAMAV_MAX_SCANSIZE:-4000M}
+max_filesize=${CLAMAV_MAX_FILESIZE:-3000M}
+max_scansize=${CLAMAV_MAX_SCANSIZE:-8000M}
 
 eicar=$(mktemp)
 trap 'rm -f "$eicar"' EXIT
