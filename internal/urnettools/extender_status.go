@@ -58,6 +58,15 @@ type ExtenderServed struct {
 	Lifetime uint64 `json:"lifetime"`
 }
 
+type ExtenderDiscovery struct {
+	Requested       string `json:"requested"`
+	State           string `json:"state"`
+	Failure         string `json:"failure,omitempty"`
+	PeerId          string `json:"peer_id"`
+	Peers           int    `json:"peers"`
+	FeedSubscribers int    `json:"feed_subscribers"`
+}
+
 // ExtenderReading mirrors the provider's extenderControlReading.
 type ExtenderReading struct {
 	// Source is where the reading came from; set by this package.
@@ -78,7 +87,8 @@ type ExtenderReading struct {
 	LiveClients   int              `json:"live_clients"`
 	Served        ExtenderServed   `json:"served"`
 
-	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+	RefusalsByStage map[string]uint64  `json:"refusals_by_stage,omitempty"`
+	Discovery       *ExtenderDiscovery `json:"discovery,omitempty"`
 
 	BindRoute string `json:"bind_route,omitempty"`
 }
@@ -254,6 +264,17 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		setting += "  (" + r.SettingSource + ")"
 	}
 	fmt.Fprintf(w, "  Setting:           %s\n", setting)
+	if r.Discovery != nil {
+		d := r.Discovery
+		fmt.Fprintf(w, "  Discovery:         %s (requested: %s)\n", d.State, d.Requested)
+		fmt.Fprintf(w, "    Peer id: %s; mesh peers: %d; feed subscribers: %d\n", d.PeerId, d.Peers, d.FeedSubscribers)
+		switch d.State {
+		case "waiting":
+			fmt.Fprintln(w, "    Discovery is waiting for the platform's root keys.")
+		case "failed":
+			fmt.Fprintf(w, "    Discovery failed: %s; it will retry.\n", d.Failure)
+		}
+	}
 	if !r.Running {
 		reason := r.OffReason
 		if reason == "" {

@@ -113,6 +113,7 @@ var controlKeys = map[string]bool{
 	"metrics":                     true,
 	"metrics_listen":              true,
 	"extender":                    true,
+	"extender_discovery":          true,
 	"proxy_audit":                 true,
 	"smart_dialer":                true,
 	"h3":                          true,

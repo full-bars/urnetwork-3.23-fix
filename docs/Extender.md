@@ -4,6 +4,18 @@ An extender is a provider that also accepts connections on ports the internet ca
 
 You normally do nothing. This page covers how to see whether it is working, the few things the host must allow, how to turn it off, Docker, and what to do when it is not working.
 
+## Discovery
+
+Discovery serves the platform's extender directory to clients. It is off by default, separate from the extender role.
+
+- `off` refuses both discovery services.
+- `feed-only` serves the directory feed and refuses gossip.
+- `on` serves the feed and joins the gossip mesh.
+
+Run `urnet-tools set extender-discovery on` to enable it. Use `feed-only` or `off` in place of `on` to change modes. The setting applies live and survives restarts. Check `urnet-tools extender status` for its state and peer counts.
+
+A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
+
 ## Quick start
 
 ```sh

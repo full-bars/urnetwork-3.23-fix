@@ -4,6 +4,10 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 
 ---
 
+## Extender discovery
+
+The `[extender] discovery started` line says the feed and gossip mesh are active. `discovery started in feed-only mode` says the feed is active and gossip is refused. `discovery stopped` says both services are refused again. `discovery could not start` gives the reason and the next retry delay; both services remain refused while it retries.
+
 ## Release diagnostics and network binding
 
 The following are literal format strings. The provider fills the `%` fields at runtime.

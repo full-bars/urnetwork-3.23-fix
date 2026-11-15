@@ -292,6 +292,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		// Keys added since this table was written; the coverage check below is
 		// what noticed they were missing.
 		{"proxy-audit", "proxy_audit", "on"},
+		{"extender-discovery", "extender_discovery", "feed-only"},
 		{"smart-dialer", "smart_dialer", "on"},
 		{"h3", "h3", "on"},
 		{"tls-hello", "tls_hello", "on"},

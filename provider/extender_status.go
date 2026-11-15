@@ -76,10 +76,11 @@ type extenderControlReading struct {
 	// LiveClients is the connections open over every carrier right now
 	LiveClients int `json:"live_clients"`
 	// Served is requests served for clients (see extender_tally.go)
-	Served          extenderTallyWindows `json:"served"`
-	RelayBytesIn    int64                `json:"relay_bytes_in,omitempty"`
-	RelayBytesOut   int64                `json:"relay_bytes_out,omitempty"`
-	RefusalsByStage map[string]uint64    `json:"refusals_by_stage,omitempty"`
+	Served          extenderTallyWindows      `json:"served"`
+	RelayBytesIn    int64                     `json:"relay_bytes_in,omitempty"`
+	RelayBytesOut   int64                     `json:"relay_bytes_out,omitempty"`
+	RefusalsByStage map[string]uint64         `json:"refusals_by_stage,omitempty"`
+	Discovery       extenderDiscoverySnapshot `json:"discovery"`
 }
 
 func unixMs(t time.Time) int64 {
@@ -93,7 +94,10 @@ func unixMs(t time.Time) int64 {
 // health tick: it reads in-memory state and one small file at most.
 func (m *extenderManager) Reading() extenderControlReading {
 	on, source := extenderSetting(m.environ)
-	reading := extenderControlReading{Known: true, Setting: "off", SettingSource: source}
+	reading := extenderControlReading{Known: true, Setting: "off", SettingSource: source, Discovery: extenderDiscoverySnapshot{Requested: extenderDiscoveryOff, State: extenderDiscoveryStateOff}}
+	if mode, ok := globalControlState.get("extender_discovery"); ok {
+		reading.Discovery.Requested = normalizeExtenderDiscoveryMode(mode)
+	}
 	if on {
 		reading.Setting = "on"
 	}
@@ -105,6 +109,7 @@ func (m *extenderManager) Reading() extenderControlReading {
 		return reading
 	}
 	m.sampleTally()
+	reading.Discovery = role.discoverySnapshot()
 	snapshot := role.snapshot()
 	reading.Running = true
 	reading.RoleState = snapshot.State

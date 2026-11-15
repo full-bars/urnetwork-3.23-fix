@@ -4,6 +4,10 @@ Every provider can serve Prometheus metrics at `/metrics`. The `monitoring/` bun
 
 It takes two steps: confirm metrics is on at each provider (it is on by default, and `urnet-tools metrics on` turns it back on after an `off`), then start the bundle on any machine that can reach them.
 
+## Extender discovery metrics
+
+`urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers.
+
 ## Before you set anything up: the built-in baseline
 
 Prometheus is the fleet view: it answers "how is this node doing right now", across every box, on a live dashboard. It is also the heavier option, and it says nothing about how a box behaved *before* an upgrade unless you were already recording.

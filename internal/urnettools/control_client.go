@@ -173,6 +173,8 @@ var controlKeyCanonical = map[string]string{
 	"metrics":                     "metrics",
 	"metrics_listen":              "metrics_listen",
 	"extender":                    "extender",
+	"extender-discovery":          "extender_discovery",
+	"extender_discovery":          "extender_discovery",
 	"metrics-listen":              "metrics_listen",
 }
 
@@ -187,6 +189,12 @@ func canonicalControlKey(key string) (string, bool) {
 // queueing to pending_overrides.json.
 func validateControlValue(canonicalKey, value string) error {
 	switch canonicalKey {
+	case "extender_discovery":
+		switch strings.ToLower(strings.TrimSpace(value)) {
+		case "off", "on", "feed-only":
+		default:
+			return fmt.Errorf("extender-discovery: must be off, on or feed-only (got %q)", value)
+		}
 	case "proxy_url_refresh", "proxy_dead_cleanup_interval":
 		d, err := time.ParseDuration(value)
 		if err != nil {

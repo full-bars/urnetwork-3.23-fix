@@ -341,6 +341,7 @@ var liveEffectKeys = map[string]bool{
 	"metrics":                     true,
 	"metrics_listen":              true,
 	"extender":                    true,
+	"extender_discovery":          true,
 	"proxy_target_family":         true,
 }
 
@@ -359,6 +360,10 @@ func validateControlValue(key, value string) error {
 	// client-side behavior in internal/urnettools/control_client.go.
 	valLower := strings.ToLower(value)
 	switch key {
+	case "extender_discovery":
+		if !validExtenderDiscoveryMode(value) {
+			return fmt.Errorf("extender_discovery: must be off, on or feed-only (got %q)", value)
+		}
 	case "proxy_url_refresh", "proxy_dead_cleanup_interval":
 		d, err := time.ParseDuration(value)
 		if err != nil {
@@ -492,7 +497,8 @@ var liveDefaults = map[string]string{
 	"metrics_listen": "auto",
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
-	"proxy_audit": "off",
+	"proxy_audit":        "off",
+	"extender_discovery": "off",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
 	// Clearing proxy_target_family goes back to resolving the target here and
@@ -728,6 +734,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// flip selection onto a measurement stream no probe loop is feeding.
 		if liveEffectKeys[req.Key] {
 			if err := applyLiveSideEffect(req.Key, req.Value); err != nil {
+				if req.Key == "extender_discovery" && errors.Is(err, errExtenderDiscoveryNoRole) {
+					return controlResponse{OK: true, NeedsRestart: true}
+				}
 				// Persisted fine — it'll take effect on the next restart — but
 				// the immediate, no-restart-needed part of it failed. Surface
 				// that distinction rather than claiming full success.
@@ -779,6 +788,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
 			if err := applyLiveDefault(req.Key, state); err != nil {
+				if req.Key == "extender_discovery" && errors.Is(err, errExtenderDiscoveryNoRole) {
+					return controlResponse{OK: true, NeedsRestart: true}
+				}
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process
@@ -1069,6 +1081,10 @@ func applyLiveSideEffect(key, value string) error {
 			}
 			debug.SetGCPercent(percent)
 		}
+	case "extender_discovery":
+		extenderDiscoveryApplyMu.Lock()
+		defer extenderDiscoveryApplyMu.Unlock()
+		return applyExtenderDiscoveryMode(value)
 	case "proxy_audit":
 		enabled := strings.EqualFold(value, "on")
 		setProxyAuditOverride(enabled)

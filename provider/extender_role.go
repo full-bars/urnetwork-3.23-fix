@@ -355,6 +355,7 @@ func (r *extenderRole) CloseAndWait() {
 
 func (r *extenderRole) run() {
 	defer close(r.done)
+	defer globalExtenderRole.CompareAndSwap(r, nil)
 	defer r.shutdown()
 
 	for {
@@ -1117,5 +1118,16 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	fmt.Fprintf(&b, "# HELP urnet_extender_tcp_retry_total Attempts to take tcp 443 after a bind failure.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_tcp_retry_total counter\n")
 	fmt.Fprintf(&b, "urnet_extender_tcp_retry_total %d\n", snapshot.TcpRetries)
+	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_state Extender discovery state.\n# TYPE urnet_extender_discovery_state gauge\n")
+	discovery := currentExtenderDiscoverySnapshot()
+	for _, candidate := range []string{extenderDiscoveryStateOff, extenderDiscoveryStateWaiting, extenderDiscoveryStateRunning, extenderDiscoveryStateFeedOnly, extenderDiscoveryStateFailed} {
+		value := 0
+		if discovery.State == candidate {
+			value = 1
+		}
+		fmt.Fprintf(&b, "urnet_extender_discovery_state{state=%s} %d\n", connect.PrometheusLabelValue(candidate), value)
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_peers Discovery mesh peers.\n# TYPE urnet_extender_discovery_peers gauge\nurnet_extender_discovery_peers %d\n", discovery.Peers)
+	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_feed_subscribers Discovery feed subscribers.\n# TYPE urnet_extender_discovery_feed_subscribers gauge\nurnet_extender_discovery_feed_subscribers %d\n", discovery.FeedSubscribers)
 	return b.String()
 }

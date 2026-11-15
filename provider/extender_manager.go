@@ -188,6 +188,13 @@ func (m *extenderManager) startLocked(why string, source string) {
 		return
 	}
 	m.role = role
+	extenderDiscoveryApplyMu.Lock()
+	if mode, ok := globalControlState.get("extender_discovery"); ok {
+		if err := role.setDiscoveryMode(mode); err != nil {
+			importantLogf("🌉⚠️ [extender] could not apply discovery setting: %s\n", err)
+		}
+	}
+	extenderDiscoveryApplyMu.Unlock()
 	m.offReason = ""
 	m.lastOffLine = ""
 	importantLogf("🌉✅ [extender] started (%s; setting from %s). It listens for censored clients on tcp 443 (required), then udp 443 and dns 4053, then asks the platform to list this host.\n", why, source)

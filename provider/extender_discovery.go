@@ -90,12 +90,12 @@ type extenderDiscoveryInputs struct {
 
 // extenderDiscoverySnapshot is the discovery state as one value for the status.
 type extenderDiscoverySnapshot struct {
-	Requested       string
-	State           string
-	Failure         string
-	PeerId          string
-	Peers           int
-	FeedSubscribers int
+	Requested       string `json:"requested"`
+	State           string `json:"state"`
+	Failure         string `json:"failure,omitempty"`
+	PeerId          string `json:"peer_id"`
+	Peers           int    `json:"peers"`
+	FeedSubscribers int    `json:"feed_subscribers"`
 }
 
 type extenderDiscovery struct {
@@ -290,6 +290,10 @@ func (d *extenderDiscovery) snapshot() extenderDiscoverySnapshot {
 	return snapshot
 }
 
+var errExtenderDiscoveryNoRole = errors.New("the extender role is not running")
+
+var extenderDiscoveryApplyMu sync.Mutex
+
 // The extender role side.
 
 // discoveryInputs gathers what the controller needs under the role's lock.
@@ -354,8 +358,8 @@ func applyExtenderDiscoveryMode(mode string) error {
 		return fmt.Errorf("extender discovery mode %q is not off, on or feed-only", mode)
 	}
 	role := globalExtenderRole.Load()
-	if role == nil {
-		return errors.New("the extender role is not running")
+	if role == nil || role.ctx.Err() != nil {
+		return errExtenderDiscoveryNoRole
 	}
 	return role.setDiscoveryMode(mode)
 }

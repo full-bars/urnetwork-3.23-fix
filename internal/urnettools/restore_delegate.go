@@ -249,6 +249,7 @@ var setKeyHelps = []string{
 	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: on, as upstream)",
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
+	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: off)",
 }
 
 // treatsOffAsClear reports whether `set <key> off` is turned into a generic
@@ -532,6 +533,7 @@ func formatSets(p Provider, want string) error {
 		{"ramlogs", "ramlogs"},
 		{"metrics", "metrics"},
 		{"extender", "extender"},
+		{"extender-discovery", "extender_discovery"},
 		{"metrics-listen", "metrics_listen"},
 		{"h3", "h3"},
 		{"tls-hello", "tls_hello"},
