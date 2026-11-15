@@ -76,6 +76,21 @@ type ExtenderCarrierStats struct {
 	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
 }
 
+// ExtenderCarrierBytes holds the relayed traffic of one carrier: the bytes this
+// extender relayed on it, the rate now, the connections open now and opened
+// since start, and the last 30 one minute buckets of ingress plus egress as
+// whole KiB.
+type ExtenderCarrierBytes struct {
+	Carrier      string   `json:"carrier"`
+	IngressBytes uint64   `json:"ingress_bytes"`
+	EgressBytes  uint64   `json:"egress_bytes"`
+	RateInBps    uint64   `json:"rate_in_bps,omitempty"`
+	RateOutBps   uint64   `json:"rate_out_bps,omitempty"`
+	LiveConns    uint64   `json:"live_conns"`
+	ConnsTotal   uint64   `json:"conns_total"`
+	Minutes      []uint32 `json:"minutes,omitempty"`
+}
+
 // ExtenderReading mirrors the provider's extenderControlReading.
 type ExtenderReading struct {
 	// Source is where the reading came from; set by this package.
@@ -96,8 +111,12 @@ type ExtenderReading struct {
 	LiveClients   int              `json:"live_clients"`
 	Served        ExtenderServed   `json:"served"`
 
+	RelayBytesIn  int64 `json:"relay_bytes_in,omitempty"`
+	RelayBytesOut int64 `json:"relay_bytes_out,omitempty"`
+
 	RefusalsByStage map[string]uint64      `json:"refusals_by_stage,omitempty"`
 	Carriers        []ExtenderCarrierStats `json:"carriers,omitempty"`
+	CarrierBytes    []ExtenderCarrierBytes `json:"carrier_bytes,omitempty"`
 	Discovery       *ExtenderDiscovery     `json:"discovery,omitempty"`
 
 	BindRoute string `json:"bind_route,omitempty"`
@@ -296,6 +315,7 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		}
 		fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
 		formatExtenderCarrierStats(w, r.Carriers)
+		formatExtenderTraffic(w, r)
 		return
 	}
 	state := strings.ReplaceAll(r.RoleState, "_", " ")
@@ -331,6 +351,7 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	fmt.Fprintf(w, "  Clients now:       %d\n", r.LiveClients)
 	fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
 	formatExtenderCarrierStats(w, r.Carriers)
+	formatExtenderTraffic(w, r)
 }
 
 func formatExtenderCarrierStats(w io.Writer, carriers []ExtenderCarrierStats) {
@@ -362,6 +383,31 @@ func formatExtenderCarrierStats(w io.Writer, carriers []ExtenderCarrierStats) {
 		}
 		fmt.Fprintln(w, line)
 	}
+}
+
+// formatExtenderTraffic renders the per-carrier relayed traffic table. The
+// bytes are what THIS extender relayed, summed over the life of the server for
+// the totals and measured on the last sample for the rates.
+func formatExtenderTraffic(w io.Writer, r ExtenderReading) {
+	if len(r.CarrierBytes) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "  Traffic:")
+	fmt.Fprintf(w, "    %-10s %10s %10s %12s %12s %s\n", "carrier", "in", "out", "rate in", "rate out", "connections")
+	for _, c := range r.CarrierBytes {
+		fmt.Fprintf(w, "    %-10s %10s %10s %12s %12s %d live, %d total\n",
+			c.Carrier+":",
+			formatBytes(float64(c.IngressBytes)),
+			formatBytes(float64(c.EgressBytes)),
+			formatBytes(float64(c.RateInBps))+"/s",
+			formatBytes(float64(c.RateOutBps))+"/s",
+			c.LiveConns,
+			c.ConnsTotal,
+		)
+	}
+	fmt.Fprintf(w, "    %-10s %10s %10s\n", "total:",
+		formatBytes(float64(r.RelayBytesIn)),
+		formatBytes(float64(r.RelayBytesOut)))
 }
 
 // printExtenderBlock appends the extender block to `urnet-tools status`.

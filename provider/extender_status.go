@@ -64,6 +64,21 @@ type extenderCarrierReading struct {
 	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
 }
 
+// extenderCarrierBytesReading is the relayed traffic of one carrier: the bytes
+// this extender relayed on it, the rate now, the connections open now and
+// opened since start, and the last 30 one minute buckets of ingress plus
+// egress as whole KiB.
+type extenderCarrierBytesReading struct {
+	Carrier      string   `json:"carrier"`
+	IngressBytes uint64   `json:"ingress_bytes"`
+	EgressBytes  uint64   `json:"egress_bytes"`
+	RateInBps    uint64   `json:"rate_in_bps,omitempty"`
+	RateOutBps   uint64   `json:"rate_out_bps,omitempty"`
+	LiveConns    uint64   `json:"live_conns"`
+	ConnsTotal   uint64   `json:"conns_total"`
+	Minutes      []uint32 `json:"minutes,omitempty"`
+}
+
 // extenderControlReading is the whole extender picture, and the JSON the
 // control socket returns for `extender`.
 type extenderControlReading struct {
@@ -85,12 +100,14 @@ type extenderControlReading struct {
 	// LiveClients is the connections open over every carrier right now
 	LiveClients int `json:"live_clients"`
 	// Served is requests served for clients (see extender_tally.go)
-	Served          extenderTallyWindows      `json:"served"`
-	RelayBytesIn    int64                     `json:"relay_bytes_in,omitempty"`
-	RelayBytesOut   int64                     `json:"relay_bytes_out,omitempty"`
-	RefusalsByStage map[string]uint64         `json:"refusals_by_stage,omitempty"`
-	Carriers        []extenderCarrierReading  `json:"carriers,omitempty"`
-	Discovery       extenderDiscoverySnapshot `json:"discovery"`
+	Served          extenderTallyWindows     `json:"served"`
+	RelayBytesIn    int64                    `json:"relay_bytes_in,omitempty"`
+	RelayBytesOut   int64                    `json:"relay_bytes_out,omitempty"`
+	RefusalsByStage map[string]uint64        `json:"refusals_by_stage,omitempty"`
+	Carriers        []extenderCarrierReading `json:"carriers,omitempty"`
+	// per-carrier relayed bytes, rates and minute history
+	CarrierBytes []extenderCarrierBytesReading `json:"carrier_bytes,omitempty"`
+	Discovery    extenderDiscoverySnapshot     `json:"discovery"`
 }
 
 func unixMs(t time.Time) int64 {
@@ -150,6 +167,21 @@ func (m *extenderManager) Reading() extenderControlReading {
 			RefusalsByStage: byStage,
 		})
 	}
+	for carrier, byteStats := range snapshot.CarrierBytes {
+		reading.CarrierBytes = append(reading.CarrierBytes, extenderCarrierBytesReading{
+			Carrier:      carrier,
+			IngressBytes: byteStats.IngressBytes,
+			EgressBytes:  byteStats.EgressBytes,
+			RateInBps:    byteStats.RateInBps,
+			RateOutBps:   byteStats.RateOutBps,
+			LiveConns:    byteStats.LiveConns,
+			ConnsTotal:   byteStats.ConnsTotal,
+			Minutes:      byteStats.Minutes,
+		})
+	}
+	slices.SortFunc(reading.CarrierBytes, func(a extenderCarrierBytesReading, b extenderCarrierBytesReading) int {
+		return strings.Compare(a.Carrier, b.Carrier)
+	})
 	reading.Served = m.tallyWindows()
 
 	portUp := func(carrier string) (bool, string) {

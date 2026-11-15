@@ -104,6 +104,7 @@ func (m *extenderManager) Start(ctx context.Context, wg *sync.WaitGroup) {
 			case <-ticker.C:
 				m.Reconcile("periodic check")
 				m.sampleTally()
+				m.sampleCarrierRates()
 			}
 		}
 	}()
@@ -348,6 +349,16 @@ func (m *extenderManager) sampleTally() {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	m.sampleTallyLocked(m.role)
+}
+
+// sampleCarrierRates folds every live server's cumulative per-carrier byte
+// counters into its rate and minute history. Called on the periodic tick.
+func (m *extenderManager) sampleCarrierRates() {
+	role := m.Role()
+	if role == nil {
+		return
+	}
+	role.sampleCarrierRates(time.Now())
 }
 
 func (m *extenderManager) sampleTallyLocked(role *extenderRole) {

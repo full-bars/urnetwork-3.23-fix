@@ -241,7 +241,10 @@ type extenderRole struct {
 	baseRefusalCounts        map[string]uint64
 	baseCarrierServedCounts  map[string]uint64
 	baseCarrierRefusalCounts map[string]map[string]uint64
-	tcpRetries               int64
+	// the cumulative per-carrier relayed bytes of retired servers, so the byte
+	// totals survive when a server leaves the live set
+	baseCarrierByteCounts map[string]extender.ExtenderCarrierByteStats
+	tcpRetries            int64
 
 	// the activation loop, attached late by the direct slot (extender_activation.go)
 	activator       *connect.ExtenderActivator
@@ -318,6 +321,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		baseRefusalCounts:        map[string]uint64{},
 		baseCarrierServedCounts:  map[string]uint64{},
 		baseCarrierRefusalCounts: map[string]map[string]uint64{},
+		baseCarrierByteCounts:    map[string]extender.ExtenderCarrierByteStats{},
 		ready:                    make(chan struct{}),
 		done:                     make(chan struct{}),
 	}
@@ -728,6 +732,7 @@ func (r *extenderRole) foldCountsLocked(
 	serviceCounts, servedCounts, refusalCounts map[string]uint64,
 	carrierServedCounts map[string]uint64,
 	carrierRefusalCounts map[string]map[string]uint64,
+	carrierByteCounts map[string]extender.ExtenderCarrierByteStats,
 ) {
 	r.baseStats.IngressByteCount += stats.IngressByteCount
 	r.baseStats.IngressReadCount += stats.IngressReadCount
@@ -761,6 +766,17 @@ func (r *extenderRole) foldCountsLocked(
 			dst[stage] += count
 		}
 	}
+	if r.baseCarrierByteCounts == nil {
+		r.baseCarrierByteCounts = map[string]extender.ExtenderCarrierByteStats{}
+	}
+	for carrier, byteStats := range carrierByteCounts {
+		base := r.baseCarrierByteCounts[carrier]
+		base.Carrier = carrier
+		base.IngressBytes += byteStats.IngressBytes
+		base.EgressBytes += byteStats.EgressBytes
+		base.ConnsTotal += byteStats.ConnsTotal
+		r.baseCarrierByteCounts[carrier] = base
+	}
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
@@ -773,6 +789,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 	refusalCounts := server.RefusalCounts()
 	carrierServedCounts := server.CarrierServedCounts()
 	carrierRefusalCounts := server.CarrierRefusalCounts()
+	carrierByteCounts := server.CarrierByteStats(time.Now())
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := slices.Index(r.servers, server)
@@ -781,7 +798,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 		return
 	}
 	r.servers = slices.Delete(r.servers, index, index+1)
-	r.foldCountsLocked(stats, serviceCounts, servedCounts, refusalCounts, carrierServedCounts, carrierRefusalCounts)
+	r.foldCountsLocked(stats, serviceCounts, servedCounts, refusalCounts, carrierServedCounts, carrierRefusalCounts, carrierByteCounts)
 	r.refreshLocked()
 }
 
@@ -889,6 +906,7 @@ func (r *extenderRole) shutdown() {
 			server.RefusalCounts(),
 			server.CarrierServedCounts(),
 			server.CarrierRefusalCounts(),
+			server.CarrierByteStats(time.Now()),
 		)
 	}
 	r.closing = slices.DeleteFunc(r.closing, func(c *extender.ExtenderServer) bool { return slices.Contains(servers, c) })
@@ -921,6 +939,9 @@ type extenderRoleSnapshot struct {
 	RefusalCounts        map[string]uint64
 	CarrierServedCounts  map[string]uint64
 	CarrierRefusalCounts map[string]map[string]uint64
+	// per-carrier relayed bytes, rates and minute history, summed over every
+	// server the role owns plus the cumulative bytes of retired ones
+	CarrierBytes map[string]extender.ExtenderCarrierByteStats
 }
 
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
@@ -933,6 +954,10 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	baseCarrierRefusalCounts := map[string]map[string]uint64{}
 	for carrier, stages := range r.baseCarrierRefusalCounts {
 		baseCarrierRefusalCounts[carrier] = maps.Clone(stages)
+	}
+	baseCarrierByteCounts := map[string]extender.ExtenderCarrierByteStats{}
+	for carrier, byteStats := range r.baseCarrierByteCounts {
+		baseCarrierByteCounts[carrier] = byteStats
 	}
 	snapshot := extenderRoleSnapshot{
 		Enabled:      true,
@@ -971,6 +996,7 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	if snapshot.CarrierRefusalCounts == nil {
 		snapshot.CarrierRefusalCounts = map[string]map[string]uint64{}
 	}
+	snapshot.CarrierBytes = mergeCarrierByteStats(baseCarrierByteCounts, servers, time.Now())
 	for _, server := range servers {
 		for service, count := range server.ServiceCounts() {
 			snapshot.ServiceCounts[service] += count
@@ -1002,6 +1028,56 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 		snapshot.Connections += server.ConnectionCount()
 	}
 	return snapshot
+}
+
+// mergeCarrierByteStats builds the role's per-carrier byte picture from the
+// cumulative bytes of retired servers plus every live server's reading.
+// Cumulative counters sum; rates sum; the minute histories add positionally,
+// which is exact because every server's minutes are computed against the same
+// now and so name the same absolute minutes.
+func mergeCarrierByteStats(
+	base map[string]extender.ExtenderCarrierByteStats,
+	servers []*extender.ExtenderServer,
+	now time.Time,
+) map[string]extender.ExtenderCarrierByteStats {
+	out := map[string]extender.ExtenderCarrierByteStats{}
+	for carrier, byteStats := range base {
+		out[carrier] = byteStats
+	}
+	for _, server := range servers {
+		for carrier, serverStats := range server.CarrierByteStats(now) {
+			merged := out[carrier]
+			merged.Carrier = carrier
+			merged.IngressBytes += serverStats.IngressBytes
+			merged.EgressBytes += serverStats.EgressBytes
+			merged.LiveConns += serverStats.LiveConns
+			merged.ConnsTotal += serverStats.ConnsTotal
+			merged.RateInBps += serverStats.RateInBps
+			merged.RateOutBps += serverStats.RateOutBps
+			if len(serverStats.Minutes) > 0 {
+				if len(merged.Minutes) == 0 {
+					merged.Minutes = slices.Clone(serverStats.Minutes)
+				} else {
+					for i := 0; i < len(serverStats.Minutes) && i < len(merged.Minutes); i++ {
+						merged.Minutes[i] += serverStats.Minutes[i]
+					}
+				}
+			}
+			out[carrier] = merged
+		}
+	}
+	return out
+}
+
+// sampleCarrierRates folds every server's cumulative per-carrier counters into
+// its rate and minute history, on the periodic tick.
+func (r *extenderRole) sampleCarrierRates(now time.Time) {
+	r.mu.Lock()
+	servers := slices.Clone(r.servers)
+	r.mu.Unlock()
+	for _, server := range servers {
+		server.SampleCarrierRates(now)
+	}
 }
 
 func (r *extenderRole) publishStatus(note string) {
@@ -1210,6 +1286,21 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	fmt.Fprintf(&b, "# TYPE urnet_extender_relay_bytes_total counter\n")
 	fmt.Fprintf(&b, "urnet_extender_relay_bytes_total{dir=\"ingress\"} %d\n", snapshot.Stats.IngressByteCount)
 	fmt.Fprintf(&b, "urnet_extender_relay_bytes_total{dir=\"egress\"} %d\n", snapshot.Stats.EgressByteCount)
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_bytes_total Bytes the extender relayed per carrier and direction.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_bytes_total counter\n")
+	for _, carrier := range extender.ExtenderCarrierPorts() {
+		byteStats := snapshot.CarrierBytes[carrier]
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"ingress\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.IngressBytes)
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"egress\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.EgressBytes)
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_connections Relayed connections open now over each extender carrier.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_connections gauge\n")
+	for _, carrier := range extender.ExtenderCarrierPorts() {
+		fmt.Fprintf(&b, "urnet_extender_carrier_connections{carrier=%s} %d\n",
+			connect.PrometheusLabelValue(carrier), snapshot.CarrierBytes[carrier].LiveConns)
+	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_tcp_retry_total Attempts to take tcp 443 after a bind failure.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_tcp_retry_total counter\n")
 	fmt.Fprintf(&b, "urnet_extender_tcp_retry_total %d\n", snapshot.TcpRetries)

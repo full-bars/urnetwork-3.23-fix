@@ -50,6 +50,7 @@ func (self *ExtenderServer) relayDatagram(
 		header.DestinationHost,
 		fmt.Sprintf("%d", header.DestinationPort),
 	)
+
 	// The family of the client's outer socket, exactly as the stream relay
 	// resolves it (A7): a destination with no address in that family fails
 	// here rather than crossing families.
@@ -60,6 +61,9 @@ func (self *ExtenderServer) relayDatagram(
 		return
 	}
 	defer forwardConn.Close()
+
+	self.noteRelayedConnOpen(ctx)
+	defer self.noteRelayedConnClose(ctx)
 
 	// Either direction ending ends both: a udp socket with no reader is a
 	// leak, and a carrier with no writer is a client waiting forever.
@@ -96,6 +100,17 @@ func (self *ExtenderServer) relayDatagram(
 			// the O1 counters cover every carrier, datagrams included
 			self.ingressByteCount.Add(int64(n))
 			self.ingressReadCount.Add(1)
+
+			// per-carrier byte count
+			carrier := extenderContextCarrier(ctx)
+			if carrier == "" {
+				carrier = ExtenderCarrierTcp443
+			}
+			if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
+				self.ingressByteCountByCarrier[cIdx].Add(uint64(n))
+				self.ingressReadCountByCarrier[cIdx].Add(1)
+			}
+
 			if _, err := forwardConn.Write(buffer[:n]); err != nil {
 				self.reportError("datagram relay write destination", err)
 				return
@@ -119,6 +134,17 @@ func (self *ExtenderServer) relayDatagram(
 			// the answer side of the same relay, on the egress counters
 			self.egressByteCount.Add(int64(n))
 			self.egressReadCount.Add(1)
+
+			// per-carrier byte count
+			carrier := extenderContextCarrier(ctx)
+			if carrier == "" {
+				carrier = ExtenderCarrierTcp443
+			}
+			if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
+				self.egressByteCountByCarrier[cIdx].Add(uint64(n))
+				self.egressReadCountByCarrier[cIdx].Add(1)
+			}
+
 			if err := writer.Write(clientConn, buffer[:n]); err != nil {
 				// An oversized reply is dropped rather than ending the relay:
 				// one bad packet from the destination must not take down a
