@@ -34,6 +34,8 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
 | `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. See [Blocklist Sync](Blocklist-Sync). |
 
+The systemd shakedown exercises a real hotswap with RAM logs on and off. It waits for the old process to drain and checks that the successor stays active. The test unit has its start limit disabled for rapid restart checks.
+
 ## The provider (`provider/`)
 
 The `provider` binary authenticates with the platform, starts one connection per proxy, relays traffic and keeps itself healthy. `main.go` holds the entry point and the command line (`auth`, `provide`, `proxy`, `claim`, `fleet`, `wallet`, `sn-status` and friends). The other files are grouped here by what they do. File names mostly start with the topic.
