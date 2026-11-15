@@ -408,6 +408,7 @@ restart_provider() {
   echo "$m $(journal_line_count)"
   # systemctl/timeout messages must never join the DATA line above: the
   # caller parses "<ramlog_mark> <journal_mark>" from this function stdout.
+  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user reset-failed urnetwork.service >/dev/null 2>&1 || true
   timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user restart urnetwork.service >&2
 }
 
@@ -446,6 +447,7 @@ start_provider() {
   local m
   m=$(ramlog_mark_snapshot)
   echo "$m $(journal_line_count)"
+  runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user reset-failed urnetwork.service >/dev/null 2>&1 || true
   timeout 180 runuser -u urnet -- env XDG_RUNTIME_DIR=/run/user/$(id -u urnet) systemctl --user start urnetwork.service >&2
 }
 
@@ -547,6 +549,12 @@ printf '200\n' > /home/urnet/.urnetwork/proxy_url_max
 printf '10m\n' > /home/urnet/.urnetwork/proxy_url_refresh
 chown -R urnet:urnet /home/urnet/.urnetwork && chmod 600 /home/urnet/.urnetwork/jwt
 export XDG_RUNTIME_DIR=/run/user/$(id -u urnet)
+# Rapid restart tests must not be throttled by the user manager.
+mkdir -p /home/urnet/.config/systemd/user/urnetwork.service.d
+printf '[Unit]\nStartLimitIntervalSec=0\n' > /home/urnet/.config/systemd/user/urnetwork.service.d/shakedown-limit.conf
+chown -R urnet:urnet /home/urnet/.config
+runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
+runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user reset-failed urnetwork.service >/dev/null 2>&1 || true
 # Snapshot the RAM-log delimiter mark BEFORE this start: a ramlog-mode wait
 # after it must accept the block this start writes even when the block lands
 # before wait_client_id runs.
