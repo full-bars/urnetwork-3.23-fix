@@ -411,7 +411,7 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 		row("5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
 	}
 	row("clients", strconv.Itoa(s.Clients), tui.Style{})
-	row("sessions", fmt.Sprintf("%d pqe / %d cl", s.Sessions.PQE, s.Sessions.Classical), tui.Style{})
+	row("sessions", fmt.Sprintf("%d pqe / %d cl", s.Sessions.PQE, classicalSessions(s.Clients, s.Sessions.PQE, s.Sessions.Classical)), tui.Style{})
 	tui.DrawBar(b.Sub(tui.Rect{Y: y, W: b.Width(), H: 1}), tui.Bar{
 		Label: "pressure", LabelWidth: topKeyColumn - 1, Value: fmt.Sprintf("%.2f", s.Pressure), Frac: s.Pressure,
 		LabelStyle: th.Dim, Fill: th.Level(s.Pressure, 0.7, 0.9), Empty: th.Dim,

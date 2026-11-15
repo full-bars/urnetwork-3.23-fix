@@ -212,7 +212,7 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	}
 
 	emit(liveRow{label: "clients", segs: []string{
-		fmt.Sprintf("%d (sessions: %d pqe, %d classical)", s.Clients, s.Sessions.PQE, s.Sessions.Classical),
+		fmt.Sprintf("%d (sessions: %d pqe, %d classical)", s.Clients, s.Sessions.PQE, classicalSessions(s.Clients, s.Sessions.PQE, s.Sessions.Classical)),
 	}})
 
 	emit(liveRow{label: "proxies", sep: ", ", segs: []string{
