@@ -325,3 +325,35 @@ func TestDetectBindRoute(t *testing.T) {
 		t.Fatalf("expected empty for freebsd, got %q", got)
 	}
 }
+
+func TestExtenderBlockRendersCarrierStats(t *testing.T) {
+	out := renderExtender(t, ExtenderReading{
+		Source:    SourceControlSocket,
+		Known:     true,
+		Setting:   "on",
+		Running:   true,
+		RoleState: "serving",
+		Carriers: []ExtenderCarrierStats{
+			{
+				Carrier:         "tcp-443",
+				Served:          412,
+				Refused:         3,
+				RefusalsByStage: map[string]uint64{"service": 2, "destination authorization": 1},
+			},
+			{Carrier: "udp-443", Served: 90, Refused: 0},
+			{Carrier: "udp-4053", Served: 12, Refused: 1, RefusalsByStage: map[string]uint64{"admission source": 1}},
+			{Carrier: "udp-53", Served: 4, Refused: 0},
+		},
+	})
+	for _, want := range []string{
+		"Carriers:",
+		"tcp-443:  served 412, refused 3 (service 2, destination authorization 1)",
+		"udp-443:  served 90, refused 0",
+		"udp-4053: served 12, refused 1 (admission source 1)",
+		"udp-53:   served 4, refused 0",
+	} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("block missing %q:\n%s", want, out)
+		}
+	}
+}

@@ -38,6 +38,16 @@ func TestExtenderServedCountsAnAcceptedForward(t *testing.T) {
 			t.Fatalf("after %s: served forwards = %d, want %d", carrier, got, i+1)
 		}
 	}
+	carrierServed := fixture.server.CarrierServedCounts()
+	for _, carrierPort := range []string{
+		ExtenderCarrierTcp443,
+		ExtenderCarrierUdp443,
+		ExtenderCarrierUdp4053,
+	} {
+		if carrierServed[carrierPort] != 1 {
+			t.Fatalf("carrier %s served = %d, want 1 (%v)", carrierPort, carrierServed[carrierPort], carrierServed)
+		}
+	}
 }
 
 // An ordinary web request to the port (a scanner, a browser) is answered like a
@@ -114,5 +124,11 @@ func TestExtenderServedCountsAnAcceptedV1Forward(t *testing.T) {
 	sendV1Header(t, fixture, oddBytes)
 	if got := fixture.server.ServedCounts()["forward"]; got != 2 {
 		t.Fatalf("a v1 forward with a nonzero service counts %d, want 2", got)
+	}
+	if got := fixture.server.CarrierServedCounts()[ExtenderCarrierTcp443]; got != 2 {
+		t.Fatalf("tcp-443 carrier served for v1 = %d, want 2", got)
+	}
+	if got := fixture.server.CarrierRefusalCounts()[ExtenderCarrierTcp443]["destination authorization"]; got != 1 {
+		t.Fatalf("tcp-443 carrier refused for v1 = %d, want 1", got)
 	}
 }

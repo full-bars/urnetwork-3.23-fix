@@ -426,6 +426,14 @@ func TestExtenderRoleSnapshotKeepsRetiredServerCounts(t *testing.T) {
 	role := &extenderRole{
 		baseServiceCounts: map[string]uint64{"feed": 3},
 		baseRefusalCounts: map[string]uint64{"country": 2},
+		baseCarrierServedCounts: map[string]uint64{
+			extender.ExtenderCarrierTcp443:  10,
+			extender.ExtenderCarrierUdp4053: 4,
+		},
+		baseCarrierRefusalCounts: map[string]map[string]uint64{
+			extender.ExtenderCarrierTcp443: {"service": 2},
+			extender.ExtenderCarrierUdp53:  {"admission source": 1},
+		},
 	}
 	snapshot := role.snapshot()
 	if snapshot.ServiceCounts["feed"] != 3 {
@@ -433,5 +441,25 @@ func TestExtenderRoleSnapshotKeepsRetiredServerCounts(t *testing.T) {
 	}
 	if snapshot.RefusalCounts["country"] != 2 {
 		t.Fatalf("refusal counts = %v, expected the retired country refusal", snapshot.RefusalCounts)
+	}
+	if snapshot.CarrierServedCounts[extender.ExtenderCarrierTcp443] != 10 || snapshot.CarrierServedCounts[extender.ExtenderCarrierUdp4053] != 4 {
+		t.Fatalf("carrier served counts = %v", snapshot.CarrierServedCounts)
+	}
+	if snapshot.CarrierRefusalCounts[extender.ExtenderCarrierTcp443]["service"] != 2 || snapshot.CarrierRefusalCounts[extender.ExtenderCarrierUdp53]["admission source"] != 1 {
+		t.Fatalf("carrier refusal counts = %v", snapshot.CarrierRefusalCounts)
+	}
+	metrics := renderExtenderRoleMetrics(snapshot)
+	for _, want := range []string{
+		`urnet_extender_carrier_requests_total{carrier="tcp-443",outcome="served"} 10`,
+		`urnet_extender_carrier_requests_total{carrier="tcp-443",outcome="refused"} 2`,
+		`urnet_extender_carrier_requests_total{carrier="udp-443",outcome="served"} 0`,
+		`urnet_extender_carrier_requests_total{carrier="udp-4053",outcome="served"} 4`,
+		`urnet_extender_carrier_requests_total{carrier="udp-53",outcome="refused"} 1`,
+		`urnet_extender_carrier_refused_total{carrier="tcp-443",stage="service"} 2`,
+		`urnet_extender_carrier_refused_total{carrier="udp-53",stage="admission source"} 1`,
+	} {
+		if !strings.Contains(metrics, want) {
+			t.Fatalf("metrics missing %q:\n%s", want, metrics)
+		}
 	}
 }
