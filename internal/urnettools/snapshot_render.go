@@ -225,12 +225,16 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	// Trim: only when a cap is in force, and only when the provider reported
 	// one. The configured count is the pool size before the cap, so the row
 	// says how much capacity the cap is holding back.
-	if s.Proxies.TrimCap > 0 {
-		segs := []string{fmt.Sprintf("holding at %d running", s.Proxies.TrimCap)}
-		if s.Proxies.Configured > s.Proxies.TrimCap {
-			segs = append(segs,
-				fmt.Sprintf("%d configured", s.Proxies.Configured),
-				fmt.Sprintf("%d held back", s.Proxies.Configured-s.Proxies.TrimCap))
+	if s.Proxies.TrimCap > 0 || (s.Proxies.Parked != nil && *s.Proxies.Parked > 0) {
+		segs := []string{}
+		if s.Proxies.Parked != nil {
+			segs = append(segs, fmt.Sprintf("%d parked", *s.Proxies.Parked))
+		}
+		if s.Proxies.TrimCap > 0 {
+			segs = append(segs, fmt.Sprintf("holding at %d running", s.Proxies.TrimCap))
+		}
+		if s.Proxies.Configured > 0 {
+			segs = append(segs, fmt.Sprintf("%d configured", s.Proxies.Configured))
 		}
 		if src := trimSourceLabel(s.Proxies.TrimCapSource); src != "" {
 			segs = append(segs, src)

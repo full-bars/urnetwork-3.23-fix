@@ -10,6 +10,8 @@ Everything merged after `v3.23.0-fix.35.10`.
 
 ### Fixed
 
+- Trim-held proxies no longer count as down in the status snapshot. The live view reports the actual parked count separately and retains clients on draining proxies.
+
 - **urnet-tools update reports "failed to update" when the restarted provider binary carries file capabilities** (`internal/urnettools/update.go`, `internal/urnettools/process_start_linux.go`). A non-dumpable provider makes `/proc/<pid>/exe` unreadable, which the updater treated as "restart did not land" and failed the update. The verifier now also accepts the process start time after the binary swap, the installed binary's version stamp, and the pid change as proof the restart landed. Tests cover the pass and fail paths.
 - **urnet-tools providers/status/update only knew `urnetwork.service`** (`internal/urnettools/discover.go`). A leftover `urnetwork@ipv6.service` template instance (same binary, same state dir) was never listed, so it stayed on an old version and consumed memory. Discovery now also recognizes `urnetwork@*.service` instances. No unit is deleted or disabled; single-provider output is unchanged.
 - **Restart after SIGPIPE** (`scripts/Provider_Install_Linux.sh`). The systemd unit forces a restart after SIGPIPE, which systemd normally treats as a clean exit. The installer warns when a restart override defeats this protection. Start rate limits still apply.

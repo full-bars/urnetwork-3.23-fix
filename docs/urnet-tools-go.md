@@ -203,6 +203,8 @@ urnet-tools proxy trim 500
 urnet-tools proxy trim off
 ```
 
+`urnet-tools status` and `urnet-tools top` show the actual trim-parked count separately from the active pool. Parked proxies do not count as down. Sessions on proxies still draining remain in the client count. Older providers do not report a parked count.
+
 `urnet-tools status` carries the same information as a `trim` row on the live block whenever a cap is in force, so a capped box is visible at a glance instead of looking like a small one.
 
 - **A-F Grade Ranking:** Sheds worst-graded proxies first using the provider's website-reachability probe scores (`dead` → `never-graded` → `F` → `D` → `C` → `B` → `A`).

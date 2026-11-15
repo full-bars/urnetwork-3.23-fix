@@ -4484,12 +4484,14 @@ func provide(opts docopt.Opts) {
 		importantLogf("%s\n", line)
 	}
 	launchSettings := allProxySettings
+	resetTrimHeld()
 	if trimCap, terr := effectiveTrimCap(); terr == nil && trimCap > 0 && len(allProxySettings) > trimCap {
 		startupURLState, _ := readProxyURLState()
 		gradeFor := buildTrimGradeResolver(proxyState, startupURLState)
 		var held []*connect.ProxySettings
 		launchSettings, held = startupTrimSelection(allProxySettings, trimCap, proxyState.Proxies, gradeFor,
 			func(key string) float64 { return proxyEarningsScore(key, time.Now()) })
+		startupHeld(held)
 		importantLogf("[proxy][trim] startup: cap=%d, launching %d of %d desired, holding %d worst-graded until the cap is raised\n",
 			trimCap, len(launchSettings), len(allProxySettings), len(held))
 	}

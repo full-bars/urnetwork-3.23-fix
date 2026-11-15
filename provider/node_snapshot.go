@@ -110,6 +110,7 @@ type SnapshotProxies struct {
 	Degraded   int `json:"degraded"`
 	Connecting int `json:"connecting"`
 	Dead       int `json:"dead"`
+	Parked     int `json:"parked"`
 	// Configured is the pool size before the trim cap; TrimCap is the
 	// effective cap on running proxies (0 = none) and TrimCapSource says who
 	// set it (operator, oomcap, thrashcap). Omitted before the first trim
@@ -755,12 +756,13 @@ func productionSnapshotSources() snapshotSources {
 			return b
 		},
 		pool: func() (SnapshotProxies, int64) {
-			up, dead, degraded, bw, connecting := connect.ProxyHealthSnapshot()
+			held := trimHeldSnapshot()
+			up, dead, degraded, bw, connecting := connect.ProxyHealthSnapshotExcluding(held)
 			var clients int64
 			for _, p := range bw {
 				clients += p.Clients.Load()
 			}
-			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead)}
+			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead), Parked: len(held)}
 			if desired, cap, source, ok := currentTrimSelection(); ok {
 				sp.TrimReported = true
 				sp.Configured = desired

@@ -34,8 +34,9 @@ func trimProvider(t *testing.T, trimFile string) Provider {
 
 func TestProxyTrimNoArgsReportsCapAndReduction(t *testing.T) {
 	p := trimProvider(t, "500\n")
+	parked := 3
 	stubTrimSnapshot(t, &NodeSnapshot{Proxies: SnapshotProxies{
-		Up: 480, Connecting: 12, Dead: 8,
+		Up: 480, Connecting: 12, Dead: 8, Parked: &parked,
 		TrimReported: true, Configured: 1200, TrimCap: 500, TrimCapSource: "operator",
 	}}, nil)
 
@@ -46,7 +47,8 @@ func TestProxyTrimNoArgsReportsCapAndReduction(t *testing.T) {
 	})
 	for _, want := range []string{
 		"Trim cap: 500 running proxies (operator cap)",
-		"Configured pool: 1200, holding 700 back",
+		"Configured pool: 1200",
+		"Parked: 3",
 		"Running now: 480 up, 12 connecting, 0 dropped, 8 dead (500 total)",
 	} {
 		if !strings.Contains(out, want) {
@@ -66,7 +68,7 @@ func TestProxyTrimNoArgsReportsNoCap(t *testing.T) {
 	})
 	for _, want := range []string{
 		"Trim cap: none, this provider runs its full pool",
-		"Configured pool: 1200, no cap applied",
+		"Configured pool: 1200",
 	} {
 		if !strings.Contains(out, want) {
 			t.Errorf("output missing %q:\n%s", want, out)

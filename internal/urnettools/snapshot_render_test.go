@@ -320,12 +320,13 @@ func TestRenderLiveBlockStateReason(t *testing.T) {
 // A capped provider must say so on the live block, including how much the cap
 // is holding back, and an uncapped one must stay quiet.
 func TestLiveBlockShowsTrimCap(t *testing.T) {
+	parked := 3
 	capped := &NodeSnapshot{
 		State:   "flowing",
-		Proxies: SnapshotProxies{Up: 480, Connecting: 20, Configured: 1200, TrimCap: 500, TrimCapSource: "operator"},
+		Proxies: SnapshotProxies{Up: 480, Connecting: 20, Parked: &parked, Configured: 1200, TrimCap: 500, TrimCapSource: "operator"},
 	}
 	out := renderLiveBlock(capped, liveOpts{}, "")
-	for _, want := range []string{"trim", "holding at 500 running", "1200 configured", "700 held back", "operator cap"} {
+	for _, want := range []string{"trim", "holding at 500 running", "1200 configured", "3 parked", "operator cap"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("capped block missing %q:\n%s", want, out)
 		}

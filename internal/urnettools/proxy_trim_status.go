@@ -74,11 +74,11 @@ func printTrimStatus(p Provider) error {
 		} else {
 			fmt.Printf("Trim cap: none, this provider runs its full pool\n")
 		}
-		switch {
-		case px.TrimCap > 0 && px.Configured > px.TrimCap:
-			fmt.Printf("Configured pool: %d, holding %d back\n", px.Configured, px.Configured-px.TrimCap)
-		case px.Configured > 0:
-			fmt.Printf("Configured pool: %d, no cap applied\n", px.Configured)
+		if px.Configured > 0 {
+			fmt.Printf("Configured pool: %d\n", px.Configured)
+		}
+		if px.Parked != nil {
+			fmt.Printf("Parked: %d\n", *px.Parked)
 		}
 		printRunning(px)
 		return nil

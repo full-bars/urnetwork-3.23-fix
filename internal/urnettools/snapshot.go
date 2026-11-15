@@ -127,10 +127,11 @@ type SnapshotSessions struct {
 }
 
 type SnapshotProxies struct {
-	Up         int `json:"up"`
-	Degraded   int `json:"degraded"`
-	Connecting int `json:"connecting"`
-	Dead       int `json:"dead"`
+	Up         int  `json:"up"`
+	Degraded   int  `json:"degraded"`
+	Connecting int  `json:"connecting"`
+	Dead       int  `json:"dead"`
+	Parked     *int `json:"parked,omitempty"`
 	// A provider that predates trim reporting omits these; zeros then mean
 	// "not reported", never "uncapped".
 	TrimReported  bool   `json:"trim_reported,omitempty"`

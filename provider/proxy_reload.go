@@ -652,6 +652,7 @@ func (r *ProxyReloader) markTrimShed(addr string) {
 		r.trimShed = map[string]bool{}
 	}
 	r.trimShed[addr] = true
+	setTrimHeld(addr, true)
 }
 
 // isTrimShed reports whether addr is currently held out by the trim cap.
@@ -667,6 +668,7 @@ func (r *ProxyReloader) clearTrimShed(addr string) {
 	r.drainMu.Lock()
 	defer r.drainMu.Unlock()
 	delete(r.trimShed, addr)
+	setTrimHeld(addr, false)
 }
 
 // drainProxyAfterRemoval takes over a cancelled proxy's shutdown: it waits for
@@ -1185,6 +1187,13 @@ func (r *ProxyReloader) reload() {
 	// Check emptiness AFTER merging the URL cache — a URL-only deployment
 	// (no --proxy_file, no internal proxies) has desired == 0 but a
 	// non-empty desiredSet, and must not be treated as a source-read error.
+	// Forget held identities that are no longer desired. Preserve unknown URL
+	// identities when the cache could not be read.
+	for key := range trimHeldSnapshot() {
+		if _, ok := desiredSet[key]; !ok && (urlCacheLoaded || !urlProxyDesiredUnknown(r.state.Proxies, key)) {
+			r.clearTrimShed(key)
+		}
+	}
 	if len(desiredSet) == 0 {
 		// A node that deliberately provides via the direct transport with no
 		// proxy source configured is a valid, completed zero-proxy config — it
@@ -1544,6 +1553,7 @@ func (r *ProxyReloader) reload() {
 					// Deferred, not undesired: leave it in desiredSet so the
 					// prune pass keeps this proxy's grade/health history.
 					// It re-enters the budget next cycle.
+					setTrimHeld(s.Key(), true)
 					dropped++
 					continue
 				}

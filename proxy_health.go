@@ -512,12 +512,24 @@ func sortedIndicesLocked() []int {
 // baseline, so it is safe to call from the pulse-fire marker. Lists are complete
 // (no display cap) and index-sorted.
 func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth, connecting []string) {
+	return ProxyHealthSnapshotExcluding(nil)
+}
+
+// ProxyHealthSnapshotExcluding omits explicitly held identities from health counts.
+// Their bandwidth remains available while existing sessions drain.
+func ProxyHealthSnapshotExcluding(held map[string]bool) (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth, connecting []string) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	now := time.Now()
 	bandwidth = make(map[string]*ProxyBandwidth)
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
+		if held[h.key] {
+			if h.bw != nil {
+				bandwidth[formatProxyEntry(idx, h.address)] = proxyBandwidthSnapshot(h.bw)
+			}
+			continue
+		}
 		switch {
 		case h.currentlyUp:
 			up++
