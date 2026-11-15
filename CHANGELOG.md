@@ -24,6 +24,10 @@ Everything merged after `v3.23.0-fix.35.10`.
 - **A hotswap on a host with RAM logs no longer kills the new provider.** The new process inherited the old process's log pipe as its error output. When the old process finished draining and exited, the next write to that pipe ended the new process with SIGPIPE. systemd counts that as a clean exit, so a unit with `Restart=on-failure` stayed dead. The old process now hands the new one the original logging destination. A new process that still inherits an orphaned pipe from an older binary drops it at startup when RAM logs are on. The long-running `provide` command ignores SIGPIPE, so a broken log pipe cannot end it.
 - **A UDP readiness shard no longer holds an OS thread** (`ip_udp_socket_poller_epoll.go`). The shards wait through the Go network poller and park as goroutines. A blocking `epoll_wait` held one thread per shard for the life of the process, which put about two thousand threads on a node that runs the shards for a thousand proxies. The shards are off by default in this line (`SocketReadShardCount` is 0), so this protects the profiles that turn them on.
 
+### Added
+
+- **Loopback diagnostics are on by default.** The pprof listener starts at `127.0.0.1:6060`, loopback only, so a stuck or heavy provider can be inspected without a restart. `urnet-tools set pprof off` turns it off and `urnet-tools set pprof <ip:port>` moves it, live and persisted. An explicit `URNETWORK_PPROF` still decides the address when it is set. If the port is taken, the listener uses a free port and moves onto its own port when the holder exits.
+
 ## [v3.23.0-fix.35.10]
 
 _Released 2026-11-14. Based on v3.23.0-fix.35.9. Notes: `releases/v3.23.0-fix.35.10.md`._

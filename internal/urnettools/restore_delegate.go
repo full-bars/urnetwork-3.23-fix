@@ -248,6 +248,7 @@ var setKeyHelps = []string{
 	"  tls-hello           on|off        present Chrome's tls ClientHello on new connections instead of Go's, so a filter that singles out the Go runtime sees a Chrome fingerprint. Live: read on every dial, so open connections keep the handshake they made and only new ones change. A clear returns to URNETWORK_TLS_HELLO, so `set tls-hello off` is the kill switch on a box whose env says on (default: off, Go's hello)",
 	"  h3-datagram-send    on|off        let this provider SEND small frames as datagrams as well, on the same lane (needs h3-datagram; the send side is newer than the receive side, so both ends must support it). A congested or blackholing lane falls back to the reliable stream rather than stalling it (default: on, as upstream)",
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
+	"  pprof               on|off|<ip:port>  loopback diagnostics for goroutine, heap and thread profiles (default: on at 127.0.0.1:6060)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
 	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: off)",
 }
@@ -276,7 +277,7 @@ var setKeyHelps = []string{
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "pprof":
 		return false
 	}
 	return true
@@ -544,6 +545,7 @@ func formatSets(p Provider, want string) error {
 		{"h1-plus", "h1_plus"},
 		{"baseline", "baseline"},
 		{"proxy-audit", "proxy_audit"},
+		{"pprof", "pprof"},
 	}
 
 	for _, item := range orderedKeys {

@@ -4788,6 +4788,9 @@ func provide(opts docopt.Opts) {
 			}
 		}
 	}
+	// The loopback diagnostics listener is on by default; the control key `pprof`
+	// turns it off or moves it.
+	startDefaultPprof()
 	startEnvMetrics(isHotSwapCandidate)
 	// /metrics is on by default (see metricsEnabledByState): auto mode binds
 	// loopback plus the box's Tailscale addresses and never a public interface.

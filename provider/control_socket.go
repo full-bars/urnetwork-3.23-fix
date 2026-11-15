@@ -331,6 +331,7 @@ var liveEffectKeys = map[string]bool{
 	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
+	"pprof":                       true,
 	"oom_cap":                     true,
 	"proxy_url_refresh":           true,
 	"proxy_url_max":               true,
@@ -363,6 +364,10 @@ func validateControlValue(key, value string) error {
 	case "extender_discovery":
 		if !validExtenderDiscoveryMode(value) {
 			return fmt.Errorf("extender_discovery: must be off, on or feed-only (got %q)", value)
+		}
+	case "pprof":
+		if !validPprofValue(value) {
+			return fmt.Errorf("pprof: must be on, off or a loopback host:port such as 127.0.0.1:6060 (got %q)", value)
 		}
 	case "proxy_url_refresh", "proxy_dead_cleanup_interval":
 		d, err := time.ParseDuration(value)
@@ -499,6 +504,7 @@ var liveDefaults = map[string]string{
 	// releasing the live override so the persisted value rules.
 	"proxy_audit":        "off",
 	"extender_discovery": "off",
+	"pprof":              "on",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
 	// Clearing proxy_target_family goes back to resolving the target here and
@@ -1143,6 +1149,8 @@ func applyLiveSideEffect(key, value string) error {
 		return applyMetricsLive(value)
 	case "extender":
 		return applyExtenderLive(value)
+	case "pprof":
+		return applyPprofMode(value)
 	case "metrics_listen":
 		return applyMetricsListenLive()
 	case "h3":

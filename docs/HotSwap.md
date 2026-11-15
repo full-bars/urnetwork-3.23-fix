@@ -121,7 +121,7 @@ Measured on a node with about 1,300 established proxy connections, hotswapping i
 
 ## Diagnostics after a swap
 
-Set `URNETWORK_PPROF=127.0.0.1:6060` to expose pprof on loopback. During a swap the old process holds that port, so the new one retries the bind in the background until the old one exits, then serves pprof. (Before that retry existed, diagnostics disappeared on every other hotswap.)
+Loopback pprof is on by default at `127.0.0.1:6060` (turn it off with `urnet-tools set pprof off`). During a swap the old process holds that port, so the new one retries the bind in the background until the old one exits, then serves pprof. (Before that retry existed, diagnostics disappeared on every other hotswap.)
 
 ## Related
 

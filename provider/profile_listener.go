@@ -17,6 +17,10 @@ type profileListener struct {
 	mu       sync.Mutex
 	server   *http.Server
 	listener net.Listener
+	// wanted is the address the last start asked for, and fellBack says the
+	// port was taken so a free one was used instead.
+	wanted   string
+	fellBack bool
 }
 
 // start binds the requested literal loopback address, falling back to a free
@@ -40,8 +44,10 @@ func (p *profileListener) start(addr string) (string, error) {
 		return "", fmt.Errorf("invalid pprof port %q", port)
 	}
 	ln, err := net.Listen("tcp", net.JoinHostPort(ip.String(), port))
+	fellBack := false
 	if errors.Is(err, syscall.EADDRINUSE) {
 		ln, err = net.Listen("tcp", net.JoinHostPort(ip.String(), "0"))
+		fellBack = true
 	}
 	if err != nil {
 		return "", fmt.Errorf("pprof listen: %w", err)
@@ -59,6 +65,7 @@ func (p *profileListener) start(addr string) (string, error) {
 	mux.HandleFunc("/debug/pprof/trace", pprof.Trace)
 	srv := &http.Server{Handler: mux, ReadHeaderTimeout: 10 * time.Second, IdleTimeout: 30 * time.Second}
 	p.server, p.listener = srv, ln
+	p.wanted, p.fellBack = net.JoinHostPort(ip.String(), port), fellBack
 	go func() { _ = srv.Serve(ln) }()
 	return ln.Addr().String(), nil
 }
@@ -82,4 +89,11 @@ func (p *profileListener) addr() string {
 		return ""
 	}
 	return p.listener.Addr().String()
+}
+
+// usingFallback reports that the last start found its port taken.
+func (p *profileListener) usingFallback() (wanted string, fellBack bool) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.wanted, p.fellBack
 }

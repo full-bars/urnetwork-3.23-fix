@@ -293,6 +293,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		// what noticed they were missing.
 		{"proxy-audit", "proxy_audit", "on"},
 		{"extender-discovery", "extender_discovery", "feed-only"},
+		{"pprof", "pprof", "127.0.0.1:6060"},
 		{"smart-dialer", "smart_dialer", "on"},
 		{"h3", "h3", "on"},
 		{"tls-hello", "tls_hello", "on"},
