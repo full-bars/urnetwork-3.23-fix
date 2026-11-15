@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"github.com/urnetwork/connect/extender"
 )
 
 // extender_status.go is the one place that answers "is the extender working?".
@@ -55,6 +56,14 @@ type extenderFamilyReading struct {
 	ExpireUnixMs      int64                       `json:"expire_unix_ms,omitempty"`
 }
 
+// extenderCarrierReading holds cumulative served and refused counts for one carrier.
+type extenderCarrierReading struct {
+	Carrier         string            `json:"carrier"`
+	Served          uint64            `json:"served"`
+	Refused         uint64            `json:"refused"`
+	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+}
+
 // extenderControlReading is the whole extender picture, and the JSON the
 // control socket returns for `extender`.
 type extenderControlReading struct {
@@ -80,6 +89,7 @@ type extenderControlReading struct {
 	RelayBytesIn    int64                     `json:"relay_bytes_in,omitempty"`
 	RelayBytesOut   int64                     `json:"relay_bytes_out,omitempty"`
 	RefusalsByStage map[string]uint64         `json:"refusals_by_stage,omitempty"`
+	Carriers        []extenderCarrierReading  `json:"carriers,omitempty"`
 	Discovery       extenderDiscoverySnapshot `json:"discovery"`
 }
 
@@ -121,6 +131,24 @@ func (m *extenderManager) Reading() extenderControlReading {
 	reading.RelayBytesOut = snapshot.Stats.EgressByteCount
 	if len(snapshot.RefusalCounts) != 0 {
 		reading.RefusalsByStage = snapshot.RefusalCounts
+	}
+	for _, carrier := range extender.ExtenderCarrierPorts() {
+		served := snapshot.CarrierServedCounts[carrier]
+		var refused uint64
+		stages := snapshot.CarrierRefusalCounts[carrier]
+		for _, count := range stages {
+			refused += count
+		}
+		var byStage map[string]uint64
+		if len(stages) > 0 {
+			byStage = stages
+		}
+		reading.Carriers = append(reading.Carriers, extenderCarrierReading{
+			Carrier:         carrier,
+			Served:          served,
+			Refused:         refused,
+			RefusalsByStage: byStage,
+		})
 	}
 	reading.Served = m.tallyWindows()
 

@@ -237,9 +237,11 @@ type extenderRole struct {
 	// tcpTried is set once tcp 443 has been attempted, so later failed attempts count as retries
 	tcpTried bool
 	// servers taken out of r.servers by shutdown whose counters are not yet folded
-	closing           []*extender.ExtenderServer
-	baseRefusalCounts map[string]uint64
-	tcpRetries        int64
+	closing                  []*extender.ExtenderServer
+	baseRefusalCounts        map[string]uint64
+	baseCarrierServedCounts  map[string]uint64
+	baseCarrierRefusalCounts map[string]map[string]uint64
+	tcpRetries               int64
 
 	// the activation loop, attached late by the direct slot (extender_activation.go)
 	activator       *connect.ExtenderActivator
@@ -304,18 +306,20 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 	}
 	roleCtx, cancel := context.WithCancel(ctx)
 	r := &extenderRole{
-		ctx:               roleCtx,
-		cancel:            cancel,
-		config:            config,
-		keyId:             extenderKeyIdString(seed),
-		state:             extenderStateStarting,
-		carriers:          map[string]bool{},
-		listenErrors:      map[string]string{},
-		baseServiceCounts: map[string]uint64{},
-		baseServedCounts:  map[string]uint64{},
-		baseRefusalCounts: map[string]uint64{},
-		ready:             make(chan struct{}),
-		done:              make(chan struct{}),
+		ctx:                      roleCtx,
+		cancel:                   cancel,
+		config:                   config,
+		keyId:                    extenderKeyIdString(seed),
+		state:                    extenderStateStarting,
+		carriers:                 map[string]bool{},
+		listenErrors:             map[string]string{},
+		baseServiceCounts:        map[string]uint64{},
+		baseServedCounts:         map[string]uint64{},
+		baseRefusalCounts:        map[string]uint64{},
+		baseCarrierServedCounts:  map[string]uint64{},
+		baseCarrierRefusalCounts: map[string]map[string]uint64{},
+		ready:                    make(chan struct{}),
+		done:                     make(chan struct{}),
 	}
 	r.setKeySeed(seed)
 	r.discovery = newExtenderDiscovery(roleCtx, func() { r.reconcileDiscovery() })
@@ -719,7 +723,12 @@ func (r *extenderRole) recordListenError(carrier string, err error) {
 // foldCountsLocked adds a retired or closed server's counters to the role's base
 // so the cumulative totals do not drop when it leaves r.servers. One helper for
 // every way a server leaves, so none of them can forget a counter.
-func (r *extenderRole) foldCountsLocked(stats extender.ExtenderStats, serviceCounts, servedCounts, refusalCounts map[string]uint64) {
+func (r *extenderRole) foldCountsLocked(
+	stats extender.ExtenderStats,
+	serviceCounts, servedCounts, refusalCounts map[string]uint64,
+	carrierServedCounts map[string]uint64,
+	carrierRefusalCounts map[string]map[string]uint64,
+) {
 	r.baseStats.IngressByteCount += stats.IngressByteCount
 	r.baseStats.IngressReadCount += stats.IngressReadCount
 	r.baseStats.EgressByteCount += stats.EgressByteCount
@@ -733,6 +742,25 @@ func (r *extenderRole) foldCountsLocked(stats extender.ExtenderStats, serviceCou
 	for stage, count := range refusalCounts {
 		r.baseRefusalCounts[stage] += count
 	}
+	if r.baseCarrierServedCounts == nil {
+		r.baseCarrierServedCounts = map[string]uint64{}
+	}
+	for carrier, count := range carrierServedCounts {
+		r.baseCarrierServedCounts[carrier] += count
+	}
+	if r.baseCarrierRefusalCounts == nil {
+		r.baseCarrierRefusalCounts = map[string]map[string]uint64{}
+	}
+	for carrier, stages := range carrierRefusalCounts {
+		dst := r.baseCarrierRefusalCounts[carrier]
+		if dst == nil {
+			dst = map[string]uint64{}
+			r.baseCarrierRefusalCounts[carrier] = dst
+		}
+		for stage, count := range stages {
+			dst[stage] += count
+		}
+	}
 }
 
 func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
@@ -743,6 +771,8 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 	serviceCounts := server.ServiceCounts()
 	servedCounts := server.ServedCounts()
 	refusalCounts := server.RefusalCounts()
+	carrierServedCounts := server.CarrierServedCounts()
+	carrierRefusalCounts := server.CarrierRefusalCounts()
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	index := slices.Index(r.servers, server)
@@ -751,7 +781,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 		return
 	}
 	r.servers = slices.Delete(r.servers, index, index+1)
-	r.foldCountsLocked(stats, serviceCounts, servedCounts, refusalCounts)
+	r.foldCountsLocked(stats, serviceCounts, servedCounts, refusalCounts, carrierServedCounts, carrierRefusalCounts)
 	r.refreshLocked()
 }
 
@@ -852,7 +882,14 @@ func (r *extenderRole) shutdown() {
 	}
 	r.mu.Lock()
 	for _, server := range servers {
-		r.foldCountsLocked(server.Stats(), server.ServiceCounts(), server.ServedCounts(), server.RefusalCounts())
+		r.foldCountsLocked(
+			server.Stats(),
+			server.ServiceCounts(),
+			server.ServedCounts(),
+			server.RefusalCounts(),
+			server.CarrierServedCounts(),
+			server.CarrierRefusalCounts(),
+		)
 	}
 	r.closing = slices.DeleteFunc(r.closing, func(c *extender.ExtenderServer) bool { return slices.Contains(servers, c) })
 	r.carriers = map[string]bool{}
@@ -880,8 +917,10 @@ type extenderRoleSnapshot struct {
 	// the role currently owns
 	ServiceCounts map[string]uint64
 	// requests accepted and handed a stream (extender.ExtenderServer.ServedCounts)
-	ServedCounts  map[string]uint64
-	RefusalCounts map[string]uint64
+	ServedCounts         map[string]uint64
+	RefusalCounts        map[string]uint64
+	CarrierServedCounts  map[string]uint64
+	CarrierRefusalCounts map[string]map[string]uint64
 }
 
 func (r *extenderRole) snapshot() extenderRoleSnapshot {
@@ -890,6 +929,11 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	baseServiceCounts := maps.Clone(r.baseServiceCounts)
 	baseServedCounts := maps.Clone(r.baseServedCounts)
 	baseRefusalCounts := maps.Clone(r.baseRefusalCounts)
+	baseCarrierServedCounts := maps.Clone(r.baseCarrierServedCounts)
+	baseCarrierRefusalCounts := map[string]map[string]uint64{}
+	for carrier, stages := range r.baseCarrierRefusalCounts {
+		baseCarrierRefusalCounts[carrier] = maps.Clone(stages)
+	}
 	snapshot := extenderRoleSnapshot{
 		Enabled:      true,
 		State:        r.state,
@@ -910,6 +954,8 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	snapshot.ServiceCounts = baseServiceCounts
 	snapshot.ServedCounts = baseServedCounts
 	snapshot.RefusalCounts = baseRefusalCounts
+	snapshot.CarrierServedCounts = baseCarrierServedCounts
+	snapshot.CarrierRefusalCounts = baseCarrierRefusalCounts
 	if snapshot.ServiceCounts == nil {
 		snapshot.ServiceCounts = map[string]uint64{}
 	}
@@ -918,6 +964,12 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 	}
 	if snapshot.RefusalCounts == nil {
 		snapshot.RefusalCounts = map[string]uint64{}
+	}
+	if snapshot.CarrierServedCounts == nil {
+		snapshot.CarrierServedCounts = map[string]uint64{}
+	}
+	if snapshot.CarrierRefusalCounts == nil {
+		snapshot.CarrierRefusalCounts = map[string]map[string]uint64{}
 	}
 	for _, server := range servers {
 		for service, count := range server.ServiceCounts() {
@@ -928,6 +980,19 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 		}
 		for stage, count := range server.RefusalCounts() {
 			snapshot.RefusalCounts[stage] += count
+		}
+		for carrier, count := range server.CarrierServedCounts() {
+			snapshot.CarrierServedCounts[carrier] += count
+		}
+		for carrier, stages := range server.CarrierRefusalCounts() {
+			dst := snapshot.CarrierRefusalCounts[carrier]
+			if dst == nil {
+				dst = map[string]uint64{}
+				snapshot.CarrierRefusalCounts[carrier] = dst
+			}
+			for stage, count := range stages {
+				dst[stage] += count
+			}
 		}
 		stats := server.Stats()
 		snapshot.Stats.IngressByteCount += stats.IngressByteCount
@@ -1094,6 +1159,36 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	for _, stage := range refusalStages {
 		fmt.Fprintf(&b, "urnet_extender_refused_total{stage=%s} %d\n",
 			connect.PrometheusLabelValue(stage), snapshot.RefusalCounts[stage])
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_requests_total Extender requests by carrier and outcome, cumulative.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_requests_total counter\n")
+	for _, carrier := range extender.ExtenderCarrierPorts() {
+		served := snapshot.CarrierServedCounts[carrier]
+		var refused uint64
+		for _, count := range snapshot.CarrierRefusalCounts[carrier] {
+			refused += count
+		}
+		fmt.Fprintf(&b, "urnet_extender_carrier_requests_total{carrier=%s,outcome=\"served\"} %d\n",
+			connect.PrometheusLabelValue(carrier), served)
+		fmt.Fprintf(&b, "urnet_extender_carrier_requests_total{carrier=%s,outcome=\"refused\"} %d\n",
+			connect.PrometheusLabelValue(carrier), refused)
+	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_refused_total Extender requests refused by carrier and stage, cumulative.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_refused_total counter\n")
+	for _, carrier := range extender.ExtenderCarrierPorts() {
+		stages := snapshot.CarrierRefusalCounts[carrier]
+		if len(stages) == 0 {
+			continue
+		}
+		stageNames := make([]string, 0, len(stages))
+		for stage := range stages {
+			stageNames = append(stageNames, stage)
+		}
+		slices.Sort(stageNames)
+		for _, stage := range stageNames {
+			fmt.Fprintf(&b, "urnet_extender_carrier_refused_total{carrier=%s,stage=%s} %d\n",
+				connect.PrometheusLabelValue(carrier), connect.PrometheusLabelValue(stage), stages[stage])
+		}
 	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_listen_error 1 when the carrier's last bind failed.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_listen_error gauge\n")

@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"path/filepath"
 	"runtime"
+	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -67,6 +68,14 @@ type ExtenderDiscovery struct {
 	FeedSubscribers int    `json:"feed_subscribers"`
 }
 
+// ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
+type ExtenderCarrierStats struct {
+	Carrier         string            `json:"carrier"`
+	Served          uint64            `json:"served"`
+	Refused         uint64            `json:"refused"`
+	RefusalsByStage map[string]uint64 `json:"refusals_by_stage,omitempty"`
+}
+
 // ExtenderReading mirrors the provider's extenderControlReading.
 type ExtenderReading struct {
 	// Source is where the reading came from; set by this package.
@@ -87,8 +96,9 @@ type ExtenderReading struct {
 	LiveClients   int              `json:"live_clients"`
 	Served        ExtenderServed   `json:"served"`
 
-	RefusalsByStage map[string]uint64  `json:"refusals_by_stage,omitempty"`
-	Discovery       *ExtenderDiscovery `json:"discovery,omitempty"`
+	RefusalsByStage map[string]uint64      `json:"refusals_by_stage,omitempty"`
+	Carriers        []ExtenderCarrierStats `json:"carriers,omitempty"`
+	Discovery       *ExtenderDiscovery     `json:"discovery,omitempty"`
 
 	BindRoute string `json:"bind_route,omitempty"`
 }
@@ -285,6 +295,7 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 			fmt.Fprintf(w, "  Port route:        %s\n", r.BindRoute)
 		}
 		fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
+		formatExtenderCarrierStats(w, r.Carriers)
 		return
 	}
 	state := strings.ReplaceAll(r.RoleState, "_", " ")
@@ -319,6 +330,38 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	}
 	fmt.Fprintf(w, "  Clients now:       %d\n", r.LiveClients)
 	fmt.Fprintf(w, "  Requests served:   24h %d, 7d %d, lifetime %d\n", r.Served.Last24h, r.Served.Last7d, r.Served.Lifetime)
+	formatExtenderCarrierStats(w, r.Carriers)
+}
+
+func formatExtenderCarrierStats(w io.Writer, carriers []ExtenderCarrierStats) {
+	if len(carriers) == 0 {
+		return
+	}
+	fmt.Fprintln(w, "  Carriers:")
+	for _, c := range carriers {
+		line := fmt.Sprintf("    %-9s served %d, refused %d", c.Carrier+":", c.Served, c.Refused)
+		if len(c.RefusalsByStage) > 0 {
+			stages := make([]string, 0, len(c.RefusalsByStage))
+			for stage := range c.RefusalsByStage {
+				stages = append(stages, stage)
+			}
+			slices.SortFunc(stages, func(a, b string) int {
+				if c.RefusalsByStage[a] != c.RefusalsByStage[b] {
+					if c.RefusalsByStage[a] > c.RefusalsByStage[b] {
+						return -1
+					}
+					return 1
+				}
+				return strings.Compare(a, b)
+			})
+			parts := make([]string, 0, len(stages))
+			for _, stage := range stages {
+				parts = append(parts, fmt.Sprintf("%s %d", stage, c.RefusalsByStage[stage]))
+			}
+			line += " (" + strings.Join(parts, ", ") + ")"
+		}
+		fmt.Fprintln(w, line)
+	}
 }
 
 // printExtenderBlock appends the extender block to `urnet-tools status`.
