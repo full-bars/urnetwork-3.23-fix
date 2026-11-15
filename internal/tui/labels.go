@@ -4,27 +4,52 @@ import (
 	"fmt"
 	"math"
 	"strings"
+	"sync/atomic"
 	"time"
 )
 
 // Humanized values for the panels. They are pure functions of their input so
 // a golden frame never depends on the clock or the locale.
 
-var byteUnits = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
+var (
+	byteUnits    = []string{"B", "KiB", "MiB", "GiB", "TiB", "PiB"}
+	byteUnitsSI  = []string{"B", "kB", "MB", "GB", "TB", "PB"}
+	decimalUnits atomic.Bool
+)
+
+// SetDecimalUnits switches every byte and rate label between binary units
+// (KiB, MiB, GiB, steps of 1024) and decimal units (kB, MB, GB, steps of 1000).
+// Binary is the default.
+func SetDecimalUnits(on bool) { decimalUnits.Store(on) }
+
+// DecimalUnits reports whether labels use decimal units.
+func DecimalUnits() bool { return decimalUnits.Load() }
+
+// UnitBase is the size step of the active unit system: 1000 or 1024.
+func UnitBase() float64 {
+	if DecimalUnits() {
+		return 1000
+	}
+	return 1024
+}
 
 func humanBytes(v float64, trim bool) string {
 	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
 		return "0 B"
 	}
+	base, units := UnitBase(), byteUnits
+	if DecimalUnits() {
+		units = byteUnitsSI
+	}
 	i := 0
-	for v >= 1024 && i < len(byteUnits)-1 {
-		v /= 1024
+	for v >= base && i < len(units)-1 {
+		v /= base
 		i++
 	}
 	// 1023.96 KiB rounds up to "1024.0", which reads wrong; carry it to the
 	// next unit instead.
-	if i < len(byteUnits)-1 && math.Round(v*10)/10 >= 1024 {
-		v /= 1024
+	if i < len(units)-1 && math.Round(v*10)/10 >= base {
+		v /= base
 		i++
 	}
 	if i == 0 {
@@ -34,7 +59,7 @@ func humanBytes(v float64, trim bool) string {
 	if trim {
 		s = strings.TrimSuffix(s, ".0")
 	}
-	return s + " " + byteUnits[i]
+	return s + " " + units[i]
 }
 
 // Bytes formats a byte count with binary units and one decimal: 1.5 KiB.

@@ -7,17 +7,17 @@
 │        │  ⣠⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⡀   ⢀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣤⣀    ⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿││ 1m avg   82.0 MiB/s        │
 │        │⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ 5m avg   71.3 MiB/s        │
 │   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││billed    45.0 GiB          │
-╰────────────────────────────────────────────────────────────────────╯│moved     90.0 GiB          │
-╭ Total traffic, 10m╭ Keys ───────────────────────────────────────────────────╮  212               │
-│60 MiB/s┤          │ q, Esc, Ctrl-C   quit                                   │  200 pqe / 12 cl   │
-│        │          │ Tab, Shift-Tab   next or previous provider              │  ██▊░░░░░░░░░░ 0.21│
-│        │         ⣠│ +  -             update slower or faster, down to 100ms │                    │
-│30 MiB/s┤      ⣀⣴⣿⣿│ w                zoom the graphs to the last 15 seconds │                    │
-│        │   ⢀⣴⣾⣿⣿⣿⣿│ m                menu: color theme and graph style      │                    │
-│        │⢀⣤⣾⣿⣿⣿⣿⣿⣿⣿│ g                list where goroutines are parked       │────────────────────╯
-│        │⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ billed, moved    billable and total bytes this session  │es ─────────────────╮
-│   0 B/s┤⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿│ ?                show or hide this help                 │██▌░░░░░ 1.8/4.0 GiB│
-╰───────────────────╰─────────────────────────────────────────────────────────╯░░░░░░░░░░ 310/65536│
+╰─────────────╭ Keys ───────────────────────────────────────────────────────────────╮ GiB          │
+╭ Total traffi│ q, Esc, Ctrl-C   quit                                               │              │
+│60 MiB/s┤    │ Tab, Shift-Tab   next or previous provider                          │pqe / 12 cl   │
+│        │    │ +  -             update slower or faster, down to 100ms             │░░░░░░░░░ 0.21│
+│        │    │ w                zoom the graphs to the last 15 seconds             │              │
+│30 MiB/s┤    │ u                switch units between GiB (binary) and GB (decimal) │              │
+│        │   ⢀│ m                menu: color theme and graph style                  │              │
+│        │⢀⣤⣾⣿│ g                list where goroutines are parked                   │──────────────╯
+│        │⣿⣿⣿⣿│ billed, moved    billable and total bytes this session              │──────────────╮
+│   0 B/s┤⣿⣿⣿⣿│ ?                show or hide this help                             │░░ 1.8/4.0 GiB│
+╰─────────────╰─────────────────────────────────────────────────────────────────────╯░░░░ 310/65536│
 ╭ Proxies ───────────────────────────────────────────────────────────╮│rss   2.1 GiB               │
 │up         ████████████████████████████████████████████████████▎░ 58││gor   1204                  │
 │dropped    █▉░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░░ 2│╰────────────────────────────╯

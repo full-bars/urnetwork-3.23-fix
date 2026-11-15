@@ -245,11 +245,11 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	}
 	// A series that outgrew the held axis (nothing has folded it in yet) still
 	// fits: the axis never sits below what is drawn.
-	if p := tui.NiceCeil(seriesPeak(samples), true); p > top {
+	if p := tui.NiceCeil(seriesPeak(samples), !tui.DecimalUnits()); p > top {
 		top = p
 	}
 	tui.DrawGraph(b, tui.Graph{
-		Samples: samples, Binary: true, Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
+		Samples: samples, Binary: !tui.DecimalUnits(), Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
 		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top, Symbols: m.graph,
 	}, th.ASCII)
 }
@@ -643,13 +643,17 @@ func (m *topModel) drawGoroutineGroups(b *tui.Buffer) {
 }
 
 // topBytesPair is "1.8/4.0 GiB": both numbers in the unit of the limit, so the
-// pair stays short enough for a bar's value column.
+// pair stays short enough for a bar's value column. The unit follows the
+// binary or decimal choice of the u key.
 func topBytesPair(used, limit float64) string {
-	const mib, gib = 1024 * 1024, 1024 * 1024 * 1024
-	if limit >= gib {
-		return fmt.Sprintf("%.1f/%.1f GiB", used/gib, limit/gib)
+	base, mega, giga := tui.UnitBase(), "MiB", "GiB"
+	if tui.DecimalUnits() {
+		mega, giga = "MB", "GB"
 	}
-	return fmt.Sprintf("%.0f/%.0f MiB", used/mib, limit/mib)
+	if limit >= base*base*base {
+		return fmt.Sprintf("%.1f/%.1f %s", used/(base*base*base), limit/(base*base*base), giga)
+	}
+	return fmt.Sprintf("%.0f/%.0f %s", used/(base*base), limit/(base*base), mega)
 }
 
 // drawCompact is the single-panel view for terminals below topMin.
@@ -684,6 +688,7 @@ var helpLines = []string{
 	"Tab, Shift-Tab   next or previous provider",
 	"+  -             update slower or faster, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
+	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme and graph style",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",

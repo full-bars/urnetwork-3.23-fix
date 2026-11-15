@@ -6,6 +6,7 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Added
 
+- **`urnet-tools top` can show decimal units** (`internal/tui/labels.go`, `internal/urnettools/top_model.go`). The `u` key switches every byte and rate label between binary units (KiB, MiB, GiB) and decimal units (kB, MB, GB). The graph axes follow the choice. Binary stays the default, and the choice lasts for the session. [redeploy]
 - **Traffic the extender relays, per carrier** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts the bytes it relays on `tcp-443`, `udp-443`, `udp-4053` and `udp-53`, on each side, with the rate, the relayed connections and a minute history. `urnet-tools extender status` prints a `Traffic` table in human units, `top` shows one row per carrier in its Extender box, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`. These are bytes this extender relayed, not earnings. [redeploy]
 
 ## [v3.23.0-fix.35.11]

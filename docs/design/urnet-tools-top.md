@@ -48,7 +48,7 @@ Panels:
 - **Resources:** heap against the memory limit, descriptors against their limit, goroutines.
 - **Events:** recent restarts (with reason) and proxy recoveries and losses, from data the provider already keeps.
 
-Keys: `q` quit, `tab` next provider on the host, `p` proxy detail, `?` help, `-`/`+` faster or slower refresh (as in btop), `w` zoom, `g` goroutine list, `m` menu. Resize is handled live.
+Keys: `q` quit, `tab` next provider on the host, `p` proxy detail, `?` help, `-`/`+` faster or slower refresh (as in btop), `w` zoom, `g` goroutine list, `m` menu, `u` binary or decimal units. Resize is handled live.
 
 ## Data flow
 

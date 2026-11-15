@@ -578,6 +578,8 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(-1)
 		case 'w', 'W':
 			m.zoomOn = !m.zoomOn
+		case 'u', 'U':
+			tui.SetDecimalUnits(!tui.DecimalUnits())
 		case 'g', 'G':
 			// Only where the provider can answer; the list is fetched on the
 			// next loop turn.

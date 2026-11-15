@@ -82,3 +82,37 @@ func TestPercent(t *testing.T) {
 		}
 	}
 }
+
+func TestBytesAndRateInDecimalUnits(t *testing.T) {
+	SetDecimalUnits(true)
+	t.Cleanup(func() { SetDecimalUnits(false) })
+	cases := []struct {
+		in    float64
+		bytes string
+		rate  string
+	}{
+		{999, "999 B", "999 B/s"},
+		{1000, "1.0 kB", "1.0 kB/s"},
+		{1500, "1.5 kB", "1.5 kB/s"},
+		{41e6, "41.0 MB", "41.0 MB/s"},
+		{1.8e9, "1.8 GB", "1.8 GB/s"},
+		// Rounds to 1000.0 in kB, so it must carry into MB.
+		{999_999, "1.0 MB", "1.0 MB/s"},
+		{2.5e12, "2.5 TB", "2.5 TB/s"},
+	}
+	for _, c := range cases {
+		if got := Bytes(c.in); got != c.bytes {
+			t.Errorf("Bytes(%v) = %q, want %q", c.in, got, c.bytes)
+		}
+		if got := Rate(c.in); got != c.rate {
+			t.Errorf("Rate(%v) = %q, want %q", c.in, got, c.rate)
+		}
+	}
+	if UnitBase() != 1000 {
+		t.Errorf("UnitBase = %v, want 1000", UnitBase())
+	}
+	SetDecimalUnits(false)
+	if got := Bytes(1024); got != "1.0 KiB" || UnitBase() != 1024 {
+		t.Errorf("binary units did not come back: %q base %v", got, UnitBase())
+	}
+}
