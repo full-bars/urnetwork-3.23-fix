@@ -70,6 +70,12 @@ func isProviderUnit(unit string) bool {
 	if !ok {
 		return false
 	}
+	if i := strings.IndexByte(base, '@'); i >= 0 {
+		if i == len(base)-1 {
+			return false // A template is not an instantiated service.
+		}
+		base = base[:i]
+	}
 	if i := strings.IndexByte(base, '.'); i >= 0 {
 		base = base[:i]
 	}

@@ -22,17 +22,19 @@ import (
 // Test seams for the verification loop — package-level vars so tests can
 // override without touching production call sites.
 var (
-	verifyDiscoverFn           = Discover
-	updateDiscoverFn           = Discover
-	verifyRunningImageHandleFn = runningImageHandle
-	verifyRunningImagePathFn   = runningImagePath
-	verifyProviderVersionFn    = providerVersion
-	verifySocketVersionFn      = providerVersionFromSocketForPID
-	verifyPidIsAliveFn         = pidIsAlive
-	verifyPruneBackupsFn       = pruneBackups
-	verifySleepFn              = time.Sleep
-	verifyRecordSuccessFn      = recordHotswapSuccess
-	verifyRecordDeclineFn      = recordHotswapDecline
+	verifyDiscoverFn                = Discover
+	updateDiscoverFn                = Discover
+	verifyRunningImageHandleFn      = runningImageHandle
+	verifyRunningImagePathFn        = runningImagePath
+	verifyProviderVersionFn         = providerVersion
+	verifyProviderVersionReadOnlyFn = providerVersionReadOnly
+	verifySocketVersionFn           = providerVersionFromSocketForPID
+	verifyPidIsAliveFn              = pidIsAlive
+	verifyPruneBackupsFn            = pruneBackups
+	verifySleepFn                   = time.Sleep
+	verifyRecordSuccessFn           = recordHotswapSuccess
+	verifyRecordDeclineFn           = recordHotswapDecline
+	verifyProcessStartedAfterFn     = processStartedAfter
 )
 
 // updateConfig holds the release metadata for the update command.
@@ -947,6 +949,14 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 	notReadyReported := false
 	var observedEntry bool
 	observation := "no matching provider entry was discovered"
+	// Capture the on-disk binary's modification time as a proxy for the swap time
+	// (installProviderBinary writes a fresh file, so its mtime approximates when
+	// the new image landed on disk). Used as fallback evidence when
+	// /proc/<pid>/exe is unreadable (non-dumpable binaries with file capabilities).
+	var swapTime time.Time
+	if fi, err := os.Stat(p.Binary); err == nil {
+		swapTime = fi.ModTime()
+	}
 	for i := 0; i < maxIterations; i++ {
 		// Adaptive sleep: poll every 2s while waiting for the restart to
 		// land (old PID still alive), then every 3s once a new PID appears
@@ -1038,12 +1048,49 @@ func verifyRestartLoop(p Provider, cfg updateConfig, hotSwapTriggered bool, back
 						imageFallbackReported = true
 					}
 					sockVersion, ok := verifySocketVersionFn(rp, rp.PID)
+					// /proc/<pid>/exe is unreadable (typically permission denied
+					// for a non-dumpable binary with file capabilities). Do NOT
+					// treat that as "restart did not land": fall back to
+					// evidence that does not need the link — the process start
+					// time being after the binary swap time (the installed
+					// binary's mtime), the control socket reporting the new
+					// version, and the pid changing — while still failing when
+					// the restart really did not land (same pid, old version,
+					// unit not active).
+					startedAfterSwap := false
+					if !swapTime.IsZero() {
+						if after, aerr := verifyProcessStartedAfterFn(rp.PID, swapTime); aerr == nil {
+							startedAfterSwap = after
+						}
+					}
+					landed := rp.PID != oldPID || startedAfterSwap
+					// The on-disk installed binary's stamped version. Reading
+					// the file is root-owned and readable; it is NOT the
+					// running image (which would be tautological after a swap),
+					// but combined with "a NEW pid started after that file was
+					// written" it establishes that the new process runs the
+					// new binary.
+					binaryStamp := ""
+					if p.Binary != "" {
+						binaryStamp = verifyProviderVersionReadOnlyFn(p.Binary)
+					}
 					observation = fmt.Sprintf("pid %d's running image was unreadable; no verified socket answer from that pid", rp.PID)
 					if ok {
 						observation = fmt.Sprintf("pid %d's running image was unreadable; its control socket reported version %q", rp.PID, sockVersion)
 					}
-					if ok && sockVersion == cfg.Tag && rp.PID != oldPID {
-						fmt.Printf("verified %s running %s (pid %d; the provider reported this version on its control socket)\n", providerLabel(p), cfg.Tag, rp.PID)
+					socketProves := ok && sockVersion == cfg.Tag && landed
+					stampProves := landed && startedAfterSwap && binaryStamp == cfg.Tag
+					if socketProves || stampProves {
+						var why string
+						if socketProves {
+							why = "the provider reported this version on its control socket"
+							if rp.PID == oldPID && startedAfterSwap {
+								why += ", and the process started after the binary swap"
+							}
+						} else {
+							why = fmt.Sprintf("pid %d started after the binary swap and the installed binary is stamped %s", rp.PID, binaryStamp)
+						}
+						fmt.Printf("verified %s running %s (pid %d; %s)\n", providerLabel(p), cfg.Tag, rp.PID, why)
 						if hotSwapTriggered {
 							verifyRecordSuccessFn(p.StateDir)
 						}

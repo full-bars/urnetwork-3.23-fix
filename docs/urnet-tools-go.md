@@ -176,6 +176,8 @@ The tool accepts selectors in both space-separated and equals-separated format (
 9. **Conflicting selectors** (e.g. `--unit foo --network bar` pointing to different instances) = ERROR.
 10. **`-f` / `--force` (or `-y` / `--yes`) only skips confirmation prompts:** It **never** selects a provider. To target all providers with force, use `-f --all`.
 11. **`--help` always prints help** and never executes actions.
+12. **Every provider unit is discovered, not just `urnetwork.service`.** The listings also include `urnetwork@*.service` template instances and other `urnetwork-*.service` units whose `ExecStart` runs a provider binary, so one box can run more than one provider. When more than one provider shares an identity directory, the tool says so once; it never deletes or disables anything.
+13. **Update verification does not fail on an unreadable image.** A provider binary with a file capability (`cap_net_bind_service`) is non-dumpable, so `/proc/<pid>/exe` is unreadable. The verifier then confirms the restart through the process start time after the binary swap, the installed binary's version stamp, the control socket version, and a changed pid. A restart that truly did not land still fails.
 
 ---
 

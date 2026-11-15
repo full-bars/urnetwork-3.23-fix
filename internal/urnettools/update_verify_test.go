@@ -20,24 +20,28 @@ func stubVerifyLoop(t *testing.T) {
 	origHandle := verifyRunningImageHandleFn
 	origPath := verifyRunningImagePathFn
 	origVersion := verifyProviderVersionFn
+	origReadOnly := verifyProviderVersionReadOnlyFn
 	origSocket := verifySocketVersionFn
 	origAlive := verifyPidIsAliveFn
 	origPrune := verifyPruneBackupsFn
 	origSleep := verifySleepFn
 	origSuccess := verifyRecordSuccessFn
 	origDecline := verifyRecordDeclineFn
+	origStarted := verifyProcessStartedAfterFn
 
 	t.Cleanup(func() {
 		verifyDiscoverFn = origDiscover
 		verifyRunningImageHandleFn = origHandle
 		verifyRunningImagePathFn = origPath
 		verifyProviderVersionFn = origVersion
+		verifyProviderVersionReadOnlyFn = origReadOnly
 		verifySocketVersionFn = origSocket
 		verifyPidIsAliveFn = origAlive
 		verifyPruneBackupsFn = origPrune
 		verifySleepFn = origSleep
 		verifyRecordSuccessFn = origSuccess
 		verifyRecordDeclineFn = origDecline
+		verifyProcessStartedAfterFn = origStarted
 	})
 
 	// Default stubs: no-op sleep, always-alive PID, no-op side effects.
@@ -49,6 +53,9 @@ func stubVerifyLoop(t *testing.T) {
 	verifyRecordDeclineFn = func(string, string) {}
 	verifyRunningImagePathFn = func(pid int) (string, error) {
 		return "/usr/bin/provider", nil
+	}
+	verifyProcessStartedAfterFn = func(pid int, swapTime time.Time) (bool, error) {
+		return false, nil
 	}
 }
 
@@ -707,5 +714,98 @@ func TestUpdateVerification_SocketReportsWrongVersionStillFails(t *testing.T) {
 	captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
 	if err == nil {
 		t.Fatal("a socket reporting the old version must not verify the update")
+	}
+}
+
+func TestUpdateVerification_UnreadableImagePassesWhenStartTimeAndStampProveSwap(t *testing.T) {
+	stubVerifyLoop(t)
+
+	// A real installed binary so swapTime (its mtime) is non-zero.
+	bin := filepath.Join(t.TempDir(), "provider")
+	if err := os.WriteFile(bin, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	p := Provider{StateDir: "/home/user/.urnetwork", Binary: bin, PID: 100}
+	cfg := testConfig("v3.23.0-fix.35.5")
+
+	verifyDiscoverFn = func() []Provider {
+		return []Provider{Provider{StateDir: p.StateDir, Binary: bin, PID: 200}}
+	}
+
+	verifyRunningImageHandleFn = func(pid int) (string, error) {
+		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
+	}
+
+	// The control socket does NOT answer, so only the start-time + stamp
+	// evidence can prove the swap.
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "", false }
+
+	verifyProcessStartedAfterFn = func(pid int, swapTime time.Time) (bool, error) {
+		return true, nil
+	}
+
+	verifyProviderVersionReadOnlyFn = func(binary string) string {
+		return cfg.Tag
+	}
+
+	var recorded, pruned bool
+	verifyRecordSuccessFn = func(string) { recorded = true }
+	verifyPruneBackupsFn = func(string, int) { pruned = true }
+
+	var err error
+	out := captureStdout(t, func() { err = verifyRestartLoop(p, cfg, true, "") })
+	if err != nil {
+		t.Fatalf("expected success via start time + stamp, got: %v\n%s", err, out)
+	}
+	if !strings.Contains(out, "started after the binary swap") {
+		t.Fatalf("expected success line to mention start after swap; got:\n%s", out)
+	}
+	if !strings.Contains(out, "verified") {
+		t.Fatalf("expected a verified line; got:\n%s", out)
+	}
+	if !recorded || !pruned {
+		t.Errorf("success side effects missing: recorded=%v pruned=%v", recorded, pruned)
+	}
+}
+
+func TestUpdateVerification_UnreadableImageFailsWhenStartTimeAndStampDoNotProveSwap(t *testing.T) {
+	stubVerifyLoop(t)
+
+	bin := filepath.Join(t.TempDir(), "provider")
+	if err := os.WriteFile(bin, []byte("binary"), 0o755); err != nil {
+		t.Fatalf("write fake binary: %v", err)
+	}
+	p := Provider{StateDir: "/home/user/.urnetwork", Binary: bin, PID: 100}
+	cfg := testConfig("v3.23.0-fix.35.5")
+
+	// Same pid as before: no new process appeared.
+	verifyDiscoverFn = func() []Provider {
+		return []Provider{Provider{StateDir: p.StateDir, Binary: bin, PID: 100}}
+	}
+
+	verifyRunningImageHandleFn = func(pid int) (string, error) {
+		return "", fmt.Errorf("readlink /proc/%d/exe: permission denied", pid)
+	}
+
+	// Socket reports the OLD version.
+	verifySocketVersionFn = func(Provider, int) (string, bool) { return "v3.23.0-fix.35.4", true }
+
+	// The process did NOT start after the swap.
+	verifyProcessStartedAfterFn = func(pid int, swapTime time.Time) (bool, error) {
+		return false, nil
+	}
+
+	// The installed binary is stamped with the OLD version.
+	verifyProviderVersionReadOnlyFn = func(binary string) string {
+		return "v3.23.0-fix.35.4"
+	}
+
+	var err error
+	_ = captureStdout(t, func() { err = verifyRestartLoop(p, cfg, false, "") })
+	if err == nil {
+		t.Fatal("expected error when the restart did not land, got nil")
+	}
+	if !strings.Contains(err.Error(), "restart did not take effect") {
+		t.Fatalf("expected 'restart did not take effect' error, got: %v", err)
 	}
 }
