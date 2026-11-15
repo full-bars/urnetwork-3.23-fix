@@ -231,6 +231,11 @@ func (r *extenderRole) rootKeyDirectory(apiUrl string) *connect.ExtenderDirector
 			settings.Store = extenderDirectoryFileStore{path: path}
 		}
 		r.directory = connect.NewExtenderDirectory(r.ctx, settings)
+		networkHost := ""
+		if 0 < len(settings.NetworkHosts) {
+			networkHost = settings.NetworkHosts[0]
+		}
+		r.setDiscoveryDirectory(r.directory, networkHost)
 	})
 	return r.directory
 }

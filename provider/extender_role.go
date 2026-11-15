@@ -251,6 +251,12 @@ type extenderRole struct {
 	// every slot's activation.
 	directoryOnce sync.Once
 	directory     *connect.ExtenderDirectory
+	// discovery serves the directory feed and takes part in the gossip mesh
+	// (extender_discovery.go). The directory and network host it needs are
+	// set once the platform's keys are read, under mu.
+	discovery            *extenderDiscovery
+	discoveryDirectory   *connect.ExtenderDirectory
+	discoveryNetworkHost string
 	// the carrier set last reported to the activation, so a change is told to it once
 	carrierSigKnown bool
 	carrierSig      string
@@ -312,6 +318,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		done:              make(chan struct{}),
 	}
 	r.setKeySeed(seed)
+	r.discovery = newExtenderDiscovery(roleCtx, func() { r.reconcileDiscovery() })
 	if created {
 		tlog("🌉 [extender] created identity key %s (0600)\n", keyPath)
 	}
@@ -378,6 +385,7 @@ func (r *extenderRole) run() {
 		r.servers = append(r.servers, primary)
 		r.refreshLocked()
 		r.mu.Unlock()
+		r.reconcileDiscovery()
 		r.markReady()
 		r.publishStatus("listening")
 
@@ -411,6 +419,7 @@ func (r *extenderRole) run() {
 						r.servers = append(r.servers, tcpServer)
 						r.refreshLocked()
 						r.mu.Unlock()
+						r.reconcileDiscovery()
 						r.publishStatus("tcp carrier recovered")
 					}
 				}
@@ -815,6 +824,11 @@ func (r *extenderRole) waitRetry() bool {
 }
 
 func (r *extenderRole) shutdown() {
+	// detach the discovery handlers and drain their streams before the
+	// servers close
+	if r.discovery != nil {
+		r.discovery.stop()
+	}
 	r.mu.Lock()
 	servers := slices.Clone(r.servers)
 	r.servers = nil
