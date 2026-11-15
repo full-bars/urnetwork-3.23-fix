@@ -1426,57 +1426,57 @@ hotswap_systemd() {
   printf '[Service]\nType=notify\nNotifyAccess=all\nEnvironment="URNETWORK_RAMLOGS=%s"\n' "$mode" > "$OVERRIDE_DIR/zz-hotswap-test.conf"
   chown urnet:urnet "$OVERRIDE_DIR/zz-hotswap-test.conf"
   runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user daemon-reload
-  if ! __RP_OUT=$(restart_provider); then bad "H2: RAMLOGS=$mode initial restart failed"; return; fi
+  if ! __RP_OUT=$(restart_provider); then t1bad "H2: RAMLOGS=$mode initial restart failed"; return; fi
   RAMLOG_MARK=${__RP_OUT%% *}; mark=${__RP_OUT##* }
-  if ! wait_client_id "$mark" 120 >/dev/null; then bad "H2: RAMLOGS=$mode provider did not start"; return; fi
+  if ! wait_client_id "$mark" 120 >/dev/null; then t1bad "H2: RAMLOGS=$mode provider did not start"; return; fi
   old=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p MainPID --value urnetwork.service)
   version=$("$bin" --version 2>&1)
-  if ! [[ "$old" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$old" 2>/dev/null; then bad "H2: RAMLOGS=$mode invalid initial MainPID '$old'"; return; fi
+  if ! [[ "$old" =~ ^[1-9][0-9]*$ ]] || ! kill -0 "$old" 2>/dev/null; then t1bad "H2: RAMLOGS=$mode invalid initial MainPID '$old'"; return; fi
   # shellcheck disable=SC2031
   echo "  H2: RAMLOGS=$mode old PID=$old version=$version" | tee -a "$REPORT"
   # The child preflight checks JWT and API access, not a version difference.
   # Stage an identical inode replacement; the running parent evaluates it.
-  stage=$(mktemp "${bin}.hotswap.XXXXXX") || { bad "H2: cannot create stage"; return; }
+  stage=$(mktemp "${bin}.hotswap.XXXXXX") || { t1bad "H2: cannot create stage"; return; }
   if ! cp --preserve=all "$bin" "$stage" || ! mv -f "$stage" "$bin"; then
-    rm -f "$stage"; bad "H2: RAMLOGS=$mode could not stage binary"; return
+    rm -f "$stage"; t1bad "H2: RAMLOGS=$mode could not stage binary"; return
   fi
   mark=$(date -u +%FT%T.%3NZ)
-  if ! kill -USR2 "$old"; then bad "H2: RAMLOGS=$mode SIGUSR2 failed"; return; fi
+  if ! kill -USR2 "$old"; then t1bad "H2: RAMLOGS=$mode SIGUSR2 failed"; return; fi
   new=0; end=$(( $(date +%s) + 120 ))
   while [ "$(date +%s)" -lt "$end" ]; do
     state=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p ActiveState --value urnetwork.service)
-    case "$state" in failed|inactive|'') bad "H2: RAMLOGS=$mode unit entered '$state' during handoff"; return;; esac
+    case "$state" in failed|inactive|'') t1bad "H2: RAMLOGS=$mode unit entered '$state' during handoff"; return;; esac
     new=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p MainPID --value urnetwork.service)
     if [[ "$new" =~ ^[1-9][0-9]*$ ]] && [ "$new" != "$old" ]; then break; fi
     sleep 2
   done
-  if ! [[ "$new" =~ ^[1-9][0-9]*$ ]] || [ "$new" = "$old" ]; then bad "H2: RAMLOGS=$mode handoff timed out"; return; fi
+  if ! [[ "$new" =~ ^[1-9][0-9]*$ ]] || [ "$new" = "$old" ]; then t1bad "H2: RAMLOGS=$mode handoff timed out"; return; fi
   ok "H2: RAMLOGS=$mode MainPID changed $old -> $new"
   end=$(( $(date +%s) + 420 ))
   while kill -0 "$old" 2>/dev/null && [ "$(date +%s)" -lt "$end" ]; do
     state=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p ActiveState --value urnetwork.service)
-    case "$state" in failed|inactive|'') bad "H2: RAMLOGS=$mode unit entered '$state' while draining"; return;; esac
+    case "$state" in failed|inactive|'') t1bad "H2: RAMLOGS=$mode unit entered '$state' while draining"; return;; esac
     sleep 5
   done
-  if kill -0 "$old" 2>/dev/null; then bad "H2: RAMLOGS=$mode old PID did not drain within 420s"; return; fi
+  if kill -0 "$old" 2>/dev/null; then t1bad "H2: RAMLOGS=$mode old PID did not drain within 420s"; return; fi
   ok "H2: RAMLOGS=$mode old PID drained"
   end=$(( $(date +%s) + 45 ))
   while [ "$(date +%s)" -lt "$end" ]; do
     state=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p ActiveState --value urnetwork.service)
-    case "$state" in failed|inactive|'') bad "H2: RAMLOGS=$mode unit entered '$state' after drain"; return;; esac
+    case "$state" in failed|inactive|'') t1bad "H2: RAMLOGS=$mode unit entered '$state' after drain"; return;; esac
     sleep 3
   done
   state=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p ActiveState --value urnetwork.service)
   if [ "$state" = active ] && kill -0 "$new" 2>/dev/null && [ "$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" systemctl --user show -p MainPID --value urnetwork.service)" = "$new" ]; then
     ok "H2: RAMLOGS=$mode successor remains active"
   else
-    bad "H2: RAMLOGS=$mode successor not active"
+    t1bad "H2: RAMLOGS=$mode successor not active"
   fi
   local journal
   if ! journal=$(runuser -u urnet -- env XDG_RUNTIME_DIR="$XDG_RUNTIME_DIR" journalctl --user -u urnetwork.service --no-pager -q --since "$mark"); then
-    bad "H2: RAMLOGS=$mode journal read failed"
+    t1bad "H2: RAMLOGS=$mode journal read failed"
   elif printf '%s\n' "$journal" | grep -qE 'signal=PIPE|code=killed'; then
-    bad "H2: RAMLOGS=$mode journal contains killed process"
+    t1bad "H2: RAMLOGS=$mode journal contains killed process"
   else
     ok "H2: RAMLOGS=$mode journal has no killed process"
   fi
@@ -1503,7 +1503,7 @@ PY
     if [ "${readers:-0}" -gt 0 ]; then
       ok "H2: RAMLOGS=$mode stderr pipe has $readers readers"
     else
-      bad "H2: RAMLOGS=$mode stderr pipe has no reader"
+      t1bad "H2: RAMLOGS=$mode stderr pipe has no reader"
     fi
   else
     ok "H2: RAMLOGS=$mode stderr is $target"
