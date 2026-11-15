@@ -99,6 +99,14 @@ func TestHotSwapStderrHelper(t *testing.T) {
 	if mode == "ignored" {
 		protectLogPipes()
 	}
+	if mode == "null-successor" {
+		// the successor of a successor: stderr is /dev/null, so the redirect
+		// must still be marked for the RAM log
+		if !hotswapStderrDetached {
+			os.Exit(11)
+		}
+		os.Exit(0)
+	}
 	if mode == "live-successor" {
 		if _, err := log.Writer().Write([]byte("live stderr\n")); err != nil {
 			os.Exit(7)
@@ -321,5 +329,27 @@ func TestHotSwapCandidateUsesOriginalStderr(t *testing.T) {
 	contents, err := os.ReadFile(orig.Name())
 	if err != nil || string(contents) != "candidate stderr\n" {
 		t.Fatalf("original stderr = %q, %v", contents, err)
+	}
+}
+
+// A hotswap successor whose stderr is /dev/null (its parent had detached an
+// orphaned pipe) must still get its fd 2 redirected to the RAM log, or the
+// writers that use fd 2 directly lose their output.
+func TestHotSwapSuccessorWithDevNullStderrIsMarkedDetached(t *testing.T) {
+	exe, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	cmd := exec.Command(exe, "-test.run=^TestHotSwapStderrHelper$")
+	cmd.Env = append(os.Environ(), "TEST_HOTSWAP_STDERR=null-successor", EnvHotSwap+"=1", "URNETWORK_RAMLOGS=1")
+	// a nil Stdout and Stderr is /dev/null for the child
+	if err := cmd.Run(); err != nil {
+		t.Fatalf("a /dev/null stderr successor was not marked detached: %v", err)
+	}
+	// without RAM logs nothing is touched
+	cmd = exec.Command(exe, "-test.run=^TestHotSwapStderrHelper$")
+	cmd.Env = append(os.Environ(), "TEST_HOTSWAP_STDERR=null-successor", EnvHotSwap+"=1", "URNETWORK_RAMLOGS=0", "URNETWORK_PROFILE=")
+	if err := cmd.Run(); err == nil {
+		t.Fatal("without RAM logs the successor must not be marked detached")
 	}
 }
