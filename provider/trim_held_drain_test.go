@@ -26,4 +26,11 @@ func TestTrimHeldDrainKeepsClients(t *testing.T) {
 	if counts.Parked != 1 || counts.Connecting != 0 || clients != 4 {
 		t.Fatalf("draining held proxy: %+v clients=%d", counts, clients)
 	}
+	// Health unregisters after the drain exits; the held identity must outlive
+	// that registry entry until the reload admits it again.
+	connect.UnregisterProxy(9010)
+	counts, clients = productionSnapshotSources().pool()
+	if counts.Parked != 1 || clients != 0 {
+		t.Fatalf("held identity after unregister: %+v clients=%d", counts, clients)
+	}
 }

@@ -42,10 +42,19 @@ func TestTrimHeldSnapshotLifecycle(t *testing.T) {
 func TestTrimHeldStartupAndShed(t *testing.T) {
 	resetTrimHeld()
 	t.Cleanup(resetTrimHeld)
-	s := &connect.ProxySettings{Address: "example:1080"}
-	startupHeld([]*connect.ProxySettings{s})
-	if !trimHeldSnapshot()[s.Key()] {
-		t.Fatal("startup-held identity missing")
+	settings := []*connect.ProxySettings{{Address: "a:1080"}, {Address: "b:1080"}, {Address: "c:1080"}}
+	launch, held := startupTrimSelection(settings, 1, map[string]ProxyEntry{}, func(string) (float64, bool) { return 0, false }, func(string) float64 { return 0 })
+	startupHeld(held)
+	if len(launch) != 1 || len(held) != 2 || len(trimHeldSnapshot()) != 2 {
+		t.Fatalf("startup selection: launch=%d held=%d published=%d", len(launch), len(held), len(trimHeldSnapshot()))
+	}
+	for _, s := range held {
+		if !trimHeldSnapshot()[s.Key()] {
+			t.Fatalf("startup-held identity %s missing", s.Key())
+		}
+	}
+	if trimHeldSnapshot()[launch[0].Key()] {
+		t.Fatal("startup launch incorrectly marked held")
 	}
 	resetTrimHeld()
 	r, keys, _ := trimFixture(t)
