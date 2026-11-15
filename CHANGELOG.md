@@ -2,7 +2,13 @@
 
 ## [Unreleased]
 
-Everything merged after `v3.23.0-fix.35.10`.
+Everything merged after `v3.23.0-fix.35.11`.
+
+## [v3.23.0-fix.35.11]
+
+_Released 2026-11-15. Based on v3.23.0-fix.35.10. Notes: `releases/v3.23.0-fix.35.11.md`._
+
+This update fixes a hotswap bug that could leave a provider dead after the old process exited. It adds per-carrier statistics and optional discovery for extender hosts, turns on loopback diagnostics by default, and makes `urnet-tools` more reliable on hosts with file capabilities and instance units. A host that runs `Restart=on-failure` gets a restart safeguard during the update.
 
 ### Added
 

@@ -4,7 +4,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 **Fork Based On**: urnetwork/connect v3.23  
 **Repository**: github.com/full-bars/urnetwork-3.23-fix  
-**Latest published release**: v3.23.0-fix.35.9 (see [releases/v3.23.0-fix.35.9.md](releases/v3.23.0-fix.35.9.md))
+**Latest published release**: v3.23.0-fix.35.11 (see [releases/v3.23.0-fix.35.11.md](releases/v3.23.0-fix.35.11.md))
 
 
 ---
@@ -4181,7 +4181,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `CarrierStats` and refusal stage counters in `extender/extender.go`, `extender/extender_services.go`, `provider/extender_discovery.go`, and the `urnet_extender_carrier_*` metrics in `provider/extender_role.go`.
 
-**Status**: On `main` after v3.23.0-fix.35.10 (unreleased).
+**Status**: Shipped in v3.23.0-fix.35.11.
 
 ---
 
@@ -4199,7 +4199,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `provider/profile_listener.go`, `provider/pprof_control.go`, and the `pprof` control key in `provider/control_socket.go`.
 
-**Status**: On `main` after v3.23.0-fix.35.10 (unreleased).
+**Status**: Shipped in v3.23.0-fix.35.11.
 
 ---
 
@@ -4217,7 +4217,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `SavedLogStdout` and `SavedLogStderr` in `provider/shmlog_linux.go` and `provider/hotswap_unix.go`, `ignoreSigpipe` in `provider/sigpipe_unix.go`, and `internal/urnettools/sigpipe_restart.go`.
 
-**Status**: On `main` after v3.23.0-fix.35.10 (unreleased).
+**Status**: Shipped in v3.23.0-fix.35.11.
 
 ---
 
@@ -4233,7 +4233,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `epollFile` and `epollRawConn.Read` in `ip_udp_socket_poller_epoll.go`.
 
-**Status**: On `main` after v3.23.0-fix.35.10 (unreleased).
+**Status**: Shipped in v3.23.0-fix.35.11.
 
 ---
 
@@ -4253,4 +4253,4 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, `urnetwork@*.service` matching in `internal/urnettools/discover.go`, and `openbsdPrivilegePrefix` in `internal/urnettools/lifecycle_openbsd.go`.
 
-**Status**: On `main` after v3.23.0-fix.35.10 (unreleased).
+**Status**: Shipped in v3.23.0-fix.35.11.
