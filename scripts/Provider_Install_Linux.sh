@@ -1262,6 +1262,7 @@ sanitize_restart_dropins ()
             pr_warn "Repairing invalid 'Restart=' value in %s (systemd requires no/always/on-failure/etc, not yes/true/1)" "$f"
             sed -i -E 's/^[[:space:]]*Restart=(yes|true|1)[[:space:]]*$/Restart=on-failure/' "$f"
         fi
+        in_service=0
         while IFS= read -r line || [ -n "$line" ]; do
             # systemd strips whitespace from lines and values, so normalize
             # both ends of the line (also absorbing CRLF endings) and of the
@@ -1269,6 +1270,11 @@ sanitize_restart_dropins ()
             # hash and are untouched by the strips.
             line="${line#"${line%%[![:space:]]*}"}"
             line="${line%"${line##*[![:space:]]}"}"
+            case "$line" in
+                '[Service]') in_service=1; continue ;;
+                \[*\]) in_service=0; continue ;;
+            esac
+            [ "$in_service" = 1 ] || continue
             case "$line" in
                 'Restart='*)
                     value="${line#Restart=}"

@@ -1137,6 +1137,16 @@ test_sanitize_restart_dropins_sigpipe() {
     : > "$out"
     XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
     assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "later prevention reset clears warning"
+
+    rm -f "$d/20-always.conf" "$d/30-prevent.conf" "$d/40-clear.conf"
+    printf '[Unit]\nRestartForceExitStatus=SIGPIPE\n' > "$d/20-wrong-section.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "1" "$(case "$(< "$out")" in *SIGPIPE*) printf 1;; *) printf 0;; esac)" "force in another section cannot hide a reset"
+    printf '[Service]\nRestartForceExitStatus=SIGPIPE\n[Unit]\nRestartForceExitStatus=\n' > "$d/20-wrong-section.conf"
+    : > "$out"
+    XDG_CONFIG_HOME="$tmp" sanitize_restart_dropins
+    assert_eq "0" "$(wc -c < "$out" | tr -d ' ')" "reset in another section cannot cancel force"
     rm -rf "$tmp"
 }
 test_sanitize_restart_dropins_sigpipe
