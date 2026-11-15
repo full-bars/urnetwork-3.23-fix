@@ -4,6 +4,21 @@ An extender is a provider that also accepts connections on ports the internet ca
 
 You normally do nothing. This page covers how to see whether it is working, the few things the host must allow, how to turn it off, Docker, and what to do when it is not working.
 
+## See how much traffic the extender relays
+
+`urnet-tools extender status` prints a `Traffic` table, one row per carrier, in human units (B, KiB, MiB, GiB, TiB):
+
+```text
+  Traffic:
+    carrier           in        out      rate in     rate out  connections
+    tcp-443:     1.2 GiB    4.0 GiB   45.0 KiB/s  310.0 KiB/s  3 live, 1280 total
+    udp-443:    12.0 MiB    3.0 MiB      0.0 B/s      0.0 B/s  0 live, 40 total
+```
+
+`in` is the bytes from clients and `out` is the bytes to them. The rates are measured between two samples of the counters. `top` shows the same totals in its Extender box, one row per carrier that has carried traffic, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`.
+
+These are the bytes this extender relayed. What the network credits depends on the contracts it counts, so these figures measure relayed traffic and are not a statement of earnings. The counts start at zero when the provider starts.
+
 ## Discovery
 
 Discovery serves the platform's extender directory to clients. It is off by default, separate from the extender role.

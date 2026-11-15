@@ -34,6 +34,12 @@ type topExtenderRow struct {
 // port reads bad and a working family reads good. Empty when the provider could
 // not report the extender.
 func extenderBoxRows(r ExtenderReading, now time.Time) []topExtenderRow {
+	return extenderBoxRowsFor(r, now, false)
+}
+
+// extenderBoxRowsFor is extenderBoxRows with the traffic rows drawn for an ASCII only
+// theme when ascii is true.
+func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExtenderRow {
 	if r.Source != SourceControlSocket {
 		return nil
 	}
@@ -107,6 +113,19 @@ func extenderBoxRows(r ExtenderReading, now time.Time) []topExtenderRow {
 		}
 	}
 	rows = append(rows, topExtenderRow{"clients", fmt.Sprintf("%d now", r.LiveClients), topInfo})
+	// The traffic this extender relayed, one row per carrier that has carried any:
+	// the bytes in from clients and out to them since the provider started.
+	down, up := "↓", "↑"
+	if ascii {
+		down, up = "v", "^"
+	}
+	for _, c := range r.CarrierBytes {
+		if c.IngressBytes == 0 && c.EgressBytes == 0 && c.LiveConns == 0 {
+			continue
+		}
+		rows = append(rows, topExtenderRow{strings.ReplaceAll(c.Carrier, "-", ""),
+			down + tui.Bytes(float64(c.IngressBytes)) + " " + up + tui.Bytes(float64(c.EgressBytes)), topInfo})
+	}
 	rows = append(rows, topExtenderRow{"served", extenderServedText(r.Served), topInfo})
 	return rows
 }
@@ -121,7 +140,7 @@ func (m *topModel) hasExtender() bool {
 
 // extenderRows is the box height: every row plus the frame.
 func (m *topModel) extenderRows() int {
-	return len(extenderBoxRows(m.extender, m.now())) + 2
+	return len(extenderBoxRowsFor(m.extender, m.now(), m.theme.ASCII)) + 2
 }
 
 // wantExtender reports whether an extender reading should be fetched now and,
@@ -151,7 +170,7 @@ func (m *topModel) applyExtender(gen int, reading ExtenderReading) {
 
 func (m *topModel) drawExtender(b *tui.Buffer) {
 	th := m.theme
-	rows := extenderBoxRows(m.extender, m.now())
+	rows := extenderBoxRowsFor(m.extender, m.now(), th.ASCII)
 	if len(rows) == 0 {
 		b.Put("no data", 0, 0, th.Dim)
 		return

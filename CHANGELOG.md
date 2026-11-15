@@ -4,6 +4,10 @@
 
 Everything merged after `v3.23.0-fix.35.11`.
 
+### Added
+
+- **Traffic the extender relays, per carrier** (`extender/`, `provider/`, `internal/urnettools/`). The extender counts the bytes it relays on `tcp-443`, `udp-443`, `udp-4053` and `udp-53`, on each side, with the rate, the relayed connections and a minute history. `urnet-tools extender status` prints a `Traffic` table in human units, `top` shows one row per carrier in its Extender box, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`. These are bytes this extender relayed, not earnings. [redeploy]
+
 ## [v3.23.0-fix.35.11]
 
 _Released 2026-11-15. Based on v3.23.0-fix.35.10. Notes: `releases/v3.23.0-fix.35.11.md`._

@@ -345,3 +345,14 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_disk_write_mbps` | gauge | | Synchronous write speed measured by the startup disk benchmark, MB/s (auto profile only; absent until one has run) |
 | `urnet_disk_slow` | gauge | | 1 when the last disk benchmark judged the disk slow (under 50 MB/s) or it hung |
 | `urnet_disk_bench_age_seconds` | gauge | | Age of the last disk benchmark result |
+
+## Extender carrier metrics
+
+An extender host exports one series per carrier (`tcp-443`, `udp-443`, `udp-4053`, `udp-53`).
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `urnet_extender_carrier_requests_total` | counter | `carrier`, `outcome` | Requests by carrier, `outcome` is `served` or `refused`, cumulative since the provider started |
+| `urnet_extender_carrier_refused_total` | counter | `carrier`, `stage` | Refusals by carrier and the stage that refused them |
+| `urnet_extender_carrier_bytes_total` | counter | `carrier`, `direction` | Bytes this extender relayed by carrier. `direction="ingress"` is from clients and `egress` is to clients. These are relayed bytes, not earnings: the network credits contracts |
+| `urnet_extender_carrier_connections` | gauge | `carrier` | Connections this extender is relaying now |
