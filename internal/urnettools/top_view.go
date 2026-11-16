@@ -364,9 +364,11 @@ const (
 )
 
 // eventsRows is the height of the Events panel: its content, at least one row
-// (which says there are none) and at most topEventsMax.
+// (which says there are none) and at most topEventsMax. The count is after
+// collapsing consecutive repeats, which is what the panel draws.
 func (m *topModel) eventsRows() int {
-	return 2 + min(max(len(m.events), topEventsMin), topEventsMax)
+	vs := collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter))
+	return 2 + min(max(len(vs), topEventsMin), topEventsMax)
 }
 
 // drawProxiesCompact is the one-line pool summary: every state with its count,
@@ -439,19 +441,24 @@ func (m *topModel) drawEvents(b *tui.Buffer) {
 		b.Put("no events yet", 0, 0, th.Dim)
 		return
 	}
-	// The wheel moves the window down the list; the newest events stay on top.
-	events := m.sortedEvents()
-	start := min(m.eventScroll, max(0, len(events)-b.Height()))
-	for i, e := range events[start:] {
-		if i >= b.Height() {
+	views := collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter))
+	start := min(m.eventScroll, max(0, len(views)-b.Height()))
+	for i, v := range views {
+		if i < start {
+			continue
+		}
+		if i-start >= b.Height() {
 			break
 		}
-		at := e.At.Format("15:04")
-		if !sameDay(e.At, now) {
-			at = e.At.Format("01-02 15:04")
+		y := i - start
+		at := eventTime(v.At, now, m.eventZoom)
+		x := b.Put(at+" ", 0, y, th.Dim)
+		x = b.Put(string(eventIcon(v.Level, th.ASCII))+" ", x, y, m.style(v.Level))
+		text := v.Text
+		if v.Count > 1 {
+			text += "  x" + strconv.Itoa(v.Count)
 		}
-		x := b.Put(at+" ", 0, i, th.Dim)
-		b.Put(tui.Truncate(e.Text, b.Width()-x, th.ASCII), x, i, m.style(e.Level))
+		b.Put(tui.Truncate(text, b.Width()-x, th.ASCII), x, y, m.style(v.Level))
 	}
 }
 

@@ -25,6 +25,6 @@
 │                                                                    │
 ╰────────────────────────────────────────────────────────────────────╯
 ╭ Events ────────────────────────────────────────────────────────────╮
-│16:04 provider not answering: dial unix /state/tornado/provider.soc…│
+│just now ✗ provider not answering: dial unix /state/tornado/provide…│
 ╰────────────────────────────────────────────────────────────────────╯
  q quit   ? help   m menu   w zoom   - 1s +   M mouse on

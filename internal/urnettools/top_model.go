@@ -155,6 +155,13 @@ type topModel struct {
 	lastErr   string
 	events    []topEvent
 
+	// Events view state: zoom, scroll and filter. The keys that drive them
+	// are owned by the key table lane; the state and the pure functions live
+	// here so the view is a function of the model alone.
+	eventZoom   bool
+	eventScroll int
+	eventFilter eventFilter
+
 	// extender is the last reading the control socket gave for the current
 	// provider, fetched off the UI loop (see wantExtender)
 	extender     ExtenderReading
@@ -239,9 +246,8 @@ type topModel struct {
 	contentRect                 tui.Rect
 	nowRows, resRows, extRows   int
 	showExtender, withInternals bool
-	// eventScroll and gorScroll are the wheel offsets of the two scrollable
-	// lists.
-	eventScroll, gorScroll int
+	// gorScroll is the wheel offset of the goroutine list.
+	gorScroll int
 
 	help bool
 	quit bool
