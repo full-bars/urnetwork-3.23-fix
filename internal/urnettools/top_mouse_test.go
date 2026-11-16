@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -155,5 +156,136 @@ func TestTopApplySettingsCarriesTheLayout(t *testing.T) {
 	m.applySettings(topSettings{})
 	if m.layout.SideWidth != 0 || m.layout.Dividers != nil {
 		t.Fatalf("empty settings should reset the layout: %+v", m.layout)
+	}
+}
+
+func TestTopWheelScrollsTheEventsList(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, topFlowing(t), nil)
+	for i := 0; i < 8; i++ {
+		m.addEvent(topBase.Add(time.Duration(i)*time.Minute), "event "+string(rune('a'+i)), topInfo)
+	}
+	b := tui.New(120, 40)
+	m.render(b)
+	ev := regionRect(t, m, "box:events")
+	if !containsLine(b.String(), "event h") {
+		t.Fatalf("the newest event should be on screen:\n%s", b.String())
+	}
+	// Wheel down moves the window to the older events.
+	m.handle(mouseEv(tcellui.MouseWheel, tcellui.MouseWheelDown, ev.X+5, ev.Y+1))
+	m.render(b)
+	if !containsLine(b.String(), "event g") {
+		t.Fatalf("one wheel step should show the next older event:\n%s", b.String())
+	}
+	// The offset never runs past the oldest event. The snapshot itself added
+	// one event, so the list holds nine and the wheel is clamped to eight.
+	for i := 0; i < 20; i++ {
+		m.handle(mouseEv(tcellui.MouseWheel, tcellui.MouseWheelDown, ev.X+5, ev.Y+1))
+	}
+	if m.eventScroll != len(m.events)-1 {
+		t.Fatalf("event scroll = %d, want %d", m.eventScroll, len(m.events)-1)
+	}
+}
+
+func containsLine(txt, sub string) bool {
+	for _, l := range splitLines(txt) {
+		if strings.Contains(l, sub) {
+			return true
+		}
+	}
+	return false
+}
+
+func splitLines(s string) []string {
+	var out []string
+	start := 0
+	for i := 0; i < len(s); i++ {
+		if s[i] == '\n' {
+			out = append(out, s[start:i])
+			start = i + 1
+		}
+	}
+	return append(out, s[start:])
+}
+
+func TestTopClickableFooterHints(t *testing.T) {
+	m, _ := mouseModel(t, 120, 40)
+	// The zoom hint toggles the zoom window, like the w key.
+	zoom := regionRect(t, m, "footer:zoom")
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, zoom.X+2, zoom.Y))
+	if !m.zoomOn {
+		t.Fatal("clicking the zoom hint should toggle zoom")
+	}
+	// The quit hint quits.
+	quit := regionRect(t, m, "footer:quit")
+	if eff := m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, quit.X+2, quit.Y)); eff != topQuit {
+		t.Fatalf("clicking quit gave effect %v", eff)
+	}
+}
+
+// The provider tab cycles the selection, like Tab.
+func TestTopClickableProviderTab(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(2), clock)
+	m.apply(0, topFlowing(t), nil)
+	b := tui.New(120, 40)
+	m.render(b)
+	tab := regionRect(t, m, "tab:provider")
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, tab.X+5, tab.Y))
+	if m.cur != 1 {
+		t.Fatalf("tab click should move to the second provider, got %d", m.cur)
+	}
+}
+
+func TestTopGraphTitleClickTogglesZoom(t *testing.T) {
+	m, _ := mouseModel(t, 120, 40)
+	title := regionRect(t, m, "title:graph")
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, title.X+5, title.Y))
+	if !m.zoomOn {
+		t.Fatal("clicking the graph title should toggle zoom")
+	}
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, title.X+5, title.Y))
+	if m.zoomOn {
+		t.Fatal("the second click should turn zoom back off")
+	}
+}
+
+func TestTopHoverHighlightsTheRegionUnderTheCursor(t *testing.T) {
+	m, b := mouseModel(t, 120, 40)
+	quit := regionRect(t, m, "footer:quit")
+	m.handle(mouseEv(tcellui.MouseMove, tcellui.MouseNone, quit.X+2, quit.Y))
+	if m.hover != "footer:quit" {
+		t.Fatalf("hover = %q", m.hover)
+	}
+	m.render(b)
+	c := b.Cell(quit.X+1, quit.Y)
+	if c.Style.Attrs&tui.AttrUnderline == 0 {
+		t.Fatalf("the hovered hint is not underlined: %+v", c.Style)
+	}
+	// The mono theme has no color and no attributes: hover must not add one.
+	clock := &fakeClock{t: topBase}
+	m2 := newTestModel(tui.MonoTheme(), topProviders(1), clock)
+	m2.apply(0, topFlowing(t), nil)
+	b2 := tui.New(120, 40)
+	m2.handle(mouseEv(tcellui.MouseMove, tcellui.MouseNone, 2, 39))
+	m2.render(b2)
+	for y := 0; y < b2.Height(); y++ {
+		for x := 0; x < b2.Width(); x++ {
+			if st := b2.Cell(x, y).Style; st.Attrs != 0 || st.FG.Kind != tui.ColorDefault {
+				t.Fatalf("mono hover drew style %+v at %d,%d", st, x, y)
+			}
+		}
+	}
+}
+
+func TestTopMouseOutsideTheScreenIsIgnored(t *testing.T) {
+	m, _ := mouseModel(t, 120, 40)
+	// A click far outside the buffer hits no region and does nothing.
+	if eff := m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, 500, 500)); eff != topNone {
+		t.Fatalf("outside click gave effect %v", eff)
+	}
+	if m.hover != "" {
+		t.Fatalf("hover outside = %q", m.hover)
 	}
 }

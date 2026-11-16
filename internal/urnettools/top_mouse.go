@@ -3,6 +3,7 @@ package urnettools
 import (
 	"time"
 
+	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
 
@@ -22,12 +23,21 @@ type topPress struct {
 	at     time.Time
 }
 
-// mouseHandle applies one mouse event. Stage 4 covers the dividers; the
-// clickable hints, tabs and titles ride on the same hit map.
+// mouseHandle applies one mouse event. It returns the effect to run (quit),
+// like the key handlers.
 func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
+	// While the help overlay is up, a click closes it and nothing else
+	// happens, like Esc.
+	if m.help {
+		if ev.Action == tcellui.MousePress {
+			m.help = false
+		}
+		return topNone
+	}
 	name := hitRegion(m.regions, ev.X, ev.Y)
 	switch ev.Action {
 	case tcellui.MouseMove:
+		m.hover = name
 		return topNone
 	case tcellui.MousePress:
 		if ev.Button != tcellui.MouseLeft {
@@ -46,8 +56,9 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 		m.lastPress = topPress{region: name, at: now}
 		if isDivider(name) {
 			m.drag = &topDrag{region: name, at: now}
+			return topNone
 		}
-		return topNone
+		return m.mouseClick(name, ev)
 	case tcellui.MouseDrag:
 		if m.drag == nil {
 			return topNone
@@ -60,8 +71,73 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 			m.saveLayout()
 		}
 		return topNone
+	case tcellui.MouseWheel:
+		m.mouseWheel(name, ev)
+		return topNone
 	}
 	return topNone
+}
+
+// mouseClick dispatches a click on a clickable region.
+func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
+	switch name {
+	case "footer:quit":
+		m.quit = true
+		return topQuit
+	case "footer:provider", "tab:provider":
+		return m.selectProvider(1)
+	case "footer:help":
+		m.help = !m.help
+	case "footer:menu":
+		m.menu, m.help, m.menuNote = true, false, ""
+	case "footer:zoom", "title:graph":
+		m.zoomOn = !m.zoomOn
+	case "footer:goroutines":
+		// Only where the provider can answer, like the g key.
+		if m.rt.gOK && m.rt.ok {
+			m.rt.showing = !m.rt.showing
+			m.rt.gLast = time.Time{}
+			m.gorScroll = 0
+		}
+	case "footer:interval":
+		for _, r := range m.regions {
+			if r.Name == name {
+				if ev.X < r.Rect.X+r.Rect.W/2 {
+					m.stepInterval(-1) // the - half polls faster
+				} else {
+					m.stepInterval(1) // the + half polls slower
+				}
+				break
+			}
+		}
+	case "footer:mouse":
+		m.mouse = !m.mouse
+	}
+	return topNone
+}
+
+// mouseWheel scrolls the list the pointer is over.
+func (m *topModel) mouseWheel(name string, ev tcellui.Event) {
+	dir := 1
+	if ev.Button == tcellui.MouseWheelUp {
+		dir = -1
+	}
+	switch name {
+	case "box:events":
+		m.eventScroll = clampScroll(m.eventScroll+dir, len(m.sortedEvents()))
+	case "box:internals":
+		if m.rt.showing && m.rt.groups != nil {
+			m.gorScroll = clampScroll(m.gorScroll+dir, len(m.rt.groups.Groups))
+		}
+	}
+}
+
+// clampScroll keeps a wheel offset inside the list.
+func clampScroll(v, total int) int {
+	if v < 0 {
+		return 0
+	}
+	return min(v, max(0, total-1))
 }
 
 // resetDivider puts one divider back to its default: the side column follows
@@ -87,4 +163,37 @@ func (m *topModel) saveLayout() {
 		return
 	}
 	_ = saveTopSettings(m.settingsPath, m.settings())
+}
+
+// hoverStyle returns the accent style for the region under the cursor, or the
+// base style otherwise. The mono theme has no color and no attributes, so the
+// hover leaves the base style untouched there.
+func (m *topModel) hoverStyle(region string, base tui.Style) tui.Style {
+	if m.hover == region && !m.theme.ASCII {
+		return m.theme.Accent.With(tui.AttrUnderline)
+	}
+	return base
+}
+
+// drawHover paints the divider under the cursor so an operator can see it is
+// draggable. The mono theme leaves the divider alone.
+func (m *topModel) drawHover(b *tui.Buffer) {
+	if m.hover == "" || m.theme.ASCII || !isDivider(m.hover) {
+		return
+	}
+	for _, r := range m.regions {
+		if r.Name != m.hover {
+			continue
+		}
+		for y := r.Rect.Y; y < r.Rect.Y+r.Rect.H; y++ {
+			for x := r.Rect.X; x < r.Rect.X+r.Rect.W; x++ {
+				c := b.Cell(x, y)
+				if c.Continuation() {
+					continue
+				}
+				b.Set(x, y, tui.Cell{Rune: c.Rune, Comb: c.Comb, Style: m.theme.Accent})
+			}
+		}
+		return
+	}
 }

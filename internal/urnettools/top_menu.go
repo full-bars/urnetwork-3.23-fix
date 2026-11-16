@@ -39,6 +39,13 @@ func (m *topModel) settings() topSettings {
 // the menu consumed it; quit keys pass through so q and Ctrl-C always work.
 func (m *topModel) menuHandle(ev tcellui.Event) (consumed bool) {
 	switch ev.Kind {
+	case tcellui.EventMouse:
+		// A click closes the menu, so a stray click never leaks a zoom toggle
+		// or a quit from under the overlay.
+		if ev.Action == tcellui.MousePress {
+			m.menu = false
+		}
+		return true
 	case tcellui.EventKey:
 		switch ev.Key {
 		case tcellui.KeyCtrlC:

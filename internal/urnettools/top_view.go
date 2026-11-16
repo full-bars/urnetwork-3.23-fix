@@ -118,7 +118,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	m.showExtender, m.withInternals = showExtender, withInternals
 	side := m.splitSide(cols[1])
 	box := func(r tui.Rect, name, title string) *tui.Buffer {
-		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
+		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, m.hoverStyle("title:"+name, th.Accent), th.ASCII)
 	}
 
 	sr := m.series()
@@ -179,6 +179,8 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	if withInternals {
 		m.record("side:internals", tui.Rect{X: side[0].X, Y: side[internalsAt].Y - 1, W: side[0].W, H: 1})
 	}
+	// An operator hovering a divider sees it is draggable.
+	m.drawHover(b)
 }
 
 // recordBox adds the box and title regions of one drawn panel.
@@ -221,18 +223,20 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 	if m.snap != nil {
 		details += "   " + orDash(m.snap.Version) + "   up " + tui.Duration(time.Duration(m.snap.UptimeSeconds*float64(time.Second)))
 	}
-	h.Put(tui.Truncate(details, rx-left-1, th.ASCII), left, 0, th.Dim)
+	h.Put(tui.Truncate(details, rx-left-1, th.ASCII), left, 0, m.hoverStyle("tab:provider", th.Dim))
 }
 
 func (m *topModel) drawFooter(f *tui.Buffer) {
 	hints := m.footerHints()
 	// The drawn line and the hit map come from the same list, so a click lands
 	// where the operator sees the label.
-	keys := " " + hints[0].label
-	for _, h := range hints[1:] {
-		keys += "   " + h.label
+	x := 1
+	for i, h := range hints {
+		if i > 0 {
+			x += 3 // the gap between hints
+		}
+		x = f.Put(h.label, x, 0, m.hoverStyle(h.name, m.theme.Dim))
 	}
-	f.Put(tui.Truncate(keys, f.Width(), m.theme.ASCII), 0, 0, m.theme.Dim)
 }
 
 // topIntervalText is 100ms, 250ms, 500ms, 1s, 2s.
@@ -395,7 +399,10 @@ func (m *topModel) drawEvents(b *tui.Buffer) {
 		b.Put("no events yet", 0, 0, th.Dim)
 		return
 	}
-	for i, e := range m.sortedEvents() {
+	// The wheel moves the window down the list; the newest events stay on top.
+	events := m.sortedEvents()
+	start := min(m.eventScroll, max(0, len(events)-b.Height()))
+	for i, e := range events[start:] {
 		if i >= b.Height() {
 			break
 		}
@@ -684,7 +691,9 @@ func (m *topModel) drawGoroutineGroups(b *tui.Buffer) {
 	}
 	b.Put(tui.Truncate(fmt.Sprintf("%d total", g.Total), b.Width(), th.ASCII), 0, 0, th.Dim)
 	const countW = 7
-	for i, grp := range g.Groups {
+	// The wheel moves the window down the list; the largest group stays on top.
+	start := min(m.gorScroll, max(0, len(g.Groups)-(b.Height()-1)))
+	for i, grp := range g.Groups[start:] {
 		y := i + 1
 		if y >= b.Height() {
 			break
