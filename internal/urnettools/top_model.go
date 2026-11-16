@@ -158,6 +158,7 @@ type topModel struct {
 	// extender is the last reading the control socket gave for the current
 	// provider, fetched off the UI loop (see wantExtender)
 	extender     ExtenderReading
+	carriers     topCarrierHistory
 	extenderBusy bool
 	lastExtender time.Time
 
@@ -258,6 +259,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	}
 	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
 	m.rt.reset()
+	m.carriers.reset()
 	return m
 }
 

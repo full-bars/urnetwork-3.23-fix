@@ -165,6 +165,9 @@ func (m *topModel) applyExtender(gen int, reading ExtenderReading) {
 		return
 	}
 	m.extenderBusy = false
+	for _, c := range reading.Carriers {
+		m.carriers.push(m.now(), c.Carrier, c.Served)
+	}
 	m.extender = reading
 }
 

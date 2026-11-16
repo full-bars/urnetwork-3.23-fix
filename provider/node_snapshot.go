@@ -135,6 +135,10 @@ type SnapshotResources struct {
 	Goroutines     int    `json:"goroutines"`
 	OpenFDs        uint64 `json:"open_fds,omitempty"`
 	FDLimit        uint64 `json:"fd_limit,omitempty"`
+	Threads        uint64 `json:"threads,omitempty"`
+	TasksMax       uint64 `json:"tasks_max,omitempty"`
+	SwapUsedBytes  uint64 `json:"swap_used_bytes,omitempty"`
+	SwapTotalBytes uint64 `json:"swap_total_bytes,omitempty"`
 }
 
 const (

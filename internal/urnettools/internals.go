@@ -38,6 +38,10 @@ type NodeInternals struct {
 	// Transport is what each platform transport mode has carried. A provider
 	// that never attempted H3 reports none, and top draws no transport rows.
 	Transport *NodeTransportStats `json:"transport,omitempty"`
+
+	// SigpipeRisk indicates whether the provider's unit is not protected against
+	// SIGPIPE restarts. Set by the model off the render path.
+	SigpipeRisk bool `json:"-"`
 }
 
 // NodeTransportStats is the provider's per-mode transport read: payload frames
