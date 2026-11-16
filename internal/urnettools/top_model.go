@@ -624,6 +624,22 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if m.overview && ev.Kind == tcellui.EventKey {
+		switch ev.Key {
+		case tcellui.KeyEsc:
+			m.overview = false
+			return topNone
+		case tcellui.KeyUp:
+			m.overviewSel = max(0, m.overviewSel-1)
+			return topNone
+		case tcellui.KeyDown:
+			m.overviewSel = min(len(m.providers)-1, m.overviewSel+1)
+			return topNone
+		case tcellui.KeyEnter:
+			m.overview = false
+			return m.selectProviderIndex(m.overviewSel)
+		}
+	}
 	if m.menu && m.menuHandle(ev) {
 		return topNone
 	}
@@ -663,6 +679,19 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.menu, m.help, m.menuNote = true, false, ""
 		case 'M':
 			m.mouse = !m.mouse
+		case 't':
+			switch m.windowHours {
+			case 0:
+				m.windowHours = 1
+			case 1:
+				m.windowHours = 24
+			default:
+				m.windowHours = 0
+			}
+		case 'o':
+			if len(m.providers) > 1 {
+				m.overview, m.overviewSel = true, m.cur
+			}
 		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
 			m.stepInterval(1)

@@ -811,6 +811,8 @@ var helpLines = []string{
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme and graph style",
 	"M                mouse on/off (Shift+drag selects text in most terminals)",
+	"t                cycle graph history: 10m, 1h, 24h",
+	"o                show all providers",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",

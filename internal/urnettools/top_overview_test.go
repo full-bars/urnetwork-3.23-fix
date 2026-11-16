@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/urnetwork/connect/internal/tui"
+	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
 
 func overviewFixtures(t *testing.T) ([]Provider, []*NodeSnapshot, []ExtenderReading) {
@@ -217,5 +218,31 @@ func TestOverviewShowsEveryRibbonOfTheHost(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("overview is missing %q:\n%s", want, got)
 		}
+	}
+}
+
+func TestTopOverviewAndWindowKeys(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(2), clock)
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 't'})
+	if m.windowHours != 1 {
+		t.Fatalf("window = %d", m.windowHours)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 't'})
+	if m.windowHours != 24 {
+		t.Fatalf("window = %d", m.windowHours)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 't'})
+	if m.windowHours != 0 {
+		t.Fatalf("window = %d", m.windowHours)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'o'})
+	if !m.overview {
+		t.Fatal("overview did not open")
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventKey, Key: tcellui.KeyDown})
+	m.handle(tcellui.Event{Kind: tcellui.EventKey, Key: tcellui.KeyEnter})
+	if m.overview || m.cur != 1 {
+		t.Fatalf("overview=%v provider=%d", m.overview, m.cur)
 	}
 }
