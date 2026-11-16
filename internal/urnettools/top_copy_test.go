@@ -3,6 +3,7 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 	"time"
@@ -104,14 +105,14 @@ func TestWriteTopCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if fi.Mode().Perm() != 0o600 {
+	if runtime.GOOS != "windows" && fi.Mode().Perm() != 0o600 {
 		t.Fatalf("file mode = %v, want 0600", fi.Mode().Perm())
 	}
 	di, err := os.Stat(filepath.Join(dir, "urnet-tools"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if di.Mode().Perm() != 0o700 {
+	if runtime.GOOS != "windows" && di.Mode().Perm() != 0o700 {
 		t.Fatalf("dir mode = %v, want 0700", di.Mode().Perm())
 	}
 }
@@ -124,7 +125,11 @@ func TestTopStateDir(t *testing.T) {
 	}
 	t.Setenv("XDG_STATE_HOME", "")
 	home := t.TempDir()
-	t.Setenv("HOME", home)
+	if runtime.GOOS == "windows" {
+		t.Setenv("USERPROFILE", home)
+	} else {
+		t.Setenv("HOME", home)
+	}
 	if got := topStateDir(); got != filepath.Join(home, ".local", "state", "urnet-tools") {
 		t.Fatalf("topStateDir = %q", got)
 	}
