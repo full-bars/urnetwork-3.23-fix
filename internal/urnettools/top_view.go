@@ -74,6 +74,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		return
 	}
 	m.drawFull(b)
+	if m.panel != "" {
+		m.drawDetails(b)
+	}
 	if m.help {
 		m.drawHelp(b)
 	}
@@ -813,6 +816,7 @@ var helpLines = []string{
 	"M                mouse on/off (Shift+drag selects text in most terminals)",
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
+	"a / i / v        alerts / resource gauges / carriers",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",

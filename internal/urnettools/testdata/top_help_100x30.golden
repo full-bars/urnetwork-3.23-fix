@@ -5,17 +5,17 @@
 │        │        ⢀⣠⣶⣿⣶⣄⡀                 ⣀⣤⣾⣷⣦⣄                 ⢀⣠⣴⣿││ 5m avg   35.7 MiB/s        │
 │20 MiB/s┤     ⣀⣤⣾⣿⣿⣿⣿⣿⣿⣿⣷⣤⣀           ⣠⣴⣿⣿⣿⣿⣿⣿⣿⣿⣶⣄⡀          ⢀⣤⣶⣿⣿⣿⣿││total     64.1 MiB/s        │
 │        │  ⣠⣴⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣄⡀   ⢀⣠⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣷⣤⣀    ⣀⣴⣾⣿⣿⣿⣿⣿⣿⣿││ 1m avg   82.0 MiB/s        │
-│        │⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣶⣤⣾⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣦⣶⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿⣿││ 5m avg   71.3 MiB/s        │
-│   0 B/s┤⣿╭ Keys ─────────────────────────────────────────────────────────────────────╮B          │
-╰──────────│ q, Esc, Ctrl-C   quit                                                     │B          │
-╭ Total tra│ Tab, Shift-Tab   next or previous provider                                │           │
-│60 MiB/s┤ │ +  -             update slower or faster, down to 100ms                   │ / 12 cl   │
-│        │ │ w                zoom the graphs to the last 15 seconds                   │░░░░░░ 0.21│
-│        │ │ u                switch units between GiB (binary) and GB (decimal)       │           │
-│30 MiB/s┤ │ m                menu: color theme and graph style                        │           │
-│        │ │ M                mouse on/off (Shift+drag selects text in most terminals) │           │
-│        │⢀│ t                cycle graph history: 10m, 1h, 24h                        │───────────╯
-│        │⣿│ o                show all providers                                       │───────────╮
+│        │⣶╭ Keys ─────────────────────────────────────────────────────────────────────╮B/s        │
+│   0 B/s┤⣿│ q, Esc, Ctrl-C   quit                                                     │B          │
+╰──────────│ Tab, Shift-Tab   next or previous provider                                │B          │
+╭ Total tra│ +  -             update slower or faster, down to 100ms                   │           │
+│60 MiB/s┤ │ w                zoom the graphs to the last 15 seconds                   │ / 12 cl   │
+│        │ │ u                switch units between GiB (binary) and GB (decimal)       │░░░░░░ 0.21│
+│        │ │ m                menu: color theme and graph style                        │           │
+│30 MiB/s┤ │ M                mouse on/off (Shift+drag selects text in most terminals) │           │
+│        │ │ t                cycle graph history: 10m, 1h, 24h                        │           │
+│        │⢀│ o                show all providers                                       │───────────╯
+│        │⣿│ a / i / v        alerts / resource gauges / carriers                      │───────────╮
 │   0 B/s┤⣿│ g                list where goroutines are parked                         │1.8/4.0 GiB│
 ╰──────────│ billed, moved    billable and total bytes this session                    │░ 310/65536│
 ╭ Proxies ─│ ?                show or hide this help                                   │           │

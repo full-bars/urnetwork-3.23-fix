@@ -279,8 +279,9 @@ type topModel struct {
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
 
-	help bool
-	quit bool
+	help  bool
+	quit  bool
+	panel string
 }
 
 func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.Theme, now func() time.Time) *topModel {
@@ -655,6 +656,10 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.quit = true
 			return topQuit
 		case tcellui.KeyEsc:
+			if m.panel != "" {
+				m.panel = ""
+				return topNone
+			}
 			// Esc backs out of the help overlay first; it quits only from the
 			// main screen.
 			if m.help {
@@ -692,6 +697,12 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			if len(m.providers) > 1 {
 				m.overview, m.overviewSel = true, m.cur
 			}
+		case 'a':
+			m.panel = "alerts"
+		case 'i':
+			m.panel = "gauges"
+		case 'v':
+			m.panel = "carriers"
 		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
 			m.stepInterval(1)
