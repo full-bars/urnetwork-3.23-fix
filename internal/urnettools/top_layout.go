@@ -59,6 +59,11 @@ func (m *topModel) sideCols(contentW int) int {
 // height h: where Proxies starts and where Events starts.
 func (m *topModel) leftDividerRows(h int) (dProxies, dEvents int) {
 	wantP, wantE := m.proxiesRows(), m.eventsRows()
+	if wantP > topProxiesCompactRows && m.hasProxyGridData() {
+		if avail := h - wantE - topGraphMinRows; avail >= proxyGridMinH {
+			wantP = min(topProxiesGridRows, avail)
+		}
+	}
 	dProxies = m.layout.dividerRow("left:proxies", h-wantP-wantE)
 	dEvents = m.layout.dividerRow("left:events", h-wantE)
 	dProxies = clampRow(dProxies, topMinBoxRows, h-2*topMinBoxRows)

@@ -29,8 +29,10 @@ type topResult struct {
 	isGroups    bool
 	groups      *GoroutineGroups
 	// the extender reading
-	isExtender bool
-	extender   ExtenderReading
+	isExtender   bool
+	extender     ExtenderReading
+	isProxyCells bool
+	proxyCells   []proxyCell
 }
 
 // runTop drives the model on a screen until the user quits, ctx is cancelled
@@ -65,6 +67,23 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				}
 			}()
 			res.snap, res.err = src.Fetch(p)
+		}()
+	}
+	var proxyBusy bool
+	fetchCells := func(gen int, p Provider) {
+		proxyBusy = true
+		go func() {
+			res := topResult{gen: gen, isProxyCells: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.err = fmt.Errorf("proxy cells fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.proxyCells, res.err = fetchProxyCells(p)
 		}()
 	}
 
@@ -150,6 +169,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}
 		if gen, p, ok := m.wantFetch(m.now()); ok {
 			fetch(gen, p)
+			if _, ok := src.(socketTopSource); ok && !proxyBusy {
+				fetchCells(gen, p)
+			}
 		}
 		if hasTraffic {
 			if gen, p, ok := m.wantTraffic(m.now()); ok {
@@ -187,6 +209,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			}
 		case r := <-results:
 			switch {
+			case r.isProxyCells:
+				proxyBusy = false
+				m.applyProxyCells(r.gen, r.proxyCells, r.err)
 			case r.isExtender:
 				m.applyExtender(r.gen, r.extender)
 			case r.isTraffic:

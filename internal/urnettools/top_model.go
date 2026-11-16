@@ -197,6 +197,17 @@ type topModel struct {
 	// rt is the runtime (Internals) panel's state.
 	rt topRuntime
 
+	// proxyCells is the decoded proxy_cells grid payload and when it was
+	// fetched. The Proxies panel draws it as a heatmap when tall enough.
+	proxyCells   []proxyCell
+	proxyCellsAt time.Time
+	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
+	// for hit testing. Set by drawProxyGrid each frame.
+	proxyGridW, proxyGridH int
+	// proxyDetail is the full per-proxy records from proxy_cell_detail, keyed
+	// by index, for the hover/click popup. Fetched on demand, not polled.
+	proxyDetail map[int]ProxyCellDetail
+
 	// graph is the graph glyph style. themeLocked is set when the environment
 	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
 	// override. settingsPath is where the menu saves; empty means nowhere.
@@ -634,6 +645,8 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
+	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
+	m.proxyDetail = nil
 	m.extender = ExtenderReading{}
 	m.extenderBusy = false
 	m.lastExtender = time.Time{}

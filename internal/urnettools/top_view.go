@@ -24,6 +24,17 @@ const (
 	topProxiesCompactRows = 3
 	// topProxiesCompactMax is the largest pool drawn as one line.
 	topProxiesCompactMax = 3
+	// topProxiesGridRows is the total height of the Proxies box when the proxy
+	// heatmap grid replaces the bars: frame plus grid rows plus the legend.
+	topProxiesGridRows = 15
+	// proxyGridMinH is the minimum box height at which the grid is used; below
+	// it the bars stay.
+	proxyGridMinH = 8
+	// proxyGridMinW is the minimum box width at which the grid is used.
+	proxyGridMinW = 20
+	// topGraphMinRows is the height the throughput graphs must keep even when
+	// the Proxies box grows to show the grid.
+	topGraphMinRows = 4
 	// topEventsMin and topEventsMax bound the Events panel's content rows: it
 	// takes what the events need, so a quiet node does not reserve blank rows.
 	topEventsMin = 1
@@ -328,6 +339,30 @@ func (m *topModel) proxiesRows() int {
 	return topProxiesRows
 }
 
+// hasProxyGridData reports whether the provider answered proxy_cells with a
+// non-empty grid. Without it the heatmap cannot draw and the panel keeps the
+// bars (a provider that predates the command, or a direct-only node).
+func (m *topModel) hasProxyGridData() bool {
+	return len(m.proxyCells) > 0
+}
+
+// proxiesBoxMode reports how the Proxies box of h rows by w cols should be
+// drawn: proxyBoxGrid (compact legend plus the heatmap grid) or proxyBoxBars
+// (the classic four bars). The box must be tall and wide enough for the grid
+// to read; anything smaller keeps the bars.
+func proxiesBoxMode(h, w int) int {
+	if h >= proxyGridMinH && w >= proxyGridMinW {
+		return proxyBoxGrid
+	}
+	return proxyBoxBars
+}
+
+// The two Proxies panel modes.
+const (
+	proxyBoxBars = iota
+	proxyBoxGrid
+)
+
 // eventsRows is the height of the Events panel: its content, at least one row
 // (which says there are none) and at most topEventsMax.
 func (m *topModel) eventsRows() int {
@@ -368,6 +403,11 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	if b.Height() < topProxiesRows-2 {
 		m.drawProxiesCompact(b)
+		return
+	}
+	// Grid mode: the provider feeds proxy_cells and the box is tall enough.
+	if m.hasProxyGridData() && proxiesBoxMode(b.Height(), b.Width()) == proxyBoxGrid {
+		m.drawProxyGrid(b)
 		return
 	}
 	p := m.snap.Proxies
