@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"strings"
 	"testing"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -40,7 +41,7 @@ func drawPanel(t *testing.T, m *topModel, w, h int, kind string) string {
 	default:
 		t.Fatalf("unknown panel %q", kind)
 	}
-	return b.String()
+	return strings.TrimRight(b.String(), "\n") + "\n"
 }
 
 func TestTopPanelsGolden(t *testing.T) {
