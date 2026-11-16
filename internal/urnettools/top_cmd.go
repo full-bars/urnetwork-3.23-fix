@@ -32,7 +32,7 @@ func cmdTop(args []string) error {
 	// --demo is hidden: it draws synthetic snapshots so the screen can be seen
 	// on a box with no provider. It is peeled off before the real parsers.
 	demo, args := stripDemoFlag(args)
-	interval, targetArgs, err := parseTopFlags(args)
+	interval, copyOnQuit, plain, targetArgs, err := parseTopFlags(args)
 	if err != nil {
 		return err
 	}
@@ -88,11 +88,26 @@ func cmdTop(args []string) error {
 	m.themeLocked = th.ASCII
 	m.settingsPath = topSettingsPath()
 	m.applySettings(loadTopSettings(m.settingsPath))
+	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
 	src := topSourceFn()
 	if demo {
 		src = newDemoTopSource(time.Now)
 	}
-	return runTop(ctx, scr, m, src, topTick)
+	if err := runTop(ctx, scr, m, src, topTick); err != nil {
+		return err
+	}
+	// The copy is printed only after the terminal is back, so the screen text
+	// lands on the real stdout, not the alternate screen.
+	if m.copyText != "" {
+		fmt.Println(m.copyText)
+	}
+	if m.copyErr != nil {
+		fmt.Fprintln(os.Stderr, "could not write the copy:", m.copyErr)
+	}
+	if m.copyPath != "" {
+		fmt.Fprintf(os.Stderr, "copy written to %s\n", m.copyPath)
+	}
+	return nil
 }
 
 func hasNoMouseFlag(args []string) bool {
@@ -104,10 +119,10 @@ func hasNoMouseFlag(args []string) bool {
 	return false
 }
 
-// parseTopFlags pulls --interval and --no-mouse out of args, leaving the target
-// flags for the strict target parser. It accepts a Go duration (500ms, 2s) or
-// plain seconds.
-func parseTopFlags(args []string) (interval time.Duration, rest []string, err error) {
+// parseTopFlags pulls --interval, --no-mouse, --copy and --plain out of args, leaving the
+// target flags for the strict target parser. It accepts a Go duration (500ms,
+// 2s) or plain seconds for --interval.
+func parseTopFlags(args []string) (interval time.Duration, copyOnQuit, plain bool, rest []string, err error) {
 	interval = topDefaultInterval
 	for i := 0; i < len(args); i++ {
 		a := args[i]
@@ -117,12 +132,18 @@ func parseTopFlags(args []string) (interval time.Duration, rest []string, err er
 			continue
 		case a == "--interval":
 			if i+1 >= len(args) {
-				return 0, nil, errors.New("--interval needs a value, for example --interval 500ms")
+				return 0, false, false, nil, errors.New("--interval needs a value, for example --interval 500ms")
 			}
 			i++
 			val = args[i]
 		case strings.HasPrefix(a, "--interval="):
 			val = strings.TrimPrefix(a, "--interval=")
+		case a == "--copy":
+			copyOnQuit = true
+			continue
+		case a == "--plain":
+			plain = true
+			continue
 		default:
 			rest = append(rest, a)
 			continue
@@ -131,14 +152,14 @@ func parseTopFlags(args []string) (interval time.Duration, rest []string, err er
 		if perr != nil {
 			secs, ferr := strconv.ParseFloat(val, 64)
 			if ferr != nil {
-				return 0, nil, fmt.Errorf("--interval %q is not a duration (try 500ms or 2s)", val)
+				return 0, false, false, nil, fmt.Errorf("--interval %q is not a duration (try 500ms or 2s)", val)
 			}
 			d = time.Duration(secs * float64(time.Second))
 		}
 		if d < topMinInterval {
-			return 0, nil, fmt.Errorf("--interval must be at least %s", topMinInterval)
+			return 0, false, false, nil, fmt.Errorf("--interval must be at least %s", topMinInterval)
 		}
 		interval = d
 	}
-	return interval, rest, nil
+	return interval, copyOnQuit, plain, rest, nil
 }

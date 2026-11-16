@@ -162,6 +162,15 @@ type topModel struct {
 	eventScroll int
 	eventFilter eventFilter
 
+	// copyOnExit writes the screen to the state dir when the user quits with
+	// --copy. copyText holds what was written so the caller can print it once
+	// the terminal is back; copyPath names the file.
+	copyOnQuit bool
+	copyPlain  bool
+	copyText   string
+	copyPath   string
+	copyErr    error
+
 	// extender is the last reading the control socket gave for the current
 	// provider, fetched off the UI loop (see wantExtender)
 	extender     ExtenderReading

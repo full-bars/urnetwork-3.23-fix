@@ -189,7 +189,7 @@ func TestTopWheelScrollsTheEventsList(t *testing.T) {
 }
 
 func containsLine(txt, sub string) bool {
-	for _, l := range splitLines(txt) {
+	for _, l := range mouseSplitLines(txt) {
 		if strings.Contains(l, sub) {
 			return true
 		}
@@ -197,7 +197,7 @@ func containsLine(txt, sub string) bool {
 	return false
 }
 
-func splitLines(s string) []string {
+func mouseSplitLines(s string) []string {
 	var out []string
 	start := 0
 	for i := 0; i < len(s); i++ {

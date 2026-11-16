@@ -205,6 +205,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				return nil
 			}
 			if m.handle(ev) == topQuit {
+				if m.copyOnQuit {
+					m.copyOnExit(buf)
+				}
 				return nil
 			}
 		case r := <-results:

@@ -530,7 +530,7 @@ func TestParseTopFlags(t *testing.T) {
 		{[]string{"--interval"}, 0, nil, "needs a value"},
 	}
 	for _, c := range cases {
-		iv, rest, err := parseTopFlags(c.args)
+		iv, copyOnQuit, plain, rest, err := parseTopFlags(c.args)
 		if c.err != "" {
 			if err == nil || !strings.Contains(err.Error(), c.err) {
 				t.Errorf("%v: err = %v, want %q", c.args, err, c.err)
@@ -538,8 +538,13 @@ func TestParseTopFlags(t *testing.T) {
 			continue
 		}
 		if err != nil || iv != c.interval || strings.Join(rest, " ") != strings.Join(c.rest, " ") {
-			t.Errorf("%v: got %v %v %v", c.args, iv, rest, err)
+			t.Errorf("%v: got %v %v %v %v %v", c.args, iv, copyOnQuit, plain, rest, err)
 		}
+	}
+	// --copy and --plain ride along without disturbing the target flags.
+	iv, copyOnQuit, plain, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
+	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || strings.Join(rest, " ") != "--network n" {
+		t.Fatalf("unexpected flags: %v %v %v %v %v", iv, copyOnQuit, plain, rest, err)
 	}
 	if !hasNoMouseFlag([]string{"--interval", "1s", "--no-mouse"}) {
 		t.Fatal("hasNoMouseFlag should detect --no-mouse")
