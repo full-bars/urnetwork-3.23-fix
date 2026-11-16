@@ -64,3 +64,37 @@ func TestTruncateInvalidUTF8(t *testing.T) {
 		t.Fatalf("too wide: %q", got)
 	}
 }
+
+func TestTruncateMiddle(t *testing.T) {
+	cases := []struct {
+		name  string
+		in    string
+		width int
+		ascii bool
+		want  string
+	}{
+		{"fits", "ACTIVE 203.0.113.5", 20, false, "ACTIVE 203.0.113.5"},
+		{"ipv6 middle cut", "ACTIVE 2602:f7a3:0:2b00:1234:5678:9abc:def0", 20, false, "ACTIVE 260…9abc:def0"},
+		{"odd width", "abcdefghij", 6, false, "abc…ij"},
+		{"zero width", "x", 0, false, ""},
+		{"width one", "abc", 1, false, "…"},
+		{"width two", "abcd", 2, false, "a…"},
+		{"width three", "abcdef", 3, false, "a…f"},
+		{"wide runes never split", "漢字漢字漢字", 5, false, "漢…字"},
+		{"combining stays with base", "éáb́ć", 3, false, "é…ć"},
+		{"ascii long", "ACTIVE 2602:f7a3:0:2b00::1", 15, true, "ACTIVE...b00::1"},
+		{"ascii narrow", "proxy-alpha", 4, true, "pr.a"},
+		{"ascii two", "proxy-alpha", 2, true, "p."},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			got := TruncateMiddle(c.in, c.width, c.ascii)
+			if got != c.want {
+				t.Fatalf("TruncateMiddle(%q, %d, %v) = %q, want %q", c.in, c.width, c.ascii, got, c.want)
+			}
+			if StringWidth(got) > c.width {
+				t.Fatalf("result is %d cells, limit %d", StringWidth(got), c.width)
+			}
+		})
+	}
+}

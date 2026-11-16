@@ -145,6 +145,32 @@ func TestTopGoldenScreens(t *testing.T) {
 		th   tui.Theme
 		set  func(m *topModel)
 	}{
+		{"top_flowing_180x50", 180, 50, tui.DefaultTheme(), func(m *topModel) {
+			m.apply(0, topFlowing(t), nil)
+			m.extender = ExtenderReading{
+				Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+				Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+				Families: []ExtenderFamily{
+					{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+					{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+				},
+				LiveClients: 3,
+				Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+			}
+		}},
+		{"top_flowing_150x40", 150, 40, tui.DefaultTheme(), func(m *topModel) {
+			m.apply(0, topFlowing(t), nil)
+			m.extender = ExtenderReading{
+				Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+				Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+				Families: []ExtenderFamily{
+					{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+					{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+				},
+				LiveClients: 3,
+				Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+			}
+		}},
 		{"top_flowing_120x40", 120, 40, tui.DefaultTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 		{"top_flowing_80x24", 80, 24, tui.DefaultTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 		{"top_flowing_mono_80x24", 80, 24, tui.MonoTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
@@ -498,6 +524,7 @@ func TestParseTopFlags(t *testing.T) {
 		{[]string{"--interval=2s", "--unit", "a.service"}, 2 * time.Second, []string{"--unit", "a.service"}, ""},
 		{[]string{"--network", "n", "--interval", "3"}, 3 * time.Second, []string{"--network", "n"}, ""},
 		{[]string{"--interval", "100ms"}, 100 * time.Millisecond, nil, ""},
+		{[]string{"--no-mouse", "--interval", "500ms", "--network", "n"}, 500 * time.Millisecond, []string{"--network", "n"}, ""},
 		{[]string{"--interval", "50ms"}, 0, nil, "at least 100ms"},
 		{[]string{"--interval", "fast"}, 0, nil, "not a duration"},
 		{[]string{"--interval"}, 0, nil, "needs a value"},
@@ -513,6 +540,38 @@ func TestParseTopFlags(t *testing.T) {
 		if err != nil || iv != c.interval || strings.Join(rest, " ") != strings.Join(c.rest, " ") {
 			t.Errorf("%v: got %v %v %v", c.args, iv, rest, err)
 		}
+	}
+	if !hasNoMouseFlag([]string{"--interval", "1s", "--no-mouse"}) {
+		t.Fatal("hasNoMouseFlag should detect --no-mouse")
+	}
+	if hasNoMouseFlag([]string{"--interval", "1s"}) {
+		t.Fatal("hasNoMouseFlag should be false without --no-mouse")
+	}
+}
+
+func TestTopMouseToggleAndHelpText(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, topFlowing(t), nil)
+	if !m.mouse {
+		t.Fatal("mouse should be enabled by default")
+	}
+	txt, _ := showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "M mouse on") {
+		t.Fatalf("footer should show mouse on:\n%s", txt)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'M'})
+	if m.mouse {
+		t.Fatal("M should toggle mouse off")
+	}
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "M mouse off") {
+		t.Fatalf("footer should show mouse off:\n%s", txt)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "Shift+drag selects text in most terminals") {
+		t.Fatalf("help overlay should explain Shift+drag text selection:\n%s", txt)
 	}
 }
 

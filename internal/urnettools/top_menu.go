@@ -58,8 +58,10 @@ func (m *topModel) menuHandle(ev tcellui.Event) (consumed bool) {
 		switch ev.Rune {
 		case 'q', 'Q':
 			return false
-		case 'm', 'M':
+		case 'm':
 			m.menu = false
+		case 'M':
+			m.mouse = !m.mouse
 		case 'k', 'K':
 			m.menuMove(-1)
 		case 'j', 'J':

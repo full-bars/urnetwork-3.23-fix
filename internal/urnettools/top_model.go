@@ -207,6 +207,10 @@ type topModel struct {
 	menuSel      int
 	menuNote     string
 
+	// mouse controls terminal mouse reporting; M and --no-mouse toggle it off so
+	// unshifted drag selects text in the terminal.
+	mouse bool
+
 	help bool
 	quit bool
 }
@@ -221,7 +225,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
 	m.rt.reset()
 	return m
 }
@@ -569,8 +573,10 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return topQuit
 		case '?':
 			m.help = !m.help
-		case 'm', 'M':
+		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
+		case 'M':
+			m.mouse = !m.mouse
 		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
 			m.stepInterval(1)

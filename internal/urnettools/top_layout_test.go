@@ -132,6 +132,26 @@ func TestTopAdaptiveLayoutFitsEverySize(t *testing.T) {
 	}
 }
 
+func TestTopAdaptiveSideCols(t *testing.T) {
+	cases := []struct {
+		w, want int
+	}{
+		{80, 30},
+		{100, 30},
+		{120, 30},
+		{130, 35},
+		{150, 45},
+		{152, 46},
+		{180, 46},
+		{240, 46},
+	}
+	for _, c := range cases {
+		if got := topSideCols(c.w); got != c.want {
+			t.Errorf("topSideCols(%d) = %d, want %d", c.w, got, c.want)
+		}
+	}
+}
+
 func TestTopDirectOnlyGoldenScreen(t *testing.T) {
 	clock := &fakeClock{t: topBase}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)

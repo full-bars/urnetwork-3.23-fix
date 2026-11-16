@@ -141,7 +141,13 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
+	scr.SetMouse(m.mouse)
+	lastMouse := m.mouse
 	for {
+		if m.mouse != lastMouse {
+			scr.SetMouse(m.mouse)
+			lastMouse = m.mouse
+		}
 		if gen, p, ok := m.wantFetch(m.now()); ok {
 			fetch(gen, p)
 		}

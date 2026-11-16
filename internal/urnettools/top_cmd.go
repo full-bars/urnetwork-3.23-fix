@@ -80,6 +80,9 @@ func cmdTop(args []string) error {
 	defer stop()
 	th := tui.ThemeFromEnv(os.Getenv)
 	m := newTopModel(providers, cur, interval, th, time.Now)
+	if hasNoMouseFlag(args) {
+		m.mouse = false
+	}
 	// The environment's own choice (NO_COLOR, a dumb terminal) outranks a saved
 	// theme; see applySettings.
 	m.themeLocked = th.ASCII
@@ -92,14 +95,26 @@ func cmdTop(args []string) error {
 	return runTop(ctx, scr, m, src, topTick)
 }
 
-// parseTopFlags pulls --interval out of args, leaving the target flags for the
-// strict target parser. It accepts a Go duration (500ms, 2s) or plain seconds.
+func hasNoMouseFlag(args []string) bool {
+	for _, a := range args {
+		if a == "--no-mouse" || a == "--no-mouse=true" || a == "--no-mouse=1" {
+			return true
+		}
+	}
+	return false
+}
+
+// parseTopFlags pulls --interval and --no-mouse out of args, leaving the target
+// flags for the strict target parser. It accepts a Go duration (500ms, 2s) or
+// plain seconds.
 func parseTopFlags(args []string) (interval time.Duration, rest []string, err error) {
 	interval = topDefaultInterval
 	for i := 0; i < len(args); i++ {
 		a := args[i]
 		var val string
 		switch {
+		case a == "--no-mouse" || a == "--no-mouse=true" || a == "--no-mouse=false" || a == "--no-mouse=1" || a == "--no-mouse=0":
+			continue
 		case a == "--interval":
 			if i+1 >= len(args) {
 				return 0, nil, errors.New("--interval needs a value, for example --interval 500ms")

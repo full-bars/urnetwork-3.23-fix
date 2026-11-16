@@ -155,6 +155,28 @@ func TestTopRendersTheExtenderBox(t *testing.T) {
 	}
 }
 
+func TestTopExtenderIPv6UsesMiddleTruncationAndFitsOnWideScreen(t *testing.T) {
+	m := modelWithProxies(t, 1, 0, 0, 0)
+	m.extender = ExtenderReading{
+		Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+		Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+		Families: []ExtenderFamily{
+			{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+			{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+		},
+		LiveClients: 3,
+		Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+	}
+	narrow, _ := showOnSim(t, m, 120, 50)
+	if !strings.Contains(narrow, "ACTIVE 260…9abc:def0") {
+		t.Fatalf("120-col screen should middle-truncate long IPv6:\n%s", narrow)
+	}
+	wide, _ := showOnSim(t, m, 150, 50)
+	if !strings.Contains(wide, "ACTIVE 2602:f7a3:") || !strings.Contains(wide, "9abc:def0") {
+		t.Fatalf("150-col screen should show wider IPv6:\n%s", wide)
+	}
+}
+
 // A provider that cannot report the extender gets no box at all.
 func TestTopLeavesOutTheExtenderBoxWhenUnreported(t *testing.T) {
 	m := modelWithProxies(t, 1, 0, 0, 0)
