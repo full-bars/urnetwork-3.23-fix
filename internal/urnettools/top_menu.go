@@ -28,10 +28,11 @@ func (m *topModel) applySettings(s topSettings) {
 	if g, ok := tui.GraphSymbolsByName(s.Graph); ok {
 		m.graph = g
 	}
+	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
 }
 
 func (m *topModel) settings() topSettings {
-	return topSettings{Theme: m.theme.Name, Graph: m.graph.String()}
+	return topSettings{Theme: m.theme.Name, Graph: m.graph.String(), LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether

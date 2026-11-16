@@ -211,6 +211,26 @@ type topModel struct {
 	// unshifted drag selects text in the terminal.
 	mouse bool
 
+	// regions is the hit map for the last frame, rebuilt by every render.
+	regions []topRegion
+	// hover is the name of the region under the cursor, for hover highlighting.
+	hover string
+
+	// layout is the operator's arrangement of the screen; zero values are the
+	// defaults. It is persisted with the menu settings.
+	layout topLayout
+	// drag is the divider being dragged, if any; lastPress sees double clicks.
+	drag      *topDrag
+	lastPress topPress
+	// The geometry of the last full frame, used to translate pointer cells
+	// into divider rows while dragging.
+	contentRect                 tui.Rect
+	nowRows, resRows, extRows   int
+	showExtender, withInternals bool
+	// eventScroll and gorScroll are the wheel offsets of the two scrollable
+	// lists.
+	eventScroll, gorScroll int
+
 	help bool
 	quit bool
 }
@@ -547,6 +567,8 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 	case tcellui.EventQuit:
 		m.quit = true
 		return topQuit
+	case tcellui.EventMouse:
+		return m.mouseHandle(ev)
 	case tcellui.EventKey:
 		switch ev.Key {
 		case tcellui.KeyCtrlC:
@@ -624,6 +646,7 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's
+	m.eventScroll, m.gorScroll = 0, 0
 	return topRefetch
 }
 

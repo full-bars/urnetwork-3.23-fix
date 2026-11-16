@@ -47,11 +47,18 @@ const (
 
 // render draws the whole screen into b.
 func (m *topModel) render(b *tui.Buffer) {
+	m.regions = m.regions[:0]
 	if !topMin.FitsRect(b.Rect()) {
 		m.drawCompact(b)
-	} else {
-		m.drawFull(b)
+		if m.help {
+			m.drawHelp(b)
+		}
+		if m.menu {
+			m.drawMenu(b)
+		}
+		return
 	}
+	m.drawFull(b)
 	if m.help {
 		m.drawHelp(b)
 	}
@@ -76,9 +83,17 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
 	m.drawHeader(b.Sub(rows[0]))
 	m.drawFooter(b.Sub(rows[2]))
+	// The footer hints are clickable: record one region per hint.
+	for _, r := range footerHintRects(rows[2], m.footerHints()) {
+		if r.Rect.W > 0 {
+			m.record(r.Name, r.Rect)
+		}
+	}
 
-	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(topSideCols(rows[1].W)))
-	left := tui.SplitRows(cols[0], tui.Flex(1), tui.Fixed(m.proxiesRows()), tui.Fixed(m.eventsRows()))
+	m.contentRect = rows[1]
+	sideW := m.sideCols(rows[1].W)
+	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(sideW))
+	left := m.splitLeft(cols[0])
 	nowRows := topNowRows
 	if m.hasTraffic() {
 		nowRows = topNowRowsTraffic
@@ -99,42 +114,34 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		extRows = 0
 	}
 	withInternals := m.hasInternals() && cols[1].H >= nowRows+resRows+extRows+topInternalsRows
-	var side []tui.Rect
-	switch {
-	case showExtender && withInternals:
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Fixed(extRows), tui.Flex(1))
-	case showExtender:
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Fixed(extRows), tui.Flex(1))
-	case withInternals:
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(resRows), tui.Flex(1))
-	default:
-		// Resources takes its content, not the rest of the column: a box of blank
-		// rows says nothing. What is left stays empty.
-		side = tui.SplitRows(cols[1], tui.Fixed(nowRows), tui.Fixed(min(resRows, max(cols[1].H-nowRows, 0))), tui.Flex(1))
-	}
-	box := func(r tui.Rect, title string) *tui.Buffer {
+	m.nowRows, m.resRows, m.extRows = nowRows, resRows, extRows
+	m.showExtender, m.withInternals = showExtender, withInternals
+	side := m.splitSide(cols[1])
+	box := func(r tui.Rect, name, title string) *tui.Buffer {
 		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, th.Accent, th.ASCII)
 	}
 
 	sr := m.series()
+	secondGraphTitle := -1
 	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
 		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], m.throughputTitle("Billable", sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
-		m.drawGraph(box(graphs[1], m.throughputTitle("Total traffic", sr)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
+		m.drawGraph(box(graphs[0], "graph", m.throughputTitle("Billable", sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], "graph", m.throughputTitle("Total traffic", sr)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
+		secondGraphTitle = graphs[1].Y
 	} else {
 		title := "Throughput"
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], m.throughputTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(left[0], "graph", m.throughputTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 	}
-	m.drawProxies(box(left[1], "Proxies"))
-	m.drawEvents(box(left[2], "Events"))
-	m.drawNow(box(side[0], "Now"))
-	m.drawResources(box(side[1], "Resources"))
+	m.drawProxies(box(left[1], "proxies", "Proxies"))
+	m.drawEvents(box(left[2], "events", "Events"))
+	m.drawNow(box(side[0], "now", "Now"))
+	m.drawResources(box(side[1], "resources", "Resources"))
 	internalsAt := 2
 	if showExtender {
-		m.drawExtender(box(side[2], "Extender"))
+		m.drawExtender(box(side[2], "extender", "Extender"))
 		internalsAt = 3
 	}
 	if withInternals {
@@ -142,8 +149,42 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		if m.rt.showing {
 			title = "Goroutines"
 		}
-		m.drawInternals(box(side[internalsAt], title))
+		m.drawInternals(box(side[internalsAt], "internals", title))
 	}
+
+	// Hit regions: every box, its title row, and the dividers between them.
+	m.recordBox("graph", left[0])
+	if secondGraphTitle >= 0 {
+		m.record("title:graph", tui.Rect{X: left[0].X, Y: secondGraphTitle, W: left[0].W, H: 1})
+	}
+	m.recordBox("proxies", left[1])
+	m.recordBox("events", left[2])
+	m.recordBox("now", side[0])
+	m.recordBox("resources", side[1])
+	if showExtender {
+		m.recordBox("extender", side[2])
+	}
+	if withInternals {
+		m.recordBox("internals", side[internalsAt])
+	}
+	// The vertical divider between the main column and the side column.
+	m.record("side", tui.Rect{X: cols[1].X, Y: rows[1].Y, W: 1, H: rows[1].H})
+	// The horizontal dividers between the boxes of each column.
+	m.record("left:proxies", tui.Rect{X: left[0].X, Y: left[1].Y - 1, W: left[0].W, H: 1})
+	m.record("left:events", tui.Rect{X: left[0].X, Y: left[2].Y - 1, W: left[0].W, H: 1})
+	m.record("side:resources", tui.Rect{X: side[0].X, Y: side[1].Y - 1, W: side[0].W, H: 1})
+	if showExtender {
+		m.record("side:extender", tui.Rect{X: side[0].X, Y: side[2].Y - 1, W: side[0].W, H: 1})
+	}
+	if withInternals {
+		m.record("side:internals", tui.Rect{X: side[0].X, Y: side[internalsAt].Y - 1, W: side[0].W, H: 1})
+	}
+}
+
+// recordBox adds the box and title regions of one drawn panel.
+func (m *topModel) recordBox(name string, r tui.Rect) {
+	m.record("box:"+name, r)
+	m.record("title:"+name, tui.Rect{X: r.X, Y: r.Y, W: r.W, H: 1})
 }
 
 func (m *topModel) drawHeader(h *tui.Buffer) {
@@ -167,8 +208,12 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 	h.Put("    "+clock+" ", x, 0, th.Dim)
 
 	// The node details give way (ellipsis) when the terminal is narrow; the
-	// verdict and clock keep their place.
+	// verdict and clock keep their place. The details area is the clickable
+	// provider tab, so a click cycles providers.
 	left := h.Put(" urnet-tools top", 0, 0, th.Accent)
+	if n := len(m.providers); n > 1 {
+		m.record("tab:provider", tui.Rect{X: left, Y: 0, W: max(rx-left, 0), H: 1})
+	}
 	details := "   " + topNodeLabel(m.provider())
 	if n := len(m.providers); n > 1 {
 		details += fmt.Sprintf(" [%d/%d]", m.cur+1, n)
@@ -180,22 +225,12 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 }
 
 func (m *topModel) drawFooter(f *tui.Buffer) {
-	keys := " q quit"
-	if len(m.providers) > 1 {
-		keys += "   tab provider"
-	}
-	keys += "   ? help   m menu"
-	if m.trafficOK {
-		keys += "   w zoom" // the zoom window is built from the live counters
-	}
-	if m.rt.ok && m.rt.gOK && m.hasInternals() {
-		keys += "   g goroutines"
-	}
-	keys += "   - " + topIntervalText(m.interval) + " +"
-	if m.mouse {
-		keys += "   M mouse on"
-	} else {
-		keys += "   M mouse off"
+	hints := m.footerHints()
+	// The drawn line and the hit map come from the same list, so a click lands
+	// where the operator sees the label.
+	keys := " " + hints[0].label
+	for _, h := range hints[1:] {
+		keys += "   " + h.label
 	}
 	f.Put(tui.Truncate(keys, f.Width(), m.theme.ASCII), 0, 0, m.theme.Dim)
 }
