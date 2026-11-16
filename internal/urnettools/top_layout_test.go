@@ -200,3 +200,22 @@ func TestTopResourceRowsMatchWhatIsDrawn(t *testing.T) {
 		}
 	}
 }
+
+func TestTopSideDividerKeepsVisiblePanels(t *testing.T) {
+	m := newTopModel(nil, 0, 0, tui.DefaultTheme(), nil)
+	m.nowRows, m.resRows, m.extRows = 10, 7, 7
+	m.showExtender, m.withInternals = true, true
+	m.layout.Dividers = map[string]int{"side:resources": 35}
+	boxes := m.splitSide(tui.Rect{W: 30, H: 38})
+	for i, box := range boxes {
+		if box.H < topMinBoxRows {
+			t.Fatalf("box %d height %d", i, box.H)
+		}
+	}
+	m.showExtender, m.withInternals = false, false
+	m.layout.Dividers["side:resources"] = 15
+	boxes = m.splitSide(tui.Rect{W: 30, H: 38})
+	if boxes[0].H != 15 {
+		t.Fatalf("boundary = %d", boxes[0].H)
+	}
+}

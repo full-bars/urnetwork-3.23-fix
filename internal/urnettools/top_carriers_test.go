@@ -51,3 +51,20 @@ func TestTopCarriersRowList(t *testing.T) {
 		t.Fatalf("render:\n%s", got)
 	}
 }
+
+func TestTopCarrierHistoryGapsAndMissing(t *testing.T) {
+	now := time.Date(2030, 1, 1, 0, 0, 0, 0, time.UTC)
+	var h topCarrierHistory
+	h.push(now, "t", 0)
+	h.push(now.Add(3*time.Minute), "t", 30)
+	if got := h.per["t"].ring[0]; got != 10 {
+		t.Fatalf("rate = %d", got)
+	}
+	m := newTopModel(nil, 0, 0, tui.Theme{}, nil)
+	m.extender = ExtenderReading{Source: SourceControlSocket, Known: true}
+	b := tui.New(40, 3)
+	m.drawCarriers(b)
+	if !strings.Contains(b.String(), "no data") {
+		t.Fatal(b.String())
+	}
+}

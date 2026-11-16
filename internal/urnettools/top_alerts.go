@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"github.com/urnetwork/connect/internal/tui"
+	"sort"
 	"time"
 )
 
@@ -72,7 +73,8 @@ func (m *topModel) alertRows() int {
 // drawAlertBanner draws into a caller-owned region; layout is wired separately.
 func (m *topModel) drawAlertBanner(b *tui.Buffer) {
 	alerts := topAlerts(m.snap, m.extender, m.rt.cur, m.now())
-	for i := 0; i < min(len(alerts), min(2, b.Height())); i++ {
+	sort.SliceStable(alerts, func(i, j int) bool { return alerts[i].level > alerts[j].level })
+	for i := 0; i < min(len(alerts), b.Height()); i++ {
 		a := alerts[i]
 		b.Put(fmt.Sprintf("%d/%d %s | %s", i+1, len(alerts), a.text, a.hint), 0, i, m.style(a.level))
 	}

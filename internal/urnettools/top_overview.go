@@ -111,10 +111,12 @@ func (m *topModel) drawOverview(b *tui.Buffer) int {
 	if in.Height() < 2 {
 		return -1
 	}
-	header := "name       version      state        billable   clients proxies extender spark"
+	header := "name         version      state        billable   clients proxies extender spark"
 	in.Put(tui.Truncate(header, in.Width(), th.ASCII), 0, 0, th.Dim)
-	for i, r := range rows {
-		y := i + 1
+	start := max(0, m.overviewSel-(in.Height()-2))
+	for i := start; i < len(rows); i++ {
+		r := rows[i]
+		y := i - start + 1
 		if y >= in.Height() {
 			break
 		}
@@ -122,14 +124,14 @@ func (m *topModel) drawOverview(b *tui.Buffer) int {
 		if i == m.overviewSel {
 			st = th.Accent
 		}
-		x := in.Put(tui.Truncate(fmt.Sprintf("%2d %s", r.index+1, r.name), 12, th.ASCII), 0, y, st)
-		x = in.Put(tui.Truncate(r.version, 12, th.ASCII), x+1, y, st)
-		x = in.Put(tui.Truncate(string(eventIcon(r.level, th))+" "+r.state, 12, th.ASCII), x+1, y, m.style(r.level))
-		x = in.Put(tui.Truncate(r.billable, 10, th.ASCII), x+1, y, st)
-		x = in.Put(fmt.Sprintf("%6d", r.clients), x+1, y, st)
-		x = in.Put(tui.Truncate(fmt.Sprintf("%d/%d", r.proxiesUp, r.proxiesTotal), 7, th.ASCII), x+1, y, st)
-		x = in.Put(tui.Truncate(r.extender, 8, th.ASCII), x+1, y, st)
-		in.Put(r.spark, x+1, y, th.Graph)
+		in.Put(tui.Truncate(fmt.Sprintf("%2d %s", r.index+1, r.name), 12, th.ASCII), 0, y, st)
+		in.Put(tui.Truncate(r.version, 12, th.ASCII), 13, y, st)
+		in.Put(tui.Truncate(string(eventIcon(r.level, th))+" "+r.state, 12, th.ASCII), 26, y, m.style(r.level))
+		in.Put(tui.Truncate(r.billable, 10, th.ASCII), 39, y, st)
+		in.Put(fmt.Sprintf("%6d", r.clients), 50, y, st)
+		in.Put(tui.Truncate(fmt.Sprintf("%d/%d", r.proxiesUp, r.proxiesTotal), 7, th.ASCII), 57, y, st)
+		in.Put(tui.Truncate(r.extender, 8, th.ASCII), 65, y, st)
+		in.Put(r.spark, 74, y, th.Graph)
 	}
 	if m.overviewSel < 0 || m.overviewSel >= len(rows) {
 		return -1

@@ -27,3 +27,24 @@ func TestTopDiagnosticPanels(t *testing.T) {
 		}
 	}
 }
+
+func TestTopAlertsPrioritizeFailures(t *testing.T) {
+	m := panelGoldenState(t)
+	m.extender.RoleState = "error"
+	b := tui.New(80, 1)
+	m.drawAlertBanner(b)
+	if !strings.Contains(b.String(), "Extender refusing") {
+		t.Fatalf("severe alert hidden: %s", b.String())
+	}
+}
+
+func TestTopMissingThreadCountIsNotZero(t *testing.T) {
+	m := panelGoldenState(t)
+	limit := uint64(512)
+	m.snap.Resources.Threads, m.snap.Resources.TasksMax = nil, &limit
+	b := tui.New(80, 5)
+	m.drawGauges(b)
+	if strings.Contains(b.String(), "threads") {
+		t.Fatalf("missing threads shown: %s", b.String())
+	}
+}

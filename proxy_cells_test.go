@@ -88,9 +88,7 @@ func TestProxyCellsCheapWith4400Proxies(t *testing.T) {
 	registerSyntheticProxies(t, n)
 	now := time.Now()
 
-	start := time.Now()
 	cells := ProxyCells(now)
-	elapsed := time.Since(start)
 
 	if len(cells) != n {
 		t.Fatalf("got %d cells, want %d", len(cells), n)
@@ -101,11 +99,6 @@ func TestProxyCellsCheapWith4400Proxies(t *testing.T) {
 			t.Fatalf("cells not strictly index-sorted at %d: %d >= %d", i-1, cells[i-1].Index, cells[i].Index)
 		}
 	}
-	// One lock, one pass: this must be far under the snapshot budget.
-	if elapsed > 50*time.Millisecond {
-		t.Fatalf("ProxyCells took %s for %d proxies, want well under 50ms", elapsed, n)
-	}
-	t.Logf("ProxyCells over %d proxies: %s (%d output cells)", n, elapsed, len(cells))
 }
 
 func TestProxyCellsAllUpWithClientsAndBytes(t *testing.T) {

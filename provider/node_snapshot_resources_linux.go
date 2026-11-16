@@ -87,14 +87,7 @@ func readCgroupPidsMax() uint64 {
 		return 0
 	}
 	for _, line := range strings.Split(string(data), "\n") {
-		fields := strings.Fields(line)
-		if len(fields) < 3 {
-			continue
-		}
-		// v2 lines look like "0::/user.slice/user-1000.slice/session-1.scope"
-		// v1 lines carry the hierarchy id; only cgroup v2 has a matching
-		// pids controller file in the common layout.
-		cgroupPath := strings.TrimPrefix(fields[2], "0=")
+		cgroupPath := pidsCgroupPath(line)
 		if cgroupPath == "" {
 			continue
 		}
@@ -108,6 +101,14 @@ func readCgroupPidsMax() uint64 {
 		}
 	}
 	return 0
+}
+
+func pidsCgroupPath(line string) string {
+	fields := strings.SplitN(line, ":", 3)
+	if len(fields) != 3 || (fields[1] != "" && !strings.Contains(","+fields[1]+",", ",pids,")) {
+		return ""
+	}
+	return fields[2]
 }
 
 // readSwap reads swap total and used from /proc/meminfo. SwapFree is absent on

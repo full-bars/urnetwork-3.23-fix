@@ -243,6 +243,9 @@ func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 	case connect.ProxyCellDegraded:
 		return th.Warn
 	case connect.ProxyCellConnecting:
+		if th.ASCII {
+			return tui.Style{}
+		}
 		return tui.Style{FG: tui.Ansi(4)} // blue
 	case connect.ProxyCellParked:
 		return th.Dim

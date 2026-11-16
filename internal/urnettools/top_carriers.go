@@ -59,7 +59,8 @@ func (c *topCarrierHistory) push(now time.Time, carrier string, served uint64) {
 	if now.Sub(e.base) < time.Minute {
 		return
 	}
-	e.ring = append(e.ring, served-e.servedAtStart)
+	rate := float64(served-e.servedAtStart) * float64(time.Minute) / float64(now.Sub(e.base))
+	e.ring = append(e.ring, uint64(rate))
 	if len(e.ring) > topCarrierRing {
 		e.ring = e.ring[len(e.ring)-topCarrierRing:]
 	}
@@ -89,9 +90,6 @@ func carrierRows(r ExtenderReading) []topCarrierRow {
 	for _, c := range r.Carriers {
 		rows = append(rows, topCarrierRow{name: c.Carrier, served: c.Served, refused: c.Refused, reasons: topRefusalReasons(c.RefusalsByStage), ipv4: activatedV4, ipv6: activatedV6})
 	}
-	if len(rows) == 0 {
-		rows = append(rows, topCarrierRow{name: "-", ipv4: activatedV4, ipv6: activatedV6})
-	}
 	return rows
 }
 
@@ -115,6 +113,12 @@ func (m *topModel) drawCarriers(b *tui.Buffer) {
 		return
 	}
 	rows := carrierRows(m.extender)
+	if len(rows) == 0 {
+		if b.Height() > 0 {
+			b.Put("no data", 0, 0, m.theme.Dim)
+		}
+		return
+	}
 	y := 0
 	for _, row := range rows {
 		if y >= b.Height() {

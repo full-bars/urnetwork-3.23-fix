@@ -410,6 +410,9 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	now := m.now()
 	m.lastDone = now
 	if err != nil || snap == nil {
+		if m.cur < len(m.providerSnaps) {
+			m.providerSnaps[m.cur] = nil
+		}
 		if isTimeoutErr(err) && m.snap != nil && m.conn == topConnected && now.Sub(m.lastAnswer) < topLossGrace {
 			m.missed(now, err)
 			return
@@ -625,6 +628,9 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if m.menu && m.menuHandle(ev) {
+		return topNone
+	}
 	if m.overview && ev.Kind == tcellui.EventKey {
 		switch ev.Key {
 		case tcellui.KeyEsc:
@@ -641,7 +647,7 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return m.selectProviderIndex(m.overviewSel)
 		}
 	}
-	if m.menu && m.menuHandle(ev) {
+	if m.overview && ev.Kind == tcellui.EventRune && (ev.Rune == '?' || ev.Rune == 'm') {
 		return topNone
 	}
 	switch ev.Kind {
@@ -750,6 +756,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyDetail = nil
 	m.extender = ExtenderReading{}
+	m.carriers.reset()
 	m.extenderBusy = false
 	m.lastExtender = time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
@@ -789,9 +796,10 @@ func (m *topModel) applyOverview(gen, idx int, snap *NodeSnapshot, err error, ex
 	if gen != m.gen || idx < 0 || idx >= len(m.providers) {
 		return
 	}
-	if err == nil && snap != nil {
-		m.providerSnaps[idx] = snap
+	if err != nil {
+		snap = nil
 	}
+	m.providerSnaps[idx] = snap
 	if ext.Source != "" {
 		m.providerExt[idx] = ext
 	}

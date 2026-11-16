@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"strings"
 	"testing"
 
@@ -244,5 +245,25 @@ func TestTopOverviewAndWindowKeys(t *testing.T) {
 	m.handle(tcellui.Event{Kind: tcellui.EventKey, Key: tcellui.KeyEnter})
 	if m.overview || m.cur != 1 {
 		t.Fatalf("overview=%v provider=%d", m.overview, m.cur)
+	}
+}
+
+func TestTopOverviewScrollAndFailedPoll(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	providers := make([]Provider, 30)
+	for i := range providers {
+		providers[i] = Provider{Unit: fmt.Sprintf("provider-%d", i)}
+	}
+	m := newTestModel(tui.DefaultTheme(), providers, clock)
+	m.overviewSel = 25
+	b := tui.New(100, 10)
+	m.drawOverview(b)
+	if !strings.Contains(b.String(), "26 ") {
+		t.Fatal("selected provider not visible")
+	}
+	m.applyOverview(m.gen, 1, topFlowing(t), nil, ExtenderReading{})
+	m.applyOverview(m.gen, 1, nil, fmt.Errorf("offline"), ExtenderReading{})
+	if m.providerSnaps[1] != nil {
+		t.Fatal("failed poll retained stale snapshot")
 	}
 }

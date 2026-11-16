@@ -24,7 +24,7 @@ func (m *topModel) drawGauges(b *tui.Buffer) {
 	y := 0
 	if m.snap != nil {
 		r := m.snap.Resources
-		if r.Threads != nil || r.TasksMax != nil {
+		if r.Threads != nil {
 			var threads, tasksMax uint64
 			if r.Threads != nil {
 				threads = *r.Threads

@@ -3,6 +3,7 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
@@ -85,8 +86,12 @@ func TestWriteTopCopy(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := filepath.Join(dir, "urnet-tools", "top-20260919-160431.txt"); path != want {
-		t.Fatalf("path = %q, want %q", path, want)
+	if !strings.HasPrefix(path, filepath.Join(dir, "urnet-tools", "top-20260919-160431-")) {
+		t.Fatalf("unexpected path %q", path)
+	}
+	second, err := writeTopCopy("second\n", now)
+	if err != nil || second == path {
+		t.Fatalf("second path=%q error=%v", second, err)
 	}
 	b, err := os.ReadFile(path)
 	if err != nil {
@@ -122,5 +127,18 @@ func TestTopStateDir(t *testing.T) {
 	t.Setenv("HOME", home)
 	if got := topStateDir(); got != filepath.Join(home, ".local", "state", "urnet-tools") {
 		t.Fatalf("topStateDir = %q", got)
+	}
+}
+
+func TestCopyTextSurvivesWriteFailure(t *testing.T) {
+	file := filepath.Join(t.TempDir(), "file")
+	if err := os.WriteFile(file, []byte("x"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("XDG_STATE_HOME", file)
+	m := newTopModel(nil, 0, 0, tui.Theme{}, nil)
+	m.copyOnExit(copyGoldenBuffer())
+	if m.copyErr == nil || m.copyPath != "" || !strings.Contains(m.copyText, "hello") {
+		t.Fatalf("path=%q err=%v text=%q", m.copyPath, m.copyErr, m.copyText)
 	}
 }

@@ -65,9 +65,18 @@ func writeTopCopy(text string, now time.Time) (string, error) {
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return "", err
 	}
-	path := topCopyPath(now)
-	if err := os.WriteFile(path, []byte(text), 0o600); err != nil {
+	f, err := os.CreateTemp(dir, "top-"+now.Format("20060102-150405")+"-*.txt")
+	if err != nil {
 		return "", err
+	}
+	path := f.Name()
+	_, writeErr := f.WriteString(text)
+	closeErr := f.Close()
+	if writeErr != nil {
+		return "", writeErr
+	}
+	if closeErr != nil {
+		return "", closeErr
 	}
 	return path, nil
 }
@@ -78,6 +87,7 @@ func writeTopCopy(text string, now time.Time) (string, error) {
 // written to stdout here.
 func (m *topModel) copyOnExit(b *tui.Buffer) {
 	text := copyText(b, m.copyPlain)
+	m.copyText = text
 	path, err := writeTopCopy(text, m.now())
 	if err != nil {
 		m.copyPath, m.copyErr = "", err

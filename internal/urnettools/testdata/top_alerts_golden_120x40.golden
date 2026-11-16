@@ -1,2 +1,4 @@
 1/4 Restart pending | urnet-tools status
 2/4 Node degraded | urnet-tools status
+3/4 File descriptors above 70% | urnet-tools status
+4/4 Fewer than half of configured proxies are up | urnet-tools status

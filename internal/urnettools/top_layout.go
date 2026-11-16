@@ -87,10 +87,18 @@ func (m *topModel) sideDividerRows(h int) (dRes, dExt, dInt int) {
 	dRes = m.layout.dividerRow("side:resources", m.nowRows)
 	dExt = m.layout.dividerRow("side:extender", m.nowRows+m.resRows)
 	dInt = m.layout.dividerRow("side:internals", m.nowRows+m.resRows+m.extRows)
-	dRes = clampRow(dRes, topMinBoxRows, h-topMinBoxRows)
+	dRes = clampRow(dRes, topMinBoxRows, m.resourcesDividerMax(h))
 	if m.showExtender {
-		dExt = clampRow(dExt, dRes+topMinBoxRows, h-topMinBoxRows)
-		dInt = clampRow(dInt, dExt+topMinBoxRows, h-topMinBoxRows)
+		remaining := topMinBoxRows
+		if m.withInternals {
+			remaining += topMinBoxRows
+		}
+		dExt = clampRow(dExt, dRes+topMinBoxRows, h-remaining)
+		endMax := h
+		if m.withInternals {
+			endMax -= topMinBoxRows
+		}
+		dInt = clampRow(dInt, dExt+topMinBoxRows, endMax)
 	}
 	if m.withInternals {
 		lo := dRes + topMinBoxRows
@@ -100,6 +108,17 @@ func (m *topModel) sideDividerRows(h int) (dRes, dExt, dInt int) {
 		dInt = clampRow(dInt, lo, h-topMinBoxRows)
 	}
 	return dRes, dExt, dInt
+}
+
+func (m *topModel) resourcesDividerMax(h int) int {
+	boxes := 1
+	if m.showExtender {
+		boxes++
+	}
+	if m.withInternals {
+		boxes++
+	}
+	return h - boxes*topMinBoxRows
 }
 
 // splitSide cuts the side column into its boxes. The default rows reproduce
@@ -118,9 +137,7 @@ func (m *topModel) splitSide(r tui.Rect) []tui.Rect {
 	default:
 		// Resources keeps its content, not the rest of the column: a box of
 		// blank rows says nothing. What is left stays empty.
-		dRes = m.layout.dividerRow("side:resources", min(m.resRows, max(h-m.nowRows, 0)))
-		dRes = clampRow(dRes, 0, max(h-m.nowRows, 0))
-		return tui.SplitRows(r, tui.Fixed(m.nowRows), tui.Fixed(dRes), tui.Flex(1))
+		return tui.SplitRows(r, tui.Fixed(dRes), tui.Fixed(min(m.resRows, h-dRes)), tui.Flex(1))
 	}
 }
 
@@ -146,7 +163,7 @@ func (m *topModel) moveDivider(name string, x, y int) {
 		dProxies, _ := m.leftDividerRows(h)
 		m.layout.Dividers[name] = clampRow(row, dProxies+topMinBoxRows, h-topMinBoxRows)
 	case "side:resources":
-		m.layout.Dividers[name] = clampRow(row, topMinBoxRows, h-topMinBoxRows)
+		m.layout.Dividers[name] = clampRow(row, topMinBoxRows, m.resourcesDividerMax(h))
 	case "side:extender":
 		dRes, _, _ := m.sideDividerRows(h)
 		m.layout.Dividers[name] = clampRow(row, dRes+topMinBoxRows, h-topMinBoxRows)
