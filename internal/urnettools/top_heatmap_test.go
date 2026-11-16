@@ -58,9 +58,9 @@ func TestDrawProxyGridUpAndLegend(t *testing.T) {
 	if !strings.Contains(s, "88 up") {
 		t.Fatalf("legend should show 88 up, got:\n%s", s)
 	}
-	// no crash, and the grid area is drawn (full blocks)
-	if !strings.Contains(s, "█") {
-		t.Fatalf("expected full blocks in the grid, got:\n%s", s)
+	// no crash, and the grid area is drawn with filled dots.
+	if !strings.Contains(s, "●") {
+		t.Fatalf("expected filled dots in the grid, got:\n%s", s)
 	}
 }
 

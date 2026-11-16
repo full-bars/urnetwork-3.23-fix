@@ -92,6 +92,13 @@ func cmdTop(args []string) error {
 	src := topSourceFn()
 	if demo {
 		src = newDemoTopSource(time.Now)
+		// Fill the demo heatmap at typical terminal sizes so the visualization
+		// shows how a large proxy pool uses the available panel space.
+		cells := make([]proxyCell, 4400)
+		for i := range cells {
+			cells[i] = proxyCell{index: i, state: uint8(i % 5), bucket: uint8(i % 8), clients: uint8(i % 4)}
+		}
+		m.applyProxyCells(m.gen, cells, nil)
 	}
 	if err := runTop(ctx, scr, m, src, topTick); err != nil {
 		return err

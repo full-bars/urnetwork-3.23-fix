@@ -13,8 +13,8 @@ import (
 //
 // The provider answers the compact "proxy_cells" command with 4 packed bytes
 // per proxy (index, state, throughput bucket, clients). This file decodes
-// that payload and draws it as a heatmap: each text cell holds two dot-rows
-// (a half-block), so a 4400-proxy pool fits in about 70x32 cells. Proxies
+// that payload and draws it as a heatmap: each text cell holds two dot-rows,
+// represented by a small or large dot depending on occupancy. Proxies
 // are laid out column-major by index, so a contiguous run of dead proxies
 // reads as a red column at a glance.
 
@@ -113,7 +113,7 @@ func (m *topModel) applyProxyCells(gen int, cells []proxyCell, err error) {
 // proxyGridLayout says where proxy index i lands in the grid. The grid is
 // column-major: consecutive indices stack down a column, so a contiguous dead
 // range draws as a red column. Each text cell holds two dot-rows (upper and
-// lower half of a half-block).
+// lower half), shown as a small or large dot depending on occupancy.
 type proxyGridLayout struct {
 	cols    int // text columns
 	dotRows int // dot-rows = 2 * text rows
@@ -191,14 +191,11 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 				b.Set(x, y, tui.Cell{Rune: proxyCellASCII(worst), Style: st})
 				continue
 			}
-			switch {
-			case hasUpper && hasLower:
-				b.Set(x, y, tui.Cell{Rune: '█', Style: st})
-			case hasUpper:
-				b.Set(x, y, tui.Cell{Rune: '▀', Style: st})
-			default:
-				b.Set(x, y, tui.Cell{Rune: '▄', Style: st})
+			dot := '•'
+			if hasUpper && hasLower {
+				dot = '●'
 			}
+			b.Set(x, y, tui.Cell{Rune: dot, Style: st})
 		}
 	}
 
