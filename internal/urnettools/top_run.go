@@ -183,6 +183,11 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
+	defer func() {
+		if m.copyOnQuit && buf.Width() > 0 && buf.Height() > 0 {
+			m.copyOnExit(buf)
+		}
+	}()
 	scr.SetMouse(m.mouse)
 	lastMouse := m.mouse
 	for {
@@ -236,9 +241,6 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				return nil
 			}
 			if m.handle(ev) == topQuit {
-				if m.copyOnQuit {
-					m.copyOnExit(buf)
-				}
 				return nil
 			}
 		case r := <-results:

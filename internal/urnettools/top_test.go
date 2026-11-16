@@ -853,3 +853,19 @@ func TestTopLoopEndsWhenTheScreenGoesAway(t *testing.T) {
 		t.Fatal(err)
 	}
 }
+
+func TestTopCopyOnContextCancel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	src, _ := fakeSource(t)
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.copyOnQuit = true
+	rig := startLoop(t, m, src, 100, 30)
+	rig.waitFor(t, "FLOWING", func(s string) bool { return strings.Contains(s, "FLOWING") })
+	rig.cancel()
+	if err := rig.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if m.copyErr != nil || m.copyPath == "" || !strings.Contains(m.copyText, "FLOWING") {
+		t.Fatalf("copy path=%q error=%v", m.copyPath, m.copyErr)
+	}
+}
