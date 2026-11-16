@@ -101,6 +101,17 @@ func newTestModel(th tui.Theme, providers []Provider, clock *fakeClock) *topMode
 	return m
 }
 
+// mustTheme returns a built-in theme by name, failing the test when it is
+// missing.
+func mustTheme(t *testing.T, name string) tui.Theme {
+	t.Helper()
+	th, ok := tui.ThemeByName(name)
+	if !ok {
+		t.Fatalf("no built-in theme named %q", name)
+	}
+	return th
+}
+
 // simText reads the simulated terminal as text, one line per row, with the
 // trailing blanks trimmed the way Buffer.String does.
 func simText(sim tcell.SimulationScreen) string {
@@ -192,6 +203,8 @@ func TestTopGoldenScreens(t *testing.T) {
 			m.apply(0, topFlowing(t), nil)
 			m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 		}},
+		{"top_flowing_high_contrast_120x40", 120, 40, mustTheme(t, "high-contrast"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
+		{"top_flowing_colorblind_120x40", 120, 40, mustTheme(t, "colorblind"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

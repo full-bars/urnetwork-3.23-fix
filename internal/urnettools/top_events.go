@@ -4,6 +4,8 @@ import (
 	"fmt"
 	"strings"
 	"time"
+
+	"github.com/urnetwork/connect/internal/tui"
 )
 
 // topEventView is one line of the Events panel: an event, plus how many
@@ -42,24 +44,38 @@ func eventTime(at, now time.Time, zoom bool) string {
 
 // eventIcon is the one character that says the severity before the color is
 // read: a dot for information, an exclamation for a warning, a cross for a
-// failure. The ASCII fallback stands in for the glyphs a dumb terminal cannot
-// draw, so the meaning survives the fallback unchanged.
-func eventIcon(level topLevel, ascii bool) rune {
-	switch level {
-	case topInfo:
-		if ascii {
+// failure. The theme carries the symbol for each role; the ASCII fallback
+// stands in for the glyphs a dumb terminal cannot draw, so the meaning survives
+// the fallback unchanged.
+func eventIcon(level topLevel, th tui.Theme) rune {
+	if th.ASCII {
+		switch level {
+		case topInfo:
 			return 'i'
-		}
-		return '•'
-	case topWarn:
-		return '!'
-	case topBad:
-		if ascii {
+		case topWarn:
+			return '!'
+		case topBad:
 			return 'x'
 		}
-		return '✗'
+		return '?'
+	}
+	switch level {
+	case topInfo:
+		return iconOr(th.IconOK, '•')
+	case topWarn:
+		return iconOr(th.IconWarn, '!')
+	case topBad:
+		return iconOr(th.IconBad, '✗')
 	}
 	return '?'
+}
+
+// iconOr falls back when the theme has no symbol for the role.
+func iconOr(r, fallback rune) rune {
+	if r == 0 {
+		return fallback
+	}
+	return r
 }
 
 // eventFilter is what the Events view keeps: a minimum severity and a text the
@@ -109,8 +125,8 @@ func collapseEvents(events []topEvent) []topEventView {
 
 // eventRow renders one collapsed event as the text the Events panel draws:
 // "12m ago  !  text  x12".
-func eventRow(v topEventView, now time.Time, zoom, ascii bool) string {
-	line := eventTime(v.At, now, zoom) + "  " + string(eventIcon(v.Level, ascii)) + "  " + v.Text
+func eventRow(v topEventView, now time.Time, zoom bool, th tui.Theme) string {
+	line := eventTime(v.At, now, zoom) + "  " + string(eventIcon(v.Level, th)) + "  " + v.Text
 	if v.Count > 1 {
 		line += "  x" + fmt.Sprint(v.Count)
 	}

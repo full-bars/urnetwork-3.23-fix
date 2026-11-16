@@ -169,6 +169,9 @@ func (m *topModel) applyExtender(gen int, reading ExtenderReading) {
 		m.carriers.push(m.now(), c.Carrier, c.Served)
 	}
 	m.extender = reading
+	if m.cur < len(m.providerExt) {
+		m.providerExt[m.cur] = reading
+	}
 }
 
 func (m *topModel) drawExtender(b *tui.Buffer) {

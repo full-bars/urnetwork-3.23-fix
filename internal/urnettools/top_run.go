@@ -33,6 +33,8 @@ type topResult struct {
 	extender     ExtenderReading
 	isProxyCells bool
 	proxyCells   []proxyCell
+	isOverview   bool
+	provider     int
 }
 
 // runTop drives the model on a screen until the user quits, ctx is cancelled
@@ -139,6 +141,27 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 
+	// The overview fetches one snapshot and extender reading of every provider
+	// the live screen is not showing, at the snapshot cadence.
+	fetchOverview := func(gen, i int, p Provider) {
+		go func() {
+			res := topResult{gen: gen, isOverview: true, provider: i}
+			defer func() {
+				if r := recover(); r != nil {
+					res.snap, res.err = nil, fmt.Errorf("overview fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.snap, res.err = src.Fetch(p)
+			if extSrc, ok := src.(topExtenderSource); ok {
+				res.extender = extSrc.FetchExtender(p)
+			}
+		}()
+	}
+
 	// The extender box is optional the same way.
 	extSrc, hasExtender := src.(topExtenderSource)
 	fetchExtender := func(gen int, p Provider) {
@@ -183,6 +206,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				fetchExtender(gen, p)
 			}
 		}
+		if gen, ok := m.wantOverview(m.now()); ok {
+			for i, p := range m.providers {
+				if i == m.cur {
+					continue // the main poll keeps this one fresh
+				}
+				fetchOverview(gen, i, p)
+			}
+		}
 		if hasRuntime {
 			if gen, p, ok := m.wantInternals(m.now()); ok {
 				fetchInternalsFn(gen, p)
@@ -217,6 +248,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				m.applyProxyCells(r.gen, r.proxyCells, r.err)
 			case r.isExtender:
 				m.applyExtender(r.gen, r.extender)
+			case r.isOverview:
+				m.applyOverview(r.gen, r.provider, r.snap, r.err, r.extender)
 			case r.isTraffic:
 				m.applyTraffic(r.gen, r.traffic, r.err)
 			case r.isInternals:

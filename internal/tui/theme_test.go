@@ -135,3 +135,39 @@ func TestHexRejectsBadLiterals(t *testing.T) {
 		}()
 	}
 }
+
+// State is never told by color alone: every built-in theme also differs by a
+// symbol per role, so a monochrome or color blind read still tells them apart.
+func TestThemeStateIconsDistinct(t *testing.T) {
+	for _, n := range ThemeNames() {
+		th, _ := ThemeByName(n)
+		if th.IconOK == 0 || th.IconWarn == 0 || th.IconBad == 0 {
+			t.Errorf("%s: a state icon is unset", n)
+		}
+		if th.IconOK == th.IconWarn || th.IconWarn == th.IconBad || th.IconOK == th.IconBad {
+			t.Errorf("%s: state icons are not distinct: %q %q %q", n, th.IconOK, th.IconWarn, th.IconBad)
+		}
+	}
+}
+
+// colorblind is the Okabe-Ito palette: blue, orange and yellow for the three
+// roles, never red against green, so the common red-green color blindnesses
+// keep the roles apart.
+func TestColorblindThemePalette(t *testing.T) {
+	th, ok := ThemeByName("colorblind")
+	if !ok {
+		t.Fatal("colorblind theme is missing")
+	}
+	if r, g, b := th.OK.FG.Components(); r != 0x00 || g != 0x72 || b != 0xb2 {
+		t.Errorf("OK = #%02x%02x%02x, want the Okabe-Ito blue #0072b2", r, g, b)
+	}
+	if r, g, b := th.Warn.FG.Components(); r != 0xe6 || g != 0x9f || b != 0x00 {
+		t.Errorf("Warn = #%02x%02x%02x, want the Okabe-Ito orange #e69f00", r, g, b)
+	}
+	if r, g, b := th.Bad.FG.Components(); r != 0xf0 || g != 0xe4 || b != 0x42 {
+		t.Errorf("Bad = #%02x%02x%02x, want the Okabe-Ito yellow #f0e442", r, g, b)
+	}
+	if th.OK == th.Warn || th.Warn == th.Bad || th.OK == th.Bad {
+		t.Error("colorblind OK/Warn/Bad must be distinct styles")
+	}
+}

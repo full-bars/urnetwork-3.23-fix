@@ -68,6 +68,20 @@ func TestTopMenuSwallowsOtherKeys(t *testing.T) {
 	}
 }
 
+// The new themes are reachable through the settings store: a saved top.conf
+// naming them loads back as that choice, not as nothing.
+func TestLoadTopSettingsAcceptsNewThemes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "top.conf")
+	for _, name := range []string{"high-contrast", "colorblind"} {
+		if err := os.WriteFile(path, []byte("theme = "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := loadTopSettings(path); got.Theme != name {
+			t.Errorf("theme %q did not load: %+v", name, got)
+		}
+	}
+}
+
 func TestTopMenuCyclesTheme(t *testing.T) {
 	m, path := menuModel(t)
 	pressKey(m, 'm')

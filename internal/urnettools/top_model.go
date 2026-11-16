@@ -171,6 +171,17 @@ type topModel struct {
 	copyPath   string
 	copyErr    error
 
+	// overview is the all-providers screen. providerSnaps and providerExt
+	// hold the last reading of every provider, so the rows come from data top
+	// already fetched; overviewSel is the row the arrow keys move.
+	overview      bool
+	overviewSel   int
+	providerSnaps []*NodeSnapshot
+	providerExt   []ExtenderReading
+	// overviewLast gates the once per snapshot cadence fetch of the providers
+	// the live screen is not showing.
+	overviewLast time.Time
+
 	// extender is the last reading the control socket gave for the current
 	// provider, fetched off the UI loop (see wantExtender)
 	extender     ExtenderReading
@@ -210,6 +221,16 @@ type topModel struct {
 	// The steady axis of each graph: the ten minute pair and the zoom pair.
 	scaleB, scaleT         topScale
 	zoomScaleB, zoomScaleT topScale
+
+	// windowHours selects the history the graphs draw: 0 keeps the provider's
+	// ten minute ring, 1 shows the downsampled hour, 24 the day. windowB and
+	// windowT hold the client-side downsampled history, binned from the same
+	// snapshots, so a provider never has to keep a longer ring.
+	windowHours  int
+	windowB      topWindow
+	windowT      topWindow
+	windowScaleB topScale
+	windowScaleT topScale
 
 	// rt is the runtime (Internals) panel's state.
 	rt topRuntime
@@ -273,6 +294,8 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 		cur = 0
 	}
 	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m.providerSnaps = make([]*NodeSnapshot, len(providers))
+	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
 	m.carriers.reset()
 	return m
@@ -415,10 +438,23 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.conn = topConnected
 	m.snap = snap
+	if m.cur < len(m.providerSnaps) {
+		// The overview rows read the same snapshot the live screen does, so
+		// the per provider history accumulates as top polls.
+		m.providerSnaps[m.cur] = snap
+	}
 	m.lastErr = ""
 	m.scaleB.update(seriesPeak(snap.Rate.HistoryBps), now, true)
+	m.windowB.push(snap.Rate.NowBps, now)
 	if snap.Traffic != nil {
 		m.scaleT.update(seriesPeak(snap.Traffic.TotalHistoryBps), now, true)
+		m.windowT.push(snap.Traffic.TotalNowBps, now)
+	}
+	if m.windowHours > 0 {
+		m.windowScaleB.update(seriesPeak(m.windowB.windowFor(m.windowHours, now)), now, true)
+		if snap.Traffic != nil {
+			m.windowScaleT.update(seriesPeak(m.windowT.windowFor(m.windowHours, now)), now, true)
+		}
 	}
 }
 
@@ -655,7 +691,16 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	if n < 2 {
 		return topNone
 	}
-	m.cur = ((m.cur+delta)%n + n) % n
+	return m.selectProviderIndex(((m.cur+delta)%n + n) % n)
+}
+
+// selectProviderIndex jumps straight to the provider at index i, the pick the
+// overview screen returns. The reset is the same one the Tab key performs.
+func (m *topModel) selectProviderIndex(i int) topEffect {
+	if i < 0 || i >= len(m.providers) || i == m.cur {
+		return topNone
+	}
+	m.cur = i
 	m.gen++
 	m.conn, m.snap, m.events = topConnecting, nil, nil
 	m.downSince, m.nextRetry, m.lastErr = time.Time{}, time.Time{}, ""
@@ -673,11 +718,43 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.scaleT.reset()
 	m.zoomScaleB.reset()
 	m.zoomScaleT.reset()
+	m.windowB.reset()
+	m.windowT.reset()
+	m.windowScaleB.reset()
+	m.windowScaleT.reset()
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's
 	m.eventScroll, m.gorScroll = 0, 0
 	return topRefetch
+}
+
+// wantOverview reports whether the overview screen should ask every other
+// provider for one snapshot. It fires at the snapshot cadence while the screen
+// is open, which is the same load as the one provider on screen.
+func (m *topModel) wantOverview(now time.Time) (gen int, ok bool) {
+	if !m.overview || len(m.providers) == 0 {
+		return 0, false
+	}
+	if !m.overviewLast.IsZero() && now.Sub(m.overviewLast) < max(m.interval, topSnapshotEvery) {
+		return 0, false
+	}
+	m.overviewLast = now
+	return m.gen, true
+}
+
+// applyOverview stores one reading the overview fetch brought in. A result for
+// an earlier selection is dropped, like every other fetch.
+func (m *topModel) applyOverview(gen, idx int, snap *NodeSnapshot, err error, ext ExtenderReading) {
+	if gen != m.gen || idx < 0 || idx >= len(m.providers) {
+		return
+	}
+	if err == nil && snap != nil {
+		m.providerSnaps[idx] = snap
+	}
+	if ext.Source != "" {
+		m.providerExt[idx] = ext
+	}
 }
 
 // stepInterval moves the poll period one step faster (dir < 0) or slower
@@ -784,6 +861,18 @@ func (m *topModel) series() topSeries {
 		}
 		return out
 	}
+	if m.windowHours > 0 {
+		out.scaleB, out.scaleT = &m.windowScaleB, &m.windowScaleT
+		out.billable = m.windowB.windowFor(m.windowHours, m.now())
+		out.capacity = len(out.billable)
+		if m.snap.Traffic != nil {
+			out.total = m.windowT.windowFor(m.windowHours, m.now())
+		}
+		if m.conn == topConnected {
+			out.tailBillable, out.tailTotal, out.live = m.live.rates()
+		}
+		return out
+	}
 	out.capacity = topGraphCapacity
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
 	switch {
@@ -809,6 +898,21 @@ func (m *topModel) history() []float64 {
 		return nil
 	}
 	return m.snap.Rate.HistoryBps
+}
+
+// windowFor returns the series for a window: h is 1 or 24, and the zero value
+// of windowHours keeps the provider's own ten minute ring.
+func (m *topModel) windowFor(h int) []float64 {
+	if m.snap == nil {
+		return nil
+	}
+	switch h {
+	case 1:
+		return m.windowB.windowFor(1, m.now())
+	case 24:
+		return m.windowB.windowFor(24, m.now())
+	}
+	return m.history()
 }
 
 // sortedEvents returns the events newest first. Events with the same time keep

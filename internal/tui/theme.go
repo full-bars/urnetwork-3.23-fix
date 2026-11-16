@@ -33,6 +33,11 @@ type Theme struct {
 	// (sparklines, bars, graphs, table ellipsis), for terminals that cannot
 	// draw block or braille glyphs.
 	ASCII bool
+	// IconOK, IconWarn and IconBad are the symbols painted beside state, so
+	// no theme is read by color alone: a row that says ok, warn or bad always
+	// differs by its symbol too. Zero means the theme has no symbol and the
+	// caller falls back to its own.
+	IconOK, IconWarn, IconBad rune
 }
 
 // DefaultTheme uses the 16 base colors, which every color terminal maps to
@@ -40,22 +45,25 @@ type Theme struct {
 // a light or unusual background.
 func DefaultTheme() Theme {
 	return Theme{
-		Name:   "default",
-		OK:     Style{FG: Ansi(2)},
-		Warn:   Style{FG: Ansi(3)},
-		Bad:    Style{FG: Ansi(1)}.With(AttrBold),
-		Dim:    Style{FG: Ansi(8)},
-		Accent: Style{FG: Ansi(6)}.With(AttrBold),
-		Graph:  Style{FG: Ansi(4)},
-		Border: Style{FG: Ansi(8)},
-		Frame:  BorderRounded,
+		Name:     "default",
+		OK:       Style{FG: Ansi(2)},
+		Warn:     Style{FG: Ansi(3)},
+		Bad:      Style{FG: Ansi(1)}.With(AttrBold),
+		Dim:      Style{FG: Ansi(8)},
+		Accent:   Style{FG: Ansi(6)}.With(AttrBold),
+		Graph:    Style{FG: Ansi(4)},
+		Border:   Style{FG: Ansi(8)},
+		Frame:    BorderRounded,
+		IconOK:   '•',
+		IconWarn: '!',
+		IconBad:  '✗',
 	}
 }
 
 // MonoTheme carries no color and no attributes, and draws with ASCII only.
 // It is for NO_COLOR and TERM=dumb, where even bold may be dropped or echoed.
 func MonoTheme() Theme {
-	return Theme{Name: "mono", Frame: BorderASCII, ASCII: true}
+	return Theme{Name: "mono", Frame: BorderASCII, ASCII: true, IconOK: 'i', IconWarn: '!', IconBad: 'x'}
 }
 
 // ThemeFromEnv picks the theme for the environment: mono when NO_COLOR is set
@@ -109,15 +117,18 @@ func hex(s string) Color {
 // backend downgrades to 256 or 16 colors where truecolor is not available.
 func paletteTheme(name, ok, warn, bad, dim, accent, graph, border string) Theme {
 	return Theme{
-		Name:   name,
-		OK:     Style{FG: hex(ok)},
-		Warn:   Style{FG: hex(warn)},
-		Bad:    Style{FG: hex(bad)}.With(AttrBold),
-		Dim:    Style{FG: hex(dim)},
-		Accent: Style{FG: hex(accent)}.With(AttrBold),
-		Graph:  Style{FG: hex(graph)},
-		Border: Style{FG: hex(border)},
-		Frame:  BorderRounded,
+		Name:     name,
+		OK:       Style{FG: hex(ok)},
+		Warn:     Style{FG: hex(warn)},
+		Bad:      Style{FG: hex(bad)}.With(AttrBold),
+		Dim:      Style{FG: hex(dim)},
+		Accent:   Style{FG: hex(accent)}.With(AttrBold),
+		Graph:    Style{FG: hex(graph)},
+		Border:   Style{FG: hex(border)},
+		Frame:    BorderRounded,
+		IconOK:   '•',
+		IconWarn: '!',
+		IconBad:  '✗',
 	}
 }
 
@@ -145,15 +156,38 @@ var themeBuilders = []struct {
 	}},
 	{"high-contrast", func() Theme {
 		return Theme{
-			Name:   "high-contrast",
-			OK:     Style{FG: Ansi(10)},
-			Warn:   Style{FG: Ansi(11)},
-			Bad:    Style{FG: Ansi(9)}.With(AttrBold),
-			Dim:    Style{FG: Ansi(7)},
-			Accent: Style{FG: Ansi(14)}.With(AttrBold),
-			Graph:  Style{FG: Ansi(12)},
-			Border: Style{FG: Ansi(15)},
-			Frame:  BorderSingle,
+			Name:     "high-contrast",
+			OK:       Style{FG: Ansi(10)},
+			Warn:     Style{FG: Ansi(11)},
+			Bad:      Style{FG: Ansi(9)}.With(AttrBold),
+			Dim:      Style{FG: Ansi(7)},
+			Accent:   Style{FG: Ansi(14)}.With(AttrBold),
+			Graph:    Style{FG: Ansi(12)},
+			Border:   Style{FG: Ansi(15)},
+			Frame:    BorderSingle,
+			IconOK:   '•',
+			IconWarn: '!',
+			IconBad:  '✗',
+		}
+	}},
+	// colorblind uses the Okabe-Ito palette: the roles are blue, orange and
+	// yellow, never red against green, so they stay apart for the common
+	// forms of red-green color blindness. The state icons carry the meaning
+	// too, so nothing hangs on the color alone.
+	{"colorblind", func() Theme {
+		return Theme{
+			Name:     "colorblind",
+			OK:       Style{FG: hex("#0072b2")},                // blue
+			Warn:     Style{FG: hex("#e69f00")},                // orange
+			Bad:      Style{FG: hex("#f0e442")}.With(AttrBold), // yellow
+			Dim:      Style{FG: hex("#999999")},
+			Accent:   Style{FG: hex("#56b4e9")}.With(AttrBold), // sky blue
+			Graph:    Style{FG: hex("#0072b2")},
+			Border:   Style{FG: hex("#999999")},
+			Frame:    BorderRounded,
+			IconOK:   '•',
+			IconWarn: '!',
+			IconBad:  '✗',
 		}
 	}},
 	{"mono", MonoTheme},

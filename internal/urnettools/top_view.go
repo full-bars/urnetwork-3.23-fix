@@ -59,6 +59,10 @@ const (
 // render draws the whole screen into b.
 func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
+	if m.overview {
+		m.drawOverview(b)
+		return
+	}
 	if !topMin.FitsRect(b.Rect()) {
 		m.drawCompact(b)
 		if m.help {
@@ -269,6 +273,13 @@ func (m *topModel) throughputTitle(name string, sr topSeries) string {
 		}
 		return title
 	}
+	if m.windowHours > 0 {
+		title := name + ", " + windowTitle(m.windowHours)
+		if m.conn == topDisconnected {
+			title += " (stale)"
+		}
+		return title
+	}
 	h := m.history()
 	if len(h) == 0 {
 		return name
@@ -453,7 +464,7 @@ func (m *topModel) drawEvents(b *tui.Buffer) {
 		y := i - start
 		at := eventTime(v.At, now, m.eventZoom)
 		x := b.Put(at+" ", 0, y, th.Dim)
-		x = b.Put(string(eventIcon(v.Level, th.ASCII))+" ", x, y, m.style(v.Level))
+		x = b.Put(string(eventIcon(v.Level, th))+" ", x, y, m.style(v.Level))
 		text := v.Text
 		if v.Count > 1 {
 			text += "  x" + strconv.Itoa(v.Count)

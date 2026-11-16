@@ -34,20 +34,28 @@ func TestEventTime(t *testing.T) {
 }
 
 func TestEventIcon(t *testing.T) {
-	if got := eventIcon(topInfo, false); got != '•' {
+	th := tui.DefaultTheme()
+	if got := eventIcon(topInfo, th); got != '•' {
 		t.Fatalf("info icon = %q, want bullet", got)
 	}
-	if got := eventIcon(topInfo, true); got != 'i' {
-		t.Fatalf("info ascii icon = %q, want i", got)
+	if got := eventIcon(topWarn, th); got != '!' {
+		t.Fatalf("warn icon = %q, want !", got)
 	}
-	if got := eventIcon(topWarn, false); got != '!' || eventIcon(topWarn, true) != '!' {
-		t.Fatal("warn icon must be ! in both modes")
-	}
-	if got := eventIcon(topBad, false); got != '✗' {
+	if got := eventIcon(topBad, th); got != '✗' {
 		t.Fatalf("bad icon = %q, want ✗", got)
 	}
-	if got := eventIcon(topBad, true); got != 'x' {
-		t.Fatalf("bad ascii icon = %q, want x", got)
+	mono := tui.MonoTheme()
+	if got := eventIcon(topInfo, mono); got != 'i' {
+		t.Fatalf("ascii info icon = %q, want i", got)
+	}
+	if got := eventIcon(topBad, mono); got != 'x' {
+		t.Fatalf("ascii bad icon = %q, want x", got)
+	}
+	// the theme's own symbols win over the built-in ones
+	custom := tui.DefaultTheme()
+	custom.IconOK = 'o'
+	if got := eventIcon(topInfo, custom); got != 'o' {
+		t.Fatalf("custom icon = %q, want o", got)
 	}
 }
 
