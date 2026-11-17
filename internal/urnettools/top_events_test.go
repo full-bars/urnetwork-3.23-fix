@@ -35,6 +35,12 @@ func TestEventTime(t *testing.T) {
 
 func TestEventIcon(t *testing.T) {
 	th := tui.DefaultTheme()
+	if got := eventIcon(topGood, th); got != '✓' {
+		t.Fatalf("good icon = %q", got)
+	}
+	if got := eventIcon(topGood, tui.MonoTheme()); got != '+' {
+		t.Fatalf("ascii good icon = %q", got)
+	}
 	if got := eventIcon(topInfo, th); got != '•' {
 		t.Fatalf("info icon = %q, want bullet", got)
 	}
@@ -145,14 +151,15 @@ func TestScrollEvents(t *testing.T) {
 		m.addEvent(clock.Now(), fmt.Sprintf("event %d", i), topWarn)
 	}
 	n := len(collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter)))
+	m.eventHeight = 4
 
 	m.scrollEvents(3)
 	if m.eventScroll != 3 {
 		t.Fatalf("scroll = %d, want 3", m.eventScroll)
 	}
 	m.scrollEvents(100)
-	if m.eventScroll != max(n-1, 0) {
-		t.Fatalf("scroll = %d, want %d", m.eventScroll, max(n-1, 0))
+	if m.eventScroll != max(n-4, 0) {
+		t.Fatalf("scroll = %d, want %d", m.eventScroll, max(n-4, 0))
 	}
 	m.scrollEvents(-100)
 	if m.eventScroll != 0 {

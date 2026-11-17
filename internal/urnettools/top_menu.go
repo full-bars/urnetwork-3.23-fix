@@ -20,6 +20,7 @@ const (
 // environment forced one (NO_COLOR, a dumb terminal): that is the user's
 // explicit request and outranks a saved preference.
 func (m *topModel) applySettings(s topSettings) {
+	m.savedTheme = s.Theme
 	if s.Theme != "" && !m.themeLocked {
 		if th, ok := tui.ThemeByName(s.Theme); ok {
 			m.theme = th
@@ -32,7 +33,11 @@ func (m *topModel) applySettings(s topSettings) {
 }
 
 func (m *topModel) settings() topSettings {
-	return topSettings{Theme: m.theme.Name, Graph: m.graph.String(), LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	theme := m.theme.Name
+	if m.themeLocked {
+		theme = m.savedTheme
+	}
+	return topSettings{Theme: theme, Graph: m.graph.String(), LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether

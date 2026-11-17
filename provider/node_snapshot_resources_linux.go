@@ -3,6 +3,7 @@ package main
 import (
 	"math"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
@@ -24,7 +25,7 @@ var procCache struct {
 	hasSwap bool
 }
 
-const procCacheTTL = 60 * time.Second
+const procCacheTTL = time.Second
 
 func readProcResources(r *SnapshotResources) {
 	if data, err := os.ReadFile("/proc/self/statm"); err == nil {
@@ -44,8 +45,10 @@ func readProcResources(r *SnapshotResources) {
 		r.FDLimit = uint64(rl.Cur)
 	}
 	threads, tasks, swapU, swapT, hasSwap := readCachedProcess()
-	r.Threads, r.TasksMax, r.SwapUsedBytes, r.SwapTotalBytes = threads, tasks, swapU, swapT
-	_ = hasSwap
+	r.Threads, r.TasksMax, r.SwapTotalBytes = threads, tasks, swapT
+	if hasSwap {
+		r.SwapUsedBytes = &swapU
+	}
 }
 
 // readCachedProcess serves the cached figures within the TTL.
@@ -86,21 +89,39 @@ func readCgroupPidsMax() uint64 {
 	if err != nil {
 		return 0
 	}
+	var limit uint64
 	for _, line := range strings.Split(string(data), "\n") {
 		cgroupPath := pidsCgroupPath(line)
 		if cgroupPath == "" {
 			continue
 		}
 		for _, root := range []string{"/sys/fs/cgroup", "/sys/fs/cgroup/pids"} {
-			p := root + cgroupPath + "/pids.max"
-			if raw, err := os.ReadFile(p); err == nil {
-				if v, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); err == nil {
-					return v
-				}
+			v := pidsMaxWithin(root, cgroupPath)
+			if v > 0 && (limit == 0 || v < limit) {
+				limit = v
 			}
 		}
 	}
-	return 0
+	return limit
+}
+
+// pidsMaxWithin includes the limits enforced by ancestor cgroups.
+func pidsMaxWithin(root, group string) uint64 {
+	root = filepath.Clean(root)
+	dir := filepath.Join(root, strings.TrimPrefix(filepath.Clean("/"+group), "/"))
+	var limit uint64
+	for {
+		if raw, err := os.ReadFile(filepath.Join(dir, "pids.max")); err == nil {
+			if v, err := strconv.ParseUint(strings.TrimSpace(string(raw)), 10, 64); err == nil && v > 0 && (limit == 0 || v < limit) {
+				limit = v
+			}
+		}
+		if dir == root {
+			break
+		}
+		dir = filepath.Dir(dir)
+	}
+	return limit
 }
 
 func pidsCgroupPath(line string) string {

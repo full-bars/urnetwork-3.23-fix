@@ -110,7 +110,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 
 	// The runtime views are optional the same way.
 	rtSrc, hasRuntime := src.(topInternalsSource)
-	fetchInternalsFn := func(gen int, p Provider) {
+	fetchInternalsFn := func(gen int, p Provider, now time.Time) {
 		go func() {
 			res := topResult{gen: gen, isInternals: true}
 			defer func() {
@@ -123,6 +123,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				}
 			}()
 			res.internals, res.err = rtSrc.FetchInternals(p)
+			if res.err == nil && res.internals != nil {
+				res.internals.SigpipeRisk = sigpipeRestartRiskCached(p, now)
+			}
 		}()
 	}
 	fetchGroupsFn := func(gen int, p Provider) {
@@ -143,7 +146,12 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 
 	// The overview fetches one snapshot and extender reading of every provider
 	// the live screen is not showing, at the snapshot cadence.
+	overviewBusy := make(map[int]int)
 	fetchOverview := func(gen, i int, p Provider) {
+		if previous, ok := overviewBusy[i]; ok && previous == gen {
+			return
+		}
+		overviewBusy[i] = gen
 		go func() {
 			res := topResult{gen: gen, isOverview: true, provider: i}
 			defer func() {
@@ -221,7 +229,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}
 		if hasRuntime {
 			if gen, p, ok := m.wantInternals(m.now()); ok {
-				fetchInternalsFn(gen, p)
+				fetchInternalsFn(gen, p, m.now())
 			}
 			if gen, p, ok := m.wantGroups(m.now()); ok {
 				fetchGroupsFn(gen, p)
@@ -251,6 +259,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			case r.isExtender:
 				m.applyExtender(r.gen, r.extender)
 			case r.isOverview:
+				if overviewBusy[r.provider] == r.gen {
+					delete(overviewBusy, r.provider)
+				}
 				m.applyOverview(r.gen, r.provider, r.snap, r.err, r.extender)
 			case r.isTraffic:
 				m.applyTraffic(r.gen, r.traffic, r.err)

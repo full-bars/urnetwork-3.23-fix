@@ -151,7 +151,11 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	samples := make([]float64, len(g.Samples))
 	peak := 0.0
 	for i, v := range g.Samples {
-		if math.IsNaN(v) || math.IsInf(v, 0) || v < 0 {
+		if math.IsNaN(v) {
+			samples[i] = v
+			continue
+		}
+		if math.IsInf(v, 0) || v < 0 {
 			v = 0
 		}
 		samples[i] = v

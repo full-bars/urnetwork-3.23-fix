@@ -52,6 +52,8 @@ func eventIcon(level topLevel, th tui.Theme) rune {
 		switch level {
 		case topInfo:
 			return 'i'
+		case topGood:
+			return '+'
 		case topWarn:
 			return '!'
 		case topBad:
@@ -62,6 +64,8 @@ func eventIcon(level topLevel, th tui.Theme) rune {
 	switch level {
 	case topInfo:
 		return iconOr(th.IconOK, '•')
+	case topGood:
+		return '✓'
 	case topWarn:
 		return iconOr(th.IconWarn, '!')
 	case topBad:
@@ -137,5 +141,5 @@ func eventRow(v topEventView, now time.Time, zoom bool, th tui.Theme) string {
 // past the top of the list, and never more than the list holds.
 func (m *topModel) scrollEvents(delta int) {
 	n := len(collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter)))
-	m.eventScroll = min(max(m.eventScroll+delta, 0), max(n-1, 0))
+	m.eventScroll = min(max(m.eventScroll+delta, 0), max(n-max(m.eventHeight, 1), 0))
 }

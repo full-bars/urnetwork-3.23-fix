@@ -191,6 +191,9 @@ func TestTopMenuThemeLockedByEnvironment(t *testing.T) {
 	if m.theme.Name != "mono" {
 		t.Fatalf("saved theme overrode the environment: %q", m.theme.Name)
 	}
+	if got := m.settings().Theme; got != "nord" {
+		t.Fatalf("layout save changed preference: %q", got)
+	}
 }
 
 func TestTopMenuSaveFailureIsReported(t *testing.T) {

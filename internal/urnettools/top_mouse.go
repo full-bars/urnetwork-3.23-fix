@@ -28,9 +28,10 @@ type topPress struct {
 func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 	// While the help overlay is up, a click closes it and nothing else
 	// happens, like Esc.
-	if m.help {
+	if m.help || m.panel != "" {
 		if ev.Action == tcellui.MousePress {
 			m.help = false
+			m.panel = ""
 		}
 		return topNone
 	}
@@ -63,7 +64,12 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 		if m.drag == nil {
 			return topNone
 		}
+		before := m.layout.Dividers[m.drag.region]
+		beforeWidth := m.layout.SideWidth
 		m.moveDivider(m.drag.region, ev.X, ev.Y)
+		if m.layout.Dividers[m.drag.region] != before || m.layout.SideWidth != beforeWidth {
+			m.lastPress = topPress{}
+		}
 		return topNone
 	case tcellui.MouseRelease:
 		if m.drag != nil {
@@ -124,7 +130,7 @@ func (m *topModel) mouseWheel(name string, ev tcellui.Event) {
 	}
 	switch name {
 	case "box:events":
-		m.eventScroll = clampScroll(m.eventScroll+dir, len(m.sortedEvents()))
+		m.scrollEvents(dir)
 	case "box:internals":
 		if m.rt.showing && m.rt.groups != nil {
 			m.gorScroll = clampScroll(m.gorScroll+dir, len(m.rt.groups.Groups))

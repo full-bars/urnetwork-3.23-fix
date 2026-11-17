@@ -129,16 +129,16 @@ type SnapshotRestart struct {
 // SnapshotResources fields the platform cannot supply are left zero and
 // omitted from the JSON.
 type SnapshotResources struct {
-	HeapInuseBytes uint64 `json:"heap_inuse_bytes"`
-	MemLimitBytes  uint64 `json:"mem_limit_bytes,omitempty"`
-	RSSBytes       uint64 `json:"rss_bytes,omitempty"`
-	Goroutines     int    `json:"goroutines"`
-	OpenFDs        uint64 `json:"open_fds,omitempty"`
-	FDLimit        uint64 `json:"fd_limit,omitempty"`
-	Threads        uint64 `json:"threads,omitempty"`
-	TasksMax       uint64 `json:"tasks_max,omitempty"`
-	SwapUsedBytes  uint64 `json:"swap_used_bytes,omitempty"`
-	SwapTotalBytes uint64 `json:"swap_total_bytes,omitempty"`
+	HeapInuseBytes uint64  `json:"heap_inuse_bytes"`
+	MemLimitBytes  uint64  `json:"mem_limit_bytes,omitempty"`
+	RSSBytes       uint64  `json:"rss_bytes,omitempty"`
+	Goroutines     int     `json:"goroutines"`
+	OpenFDs        uint64  `json:"open_fds,omitempty"`
+	FDLimit        uint64  `json:"fd_limit,omitempty"`
+	Threads        uint64  `json:"threads,omitempty"`
+	TasksMax       uint64  `json:"tasks_max,omitempty"`
+	SwapUsedBytes  *uint64 `json:"swap_used_bytes,omitempty"`
+	SwapTotalBytes uint64  `json:"swap_total_bytes,omitempty"`
 }
 
 const (

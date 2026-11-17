@@ -178,13 +178,13 @@ func TestTopWheelScrollsTheEventsList(t *testing.T) {
 	if !containsLine(b.String(), "event g") {
 		t.Fatalf("one wheel step should show the next older event:\n%s", b.String())
 	}
-	// The offset never runs past the oldest event. The snapshot itself added
-	// one event, so the list holds nine and the wheel is clamped to eight.
+	// The offset stops at the last full visible window.
 	for i := 0; i < 20; i++ {
 		m.handle(mouseEv(tcellui.MouseWheel, tcellui.MouseWheelDown, ev.X+5, ev.Y+1))
 	}
-	if m.eventScroll != len(m.events)-1 {
-		t.Fatalf("event scroll = %d, want %d", m.eventScroll, len(m.events)-1)
+	want := max(len(collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter)))-m.eventHeight, 0)
+	if m.eventScroll != want {
+		t.Fatalf("event scroll = %d, want %d", m.eventScroll, want)
 	}
 }
 
@@ -287,5 +287,29 @@ func TestTopMouseOutsideTheScreenIsIgnored(t *testing.T) {
 	}
 	if m.hover != "" {
 		t.Fatalf("hover outside = %q", m.hover)
+	}
+}
+
+func TestTopPanelBlocksDividerInput(t *testing.T) {
+	m, _ := mouseModel(t, 120, 40)
+	d := regionRect(t, m, "left:proxies")
+	m.panel = "gauges"
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, d.X+5, d.Y))
+	if m.panel != "" || m.drag != nil {
+		t.Fatalf("panel=%q drag=%v", m.panel, m.drag)
+	}
+}
+
+func TestTopDragThenPressDoesNotReset(t *testing.T) {
+	m, b := mouseModel(t, 120, 40)
+	d := regionRect(t, m, "left:proxies")
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, d.X+5, d.Y))
+	m.handle(mouseEv(tcellui.MouseDrag, tcellui.MouseLeft, d.X+5, d.Y-5))
+	m.handle(mouseEv(tcellui.MouseRelease, tcellui.MouseLeft, d.X+5, d.Y-5))
+	m.render(b)
+	d = regionRect(t, m, "left:proxies")
+	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, d.X+5, d.Y))
+	if m.drag == nil {
+		t.Fatal("press after drag should start a new drag")
 	}
 }

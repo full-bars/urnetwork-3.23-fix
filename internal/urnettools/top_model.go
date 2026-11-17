@@ -160,6 +160,7 @@ type topModel struct {
 	// here so the view is a function of the model alone.
 	eventZoom   bool
 	eventScroll int
+	eventHeight int
 	eventFilter eventFilter
 
 	// copyOnExit writes the screen to the state dir when the user quits with
@@ -251,6 +252,7 @@ type topModel struct {
 	// override. settingsPath is where the menu saves; empty means nowhere.
 	graph        tui.GraphSymbols
 	themeLocked  bool
+	savedTheme   string
 	settingsPath string
 	menu         bool
 	menuSel      int

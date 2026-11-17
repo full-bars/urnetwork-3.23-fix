@@ -170,9 +170,6 @@ func (m *topModel) applyInternals(gen int, in *NodeInternals, err error) {
 		r.cur, r.recent, r.groups, r.gor = nil, nil, nil, nil
 	case err != nil || in == nil:
 	default:
-		// sigpipe risk is evaluated off the render path and cached, so
-		// applying an internals reading is the right place to attach it.
-		in.SigpipeRisk = sigpipeRestartRiskCached(m.provider(), m.now())
 		r.cur = in
 		r.recent = append(r.recent, in)
 		// Drop readings older than the rate window needs, and never fewer than

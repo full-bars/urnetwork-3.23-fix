@@ -168,8 +168,12 @@ func (m *topModel) moveDivider(name string, x, y int) {
 		dRes, _, _ := m.sideDividerRows(h)
 		m.layout.Dividers[name] = clampRow(row, dRes+topMinBoxRows, h-topMinBoxRows)
 	case "side:internals":
-		_, dExt, _ := m.sideDividerRows(h)
-		m.layout.Dividers[name] = clampRow(row, dExt+topMinBoxRows, h-topMinBoxRows)
+		dRes, dExt, _ := m.sideDividerRows(h)
+		boundary := dRes
+		if m.showExtender {
+			boundary = dExt
+		}
+		m.layout.Dividers[name] = clampRow(row, boundary+topMinBoxRows, h-topMinBoxRows)
 	}
 }
 

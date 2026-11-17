@@ -451,11 +451,18 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 func (m *topModel) drawEvents(b *tui.Buffer) {
 	th := m.theme
 	now := m.now()
+	m.eventHeight = b.Height()
 	if len(m.events) == 0 {
 		b.Put("no events yet", 0, 0, th.Dim)
 		return
 	}
 	views := collapseEvents(filterEvents(m.sortedEvents(), m.eventFilter))
+	if len(views) == 0 {
+		b.Put("no events match filter", 0, 0, th.Dim)
+		m.eventScroll = 0
+		return
+	}
+	m.eventScroll = min(m.eventScroll, max(0, len(views)-b.Height()))
 	start := min(m.eventScroll, max(0, len(views)-b.Height()))
 	for i, v := range views {
 		if i < start {
