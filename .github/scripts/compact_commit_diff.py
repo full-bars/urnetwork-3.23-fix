@@ -18,6 +18,7 @@ Strategy:
        compact_commit_diff.py <repo> --pr <number>    # pull-request diff
 """
 import json, re, sys, urllib.request
+from pathlib import Path
 
 MEANINGFUL_CONSTS = re.compile(
     r"^\s*const\s+(?P<name>"
@@ -36,47 +37,34 @@ PATCH_BUDGET = 30000
 #   - DIVERGED: the fork carries the file but its generated table is a fork
 #     snapshot that may drift from upstream. This is NOT a "never port" rule --
 #     the fork periodically syncs the table from upstream (see git history of
-#     ip_security_cfaa_block.go). The annotation carries the fork's REAL
-#     per-constant counts so the model can compare per constant and classify:
-#     a family where the fork lags upstream is a genuine [WATCH] port
-#     candidate; a family where the fork already leads is [NO ACTION]. The
-#     up/current-count values (below) are a dated snapshot; refresh them when
-#     the fork next syncs to avoid stale guidance.
+#     ip_security_cfaa_block.go). Read counts from the checked-out fork.
+#     A larger count alone does not establish that a table is more effective.
 FORK_AWARE = {
-    # fork has no ip_blocker_block.go nor its consumer ip_mux_upgrade.go
-    "ip_blocker_block.go": "FORK LACKS: ip_blocker_block.go (and its consumer "
-                           "ip_mux_upgrade.go) are absent from the 3.23-fix "
-                           "fork. Do not mark [MUST PORT] for this file. "
-                           "Classify changes to this file as [NO ACTION]; a "
-                           "code-path fix here cannot apply to a fork that "
-                           "does not carry the file. Judge any other file "
-                           "changed by the same upstream commit on its own "
-                           "merits.",
     "ip_mux_upgrade.go": "FORK LACKS: ip_mux_upgrade.go is absent from the "
-                         "3.23-fix fork (it consumes ip_blocker_block.go, "
-                         "which the fork also does not carry). Do not mark "
-                         "[MUST PORT] for this file. Classify changes to this "
-                         "file as [NO ACTION]; a code-path fix here cannot "
-                         "apply to a fork that does not carry it.",
-    # fork HAS the file but its generated CFAA table is a fork snapshot
-    "ip_security_cfaa_block.go": "FORK DIVERGED: the 3.23-fix fork carries its "
-                                  "own CFAA table, a dated snapshot that drifts "
-                                  "from upstream (current fork counts: "
-                                  "cfaaBlockedPrefixCount=44225, "
-                                  "cfaaBlockedPrefix6Count=513). These are NOT "
-                                  "the same values as upstream; do not assume a "
-                                  "raw port is correct or that the fork leads. "
-                                  "Judge PER CONSTANT against the fork counts "
-                                  "above: if this refresh grows a family where "
-                                  "the fork LAGS (e.g. IPv6 513 < upstream), "
-                                  "that is a genuine [WATCH] port candidate; if "
-                                  "the fork already LEADS that family (e.g. IPv4 "
-                                  "44225 > upstream), classify as [NO ACTION].",
+                         "3.23-fix fork. Judge other files in the same commit "
+                         "on their own merits.",
 }
+FORK_ROOT = Path(__file__).resolve().parents[2]
+
+
+def fork_table_note(path):
+    try:
+        contents = (FORK_ROOT / path).read_text()
+    except OSError as exc:
+        return f"FORK TABLE UNKNOWN: cannot read {path}: {exc}"
+    counts = [f"{m.group('name')}={m.group('value').strip()}"
+              for m in MEANINGFUL_CONSTS.finditer(contents)
+              if m.group('name').endswith('Count')]
+    if not counts:
+        return f"FORK TABLE UNKNOWN: no counts found in {path}"
+    return ("FORK DIVERGED: checked-out fork table counts: " + ", ".join(counts)
+            + ". Compare contents and format; count changes alone do not measure security.")
 
 
 def fork_aware_note(path):
     """Return the fork-aware annotation for an upstream file, or '' if none."""
+    if path in DATA_TABLE_FILES:
+        return fork_table_note(path)
     return FORK_AWARE.get(path, "")
 
 

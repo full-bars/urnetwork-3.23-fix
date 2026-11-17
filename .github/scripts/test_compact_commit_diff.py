@@ -1,4 +1,5 @@
-import os, sys, unittest
+import os, sys, tempfile, unittest
+from pathlib import Path
 from unittest import mock
 sys.path.insert(0, os.path.dirname(__file__))
 import compact_commit_diff as ccd
@@ -14,38 +15,46 @@ CFAA_AFTER = "// gen\nconst cfaaBlockedPrefixCount = 42400\nconst cfaaBlockedPre
 
 
 class ForkAwareManifestTest(unittest.TestCase):
-    def test_file_the_fork_lacks_is_marked(self):
+    def test_host_table_is_present(self):
         note = ccd.fork_aware_note("ip_blocker_block.go")
-        self.assertIn("FORK LACKS", note)
-        self.assertIn("ip_blocker_block.go", note)
-        self.assertIn("NO ACTION", note)
+        self.assertIn("FORK DIVERGED", note)
+        self.assertIn("blockerBlockedHostCount=", note)
+        self.assertNotIn("FORK LACKS", note)
 
     def test_mux_consumer_file_is_marked(self):
         note = ccd.fork_aware_note("ip_mux_upgrade.go")
         self.assertIn("FORK LACKS", note)
         self.assertIn("ip_mux_upgrade.go", note)
-        self.assertIn("NO ACTION", note)
+        self.assertIn("Judge other files", note)
 
     def test_diverged_table_carries_counts_and_guidance(self):
-        note = ccd.fork_aware_note("ip_security_cfaa_block.go")
+        with tempfile.TemporaryDirectory() as directory:
+            root = Path(directory)
+            table = root / "ip_security_cfaa_block.go"
+            table.write_text(CFAA_BEFORE)
+            with mock.patch.object(ccd, "FORK_ROOT", root):
+                note = ccd.fork_aware_note(table.name)
+                self.assertIn("cfaaBlockedPrefixCount=42327", note)
+                table.write_text(CFAA_AFTER)
+                note = ccd.fork_aware_note(table.name)
+                self.assertIn("cfaaBlockedPrefixCount=42400", note)
+                self.assertIn("cfaaBlockedPrefix6Count=533", note)
+                table.unlink()
+                self.assertIn("FORK TABLE UNKNOWN", ccd.fork_aware_note(table.name))
         self.assertIn("FORK DIVERGED", note)
-        self.assertIn("44225", note)
-        self.assertIn("513", note)
-        self.assertNotIn("not [MUST PORT].", note)
-        self.assertIn("WATCH", note)
-        self.assertIn("NO ACTION", note)
+        self.assertIn("count changes alone do not measure security", note)
 
     def test_unknown_or_shared_code_file_gets_no_annotation(self):
         self.assertEqual(ccd.fork_aware_note("ip.go"), "")
         self.assertEqual(ccd.fork_aware_note("transfer.go"), "")
 
-    def test_data_table_lacks_skips_fetch_and_emits_note(self):
+    def test_data_table_emits_delta_and_note(self):
         files = [_file("ip_blocker_block.go", additions=30142, deletions=30141)]
-        with mock.patch.object(ccd, "_const_delta_str") as m:
+        with mock.patch.object(ccd, "_const_delta_str", return_value="host delta") as m:
             out = ccd._shape("urnetwork/connect", files, "aaaa", "bbbb")
-            m.assert_not_called()
-        self.assertIn("FORK LACKS", out)
-        self.assertIn("ip_blocker_block.go", out)
+            m.assert_called_once()
+        self.assertIn("FORK DIVERGED", out)
+        self.assertIn("host delta", out)
 
     def test_no_patch_annotated_file_keeps_note(self):
         files = [_file("ip_mux_upgrade.go", additions=0, deletions=0, patch=None)]
