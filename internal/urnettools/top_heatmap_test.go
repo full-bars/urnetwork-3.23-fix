@@ -5,6 +5,8 @@ import (
 	"strings"
 	"testing"
 
+	"golang.org/x/text/width"
+
 	"github.com/urnetwork/connect"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -46,6 +48,41 @@ func TestDecodeProxyCellsRoundtrip(t *testing.T) {
 	}
 }
 
+func TestProxyGridDisplayWidth(t *testing.T) {
+	// Exercise both a single proxy and a full cell's two proxies.
+	for _, n := range []int{1, 2} {
+		m := topHeatGridModel(t, tui.DefaultTheme(), n)
+		b := tui.New(1, 2)
+		m.drawProxyGrid(b)
+		r := b.Cell(0, 0).Rune
+		if tui.RuneWidth(r) != 1 || width.LookupRune(r).Kind() == width.EastAsianAmbiguous {
+			t.Fatalf("%d proxies: dot %U is not a stable single-cell glyph", n, r)
+		}
+	}
+	for _, panelWidth := range []int{48, 68, 80, 88, 100, 118, 120, 150, 180} {
+		t.Run(fmt.Sprint(panelWidth), func(t *testing.T) {
+			m := topHeatGridModel(t, tui.DefaultTheme(), 4400)
+			b := tui.New(panelWidth, 13)
+			m.drawProxyGrid(b)
+			lines := strings.Split(b.String(), "\n")
+			for row, line := range lines {
+				actual := tui.StringWidth(line)
+				// Some terminals render East Asian ambiguous glyphs as two cells.
+				// This adds the difference to the renderer's own width, rather
+				// than counting bytes or trusting the buffer's clipped size.
+				for _, r := range line {
+					if width.LookupRune(r).Kind() == width.EastAsianAmbiguous {
+						actual += 2 - tui.RuneWidth(r)
+					}
+				}
+				if actual > panelWidth {
+					t.Fatalf("row %d uses %d display cells in a %d-cell panel", row, actual, panelWidth)
+				}
+			}
+		})
+	}
+}
+
 func TestDrawProxyGridUpAndLegend(t *testing.T) {
 	clock := &fakeClock{t: topBase}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
@@ -59,7 +96,7 @@ func TestDrawProxyGridUpAndLegend(t *testing.T) {
 		t.Fatalf("legend should show 88 up, got:\n%s", s)
 	}
 	// no crash, and the grid area is drawn with filled dots.
-	if !strings.Contains(s, "●") {
+	if !strings.Contains(s, "⦁") {
 		t.Fatalf("expected filled dots in the grid, got:\n%s", s)
 	}
 }

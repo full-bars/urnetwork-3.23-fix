@@ -191,9 +191,11 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 				b.Set(x, y, tui.Cell{Rune: proxyCellASCII(worst), Style: st})
 				continue
 			}
-			dot := '•'
+			// These dots have East Asian width Neutral, unlike • and ●,
+			// which some terminals render two cells wide.
+			dot := '∙'
 			if hasUpper && hasLower {
-				dot = '●'
+				dot = '⦁'
 			}
 			b.Set(x, y, tui.Cell{Rune: dot, Style: st})
 		}
