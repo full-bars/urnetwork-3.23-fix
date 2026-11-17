@@ -280,6 +280,7 @@ type topModel struct {
 	showExtender, withInternals bool
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
+	gorHeight int
 
 	help  bool
 	quit  bool
@@ -630,6 +631,10 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if (m.menu || m.help || m.panel != "") && ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseRelease {
+		m.drag = nil
+		m.lastPress = topPress{}
+	}
 	if m.menu && m.menuHandle(ev) {
 		return topNone
 	}

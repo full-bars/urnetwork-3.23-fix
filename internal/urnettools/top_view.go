@@ -760,7 +760,9 @@ func (m *topModel) drawGoroutineGroups(b *tui.Buffer) {
 	b.Put(tui.Truncate(fmt.Sprintf("%d total", g.Total), b.Width(), th.ASCII), 0, 0, th.Dim)
 	const countW = 7
 	// The wheel moves the window down the list; the largest group stays on top.
-	start := min(m.gorScroll, max(0, len(g.Groups)-(b.Height()-1)))
+	m.gorHeight = max(b.Height()-1, 0)
+	m.gorScroll = min(m.gorScroll, max(0, len(g.Groups)-m.gorHeight))
+	start := m.gorScroll
 	for i, grp := range g.Groups[start:] {
 		y := i + 1
 		if y >= b.Height() {

@@ -313,3 +313,28 @@ func TestTopDragThenPressDoesNotReset(t *testing.T) {
 		t.Fatal("press after drag should start a new drag")
 	}
 }
+
+func TestTopOverlayReleaseCancelsDrag(t *testing.T) {
+	for _, overlay := range []string{"menu", "help", "gauges"} {
+		t.Run(overlay, func(t *testing.T) {
+			m, _ := mouseModel(t, 120, 40)
+			d := regionRect(t, m, "left:proxies")
+			m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, d.X+5, d.Y))
+			if m.drag == nil {
+				t.Fatal("expected active drag")
+			}
+			switch overlay {
+			case "menu":
+				m.menu = true
+			case "help":
+				m.help = true
+			default:
+				m.panel = overlay
+			}
+			m.handle(mouseEv(tcellui.MouseRelease, tcellui.MouseLeft, d.X+5, d.Y))
+			if m.drag != nil {
+				t.Fatal("overlay retained released drag")
+			}
+		})
+	}
+}

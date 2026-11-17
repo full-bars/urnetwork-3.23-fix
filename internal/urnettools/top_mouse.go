@@ -133,7 +133,7 @@ func (m *topModel) mouseWheel(name string, ev tcellui.Event) {
 		m.scrollEvents(dir)
 	case "box:internals":
 		if m.rt.showing && m.rt.groups != nil {
-			m.gorScroll = clampScroll(m.gorScroll+dir, len(m.rt.groups.Groups))
+			m.gorScroll = min(max(m.gorScroll+dir, 0), max(0, len(m.rt.groups.Groups)-m.gorHeight))
 		}
 	}
 }

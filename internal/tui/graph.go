@@ -291,11 +291,16 @@ func plotColumns(samples []float64, n int) []float64 {
 	for i := 0; i < n; i++ {
 		lo := i * len(samples) / n
 		hi := max((i+1)*len(samples)/n, lo+1)
-		sum := 0.0
+		sum, count := 0.0, 0
 		for _, v := range samples[lo:hi] {
-			sum += v
+			if !math.IsNaN(v) {
+				sum += v
+				count++
+			}
 		}
-		cols[i] = sum / float64(hi-lo)
+		if count > 0 {
+			cols[i] = sum / float64(count)
+		}
 	}
 	return cols
 }
@@ -342,15 +347,22 @@ func bucketColumns(samples []float64, n int, anchor int64, capacity int) (ids []
 	first := anchor - int64(len(samples)-1)
 	for i := 0; i < len(samples); {
 		id := bucketOf(first + int64(i))
-		j, sum := i, 0.0
+		j, sum, count := i, 0.0, 0
 		for j < len(samples) && bucketOf(first+int64(j)) == id {
-			sum += samples[j]
+			if !math.IsNaN(samples[j]) {
+				sum += samples[j]
+				count++
+			}
 			j++
 		}
 		partialOldest := i == 0 && bucketOf(first-1) == id
 		if !partialOldest {
 			ids = append(ids, id)
-			vals = append(vals, sum/float64(j-i))
+			value := math.NaN()
+			if count > 0 {
+				value = sum / float64(count)
+			}
+			vals = append(vals, value)
 		}
 		i = j
 	}
