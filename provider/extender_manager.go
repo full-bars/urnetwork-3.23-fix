@@ -49,6 +49,8 @@ type extenderManager struct {
 	// repeat a line that has not changed
 	lastOffLine string
 	lastBadEnv  string
+	// discoveryLog is owned exclusively by the manager Start ticker goroutine.
+	discoveryLog discoveryLogState
 	// why the role is off, for status. Empty while it runs.
 	offReason string
 
@@ -105,6 +107,7 @@ func (m *extenderManager) Start(ctx context.Context, wg *sync.WaitGroup) {
 				m.Reconcile("periodic check")
 				m.sampleTally()
 				m.sampleCarrierRates()
+				m.logDiscoveryHealth(time.Now())
 			}
 		}
 	}()
@@ -190,10 +193,16 @@ func (m *extenderManager) startLocked(why string, source string) {
 	}
 	m.role = role
 	extenderDiscoveryApplyMu.Lock()
-	if mode, ok := globalControlState.get("extender_discovery"); ok {
-		if err := role.setDiscoveryMode(mode); err != nil {
-			importantLogf("🌉⚠️ [extender] could not apply discovery setting: %s\n", err)
+	mode := extenderDiscoveryOn
+	if saved, ok := globalControlState.get("extender_discovery"); ok {
+		if validExtenderDiscoveryMode(saved) {
+			mode = normalizeExtenderDiscoveryMode(saved)
+		} else {
+			importantLogf("🌉⚠️ [extender] invalid saved discovery mode %q; using the default on.\n", saved)
 		}
+	}
+	if err := role.setDiscoveryMode(mode); err != nil {
+		importantLogf("🌉⚠️ [extender] could not apply discovery setting: %s\n", err)
 	}
 	extenderDiscoveryApplyMu.Unlock()
 	m.offReason = ""

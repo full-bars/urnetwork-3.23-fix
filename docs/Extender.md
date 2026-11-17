@@ -21,13 +21,13 @@ These are the bytes this extender relayed. What the network credits depends on t
 
 ## Discovery
 
-Discovery serves the platform's extender directory to clients. It is off by default, separate from the extender role.
+Discovery serves the platform's extender directory to clients. When the extender role is enabled, it defaults to serving the feed and joining gossip. Explicit saved `off` or `feed-only` settings take precedence. Older versions of `urnet-tools set extender-discovery off` cleared the override rather than saving it, so that earlier CLI choice cannot be detected: after upgrading, run the command again if discovery should stay off.
 
 - `off` refuses both discovery services.
 - `feed-only` serves the directory feed and refuses gossip.
 - `on` serves the feed and joins the gossip mesh.
 
-Run `urnet-tools set extender-discovery on` to enable it. Use `feed-only` or `off` in place of `on` to change modes. The setting applies live and survives restarts. Check `urnet-tools extender status` for its state and peer counts.
+Use `urnet-tools set extender-discovery off` or `urnet-tools set extender-discovery feed-only` to change modes; `on` restores feed and gossip. The setting applies live and survives restarts. Check `urnet-tools extender status` or `urnet-tools status` for its state, peer ID, peer count, subscribers and startup failures. `urnet-tools top` shows the discovery state and counts in the Extender box and the `v` details panel. A running state means the local role started, not that peers have connected; zero peers means mesh connectivity is not yet demonstrated. On updated providers, the active directory record count includes all sources and is not proof of gossip. The valid-message count and last-received time show messages received from peers that passed validation and were accepted for directory application (including duplicates), since the gossip role started. A zero count does not prove failure: gossip carries live updates and there may not have been a new message yet. Apply errors count directory application failures, not messages rejected by the network validator. Older providers omit these counters.
 
 A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
 

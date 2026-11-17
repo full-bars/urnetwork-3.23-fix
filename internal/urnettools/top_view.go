@@ -125,9 +125,9 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	// it is left out (no empty box) for a provider that cannot report it.
 	extRows := 0
 	if m.hasExtender() {
-		extRows = m.extenderRows()
+		extRows = min(m.extenderRows(), max(0, cols[1].H-nowRows-resRows))
 	}
-	showExtender := 0 < extRows && cols[1].H >= nowRows+resRows+extRows
+	showExtender := extRows >= topMinBoxRows
 	if !showExtender {
 		extRows = 0
 	}

@@ -292,8 +292,13 @@ func TestExtenderDiscoverySnapshotReportsPeersAndSubscribers(t *testing.T) {
 	d.reconcile(discoveryTestInputs(t, server))
 	h.roles[0].status = extenderrole.Status{PeerId: "peer-1", GossipRunning: true, FeedSubscriberCount: 3}
 	h.roles[0].status.Node.MeshPeerCount = 7
+	h.roles[0].status.Node.PeerCount = 9
+	h.roles[0].status.ActiveRecords = 8
+	h.roles[0].status.MessagesAccepted = 11
+	h.roles[0].status.ApplyErrors = 2
+	h.roles[0].status.LastAcceptedUnixMilli = 123456
 	snapshot := d.snapshot()
-	if snapshot.PeerId != "peer-1" || snapshot.Peers != 7 || snapshot.FeedSubscribers != 3 {
+	if snapshot.PeerId != "peer-1" || snapshot.Peers != 7 || snapshot.FeedSubscribers != 3 || snapshot.ActiveRecords == nil || *snapshot.ActiveRecords != 8 || snapshot.ConnectedPeers == nil || *snapshot.ConnectedPeers != 9 || snapshot.MessagesAccepted == nil || *snapshot.MessagesAccepted != 11 || snapshot.ApplyErrors == nil || *snapshot.ApplyErrors != 2 || snapshot.LastAcceptedUnixMilli != 123456 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}
 }
@@ -324,6 +329,9 @@ func TestExtenderDiscoveryConcurrentToggleIsRaceFree(t *testing.T) {
 }
 
 func TestApplyExtenderDiscoveryModeWithoutARole(t *testing.T) {
+	previous := globalControlState
+	globalControlState = newControlState()
+	t.Cleanup(func() { globalControlState = previous })
 	globalExtenderRole.Store(nil)
 	if err := applyExtenderDiscoveryMode("on"); err == nil {
 		t.Fatal("applying a mode with no extender role should fail so the caller can queue it")
@@ -331,7 +339,13 @@ func TestApplyExtenderDiscoveryModeWithoutARole(t *testing.T) {
 	if err := applyExtenderDiscoveryMode("bogus"); err == nil {
 		t.Fatal("a bad mode was accepted")
 	}
-	if got := currentExtenderDiscoverySnapshot(); got.State != extenderDiscoveryStateOff || got.Requested != extenderDiscoveryOff {
+	if got := currentExtenderDiscoverySnapshot(); got.State != extenderDiscoveryStateOff || got.Requested != extenderDiscoveryOn {
 		t.Fatalf("snapshot with no role = %+v", got)
+	}
+	if err := globalControlState.set("extender_discovery", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if got := currentExtenderDiscoverySnapshot(); got.Requested != "off" || got.State != extenderDiscoveryStateOff {
+		t.Fatalf("saved off with no role: %+v", got)
 	}
 }

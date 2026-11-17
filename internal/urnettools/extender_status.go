@@ -60,12 +60,18 @@ type ExtenderServed struct {
 }
 
 type ExtenderDiscovery struct {
-	Requested       string `json:"requested"`
-	State           string `json:"state"`
-	Failure         string `json:"failure,omitempty"`
-	PeerId          string `json:"peer_id"`
-	Peers           int    `json:"peers"`
-	FeedSubscribers int    `json:"feed_subscribers"`
+	Requested             string  `json:"requested"`
+	State                 string  `json:"state"`
+	Failure               string  `json:"failure,omitempty"`
+	PeerId                string  `json:"peer_id"`
+	Peers                 int     `json:"peers"`
+	FeedSubscribers       int     `json:"feed_subscribers"`
+	ActiveRecords         *int    `json:"active_records,omitempty"`
+	ConnectedPeers        *int    `json:"connected_peers,omitempty"`
+	Connecting            *bool   `json:"connecting,omitempty"`
+	MessagesAccepted      *uint64 `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64 `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64   `json:"last_accepted_unix_milli,omitempty"`
 }
 
 // ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
@@ -297,6 +303,26 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 		d := r.Discovery
 		fmt.Fprintf(w, "  Discovery:         %s (requested: %s)\n", d.State, d.Requested)
 		fmt.Fprintf(w, "    Peer id: %s; mesh peers: %d; feed subscribers: %d\n", d.PeerId, d.Peers, d.FeedSubscribers)
+		if d.ActiveRecords != nil {
+			fmt.Fprintf(w, "    Active directory records: %d\n", *d.ActiveRecords)
+		}
+		if d.ConnectedPeers != nil {
+			fmt.Fprintf(w, "    Gossip connections: %d", *d.ConnectedPeers)
+			if d.Connecting != nil && *d.Connecting {
+				fmt.Fprint(w, "; connecting")
+			}
+			fmt.Fprintln(w)
+		}
+		if d.MessagesAccepted != nil {
+			fmt.Fprintf(w, "    Gossip: %d valid peer messages received", *d.MessagesAccepted)
+			if d.ApplyErrors != nil {
+				fmt.Fprintf(w, "; %d apply errors", *d.ApplyErrors)
+			}
+			if d.LastAcceptedUnixMilli > 0 {
+				fmt.Fprintf(w, "; last received %s", time.UnixMilli(d.LastAcceptedUnixMilli).Local().Format(time.RFC3339))
+			}
+			fmt.Fprintln(w)
+		}
 		switch d.State {
 		case "waiting":
 			fmt.Fprintln(w, "    Discovery is waiting for the platform's root keys.")

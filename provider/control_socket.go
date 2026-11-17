@@ -509,7 +509,7 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit":        "off",
-	"extender_discovery": "off",
+	"extender_discovery": "on",
 	"pprof":              "on",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
@@ -810,7 +810,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, extenderDiscoveryOff, err) {
+			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, liveDefaults[req.Key], err) {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process

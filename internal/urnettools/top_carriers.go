@@ -112,14 +112,47 @@ func (m *topModel) drawCarriers(b *tui.Buffer) {
 		}
 		return
 	}
+	y := 0
+	if d := m.extender.Discovery; d != nil {
+		line := fmt.Sprintf("discovery %s (requested %s)  mesh %d  feeds %d", d.State, d.Requested, d.Peers, d.FeedSubscribers)
+		if d.ActiveRecords != nil {
+			line += fmt.Sprintf("  records %d", *d.ActiveRecords)
+		}
+		if d.ConnectedPeers != nil {
+			line += fmt.Sprintf("  links %d", *d.ConnectedPeers)
+		}
+		if d.Connecting != nil && *d.Connecting {
+			line += "  connecting"
+		}
+		b.Put(line, 0, y, m.theme.Dim)
+		y++
+		if d.MessagesAccepted != nil && y < b.Height() {
+			line := fmt.Sprintf("gossip messages %d", *d.MessagesAccepted)
+			if d.ApplyErrors != nil {
+				line += fmt.Sprintf("  apply errors %d", *d.ApplyErrors)
+			}
+			if d.LastAcceptedUnixMilli > 0 {
+				line += "  last " + time.UnixMilli(d.LastAcceptedUnixMilli).Local().Format("15:04:05")
+			}
+			b.Put(line, 0, y, m.theme.Dim)
+			y++
+		}
+		if d.PeerId != "" && y < b.Height() {
+			b.Put("peer id: "+d.PeerId, 0, y, m.theme.Dim)
+			y++
+		}
+		if d.Failure != "" && y < b.Height() {
+			b.Put("discovery: "+d.Failure, 0, y, m.theme.Dim)
+			y++
+		}
+	}
 	rows := carrierRows(m.extender)
 	if len(rows) == 0 {
 		if b.Height() > 0 {
-			b.Put("no data", 0, 0, m.theme.Dim)
+			b.Put("no data (carriers)", 0, y, m.theme.Dim)
 		}
 		return
 	}
-	y := 0
 	for _, row := range rows {
 		if y >= b.Height() {
 			return

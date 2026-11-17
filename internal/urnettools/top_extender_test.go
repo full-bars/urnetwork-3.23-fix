@@ -4,6 +4,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/internal/tui"
 )
 
 func extenderRowMap(rows []topExtenderRow) map[string]topExtenderRow {
@@ -184,5 +186,31 @@ func TestTopLeavesOutTheExtenderBoxWhenUnreported(t *testing.T) {
 	txt, _ := showOnSim(t, m, 120, 50)
 	if strings.Contains(txt, "Extender") {
 		t.Errorf("an unreported extender must not draw a box:\n%s", txt)
+	}
+}
+
+func TestTopExtenderDiscoveryVisibility(t *testing.T) {
+	for _, tc := range []struct {
+		state string
+		peers int
+		want  topLevel
+	}{
+		{"running", 4, topGood}, {"running", 0, topWarn}, {"waiting", 0, topWarn}, {"failed", 0, topBad},
+	} {
+		r := ExtenderReading{Source: SourceControlSocket, Known: true, Running: true, Discovery: &ExtenderDiscovery{State: tc.state, Requested: "on", Peers: tc.peers, FeedSubscribers: 3, PeerId: "peer-123", Failure: ""}}
+		messages, failures := uint64(12), uint64(2)
+		r.Discovery.MessagesAccepted = &messages
+		r.Discovery.ApplyErrors = &failures
+		row := extenderRowMap(extenderBoxRows(r, time.Now()))["gossip"]
+		if row.level != tc.want || !strings.Contains(row.value, tc.state) {
+			t.Fatalf("%s: %+v", tc.state, row)
+		}
+		m := newTopModel(nil, 0, 0, tui.DefaultTheme(), nil)
+		m.extender = r
+		b := tui.New(80, 5)
+		m.drawCarriers(b)
+		if got := b.String(); !strings.Contains(got, "peer-123") || !strings.Contains(got, "feeds 3") || !strings.Contains(got, "gossip messages 12") {
+			t.Fatalf("missing discovery details: %s", got)
+		}
 	}
 }

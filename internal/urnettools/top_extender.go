@@ -62,6 +62,31 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 		level = topInfo
 	}
 	rows := []topExtenderRow{{"state", state, level}}
+	if d := r.Discovery; d != nil {
+		level := topInfo
+		switch d.State {
+		case "running":
+			level = topGood
+			if d.Peers == 0 {
+				level = topWarn
+			}
+		case "failed":
+			level = topBad
+		case "waiting":
+			level = topWarn
+		}
+		value := d.State
+		if d.State == "running" {
+			value = fmt.Sprintf("%s %d peers %d feeds", d.State, d.Peers, d.FeedSubscribers)
+			if d.MessagesAccepted != nil {
+				value += fmt.Sprintf(" %d msgs", *d.MessagesAccepted)
+			}
+		}
+		if d.State == "failed" && d.Failure != "" {
+			value += ": " + d.Failure
+		}
+		rows = append(rows, topExtenderRow{"gossip", value, level})
+	}
 
 	var ports []string
 	portLevel := topGood

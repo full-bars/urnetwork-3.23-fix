@@ -13,7 +13,7 @@ func TestExtenderDiscoveryControlQueuedAndLive(t *testing.T) {
 	globalControlState = state
 	globalExtenderRole.Store(nil)
 	t.Cleanup(func() { globalControlState = previous; globalExtenderRole.Store(nil) })
-	if !controlKeys["extender_discovery"] || !liveEffectKeys["extender_discovery"] || liveDefaults["extender_discovery"] != "off" {
+	if !controlKeys["extender_discovery"] || !liveEffectKeys["extender_discovery"] || liveDefaults["extender_discovery"] != "on" {
 		t.Fatal("control key not registered")
 	}
 	for _, value := range []string{"off", "on", "feed-only", "ON"} {
@@ -63,7 +63,7 @@ func TestExtenderDiscoveryControlQueuedAndLive(t *testing.T) {
 		t.Fatalf("live set: %+v", res)
 	}
 	res = handleControlRequest(state, controlRequest{Cmd: "clear", Key: "extender_discovery"})
-	if !res.OK || role.discoverySnapshot().State != "off" {
+	if !res.OK || role.discoverySnapshot().Requested != "on" {
 		t.Fatalf("clear: %+v %+v", res, role.discoverySnapshot())
 	}
 }
@@ -75,5 +75,40 @@ func TestExtenderDiscoveryMetrics(t *testing.T) {
 		if !strings.Contains(text, want) {
 			t.Errorf("missing %q", want)
 		}
+	}
+}
+
+func TestExtenderDiscoveryManagerDefaultsAndSavedModes(t *testing.T) {
+	for _, tc := range []struct{ name, saved, want string }{
+		{"default", "", "on"}, {"explicit-off", "off", "off"}, {"explicit-feed-only", "feed-only", "feed-only"}, {"invalid-saved", "invalid", "on"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			withTempHome(t)
+			previous := globalControlState
+			globalControlState = newControlState()
+			globalExtenderRole.Store(nil)
+			t.Cleanup(func() { globalControlState = previous; globalExtenderRole.Store(nil) })
+			if tc.saved != "" {
+				if err := globalControlState.set("extender_discovery", tc.saved); err != nil {
+					t.Fatal(err)
+				}
+			}
+			m := newExtenderManager()
+			m.environ = func(string) string { return "" }
+			m.directEnabled = func() bool { return true }
+			m.newConfig = func() extenderRoleConfig { return testExtenderRoleConfig(t) }
+			ctx, cancel := context.WithCancel(context.Background())
+			defer cancel()
+			m.ctx = ctx
+			m.Reconcile("test")
+			role := m.Role()
+			if role == nil {
+				t.Fatal("extender role did not start")
+			}
+			t.Cleanup(func() { m.stop("test complete") })
+			if got := role.discoverySnapshot().Requested; got != tc.want {
+				t.Fatalf("requested %q, want %q", got, tc.want)
+			}
+		})
 	}
 }
