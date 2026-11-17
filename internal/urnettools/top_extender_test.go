@@ -45,6 +45,27 @@ func TestTopExtenderRowsServing(t *testing.T) {
 	}
 }
 
+func TestTopExtenderPort53Rows(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		ports []ExtenderPort
+		want  string
+	}{
+		{"bound", []ExtenderPort{{Name: "dns 53", Up: true}}, "bound"},
+		{"down", []ExtenderPort{{Name: "dns 53"}}, "DOWN"},
+		{"omitted", nil, "not reported"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			rows := extenderRowMap(extenderBoxRows(ExtenderReading{
+				Source: SourceControlSocket, Running: true, Ports: tc.ports,
+			}, time.Now()))
+			if got := rows["dns 53"].value; got != tc.want {
+				t.Fatalf("dns 53 = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}
+
 func TestTopExtenderRowsBlockedTcpIsBad(t *testing.T) {
 	rows := extenderRowMap(extenderBoxRows(ExtenderReading{
 		Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "tcp_unavailable",
@@ -54,8 +75,8 @@ func TestTopExtenderRowsBlockedTcpIsBad(t *testing.T) {
 	if r := rows["state"]; r.level != topBad || !strings.Contains(r.value, "tcp 443") {
 		t.Errorf("a blocked tcp 443 must read bad and say why: %+v", r)
 	}
-	if r := rows["ports"]; !strings.Contains(r.value, "tcp DOWN") || r.level != topBad {
-		t.Errorf("ports row = %+v", r)
+	if r := rows["tcp 443"]; r.value != "DOWN" || r.level != topBad {
+		t.Errorf("tcp port row = %+v", r)
 	}
 }
 

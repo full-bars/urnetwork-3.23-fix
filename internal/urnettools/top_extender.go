@@ -88,26 +88,27 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 		rows = append(rows, topExtenderRow{"gossip", value, level})
 	}
 
-	var ports []string
-	portLevel := topGood
+	// Keep each port on its own row: a single concatenated row is clipped in
+	// the side panel, and discarding the port number makes both DNS ports alike.
+	seen53 := false
 	for _, port := range r.Ports {
-		short := strings.Fields(port.Name)
-		name := port.Name
-		if len(short) > 0 {
-			name = short[0] // tcp, udp, dns: the ports are in the title row
+		if port.Name == "dns 53" || port.Name == "udp 53" {
+			seen53 = true
 		}
-		if port.Up {
-			ports = append(ports, name+" bound")
-			continue
+		value, level := "bound", topGood
+		if !port.Up {
+			value, level = "DOWN", topWarn
+			if strings.HasPrefix(port.Name, "tcp") {
+				level = topBad
+			}
 		}
-		ports = append(ports, name+" DOWN")
-		if strings.HasPrefix(port.Name, "tcp") {
-			portLevel = topBad
-		} else if portLevel == topGood {
-			portLevel = topWarn
-		}
+		rows = append(rows, topExtenderRow{port.Name, value, level})
 	}
-	rows = append(rows, topExtenderRow{"ports", strings.Join(ports, " "), portLevel})
+	if !seen53 {
+		// Older providers omit 53 when it is not bound; omission does not tell
+		// us whether it was disabled, failed to bind, or is not supported.
+		rows = append(rows, topExtenderRow{"dns 53", "not reported", topInfo})
+	}
 
 	for _, f := range r.Families {
 		key := strings.ToLower(extenderFamilyName(f.IpVersion))
@@ -210,6 +211,10 @@ func (m *topModel) drawExtender(b *tui.Buffer) {
 		if y >= b.Height() {
 			return
 		}
-		m.kvAt(b, 8, y, row.key, row.value, m.style(row.level))
+		col := 8
+		if len(row.key) >= col {
+			col = len(row.key) + 1
+		}
+		m.kvAt(b, col, y, row.key, row.value, m.style(row.level))
 	}
 }
