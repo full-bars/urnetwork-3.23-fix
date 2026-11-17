@@ -16,7 +16,7 @@ set -uo pipefail
 SHA="${1:?upstream sha}"
 TABLES=(ip_security_cfaa_block.go ip_blocker_block.go)
 # the code that defines the format, the tables themselves are not listed
-FORMAT_PATHS=(ip_blocker.go ip_security_cfaa.go blocker)
+FORMAT_PATHS=(ip_blocker.go ip_security_cfaa.go blocker security)
 TEST_RUN='Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security'
 LOG=/tmp/cfaa_format_check.log
 INFO=/tmp/cfaa_sync_info.json
@@ -29,7 +29,7 @@ for f in "${TABLES[@]}"; do
 done
 
 echo "checking that the fork decoder reads the upstream tables at ${SHA:0:8}"
-go test -count=1 -run "$TEST_RUN" . ./blocker/... > "$LOG" 2>&1
+go test -count=1 -run "$TEST_RUN" . ./blocker/... ./security/... > "$LOG" 2>&1
 rc=$?
 if [ "$rc" -eq 0 ]; then
   echo "format check passed"
@@ -37,7 +37,7 @@ if [ "$rc" -eq 0 ]; then
   exit 0
 fi
 
-echo "::error::the fork cannot read the upstream blocklist tables, upstream changed the table format"
+echo "::error::blocklist compatibility or policy tests failed; inspect the test output before assigning a cause"
 grep -E '^(--- FAIL|FAIL|panic:)' "$LOG" | head -n 12 || true
 
 FAILED=$(grep -E '^--- FAIL' "$LOG" | sed 's/^--- FAIL: //; s/ (.*//' | head -n 8 | paste -sd, -)

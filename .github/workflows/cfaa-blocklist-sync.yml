@@ -53,10 +53,7 @@ jobs:
               f.identical = f.upstream === f.fork;
             }
 
-            const extractConst = (content, name) => {
-              const m = content.match(new RegExp(name + '\\s*=\\s*(\\d+)'));
-              return m ? parseInt(m[1], 10) : 0;
-            };
+            const { extractConst } = require('./.github/scripts/cfaa_count.js');
 
             const cfaa = files[0];
             const blocker = files[1];
