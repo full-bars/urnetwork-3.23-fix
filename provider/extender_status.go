@@ -36,6 +36,10 @@ type extenderPortReading struct {
 	Up       bool   `json:"up"`
 	Error    string `json:"error,omitempty"`
 	Disabled bool   `json:"disabled,omitempty"`
+	// Reason says why a port that is not up is down: address_in_use,
+	// permission_denied, unknown or not_requested. Absent when the port is up,
+	// disabled or the reason is not known. Older readers ignore it.
+	Reason string `json:"reason,omitempty"`
 }
 
 // extenderFamilyPortReading reports listing state for a bound carrier.
@@ -208,11 +212,20 @@ func (m *extenderManager) Reading() extenderControlReading {
 		}
 		reading.Ports = append(reading.Ports, extenderPortReading{Name: port.name, Up: up, Error: listenError, Disabled: disabled})
 	}
-	if role.config.disabledCarriers["dns 53"] {
+	// dns 53 always has a row, so an operator can tell a disabled, a bound, a
+	// failed and a never requested port apart.
+	switch state := dns53State(snapshot); state {
+	case "disabled":
 		reading.Ports = append(reading.Ports, extenderPortReading{Name: "dns 53", Disabled: true})
+	case "bound":
+		reading.Ports = append(reading.Ports, extenderPortReading{Name: "dns 53", Up: true})
+	case "pending":
+		// nothing is known until the role finishes binding
+	default:
+		reading.Ports = append(reading.Ports, extenderPortReading{Name: "dns 53", Reason: state})
 	}
 	for _, dnsPort := range snapshot.DnsPorts {
-		if dnsPort != connect.ExtenderDnsPort {
+		if dnsPort != connect.ExtenderDnsPort && dnsPort != connect.DefaultDnsPort {
 			reading.Ports = append(reading.Ports, extenderPortReading{Name: fmt.Sprintf("dns %d", dnsPort), Up: true})
 		}
 	}
@@ -411,4 +424,39 @@ func extenderListingExpiry(family *connect.ExtenderFamilyActivationStatus) time.
 func extenderListingExpired(family *connect.ExtenderFamilyActivationStatus, now time.Time) bool {
 	expiry := extenderListingExpiry(family)
 	return !expiry.IsZero() && !expiry.After(now)
+}
+
+// dns53Reason names why dns 53 is not up. A recorded bind failure gives its
+// class. With no failure recorded, a port the role was never asked to bind is
+// "not_requested". Otherwise the role has not finished binding and the reason
+// is empty.
+func dns53Reason(snapshot extenderRoleSnapshot) string {
+	if reason := snapshot.UdpPortReasons[connect.DefaultDnsPort]; reason != "" {
+		return reason
+	}
+	if !snapshot.Dns53Requested && len(snapshot.Carriers) > 0 {
+		return "not_requested"
+	}
+	return ""
+}
+
+// dns53States are the values of the dns 53 state gauge. The set is fixed, so
+// the metric never grows labels.
+var dns53States = []string{
+	"bound", "disabled", "address_in_use", "permission_denied", "unknown", "not_requested", "pending",
+}
+
+// dns53State is the one state dns port 53 is in right now. "pending" means the
+// role has not finished binding, so nothing is known yet.
+func dns53State(snapshot extenderRoleSnapshot) string {
+	switch {
+	case snapshot.Dns53Disabled:
+		return "disabled"
+	case slices.Contains(snapshot.DnsPorts, connect.DefaultDnsPort):
+		return "bound"
+	}
+	if reason := dns53Reason(snapshot); reason != "" {
+		return reason
+	}
+	return "pending"
 }
