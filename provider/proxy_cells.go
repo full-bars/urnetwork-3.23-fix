@@ -34,9 +34,9 @@ type proxyCellStore struct {
 // matches top's snapshot cadence and keeps throughput buckets meaningful.
 const proxyCellCacheTTL = time.Second
 
-// Discard baselines after three normal polling intervals rather than showing
-// accumulated traffic from a long-closed top session as current activity.
-const proxyCellMaxBaselineAge = 3 * proxyCellCacheTTL
+// Allow three times top's slowest built-in polling step (10s), while still
+// discarding traffic accumulated during a long-closed top session.
+const proxyCellMaxBaselineAge = 30 * time.Second
 
 var (
 	proxyCellStoreMu sync.Mutex

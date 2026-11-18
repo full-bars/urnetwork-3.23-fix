@@ -18,6 +18,7 @@ func TestProxyCellRatesByElapsedTime(t *testing.T) {
 		{"one second", time.Second, 4096, 2, 4096},
 		{"two seconds", 2 * time.Second, 8192, 2, 8192},
 		{"three seconds", 3 * time.Second, 12288, 2, 12288},
+		{"ten seconds", 10 * time.Second, 40960, 2, 40960},
 		{"long gap", 10 * time.Minute, 900000, 0, 0},
 		{"zero elapsed", 0, 2048, 0, 0},
 	} {
