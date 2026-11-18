@@ -66,6 +66,15 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 		}
 	}
 	rows = append(rows, proxy)
+	if s != nil && s.Proxies.UDP != nil {
+		u := s.Proxies.UDP
+		row := udprow(u)
+		level := statusOK
+		if u.NoRelay > 0 || u.Mismatch > 0 || u.Unknown > 0 || u.Unchecked > 0 {
+			level = statusWarn
+		}
+		rows = append(rows, statusRow{"UDP", level, strings.Join(row.segs, row.sep)})
+	}
 	extender := statusRow{"Extender", statusUnknown, "unavailable"}
 	if e.Known {
 		extender.Level, extender.Text = statusOK, "off"

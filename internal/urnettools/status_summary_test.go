@@ -39,6 +39,20 @@ func TestStatusSummaryUnknownAndStopped(t *testing.T) {
 	}
 }
 
+func TestStatusSummaryUDP(t *testing.T) {
+	s := &NodeSnapshot{Proxies: SnapshotProxies{UDP: &SnapshotProxyUDP{OK: 3, NoRelay: 1, Mismatch: 1, Unknown: 1, Unchecked: 4}}}
+	rows := makeStatusRows(Provider{Running: true}, s, ExtenderReading{}, nil)
+	for _, row := range rows {
+		if row.Name == "UDP" {
+			if row.Level != statusWarn || !strings.Contains(row.Text, "50% of checked, 30% of online") || !strings.Contains(row.Text, "4 unchecked") {
+				t.Fatalf("unexpected UDP row: %+v", row)
+			}
+			return
+		}
+	}
+	t.Fatal("UDP row missing")
+}
+
 func TestStatusSummaryNarrowAndNoColor(t *testing.T) {
 	rows := makeStatusRows(Provider{Running: true, Version: "a very long version"}, nil, ExtenderReading{}, nil)
 	var b bytes.Buffer
