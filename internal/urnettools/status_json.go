@@ -44,9 +44,15 @@ type statusDoc struct {
 
 // buildStatusDoc assembles the --json document from the live data.
 func buildStatusDoc(p Provider, d statusData) statusDoc {
+	available := false
+	if !d.Update.Unavailable && d.Update.Tag != "" && p.Version != "" {
+		available = compareVersionTags(p.Version, d.Update.Tag) < 0
+	}
 	up := statusUpdateJSON{
 		Installed:   p.Version,
-		Unavailable: true,
+		Latest:      d.Update.Tag,
+		Available:   available,
+		Unavailable: d.Update.Unavailable,
 	}
 	sock := controlSocketReachable(p)
 	return statusDoc{

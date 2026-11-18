@@ -16,10 +16,13 @@ func stubStatus(t *testing.T, providers []Provider, snaps map[string]json.RawMes
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	origD, origF, origP, origR := discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus
+	origD, origF, origP, origR, origU := discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus, checkStatusUpdateFn
 	t.Cleanup(func() {
-		discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus = origD, origF, origP, origR
+		discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus, checkStatusUpdateFn = origD, origF, origP, origR, origU
 	})
+	checkStatusUpdateFn = func(string) statusUpdateState {
+		return statusUpdateState{Unavailable: true}
+	}
 	// Never run the box's real systemctl. The stub fails like an unresolvable
 	// unit so the classic table (with its "state-dir:" row) is what prints.
 	renderSystemctlStatus = func(Provider) error { return errors.New("stubbed") }

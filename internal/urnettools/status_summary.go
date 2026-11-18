@@ -108,18 +108,10 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 }
 
 // renderStatusSummary renders the one-screen status summary for one provider:
-// the rows from the summary model. plain disables color and escape sequences.
+// the update line and the rows from the summary model. plain disables color
+// and escape sequences.
 func renderStatusSummary(p Provider, plain bool) error {
-	snap, _, _ := fetchSnapshotFn(p)
-	ext := ReadExtenderStatus(p)
-	var sigpipeRisk *bool
-	if p.Unit != "" && p.Supervisor != "openrc" {
-		if state, err := showSigpipeState(p, runSigpipeSystemctl); err == nil && state.risk() {
-			t := true
-			sigpipeRisk = &t
-		}
-	}
-	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
+	d := collectStatusData(p)
 
 	opts := statusLiveOptsFn()
 	if plain {
@@ -131,7 +123,12 @@ func renderStatusSummary(p Provider, plain bool) error {
 		width = 80
 	}
 	var buf bytes.Buffer
-	if err := renderStatusRows(&buf, rows, width, opts.Color); err != nil {
+	main, hint := statusUpdateParts(p.Version, d.Update)
+	fmt.Fprintln(&buf, statusClip(main, width))
+	if hint != "" {
+		fmt.Fprintf(&buf, "           %s\n", statusClip(hint, width-11))
+	}
+	if err := renderStatusRows(&buf, d.Rows, width, opts.Color); err != nil {
 		return err
 	}
 	fmt.Print(buf.String())
@@ -169,11 +166,13 @@ func renderStatusRows(w io.Writer, rows []statusRow, width int, color bool) erro
 }
 
 // statusData is the complete, renderable state of the summary: the provider,
-// the live snapshot the rows were built from, the rows, and the exit code.
+// the live snapshot the rows were built from, the rows, the update state, and
+// the exit code.
 type statusData struct {
 	Provider Provider
 	Snapshot *NodeSnapshot
 	Rows     []statusRow
+	Update   statusUpdateState
 	ExitCode int
 }
 
@@ -192,7 +191,8 @@ func collectStatusData(p Provider) statusData {
 		}
 	}
 	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
-	d := statusData{Provider: p, Snapshot: snap, Rows: rows}
+	updateState := checkStatusUpdateFn(p.StateDir)
+	d := statusData{Provider: p, Snapshot: snap, Rows: rows, Update: updateState}
 	d.ExitCode = statusExitCode(d)
 	return d
 }
