@@ -96,6 +96,28 @@ func fetchProxyCells(p Provider) ([]proxyCell, error) {
 	return decodeProxyCells(resp.ProxyCells), nil
 }
 
+const defaultProxyAfterglowSeconds = 5
+
+type proxyGlowSample struct {
+	bucket float64
+	at     time.Time
+}
+
+func (m *topModel) proxyGlowBucket(c proxyCell, now time.Time) uint8 {
+	seconds := m.proxyAfterglowSeconds
+	if seconds <= 0 {
+		seconds = defaultProxyAfterglowSeconds
+	}
+	level := float64(c.bucket)
+	if previous, ok := m.proxyGlow[c.index]; ok {
+		age := now.Sub(previous.at).Seconds()
+		if age >= 0 {
+			level = max(level, previous.bucket*max(0, 1-age/float64(seconds)))
+		}
+	}
+	return uint8(level + 0.5)
+}
+
 // applyProxyCells folds a fetched grid into the model. A nil payload clears
 // the grid (provider predates the command) so the panel falls back to bars.
 func (m *topModel) applyProxyCells(gen int, cells []proxyCell, err error) {
@@ -104,10 +126,25 @@ func (m *topModel) applyProxyCells(gen int, cells []proxyCell, err error) {
 	}
 	if err != nil || cells == nil {
 		m.proxyCells = nil
+		m.proxyGlow = nil
 		return
 	}
+	now := m.now()
+	next := make(map[int]proxyGlowSample, len(cells))
+	for _, c := range cells {
+		if c.state != connect.ProxyCellUp {
+			continue
+		}
+		previous, ok := m.proxyGlow[c.index]
+		if ok && m.proxyGlowBucket(c, now) > c.bucket {
+			next[c.index] = previous
+		} else if c.bucket > 0 {
+			next[c.index] = proxyGlowSample{bucket: float64(c.bucket), at: now}
+		}
+	}
+	m.proxyGlow = next
 	m.proxyCells = cells
-	m.proxyCellsAt = m.now()
+	m.proxyCellsAt = now
 }
 
 // proxyGridLayout says where proxy index i lands in the grid. The grid is
@@ -156,6 +193,7 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 	}
 
 	ascii := th.ASCII
+	now := m.now()
 	for y := 0; y < gridH; y++ {
 		for x := 0; x < w; x++ {
 			upperIdx := x*layout.dotRows + 2*y
@@ -169,8 +207,8 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 					if proxyCellSeverity(cells[ui].state) > proxyCellSeverity(worst) {
 						worst = cells[ui].state
 					}
-					if cells[ui].bucket > worstBucket {
-						worstBucket = cells[ui].bucket
+					if bucket := m.proxyGlowBucket(cells[ui], now); bucket > worstBucket {
+						worstBucket = bucket
 					}
 				}
 				if li := lowerIdx + k*capacity; li < len(cells) {
@@ -178,8 +216,8 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 					if proxyCellSeverity(cells[li].state) > proxyCellSeverity(worst) {
 						worst = cells[li].state
 					}
-					if cells[li].bucket > worstBucket {
-						worstBucket = cells[li].bucket
+					if bucket := m.proxyGlowBucket(cells[li], now); bucket > worstBucket {
+						worstBucket = bucket
 					}
 				}
 			}
@@ -188,7 +226,11 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 			}
 			st := m.proxyCellStyle(worst, worstBucket)
 			if ascii {
-				b.Set(x, y, tui.Cell{Rune: proxyCellASCII(worst), Style: st})
+				glyph := proxyCellASCII(worst)
+				if worst == connect.ProxyCellUp {
+					glyph = []rune{'.', ':', '+', '*'}[min(int(worstBucket)/2, 3)]
+				}
+				b.Set(x, y, tui.Cell{Rune: glyph, Style: st})
 				continue
 			}
 			// These dots have East Asian width Neutral, unlike • and ●,
@@ -252,6 +294,15 @@ func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 	// up: brightness by throughput bucket.
 	if th.OK.FG.Kind == tui.ColorDefault {
 		return th.OK // mono theme carries no color
+	}
+	if th.Name == "colorblind" {
+		st := th.OK
+		if bucket >= 4 {
+			st.Attrs |= tui.AttrBold
+		} else if bucket == 0 {
+			st.Attrs |= tui.AttrDim
+		}
+		return st
 	}
 	ramp := []tui.Color{
 		th.OK.FG,
