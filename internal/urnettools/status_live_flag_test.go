@@ -97,7 +97,7 @@ func TestStatusLiveIntervalErrors(t *testing.T) {
 
 func TestStatusRedrawLivePlain(t *testing.T) {
 	out := captureStdout(t, func() {
-		redrawLive("test frame\n", true)
+		redrawLive("test frame\n", true, 0)
 	})
 	if !strings.Contains(out, "test frame") {
 		t.Fatalf("redrawLive missing text: %q", out)
