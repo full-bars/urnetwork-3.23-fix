@@ -177,14 +177,15 @@ func parseStunMappedAddress(response []byte, transaction [12]byte) (net.IP, bool
 	return nil, false
 }
 
-// udpExitViaProxy asks a STUN server, through the proxy's UDP relay, which
+// probeProxyUDPRelay performs only the SOCKS5 handshake and UDP ASSOCIATE.
+// It sends no UDP packets and does not contact an external service.
+func probeProxyUDPRelay(ctx context.Context, settings *connect.ProxySettings) (net.PacketConn, error) {
+	return dialSocks5UDP(ctx, settings.Network, settings.Address, settings.Auth)
+}
+
+// udpExitViaProxy asks a STUN server, through the already opened relay, which
 // address it sees the datagram from.
-func udpExitViaProxy(ctx context.Context, settings *connect.ProxySettings) (string, error) {
-	pc, err := dialSocks5UDP(ctx, settings.Network, settings.Address, settings.Auth)
-	if err != nil {
-		return "", err
-	}
-	defer pc.Close()
+func udpExitViaProxy(ctx context.Context, pc net.PacketConn) (string, error) {
 	buffer := make([]byte, 2048)
 	for _, server := range udpCheckStunServers {
 		destination, err := net.ResolveUDPAddr("udp4", server)
@@ -290,17 +291,27 @@ func tcpExitFrom(ctx context.Context, settings *connect.ProxySettings, server ud
 	return ip.String(), nil
 }
 
+type cachedProxyTCPExitKey struct{}
+
 // checkProxyUDP runs the whole check for one identity.
 func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
 	ctx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
 	defer cancel()
-	udpExit, err := udpExitViaProxy(ctx, settings)
+	pc, err := probeProxyUDPRelay(ctx, settings)
 	if err != nil {
 		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
 	}
-	tcpExit, err := tcpExitViaProxy(ctx, settings)
+	defer pc.Close()
+	udpExit, err := udpExitViaProxy(ctx, pc)
 	if err != nil {
-		return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
+		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
+	}
+	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
+	if tcpExit == "" {
+		tcpExit, err = tcpExitViaProxy(ctx, settings)
+		if err != nil {
+			return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
+		}
 	}
 	if tcpExit != udpExit {
 		return proxyUDPResult{Status: proxyUDPExitMismatch, TCPExit: tcpExit, UDPExit: udpExit}
@@ -309,8 +320,9 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 }
 
 type proxyUDPCheckEntry struct {
-	result proxyUDPResult
-	at     time.Time
+	result  proxyUDPResult
+	at      time.Time
+	tcpExit string // last known TCP exit, retained even when a relay fails
 	// done is non-nil while a check for the identity is running
 	done chan struct{}
 }
@@ -404,19 +416,25 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			return result
 		}
 		var previous *proxyUDPResult
+		var tcpExit string
 		if entry != nil {
 			copyOf := entry.result
 			previous = &copyOf
+			tcpExit = entry.tcpExit
+			if tcpExit == "" {
+				tcpExit = entry.result.TCPExit
+			}
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{})}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit}
 		self.entries[key] = running
 		self.mu.Unlock()
 
 		var result proxyUDPResult
 		select {
 		case self.slots <- struct{}{}:
-			result = self.probe(ctx, settings)
+			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, tcpExit)
+			result = self.probe(probeCtx, settings)
 			<-self.slots
 		case <-ctx.Done():
 			result = proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
@@ -427,13 +445,16 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, at: now.Add(-proxyUDPTTL(previous.Status))}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, at: now.Add(-proxyUDPTTL(previous.Status))}
 			}
 			close(running.done)
 			self.mu.Unlock()
 			return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 		}
 		running.result = result
+		if result.TCPExit != "" {
+			running.tcpExit = result.TCPExit
+		}
 		running.at = now
 		close(running.done)
 		running.done = nil

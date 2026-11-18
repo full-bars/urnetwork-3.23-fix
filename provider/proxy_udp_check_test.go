@@ -182,6 +182,28 @@ func TestUdpCheckIsUnknownWhenTheTcpExitCannotBeLearned(t *testing.T) {
 	}
 }
 
+func TestUdpCheckReusesCachedTCPExit(t *testing.T) {
+	stun := startFakeStun(t)
+	withUdpCheckTargets(t, stun)
+	server := startFakeSocks5(t, "", "", false)
+	server.tcpExitBody = "127.0.0.1"
+	store := newProxyUDPCheckStore(checkProxyUDP)
+	settings := proxySettingsFor(server)
+	now := time.Unix(100000, 0)
+	if result := store.Check(context.Background(), settings, now); result.Status != proxyUDPOK {
+		t.Fatalf("first check: %s (%v)", result.Status, result.Err)
+	}
+	if got := server.accepts.Load(); got != 2 {
+		t.Fatalf("first check opened %d connections, want UDP association and TCP lookup", got)
+	}
+	if result := store.Check(context.Background(), settings, now.Add(proxyUDPLazyTTL)); result.Status != proxyUDPOK {
+		t.Fatalf("second check: %s (%v)", result.Status, result.Err)
+	}
+	if got := server.accepts.Load(); got != 3 {
+		t.Fatalf("second check opened %d total connections, want 3 with no TCP lookup", got)
+	}
+}
+
 // One check per identity at a time, remembered for a while, and a different
 // answer for the same identity replaces the old one only when it expires.
 func TestUdpCheckStoreRemembersAndDeduplicates(t *testing.T) {
