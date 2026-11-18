@@ -52,6 +52,13 @@ func TestTopUDPGridAndCompactLayout(t *testing.T) {
 			t.Fatalf("grid pool height = %d, want %d", box.H, topProxiesGridRows)
 		}
 	}
+	m := topHeatGridModel(t, tui.DefaultTheme(), 900)
+	m.snap.Proxies.UDP = &SnapshotProxyUDP{OK: 900}
+	buf := tui.New(60, proxyGridMinH)
+	m.drawProxies(buf)
+	if m.proxyGridH != 0 {
+		t.Fatalf("sub-minimum grid height %d drawn with UDP rows", m.proxyGridH+1)
+	}
 }
 
 func TestTopUDPCompactAndEmpty(t *testing.T) {
