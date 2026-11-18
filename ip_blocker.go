@@ -84,11 +84,7 @@ func blockerOrFailClosed(b Blocker, err error) Blocker {
 
 // NewBlockerWithDefaultsChecked reports invalid embedded data to the caller.
 func NewBlockerWithDefaultsChecked() (Blocker, error) {
-	index, tails, err := legacyBlockerBuckets(blockerBlockedHostData, blockerBlockedHostCount)
-	if err != nil {
-		return nil, err
-	}
-	return newDefaultBlockerWithData(blockerPepper, index, tails, blockerBlockedHostCount,
+	return newDefaultBlockerWithData(blockerPepper, blockerBlockedHostBuckets, blockerBlockedHostData, blockerBlockedHostCount,
 		blockerBlockedPrefixData, blockerBlockedPrefixCount,
 		blockerBlockedPrefix6Data, blockerBlockedPrefix6Count)
 }

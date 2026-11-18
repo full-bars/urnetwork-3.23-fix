@@ -479,19 +479,18 @@ func TestBlockerGeneratedTables(t *testing.T) {
 	if len(blockerPepper) != blockerPepperLen {
 		t.Fatalf("pepper length %d, want %d", len(blockerPepper), blockerPepperLen)
 	}
-	if len(blockerBlockedHostData) != blockerBlockedHostCount*blockerHostRecordLen {
-		t.Fatalf("host data length %d, want %d", len(blockerBlockedHostData), blockerBlockedHostCount*blockerHostRecordLen)
+	if len(blockerBlockedHostBuckets) != blockerHostBucketBytes {
+		t.Fatalf("bucket index length %d, want %d", len(blockerBlockedHostBuckets), blockerHostBucketBytes)
 	}
-	for i := 1; i < blockerBlockedHostCount; i += 1 {
-		prev := beN(blockerBlockedHostData, (i-1)*blockerHostRecordLen, blockerHostRecordLen)
-		cur := beN(blockerBlockedHostData, i*blockerHostRecordLen, blockerHostRecordLen)
-		if prev >= cur {
-			t.Fatalf("host record %d: not strictly increasing", i)
-		}
+	if len(blockerBlockedHostData) != blockerBlockedHostCount*blockerHostTailLen {
+		t.Fatalf("host tail length %d, want %d", len(blockerBlockedHostData), blockerBlockedHostCount*blockerHostTailLen)
 	}
-	// the embedded tables are what ship in the sdk binary; the generator
-	// enforces a size budget (blocker/main.go -max-bytes, default 1 MiB)
-	embedded := len(blockerPepper) + len(blockerBlockedHostData) +
+	if _, err := decodeBlockerHostBuckets(blockerBlockedHostBuckets, blockerBlockedHostData, blockerBlockedHostCount,
+		len(blockerPepper)+len(blockerBlockedPrefixData)+len(blockerBlockedPrefix6Data)); err != nil {
+		t.Fatalf("invalid generated host table: %v", err)
+	}
+	// Include the bucket index in the generator's 1 MiB embedded size budget.
+	embedded := len(blockerPepper) + len(blockerBlockedHostBuckets) + len(blockerBlockedHostData) +
 		len(blockerBlockedPrefixData) + len(blockerBlockedPrefix6Data)
 	if 1<<20 < embedded {
 		t.Fatalf("embedded blocker tables %d bytes exceed the 1 MiB size budget", embedded)
