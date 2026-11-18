@@ -1004,6 +1004,11 @@ func main() {
 	finishInit := bannerPhase("Logger init")
 	initGlog()
 	finishInit("glog + stderr")
+	if isLongRunningSubcommand() {
+		if path, err := proxyStatePath(); err == nil {
+			globalProxyUDPCheck.enablePersistence(filepath.Join(filepath.Dir(path), "proxy_udp_state.json"), time.Now())
+		}
+	}
 
 	// If auto-tuner enabled RAM logs, perform the countdown handover now.
 	// Only for the long-running provide process — see isLongRunningSubcommand.

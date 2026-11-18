@@ -190,7 +190,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 		}
 		settingsByKey[key] = settings
 		candidate := udpProbeCandidate{key: key, online: true}
-		if entry := store.entries[key]; entry != nil {
+		if entry := store.cachedEntryLocked(key); entry != nil {
 			if entry.done != nil {
 				// An active check will publish a fresh answer itself.
 				candidate.lastChecked = now

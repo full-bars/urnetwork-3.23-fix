@@ -353,6 +353,8 @@ type proxyUDPCheckStore struct {
 	// detachedRuns holds the one detached check in flight per identity
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
+	persistPath  string
+	persisted    map[string]udpPersistEntry
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -410,7 +412,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 	key := settings.Key()
 	for {
 		self.mu.Lock()
-		entry := self.entries[key]
+		entry := self.cachedEntryLocked(key)
 		if entry != nil && entry.done != nil {
 			done := entry.done
 			self.mu.Unlock()
@@ -481,6 +483,9 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		running.at = now
 		close(running.done)
 		running.done = nil
+		if err := self.persistLocked(key, running, now); err != nil {
+			tlog("[proxy][udp] could not persist probe state\n")
+		}
 		self.mu.Unlock()
 
 		logProxyUDPResult(settings, previous, result)
@@ -497,7 +502,7 @@ func (self *proxyUDPCheckStore) checkDetached(settings *connect.ProxySettings, n
 	key := settings.Key()
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if entry := self.entries[key]; entry != nil && entry.done == nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
+	if entry := self.cachedEntryLocked(key); entry != nil && entry.done == nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 		run := &proxyUDPCheckRun{done: make(chan struct{}), result: entry.result}
 		close(run.done)
 		return run
@@ -554,7 +559,7 @@ func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *Snapsh
 	defer self.mu.Unlock()
 	out := &SnapshotProxyUDP{}
 	for _, key := range online {
-		entry := self.entries[key]
+		entry := self.cachedEntryLocked(key)
 		if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
 			out.Unchecked++
 			continue
