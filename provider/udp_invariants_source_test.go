@@ -10,6 +10,22 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+func TestUDPInvariantMalformedPrimaryCannotClaimURLAddress(t *testing.T) {
+	home := withTempHome(t)
+	path := filepath.Join(home, "source.txt")
+	if err := os.WriteFile(path, []byte("shared:1234:alice:pw:extra\nvalid:5678:bob:pw\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paid, trusted := udpPaidDesiredSet(&ProxyState{Source: path})
+	if !trusted {
+		return
+	}
+	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{"shared:1234": {}}}
+	if got := urlUDPProbeSettings([]string{"shared:1234"}, paid, url); len(got) != 0 {
+		t.Fatal("malformed primary entry allowed its address to be claimed by URL")
+	}
+}
+
 func TestUDPInvariantURLSweepProtectsUnknownPaidOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		name  string

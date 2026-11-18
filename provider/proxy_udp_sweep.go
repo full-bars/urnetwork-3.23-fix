@@ -6,6 +6,7 @@ import (
 	"errors"
 	"math/bits"
 	"math/rand"
+	"net"
 	"os"
 	"path/filepath"
 	"sort"
@@ -41,6 +42,9 @@ func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bo
 				continue
 			}
 			address, user, password := parseProxyAddress(line)
+			if _, _, err := net.SplitHostPort(address); err != nil {
+				return nil, false
+			}
 			if user == "" || password == "" {
 				if address != "" {
 					out["\x00"+address] = &connect.ProxySettings{Address: address}
