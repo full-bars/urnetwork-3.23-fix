@@ -19,7 +19,7 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ---
 
-## Stop the URL proxy source cycle cleanly on shutdown
+## 226. Stop the URL proxy source cycle cleanly on shutdown
 
 **Purpose**: A shutdown that arrives while the provider reads or probes its URL proxy sources must end the cycle quietly. Before, it failed every remaining source, set the resolution status to failed and warned the operator once per source.
 
@@ -4124,7 +4124,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Files modified**: `transfer.go`, `transfer_encrypt.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/jwt_read_openbsd.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `scripts/compute-app-version.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
-- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
+- Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path. The handshake changes derive from upstream connect commit 9383d2d8.
 - Add Linux ARMv7 (`GOARCH=arm`, `GOARM=5` software floating point) provider and `urnet-tools` release binaries and installer architecture detection (`armv7l`, `armv8l`).
 - Harden OpenBSD service identity and installer guards: `urnet-tools` distinguishes an absent service from an ambiguous process match before running `rcctl`, keeps manually started providers on the direct stop path, verifies that `rcctl` actions and scheduled cron updates target the selected provider, and the OpenBSD installer checks the service user of an existing `rc.d` script, reports partial installs and unsafe state paths, and preserves a working provider when a step fails.
 - Stop the URL proxy source fetch and probe cycle cleanly on context cancellation without marking remaining sources failed or logging false warnings (`provider/proxy_url_source.go`).
