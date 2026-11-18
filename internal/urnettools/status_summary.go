@@ -167,3 +167,143 @@ func renderStatusRows(w io.Writer, rows []statusRow, width int, color bool) erro
 	}
 	return nil
 }
+
+// statusData is the complete, renderable state of the summary: the provider,
+// the live snapshot the rows were built from, the rows, and the exit code.
+type statusData struct {
+	Provider Provider
+	Snapshot *NodeSnapshot
+	Rows     []statusRow
+	ExitCode int
+}
+
+// collectStatusData reads every source without letting one slow source stop
+// another. The snapshot stays nil when the provider does not answer, which
+// drives both the "live status unavailable" rows and the unreachable exit
+// code.
+func collectStatusData(p Provider) statusData {
+	snap, _, _ := fetchSnapshotFn(p)
+	ext := ReadExtenderStatus(p)
+	var sigpipeRisk *bool
+	if p.Unit != "" && p.Supervisor != "openrc" {
+		if state, err := showSigpipeState(p, runSigpipeSystemctl); err == nil && state.risk() {
+			t := true
+			sigpipeRisk = &t
+		}
+	}
+	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
+	d := statusData{Provider: p, Snapshot: snap, Rows: rows}
+	d.ExitCode = statusExitCode(d)
+	return d
+}
+
+// statusExitCode maps the summary to the documented script contract: 0
+// healthy, 1 warning, 2 broken, 3 unreachable. A row that stays unknown, for
+// example the SIGPIPE check on a platform that cannot run it, is not a fault
+// by itself; only a missing live snapshot means unreachable.
+func statusExitCode(d statusData) int {
+	worst := statusOK
+	for _, row := range d.Rows {
+		switch row.Level {
+		case statusBad:
+			return 2
+		case statusWarn:
+			worst = statusWarn
+		}
+	}
+	if d.Snapshot == nil {
+		return 3
+	}
+	if worst == statusWarn {
+		return 1
+	}
+	return 0
+}
+
+// worstLevel returns the worst row level, ignoring unknown rows.
+func worstLevel(d statusData) statusLevel {
+	worst := statusOK
+	for _, row := range d.Rows {
+		switch row.Level {
+		case statusBad:
+			return statusBad
+		case statusWarn:
+			worst = statusWarn
+		}
+	}
+	return worst
+}
+
+// statusBriefLine renders the one-line contract for scripts and monitors,
+// for example `ok v3.23.0-fix.35.11 900/900 proxies extender active`.
+func statusBriefLine(d statusData) string {
+	word := "ok"
+	switch {
+	case d.Snapshot == nil:
+		word = "unreachable"
+	case worstLevel(d) == statusBad:
+		word = "bad"
+	case worstLevel(d) == statusWarn:
+		word = "warn"
+	}
+	version := firstSnapshotVersion(d)
+	if version == "" {
+		version = d.Provider.Version
+	}
+	if version == "" {
+		version = "unknown"
+	}
+	return fmt.Sprintf("%s %s %s", word, version, statusBriefTail(d))
+}
+
+func firstSnapshotVersion(d statusData) string {
+	for _, row := range d.Rows {
+		if row.Name == "Version" {
+			if row.Text == "unknown" {
+				// Fall back to the provider's stamped version rather than
+				// printing "unknown" for the whole line.
+				continue
+			}
+			return row.Text
+		}
+	}
+	return ""
+}
+
+func statusBriefTail(d statusData) string {
+	var parts []string
+	for _, row := range d.Rows {
+		if row.Name == "Proxies" {
+			parts = append(parts, statusBriefProxies(row.Text))
+		}
+		if row.Name == "Extender" {
+			parts = append(parts, "extender "+statusBriefExtender(row.Text))
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
+// statusBriefProxies turns "58 up, 2 degraded, 0 connecting, 0 dead, trim
+// 12/20" into "58/60 proxies".
+func statusBriefProxies(text string) string {
+	var up, degraded, connecting, dead int
+	fmt.Sscanf(text, "%d up, %d degraded, %d connecting, %d dead", &up, &degraded, &connecting, &dead)
+	total := up + degraded + connecting + dead
+	if total == 0 {
+		return "0/0 proxies"
+	}
+	return fmt.Sprintf("%d/%d proxies", up, total)
+}
+
+func statusBriefExtender(text string) string {
+	switch text {
+	case "active":
+		return "active"
+	case "off":
+		return "off"
+	case "activating":
+		return "activating"
+	default:
+		return "unavailable"
+	}
+}

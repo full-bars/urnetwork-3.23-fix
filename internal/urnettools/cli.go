@@ -476,13 +476,15 @@ var (
 // providers on the box and no target it prints one compact row per provider
 // instead. --json prints the raw live snapshot. The default output is the
 // one-screen summary; --detail restores the classic deep view, --plain drops
-// color and escape sequences.
+// color and escape sequences, and --brief gives a one-line script-friendly
+// exit-code return.
 func cmdStatus(args []string) error {
 	// These are this command's own flags; strip them before the strict target
 	// parser sees them. The original args still go to the sudo re-exec so the
 	// elevated child honours them too.
 	jsonMode := false
 	plainMode := false
+	briefMode := false
 	detailMode := false
 	var targetArgs []string
 	for _, a := range args {
@@ -491,6 +493,8 @@ func cmdStatus(args []string) error {
 			plainMode = true
 		case "--json":
 			jsonMode = true
+		case "--brief", "-brief":
+			briefMode = true
 		case "--detail", "--full":
 			detailMode = true
 		default:
@@ -507,7 +511,7 @@ func cmdStatus(args []string) error {
 		// Several providers and no target used to be refused with an
 		// inventory. Plain status now summarizes them instead; --json still
 		// needs one provider to be named.
-		if !jsonMode && !hasExplicitTarget(t) && len(providers) > 1 {
+		if !jsonMode && !briefMode && !detailMode && !hasExplicitTarget(t) && len(providers) > 1 {
 			printProviderSummary(providers, plainMode)
 			return nil
 		}
@@ -520,6 +524,11 @@ func cmdStatus(args []string) error {
 	}
 	if jsonMode {
 		return printSnapshotJSON(p)
+	}
+	if briefMode {
+		d := collectStatusData(p)
+		fmt.Println(statusBriefLine(d))
+		return briefExitError(d.ExitCode)
 	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
@@ -958,4 +967,20 @@ func printToolVersionAndProviders() {
 		fmt.Printf("  %s: %s (%s, pid %d)%s\n",
 			providerLabel(p), version, status, p.PID, stale)
 	}
+}
+
+// briefExitError wraps an exit code so main.go can exit with the correct
+// code without changing the Run() signature. The documented contract is 0
+// healthy, 1 warning, 2 broken, 3 unreachable.
+type briefExitError int
+
+func (e briefExitError) Error() string { return "" }
+func (e briefExitError) ExitCode() int { return int(e) }
+
+// StatusBriefExit is the interface main.go uses to honour --brief's exit code
+// without special-casing every command. Not every error carries one: a
+// usage error still exits 1.
+type StatusBriefExit interface {
+	error
+	ExitCode() int
 }

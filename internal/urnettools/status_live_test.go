@@ -294,7 +294,7 @@ func TestStatusManyProvidersNoTargetPrintsSummary(t *testing.T) {
 	}
 	stubStatus(t, ps, map[string]json.RawMessage{"a.service": fixtureRaw(t, "node_snapshot_v1.json")}, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus([]string{"--detail"}); err != nil {
+		if err := cmdStatus(nil); err != nil {
 			t.Fatal(err)
 		}
 	})
