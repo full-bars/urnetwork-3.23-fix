@@ -632,6 +632,9 @@ const (
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
 	if (m.menu || m.help || m.panel != "") && ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseRelease {
+		if m.drag != nil {
+			m.saveLayout()
+		}
 		m.drag = nil
 		m.lastPress = topPress{}
 	}
