@@ -1562,10 +1562,8 @@ func (self *Client) run() {
 				// transport reform or loss). EC frames only piggyback that ordering
 				// to reuse the retransmit/route plumbing; each handler below is safe
 				// to invoke off-order:
-				//   - Handshake: gated on `IsAwaitingClientFinished` + a record-prefix
-				//     check in `OptimisticallyDeliverHandshake` that rejects
-				//     ClientHello-shaped retransmits, so no duplicate bytes reach the
-				//     TLS state machine.
+				//   - Handshake: the optimistic handler checks the role, epoch,
+				//     handshake state and record prefix before delivering bytes.
 				//   - IdentityProof: `receivePeerIdentityProof` short-circuits once
 				//     verified, failed, or already buffered — safe to re-deliver.
 				// The ReceiveSequence's later in-order delivery still runs and
