@@ -49,8 +49,9 @@ type extenderManager struct {
 	// repeat a line that has not changed
 	lastOffLine string
 	lastBadEnv  string
-	// discoveryLog is owned exclusively by the manager Start ticker goroutine.
-	discoveryLog discoveryLogState
+	// discoveryLog and discoveryLogRole are owned by the Start ticker goroutine.
+	discoveryLog     discoveryLogState
+	discoveryLogRole *extenderRole
 	// why the role is off, for status. Empty while it runs.
 	offReason string
 

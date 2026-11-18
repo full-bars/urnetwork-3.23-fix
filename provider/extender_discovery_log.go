@@ -69,8 +69,11 @@ func (s *discoveryLogState) lines(d extenderDiscoverySnapshot, now time.Time) []
 
 func (m *extenderManager) logDiscoveryHealth(now time.Time) {
 	role := m.Role()
-	if role == nil {
+	if role != m.discoveryLogRole {
 		m.discoveryLog = discoveryLogState{}
+		m.discoveryLogRole = role
+	}
+	if role == nil {
 		return
 	}
 	for _, line := range m.discoveryLog.lines(role.discoverySnapshot(), now) {
