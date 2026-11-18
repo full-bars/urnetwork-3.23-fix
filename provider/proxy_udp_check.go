@@ -509,10 +509,19 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	case proxyUDPExitMismatch:
 		tlog("[proxy][udp] proxy[%d] (%s) udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.TCPExit)
 	case proxyUDPNoRelay:
-		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%v); h3 and client udp not used for this proxy, tcp only\n", index, redactedProxyAddress(settings.Address), result.Err)
+		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%s); h3 and client udp not used for this proxy, tcp only\n", index, redactedProxyAddress(settings.Address), proxyUDPFailureClass(result.Err))
 	default:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%v); h3 and client udp allowed, checking again soon\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.Err)
+		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", index, redactedProxyAddress(settings.Address), result.UDPExit, proxyUDPFailureClass(result.Err))
 	}
+}
+
+// proxyUDPFailureClass keeps underlying network errors out of operator logs.
+func proxyUDPFailureClass(err error) string {
+	class := dialFailureClass(err)
+	if class == "dial error" {
+		return "check failed"
+	}
+	return class
 }
 
 // coverage reads cached results without starting checks. A missing, in-flight,
