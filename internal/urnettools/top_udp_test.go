@@ -36,13 +36,31 @@ func TestTopUDPCoverage(t *testing.T) {
 	}
 }
 
+func TestTopUDPGridAndCompactLayout(t *testing.T) {
+	for _, n := range []int{1, 900} {
+		m := topHeatGridModel(t, tui.DefaultTheme(), n)
+		m.snap.Proxies.UDP = &SnapshotProxyUDP{OK: n}
+		got, _ := showOnSim(t, m, 120, 40)
+		if !strings.Contains(got, "udp ") {
+			t.Fatalf("pool %d: missing UDP row:\n%s", n, got)
+		}
+		box := regionRect(t, m, "box:proxies")
+		if n == 1 && box.H != topProxiesCompactRows+1 {
+			t.Fatalf("compact pool expanded to %d rows", box.H)
+		}
+		if n == 900 && box.H != topProxiesGridRows {
+			t.Fatalf("grid pool height = %d, want %d", box.H, topProxiesGridRows)
+		}
+	}
+}
+
 func TestTopUDPCompactAndEmpty(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		udp  *SnapshotProxyUDP
 		want string
 	}{
-		{"old", nil, "not reported"},
+		{"old", nil, ""},
 		{"unchecked", &SnapshotProxyUDP{Unchecked: 1}, "1 unchecked"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
@@ -51,7 +69,10 @@ func TestTopUDPCompactAndEmpty(t *testing.T) {
 			s.Proxies = SnapshotProxies{Up: 1, UDP: tc.udp}
 			m.apply(0, s, nil)
 			got, _ := showOnSim(t, m, 120, 40)
-			if !strings.Contains(got, tc.want) {
+			if tc.udp == nil && strings.Contains(got, "udp ") {
+				t.Fatalf("unexpected UDP row:\n%s", got)
+			}
+			if tc.want != "" && !strings.Contains(got, tc.want) {
 				t.Fatalf("missing %q:\n%s", tc.want, got)
 			}
 		})

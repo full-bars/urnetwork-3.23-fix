@@ -19,12 +19,11 @@ import (
 const (
 	topSideWidth    = 30
 	topSideMaxWidth = 46
-	// topProxiesRows is the Proxies panel height: frame plus four bars plus
-	// one UDP coverage line and, when there is room, a percentage line.
-	topProxiesRows = 8
+	// topProxiesRows is the Proxies panel height: frame plus four bars.
+	topProxiesRows = 6
 	// topProxiesCompactRows is the Proxies panel for a small pool: frame plus one
 	// line. Four bars for one proxy is a lot of box for one number.
-	topProxiesCompactRows = 4
+	topProxiesCompactRows = 3
 	// topProxiesCompactMax is the largest pool drawn as one line.
 	topProxiesCompactMax = 3
 	// topProxiesGridRows is the total height of the Proxies box when the proxy
@@ -350,7 +349,13 @@ func (m *topModel) proxiesRows() int {
 	if m.snap != nil {
 		p := m.snap.Proxies
 		if p.Up+p.Degraded+p.Connecting+p.Dead <= topProxiesCompactMax {
+			if p.UDP != nil {
+				return topProxiesCompactRows + 1
+			}
 			return topProxiesCompactRows
+		}
+		if p.UDP != nil {
+			return topProxiesRows + 2
 		}
 	}
 	return topProxiesRows
@@ -395,8 +400,7 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	th := m.theme
 	udp := m.snap.Proxies.UDP
 	if udp == nil {
-		b.Put("udp  not reported", 0, y, th.Dim)
-		return 1
+		return 0
 	}
 	checked := udp.OK + udp.NoRelay + udp.Mismatch + udp.Unknown
 	online := checked + udp.Unchecked
@@ -493,8 +497,12 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	// Grid mode: the provider feeds proxy_cells and the box is tall enough.
 	if m.hasProxyGridData() && proxiesBoxMode(b.Height(), b.Width()) == proxyBoxGrid {
-		m.drawProxyGrid(b.Sub(tui.Rect{W: b.Width(), H: b.Height() - 2}))
-		m.drawUDPProxyCoverage(b, b.Height()-2)
+		if m.snap.Proxies.UDP == nil {
+			m.drawProxyGrid(b)
+		} else {
+			m.drawProxyGrid(b.Sub(tui.Rect{W: b.Width(), H: b.Height() - 2}))
+			m.drawUDPProxyCoverage(b, b.Height()-2)
+		}
 		return
 	}
 	p := m.snap.Proxies

@@ -162,7 +162,7 @@ operator most needs the log to explain why their setting did not take:
 
 The UDP row counts online proxies in the up or degraded state. `ok` has a working relay with matching TCP exit. `no_relay` has no working relay. `mismatch` has a different UDP exit. `unknown` has a working relay and no known TCP exit. `unchecked` has no current result. The counts sum to online proxies.
 
-Checked is ok + no_relay + mismatch + unknown. `ok/checked` and `ok/online` show the share of ok proxies in each total. A zero denominator shows `n/a`. An omitted field shows `udp not reported`.
+Checked is ok + no_relay + mismatch + unknown. `ok/checked` and `ok/online` show the share of ok proxies in each total. A zero denominator shows `n/a`. When the field is omitted, the UDP row is omitted.
 
 ---
 

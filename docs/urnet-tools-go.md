@@ -223,7 +223,7 @@ urnet-tools proxy trim off
 - `unknown`: the relay works but its TCP exit address is unknown.
 - `unchecked`: the result is missing, in flight or expired.
 
-The counts sum to the online total. Checked is the sum of all counts except unchecked. `ok/checked` is the percentage of checked proxies that are ok. `ok/online` is the percentage of online proxies that are ok. A zero denominator shows `n/a`. Older providers that omit the field show `udp not reported`.
+The counts sum to the online total. Checked is the sum of all counts except unchecked. `ok/checked` is the percentage of checked proxies that are ok. `ok/online` is the percentage of online proxies that are ok. A zero denominator shows `n/a`. When a provider omits the field, the UDP row is omitted.
 
 ### 2. Session Save and Load
 

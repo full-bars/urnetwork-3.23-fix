@@ -226,8 +226,6 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	// omit it.
 	if s.Proxies.UDP != nil {
 		emit(udprow(s.Proxies.UDP))
-	} else {
-		emit(liveRow{label: "udp", segs: []string{"not reported"}})
 	}
 
 	// Trim: only when a cap is in force, and only when the provider reported

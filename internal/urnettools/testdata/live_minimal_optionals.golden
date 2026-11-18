@@ -4,7 +4,6 @@ Live (provider v3.23.0-fix.32.1)   FLOWING
   moved       45.0 GiB billable, 90.0 GiB total (this run), 256.0 TiB billable lifetime
   clients     212 (sessions: 200 pqe, 12 classical)
   proxies     58 up, 2 dropped, 0 connecting, 0 dead
-  udp         not reported
   uptime      3d 4h   last restart: update
   memory      1.8 GiB heap, 1204 goroutines
   pressure    0.21
