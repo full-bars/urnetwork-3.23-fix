@@ -583,6 +583,13 @@ func providerExtraMetrics() string {
 		fmt.Fprintf(&b, "urnet_proxy_auth_failures %d\n", totalAuthFailures)
 	}
 
+	// Report live UDP coverage independently of the proxy state file.
+	held := trimHeldSnapshot()
+	_, _, _, _, _, online, proxied := connect.ProxyHealthSnapshotWithIdentities(held)
+	if proxied {
+		writeUDPProxyMetrics(&b, globalProxyUDPCheck.coverage(online, time.Now()))
+	}
+
 	// --- URL proxy grades ---
 	if urlErr == nil && urlState != nil {
 		var urlUngraded int
@@ -622,6 +629,17 @@ func providerExtraMetrics() string {
 	b.WriteString(contractDiscoveryMetricsText())
 
 	return b.String()
+}
+
+// writeUDPProxyMetrics writes the UDP proxy metrics to a string builder.
+func writeUDPProxyMetrics(b *strings.Builder, cov *SnapshotProxyUDP) {
+	fmt.Fprintf(b, "# HELP urnet_proxy_udp_proxies Online proxies by cached UDP check result.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_udp_proxies gauge\n")
+	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"ok\"} %d\n", cov.OK)
+	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"no_relay\"} %d\n", cov.NoRelay)
+	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"mismatch\"} %d\n", cov.Mismatch)
+	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"unknown\"} %d\n", cov.Unknown)
+	fmt.Fprintf(b, "urnet_proxy_udp_proxies{state=\"unchecked\"} %d\n", cov.Unchecked)
 }
 
 // writeNodeGauges emits the restart-reason and resource gauges. Resource
