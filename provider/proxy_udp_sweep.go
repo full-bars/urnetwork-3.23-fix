@@ -2,9 +2,14 @@ package main
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"math/bits"
 	"math/rand"
+	"os"
+	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +24,54 @@ const (
 	udpProbeSkipPressure  = 1.0
 	udpProbeRecheckWindow = 24 * time.Hour
 )
+
+// udpPaidDesiredSet never logs source lines: they may contain credentials.
+// Any unreadable or malformed source leaves ownership unknown, so skip a tick.
+func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bool) {
+	out := make(map[string]*connect.ProxySettings)
+	if state.Source != "" {
+		b, err := os.ReadFile(state.Source)
+		if err != nil {
+			return nil, false
+		}
+		for _, line := range strings.Split(string(b), "\n") {
+			line = strings.TrimSpace(line)
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
+			}
+			address, user, password := parseProxyAddress(line)
+			if user == "" || password == "" {
+				return nil, false
+			}
+			ps := &connect.ProxySettings{Network: "tcp", Address: address, Auth: &proxy.Auth{User: user, Password: password}}
+			out[ps.Key()] = ps
+		}
+		if len(out) == 0 {
+			return nil, false
+		}
+	}
+	home, err := os.UserHomeDir()
+	if err != nil {
+		return nil, false
+	}
+	b, err := os.ReadFile(filepath.Join(home, ".urnetwork", "proxy"))
+	if err != nil && !errors.Is(err, os.ErrNotExist) {
+		return nil, false
+	}
+	if err == nil {
+		var cfg ProxyConfig
+		if json.Unmarshal(b, &cfg) != nil {
+			return nil, false
+		}
+		for address, key := range cfg.Servers {
+			ps := internalServerSettings(&cfg, address, key)
+			if _, exists := out[ps.Key()]; !exists {
+				out[ps.Key()] = ps
+			}
+		}
+	}
+	return out, true
+}
 
 // urlUDPProbeSettings resolves online URL identities, respecting primary-source
 // address ownership. If ownership is uncertain, skip rather than use stale auth.
@@ -58,7 +111,7 @@ func runURLUDPProbeTick(ctx context.Context) {
 		proxyStateMu.Unlock()
 		return
 	}
-	paid, trusted := paidDesiredSet(state)
+	paid, trusted := udpPaidDesiredSet(state)
 	proxyStateMu.Unlock()
 	if !trusted {
 		return
@@ -73,6 +126,33 @@ func runURLUDPProbeTick(ctx context.Context) {
 		return
 	}
 	runUDPProbeTick(ctx, globalProxyUDPCheck, urlUDPProbeSettings(online, paid, url), time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
+}
+
+// runPaidUDPProbeTick resolves online identities only through the trusted
+// desired set; a missing credential must never turn into an unauthenticated dial.
+func runPaidUDPProbeTick(ctx context.Context) {
+	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
+		return
+	}
+	_, _, _, _, _, online, _ := connect.ProxyHealthSnapshotWithIdentities(trimHeldSnapshot())
+	proxyStateMu.Lock()
+	state, err := readProxyState()
+	if err != nil {
+		proxyStateMu.Unlock()
+		return
+	}
+	paid, trusted := udpPaidDesiredSet(state)
+	proxyStateMu.Unlock()
+	if !trusted {
+		return
+	}
+	settings := make([]*connect.ProxySettings, 0, len(online))
+	for _, key := range online {
+		if ps := paid[key]; ps != nil {
+			settings = append(settings, ps)
+		}
+	}
+	runUDPProbeTick(ctx, globalProxyUDPCheck, settings, time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
 }
 
 // runUDPProbeTick checks a bounded batch and joins every worker before returning.
