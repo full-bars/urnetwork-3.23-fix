@@ -43,9 +43,12 @@ func cmdTop(args []string) error {
 	}
 	providers, cur := []Provider{demoProvider()}, 0
 	if !demo {
-		t, _, err := parseTargetFlags(targetArgs)
+		t, extra, err := parseTargetFlags(targetArgs)
 		if err != nil {
 			return err
+		}
+		if len(extra) > 0 {
+			return errUnexpectedPositional("top", extra)
 		}
 		providers = discoverStatusFn()
 		p, _, err := selectTargetOrSoleAccessible(providers, t, false)

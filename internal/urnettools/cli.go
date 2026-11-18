@@ -540,9 +540,12 @@ func cmdStatus(args []string) error {
 			targetArgs = append(targetArgs, a)
 		}
 	}
-	t, _, err := parseTargetFlags(targetArgs)
+	t, extra, err := parseTargetFlags(targetArgs)
 	if err != nil {
 		return err
+	}
+	if len(extra) > 0 {
+		return errUnexpectedPositional("status", extra)
 	}
 	providers := discoverStatusFn()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -595,6 +598,13 @@ func cmdStatus(args []string) error {
 	}
 	// Default: the one-screen summary.
 	return renderStatusSummary(p, plainMode)
+}
+
+// errUnexpectedPositional rejects a bare argument. A command that picks its
+// provider with flags would otherwise ignore the argument and act on a default
+// provider, which hides a typo.
+func errUnexpectedPositional(cmd string, extra []string) error {
+	return fmt.Errorf("%s takes no positional arguments, got %q. Name the provider with --unit, --user, --network, --network-id, --state-dir or --pid", cmd, strings.Join(extra, " "))
 }
 
 // printSigpipeRestartWarning prints a warning line when the effective unit would leave a SIGPIPE death dead.
