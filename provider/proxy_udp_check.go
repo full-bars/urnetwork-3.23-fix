@@ -334,6 +334,7 @@ type proxyUDPCheckEntry struct {
 	tcpExit string // last known TCP exit, retained even when a relay fails
 	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
 	tcpExitAt time.Time
+	flowReply bool
 	// done is non-nil while a check for the identity is running
 	done chan struct{}
 }
@@ -553,20 +554,35 @@ func proxyUDPFailureClass(err error) string {
 }
 
 // noteFlowReply records relay use without claiming that UDP and TCP exits match.
-// In-flight and fresh checks carry stronger evidence and are left unchanged.
+// In-flight checks and fresh definitive checks carry stronger evidence.
 func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 	entry := self.cachedEntryLocked(key)
-	if entry != nil && (entry.done != nil || now.Before(entry.at) || (!entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status))) {
-		return
+	if entry != nil {
+		if entry.done != nil || now.Before(entry.at) {
+			return
+		}
+		if !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+			if entry.result.Status != proxyUDPUnknown || entry.flowReply {
+				return
+			}
+			entry.flowReply = true
+			entry.at = now
+			if err := self.persistLocked(key, entry, now); err != nil {
+				tlog("[proxy][udp] could not persist probe state\n")
+			}
+			return
+		}
 	}
 	var tcpExit string
+	var tcpExitAt time.Time
 	if entry != nil {
 		tcpExit = entry.tcpExit
+		tcpExitAt = entry.tcpExitAt
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, at: now}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true}
 	self.entries[key] = entry
 	if err := self.persistLocked(key, entry, now); err != nil {
 		tlog("[proxy][udp] could not persist probe state\n")

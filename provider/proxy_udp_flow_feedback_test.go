@@ -71,6 +71,13 @@ func TestUDPFlowReplyPreservesCheck(t *testing.T) {
 		}
 	}
 	store := newProxyUDPCheckStore(nil)
+	unknown := &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, at: now}
+	store.entries["unknown"] = unknown
+	store.noteFlowReply("unknown", now.Add(time.Second))
+	store.noteFlowReply("unknown", now.Add(2*time.Second))
+	if !unknown.flowReply || !unknown.at.Equal(now.Add(time.Second)) {
+		t.Fatal("reply did not refresh unknown once")
+	}
 	running := &proxyUDPCheckEntry{done: make(chan struct{})}
 	store.entries["key"] = running
 	store.noteFlowReply("key", now)
