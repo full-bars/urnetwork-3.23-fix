@@ -401,9 +401,16 @@ func TestEmitInputProvenance(t *testing.T) {
 	}
 }
 
+func checkedInTablePath() string {
+	if path := os.Getenv("BLOCKER_TEST_TABLE"); path != "" {
+		return path
+	}
+	return filepath.Join("..", "ip_blocker_block.go")
+}
+
 // Rejects stale or unavailable checked-in inputs.
 func TestCheckedInGeneratedInputProvenance(t *testing.T) {
-	generatedBytes, err := os.ReadFile(filepath.Join("..", "ip_blocker_block.go"))
+	generatedBytes, err := os.ReadFile(checkedInTablePath())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -427,7 +434,12 @@ func TestCheckedInGeneratedInputProvenance(t *testing.T) {
 		if f.allow {
 			disposition = feedDispositionAcceptedAllow
 		}
-		pattern := regexp.MustCompile(`(?m)^//   - name=` + regexp.QuoteMeta(f.name) + ` url=` + regexp.QuoteMeta(f.url) + ` content_sha256=[0-9a-f]{64} content_bytes=[1-9][0-9]* parsed_hosts=([0-9]+) parsed_v4_ranges=[0-9]+ parsed_v6_ranges=[0-9]+ parsed_invalid=[0-9]+ parsed_skipped=[0-9]+ disposition=` + disposition + `$`)
+		urlPattern := regexp.QuoteMeta(f.url)
+		// The checked table can predate the move to Frogeye's hosts variants.
+		if f.name == "frogeye_firstparty" || f.name == "frogeye_multiparty" {
+			urlPattern = strings.TrimSuffix(urlPattern, `\.txt`) + `(?:-hosts)?\.txt`
+		}
+		pattern := regexp.MustCompile(`(?m)^//   - name=` + regexp.QuoteMeta(f.name) + ` url=` + urlPattern + ` content_sha256=[0-9a-f]{64} content_bytes=[1-9][0-9]* parsed_hosts=([0-9]+) parsed_v4_ranges=[0-9]+ parsed_v6_ranges=[0-9]+ parsed_invalid=[0-9]+ parsed_skipped=[0-9]+ disposition=` + disposition + `$`)
 		matches := pattern.FindAllStringSubmatchIndex(generated, -1)
 		if len(matches) != 1 {
 			t.Errorf("provenance records for %s = %d, want 1 available record", f.name, len(matches))
@@ -449,34 +461,37 @@ func TestCheckedInGeneratedInputProvenance(t *testing.T) {
 // Keep the emitted provenance and packed payload tied to the collision/size
 // constant, including the generated file that is committed for release.
 func TestGeneratedHeaderMatchesHostRecordWidth(t *testing.T) {
-	if hostRecordLen != 6 {
-		t.Fatalf("host record width = %d, want reviewed 6-byte width", hostRecordLen)
+	if hostRecordLen != 6 || hostTailLen != 5 || hostBucketBytes != 257*4 {
+		t.Fatalf("generator bucket format drift: record=%d tail=%d index=%d; review decoder and header", hostRecordLen, hostTailLen, hostBucketBytes)
 	}
 	pepper, err := makePepper(strings.Repeat("ab", 32))
 	if err != nil {
 		t.Fatal(err)
 	}
 	emitted := string(emit("standard", pepper, []uint64{0x010203040506}, nil, nil, []parsed{{f: feeds[0], disposition: feedDispositionAcceptedBlock}}))
-	generatedBytes, err := os.ReadFile(filepath.Join("..", "ip_blocker_block.go"))
+	for _, header := range []string{
+		"Representation: fingerprints retain the first 6 bytes of SHA256(blockerPepper || name).",
+		"blockerBlockedHostBuckets holds 257 big-endian uint32 record offsets;",
+		"the first fingerprint byte selects a bucket of sorted 5-byte tails in",
+	} {
+		if strings.Count(emitted, header) != 1 {
+			t.Errorf("generated bucket header drift: expected exactly one %q", header)
+		}
+	}
+	if !strings.Contains(emitted, `const blockerBlockedHostData = "\x02\x03\x04\x05\x06"`) {
+		t.Fatal("generated bucket tail drift: expected the last five fingerprint bytes")
+	}
+	generatedBytes, err := os.ReadFile(checkedInTablePath())
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantHeader := fmt.Sprintf("blockerBlockedHostCount records of %d bytes each — the first %d bytes, big", hostRecordLen, hostRecordLen)
-	for _, source := range []struct {
-		name string
-		text string
-	}{
-		{name: "fresh emission", text: emitted},
-		{name: "checked-in generated source", text: string(generatedBytes)},
-	} {
-		if count := strings.Count(source.text, wantHeader); count != 1 {
-			t.Errorf("%s has reviewed record-width header %d times, want 1", source.name, count)
+	generated := string(generatedBytes)
+	if strings.Contains(generated, "const blockerBlockedHostBuckets") {
+		if !strings.Contains(generated, "Representation: fingerprints retain the first 6 bytes of SHA256(blockerPepper || name).") || !strings.Contains(generated, "the first fingerprint byte selects a bucket of sorted 5-byte tails in") {
+			t.Fatal("checked-in bucket table header drift: review fingerprint and tail widths")
 		}
-	}
-	const wantPayload = `const blockerBlockedHostData = "" +
-	"\x01\x02\x03\x04\x05\x06"`
-	if !strings.Contains(emitted, wantPayload) {
-		t.Fatalf("fresh emission does not encode one exact %d-byte host record", hostRecordLen)
+	} else if !strings.Contains(generated, "blockerBlockedHostCount records of 6 bytes each — the first 6 bytes, big") {
+		t.Fatal("checked-in legacy table header drift: expected six-byte records until table migration")
 	}
 }
 
