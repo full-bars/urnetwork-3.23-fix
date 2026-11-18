@@ -11,8 +11,9 @@ import (
 	"github.com/spf13/cobra"
 )
 
-const extenderUsage = "usage: urnet-tools extender [status|about|on|off|enable|disable|setup]"
+const extenderUsage = "usage: urnet-tools extender [status|events|about|on|off|enable|disable|setup]"
 const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [--route=sysctl|capability|skip] [target]"
+const extenderEventsUsage = "usage: urnet-tools extender events [--since <duration>] [--kind peer,reject,state,dial,cap,publish] [--json] [target]"
 
 // normalizeExtenderAction accepts enable and disable as plain names for on and
 // off. The second result is false for anything else.
@@ -114,17 +115,18 @@ func cmdExtenderSetup(args []string) error {
 
 func newExtenderCmd() *cobra.Command {
 	return &cobra.Command{
-		Use:   "extender [status|about|on|off|enable|disable|setup]",
+		Use:   "extender [status|events|about|on|off|enable|disable|setup]",
 		Short: "show, turn on, turn off, or prepare the host for the extender role",
 		Long: "The extender helps censored clients reach URnetwork: this host accepts their connections on tcp 443 (required), udp 443 and udp 4053 and relays them, and asks the platform to list it. " +
 			"It is ON by default and earns nothing; it is a public service like a Tor bridge. " +
 			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
+			"'events' reads the in-memory gossip flight recorder over the control socket (--since, --kind, --json). " +
 			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
 			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). UDP 53 is optional and user-managed; setup does not open it. FreeBSD extender setup is untested and prints manual instructions only. " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
 			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
-		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender about\n  urnet-tools extender setup\n  urnet-tools extender setup --yes\n  urnet-tools extender disable\n  urnet-tools extender enable",
+		Example:            "  urnet-tools extender\n  urnet-tools extender status\n  urnet-tools extender events --since 1h --kind peer,reject,state,dial\n  urnet-tools extender about\n  urnet-tools extender setup\n  urnet-tools extender setup --yes\n  urnet-tools extender disable\n  urnet-tools extender enable",
 		DisableFlagParsing: true,
 		RunE: func(cmd *cobra.Command, args []string) error {
 			if hasHelpFlag(args) {
@@ -132,6 +134,9 @@ func newExtenderCmd() *cobra.Command {
 			}
 			if isExtenderSetupArgs(args) {
 				return cmdExtenderSetup(args)
+			}
+			if isExtenderEventsArgs(args) {
+				return cmdExtenderEvents(args)
 			}
 			return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 				if force {
