@@ -1,11 +1,89 @@
 package main
 
 import (
+	"context"
 	"math/bits"
 	"math/rand"
 	"sort"
+	"sync"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
+
+const (
+	udpProbeWorkers = 2
+	// At full pressure the grade pipeline already runs at its one-worker
+	// floor; defer this optional sweep to preserve capacity for that work.
+	udpProbeSkipPressure = 1.0
+)
+
+// runUDPProbeTick checks a bounded batch and joins every worker before returning.
+// The supplied settings are a snapshot of online identities, not state entries.
+func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*connect.ProxySettings, now time.Time, recheckWindow, tick time.Duration, pressure float64, enabled bool) {
+	if !enabled || pressure >= udpProbeSkipPressure || ctx.Err() != nil {
+		return
+	}
+	workers := min(udpProbeWorkers, scaledProbeConcurrency(pressure), cap(store.slots))
+	if workers <= 0 {
+		return
+	}
+	settingsByKey := make(map[string]*connect.ProxySettings, len(online))
+	candidates := make([]udpProbeCandidate, 0, len(online))
+	store.mu.Lock()
+	for _, settings := range online {
+		if settings == nil {
+			continue
+		}
+		key := settings.Key()
+		if _, exists := settingsByKey[key]; exists {
+			continue
+		}
+		settingsByKey[key] = settings
+		candidate := udpProbeCandidate{key: key, online: true}
+		if entry := store.entries[key]; entry != nil {
+			if entry.done != nil {
+				// An active check will publish a fresh answer itself.
+				candidate.lastChecked = now
+			} else {
+				candidate.lastChecked = entry.at
+				candidate.status = entry.result.Status
+			}
+		}
+		candidates = append(candidates, candidate)
+	}
+	store.mu.Unlock()
+	batch := selectUDPProbeBatch(now, candidates, recheckWindow, tick, rand.New(rand.NewSource(now.UnixNano())))
+	workers = min(workers, len(batch))
+	if workers == 0 {
+		return
+	}
+	jobs := make(chan udpProbeCandidate)
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	for range workers {
+		go func() {
+			defer wg.Done()
+			for candidate := range jobs {
+				if ctx.Err() != nil {
+					return
+				}
+				store.Check(ctx, settingsByKey[candidate.key], time.Now())
+			}
+		}()
+	}
+	for _, candidate := range batch {
+		select {
+		case <-ctx.Done():
+			close(jobs)
+			wg.Wait()
+			return
+		case jobs <- candidate:
+		}
+	}
+	close(jobs)
+	wg.Wait()
+}
 
 type udpProbeCandidate struct {
 	key         string
