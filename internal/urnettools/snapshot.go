@@ -230,6 +230,8 @@ func printSnapshotJSON(p Provider) error {
 	return err
 }
 
+var statusLiveOptsFn = statusLiveOpts
+
 // statusLiveOpts reads the drawing options for stdout.
 func statusLiveOpts() liveOpts {
 	fd := int(os.Stdout.Fd())
@@ -250,7 +252,7 @@ func printLiveBlock(p Provider, plain bool) {
 	if err != nil {
 		return
 	}
-	opts := statusLiveOpts()
+	opts := statusLiveOptsFn()
 	if plain {
 		opts.Color = false
 		opts.ASCII = true
@@ -317,7 +319,7 @@ func sanitizeSummary(s string) string {
 
 // printProviderSummary prints one compact row per provider, fetching the
 // snapshots concurrently so one slow socket does not stall the rest.
-func printProviderSummary(providers []Provider) {
+func printProviderSummary(providers []Provider, plain bool) {
 	rows := make([]providerRow, len(providers))
 	var wg sync.WaitGroup
 	for i, p := range providers {
@@ -331,6 +333,11 @@ func printProviderSummary(providers []Provider) {
 		}(i, p)
 	}
 	wg.Wait()
+	opts := statusLiveOptsFn()
+	if plain {
+		opts.Color = false
+		opts.ASCII = true
+	}
 	fmt.Printf("%d providers found; use a target (--unit / --user / --network / --network-id / --state-dir) for detail:\n\n", len(providers))
-	fmt.Print(renderProviderTable(rows, statusLiveOpts()))
+	fmt.Print(renderProviderTable(rows, opts))
 }

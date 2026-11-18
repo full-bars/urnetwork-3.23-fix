@@ -504,7 +504,7 @@ func cmdStatus(args []string) error {
 		// inventory. Plain status now summarizes them instead; --json still
 		// needs one provider to be named.
 		if !jsonMode && !hasExplicitTarget(t) && len(providers) > 1 {
-			printProviderSummary(providers)
+			printProviderSummary(providers, plainMode)
 			return nil
 		}
 		return err
