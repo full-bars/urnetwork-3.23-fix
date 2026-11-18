@@ -459,7 +459,13 @@ func TestExtenderRoleDoesNotInstallAnActivationForAnEndedSlot(t *testing.T) {
 // slot's activator, and closing the role leaves none.
 func TestExtenderRoleActivationAttachDetachRace(t *testing.T) {
 	withTempHome(t)
-	role, err := startExtenderRole(context.Background(), testExtenderRoleConfig(t))
+	config := testExtenderRoleConfig(t)
+	// This test exercises attach/detach ownership, not root-key discovery.
+	// Fail the unrelated fetch immediately instead of waiting five seconds per slot.
+	config.fetchHello = func(context.Context, *extenderActivationInputs) ([]byte, error) {
+		return nil, errors.New("test: no root keys")
+	}
+	role, err := startExtenderRole(context.Background(), config)
 	if err != nil {
 		t.Fatal(err)
 	}
