@@ -54,8 +54,9 @@ type dataBlocker struct {
 
 	pepper string
 
-	hostData  string
-	hostCount int
+	hostData    string
+	hostCount   int
+	hostBuckets *blockerHostBuckets
 
 	prefixData  string
 	prefixCount int
@@ -212,6 +213,9 @@ func (self *dataBlocker) blockHash(hashBuf *[blockerPepperLen + blockerMaxHostLe
 	var key uint64
 	for i := 0; i < blockerHostRecordLen; i += 1 {
 		key = key<<8 | uint64(sum[i])
+	}
+	if self.hostBuckets != nil {
+		return self.hostBuckets.contains(key)
 	}
 	return searchHash(self.hostData, self.hostCount, blockerHostRecordLen, key)
 }
