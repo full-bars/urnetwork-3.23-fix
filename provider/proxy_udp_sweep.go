@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -86,6 +87,12 @@ func urlUDPProbeSettings(online []string, paid map[string]*connect.ProxySettings
 	return result
 }
 
+// udpProbeEnabled controls optional background sweeps, not client safety checks.
+func udpProbeEnabled(state *controlState) bool {
+	value, found := state.get("udp_probe")
+	return !found || strings.EqualFold(value, "on")
+}
+
 type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
 
 func runURLUDPProbeTick(ctx context.Context) {
@@ -93,7 +100,7 @@ func runURLUDPProbeTick(ctx context.Context) {
 }
 
 func runURLUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
-	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
+	if !udpProbeEnabled(globalControlState) || !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
 		return
 	}
 	_, _, _, _, _, online, _ := connect.ProxyHealthSnapshotWithIdentities(trimHeldSnapshot())
@@ -133,7 +140,7 @@ func runPaidUDPProbeTick(ctx context.Context) {
 }
 
 func runPaidUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
-	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
+	if !udpProbeEnabled(globalControlState) || !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
 		return
 	}
 	_, _, _, _, _, online, _ := connect.ProxyHealthSnapshotWithIdentities(trimHeldSnapshot())
