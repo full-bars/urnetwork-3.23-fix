@@ -32,9 +32,10 @@ const (
 
 // extenderPortReading is one carrier port: tcp 443, udp 443 (quic), dns 4053.
 type extenderPortReading struct {
-	Name  string `json:"name"`
-	Up    bool   `json:"up"`
-	Error string `json:"error,omitempty"`
+	Name     string `json:"name"`
+	Up       bool   `json:"up"`
+	Error    string `json:"error,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // extenderFamilyPortReading reports listing state for a bound carrier.
@@ -201,7 +202,14 @@ func (m *extenderManager) Reading() extenderControlReading {
 		if port.carrier == connect.ExtenderCarrierDns {
 			up = slices.Contains(snapshot.DnsPorts, connect.ExtenderDnsPort)
 		}
-		reading.Ports = append(reading.Ports, extenderPortReading{Name: port.name, Up: up, Error: listenError})
+		disabled := role.config.disabledCarriers[port.name]
+		if disabled {
+			up, listenError = false, ""
+		}
+		reading.Ports = append(reading.Ports, extenderPortReading{Name: port.name, Up: up, Error: listenError, Disabled: disabled})
+	}
+	if role.config.disabledCarriers["dns 53"] {
+		reading.Ports = append(reading.Ports, extenderPortReading{Name: "dns 53", Disabled: true})
 	}
 	for _, dnsPort := range snapshot.DnsPorts {
 		if dnsPort != connect.ExtenderDnsPort {
@@ -239,7 +247,9 @@ func extenderFamilyPorts(ports []extenderPortReading, family *connect.ExtenderFa
 	var out []extenderFamilyPortReading
 	for _, port := range ports {
 		state := "not bound"
-		if port.Up {
+		if port.Disabled {
+			state = "disabled by setting"
+		} else if port.Up {
 			state = "bound, platform status unknown"
 			fields := strings.Fields(port.Name)
 			if active && family != nil && len(fields) == 2 {
@@ -323,6 +333,8 @@ func formatExtenderHealthLine(reading extenderControlReading, now time.Time) str
 	tcpDown := false
 	for _, port := range reading.Ports {
 		switch {
+		case port.Disabled:
+			ports = append(ports, port.Name+" disabled by setting")
 		case port.Up:
 			ports = append(ports, port.Name+" bound")
 		case port.Error != "":
