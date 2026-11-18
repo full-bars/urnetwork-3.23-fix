@@ -1339,5 +1339,6 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_peers Discovery mesh peers.\n# TYPE urnet_extender_discovery_peers gauge\nurnet_extender_discovery_peers %d\n", discovery.Peers)
 	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_feed_subscribers Discovery feed subscribers.\n# TYPE urnet_extender_discovery_feed_subscribers gauge\nurnet_extender_discovery_feed_subscribers %d\n", discovery.FeedSubscribers)
+	writeGossipDialMetrics(&b, discovery.DialStats)
 	return b.String()
 }
