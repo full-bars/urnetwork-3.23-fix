@@ -352,11 +352,17 @@ func (m *topModel) proxyCellAt(x, y int) (int, bool) {
 // the detail fetch has not seen reads "?" for the fields only detail carries.
 // Pure: reads only the model.
 func (m *topModel) proxyCellInfo(index int) []string {
-	cells := m.proxyCells
-	if index < 0 || index >= len(cells) {
+	var c proxyCell
+	found := false
+	for _, cell := range m.proxyCells {
+		if cell.index == index {
+			c, found = cell, true
+			break
+		}
+	}
+	if !found {
 		return nil
 	}
-	c := cells[index]
 	st := proxyCellStateName(c.state)
 	addr, intervalBytes, age := "?", uint64(0), "?"
 	clients := int64(c.clients)
