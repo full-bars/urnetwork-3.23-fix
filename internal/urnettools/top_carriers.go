@@ -161,6 +161,12 @@ func (m *topModel) drawCarriers(b *tui.Buffer) {
 			return
 		}
 		dot := func(ok bool) string {
+			if m.theme.ASCII {
+				if ok {
+					return "+"
+				}
+				return "-"
+			}
 			if ok {
 				return string(rune(0x25cf)) // filled circle: green
 			}
