@@ -31,8 +31,8 @@ func TestUDPProbeMalformedSourceKeepsValidProxies(t *testing.T) {
 	}
 	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{"shared:1234": {User: "url", Password: "fake"}}}
 	urlKey := (&connect.ProxySettings{Address: "shared:1234", Auth: &proxy.Auth{User: "url"}}).Key()
-	if got := urlUDPProbeSettings([]string{urlKey}, paid, url); len(got) != 0 {
-		t.Fatal("malformed primary source address was claimed by URL")
+	if got := urlUDPProbeSettings([]string{urlKey}, paid, url); len(got) != 1 {
+		t.Fatal("rejected primary source must not claim URL address")
 	}
 }
 
@@ -114,8 +114,8 @@ func TestPaidUDPProbeTick(t *testing.T) {
 	if err := os.WriteFile(file, []byte("malformed:secret\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if _, trusted := udpPaidDesiredSet(before); trusted {
-		t.Fatal("malformed source treated as trusted")
+	if paid, trusted := udpPaidDesiredSet(before); !trusted || len(paid) != 0 {
+		t.Fatal("rejected source must be trusted and claim no proxies")
 	}
 }
 

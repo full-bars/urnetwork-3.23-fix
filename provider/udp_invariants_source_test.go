@@ -26,6 +26,26 @@ func TestUDPInvariantMalformedPrimaryCannotClaimURLAddress(t *testing.T) {
 	}
 }
 
+func TestUDPInvariantMalformedPrimaryDoesNotPauseSweep(t *testing.T) {
+	home := withTempHome(t)
+	path := filepath.Join(home, "source.txt")
+	if err := os.WriteFile(path, []byte("first:1234:u:p\nbroken:abc:u:p\nlast:5678:u:p\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	if err := writeProxyState(&ProxyState{Source: path}); err != nil {
+		t.Fatal(err)
+	}
+	writeReviewProbeOverride(t, map[string]any{"enabled": true})
+	t.Cleanup(resetProbeConfigCache)
+	runs := 0
+	runPaidUDPProbeTickWith(context.Background(), func(_ context.Context, _ *proxyUDPCheckStore, _ []*connect.ProxySettings, _ time.Time, _, _ time.Duration, _ float64, _ bool) {
+		runs++
+	})
+	if runs != 1 {
+		t.Fatalf("paid sweep ran %d times", runs)
+	}
+}
+
 func TestUDPInvariantURLSweepProtectsUnknownPaidOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
