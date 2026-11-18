@@ -26,6 +26,7 @@ const topCarrierRing = 24
 type topCarrierRate struct {
 	base          time.Time
 	servedAtStart uint64
+	lastServed    uint64
 	ring          []uint64
 }
 
@@ -41,15 +42,17 @@ func (c *topCarrierHistory) push(now time.Time, carrier string, served uint64) {
 	}
 	e := c.per[carrier]
 	if e == nil {
-		c.per[carrier] = &topCarrierRate{base: now, servedAtStart: served}
+		c.per[carrier] = &topCarrierRate{base: now, servedAtStart: served, lastServed: served}
 		return
 	}
 	if e.base.IsZero() {
 		e.base = now
-		e.servedAtStart = served
+		e.servedAtStart, e.lastServed = served, served
 		return
 	}
-	if served < e.servedAtStart {
+	previous := e.lastServed
+	e.lastServed = served
+	if served < previous {
 		// The counter dropped: a new proxy was adopted or the provider
 		// restarted. Fold the new value as the baseline and do not invent a
 		// rate.
