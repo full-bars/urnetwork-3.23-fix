@@ -29,9 +29,10 @@ const (
 
 // ExtenderPort is one carrier port.
 type ExtenderPort struct {
-	Name  string `json:"name"`
-	Up    bool   `json:"up"`
-	Error string `json:"error,omitempty"`
+	Name     string `json:"name"`
+	Up       bool   `json:"up"`
+	Error    string `json:"error,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
 }
 
 // ExtenderFamilyPort is one carrier's platform state on one address family.
@@ -356,6 +357,8 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	var ports []string
 	for _, port := range r.Ports {
 		switch {
+		case port.Disabled:
+			ports = append(ports, port.Name+" disabled by setting")
 		case port.Up:
 			ports = append(ports, port.Name+" bound")
 		case port.Error != "":
