@@ -114,17 +114,17 @@ func TestTopUDPCoverageKeepsUncheckedInNarrowPanels(t *testing.T) {
 	}
 }
 
-// With no ok segment the first optional state is index zero. It must be
-// droppable so the unchecked count (required) stays visible in a narrow panel.
-func TestTopUDPCoverageDropsFirstOptionalStateWithoutOK(t *testing.T) {
+// With no ok count the first drawn state is an optional one. It still gives way
+// to the unchecked count when the panel is too narrow for both.
+func TestTopUDPCoverageDropsAFirstOptionalStateBeforeUnchecked(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
 	s := topFlowing(t)
-	s.Proxies.UDP = &SnapshotProxyUDP{NoRelay: 100, Unchecked: 100}
+	s.Proxies.UDP = &SnapshotProxyUDP{NoRelay: 400000, Unchecked: 1000}
 	m.apply(0, s, nil)
-	buf := tui.New(24, 4)
+	buf := tui.New(30, 4)
 	m.drawUDPProxyCoverage(buf, 0)
 	line := strings.SplitN(buf.String(), "\n", 2)[0]
-	if !strings.Contains(line, "100 unchecked") {
-		t.Fatalf("unchecked label clipped: %q", line)
+	if !strings.Contains(line, "1000 unchecked") {
+		t.Fatalf("unchecked lost at 30 columns: %q", line)
 	}
 }

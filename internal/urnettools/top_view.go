@@ -412,9 +412,9 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	b.Put("udp ", 0, y, th.Dim)
 	x := utf8.RuneCountInString("udp ")
 	type udpSeg struct {
-		text     string
-		style    tui.Style
-		required bool
+		text  string
+		style tui.Style
+		keep  bool // never dropped to make room
 	}
 	build := func(short bool) []udpSeg {
 		noRelay, mismatch, unknown := "no relay", "mismatch", "unknown"
@@ -422,17 +422,19 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 			noRelay, mismatch, unknown = "no-rel", "diff", "unk"
 		}
 		var segs []udpSeg
-		add := func(n int, label string, style tui.Style, required bool) {
-			if n == 0 && !required {
+		// A state with no count is left out, except unchecked, which is always
+		// drawn. ok and unchecked are kept when there is not enough room.
+		add := func(n int, label string, style tui.Style, always, keep bool) {
+			if n == 0 && !always {
 				return
 			}
-			segs = append(segs, udpSeg{strconv.Itoa(n) + " " + label, style, required})
+			segs = append(segs, udpSeg{strconv.Itoa(n) + " " + label, style, keep})
 		}
-		add(udp.OK, "ok", th.OK, false)
-		add(udp.NoRelay, noRelay, th.Warn, false)
-		add(udp.Mismatch, mismatch, th.Warn, false)
-		add(udp.Unknown, unknown, th.Dim, false)
-		add(udp.Unchecked, "unchecked", th.Dim, true)
+		add(udp.OK, "ok", th.OK, false, true)
+		add(udp.NoRelay, noRelay, th.Warn, false, false)
+		add(udp.Mismatch, mismatch, th.Warn, false, false)
+		add(udp.Unknown, unknown, th.Dim, false, false)
+		add(udp.Unchecked, "unchecked", th.Dim, true, true)
 		return segs
 	}
 	gap := 1
@@ -454,16 +456,11 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	if width(segs) > room {
 		segs = build(true)
 	}
-	// Drop the least important optional states from the right until it fits.
-	// The ok segment leads the row and stays. Without it, index zero is optional.
-	firstDroppable := 1
-	if udp.OK == 0 {
-		firstDroppable = 0
-	}
+	// Drop the least important states from the right until it fits.
 	for width(segs) > room {
 		drop := -1
-		for i := len(segs) - 1; i >= firstDroppable; i-- {
-			if !segs[i].required {
+		for i := len(segs) - 1; i >= 0; i-- {
+			if !segs[i].keep {
 				drop = i
 				break
 			}

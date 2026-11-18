@@ -185,6 +185,12 @@ type statusData struct {
 	ExitCode int
 }
 
+// statusSigpipeStateFn reads the unit's restart settings. It is a variable so a
+// test does not run the box's systemctl.
+var statusSigpipeStateFn = func(p Provider) (sigpipeState, error) {
+	return showSigpipeState(p, runSigpipeSystemctl)
+}
+
 // collectStatusData reads every source without letting one slow source stop
 // another. The snapshot stays nil when the provider does not answer, which
 // drives both the "live status unavailable" rows and the unreachable exit
@@ -194,9 +200,11 @@ func collectStatusData(p Provider) statusData {
 	ext := ReadExtenderStatus(p)
 	var sigpipeRisk *bool
 	if p.Unit != "" && p.Supervisor != "openrc" {
-		if state, err := showSigpipeState(p, runSigpipeSystemctl); err == nil && state.risk() {
-			t := true
-			sigpipeRisk = &t
+		// A reading that succeeded and found no risk is a result: the unit row
+		// reads ok. Only a failed reading leaves the row unknown.
+		if state, err := statusSigpipeStateFn(p); err == nil {
+			risk := state.risk()
+			sigpipeRisk = &risk
 		}
 	}
 	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
@@ -229,32 +237,12 @@ func statusExitCode(d statusData) int {
 	return 0
 }
 
-// worstLevel returns the worst row level, ignoring unknown rows.
-func worstLevel(d statusData) statusLevel {
-	worst := statusOK
-	for _, row := range d.Rows {
-		switch row.Level {
-		case statusBad:
-			return statusBad
-		case statusWarn:
-			worst = statusWarn
-		}
-	}
-	return worst
-}
-
 // statusBriefLine renders the one-line contract for scripts and monitors,
 // for example `ok v3.23.0-fix.35.11 900/900 proxies extender active`.
 func statusBriefLine(d statusData) string {
-	word := "ok"
-	switch {
-	case d.Snapshot == nil:
-		word = "unreachable"
-	case worstLevel(d) == statusBad:
-		word = "bad"
-	case worstLevel(d) == statusWarn:
-		word = "warn"
-	}
+	// The word follows the exit code, so the text and the code a script reads
+	// can never disagree.
+	word := map[int]string{0: "ok", 1: "warn", 2: "bad", 3: "unreachable"}[statusExitCode(d)]
 	version := firstSnapshotVersion(d)
 	if version == "" {
 		version = d.Provider.Version
