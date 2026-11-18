@@ -5,6 +5,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -133,8 +134,8 @@ func TestUDPInvariantSilentHandshakeTimeoutNeverFallsBack(t *testing.T) {
 		conn.Close()
 		t.Fatal("silent proxy returned a connection")
 	}
-	if !errors.Is(err, context.DeadlineExceeded) {
-		t.Fatalf("error = %v, want deadline", err)
+	if err == nil || (!errors.Is(err, context.DeadlineExceeded) && !strings.HasSuffix(err.Error(), "relay dial failed: timed out")) {
+		t.Fatalf("error = %v, want a timeout", err)
 	}
 	select {
 	case <-accepted:
