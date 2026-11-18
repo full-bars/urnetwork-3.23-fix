@@ -63,6 +63,9 @@ type proxyUDPResult struct {
 	TCPExit string
 	UDPExit string
 	Err     error
+	// TCPExitObserved is true when this check looked the TCP exit up itself
+	// instead of reusing a remembered one.
+	TCPExitObserved bool
 }
 
 type udpCheckTcpExitServer struct {
@@ -90,6 +93,10 @@ const (
 	proxyUDPNoRelayTTL    = 72 * time.Hour
 	proxyUDPMismatchTTL   = 24 * time.Hour
 	proxyUDPUnknownTTL    = time.Hour
+	// A remembered TCP exit is reused by later checks for this long. It is
+	// renewed only by a lookup that observed it, never by a UDP success, so a
+	// proxy whose TCP exit changes cannot keep a stale match indefinitely.
+	proxyTCPExitMaxAge = 6 * time.Hour
 	// An active flow keeps the existing lazy-path recheck cadence. A sweep
 	// and coverage use the longer state lifetimes; they do not delay a lazy
 	// check when traffic returns after 30 minutes (5 minutes for unknown).
@@ -307,22 +314,26 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
 	}
 	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
+	observed := false
 	if tcpExit == "" || tcpExit != udpExit {
 		tcpExit, err = tcpExitViaProxy(ctx, settings)
 		if err != nil {
 			return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
 		}
+		observed = true
 	}
 	if tcpExit != udpExit {
-		return proxyUDPResult{Status: proxyUDPExitMismatch, TCPExit: tcpExit, UDPExit: udpExit}
+		return proxyUDPResult{Status: proxyUDPExitMismatch, TCPExit: tcpExit, UDPExit: udpExit, TCPExitObserved: observed}
 	}
-	return proxyUDPResult{Status: proxyUDPOK, TCPExit: tcpExit, UDPExit: udpExit}
+	return proxyUDPResult{Status: proxyUDPOK, TCPExit: tcpExit, UDPExit: udpExit, TCPExitObserved: observed}
 }
 
 type proxyUDPCheckEntry struct {
 	result  proxyUDPResult
 	at      time.Time
 	tcpExit string // last known TCP exit, retained even when a relay fails
+	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
+	tcpExitAt time.Time
 	// done is non-nil while a check for the identity is running
 	done chan struct{}
 }
@@ -418,6 +429,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		var previous *proxyUDPResult
 		var previousAt time.Time
 		var tcpExit string
+		var tcpExitAt time.Time
 		if entry != nil {
 			previousAt = entry.at
 			copyOf := entry.result
@@ -426,16 +438,22 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			if tcpExit == "" {
 				tcpExit = entry.result.TCPExit
 			}
+			tcpExitAt = entry.tcpExitAt
+		}
+		// the probe may reuse the remembered TCP exit only while it is fresh
+		reusableTcpExit := ""
+		if tcpExit != "" && !tcpExitAt.IsZero() && now.Sub(tcpExitAt) < proxyTCPExitMaxAge {
+			reusableTcpExit = tcpExit
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt}
 		self.entries[key] = running
 		self.mu.Unlock()
 
 		var result proxyUDPResult
 		select {
 		case self.slots <- struct{}{}:
-			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, tcpExit)
+			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, reusableTcpExit)
 			result = self.probe(probeCtx, settings)
 			<-self.slots
 		case <-ctx.Done():
@@ -447,7 +465,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, at: previousAt}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt}
 			}
 			close(running.done)
 			self.mu.Unlock()
@@ -456,6 +474,9 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		running.result = result
 		if result.TCPExit != "" {
 			running.tcpExit = result.TCPExit
+		}
+		if result.TCPExitObserved {
+			running.tcpExitAt = now
 		}
 		running.at = now
 		close(running.done)
