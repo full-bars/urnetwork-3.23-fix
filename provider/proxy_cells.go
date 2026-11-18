@@ -1,6 +1,7 @@
 package main
 
 import (
+	"math/bits"
 	"sync"
 	"time"
 
@@ -32,6 +33,10 @@ type proxyCellStore struct {
 // proxyCellCacheTTL is how long the computed grid cells stay valid. A second
 // matches top's snapshot cadence and keeps throughput buckets meaningful.
 const proxyCellCacheTTL = time.Second
+
+// Discard baselines after three normal polling intervals rather than showing
+// accumulated traffic from a long-closed top session as current activity.
+const proxyCellMaxBaselineAge = 3 * proxyCellCacheTTL
 
 var (
 	proxyCellStoreMu sync.Mutex
@@ -69,13 +74,15 @@ func (c *proxyCellStore) sample(now time.Time) ([]connect.ProxyCellRaw, map[int]
 	nextPrev := make(map[int]uint64, len(raw))
 	nextRegistration := make(map[int]connect.ProxyCellRegistration, len(raw))
 	buf := make([]byte, 0, 4*len(raw))
+	elapsed := now.Sub(c.at)
+	validBaseline := !c.at.IsZero() && elapsed > 0 && elapsed <= proxyCellMaxBaselineAge
 	for _, p := range raw {
 		delta := uint64(0)
-		if last, ok := c.prev[p.Index]; ok && c.prevRegistration[p.Index] == p.Registration && p.Total >= last {
+		if last, ok := c.prev[p.Index]; validBaseline && ok && c.prevRegistration[p.Index] == p.Registration && p.Total >= last {
 			delta = p.Total - last
 		}
 		deltas[p.Index] = delta
-		bucket := proxyThroughputBucket(delta)
+		bucket := proxyThroughputBucket(proxyBytesPerSecond(delta, elapsed))
 		state := p.State
 		if state > 7 {
 			state = 7 // guard: state codes fit in 3 bits
@@ -109,9 +116,9 @@ func (c *proxyCellStore) sample(now time.Time) ([]connect.ProxyCellRaw, map[int]
 
 // Cells returns the packed grid-cell wire bytes for now, recomputing at most
 // once per proxyCellCacheTTL. The registry is read under its single lock; the
-// throughput bucket comes from the Total-byte delta between this sample and the
-// previous one (bytes in the last interval), bucketed logarithmically 0..7.
-// New proxies (no previous sample) bucket 0.
+// throughput bucket comes from the Total-byte delta divided by elapsed time
+// (bytes per second), bucketed logarithmically 0..7. Detail keeps the actual
+// interval-byte delta for compatibility. New and stale baselines bucket 0.
 func (c *proxyCellStore) Cells(now time.Time) []byte {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -144,7 +151,21 @@ func (c *proxyCellStore) Detail(now time.Time) []proxyCellDetail {
 	return out
 }
 
-// proxyThroughputBucket buckets bytes moved in the last interval (~1s) into
+// proxyBytesPerSecond scales without overflowing even for very large counters.
+func proxyBytesPerSecond(delta uint64, elapsed time.Duration) uint64 {
+	if elapsed <= 0 {
+		return 0
+	}
+	hi, lo := bits.Mul64(delta, uint64(time.Second))
+	denom := uint64(elapsed)
+	if hi >= denom {
+		return ^uint64(0)
+	}
+	rate, _ := bits.Div64(hi, lo, denom)
+	return rate
+}
+
+// proxyThroughputBucket buckets bytes per second into
 // eight logarithmic levels so the heatmap can shade cells by activity:
 //
 //	0 idle, 1 <1KiB, 2 <8KiB, 3 <64KiB, 4 <512KiB,
