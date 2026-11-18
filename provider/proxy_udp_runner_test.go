@@ -11,6 +11,24 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+func TestUDPProbeRunnerUsesSuppliedTime(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Address: "example:1080"}
+	calls := 0
+	store := newProxyUDPCheckStore(func(_ context.Context, _ *connect.ProxySettings) proxyUDPResult {
+		calls++
+		return proxyUDPResult{Status: proxyUDPOK}
+	})
+	runUDPProbeTick(context.Background(), store, []*connect.ProxySettings{ps}, now, time.Hour, time.Hour, 0, true)
+	runUDPProbeTick(context.Background(), store, []*connect.ProxySettings{ps}, now.Add(25*time.Hour), time.Hour, time.Hour, 0, true)
+	if calls != 2 {
+		t.Fatalf("calls = %d, want 2", calls)
+	}
+	if got := store.entries[ps.Key()].at; !got.Equal(now.Add(25 * time.Hour)) {
+		t.Fatalf("timestamp = %v, want supplied time", got)
+	}
+}
+
 func TestUDPProbeRunnerBoundAndResults(t *testing.T) {
 	var active, peak, count atomic.Int32
 	entered := make(chan struct{}, 2)

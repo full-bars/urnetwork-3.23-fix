@@ -224,7 +224,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 				if ctx.Err() != nil {
 					return
 				}
-				store.Check(ctx, settingsByKey[candidate.key], time.Now())
+				store.Check(ctx, settingsByKey[candidate.key], now)
 			}
 		}()
 	}

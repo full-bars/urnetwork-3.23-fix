@@ -362,7 +362,7 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 // prune drops identities nobody has asked about for two state lifetimes,
 // at most once per lazy lifetime. Called with the lock held.
 func (self *proxyUDPCheckStore) prune(now time.Time) {
-	if now.Sub(self.lastPrune) < proxyUDPLazyTTL {
+	if !self.lastPrune.IsZero() && now.Sub(self.lastPrune) < proxyUDPLazyTTL {
 		return
 	}
 	self.lastPrune = now
@@ -410,7 +410,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 			}
 		}
-		if entry != nil && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
+		if entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 			result := entry.result
 			self.mu.Unlock()
 			return result
@@ -476,7 +476,7 @@ func (self *proxyUDPCheckStore) checkDetached(settings *connect.ProxySettings, n
 	key := settings.Key()
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if entry := self.entries[key]; entry != nil && entry.done == nil && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
+	if entry := self.entries[key]; entry != nil && entry.done == nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 		run := &proxyUDPCheckRun{done: make(chan struct{}), result: entry.result}
 		close(run.done)
 		return run
