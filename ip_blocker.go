@@ -13,6 +13,8 @@ package connect
 
 import (
 	"crypto/sha256"
+	"fmt"
+	"log"
 	"net/netip"
 	"sync/atomic"
 )
@@ -69,14 +71,49 @@ type dataBlocker struct {
 // community data sets (ip_blocker_block.go, regenerate with blocker/main.go).
 // the blocker starts disabled; the owner seeds the initial state.
 func NewBlockerWithDefaults() Blocker {
-	return newBlockerWithData(
-		blockerPepper,
-		blockerBlockedHostData, blockerBlockedHostCount,
-		blockerBlockedPrefixData, blockerBlockedPrefixCount,
-		blockerBlockedPrefix6Data, blockerBlockedPrefix6Count,
-	)
+	return blockerOrFailClosed(NewBlockerWithDefaultsChecked())
 }
 
+func blockerOrFailClosed(b Blocker, err error) Blocker {
+	if err != nil {
+		log.Printf("blocker default data invalid; blocking all traffic: %v", err)
+		return &failedBlocker{err: err}
+	}
+	return b
+}
+
+// NewBlockerWithDefaultsChecked reports invalid embedded data to the caller.
+func NewBlockerWithDefaultsChecked() (Blocker, error) {
+	index, tails, err := legacyBlockerBuckets(blockerBlockedHostData, blockerBlockedHostCount)
+	if err != nil {
+		return nil, err
+	}
+	return newDefaultBlockerWithData(blockerPepper, index, tails, blockerBlockedHostCount,
+		blockerBlockedPrefixData, blockerBlockedPrefixCount,
+		blockerBlockedPrefix6Data, blockerBlockedPrefix6Count)
+}
+
+func newDefaultBlockerWithData(pepper, index, tails string, count int, prefix string, prefixCount int, prefix6 string, prefix6Count int) (Blocker, error) {
+	if count <= 0 {
+		return nil, fmt.Errorf("blocker default host table is empty")
+	}
+	b, err := newBucketBlockerWithData(pepper, index, tails, count, prefix, prefixCount, prefix6, prefix6Count)
+	if err != nil {
+		return nil, fmt.Errorf("invalid blocker default data: %w", err)
+	}
+	return b, nil
+}
+
+// failedBlocker refuses all traffic, even if a caller tries to disable it.
+type failedBlocker struct{ err error }
+
+func (b *failedBlocker) Error() error            { return b.err }
+func (b *failedBlocker) BlockHost(string) bool   { return true }
+func (b *failedBlocker) BlockIp(netip.Addr) bool { return true }
+func (b *failedBlocker) Enabled() bool           { return true }
+func (b *failedBlocker) SetEnabled(bool)         {}
+
+// newBlockerWithData is the legacy flat six-byte constructor used by older tests.
 func newBlockerWithData(
 	pepper string,
 	hostData string, hostCount int,

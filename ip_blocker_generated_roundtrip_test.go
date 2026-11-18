@@ -61,15 +61,17 @@ func TestGeneratedBlockerRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	b, err := newBucketBlockerWithData(values["blockerPepper"], values["blockerBlockedHostBuckets"], values["blockerBlockedHostData"], count, "", 0, "", 0)
+	b, err := newDefaultBlockerWithData(values["blockerPepper"], values["blockerBlockedHostBuckets"], values["blockerBlockedHostData"], count, "", 0, "", 0)
 	if err != nil {
 		t.Fatalf("checked decoder rejected generated table: %v", err)
 	}
 	b.SetEnabled(true)
 	for _, host := range fixture.Blocked {
-		if !b.BlockHost(host) || !b.BlockHost("sub."+host) {
-			t.Errorf("generated table did not block %q and its subdomain", host)
-		}
+		t.Run(host, func(t *testing.T) {
+			if !b.BlockHost(host) || !b.BlockHost("sub."+host) {
+				t.Errorf("generated table did not block %q and its subdomain", host)
+			}
+		})
 	}
 	if len(fixture.Excluded) == 0 {
 		t.Fatal("fixture did not exercise resolver exclusions")
