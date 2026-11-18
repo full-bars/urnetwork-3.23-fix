@@ -918,10 +918,17 @@ func (m *topModel) series() topSeries {
 	}
 	if m.windowHours > 0 {
 		out.scaleB, out.scaleT = &m.windowScaleB, &m.windowScaleT
-		out.billable = m.windowB.windowFor(m.windowHours, m.now())
+		now := m.now()
+		switch m.windowHours {
+		case 1:
+			out.anchor = now.Unix() / 60
+		case 24:
+			out.anchor = now.Unix() / 900
+		}
+		out.billable = m.windowB.windowFor(m.windowHours, now)
 		out.capacity = len(out.billable)
 		if m.snap.Traffic != nil {
-			out.total = m.windowT.windowFor(m.windowHours, m.now())
+			out.total = m.windowT.windowFor(m.windowHours, now)
 		}
 		if m.conn == topConnected {
 			out.tailBillable, out.tailTotal, out.live = m.live.rates()
