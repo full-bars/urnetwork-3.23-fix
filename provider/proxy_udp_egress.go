@@ -177,6 +177,9 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 	return &proxiedUdpConn{
 		relayed:     relayed,
 		destination: destination,
+		onReply: func() {
+			checkStore.noteFlowReply(proxySettings.Key(), time.Now())
+		},
 	}, nil
 }
 
@@ -219,6 +222,8 @@ func proxiedUdpDestination(network string, addr string) (*net.UDPAddr, error) {
 type proxiedUdpConn struct {
 	relayed     net.PacketConn
 	destination *net.UDPAddr
+	onReply     func()
+	replyOnce   sync.Once
 }
 
 // Read returns the next datagram from the destination. The loop skips
@@ -235,6 +240,9 @@ func (self *proxiedUdpConn) Read(b []byte) (int, error) {
 			// another destination's datagram on this association, which a
 			// connected udp socket would not deliver either
 			continue
+		}
+		if self.onReply != nil {
+			self.replyOnce.Do(self.onReply)
 		}
 		return n, nil
 	}

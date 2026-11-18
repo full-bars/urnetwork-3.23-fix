@@ -552,6 +552,27 @@ func proxyUDPFailureClass(err error) string {
 	return class
 }
 
+// noteFlowReply records relay use without claiming that UDP and TCP exits match.
+// In-flight and fresh checks carry stronger evidence and are left unchanged.
+func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry != nil && (entry.done != nil || now.Before(entry.at) || (!entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status))) {
+		return
+	}
+	var tcpExit string
+	if entry != nil {
+		tcpExit = entry.tcpExit
+	}
+	self.prune(now)
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, at: now}
+	self.entries[key] = entry
+	if err := self.persistLocked(key, entry, now); err != nil {
+		tlog("[proxy][udp] could not persist probe state\n")
+	}
+}
+
 // coverage reads cached results without starting checks. A missing, in-flight,
 // or expired result is unchecked. The caller supplies only online identities.
 func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *SnapshotProxyUDP {
