@@ -38,7 +38,7 @@ func TestPaidUDPProbeTick(t *testing.T) {
 	}
 	alice := (&connect.ProxySettings{Address: "127.0.0.1:1234", Auth: &proxy.Auth{User: "alice"}}).Key()
 	bob := (&connect.ProxySettings{Address: "127.0.0.1:1234", Auth: &proxy.Auth{User: "bob"}}).Key()
-	if err := writeProxyState(&ProxyState{Source: file, Proxies: map[string]ProxyEntry{alice: {Source: "file", Health: "up", Graded: true, Score: .8}, bob: {Source: "file", Health: proxyHealthParked}}}); err != nil {
+	if err := writeProxyState(&ProxyState{Source: file, Proxies: map[string]ProxyEntry{alice: {ID: 27, Source: "file", Health: "up", Graded: true, Score: .8}, bob: {Source: "file", Health: proxyHealthParked}}}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := readProxyState()
@@ -66,6 +66,9 @@ func TestPaidUDPProbeTick(t *testing.T) {
 	var runs int
 	runPaidUDPProbeTickWith(context.Background(), func(_ context.Context, store *proxyUDPCheckStore, selected []*connect.ProxySettings, _ time.Time, window, tick time.Duration, _ float64, enabled bool) {
 		runs++
+		if len(selected) == 1 && selected[0].Index != 27 {
+			t.Errorf("paid index = %d, want 27", selected[0].Index)
+		}
 		if store != globalProxyUDPCheck || !enabled || window != 24*time.Hour || tick != proxyReaperInterval || len(selected) != 1 || selected[0].Key() != alice {
 			t.Error("paid tick passed incorrect arguments to runner")
 		}
@@ -99,7 +102,7 @@ func TestURLUDPProbeTickKillSwitchAndState(t *testing.T) {
 	resetTrimHeld()
 	t.Cleanup(resetTrimHeld)
 	t.Cleanup(resetProbeConfigCache)
-	state := &ProxyState{Proxies: map[string]ProxyEntry{"url:2": {Source: "url", Health: "up", Graded: true, Score: .7}, "held:3": {Health: proxyHealthParked}}}
+	state := &ProxyState{Proxies: map[string]ProxyEntry{"url:2": {ID: 31, Source: "url", Health: "up", Graded: true, Score: .7}, "held:3": {Health: proxyHealthParked}}}
 	if err := writeProxyState(state); err != nil {
 		t.Fatal(err)
 	}
@@ -132,6 +135,9 @@ func TestURLUDPProbeTickKillSwitchAndState(t *testing.T) {
 	var runs int
 	runURLUDPProbeTickWith(context.Background(), func(_ context.Context, store *proxyUDPCheckStore, selected []*connect.ProxySettings, _ time.Time, window, tick time.Duration, _ float64, enabled bool) {
 		runs++
+		if len(selected) == 1 && selected[0].Index != 31 {
+			t.Errorf("URL index = %d, want 31", selected[0].Index)
+		}
 		if store != globalProxyUDPCheck || !enabled || window != 24*time.Hour || tick != proxyReaperInterval || len(selected) != 1 || selected[0].Key() != "url:2" {
 			t.Error("URL tick passed incorrect arguments to runner")
 		}

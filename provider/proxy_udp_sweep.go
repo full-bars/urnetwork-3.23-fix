@@ -131,7 +131,13 @@ func runURLUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
 	if err != nil {
 		return
 	}
-	run(ctx, globalProxyUDPCheck, urlUDPProbeSettings(online, paid, url), time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
+	settings := urlUDPProbeSettings(online, paid, url)
+	for _, ps := range settings {
+		if entry, ok := state.Proxies[ps.Key()]; ok {
+			ps.Index = entry.ID
+		}
+	}
+	run(ctx, globalProxyUDPCheck, settings, time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
 }
 
 // runPaidUDPProbeTick resolves online identities only through the trusted
@@ -159,6 +165,9 @@ func runPaidUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
 	settings := make([]*connect.ProxySettings, 0, len(online))
 	for _, key := range online {
 		if ps := paid[key]; ps != nil {
+			if entry, ok := state.Proxies[key]; ok {
+				ps.Index = entry.ID
+			}
 			settings = append(settings, ps)
 		}
 	}
