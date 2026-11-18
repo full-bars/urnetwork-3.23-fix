@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"bytes"
+	"encoding/json"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -51,6 +52,32 @@ func TestStatusSummaryUDP(t *testing.T) {
 		}
 	}
 	t.Fatal("UDP row missing")
+}
+
+func TestStatusSummaryOldSnapshotOmitsUDP(t *testing.T) {
+	var s NodeSnapshot
+	if err := json.Unmarshal([]byte(`{"v":1,"state":"flowing","proxies":{"up":4}}`), &s); err != nil {
+		t.Fatal(err)
+	}
+	if s.Proxies.UDP != nil {
+		t.Fatalf("old snapshot acquired UDP data: %+v", s.Proxies.UDP)
+	}
+	for _, row := range makeStatusRows(Provider{Running: true}, &s, ExtenderReading{}, nil) {
+		if row.Name == "UDP" {
+			t.Fatalf("old snapshot produced UDP row: %+v", row)
+		}
+	}
+}
+
+func TestStatusSummaryStripsControlCharacters(t *testing.T) {
+	rows := []statusRow{{Name: "Version", Level: statusOK, Text: "v1\x1b[31m\ninjected\r\ttext"}}
+	var b bytes.Buffer
+	if err := renderStatusRows(&b, rows, 80, false); err != nil {
+		t.Fatal(err)
+	}
+	if strings.ContainsAny(b.String(), "\x1b\r\t") || strings.Count(b.String(), "\n") != 1 {
+		t.Fatalf("unsafe control characters in output: %q", b.String())
+	}
 }
 
 func TestStatusSummaryNarrowAndNoColor(t *testing.T) {

@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"strings"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -113,7 +114,12 @@ func renderStatusRows(w io.Writer, rows []statusRow, width int, color bool) erro
 	}
 	for _, row := range rows {
 		prefix := fmt.Sprintf("* %-9s ", row.Name)
-		line := prefix + strings.ReplaceAll(strings.ReplaceAll(row.Text, "\n", " "), "\r", " ")
+		line := prefix + strings.Map(func(r rune) rune {
+			if unicode.IsControl(r) {
+				return ' '
+			}
+			return r
+		}, row.Text)
 		if utf8.RuneCountInString(line) > width {
 			line = string([]rune(line)[:width])
 		}
