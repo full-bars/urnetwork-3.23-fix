@@ -129,6 +129,11 @@ type screen struct {
 	// repaint that tcell wants after a resize happens on the drawing goroutine
 	// rather than racing it.
 	resized atomic.Bool
+	// Mouse mode changes are published to the pump without writing held from
+	// the rendering goroutine. Repeated SetMouse calls do not break a drag.
+	mouseDisabled  bool // protected by mu
+	mouseEpoch     atomic.Uint64
+	seenMouseEpoch uint64 // pump goroutine only
 	// held is the button currently pressed, tracked on the pump goroutine so
 	// motion with a button held translates as MouseDrag and button release as
 	// MouseRelease.
@@ -164,6 +169,10 @@ func (self *screen) Events() <-chan Event { return self.events }
 func (self *screen) SetMouse(on bool) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
+	if self.mouseDisabled == on {
+		self.mouseDisabled = !on
+		self.mouseEpoch.Add(1)
+	}
 	if on {
 		self.s.EnableMouse()
 	} else {
@@ -274,6 +283,10 @@ func translateMods(m tcell.ModMask) ModMask {
 }
 
 func (self *screen) translateMouse(ev *tcell.EventMouse) (Event, bool) {
+	if epoch := self.mouseEpoch.Load(); epoch != self.seenMouseEpoch {
+		self.held = MouseNone
+		self.seenMouseEpoch = epoch
+	}
 	x, y := ev.Position()
 	mods := translateMods(ev.Modifiers())
 	btns := ev.Buttons()
