@@ -153,3 +153,38 @@ func TestUDPProbeRunnerStopsAtTheTickInterval(t *testing.T) {
 		t.Fatalf("interrupted checks were remembered: %d", store.size())
 	}
 }
+
+// A probe tick runs beside the pass it belongs to. A tick still running at the
+// next interval is skipped, not stacked behind it.
+func TestStartUDPProbeTickRunsOneAtATime(t *testing.T) {
+	var running atomic.Bool
+	var runs atomic.Int32
+	entered := make(chan struct{}, 4)
+	release := make(chan struct{})
+	run := func(ctx context.Context) {
+		runs.Add(1)
+		entered <- struct{}{}
+		<-release
+	}
+	startUDPProbeTick(&running, context.Background(), run)
+	waitSignal(t, entered, "the first tick")
+	returned := make(chan struct{})
+	go func() {
+		defer close(returned)
+		startUDPProbeTick(&running, context.Background(), run) // skipped: one is in flight
+	}()
+	waitSignal(t, returned, "the caller, which must not wait for the running tick")
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("%d ticks ran while one was in flight, want 1", got)
+	}
+	close(release)
+	deadline := time.Now().Add(5 * time.Second)
+	for running.Load() {
+		if time.Now().After(deadline) {
+			t.Fatal("the tick never finished")
+		}
+		runtime.Gosched()
+	}
+	startUDPProbeTick(&running, context.Background(), run)
+	waitSignal(t, entered, "a new tick after the first finished")
+}
