@@ -101,6 +101,12 @@ func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool,
 						if !sp.sysctlPersisted() {
 							return false, fmt.Sprintf("ip_unprivileged_port_start=%d live, but not persisted; setup can write %s", v, extenderSysctlDropin), nil
 						}
+						if sp.sysctlPort() == 443 {
+							if v == 443 {
+								return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443, persisted)", nil
+							}
+							return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443, persisted)", v), nil
+						}
 						return true, fmt.Sprintf("ports from %d are available without a file capability (ip_unprivileged_port_start=%d, persisted)", sp.sysctlPort(), v), nil
 					}
 				}
