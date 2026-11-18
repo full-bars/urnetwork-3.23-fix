@@ -119,6 +119,11 @@ func TestHelpFlagsMatchTheParsers(t *testing.T) {
 			{"top_cmd.go", "hasNoMouseFlag"}, {"top_demo.go", "stripDemoFlag"},
 		}, []string{"--demo"}},
 		{"providers", newProvidersCmd, []parserSource{{"cli.go", "cmdProviders"}}, nil},
+		{"start", newStartCmd, []parserSource{{"legacy_cmds.go", "cmdStart"}}, nil},
+		{"stop", newStopCmd, []parserSource{{"legacy_cmds.go", "cmdStop"}}, nil},
+		{"restart", newRestartCmd, []parserSource{{"legacy_cmds.go", "cmdRestart"}}, nil},
+		{"update", newUpdateCmd, []parserSource{{"update.go", "cmdUpdate"}}, nil},
+		{"logs", newLogsCmd, []parserSource{{"legacy_cmds.go", "cmdLogs"}}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			ignore := map[string]bool{}
@@ -167,7 +172,7 @@ func TestHelpPagesAreReadable(t *testing.T) {
 			}
 		})
 	}
-	for _, name := range []string{"status", "top", "providers"} {
+	for _, name := range []string{"status", "top", "providers", "start", "stop", "restart", "update", "logs"} {
 		cmd, _, err := root.Find([]string{name})
 		if err != nil {
 			t.Fatal(err)
@@ -180,6 +185,10 @@ func TestHelpPagesAreReadable(t *testing.T) {
 		for _, line := range strings.Split(out.String(), "\n") {
 			if n := len([]rune(line)); n > 80 {
 				t.Errorf("%s help has a %d column line: %q", name, n, line)
+			}
+			// a flag such as --dry-run must not be split across two lines
+			if strings.HasSuffix(line, "-") && !strings.HasSuffix(line, " -") {
+				t.Errorf("%s help splits a word at a hyphen: %q", name, line)
 			}
 		}
 	}

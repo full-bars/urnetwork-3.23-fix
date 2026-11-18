@@ -259,7 +259,7 @@ func newProvidersCmd() *cobra.Command {
 }
 
 func newStatusCmd() *cobra.Command {
-	return withHelpFlags(newCobraCmd("status [target]", "health summary of a provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("status", "health summary of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
@@ -277,7 +277,7 @@ func newStatusCmd() *cobra.Command {
 }
 
 func newTopCmd() *cobra.Command {
-	return withHelpFlags(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("top", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
@@ -318,35 +318,50 @@ func newSnStatusCmd() *cobra.Command {
 }
 
 func newStartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("start [target]", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("start", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStart(rest, force, dryRun)
 		})
-	}), "Start the provider's systemd unit. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. Honors --dry-run, which prints the plan and starts nothing.", "  urnet-tools start\n  urnet-tools start --unit urnetwork-native.service\n  urnet-tools start --user urnet --dry-run")
+	}),
+		"Start the provider's systemd unit. With more than one provider on the box,\nchoose one with a target flag. Use --dry-run to see the plan without starting\nanything.",
+		"  urnet-tools start\n  urnet-tools start --unit urnetwork-native.service\n  urnet-tools start --user urnet --dry-run")
 }
 
 func newStopCmd() *cobra.Command {
-	return withHelp(newCobraCmd("stop [target]", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("stop", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStop(rest, force, dryRun)
 		})
-	}), "Stop the provider's systemd unit. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. Honors --dry-run, which prints the plan and stops nothing.", "  urnet-tools stop\n  urnet-tools stop --unit urnetwork-native.service")
+	}),
+		"Stop the provider's systemd unit. With more than one provider on the box,\nchoose one with a target flag. Use --dry-run to see the plan without stopping\nanything.",
+		"  urnet-tools stop\n  urnet-tools stop --unit urnetwork-native.service\n  urnet-tools stop --user urnet --dry-run")
 }
 
 func newRestartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("restart [target]", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("restart", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network mynetwork --force")
+	}),
+		"Restart the provider's systemd unit. This acts on a running provider, so it\nasks you to type \"yes\" first. Pass --force to skip the question, or\n--dry-run to see the plan without restarting.",
+		"  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network mynetwork --force\n  urnet-tools restart --dry-run")
 }
 
 func newUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("update", "update provider(s) to the latest release", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+	}),
+		"Download the latest provider release, check its sha256 digest, swap the binary\nand restart the unit. The urnet-tools binary is refreshed from the same\nrelease. With several providers and no target flag it asks which to update.\nNames in --include and --exclude are unit, user, network or network id.",
+		"  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --all --exclude mynetwork\n  urnet-tools update --tag v3.23.0-fix.30.5",
+		helpFlag{name: "all", usage: "update every provider on the box (no target flag)"},
+		helpFlag{name: "include", value: true, usage: "update only these providers, as a comma separated `list`"},
+		helpFlag{name: "exclude", value: true, usage: "skip these providers, as a comma separated `list`"},
+		helpFlag{name: "tag", value: true, usage: "install this release `tag` instead of the latest"},
+		helpFlag{name: "digest", value: true, usage: "expected `sha256` of the provider asset"},
+		helpFlag{name: "url", value: true, usage: "download the provider asset from this `url`"},
+	)
 }
 
 func newIdleUpdateCmd() *cobra.Command {
@@ -397,11 +412,13 @@ func newSelfUpdateCmd() *cobra.Command {
 }
 
 func newLogsCmd() *cobra.Command {
-	return withHelp(newCobraCmd("logs [target] [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("logs [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdLogs(rest)
 		})
-	}), "Show recent provider logs and then follow them. The default is 250 lines; pass a number to change it. If the unit runs with RAMLOGS or a low-memory profile, this streams from the RAM log buffer instead of journald.", "  urnet-tools logs\n  urnet-tools logs --unit urnetwork-native.service 200")
+	}),
+		"Show the last N lines of the provider's log, then follow it. N defaults to\n250. A unit that logs to RAM (RAMLOGS or a low-memory profile) is read from\nthe RAM buffer instead of journald.",
+		"  urnet-tools logs\n  urnet-tools logs 500\n  urnet-tools logs --unit urnetwork-native.service 200")
 }
 
 func newSummaryCmd() *cobra.Command {
