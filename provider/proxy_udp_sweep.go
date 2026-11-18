@@ -9,14 +9,71 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 const (
 	udpProbeWorkers = 2
 	// At full pressure the grade pipeline already runs at its one-worker
 	// floor; defer this optional sweep to preserve capacity for that work.
-	udpProbeSkipPressure = 1.0
+	udpProbeSkipPressure  = 1.0
+	udpProbeRecheckWindow = 24 * time.Hour
 )
+
+// urlUDPProbeSettings resolves online URL identities, respecting primary-source
+// address ownership. If ownership is uncertain, skip rather than use stale auth.
+func urlUDPProbeSettings(online []string, paid map[string]*connect.ProxySettings, url *ProxyURLState) []*connect.ProxySettings {
+	primaryAddrs := make(map[string]bool, len(paid))
+	for _, settings := range paid {
+		primaryAddrs[settings.Address] = true
+	}
+	byKey := make(map[string]*connect.ProxySettings, len(url.Cache))
+	for addr, entry := range url.Cache {
+		if primaryAddrs[addr] {
+			continue
+		}
+		settings := &connect.ProxySettings{Network: "tcp", Address: addr}
+		if entry.User != "" || entry.Password != "" {
+			settings.Auth = &proxy.Auth{User: entry.User, Password: entry.Password}
+		}
+		byKey[settings.Key()] = settings
+	}
+	var result []*connect.ProxySettings
+	for _, key := range online {
+		if settings := byKey[key]; settings != nil {
+			result = append(result, settings)
+		}
+	}
+	return result
+}
+
+func runURLUDPProbeTick(ctx context.Context) {
+	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
+		return
+	}
+	_, _, _, _, _, online, _ := connect.ProxyHealthSnapshotWithIdentities(trimHeldSnapshot())
+	proxyStateMu.Lock()
+	state, err := readProxyState()
+	if err != nil {
+		proxyStateMu.Unlock()
+		return
+	}
+	paid, trusted := paidDesiredSet(state)
+	proxyStateMu.Unlock()
+	if !trusted {
+		return
+	}
+	release, err := acquireProxyLock()
+	if err != nil {
+		return
+	}
+	url, err := readProxyURLState()
+	release()
+	if err != nil {
+		return
+	}
+	runUDPProbeTick(ctx, globalProxyUDPCheck, urlUDPProbeSettings(online, paid, url), time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
+}
 
 // runUDPProbeTick checks a bounded batch and joins every worker before returning.
 // The supplied settings are a snapshot of online identities, not state entries.

@@ -990,6 +990,7 @@ func runURLProxyReaper(ctx context.Context, apiHost string, apiPort uint16) {
 			return
 		case <-ticker.C:
 		}
+		runURLUDPProbeTick(ctx)
 		runURLProxyReaperOnce(ctx, apiHost, apiPort)
 	}
 }
