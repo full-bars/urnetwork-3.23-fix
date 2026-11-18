@@ -245,13 +245,18 @@ func statusLiveOpts() liveOpts {
 
 // printLiveBlock appends the live section under the classic status output
 // when the provider answers, and prints nothing at all when it does not.
-func printLiveBlock(p Provider) {
+func printLiveBlock(p Provider, plain bool) {
 	snap, _, err := fetchSnapshotFn(p)
 	if err != nil {
 		return
 	}
+	opts := statusLiveOpts()
+	if plain {
+		opts.Color = false
+		opts.ASCII = true
+	}
 	fmt.Println()
-	fmt.Print(renderLiveBlock(snap, statusLiveOpts(), pressureSummaryLine(p.StateDir)))
+	fmt.Print(renderLiveBlock(snap, opts, pressureSummaryLine(p.StateDir)))
 }
 
 // pressureSummaryLine reads the provider's persisted one-sentence pressure

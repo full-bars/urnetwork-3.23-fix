@@ -58,6 +58,32 @@ func statusStateDirLabelFor(goos string) string {
 	return "state-dir:"
 }
 
+func TestStatusUDPRows(t *testing.T) {
+	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	s.Proxies.UDP = &SnapshotProxyUDP{OK: 3, NoRelay: 1, Mismatch: 1, Unknown: 1, Unchecked: 4}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": raw}, true)
+	for _, args := range [][]string{nil, {"--plain"}} {
+		out := captureStdout(t, func() {
+			if err := cmdStatus(args); err != nil {
+				t.Fatal(err)
+			}
+		})
+		for _, want := range []string{"3 ok", "4 unchecked", "50% of checked, 30% of online"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("args %v missing %q: %s", args, want, out)
+			}
+		}
+		if len(args) > 0 && strings.Contains(out, "\x1b") {
+			t.Error("plain output contains ANSI")
+		}
+	}
+}
+
 func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)

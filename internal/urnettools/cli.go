@@ -480,8 +480,13 @@ func cmdStatus(args []string) error {
 	// parser sees it. The original args still go to the sudo re-exec so the
 	// elevated child prints JSON too.
 	jsonMode := false
+	plainMode := false
 	var targetArgs []string
 	for _, a := range args {
+		if a == "--plain" {
+			plainMode = true
+			continue
+		}
 		if a == "--json" {
 			jsonMode = true
 			continue
@@ -516,10 +521,14 @@ func cmdStatus(args []string) error {
 		printNarrowedNote(len(providers), p, "status")
 	}
 	printSigpipeRestartWarning(p)
-	if err := renderStatusBase(p); err != nil {
+	if plainMode {
+		if err := renderStatusTable(p); err != nil {
+			return err
+		}
+	} else if err := renderStatusBase(p); err != nil {
 		return err
 	}
-	printLiveBlock(p)
+	printLiveBlock(p, plainMode)
 	printExtenderBlock(p)
 	return nil
 }
@@ -560,6 +569,10 @@ func renderStatusBase(p Provider) error {
 		// Weird: unit set but systemctl failed; surface it.
 		fmt.Fprintf(os.Stderr, "warning: systemctl status failed, falling back: %v\n", err)
 	}
+	return renderStatusTable(p)
+}
+
+func renderStatusTable(p Provider) error {
 	w := tabwriter.NewWriter(os.Stdout, 2, 4, 2, ' ', 0)
 	fmt.Fprintf(w, "user:\t%s\n", p.User)
 	fmt.Fprintf(w, "unit:\t%s\n", p.Unit)
