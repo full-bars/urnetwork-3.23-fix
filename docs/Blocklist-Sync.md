@@ -4,7 +4,9 @@ This page is for maintainers. It explains how the built-in blocklist tables stay
 
 ## What the sync does
 
-The provider ships two generated tables. `ip_security_cfaa_block.go` holds the CFAA block list, and `ip_blocker_block.go` holds the IP blocker list. Both are produced upstream. The `CFAA Blocklist Sync` workflow copies them into this repository.
+The provider ships two generated tables. `ip_security_cfaa_block.go` holds the CFAA block list, and `ip_blocker_block.go` holds hostname and IP blocker data. Both are produced upstream. The `CFAA Blocklist Sync` workflow copies them together from the same commit.
+
+The hostname table uses a 257-entry bucket index and sorted five-byte hash tails. The bucket selects the first byte of each six-byte fingerprint. The decoder checks the index, tails and embedded size before use. If default data is invalid, the checked constructor returns an error; the compatibility constructor logs the error and blocks all traffic. Resolver exclusions remain in the generator.
 
 The workflow runs twice a day, at 04:00 and 16:00 UTC. You can also start it by hand from the Actions tab.
 
@@ -23,7 +25,7 @@ Upstream can change the table format and the decoder in the same window. If we c
 `.github/scripts/cfaa_format_check.sh <upstream-sha>` writes the upstream tables into the working tree, runs the tests, and then restores both table files from the index. Run it only in a clean, disposable checkout, because it discards unstaged edits to those two files. The tests are the ones that match this pattern:
 
 ```sh
-go test -count=1 -run 'Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security' . ./blocker/...
+go test -count=1 -run 'Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security' . ./blocker/... ./security/...
 ```
 
 If the tests pass, the sync goes on. If they fail, the sync stops before it opens a pull request. The script writes the failed tests and the recent upstream commits that touched the format code to `/tmp/cfaa_sync_info.json`, and the notice names them.

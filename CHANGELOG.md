@@ -4,6 +4,10 @@
 
 Everything merged after `v3.23.0-fix.35.11`.
 
+### Fixed
+
+- Validate the default blocker and refresh both blocklists together because upstream moved the hostname table to bucketed five-byte tails.
+
 ### Added
 
 - **`urnet-tools top` can show decimal units** (`internal/tui/labels.go`, `internal/urnettools/top_model.go`). The `u` key switches every byte and rate label between binary units (KiB, MiB, GiB) and decimal units (kB, MB, GB). The graph axes follow the choice. Binary stays the default, and the choice lasts for the session. [redeploy]
