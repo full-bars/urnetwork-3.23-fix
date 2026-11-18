@@ -250,8 +250,13 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 			counts[c.state]++
 		}
 	}
+	names := []string{"up", "dropped", "connecting", "dead", "parked"}
+	legend := fmt.Sprintf("%d up  %d dropped  %d connecting  %d dead  %d parked", counts[0], counts[1], counts[2], counts[3], counts[4])
+	if tui.StringWidth(legend) > w {
+		names = []string{"up", "drop", "conn", "dead", "park"}
+	}
 	x := 0
-	for i, name := range []string{"up", "dropped", "connecting", "dead", "parked"} {
+	for i, name := range names {
 		st := th.OK
 		switch i {
 		case 1:

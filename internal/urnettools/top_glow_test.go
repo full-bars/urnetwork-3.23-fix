@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"testing"
 	"time"
 
@@ -81,6 +82,27 @@ func TestProxyAfterglowThemes(t *testing.T) {
 				t.Fatal("glow did not preserve the theme's healthy color")
 			}
 		})
+	}
+}
+
+func TestTopGlowFrameGoldens(t *testing.T) {
+	for _, theme := range []string{"default", "mono", "colorblind"} {
+		for _, size := range []struct{ w, h int }{{80, 24}, {100, 30}, {120, 40}} {
+			name := fmt.Sprintf("top_glow_%s_%dx%d", theme, size.w, size.h)
+			t.Run(name, func(t *testing.T) {
+				th, ok := tui.ThemeByName(theme)
+				if !ok {
+					t.Fatalf("unknown theme %q", theme)
+				}
+				m := topHeatGridModel(t, th, 4400)
+				m.applyProxyCells(m.gen, m.proxyCells, nil)
+				for i := range m.proxyCells {
+					m.proxyCells[i].bucket = 0
+				}
+				got, _ := showOnSim(t, m, size.w, size.h)
+				assertGolden(t, name, got)
+			})
+		}
 	}
 }
 
