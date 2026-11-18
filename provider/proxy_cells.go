@@ -19,13 +19,14 @@ import (
 // state is one of connect.ProxyCellUp..ProxyCellParked; bucket is 0..7; clients
 // is capped at 255. The whole slice is a base64 string on the JSON wire.
 type proxyCellStore struct {
-	mu     sync.Mutex
-	at     time.Time
-	raw    []connect.ProxyCellRaw // the sampled pool, shared by Cells and Detail
-	deltas map[int]uint64         // index -> bytes in the last interval
-	cells  []byte                 // packed wire bytes, valid while cached
-	prev   map[int]uint64         // index -> Total bytes at last sample, for interval deltas
-	prevAt time.Time
+	mu               sync.Mutex
+	at               time.Time
+	raw              []connect.ProxyCellRaw // the sampled pool, shared by Cells and Detail
+	deltas           map[int]uint64         // index -> bytes in the last interval
+	cells            []byte                 // packed wire bytes, valid while cached
+	prev             map[int]uint64         // index -> Total bytes at last sample, for interval deltas
+	prevRegistration map[int]connect.ProxyCellRegistration
+	prevAt           time.Time
 }
 
 // proxyCellCacheTTL is how long the computed grid cells stay valid. A second
@@ -65,10 +66,12 @@ func (c *proxyCellStore) sample(now time.Time) ([]connect.ProxyCellRaw, map[int]
 	}
 	raw := connect.ProxyCells(now)
 	deltas := make(map[int]uint64, len(raw))
+	nextPrev := make(map[int]uint64, len(raw))
+	nextRegistration := make(map[int]connect.ProxyCellRegistration, len(raw))
 	buf := make([]byte, 0, 4*len(raw))
 	for _, p := range raw {
 		delta := uint64(0)
-		if last, ok := c.prev[p.Index]; ok && p.Total >= last {
+		if last, ok := c.prev[p.Index]; ok && c.prevRegistration[p.Index] == p.Registration && p.Total >= last {
 			delta = p.Total - last
 		}
 		deltas[p.Index] = delta
@@ -92,8 +95,10 @@ func (c *proxyCellStore) sample(now time.Time) ([]connect.ProxyCellRaw, map[int]
 			state<<5|bucket,
 			byte(clients),
 		)
-		c.prev[p.Index] = p.Total
+		nextPrev[p.Index] = p.Total
+		nextRegistration[p.Index] = p.Registration
 	}
+	c.prev, c.prevRegistration = nextPrev, nextRegistration
 	c.prevAt = c.at
 	c.at = now
 	c.raw = raw

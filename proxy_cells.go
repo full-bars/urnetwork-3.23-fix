@@ -12,6 +12,13 @@ const (
 	ProxyCellParked
 )
 
+// ProxyCellRegistration identifies a registry slot incarnation and identity.
+// Its opaque fields allow callers to compare samples without exposing keys.
+type ProxyCellRegistration struct {
+	health   *proxyHealth
+	revision uint64
+}
+
 // ProxyCellRaw is one proxy's compact runtime state, read under a single
 // registry lock for the proxy grid. Index is the registry index (stable for
 // the life of the registration); Addr is the dial target for display only;
@@ -19,13 +26,14 @@ const (
 // bucket throughput; Clients is the live session count; Age is how long the
 // proxy has been continuously present (its serving window), zero when unknown.
 type ProxyCellRaw struct {
-	Index    int
-	State    uint8
-	Addr     string
-	Billable uint64
-	Total    uint64
-	Clients  int64
-	Age      time.Duration
+	Registration ProxyCellRegistration
+	Index        int
+	State        uint8
+	Addr         string
+	Billable     uint64
+	Total        uint64
+	Clients      int64
+	Age          time.Duration
 }
 
 // ProxyCells reads one compact record per registered proxy, index-sorted,
@@ -39,7 +47,7 @@ func ProxyCells(now time.Time) []ProxyCellRaw {
 	out := make([]ProxyCellRaw, 0, len(proxyHealthByIndex))
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
-		c := ProxyCellRaw{Index: idx, Addr: h.address}
+		c := ProxyCellRaw{Index: idx, Addr: h.address, Registration: ProxyCellRegistration{health: h, revision: h.cellRevision}}
 		switch {
 		case h.parked:
 			// Parked is its own state, checked before connectingActive: a
