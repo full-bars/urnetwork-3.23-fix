@@ -10,7 +10,7 @@ import (
 	"github.com/urnetwork/connect"
 )
 
-func TestUDPInvariantURLSweepSurvivesUnavailablePaidSource(t *testing.T) {
+func TestUDPInvariantURLSweepProtectsUnknownPaidOwnership(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
 		empty bool
@@ -35,14 +35,11 @@ func TestUDPInvariantURLSweepSurvivesUnavailablePaidSource(t *testing.T) {
 			connect.NoteLiveProxyHealth("127.0.0.1:24001", "up", time.Time{})
 			writeReviewProbeOverride(t, map[string]any{"enabled": true})
 			runs := 0
-			runURLUDPProbeTickWith(context.Background(), func(_ context.Context, _ *proxyUDPCheckStore, selected []*connect.ProxySettings, _ time.Time, _, _ time.Duration, _ float64, _ bool) {
+			runURLUDPProbeTickWith(context.Background(), func(_ context.Context, _ *proxyUDPCheckStore, _ []*connect.ProxySettings, _ time.Time, _, _ time.Duration, _ float64, _ bool) {
 				runs++
-				if len(selected) != 1 || selected[0].Key() != "127.0.0.1:24001" {
-					t.Errorf("selected=%v, want URL identity", selected)
-				}
 			})
-			if runs != 1 {
-				t.Fatalf("URL sweep runs=%d, want 1 despite unavailable paid source", runs)
+			if runs != 0 {
+				t.Fatalf("URL sweep ran %d times without trusted primary ownership", runs)
 			}
 		})
 	}
