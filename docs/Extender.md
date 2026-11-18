@@ -102,9 +102,9 @@ The role runs from the provider's direct slot, because only that slot's egress i
 | Port | Role | Notes |
 |---|---|---|
 | TCP 443 | TLS carrier | **Required.** The platform proves the host over this port. |
-| UDP 443 | QUIC carrier | Optional. |
-| UDP 4053 | DNS carrier | Optional. See the note on DNS below. |
-| UDP 53 | Second DNS port | Optional and user-managed. Setup does not open it. Tried by default; skipped if something else holds it. `URNETWORK_EXTENDER_DNS53=off` skips it. |
+| UDP 443 | QUIC carrier | Optional. Control it with `extender-udp443`. |
+| UDP 4053 | DNS carrier | Optional. Control it with `extender-udp4053`. See the note on DNS below. |
+| UDP 53 | Second DNS port | Optional and user-managed. Control it with `extender-udp53`. Setup does not open it. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
 
 TCP 443 gates everything. The extender binds it first, and **while it fails no other port is opened**: the platform could not list the host anyway, so nothing could use them. It retries every three minutes and opens the rest once it has the port. It says so plainly, naming what holds the port when the host will tell it:
 
@@ -117,6 +117,20 @@ A reminder repeats every 30 minutes while the port stays blocked. When it comes 
 **About the DNS ports.** The DNS carrier also answers ordinary DNS questions from anyone who can reach the port, resolved over DoH and rate limited per source and in total, so that from outside it looks like a small rate-limited resolver. That is part of its camouflage; it is upstream's design. It is not limited to the platform's hosts. Port 53 is probed by scanners much more than 4053. Firewall UDP 4053 and 53 like any resolver you do not want to expose, or turn the role off. Without them the host is still listed over TCP.
 
 On Linux, TCP 443 needs root, an unprivileged-port sysctl threshold of 443 or lower, or a file capability (`cap_net_bind_service=ep`). The Docker image runs as root. The sysctl route is offered for single-purpose hosts: it writes `net.ipv4.ip_unprivileged_port_start=443` to `/etc/sysctl.d/99-urnetwork-extender.conf` and applies it with `sysctl --system`. It avoids a file capability and its process-image read restriction, but any local user can bind ports 443 and above. Other restrictions can still make the process image unreadable. The file capability route grants `cap_net_bind_service=+ep` to the binary; replacement drops that capability unless it is restored, and the running process can become unreadable to an unprivileged updater. Setup preserves the binary's existing file capabilities when it adds this bind capability.
+
+## Choosing carriers
+
+UDP 443 carries QUIC traffic. UDP 4053 and UDP 53 carry DNS traffic. Each setting defaults to `on` and works independently. Choose which optional carriers the host should offer:
+
+```sh
+urnet-tools set extender-udp443 off
+urnet-tools set extender-udp4053 off
+urnet-tools set extender-udp53 off
+```
+
+Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
+
+UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
 ## Prepare the host with `urnet-tools extender setup`
 

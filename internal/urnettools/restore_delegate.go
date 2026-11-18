@@ -297,7 +297,8 @@ When the provider is not running, changes are queued in pending_overrides.json a
 
 Set a value:  urnet-tools set <key> <value>
 Show current: urnet-tools set <key>
-Clear it:     urnet-tools set <key> off
+Clear it:     urnet-tools set <key> off (for keys that use off to clear)
+              For carrier settings, off is saved and disables that carrier.
 List all:     urnet-tools set
 
 Available keys:
