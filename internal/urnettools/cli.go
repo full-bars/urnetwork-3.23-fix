@@ -483,6 +483,7 @@ func cmdStatus(args []string) error {
 	// parser sees them. The original args still go to the sudo re-exec so the
 	// elevated child honours them too.
 	jsonMode := false
+	jsonRawMode := false
 	plainMode := false
 	briefMode := false
 	detailMode := false
@@ -493,6 +494,8 @@ func cmdStatus(args []string) error {
 			plainMode = true
 		case "--json":
 			jsonMode = true
+		case "--json-raw", "--raw":
+			jsonRawMode = true
 		case "--brief", "-brief":
 			briefMode = true
 		case "--detail", "--full":
@@ -511,7 +514,7 @@ func cmdStatus(args []string) error {
 		// Several providers and no target used to be refused with an
 		// inventory. Plain status now summarizes them instead; --json still
 		// needs one provider to be named.
-		if !jsonMode && !briefMode && !detailMode && !hasExplicitTarget(t) && len(providers) > 1 {
+		if !jsonMode && !jsonRawMode && !briefMode && !detailMode && !hasExplicitTarget(t) && len(providers) > 1 {
 			printProviderSummary(providers, plainMode)
 			return nil
 		}
@@ -522,8 +525,11 @@ func cmdStatus(args []string) error {
 	if elevated, err := maybeElevateForCrossUser("status", p, args, false, false); elevated {
 		return err
 	}
-	if jsonMode {
+	if jsonRawMode {
 		return printSnapshotJSON(p)
+	}
+	if jsonMode {
+		return printStatusJSON(p)
 	}
 	if briefMode {
 		d := collectStatusData(p)

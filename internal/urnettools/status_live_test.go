@@ -252,7 +252,7 @@ func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 	}
 }
 
-func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
+func TestStatusJSONPrintsSchemaDocument(t *testing.T) {
 	raw := fixtureRaw(t, "node_snapshot_v1.json")
 	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"a.service": raw}, true)
@@ -261,13 +261,18 @@ func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	var got, want map[string]any
+	var got map[string]any
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
 	}
-	json.Unmarshal(raw, &want)
-	if got["version"] != want["version"] || got["state"] != "flowing" {
-		t.Fatalf("got %v", got)
+	if got["schema"] != "urnet-tools-status/1" {
+		t.Fatalf("--json must carry schema=urnet-tools-status/1, got %v", got)
+	}
+	if _, ok := got["rows"].([]any); !ok {
+		t.Fatalf("--json must carry the summary rows, got %v", got)
+	}
+	if _, ok := got["provider"].(map[string]any); !ok {
+		t.Fatalf("--json must carry the provider block, got %v", got)
 	}
 	if strings.Contains(out, "user:") {
 		t.Fatalf("--json must not print the classic output:\n%s", out)
@@ -279,11 +284,18 @@ func TestStatusJSONErrorsWhenUnavailable(t *testing.T) {
 	stubStatus(t, []Provider{p}, nil, true)
 	var err error
 	out := captureStdout(t, func() { err = cmdStatus([]string{"--json"}) })
-	if err == nil || !errors.Is(err, errSnapshotUnavailable) {
-		t.Fatalf("err = %v; want a wrapped errSnapshotUnavailable", err)
+	if err != nil {
+		t.Fatalf("err = %v; --json stays usable when the snapshot is unreachable", err)
 	}
-	if out != "" {
-		t.Fatalf("stdout must stay empty on failure, got %q", out)
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
+	}
+	if got["exit_code"] != float64(3) {
+		t.Fatalf("--json must report exit_code 3 when unreachable, got %v", got)
+	}
+	if out == "" {
+		t.Fatal("stdout must not stay empty when the snapshot is unavailable")
 	}
 }
 
