@@ -518,4 +518,14 @@ func TestExtenderRolePublishesAndAppliesRecordsOverTheMesh(t *testing.T) {
 		t.Fatalf("the feed led with %s, expected the extender's own key %s",
 			hex.EncodeToString(publicKey), hex.EncodeToString(extenderKey.publicKey))
 	}
+
+	seenKinds := map[string]bool{}
+	for _, ev := range role.Events() {
+		seenKinds[ev.Kind] = true
+	}
+	for _, wantKind := range []string{"peer", "state", "publish"} {
+		if !seenKinds[wantKind] {
+			t.Fatalf("role events %+v missing kind %q", role.Events(), wantKind)
+		}
+	}
 }

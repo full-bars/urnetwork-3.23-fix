@@ -26,23 +26,39 @@ type dialCounters struct {
 	other    atomic.Uint64
 }
 
-func (c *dialCounters) recordResult(err error) {
+func dialFailureClass(err error) string {
 	if err == nil {
-		return
+		return ""
 	}
 	var netErr net.Error
 	switch {
 	case errors.Is(err, context.Canceled):
-		c.canceled.Add(1)
+		return "canceled"
 	case errors.Is(err, context.DeadlineExceeded):
-		c.timeout.Add(1)
+		return "timeout"
 	case errors.Is(err, syscall.ECONNREFUSED):
-		c.refused.Add(1)
+		return "refused"
 	case errors.As(err, &netErr) && netErr.Timeout():
+		return "timeout"
+	default:
+		return "other"
+	}
+}
+
+func (c *dialCounters) recordResult(err error) string {
+	class := dialFailureClass(err)
+	switch class {
+	case "":
+	case "canceled":
+		c.canceled.Add(1)
+	case "timeout":
 		c.timeout.Add(1)
+	case "refused":
+		c.refused.Add(1)
 	default:
 		c.other.Add(1)
 	}
+	return class
 }
 
 func (c *dialCounters) snapshot() DialStats {

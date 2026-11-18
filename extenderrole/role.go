@@ -115,6 +115,10 @@ type Settings struct {
 	// whatever its directory holds. A listener passed in `Listener` is not used
 	// and not closed.
 	DisableGossip bool
+
+	// Events is the shared flight-recorder ring. Nil allocates a new ring for
+	// this role.
+	Events *gossip.EventRing
 }
 
 // Status is the role as one comparable value, so a consumer can publish it on a
@@ -153,7 +157,8 @@ type Role struct {
 	listener     *gossip.InProcessListener
 	ownsListener bool
 
-	node *gossip.Node
+	node   *gossip.Node
+	events *gossip.EventRing
 }
 
 // New builds and starts the role: the feed server always, and the in-process
@@ -184,12 +189,22 @@ func New(ctx context.Context, settings *Settings) (*Role, error) {
 		return nil, err
 	}
 
+	events := settings.Events
+	if events == nil {
+		events = &gossip.EventRing{}
+	}
+	nowFn := gossip.DefaultNodeSettings(gossip.NodeRoleExtender).Now
+	if settings.NodeSettings != nil && settings.NodeSettings.Now != nil {
+		nowFn = settings.NodeSettings.Now
+	}
+
 	cancelCtx, cancel := context.WithCancel(ctx)
 	self := &Role{
 		cancel:    cancel,
 		publicKey: append([]byte(nil), publicKey...),
 		peerId:    peerId.String(),
 		directory: settings.Directory,
+		events:    events,
 	}
 	success := false
 	defer func() {
@@ -200,11 +215,22 @@ func New(ctx context.Context, settings *Settings) (*Role, error) {
 		}
 	}()
 
+	feedSettings := gossip.DefaultFeedServerSettings()
+	if settings.FeedSettings != nil {
+		copiedFeedSettings := *settings.FeedSettings
+		feedSettings = &copiedFeedSettings
+	}
+	if feedSettings.Events == nil {
+		feedSettings.Events = self.events
+	}
+	if feedSettings.Now == nil {
+		feedSettings.Now = nowFn
+	}
 	self.feed = gossip.NewFeedServer(
 		cancelCtx,
 		settings.Directory,
 		self.publicKey,
-		settings.FeedSettings,
+		feedSettings,
 	)
 	if settings.DisableGossip {
 		success = true
@@ -220,6 +246,12 @@ func New(ctx context.Context, settings *Settings) (*Role, error) {
 		}
 		listenerSettings.Log = settings.Log
 		listenerSettings.ListenAddrs = slices.Clone(settings.ListenAddrs)
+		if listenerSettings.Events == nil {
+			listenerSettings.Events = self.events
+		}
+		if listenerSettings.Now == nil {
+			listenerSettings.Now = nowFn
+		}
 		self.listener = gossip.NewInProcessListener(cancelCtx, listenerSettings)
 		self.ownsListener = true
 	}
@@ -255,6 +287,9 @@ func New(ctx context.Context, settings *Settings) (*Role, error) {
 		if base.RandSeed != 0 {
 			nodeSettings.RandSeed = base.RandSeed
 		}
+		if base.RejectSampleEvery > 0 {
+			nodeSettings.RejectSampleEvery = base.RejectSampleEvery
+		}
 		nodeSettings.ConnectSettings = base.ConnectSettings
 	}
 	nodeSettings.Log = settings.Log
@@ -263,6 +298,7 @@ func New(ctx context.Context, settings *Settings) (*Role, error) {
 	nodeSettings.IdentityKeySeed = settings.IdentityKeySeed
 	nodeSettings.Role = gossip.NodeRoleExtender
 	nodeSettings.ExtenderListener = self.listener
+	nodeSettings.Events = self.events
 	// the addresses are the listener's, which the transport advertises per
 	// family; passing them twice would ask the swarm to listen on each twice
 	nodeSettings.ListenAddrs = nil
@@ -368,6 +404,11 @@ func (self *Role) Listener() *gossip.InProcessListener {
 // Node is the mesh node, nil on a feed-only role.
 func (self *Role) Node() *gossip.Node {
 	return self.node
+}
+
+// Events returns a snapshot of the role's bounded flight-recorder events.
+func (self *Role) Events() []gossip.Event {
+	return self.events.Snapshot()
 }
 
 // GossipRunning reports whether the mesh is running, which a caller checks

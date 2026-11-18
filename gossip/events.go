@@ -6,7 +6,10 @@ import (
 	"time"
 )
 
-const EventCapacity = 1000
+const (
+	EventCapacity            = 1000
+	DefaultRejectSampleEvery = 16
+)
 
 // Event contains metadata only. It never contains a message payload or address.
 type Event struct {
@@ -36,6 +39,9 @@ func eventField(s string, limit int) string {
 
 // Record returns false when another operation holds the ring.
 func (r *EventRing) Record(e Event) bool {
+	if r == nil {
+		return false
+	}
 	if !r.mu.TryLock() {
 		return false
 	}
@@ -54,6 +60,9 @@ func (r *EventRing) Record(e Event) bool {
 
 // Snapshot returns events in insertion order without exposing the ring.
 func (r *EventRing) Snapshot() []Event {
+	if r == nil {
+		return nil
+	}
 	r.mu.Lock()
 	defer r.mu.Unlock()
 	out := make([]Event, r.count)
