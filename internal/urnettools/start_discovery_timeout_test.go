@@ -30,6 +30,7 @@ func TestCmdStartUsesInstalledDefaultWhenDiscoveryTimesOut(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd fallback is Linux-only")
 	}
+	stubOpenRCForStartTest(t)
 	stubDiscovery(t, nil, nil)
 	installDefaultUserUnitForTest(t)
 
@@ -53,6 +54,7 @@ func TestCmdStartDoesNotGuessAfterDiscoveryTimeout(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("systemd fallback is Linux-only")
 	}
+	stubOpenRCForStartTest(t)
 	stubDiscovery(t, nil, nil)
 	originalInstalled := defaultUserUnitInstalledFn
 	defaultUserUnitInstalledFn = func() bool { return false }
