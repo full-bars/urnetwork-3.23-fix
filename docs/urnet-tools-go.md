@@ -24,7 +24,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
-| `status [target]` | Show detailed status. On Linux, displays live `systemctl status` view; on Windows/macOS, renders styled panel. The live block's pressure row prints the provider's one-sentence pressure summary (the `summary` from `~/.urnetwork/pressure_status`) when the provider writes it; older providers show the bare score. |
+| `status [target] [--live] [--brief] [--json] [--json-raw] [--detail] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints a single line (`ok/warn/bad/unreachable`) with script exit codes (0/1/2/3). `--json` outputs a stable schema document (`urnet-tools-status/1`); `--json-raw` retains the raw snapshot. `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
 | `diag` | Capture a running provider's profiles and summary. See [Diagnostics](/full-bars/urnetwork-3.23-fix/wiki/Diagnostics). |
 | `start [target]` | Start provider service/process. |
 | `stop [target]` | Stop provider service/process. |

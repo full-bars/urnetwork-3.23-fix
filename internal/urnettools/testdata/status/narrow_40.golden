@@ -1,0 +1,7 @@
+update: installed v3.23.0-fix.35.11; lat
+* Version   v3.23.0-fix.32.1
+* Health    flowing
+* Proxies   58 up, 2 degraded, 0 connect
+* Extender  active
+* Unit      urnetwork.service
+* Resources heap 1.8 GiB, 1204 goroutine

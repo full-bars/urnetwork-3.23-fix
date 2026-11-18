@@ -14,7 +14,7 @@ A fork of the **UrNetwork Connect** provider, tuned for people who run many prox
 1. **Install.** Pick your system in [Quick Start](#-quick-start) below. On Linux the one-liner is `curl -fSsL https://dl.fullbars.xyz/install.sh | sh`.
 2. **Log in.** Run `urnetwork auth` and paste your auth code from the UrNetwork app when asked.
 3. **Add proxies (optional).** `urnet-tools proxy add ~/proxies.txt`, then `urnet-tools proxy refresh`. See [Adding Proxies](docs/Adding-Proxies.md).
-4. **Check that it works.** Run `urnet-tools status`. It shows whether the provider is running. Run `urnet-tools logs` to watch it start. For a live screen, run `urnet-tools top`.
+4. **Check that it works.** Run `urnet-tools status`. It shows a one-screen health summary (version, update check, proxies, UDP coverage, extender, unit, resources). For continuous refresh, run `urnet-tools status --live` (or `urnet-tools top`). Run `urnet-tools logs` to watch it start.
 5. **Get paid on Bittensor (optional).** Sign one wallet message, once, from your own computer. Your nodes do not change. See the [Bittensor Quick Start](docs/Bittensor-Quick-Start.md).
 6. **Update.** Run `urnet-tools update`. It asks before it changes anything. Docker users run `urnet-docker update` on the host.
 
@@ -262,6 +262,7 @@ See [Docker Deployment](docs/Docker-Deployment.md) for Docker Compose, email/pas
 | Command | Use this when... |
 | :--- | :--- |
 | `urnetwork auth` | You need to log in or refresh your identity manually |
+| `urnet-tools status [--live] [--brief] [--json]` | You want a one-screen health summary of one provider (version, update check, proxies, UDP coverage, extender, unit, resources) |
 | `urnet-tools direct [on\|off\|status]` | You want to check or toggle native direct IP providing (`off` = proxy-only stealth) |
 | `urnet-tools usage [graphs]` | You want to view persistent traffic accounting (billable relay vs control plane split) |
 | `urnet-tools proxy add <path\|url>` | You want to add proxies from a file (straight path or `--file=`) or URL source |
