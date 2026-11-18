@@ -114,3 +114,57 @@ func Truncate(s string, width int, ascii bool) string {
 	// already keeps them (width 0), so nothing further to attach.
 	return s[:end] + ell
 }
+
+// TruncateMiddle shortens s to at most width cells by keeping the start and the
+// end and joining them with an ellipsis. When width is too small to keep at
+// least one cell on each side of the ellipsis, it falls back to Truncate.
+func TruncateMiddle(s string, width int, ascii bool) string {
+	if width <= 0 {
+		return ""
+	}
+	if StringWidth(s) <= width {
+		return s
+	}
+	ell := "…"
+	if ascii {
+		ell = "."
+		if width >= 5 {
+			ell = "..."
+		}
+	}
+	room := width - StringWidth(ell)
+	if room < 2 {
+		return Truncate(s, width, ascii)
+	}
+	leftRoom := (room + 1) / 2
+	leftUsed := 0
+	leftEnd := 0
+	for i, r := range s {
+		w := RuneWidth(r)
+		if leftUsed+w > leftRoom {
+			break
+		}
+		leftUsed += w
+		_, size := utf8.DecodeRuneInString(s[i:])
+		leftEnd = i + size
+	}
+	tail := s[leftEnd:]
+	rightRoom := room - leftUsed
+	rightUsed := 0
+	rightStart := len(tail)
+	for i := len(tail); i > 0; {
+		r, size := utf8.DecodeLastRuneInString(tail[:i])
+		w := RuneWidth(r)
+		if w == 0 {
+			i -= size
+			continue
+		}
+		if rightUsed+w > rightRoom {
+			break
+		}
+		rightUsed += w
+		i -= size
+		rightStart = i
+	}
+	return s[:leftEnd] + ell + tail[rightStart:]
+}

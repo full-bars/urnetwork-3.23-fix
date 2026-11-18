@@ -129,7 +129,11 @@ type Status struct {
 	// Node is the mesh status, zero while gossip is not running.
 	Node gossip.NodeStatus
 	// FeedSubscriberCount is the subscribers the feed is serving now.
-	FeedSubscriberCount int
+	FeedSubscriberCount   int
+	ActiveRecords         int
+	MessagesAccepted      uint64
+	ApplyErrors           uint64
+	LastAcceptedUnixMilli int64
 }
 
 // Role is one served extender's discovery plane, running when `New` returns.
@@ -377,9 +381,11 @@ func (self *Role) Status() Status {
 		PeerId:              self.peerId,
 		GossipRunning:       self.node != nil,
 		FeedSubscriberCount: self.feed.SubscriberCount(),
+		ActiveRecords:       self.directory.ActiveRecordCount(),
 	}
 	if self.node != nil {
 		status.Node = self.node.Status()
+		status.MessagesAccepted, status.ApplyErrors, status.LastAcceptedUnixMilli = self.node.ReceiveStats()
 	}
 	return status
 }

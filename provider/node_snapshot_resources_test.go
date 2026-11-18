@@ -59,3 +59,20 @@ func TestCollectResourcesMemLimit(t *testing.T) {
 		t.Errorf("MemLimitBytes = %d with no limit set, want 0 (omitted)", got)
 	}
 }
+
+func TestSnapshotResourcesPreservesZeroSwap(t *testing.T) {
+	zero := uint64(0)
+	b, err := json.Marshal(SnapshotResources{SwapUsedBytes: &zero, SwapTotalBytes: 1024})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var result struct {
+		Used *uint64 `json:"swap_used_bytes"`
+	}
+	if err := json.Unmarshal(b, &result); err != nil {
+		t.Fatal(err)
+	}
+	if result.Used == nil || *result.Used != 0 {
+		t.Fatalf("zero swap missing: %s", b)
+	}
+}

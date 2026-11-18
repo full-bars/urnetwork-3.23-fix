@@ -141,6 +141,33 @@ func TestShiftTabIsBacktab(t *testing.T) {
 	}
 }
 
+func TestMouseTranslationPressDragReleaseWheelAndMove(t *testing.T) {
+	scr, sim := newSim(t, 80, 24)
+	cases := []struct {
+		x, y int
+		btns tcell.ButtonMask
+		mods tcell.ModMask
+		want Event
+	}{
+		{5, 2, tcell.ButtonNone, 0, Event{Kind: EventMouse, X: 5, Y: 2, Button: MouseNone, Action: MouseMove}},
+		{10, 4, tcell.Button1, 0, Event{Kind: EventMouse, X: 10, Y: 4, Button: MouseLeft, Action: MousePress}},
+		{15, 4, tcell.Button1, tcell.ModShift, Event{Kind: EventMouse, X: 15, Y: 4, Button: MouseLeft, Action: MouseDrag, Modifiers: ModShift}},
+		{15, 4, tcell.ButtonNone, 0, Event{Kind: EventMouse, X: 15, Y: 4, Button: MouseLeft, Action: MouseRelease}},
+		{20, 8, tcell.Button2, tcell.ModCtrl, Event{Kind: EventMouse, X: 20, Y: 8, Button: MouseRight, Action: MousePress, Modifiers: ModCtrl}},
+		{20, 8, tcell.ButtonNone, 0, Event{Kind: EventMouse, X: 20, Y: 8, Button: MouseRight, Action: MouseRelease}},
+		{3, 3, tcell.WheelUp, 0, Event{Kind: EventMouse, X: 3, Y: 3, Button: MouseWheelUp, Action: MouseWheel}},
+		{3, 3, tcell.WheelDown, tcell.ModAlt, Event{Kind: EventMouse, X: 3, Y: 3, Button: MouseWheelDown, Action: MouseWheel, Modifiers: ModAlt}},
+	}
+	for i, c := range cases {
+		sim.InjectMouse(c.x, c.y, c.btns, c.mods)
+		if got := nextEvent(t, scr); got != c.want {
+			t.Fatalf("step %d: got %+v, want %+v", i, got, c.want)
+		}
+	}
+	scr.SetMouse(false)
+	scr.SetMouse(true)
+}
+
 // Close is called from a deferred cleanup and from the panic path, so it must
 // tolerate being called twice, and it must end the event stream so a reader
 // never blocks on a dead screen.

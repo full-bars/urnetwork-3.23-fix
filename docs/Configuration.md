@@ -72,7 +72,7 @@ Quick jump:
 
 ### 🌐 Extender Serving Role
 
-> Discovery is separately controlled with `urnet-tools set extender-discovery off|on|feed-only`. It is off by default; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
+> Discovery is separately controlled with `urnet-tools set extender-discovery off|on|feed-only`. It defaults to `on` when the extender role runs; saved `off` and `feed-only` choices are respected. See [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
 
 > The extender is ON by default and needs no variable. These only tune it. Turn it on or off at runtime with `urnet-tools extender on|off`; see [Extender](/full-bars/urnetwork-3.23-fix/wiki/Extender).
 

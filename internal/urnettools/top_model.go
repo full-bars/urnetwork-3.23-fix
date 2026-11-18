@@ -155,9 +155,38 @@ type topModel struct {
 	lastErr   string
 	events    []topEvent
 
+	// Events view state: zoom, scroll and filter. The keys that drive them
+	// are owned by the key table lane; the state and the pure functions live
+	// here so the view is a function of the model alone.
+	eventZoom   bool
+	eventScroll int
+	eventHeight int
+	eventFilter eventFilter
+
+	// copyOnExit writes the screen to the state dir when the user quits with
+	// --copy. copyText holds what was written so the caller can print it once
+	// the terminal is back; copyPath names the file.
+	copyOnQuit bool
+	copyPlain  bool
+	copyText   string
+	copyPath   string
+	copyErr    error
+
+	// overview is the all-providers screen. providerSnaps and providerExt
+	// hold the last reading of every provider, so the rows come from data top
+	// already fetched; overviewSel is the row the arrow keys move.
+	overview      bool
+	overviewSel   int
+	providerSnaps []*NodeSnapshot
+	providerExt   []ExtenderReading
+	// overviewLast gates the once per snapshot cadence fetch of the providers
+	// the live screen is not showing.
+	overviewLast time.Time
+
 	// extender is the last reading the control socket gave for the current
 	// provider, fetched off the UI loop (see wantExtender)
 	extender     ExtenderReading
+	carriers     topCarrierHistory
 	extenderBusy bool
 	lastExtender time.Time
 
@@ -194,21 +223,68 @@ type topModel struct {
 	scaleB, scaleT         topScale
 	zoomScaleB, zoomScaleT topScale
 
+	// windowHours selects the history the graphs draw: 0 keeps the provider's
+	// ten minute ring, 1 shows the downsampled hour, 24 the day. windowB and
+	// windowT hold the client-side downsampled history, binned from the same
+	// snapshots, so a provider never has to keep a longer ring.
+	windowHours  int
+	windowB      topWindow
+	windowT      topWindow
+	windowScaleB topScale
+	windowScaleT topScale
+
 	// rt is the runtime (Internals) panel's state.
 	rt topRuntime
+
+	// proxyCells is the decoded proxy_cells grid payload and when it was
+	// fetched. The Proxies panel draws it as a heatmap when tall enough.
+	proxyCells   []proxyCell
+	proxyCellsAt time.Time
+	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
+	// for hit testing. Set by drawProxyGrid each frame.
+	proxyGridW, proxyGridH int
+	// proxyDetail is the full per-proxy records from proxy_cell_detail, keyed
+	// by index, for the hover/click popup. Fetched on demand, not polled.
+	proxyDetail map[int]ProxyCellDetail
 
 	// graph is the graph glyph style. themeLocked is set when the environment
 	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
 	// override. settingsPath is where the menu saves; empty means nowhere.
 	graph        tui.GraphSymbols
 	themeLocked  bool
+	savedTheme   string
 	settingsPath string
 	menu         bool
 	menuSel      int
 	menuNote     string
 
-	help bool
-	quit bool
+	// mouse controls terminal mouse reporting; M and --no-mouse toggle it off so
+	// unshifted drag selects text in the terminal.
+	mouse bool
+
+	// regions is the hit map for the last frame, rebuilt by every render.
+	regions []topRegion
+	// hover is the name of the region under the cursor, for hover highlighting.
+	hover string
+
+	// layout is the operator's arrangement of the screen; zero values are the
+	// defaults. It is persisted with the menu settings.
+	layout topLayout
+	// drag is the divider being dragged, if any; lastPress sees double clicks.
+	drag      *topDrag
+	lastPress topPress
+	// The geometry of the last full frame, used to translate pointer cells
+	// into divider rows while dragging.
+	contentRect                 tui.Rect
+	nowRows, resRows, extRows   int
+	showExtender, withInternals bool
+	// gorScroll is the wheel offset of the goroutine list.
+	gorScroll int
+	gorHeight int
+
+	help  bool
+	quit  bool
+	panel string
 }
 
 func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.Theme, now func() time.Time) *topModel {
@@ -221,8 +297,11 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m.providerSnaps = make([]*NodeSnapshot, len(providers))
+	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
+	m.carriers.reset()
 	return m
 }
 
@@ -338,6 +417,9 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 			m.missed(now, err)
 			return
 		}
+		if m.cur < len(m.providerSnaps) {
+			m.providerSnaps[m.cur] = nil
+		}
 		m.lost(now, err)
 		return
 	}
@@ -363,10 +445,23 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.conn = topConnected
 	m.snap = snap
+	if m.cur < len(m.providerSnaps) {
+		// The overview rows read the same snapshot the live screen does, so
+		// the per provider history accumulates as top polls.
+		m.providerSnaps[m.cur] = snap
+	}
 	m.lastErr = ""
 	m.scaleB.update(seriesPeak(snap.Rate.HistoryBps), now, true)
+	m.windowB.push(snap.Rate.NowBps, now)
 	if snap.Traffic != nil {
 		m.scaleT.update(seriesPeak(snap.Traffic.TotalHistoryBps), now, true)
+		m.windowT.push(snap.Traffic.TotalNowBps, now)
+	}
+	if m.windowHours > 0 {
+		m.windowScaleB.update(seriesPeak(m.windowB.windowFor(m.windowHours, now)), now, true)
+		if snap.Traffic != nil {
+			m.windowScaleT.update(seriesPeak(m.windowT.windowFor(m.windowHours, now)), now, true)
+		}
 	}
 }
 
@@ -536,19 +631,51 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if (m.menu || m.help || m.panel != "") && ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseRelease {
+		if m.drag != nil {
+			m.saveLayout()
+		}
+		m.drag = nil
+		m.lastPress = topPress{}
+	}
 	if m.menu && m.menuHandle(ev) {
+		return topNone
+	}
+	if m.overview && ev.Kind == tcellui.EventKey {
+		switch ev.Key {
+		case tcellui.KeyEsc:
+			m.overview = false
+			return topNone
+		case tcellui.KeyUp:
+			m.overviewSel = max(0, m.overviewSel-1)
+			return topNone
+		case tcellui.KeyDown:
+			m.overviewSel = min(len(m.providers)-1, m.overviewSel+1)
+			return topNone
+		case tcellui.KeyEnter:
+			m.overview = false
+			return m.selectProviderIndex(m.overviewSel)
+		}
+	}
+	if m.overview && ev.Kind == tcellui.EventRune && (ev.Rune == '?' || ev.Rune == 'm') {
 		return topNone
 	}
 	switch ev.Kind {
 	case tcellui.EventQuit:
 		m.quit = true
 		return topQuit
+	case tcellui.EventMouse:
+		return m.mouseHandle(ev)
 	case tcellui.EventKey:
 		switch ev.Key {
 		case tcellui.KeyCtrlC:
 			m.quit = true
 			return topQuit
 		case tcellui.KeyEsc:
+			if m.panel != "" {
+				m.panel = ""
+				return topNone
+			}
 			// Esc backs out of the help overlay first; it quits only from the
 			// main screen.
 			if m.help {
@@ -569,8 +696,29 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return topQuit
 		case '?':
 			m.help = !m.help
-		case 'm', 'M':
+		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
+		case 'M':
+			m.mouse = !m.mouse
+		case 't':
+			switch m.windowHours {
+			case 0:
+				m.windowHours = 1
+			case 1:
+				m.windowHours = 24
+			default:
+				m.windowHours = 0
+			}
+		case 'o':
+			if len(m.providers) > 1 {
+				m.overview, m.overviewSel = true, m.cur
+			}
+		case 'a':
+			m.panel = "alerts"
+		case 'i':
+			m.panel = "gauges"
+		case 'v':
+			m.panel = "carriers"
 		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
 			m.stepInterval(1)
@@ -599,14 +747,26 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	if n < 2 {
 		return topNone
 	}
-	m.cur = ((m.cur+delta)%n + n) % n
+	return m.selectProviderIndex(((m.cur+delta)%n + n) % n)
+}
+
+// selectProviderIndex jumps straight to the provider at index i, the pick the
+// overview screen returns. The reset is the same one the Tab key performs.
+func (m *topModel) selectProviderIndex(i int) topEffect {
+	if i < 0 || i >= len(m.providers) || i == m.cur {
+		return topNone
+	}
+	m.cur = i
 	m.gen++
 	m.conn, m.snap, m.events = topConnecting, nil, nil
 	m.downSince, m.nextRetry, m.lastErr = time.Time{}, time.Time{}, ""
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
+	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
+	m.proxyDetail = nil
 	m.extender = ExtenderReading{}
+	m.carriers.reset()
 	m.extenderBusy = false
 	m.lastExtender = time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
@@ -615,10 +775,44 @@ func (m *topModel) selectProvider(delta int) topEffect {
 	m.scaleT.reset()
 	m.zoomScaleB.reset()
 	m.zoomScaleT.reset()
+	m.windowB.reset()
+	m.windowT.reset()
+	m.windowScaleB.reset()
+	m.windowScaleT.reset()
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's
+	m.eventScroll, m.gorScroll = 0, 0
 	return topRefetch
+}
+
+// wantOverview reports whether the overview screen should ask every other
+// provider for one snapshot. It fires at the snapshot cadence while the screen
+// is open, which is the same load as the one provider on screen.
+func (m *topModel) wantOverview(now time.Time) (gen int, ok bool) {
+	if !m.overview || len(m.providers) == 0 {
+		return 0, false
+	}
+	if !m.overviewLast.IsZero() && now.Sub(m.overviewLast) < max(m.interval, topSnapshotEvery) {
+		return 0, false
+	}
+	m.overviewLast = now
+	return m.gen, true
+}
+
+// applyOverview stores one reading the overview fetch brought in. A result for
+// an earlier selection is dropped, like every other fetch.
+func (m *topModel) applyOverview(gen, idx int, snap *NodeSnapshot, err error, ext ExtenderReading) {
+	if gen != m.gen || idx < 0 || idx >= len(m.providers) {
+		return
+	}
+	if err != nil {
+		snap = nil
+	}
+	m.providerSnaps[idx] = snap
+	if ext.Source != "" {
+		m.providerExt[idx] = ext
+	}
 }
 
 // stepInterval moves the poll period one step faster (dir < 0) or slower
@@ -725,6 +919,25 @@ func (m *topModel) series() topSeries {
 		}
 		return out
 	}
+	if m.windowHours > 0 {
+		out.scaleB, out.scaleT = &m.windowScaleB, &m.windowScaleT
+		now := m.now()
+		switch m.windowHours {
+		case 1:
+			out.anchor = now.Unix() / 60
+		case 24:
+			out.anchor = now.Unix() / 900
+		}
+		out.billable = m.windowB.windowFor(m.windowHours, now)
+		out.capacity = len(out.billable)
+		if m.snap.Traffic != nil {
+			out.total = m.windowT.windowFor(m.windowHours, now)
+		}
+		if m.conn == topConnected {
+			out.tailBillable, out.tailTotal, out.live = m.live.rates()
+		}
+		return out
+	}
 	out.capacity = topGraphCapacity
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
 	switch {
@@ -750,6 +963,21 @@ func (m *topModel) history() []float64 {
 		return nil
 	}
 	return m.snap.Rate.HistoryBps
+}
+
+// windowFor returns the series for a window: h is 1 or 24, and the zero value
+// of windowHours keeps the provider's own ten minute ring.
+func (m *topModel) windowFor(h int) []float64 {
+	if m.snap == nil {
+		return nil
+	}
+	switch h {
+	case 1:
+		return m.windowB.windowFor(1, m.now())
+	case 24:
+		return m.windowB.windowFor(24, m.now())
+	}
+	return m.history()
 }
 
 // sortedEvents returns the events newest first. Events with the same time keep

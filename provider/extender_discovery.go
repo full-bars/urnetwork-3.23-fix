@@ -90,12 +90,18 @@ type extenderDiscoveryInputs struct {
 
 // extenderDiscoverySnapshot is the discovery state as one value for the status.
 type extenderDiscoverySnapshot struct {
-	Requested       string `json:"requested"`
-	State           string `json:"state"`
-	Failure         string `json:"failure,omitempty"`
-	PeerId          string `json:"peer_id"`
-	Peers           int    `json:"peers"`
-	FeedSubscribers int    `json:"feed_subscribers"`
+	Requested             string  `json:"requested"`
+	State                 string  `json:"state"`
+	Failure               string  `json:"failure,omitempty"`
+	PeerId                string  `json:"peer_id"`
+	Peers                 int     `json:"peers"`
+	FeedSubscribers       int     `json:"feed_subscribers"`
+	ActiveRecords         *int    `json:"active_records,omitempty"`
+	ConnectedPeers        *int    `json:"connected_peers,omitempty"`
+	Connecting            *bool   `json:"connecting,omitempty"`
+	MessagesAccepted      *uint64 `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64 `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64   `json:"last_accepted_unix_milli,omitempty"`
 }
 
 type extenderDiscovery struct {
@@ -182,7 +188,7 @@ func (d *extenderDiscovery) reconcile(in extenderDiscoveryInputs) {
 		d.failure = ""
 		d.failures = 0
 		if d.roleGossip {
-			importantLogf("🌉✅ [extender] discovery started: this host serves the directory feed and takes part in the gossip mesh.\n")
+			importantLogf("🌉✅ [extender] discovery started locally: serving the directory feed and trying to join the gossip mesh; check peer and message counts to confirm activity.\n")
 		} else {
 			importantLogf("🌉✅ [extender] discovery started in feed-only mode: this host serves the directory feed and refuses gossip.\n")
 		}
@@ -286,6 +292,14 @@ func (d *extenderDiscovery) snapshot() extenderDiscoverySnapshot {
 		snapshot.PeerId = status.PeerId
 		snapshot.Peers = status.Node.MeshPeerCount
 		snapshot.FeedSubscribers = status.FeedSubscriberCount
+		snapshot.ActiveRecords = &status.ActiveRecords
+		if status.GossipRunning {
+			snapshot.ConnectedPeers = &status.Node.PeerCount
+			snapshot.Connecting = &status.Node.Connecting
+			snapshot.MessagesAccepted = &status.MessagesAccepted
+			snapshot.ApplyErrors = &status.ApplyErrors
+			snapshot.LastAcceptedUnixMilli = status.LastAcceptedUnixMilli
+		}
 	}
 	return snapshot
 }
@@ -369,7 +383,11 @@ func applyExtenderDiscoveryMode(mode string) error {
 func currentExtenderDiscoverySnapshot() extenderDiscoverySnapshot {
 	role := globalExtenderRole.Load()
 	if role == nil {
-		return extenderDiscoverySnapshot{Requested: extenderDiscoveryOff, State: extenderDiscoveryStateOff}
+		mode := extenderDiscoveryOn
+		if saved, ok := globalControlState.get("extender_discovery"); ok && validExtenderDiscoveryMode(saved) {
+			mode = normalizeExtenderDiscoveryMode(saved)
+		}
+		return extenderDiscoverySnapshot{Requested: mode, State: extenderDiscoveryStateOff}
 	}
 	return role.discoverySnapshot()
 }

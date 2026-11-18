@@ -91,6 +91,12 @@ type controlResponse struct {
 	// ProxyAudit is the proxy audit engine's last completed tick, answered by
 	// "status" and "audit". Nil before its first tick or on a provider that predates it.
 	ProxyAudit *proxyAuditStatus `json:"proxy_audit,omitempty"`
+	// ProxyCells is the compact per-proxy grid payload for top's heatmap,
+	// answered by "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
+	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// ProxyCellDetail is the full per-proxy record for the heatmap popup,
+	// answered by "proxy_cell_detail". Not polled; fetched on hover/click.
+	ProxyCellDetail []proxyCellDetail `json:"proxy_cell_detail,omitempty"`
 	// Extender is the extender's whole picture, answered by the "extender"
 	// command (extender_status.go).
 	Extender *extenderControlReading `json:"extender,omitempty"`
@@ -503,7 +509,7 @@ var liveDefaults = map[string]string{
 	// Clearing audit reapplies the runtime default (off = observe mode),
 	// releasing the live override so the persisted value rules.
 	"proxy_audit":        "off",
-	"extender_discovery": "off",
+	"extender_discovery": "on",
 	"pprof":              "on",
 	// Clearing ip_version hands the families back to the default: dual stack.
 	"ip_version": "dual",
@@ -597,6 +603,20 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 
 	case "goroutines":
 		return controlResponse{OK: true, Goroutines: nodeGoroutines.Get(time.Now())}
+
+	case "proxy_cells":
+		// Compact per-proxy grid cells for urnet-tools top's proxy heatmap.
+		// Packed and base64 by the JSON encoder; cached for a second so a
+		// 4400-proxy node does not pay for the registry scan per frame.
+		cells := getProxyCellStore().Cells(time.Now())
+		return controlResponse{OK: true, ProxyCells: cells}
+
+	case "proxy_cell_detail":
+		// The full per-proxy record for the heatmap's hover/click popup:
+		// address, state, clients, interval bytes, age. Shares the grid's
+		// one-second sample so the popup describes what the grid shows.
+		detail := getProxyCellStore().Detail(time.Now())
+		return controlResponse{OK: true, ProxyCellDetail: detail}
 
 	case "mark":
 		// An operator annotation on the baseline timeline. It goes through the
@@ -790,7 +810,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// value takes effect on next restart.
 		liveCleared := liveEffectKeys[req.Key]
 		if liveCleared {
-			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, extenderDiscoveryOff, err) {
+			if err := applyLiveDefault(req.Key, state); err != nil && !extenderDiscoverySavedForStart(req.Key, liveDefaults[req.Key], err) {
 				tlog("⚠️ [control] clear %s persisted but live default apply failed: %s\n", req.Key, err)
 				// The key is cleared but the running process did not adopt
 				// the default, so the persisted state and the live process

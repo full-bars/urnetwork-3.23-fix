@@ -101,6 +101,17 @@ func newTestModel(th tui.Theme, providers []Provider, clock *fakeClock) *topMode
 	return m
 }
 
+// mustTheme returns a built-in theme by name, failing the test when it is
+// missing.
+func mustTheme(t *testing.T, name string) tui.Theme {
+	t.Helper()
+	th, ok := tui.ThemeByName(name)
+	if !ok {
+		t.Fatalf("no built-in theme named %q", name)
+	}
+	return th
+}
+
 // simText reads the simulated terminal as text, one line per row, with the
 // trailing blanks trimmed the way Buffer.String does.
 func simText(sim tcell.SimulationScreen) string {
@@ -145,6 +156,32 @@ func TestTopGoldenScreens(t *testing.T) {
 		th   tui.Theme
 		set  func(m *topModel)
 	}{
+		{"top_flowing_180x50", 180, 50, tui.DefaultTheme(), func(m *topModel) {
+			m.apply(0, topFlowing(t), nil)
+			m.extender = ExtenderReading{
+				Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+				Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+				Families: []ExtenderFamily{
+					{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+					{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+				},
+				LiveClients: 3,
+				Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+			}
+		}},
+		{"top_flowing_150x40", 150, 40, tui.DefaultTheme(), func(m *topModel) {
+			m.apply(0, topFlowing(t), nil)
+			m.extender = ExtenderReading{
+				Source: SourceControlSocket, Known: true, Setting: "on", Running: true, RoleState: "serving", Activating: true,
+				Ports: []ExtenderPort{{Name: "tcp 443", Up: true}, {Name: "udp 443", Up: true}, {Name: "dns 4053", Up: true}},
+				Families: []ExtenderFamily{
+					{IpVersion: 4, State: "activated", Ip: "203.0.113.5"},
+					{IpVersion: 6, State: "activated", Ip: "2602:f7a3:0:2b00:1234:5678:9abc:def0"},
+				},
+				LiveClients: 3,
+				Served:      ExtenderServed{Last24h: 120, Last7d: 800, Lifetime: 5000},
+			}
+		}},
 		{"top_flowing_120x40", 120, 40, tui.DefaultTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 		{"top_flowing_80x24", 80, 24, tui.DefaultTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 		{"top_flowing_mono_80x24", 80, 24, tui.MonoTheme(), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
@@ -166,6 +203,8 @@ func TestTopGoldenScreens(t *testing.T) {
 			m.apply(0, topFlowing(t), nil)
 			m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 		}},
+		{"top_flowing_high_contrast_120x40", 120, 40, mustTheme(t, "high-contrast"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
+		{"top_flowing_colorblind_120x40", 120, 40, mustTheme(t, "colorblind"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -498,12 +537,13 @@ func TestParseTopFlags(t *testing.T) {
 		{[]string{"--interval=2s", "--unit", "a.service"}, 2 * time.Second, []string{"--unit", "a.service"}, ""},
 		{[]string{"--network", "n", "--interval", "3"}, 3 * time.Second, []string{"--network", "n"}, ""},
 		{[]string{"--interval", "100ms"}, 100 * time.Millisecond, nil, ""},
+		{[]string{"--no-mouse", "--interval", "500ms", "--network", "n"}, 500 * time.Millisecond, []string{"--network", "n"}, ""},
 		{[]string{"--interval", "50ms"}, 0, nil, "at least 100ms"},
 		{[]string{"--interval", "fast"}, 0, nil, "not a duration"},
 		{[]string{"--interval"}, 0, nil, "needs a value"},
 	}
 	for _, c := range cases {
-		iv, rest, err := parseTopFlags(c.args)
+		iv, copyOnQuit, plain, rest, err := parseTopFlags(c.args)
 		if c.err != "" {
 			if err == nil || !strings.Contains(err.Error(), c.err) {
 				t.Errorf("%v: err = %v, want %q", c.args, err, c.err)
@@ -511,8 +551,45 @@ func TestParseTopFlags(t *testing.T) {
 			continue
 		}
 		if err != nil || iv != c.interval || strings.Join(rest, " ") != strings.Join(c.rest, " ") {
-			t.Errorf("%v: got %v %v %v", c.args, iv, rest, err)
+			t.Errorf("%v: got %v %v %v %v %v", c.args, iv, copyOnQuit, plain, rest, err)
 		}
+	}
+	// --copy and --plain ride along without disturbing the target flags.
+	iv, copyOnQuit, plain, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
+	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || strings.Join(rest, " ") != "--network n" {
+		t.Fatalf("unexpected flags: %v %v %v %v %v", iv, copyOnQuit, plain, rest, err)
+	}
+	if !hasNoMouseFlag([]string{"--interval", "1s", "--no-mouse"}) {
+		t.Fatal("hasNoMouseFlag should detect --no-mouse")
+	}
+	if hasNoMouseFlag([]string{"--interval", "1s"}) {
+		t.Fatal("hasNoMouseFlag should be false without --no-mouse")
+	}
+}
+
+func TestTopMouseToggleAndHelpText(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, topFlowing(t), nil)
+	if !m.mouse {
+		t.Fatal("mouse should be enabled by default")
+	}
+	txt, _ := showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "M mouse on") {
+		t.Fatalf("footer should show mouse on:\n%s", txt)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'M'})
+	if m.mouse {
+		t.Fatal("M should toggle mouse off")
+	}
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "M mouse off") {
+		t.Fatalf("footer should show mouse off:\n%s", txt)
+	}
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "Shift+drag selects text in most terminals") {
+		t.Fatalf("help overlay should explain Shift+drag text selection:\n%s", txt)
 	}
 }
 
@@ -774,5 +851,21 @@ func TestTopLoopEndsWhenTheScreenGoesAway(t *testing.T) {
 	rig.scr.Screen.Close() // for example the terminal was closed under us
 	if err := rig.wait(t); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestTopCopyOnContextCancel(t *testing.T) {
+	t.Setenv("XDG_STATE_HOME", t.TempDir())
+	src, _ := fakeSource(t)
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.copyOnQuit = true
+	rig := startLoop(t, m, src, 100, 30)
+	rig.waitFor(t, "FLOWING", func(s string) bool { return strings.Contains(s, "FLOWING") })
+	rig.cancel()
+	if err := rig.wait(t); err != nil {
+		t.Fatal(err)
+	}
+	if m.copyErr != nil || m.copyPath == "" || !strings.Contains(m.copyText, "FLOWING") {
+		t.Fatalf("copy path=%q error=%v", m.copyPath, m.copyErr)
 	}
 }

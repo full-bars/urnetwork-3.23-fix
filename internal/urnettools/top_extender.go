@@ -62,27 +62,53 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 		level = topInfo
 	}
 	rows := []topExtenderRow{{"state", state, level}}
-
-	var ports []string
-	portLevel := topGood
-	for _, port := range r.Ports {
-		short := strings.Fields(port.Name)
-		name := port.Name
-		if len(short) > 0 {
-			name = short[0] // tcp, udp, dns: the ports are in the title row
+	if d := r.Discovery; d != nil {
+		level := topInfo
+		switch d.State {
+		case "running":
+			level = topGood
+			if d.Peers == 0 {
+				level = topWarn
+			}
+		case "failed":
+			level = topBad
+		case "waiting":
+			level = topWarn
 		}
-		if port.Up {
-			ports = append(ports, name+" bound")
-			continue
+		value := d.State
+		if d.State == "running" {
+			value = fmt.Sprintf("%s %d peers %d feeds", d.State, d.Peers, d.FeedSubscribers)
+			if d.MessagesAccepted != nil {
+				value += fmt.Sprintf(" %d msgs", *d.MessagesAccepted)
+			}
 		}
-		ports = append(ports, name+" DOWN")
-		if strings.HasPrefix(port.Name, "tcp") {
-			portLevel = topBad
-		} else if portLevel == topGood {
-			portLevel = topWarn
+		if d.State == "failed" && d.Failure != "" {
+			value += ": " + d.Failure
 		}
+		rows = append(rows, topExtenderRow{"gossip", value, level})
 	}
-	rows = append(rows, topExtenderRow{"ports", strings.Join(ports, " "), portLevel})
+
+	// Keep each port on its own row: a single concatenated row is clipped in
+	// the side panel, and discarding the port number makes both DNS ports alike.
+	seen53 := false
+	for _, port := range r.Ports {
+		if port.Name == "dns 53" || port.Name == "udp 53" {
+			seen53 = true
+		}
+		value, level := "bound", topGood
+		if !port.Up {
+			value, level = "DOWN", topWarn
+			if strings.HasPrefix(port.Name, "tcp") {
+				level = topBad
+			}
+		}
+		rows = append(rows, topExtenderRow{port.Name, value, level})
+	}
+	if !seen53 {
+		// Older providers omit 53 when it is not bound; omission does not tell
+		// us whether it was disabled, failed to bind, or is not supported.
+		rows = append(rows, topExtenderRow{"dns 53", "not reported", topInfo})
+	}
 
 	for _, f := range r.Families {
 		key := strings.ToLower(extenderFamilyName(f.IpVersion))
@@ -165,7 +191,13 @@ func (m *topModel) applyExtender(gen int, reading ExtenderReading) {
 		return
 	}
 	m.extenderBusy = false
+	for _, c := range reading.Carriers {
+		m.carriers.push(m.now(), c.Carrier, c.Served)
+	}
 	m.extender = reading
+	if m.cur < len(m.providerExt) {
+		m.providerExt[m.cur] = reading
+	}
 }
 
 func (m *topModel) drawExtender(b *tui.Buffer) {
@@ -179,6 +211,10 @@ func (m *topModel) drawExtender(b *tui.Buffer) {
 		if y >= b.Height() {
 			return
 		}
-		m.kvAt(b, 8, y, row.key, row.value, m.style(row.level))
+		col := 8
+		if len(row.key) >= col {
+			col = len(row.key) + 1
+		}
+		m.kvAt(b, col, y, row.key, row.value, m.style(row.level))
 	}
 }

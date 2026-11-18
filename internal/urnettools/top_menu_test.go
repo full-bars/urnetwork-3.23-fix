@@ -68,6 +68,20 @@ func TestTopMenuSwallowsOtherKeys(t *testing.T) {
 	}
 }
 
+// The new themes are reachable through the settings store: a saved top.conf
+// naming them loads back as that choice, not as nothing.
+func TestLoadTopSettingsAcceptsNewThemes(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "top.conf")
+	for _, name := range []string{"high-contrast", "colorblind"} {
+		if err := os.WriteFile(path, []byte("theme = "+name+"\n"), 0o644); err != nil {
+			t.Fatal(err)
+		}
+		if got := loadTopSettings(path); got.Theme != name {
+			t.Errorf("theme %q did not load: %+v", name, got)
+		}
+	}
+}
+
 func TestTopMenuCyclesTheme(t *testing.T) {
 	m, path := menuModel(t)
 	pressKey(m, 'm')
@@ -177,6 +191,9 @@ func TestTopMenuThemeLockedByEnvironment(t *testing.T) {
 	if m.theme.Name != "mono" {
 		t.Fatalf("saved theme overrode the environment: %q", m.theme.Name)
 	}
+	if got := m.settings().Theme; got != "nord" {
+		t.Fatalf("layout save changed preference: %q", got)
+	}
 }
 
 func TestTopMenuSaveFailureIsReported(t *testing.T) {
@@ -210,13 +227,15 @@ func TestTopMenuNoPathMeansNoPersistence(t *testing.T) {
 func TestTopSettingsRoundTripAndForgiveness(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "a", "top.conf")
-	if got := loadTopSettings(path); got != (topSettings{}) {
+	got := loadTopSettings(path)
+	if got.Theme != "" || got.Graph != "" || got.LayoutSideWidth != 0 || got.LayoutDividers != nil {
 		t.Fatalf("missing file = %+v", got)
 	}
 	if err := saveTopSettings(path, topSettings{Theme: "dracula", Graph: "tty"}); err != nil {
 		t.Fatal(err)
 	}
-	if got := loadTopSettings(path); got != (topSettings{Theme: "dracula", Graph: "tty"}) {
+	got = loadTopSettings(path)
+	if got.Theme != "dracula" || got.Graph != "tty" || got.LayoutSideWidth != 0 || got.LayoutDividers != nil {
 		t.Fatalf("round trip = %+v", got)
 	}
 	// No temp files left beside it.
@@ -226,12 +245,41 @@ func TestTopSettingsRoundTripAndForgiveness(t *testing.T) {
 	}
 	// Garbage, stale names and comments are ignored, valid lines kept.
 	os.WriteFile(path, []byte("# hi\n\nnonsense\ntheme = vaporwave\ngraph = \"block\"\nunknown = 1\ntheme=nord\n"), 0o644)
-	if got := loadTopSettings(path); got != (topSettings{Theme: "nord", Graph: "block"}) {
+	if got := loadTopSettings(path); got.Theme != "nord" || got.Graph != "block" {
 		t.Fatalf("forgiving read = %+v", got)
 	}
 	os.WriteFile(path, []byte{0xff, 0x00, '='}, 0o644)
-	if got := loadTopSettings(path); got != (topSettings{}) {
+	if got := loadTopSettings(path); got.Theme != "" || got.Graph != "" {
 		t.Fatalf("binary garbage = %+v", got)
+	}
+}
+
+// The layout keys round trip like the theme ones, and a corrupt file reads as
+// the default layout.
+func TestTopLayoutSettingsRoundTrip(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "top.conf")
+	if got := loadTopSettings(path); got.LayoutSideWidth != 0 || got.LayoutDividers != nil {
+		t.Fatalf("missing file = %+v", got)
+	}
+	err := saveTopSettings(path, topSettings{LayoutSideWidth: 38, LayoutDividers: map[string]int{"left:proxies": 22, "side:resources": 12}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got := loadTopSettings(path)
+	if got.LayoutSideWidth != 38 {
+		t.Fatalf("side width = %d", got.LayoutSideWidth)
+	}
+	if got.LayoutDividers["left:proxies"] != 22 || got.LayoutDividers["side:resources"] != 12 {
+		t.Fatalf("dividers = %v", got.LayoutDividers)
+	}
+	if len(got.LayoutDividers) != 2 {
+		t.Fatalf("extra dividers = %v", got.LayoutDividers)
+	}
+	// A corrupt layout line reads as no layout, not a crash.
+	os.WriteFile(path, []byte("layout.side_width = lots\nlayout.divider.left:proxies = -3\nlayout.side_width = 33\n"), 0o644)
+	if got := loadTopSettings(path); got.LayoutSideWidth != 33 || got.LayoutDividers != nil {
+		t.Fatalf("forgiving read = %+v", got)
 	}
 }
 

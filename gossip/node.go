@@ -207,7 +207,10 @@ type Node struct {
 	// dials the current peering round has in flight (K4). Atomic rather than
 	// state, because the round publishes it through `updateStatus`, which
 	// takes the status lock.
-	dialCount atomic.Int64
+	dialCount             atomic.Int64
+	messagesAccepted      atomic.Uint64
+	applyErrors           atomic.Uint64
+	lastAcceptedUnixMilli atomic.Int64
 
 	stateLock     sync.Mutex
 	operatorAddrs []ma.Multiaddr
@@ -602,6 +605,12 @@ func (self *Node) Status() NodeStatus {
 	return self.statusMonitor.Value()
 }
 
+// ReceiveStats returns successfully applied remote messages (including duplicates),
+// application errors and the last successful receipt time in Unix milliseconds.
+func (self *Node) ReceiveStats() (uint64, uint64, int64) {
+	return self.messagesAccepted.Load(), self.applyErrors.Load(), self.lastAcceptedUnixMilli.Load()
+}
+
 // The status value and a channel armed at the same instant, for a consumer
 // that renders it.
 func (self *Node) StatusMonitor() *connect.MonitorValue[NodeStatus] {
@@ -808,7 +817,11 @@ func (self *Node) runReceive() {
 			gossipMessage,
 			connect.ExtenderSourceGossip,
 		); err != nil {
+			self.applyErrors.Add(1)
 			self.log.Infof("[gossip]apply err = %s\n", err)
+		} else if !message.Local && message.ReceivedFrom != self.host.ID() {
+			self.messagesAccepted.Add(1)
+			self.lastAcceptedUnixMilli.Store(self.settings.Now().UnixMilli())
 		}
 	}
 }

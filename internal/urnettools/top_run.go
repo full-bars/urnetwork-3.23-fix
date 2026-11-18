@@ -29,8 +29,34 @@ type topResult struct {
 	isGroups    bool
 	groups      *GoroutineGroups
 	// the extender reading
-	isExtender bool
-	extender   ExtenderReading
+	isExtender   bool
+	extender     ExtenderReading
+	isProxyCells bool
+	proxyCells   []proxyCell
+	isOverview   bool
+	provider     int
+}
+
+// topFetchOverview reads one provider and recovers source panics.
+func topFetchOverview(src topSource, p Provider, gen, i int) (res topResult) {
+	res = topResult{gen: gen, isOverview: true, provider: i}
+	defer func() {
+		if r := recover(); r != nil {
+			res.snap, res.err = nil, fmt.Errorf("overview fetch panicked: %v", r)
+		}
+	}()
+	res.snap, res.err = src.Fetch(p)
+	if extSrc, ok := src.(topExtenderSource); ok {
+		func() {
+			defer func() {
+				if recover() != nil {
+					res.extender = ExtenderReading{Source: SourceUnknown}
+				}
+			}()
+			res.extender = extSrc.FetchExtender(p)
+		}()
+	}
+	return res
 }
 
 // runTop drives the model on a screen until the user quits, ctx is cancelled
@@ -67,6 +93,23 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			res.snap, res.err = src.Fetch(p)
 		}()
 	}
+	var proxyBusy bool
+	fetchCells := func(gen int, p Provider) {
+		proxyBusy = true
+		go func() {
+			res := topResult{gen: gen, isProxyCells: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.err = fmt.Errorf("proxy cells fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.proxyCells, res.err = fetchProxyCells(p)
+		}()
+	}
 
 	// The light counters are optional: a source without them (or a provider
 	// that predates the command) leaves top on the snapshot's own rates.
@@ -89,7 +132,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 
 	// The runtime views are optional the same way.
 	rtSrc, hasRuntime := src.(topInternalsSource)
-	fetchInternalsFn := func(gen int, p Provider) {
+	fetchInternalsFn := func(gen int, p Provider, now time.Time) {
 		go func() {
 			res := topResult{gen: gen, isInternals: true}
 			defer func() {
@@ -102,6 +145,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				}
 			}()
 			res.internals, res.err = rtSrc.FetchInternals(p)
+			if res.err == nil && res.internals != nil {
+				res.internals.SigpipeRisk = sigpipeRestartRiskCached(p, now)
+			}
 		}()
 	}
 	fetchGroupsFn := func(gen int, p Provider) {
@@ -117,6 +163,23 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				}
 			}()
 			res.groups, res.err = rtSrc.FetchGoroutines(p)
+		}()
+	}
+
+	// The overview fetches one snapshot and extender reading of every provider
+	// the live screen is not showing, at the snapshot cadence.
+	overviewBusy := make(map[int]int)
+	fetchOverview := func(gen, i int, p Provider) {
+		if previous, ok := overviewBusy[i]; ok && previous == gen {
+			return
+		}
+		overviewBusy[i] = gen
+		go func() {
+			res := topFetchOverview(src, p, gen, i)
+			select {
+			case results <- res:
+			case <-ctx.Done():
+			}
 		}()
 	}
 
@@ -141,9 +204,23 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
+	defer func() {
+		if m.copyOnQuit && buf.Width() > 0 && buf.Height() > 0 {
+			m.copyOnExit(buf)
+		}
+	}()
+	scr.SetMouse(m.mouse)
+	lastMouse := m.mouse
 	for {
+		if m.mouse != lastMouse {
+			scr.SetMouse(m.mouse)
+			lastMouse = m.mouse
+		}
 		if gen, p, ok := m.wantFetch(m.now()); ok {
 			fetch(gen, p)
+			if _, ok := src.(socketTopSource); ok && !proxyBusy {
+				fetchCells(gen, p)
+			}
 		}
 		if hasTraffic {
 			if gen, p, ok := m.wantTraffic(m.now()); ok {
@@ -155,9 +232,17 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				fetchExtender(gen, p)
 			}
 		}
+		if gen, ok := m.wantOverview(m.now()); ok {
+			for i, p := range m.providers {
+				if i == m.cur {
+					continue // the main poll keeps this one fresh
+				}
+				fetchOverview(gen, i, p)
+			}
+		}
 		if hasRuntime {
 			if gen, p, ok := m.wantInternals(m.now()); ok {
-				fetchInternalsFn(gen, p)
+				fetchInternalsFn(gen, p, m.now())
 			}
 			if gen, p, ok := m.wantGroups(m.now()); ok {
 				fetchGroupsFn(gen, p)
@@ -181,8 +266,16 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			}
 		case r := <-results:
 			switch {
+			case r.isProxyCells:
+				proxyBusy = false
+				m.applyProxyCells(r.gen, r.proxyCells, r.err)
 			case r.isExtender:
 				m.applyExtender(r.gen, r.extender)
+			case r.isOverview:
+				if overviewBusy[r.provider] == r.gen {
+					delete(overviewBusy, r.provider)
+				}
+				m.applyOverview(r.gen, r.provider, r.snap, r.err, r.extender)
 			case r.isTraffic:
 				m.applyTraffic(r.gen, r.traffic, r.err)
 			case r.isInternals:

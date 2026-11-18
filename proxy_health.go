@@ -127,6 +127,7 @@ type ProxyFailureCounters struct {
 type proxyHealth struct {
 	address         string // dial target, for operator-facing display only
 	key             string // identity: address, or address+user for a shared-gateway proxy — see ProxySettings.Key()
+	cellRevision    uint64 // changes whenever this slot changes identity
 	currentlyUp     bool
 	everUp          bool
 	connecting      bool      // registered and still trying to establish first WebSocket
@@ -231,6 +232,9 @@ func RegisterProxy(index int, address, key string) {
 	if !ok {
 		h = &proxyHealth{}
 		proxyHealthByIndex[index] = h
+	}
+	if h.key != key {
+		h.cellRevision++
 	}
 	if h.key != "" && h.key != key {
 		delete(proxyHealthByKey, h.key)

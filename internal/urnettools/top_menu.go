@@ -20,6 +20,7 @@ const (
 // environment forced one (NO_COLOR, a dumb terminal): that is the user's
 // explicit request and outranks a saved preference.
 func (m *topModel) applySettings(s topSettings) {
+	m.savedTheme = s.Theme
 	if s.Theme != "" && !m.themeLocked {
 		if th, ok := tui.ThemeByName(s.Theme); ok {
 			m.theme = th
@@ -28,16 +29,28 @@ func (m *topModel) applySettings(s topSettings) {
 	if g, ok := tui.GraphSymbolsByName(s.Graph); ok {
 		m.graph = g
 	}
+	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
 }
 
 func (m *topModel) settings() topSettings {
-	return topSettings{Theme: m.theme.Name, Graph: m.graph.String()}
+	theme := m.theme.Name
+	if m.themeLocked {
+		theme = m.savedTheme
+	}
+	return topSettings{Theme: theme, Graph: m.graph.String(), LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether
 // the menu consumed it; quit keys pass through so q and Ctrl-C always work.
 func (m *topModel) menuHandle(ev tcellui.Event) (consumed bool) {
 	switch ev.Kind {
+	case tcellui.EventMouse:
+		// A click closes the menu, so a stray click never leaks a zoom toggle
+		// or a quit from under the overlay.
+		if ev.Action == tcellui.MousePress {
+			m.menu = false
+		}
+		return true
 	case tcellui.EventKey:
 		switch ev.Key {
 		case tcellui.KeyCtrlC:
@@ -58,8 +71,10 @@ func (m *topModel) menuHandle(ev tcellui.Event) (consumed bool) {
 		switch ev.Rune {
 		case 'q', 'Q':
 			return false
-		case 'm', 'M':
+		case 'm':
 			m.menu = false
+		case 'M':
+			m.mouse = !m.mouse
 		case 'k', 'K':
 			m.menuMove(-1)
 		case 'j', 'J':

@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -20,6 +22,11 @@ import (
 type topSettings struct {
 	Theme string // a tui.ThemeNames entry, or "" for the environment's choice
 	Graph string // a tui.GraphSymbolNames entry, or "" for braille
+	// The operator's arrangement of the top screen, drawn by their own hand:
+	// how wide the right column is and where the box dividers sit. Zero or a
+	// missing value means the default for the terminal size.
+	LayoutSideWidth int            // explicit right column width; 0 = auto
+	LayoutDividers  map[string]int // divider name -> content row index
 }
 
 // topSettingsPath is ~/.config/urnet-tools/top.conf (or the platform's
@@ -57,14 +64,25 @@ func loadTopSettings(path string) topSettings {
 			continue
 		}
 		key, val = strings.TrimSpace(key), strings.Trim(strings.TrimSpace(val), `"`)
-		switch key {
-		case "theme":
+		switch {
+		case key == "theme":
 			if _, ok := tui.ThemeByName(val); ok {
 				s.Theme = val
 			}
-		case "graph":
+		case key == "graph":
 			if _, ok := tui.GraphSymbolsByName(val); ok {
 				s.Graph = val
+			}
+		case key == "layout.side_width":
+			if v, err := strconv.Atoi(val); err == nil && v >= 0 {
+				s.LayoutSideWidth = v
+			}
+		case strings.HasPrefix(key, "layout.divider."):
+			if v, err := strconv.Atoi(val); err == nil && v > 0 {
+				if s.LayoutDividers == nil {
+					s.LayoutDividers = map[string]int{}
+				}
+				s.LayoutDividers[strings.TrimPrefix(key, "layout.divider.")] = v
 			}
 		}
 	}
@@ -85,7 +103,19 @@ func saveTopSettings(path string, s topSettings) error {
 		return err
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
-	_, werr := fmt.Fprintf(tmp, "# urnet-tools top: chosen in the m menu\ntheme = %s\ngraph = %s\n", s.Theme, s.Graph)
+	out := "# urnet-tools top: chosen in the m menu\ntheme = " + s.Theme + "\ngraph = " + s.Graph + "\n"
+	if s.LayoutSideWidth > 0 {
+		out += fmt.Sprintf("layout.side_width = %d\n", s.LayoutSideWidth)
+	}
+	names := make([]string, 0, len(s.LayoutDividers))
+	for name := range s.LayoutDividers {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		out += fmt.Sprintf("layout.divider.%s = %d\n", name, s.LayoutDividers[name])
+	}
+	_, werr := tmp.WriteString(out)
 	if cerr := tmp.Chmod(0o644); werr == nil {
 		werr = cerr
 	}

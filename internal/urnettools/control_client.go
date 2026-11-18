@@ -105,6 +105,12 @@ type controlResponse struct {
 	// and "goroutines".
 	Internals  *NodeInternals   `json:"internals,omitempty"`
 	Goroutines *GoroutineGroups `json:"goroutines,omitempty"`
+	// ProxyCells is the compact per-proxy grid payload answered by
+	// "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
+	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// ProxyCellDetail is the full per-proxy record for the grid's popup,
+	// answered by "proxy_cell_detail".
+	ProxyCellDetail []ProxyCellDetail `json:"proxy_cell_detail,omitempty"`
 	// ProxyAudit is the provider's proxy audit status, answered by "status" and "audit".
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`

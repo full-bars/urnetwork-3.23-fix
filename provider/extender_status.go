@@ -121,8 +121,8 @@ func unixMs(t time.Time) int64 {
 // health tick: it reads in-memory state and one small file at most.
 func (m *extenderManager) Reading() extenderControlReading {
 	on, source := extenderSetting(m.environ)
-	reading := extenderControlReading{Known: true, Setting: "off", SettingSource: source, Discovery: extenderDiscoverySnapshot{Requested: extenderDiscoveryOff, State: extenderDiscoveryStateOff}}
-	if mode, ok := globalControlState.get("extender_discovery"); ok {
+	reading := extenderControlReading{Known: true, Setting: "off", SettingSource: source, Discovery: extenderDiscoverySnapshot{Requested: extenderDiscoveryOn, State: extenderDiscoveryStateOff}}
+	if mode, ok := globalControlState.get("extender_discovery"); ok && validExtenderDiscoveryMode(mode) {
 		reading.Discovery.Requested = normalizeExtenderDiscoveryMode(mode)
 	}
 	if on {

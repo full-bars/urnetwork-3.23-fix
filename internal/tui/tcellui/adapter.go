@@ -25,9 +25,46 @@ const (
 	EventRune
 	// EventResize is a new terminal size (W and H are set).
 	EventResize
+	// EventMouse is a mouse press, release, drag, move or wheel step.
+	EventMouse
 	// EventQuit means the screen is gone (finalized or its input failed); no
 	// further events follow.
 	EventQuit
+)
+
+// MouseButton names a mouse button or wheel direction.
+type MouseButton uint8
+
+const (
+	MouseNone MouseButton = iota
+	MouseLeft
+	MouseRight
+	MouseMiddle
+	MouseWheelUp
+	MouseWheelDown
+	MouseWheelLeft
+	MouseWheelRight
+)
+
+// MouseAction says what the mouse did at (X, Y).
+type MouseAction uint8
+
+const (
+	MouseMove MouseAction = iota
+	MousePress
+	MouseDrag
+	MouseRelease
+	MouseWheel
+)
+
+// ModMask is a bitmask of keyboard modifiers held during an input event.
+type ModMask uint8
+
+const (
+	ModShift ModMask = 1 << iota
+	ModCtrl
+	ModAlt
+	ModMeta
 )
 
 // Key names the few non-printable keys the screens use. Anything else that is
@@ -49,10 +86,14 @@ const (
 
 // Event is the terminal input the screens understand.
 type Event struct {
-	Kind EventKind
-	Key  Key
-	Rune rune
-	W, H int
+	Kind      EventKind
+	Key       Key
+	Rune      rune
+	W, H      int
+	X, Y      int
+	Button    MouseButton
+	Action    MouseAction
+	Modifiers ModMask
 }
 
 // Screen is what a screen model needs from a terminal: its size, a way to show
@@ -63,6 +104,9 @@ type Screen interface {
 	// Draw shows b, which should be Size() big; anything outside the terminal
 	// is clipped and anything b does not cover is blank.
 	Draw(b *tui.Buffer)
+	// SetMouse turns terminal mouse reporting on or off. Turning it off lets
+	// the terminal handle text selection directly without holding Shift.
+	SetMouse(on bool)
 	// Events is the input stream. It ends (after an EventQuit) once the screen
 	// is closed.
 	Events() <-chan Event
@@ -76,7 +120,7 @@ type screen struct {
 	events chan Event
 	done   chan struct{}
 	once   sync.Once
-	// mu serializes Draw and Close. tcell's screen state is not
+	// mu serializes Draw, SetMouse and Close. tcell's screen state is not
 	// goroutine-safe: a Close (Fini) racing an in-flight Draw (Show/resize)
 	// is a data race (caught on TestTopLoopEndsWhenTheScreenGoesAway), so the
 	// drawing loop and the teardown must never touch tcell concurrently.
@@ -85,6 +129,15 @@ type screen struct {
 	// repaint that tcell wants after a resize happens on the drawing goroutine
 	// rather than racing it.
 	resized atomic.Bool
+	// Mouse mode changes are published to the pump without writing held from
+	// the rendering goroutine. Repeated SetMouse calls do not break a drag.
+	mouseDisabled  bool // protected by mu
+	mouseEpoch     atomic.Uint64
+	seenMouseEpoch uint64 // pump goroutine only
+	// held is the button currently pressed, tracked on the pump goroutine so
+	// motion with a button held translates as MouseDrag and button release as
+	// MouseRelease.
+	held MouseButton
 }
 
 // Open takes over the controlling terminal with the alternate screen and raw
@@ -103,6 +156,7 @@ func Wrap(s tcell.Screen) (Screen, error) {
 	if err := s.Init(); err != nil {
 		return nil, err
 	}
+	s.EnableMouse()
 	self := &screen{s: s, events: make(chan Event, 16), done: make(chan struct{})}
 	go self.pump()
 	return self, nil
@@ -111,6 +165,20 @@ func Wrap(s tcell.Screen) (Screen, error) {
 func (self *screen) Size() (int, int) { return self.s.Size() }
 
 func (self *screen) Events() <-chan Event { return self.events }
+
+func (self *screen) SetMouse(on bool) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.mouseDisabled == on {
+		self.mouseDisabled = !on
+		self.mouseEpoch.Add(1)
+	}
+	if on {
+		self.s.EnableMouse()
+	} else {
+		self.s.DisableMouse()
+	}
+}
 
 // Close finalizes the terminal exactly once. tcell's Fini unblocks PollEvent,
 // which ends the pump.
@@ -189,10 +257,76 @@ func (self *screen) translate(ev tcell.Event) (Event, bool) {
 		return Event{Kind: EventResize, W: w, H: h}, true
 	case *tcell.EventKey:
 		return translateKey(ev), true
+	case *tcell.EventMouse:
+		return self.translateMouse(ev)
 	case *tcell.EventError:
 		return Event{Kind: EventQuit}, true
 	}
 	return Event{}, false
+}
+
+func translateMods(m tcell.ModMask) ModMask {
+	var out ModMask
+	if m&tcell.ModShift != 0 {
+		out |= ModShift
+	}
+	if m&tcell.ModCtrl != 0 {
+		out |= ModCtrl
+	}
+	if m&tcell.ModAlt != 0 {
+		out |= ModAlt
+	}
+	if m&tcell.ModMeta != 0 {
+		out |= ModMeta
+	}
+	return out
+}
+
+func (self *screen) translateMouse(ev *tcell.EventMouse) (Event, bool) {
+	if epoch := self.mouseEpoch.Load(); epoch != self.seenMouseEpoch {
+		self.held = MouseNone
+		self.seenMouseEpoch = epoch
+	}
+	x, y := ev.Position()
+	mods := translateMods(ev.Modifiers())
+	btns := ev.Buttons()
+	switch {
+	case btns&tcell.WheelUp != 0:
+		return Event{Kind: EventMouse, X: x, Y: y, Button: MouseWheelUp, Action: MouseWheel, Modifiers: mods}, true
+	case btns&tcell.WheelDown != 0:
+		return Event{Kind: EventMouse, X: x, Y: y, Button: MouseWheelDown, Action: MouseWheel, Modifiers: mods}, true
+	case btns&tcell.WheelLeft != 0:
+		return Event{Kind: EventMouse, X: x, Y: y, Button: MouseWheelLeft, Action: MouseWheel, Modifiers: mods}, true
+	case btns&tcell.WheelRight != 0:
+		return Event{Kind: EventMouse, X: x, Y: y, Button: MouseWheelRight, Action: MouseWheel, Modifiers: mods}, true
+	}
+	var btn MouseButton
+	switch {
+	case btns&tcell.Button1 != 0:
+		btn = MouseLeft
+	case btns&tcell.Button2 != 0:
+		btn = MouseRight
+	case btns&tcell.Button3 != 0:
+		btn = MouseMiddle
+	case btns == tcell.ButtonNone:
+		btn = MouseNone
+	default:
+		return Event{}, false
+	}
+	if btn != MouseNone {
+		action := MousePress
+		if self.held == btn {
+			action = MouseDrag
+		}
+		self.held = btn
+		return Event{Kind: EventMouse, X: x, Y: y, Button: btn, Action: action, Modifiers: mods}, true
+	}
+	if self.held != MouseNone {
+		rel := self.held
+		self.held = MouseNone
+		return Event{Kind: EventMouse, X: x, Y: y, Button: rel, Action: MouseRelease, Modifiers: mods}, true
+	}
+	return Event{Kind: EventMouse, X: x, Y: y, Button: MouseNone, Action: MouseMove, Modifiers: mods}, true
 }
 
 func translateKey(ev *tcell.EventKey) Event {

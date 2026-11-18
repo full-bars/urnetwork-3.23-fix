@@ -250,7 +250,7 @@ var setKeyHelps = []string{
 	"  baseline            on|off        record this box's behaviour into baseline.jsonl every 15 minutes, with the transport split and the lifetime counters, for `urnet-tools baseline show|compare` (default: on)",
 	"  pprof               on|off|<ip:port>  loopback diagnostics for goroutine, heap and thread profiles (default: on at 127.0.0.1:6060)",
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
-	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: off)",
+	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: on with extender)",
 }
 
 // treatsOffAsClear reports whether `set <key> off` is turned into a generic
@@ -277,7 +277,7 @@ var setKeyHelps = []string{
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "pprof":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "pprof":
 		return false
 	}
 	return true

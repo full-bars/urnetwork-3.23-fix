@@ -132,6 +132,26 @@ func TestTopAdaptiveLayoutFitsEverySize(t *testing.T) {
 	}
 }
 
+func TestTopAdaptiveSideCols(t *testing.T) {
+	cases := []struct {
+		w, want int
+	}{
+		{80, 30},
+		{100, 30},
+		{120, 30},
+		{130, 35},
+		{150, 45},
+		{152, 46},
+		{180, 46},
+		{240, 46},
+	}
+	for _, c := range cases {
+		if got := topSideCols(c.w); got != c.want {
+			t.Errorf("topSideCols(%d) = %d, want %d", c.w, got, c.want)
+		}
+	}
+}
+
 func TestTopDirectOnlyGoldenScreen(t *testing.T) {
 	clock := &fakeClock{t: topBase}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
@@ -178,5 +198,24 @@ func TestTopResourceRowsMatchWhatIsDrawn(t *testing.T) {
 				}
 			})
 		}
+	}
+}
+
+func TestTopSideDividerKeepsVisiblePanels(t *testing.T) {
+	m := newTopModel(nil, 0, 0, tui.DefaultTheme(), nil)
+	m.nowRows, m.resRows, m.extRows = 10, 7, 7
+	m.showExtender, m.withInternals = true, true
+	m.layout.Dividers = map[string]int{"side:resources": 35}
+	boxes := m.splitSide(tui.Rect{W: 30, H: 38})
+	for i, box := range boxes {
+		if box.H < topMinBoxRows {
+			t.Fatalf("box %d height %d", i, box.H)
+		}
+	}
+	m.showExtender, m.withInternals = false, false
+	m.layout.Dividers["side:resources"] = 15
+	boxes = m.splitSide(tui.Rect{W: 30, H: 38})
+	if boxes[0].H != 15 {
+		t.Fatalf("boundary = %d", boxes[0].H)
 	}
 }
