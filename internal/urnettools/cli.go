@@ -474,24 +474,28 @@ var (
 
 // cmdStatus shows detailed info for one provider (targeted). With several
 // providers on the box and no target it prints one compact row per provider
-// instead. --json prints the raw live snapshot.
+// instead. --json prints the raw live snapshot. The default output is the
+// one-screen summary; --detail restores the classic deep view, --plain drops
+// color and escape sequences.
 func cmdStatus(args []string) error {
-	// --json is this command's own flag; strip it before the strict target
-	// parser sees it. The original args still go to the sudo re-exec so the
-	// elevated child prints JSON too.
+	// These are this command's own flags; strip them before the strict target
+	// parser sees them. The original args still go to the sudo re-exec so the
+	// elevated child honours them too.
 	jsonMode := false
 	plainMode := false
+	detailMode := false
 	var targetArgs []string
 	for _, a := range args {
-		if a == "--plain" {
+		switch a {
+		case "--plain":
 			plainMode = true
-			continue
-		}
-		if a == "--json" {
+		case "--json":
 			jsonMode = true
-			continue
+		case "--detail", "--full":
+			detailMode = true
+		default:
+			targetArgs = append(targetArgs, a)
 		}
-		targetArgs = append(targetArgs, a)
 	}
 	t, _, err := parseTargetFlags(targetArgs)
 	if err != nil {
@@ -521,16 +525,22 @@ func cmdStatus(args []string) error {
 		printNarrowedNote(len(providers), p, "status")
 	}
 	printSigpipeRestartWarning(p)
-	if plainMode {
-		if err := renderStatusTable(p); err != nil {
+	if detailMode {
+		// Classic deep view: the platform status, the live block and the
+		// extender block. Same as the pre-redesign output.
+		if plainMode {
+			if err := renderStatusTable(p); err != nil {
+				return err
+			}
+		} else if err := renderStatusBase(p); err != nil {
 			return err
 		}
-	} else if err := renderStatusBase(p); err != nil {
-		return err
+		printLiveBlock(p, plainMode)
+		printExtenderBlock(p)
+		return nil
 	}
-	printLiveBlock(p, plainMode)
-	printExtenderBlock(p)
-	return nil
+	// Default: the one-screen summary.
+	return renderStatusSummary(p, plainMode)
 }
 
 // printSigpipeRestartWarning prints a warning line when the effective unit would leave a SIGPIPE death dead.

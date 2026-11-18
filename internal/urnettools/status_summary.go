@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"bytes"
 	"fmt"
 	"io"
 	"strings"
@@ -104,6 +105,37 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 		resources.Text = fmt.Sprintf("heap %s, %d goroutines, pressure %.2f", formatBytes(float64(s.Resources.HeapInuseBytes)), s.Resources.Goroutines, s.Pressure)
 	}
 	return append(rows, resources)
+}
+
+// renderStatusSummary renders the one-screen status summary for one provider:
+// the rows from the summary model. plain disables color and escape sequences.
+func renderStatusSummary(p Provider, plain bool) error {
+	snap, _, _ := fetchSnapshotFn(p)
+	ext := ReadExtenderStatus(p)
+	var sigpipeRisk *bool
+	if p.Unit != "" && p.Supervisor != "openrc" {
+		if state, err := showSigpipeState(p, runSigpipeSystemctl); err == nil && state.risk() {
+			t := true
+			sigpipeRisk = &t
+		}
+	}
+	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
+
+	opts := statusLiveOptsFn()
+	if plain {
+		opts.Color = false
+		opts.ASCII = true
+	}
+	width := opts.Width
+	if width <= 0 || width > 80 {
+		width = 80
+	}
+	var buf bytes.Buffer
+	if err := renderStatusRows(&buf, rows, width, opts.Color); err != nil {
+		return err
+	}
+	fmt.Print(buf.String())
+	return nil
 }
 
 // renderStatusRows clips each row independently, including on narrow terminals.
