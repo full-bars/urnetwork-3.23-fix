@@ -2,6 +2,43 @@
 
 This guide covers how to monitor, update, and prune your proxy list dynamically without restarting the provider.
 
+## Proxies and UDP
+
+A proxied identity sends its traffic through a SOCKS5 proxy. TCP works through any working SOCKS5 proxy. UDP works only when the proxy has a UDP relay. A relay is the SOCKS5 feature that forwards UDP packets. UDP carries DNS queries, STUN requests, QUIC, HTTP/3, and some game traffic. HTTP/3 is QUIC over UDP.
+
+### Why it matters
+
+The network's quality checks include an HTTP/3 leg. An identity whose proxy cannot relay UDP can fail that leg and fall back to TCP. It can still look healthy over TCP. It can also fall out of the quality bucket and receive less traffic. A proxy that relays UDP keeps the identity eligible for that traffic.
+
+### What the provider checks
+
+The provider checks the relay the first time an identity tries HTTP/3 or client UDP. It remembers the result and checks again later. The check reports one of four states:
+
+- `ok` means the relay answers and its exit address matches the TCP exit address.
+- `no-relay` means the proxy refuses UDP ASSOCIATE or the relay does not answer.
+- `exit-mismatch` means the relay answers but its exit address differs from the TCP exit address.
+- `unknown` means the relay answers but the TCP exit address could not be learned.
+
+For `ok` and `unknown`, the provider allows HTTP/3 and client UDP. For `no-relay` and `exit-mismatch`, it refuses both and uses TCP.
+
+### Choosing a proxy
+
+Choose a SOCKS5 proxy that relays UDP and uses the same exit address for UDP and TCP. Proxied identities do not carry UDP to IPv6 destinations.
+
+### Seeing the result
+
+Search the provider logs for `[proxy][udp]`. Each line names the proxy and gives the relay result. A new line appears when the result changes. A proxy that has not tried HTTP/3 or client UDP yet may have no result.
+
+### Testing a proxy by hand
+
+Use a SOCKS5 client that supports UDP ASSOCIATE:
+
+1. Open a TCP connection to the proxy and complete the SOCKS5 handshake.
+2. Request UDP ASSOCIATE and keep the TCP connection open.
+3. Send a DNS query for an IPv4 DNS server through the UDP relay the proxy returns. Use the SOCKS5 UDP packet format.
+4. Check that a valid DNS response comes back.
+5. To check the exit address, ask an address-check service for your address over TCP and over UDP (for example with a STUN request). The two answers should match.
+
 ## 🛑 The Problem with Restarts
 
 > [!WARNING]
