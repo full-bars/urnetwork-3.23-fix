@@ -364,11 +364,11 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		return nil
 	}
 	st := proxyCellStateName(c.state)
-	addr, intervalBytes, age := "?", uint64(0), "?"
+	addr, intervalBytes, age := "?", "?", "?"
 	clients := int64(c.clients)
 	if d, ok := m.proxyDetail[c.index]; ok {
 		addr = d.Addr
-		intervalBytes = d.IntervalBytes
+		intervalBytes = fmt.Sprint(d.IntervalBytes)
 		clients = d.Clients
 		age = tui.Duration(time.Duration(d.AgeSeconds) * time.Second)
 	}
@@ -376,7 +376,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("proxy[%d] %s", c.index, addr),
 		fmt.Sprintf("state %s", st),
 		fmt.Sprintf("clients %d", clients),
-		fmt.Sprintf("bytes in interval %d", intervalBytes),
+		fmt.Sprintf("bytes in interval %s", intervalBytes),
 		fmt.Sprintf("age %s", age),
 	}
 }
