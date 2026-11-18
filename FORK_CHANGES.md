@@ -4254,3 +4254,23 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **How to Identify in New Upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, `urnetwork@*.service` matching in `internal/urnettools/discover.go`, and `openbsdPrivilegePrefix` in `internal/urnettools/lifecycle_openbsd.go`.
 
 **Status**: Shipped in v3.23.0-fix.35.11.
+
+---
+
+## 225. Bucketed Host Blocker Format and Security Precedence Test Sync
+
+**Purpose**: Update the host blocker generator and decoder to handle the lossless prefix bucket table format, validate Frogeye host feeds, emit packed tables as single string literals, and align Telegram reflector test expectations with reputation precedence.
+
+**Files Modified**: `ip_blocker.go`, `ip_blocker_block.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/main.go`, `blocker/main_test.go`, `blocker/packed_literal_test.go`, `ip_blocker_test.go`.
+
+**Files Added**: `blocker/frogeye.go`, `blocker/frogeye_test.go`, `blocker/packed_data_test.go`.
+
+**Changes**:
+- **Lossless prefix bucket host blocker layout** (`ip_blocker.go`, `blocker/main.go`): host fingerprints retain all 48 bits of `SHA256(pepper || hostname)`. The leading byte indexes 256 buckets via 257 monotone uint32 offsets in `blockerBlockedHostBuckets`, and `blockerBlockedHostData` stores sorted 5-byte tails. The decoder validates offset monotonicity and bounds before binary searching only the matching bucket.
+- **Single string literal emissions** (`blocker/main.go`, `blocker/packed_literal_test.go`): generated tables are emitted as single string literals to keep compiler type checking linear.
+- **Frogeye host feed parsing** (`blocker/frogeye.go`, `blocker/frogeye_test.go`): validates host feed metadata and records, ensuring compatibility with generated provenance records.
+- **Telegram reflector reputation precedence** (`ip_security_cfaa.go`, `ip_security_telegram_test.go`): `cfaaDetector` exposes `inspectReason` for static rule attribution. Test assertions in `TestTelegramCallReflectorRanges` expect an IP reputation drop (`cfaaDrop` / `SecurityPolicyReasonCfaaDropIp`) when an address in the reflector snapshot is present on an active IP blocklist.
+
+**How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
+
+**Status**: Unreleased.
