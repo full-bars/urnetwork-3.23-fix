@@ -405,30 +405,76 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	checked := udp.OK + udp.NoRelay + udp.Mismatch + udp.Unknown
 	online := checked + udp.Unchecked
 
-	// Build the main line with styled segments.
-	x := 0
+	// Build the main line with styled segments. Every state with a count is
+	// shown, and unchecked always is. A line wider than the panel first uses the
+	// short labels, then drops the least important states, so ok and unchecked
+	// keep their counts and labels.
 	b.Put("udp ", 0, y, th.Dim)
-	x = utf8.RuneCountInString("udp ")
-	seg := func(n int, label string, style tui.Style) {
-		if n == 0 && label != "unchecked" {
-			return
-		}
-		s := strconv.Itoa(n) + " " + label
-		b.Put(s, x, y, style)
-		x += utf8.RuneCountInString(s) + 1
-		if b.Width() >= 60 {
-			x++
-		}
+	x := utf8.RuneCountInString("udp ")
+	type udpSeg struct {
+		text     string
+		style    tui.Style
+		required bool
 	}
-	noRelay, mismatch, unknown, unchecked := "no relay", "mismatch", "unknown", "unchecked"
-	if b.Width() < 60 {
-		noRelay, mismatch, unknown, unchecked = "no-rel", "diff", "unk", "unchecked"
+	build := func(short bool) []udpSeg {
+		noRelay, mismatch, unknown := "no relay", "mismatch", "unknown"
+		if short {
+			noRelay, mismatch, unknown = "no-rel", "diff", "unk"
+		}
+		var segs []udpSeg
+		add := func(n int, label string, style tui.Style, required bool) {
+			if n == 0 && !required {
+				return
+			}
+			segs = append(segs, udpSeg{strconv.Itoa(n) + " " + label, style, required})
+		}
+		add(udp.OK, "ok", th.OK, false)
+		add(udp.NoRelay, noRelay, th.Warn, false)
+		add(udp.Mismatch, mismatch, th.Warn, false)
+		add(udp.Unknown, unknown, th.Dim, false)
+		add(udp.Unchecked, "unchecked", th.Dim, true)
+		return segs
 	}
-	seg(udp.OK, "ok", th.OK)
-	seg(udp.NoRelay, noRelay, th.Warn)
-	seg(udp.Mismatch, mismatch, th.Warn)
-	seg(udp.Unknown, unknown, th.Dim)
-	seg(udp.Unchecked, unchecked, th.Dim)
+	gap := 1
+	if b.Width() >= 60 {
+		gap = 2
+	}
+	room := b.Width() - x
+	width := func(segs []udpSeg) int {
+		w := 0
+		for i, sg := range segs {
+			if i > 0 {
+				w += gap
+			}
+			w += utf8.RuneCountInString(sg.text)
+		}
+		return w
+	}
+	segs := build(b.Width() < 60)
+	if width(segs) > room {
+		segs = build(true)
+	}
+	// Drop the least important optional states from the right until it fits.
+	for width(segs) > room {
+		drop := -1
+		for i := len(segs) - 1; i > 0; i-- {
+			if !segs[i].required {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			break
+		}
+		segs = append(segs[:drop], segs[drop+1:]...)
+	}
+	for i, sg := range segs {
+		if i > 0 {
+			x += gap
+		}
+		b.Put(sg.text, x, y, sg.style)
+		x += utf8.RuneCountInString(sg.text)
+	}
 
 	// Percentage line: only when there is room.
 	rows := 1

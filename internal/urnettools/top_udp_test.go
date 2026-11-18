@@ -85,3 +85,31 @@ func TestTopUDPCompactAndEmpty(t *testing.T) {
 		})
 	}
 }
+
+// A narrow panel keeps the ok and unchecked counts with their labels. Larger
+// optional states give way first.
+func TestTopUDPCoverageKeepsUncheckedInNarrowPanels(t *testing.T) {
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	s := topFlowing(t)
+	s.Proxies.UDP = &SnapshotProxyUDP{OK: 4000, NoRelay: 1000, Mismatch: 1000, Unknown: 1000, Unchecked: 1000}
+	m.apply(0, s, nil)
+	for _, w := range []int{80, 60, 48, 40, 30} {
+		buf := tui.New(w, 4)
+		m.drawUDPProxyCoverage(buf, 0)
+		line := strings.SplitN(buf.String(), "\n", 2)[0]
+		for _, want := range []string{"4000 ok", "1000 unchecked"} {
+			if !strings.Contains(line, want) {
+				t.Fatalf("width %d: %q missing from %q", w, want, line)
+			}
+		}
+	}
+	// With room for everything, all five states are drawn.
+	buf := tui.New(120, 4)
+	m.drawUDPProxyCoverage(buf, 0)
+	line := strings.SplitN(buf.String(), "\n", 2)[0]
+	for _, want := range []string{"4000 ok", "1000 no relay", "1000 mismatch", "1000 unknown", "1000 unchecked"} {
+		if !strings.Contains(line, want) {
+			t.Fatalf("wide panel: %q missing from %q", want, line)
+		}
+	}
+}
