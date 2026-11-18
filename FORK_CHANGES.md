@@ -4254,4 +4254,4 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 ## 225. Unused FP2 Client Window
 
-Removed the unused FP2 client window and peer capability recorder, including the address family request labels and the zero receive window handling that belonged to them. The removal covers the window and recorder commits of the FP2 port (`26173ee504` through `3c254453bf` and `e445d5a7af`, listed in the removal commit).
+Removed the unused FP2 client window and peer capability recorder, including the address family request labels and the zero receive window handling that belonged to them. The removal covers the window, recorder and address family commits of the FP2 port.
