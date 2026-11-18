@@ -74,7 +74,18 @@ func (self *proxyUDPCheckStore) cachedEntryLocked(key string) *proxyUDPCheckEntr
 	return nil
 }
 
-// persistLocked serializes completed results, never raw identities or errors.
+// udpPersistDelay is how long the background writer waits before it writes, so
+// a burst of completed checks costs one file write instead of one each.
+var udpPersistDelay = 2 * time.Second
+
+// udpPersistWriteFile writes the state file. It is a variable so a test can
+// observe or hold a write.
+var udpPersistWriteFile = writeUDPPersistFile
+
+// persistLocked records a completed result and schedules one background write.
+// It only touches memory: the check path and the flow path hold self.mu, so they
+// must never wait for a disk. The file holds results, never raw identities or
+// errors.
 func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEntry, now time.Time) error {
 	if self.persistPath == "" {
 		return nil
@@ -91,14 +102,86 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 	}
 	hash := udpPersistKey(key)
 	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit}
-	list := make([]udpPersistEntry, 0, len(self.persisted))
-	for hash, saved := range self.persisted {
-		if saved.At.After(now) || now.Sub(saved.At) >= proxyUDPTTL(saved.Status) {
-			delete(self.persisted, hash)
-			continue
-		}
-		list = append(list, saved)
+	self.persistDirty = true
+	self.persistNow = now
+	if self.persistKick == nil {
+		self.persistKick = make(chan struct{}, 1)
 	}
+	if !self.persistWriting {
+		self.persistWriting = true
+		self.persistWG.Add(1)
+		go self.persistWriter()
+	}
+	return nil
+}
+
+// persistWriter writes the state file until nothing is left to write, then
+// exits. At most one runs per store.
+func (self *proxyUDPCheckStore) persistWriter() {
+	defer self.persistWG.Done()
+	for {
+		timer := time.NewTimer(udpPersistDelay)
+		select {
+		case <-timer.C:
+		case <-self.persistKick:
+			timer.Stop()
+		}
+		self.mu.Lock()
+		self.persistDirty = false
+		now, path := self.persistNow, self.persistPath
+		list := make([]udpPersistEntry, 0, len(self.persisted))
+		for hash, saved := range self.persisted {
+			if saved.At.After(now) || now.Sub(saved.At) >= proxyUDPTTL(saved.Status) {
+				delete(self.persisted, hash)
+				continue
+			}
+			list = append(list, saved)
+		}
+		self.mu.Unlock()
+
+		dropped, err := udpPersistWriteFile(path, list)
+		if len(dropped) > 0 {
+			self.mu.Lock()
+			for _, hash := range dropped {
+				delete(self.persisted, hash)
+			}
+			self.mu.Unlock()
+		}
+		if err != nil {
+			tlog("[proxy][udp] could not persist probe state\n")
+		}
+		// Results that arrived during the write get another round after the
+		// delay. With none, exit now instead of waiting for nothing. The
+		// check and the exit are one step under the lock, so a result that
+		// arrives next starts a new writer.
+		self.mu.Lock()
+		if !self.persistDirty {
+			self.persistWriting = false
+			self.mu.Unlock()
+			return
+		}
+		self.mu.Unlock()
+	}
+}
+
+// flushPersist writes any pending state now and waits for the writer to finish.
+func (self *proxyUDPCheckStore) flushPersist() {
+	self.mu.Lock()
+	kick := self.persistKick
+	self.mu.Unlock()
+	if kick != nil {
+		select {
+		case kick <- struct{}{}:
+		default:
+		}
+	}
+	self.persistWG.Wait()
+}
+
+// writeUDPPersistFile sorts the entries newest first, keeps the newest ones
+// within the entry and byte limits, and replaces the file atomically. It
+// returns the keys it dropped so the caller can forget them too.
+func writeUDPPersistFile(path string, list []udpPersistEntry) (dropped []string, err error) {
 	sort.Slice(list, func(i, j int) bool {
 		if list[i].At.Equal(list[j].At) {
 			return list[i].Key < list[j].Key
@@ -106,40 +189,40 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 		return list[i].At.After(list[j].At)
 	})
 	if len(list) > udpStateMaxEntries {
-		for _, dropped := range list[udpStateMaxEntries:] {
-			delete(self.persisted, dropped.Key)
+		for _, d := range list[udpStateMaxEntries:] {
+			dropped = append(dropped, d.Key)
 		}
 		list = list[:udpStateMaxEntries]
 	}
 	b, err := json.Marshal(udpPersistFile{Version: 1, Entries: list})
 	if err != nil {
-		return err
+		return dropped, err
 	}
 	for len(b) > udpStateMaxBytes && len(list) > 0 {
-		delete(self.persisted, list[len(list)-1].Key)
+		dropped = append(dropped, list[len(list)-1].Key)
 		list = list[:len(list)-1]
 		b, err = json.Marshal(udpPersistFile{Version: 1, Entries: list})
 		if err != nil {
-			return err
+			return dropped, err
 		}
 	}
 	if len(b) > udpStateMaxBytes {
-		return io.ErrShortBuffer
+		return dropped, io.ErrShortBuffer
 	}
-	if err := os.MkdirAll(filepath.Dir(self.persistPath), 0700); err != nil {
-		return err
+	if err := os.MkdirAll(filepath.Dir(path), 0700); err != nil {
+		return dropped, err
 	}
-	f, err := os.CreateTemp(filepath.Dir(self.persistPath), ".udp-state-*.tmp")
+	f, err := os.CreateTemp(filepath.Dir(path), ".udp-state-*.tmp")
 	if err != nil {
-		return err
+		return dropped, err
 	}
 	defer os.Remove(f.Name())
 	if _, err := f.Write(b); err != nil {
 		f.Close()
-		return err
+		return dropped, err
 	}
 	if err := f.Close(); err != nil {
-		return err
+		return dropped, err
 	}
-	return os.Rename(f.Name(), self.persistPath)
+	return dropped, os.Rename(f.Name(), path)
 }

@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -25,6 +27,7 @@ func TestUDPPersistRestartAndExpiry(t *testing.T) {
 	})
 	store.enablePersistence(path, now)
 	store.Check(context.Background(), ps, now)
+	store.flushPersist()
 	b, err := os.ReadFile(path)
 	if err != nil {
 		t.Fatal(err)
@@ -68,5 +71,106 @@ func TestUDPPersistInvalidInput(t *testing.T) {
 		if got := store.coverage([]string{ps.Key()}, now); got.Unchecked != 1 {
 			t.Fatalf("invalid input accepted: %+v", got)
 		}
+	}
+}
+
+func okProbe(context.Context, *connect.ProxySettings) proxyUDPResult {
+	return proxyUDPResult{Status: proxyUDPOK, TCPExit: "192.0.2.1", UDPExit: "192.0.2.1"}
+}
+
+// A write that never returns must not stop the store: checks, flow replies and
+// coverage reads all hold the store lock, so none of them may wait for the disk.
+func TestUDPPersistWriteNeverBlocksTheStore(t *testing.T) {
+	prevWrite, prevDelay := udpPersistWriteFile, udpPersistDelay
+	t.Cleanup(func() { udpPersistWriteFile, udpPersistDelay = prevWrite, prevDelay })
+	udpPersistDelay = 0
+	entered := make(chan struct{}, 1)
+	release := make(chan struct{})
+	udpPersistWriteFile = func(path string, list []udpPersistEntry) ([]string, error) {
+		select {
+		case entered <- struct{}{}:
+		default:
+		}
+		<-release
+		return nil, nil
+	}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	store := newProxyUDPCheckStore(okProbe)
+	store.enablePersistence(filepath.Join(t.TempDir(), "state.json"), now)
+	first := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store.Check(context.Background(), first, now)
+	waitSignal(t, entered, "the writer to start its write")
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		second := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.2:1080"}
+		store.Check(context.Background(), second, now)
+		store.noteFlowReply(second.Key(), now)
+		store.coverage([]string{first.Key(), second.Key()}, now)
+	}()
+	waitSignal(t, done, "checks and reads while a write is stuck")
+	close(release)
+	store.flushPersist()
+}
+
+// A burst of completed checks costs a few writes, and the last write holds all
+// of them.
+func TestUDPPersistCoalescesABurstOfResults(t *testing.T) {
+	prevWrite, prevDelay := udpPersistWriteFile, udpPersistDelay
+	t.Cleanup(func() { udpPersistWriteFile, udpPersistDelay = prevWrite, prevDelay })
+	udpPersistDelay = time.Hour // only flushPersist triggers a write
+	var writes atomic.Int32
+	udpPersistWriteFile = func(path string, list []udpPersistEntry) ([]string, error) {
+		writes.Add(1)
+		return writeUDPPersistFile(path, list)
+	}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "state.json")
+	store := newProxyUDPCheckStore(okProbe)
+	store.enablePersistence(path, now)
+	const n = 25
+	for i := 0; i < n; i++ {
+		ps := &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("192.0.2.%d:1080", i+1)}
+		store.Check(context.Background(), ps, now)
+	}
+	if got := writes.Load(); got != 0 {
+		t.Fatalf("%d writes before the delay ended, want 0", got)
+	}
+	store.flushPersist()
+	if got := writes.Load(); got != 1 {
+		t.Fatalf("%d writes for one burst, want 1", got)
+	}
+	b, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var state udpPersistFile
+	if err := json.Unmarshal(b, &state); err != nil || len(state.Entries) != n {
+		t.Fatalf("file holds %d entries (err %v), want %d", len(state.Entries), err, n)
+	}
+	// nothing left to write, so a second flush writes nothing
+	store.flushPersist()
+	if got := writes.Load(); got != 1 {
+		t.Fatalf("an idle flush wrote again: %d writes", got)
+	}
+}
+
+// The writer exits when it has nothing to write, so a store that is no longer
+// used leaves no goroutine behind.
+func TestUDPPersistWriterExitsWhenIdle(t *testing.T) {
+	prevDelay := udpPersistDelay
+	t.Cleanup(func() { udpPersistDelay = prevDelay })
+	udpPersistDelay = 0
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	store := newProxyUDPCheckStore(okProbe)
+	store.enablePersistence(filepath.Join(t.TempDir(), "state.json"), now)
+	store.Check(context.Background(), &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}, now)
+	store.flushPersist()
+	store.mu.Lock()
+	writing, dirty := store.persistWriting, store.persistDirty
+	store.mu.Unlock()
+	if writing || dirty {
+		t.Fatalf("writer still active after flush: writing=%v dirty=%v", writing, dirty)
 	}
 }

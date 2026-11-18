@@ -357,6 +357,12 @@ type proxyUDPCheckStore struct {
 	detachedRuns map[string]*proxyUDPCheckRun
 	persistPath  string
 	persisted    map[string]udpPersistEntry
+	// background state writer (proxy_udp_persist.go)
+	persistDirty   bool
+	persistWriting bool
+	persistNow     time.Time
+	persistKick    chan struct{}
+	persistWG      sync.WaitGroup
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
