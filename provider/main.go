@@ -6130,8 +6130,16 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 			proxyAddress = keyAddress[i+1:]
 		}
 		trimmed := strings.TrimSpace(proxyAddress)
+		parsed, reason := classifyProxySourceLine(trimmed)
+		if parsed == nil {
+			if reason == "" {
+				reason = "invalid_fields"
+			}
+			fmt.Fprintf(os.Stderr, "proxy add: rejected entry: %s (expected host:port:user:pass)\n", reason)
+			continue
+		}
 		if existing[trimmed] {
-			fmt.Printf("server %s already present in %s\n", trimmed, sourcePath)
+			fmt.Printf("server %s already present in %s\n", parsed.Address, sourcePath)
 			continue
 		}
 		existing[trimmed] = true
@@ -6432,28 +6440,8 @@ func readProxySettings() []*connect.ProxySettings {
 // Returns an error only if the file itself cannot be read; malformed individual
 // lines are skipped with a warning.
 func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("could not read proxy file %s: %w", path, err)
-	}
-	var all []*connect.ProxySettings
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		address, user, password := parseProxyAddress(line)
-		if user == "" || password == "" {
-			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
-			continue
-		}
-		all = append(all, &connect.ProxySettings{
-			Network: "tcp",
-			Address: address,
-			Auth:    &proxy.Auth{User: user, Password: password},
-		})
-	}
-	return all, nil
+	all, _, err := readClassifiedProxySource(path)
+	return all, err
 }
 
 // readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
@@ -7197,6 +7185,11 @@ func proxySummary() {
 		fileSource = state.Source
 	}
 	fmt.Printf("  File proxies:       %d  (%s)\n", fileCount, fileSource)
+	if state != nil && state.Source != "" {
+		if _, rejected, err := readClassifiedProxySource(state.Source); err == nil {
+			fmt.Printf("  Rejected lines:     %d\n", rejected)
+		}
+	}
 	fmt.Printf("  URL proxies:        %d\n", urlCount)
 	fmt.Printf("  Internal proxies:   %d\n", internalCount)
 	fmt.Println()
@@ -7510,10 +7503,8 @@ func removeKeysFromFile(path string, keys []string) error {
 	}
 	var kept []string
 	for _, line := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(line)
-		addr, user, _ := parseProxyAddress(trimmed)
-		lineKey := (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: user}}).Key()
-		if !removeSet[lineKey] {
+		settings, _ := classifyProxySourceLine(line)
+		if settings == nil || !removeSet[settings.Key()] {
 			kept = append(kept, line)
 		}
 	}

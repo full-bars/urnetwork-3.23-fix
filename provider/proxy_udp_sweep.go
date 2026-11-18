@@ -6,11 +6,9 @@ import (
 	"errors"
 	"math/bits"
 	"math/rand"
-	"net"
 	"os"
 	"path/filepath"
 	"sort"
-	"strings"
 	"sync"
 	"time"
 
@@ -26,37 +24,16 @@ const (
 	udpProbeRecheckWindow = 24 * time.Hour
 )
 
-// udpPaidDesiredSet never logs source lines: they may contain credentials.
-// Any unreadable or malformed source leaves ownership unknown, so skip a tick.
+// An unreadable or empty source leaves ownership unknown, so skip a tick.
 func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bool) {
 	out := make(map[string]*connect.ProxySettings)
 	if state.Source != "" {
-		b, err := os.ReadFile(state.Source)
-		if err != nil {
+		settings, rejected, err := readClassifiedProxySource(state.Source)
+		if err != nil || (len(settings) == 0 && rejected == 0) {
 			return nil, false
 		}
-		valid := 0
-		for _, line := range strings.Split(string(b), "\n") {
-			line = strings.TrimSpace(line)
-			if line == "" || strings.HasPrefix(line, "#") {
-				continue
-			}
-			address, user, password := parseProxyAddress(line)
-			if _, _, err := net.SplitHostPort(address); err != nil {
-				return nil, false
-			}
-			if user == "" || password == "" {
-				if address != "" {
-					out["\x00"+address] = &connect.ProxySettings{Address: address}
-				}
-				continue
-			}
-			valid++
-			ps := &connect.ProxySettings{Network: "tcp", Address: address, Auth: &proxy.Auth{User: user, Password: password}}
+		for _, ps := range settings {
 			out[ps.Key()] = ps
-		}
-		if valid == 0 {
-			return nil, false
 		}
 	}
 	home, err := os.UserHomeDir()

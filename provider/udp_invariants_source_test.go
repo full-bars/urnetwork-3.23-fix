@@ -18,11 +18,11 @@ func TestUDPInvariantMalformedPrimaryCannotClaimURLAddress(t *testing.T) {
 	}
 	paid, trusted := udpPaidDesiredSet(&ProxyState{Source: path})
 	if !trusted {
-		return
+		t.Fatal("valid source lines must remain usable")
 	}
 	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{"shared:1234": {}}}
-	if got := urlUDPProbeSettings([]string{"shared:1234"}, paid, url); len(got) != 0 {
-		t.Fatal("malformed primary entry allowed its address to be claimed by URL")
+	if got := urlUDPProbeSettings([]string{"shared:1234"}, paid, url); len(got) != 1 {
+		t.Fatal("rejected primary entry must not claim the URL address")
 	}
 }
 
