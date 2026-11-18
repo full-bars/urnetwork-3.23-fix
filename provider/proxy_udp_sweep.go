@@ -34,6 +34,7 @@ func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bo
 		if err != nil {
 			return nil, false
 		}
+		valid := 0
 		for _, line := range strings.Split(string(b), "\n") {
 			line = strings.TrimSpace(line)
 			if line == "" || strings.HasPrefix(line, "#") {
@@ -41,12 +42,16 @@ func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bo
 			}
 			address, user, password := parseProxyAddress(line)
 			if user == "" || password == "" {
-				return nil, false
+				if address != "" {
+					out["\x00"+address] = &connect.ProxySettings{Address: address}
+				}
+				continue
 			}
+			valid++
 			ps := &connect.ProxySettings{Network: "tcp", Address: address, Auth: &proxy.Auth{User: user, Password: password}}
 			out[ps.Key()] = ps
 		}
-		if len(out) == 0 {
+		if valid == 0 {
 			return nil, false
 		}
 	}
@@ -164,7 +169,7 @@ func runPaidUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
 	}
 	settings := make([]*connect.ProxySettings, 0, len(online))
 	for _, key := range online {
-		if ps := paid[key]; ps != nil {
+		if ps := paid[key]; ps != nil && ps.Network != "" {
 			if entry, ok := state.Proxies[key]; ok {
 				ps.Index = entry.ID
 			}

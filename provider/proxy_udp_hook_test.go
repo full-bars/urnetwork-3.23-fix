@@ -12,6 +12,30 @@ import (
 	"golang.org/x/net/proxy"
 )
 
+func TestUDPProbeMalformedSourceKeepsValidProxies(t *testing.T) {
+	home := withTempHome(t)
+	file := filepath.Join(home, "paid.txt")
+	if err := os.WriteFile(file, []byte("shared:1234::fake\nvalid:1234:alice:fake\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	paid, trusted := udpPaidDesiredSet(&ProxyState{Source: file})
+	if !trusted {
+		t.Fatal("malformed source line blocked valid proxies")
+	}
+	key := (&connect.ProxySettings{Address: "valid:1234", Auth: &proxy.Auth{User: "alice"}}).Key()
+	if paid[key] == nil {
+		t.Fatal("valid proxy missing")
+	}
+	if paid["shared:1234"] != nil {
+		t.Fatal("malformed source line added as unauthenticated proxy")
+	}
+	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{"shared:1234": {User: "url", Password: "fake"}}}
+	urlKey := (&connect.ProxySettings{Address: "shared:1234", Auth: &proxy.Auth{User: "url"}}).Key()
+	if got := urlUDPProbeSettings([]string{urlKey}, paid, url); len(got) != 0 {
+		t.Fatal("malformed primary source address was claimed by URL")
+	}
+}
+
 func TestURLUDPProbeSettingsOwnership(t *testing.T) {
 	paid := &connect.ProxySettings{Address: "shared:1", Auth: &proxy.Auth{User: "paid", Password: "secret"}}
 	url := &ProxyURLState{Cache: map[string]ProxyURLEntry{
