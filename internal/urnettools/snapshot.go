@@ -138,6 +138,21 @@ type SnapshotProxies struct {
 	Configured    int    `json:"configured,omitempty"`
 	TrimCap       int    `json:"trim_cap,omitempty"`
 	TrimCapSource string `json:"trim_cap_source,omitempty"`
+	// UDP coverage counts for online proxies (up or degraded).
+	// omitted when the provider has no proxied identities or an old provider never sets it.
+	UDP *SnapshotProxyUDP `json:"udp,omitempty"`
+}
+
+// SnapshotProxyUDP counts online proxies (up or degraded) by non-expired UDP
+// result. Unchecked has no usable result. The five counts sum to online.
+// Checked is ok + no_relay + mismatch + unknown; percentages are ok/checked
+// and ok/online, and are not defined when their denominator is zero.
+type SnapshotProxyUDP struct {
+	OK        int `json:"ok"`
+	NoRelay   int `json:"no_relay"`
+	Mismatch  int `json:"mismatch"`
+	Unknown   int `json:"unknown"`
+	Unchecked int `json:"unchecked"`
 }
 
 type SnapshotRestart struct {

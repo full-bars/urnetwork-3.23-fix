@@ -5,6 +5,7 @@ import (
 	"strconv"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/urnetwork/connect/internal/tui"
 )
@@ -18,10 +19,12 @@ import (
 const (
 	topSideWidth    = 30
 	topSideMaxWidth = 46
-	topProxiesRows  = 6 // frame plus four bars
+	// topProxiesRows is the Proxies panel height: frame plus four bars plus
+	// one UDP coverage line and, when there is room, a percentage line.
+	topProxiesRows = 8
 	// topProxiesCompactRows is the Proxies panel for a small pool: frame plus one
 	// line. Four bars for one proxy is a lot of box for one number.
-	topProxiesCompactRows = 3
+	topProxiesCompactRows = 4
 	// topProxiesCompactMax is the largest pool drawn as one line.
 	topProxiesCompactMax = 3
 	// topProxiesGridRows is the total height of the Proxies box when the proxy
@@ -385,6 +388,66 @@ func (m *topModel) eventsRows() int {
 	return 2 + min(max(len(vs), topEventsMin), topEventsMax)
 }
 
+// drawUDPProxyCoverage draws the UDP coverage line and optional percentage line
+// starting at row y of b. It returns the number of rows drawn.
+// States with count > 0 are shown; unchecked is always shown.
+func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
+	th := m.theme
+	udp := m.snap.Proxies.UDP
+	if udp == nil {
+		b.Put("udp  not reported", 0, y, th.Dim)
+		return 1
+	}
+	checked := udp.OK + udp.NoRelay + udp.Mismatch + udp.Unknown
+	online := checked + udp.Unchecked
+
+	// Build the main line with styled segments.
+	x := 0
+	b.Put("udp ", 0, y, th.Dim)
+	x = utf8.RuneCountInString("udp ")
+	seg := func(n int, label string, style tui.Style) {
+		if n == 0 && label != "unchecked" {
+			return
+		}
+		s := strconv.Itoa(n) + " " + label
+		b.Put(s, x, y, style)
+		x += utf8.RuneCountInString(s) + 1
+		if b.Width() >= 60 {
+			x++
+		}
+	}
+	noRelay, mismatch, unknown, unchecked := "no relay", "mismatch", "unknown", "unchecked"
+	if b.Width() < 60 {
+		noRelay, mismatch, unknown, unchecked = "no-rel", "diff", "unk", "unchecked"
+	}
+	seg(udp.OK, "ok", th.OK)
+	seg(udp.NoRelay, noRelay, th.Warn)
+	seg(udp.Mismatch, mismatch, th.Warn)
+	seg(udp.Unknown, unknown, th.Dim)
+	seg(udp.Unchecked, unchecked, th.Dim)
+
+	// Percentage line: only when there is room.
+	rows := 1
+	if y+1 < b.Height() {
+		var pctLine string
+		switch {
+		case checked > 0 && online > 0:
+			pctLine = fmt.Sprintf("%d%% of checked, %d%% of online",
+				udp.OK*100/checked, udp.OK*100/online)
+		case checked > 0:
+			pctLine = fmt.Sprintf("%d%% of checked, n/a of online",
+				udp.OK*100/checked)
+		case checked == 0 && online > 0:
+			pctLine = "n/a of checked, 0% of online"
+		default:
+			pctLine = "n/a of checked, n/a of online"
+		}
+		b.Put(pctLine, 0, y+1, th.Dim)
+		rows = 2
+	}
+	return rows
+}
+
 // drawProxiesCompact is the one-line pool summary: every state with its count,
 // a zero dimmed so the states that matter stand out.
 func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
@@ -392,6 +455,9 @@ func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
 	p := m.snap.Proxies
 	if p.Up+p.Degraded+p.Connecting+p.Dead == 0 {
 		b.Put("no proxies: direct only", 0, 0, th.Dim)
+		if b.Height() >= 2 {
+			m.drawUDPProxyCoverage(b, 1)
+		}
 		return
 	}
 	x := 0
@@ -409,6 +475,10 @@ func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
 		}
 		x = b.Put(strconv.Itoa(st.n)+" "+st.label, x, 0, style)
 	}
+	// UDP coverage: add below when there is room (height >= 2).
+	if b.Height() >= 2 {
+		m.drawUDPProxyCoverage(b, 1)
+	}
 }
 
 func (m *topModel) drawProxies(b *tui.Buffer) {
@@ -423,7 +493,8 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	// Grid mode: the provider feeds proxy_cells and the box is tall enough.
 	if m.hasProxyGridData() && proxiesBoxMode(b.Height(), b.Width()) == proxyBoxGrid {
-		m.drawProxyGrid(b)
+		m.drawProxyGrid(b.Sub(tui.Rect{W: b.Width(), H: b.Height() - 2}))
+		m.drawUDPProxyCoverage(b, b.Height()-2)
 		return
 	}
 	p := m.snap.Proxies
@@ -445,6 +516,10 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 			Label: bar.label, LabelWidth: 10, Value: strconv.Itoa(bar.n), Frac: frac,
 			LabelStyle: th.Dim, Fill: bar.fill, Empty: th.Dim,
 		}, th.ASCII)
+	}
+	// UDP coverage: draw below the bars when there is room.
+	if b.Height() > 4 {
+		m.drawUDPProxyCoverage(b, 4)
 	}
 }
 
