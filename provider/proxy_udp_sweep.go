@@ -251,7 +251,6 @@ type udpProbeCandidate struct {
 	online      bool
 	status      proxyUDPStatus
 	lastChecked time.Time
-	changed     bool
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -284,9 +283,6 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		a, b := due[i], due[j]
 		if a.lastChecked.IsZero() != b.lastChecked.IsZero() {
 			return a.lastChecked.IsZero()
-		}
-		if a.changed != b.changed {
-			return a.changed
 		}
 		if !a.lastChecked.Equal(b.lastChecked) {
 			return a.lastChecked.Before(b.lastChecked)

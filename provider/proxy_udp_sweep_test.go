@@ -90,7 +90,6 @@ func TestSelectUDPProbeOrdering(t *testing.T) {
 		{key: "tie-b", online: true, lastChecked: now.Add(-48 * time.Hour)},
 		{key: "new-b", online: true},
 		{key: "oldest", online: true, lastChecked: now.Add(-72 * time.Hour)},
-		{key: "changed", online: true, changed: true, lastChecked: now.Add(-25 * time.Hour)},
 		{key: "tie-a", online: true, lastChecked: now.Add(-48 * time.Hour)},
 		{key: "new-a", online: true},
 	}
@@ -100,7 +99,7 @@ func TestSelectUDPProbeOrdering(t *testing.T) {
 	for _, candidate := range got {
 		keys = append(keys, candidate.key)
 	}
-	want := []string{"new-a", "new-b", "changed", "oldest", "tie-a", "tie-b"}
+	want := []string{"new-a", "new-b", "oldest", "tie-a", "tie-b"}
 	if !reflect.DeepEqual(keys, want) {
 		t.Fatalf("order = %v, want %v", keys, want)
 	}
@@ -111,7 +110,7 @@ func TestSelectUDPProbeOrdering(t *testing.T) {
 
 func TestSelectUDPProbeEmptyAndLimits(t *testing.T) {
 	now := time.Date(2026, 1, 2, 0, 0, 0, 0, time.UTC)
-	fresh := []udpProbeCandidate{{key: "fresh", online: true, status: proxyUDPOK, lastChecked: now, changed: true}}
+	fresh := []udpProbeCandidate{{key: "fresh", online: true, status: proxyUDPOK, lastChecked: now}}
 	for _, tt := range []struct {
 		name         string
 		candidates   []udpProbeCandidate
