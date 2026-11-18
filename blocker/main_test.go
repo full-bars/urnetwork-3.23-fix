@@ -427,7 +427,12 @@ func TestCheckedInGeneratedInputProvenance(t *testing.T) {
 		if f.allow {
 			disposition = feedDispositionAcceptedAllow
 		}
-		pattern := regexp.MustCompile(`(?m)^//   - name=` + regexp.QuoteMeta(f.name) + ` url=` + regexp.QuoteMeta(f.url) + ` content_sha256=[0-9a-f]{64} content_bytes=[1-9][0-9]* parsed_hosts=([0-9]+) parsed_v4_ranges=[0-9]+ parsed_v6_ranges=[0-9]+ parsed_invalid=[0-9]+ parsed_skipped=[0-9]+ disposition=` + disposition + `$`)
+		url := f.url
+		// The retained legacy table predates the hosts feed variants.
+		if f.frogeyeVariant != "" && !strings.Contains(generated, "const blockerBlockedHostBuckets") {
+			url = strings.Replace(url, "-hosts.txt", ".txt", 1)
+		}
+		pattern := regexp.MustCompile(`(?m)^//   - name=` + regexp.QuoteMeta(f.name) + ` url=` + regexp.QuoteMeta(url) + ` content_sha256=[0-9a-f]{64} content_bytes=[1-9][0-9]* parsed_hosts=([0-9]+) parsed_v4_ranges=[0-9]+ parsed_v6_ranges=[0-9]+ parsed_invalid=[0-9]+ parsed_skipped=[0-9]+ disposition=` + disposition + `$`)
 		matches := pattern.FindAllStringSubmatchIndex(generated, -1)
 		if len(matches) != 1 {
 			t.Errorf("provenance records for %s = %d, want 1 available record", f.name, len(matches))
