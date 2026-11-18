@@ -428,10 +428,6 @@ func TestCheckedInGeneratedInputProvenance(t *testing.T) {
 			disposition = feedDispositionAcceptedAllow
 		}
 		url := f.url
-		// The retained legacy table predates the hosts feed variants.
-		if f.frogeyeVariant != "" && !strings.Contains(generated, "const blockerBlockedHostBuckets") {
-			url = strings.Replace(url, "-hosts.txt", ".txt", 1)
-		}
 		pattern := regexp.MustCompile(`(?m)^//   - name=` + regexp.QuoteMeta(f.name) + ` url=` + regexp.QuoteMeta(url) + ` content_sha256=[0-9a-f]{64} content_bytes=[1-9][0-9]* parsed_hosts=([0-9]+) parsed_v4_ranges=[0-9]+ parsed_v6_ranges=[0-9]+ parsed_invalid=[0-9]+ parsed_skipped=[0-9]+ disposition=` + disposition + `$`)
 		matches := pattern.FindAllStringSubmatchIndex(generated, -1)
 		if len(matches) != 1 {
@@ -466,7 +462,7 @@ func TestGeneratedHeaderMatchesHostRecordWidth(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantHeader := fmt.Sprintf("blockerBlockedHostCount records of %d bytes each — the first %d bytes, big", hostRecordLen, hostRecordLen)
+	wantHeader := fmt.Sprintf("fingerprints retain the first %d bytes of SHA256", hostRecordLen)
 	for _, source := range []struct {
 		name string
 		text string
@@ -478,7 +474,7 @@ func TestGeneratedHeaderMatchesHostRecordWidth(t *testing.T) {
 			t.Errorf("%s has reviewed record-width header %d times, want 1", source.name, count)
 		}
 	}
-	const wantPayload = `const blockerBlockedHostData = "\x01\x02\x03\x04\x05\x06"`
+	const wantPayload = `const blockerBlockedHostData = "\x02\x03\x04\x05\x06"`
 	if !strings.Contains(emitted, wantPayload) {
 		t.Fatalf("fresh emission does not encode one exact %d-byte host record", hostRecordLen)
 	}

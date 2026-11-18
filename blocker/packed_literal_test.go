@@ -37,7 +37,7 @@ func TestEmitPackedHostDataSingleLiteral(t *testing.T) {
 				}
 				want := ""
 				if len(keys) != 0 {
-					want = "\x01\x02\x03\x04\x05\x06\x07\x08\x09\x0a\x0b\x0c"
+					want = "\x02\x03\x04\x05\x06\x08\x09\x0a\x0b\x0c"
 				}
 				if got != want {
 					t.Fatalf("host bytes = %x, want %x", got, want)
