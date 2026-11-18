@@ -106,11 +106,12 @@ type SnapshotSessions struct {
 }
 
 type SnapshotProxies struct {
-	Up         int `json:"up"`
-	Degraded   int `json:"degraded"`
-	Connecting int `json:"connecting"`
-	Dead       int `json:"dead"`
-	Parked     int `json:"parked,omitempty"`
+	UDP        *SnapshotProxyUDP `json:"udp,omitempty"`
+	Up         int               `json:"up"`
+	Degraded   int               `json:"degraded"`
+	Connecting int               `json:"connecting"`
+	Dead       int               `json:"dead"`
+	Parked     int               `json:"parked,omitempty"`
 	// Configured is the pool size before the trim cap; TrimCap is the
 	// effective cap on running proxies (0 = none) and TrimCapSource says who
 	// set it (operator, oomcap, thrashcap). Omitted before the first trim
@@ -119,6 +120,18 @@ type SnapshotProxies struct {
 	Configured    int    `json:"configured,omitempty"`
 	TrimCap       int    `json:"trim_cap,omitempty"`
 	TrimCapSource string `json:"trim_cap_source,omitempty"`
+}
+
+// SnapshotProxyUDP counts online proxies (up or degraded) by non-expired UDP
+// result. Unchecked has no usable result. The five counts sum to online.
+// Checked is ok + no_relay + mismatch + unknown; percentages are ok/checked
+// and ok/online, and are not defined when their denominator is zero.
+type SnapshotProxyUDP struct {
+	OK        int `json:"ok"`
+	NoRelay   int `json:"no_relay"`
+	Mismatch  int `json:"mismatch"`
+	Unknown   int `json:"unknown"`
+	Unchecked int `json:"unchecked"`
 }
 
 type SnapshotRestart struct {
@@ -761,12 +774,15 @@ func productionSnapshotSources() snapshotSources {
 		},
 		pool: func() (SnapshotProxies, int64) {
 			held := trimHeldSnapshot()
-			up, dead, degraded, bw, connecting := connect.ProxyHealthSnapshotExcluding(held)
+			up, dead, degraded, bw, connecting, online, proxied := connect.ProxyHealthSnapshotWithIdentities(held)
 			var clients int64
 			for _, p := range bw {
 				clients += p.Clients.Load()
 			}
 			sp := SnapshotProxies{Up: up, Degraded: len(degraded), Connecting: len(connecting), Dead: len(dead), Parked: len(held)}
+			if proxied {
+				sp.UDP = globalProxyUDPCheck.coverage(online, time.Now())
+			}
 			if desired, cap, source, ok := currentTrimSelection(); ok {
 				sp.TrimReported = true
 				sp.Configured = desired

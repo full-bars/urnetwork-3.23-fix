@@ -477,6 +477,34 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	}
 }
 
+// coverage reads cached results without starting checks. A missing, in-flight,
+// or expired result is unchecked. The caller supplies only online identities.
+func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *SnapshotProxyUDP {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	out := &SnapshotProxyUDP{}
+	for _, key := range online {
+		entry := self.entries[key]
+		if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+			out.Unchecked++
+			continue
+		}
+		switch entry.result.Status {
+		case proxyUDPOK:
+			out.OK++
+		case proxyUDPNoRelay:
+			out.NoRelay++
+		case proxyUDPExitMismatch:
+			out.Mismatch++
+		case proxyUDPUnknown:
+			out.Unknown++
+		default:
+			out.Unchecked++
+		}
+	}
+	return out
+}
+
 // size is how many identities the store currently remembers.
 func (self *proxyUDPCheckStore) size() int {
 	self.mu.Lock()
