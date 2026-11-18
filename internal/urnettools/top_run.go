@@ -37,6 +37,28 @@ type topResult struct {
 	provider     int
 }
 
+// topFetchOverview reads one provider and recovers source panics.
+func topFetchOverview(src topSource, p Provider, gen, i int) (res topResult) {
+	res = topResult{gen: gen, isOverview: true, provider: i}
+	defer func() {
+		if r := recover(); r != nil {
+			res.snap, res.err = nil, fmt.Errorf("overview fetch panicked: %v", r)
+		}
+	}()
+	res.snap, res.err = src.Fetch(p)
+	if extSrc, ok := src.(topExtenderSource); ok {
+		func() {
+			defer func() {
+				if recover() != nil {
+					res.extender = ExtenderReading{Source: SourceUnknown}
+				}
+			}()
+			res.extender = extSrc.FetchExtender(p)
+		}()
+	}
+	return res
+}
+
 // runTop drives the model on a screen until the user quits, ctx is cancelled
 // (SIGINT and SIGTERM cancel it), or the screen goes away. The terminal is
 // given back on every way out, including a panic: a terminal left in raw mode
@@ -153,19 +175,10 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}
 		overviewBusy[i] = gen
 		go func() {
-			res := topResult{gen: gen, isOverview: true, provider: i}
-			defer func() {
-				if r := recover(); r != nil {
-					res.snap, res.err = nil, fmt.Errorf("overview fetch panicked: %v", r)
-				}
-				select {
-				case results <- res:
-				case <-ctx.Done():
-				}
-			}()
-			res.snap, res.err = src.Fetch(p)
-			if extSrc, ok := src.(topExtenderSource); ok {
-				res.extender = extSrc.FetchExtender(p)
+			res := topFetchOverview(src, p, gen, i)
+			select {
+			case results <- res:
+			case <-ctx.Done():
 			}
 		}()
 	}
