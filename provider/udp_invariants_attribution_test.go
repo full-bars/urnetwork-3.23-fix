@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"strings"
 	"testing"
 	"time"
@@ -29,6 +30,23 @@ func TestUDPInvariantRefusalAttributionAndThrottle(t *testing.T) {
 	out = captureTlog(t, func() { stats.note(a, proxiedUdpRefusalNoRelay) })
 	if !strings.Contains(out, "2 since the last line") || stats.count(a, proxiedUdpRefusalNoRelay) != 3 {
 		t.Fatalf("throttled count not reported correctly: %q", out)
+	}
+}
+
+func TestUDPInvariantReorderAndRemovalAttribution(t *testing.T) {
+	now := time.Now()
+	a := &connect.ProxySettings{Address: "127.0.0.1:24001", Index: 1}
+	b := &connect.ProxySettings{Address: "127.0.0.1:24002", Index: 2}
+	store := newProxyUDPCheckStore(nil)
+	store.entries[a.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPNoRelay}, at: now}
+	store.entries[b.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now}
+	a.Index, b.Index = b.Index, a.Index
+	if store.Check(context.Background(), a, now).Status != proxyUDPNoRelay || store.Check(context.Background(), b, now).Status != proxyUDPOK {
+		t.Fatal("reordering changed cached identity attribution")
+	}
+	coverage := store.coverage([]string{b.Key()}, now)
+	if coverage.OK != 1 || coverage.NoRelay != 0 {
+		t.Fatalf("removed identity affected coverage: %+v", coverage)
 	}
 }
 

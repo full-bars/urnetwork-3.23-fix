@@ -48,6 +48,58 @@ func TestUDPInvariantCheckTimeoutNeverFallsBack(t *testing.T) {
 	}
 }
 
+func TestUDPInvariantSilentRelayNeverFallsBack(t *testing.T) {
+	server := startFakeSocks5(t, "", "", false)
+	destination, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer destination.Close()
+	var direct atomic.Int32
+	cs := connect.DefaultConnectSettings()
+	cs.DialContextSettings = &connect.DialContextSettings{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		direct.Add(1)
+		return nil, errors.New("unexpected host dial")
+	}}
+	installProxiedUdpEgress(cs, proxySettingsFor(server), stubUdpCheckStore(proxyUDPOK))
+	conn, err := cs.DialContext(context.Background(), "udp", destination.LocalAddr().String())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := conn.Write([]byte("test")); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	if err := destination.SetReadDeadline(time.Now().Add(5 * time.Second)); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	packet := make([]byte, 16)
+	n, from, err := destination.ReadFromUDP(packet)
+	if err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	if string(packet[:n]) != "test" || from.Port != server.waitRelayPort(t) {
+		conn.Close()
+		t.Fatal("datagram did not arrive through the relay")
+	}
+	if err := conn.SetReadDeadline(time.Now().Add(100 * time.Millisecond)); err != nil {
+		conn.Close()
+		t.Fatal(err)
+	}
+	_, err = conn.Read(make([]byte, 16))
+	conn.Close()
+	var netErr net.Error
+	if !errors.As(err, &netErr) || !netErr.Timeout() {
+		t.Fatalf("read error = %v, want timeout", err)
+	}
+	waitForAssociations(t, server, 0)
+	if direct.Load() != 0 {
+		t.Fatalf("host dials = %d", direct.Load())
+	}
+}
+
 func TestUDPInvariantSilentHandshakeTimeoutNeverFallsBack(t *testing.T) {
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
