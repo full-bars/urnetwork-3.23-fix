@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"encoding/json"
 	"go/ast"
 	"go/parser"
@@ -10,11 +11,14 @@ import (
 	"path/filepath"
 	"strconv"
 	"testing"
+	"time"
 )
 
 func TestGeneratedBlockerRoundTrip(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "fixture.json")
-	cmd := exec.Command("timeout", "900", "go", "test", "-count=1", "-run", "^TestGeneratedBucketFixture$", "./blocker")
+	ctx, cancel := context.WithTimeout(context.Background(), 900*time.Second)
+	defer cancel()
+	cmd := exec.CommandContext(ctx, "go", "test", "-count=1", "-run", "^TestGeneratedBucketFixture$", "./blocker")
 	cmd.Env = append(os.Environ(), "BLOCKER_ROUNDTRIP_FIXTURE="+path, "GOWORK=off")
 	if output, err := cmd.CombinedOutput(); err != nil {
 		t.Fatalf("generate bucket fixture: %v\n%s", err, output)
