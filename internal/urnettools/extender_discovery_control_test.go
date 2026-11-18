@@ -83,7 +83,7 @@ func TestExtenderDiscoveryCounterCompatibility(t *testing.T) {
 		present    bool
 	}{
 		{"older provider", `{"state":"running","peers":1}`, false},
-		{"new provider", `{"state":"running","peers":1,"messages_accepted":0,"apply_errors":0}`, true},
+		{"new provider", `{"state":"running","peers":1,"messages_accepted":0,"apply_errors":0,"dial_stats":{"attempts":2,"timeout":1,"refused":0,"canceled":0,"other":0}}`, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			var d ExtenderDiscovery
@@ -93,8 +93,18 @@ func TestExtenderDiscoveryCounterCompatibility(t *testing.T) {
 			if (d.MessagesAccepted != nil) != tc.present {
 				t.Fatalf("counter presence = %+v", d.MessagesAccepted)
 			}
+			if (d.DialStats != nil) != tc.present {
+				t.Fatalf("dial stats presence = %+v", d.DialStats)
+			}
 			var b bytes.Buffer
 			formatExtenderBlock(&b, ExtenderReading{Source: SourceControlSocket, Running: true, Discovery: &d}, time.Time{})
+			wantDials := "Gossip dials: not reported"
+			if tc.present {
+				wantDials = "Gossip dials: 2 attempts; failures timeout=1 refused=0 canceled=0 other=0"
+			}
+			if !strings.Contains(b.String(), wantDials) {
+				t.Fatalf("missing dial stats %q: %s", wantDials, b.String())
+			}
 			if strings.Contains(b.String(), "valid peer messages received") != tc.present {
 				t.Fatalf("unexpected counter display: %s", b.String())
 			}

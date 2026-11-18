@@ -295,9 +295,14 @@ func TestExtenderDiscoverySnapshotReportsPeersAndSubscribers(t *testing.T) {
 	h.roles[0].status.Node.PeerCount = 9
 	h.roles[0].status.ActiveRecords = 8
 	h.roles[0].status.MessagesAccepted = 11
+	h.roles[0].status.DialStats.Attempts = 17
+	h.roles[0].status.DialStats.Refused = 4
 	h.roles[0].status.ApplyErrors = 2
 	h.roles[0].status.LastAcceptedUnixMilli = 123456
 	snapshot := d.snapshot()
+	if snapshot.DialStats == nil || snapshot.DialStats.Attempts != 17 || snapshot.DialStats.Refused != 4 {
+		t.Fatalf("dial stats = %+v", snapshot.DialStats)
+	}
 	if snapshot.PeerId != "peer-1" || snapshot.Peers != 7 || snapshot.FeedSubscribers != 3 || snapshot.ActiveRecords == nil || *snapshot.ActiveRecords != 8 || snapshot.ConnectedPeers == nil || *snapshot.ConnectedPeers != 9 || snapshot.MessagesAccepted == nil || *snapshot.MessagesAccepted != 11 || snapshot.ApplyErrors == nil || *snapshot.ApplyErrors != 2 || snapshot.LastAcceptedUnixMilli != 123456 {
 		t.Fatalf("snapshot = %+v", snapshot)
 	}

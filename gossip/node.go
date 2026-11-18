@@ -208,6 +208,7 @@ type Node struct {
 	// state, because the round publishes it through `updateStatus`, which
 	// takes the status lock.
 	dialCount             atomic.Int64
+	dialStats             dialCounters
 	messagesAccepted      atomic.Uint64
 	applyErrors           atomic.Uint64
 	lastAcceptedUnixMilli atomic.Int64
@@ -611,6 +612,11 @@ func (self *Node) ReceiveStats() (uint64, uint64, int64) {
 	return self.messagesAccepted.Load(), self.applyErrors.Load(), self.lastAcceptedUnixMilli.Load()
 }
 
+// DialStats returns cumulative outgoing peering attempts and failures.
+func (self *Node) DialStats() DialStats {
+	return self.dialStats.snapshot()
+}
+
 // The status value and a channel armed at the same instant, for a consumer
 // that renders it.
 func (self *Node) StatusMonitor() *connect.MonitorValue[NodeStatus] {
@@ -750,7 +756,10 @@ func (self *Node) peer() {
 func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.DialTimeout)
 	defer cancel()
-	if err := self.host.Connect(ctx, addrInfo); err != nil {
+	self.dialStats.attempts.Add(1)
+	err := self.host.Connect(ctx, addrInfo)
+	self.dialStats.recordResult(err)
+	if err != nil {
 		if self.log.V(1).Enabled() {
 			self.log.Infof("[gossip]connect %s err = %s\n", addrInfo.ID, err)
 		}

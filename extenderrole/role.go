@@ -132,6 +132,7 @@ type Status struct {
 	FeedSubscriberCount   int
 	ActiveRecords         int
 	MessagesAccepted      uint64
+	DialStats             gossip.DialStats
 	ApplyErrors           uint64
 	LastAcceptedUnixMilli int64
 }
@@ -385,6 +386,7 @@ func (self *Role) Status() Status {
 	}
 	if self.node != nil {
 		status.Node = self.node.Status()
+		status.DialStats = self.node.DialStats()
 		status.MessagesAccepted, status.ApplyErrors, status.LastAcceptedUnixMilli = self.node.ReceiveStats()
 	}
 	return status

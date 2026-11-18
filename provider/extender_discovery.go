@@ -11,6 +11,7 @@ import (
 
 	"github.com/urnetwork/connect"
 	"github.com/urnetwork/connect/extenderrole"
+	"github.com/urnetwork/connect/gossip"
 )
 
 // Extender discovery serves the platform's extender directory to clients (the
@@ -90,18 +91,19 @@ type extenderDiscoveryInputs struct {
 
 // extenderDiscoverySnapshot is the discovery state as one value for the status.
 type extenderDiscoverySnapshot struct {
-	Requested             string  `json:"requested"`
-	State                 string  `json:"state"`
-	Failure               string  `json:"failure,omitempty"`
-	PeerId                string  `json:"peer_id"`
-	Peers                 int     `json:"peers"`
-	FeedSubscribers       int     `json:"feed_subscribers"`
-	ActiveRecords         *int    `json:"active_records,omitempty"`
-	ConnectedPeers        *int    `json:"connected_peers,omitempty"`
-	Connecting            *bool   `json:"connecting,omitempty"`
-	MessagesAccepted      *uint64 `json:"messages_accepted,omitempty"`
-	ApplyErrors           *uint64 `json:"apply_errors,omitempty"`
-	LastAcceptedUnixMilli int64   `json:"last_accepted_unix_milli,omitempty"`
+	Requested             string            `json:"requested"`
+	State                 string            `json:"state"`
+	Failure               string            `json:"failure,omitempty"`
+	PeerId                string            `json:"peer_id"`
+	Peers                 int               `json:"peers"`
+	FeedSubscribers       int               `json:"feed_subscribers"`
+	ActiveRecords         *int              `json:"active_records,omitempty"`
+	ConnectedPeers        *int              `json:"connected_peers,omitempty"`
+	Connecting            *bool             `json:"connecting,omitempty"`
+	DialStats             *gossip.DialStats `json:"dial_stats,omitempty"`
+	MessagesAccepted      *uint64           `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64           `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64             `json:"last_accepted_unix_milli,omitempty"`
 }
 
 type extenderDiscovery struct {
@@ -296,6 +298,7 @@ func (d *extenderDiscovery) snapshot() extenderDiscoverySnapshot {
 		if status.GossipRunning {
 			snapshot.ConnectedPeers = &status.Node.PeerCount
 			snapshot.Connecting = &status.Node.Connecting
+			snapshot.DialStats = &status.DialStats
 			snapshot.MessagesAccepted = &status.MessagesAccepted
 			snapshot.ApplyErrors = &status.ApplyErrors
 			snapshot.LastAcceptedUnixMilli = status.LastAcceptedUnixMilli

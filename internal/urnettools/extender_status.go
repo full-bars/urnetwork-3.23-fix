@@ -59,19 +59,28 @@ type ExtenderServed struct {
 	Lifetime uint64 `json:"lifetime"`
 }
 
+type ExtenderDialStats struct {
+	Attempts uint64 `json:"attempts"`
+	Timeout  uint64 `json:"timeout"`
+	Refused  uint64 `json:"refused"`
+	Canceled uint64 `json:"canceled"`
+	Other    uint64 `json:"other"`
+}
+
 type ExtenderDiscovery struct {
-	Requested             string  `json:"requested"`
-	State                 string  `json:"state"`
-	Failure               string  `json:"failure,omitempty"`
-	PeerId                string  `json:"peer_id"`
-	Peers                 int     `json:"peers"`
-	FeedSubscribers       int     `json:"feed_subscribers"`
-	ActiveRecords         *int    `json:"active_records,omitempty"`
-	ConnectedPeers        *int    `json:"connected_peers,omitempty"`
-	Connecting            *bool   `json:"connecting,omitempty"`
-	MessagesAccepted      *uint64 `json:"messages_accepted,omitempty"`
-	ApplyErrors           *uint64 `json:"apply_errors,omitempty"`
-	LastAcceptedUnixMilli int64   `json:"last_accepted_unix_milli,omitempty"`
+	Requested             string             `json:"requested"`
+	State                 string             `json:"state"`
+	Failure               string             `json:"failure,omitempty"`
+	PeerId                string             `json:"peer_id"`
+	Peers                 int                `json:"peers"`
+	FeedSubscribers       int                `json:"feed_subscribers"`
+	ActiveRecords         *int               `json:"active_records,omitempty"`
+	ConnectedPeers        *int               `json:"connected_peers,omitempty"`
+	Connecting            *bool              `json:"connecting,omitempty"`
+	DialStats             *ExtenderDialStats `json:"dial_stats,omitempty"`
+	MessagesAccepted      *uint64            `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64            `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64              `json:"last_accepted_unix_milli,omitempty"`
 }
 
 // ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
@@ -312,6 +321,12 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 				fmt.Fprint(w, "; connecting")
 			}
 			fmt.Fprintln(w)
+		}
+		if d.DialStats != nil {
+			dials := d.DialStats
+			fmt.Fprintf(w, "    Gossip dials: %d attempts; failures timeout=%d refused=%d canceled=%d other=%d\n", dials.Attempts, dials.Timeout, dials.Refused, dials.Canceled, dials.Other)
+		} else {
+			fmt.Fprintln(w, "    Gossip dials: not reported")
 		}
 		if d.MessagesAccepted != nil {
 			fmt.Fprintf(w, "    Gossip: %d valid peer messages received", *d.MessagesAccepted)
