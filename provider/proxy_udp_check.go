@@ -307,7 +307,7 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
 	}
 	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
-	if tcpExit == "" {
+	if tcpExit == "" || tcpExit != udpExit {
 		tcpExit, err = tcpExitViaProxy(ctx, settings)
 		if err != nil {
 			return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
