@@ -33,6 +33,28 @@ type ExtenderPort struct {
 	Up       bool   `json:"up"`
 	Error    string `json:"error,omitempty"`
 	Disabled bool   `json:"disabled,omitempty"`
+	// Reason says why a port that is not up is down: address_in_use,
+	// permission_denied, unknown or not_requested. Providers that predate it
+	// leave it empty.
+	Reason string `json:"reason,omitempty"`
+}
+
+// extenderPortReasonText is the plain-words form of a port's Reason. The
+// second result is true when the reason is no fault, so a renderer can show it
+// as information and not as a warning.
+func extenderPortReasonText(reason string) (text string, informational bool) {
+	switch reason {
+	case "":
+		return "", false
+	case "address_in_use":
+		return "address already in use", false
+	case "permission_denied":
+		return "permission denied", false
+	case "not_requested":
+		return "not requested", true
+	default:
+		return "bind failed, cause unknown", false
+	}
 }
 
 // ExtenderFamilyPort is one carrier's platform state on one address family.
@@ -361,6 +383,11 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 			ports = append(ports, port.Name+" disabled by setting")
 		case port.Up:
 			ports = append(ports, port.Name+" bound")
+		case port.Reason == "not_requested":
+			ports = append(ports, port.Name+" not requested")
+		case port.Reason != "":
+			text, _ := extenderPortReasonText(port.Reason)
+			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, text))
 		case port.Error != "":
 			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, port.Error))
 		default:

@@ -96,10 +96,19 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 			seen53 = true
 		}
 		value, level := "bound", topGood
-		if !port.Up {
+		if port.Disabled {
+			value, level = "off by setting", topInfo
+		} else if !port.Up {
 			value, level = "DOWN", topWarn
 			if strings.HasPrefix(port.Name, "tcp") {
 				level = topBad
+			}
+			if text, informational := extenderPortReasonText(port.Reason); text != "" {
+				if informational {
+					value, level = text, topInfo
+				} else {
+					value = "DOWN: " + text
+				}
 			}
 		}
 		rows = append(rows, topExtenderRow{port.Name, value, level})

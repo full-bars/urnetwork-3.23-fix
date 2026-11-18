@@ -132,6 +132,19 @@ Use `on` to enable a carrier again. The provider saves each choice and automatic
 
 UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
+`urnet-tools extender status` and `urnet-tools top` always show a `dns 53` line, so you can tell why UDP 53 is not serving:
+
+| Shown | Meaning |
+|---|---|
+| `bound` | UDP 53 is open. |
+| `not bound (address already in use)` | Another service holds UDP 53. |
+| `not bound (permission denied)` | The provider may not bind a port below 1024. See the capability note above. |
+| `not bound (bind failed, cause unknown)` | The bind failed for another reason. The provider log has the error. |
+| `not requested` | `URNETWORK_EXTENDER_DNS53=off` turned UDP 53 off. |
+| `disabled by setting` | `extender-udp53 off` turned it off. |
+
+Providers that predate this show `not reported` in `top` when UDP 53 is not bound.
+
 ## Prepare the host with `urnet-tools extender setup`
 
 ```sh
@@ -340,7 +353,7 @@ The periodic `[health][extender]` line summarises everything:
 🌉❤️ [health][extender] serving | tcp 443 bound, udp 443 bound, dns 4053 bound | IPv4 ACTIVE 203.0.113.5; tcp 443 bound, accepted by the platform; udp 443 bound, left out by the platform (probe failed); dns 4053 bound, left out by the platform (probe failed) | IPv6 not active (failed): no public IPv6 address, next try 17:23; tcp 443 bound, platform status unknown; udp 443 bound, platform status unknown; dns 4053 bound, platform status unknown | clients now 2, requests served 24h 120, 7d 800, lifetime 5000
 ```
 
-The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_carrier_requests_total{carrier=...,outcome=...}`, `urnet_extender_carrier_refused_total{carrier=...,stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
+The role also exports its state to Prometheus. Turn metrics on with `urnet-tools metrics on` and read the `urnet_extender_*` series: `urnet_extender_enabled`, `urnet_extender_state{state=...}` with one series per state (`off`, `starting`, `serving`, `tcp_unavailable`, `unavailable`, `error`, `closed`), `urnet_extender_carrier_listening{carrier=...}`, `urnet_extender_carrier_listen_error{carrier=...}`, `urnet_extender_dns53_state{state=...}` with one series per state (`bound`, `disabled`, `address_in_use`, `permission_denied`, `unknown`, `not_requested`, `pending`), `urnet_extender_requests_total{service=...}`, `urnet_extender_refused_total{stage=...}`, `urnet_extender_carrier_requests_total{carrier=...,outcome=...}`, `urnet_extender_carrier_refused_total{carrier=...,stage=...}`, `urnet_extender_tcp_retry_total` and `urnet_extender_connections_active`.
 
 `serving on tcp` means the process bound the port inside itself. **ACTIVE** means the platform proved the host from the outside and listed it. Neither tells you that a particular client is using it; the live client count and the request totals do.
 
