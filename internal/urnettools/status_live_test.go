@@ -255,12 +255,12 @@ func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 	}
 }
 
-func TestStatusJSONPrintsSchemaDocument(t *testing.T) {
+func TestStatusJSONSummaryPrintsSchemaDocument(t *testing.T) {
 	raw := fixtureRaw(t, "node_snapshot_v1.json")
 	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"a.service": raw}, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus([]string{"--json"}); err != nil {
+		if err := cmdStatus([]string{"--json-summary"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -269,16 +269,41 @@ func TestStatusJSONPrintsSchemaDocument(t *testing.T) {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
 	}
 	if got["schema"] != "urnet-tools-status/1" {
-		t.Fatalf("--json must carry schema=urnet-tools-status/1, got %v", got)
+		t.Fatalf("--json-summary must carry schema=urnet-tools-status/1, got %v", got)
 	}
 	if _, ok := got["rows"].([]any); !ok {
-		t.Fatalf("--json must carry the summary rows, got %v", got)
+		t.Fatalf("--json-summary must carry the summary rows, got %v", got)
 	}
 	if _, ok := got["provider"].(map[string]any); !ok {
-		t.Fatalf("--json must carry the provider block, got %v", got)
+		t.Fatalf("--json-summary must carry the provider block, got %v", got)
+	}
+	if strings.Contains(out, "user:") {
+		t.Fatalf("--json-summary must not print the classic output:\n%s", out)
+	}
+}
+
+func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
+	raw := fixtureRaw(t, "node_snapshot_v1.json")
+	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"a.service": raw}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus([]string{"--json"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var got, want map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
+	}
+	json.Unmarshal(raw, &want)
+	if got["version"] != want["version"] || got["state"] != "flowing" {
+		t.Fatalf("got %v", got)
 	}
 	if strings.Contains(out, "user:") {
 		t.Fatalf("--json must not print the classic output:\n%s", out)
+	}
+	if got["schema"] != nil {
+		t.Fatalf("--json must stay the raw snapshot, not the summary document: %v", got)
 	}
 }
 
@@ -287,15 +312,28 @@ func TestStatusJSONErrorsWhenUnavailable(t *testing.T) {
 	stubStatus(t, []Provider{p}, nil, true)
 	var err error
 	out := captureStdout(t, func() { err = cmdStatus([]string{"--json"}) })
+	if err == nil || !errors.Is(err, errSnapshotUnavailable) {
+		t.Fatalf("err = %v; want a wrapped errSnapshotUnavailable", err)
+	}
+	if out != "" {
+		t.Fatalf("stdout must stay empty on failure, got %q", out)
+	}
+}
+
+func TestStatusJSONSummaryReportsUnreachable(t *testing.T) {
+	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, nil, true)
+	var err error
+	out := captureStdout(t, func() { err = cmdStatus([]string{"--json-summary"}) })
 	if err != nil {
-		t.Fatalf("err = %v; --json stays usable when the snapshot is unreachable", err)
+		t.Fatalf("err = %v; --json-summary stays usable when the snapshot is unreachable", err)
 	}
 	var got map[string]any
 	if err := json.Unmarshal([]byte(out), &got); err != nil {
 		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
 	}
 	if got["exit_code"] != float64(3) {
-		t.Fatalf("--json must report exit_code 3 when unreachable, got %v", got)
+		t.Fatalf("--json-summary must report exit_code 3 when unreachable, got %v", got)
 	}
 	if out == "" {
 		t.Fatal("stdout must not stay empty when the snapshot is unavailable")
@@ -350,26 +388,31 @@ func TestStatusManyProvidersBadTargetStillErrors(t *testing.T) {
 	if err := cmdStatus([]string{"--unit", "nope.service"}); err == nil || !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("err = %v", err)
 	}
-	// --json with several providers and no target still needs a target.
-	if err := cmdStatus([]string{"--json"}); err == nil || !strings.Contains(err.Error(), "specify a target") {
-		t.Fatalf("--json without target: err = %v", err)
+	// the JSON modes with several providers and no target still need a target.
+	for _, flag := range []string{"--json", "--json-summary"} {
+		if err := cmdStatus([]string{flag}); err == nil || !strings.Contains(err.Error(), "specify a target") {
+			t.Fatalf("%s without target: err = %v", flag, err)
+		}
 	}
 }
 
 // The sudo re-exec for another user's provider must carry --json through to
 // the elevated child.
 func TestStatusJSONSurvivesCrossUserElevation(t *testing.T) {
-	p := Provider{Unit: "a.service", User: "someone-else-entirely", StateDir: t.TempDir(), Running: true}
-	stubStatus(t, []Provider{p}, nil, false)
-	var got []string
-	origE := elevateSelfFunc
-	t.Cleanup(func() { elevateSelfFunc = origE })
-	elevateSelfFunc = func(args []string) error { got = args; return nil }
-	if err := cmdStatus([]string{"--json"}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(got, " ") != "status --json" {
-		t.Fatalf("elevated argv = %v", got)
+	for _, flag := range []string{"--json", "--json-summary"} {
+		p := Provider{Unit: "a.service", User: "someone-else-entirely", StateDir: t.TempDir(), Running: true}
+		stubStatus(t, []Provider{p}, nil, false)
+		var got []string
+		origE := elevateSelfFunc
+		elevateSelfFunc = func(args []string) error { got = args; return nil }
+		err := cmdStatus([]string{flag})
+		elevateSelfFunc = origE
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(got, " ") != "status "+flag {
+			t.Fatalf("elevated argv for %s = %v", flag, got)
+		}
 	}
 }
 

@@ -483,7 +483,7 @@ func cmdStatus(args []string) error {
 	// parser sees them. The original args still go to the sudo re-exec so the
 	// elevated child honours them too.
 	jsonMode := false
-	jsonRawMode := false
+	jsonSummaryMode := false
 	plainMode := false
 	briefMode := false
 	detailMode := false
@@ -497,8 +497,8 @@ func cmdStatus(args []string) error {
 			plainMode = true
 		case a == "--json":
 			jsonMode = true
-		case a == "--json-raw" || a == "--raw":
-			jsonRawMode = true
+		case a == "--json-summary":
+			jsonSummaryMode = true
 		case a == "--brief" || a == "-brief":
 			briefMode = true
 		case a == "--detail" || a == "--full":
@@ -548,9 +548,9 @@ func cmdStatus(args []string) error {
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		// Several providers and no target used to be refused with an
-		// inventory. Plain status now summarizes them instead; --json still
-		// needs one provider to be named.
-		if !jsonMode && !jsonRawMode && !briefMode && !detailMode && !liveMode && !hasExplicitTarget(t) && len(providers) > 1 {
+		// inventory. Plain status now summarizes them instead; the JSON modes
+		// still need one provider to be named.
+		if !jsonMode && !jsonSummaryMode && !briefMode && !detailMode && !liveMode && !hasExplicitTarget(t) && len(providers) > 1 {
 			printProviderSummary(providers, plainMode)
 			return nil
 		}
@@ -561,10 +561,10 @@ func cmdStatus(args []string) error {
 	if elevated, err := maybeElevateForCrossUser("status", p, args, false, false); elevated {
 		return err
 	}
-	if jsonRawMode {
+	if jsonMode {
 		return printSnapshotJSON(p)
 	}
-	if jsonMode {
+	if jsonSummaryMode {
 		return printStatusJSON(p)
 	}
 	if briefMode {
