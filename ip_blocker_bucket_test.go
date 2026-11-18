@@ -2,6 +2,7 @@ package connect
 
 import (
 	"encoding/binary"
+	"net/netip"
 	"slices"
 	"testing"
 )
@@ -110,5 +111,74 @@ func TestBlockerBucketFormatDrift(t *testing.T) {
 	index, tails := blockerBucketFixture(nil)
 	if _, err := decodeBlockerHostBuckets(index, tails, 0, 0); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func blockerTestRange4(ranges ...[2]uint32) string {
+	data := make([]byte, len(ranges)*8)
+	for i, r := range ranges {
+		binary.BigEndian.PutUint32(data[i*8:], r[0])
+		binary.BigEndian.PutUint32(data[i*8+4:], r[1])
+	}
+	return string(data)
+}
+
+func blockerTestRange6(ranges ...[2][2]uint64) string {
+	data := make([]byte, len(ranges)*32)
+	for i, r := range ranges {
+		binary.BigEndian.PutUint64(data[i*32:], r[0][0])
+		binary.BigEndian.PutUint64(data[i*32+8:], r[0][1])
+		binary.BigEndian.PutUint64(data[i*32+16:], r[1][0])
+		binary.BigEndian.PutUint64(data[i*32+24:], r[1][1])
+	}
+	return string(data)
+}
+
+func TestBlockerPrefixRangesValidated(t *testing.T) {
+	index, tails := blockerBucketFixture(nil)
+	for _, tc := range []struct {
+		name string
+		v4   string
+		n4   int
+		v6   string
+		n6   int
+		want bool
+	}{
+		{name: "inverted IPv4", v4: blockerTestRange4([2]uint32{9, 8}), n4: 1},
+		{name: "unsorted IPv4", v4: blockerTestRange4([2]uint32{10, 11}, [2]uint32{1, 2}), n4: 2},
+		{name: "overlapping IPv4", v4: blockerTestRange4([2]uint32{1, 5}, [2]uint32{5, 8}), n4: 2},
+		{name: "inverted IPv6", v6: blockerTestRange6([2][2]uint64{{0, 9}, {0, 8}}), n6: 1},
+		{name: "unsorted IPv6", v6: blockerTestRange6([2][2]uint64{{0, 10}, {0, 1}}, [2][2]uint64{{0, 11}, {0, 2}}), n6: 2},
+		{name: "overlapping IPv6", v6: blockerTestRange6([2][2]uint64{{0, 1}, {0, 5}}, [2][2]uint64{{0, 5}, {0, 8}}), n6: 2},
+		{name: "adjacent IPv4", v4: blockerTestRange4([2]uint32{1, 2}, [2]uint32{3, 4}), n4: 2, want: true},
+		{name: "single address IPv4", v4: blockerTestRange4([2]uint32{7, 7}), n4: 1, want: true},
+		{name: "empty ranges", want: true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			b, err := newBucketBlockerWithData(blockerTestPepper, index, tails, 0, tc.v4, tc.n4, tc.v6, tc.n6)
+			if tc.want && err != nil {
+				t.Fatalf("valid ranges rejected: %v", err)
+			}
+			if !tc.want && err == nil {
+				t.Fatal("malformed ranges accepted")
+			}
+			if tc.want && b == nil {
+				t.Fatal("valid ranges returned a nil blocker")
+			}
+		})
+	}
+}
+
+func TestBlockerMalformedPrefixRangeFailsClosed(t *testing.T) {
+	index, tails := blockerBucketFixture([]uint64{1})
+	badRange := blockerTestRange4([2]uint32{10, 1})
+	b, err := newDefaultBlockerWithData(blockerTestPepper, index, tails, 1, badRange, 1, "", 0)
+	if err == nil || b != nil {
+		t.Fatal("malformed default ranges must return an error and no blocker")
+	}
+	closed := blockerOrFailClosed(b, err)
+	closed.SetEnabled(false)
+	if !closed.Enabled() || !closed.BlockIp(netip.MustParseAddr("192.0.2.1")) {
+		t.Fatal("malformed data must fail closed even when disabled")
 	}
 }

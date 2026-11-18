@@ -45,6 +45,45 @@ func decodeBlockerHostBuckets(index, tails string, count, otherBytes int) (*bloc
 	return &blockerHostBuckets{index: index, tails: tails}, nil
 }
 
+func validateBlockerRanges4(data string, count int) error {
+	var previousHi uint32
+	for i := 0; i < count; i++ {
+		offset := i * 8
+		lo := uint32(beN(data, offset, 4))
+		hi := uint32(beN(data, offset+4, 4))
+		if hi < lo {
+			return fmt.Errorf("blocker IPv4 range %d is inverted", i)
+		}
+		if i > 0 && lo <= previousHi {
+			return fmt.Errorf("blocker IPv4 range %d is unsorted or overlapping", i)
+		}
+		previousHi = hi
+	}
+	return nil
+}
+
+func blockerIPv6EndpointLess(data string, left, right int) bool {
+	leftHi, rightHi := be64(data, left), be64(data, right)
+	if leftHi != rightHi {
+		return leftHi < rightHi
+	}
+	return be64(data, left+8) < be64(data, right+8)
+}
+
+func validateBlockerRanges6(data string, count int) error {
+	for i := 0; i < count; i++ {
+		offset := i * 32
+		lo, hi := offset, offset+16
+		if blockerIPv6EndpointLess(data, hi, lo) {
+			return fmt.Errorf("blocker IPv6 range %d is inverted", i)
+		}
+		if i > 0 && !blockerIPv6EndpointLess(data, (i-1)*32+16, lo) {
+			return fmt.Errorf("blocker IPv6 range %d is unsorted or overlapping", i)
+		}
+	}
+	return nil
+}
+
 // newBucketBlockerWithData rejects malformed data rather than constructing a
 // blocker with incomplete protection. The caller must handle the error.
 func newBucketBlockerWithData(pepper, index, tails string, count int, prefixData string, prefixCount int, prefix6Data string, prefix6Count int) (*dataBlocker, error) {
@@ -56,6 +95,12 @@ func newBucketBlockerWithData(pepper, index, tails string, count int, prefixData
 	}
 	if prefix6Count < 0 || len(prefix6Data)%32 != 0 || len(prefix6Data)/32 != prefix6Count {
 		return nil, fmt.Errorf("invalid blocker IPv6 data length")
+	}
+	if err := validateBlockerRanges4(prefixData, prefixCount); err != nil {
+		return nil, err
+	}
+	if err := validateBlockerRanges6(prefix6Data, prefix6Count); err != nil {
+		return nil, err
 	}
 	otherBytes := len(pepper) + len(prefixData) + len(prefix6Data)
 	table, err := decodeBlockerHostBuckets(index, tails, count, otherBytes)
