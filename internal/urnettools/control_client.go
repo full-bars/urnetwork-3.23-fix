@@ -184,6 +184,12 @@ var controlKeyCanonical = map[string]string{
 	"extender":                    "extender",
 	"extender-discovery":          "extender_discovery",
 	"extender_discovery":          "extender_discovery",
+	"extender-udp443":             "extender_udp443",
+	"extender_udp443":             "extender_udp443",
+	"extender-udp4053":            "extender_udp4053",
+	"extender_udp4053":            "extender_udp4053",
+	"extender-udp53":              "extender_udp53",
+	"extender_udp53":              "extender_udp53",
 	"metrics-listen":              "metrics_listen",
 }
 
@@ -243,7 +249,7 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("proxy-target-family: must be v4 or proxy (got %q)", value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:
