@@ -5913,6 +5913,11 @@ keyAddressLoop:
 		}
 
 		address, user, password := parseProxyAddress(proxyAddress)
+		if !validProxyHostPort(address) {
+			// Never print the entry: it may hold credentials.
+			fmt.Fprintf(os.Stderr, "proxy add: rejected entry: invalid_address (expected host:port[:user:pass])\n")
+			continue keyAddressLoop
+		}
 		if proxyConfig.Auths != nil {
 			proxyAuth, ok := proxyConfig.Auths[key]
 			if ok {
@@ -7504,7 +7509,16 @@ func removeKeysFromFile(path string, keys []string) error {
 	var kept []string
 	for _, line := range strings.Split(string(b), "\n") {
 		settings, _ := classifyProxySourceLine(line)
-		if settings == nil || !removeSet[settings.Key()] {
+		var lineKey string
+		if settings != nil {
+			lineKey = settings.Key()
+		} else if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			// A rejected line can still be removed by its address, so an
+			// operator can clean bad lines out of the file.
+			addr, user, _ := parseProxyAddress(trimmed)
+			lineKey = (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: user}}).Key()
+		}
+		if lineKey == "" || !removeSet[lineKey] {
 			kept = append(kept, line)
 		}
 	}

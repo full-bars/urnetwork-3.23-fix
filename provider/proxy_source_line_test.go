@@ -87,3 +87,55 @@ func TestProxySourceLoaderSweepParityAndRedaction(t *testing.T) {
 		t.Fatal("changed source must log only a redacted reason")
 	}
 }
+
+func TestValidProxyHostPort(t *testing.T) {
+	for address, want := range map[string]bool{
+		"192.0.2.1:1080":      true,
+		"gw.example:1":        true,
+		"[2001:db8::1]:65535": true,
+		"":                    false,
+		"192.0.2.1":           false,
+		":1080":               false,
+		"192.0.2.1:0":         false,
+		"192.0.2.1:65536":     false,
+		"192.0.2.1:http":      false,
+		"a b:1080":            false,
+		"2001:db8::1:1080":    false,
+	} {
+		if got := validProxyHostPort(address); got != want {
+			t.Errorf("validProxyHostPort(%q) = %v, want %v", address, got, want)
+		}
+	}
+}
+
+func TestProxyAddInternalRejectsInvalidAddress(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	proxyAdd(docopt.Opts{
+		"<key_address>": []string{"badhost:user:pass", "192.0.2.1:99999:user:pass", "192.0.2.5:1080:user:pass"},
+		"-f":            true,
+	})
+	got := readProxyConfig()
+	if len(got.Servers) != 1 {
+		t.Fatalf("want only the valid entry, got %v", got.Servers)
+	}
+	if _, ok := got.Servers["192.0.2.5:1080:user:pass"]; !ok {
+		t.Fatalf("valid entry missing: %v", got.Servers)
+	}
+}
+
+func TestRemoveKeysFromFileRemovesRejectedLineByAddress(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxies.txt")
+	content := "# keep\n192.0.2.1:1080:u1:p1\n192.0.2.2:1080\n192.0.2.3:1080:u3:p3\n"
+	if err := os.WriteFile(path, []byte(content), 0600); err != nil {
+		t.Fatal(err)
+	}
+	// 192.0.2.2:1080 has no credentials, so the classifier rejects it.
+	if err := removeKeysFromFile(path, []string{"192.0.2.2:1080", "192.0.2.1:1080\x1fu1"}); err != nil {
+		t.Fatal(err)
+	}
+	b, _ := os.ReadFile(path)
+	want := "# keep\n192.0.2.3:1080:u3:p3\n"
+	if string(b) != want {
+		t.Fatalf("file = %q, want %q", b, want)
+	}
+}

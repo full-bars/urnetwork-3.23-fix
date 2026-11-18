@@ -68,6 +68,18 @@ func classifyProxySourceLine(line string) (*connect.ProxySettings, string) {
 	return &connect.ProxySettings{Network: "tcp", Address: net.JoinHostPort(host, port), Auth: &proxy.Auth{User: fields[1], Password: fields[2]}}, ""
 }
 
+// validProxyHostPort reports whether address is a host:port with a non-empty
+// host and a port from 1 to 65535. The internal config accepts entries
+// without credentials, so only the address is checked there.
+func validProxyHostPort(address string) bool {
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" || strings.ContainsAny(host, " \t\r\n@/\\?#") {
+		return false
+	}
+	n, err := strconv.Atoi(port)
+	return err == nil && n >= 1 && n <= 65535
+}
+
 func parseProxySource(data []byte) ([]*connect.ProxySettings, []proxySourceRejection) {
 	var settings []*connect.ProxySettings
 	var rejected []proxySourceRejection
