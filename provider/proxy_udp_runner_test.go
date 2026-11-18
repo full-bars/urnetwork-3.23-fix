@@ -64,6 +64,35 @@ func TestUDPProbeRunnerBoundAndResults(t *testing.T) {
 	}
 }
 
+func TestUDPProbeRunnerSlotAndPressureBounds(t *testing.T) {
+	for _, tc := range []struct {
+		name     string
+		slots    int
+		pressure float64
+	}{
+		{"slot", 1, 0}, {"pressure", 8, .99},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			var active, peak, count atomic.Int32
+			store := newProxyUDPCheckStore(func(_ context.Context, _ *connect.ProxySettings) proxyUDPResult {
+				n := active.Add(1)
+				for p := peak.Load(); n > p && !peak.CompareAndSwap(p, n); p = peak.Load() {
+				}
+				count.Add(1)
+				runtime.Gosched()
+				active.Add(-1)
+				return proxyUDPResult{Status: proxyUDPOK}
+			})
+			store.slots = make(chan struct{}, tc.slots)
+			online := []*connect.ProxySettings{{Address: "a:1"}, {Address: "b:2"}, {Address: "c:3"}}
+			runUDPProbeTick(context.Background(), store, online, time.Now(), time.Minute, time.Minute, tc.pressure, true)
+			if count.Load() != 3 || peak.Load() != 1 || active.Load() != 0 {
+				t.Fatalf("count=%d peak=%d active=%d", count.Load(), peak.Load(), active.Load())
+			}
+		})
+	}
+}
+
 func TestUDPProbeRunnerSkipsAndCancels(t *testing.T) {
 	var calls atomic.Int32
 	entered := make(chan struct{}, 2)

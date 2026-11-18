@@ -63,6 +63,16 @@ func TestPaidUDPProbeTick(t *testing.T) {
 		t.Fatal("disabled hook probed")
 	}
 	writeReviewProbeOverride(t, map[string]any{"enabled": true})
+	var runs int
+	runPaidUDPProbeTickWith(context.Background(), func(_ context.Context, store *proxyUDPCheckStore, selected []*connect.ProxySettings, _ time.Time, window, tick time.Duration, _ float64, enabled bool) {
+		runs++
+		if store != globalProxyUDPCheck || !enabled || window != 24*time.Hour || tick != proxyReaperInterval || len(selected) != 1 || selected[0].Key() != alice {
+			t.Error("paid tick passed incorrect arguments to runner")
+		}
+	})
+	if runs != 1 {
+		t.Fatalf("paid runner calls = %d", runs)
+	}
 	runPaidUDPProbeTick(context.Background())
 	if calls != 1 {
 		t.Fatalf("probe calls = %d, want 1", calls)
@@ -86,19 +96,23 @@ func TestURLUDPProbeTickKillSwitchAndState(t *testing.T) {
 	withTempHome(t)
 	connect.ResetProxyHealthForTesting()
 	t.Cleanup(connect.ResetProxyHealthForTesting)
+	resetTrimHeld()
+	t.Cleanup(resetTrimHeld)
 	t.Cleanup(resetProbeConfigCache)
 	state := &ProxyState{Proxies: map[string]ProxyEntry{"url:2": {Source: "url", Health: "up", Graded: true, Score: .7}, "held:3": {Health: proxyHealthParked}}}
 	if err := writeProxyState(state); err != nil {
 		t.Fatal(err)
 	}
-	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{"url:2": {Graded: true, Score: .8}, "offline:4": {}}}); err != nil {
+	if err := writeProxyURLState(&ProxyURLState{Cache: map[string]ProxyURLEntry{"url:2": {Graded: true, Score: .8}, "held:3": {}, "offline:4": {}}}); err != nil {
 		t.Fatal(err)
 	}
 	before, err := readProxyState()
 	if err != nil {
 		t.Fatal(err)
 	}
-	connect.NoteLiveProxyHealth("url:2", "up", time.Time{})
+	connect.NoteLiveProxyHealth("url:2", "recently_offline", time.Now())
+	connect.NoteLiveProxyHealth("held:3", "up", time.Time{})
+	setTrimHeld("held:3", true)
 	calls := 0
 	old := globalProxyUDPCheck
 	globalProxyUDPCheck = newProxyUDPCheckStore(func(_ context.Context, ps *connect.ProxySettings) proxyUDPResult {
@@ -115,6 +129,16 @@ func TestURLUDPProbeTickKillSwitchAndState(t *testing.T) {
 		t.Fatal("disabled hook probed")
 	}
 	writeReviewProbeOverride(t, map[string]any{"enabled": true})
+	var runs int
+	runURLUDPProbeTickWith(context.Background(), func(_ context.Context, store *proxyUDPCheckStore, selected []*connect.ProxySettings, _ time.Time, window, tick time.Duration, _ float64, enabled bool) {
+		runs++
+		if store != globalProxyUDPCheck || !enabled || window != 24*time.Hour || tick != proxyReaperInterval || len(selected) != 1 || selected[0].Key() != "url:2" {
+			t.Error("URL tick passed incorrect arguments to runner")
+		}
+	})
+	if runs != 1 {
+		t.Fatalf("URL runner calls = %d", runs)
+	}
 	runURLUDPProbeTick(context.Background())
 	if calls != 1 {
 		t.Fatalf("probe calls = %d, want 1", calls)

@@ -100,7 +100,13 @@ func urlUDPProbeSettings(online []string, paid map[string]*connect.ProxySettings
 	return result
 }
 
+type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
+
 func runURLUDPProbeTick(ctx context.Context) {
+	runURLUDPProbeTickWith(ctx, runUDPProbeTick)
+}
+
+func runURLUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
 	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
 		return
 	}
@@ -125,12 +131,16 @@ func runURLUDPProbeTick(ctx context.Context) {
 	if err != nil {
 		return
 	}
-	runUDPProbeTick(ctx, globalProxyUDPCheck, urlUDPProbeSettings(online, paid, url), time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
+	run(ctx, globalProxyUDPCheck, urlUDPProbeSettings(online, paid, url), time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
 }
 
 // runPaidUDPProbeTick resolves online identities only through the trusted
 // desired set; a missing credential must never turn into an unauthenticated dial.
 func runPaidUDPProbeTick(ctx context.Context) {
+	runPaidUDPProbeTickWith(ctx, runUDPProbeTick)
+}
+
+func runPaidUDPProbeTickWith(ctx context.Context, run udpTickRunner) {
 	if !resolveProxyTableProbeConfig().Enabled || ctx.Err() != nil {
 		return
 	}
@@ -152,7 +162,7 @@ func runPaidUDPProbeTick(ctx context.Context) {
 			settings = append(settings, ps)
 		}
 	}
-	runUDPProbeTick(ctx, globalProxyUDPCheck, settings, time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
+	run(ctx, globalProxyUDPCheck, settings, time.Now(), udpProbeRecheckWindow, proxyReaperInterval, currentPressure(), true)
 }
 
 // runUDPProbeTick checks a bounded batch and joins every worker before returning.
