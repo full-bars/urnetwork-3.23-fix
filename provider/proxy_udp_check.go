@@ -504,16 +504,16 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	if previous != nil && previous.Status == result.Status {
 		return
 	}
-	index := settings.Index
+	identity := udpProxyIdentity(settings)
 	switch result.Status {
 	case proxyUDPOK:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", index, redactedProxyAddress(settings.Address), result.UDPExit)
+		tlog("[proxy][udp] %s udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", identity, result.UDPExit)
 	case proxyUDPExitMismatch:
-		tlog("[proxy][udp] proxy[%d] (%s) udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.TCPExit)
+		tlog("[proxy][udp] %s udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", identity, result.UDPExit, result.TCPExit)
 	case proxyUDPNoRelay:
-		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%s); h3 and client udp not used for this proxy, tcp only\n", index, redactedProxyAddress(settings.Address), proxyUDPFailureClass(result.Err))
+		tlog("[proxy][udp] %s no udp relay (%s); h3 and client udp not used for this proxy, tcp only\n", identity, proxyUDPFailureClass(result.Err))
 	default:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", index, redactedProxyAddress(settings.Address), result.UDPExit, proxyUDPFailureClass(result.Err))
+		tlog("[proxy][udp] %s udp relay works (exit %s) but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", identity, result.UDPExit, proxyUDPFailureClass(result.Err))
 	}
 }
 

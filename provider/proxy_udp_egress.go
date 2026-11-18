@@ -172,7 +172,7 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 			return nil, ctxErr
 		}
 		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalAssociation)
-		return nil, fmt.Errorf("proxy udp through %s: relay dial failed: %s", redactedProxyAddress(proxySettings.Address), dialFailureClass(err))
+		return nil, fmt.Errorf("proxy udp through %s: relay dial failed: %s", udpProxyIdentity(proxySettings), dialFailureClass(err))
 	}
 	return &proxiedUdpConn{
 		relayed:     relayed,
@@ -345,7 +345,7 @@ func (self *proxiedUdpRefusalStats) note(proxySettings *connect.ProxySettings, r
 		return count
 	}()
 	if 0 < logCount {
-		tlog("[proxy][udp] proxy[%d] (%s) client udp refused: %s (%d since the last line for this proxy)\n", proxySettings.Index, redactedProxyAddress(proxySettings.Address), reason, logCount)
+		tlog("[proxy][udp] %s client udp refused: %s (%d since the last line for this proxy)\n", udpProxyIdentity(proxySettings), reason, logCount)
 	}
 }
 

@@ -33,7 +33,7 @@ func newH3PacketConnFactory(proxySettings *connect.ProxySettings) func(context.C
 		// TCP does
 		switch result := globalProxyUDPCheck.Check(ctx, proxySettings, time.Now()); result.Status {
 		case proxyUDPNoRelay, proxyUDPExitMismatch:
-			return nil, fmt.Errorf("h3 not used through proxy %s: udp check %s", redactedProxyAddress(proxySettings.Address), result.Status)
+			return nil, fmt.Errorf("h3 not used through %s: udp check %s", udpProxyIdentity(proxySettings), result.Status)
 		}
 		relayed, err := dialSocks5UDP(ctx, proxySettings.Network, proxySettings.Address, proxySettings.Auth)
 		if err != nil {
@@ -45,7 +45,7 @@ func newH3PacketConnFactory(proxySettings *connect.ProxySettings) func(context.C
 			if ctxErr := ctx.Err(); ctxErr != nil {
 				return nil, ctxErr
 			}
-			return nil, fmt.Errorf("h3 through proxy %s: relay dial failed: %s", redactedProxyAddress(proxySettings.Address), dialFailureClass(err))
+			return nil, fmt.Errorf("h3 through %s: relay dial failed: %s", udpProxyIdentity(proxySettings), dialFailureClass(err))
 		}
 		return relayed, nil
 	}
