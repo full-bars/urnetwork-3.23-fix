@@ -22,9 +22,9 @@ func TestSelectUDPProbeDueBoundaries(t *testing.T) {
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			candidates := []udpProbeCandidate{
-				{key: "before", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl + time.Nanosecond)},
-				{key: "at", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl)},
-				{key: "after", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl - time.Nanosecond)},
+				{key: "before", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl/2 + time.Nanosecond)},
+				{key: "at", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl / 2)},
+				{key: "after", online: true, status: tt.status, lastChecked: now.Add(-tt.ttl/2 - time.Nanosecond)},
 				{key: "offline", status: tt.status},
 			}
 			got := selectUDPProbeBatch(now, candidates, time.Minute, time.Minute, rand.New(rand.NewSource(1)))

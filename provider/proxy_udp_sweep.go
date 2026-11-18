@@ -254,8 +254,12 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 			continue
 		}
 		online++
-		if candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(proxyUDPTTL(candidate.status))) {
+		refreshWindow := proxyUDPTTL(candidate.status) / 2
+		if candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
 			due = append(due, candidate)
+			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
+				recheckWindow = refreshWindow
+			}
 		}
 	}
 	if len(due) == 0 {

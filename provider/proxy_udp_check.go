@@ -416,8 +416,10 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			return result
 		}
 		var previous *proxyUDPResult
+		var previousAt time.Time
 		var tcpExit string
 		if entry != nil {
+			previousAt = entry.at
 			copyOf := entry.result
 			previous = &copyOf
 			tcpExit = entry.tcpExit
@@ -445,7 +447,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, at: now.Add(-proxyUDPTTL(previous.Status))}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, at: previousAt}
 			}
 			close(running.done)
 			self.mu.Unlock()
