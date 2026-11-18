@@ -367,6 +367,10 @@ func validateControlValue(key, value string) error {
 	// client-side behavior in internal/urnettools/control_client.go.
 	valLower := strings.ToLower(value)
 	switch key {
+	case "extender_udp443", "extender_udp4053", "extender_udp53":
+		if valLower != "on" && valLower != "off" {
+			return fmt.Errorf("%s: must be on or off (got %q)", key, value)
+		}
 	case "extender_discovery":
 		if !validExtenderDiscoveryMode(value) {
 			return fmt.Errorf("extender_discovery: must be off, on or feed-only (got %q)", value)

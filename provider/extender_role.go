@@ -110,10 +110,12 @@ type extenderRoleConfig struct {
 	keyPath           string
 	ports             map[int][]connect.ExtenderConnectMode
 	dnsPrivilegedPort bool
-	retryInterval     time.Duration
-	listen            func(network string, address string) (net.Listener, error)
-	listenPacket      func(network string, address string) (net.PacketConn, error)
-	forwardDialer     *net.Dialer
+	// disabledCarriers records settings captured for this role's lifetime.
+	disabledCarriers map[string]bool
+	retryInterval    time.Duration
+	listen           func(network string, address string) (net.Listener, error)
+	listenPacket     func(network string, address string) (net.PacketConn, error)
+	forwardDialer    *net.Dialer
 	// allowedHosts is the forward allow list. Empty refuses every forward
 	// request, which is the server's default and upstream's network-space
 	// behaviour; an open provider names its hosts here.
@@ -139,7 +141,7 @@ func extenderAllowedHostsFromEnv(getenv func(string) string) []string {
 }
 
 func defaultExtenderRoleConfig() extenderRoleConfig {
-	return extenderRoleConfig{
+	config := extenderRoleConfig{
 		ports: map[int][]connect.ExtenderConnectMode{
 			connect.ExtenderTcpPort: {
 				connect.ExtenderConnectModeTcpTls,
@@ -161,6 +163,28 @@ func defaultExtenderRoleConfig() extenderRoleConfig {
 			KeepAlive: 30 * time.Second,
 		},
 	}
+	config.disabledCarriers = make(map[string]bool)
+	for _, item := range []struct{ key, name string }{
+		{"extender_udp443", "udp 443"}, {"extender_udp4053", "dns 4053"}, {"extender_udp53", "dns 53"},
+	} {
+		if value, ok := globalControlState.get(item.key); ok && strings.EqualFold(value, "off") {
+			config.disabledCarriers[item.name] = true
+		}
+	}
+	if config.disabledCarriers["udp 443"] {
+		config.ports[connect.ExtenderTcpPort] = []connect.ExtenderConnectMode{connect.ExtenderConnectModeTcpTls}
+	}
+	if config.disabledCarriers["dns 4053"] {
+		delete(config.ports, connect.ExtenderDnsPort)
+	}
+	if config.disabledCarriers["dns 53"] {
+		config.dnsPrivilegedPort = false
+	}
+	// An explicit 53 mode is needed when there is no 4053 mode to widen.
+	if config.dnsPrivilegedPort && config.disabledCarriers["dns 4053"] {
+		config.ports[connect.DefaultDnsPort] = []connect.ExtenderConnectMode{connect.ExtenderConnectModeDns}
+	}
+	return config
 }
 
 // loadOrCreateExtenderKeySeed loads the ed25519 seed from path, creating it
