@@ -2,7 +2,7 @@ package connect
 
 // ip_family.go — the address-family vocabulary shared by discovery
 // (find-providers2), the multi-client windows, the window monitor, the sdk
-// and the family-pinned platform transports. See IPV6.md §3.
+// and the family-pinned platform transports. See upstream connect IPV6.md §3.
 //
 // Two distinct types live here. `IpFamily` is a provider's proven egress
 // category as the platform categorizes it from control connections whose

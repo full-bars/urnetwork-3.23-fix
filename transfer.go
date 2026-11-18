@@ -543,7 +543,7 @@ type Client struct {
 	unreliableFlightMaximumMessages     atomic.Uint64
 	unreliableFlightMaximumMessageLimit atomic.Uint64
 
-	// receive-hold counters for the committed-prefix policy (THROUGHPUTFIX
+	// receive-hold counters for the committed-prefix policy (upstream connect THROUGHPUTFIX
 	// §37.20, ported from upstream 609cb1b6). receiveQueueEvictionCount and
 	// receiveQueueEvictionByteCount must stay at zero under
 	// ReceiveHoldCommittedPrefix: an acknowledged item is never discarded,
@@ -4911,7 +4911,7 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 
 // ReceiveHoldPolicyKind decides what a full receive hold does with an
 // arrival that is earlier than what it holds (ported from upstream
-// 609cb1b6, THROUGHPUTFIX §37.20).
+// 609cb1b6, upstream connect THROUGHPUTFIX §37.20).
 type ReceiveHoldPolicyKind int
 
 const (
@@ -5005,7 +5005,7 @@ type ReceiveBufferSettings struct {
 	ReliablePackHandoffTimeout time.Duration
 
 	// ReceiveHoldPolicy decides what a full hold does with an arrival that
-	// is earlier than what it holds (THROUGHPUTFIX §37.20, ported from
+	// is earlier than what it holds (upstream connect THROUGHPUTFIX §37.20, ported from
 	// upstream 609cb1b6). Defaults to ReceiveHoldCommittedPrefix (the zero
 	// value).
 	ReceiveHoldPolicy ReceiveHoldPolicyKind
@@ -6064,7 +6064,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		}
 
 		// What a full hold does with an arrival earlier than what it holds
-		// (ported from upstream 609cb1b6/38d637c5, THROUGHPUTFIX §37.20).
+		// (ported from upstream 609cb1b6/38d637c5, upstream connect THROUGHPUTFIX §37.20).
 		// Refuse never removes anything; evict and committed-prefix both
 		// remove later held items to fit, in sequence order (newest first),
 		// but committed-prefix never removes an item once it has been
@@ -6118,7 +6118,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 }
 
 // commitHeldPrefix acknowledges every held item that can no longer be
-// evicted, and only those (THROUGHPUTFIX §37.20, ported from upstream
+// evicted, and only those (upstream connect THROUGHPUTFIX §37.20, ported from upstream
 // 609cb1b6/38d637c5).
 //
 // An item is evicted only by an earlier arrival at a full hold, so it is safe
@@ -6167,7 +6167,7 @@ func (self *ReceiveSequence) commitHeldPrefix() {
 	// whatever the sender does. Deciding that needs only the newest held
 	// item, the count and the byte total, all of which the queue answers
 	// without a walk, and it skips the sort the general case pays on every
-	// out-of-order arrival (THROUGHPUTFIX §37.20, ported from upstream
+	// out-of-order arrival (upstream connect THROUGHPUTFIX §37.20, ported from upstream
 	// 38d637c5).
 	heldCount, heldTotal := self.receiveQueue.QueueSize()
 	if heldCount == 0 {
@@ -6633,7 +6633,7 @@ type receiveItem struct {
 	unwrapped bool
 	// committed is set once this held item has been selectively
 	// acknowledged, which under the committed-prefix hold policy happens
-	// only when it can no longer be evicted (THROUGHPUTFIX §37.20). A
+	// only when it can no longer be evicted (upstream connect THROUGHPUTFIX §37.20). A
 	// committed item is never discarded.
 	committed bool
 }

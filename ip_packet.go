@@ -268,7 +268,7 @@ func ipParseIcmpUnreachable(packet []byte) (*IpPath, bool) {
 // sends it). The return path's inspection cannot parse an icmp error, so the
 // provider inspects its own signal as the flow's return instead. Any other
 // packet, an unreachable naming another flow, a different code or a single
-// changed byte, returns false and stays dropped (IPV6.md C7).
+// changed byte, returns false and stays dropped (upstream connect IPV6.md C7).
 func providerDialFailureReturnPath(flowPath *IpPath, packet []byte) (*IpPath, bool) {
 	if flowPath == nil {
 		return nil, false
@@ -288,7 +288,7 @@ func providerDialFailureReturnPath(flowPath *IpPath, packet []byte) (*IpPath, bo
 // addresses running from the flow's destination back to its source, one
 // family throughout, lengths and checksums. The embed's own sequence number
 // is kept, so only its 5-tuple is the flow. Anything else is not the signal
-// and both client intercepts drop it (IPV6.md C7).
+// and both client intercepts drop it (upstream connect IPV6.md C7).
 func providerDialFailureEgressPath(packet []byte) (*IpPath, bool) {
 	egressIpPath, ok := ipParseIcmpUnreachable(packet)
 	if !ok {

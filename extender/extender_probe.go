@@ -14,7 +14,7 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// The latency probe service (DESIGNNOTES4.md, GEOMAP §2).
+// The latency probe service (upstream connect DESIGNNOTES4.md, GEOMAP §2).
 //
 // A probe is answered exactly like any other request -- the same response
 // frame, with a nonce added for an attesting pinger -- and then the stream is
@@ -124,7 +124,7 @@ func (self *ExtenderServer) admitProbe(header *protocol.ExtenderHeader, remoteAd
 }
 
 // Admits one probe request this extender answers itself and decides whether
-// it gets a nonce (DESIGNNOTES4.md §2, GEOMAP §2.2). A nonce is issued when
+// it gets a nonce (upstream connect DESIGNNOTES4.md §2, GEOMAP §2.2). A nonce is issued when
 // the header names one well formed pinger -- a 16 byte client id or a 32 byte
 // extender key -- and this extender has an identity to bind the claim to.
 // Every claim that follows is answered with a verdict, so a pinger never signs
@@ -156,7 +156,7 @@ func (self *ExtenderServer) beginProbe(header *protocol.ExtenderHeader, remoteAd
 
 // Serves the stream after the response of a probe: reads the one attestation
 // frame an attesting pinger sends, judges it against the interval observed
-// and answers with the verdict (DESIGNNOTES4.md §3, GEOMAP §2.3). A ranking
+// and answers with the verdict (upstream connect DESIGNNOTES4.md §3, GEOMAP §2.3). A ranking
 // probe has no nonce, and its stream simply closes. The response has been
 // flushed when this is called, so the interval starts here.
 func (self *ExtenderServer) serveProbe(ctx context.Context, clientConn net.Conn, probe *extenderProbe) {
@@ -228,7 +228,7 @@ func (self *ExtenderServer) judgeProbeAttestation(
 	}
 }
 
-// The gate (DESIGNNOTES4.md §3, GEOMAP §2.4), in order, each refusal with its
+// The gate (upstream connect DESIGNNOTES4.md §3, GEOMAP §2.4), in order, each refusal with its
 // verdict reason. The claim must echo this probe's nonce (nonce) and name this
 // extender's key (wrong extender); it must name the pinger the header named
 // and no other identity (unknown pinger). An extender pinger's signature must

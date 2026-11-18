@@ -111,7 +111,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 		}
 		// always served: a probe is answered by the response itself, and a
 		// nonce is added only for an attesting pinger this extender has an
-		// identity to judge its claim with (DESIGNNOTES4.md, GEOMAP §2.2)
+		// identity to judge its claim with (upstream connect DESIGNNOTES4.md, GEOMAP §2.2)
 		if probe, err = server.beginProbe(header, req.RemoteAddr); err != nil {
 			self.refuse(w, req, "probe", err)
 			return
@@ -177,7 +177,7 @@ func (self *extenderHandler) ServeHTTP(w http.ResponseWriter, req *http.Request)
 	if probe != nil {
 		// the response was flushed by the take over; the interval the gate
 		// judges against starts now, and the verdict is written before the
-		// stream closes (DESIGNNOTES4.md §3, GEOMAP §2.3)
+		// stream closes (upstream connect DESIGNNOTES4.md §3, GEOMAP §2.3)
 		server.serveProbe(handleCtx, clientConn, probe)
 		return
 	}

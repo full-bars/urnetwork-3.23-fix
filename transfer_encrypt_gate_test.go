@@ -1,7 +1,7 @@
 package connect
 
 // Deterministic pins for the EncryptionModeRequired fail-closed entry gate
-// (upstream d2553e06, DESIGNNOTES2.md §8.2 piece 1). The landed contract tests
+// (upstream d2553e06, connect DESIGNNOTES2.md §8.2 piece 1). The landed contract tests
 // pin the two end-state behaviors (Required×Required establishes and
 // delivers; Required×Off delivers nothing and does not wedge — §8.3); these
 // tests pin the gate's TIMEOUT CONTRACT and its LIVENESS coupling, which those

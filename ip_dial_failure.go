@@ -8,7 +8,7 @@ import (
 )
 
 // ip_dial_failure.go — the provider's answer to an upstream dial that failed
-// (IPV6.md C7). Taken from upstream's ip.go unedited apart from living in its
+// (upstream connect IPV6.md C7). Taken from upstream's ip.go unedited apart from living in its
 // own file until this line's ip.go is brought forward.
 
 // inferredDialFailureTimeout is the multi client's silence-inference horizon,
@@ -57,7 +57,7 @@ const (
 // address families has connected over the other family 250ms in and
 // abandoned this attempt. A signal that late speeds nothing up. It only
 // strikes the exit for a flow no one waits on, and three such strikes for a
-// blackholed AAAA downgrade a healthy dual-stack exit to v4-only (IPV6.md C7).
+// blackholed AAAA downgrade a healthy dual-stack exit to v4-only (upstream connect IPV6.md C7).
 //
 // Every other failure is immediate and answered. tcp + ECONNREFUSED means the
 // destination refused: RST+ACK. Anything else on tcp (no route, unreachable,

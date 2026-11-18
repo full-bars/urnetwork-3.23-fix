@@ -878,7 +878,7 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 // The stream window takes six eighths of that draw and the connection window
 // the whole of it, keeping the 3:4 ratio the two have always had.
 //
-// These are THROUGHPUTFIX §43.2's receive-credit fractions. Its old assertion
+// These are upstream connect THROUGHPUTFIX §43.2's receive-credit fractions. Its old assertion
 // that connection credit must equal the entire reservation did not account
 // for concurrently retained non-receive owners. MEMSTEADY supersedes that
 // assertion on the constrained mobile surface: at a 20 MiB owner target the
@@ -890,7 +890,7 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 // of `TestTheH3ReceiveWindowsAreADrawOnTheBudget`).
 //
 // It must never be a memory-scaled constant, and that distinction is the whole
-// finding (THROUGHPUTFIX §37.22, §42.1, §44.2 constraint 1). `memoryTargetScale`
+// finding (upstream connect THROUGHPUTFIX §37.22, §42.1, §44.2 constraint 1). `memoryTargetScale`
 // returns one at or above the reference and a fraction below it, so every
 // window in this file was sized for a 64 MiB device and could only shrink from
 // there: a desktop with a 256 MiB budget ran a 64 MiB device's window, which is

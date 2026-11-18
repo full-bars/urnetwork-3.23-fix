@@ -184,7 +184,7 @@ type ExtenderDirectorySettings struct {
 	// last minute, which is the default.
 	EventWindowTimeout time.Duration
 	// A latency sample older than this counts as never measured
-	// (DESIGNNOTES4.md §4): the ordering stops trusting it and a probe pass
+	// (upstream connect DESIGNNOTES4.md §4): the ordering stops trusting it and a probe pass
 	// measures the address again. The default is half the day the operator
 	// keeps pings for, so a provider's attested pings are renewed before the
 	// previous ones age out of what each derivation reads (GEOMAP §2.1). The
@@ -312,7 +312,7 @@ type extenderDirectoryAddress struct {
 	// process, never stored, and never a failure
 	limitedUntilTime time.Time
 
-	// the latest latency sample (DESIGNNOTES4.md): the lowest rtt of one
+	// the latest latency sample (upstream connect DESIGNNOTES4.md): the lowest rtt of one
 	// probe pass, when it was taken and whether the target co-signed a claim
 	// of that pass (GEOMAP §2.3). Per process: never stored. A path change,
 	// and a resume from a long sleep that followed it, keep it and make it
@@ -353,13 +353,13 @@ type ExtenderCandidate struct {
 	CountryCode string
 	// The continent the operator stamped on the record, upper case; empty
 	// for a record that predates it and for an unverified address
-	// (DESIGNNOTES4.md §2).
+	// (upstream connect DESIGNNOTES4.md §2).
 	ContinentCode string
 	// The directory tier the record is signed into (Q1):
 	// ExtenderDirectoryTierOpen for a record that predates the field and for
 	// an unverified address, ExtenderDirectoryTierGated for a released one.
 	DirectoryTier int
-	// The current latency sample, zero when there is none (DESIGNNOTES4.md).
+	// The current latency sample, zero when there is none (upstream connect DESIGNNOTES4.md).
 	Latency time.Duration
 	// Whether the target co-signed a claim of the pass that took the sample
 	// (GEOMAP §2.3), which a provider's probe pass reads to find what it has
@@ -492,7 +492,7 @@ type ExtenderDirectory struct {
 	eventTimes []time.Time
 	eventHead  int
 	// the continent the candidate order prefers, upper case, empty until the
-	// network client learns one (DESIGNNOTES4.md §4)
+	// network client learns one (upstream connect DESIGNNOTES4.md §4)
 	continentHint string
 	// the country the operator's hint last placed this client in, lower
 	// case, empty until it has placed it; when the operator last answered it,
@@ -1430,7 +1430,7 @@ func (self *ExtenderDirectory) SetInUse(ip netip.Addr, delta int) {
 }
 
 // SetContinentHint sets the continent the candidate order prefers
-// (DESIGNNOTES4.md §4): the operator's hint, or the one inferred from the dns
+// (upstream connect DESIGNNOTES4.md §4): the operator's hint, or the one inferred from the dns
 // bootstrap. Upper case; empty clears it. Reports whether it changed.
 func (self *ExtenderDirectory) SetContinentHint(continentCode string) (changed bool) {
 	continentCode = strings.ToUpper(strings.TrimSpace(continentCode))
@@ -1551,7 +1551,7 @@ func directorySpoofDomains(directory *ExtenderDirectory) ([]string, string) {
 
 // RecordLatency stores the outcome of one probe pass over an address: the
 // lowest rtt it measured and whether the target co-signed a claim of that
-// pass (DESIGNNOTES4.md, GEOMAP §2.3) -- a claim merely sent, refused or left
+// pass (upstream connect DESIGNNOTES4.md, GEOMAP §2.3) -- a claim merely sent, refused or left
 // without a verdict does not count. The sample is per process and ages out
 // after LatencyMaxAge, the time the host slept included; it is never stored,
 // because yesterday's path is not today's. It replaces the address's last
@@ -1585,7 +1585,7 @@ func (self *ExtenderDirectory) RecordLatency(ip netip.Addr, rtt time.Duration, a
 }
 
 // Makes every latency sample due a refresh: the path changed, and each one
-// measured the old path (DESIGNNOTES4.md §6). A sample due a refresh stays in
+// measured the old path (upstream connect DESIGNNOTES4.md §6). A sample due a refresh stays in
 // use -- the candidate order still ranks by it and the active cap still counts
 // its record measured -- until a probe measures the address again and the new
 // sample replaces it (RecordLatency), so a path change leaves no time with no
@@ -1686,7 +1686,7 @@ func (self *ExtenderDirectory) Expire(now time.Time) (changed bool) {
 
 // Up to `count` dialable endpoints of `ipVersion` (0 for any family), active
 // and not held, verified first. The order is deterministic -- verified, then
-// the proximity order of DESIGNNOTES4.md §4 (the hinted continent first, then
+// the proximity order of upstream connect DESIGNNOTES4.md §4 (the hinted continent first, then
 // measured latency ascending with unmeasured addresses last), then fewest
 // consecutive failures, then the most recent success, then the address --
 // because the strategy does its own weighting on top and a stable order makes
@@ -1914,7 +1914,7 @@ func compareExtenderVerified(a *extenderDirectoryAddress, b *extenderDirectoryAd
 	return 1
 }
 
-// The proximity order of DESIGNNOTES4.md §4: the hinted continent before the
+// The proximity order of upstream connect DESIGNNOTES4.md §4: the hinted continent before the
 // others before unknown, then within a tier a measured address before an
 // unmeasured one and ascending by rtt, a sample due a refresh ranking as it
 // stands. `explore` is the probe pass asking for what to measure: the samples
@@ -1964,7 +1964,7 @@ func (self *ExtenderDirectory) compareProximityWithLock(
 	return 0
 }
 
-// The continent tier of an address under the current hint (DESIGNNOTES4.md
+// The continent tier of an address under the current hint (upstream connect DESIGNNOTES4.md
 // §4): 0 on the hinted continent, 1 on another, 2 unknown -- an unverified
 // address, or a record that predates the continent field. With no hint every
 // address is tier 0, which leaves the order what it was.
@@ -1993,7 +1993,7 @@ func (self *ExtenderDirectory) latencyWithLock(
 }
 
 // ProbeCandidates is what a probe pass measures, in the order it should
-// (DESIGNNOTES4.md §4): the hinted continent first, and within a tier the
+// (upstream connect DESIGNNOTES4.md §4): the hinted continent first, and within a tier the
 // samples due a refresh lowest first (RefreshLatencies), then the addresses
 // with no current sample, then those with one, so the prior saves probes
 // rather than merely reordering them. `attesting` treats an unattested sample
@@ -2044,7 +2044,7 @@ func (self *ExtenderDirectory) MeasuredLatencies(ipVersion int, attesting bool) 
 	return self.usableLatencies(ipVersion, attesting, true)
 }
 
-// The latency samples a probe pass counts its window over (DESIGNNOTES4.md
+// The latency samples a probe pass counts its window over (upstream connect DESIGNNOTES4.md
 // §4): every current sample of a usable address of one family (0 for any)
 // that is not due a refresh, since one that is will be measured again
 // (RefreshLatencies). With `attesting` only attested samples count.

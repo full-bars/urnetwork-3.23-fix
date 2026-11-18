@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// Measuring again after the host resumes from a sleep (DESIGNNOTES4.md §6).
+// Measuring again after the host resumes from a sleep (upstream connect DESIGNNOTES4.md §6).
 //
 // Every timer of the network client runs on the monotonic clock, which stops
 // while the host sleeps (mach_absolute_time on darwin, CLOCK_MONOTONIC on

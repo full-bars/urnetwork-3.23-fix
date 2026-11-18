@@ -208,7 +208,7 @@ func (self *TransferMemoryBudget) removeFloor(byteCount ByteCount) {
 
 // LendableByteCount is the static permission ceiling for a queue with the
 // given guaranteed floor: the pool less the floors guaranteed to the other
-// attached queues (THROUGHPUTFIX §37.24).
+// attached queues (upstream connect THROUGHPUTFIX §37.24).
 //
 // This is what the window rule's share means, and it is deliberately not
 // `Available`. Available is a transient — it is zero whenever the pool happens

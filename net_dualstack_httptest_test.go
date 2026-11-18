@@ -2,7 +2,7 @@ package connect
 
 // net_dualstack_httptest_test.go — httptest servers and DoH fixtures bound to
 // the loopback of one ip family, so the http, DoH and transfer-control tests
-// run their assertions over ::1 as well as 127.0.0.1 (IPV6.md D3).
+// run their assertions over ::1 as well as 127.0.0.1 (upstream connect IPV6.md D3).
 //
 // httptest itself always binds 127.0.0.1. The helpers here swap the listener
 // before Start so the served URL carries the family literal

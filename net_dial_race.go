@@ -3,7 +3,7 @@ package connect
 // net_dial_race.go — the shared dual-stack ("happy eyeballs") dial race used
 // by every hostname dial in this package: ConnectSettings.DialContext, the
 // internal DoH resolver's protected-name path, and the gVisor tun's internal
-// dialer (IPV6.md C6).
+// dialer (upstream connect IPV6.md C6).
 //
 // DoH stream dials feed each completed A or AAAA answer into the TCP race,
 // so one pending family cannot strand the other. A narrowed network still
@@ -12,7 +12,7 @@ package connect
 // later ready addresses alternate families with one delay between attempts.
 // A caller that names a first family (4 or 6) has it attempted first: a ready
 // answer of the other family waits at most one delay for the first family's
-// answer (IPV6.md C7). A definitive failure launches
+// answer (upstream connect IPV6.md C7). A definitive failure launches
 // the next address at once; the first success cancels the rest and every
 // losing connection is closed. IP literals need no resolution.
 //

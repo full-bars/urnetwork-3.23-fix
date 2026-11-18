@@ -4,7 +4,7 @@ import (
 	"time"
 )
 
-// Telling from the host clock that the host slept (DESIGNNOTES4.md §6).
+// Telling from the host clock that the host slept (upstream connect DESIGNNOTES4.md §6).
 //
 // A reading of time.Now carries a monotonic reading beside the wall one, and
 // Go subtracts two readings by their monotonic parts. The monotonic clock

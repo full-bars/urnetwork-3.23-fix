@@ -126,7 +126,7 @@ func newTransferQueue[T transferQueueItem](cmp TransferQueueCmpFunction[T]) *tra
 // A per-sequence rule that reports the pool's total instead is claiming
 // permission it cannot obtain, which is what a campaign reads when it asks why
 // a provider serving many clients did not reach the number its windows said it
-// would (THROUGHPUTFIX §37.22).
+// would (upstream connect THROUGHPUTFIX §37.22).
 func (self *transferQueue[T]) ObtainableByteCount() ByteCount {
 	self.stateLock.Lock()
 	budget := self.budget
