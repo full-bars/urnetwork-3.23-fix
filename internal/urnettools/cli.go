@@ -487,19 +487,55 @@ func cmdStatus(args []string) error {
 	plainMode := false
 	briefMode := false
 	detailMode := false
+	liveMode := false
+	interval := 2 * time.Second
 	var targetArgs []string
-	for _, a := range args {
-		switch a {
-		case "--plain":
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--plain":
 			plainMode = true
-		case "--json":
+		case a == "--json":
 			jsonMode = true
-		case "--json-raw", "--raw":
+		case a == "--json-raw" || a == "--raw":
 			jsonRawMode = true
-		case "--brief", "-brief":
+		case a == "--brief" || a == "-brief":
 			briefMode = true
-		case "--detail", "--full":
+		case a == "--detail" || a == "--full":
 			detailMode = true
+		case a == "--live" || a == "-live" || a == "-l":
+			liveMode = true
+		case a == "--interval" || a == "-interval":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a duration argument", a)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				secs, ferr := strconv.ParseFloat(args[i], 64)
+				if ferr != nil {
+					return fmt.Errorf("--interval %q is not a duration (try 2s or 5s)", args[i])
+				}
+				d = time.Duration(secs * float64(time.Second))
+			}
+			if d < 100*time.Millisecond {
+				return fmt.Errorf("--interval must be at least 100ms")
+			}
+			interval = d
+		case strings.HasPrefix(a, "--interval=") || strings.HasPrefix(a, "-interval="):
+			val := a[strings.Index(a, "=")+1:]
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				secs, ferr := strconv.ParseFloat(val, 64)
+				if ferr != nil {
+					return fmt.Errorf("--interval %q is not a duration (try 2s or 5s)", val)
+				}
+				d = time.Duration(secs * float64(time.Second))
+			}
+			if d < 100*time.Millisecond {
+				return fmt.Errorf("--interval must be at least 100ms")
+			}
+			interval = d
 		default:
 			targetArgs = append(targetArgs, a)
 		}
@@ -514,7 +550,7 @@ func cmdStatus(args []string) error {
 		// Several providers and no target used to be refused with an
 		// inventory. Plain status now summarizes them instead; --json still
 		// needs one provider to be named.
-		if !jsonMode && !jsonRawMode && !briefMode && !detailMode && !hasExplicitTarget(t) && len(providers) > 1 {
+		if !jsonMode && !jsonRawMode && !briefMode && !detailMode && !liveMode && !hasExplicitTarget(t) && len(providers) > 1 {
 			printProviderSummary(providers, plainMode)
 			return nil
 		}
@@ -553,6 +589,9 @@ func cmdStatus(args []string) error {
 		printLiveBlock(p, plainMode)
 		printExtenderBlock(p)
 		return nil
+	}
+	if liveMode {
+		return runStatusLiveFn(p, interval, plainMode)
 	}
 	// Default: the one-screen summary.
 	return renderStatusSummary(p, plainMode)

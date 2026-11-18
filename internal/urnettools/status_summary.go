@@ -107,12 +107,9 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 	return append(rows, resources)
 }
 
-// renderStatusSummary renders the one-screen status summary for one provider:
-// the update line and the rows from the summary model. plain disables color
-// and escape sequences.
-func renderStatusSummary(p Provider, plain bool) error {
-	d := collectStatusData(p)
-
+// formatStatusSummary formats the one-screen summary into a string buffer:
+// the update line and the summary rows. plain disables color and escape sequences.
+func formatStatusSummary(d statusData, plain bool) (string, error) {
 	opts := statusLiveOptsFn()
 	if plain {
 		opts.Color = false
@@ -123,15 +120,27 @@ func renderStatusSummary(p Provider, plain bool) error {
 		width = 80
 	}
 	var buf bytes.Buffer
-	main, hint := statusUpdateParts(p.Version, d.Update)
+	main, hint := statusUpdateParts(d.Provider.Version, d.Update)
 	fmt.Fprintln(&buf, statusClip(main, width))
 	if hint != "" {
 		fmt.Fprintf(&buf, "           %s\n", statusClip(hint, width-11))
 	}
 	if err := renderStatusRows(&buf, d.Rows, width, opts.Color); err != nil {
+		return "", err
+	}
+	return buf.String(), nil
+}
+
+// renderStatusSummary renders the one-screen status summary for one provider:
+// the update line and the rows from the summary model. plain disables color
+// and escape sequences.
+func renderStatusSummary(p Provider, plain bool) error {
+	d := collectStatusData(p)
+	text, err := formatStatusSummary(d, plain)
+	if err != nil {
 		return err
 	}
-	fmt.Print(buf.String())
+	fmt.Print(text)
 	return nil
 }
 
