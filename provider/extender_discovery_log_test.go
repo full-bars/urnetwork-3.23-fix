@@ -65,7 +65,7 @@ func TestDiscoveryAnomalyDumpCapsAt50AndRateLimitsTo30Minutes(t *testing.T) {
 	d.Peers = 0
 	t2 := t1.Add(10 * time.Second)
 	got := strings.Join(s.linesWithEvents(d, events, t2), "")
-	if !strings.Contains(got, "gossip anomaly (all mesh peers lost): last 50 event(s):") {
+	if !strings.Contains(got, "gossip anomaly (all mesh peers lost") {
 		t.Fatalf("missing anomaly dump on peer loss:\n%s", got)
 	}
 	if strings.Contains(got, "peer=peer09") || !strings.Contains(got, "peer=peer10") || !strings.Contains(got, "peer=peer59") {

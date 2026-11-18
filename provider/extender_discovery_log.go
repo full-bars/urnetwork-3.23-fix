@@ -25,6 +25,13 @@ type discoveryLogState struct {
 	lastSummary     time.Time
 	lastCheck       time.Time
 	lastAnomalyDump time.Time
+	health          string
+	healthSince     time.Time
+	// capHold is the state the node keeps while cap hits keep arriving. A cap
+	// that clears is only reported once no further hit has been seen for the
+	// hold, so a busy feed does not flap the state on every refused subscriber.
+	capHoldUntil time.Time
+	record       func(gossip.Event) bool
 }
 
 func (s *discoveryLogState) lines(d extenderDiscoverySnapshot, now time.Time) []string {
@@ -90,6 +97,31 @@ func (s *discoveryLogState) linesWithEvents(d extenderDiscoverySnapshot, events 
 	}
 	if rejectEvents >= anomalyRejectEventThreshold {
 		anomalyReasons = append(anomalyReasons, fmt.Sprintf("reject spike (%d sampled rejects)", rejectEvents))
+	}
+	healthState, healthReason := gossipHealthFromSnapshot(d)
+	if capReason, ok := gossipHealthCappedReason(events, prevCheck, now); ok {
+		healthState = gossipHealthCapped
+		healthReason = capReason
+		s.capHoldUntil = now.Add(gossipHealthCapHold)
+	} else if now.Before(s.capHoldUntil) {
+		healthState = gossipHealthCapped
+		healthReason = "cap hits are recent"
+	}
+	if healthState != "" && healthState != s.health {
+		prevHealth := s.health
+		s.health = healthState
+		s.healthSince = now
+		if s.record != nil {
+			s.record(gossip.Event{Time: now, Kind: "state", Reason: healthState})
+		}
+		if healthState == gossipHealthHealthy {
+			out = append(out, fmt.Sprintf("🌉✅ [extender] gossip health is healthy: %s\n", healthReason))
+		} else {
+			out = append(out, fmt.Sprintf("🌉⚠️ [extender] gossip health is %s: %s\n", healthState, healthReason))
+			if gossipHealthWorsened(prevHealth, healthState) {
+				anomalyReasons = append(anomalyReasons, "gossip health "+healthState)
+			}
+		}
 	}
 	if len(anomalyReasons) > 0 {
 		out = s.appendAnomalyDump(out, strings.Join(anomalyReasons, ", "), events, now)
@@ -184,6 +216,7 @@ func (m *extenderManager) logDiscoveryHealth(now time.Time) {
 	if role == nil {
 		return
 	}
+	m.discoveryLog.record = role.discoveryRecordEvent
 	for _, line := range m.discoveryLog.linesWithEvents(role.discoverySnapshot(), role.discoveryEvents(), now) {
 		importantLogf("%s", line)
 	}

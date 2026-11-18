@@ -409,6 +409,15 @@ func (r *extenderRole) discoveryEvents() []gossip.Event {
 	return r.discovery.eventsSnapshot()
 }
 
+// discoveryRecordEvent records one structured event into the discovery ring, so
+// the flight recorder shows the health transitions this process observes.
+func (r *extenderRole) discoveryRecordEvent(event gossip.Event) bool {
+	if r == nil || r.discovery == nil {
+		return false
+	}
+	return r.discovery.events.Record(event)
+}
+
 // applyExtenderDiscoveryMode is what the control socket calls for the key
 // `extender_discovery`. It returns an error when no extender role runs in this
 // process, so the caller can queue the value for the next start.

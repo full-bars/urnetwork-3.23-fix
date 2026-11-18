@@ -411,6 +411,12 @@ func (self *Role) Events() []gossip.Event {
 	return self.events.Snapshot()
 }
 
+// RecordEvent records a structured event into the role's flight-recorder ring.
+// Returns true if the event was recorded.
+func (self *Role) RecordEvent(event gossip.Event) bool {
+	return self.events.Record(event)
+}
+
 // GossipRunning reports whether the mesh is running, which a caller checks
 // before installing `GossipConnHandler` on a server it builds later.
 func (self *Role) GossipRunning() bool {
