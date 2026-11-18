@@ -15,7 +15,7 @@ func TestProxyUDPCoverage(t *testing.T) {
 		"no":              {result: proxyUDPResult{Status: proxyUDPNoRelay}, at: now},
 		"mismatch":        {result: proxyUDPResult{Status: proxyUDPExitMismatch}, at: now},
 		"unknown":         {result: proxyUDPResult{Status: proxyUDPUnknown}, at: now},
-		"expired":         {result: proxyUDPResult{Status: proxyUDPOK}, at: now.Add(-proxyUDPResultTTL)},
+		"expired":         {result: proxyUDPResult{Status: proxyUDPOK}, at: now.Add(-proxyUDPOKTTL)},
 		"unknown-expired": {result: proxyUDPResult{Status: proxyUDPUnknown}, at: now.Add(-proxyUDPUnknownTTL)},
 		"running":         {done: make(chan struct{})},
 		"offline":         {result: proxyUDPResult{Status: proxyUDPOK}, at: now},

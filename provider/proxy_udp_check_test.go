@@ -209,7 +209,7 @@ func TestUdpCheckStoreRemembersAndDeduplicates(t *testing.T) {
 	if got := runs.Load(); got != 1 {
 		t.Fatalf("a remembered result was probed again (%d runs)", got)
 	}
-	store.Check(context.Background(), settings, time.Now().Add(proxyUDPResultTTL+time.Second))
+	store.Check(context.Background(), settings, time.Now().Add(proxyUDPLazyTTL+time.Second))
 	if got := runs.Load(); got != 2 {
 		t.Fatalf("an expired result was not probed again (%d runs)", got)
 	}

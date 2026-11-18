@@ -86,10 +86,15 @@ const (
 	// how many checks may hold sockets at once
 	udpCheckMaxConcurrent = 8
 	udpCheckOverallLimit  = 15 * time.Second
-	// how long a check is remembered, and how soon an unverifiable one is
-	// repeated
-	proxyUDPResultTTL  = 30 * time.Minute
-	proxyUDPUnknownTTL = 5 * time.Minute
+	proxyUDPOKTTL         = 24 * time.Hour
+	proxyUDPNoRelayTTL    = 72 * time.Hour
+	proxyUDPMismatchTTL   = 24 * time.Hour
+	proxyUDPUnknownTTL    = time.Hour
+	// An active flow keeps the existing lazy-path recheck cadence. A sweep
+	// and coverage use the longer state lifetimes; they do not delay a lazy
+	// check when traffic returns after 30 minutes (5 minutes for unknown).
+	proxyUDPLazyTTL        = 30 * time.Minute
+	proxyUDPLazyUnknownTTL = 5 * time.Minute
 
 	stunMagicCookie      = 0x2112A442
 	stunBindingRequest   = 0x0001
@@ -342,16 +347,15 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 	}
 }
 
-// prune drops identities nobody has asked about for two lifetimes of a result,
-// at most once per lifetime, so the store follows the proxy lists instead of
-// growing with every proxy ever seen. Called with the lock held.
+// prune drops identities nobody has asked about for two state lifetimes,
+// at most once per lazy lifetime. Called with the lock held.
 func (self *proxyUDPCheckStore) prune(now time.Time) {
-	if now.Sub(self.lastPrune) < proxyUDPResultTTL {
+	if now.Sub(self.lastPrune) < proxyUDPLazyTTL {
 		return
 	}
 	self.lastPrune = now
 	for key, entry := range self.entries {
-		if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPResultTTL {
+		if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
 			delete(self.entries, key)
 		}
 	}
@@ -360,10 +364,23 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 var globalProxyUDPCheck = newProxyUDPCheckStore(checkProxyUDP)
 
 func proxyUDPTTL(status proxyUDPStatus) time.Duration {
-	if status == proxyUDPUnknown {
+	switch status {
+	case proxyUDPOK:
+		return proxyUDPOKTTL
+	case proxyUDPNoRelay:
+		return proxyUDPNoRelayTTL
+	case proxyUDPExitMismatch:
+		return proxyUDPMismatchTTL
+	default:
 		return proxyUDPUnknownTTL
 	}
-	return proxyUDPResultTTL
+}
+
+func proxyUDPLazyRecheckTTL(status proxyUDPStatus) time.Duration {
+	if status == proxyUDPUnknown {
+		return proxyUDPLazyUnknownTTL
+	}
+	return proxyUDPLazyTTL
 }
 
 func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.ProxySettings, now time.Time) proxyUDPResult {
@@ -381,7 +398,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 			}
 		}
-		if entry != nil && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+		if entry != nil && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 			result := entry.result
 			self.mu.Unlock()
 			return result
@@ -436,7 +453,7 @@ func (self *proxyUDPCheckStore) checkDetached(settings *connect.ProxySettings, n
 	key := settings.Key()
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if entry := self.entries[key]; entry != nil && entry.done == nil && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+	if entry := self.entries[key]; entry != nil && entry.done == nil && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 		run := &proxyUDPCheckRun{done: make(chan struct{}), result: entry.result}
 		close(run.done)
 		return run
