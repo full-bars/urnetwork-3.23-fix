@@ -413,12 +413,12 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	now := m.now()
 	m.lastDone = now
 	if err != nil || snap == nil {
-		if m.cur < len(m.providerSnaps) {
-			m.providerSnaps[m.cur] = nil
-		}
 		if isTimeoutErr(err) && m.snap != nil && m.conn == topConnected && now.Sub(m.lastAnswer) < topLossGrace {
 			m.missed(now, err)
 			return
+		}
+		if m.cur < len(m.providerSnaps) {
+			m.providerSnaps[m.cur] = nil
 		}
 		m.lost(now, err)
 		return
