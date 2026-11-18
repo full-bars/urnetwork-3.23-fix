@@ -49,6 +49,44 @@ func TestUDPInvariantCheckTimeoutNeverFallsBack(t *testing.T) {
 	}
 }
 
+func TestUDPInvariantCheckWaitLimitNeverFallsBack(t *testing.T) {
+	server := startFakeSocks5(t, "", "", false)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	store := newProxyUDPCheckStore(func(context.Context, *connect.ProxySettings) proxyUDPResult {
+		close(started)
+		<-release
+		return proxyUDPResult{Status: proxyUDPNoRelay}
+	})
+	defer close(release)
+	var direct atomic.Int32
+	cs := connect.DefaultConnectSettings()
+	cs.DialContextSettings = &connect.DialContextSettings{DialContext: func(context.Context, string, string) (net.Conn, error) {
+		direct.Add(1)
+		return nil, errors.New("unexpected host dial")
+	}}
+	installProxiedUdpEgress(cs, proxySettingsFor(server), store)
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	start := time.Now()
+	conn, err := cs.DialContext(ctx, "udp", "192.0.2.1:53")
+	if err != nil {
+		t.Fatalf("relay dial after check wait: %v", err)
+	}
+	defer conn.Close()
+	if time.Since(start) < proxiedUdpCheckWait {
+		t.Fatal("dial did not wait for the check limit")
+	}
+	select {
+	case <-started:
+	default:
+		t.Fatal("check was not started")
+	}
+	if server.associations.Load() != 1 || direct.Load() != 0 {
+		t.Fatalf("associations=%d host dials=%d", server.associations.Load(), direct.Load())
+	}
+}
+
 func TestUDPInvariantSilentRelayNeverFallsBack(t *testing.T) {
 	server := startFakeSocks5(t, "", "", false)
 	destination, err := net.ListenUDP("udp4", &net.UDPAddr{IP: net.IPv4(127, 0, 0, 1)})
