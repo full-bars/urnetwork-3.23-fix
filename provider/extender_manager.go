@@ -114,6 +114,28 @@ func (m *extenderManager) Start(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
+// isExtenderCarrierKey identifies settings that replace the running role.
+func isExtenderCarrierKey(key string) bool {
+	switch key {
+	case "extender_udp443", "extender_udp4053", "extender_udp53":
+		return true
+	}
+	return false
+}
+
+// RestartCarriers replaces only an active role. It must run after the control
+// transaction unlocks: draining a role can take time. The manager lock orders
+// competing replacements, each of which reads the latest persisted settings.
+func (m *extenderManager) RestartCarriers() {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if m.role == nil {
+		return
+	}
+	m.stopLocked("UDP carrier settings changed")
+	m.reconcileLocked("UDP carrier settings changed")
+}
+
 // Reconcile starts or stops the role so it matches the setting and the direct
 // slot. Safe to call from any goroutine, any number of times.
 func (m *extenderManager) Reconcile(why string) {
