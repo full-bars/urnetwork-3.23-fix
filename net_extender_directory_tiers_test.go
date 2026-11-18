@@ -3,6 +3,7 @@ package connect
 import (
 	"bytes"
 	"crypto/ed25519"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -486,8 +487,15 @@ func TestExtenderVantageKeyIsThePrefix(t *testing.T) {
 func testGatedKeyHexes(t *testing.T, count int) []string {
 	t.Helper()
 	keyHexes := []string{}
-	for range count {
-		keyHexes = append(keyHexes, hex.EncodeToString(newTestExtenderKey(t)))
+	for i := range count {
+		// The seed only fixes the fixture; the expected release count comes from
+		// the release policy, not from any special property of these keys.
+		seed := sha256.Sum256([]byte(fmt.Sprintf("extender-gated-test-key-v1:%d", i)))
+		publicKey, err := ExtenderPublicKeyFromSeed(seed[:])
+		if err != nil {
+			t.Fatal(err)
+		}
+		keyHexes = append(keyHexes, hex.EncodeToString(publicKey))
 	}
 	slices.Sort(keyHexes)
 	return keyHexes
