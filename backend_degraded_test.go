@@ -15,22 +15,44 @@ import (
 func resetBackendDegraded() {
 	backendFailMu.Lock()
 	defer backendFailMu.Unlock()
-	consecutiveBackendFails.Store(0)
-	lastBackendFailNano.Store(0)
+	backendFailures.Store(nil)
+}
+
+func setBackendFailureStamp(stamp int64) {
+	backendFailMu.Lock()
+	defer backendFailMu.Unlock()
+	state := loadBackendFailureState()
+	state.stamp = stamp
+	backendFailures.Store(&state)
 }
 
 // ageLastBackendFailure rewinds the recorded failure time, keeping the count.
 // This is how an idle provider that stopped retrying looks: a streak on the
 // books, but nothing recent.
 func ageLastBackendFailure(d time.Duration) {
-	lastBackendFailNano.Store(time.Now().Add(-d).UnixNano())
+	setBackendFailureStamp(time.Now().Add(-d).UnixNano())
 }
 
 // backendFails reads the current consecutive-failure count out of the snapshot.
 // Assertions want the raw count, which isBackendDegraded deliberately does not
 // expose: it folds the count and the recency guard into one verdict.
 func backendFails() int64 {
-	return consecutiveBackendFails.Load()
+	return loadBackendFailureState().count
+}
+
+func TestBackendDegraded_ForcedRepeatedTimestampInterleaving(t *testing.T) {
+	resetBackendDegraded()
+	defer resetBackendDegraded()
+	fresh := time.Now().UnixNano()
+	backendFailures.Store(&backendFailureState{count: 1, stamp: fresh})
+	observed := loadBackendFailureState()
+	backendFailures.Store(&backendFailureState{count: backendDegradedFailThreshold + 5, stamp: fresh - int64(backendDegradedWindow) - 1})
+	stale := loadBackendFailureState()
+	backendFailures.Store(&backendFailureState{count: 1, stamp: fresh})
+	if observed.count != 1 || observed.stamp != fresh || stale.count != backendDegradedFailThreshold+5 ||
+		backendFailureStateDegraded(observed, fresh) || backendFailureStateDegraded(stale, fresh) || isBackendDegraded() {
+		t.Fatal("reader combined a stale count with a recent repeated timestamp")
+	}
 }
 
 func TestBackendDegraded_CleanStateIsNotDegraded(t *testing.T) {
@@ -200,7 +222,7 @@ func TestBackendDegraded_FailuresStampedAfterNowAreNotDegraded(t *testing.T) {
 		}
 	})
 
-	lastBackendFailNano.Store(time.Now().Add(time.Minute).UnixNano())
+	setBackendFailureStamp(time.Now().Add(time.Minute).UnixNano())
 	if isBackendDegraded() {
 		t.Error("degraded on failures stamped a minute after now")
 	}
@@ -216,11 +238,11 @@ func TestBackendDegraded_StreakStampedAfterNowIsNotResumedByANewFailure(t *testi
 	for i := 0; i < backendDegradedFailThreshold; i++ {
 		noteBackendFailure()
 	}
-	lastBackendFailNano.Store(time.Now().Add(time.Minute).UnixNano())
+	setBackendFailureStamp(time.Now().Add(time.Minute).UnixNano())
 
 	noteBackendFailure()
 
-	if got := consecutiveBackendFails.Load(); got != 1 {
+	if got := loadBackendFailureState().count; got != 1 {
 		t.Fatalf("consecutive failures = %d after a streak stamped after now plus one failure, want 1", got)
 	}
 	if isBackendDegraded() {
@@ -256,8 +278,8 @@ func TestBackendDegraded_ConcurrentSuccessAndFailureNeverLeaveInvalidState(t *te
 	}
 	wg.Wait()
 
-	fails := consecutiveBackendFails.Load()
-	lastNano := lastBackendFailNano.Load()
+	state := loadBackendFailureState()
+	fails, lastNano := state.count, state.stamp
 	// A positive count always implies a real failure timestamp, and a zeroed
 	// timestamp always implies no outstanding failures.
 	if 0 < fails && lastNano == 0 {
@@ -300,10 +322,9 @@ func TestBackendDegraded_ConcurrentReadersNeverSeeATornPair(t *testing.T) {
 				return
 			default:
 			}
-			// timestamp first, count second: the setup is two stores, and a
-			// reader that lands between them must see a non-degraded pair
-			lastBackendFailNano.Store(time.Now().Add(-stale).UnixNano())
-			consecutiveBackendFails.Store(backendDegradedFailThreshold + 5)
+			backendFailMu.Lock()
+			backendFailures.Store(&backendFailureState{count: backendDegradedFailThreshold + 5, stamp: time.Now().Add(-stale).UnixNano()})
+			backendFailMu.Unlock()
 			// stale streak discarded: {threshold+5, old} becomes {1, now}
 			noteBackendFailure()
 		}
@@ -525,7 +546,7 @@ func TestNoteBackendFailure_FirstFailureFromCleanState(t *testing.T) {
 	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after the first failure, want 1", got)
 	}
-	ts := lastBackendFailNano.Load()
+	ts := loadBackendFailureState().stamp
 	if ts < before || after < ts {
 		t.Fatalf("backend failure timestamp = %d, want a value between %d and %d", ts, before, after)
 	}
@@ -542,7 +563,7 @@ func TestNoteBackendSuccess_OnCleanStateIsNoOp(t *testing.T) {
 	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after noteBackendSuccess on a clean state, want 0", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
+	if loadBackendFailureState().stamp != 0 {
 		t.Fatal("backend failure timestamp set after noteBackendSuccess on a clean state")
 	}
 }
