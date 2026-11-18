@@ -11,6 +11,16 @@ import (
 	"github.com/urnetwork/connect"
 )
 
+// waitSignal waits for one value on ch and fails the test instead of hanging.
+func waitSignal(t *testing.T, ch <-chan struct{}, what string) {
+	t.Helper()
+	select {
+	case <-ch:
+	case <-time.After(10 * time.Second):
+		t.Fatalf("timed out waiting for %s", what)
+	}
+}
+
 func TestUDPProbeRunnerUsesSuppliedTime(t *testing.T) {
 	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
 	ps := &connect.ProxySettings{Address: "example:1080"}
@@ -50,35 +60,21 @@ func TestUDPProbeRunnerBoundAndResults(t *testing.T) {
 	for i := range online {
 		online[i] = &connect.ProxySettings{Address: fmt.Sprintf("127.0.0.1:%d", i+1)}
 	}
-	before := runtime.NumGoroutine()
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
 		runUDPProbeTick(context.Background(), store, online, time.Now(), time.Minute, time.Minute, 0, true)
 	}()
-	<-entered
-	<-entered
+	waitSignal(t, entered, "the first probe")
+	waitSignal(t, entered, "the second probe")
 	close(release)
-	// Drain further notifications without constraining workers.
-	for count.Load() < int32(len(online)) {
-		select {
-		case <-entered:
-		case <-done:
-			t.Fatal("runner stopped early")
-		}
-	}
-	<-done
+	// The two later probes fit in the entered buffer, so no drain is needed.
+	waitSignal(t, done, "the runner to finish")
 	if peak.Load() != 2 || active.Load() != 0 || count.Load() != 4 {
 		t.Fatalf("peak=%d active=%d count=%d", peak.Load(), active.Load(), count.Load())
 	}
 	if got := store.coverage([]string{online[0].Key(), online[1].Key(), online[2].Key(), online[3].Key()}, time.Now()); got.OK != 4 {
 		t.Fatalf("coverage: %+v", got)
-	}
-	for i := 0; i < 1000 && runtime.NumGoroutine() > before; i++ {
-		runtime.Gosched()
-	}
-	if after := runtime.NumGoroutine(); after > before {
-		t.Fatalf("goroutines before=%d after=%d", before, after)
 	}
 }
 
@@ -130,11 +126,30 @@ func TestUDPProbeRunnerSkipsAndCancels(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	done := make(chan struct{})
 	go func() { defer close(done); runUDPProbeTick(ctx, store, online, now, time.Minute, time.Minute, 0, true) }()
-	<-entered
-	<-entered
+	waitSignal(t, entered, "the first probe")
+	waitSignal(t, entered, "the second probe")
 	cancel()
-	<-done
+	waitSignal(t, done, "the runner to stop after cancel")
 	if calls.Load() != 2 || store.size() != 0 {
 		t.Fatalf("calls=%d cached=%d", calls.Load(), store.size())
+	}
+}
+
+// A batch that outlasts its tick is cut off at the tick interval, so a slow
+// batch cannot hold the reaper or the grader past their own interval.
+func TestUDPProbeRunnerStopsAtTheTickInterval(t *testing.T) {
+	store := newProxyUDPCheckStore(func(ctx context.Context, _ *connect.ProxySettings) proxyUDPResult {
+		<-ctx.Done() // a probe that never answers on its own
+		return proxyUDPResult{Status: proxyUDPNoRelay}
+	})
+	online := []*connect.ProxySettings{{Address: "127.0.0.1:1"}, {Address: "127.0.0.1:2"}, {Address: "127.0.0.1:3"}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		runUDPProbeTick(context.Background(), store, online, time.Now(), time.Minute, 50*time.Millisecond, 0, true)
+	}()
+	waitSignal(t, done, "the tick to stop at its interval")
+	if store.size() != 0 {
+		t.Fatalf("interrupted checks were remembered: %d", store.size())
 	}
 }

@@ -166,6 +166,13 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 	if !enabled || pressure >= udpProbeSkipPressure || ctx.Err() != nil {
 		return
 	}
+	if tick > 0 {
+		// A slow batch must not hold the reaper or grader past its own
+		// interval. An interrupted check is forgotten by the store.
+		var cancel context.CancelFunc
+		ctx, cancel = context.WithTimeout(ctx, tick)
+		defer cancel()
+	}
 	workers := min(udpProbeWorkers, scaledProbeConcurrency(pressure), cap(store.slots))
 	if workers <= 0 {
 		return
