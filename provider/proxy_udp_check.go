@@ -555,6 +555,10 @@ func proxyUDPFailureClass(err error) string {
 
 // noteFlowReply records relay use without claiming that UDP and TCP exits match.
 // In-flight checks and fresh definitive checks carry stronger evidence.
+//
+// Only a matching reply is evidence. A timeout, a refused association or a
+// read error says nothing about the relay, so flows never record a negative
+// result: coverage changes only through checks and through this method.
 func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	self.mu.Lock()
 	defer self.mu.Unlock()

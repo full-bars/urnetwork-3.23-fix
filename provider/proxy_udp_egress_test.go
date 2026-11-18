@@ -611,3 +611,38 @@ func TestProxiedIdentityUdpBurstSharesOneCheck(t *testing.T) {
 		t.Fatalf("probes = %d, want 1", probes.Load())
 	}
 }
+
+// A failed flow is not evidence about the relay. A refused association (the
+// fake proxy refuses UDP ASSOCIATE for the flow) must leave the coverage that
+// the last check produced exactly as it was, for definitive and unknown results.
+func TestProxiedIdentityUdpFlowFailureLeavesCoverageUnchanged(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status proxyUDPStatus
+		want   SnapshotProxyUDP
+	}{
+		{"ok stays ok", proxyUDPOK, SnapshotProxyUDP{OK: 1}},
+		{"unknown stays unknown", proxyUDPUnknown, SnapshotProxyUDP{Unknown: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			server := startFakeSocks5(t, "", "", true)
+			echo, _ := startEchoUdp(t)
+			proxySettings := &connect.ProxySettings{Network: "tcp", Address: server.address()}
+			store := stubUdpCheckStore(tc.status)
+			natSettings := proxiedIdentityNatSettings(proxySettings, store)
+
+			ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			for i := 0; i < 3; i++ {
+				if conn, err := natSettings.UdpBufferSettings.DialContext(ctx, "udp", echo.LocalAddr().String()); err == nil {
+					conn.Close()
+					t.Fatal("got a conn although the proxy refused UDP ASSOCIATE")
+				}
+			}
+			got := store.coverage([]string{proxySettings.Key()}, time.Now())
+			if *got != tc.want {
+				t.Fatalf("coverage after failed flows = %+v, want %+v", *got, tc.want)
+			}
+		})
+	}
+}
