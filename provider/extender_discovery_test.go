@@ -354,3 +354,54 @@ func TestApplyExtenderDiscoveryModeWithoutARole(t *testing.T) {
 		t.Fatalf("saved off with no role: %+v", got)
 	}
 }
+
+func TestExtenderDiscoveryRecordsStateEventsAndSocketServesThem(t *testing.T) {
+	h := newDiscoveryTestHarness(t)
+	server := &fakeDiscoveryServer{}
+	d := newExtenderDiscovery(context.Background(), nil)
+	clock := time.Date(2026, 11, 18, 5, 0, 0, 0, time.UTC)
+	d.now = func() time.Time { return clock }
+	_ = d.setMode("on")
+
+	// 1. Waiting for directory.
+	in := discoveryTestInputs(t, server)
+	in.directory = nil
+	d.reconcile(in)
+
+	// 2. Running.
+	clock = clock.Add(time.Second)
+	d.reconcile(discoveryTestInputs(t, server))
+	if h.settings[0].Events != &d.events {
+		t.Fatal("role settings did not receive shared event ring")
+	}
+
+	// 3. Feed-only.
+	clock = clock.Add(time.Second)
+	_ = d.setMode("feed-only")
+	d.reconcile(discoveryTestInputs(t, server))
+
+	// 4. Off.
+	clock = clock.Add(time.Second)
+	_ = d.setMode("off")
+	d.reconcile(discoveryTestInputs(t, server))
+
+	events := d.eventsSnapshot()
+	wantReasons := []string{"waiting", "running", "feed-only", "off"}
+	if len(events) != len(wantReasons) {
+		t.Fatalf("events = %+v, want %v", events, wantReasons)
+	}
+	for i, want := range wantReasons {
+		if events[i].Kind != "state" || events[i].Reason != want {
+			t.Fatalf("events[%d] = %+v, want state/%s", i, events[i], want)
+		}
+	}
+
+	role := &extenderRole{discovery: d}
+	prevRole := globalExtenderRole.Swap(role)
+	t.Cleanup(func() { globalExtenderRole.Store(prevRole) })
+
+	resp := handleControlRequest(newControlState(), controlRequest{Cmd: "extender_events"})
+	if !resp.OK || len(resp.GossipEvents) != len(wantReasons) {
+		t.Fatalf("control response = %+v", resp)
+	}
+}

@@ -111,20 +111,29 @@ type extenderDiscovery struct {
 	// retry runs when a failed start is due again. The extender role sets it
 	// to a reconcile with fresh inputs.
 	retry func()
+	now   func() time.Time
 
-	mu         sync.Mutex
-	requested  string
-	role       extenderDiscoveryRole
-	roleGossip bool
-	attached   []extenderDiscoveryServer
-	waiting    bool
-	failure    string
-	failures   int
-	retryTimer *time.Timer
+	mu                sync.Mutex
+	requested         string
+	role              extenderDiscoveryRole
+	roleGossip        bool
+	attached          []extenderDiscoveryServer
+	waiting           bool
+	failure           string
+	failures          int
+	retryTimer        *time.Timer
+	lastRecordedState string
+	events            gossip.EventRing
 }
 
 func newExtenderDiscovery(ctx context.Context, retry func()) *extenderDiscovery {
-	return &extenderDiscovery{ctx: ctx, retry: retry, requested: extenderDiscoveryOff}
+	return &extenderDiscovery{
+		ctx:               ctx,
+		retry:             retry,
+		now:               time.Now,
+		requested:         extenderDiscoveryOff,
+		lastRecordedState: extenderDiscoveryStateOff,
+	}
 }
 
 // setMode records the requested mode. The caller reconciles afterwards.
@@ -159,6 +168,7 @@ func (d *extenderDiscovery) reconcile(in extenderDiscoveryInputs) {
 		d.waiting = false
 		d.failure = ""
 		d.failures = 0
+		d.recordStateTransitionLocked(extenderDiscoveryStateOff, extenderDiscoveryStateOff)
 		return
 	}
 	if in.directory == nil || in.networkHost == "" || len(in.keySeed) == 0 {
@@ -166,6 +176,7 @@ func (d *extenderDiscovery) reconcile(in extenderDiscoveryInputs) {
 		// root keys. Until then nothing can be served, so nothing is attached.
 		d.teardownLocked()
 		d.waiting = true
+		d.recordStateTransitionLocked(extenderDiscoveryStateWaiting, extenderDiscoveryStateWaiting)
 		return
 	}
 	d.waiting = false
@@ -180,6 +191,7 @@ func (d *extenderDiscovery) reconcile(in extenderDiscoveryInputs) {
 			Directory:       in.directory,
 			IdentityKeySeed: in.keySeed,
 			DisableGossip:   !wantGossip,
+			Events:          &d.events,
 		})
 		if err != nil {
 			d.failLocked(err)
@@ -190,8 +202,10 @@ func (d *extenderDiscovery) reconcile(in extenderDiscoveryInputs) {
 		d.failure = ""
 		d.failures = 0
 		if d.roleGossip {
+			d.recordStateTransitionLocked(extenderDiscoveryStateRunning, extenderDiscoveryStateRunning)
 			importantLogf("🌉✅ [extender] discovery started locally: serving the directory feed and trying to join the gossip mesh; check peer and message counts to confirm activity.\n")
 		} else {
+			d.recordStateTransitionLocked(extenderDiscoveryStateFeedOnly, extenderDiscoveryStateFeedOnly)
 			importantLogf("🌉✅ [extender] discovery started in feed-only mode: this host serves the directory feed and refuses gossip.\n")
 		}
 	}
@@ -240,6 +254,7 @@ func (d *extenderDiscovery) failLocked(err error) {
 	d.teardownLocked()
 	d.failure = err.Error()
 	d.failures++
+	d.recordStateTransitionLocked(extenderDiscoveryStateFailed, extenderDiscoveryStateFailed+": "+d.failure)
 	wait := extenderDiscoveryRetryMin
 	for i := 1; i < d.failures && wait < extenderDiscoveryRetryMax; i++ {
 		wait *= 2
@@ -269,6 +284,26 @@ func (d *extenderDiscovery) stop() {
 	defer d.mu.Unlock()
 	d.stopRetryLocked()
 	d.teardownLocked()
+}
+
+func (d *extenderDiscovery) recordStateTransitionLocked(state string, reason string) {
+	if d.lastRecordedState == state {
+		return
+	}
+	d.lastRecordedState = state
+	now := time.Now
+	if d.now != nil {
+		now = d.now
+	}
+	d.events.Record(gossip.Event{
+		Time:   now(),
+		Kind:   "state",
+		Reason: reason,
+	})
+}
+
+func (d *extenderDiscovery) eventsSnapshot() []gossip.Event {
+	return d.events.Snapshot()
 }
 
 func (d *extenderDiscovery) snapshot() extenderDiscoverySnapshot {
@@ -367,6 +402,13 @@ func (r *extenderRole) discoverySnapshot() extenderDiscoverySnapshot {
 	return r.discovery.snapshot()
 }
 
+func (r *extenderRole) discoveryEvents() []gossip.Event {
+	if r == nil || r.discovery == nil {
+		return nil
+	}
+	return r.discovery.eventsSnapshot()
+}
+
 // applyExtenderDiscoveryMode is what the control socket calls for the key
 // `extender_discovery`. It returns an error when no extender role runs in this
 // process, so the caller can queue the value for the next start.
@@ -393,6 +435,18 @@ func currentExtenderDiscoverySnapshot() extenderDiscoverySnapshot {
 		return extenderDiscoverySnapshot{Requested: mode, State: extenderDiscoveryStateOff}
 	}
 	return role.discoverySnapshot()
+}
+
+// currentExtenderGossipEvents returns the flight-recorder snapshot from the
+// running extender role, or an empty slice when no role is running.
+func currentExtenderGossipEvents() []gossip.Event {
+	if role := globalExtenderManager.Role(); role != nil {
+		return role.discoveryEvents()
+	}
+	if role := globalExtenderRole.Load(); role != nil {
+		return role.discoveryEvents()
+	}
+	return []gossip.Event{}
 }
 
 // extenderDiscoverySavedForStart reports that a control command for the key
