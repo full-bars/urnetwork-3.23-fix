@@ -147,3 +147,5 @@ replace github.com/centrifuge/go-substrate-rpc-client/v4 => ./third_party/go-sub
 // repository's own two-call adapter (Listen, DialTimeout) over
 // github.com/Microsoft/go-winio.
 replace gopkg.in/natefinch/npipe.v2 => ./third_party/npipe
+
+replace github.com/libp2p/go-yamux/v5 => ./third_party/go-yamux
