@@ -4298,3 +4298,51 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
 
 **Status**: Unreleased.
+
+---
+
+## 228. Status Summary and Output Modes
+
+The status command presents a health summary and UDP coverage. `--brief` reports warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. Healthy brief output is empty. `--json` keeps the raw snapshot. `--json-summary` emits schema `urnet-tools-status/1`. `--live` refreshes the summary. Update checks use a time-limited cache that does not follow symbolic links. Status honors `--pid` and identifies an unavailable or stopped extender.
+
+**Status**: Unreleased.
+
+---
+
+## 229. Extender UDP Controls and Port 53 State
+
+The `extender-udp443`, `extender-udp4053` and `extender-udp53` settings enable or disable each UDP carrier. A change restarts the active role. A failed control write restores the previous carrier configuration. Extender status reports UDP port 53 state and bind failure reason. The `urnet_extender_dns53_state` metric reports the state. Setup does not offer the lower sysctl threshold for port 53 yet.
+
+**Status**: Unreleased.
+
+---
+
+## 230. Gossip Visibility
+
+Gossip diagnostics report dial attempts and failures, health transitions and recent events. Anomaly dumps are rate limited. The health calculation retains a more severe state when cap pressure is present. `urnet-tools extender events` displays recent events.
+
+**Status**: Unreleased.
+
+---
+
+## 231. Top Display and Container Support
+
+The top display includes proxy heatmap dots, a configurable fading afterglow and a UDP coverage row. The container image includes the dashboard. The Docker helper checks for the dashboard before launch.
+
+**Status**: Unreleased.
+
+---
+
+## 232. Linux Interface Counters
+
+The `internal/nicstat` package reads cumulative interface receive and transmit byte counters on Linux.
+
+**Status**: Unreleased.
+
+---
+
+## 233. Proxy Input and Blocklist Sync
+
+Proxy add accepts passwords containing an `@` sign. The blocklist sync checks the generated tables and commits them directly to the main branch.
+
+**Status**: Unreleased.
