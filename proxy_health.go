@@ -358,14 +358,24 @@ func isTimeoutError(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
+// proxyHealthErrorSummary keeps arbitrary error text out of health reports.
+func proxyHealthErrorSummary(err error) string {
+	if err == nil {
+		return ""
+	}
+	if isTimeoutError(err) {
+		return "timeout"
+	}
+	return "connection error"
+}
+
 // RecordProxyAuthFailure increments the auth-failure counter for a proxy.
 func RecordProxyAuthFailure(index int, err error) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	if h, ok := proxyHealthByIndex[index]; ok {
-		errStr := ""
+		errStr := proxyHealthErrorSummary(err)
 		if err != nil {
-			errStr = err.Error()
 			rejected := explicitRejection(err)
 			// A refusal that arrives while the backend is failing is not trusted:
 			// an overloaded gateway or a half-broken auth path can say no to a
@@ -407,7 +417,7 @@ func RecordProxyTransportDrop(index int, err error) {
 	if h, ok := proxyHealthByIndex[index]; ok {
 		h.failures.TransportDrops.Add(1)
 		if err != nil {
-			h.lastError = err.Error()
+			h.lastError = proxyHealthErrorSummary(err)
 			h.lastErrorAt = time.Now()
 		}
 	}
