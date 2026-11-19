@@ -1,9 +1,35 @@
 package urnettools
 
 import (
+	"math"
 	"testing"
 	"time"
 )
+
+func TestTopZoomGridUsesSampleTimes(t *testing.T) {
+	for _, interval := range topIntervalSteps {
+		t.Run(interval.String(), func(t *testing.T) {
+			var z topZoom
+			base := int64(time.Minute)
+			z.push(base, 1, 2)
+			z.push(base+int64(interval), 3, 4)
+			b, total, anchor := z.grid()
+			if anchor != (base+int64(interval))/int64(topMinInterval) || len(b) != 150 {
+				t.Fatalf("anchor=%d length=%d", anchor, len(b))
+			}
+			if b[149] != 3 || total[149] != 4 {
+				t.Fatalf("newest values %v %v", b[149], total[149])
+			}
+			old := 149 - int(interval/topMinInterval)
+			if old >= 0 && b[old] != 1 {
+				t.Fatalf("older value at %d = %v", old, b[old])
+			}
+			if interval > topMinInterval && !math.IsNaN(b[148]) {
+				t.Fatalf("missing time slot = %v", b[148])
+			}
+		})
+	}
+}
 
 func TestTopTrafficRateRestartsAfterLongGap(t *testing.T) {
 	m, clock := liveModel(t, time.Second)

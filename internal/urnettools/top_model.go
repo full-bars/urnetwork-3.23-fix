@@ -402,7 +402,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
 			if b, t, ok := m.live.recent(topZoomSpan); ok {
-				m.zoom.push(b, t, m.zoomCapacity())
+				m.zoom.push(lt.AtUnixNano, b, t)
 				m.zoomScaleB.update(seriesPeak(m.zoom.billable), m.now(), true)
 				m.zoomScaleT.update(seriesPeak(m.zoom.total), m.now(), true)
 			}
@@ -827,16 +827,6 @@ func (m *topModel) applyOverview(gen, idx int, snap *NodeSnapshot, err error, ex
 // (dir > 0) along topIntervalSteps, starting from wherever a custom
 // --interval sits between them.
 func (m *topModel) stepInterval(dir int) {
-	before := m.interval
-	defer func() {
-		if m.interval != before {
-			// Columns of a different poll period would sit side by side on one
-			// time axis; start the zoom window over.
-			m.zoom.reset()
-			m.zoomScaleB.reset()
-			m.zoomScaleT.reset()
-		}
-	}()
 	steps := topIntervalSteps
 	if dir < 0 {
 		for i := len(steps) - 1; i >= 0; i-- {
@@ -914,16 +904,13 @@ func (m *topModel) series() topSeries {
 		return out
 	}
 	if m.zoomOn && m.trafficOK && m.conn == topConnected {
-		// The client-side ring at the poll rate. It has no tail: every column is
-		// already a live reading.
+		// The time grid keeps readings aligned across interval changes.
 		out.zoom, out.capacity = true, m.zoomCapacity()
 		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
-		out.anchor = m.zoom.seq
-		out.billable = m.zoom.billable
+		var total []float64
+		out.billable, total, out.anchor = m.zoom.grid()
 		if m.snap.Traffic != nil {
-			// Non-nil even while the ring is empty: nil would read as "this
-			// provider has no total graph" and drop the second panel.
-			out.total = append([]float64{}, m.zoom.total...)
+			out.total = append([]float64{}, total...)
 		}
 		return out
 	}

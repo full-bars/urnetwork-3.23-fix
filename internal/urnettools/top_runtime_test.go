@@ -176,12 +176,11 @@ func TestTopZoomFillsAtThePollRateAndStopsAtTheWindow(t *testing.T) {
 
 func TestTopZoomCapacityFollowsTheInterval(t *testing.T) {
 	m, _ := liveModel(t, time.Second)
-	if got := m.zoomCapacity(); got != 15 {
-		t.Fatalf("capacity at 1s = %d, want 15", got)
-	}
-	m.interval = 10 * time.Second
-	if got := m.zoomCapacity(); got != topZoomMinCols {
-		t.Fatalf("capacity at 10s = %d, want the floor %d", got, topZoomMinCols)
+	for _, interval := range topIntervalSteps {
+		m.interval = interval
+		if got := m.zoomCapacity(); got != 150 {
+			t.Fatalf("capacity at %v = %d, want 150", interval, got)
+		}
 	}
 }
 
@@ -198,9 +197,10 @@ func TestTopZoomRestartsWhenItsTimeBaseWouldBreak(t *testing.T) {
 	}
 	t.Run("rate change", func(t *testing.T) {
 		m, _ := setup()
-		pressKey(m, '+') // slower: 100ms is already the fastest step
-		if len(m.zoom.billable) != 0 {
-			t.Fatal("columns of another poll period must not share one axis")
+		before := len(m.zoom.billable)
+		pressKey(m, '+')
+		if len(m.zoom.billable) != before {
+			t.Fatal("changing the poll period must preserve history")
 		}
 	})
 	t.Run("connection lost", func(t *testing.T) {

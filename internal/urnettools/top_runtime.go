@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"errors"
+	"math"
 	"regexp"
 	"strings"
 	"time"
@@ -14,15 +15,12 @@ import (
 // is fed by the run loop and drawn from the model alone, like the rest.
 
 const (
-	// topZoomWindow is how much time the zoom graph shows, at whatever poll rate
-	// is set: a 100ms poll gives 150 columns, a 1s poll 15.
+	// topZoomWindow is the duration shown by the zoom graph.
 	topZoomWindow = 15 * time.Second
 	// topZoomSpan is the span each zoom column's rate is taken over. Two or
 	// three polls at 100ms: motion on every poll without counter-granularity
 	// noise.
 	topZoomSpan = 250 * time.Millisecond
-	// topZoomMinCols keeps the ring useful at slow poll rates.
-	topZoomMinCols = 8
 
 	// topScaleHeadroom is how far above the peak a raised axis is put, so a burst
 	// a little above the last one does not rescale the chart again.
@@ -94,28 +92,50 @@ func seriesPeak(v []float64) float64 {
 	return p
 }
 
-// topZoom is the client-side ring behind the zoom graph: one rate per traffic
-// poll, newest last. seq counts every column ever pushed and anchors the graph,
-// so a column keeps its place as older ones fall off the left.
+// topZoom stores rates with the provider time of each accepted poll.
 type topZoom struct {
 	billable, total []float64
+	at              []int64
 	seq             int64
 }
 
 func (z *topZoom) reset() { *z = topZoom{} }
 
-func (z *topZoom) push(b, t float64, capacity int) {
+func (z *topZoom) push(at int64, b, t float64) {
 	z.billable = append(z.billable, b)
 	z.total = append(z.total, t)
+	z.at = append(z.at, at)
 	z.seq++
-	if n := len(z.billable) - capacity; n > 0 {
-		z.billable, z.total = z.billable[n:], z.total[n:]
+	cut := at - int64(topZoomWindow)
+	n := 0
+	for n < len(z.at) && z.at[n] <= cut {
+		n++
 	}
+	z.at, z.billable, z.total = z.at[n:], z.billable[n:], z.total[n:]
 }
 
-// zoomCapacity is how many columns the ring holds at the current poll rate.
+// grid places readings on a fixed time axis. Empty slots remain unknown.
+func (z *topZoom) grid() (billable, total []float64, anchor int64) {
+	if len(z.at) == 0 {
+		return nil, nil, 0
+	}
+	const capacity = int(topZoomWindow / topMinInterval)
+	anchor = z.at[len(z.at)-1] / int64(topMinInterval)
+	billable, total = make([]float64, capacity), make([]float64, capacity)
+	for i := range billable {
+		billable[i], total[i] = math.NaN(), math.NaN()
+	}
+	for i, at := range z.at {
+		idx := int(at/int64(topMinInterval) - anchor + int64(capacity) - 1)
+		if idx >= 0 && idx < capacity {
+			billable[idx], total[idx] = z.billable[i], z.total[i]
+		}
+	}
+	return billable, total, anchor
+}
+
 func (m *topModel) zoomCapacity() int {
-	return max(int(topZoomWindow/max(m.interval, topMinInterval)), topZoomMinCols)
+	return int(topZoomWindow / topMinInterval)
 }
 
 // topRuntime is what the Internals panel shows and how it is fed.
