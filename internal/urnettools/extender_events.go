@@ -203,8 +203,8 @@ func formatExtenderGossipEvents(w io.Writer, events []ExtenderGossipEvent, filte
 		return enc.Encode(filtered)
 	}
 	if len(filtered) == 0 {
-		fmt.Fprintln(w, "No gossip events.")
-		return nil
+		_, err := fmt.Fprintln(w, "No gossip events.")
+		return err
 	}
 	for _, ev := range filtered {
 		var b strings.Builder
@@ -221,7 +221,9 @@ func formatExtenderGossipEvents(w io.Writer, events []ExtenderGossipEvent, filte
 		if ev.Size > 0 {
 			fmt.Fprintf(&b, "  size=%d", ev.Size)
 		}
-		fmt.Fprintln(w, b.String())
+		if _, err := fmt.Fprintln(w, b.String()); err != nil {
+			return err
+		}
 	}
 	return nil
 }

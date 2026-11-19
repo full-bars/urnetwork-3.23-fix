@@ -67,7 +67,11 @@ func TestExtenderCarrierControlLiveOff(t *testing.T) {
 	}
 	for _, port := range []string{"443", "4053", "53"} {
 		t.Run(port, func(t *testing.T) {
-			dir := t.TempDir()
+			dir, err := os.MkdirTemp("", "carrier-")
+			if err != nil {
+				t.Fatal(err)
+			}
+			t.Cleanup(func() { _ = os.RemoveAll(dir) })
 			listener, err := net.Listen("unix", filepath.Join(dir, "provider.sock"))
 			if err != nil {
 				t.Fatal(err)
