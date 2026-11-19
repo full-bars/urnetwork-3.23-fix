@@ -58,7 +58,20 @@ func writeStatusUpdateCache(stateDir string, s statusUpdateState) {
 	if err != nil {
 		return
 	}
-	_ = os.WriteFile(filepath.Join(stateDir, statusUpdateCacheFile), b, 0o600)
+	// Write a temporary file that is created exclusively and rename it over the
+	// cache. A rename replaces a symlink at the target instead of following it.
+	// The state dir can belong to another user when status runs elevated, and
+	// that user must not be able to aim this write at another file.
+	tmp, err := os.CreateTemp(stateDir, ".update-check-*.tmp")
+	if err != nil {
+		return
+	}
+	name := tmp.Name()
+	_, werr := tmp.Write(b)
+	cerr := tmp.Close()
+	if werr != nil || cerr != nil || os.Rename(name, filepath.Join(stateDir, statusUpdateCacheFile)) != nil {
+		_ = os.Remove(name)
+	}
 }
 
 // readStatusUpdateCache returns the cached state when it is still within TTL.
@@ -66,7 +79,13 @@ func readStatusUpdateCache(stateDir string) (statusUpdateState, bool) {
 	if stateDir == "" {
 		return statusUpdateState{}, false
 	}
-	b, err := os.ReadFile(filepath.Join(stateDir, statusUpdateCacheFile))
+	path := filepath.Join(stateDir, statusUpdateCacheFile)
+	// Only a regular file counts. A symlink in a state dir owned by someone else
+	// is not followed.
+	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
+		return statusUpdateState{}, false
+	}
+	b, err := os.ReadFile(path)
 	if err != nil {
 		return statusUpdateState{}, false
 	}

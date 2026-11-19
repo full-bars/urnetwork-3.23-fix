@@ -80,10 +80,17 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 	extender := statusRow{"Extender", statusUnknown, "unavailable"}
 	if e.Known {
 		extender.Level, extender.Text = statusOK, "off"
-		if e.Running {
+		switch {
+		case e.Running && extenderRoleUnavailable(e.RoleState):
+			// the role exists but cannot serve, for example tcp 443 cannot be bound
+			extender.Level, extender.Text = statusWarn, "unavailable"
+		case e.Running:
 			extender.Text = "active"
-		} else if e.Activating {
+		case e.Activating:
 			extender.Level, extender.Text = statusWarn, "activating"
+		case e.Setting == "on":
+			// switched on but no role is running: the start failed or is held
+			extender.Level, extender.Text = statusWarn, "not running"
 		}
 	}
 	rows = append(rows, extender)
@@ -303,4 +310,14 @@ func statusBriefExtender(text string) string {
 	default:
 		return "unavailable"
 	}
+}
+
+// extenderRoleUnavailable reports whether a running extender role is in a state
+// where it cannot serve clients.
+func extenderRoleUnavailable(state string) bool {
+	switch state {
+	case "tcp_unavailable", "unavailable", "error", "closed":
+		return true
+	}
+	return false
 }

@@ -573,7 +573,7 @@ func cmdStatus(args []string) error {
 	if briefMode {
 		d := collectStatusData(p)
 		fmt.Println(statusBriefLine(d))
-		return briefExitError(d.ExitCode)
+		return briefExit(d.ExitCode)
 	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
@@ -1028,6 +1028,15 @@ func printToolVersionAndProviders() {
 // code without changing the Run() signature. The documented contract is 0
 // healthy, 1 warning, 2 broken, 3 unreachable.
 type briefExitError int
+
+// briefExit turns the summary's exit code into the error main.go honours. A
+// healthy status is no error, so nothing is printed to stderr.
+func briefExit(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return briefExitError(code)
+}
 
 func (e briefExitError) Error() string { return "" }
 func (e briefExitError) ExitCode() int { return int(e) }

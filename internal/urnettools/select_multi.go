@@ -291,7 +291,7 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 // when root is asking (who CAN reach all of them and should get the normal
 // refusal + inventory).
 func selectTargetOrSoleAccessible(providers []Provider, t Target, requireRunning bool) (p Provider, narrowed bool, err error) {
-	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
+	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" && t.PID == 0
 	// Use the platform privilege seam (isPrivileged), not os.Geteuid() direct:
 	// Geteuid is meaningless on Windows (returns -1) where an elevated Admin
 	// should still get the normal refusal + inventory, not the unprivileged
