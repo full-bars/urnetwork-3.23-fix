@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"slices"
+	"strconv"
 
 	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
@@ -13,6 +14,7 @@ import (
 const (
 	topMenuTheme = iota
 	topMenuGraph
+	topMenuAfterglow
 	topMenuRows
 )
 
@@ -29,6 +31,7 @@ func (m *topModel) applySettings(s topSettings) {
 	if g, ok := tui.GraphSymbolsByName(s.Graph); ok {
 		m.graph = g
 	}
+	m.proxyAfterglowSeconds = s.ProxyAfterglowSeconds
 	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
 }
 
@@ -37,7 +40,7 @@ func (m *topModel) settings() topSettings {
 	if m.themeLocked {
 		theme = m.savedTheme
 	}
-	return topSettings{Theme: theme, Graph: m.graph.String(), LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	return topSettings{Theme: theme, Graph: m.graph.String(), ProxyAfterglowSeconds: m.proxyAfterglowSeconds, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether
@@ -110,6 +113,12 @@ func (m *topModel) menuCycle(d int) {
 	case topMenuGraph:
 		n := len(tui.GraphSymbolNames)
 		m.graph = tui.GraphSymbols(((int(m.graph)+d)%n + n) % n)
+	case topMenuAfterglow:
+		seconds := m.proxyAfterglowSeconds
+		if seconds == 0 {
+			seconds = defaultProxyAfterglowSeconds
+		}
+		m.proxyAfterglowSeconds = (seconds-1+d+60)%60 + 1
 	}
 	if err := saveTopSettings(m.settingsPath, m.settings()); err != nil {
 		m.menuNote = "could not save: " + err.Error()
@@ -120,9 +129,14 @@ func (m *topModel) menuCycle(d int) {
 func (m *topModel) drawMenu(b *tui.Buffer) {
 	th := m.theme
 	type row struct{ label, value string }
+	seconds := m.proxyAfterglowSeconds
+	if seconds == 0 {
+		seconds = defaultProxyAfterglowSeconds
+	}
 	rows := [topMenuRows]row{
-		topMenuTheme: {"Theme", m.theme.Name},
-		topMenuGraph: {"Graph style", m.graph.String()},
+		topMenuTheme:     {"Theme", m.theme.Name},
+		topMenuGraph:     {"Graph style", m.graph.String()},
+		topMenuAfterglow: {"Proxy afterglow", strconv.Itoa(seconds) + " s"},
 	}
 	const w = 46
 	h := topMenuRows + 6

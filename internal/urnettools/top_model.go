@@ -238,8 +238,10 @@ type topModel struct {
 
 	// proxyCells is the decoded proxy_cells grid payload and when it was
 	// fetched. The Proxies panel draws it as a heatmap when tall enough.
-	proxyCells   []proxyCell
-	proxyCellsAt time.Time
+	proxyCells            []proxyCell
+	proxyCellsAt          time.Time
+	proxyGlow             map[int]proxyGlowSample
+	proxyAfterglowSeconds int
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -764,6 +766,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.live.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
+	m.proxyGlow = nil
 	m.proxyDetail = nil
 	m.extender = ExtenderReading{}
 	m.carriers.reset()
