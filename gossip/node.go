@@ -301,7 +301,7 @@ func DefaultNodeResourceLimits(connManagerHighWater int) *NodeResourceLimits {
 // (`remoteMultiaddrOrDefault`), so a per-address bound would be a bound on the
 // whole mesh. An extender's admission limits (A12) already bound connections
 // per source subnet before a stream reaches the node.
-func newNodeResourceManager(limits *NodeResourceLimits) (network.ResourceManager, error) {
+func newNodeResourceManager(limits *NodeResourceLimits, events ...*EventRing) (network.ResourceManager, error) {
 	limitConfig := rcmgr.PartialLimitConfig{
 		System: rcmgr.ResourceLimits{
 			Conns:           rcmgr.LimitVal(limits.ConnCount),
@@ -323,13 +323,15 @@ func newNodeResourceManager(limits *NodeResourceLimits) (network.ResourceManager
 			Memory:          rcmgr.LimitVal64(limits.PeerMemoryByteCount),
 		},
 	}.Build(rcmgr.InfiniteLimits)
-	return rcmgr.NewResourceManager(
-		rcmgr.NewFixedLimiter(limitConfig),
+	options := []rcmgr.Option{
 		rcmgr.WithLimitPerSubnet([]rcmgr.ConnLimitPerSubnet{}, []rcmgr.ConnLimitPerSubnet{}),
 		rcmgr.WithConnRateLimiters(&rate.Limiter{}),
-		// the limits are fixed, and the node exports no libp2p metrics
 		rcmgr.WithMetricsDisabled(),
-	)
+	}
+	if len(events) > 0 && events[0] != nil {
+		options = append(options, rcmgr.WithTraceReporter(nodeResourceEvents{events[0]}))
+	}
+	return rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limitConfig), options...)
 }
 
 // The muxer of D1 with this node's stream bounds. The libp2p default lifts
@@ -527,7 +529,7 @@ func NewNode(ctx context.Context, settings *NodeSettings) (*Node, error) {
 		}
 	}()
 
-	if resourceManager, err = newNodeResourceManager(settings.ResourceLimits); err != nil {
+	if resourceManager, err = newNodeResourceManager(settings.ResourceLimits, settings.Events); err != nil {
 		return nil, err
 	}
 	if self.host, err = self.newHost(privateKey, resourceManager); err != nil {
