@@ -145,10 +145,6 @@ UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-r
 
 Providers that predate this show `not reported` in `top` when UDP 53 is not bound.
 
-Use `on` to enable a carrier again. The provider saves each choice. Restart the extender role to apply a change. An `off` carrier is not bound or listed after the role restarts. TCP 443 remains required.
-
-UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
-
 ## Prepare the host with `urnet-tools extender setup`
 
 ```sh
