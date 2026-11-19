@@ -128,7 +128,7 @@ urnet-tools set extender-udp4053 off
 urnet-tools set extender-udp53 off
 ```
 
-Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
+Use `on` to enable a carrier again. The provider saves each choice. Restart the extender role to apply a change. An `off` carrier is not bound or listed after the role restarts. TCP 443 remains required.
 
 UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
