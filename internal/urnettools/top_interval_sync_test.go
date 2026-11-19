@@ -20,12 +20,14 @@ func TestTopTenMinuteHistoryAdvancesWithTrafficPolls(t *testing.T) {
 				m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i*i) * 1000, TotalBytes: uint64(i*i) * 2000}, nil)
 			}
 			before := append([]float64(nil), m.series().billable...)
-			clock.Advance(interval)
-			gen, _, ok := m.wantTraffic(clock.Now())
-			if !ok {
-				t.Fatal("traffic poll was not requested")
+			for elapsed, i := time.Duration(0), uint64(1); elapsed < 20*time.Second; elapsed, i = elapsed+interval, i+1 {
+				clock.Advance(interval)
+				gen, _, ok := m.wantTraffic(clock.Now())
+				if !ok {
+					t.Fatal("traffic poll was not requested")
+				}
+				m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: 4000 + i*1000, TotalBytes: 8000 + i*2000}, nil)
 			}
-			m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: 16000, TotalBytes: 32000}, nil)
 			if reflect.DeepEqual(before, m.series().billable) {
 				t.Fatal("ten minute graph history did not advance with the traffic poll")
 			}
