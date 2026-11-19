@@ -773,15 +773,14 @@ func TestTopInternalsNeverOverflowsAnySize(t *testing.T) {
 	}
 }
 
-// At a 100ms poll the goroutine trend still takes one point a second, so it keeps
-// its two minutes; a trend of 100ms points would cover twelve seconds.
-func TestTopInternalsTrendIsOnePointPerSecondAtAnyPollRate(t *testing.T) {
+// At a 100ms poll the goroutine trend keeps each accepted reading.
+func TestTopInternalsTrendFollowsFastPollRate(t *testing.T) {
 	m, _ := liveModel(t, 100*time.Millisecond)
 	for i := 0; i < 100; i++ { // ten seconds of 100ms readings
 		m.applyInternals(m.gen, &NodeInternals{AtUnixNano: int64(i) * int64(100*time.Millisecond), Goroutines: uint64(1000 + i)}, nil)
 	}
-	if n := len(m.rt.gor); n != 10 {
-		t.Fatalf("ten seconds of readings gave %d trend points, want 10", n)
+	if n := len(m.rt.gor); n != 100 {
+		t.Fatalf("ten seconds of readings gave %d trend points, want 100", n)
 	}
 }
 

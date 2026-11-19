@@ -150,12 +150,11 @@ func TestTopSeriesKeepsTheLiveRateAsASeparateTail(t *testing.T) {
 		m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 3000}, nil)
 	}
 	sr = m.series()
-	if sr.live || len(sr.billable) != base+1 || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps)+1 {
-		t.Fatalf("the series now includes the live rate: live=%v %d samples (want %d)", sr.live, len(sr.billable), base+1)
+	if sr.live || len(sr.billable) != base+11 || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps)+11 {
+		t.Fatalf("the series now includes the live rate: live=%v %d samples (want %d)", sr.live, len(sr.billable), base+11)
 	}
-	nowSec := clock.Now().Unix()
-	if sr.anchor != nowSec {
-		t.Fatalf("the live rate moved the anchor to %d, want %d", sr.anchor, nowSec)
+	if sr.anchor != m.trafficHistory.seq {
+		t.Fatalf("the live rate moved the anchor to %d, want %d", sr.anchor, m.trafficHistory.seq)
 	}
 	last := sr.billable[len(sr.billable)-1]
 	lastTotal := sr.total[len(sr.total)-1]

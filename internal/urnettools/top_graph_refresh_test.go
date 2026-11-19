@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"math"
 	"testing"
 	"time"
 )
@@ -82,5 +83,26 @@ func TestTopGraphRefreshScaleSmoothsSingleSpike(t *testing.T) {
 	m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: bytes, TotalBytes: bytes}, nil)
 	if m.zoomScaleB.top != before {
 		t.Fatalf("small spike changed scale from %v to %v", before, m.zoomScaleB.top)
+	}
+}
+
+func TestTopGraphRefreshSlowIntervalKeepsSecondSlots(t *testing.T) {
+	m, clock := liveModel(t, 5*time.Second)
+	for i := 0; i < 3; i++ {
+		clock.Advance(5 * time.Second)
+		m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 2000}, nil)
+	}
+	h := m.trafficHistory
+	n := len(h.billable)
+	if n < 6 {
+		t.Fatalf("only %d slots", n)
+	}
+	for _, v := range h.billable[n-5 : n-1] {
+		if !math.IsNaN(v) {
+			t.Fatalf("missing second has value %v", v)
+		}
+	}
+	if math.IsNaN(h.billable[n-1]) {
+		t.Fatal("latest slot is missing")
 	}
 }

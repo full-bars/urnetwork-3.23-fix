@@ -4,8 +4,6 @@ import (
 	"math"
 	"testing"
 	"time"
-
-	"github.com/urnetwork/connect/internal/tui"
 )
 
 // burst is the true per-second billable rate at provider sample index j: bursty,
@@ -98,19 +96,18 @@ func TestTopGraphHistoryDoesNotChangeAsItScrolls(t *testing.T) {
 		}
 
 		sr := m.series()
-		// The graph gives the newest column to the live tail, so the history
-		// is bucketed into one column fewer.
-		ids, vals := tui.GraphBuckets(sr.billable, cols-1, sr.anchor, topGraphCapacity)
-		// Every bucket but the newest two is complete: it must hold the value it had
-		// the first time it was seen.
-		for i := 0; i < len(ids)-2; i++ {
-			if prev, ok := seen[ids[i]]; ok && math.Abs(prev-vals[i]) > 1e-6 {
+		// Live columns retain their sequence identities as they scroll.
+		first := sr.anchor - int64(len(sr.billable)) + 1
+		start := max(0, len(sr.billable)-cols)
+		for i := start; i < len(sr.billable); i++ {
+			id, value := first+int64(i), sr.billable[i]
+			if prev, ok := seen[id]; ok && math.Abs(prev-value) > 1e-6 {
 				changes++
 				if changes <= 5 {
-					t.Logf("t=%.1f: completed bucket %d changed %.0f -> %.0f", at, ids[i], prev, vals[i])
+					t.Logf("t=%.1f: column %d changed %.0f -> %.0f", at, id, prev, value)
 				}
 			}
-			seen[ids[i]] = vals[i]
+			seen[id] = value
 		}
 	}
 	// The scenario must actually have happened, or a pass means nothing.
