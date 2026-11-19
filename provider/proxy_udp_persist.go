@@ -146,6 +146,14 @@ func (self *proxyUDPCheckStore) persistWriter() {
 
 		dropped, err := udpPersistWriteFile(path, list)
 		self.mu.Lock()
+		// Entries beyond the file limits are forgotten after every attempt, also a
+		// failed one, so a write that keeps failing cannot hold them in memory. A
+		// newer result for the same key stays.
+		for _, hash := range dropped {
+			if saved, ok := snapshot[hash]; ok && self.persisted[hash] == saved {
+				delete(self.persisted, hash)
+			}
+		}
 		if err != nil {
 			self.persistDirty = true
 			if !self.persistFailed {
@@ -154,11 +162,6 @@ func (self *proxyUDPCheckStore) persistWriter() {
 			self.persistFailed = true
 		} else {
 			self.persistFailed = false
-			for _, hash := range dropped {
-				if saved, ok := snapshot[hash]; ok && self.persisted[hash] == saved {
-					delete(self.persisted, hash)
-				}
-			}
 		}
 		if !self.persistDirty {
 			self.persistWriting = false

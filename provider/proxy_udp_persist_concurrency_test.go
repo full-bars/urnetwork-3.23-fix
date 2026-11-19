@@ -118,3 +118,42 @@ func TestUDPPersistConcurrentFlush(t *testing.T) {
 	wg.Wait()
 	store.flushPersist()
 }
+
+// A write that fails still reports which entries are beyond the file limits.
+// They must leave memory after that attempt, so a failure that keeps repeating
+// cannot hold them until their TTL expires.
+func TestUDPPersistDropsOverLimitEntriesAfterAFailedWrite(t *testing.T) {
+	oldWrite, oldDelay := udpPersistWriteFile, udpPersistDelay
+	t.Cleanup(func() { udpPersistWriteFile, udpPersistDelay = oldWrite, oldDelay })
+	udpPersistDelay = 0
+	entered, release := make(chan struct{}), make(chan struct{})
+	var calls atomic.Int32
+	var dropped []string
+	udpPersistWriteFile = func(_ string, list []udpPersistEntry) ([]string, error) {
+		if calls.Add(1) == 1 {
+			dropped = []string{list[0].Key}
+			return dropped, errors.New("disk full")
+		}
+		close(entered)
+		<-release
+		return nil, nil
+	}
+	now := time.Now()
+	store := newProxyUDPCheckStore(nil)
+	store.enablePersistence(filepath.Join(t.TempDir(), "state"), now)
+	store.mu.Lock()
+	for i := 0; i < 3; i++ {
+		store.persistLocked(fmt.Sprintf("key-%d", i), &proxyUDPCheckEntry{at: now, result: proxyUDPResult{Status: proxyUDPOK}}, now)
+	}
+	store.mu.Unlock()
+	waitSignal(t, entered, "retry write")
+	store.mu.Lock()
+	_, stillThere := store.persisted[dropped[0]]
+	size := len(store.persisted)
+	store.mu.Unlock()
+	close(release)
+	store.flushPersist()
+	if stillThere || size != 2 {
+		t.Fatalf("the dropped entry stayed after a failed write: present=%v size=%d", stillThere, size)
+	}
+}
