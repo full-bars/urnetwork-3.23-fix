@@ -17,7 +17,7 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// The latency probe (DESIGNNOTES4.md, GEOMAP §2).
+// The latency probe (upstream connect DESIGNNOTES4.md, GEOMAP §2).
 //
 // A probe is an ordinary extender request with the probe service: it rides
 // the same outer tls and the same `POST /` as a forward, so an observer sees
@@ -212,7 +212,7 @@ type ExtenderLatencyProbe struct {
 }
 
 // ProbeExtenderLatency measures one round trip to one extender carrier and,
-// with an attestor, attests it and reads the target's verdict (DESIGNNOTES4.md
+// with an attestor, attests it and reads the target's verdict (upstream connect DESIGNNOTES4.md
 // §3, GEOMAP §2.3).
 //
 // extenderConfig names the carrier exactly as a feed dial does; its PublicKey,

@@ -1836,11 +1836,8 @@ func (self *peerEncryptionSession) receivePeerIdentityProofForEpoch(payload []by
 // wrapped app-data frames in the immediately-following reads (which the unwrap
 // path used to wait on `ReadyNotify` for) find the cipher already set.
 //
-// Gated on `IsAwaitingClientFinished` so it's a no-op outside the narrow
-// TLS-server window where it pays off (and where the just-arrived EC frame is,
-// by construction, the expected client second flight). Once the handshake
-// completes, `IsAwaitingClientFinished` returns false and subsequent calls do
-// nothing.
+// Delivery requires a matching server epoch with a sent server flight and an
+// unfinished handshake. Other sessions and completed handshakes are skipped.
 //
 // Called from the single-threaded receive loop, so it must not block:
 // `transport.Deliver` just appends to the inbox under a quick lock and notifies
@@ -2085,44 +2082,6 @@ func (self *peerEncryptionSession) markEstablishedWithLock(e *tlsHandshakeEpoch)
 	}
 	self.priorEstablishedEpoch = self.establishedEpoch
 	self.establishedEpoch = e
-}
-
-// IsAwaitingClientFinished reports whether this session is in the narrow
-// TLS-server-role window after sending its own Finished and before receiving
-// the peer's — the only state in which it's meaningful for the unwrap path to
-// briefly block the receive loop waiting for the cipher.
-//
-// Returns false:
-//   - in TLS-client role (the local cipher is set first; a wrapped frame
-//     arriving in that direction is the peer racing ahead with its own cipher,
-//     not anything we can resolve by waiting locally — drop and let the sender
-//     resend);
-//   - before this side has produced its server flight (no ClientHello processed
-//     yet, so blocking can't resolve in any reasonable window; also the natural
-//     state of a freshly-created session with no handshake input — keeping wait
-//     off here closes the DoS surface where an attacker creates a session
-//     reference and then stalls);
-//   - once the handshake has completed (success: cipher already non-nil;
-//     failure: cipher will never be set and waiting is pointless).
-//
-// Keeping this predicate tight bounds how long the single-threaded `Client.run`
-// receive loop can be parked by any one wrapped frame.
-func (self *peerEncryptionSession) IsAwaitingClientFinished() bool {
-	if self.role != sequenceTlsRoleServer {
-		return false
-	}
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-	e := self.epoch
-	if e == nil {
-		return false
-	}
-	select {
-	case <-e.handshakeDone:
-		return false
-	default:
-	}
-	return e.serverFlightSent
 }
 
 func (self *peerEncryptionSession) closeTls() {

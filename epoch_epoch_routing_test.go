@@ -126,7 +126,7 @@ func TestEpochRoutingLegacyControlSkipsRouting(t *testing.T) {
 }
 
 // A foreign identity proof cannot select a generation or restart the session.
-func TestConvergeToPeerEpochOnNewerIdentityProof(t *testing.T) {
+func TestIgnoreNewerForeignIdentityProof(t *testing.T) {
 	older := Id{15: 1}
 	newer := Id{15: 2}
 

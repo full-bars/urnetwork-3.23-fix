@@ -18,7 +18,7 @@ import (
 // Address-family policy for this process's CONTROL-PLANE dials: the api
 // https client, the platform control websocket, and the h3/quic transport's
 // name path. The tunnelled user data plane is not affected: it carries both
-// families and picks an exit by the packet's own version (IPV6.md B3). A
+// families and picks an exit by the packet's own version (upstream connect IPV6.md B3). A
 // family-PINNED platform transport (transport_family.go) obeys a Force by
 // idling and bypasses a demotion by construction, so the policy below only
 // ever steers the family-agnostic dials.

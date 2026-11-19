@@ -8,7 +8,7 @@ import (
 )
 
 // ip_ipv6_ext_test.go — the extension-header walker and every parser and
-// peek that shares it (IPV6.md C3): a flow whose packets carry hop-by-hop,
+// peek that shares it (upstream connect IPV6.md C3): a flow whose packets carry hop-by-hop,
 // routing, destination-options, authentication or atomic fragment headers must
 // parse, classify, shard and sniff exactly like its plain packets, and a
 // non-atomic fragment must be recognized as one everywhere.

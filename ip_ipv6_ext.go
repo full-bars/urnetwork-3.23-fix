@@ -5,7 +5,7 @@ import (
 )
 
 // ip_ipv6_ext.go — the one IPv6 extension-header walker shared by every
-// packet parser and peek in this package (IPV6.md C3). Before it existed each
+// packet parser and peek in this package (upstream connect IPV6.md C3). Before it existed each
 // site read the transport protocol from the base header's Next Header byte,
 // so any packet carrying a Hop-by-Hop, Routing, Destination Options or
 // Fragment header decoded as an unsupported protocol and was silently dropped,

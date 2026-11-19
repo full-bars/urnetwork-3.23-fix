@@ -126,7 +126,7 @@ func (self *ExtenderDirectory) tierActiveCountWithLock() int {
 	return count
 }
 
-// The continent tier of one record under the current hint (DESIGNNOTES4.md
+// The continent tier of one record under the current hint (upstream connect DESIGNNOTES4.md
 // §4): 0 on the hinted continent, 1 on another, 2 unknown -- no record, or one
 // that predates the continent field. With no hint every record is tier 0,
 // which leaves every order what it was.

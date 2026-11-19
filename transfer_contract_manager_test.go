@@ -347,7 +347,7 @@ func TestCreateContract_OobFailureRecordsBackendFailure(t *testing.T) {
 	if got := backendFails(); got != 1 {
 		t.Fatalf("consecutive failures = %d after one failed CreateContract, want 1", got)
 	}
-	if lastBackendFailNano.Load() == 0 {
+	if loadBackendFailureState().stamp == 0 {
 		t.Fatal("backend failure timestamp not set after a failed CreateContract")
 	}
 }
@@ -381,7 +381,7 @@ func TestCreateContract_OobSuccessClearsBackendFailure(t *testing.T) {
 	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after a successful CreateContract, want 0", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
+	if loadBackendFailureState().stamp != 0 {
 		t.Fatal("backend failure timestamp not cleared after a successful CreateContract")
 	}
 }
@@ -411,7 +411,7 @@ func TestCreateContract_ClientDoneSkipsFailureRecording(t *testing.T) {
 	if got := backendFails(); got != 0 {
 		t.Fatalf("consecutive failures = %d after CreateContract on a closed client, want 0 (client.Done() carve-out should skip recording)", got)
 	}
-	if lastBackendFailNano.Load() != 0 {
+	if loadBackendFailureState().stamp != 0 {
 		t.Fatal("backend failure timestamp set after CreateContract on a closed client; the client.Done() carve-out should skip recording")
 	}
 }
