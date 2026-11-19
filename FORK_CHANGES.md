@@ -4282,7 +4282,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 ---
 
-## 226. Proxy UDP Relay Coverage and Sweeps
+## 227. Proxy UDP Relay Coverage and Sweeps
 
 **Purpose**: Check proxy UDP relay coverage and expose the results to operators.
 
