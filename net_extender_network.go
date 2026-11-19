@@ -1159,6 +1159,9 @@ func (self *ExtenderNetworkClient) sampleCandidate(
 		if !ok {
 			continue
 		}
+		if !extenderConnectModeDialable(connectSettings, connectMode) {
+			continue
+		}
 		extenderConfig := extenderFeedConfig(candidate, connectMode, spoofDomains)
 		if extenderConfig == nil {
 			continue
@@ -1830,12 +1833,12 @@ func (self *ExtenderNetworkClient) probeCandidate(
 		defer cancel()
 		return self.settings.Probe(ctx, candidate, attestor)
 	}
+	connectSettings := DefaultConnectSettings()
+	if self.clientStrategy != nil {
+		connectSettings = &self.clientStrategy.settings.ConnectSettings
+	}
 	probeLatency := self.settings.ProbeLatency
 	if probeLatency == nil {
-		connectSettings := DefaultConnectSettings()
-		if self.clientStrategy != nil {
-			connectSettings = &self.clientStrategy.settings.ConnectSettings
-		}
 		probeLatency = func(
 			ctx context.Context,
 			extenderConfig *ExtenderConfig,
@@ -1846,6 +1849,7 @@ func (self *ExtenderNetworkClient) probeCandidate(
 	}
 	candidateProbe, err := probeExtenderCandidate(
 		self.ctx,
+		connectSettings,
 		self.directory,
 		candidate,
 		self.settings.ProbeCountPerExtender,
@@ -1909,6 +1913,7 @@ func (self *extenderCandidateProbe) outcome() (ExtenderPingOutcome, uint32) {
 // two can never disagree about what a ping of one extender is.
 func probeExtenderCandidate(
 	ctx context.Context,
+	connectSettings *ConnectSettings,
 	directory *ExtenderDirectory,
 	candidate *ExtenderCandidate,
 	count int,
@@ -1921,6 +1926,9 @@ func probeExtenderCandidate(
 	for _, carrier := range orderedExtenderCarriers(candidate.Carriers) {
 		connectMode, ok := ExtenderConnectModeForCarrier(carrier)
 		if !ok {
+			continue
+		}
+		if !extenderConnectModeDialable(connectSettings, connectMode) {
 			continue
 		}
 		extenderConfig := extenderFeedConfig(candidate, connectMode, spoofDomains)
