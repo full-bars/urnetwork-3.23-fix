@@ -487,6 +487,7 @@ func cmdStatus(args []string) error {
 	plainMode := false
 	briefMode := false
 	detailMode := false
+	summaryMode := false
 	liveMode := false
 	interval := 2 * time.Second
 	var targetArgs []string
@@ -503,6 +504,8 @@ func cmdStatus(args []string) error {
 			briefMode = true
 		case a == "--detail" || a == "--full":
 			detailMode = true
+		case a == "--summary":
+			summaryMode = true
 		case a == "--live" || a == "-live" || a == "-l":
 			liveMode = true
 		case a == "--interval" || a == "-interval":
@@ -578,10 +581,10 @@ func cmdStatus(args []string) error {
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
-	printSigpipeRestartWarning(p)
-	if detailMode {
-		// Classic deep view: the platform status, the live block and the
-		// extender block. Same as the pre-redesign output.
+	if detailMode || (!liveMode && !summaryMode) {
+		// The default view: the platform status (systemctl on Linux), then the
+		// update and health verdict, the live metrics and the extender block.
+		printSigpipeRestartWarning(p)
 		if plainMode {
 			if err := renderStatusTable(p); err != nil {
 				return err
@@ -589,6 +592,7 @@ func cmdStatus(args []string) error {
 		} else if err := renderStatusBase(p); err != nil {
 			return err
 		}
+		printStatusVerdict(p, plainMode)
 		printLiveBlock(p, plainMode)
 		printExtenderBlock(p)
 		return nil
@@ -1047,4 +1051,24 @@ func (e briefExitError) ExitCode() int { return int(e) }
 type StatusBriefExit interface {
 	error
 	ExitCode() int
+}
+
+// printStatusVerdict prints the update line and a one-line verdict between the
+// platform status and the live block. The verdict word follows the exit code.
+func printStatusVerdict(p Provider, plain bool) {
+	d := collectStatusData(p)
+	opts := statusLiveOptsFn()
+	color := opts.Color && !plain
+	main, hint := statusUpdateParts(d.Provider.Version, d.Update)
+	fmt.Println()
+	fmt.Println(main)
+	if hint != "" {
+		fmt.Printf("  %s\n", hint)
+	}
+	line := statusBriefLine(d)
+	if color {
+		code := map[int]string{0: "32", 1: "33", 2: "31", 3: "90"}[d.ExitCode]
+		line = "\x1b[1;" + code + "m" + line + "\x1b[0m"
+	}
+	fmt.Println("health: " + line)
 }

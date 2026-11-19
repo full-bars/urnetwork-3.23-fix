@@ -45,7 +45,7 @@ func TestStatusSummaryUDP(t *testing.T) {
 	rows := makeStatusRows(Provider{Running: true}, s, ExtenderReading{}, nil)
 	for _, row := range rows {
 		if row.Name == "UDP" {
-			if row.Level != statusWarn || !strings.Contains(row.Text, "50% of checked, 30% of online") || !strings.Contains(row.Text, "4 unchecked") {
+			if row.Level != statusWarn || !strings.Contains(row.Text, "50% of checked") || !strings.Contains(row.Text, "4 unchecked") {
 				t.Fatalf("unexpected UDP row: %+v", row)
 			}
 			return

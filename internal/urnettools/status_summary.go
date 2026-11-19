@@ -70,12 +70,13 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 	rows = append(rows, proxy)
 	if s != nil && s.Proxies.UDP != nil {
 		u := s.Proxies.UDP
-		row := udprow(u)
 		level := statusOK
-		if u.NoRelay > 0 || u.Mismatch > 0 || u.Unknown > 0 || u.Unchecked > 0 {
+		// A sweep still running (unchecked) or a proxy without UDP (no relay) is
+		// normal and never grades the node down. Only a mismatch is a warning.
+		if u.Mismatch > 0 {
 			level = statusWarn
 		}
-		rows = append(rows, statusRow{"UDP", level, strings.Join(row.segs, row.sep)})
+		rows = append(rows, statusRow{"UDP", level, statusUDPText(u)})
 	}
 	extender := statusRow{"Extender", statusUnknown, "unavailable"}
 	if e.Known {
@@ -112,6 +113,26 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 		resources.Text = fmt.Sprintf("heap %s, %d goroutines, pressure %.2f", formatBytes(float64(s.Resources.HeapInuseBytes)), s.Resources.Goroutines, s.Pressure)
 	}
 	return append(rows, resources)
+}
+
+// statusUDPText is the UDP row of the summary. It stays inside 80 columns and
+// leaves out counts that are zero, so the percentage is never clipped away.
+func statusUDPText(u *SnapshotProxyUDP) string {
+	checked := u.OK + u.NoRelay + u.Mismatch + u.Unknown
+	parts := []string{fmt.Sprintf("%d ok", u.OK)}
+	for _, c := range []struct {
+		n    int
+		name string
+	}{{u.NoRelay, "no relay"}, {u.Mismatch, "mismatch"}, {u.Unknown, "unknown"}, {u.Unchecked, "unchecked"}} {
+		if c.n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.name))
+		}
+	}
+	text := strings.Join(parts, ", ")
+	if checked > 0 {
+		text += fmt.Sprintf(" (%d%% of checked)", u.OK*100/checked)
+	}
+	return text
 }
 
 // formatStatusSummary formats the one-screen summary into a string buffer:

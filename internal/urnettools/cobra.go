@@ -259,17 +259,18 @@ func newProvidersCmd() *cobra.Command {
 }
 
 func newStatusCmd() *cobra.Command {
-	return withHelpFlags(newCobraCmd("status", "health summary of a provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("status", "health and live metrics of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
 	}),
-		"Show a one-screen health summary of a provider: version, update check,\nproxies, UDP coverage, extender, service state and resources. With several\nproviders and no target, it prints one row per provider.",
+		"Show a provider: the service status, an update and health line, the live\nmetrics and the extender block. With several providers and no target, it prints\none row per provider. Use --summary for a one-screen overview.",
 		"  urnet-tools status\n  urnet-tools status --live\n  urnet-tools status --brief && echo healthy\n  urnet-tools status --network mynetwork --json-summary",
 		helpFlag{name: "brief", usage: "one line: ok, warn, bad or unreachable (exit 0 to 3)"},
 		helpFlag{name: "live", short: "l", usage: "refresh until Ctrl-C"},
 		helpFlag{name: "interval", value: true, usage: "refresh every `duration`, for example 5s (default 2s)"},
-		helpFlag{name: "detail", usage: "classic full view (service status, live, extender)"},
+		helpFlag{name: "summary", usage: "one-screen overview rows instead of the full view"},
+		helpFlag{name: "detail", usage: "same as the default full view"},
 		helpFlag{name: "plain", usage: "plain text, no colors or box characters"},
 		helpFlag{name: "json", usage: "print the raw live snapshot as JSON"},
 		helpFlag{name: "json-summary", usage: "print summary as JSON (schema urnet-tools-status/1)"},
