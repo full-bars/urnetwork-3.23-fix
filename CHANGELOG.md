@@ -30,6 +30,8 @@ Everything merged after `v3.23.0-fix.35.11`.
 ### Fixed
 
 - Backend failure counts and timestamps are published together as one snapshot.
+- A pinned IP family with no route sleeps instead of redialing. A dial that the routing refuses on every attempt (no route to host or network) holds that family for 5 minutes, doubling per refusal up to 1 hour. A network change or a connection ends the hold. Before, an IPv6 pin on a host with only ULA addresses retried every few minutes. [redeploy]
+- The `[t]auth error` and `[contract]oob err` lines name the failed mode, the pinned family and the causes an exhausted request retained, such as `no route to host`. Before, they only said `http request attempts exhausted`.
 - Proxy add accepts passwords containing an `@` sign.
 - The CFAA sync commits generated tables directly to the main branch after its format checks.
 - Status update checks do not follow symbolic links in the cache. Status honors `--pid` and reports an unavailable or stopped extender. A healthy `--brief` produces no output.
