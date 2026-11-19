@@ -314,13 +314,12 @@ func parseProxyListLineByLine(lines []string) []string {
 	return result
 }
 
-// redactProxyLine strips credential material from a rejected line for safe
-// operator diagnostics. Rejected input is exactly the class most likely to
-// contain a live password (malformed credential syntax); echoing it verbatim
-// leaks it into scrollback/logs. Best-effort: strip a {user}:{pass}@ prefix
-// (or a {user}:{pass} tail) and show only the host:port-ish residue.
+// redactProxyLine returns only a validated address from a rejected line.
 func redactProxyLine(line string) string {
 	s := strings.TrimSpace(line)
+	if plainHostPort(s) {
+		return s
+	}
 	// user:pass@host:port → keep the part after the last '@'.
 	// A bare trailing '@' means the line is `user:pass@` with no host —
 	// there is no suffix to keep, so return a redaction placeholder
@@ -341,7 +340,7 @@ func redactProxyLine(line string) string {
 	if parts := strings.SplitN(s, ":", 3); len(parts) >= 2 && validColonForm(s) {
 		s = parts[0] + ":" + parts[1]
 	}
-	return s
+	return redactedProxyAddress(s)
 }
 
 // validColonForm reports whether s looks like host:port[:cred] for redaction

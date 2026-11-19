@@ -10,6 +10,21 @@ const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
 
+func TestProxySecretRejectedPaste(t *testing.T) {
+	for _, line := range []string{
+		"socks5://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken,
+		"example.com:1080?token=" + secretCanaryToken,
+		secretCanaryUser + " " + secretCanaryPassword + " " + secretCanaryToken,
+	} {
+		got := redactProxyLine(line)
+		for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+			if strings.Contains(got, secret) {
+				t.Error("rejected paste output contains a canary")
+			}
+		}
+	}
+}
+
 func TestProxySecretRejectedURLLog(t *testing.T) {
 	out := captureTlog(t, func() {
 		parseProxyURLLine("http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken)
