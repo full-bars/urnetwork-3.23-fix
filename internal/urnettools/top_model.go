@@ -391,6 +391,11 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 		last := int64(0)
 		if n := len(m.live.samples); n > 0 {
 			last = m.live.samples[n-1].at
+			// A long gap has no samples for its missing intervals. Start a new
+			// rate window so its average does not fill the gap with traffic.
+			if time.Duration(lt.AtUnixNano-last) > 2*m.interval {
+				m.live.reset()
+			}
 		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
 		// One zoom column per reading the window accepted; a stalled clock adds

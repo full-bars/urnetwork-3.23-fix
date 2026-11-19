@@ -1,6 +1,25 @@
 package urnettools
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestTopTrafficRateRestartsAfterLongGap(t *testing.T) {
+	m, clock := liveModel(t, time.Second)
+	for i, delay := range []time.Duration{time.Second, time.Second, time.Minute} {
+		clock.Advance(delay)
+		gen, _, ok := m.wantTraffic(clock.Now())
+		if !ok {
+			t.Fatal("traffic poll was not requested")
+		}
+		m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 2000}, nil)
+		_, _, available := m.live.rates()
+		if available != (i == 1) {
+			t.Fatalf("reading %d: rate available = %v", i, available)
+		}
+	}
+}
 
 func TestTopIntervalChangePreservesZoomHistory(t *testing.T) {
 	for _, interval := range topIntervalSteps {
