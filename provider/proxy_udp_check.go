@@ -301,6 +301,27 @@ func tcpExitFrom(ctx context.Context, settings *connect.ProxySettings, server ud
 
 type cachedProxyTCPExitKey struct{}
 
+// cachedProxyTCPExitReuseKey carries how long the cached TCP exit may still be
+// reused. The probe can wait for a slot after the store decided to reuse the
+// exit, so the probe checks the budget again when it is about to rely on it.
+type cachedProxyTCPExitReuseKey struct{}
+
+type tcpExitReuse struct {
+	start  time.Time
+	budget time.Duration
+}
+
+// reusableCachedTCPExit returns the cached TCP exit the store offered, or an
+// empty string when it is missing or its reuse budget ran out while the probe
+// waited.
+func reusableCachedTCPExit(ctx context.Context) string {
+	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
+	if reuse, ok := ctx.Value(cachedProxyTCPExitReuseKey{}).(tcpExitReuse); ok && time.Since(reuse.start) >= reuse.budget {
+		return ""
+	}
+	return tcpExit
+}
+
 // checkProxyUDP runs the whole check for one identity.
 func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
 	ctx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
@@ -314,7 +335,7 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 	if err != nil {
 		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
 	}
-	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
+	tcpExit := reusableCachedTCPExit(ctx)
 	observed := false
 	if tcpExit == "" || tcpExit != udpExit {
 		tcpExit, err = tcpExitViaProxy(ctx, settings)
@@ -478,8 +499,10 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		// the probe may reuse the remembered TCP exit only while it is fresh
 		reusableTcpExit := ""
+		var reuseBudget time.Duration
 		if tcpExit != "" && !tcpExitAt.IsZero() && now.Sub(tcpExitAt) < proxyTCPExitMaxAge {
 			reusableTcpExit = tcpExit
+			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
 		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt}
@@ -490,6 +513,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		select {
 		case self.slots <- struct{}{}:
 			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, reusableTcpExit)
+			probeCtx = context.WithValue(probeCtx, cachedProxyTCPExitReuseKey{}, tcpExitReuse{start: time.Now(), budget: reuseBudget})
 			result = self.probe(probeCtx, settings)
 			<-self.slots
 		case <-ctx.Done():

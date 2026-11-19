@@ -103,7 +103,11 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 	hash := udpPersistKey(key)
 	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit}
 	self.persistDirty = true
-	self.persistNow = now
+	// Checks for different identities finish in any order. The writer drops
+	// entries dated after persistNow, so it must never move backwards.
+	if now.After(self.persistNow) {
+		self.persistNow = now
+	}
 	if self.persistKick == nil {
 		self.persistKick = make(chan struct{}, 1)
 	}
@@ -215,17 +219,37 @@ func writeUDPPersistFile(path string, list []udpPersistEntry) (dropped []string,
 		}
 		list = list[:udpStateMaxEntries]
 	}
-	b, err := json.Marshal(udpPersistFile{Version: 1, Entries: list})
+	// The encoded size of the file is the size of the empty file plus each
+	// entry and one comma between entries. Sum it once and cut the list at the
+	// last entry that fits, instead of encoding the whole list again per entry.
+	base, err := json.Marshal(udpPersistFile{Version: 1, Entries: []udpPersistEntry{}})
 	if err != nil {
 		return dropped, err
 	}
-	for len(b) > udpStateMaxBytes && len(list) > 0 {
-		dropped = append(dropped, list[len(list)-1].Key)
-		list = list[:len(list)-1]
-		b, err = json.Marshal(udpPersistFile{Version: 1, Entries: list})
+	size := len(base)
+	fit := 0
+	for i := range list {
+		e, err := json.Marshal(list[i])
 		if err != nil {
 			return dropped, err
 		}
+		next := size + len(e)
+		if i > 0 {
+			next++
+		}
+		if next > udpStateMaxBytes {
+			break
+		}
+		size = next
+		fit = i + 1
+	}
+	for _, d := range list[fit:] {
+		dropped = append(dropped, d.Key)
+	}
+	list = list[:fit]
+	b, err := json.Marshal(udpPersistFile{Version: 1, Entries: list})
+	if err != nil {
+		return dropped, err
 	}
 	if len(b) > udpStateMaxBytes {
 		return dropped, io.ErrShortBuffer

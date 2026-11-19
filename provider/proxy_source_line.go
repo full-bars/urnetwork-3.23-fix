@@ -4,6 +4,7 @@ import (
 	"crypto/sha256"
 	"fmt"
 	"net"
+	"net/netip"
 	"os"
 	"strconv"
 	"strings"
@@ -32,7 +33,8 @@ func classifyProxySourceLine(line string) (*connect.ProxySettings, string) {
 			return nil, "invalid_address"
 		}
 		host = line[1:end]
-		if ip := net.ParseIP(host); ip == nil || !strings.Contains(host, ":") {
+		// netip accepts a zone such as fe80::1%eth0, which a scoped address needs.
+		if ip, err := netip.ParseAddr(host); err != nil || !ip.Is6() {
 			return nil, "invalid_address"
 		}
 		fields = strings.Split(line[end+2:], ":")
