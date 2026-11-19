@@ -641,8 +641,15 @@ func (self *PlatformTransport) State() PlatformTransportState {
 // family's hold. A gate that just closed kicks the live connection so the
 // runner re-enters admission and parks there.
 func (self *PlatformTransport) updateHold() {
+	// The read of the inputs and the store of the result are one step. Two
+	// callers that interleave could otherwise publish a stale result last and
+	// leave the transport held while its family is connecting. No caller holds
+	// familyHoldLock here: refreshFamilyHold releases it before it calls this.
+	self.familyHoldLock.Lock()
 	held := !self.enabled.Load() || self.familyHold.Load() != int32(PlatformTransportStateConnecting)
-	if self.held.Set(held) && held {
+	changed := self.held.Set(held)
+	self.familyHoldLock.Unlock()
+	if changed && held {
 		self.kickMonitor.NotifyAll()
 	}
 }
