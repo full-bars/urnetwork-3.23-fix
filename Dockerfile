@@ -29,6 +29,9 @@ RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
     go build -trimpath \
     -ldflags "-s -w -X main.Version=${VERSION} -X main.AuthVersion=${APP_VERSION}" \
     -o provider_bin ./provider/
+RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
+    go build -trimpath -ldflags "-s -w -X main.Version=${VERSION}" \
+    -o urnet-tools-go ./cmd/urnet-tools/
 
 # --- Final Stage ---
 FROM alpine:latest
@@ -52,6 +55,7 @@ COPY docker/scripts/*.sh /app/
 
 # Copy our custom compiled binary
 COPY --from=builder /app/provider_bin /app/urnetwork_${TARGETARCH}_stable
+COPY --from=builder /app/urnet-tools-go /usr/local/bin/urnet-tools-go
 
 # Set permissions
 RUN dos2unix /app/*.sh && chmod +x /app/*.sh
