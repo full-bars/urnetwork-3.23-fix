@@ -522,12 +522,22 @@ func ProxyHealthSnapshot() (up int, dead []string, degraded []string, bandwidth 
 // ProxyHealthSnapshotExcluding omits explicitly held identities from health counts.
 // Their bandwidth remains available while existing sessions drain.
 func ProxyHealthSnapshotExcluding(held map[string]bool) (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth, connecting []string) {
+	up, dead, degraded, bandwidth, connecting, _, _ = ProxyHealthSnapshotWithIdentities(held)
+	return
+}
+
+// ProxyHealthSnapshotWithIdentities captures online identity keys alongside the
+// same health counts. Online means up or degraded, excluding held identities and
+// the direct connection. The bool reports whether any proxied identity exists.
+func ProxyHealthSnapshotWithIdentities(held map[string]bool) (up int, dead []string, degraded []string, bandwidth map[string]*ProxyBandwidth, connecting []string, online []string, proxied bool) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	now := time.Now()
 	bandwidth = make(map[string]*ProxyBandwidth)
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
+		isProxy := h.key != "" && h.key != "direct"
+		proxied = proxied || isProxy
 		if held[h.key] {
 			if h.bw != nil {
 				bandwidth[formatProxyEntry(idx, h.address)] = proxyBandwidthSnapshot(h.bw)
@@ -537,6 +547,9 @@ func ProxyHealthSnapshotExcluding(held map[string]bool) (up int, dead []string, 
 		switch {
 		case h.currentlyUp:
 			up++
+			if isProxy {
+				online = append(online, h.key)
+			}
 		case h.connectingActive(now):
 			// a re-registered instance reuses the struct and inherits its
 			// predecessor's everUp/downSince, so a fresh `connecting` must win
@@ -548,6 +561,9 @@ func ProxyHealthSnapshotExcluding(held map[string]bool) (up int, dead []string, 
 				dead = append(dead, formatProxyEntry(idx, h.address))
 			} else {
 				degraded = append(degraded, formatProxyEntry(idx, h.address))
+				if isProxy {
+					online = append(online, h.key)
+				}
 			}
 		default:
 			dead = append(dead, formatProxyEntry(idx, h.address))
@@ -558,7 +574,7 @@ func ProxyHealthSnapshotExcluding(held map[string]bool) (up int, dead []string, 
 			bandwidth[formatProxyEntry(idx, h.address)] = pb
 		}
 	}
-	return up, dead, degraded, bandwidth, connecting
+	return up, dead, degraded, bandwidth, connecting, online, proxied
 }
 
 // ProxyBandwidthTotals sums the cumulative billable and total (rx plus tx) byte

@@ -4279,3 +4279,22 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
 
 **Status**: Unreleased.
+
+---
+
+## 227. Proxy UDP Relay Coverage and Sweeps
+
+**Purpose**: Check proxy UDP relay coverage and expose the results to operators.
+
+**Files Modified**: `provider/proxy_udp_check.go`, `provider/proxy_udp_egress.go`, `provider/node_snapshot.go`, `provider/metrics_provider.go`, `internal/urnettools/snapshot_render.go` and `internal/urnettools/top_view.go`.
+
+**Files Added**: `provider/proxy_udp_sweep.go`, `provider/proxy_udp_persist.go`, `provider/proxy_source_line.go` and their tests.
+
+**Changes**:
+- Status, `top` and metrics report UDP relay coverage for online proxies. Paid and URL proxy sources have background sweeps.
+- Turning off the proxy sweep or `udp_probe` stops new sweeps at the next tick. A running sweep continues. Client safety checks remain active.
+- The state file is written in the background at most once every two seconds during normal operation. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours.
+- The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`.
+- A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
+
+**Status**: Unreleased.

@@ -292,6 +292,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		// Keys added since this table was written; the coverage check below is
 		// what noticed they were missing.
 		{"proxy-audit", "proxy_audit", "on"},
+		{"udp-probe", "udp_probe", "off"},
 		{"extender-discovery", "extender_discovery", "feed-only"},
 		{"pprof", "pprof", "127.0.0.1:6060"},
 		{"smart-dialer", "smart_dialer", "on"},

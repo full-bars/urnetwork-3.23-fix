@@ -138,6 +138,21 @@ type SnapshotProxies struct {
 	Configured    int    `json:"configured,omitempty"`
 	TrimCap       int    `json:"trim_cap,omitempty"`
 	TrimCapSource string `json:"trim_cap_source,omitempty"`
+	// UDP coverage counts for online proxies (up or degraded).
+	// omitted when the provider has no proxied identities or an old provider never sets it.
+	UDP *SnapshotProxyUDP `json:"udp,omitempty"`
+}
+
+// SnapshotProxyUDP counts online proxies (up or degraded) by non-expired UDP
+// result. Unchecked has no usable result. The five counts sum to online.
+// Checked is ok + no_relay + mismatch + unknown; percentages are ok/checked
+// and ok/online, and are not defined when their denominator is zero.
+type SnapshotProxyUDP struct {
+	OK        int `json:"ok"`
+	NoRelay   int `json:"no_relay"`
+	Mismatch  int `json:"mismatch"`
+	Unknown   int `json:"unknown"`
+	Unchecked int `json:"unchecked"`
 }
 
 type SnapshotRestart struct {
@@ -215,6 +230,8 @@ func printSnapshotJSON(p Provider) error {
 	return err
 }
 
+var statusLiveOptsFn = statusLiveOpts
+
 // statusLiveOpts reads the drawing options for stdout.
 func statusLiveOpts() liveOpts {
 	fd := int(os.Stdout.Fd())
@@ -230,13 +247,18 @@ func statusLiveOpts() liveOpts {
 
 // printLiveBlock appends the live section under the classic status output
 // when the provider answers, and prints nothing at all when it does not.
-func printLiveBlock(p Provider) {
+func printLiveBlock(p Provider, plain bool) {
 	snap, _, err := fetchSnapshotFn(p)
 	if err != nil {
 		return
 	}
+	opts := statusLiveOptsFn()
+	if plain {
+		opts.Color = false
+		opts.ASCII = true
+	}
 	fmt.Println()
-	fmt.Print(renderLiveBlock(snap, statusLiveOpts(), pressureSummaryLine(p.StateDir)))
+	fmt.Print(renderLiveBlock(snap, opts, pressureSummaryLine(p.StateDir)))
 }
 
 // pressureSummaryLine reads the provider's persisted one-sentence pressure
@@ -297,7 +319,7 @@ func sanitizeSummary(s string) string {
 
 // printProviderSummary prints one compact row per provider, fetching the
 // snapshots concurrently so one slow socket does not stall the rest.
-func printProviderSummary(providers []Provider) {
+func printProviderSummary(providers []Provider, plain bool) {
 	rows := make([]providerRow, len(providers))
 	var wg sync.WaitGroup
 	for i, p := range providers {
@@ -311,6 +333,11 @@ func printProviderSummary(providers []Provider) {
 		}(i, p)
 	}
 	wg.Wait()
+	opts := statusLiveOptsFn()
+	if plain {
+		opts.Color = false
+		opts.ASCII = true
+	}
 	fmt.Printf("%d providers found; use a target (--unit / --user / --network / --network-id / --state-dir) for detail:\n\n", len(providers))
-	fmt.Print(renderProviderTable(rows, statusLiveOpts()))
+	fmt.Print(renderProviderTable(rows, opts))
 }

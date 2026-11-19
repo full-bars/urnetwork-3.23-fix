@@ -58,6 +58,57 @@ func statusStateDirLabelFor(goos string) string {
 	return "state-dir:"
 }
 
+func TestStatusUDPRows(t *testing.T) {
+	origOpts := statusLiveOptsFn
+	statusLiveOptsFn = func() liveOpts { return liveOpts{Color: true, ASCII: false} }
+	t.Cleanup(func() { statusLiveOptsFn = origOpts })
+	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
+	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
+	s.Proxies.UDP = &SnapshotProxyUDP{OK: 3, NoRelay: 1, Mismatch: 1, Unknown: 1, Unchecked: 4}
+	raw, err := json.Marshal(s)
+	if err != nil {
+		t.Fatal(err)
+	}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": raw}, true)
+	for _, args := range [][]string{nil, {"--plain"}} {
+		out := captureStdout(t, func() {
+			if err := cmdStatus(args); err != nil {
+				t.Fatal(err)
+			}
+		})
+		for _, want := range []string{"3 ok", "4 unchecked", "50% of checked, 30% of online"} {
+			if !strings.Contains(out, want) {
+				t.Errorf("args %v missing %q: %s", args, want, out)
+			}
+		}
+		if len(args) > 0 {
+			if strings.Contains(out, "\x1b") {
+				t.Error("plain output contains ANSI")
+			}
+			for _, r := range out {
+				if r > 127 {
+					t.Fatalf("plain output contains non-ASCII rune %q", r)
+				}
+			}
+		} else if !strings.Contains(out, "\x1b") {
+			t.Error("default TTY output missing ANSI")
+		}
+	}
+	ps := []Provider{
+		{Unit: "a.service", User: "ua", StateDir: t.TempDir(), Running: true},
+		{Unit: "b.service", User: "ub", StateDir: t.TempDir(), Running: true},
+	}
+	stubStatus(t, ps, map[string]json.RawMessage{"a.service": raw}, true)
+	summary := captureStdout(t, func() {
+		if err := cmdStatus([]string{"--plain"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	if strings.Contains(summary, "\x1b") {
+		t.Fatal("plain summary contains ANSI")
+	}
+}
+
 func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)

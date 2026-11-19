@@ -77,3 +77,31 @@ func TestLifetimeStartMetricsApproximate(t *testing.T) {
 		t.Error(err)
 	}
 }
+
+// TestWriteUDPProxyMetrics verifies the five UDP coverage gauges are emitted
+// in the same style as the neighbour proxy gauges. The counts are passed in
+// directly so the test is deterministic and needs no running provider.
+func TestWriteUDPProxyMetrics(t *testing.T) {
+	cov := &SnapshotProxyUDP{OK: 312, NoRelay: 31, Mismatch: 7, Unknown: 2, Unchecked: 1650}
+	var b strings.Builder
+	writeUDPProxyMetrics(&b, cov)
+	got := b.String()
+
+	want := []string{
+		"# HELP urnet_proxy_udp_proxies Online proxies by cached UDP check result.\n",
+		"# TYPE urnet_proxy_udp_proxies gauge\n",
+		`urnet_proxy_udp_proxies{state="ok"} 312` + "\n",
+		`urnet_proxy_udp_proxies{state="no_relay"} 31` + "\n",
+		`urnet_proxy_udp_proxies{state="mismatch"} 7` + "\n",
+		`urnet_proxy_udp_proxies{state="unknown"} 2` + "\n",
+		`urnet_proxy_udp_proxies{state="unchecked"} 1650` + "\n",
+	}
+	for _, w := range want {
+		if !strings.Contains(got, w) {
+			t.Errorf("UDP metric %q missing from output:\n%s", w, got)
+		}
+	}
+	for _, err := range promtext.Lint(got) {
+		t.Error(err)
+	}
+}

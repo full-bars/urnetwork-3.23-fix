@@ -337,6 +337,7 @@ var liveEffectKeys = map[string]bool{
 	"baseline":                    true,
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
+	"udp_probe":                   true,
 	"pprof":                       true,
 	"oom_cap":                     true,
 	"proxy_url_refresh":           true,
@@ -406,7 +407,7 @@ func validateControlValue(key, value string) error {
 		if _, err := connect.ParseProxyTargetFamily(value); err != nil {
 			return err
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
 		switch valLower {
 		case "on", "off":
 		default:

@@ -222,6 +222,12 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 		fmt.Sprintf("%d dead", s.Proxies.Dead),
 	}})
 
+	// UDP coverage of online proxies (up or degraded). Older providers may
+	// omit it.
+	if s.Proxies.UDP != nil {
+		emit(udprow(s.Proxies.UDP))
+	}
+
 	// Trim: only when a cap is in force, and only when the provider reported
 	// one. The configured count is the pool size before the cap, so the row
 	// says how much capacity the cap is holding back.
@@ -402,4 +408,33 @@ func renderProviderTable(rows []providerRow, o liveOpts) string {
 		line(r)
 	}
 	return b.String()
+}
+
+// udprow renders the UDP coverage row for the live block. Percentages use
+// integer division; both show "n/a" when their denominator is zero.
+func udprow(u *SnapshotProxyUDP) liveRow {
+	checked := u.OK + u.NoRelay + u.Mismatch + u.Unknown
+	online := checked + u.Unchecked
+	segs := []string{
+		fmt.Sprintf("%d ok", u.OK),
+		fmt.Sprintf("%d no relay", u.NoRelay),
+		fmt.Sprintf("%d mismatch", u.Mismatch),
+		fmt.Sprintf("%d unchecked", u.Unchecked),
+	}
+	if u.Unknown > 0 {
+		segs = append(segs, fmt.Sprintf("%d unknown", u.Unknown))
+	}
+	var pct string
+	switch {
+	case checked > 0 && online > 0:
+		pct = fmt.Sprintf("(%d%% of checked, %d%% of online)", u.OK*100/checked, u.OK*100/online)
+	case checked > 0:
+		pct = fmt.Sprintf("(%d%% of checked, n/a of online)", u.OK*100/checked)
+	case online > 0:
+		pct = "(n/a of checked, 0% of online)"
+	default:
+		pct = "(n/a of checked, n/a of online)"
+	}
+	segs = append(segs, pct)
+	return liveRow{label: "udp", sep: ", ", segs: segs}
 }

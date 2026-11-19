@@ -59,7 +59,8 @@ func (m *topModel) sideCols(contentW int) int {
 // height h: where Proxies starts and where Events starts.
 func (m *topModel) leftDividerRows(h int) (dProxies, dEvents int) {
 	wantP, wantE := m.proxiesRows(), m.eventsRows()
-	if wantP > topProxiesCompactRows && m.hasProxyGridData() {
+	compact := m.snap != nil && m.snap.Proxies.Up+m.snap.Proxies.Degraded+m.snap.Proxies.Connecting+m.snap.Proxies.Dead <= topProxiesCompactMax
+	if !compact && m.hasProxyGridData() {
 		if avail := h - wantE - topGraphMinRows; avail >= proxyGridMinH {
 			wantP = min(topProxiesGridRows, avail)
 		}

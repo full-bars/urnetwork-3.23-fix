@@ -172,11 +172,14 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 			return nil, ctxErr
 		}
 		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalAssociation)
-		return nil, fmt.Errorf("proxy udp through %s: relay dial failed: %s", redactedProxyAddress(proxySettings.Address), dialFailureClass(err))
+		return nil, fmt.Errorf("proxy udp through %s: relay dial failed: %s", udpProxyIdentity(proxySettings), dialFailureClass(err))
 	}
 	return &proxiedUdpConn{
 		relayed:     relayed,
 		destination: destination,
+		onReply: func() {
+			checkStore.noteFlowReply(proxySettings.Key(), time.Now())
+		},
 	}, nil
 }
 
@@ -219,6 +222,8 @@ func proxiedUdpDestination(network string, addr string) (*net.UDPAddr, error) {
 type proxiedUdpConn struct {
 	relayed     net.PacketConn
 	destination *net.UDPAddr
+	onReply     func()
+	replyOnce   sync.Once
 }
 
 // Read returns the next datagram from the destination. The loop skips
@@ -235,6 +240,9 @@ func (self *proxiedUdpConn) Read(b []byte) (int, error) {
 			// another destination's datagram on this association, which a
 			// connected udp socket would not deliver either
 			continue
+		}
+		if self.onReply != nil {
+			self.replyOnce.Do(self.onReply)
 		}
 		return n, nil
 	}
@@ -345,7 +353,7 @@ func (self *proxiedUdpRefusalStats) note(proxySettings *connect.ProxySettings, r
 		return count
 	}()
 	if 0 < logCount {
-		tlog("[proxy][udp] proxy[%d] (%s) client udp refused: %s (%d since the last line for this proxy)\n", proxySettings.Index, redactedProxyAddress(proxySettings.Address), reason, logCount)
+		tlog("[proxy][udp] %s client udp refused: %s (%d since the last line for this proxy)\n", udpProxyIdentity(proxySettings), reason, logCount)
 	}
 }
 

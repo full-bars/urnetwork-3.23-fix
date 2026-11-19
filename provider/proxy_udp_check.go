@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -63,6 +64,9 @@ type proxyUDPResult struct {
 	TCPExit string
 	UDPExit string
 	Err     error
+	// TCPExitObserved is true when this check looked the TCP exit up itself
+	// instead of reusing a remembered one.
+	TCPExitObserved bool
 }
 
 type udpCheckTcpExitServer struct {
@@ -86,10 +90,19 @@ const (
 	// how many checks may hold sockets at once
 	udpCheckMaxConcurrent = 8
 	udpCheckOverallLimit  = 15 * time.Second
-	// how long a check is remembered, and how soon an unverifiable one is
-	// repeated
-	proxyUDPResultTTL  = 30 * time.Minute
-	proxyUDPUnknownTTL = 5 * time.Minute
+	proxyUDPOKTTL         = 24 * time.Hour
+	proxyUDPNoRelayTTL    = 72 * time.Hour
+	proxyUDPMismatchTTL   = 24 * time.Hour
+	proxyUDPUnknownTTL    = time.Hour
+	// A remembered TCP exit is reused by later checks for this long. It is
+	// renewed only by a lookup that observed it, never by a UDP success, so a
+	// proxy whose TCP exit changes cannot keep a stale match indefinitely.
+	proxyTCPExitMaxAge = 6 * time.Hour
+	// An active flow keeps the existing lazy-path recheck cadence. A sweep
+	// and coverage use the longer state lifetimes; they do not delay a lazy
+	// check when traffic returns after 30 minutes (5 minutes for unknown).
+	proxyUDPLazyTTL        = 30 * time.Minute
+	proxyUDPLazyUnknownTTL = 5 * time.Minute
 
 	stunMagicCookie      = 0x2112A442
 	stunBindingRequest   = 0x0001
@@ -172,14 +185,15 @@ func parseStunMappedAddress(response []byte, transaction [12]byte) (net.IP, bool
 	return nil, false
 }
 
-// udpExitViaProxy asks a STUN server, through the proxy's UDP relay, which
+// probeProxyUDPRelay performs only the SOCKS5 handshake and UDP ASSOCIATE.
+// It sends no UDP packets and does not contact an external service.
+func probeProxyUDPRelay(ctx context.Context, settings *connect.ProxySettings) (net.PacketConn, error) {
+	return dialSocks5UDP(ctx, settings.Network, settings.Address, settings.Auth)
+}
+
+// udpExitViaProxy asks a STUN server, through the already opened relay, which
 // address it sees the datagram from.
-func udpExitViaProxy(ctx context.Context, settings *connect.ProxySettings) (string, error) {
-	pc, err := dialSocks5UDP(ctx, settings.Network, settings.Address, settings.Auth)
-	if err != nil {
-		return "", err
-	}
-	defer pc.Close()
+func udpExitViaProxy(ctx context.Context, pc net.PacketConn) (string, error) {
 	buffer := make([]byte, 2048)
 	for _, server := range udpCheckStunServers {
 		destination, err := net.ResolveUDPAddr("udp4", server)
@@ -285,27 +299,64 @@ func tcpExitFrom(ctx context.Context, settings *connect.ProxySettings, server ud
 	return ip.String(), nil
 }
 
+type cachedProxyTCPExitKey struct{}
+
+// cachedProxyTCPExitReuseKey carries how long the cached TCP exit may still be
+// reused. The probe can wait for a slot after the store decided to reuse the
+// exit, so the probe checks the budget again when it is about to rely on it.
+type cachedProxyTCPExitReuseKey struct{}
+
+type tcpExitReuse struct {
+	start  time.Time
+	budget time.Duration
+}
+
+// reusableCachedTCPExit returns the cached TCP exit the store offered, or an
+// empty string when it is missing or its reuse budget ran out while the probe
+// waited.
+func reusableCachedTCPExit(ctx context.Context) string {
+	tcpExit, _ := ctx.Value(cachedProxyTCPExitKey{}).(string)
+	if reuse, ok := ctx.Value(cachedProxyTCPExitReuseKey{}).(tcpExitReuse); ok && time.Since(reuse.start) >= reuse.budget {
+		return ""
+	}
+	return tcpExit
+}
+
 // checkProxyUDP runs the whole check for one identity.
 func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
 	ctx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
 	defer cancel()
-	udpExit, err := udpExitViaProxy(ctx, settings)
+	pc, err := probeProxyUDPRelay(ctx, settings)
 	if err != nil {
 		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
 	}
-	tcpExit, err := tcpExitViaProxy(ctx, settings)
+	defer pc.Close()
+	udpExit, err := udpExitViaProxy(ctx, pc)
 	if err != nil {
-		return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
+		return proxyUDPResult{Status: proxyUDPNoRelay, Err: err}
+	}
+	tcpExit := reusableCachedTCPExit(ctx)
+	observed := false
+	if tcpExit == "" || tcpExit != udpExit {
+		tcpExit, err = tcpExitViaProxy(ctx, settings)
+		if err != nil {
+			return proxyUDPResult{Status: proxyUDPUnknown, UDPExit: udpExit, Err: err}
+		}
+		observed = true
 	}
 	if tcpExit != udpExit {
-		return proxyUDPResult{Status: proxyUDPExitMismatch, TCPExit: tcpExit, UDPExit: udpExit}
+		return proxyUDPResult{Status: proxyUDPExitMismatch, TCPExit: tcpExit, UDPExit: udpExit, TCPExitObserved: observed}
 	}
-	return proxyUDPResult{Status: proxyUDPOK, TCPExit: tcpExit, UDPExit: udpExit}
+	return proxyUDPResult{Status: proxyUDPOK, TCPExit: tcpExit, UDPExit: udpExit, TCPExitObserved: observed}
 }
 
 type proxyUDPCheckEntry struct {
-	result proxyUDPResult
-	at     time.Time
+	result  proxyUDPResult
+	at      time.Time
+	tcpExit string // last known TCP exit, retained even when a relay fails
+	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
+	tcpExitAt time.Time
+	flowReply bool
 	// done is non-nil while a check for the identity is running
 	done chan struct{}
 }
@@ -325,6 +376,15 @@ type proxyUDPCheckStore struct {
 	// detachedRuns holds the one detached check in flight per identity
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
+	persistPath  string
+	persisted    map[string]udpPersistEntry
+	// background state writer (proxy_udp_persist.go)
+	persistDirty   bool
+	persistWriting bool
+	persistNow     time.Time
+	persistKick    chan struct{}
+	persistDone    chan struct{}
+	persistFailed  bool
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -342,35 +402,72 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 	}
 }
 
-// prune drops identities nobody has asked about for two lifetimes of a result,
-// at most once per lifetime, so the store follows the proxy lists instead of
-// growing with every proxy ever seen. Called with the lock held.
+// prune drops identities nobody has asked about for two state lifetimes,
+// at most once per lazy lifetime. Called with the lock held.
 func (self *proxyUDPCheckStore) prune(now time.Time) {
-	if now.Sub(self.lastPrune) < proxyUDPResultTTL {
+	if self.lastPrune.IsZero() || now.Sub(self.lastPrune) >= proxyUDPLazyTTL {
+		self.lastPrune = now
+		for key, entry := range self.entries {
+			if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
+				delete(self.entries, key)
+			}
+		}
+	}
+	const limit = 4 * udpStateMaxEntries
+	if len(self.entries) <= limit {
 		return
 	}
-	self.lastPrune = now
+	type completed struct {
+		key string
+		at  time.Time
+	}
+	var oldest []completed
 	for key, entry := range self.entries {
-		if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPResultTTL {
-			delete(self.entries, key)
+		if entry.done == nil {
+			oldest = append(oldest, completed{key, entry.at})
 		}
+	}
+	sort.Slice(oldest, func(i, j int) bool {
+		if oldest[i].at.Equal(oldest[j].at) {
+			return oldest[i].key < oldest[j].key
+		}
+		return oldest[i].at.Before(oldest[j].at)
+	})
+	for _, entry := range oldest {
+		if len(self.entries) <= limit {
+			break
+		}
+		delete(self.entries, entry.key)
 	}
 }
 
 var globalProxyUDPCheck = newProxyUDPCheckStore(checkProxyUDP)
 
 func proxyUDPTTL(status proxyUDPStatus) time.Duration {
-	if status == proxyUDPUnknown {
+	switch status {
+	case proxyUDPOK:
+		return proxyUDPOKTTL
+	case proxyUDPNoRelay:
+		return proxyUDPNoRelayTTL
+	case proxyUDPExitMismatch:
+		return proxyUDPMismatchTTL
+	default:
 		return proxyUDPUnknownTTL
 	}
-	return proxyUDPResultTTL
+}
+
+func proxyUDPLazyRecheckTTL(status proxyUDPStatus) time.Duration {
+	if status == proxyUDPUnknown {
+		return proxyUDPLazyUnknownTTL
+	}
+	return proxyUDPLazyTTL
 }
 
 func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.ProxySettings, now time.Time) proxyUDPResult {
 	key := settings.Key()
 	for {
 		self.mu.Lock()
-		entry := self.entries[key]
+		entry := self.cachedEntryLocked(key)
 		if entry != nil && entry.done != nil {
 			done := entry.done
 			self.mu.Unlock()
@@ -381,25 +478,46 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 			}
 		}
-		if entry != nil && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+		if entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 			result := entry.result
 			self.mu.Unlock()
 			return result
 		}
 		var previous *proxyUDPResult
+		var previousAt time.Time
+		var tcpExit string
+		var tcpExitAt time.Time
 		if entry != nil {
+			previousAt = entry.at
 			copyOf := entry.result
 			previous = &copyOf
+			tcpExit = entry.tcpExit
+			if tcpExit == "" {
+				tcpExit = entry.result.TCPExit
+			}
+			tcpExitAt = entry.tcpExitAt
+		}
+		// the probe may reuse the remembered TCP exit only while it is fresh
+		reusableTcpExit := ""
+		var reuseBudget time.Duration
+		// The reuse clock starts here, before the wait for a probe slot, so the
+		// queue time counts against the six hour limit.
+		reuseStart := time.Now()
+		if tcpExit != "" && !tcpExitAt.IsZero() && now.Sub(tcpExitAt) < proxyTCPExitMaxAge {
+			reusableTcpExit = tcpExit
+			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{})}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt}
 		self.entries[key] = running
 		self.mu.Unlock()
 
 		var result proxyUDPResult
 		select {
 		case self.slots <- struct{}{}:
-			result = self.probe(ctx, settings)
+			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, reusableTcpExit)
+			probeCtx = context.WithValue(probeCtx, cachedProxyTCPExitReuseKey{}, tcpExitReuse{start: reuseStart, budget: reuseBudget})
+			result = self.probe(probeCtx, settings)
 			<-self.slots
 		case <-ctx.Done():
 			result = proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
@@ -410,16 +528,26 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, at: now.Add(-proxyUDPTTL(previous.Status))}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt}
 			}
 			close(running.done)
 			self.mu.Unlock()
 			return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 		}
 		running.result = result
+		if result.TCPExit != "" {
+			running.tcpExit = result.TCPExit
+		}
+		if result.TCPExitObserved {
+			running.tcpExitAt = now
+		}
 		running.at = now
 		close(running.done)
 		running.done = nil
+		self.prune(now)
+		if err := self.persistLocked(key, running, now); err != nil {
+			tlog("[proxy][udp] could not persist probe state\n")
+		}
 		self.mu.Unlock()
 
 		logProxyUDPResult(settings, previous, result)
@@ -436,7 +564,7 @@ func (self *proxyUDPCheckStore) checkDetached(settings *connect.ProxySettings, n
 	key := settings.Key()
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if entry := self.entries[key]; entry != nil && entry.done == nil && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+	if entry := self.cachedEntryLocked(key); entry != nil && entry.done == nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
 		run := &proxyUDPCheckRun{done: make(chan struct{}), result: entry.result}
 		close(run.done)
 		return run
@@ -464,17 +592,95 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	if previous != nil && previous.Status == result.Status {
 		return
 	}
-	index := settings.Index
+	identity := udpProxyIdentity(settings)
 	switch result.Status {
 	case proxyUDPOK:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", index, redactedProxyAddress(settings.Address), result.UDPExit)
+		tlog("[proxy][udp] %s udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", identity, result.UDPExit)
 	case proxyUDPExitMismatch:
-		tlog("[proxy][udp] proxy[%d] (%s) udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.TCPExit)
+		tlog("[proxy][udp] %s udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", identity, result.UDPExit, result.TCPExit)
 	case proxyUDPNoRelay:
-		tlog("[proxy][udp] proxy[%d] (%s) no udp relay (%v); h3 and client udp not used for this proxy, tcp only\n", index, redactedProxyAddress(settings.Address), result.Err)
+		tlog("[proxy][udp] %s no udp relay (%s); h3 and client udp not used for this proxy, tcp only\n", identity, proxyUDPFailureClass(result.Err))
 	default:
-		tlog("[proxy][udp] proxy[%d] (%s) udp relay works (exit %s) but the tcp exit could not be learned (%v); h3 and client udp allowed, checking again soon\n", index, redactedProxyAddress(settings.Address), result.UDPExit, result.Err)
+		tlog("[proxy][udp] %s udp relay works (exit %s) but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", identity, result.UDPExit, proxyUDPFailureClass(result.Err))
 	}
+}
+
+// proxyUDPFailureClass keeps underlying network errors out of operator logs.
+func proxyUDPFailureClass(err error) string {
+	class := dialFailureClass(err)
+	if class == "dial error" {
+		return "check failed"
+	}
+	return class
+}
+
+// noteFlowReply records relay use without claiming that UDP and TCP exits match.
+// In-flight checks and fresh definitive checks carry stronger evidence.
+//
+// Only a matching reply is evidence. A timeout, a refused association or a
+// read error says nothing about the relay, so flows never record a negative
+// result: coverage changes only through checks and through this method.
+func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry != nil {
+		if entry.done != nil || now.Before(entry.at) {
+			return
+		}
+		if !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+			if entry.result.Status != proxyUDPUnknown || entry.flowReply {
+				return
+			}
+			entry.flowReply = true
+			entry.at = now
+			if err := self.persistLocked(key, entry, now); err != nil {
+				tlog("[proxy][udp] could not persist probe state\n")
+			}
+			return
+		}
+	}
+	var tcpExit string
+	var tcpExitAt time.Time
+	if entry != nil {
+		tcpExit = entry.tcpExit
+		tcpExitAt = entry.tcpExitAt
+	}
+	self.prune(now)
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true}
+	self.entries[key] = entry
+	self.prune(now)
+	if err := self.persistLocked(key, entry, now); err != nil {
+		tlog("[proxy][udp] could not persist probe state\n")
+	}
+}
+
+// coverage reads cached results without starting checks. A missing, in-flight,
+// or expired result is unchecked. The caller supplies only online identities.
+func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *SnapshotProxyUDP {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	out := &SnapshotProxyUDP{}
+	for _, key := range online {
+		entry := self.cachedEntryLocked(key)
+		if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+			out.Unchecked++
+			continue
+		}
+		switch entry.result.Status {
+		case proxyUDPOK:
+			out.OK++
+		case proxyUDPNoRelay:
+			out.NoRelay++
+		case proxyUDPExitMismatch:
+			out.Mismatch++
+		case proxyUDPUnknown:
+			out.Unknown++
+		default:
+			out.Unchecked++
+		}
+	}
+	return out
 }
 
 // size is how many identities the store currently remembers.

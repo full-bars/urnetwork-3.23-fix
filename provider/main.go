@@ -1004,6 +1004,11 @@ func main() {
 	finishInit := bannerPhase("Logger init")
 	initGlog()
 	finishInit("glog + stderr")
+	if isLongRunningSubcommand() {
+		if path, err := proxyStatePath(); err == nil {
+			globalProxyUDPCheck.enablePersistence(filepath.Join(filepath.Dir(path), "proxy_udp_state.json"), time.Now())
+		}
+	}
 
 	// If auto-tuner enabled RAM logs, perform the countdown handover now.
 	// Only for the long-running provide process — see isLongRunningSubcommand.
@@ -4850,6 +4855,9 @@ func provide(opts docopt.Opts) {
 	FlushPersistentErrors()
 	flushMetricsCountersOnExit()
 	forceAuditPersist()
+	if !globalProxyUDPCheck.flushPersistWithin(2 * time.Second) {
+		tlog("[proxy][udp] probe state flush timed out\n")
+	}
 	// Stop the background STUN probe loop. Log-only, and it would die with the
 	// process anyway, but the loop waits on a five-minute timer between cycles
 	// and there is no reason to leave it running through shutdown.
@@ -5881,6 +5889,13 @@ func expandPath(p string) string {
 	return p
 }
 
+func splitProxyAddKey(value string) (string, string) {
+	if i := strings.Index(value, "@"); i >= 0 && !strings.Contains(value[:i], ":") {
+		return value[:i], value[i+1:]
+	}
+	return "", value
+}
+
 func proxyAdd(opts docopt.Opts) {
 	// File-backed providers (Workflow A: --proxy_file=<X>) load their proxies
 	// from that external file on every reload; writes to the internal config
@@ -5903,16 +5918,14 @@ keyAddressLoop:
 	for _, keyAddress := range allKeyAddress {
 		var key string
 		var proxyAddress string
-		i := strings.Index(keyAddress, "@")
-		if 0 <= i {
-			key = keyAddress[:i]
-			proxyAddress = keyAddress[i+1:]
-		} else {
-			key = ""
-			proxyAddress = keyAddress
-		}
+		key, proxyAddress = splitProxyAddKey(keyAddress)
 
 		address, user, password := parseProxyAddress(proxyAddress)
+		if !validProxyHostPort(address) {
+			// Never print the entry: it may hold credentials.
+			fmt.Fprintf(os.Stderr, "proxy add: rejected entry: invalid_address (expected host:port[:user:pass])\n")
+			continue keyAddressLoop
+		}
 		if proxyConfig.Auths != nil {
 			proxyAuth, ok := proxyConfig.Auths[key]
 			if ok {
@@ -6125,13 +6138,18 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	added := 0
 	for _, keyAddress := range allKeyAddress {
 		// Strip a key@ prefix; the source file stores bare host:port:user:pass.
-		proxyAddress := keyAddress
-		if i := strings.Index(keyAddress, "@"); 0 <= i {
-			proxyAddress = keyAddress[i+1:]
-		}
+		_, proxyAddress := splitProxyAddKey(keyAddress)
 		trimmed := strings.TrimSpace(proxyAddress)
+		parsed, reason := classifyProxySourceLine(trimmed)
+		if parsed == nil {
+			if reason == "" {
+				reason = "invalid_fields"
+			}
+			fmt.Fprintf(os.Stderr, "proxy add: rejected entry: %s (expected host:port:user:pass)\n", reason)
+			continue
+		}
 		if existing[trimmed] {
-			fmt.Printf("server %s already present in %s\n", trimmed, sourcePath)
+			fmt.Printf("server %s already present in %s\n", parsed.Address, sourcePath)
 			continue
 		}
 		existing[trimmed] = true
@@ -6432,28 +6450,8 @@ func readProxySettings() []*connect.ProxySettings {
 // Returns an error only if the file itself cannot be read; malformed individual
 // lines are skipped with a warning.
 func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
-	b, err := os.ReadFile(path)
-	if err != nil {
-		return nil, fmt.Errorf("could not read proxy file %s: %w", path, err)
-	}
-	var all []*connect.ProxySettings
-	for _, line := range strings.Split(string(b), "\n") {
-		line = strings.TrimSpace(line)
-		if line == "" || line[0] == '#' {
-			continue
-		}
-		address, user, password := parseProxyAddress(line)
-		if user == "" || password == "" {
-			tlog("[proxy] error: proxy %q missing credentials — required format ip:port:user:pass; skipping\n", line)
-			continue
-		}
-		all = append(all, &connect.ProxySettings{
-			Network: "tcp",
-			Address: address,
-			Auth:    &proxy.Auth{User: user, Password: password},
-		})
-	}
-	return all, nil
+	all, _, err := readClassifiedProxySource(path)
+	return all, err
 }
 
 // readSHMLog reads the RAM log file. If n > 0, returns only the last n lines.
@@ -7197,6 +7195,11 @@ func proxySummary() {
 		fileSource = state.Source
 	}
 	fmt.Printf("  File proxies:       %d  (%s)\n", fileCount, fileSource)
+	if state != nil && state.Source != "" {
+		if _, rejected, err := readClassifiedProxySource(state.Source); err == nil {
+			fmt.Printf("  Rejected lines:     %d\n", rejected)
+		}
+	}
 	fmt.Printf("  URL proxies:        %d\n", urlCount)
 	fmt.Printf("  Internal proxies:   %d\n", internalCount)
 	fmt.Println()
@@ -7510,10 +7513,17 @@ func removeKeysFromFile(path string, keys []string) error {
 	}
 	var kept []string
 	for _, line := range strings.Split(string(b), "\n") {
-		trimmed := strings.TrimSpace(line)
-		addr, user, _ := parseProxyAddress(trimmed)
-		lineKey := (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: user}}).Key()
-		if !removeSet[lineKey] {
+		settings, _ := classifyProxySourceLine(line)
+		var lineKey string
+		if settings != nil {
+			lineKey = settings.Key()
+		} else if trimmed := strings.TrimSpace(line); trimmed != "" && !strings.HasPrefix(trimmed, "#") {
+			// A rejected line can still be removed by its address, so an
+			// operator can clean bad lines out of the file.
+			addr, user, _ := parseProxyAddress(trimmed)
+			lineKey = (&connect.ProxySettings{Address: addr, Auth: &proxy.Auth{User: user}}).Key()
+		}
+		if lineKey == "" || !removeSet[lineKey] {
 			kept = append(kept, line)
 		}
 	}

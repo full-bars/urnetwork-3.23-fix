@@ -66,6 +66,7 @@ func runPaidProxyGrader(ctx context.Context, apiHost string, apiPort uint16) {
 			return
 		case <-ticker.C:
 		}
+		runPaidUDPProbeTick(ctx)
 		runPaidProxyGradeOnce(ctx, apiHost, apiPort)
 	}
 }
