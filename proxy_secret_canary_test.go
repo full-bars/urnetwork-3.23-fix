@@ -16,6 +16,22 @@ func TestSafeProxyDisplayAddress(t *testing.T) {
 	}
 }
 
+func TestProxySecretDialerString(t *testing.T) {
+	settings := DefaultClientStrategySettings()
+	settings.ProxySettings = &ProxySettings{Address: "socks5://canary-user-7731:canary-pass-9042@example.com:1080?token=canary-token-5518"}
+	dialer := &clientDialer{settings: settings}
+	got := dialer.String()
+	for _, secret := range []string{"canary-user-7731", "canary-pass-9042", "canary-token-5518"} {
+		if strings.Contains(got, secret) {
+			t.Error("dialer output contains a canary")
+		}
+	}
+	settings.ProxySettings.Address = "example.com:1080"
+	if !strings.Contains(dialer.String(), "example.com:1080") {
+		t.Error("dialer output hides a valid address")
+	}
+}
+
 func TestProxySecretHealthErrors(t *testing.T) {
 	for _, record := range []func(int, error){RecordProxyAuthFailure, RecordProxyTransportDrop} {
 		RegisterProxy(991732, "example.com:1080", "example.com:1080")

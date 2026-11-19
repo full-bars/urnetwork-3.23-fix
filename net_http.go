@@ -1843,7 +1843,7 @@ func (self *clientDialer) String() string {
 		if clients > 0 {
 			ageStr = fmt.Sprintf(" age=%s", maxAge.Round(time.Second).String())
 		}
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", self.settings.ProxySettings.Index, safeProxyDisplayAddress(self.settings.ProxySettings.Address), self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
 	} else {
 		return fmt.Sprintf("[direct] %s success=%d error=%d%s", self.description, self.successCount, self.errorCount, latencyStr)
 	}
