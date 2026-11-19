@@ -109,7 +109,7 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 	}
 	if !self.persistWriting {
 		self.persistWriting = true
-		self.persistWG.Add(1)
+		self.persistDone = make(chan struct{})
 		go self.persistWriter()
 	}
 	return nil
@@ -118,7 +118,6 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 // persistWriter writes the state file until nothing is left to write, then
 // exits. At most one runs per store.
 func (self *proxyUDPCheckStore) persistWriter() {
-	defer self.persistWG.Done()
 	for {
 		timer := time.NewTimer(udpPersistDelay)
 		select {
@@ -130,33 +129,37 @@ func (self *proxyUDPCheckStore) persistWriter() {
 		self.persistDirty = false
 		now, path := self.persistNow, self.persistPath
 		list := make([]udpPersistEntry, 0, len(self.persisted))
+		snapshot := make(map[string]udpPersistEntry, len(self.persisted))
 		for hash, saved := range self.persisted {
 			if saved.At.After(now) || now.Sub(saved.At) >= proxyUDPTTL(saved.Status) {
 				delete(self.persisted, hash)
 				continue
 			}
 			list = append(list, saved)
+			snapshot[hash] = saved
 		}
 		self.mu.Unlock()
 
 		dropped, err := udpPersistWriteFile(path, list)
-		if len(dropped) > 0 {
-			self.mu.Lock()
-			for _, hash := range dropped {
-				delete(self.persisted, hash)
-			}
-			self.mu.Unlock()
-		}
-		if err != nil {
-			tlog("[proxy][udp] could not persist probe state\n")
-		}
-		// Results that arrived during the write get another round after the
-		// delay. With none, exit now instead of waiting for nothing. The
-		// check and the exit are one step under the lock, so a result that
-		// arrives next starts a new writer.
 		self.mu.Lock()
+		if err != nil {
+			self.persistDirty = true
+			if !self.persistFailed {
+				tlog("[proxy][udp] could not persist probe state\n")
+			}
+			self.persistFailed = true
+		} else {
+			self.persistFailed = false
+			for _, hash := range dropped {
+				if saved, ok := snapshot[hash]; ok && self.persisted[hash] == saved {
+					delete(self.persisted, hash)
+				}
+			}
+		}
 		if !self.persistDirty {
 			self.persistWriting = false
+			close(self.persistDone)
+			self.persistDone = nil
 			self.mu.Unlock()
 			return
 		}
@@ -167,15 +170,33 @@ func (self *proxyUDPCheckStore) persistWriter() {
 // flushPersist writes any pending state now and waits for the writer to finish.
 func (self *proxyUDPCheckStore) flushPersist() {
 	self.mu.Lock()
-	kick := self.persistKick
-	self.mu.Unlock()
-	if kick != nil {
+	done := self.persistDone
+	if done != nil {
 		select {
-		case kick <- struct{}{}:
+		case self.persistKick <- struct{}{}:
 		default:
 		}
 	}
-	self.persistWG.Wait()
+	self.mu.Unlock()
+	if done != nil {
+		<-done
+	}
+}
+
+func (self *proxyUDPCheckStore) flushPersistWithin(timeout time.Duration) bool {
+	done := make(chan struct{})
+	go func() {
+		self.flushPersist()
+		close(done)
+	}()
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	select {
+	case <-done:
+		return true
+	case <-timer.C:
+		return false
+	}
 }
 
 // writeUDPPersistFile sorts the entries newest first, keeps the newest ones

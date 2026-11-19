@@ -362,7 +362,8 @@ type proxyUDPCheckStore struct {
 	persistWriting bool
 	persistNow     time.Time
 	persistKick    chan struct{}
-	persistWG      sync.WaitGroup
+	persistDone    chan struct{}
+	persistFailed  bool
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.

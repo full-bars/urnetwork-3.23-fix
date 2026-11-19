@@ -4855,6 +4855,9 @@ func provide(opts docopt.Opts) {
 	FlushPersistentErrors()
 	flushMetricsCountersOnExit()
 	forceAuditPersist()
+	if !globalProxyUDPCheck.flushPersistWithin(2 * time.Second) {
+		tlog("[proxy][udp] probe state flush timed out\n")
+	}
 	// Stop the background STUN probe loop. Log-only, and it would die with the
 	// process anyway, but the loop waits on a five-minute timer between cycles
 	// and there is no reason to leave it running through shutdown.
