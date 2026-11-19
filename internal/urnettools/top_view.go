@@ -455,9 +455,14 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 		segs = build(true)
 	}
 	// Drop the least important optional states from the right until it fits.
+	// The ok segment leads the row and stays. Without it, index zero is optional.
+	firstDroppable := 1
+	if udp.OK == 0 {
+		firstDroppable = 0
+	}
 	for width(segs) > room {
 		drop := -1
-		for i := len(segs) - 1; i > 0; i-- {
+		for i := len(segs) - 1; i >= firstDroppable; i-- {
 			if !segs[i].required {
 				drop = i
 				break
