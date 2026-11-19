@@ -4,7 +4,7 @@
 │       ╭ Keys ───────────────────────────────────────────────────────────────────────────╮        │
 │       │ q, Esc, Ctrl-C   quit                                                           │        │
 │20 MiB/│ Tab, Shift-Tab   next or previous provider                                      │        │
-│       │ +  -             refresh slower or faster; graphs follow, down to 100ms         │        │
+│       │ +  -             change refresh interval, down to 100ms                         │        │
 │       │ w                zoom the graphs to the last 15 seconds                         │        │
 │   0 B/│ u                switch units between GiB (binary) and GB (decimal)             │        │
 ╰───────│ m                menu: color theme and graph style                              │        │
