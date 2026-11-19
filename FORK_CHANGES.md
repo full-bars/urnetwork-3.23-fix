@@ -4135,7 +4135,7 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 
 **How to Identify in New Upstream**: Check `transfer_encrypt.go` (ClientHello-only peer generation id adoption), `provider/proxy_url_source.go` (`fetchAndMergeProxyURLs` context checks), `internal/urnettools/openbsd_managed.go`, and `scripts/compute-app-version.sh`.
 
-**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). The handshake fix does not include upstream's receive-sequence rejection records. Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream.
+**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The handshake fix does not include upstream's receive-sequence rejection records.
 
 **Status**: Shipped in v3.23.0-fix.35.10.
 
@@ -4255,6 +4255,10 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 ## 226. Unused FP2 Client Window
 
 Removed the unused FP2 client window and peer capability recorder, including the address family request labels and the zero receive window handling that belonged to them. The removal covers the window, recorder and address family commits of the FP2 port.
+
+The sticky redial, the recent exit memory and the size-one IPv6 window that earlier entries listed as limits went with the window. Each window still starts with the effective performance profile, as it did before the FP2 port.
+
+This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds.
 
 ---
 

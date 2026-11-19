@@ -549,6 +549,7 @@ func NewRemoteUserNatMultiClient(
 		multiClient.removeClient,
 		WindowTypeQuality,
 		settings,
+		multiClient.config.Load().performanceProfile,
 	)
 	if _, fixed := generator.FixedDestinationSize(); !fixed {
 		multiClient.windows[WindowTypeSpeed] = newMultiClientWindow(
@@ -561,6 +562,7 @@ func NewRemoteUserNatMultiClient(
 			multiClient.removeClient,
 			WindowTypeSpeed,
 			settings,
+			multiClient.config.Load().performanceProfile,
 		)
 	}
 	// else only keep the quality window for fixed destination
@@ -2334,6 +2336,7 @@ func newMultiClientWindow(
 	clientRemoveCallback func(client *multiClientChannel),
 	windowType WindowType,
 	settings *MultiClientSettings,
+	performanceProfile *PerformanceProfile,
 ) *multiClientWindow {
 	window := &multiClientWindow{
 		ctx:                         ctx,
@@ -2346,6 +2349,7 @@ func newMultiClientWindow(
 		clientRemoveCallback:        clientRemoveCallback,
 		windowType:                  windowType,
 		settings:                    settings,
+		performanceProfile:          performanceProfile,
 		clientChannelArgs:           make(chan *multiClientChannelArgs),
 		monitor:                     NewRemoteUserNatMultiClientMonitor(&settings.RemoteUserNatMultiClientMonitorSettings),
 		contractStatusCallbacks:     NewCallbackList[*contractStatusCallbackWorker](),

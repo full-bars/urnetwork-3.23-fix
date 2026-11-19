@@ -150,7 +150,8 @@ const (
 // window (linux tcp_v4_err / tcp_v6_err). so where the multi client hands an
 // unreachable to the source's own stack, it builds it over the SYN's
 // sequence: the forward with the re-race off (`clientDialFailure`) takes it
-// from the flow's SYN generation.
+// from the flow's SYN generation when one has been recorded. With none
+// recorded it keeps the sequence the provider embedded.
 //
 // `ipPath` is the flow's own direction (source to destination). the returned
 // packet is addressed back the other way, as if from the destination.
