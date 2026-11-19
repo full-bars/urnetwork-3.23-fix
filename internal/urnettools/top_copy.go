@@ -76,9 +76,11 @@ func writeTopCopy(text string, now time.Time) (string, error) {
 	_, writeErr := f.WriteString(text)
 	closeErr := f.Close()
 	if writeErr != nil {
+		_ = os.Remove(path)
 		return "", writeErr
 	}
 	if closeErr != nil {
+		_ = os.Remove(path)
 		return "", closeErr
 	}
 	return path, nil

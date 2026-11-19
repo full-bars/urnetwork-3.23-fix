@@ -719,10 +719,10 @@ func openExtenderPacketConn(
 	connectSettings *ConnectSettings,
 	udpAddr *net.UDPAddr,
 ) (net.PacketConn, error) {
-	if connectSettings.DialContextSettings != nil && connectSettings.DialContextSettings.PacketConnFactory != nil {
+	if connectSettings != nil && connectSettings.DialContextSettings != nil && connectSettings.DialContextSettings.PacketConnFactory != nil {
 		return connectSettings.DialContextSettings.PacketConnFactory(ctx)
 	}
-	if connectSettings.ProxySettings != nil {
+	if connectSettings != nil && connectSettings.ProxySettings != nil {
 		return nil, ErrExtenderPacketCarrierUnavailable
 	}
 	udpNetwork, wildcard := udpWildcardForFamily(udpAddrFamily(udpAddr))
