@@ -5886,6 +5886,13 @@ func expandPath(p string) string {
 	return p
 }
 
+func splitProxyAddKey(value string) (string, string) {
+	if i := strings.Index(value, "@"); i >= 0 && !strings.Contains(value[:i], ":") {
+		return value[:i], value[i+1:]
+	}
+	return "", value
+}
+
 func proxyAdd(opts docopt.Opts) {
 	// File-backed providers (Workflow A: --proxy_file=<X>) load their proxies
 	// from that external file on every reload; writes to the internal config
@@ -5908,14 +5915,7 @@ keyAddressLoop:
 	for _, keyAddress := range allKeyAddress {
 		var key string
 		var proxyAddress string
-		i := strings.Index(keyAddress, "@")
-		if 0 <= i {
-			key = keyAddress[:i]
-			proxyAddress = keyAddress[i+1:]
-		} else {
-			key = ""
-			proxyAddress = keyAddress
-		}
+		key, proxyAddress = splitProxyAddKey(keyAddress)
 
 		address, user, password := parseProxyAddress(proxyAddress)
 		if !validProxyHostPort(address) {
@@ -6135,10 +6135,7 @@ func proxyAddFileBacked(sourcePath string, opts docopt.Opts) {
 	added := 0
 	for _, keyAddress := range allKeyAddress {
 		// Strip a key@ prefix; the source file stores bare host:port:user:pass.
-		proxyAddress := keyAddress
-		if i := strings.Index(keyAddress, "@"); 0 <= i {
-			proxyAddress = keyAddress[i+1:]
-		}
+		_, proxyAddress := splitProxyAddKey(keyAddress)
 		trimmed := strings.TrimSpace(proxyAddress)
 		parsed, reason := classifyProxySourceLine(trimmed)
 		if parsed == nil {
