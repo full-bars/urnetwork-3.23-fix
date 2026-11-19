@@ -61,13 +61,37 @@ func elevateSelf(args []string) error {
 	cmd.Stdout = os.Stdout
 	cmd.Stderr = os.Stderr
 	cmd.Env = append(os.Environ(), urnetElevatedEnv+"=1")
-	if err := cmd.Run(); err != nil {
-		if ee, ok := err.(*exec.ExitError); ok && ee.ExitCode() == 0 {
-			return nil
-		}
-		return fmt.Errorf("elevated %s failed: %w", strings.Join(args, " "), err)
+	return elevatedRunError(args, cmd.Run())
+}
+
+// elevatedRunError turns the result of the elevated child into the error the
+// caller returns. `status --brief` ends with 1, 2 or 3 on purpose: that is its
+// answer to a script, not a failure of the elevation, so its code is passed on.
+func elevatedRunError(args []string, err error) error {
+	if err == nil {
+		return nil
 	}
-	return nil
+	ee, ok := err.(*exec.ExitError)
+	if ok && ee.ExitCode() == 0 {
+		return nil
+	}
+	if ok && isStatusBrief(args) && 1 <= ee.ExitCode() && ee.ExitCode() <= 3 {
+		return briefExitError(ee.ExitCode())
+	}
+	return fmt.Errorf("elevated %s failed: %w", strings.Join(args, " "), err)
+}
+
+// isStatusBrief reports whether args are a `status --brief` command line.
+func isStatusBrief(args []string) bool {
+	if len(args) == 0 || args[0] != "status" {
+		return false
+	}
+	for _, a := range args[1:] {
+		if a == "--brief" || a == "-brief" {
+			return true
+		}
+	}
+	return false
 }
 
 // urnetElevatedEnv marks the child spawned by elevateSelf so it can skip the
@@ -267,7 +291,7 @@ func selectTargets(providers []Provider, t Target, include, exclude []string, in
 // when root is asking (who CAN reach all of them and should get the normal
 // refusal + inventory).
 func selectTargetOrSoleAccessible(providers []Provider, t Target, requireRunning bool) (p Provider, narrowed bool, err error) {
-	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == ""
+	noTarget := t.Unit == "" && t.User == "" && t.Network == "" && t.NetworkID == "" && t.StateDir == "" && t.PID == 0
 	// Use the platform privilege seam (isPrivileged), not os.Geteuid() direct:
 	// Geteuid is meaningless on Windows (returns -1) where an elevated Admin
 	// should still get the normal refusal + inventory, not the unprivileged

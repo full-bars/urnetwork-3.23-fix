@@ -23,6 +23,7 @@ import (
 	"fmt"
 	mathrand "math/rand"
 	"net/netip"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -56,6 +57,8 @@ type extenderTransportSettings struct {
 	// Supplied by libp2p when the transport is constructed.
 	Upgrader        transport.Upgrader
 	ResourceManager network.ResourceManager
+	Events          *EventRing
+	Now             func() time.Time
 }
 
 type extenderTransport struct {
@@ -130,6 +133,7 @@ func (self *extenderTransport) Dial(
 
 	connScope, err := self.settings.ResourceManager.OpenConnection(network.DirOutbound, true, raddr)
 	if err != nil {
+		self.recordCap(peerId, "resource_limit")
 		return nil, err
 	}
 	capableConn, err := self.dialWithScope(ctx, raddr, ip, port, peerId, publicKey, connScope)
@@ -150,6 +154,7 @@ func (self *extenderTransport) dialWithScope(
 	connScope network.ConnManagementScope,
 ) (transport.CapableConn, error) {
 	if err := connScope.SetPeer(peerId); err != nil {
+		self.recordCap(peerId, "resource_limit")
 		return nil, err
 	}
 	conn, response, err := connect.DialExtender(
@@ -277,4 +282,21 @@ func extenderGossipConfig(
 		Ip:        ip,
 		PublicKey: publicKey,
 	}
+}
+
+func (self *extenderTransport) recordCap(peerId peer.ID, reason string) {
+	if self.settings == nil || self.settings.Events == nil {
+		return
+	}
+	now := time.Now
+	if self.settings.Now != nil {
+		now = self.settings.Now
+	}
+	self.settings.Events.RecordCap(Event{
+		Time:      now(),
+		Kind:      "cap",
+		Peer:      peerId.String(),
+		Direction: "out",
+		Reason:    reason,
+	})
 }

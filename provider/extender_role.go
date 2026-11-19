@@ -110,10 +110,12 @@ type extenderRoleConfig struct {
 	keyPath           string
 	ports             map[int][]connect.ExtenderConnectMode
 	dnsPrivilegedPort bool
-	retryInterval     time.Duration
-	listen            func(network string, address string) (net.Listener, error)
-	listenPacket      func(network string, address string) (net.PacketConn, error)
-	forwardDialer     *net.Dialer
+	// disabledCarriers records settings captured for this role's lifetime.
+	disabledCarriers map[string]bool
+	retryInterval    time.Duration
+	listen           func(network string, address string) (net.Listener, error)
+	listenPacket     func(network string, address string) (net.PacketConn, error)
+	forwardDialer    *net.Dialer
 	// allowedHosts is the forward allow list. Empty refuses every forward
 	// request, which is the server's default and upstream's network-space
 	// behaviour; an open provider names its hosts here.
@@ -139,7 +141,7 @@ func extenderAllowedHostsFromEnv(getenv func(string) string) []string {
 }
 
 func defaultExtenderRoleConfig() extenderRoleConfig {
-	return extenderRoleConfig{
+	config := extenderRoleConfig{
 		ports: map[int][]connect.ExtenderConnectMode{
 			connect.ExtenderTcpPort: {
 				connect.ExtenderConnectModeTcpTls,
@@ -161,6 +163,28 @@ func defaultExtenderRoleConfig() extenderRoleConfig {
 			KeepAlive: 30 * time.Second,
 		},
 	}
+	config.disabledCarriers = make(map[string]bool)
+	for _, item := range []struct{ key, name string }{
+		{"extender_udp443", "udp 443"}, {"extender_udp4053", "dns 4053"}, {"extender_udp53", "dns 53"},
+	} {
+		if value, ok := globalControlState.get(item.key); ok && strings.EqualFold(value, "off") {
+			config.disabledCarriers[item.name] = true
+		}
+	}
+	if config.disabledCarriers["udp 443"] {
+		config.ports[connect.ExtenderTcpPort] = []connect.ExtenderConnectMode{connect.ExtenderConnectModeTcpTls}
+	}
+	if config.disabledCarriers["dns 4053"] {
+		delete(config.ports, connect.ExtenderDnsPort)
+	}
+	if config.disabledCarriers["dns 53"] {
+		config.dnsPrivilegedPort = false
+	}
+	// An explicit 53 mode is needed when there is no 4053 mode to widen.
+	if config.dnsPrivilegedPort && config.disabledCarriers["dns 4053"] {
+		config.ports[connect.DefaultDnsPort] = []connect.ExtenderConnectMode{connect.ExtenderConnectModeDns}
+	}
+	return config
 }
 
 // loadOrCreateExtenderKeySeed loads the ed25519 seed from path, creating it
@@ -228,6 +252,8 @@ type extenderRole struct {
 	carriers       map[string]bool
 	listenErrors   map[string]string
 	dnsPorts       []int
+	// bind failure class of each udp port that failed, by port
+	udpPortReasons map[int]string
 	servers        []*extender.ExtenderServer
 	baseStats      extender.ExtenderStats
 	// counts folded from retired servers, so the cumulative metrics do not
@@ -316,6 +342,7 @@ func startExtenderRole(ctx context.Context, config extenderRoleConfig) (*extende
 		state:                    extenderStateStarting,
 		carriers:                 map[string]bool{},
 		listenErrors:             map[string]string{},
+		udpPortReasons:           map[int]string{},
 		baseServiceCounts:        map[string]uint64{},
 		baseServedCounts:         map[string]uint64{},
 		baseRefusalCounts:        map[string]uint64{},
@@ -488,6 +515,7 @@ func (r *extenderRole) startPrimary() (*extender.ExtenderServer, chan error, err
 		}
 		r.carriers = map[string]bool{}
 		r.dnsPorts = nil
+		r.udpPortReasons = map[int]string{}
 		if r.state != extenderStateError {
 			r.state = extenderStateTcpUnavailable
 		}
@@ -805,6 +833,7 @@ func (r *extenderRole) retireServer(server *extender.ExtenderServer) {
 func (r *extenderRole) refreshLocked() {
 	carriers := map[string]bool{}
 	dnsPorts := map[int]bool{}
+	udpPortReasons := map[int]string{}
 	// The pre-bound tcp failure never reaches the core's own error map, so
 	// keep the role-level entries and merge the servers' over them.
 	listenErrors := maps.Clone(r.listenErrors)
@@ -818,7 +847,15 @@ func (r *extenderRole) refreshLocked() {
 		for carrier, err := range server.ListenErrors() {
 			listenErrors[carrier] = err.Error()
 		}
+		for port, err := range server.UdpPortListenErrors() {
+			udpPortReasons[port] = extender.ClassifyBindError(err)
+		}
 	}
+	// a port that bound on any server has no failure
+	for port := range dnsPorts {
+		delete(udpPortReasons, port)
+	}
+	r.udpPortReasons = udpPortReasons
 	for carrier := range carriers {
 		delete(listenErrors, carrier)
 	}
@@ -912,6 +949,7 @@ func (r *extenderRole) shutdown() {
 	r.closing = slices.DeleteFunc(r.closing, func(c *extender.ExtenderServer) bool { return slices.Contains(servers, c) })
 	r.carriers = map[string]bool{}
 	r.dnsPorts = nil
+	r.udpPortReasons = map[int]string{}
 	r.state = extenderStateClosed
 	r.mu.Unlock()
 	r.markReady()
@@ -928,9 +966,15 @@ type extenderRoleSnapshot struct {
 	Carriers     []string
 	ListenErrors map[string]string
 	DnsPorts     []int
-	Connections  int
-	Stats        extender.ExtenderStats
-	TcpRetries   int64
+	// bind failure class (extender.BindFailure*) of each udp port that failed
+	UdpPortReasons map[int]string
+	// Dns53Disabled is the operator's setting that turns dns 53 off.
+	Dns53Disabled bool
+	// Dns53Requested is true when this role was asked to bind dns 53.
+	Dns53Requested bool
+	Connections    int
+	Stats          extender.ExtenderStats
+	TcpRetries     int64
 	// per-service requests and per-stage refusals, summed over every server
 	// the role currently owns
 	ServiceCounts map[string]uint64
@@ -960,13 +1004,16 @@ func (r *extenderRole) snapshot() extenderRoleSnapshot {
 		baseCarrierByteCounts[carrier] = byteStats
 	}
 	snapshot := extenderRoleSnapshot{
-		Enabled:      true,
-		State:        r.state,
-		Note:         r.note,
-		ListenErrors: maps.Clone(r.listenErrors),
-		DnsPorts:     slices.Clone(r.dnsPorts),
-		Stats:        r.baseStats,
-		TcpRetries:   r.tcpRetries,
+		Enabled:        true,
+		State:          r.state,
+		Note:           r.note,
+		ListenErrors:   maps.Clone(r.listenErrors),
+		DnsPorts:       slices.Clone(r.dnsPorts),
+		UdpPortReasons: maps.Clone(r.udpPortReasons),
+		Dns53Disabled:  r.config.disabledCarriers["dns 53"],
+		Dns53Requested: r.config.dnsPrivilegedPort || len(r.config.ports[connect.DefaultDnsPort]) > 0,
+		Stats:          r.baseStats,
+		TcpRetries:     r.tcpRetries,
 	}
 	for carrier := range r.carriers {
 		snapshot.Carriers = append(snapshot.Carriers, carrier)
@@ -1279,6 +1326,16 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 		}
 		fmt.Fprintf(&b, "urnet_extender_carrier_listen_error{carrier=%s} %d\n", connect.PrometheusLabelValue(carrier), value)
 	}
+	fmt.Fprintf(&b, "# HELP urnet_extender_dns53_state 1 for the current state of dns port 53.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_extender_dns53_state gauge\n")
+	current := dns53State(snapshot)
+	for _, state := range dns53States {
+		value := 0
+		if state == current {
+			value = 1
+		}
+		fmt.Fprintf(&b, "urnet_extender_dns53_state{state=%s} %d\n", connect.PrometheusLabelValue(state), value)
+	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_connections_active Connections open over every extender carrier.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_connections_active gauge\n")
 	fmt.Fprintf(&b, "urnet_extender_connections_active %d\n", snapshot.Connections)
@@ -1315,5 +1372,6 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_peers Discovery mesh peers.\n# TYPE urnet_extender_discovery_peers gauge\nurnet_extender_discovery_peers %d\n", discovery.Peers)
 	fmt.Fprintf(&b, "# HELP urnet_extender_discovery_feed_subscribers Discovery feed subscribers.\n# TYPE urnet_extender_discovery_feed_subscribers gauge\nurnet_extender_discovery_feed_subscribers %d\n", discovery.FeedSubscribers)
+	writeGossipDialMetrics(&b, discovery.DialStats)
 	return b.String()
 }

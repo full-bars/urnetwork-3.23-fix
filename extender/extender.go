@@ -13,10 +13,13 @@ import (
 	"net"
 	"net/http"
 	"net/netip"
+	"os"
+	"runtime"
 	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
+	"syscall"
 	"time"
 
 	"golang.org/x/net/dns/dnsmessage"
@@ -512,6 +515,9 @@ type ExtenderServer struct {
 	// provider role renders beside the carrier list (G2, F3). A carrier that
 	// binds clears its entry.
 	carrierListenErrs map[string]error
+	// the last bind failure of each udp port, kept per port because a carrier
+	// with another port serving has no carrier-level failure
+	udpPortListenErrs map[int]error
 	forwardDialer     *net.Dialer
 
 	// closed once every carrier bind has been attempted, and at the latest
@@ -620,6 +626,7 @@ func NewExtenderServer(
 		carriers:                 []string{},
 		dnsPorts:                 []int{},
 		carrierListenErrs:        map[string]error{},
+		udpPortListenErrs:        map[int]error{},
 		forwardDialer:            forwardDialer,
 		listening:                make(chan struct{}),
 		probeLimiter:             newExtenderProbeLimiter(),
@@ -1122,15 +1129,18 @@ func (self *ExtenderServer) ListenAndServe() error {
 				packetConn.Close()
 			}
 			self.reportListenError(carrier, err)
+			self.setUdpPortListenError(port, err)
 			bindErrs = append(bindErrs, err)
 			continue
 		}
 		if packetConn == nil {
 			err := fmt.Errorf("extender packet listener factory returned nil")
 			self.reportListenError(carrier, err)
+			self.setUdpPortListenError(port, err)
 			bindErrs = append(bindErrs, err)
 			continue
 		}
+		self.setUdpPortListenError(port, nil)
 		ownedCloser, ok := self.addCloser(func() { packetConn.Close() })
 		if !ok {
 			// shutdown started while binding, which is not a bind failure
@@ -1600,6 +1610,57 @@ func (self *ExtenderServer) ListenErrors() map[string]error {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return maps.Clone(self.carrierListenErrs)
+}
+
+// The last bind failure of each udp port that has one. A port that bound has
+// no entry. The errors keep their type, so a caller can tell an address already
+// in use from a permission failure with ClassifyBindError.
+func (self *ExtenderServer) UdpPortListenErrors() map[int]error {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	return maps.Clone(self.udpPortListenErrs)
+}
+
+func (self *ExtenderServer) setUdpPortListenError(port int, err error) {
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	if err == nil {
+		delete(self.udpPortListenErrs, port)
+		return
+	}
+	self.udpPortListenErrs[port] = err
+}
+
+// Bind failure classes reported by ClassifyBindError.
+const (
+	BindFailureAddressInUse     = "address_in_use"
+	BindFailurePermissionDenied = "permission_denied"
+	BindFailureUnknown          = "unknown"
+)
+
+// ClassifyBindError names the cause of a listen failure from its error type,
+// never from its text. Windows reports its own socket error numbers, which
+// differ from the syscall constants, so they are compared by value.
+func ClassifyBindError(err error) string {
+	if err == nil {
+		return ""
+	}
+	var errno syscall.Errno
+	if errors.As(err, &errno) && runtime.GOOS == "windows" {
+		switch errno {
+		case 10048: // WSAEADDRINUSE
+			return BindFailureAddressInUse
+		case 10013: // WSAEACCES
+			return BindFailurePermissionDenied
+		}
+	}
+	switch {
+	case errors.Is(err, syscall.EADDRINUSE):
+		return BindFailureAddressInUse
+	case errors.Is(err, syscall.EACCES), errors.Is(err, syscall.EPERM), errors.Is(err, os.ErrPermission):
+		return BindFailurePermissionDenied
+	}
+	return BindFailureUnknown
 }
 
 // Connections open over every carrier right now, which is what the per-source

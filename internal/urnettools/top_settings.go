@@ -20,8 +20,9 @@ import (
 // stick.
 
 type topSettings struct {
-	Theme string // a tui.ThemeNames entry, or "" for the environment's choice
-	Graph string // a tui.GraphSymbolNames entry, or "" for braille
+	Theme                 string // a tui.ThemeNames entry, or "" for the environment's choice
+	Graph                 string // a tui.GraphSymbolNames entry, or "" for braille
+	ProxyAfterglowSeconds int    // 0 selects the default
 	// The operator's arrangement of the top screen, drawn by their own hand:
 	// how wide the right column is and where the box dividers sit. Zero or a
 	// missing value means the default for the terminal size.
@@ -73,6 +74,10 @@ func loadTopSettings(path string) topSettings {
 			if _, ok := tui.GraphSymbolsByName(val); ok {
 				s.Graph = val
 			}
+		case key == "proxy.afterglow_seconds":
+			if v, err := strconv.Atoi(val); err == nil && v >= 1 && v <= 60 {
+				s.ProxyAfterglowSeconds = v
+			}
 		case key == "layout.side_width":
 			if v, err := strconv.Atoi(val); err == nil && v >= 0 {
 				s.LayoutSideWidth = v
@@ -104,6 +109,9 @@ func saveTopSettings(path string, s topSettings) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	out := "# urnet-tools top: chosen in the m menu\ntheme = " + s.Theme + "\ngraph = " + s.Graph + "\n"
+	if s.ProxyAfterglowSeconds > 0 {
+		out += fmt.Sprintf("proxy.afterglow_seconds = %d\n", s.ProxyAfterglowSeconds)
+	}
 	if s.LayoutSideWidth > 0 {
 		out += fmt.Sprintf("layout.side_width = %d\n", s.LayoutSideWidth)
 	}

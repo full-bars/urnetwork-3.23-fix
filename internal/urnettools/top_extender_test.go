@@ -54,6 +54,12 @@ func TestTopExtenderPort53Rows(t *testing.T) {
 		{"bound", []ExtenderPort{{Name: "dns 53", Up: true}}, "bound"},
 		{"down", []ExtenderPort{{Name: "dns 53"}}, "DOWN"},
 		{"omitted", nil, "not reported"},
+		{"in use", []ExtenderPort{{Name: "dns 53", Reason: "address_in_use"}}, "DOWN: address already in use"},
+		{"permission", []ExtenderPort{{Name: "dns 53", Reason: "permission_denied"}}, "DOWN: permission denied"},
+		{"unknown cause", []ExtenderPort{{Name: "dns 53", Reason: "unknown"}}, "DOWN: bind failed, cause unknown"},
+		{"not requested", []ExtenderPort{{Name: "dns 53", Reason: "not_requested"}}, "not requested"},
+		{"disabled", []ExtenderPort{{Name: "dns 53", Disabled: true}}, "off by setting"},
+		{"newer reason from a newer provider", []ExtenderPort{{Name: "dns 53", Reason: "something_new"}}, "DOWN: bind failed, cause unknown"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			rows := extenderRowMap(extenderBoxRows(ExtenderReading{
@@ -63,6 +69,23 @@ func TestTopExtenderPort53Rows(t *testing.T) {
 				t.Fatalf("dns 53 = %q, want %q", got, tc.want)
 			}
 		})
+	}
+}
+
+// A port nobody asked for or an operator turned off is information. A failed
+// bind is a warning.
+func TestTopExtenderPort53Levels(t *testing.T) {
+	for reason, want := range map[string]int{
+		"not_requested":     int(topInfo),
+		"address_in_use":    int(topWarn),
+		"permission_denied": int(topWarn),
+	} {
+		rows := extenderRowMap(extenderBoxRows(ExtenderReading{
+			Source: SourceControlSocket, Running: true, Ports: []ExtenderPort{{Name: "dns 53", Reason: reason}},
+		}, time.Now()))
+		if got := int(rows["dns 53"].level); got != want {
+			t.Errorf("reason %q: level %d, want %d", reason, got, want)
+		}
 	}
 }
 

@@ -56,6 +56,10 @@ type FeedServerSettings struct {
 	// Budget of one frame write, so a client that stops reading releases its
 	// subscriber slot.
 	WriteTimeout time.Duration
+	// Events is the shared flight-recorder ring.
+	Events *EventRing
+	// Now is the clock for recorded events.
+	Now func() time.Time
 }
 
 func DefaultFeedServerSettings() *FeedServerSettings {
@@ -147,11 +151,15 @@ func (self *FeedServer) Serve(conn net.Conn) {
 	// subscribe before the sample is taken, so a record applied between the
 	// two is streamed rather than lost
 	var messages <-chan *protocol.ExtenderGossipMessage
-	if request.Subscribe && self.beginSubscriber() {
-		var unsubscribe func()
-		messages, unsubscribe = self.directory.Subscribe()
-		defer unsubscribe()
-		defer self.endSubscriber()
+	if request.Subscribe {
+		if self.beginSubscriber() {
+			var unsubscribe func()
+			messages, unsubscribe = self.directory.Subscribe()
+			defer unsubscribe()
+			defer self.endSubscriber()
+		} else {
+			self.recordCap("subscriber_cap")
+		}
 	}
 
 	// the client's vantage, which binds it to one partition of the open tier
@@ -280,4 +288,20 @@ func (self *FeedServer) SubscriberCount() int {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 	return self.subscriberCount
+}
+
+func (self *FeedServer) recordCap(reason string) {
+	if self.settings == nil || self.settings.Events == nil {
+		return
+	}
+	now := time.Now
+	if self.settings.Now != nil {
+		now = self.settings.Now
+	}
+	self.settings.Events.RecordCap(Event{
+		Time:      now(),
+		Kind:      "cap",
+		Direction: "in",
+		Reason:    reason,
+	})
 }

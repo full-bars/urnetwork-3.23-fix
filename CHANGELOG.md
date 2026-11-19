@@ -11,6 +11,15 @@ Everything merged after `v3.23.0-fix.35.11`.
 ### Added
 
 - **Proxy UDP relay coverage**. Status, `top` and metrics report UDP relay coverage for online proxies. Background sweeps check paid and URL proxy sources. Turning off the proxy sweep or `udp_probe` stops new sweeps at the next tick. A running sweep continues. The state file is written in the background at most once every two seconds during normal operation. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours. The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`. A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
+- **`urnet-tools status` redesign** (`internal/urnettools/`). Default output is a one-screen health summary showing version, time-boxed cached update availability, proxy pool counts, UDP coverage, extender state, unit health with SIGPIPE restart risk detection, and resource utilization. `--brief` reports warnings and failures with script exit codes (0 healthy, 1 warning, 2 broken, 3 unreachable). `--json` still prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`) and omits `jwt_expires` when the provider has no token. `--live` (and `-l`) refreshes the summary in place with cursor home on terminals (`--interval` to adjust rate). `--detail` restores the platform status output.
+- Choose the extender's UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. Changes restart the active extender role and persist. Status identifies disabled carriers.
+- Extender status reports the UDP port 53 state and bind failure reason. The `urnet_extender_dns53_state` metric exposes the state.
+- Gossip diagnostics include dial counters, health transitions, recent events and rate-limited anomaly dumps.
+- The proxy heatmap uses dots and can show a fading afterglow for recent activity.
+- Extender sysctl handling supports a lower port threshold. Setup continues to offer the TCP 443 threshold. The UDP port 53 threshold is not selectable in setup yet.
+- The Linux interface counter reader exposes cumulative receive and transmit bytes.
+- The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
+
 
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
 
@@ -20,6 +29,13 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Fixed
 
+- Backend failure counts and timestamps are published together as one snapshot.
+- A pinned IP family with no route sleeps instead of redialing. A dial that the routing refuses on every attempt (no route to host or network) holds that family for 5 minutes, doubling per refusal up to 1 hour. A network change or a connection ends the hold. Before, an IPv6 pin on a host with only ULA addresses retried every few minutes. [redeploy]
+- The `[t]auth error` and `[contract]oob err` lines name the failed mode, the pinned family and the causes an exhausted request retained, such as `no route to host`. Before, they only said `http request attempts exhausted`.
+- Proxy add accepts passwords containing an `@` sign.
+- The CFAA sync commits generated tables directly to the main branch after its format checks.
+- Status update checks do not follow symbolic links in the cache. Status honors `--pid` and reports an unavailable or stopped extender. A healthy `--brief` produces no output.
+- Failed carrier control writes restore the previous carrier configuration. Gossip cap pressure no longer hides a worse health state.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
 
 ## [v3.23.0-fix.35.11]

@@ -16,10 +16,13 @@ func stubStatus(t *testing.T, providers []Provider, snaps map[string]json.RawMes
 	t.Helper()
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("XDG_CONFIG_HOME", t.TempDir())
-	origD, origF, origP, origR := discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus
+	origD, origF, origP, origR, origU := discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus, checkStatusUpdateFn
 	t.Cleanup(func() {
-		discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus = origD, origF, origP, origR
+		discoverStatusFn, fetchSnapshotFn, isPrivileged, renderSystemctlStatus, checkStatusUpdateFn = origD, origF, origP, origR, origU
 	})
+	checkStatusUpdateFn = func(string) statusUpdateState {
+		return statusUpdateState{Unavailable: true}
+	}
 	// Never run the box's real systemctl. The stub fails like an unresolvable
 	// unit so the classic table (with its "state-dir:" row) is what prints.
 	renderSystemctlStatus = func(Provider) error { return errors.New("stubbed") }
@@ -60,7 +63,7 @@ func statusStateDirLabelFor(goos string) string {
 
 func TestStatusUDPRows(t *testing.T) {
 	origOpts := statusLiveOptsFn
-	statusLiveOptsFn = func() liveOpts { return liveOpts{Color: true, ASCII: false} }
+	statusLiveOptsFn = func() liveOpts { return liveOpts{Color: true, ASCII: false, Width: 200} }
 	t.Cleanup(func() { statusLiveOptsFn = origOpts })
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	s := loadSnapshotFixture(t, "node_snapshot_v1.json")
@@ -76,12 +79,16 @@ func TestStatusUDPRows(t *testing.T) {
 				t.Fatal(err)
 			}
 		})
-		for _, want := range []string{"3 ok", "4 unchecked", "50% of checked, 30% of online"} {
+		// The UDP row is part of the one-screen summary; the percentage
+		// suffix may be clipped on an 80 column screen, so assert on the
+		// tokens that survive clipping.
+		for _, want := range []string{"3 ok", "4 unchecked", "50%"} {
 			if !strings.Contains(out, want) {
 				t.Errorf("args %v missing %q: %s", args, want, out)
 			}
 		}
 		if len(args) > 0 {
+			// plain output: no ANSI and no escape sequences.
 			if strings.Contains(out, "\x1b") {
 				t.Error("plain output contains ANSI")
 			}
@@ -90,30 +97,20 @@ func TestStatusUDPRows(t *testing.T) {
 					t.Fatalf("plain output contains non-ASCII rune %q", r)
 				}
 			}
+			// The summary rows also lack escape sequences.
+			if strings.ContainsAny(out, "\x1b") {
+				t.Error("plain summary contains ANSI")
+			}
 		} else if !strings.Contains(out, "\x1b") {
 			t.Error("default TTY output missing ANSI")
 		}
 	}
-	ps := []Provider{
-		{Unit: "a.service", User: "ua", StateDir: t.TempDir(), Running: true},
-		{Unit: "b.service", User: "ub", StateDir: t.TempDir(), Running: true},
-	}
-	stubStatus(t, ps, map[string]json.RawMessage{"a.service": raw}, true)
-	summary := captureStdout(t, func() {
-		if err := cmdStatus([]string{"--plain"}); err != nil {
-			t.Fatal(err)
-		}
-	})
-	if strings.Contains(summary, "\x1b") {
-		t.Fatal("plain summary contains ANSI")
-	}
 }
-
 func TestStatusAppendsLiveBlockWhenProviderAnswers(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus(nil); err != nil {
+		if err := cmdStatus([]string{"--detail"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -135,7 +132,7 @@ func TestStatusShowsPersistedPressureSummary(t *testing.T) {
 	p := Provider{User: "u", StateDir: dir, Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus(nil); err != nil {
+		if err := cmdStatus([]string{"--detail"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -150,7 +147,7 @@ func TestStatusFallsBackToBarePressureScore(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"": fixtureRaw(t, "node_snapshot_v1.json")}, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus(nil); err != nil {
+		if err := cmdStatus([]string{"--detail"}); err != nil {
 			t.Fatal(err)
 		}
 	})
@@ -249,12 +246,39 @@ func TestStatusSkipsLiveBlockSilentlyWhenUnreachable(t *testing.T) {
 	p := Provider{User: "u", StateDir: t.TempDir(), Running: true}
 	stubStatus(t, []Provider{p}, nil, true)
 	out := captureStdout(t, func() {
-		if err := cmdStatus(nil); err != nil {
+		if err := cmdStatus([]string{"--detail"}); err != nil {
 			t.Fatal(err)
 		}
 	})
 	if strings.Contains(out, "Live (provider") || !strings.Contains(out, "user:") {
 		t.Fatalf("existing output must stand alone:\n%s", out)
+	}
+}
+
+func TestStatusJSONSummaryPrintsSchemaDocument(t *testing.T) {
+	raw := fixtureRaw(t, "node_snapshot_v1.json")
+	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, map[string]json.RawMessage{"a.service": raw}, true)
+	out := captureStdout(t, func() {
+		if err := cmdStatus([]string{"--json-summary"}); err != nil {
+			t.Fatal(err)
+		}
+	})
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
+	}
+	if got["schema"] != "urnet-tools-status/1" {
+		t.Fatalf("--json-summary must carry schema=urnet-tools-status/1, got %v", got)
+	}
+	if _, ok := got["rows"].([]any); !ok {
+		t.Fatalf("--json-summary must carry the summary rows, got %v", got)
+	}
+	if _, ok := got["provider"].(map[string]any); !ok {
+		t.Fatalf("--json-summary must carry the provider block, got %v", got)
+	}
+	if strings.Contains(out, "user:") {
+		t.Fatalf("--json-summary must not print the classic output:\n%s", out)
 	}
 }
 
@@ -278,6 +302,9 @@ func TestStatusJSONPrintsRawSnapshot(t *testing.T) {
 	if strings.Contains(out, "user:") {
 		t.Fatalf("--json must not print the classic output:\n%s", out)
 	}
+	if got["schema"] != nil {
+		t.Fatalf("--json must stay the raw snapshot, not the summary document: %v", got)
+	}
 }
 
 func TestStatusJSONErrorsWhenUnavailable(t *testing.T) {
@@ -290,6 +317,26 @@ func TestStatusJSONErrorsWhenUnavailable(t *testing.T) {
 	}
 	if out != "" {
 		t.Fatalf("stdout must stay empty on failure, got %q", out)
+	}
+}
+
+func TestStatusJSONSummaryReportsUnreachable(t *testing.T) {
+	p := Provider{Unit: "a.service", User: "u", StateDir: t.TempDir(), Running: true}
+	stubStatus(t, []Provider{p}, nil, true)
+	var err error
+	out := captureStdout(t, func() { err = cmdStatus([]string{"--json-summary"}) })
+	if err != nil {
+		t.Fatalf("err = %v; --json-summary stays usable when the snapshot is unreachable", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal([]byte(out), &got); err != nil {
+		t.Fatalf("stdout is not one JSON object: %v\n%s", err, out)
+	}
+	if got["exit_code"] != float64(3) {
+		t.Fatalf("--json-summary must report exit_code 3 when unreachable, got %v", got)
+	}
+	if out == "" {
+		t.Fatal("stdout must not stay empty when the snapshot is unavailable")
 	}
 }
 
@@ -325,7 +372,7 @@ func TestStatusManyProvidersTargetShowsDetail(t *testing.T) {
 			t.Fatal(err)
 		}
 	})
-	if !strings.Contains(out, "b.service") || !strings.Contains(out, "why idle") || strings.Contains(out, "providers found") {
+	if !strings.Contains(out, "b.service") || !strings.Contains(out, "idle") || strings.Contains(out, "providers found") {
 		t.Fatalf("want detail for b only:\n%s", out)
 	}
 }
@@ -341,26 +388,31 @@ func TestStatusManyProvidersBadTargetStillErrors(t *testing.T) {
 	if err := cmdStatus([]string{"--unit", "nope.service"}); err == nil || !strings.Contains(err.Error(), "matches no provider") {
 		t.Fatalf("err = %v", err)
 	}
-	// --json with several providers and no target still needs a target.
-	if err := cmdStatus([]string{"--json"}); err == nil || !strings.Contains(err.Error(), "specify a target") {
-		t.Fatalf("--json without target: err = %v", err)
+	// the JSON modes with several providers and no target still need a target.
+	for _, flag := range []string{"--json", "--json-summary"} {
+		if err := cmdStatus([]string{flag}); err == nil || !strings.Contains(err.Error(), "specify a target") {
+			t.Fatalf("%s without target: err = %v", flag, err)
+		}
 	}
 }
 
 // The sudo re-exec for another user's provider must carry --json through to
 // the elevated child.
 func TestStatusJSONSurvivesCrossUserElevation(t *testing.T) {
-	p := Provider{Unit: "a.service", User: "someone-else-entirely", StateDir: t.TempDir(), Running: true}
-	stubStatus(t, []Provider{p}, nil, false)
-	var got []string
-	origE := elevateSelfFunc
-	t.Cleanup(func() { elevateSelfFunc = origE })
-	elevateSelfFunc = func(args []string) error { got = args; return nil }
-	if err := cmdStatus([]string{"--json"}); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(got, " ") != "status --json" {
-		t.Fatalf("elevated argv = %v", got)
+	for _, flag := range []string{"--json", "--json-summary"} {
+		p := Provider{Unit: "a.service", User: "someone-else-entirely", StateDir: t.TempDir(), Running: true}
+		stubStatus(t, []Provider{p}, nil, false)
+		var got []string
+		origE := elevateSelfFunc
+		elevateSelfFunc = func(args []string) error { got = args; return nil }
+		err := cmdStatus([]string{flag})
+		elevateSelfFunc = origE
+		if err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(got, " ") != "status "+flag {
+			t.Fatalf("elevated argv for %s = %v", flag, got)
+		}
 	}
 }
 

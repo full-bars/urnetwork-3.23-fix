@@ -20,6 +20,38 @@ func withHelp(cmd *cobra.Command, long, example string) *cobra.Command {
 	return cmd
 }
 
+// helpFlag documents one flag of a command that parses its arguments by hand.
+// The flag is registered with cobra so `--help` lists it, but cobra never
+// parses it: the command's own parser stays the only reader of the arguments.
+// A value flag names its placeholder in backquotes inside usage, for example
+// "refresh period, default `2s`".
+type helpFlag struct {
+	name  string
+	short string
+	value bool
+	usage string
+}
+
+// withHelpFlags is withHelp plus a Flags section for the command's own flags.
+func withHelpFlags(cmd *cobra.Command, long, example string, flags ...helpFlag) *cobra.Command {
+	cmd.Flags().SortFlags = false
+	for _, f := range flags {
+		switch {
+		case f.value:
+			cmd.Flags().StringP(f.name, f.short, "", f.usage)
+		default:
+			cmd.Flags().BoolP(f.name, f.short, false, f.usage)
+		}
+	}
+	return withHelp(cmd, long, example)
+}
+
+// perCommandHelpTemplate is cobra's default per-command page with a blank line
+// between the description and the usage.
+const perCommandHelpTemplate = `{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
+
+{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`
+
 // dockerRootHelpMenu is the curated root menu for urnet-docker, matching the
 // tool's sectioned/emoji style. Replaces Cobra's flat list; per-command help
 // pages are untouched (subcommands reset to the default template below).
@@ -99,12 +131,14 @@ func buildDockerRootCmd() *cobra.Command {
 	}
 	rootCmd.SetHelpTemplate(dockerRootHelpMenu)
 
-	rootCmd.PersistentFlags().String("unit", "", "container name (mapped to Unit)")
-	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. mynetwork")
-	rootCmd.PersistentFlags().String("network-id", "", "JWT network id")
-	rootCmd.PersistentFlags().String("state-dir", "", "state dir INSIDE the container")
-	rootCmd.PersistentFlags().BoolP("force", "f", false, "bypass the confirm gate")
-	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "show what would happen without doing it")
+	// Choose which provider container a command acts on. Give at most one of the target flags.
+	rootCmd.PersistentFlags().String("unit", "", "target this `container` (name or id)")
+	rootCmd.PersistentFlags().String("network", "", "target the provider on this network `name`")
+	rootCmd.PersistentFlags().String("network-id", "", "target the provider with this network `id`")
+	rootCmd.PersistentFlags().String("state-dir", "", "target the provider using this state `dir` in the container")
+	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip the confirmation prompt")
+	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "print what would happen, change nothing")
+	rootCmd.PersistentFlags().SortFlags = false
 
 	rootCmd.AddCommand(
 		newDockerProvidersCmd(),
@@ -132,8 +166,7 @@ func buildDockerRootCmd() *cobra.Command {
 		newDockerUsageCmd(),
 	)
 	for _, sub := range rootCmd.Commands() {
-		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
-{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+		sub.SetHelpTemplate(perCommandHelpTemplate)
 	}
 
 	return rootCmd
@@ -154,7 +187,7 @@ func newDockerStatusCmd() *cobra.Command {
 func newDockerTopCmd() *cobra.Command {
 	return withHelp(newCobraCmd("top [target]", "live full-screen view of a container", nil, func(cmd *cobra.Command, args []string) error {
 		return cmdDockerTop(args)
-	}), "Live full-screen status dashboard for a provider container. Shows billable and total throughput graphs, proxy pool state, client sessions, and node resources inside the container. Refreshes every 100ms–2s; press - for faster and + for slower, w to zoom the graphs, m for the theme and graph style menu, ? for help, q to quit.", "  urnet-docker top\n  urnet-docker top mynetwork-provider\n  urnet-docker top --unit mynetwork-provider")
+	}), "Live full-screen status dashboard inside a provider container. Press - for faster refresh, + for slower refresh, w to zoom the graphs, g for goroutines, m for the settings menu, ? for help, and q to quit. Requires an interactive terminal and a current image.", "  urnet-docker top\n  urnet-docker top mynetwork-provider\n  urnet-docker top --unit mynetwork-provider")
 }
 
 func newDockerSnStatusCmd() *cobra.Command {

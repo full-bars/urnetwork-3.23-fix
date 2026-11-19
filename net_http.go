@@ -1433,12 +1433,14 @@ func (self *ClientStrategy) expandExtenderDialers() (expandedDialers []*clientDi
 		}
 	}
 
+	// a carrier the space's egress cannot carry is left out
+	extenderConfigs = dialableExtenderConfigs(&self.settings.ConnectSettings, extenderConfigs)
+
 	for _, extenderConfig := range extenderConfigs {
 		dialTlsContext := NewExtenderDialTlsContext(
 			&self.settings.ConnectSettings,
 			extenderConfig,
 		)
-
 		dialer := &clientDialer{
 			minimumWeight:  self.settings.ExtenderMinimumWeight,
 			priority:       100,

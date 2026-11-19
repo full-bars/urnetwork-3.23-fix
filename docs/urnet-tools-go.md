@@ -24,18 +24,19 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | Command | What it does |
 |---|---|
 | `providers` (`list`, `ps`) | List providers: your own OS user's by default, or all providers on the box with `--all` (JWT identities, systemd units, state dirs). |
-| `status [target]` | Show detailed status. On Linux, displays live `systemctl status` view; on Windows/macOS, renders styled panel. The live block's pressure row prints the provider's one-sentence pressure summary (the `summary` from `~/.urnetwork/pressure_status`) when the provider writes it; older providers show the bare score. |
+| `status [--live] [--brief] [--json] [--json-summary] [--summary] [--plain]` | One-screen health summary: version, time-boxed cached update check, proxy counts, UDP relay coverage, extender state, unit health, and resource utilization. `--live` (or `-l`, with `--interval`) refreshes in place until Ctrl-C. `--brief` prints warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. A healthy result prints nothing. `--json` prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`). `--detail` restores the classic full view (`systemctl status` on Linux, styled panel on Windows/macOS, followed by the live and extender blocks). `--plain` uses plain text without ANSI escapes. |
 | `diag` | Capture a running provider's profiles and summary. See [Diagnostics](/full-bars/urnetwork-3.23-fix/wiki/Diagnostics). |
-| `start [target]` | Start provider service/process. |
-| `stop [target]` | Stop provider service/process. |
-| `restart [target]` | Restart provider service/process. |
+| `start` | Start the provider's systemd unit. Target a specific provider with target flags. |
+| `stop` | Stop the provider's systemd unit. Target a specific provider with target flags. |
+| `restart` | Restart the provider's systemd unit. Confirm-gated (`-f`/`--force` skips prompt). |
 | `reinstall [target]` | Cleanly reinstall provider binary (delegates to latest updater). |
 | `uninstall [target]` | Uninstall provider, unit files, and optional state. Confirm-gated. |
-| `update [target]` | Update provider to the latest release (or `--tag <version>`). Digest-verified. |
+| `update [--all] [--include <list>] [--exclude <list>] [--tag <tag>] [--digest <sha256>] [--url <url>]` | Update provider(s) to the latest release, check digest, swap binary, and restart unit. |
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
-| `logs [target] [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [target] [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`); the graphs cover the provider's ten minutes or top's own binned `1h` and `24h` windows; press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `logs [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
+| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`); the graphs cover the provider's ten minutes or top's own binned `1h` and `24h` windows; press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `extender [status|events|about|on|off|enable|disable|setup]` | Manage the extender role: `status` shows ports and relayed traffic; `events` reads recent gossip events (`--since`, `--kind`, `--json`); `about` explains ports and requirements; `setup` configures low-port bind privilege and firewall rules; `on`/`off` controls the role live without restart. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
 
@@ -52,6 +53,10 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `fast-auth [on\|off\|status] [target]` | Toggle or check `~/.urnetwork/fast_auth` marker to bypass auth rate limiter. Confirm-gated. |
 | `set [help \| <key> <val> \| <key> off \| <key>] [target]` | Get, set, or clear a runtime provider override over the control socket. `urnet-tools set help` lists every key with its value domain and what it changes. The keys are `node-name`, `fast-auth`, `self-heal`, `proxy-url-max`, `proxy-url-refresh`, `cleanup-scope`, `cleanup-interval`, `hot-restart`, `oom-cap`, `smart-dialer`, `gomemlimit`, `gogc`, `profile`, `ramlogs`, `metrics`, `metrics-listen`, `h3`, `h3-datagram`, `h3-datagram-send`, `tls-hello`, `baseline` and `proxy-audit`. For `tls-hello`, `off` is a stored value, not a clear: it survives restarts and takes precedence over `URNETWORK_TLS_HELLO=on`. A control socket `clear` returns the key to `URNETWORK_TLS_HELLO`. Most apply live on the next tick; `profile`, `ramlogs` and `smart-dialer` need a restart. Queued to `pending_overrides.json` if the provider is stopped. Confirm-gated. |
 | `set extender-discovery <off\|on\|feed-only>` | Control the extender directory feed and gossip mesh. Default: `on` when the extender runs. Applies live and persists; `off` is saved explicitly. |
+| `set extender-udp443 <on\|off>` | Enable or disable the UDP 443 QUIC carrier. Default: `on`. A change restarts an active extender role. |
+| `set extender-udp4053 <on\|off>` | Enable or disable the UDP 4053 DNS carrier. Default: `on`. A change restarts an active extender role. |
+| `set extender-udp53 <on\|off>` | Enable or disable the UDP 53 DNS carrier. Default: `on`. A change restarts an active extender role. Port 53 needs bind permission. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
+| `set udp-probe <on\|off>` | Control the live proxy UDP background sweep. Default: `on`. A running sweep continues. |
 | `set pprof [on\|off\|<ip:port>]` | Turn the loopback pprof diagnostics on or off, or move them to another loopback address. The default is on at `127.0.0.1:6060`. Applies live, no restart. See [Troubleshooting](/full-bars/urnetwork-3.23-fix/wiki/Troubleshooting#inspecting-a-stuck-or-heavy-provider). |
 | `rename <name> [target]` | Set the dashboard identity label on the backend. Alias for `set node-name <name>`. The setting persists in provider state and takes precedence over the legacy node name file. Use `off` to clear. Available with `urnet-tools`. `urnet-docker rename` does not work: the image's shell `urnet-tools` does not implement it. For container instructions, see [Node-Identity](/full-bars/urnetwork-3.23-fix/wiki/Node-Identity). |
 | `session save <file> [target]` | Export encrypted AES-256-CBC bundle of provider JWT identity and state. Prompts for passphrase. |
@@ -153,6 +158,12 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 | `dashboard` | Rich terminal status panel: state indicators, active settings, proxy sources, and restart warnings. Aliases `dash`, `panel`. |
 
 ---
+
+## Docker top
+
+`urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.
+
+The dashboard uses the writable `/root/.urnetwork` mount for its settings when that mount is present. Use a named volume or a bind mount and reuse it when recreating the container. An anonymous volume is not automatically reused. Without a writable state mount, settings remain in the container and can be lost on recreation. Terminal colors follow `TERM` and `COLORTERM` when they are set on the host. Container network interfaces describe the container namespace, not necessarily the host network.
 
 ## 🎯 Targeting & Selectors
 

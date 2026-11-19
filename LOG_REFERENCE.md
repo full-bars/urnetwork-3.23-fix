@@ -8,6 +8,18 @@ A plain-language guide to every log line you'll regularly see running urnetwork 
 
 The `[extender] discovery started` line says the feed and gossip mesh are active. `discovery started in feed-only mode` says the feed is active and gossip is refused. `discovery stopped` says both services are refused again. `discovery could not start` gives the reason and the next retry delay; both services remain refused while it retries.
 
+```text
+🌉✅ [extender] gossip health is healthy: <reason>
+🌉⚠️ [extender] gossip health is <state>: <reason>
+🌉⚠️ [extender] gossip anomaly (<reason>): last <N> event(s): <events>
+🌉⚠️ [extender] gossip lost all mesh peers; it will keep trying to connect.
+🌉 [extender] gossip started locally but has no mesh peers yet; it will keep trying to connect.
+🌉 [extender] discovery is waiting for the platform directory, network host and extender identity; gossip has not started yet.
+🌉⚠️ [extender] gossip directory application errors: <N> since this role started; inspect the gossip logs for details.
+```
+
+`gossip health is ...` logs state transitions (`healthy`, `capped`, `bootstrapping`, `degraded`, `isolated`). Anomaly dumps record recent events when reject spikes or state regressions happen, rate-limited to at most once per 30 minutes.
+
 ## Release diagnostics and network binding
 
 The following are literal format strings. The provider fills the `%` fields at runtime.

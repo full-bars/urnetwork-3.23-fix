@@ -1,0 +1,7 @@
+update: installed v3.23.0-fix.35.11; latest v3.23.0-fix.35.11
+* Version   v3.23.0-fix.32.1
+* Health    provider stopped; run urnet-tools start
+* Proxies   58 up, 2 degraded, 0 connecting, 3 dead
+* Extender  active
+* Unit      urnetwork.service
+* Resources heap 1.8 GiB, 1204 goroutines, pressure 0.21

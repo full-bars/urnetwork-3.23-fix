@@ -6445,10 +6445,11 @@ func readProxySettings() []*connect.ProxySettings {
 }
 
 // readProxySettingsFromFile reads proxy settings directly from an external file
-// where each non-blank, non-comment line is ip:port:user:pass. Entries missing
+// where each non-blank, non-comment line is host:port:user:pass. Entries missing
 // credentials are rejected (Workflow A requires authenticated proxies).
-// Returns an error only if the file itself cannot be read; malformed individual
-// lines are skipped with a warning.
+// Returns an error only if the file itself cannot be read. A rejected line owns
+// nothing and does not stop the others. Each rejection is reported once per
+// change of the file, by line number and reason only, never the line itself.
 func readProxySettingsFromFile(path string) ([]*connect.ProxySettings, error) {
 	all, _, err := readClassifiedProxySource(path)
 	return all, err

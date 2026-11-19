@@ -474,36 +474,89 @@ var (
 
 // cmdStatus shows detailed info for one provider (targeted). With several
 // providers on the box and no target it prints one compact row per provider
-// instead. --json prints the raw live snapshot.
+// instead. --json prints the raw live snapshot. The default output is the
+// one-screen summary; --detail restores the classic deep view, --plain drops
+// color and escape sequences, and --brief gives a one-line script-friendly
+// exit-code return.
 func cmdStatus(args []string) error {
-	// --json is this command's own flag; strip it before the strict target
-	// parser sees it. The original args still go to the sudo re-exec so the
-	// elevated child prints JSON too.
+	// These are this command's own flags; strip them before the strict target
+	// parser sees them. The original args still go to the sudo re-exec so the
+	// elevated child honours them too.
 	jsonMode := false
+	jsonSummaryMode := false
 	plainMode := false
+	briefMode := false
+	detailMode := false
+	summaryMode := false
+	liveMode := false
+	interval := 2 * time.Second
 	var targetArgs []string
-	for _, a := range args {
-		if a == "--plain" {
+	for i := 0; i < len(args); i++ {
+		a := args[i]
+		switch {
+		case a == "--plain":
 			plainMode = true
-			continue
-		}
-		if a == "--json" {
+		case a == "--json":
 			jsonMode = true
-			continue
+		case a == "--json-summary":
+			jsonSummaryMode = true
+		case a == "--brief" || a == "-brief":
+			briefMode = true
+		case a == "--detail" || a == "--full":
+			detailMode = true
+		case a == "--summary":
+			summaryMode = true
+		case a == "--live" || a == "-live" || a == "-l":
+			liveMode = true
+		case a == "--interval" || a == "-interval":
+			if i+1 >= len(args) {
+				return fmt.Errorf("%s requires a duration argument", a)
+			}
+			i++
+			d, err := time.ParseDuration(args[i])
+			if err != nil {
+				secs, ferr := strconv.ParseFloat(args[i], 64)
+				if ferr != nil {
+					return fmt.Errorf("--interval %q is not a duration (try 2s or 5s)", args[i])
+				}
+				d = time.Duration(secs * float64(time.Second))
+			}
+			if d < 100*time.Millisecond {
+				return fmt.Errorf("--interval must be at least 100ms")
+			}
+			interval = d
+		case strings.HasPrefix(a, "--interval=") || strings.HasPrefix(a, "-interval="):
+			val := a[strings.Index(a, "=")+1:]
+			d, err := time.ParseDuration(val)
+			if err != nil {
+				secs, ferr := strconv.ParseFloat(val, 64)
+				if ferr != nil {
+					return fmt.Errorf("--interval %q is not a duration (try 2s or 5s)", val)
+				}
+				d = time.Duration(secs * float64(time.Second))
+			}
+			if d < 100*time.Millisecond {
+				return fmt.Errorf("--interval must be at least 100ms")
+			}
+			interval = d
+		default:
+			targetArgs = append(targetArgs, a)
 		}
-		targetArgs = append(targetArgs, a)
 	}
-	t, _, err := parseTargetFlags(targetArgs)
+	t, extra, err := parseTargetFlags(targetArgs)
 	if err != nil {
 		return err
+	}
+	if len(extra) > 0 {
+		return errUnexpectedPositional("status", extra)
 	}
 	providers := discoverStatusFn()
 	p, narrowed, err := selectTargetOrSoleAccessible(providers, t, false)
 	if err != nil {
 		// Several providers and no target used to be refused with an
-		// inventory. Plain status now summarizes them instead; --json still
-		// needs one provider to be named.
-		if !jsonMode && !hasExplicitTarget(t) && len(providers) > 1 {
+		// inventory. Plain status now summarizes them instead; the JSON modes
+		// still need one provider to be named.
+		if !jsonMode && !jsonSummaryMode && !briefMode && !detailMode && !liveMode && !hasExplicitTarget(t) && len(providers) > 1 {
 			printProviderSummary(providers, plainMode)
 			return nil
 		}
@@ -517,20 +570,45 @@ func cmdStatus(args []string) error {
 	if jsonMode {
 		return printSnapshotJSON(p)
 	}
+	if jsonSummaryMode {
+		return printStatusJSON(p)
+	}
+	if briefMode {
+		d := collectStatusData(p)
+		fmt.Println(statusBriefLine(d))
+		return briefExit(d.ExitCode)
+	}
 	if narrowed {
 		printNarrowedNote(len(providers), p, "status")
 	}
-	printSigpipeRestartWarning(p)
-	if plainMode {
-		if err := renderStatusTable(p); err != nil {
+	if detailMode || (!liveMode && !summaryMode) {
+		// The default view: the platform status (systemctl on Linux), then the
+		// update and health verdict, the live metrics and the extender block.
+		printSigpipeRestartWarning(p)
+		if plainMode {
+			if err := renderStatusTable(p); err != nil {
+				return err
+			}
+		} else if err := renderStatusBase(p); err != nil {
 			return err
 		}
-	} else if err := renderStatusBase(p); err != nil {
-		return err
+		printStatusVerdict(p, plainMode)
+		printLiveBlock(p, plainMode)
+		printExtenderBlock(p)
+		return nil
 	}
-	printLiveBlock(p, plainMode)
-	printExtenderBlock(p)
-	return nil
+	if liveMode {
+		return runStatusLiveFn(p, interval, plainMode)
+	}
+	// Default: the one-screen summary.
+	return renderStatusSummary(p, plainMode)
+}
+
+// errUnexpectedPositional rejects a bare argument. A command that picks its
+// provider with flags would otherwise ignore the argument and act on a default
+// provider, which hides a typo.
+func errUnexpectedPositional(cmd string, extra []string) error {
+	return fmt.Errorf("%s takes no positional arguments, got %q. Name the provider with --unit, --user, --network, --network-id, --state-dir or --pid", cmd, strings.Join(extra, " "))
 }
 
 // printSigpipeRestartWarning prints a warning line when the effective unit would leave a SIGPIPE death dead.
@@ -948,4 +1026,49 @@ func printToolVersionAndProviders() {
 		fmt.Printf("  %s: %s (%s, pid %d)%s\n",
 			providerLabel(p), version, status, p.PID, stale)
 	}
+}
+
+// briefExitError wraps an exit code so main.go can exit with the correct
+// code without changing the Run() signature. The documented contract is 0
+// healthy, 1 warning, 2 broken, 3 unreachable.
+type briefExitError int
+
+// briefExit turns the summary's exit code into the error main.go honours. A
+// healthy status is no error, so nothing is printed to stderr.
+func briefExit(code int) error {
+	if code == 0 {
+		return nil
+	}
+	return briefExitError(code)
+}
+
+func (e briefExitError) Error() string { return "" }
+func (e briefExitError) ExitCode() int { return int(e) }
+
+// StatusBriefExit is the interface main.go uses to honour --brief's exit code
+// without special-casing every command. Not every error carries one: a
+// usage error still exits 1.
+type StatusBriefExit interface {
+	error
+	ExitCode() int
+}
+
+// printStatusVerdict prints the update line and a one-line verdict between the
+// platform status and the live block. The verdict word follows the exit code.
+func printStatusVerdict(p Provider, plain bool) {
+	d := collectStatusData(p)
+	opts := statusLiveOptsFn()
+	color := opts.Color && !plain
+	main, hint := statusUpdateParts(d.Provider.Version, d.Update)
+	fmt.Println()
+	fmt.Println(main)
+	if hint != "" {
+		fmt.Printf("  %s\n", hint)
+	}
+	line := statusBriefLine(d)
+	if color {
+		code := map[int]string{0: "32", 1: "33", 2: "31", 3: "90"}[d.ExitCode]
+		line = "\x1b[1;" + code + "m" + line + "\x1b[0m"
+	}
+	fmt.Println("health: " + line)
 }

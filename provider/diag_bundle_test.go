@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"math"
@@ -11,6 +12,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect/gossip"
 )
 
 // diagTestClock is a hand-moved clock; nothing in these tests sleeps to make
@@ -464,5 +467,38 @@ func TestDiagEmptyProfileIsAFailedCapture(t *testing.T) {
 	}
 	if got := diagEntries(t, env); len(got) != 0 {
 		t.Fatalf("left %v behind", got)
+	}
+}
+
+func TestDiagBundleIncludesGossipEvents(t *testing.T) {
+	env, clock := newDiagTestEnv(t)
+	wantEvent := gossip.Event{
+		Time:      clock.t.Add(-5 * time.Second),
+		Kind:      "peer",
+		Peer:      "12D3KooW",
+		Direction: "in",
+		Reason:    "connect",
+	}
+	env.gossipEvents = func() []gossip.Event {
+		return []gossip.Event{wantEvent}
+	}
+	res, err := runDiag(context.Background(), env)
+	if err != nil {
+		t.Fatalf("runDiag: %v", err)
+	}
+	data, err := os.ReadFile(filepath.Join(res.Dir, "gossip-events.json"))
+	if err != nil {
+		t.Fatalf("read gossip-events.json: %v", err)
+	}
+	var got []gossip.Event
+	if err := json.Unmarshal(data, &got); err != nil {
+		t.Fatalf("unmarshal gossip-events.json: %v", err)
+	}
+	if len(got) != 1 || got[0].Kind != wantEvent.Kind || got[0].Peer != wantEvent.Peer || got[0].Reason != wantEvent.Reason {
+		t.Fatalf("gossip-events.json = %+v, want %+v", got, wantEvent)
+	}
+	summary, _ := os.ReadFile(filepath.Join(res.Dir, "summary.txt"))
+	if !strings.Contains(string(summary), "gossip-events.json") {
+		t.Fatalf("summary.txt missing gossip-events.json:\n%s", summary)
 	}
 }

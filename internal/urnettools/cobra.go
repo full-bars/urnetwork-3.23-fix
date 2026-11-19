@@ -143,13 +143,16 @@ func buildRootCmd() *cobra.Command {
 	// powershell) is registered, so `urnet-tools completion <shell>` works.
 	rootCmd.CompletionOptions.DisableDefaultCmd = false
 
-	rootCmd.PersistentFlags().String("unit", "", "systemd unit, e.g. urnetwork-native.service")
-	rootCmd.PersistentFlags().String("user", "", "OS user, e.g. urnet")
-	rootCmd.PersistentFlags().String("network", "", "JWT network name, e.g. mynetwork")
-	rootCmd.PersistentFlags().String("network-id", "", "JWT network id")
-	rootCmd.PersistentFlags().String("state-dir", "", "state dir")
-	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip confirm prompts ONLY")
-	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "print the plan, change nothing")
+	// Choose which provider a command acts on. Give at most one of the target flags.
+	rootCmd.PersistentFlags().String("unit", "", "target the provider of this systemd unit `name`")
+	rootCmd.PersistentFlags().String("user", "", "target the provider run by this OS user `name`")
+	rootCmd.PersistentFlags().String("network", "", "target the provider on this network `name`")
+	rootCmd.PersistentFlags().String("network-id", "", "target the provider with this network `id`")
+	rootCmd.PersistentFlags().String("state-dir", "", "target the provider using this state `dir`")
+	rootCmd.PersistentFlags().String("pid", "", "target the provider with this process `id`")
+	rootCmd.PersistentFlags().BoolP("force", "f", false, "skip the confirmation prompt (also -y, --yes)")
+	rootCmd.PersistentFlags().BoolP("dry-run", "n", false, "print what would happen, change nothing")
+	rootCmd.PersistentFlags().SortFlags = false
 
 	rootCmd.AddCommand(
 		newProvidersCmd(),
@@ -211,8 +214,7 @@ func buildRootCmd() *cobra.Command {
 		// Restore Cobra's default per-command help page (the framework's
 		// private defaultHelpTemplate). The root's curated menu must show only
 		// for bare `urnet-tools` / root -h, never for a subcommand's -h.
-		sub.SetHelpTemplate(`{{with (or .Long .Short)}}{{. | trimTrailingWhitespaces}}
-{{end}}{{if or .Runnable .HasSubCommands}}{{.UsageString}}{{end}}`)
+		sub.SetHelpTemplate(perCommandHelpTemplate)
 	}
 
 	return rootCmd
@@ -245,27 +247,61 @@ func parseGlobal(args []string, handler func(force, dryRun bool, rest []string) 
 }
 
 func newProvidersCmd() *cobra.Command {
-	return withHelp(newCobraCmd("providers [--all]", "list providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("providers", "list the providers on this box", []string{"list", "ps"}, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdProviders(rest)
 		})
-	}), "List providers found on this box: systemd units and bare processes, identified by their JWT network identity. By default an unprivileged caller sees only the providers owned by their own OS user (the one-provider-per-user contract); pass --all (run as root to read every identity) to list all providers across users. If no systemd providers exist but provider containers do, it says so and points you at urnet-docker.", "  urnet-tools providers\n  urnet-tools providers --all")
+	}),
+		"List the providers on this box (systemd units and bare processes), identified\nby their network. A normal user sees only their own providers. Run as root\nwith --all to list every user's providers. If only provider containers exist,\nit points you to urnet-docker.",
+		"  urnet-tools providers\n  sudo urnet-tools providers --all",
+		helpFlag{name: "all", usage: "list every user's providers (needs root)"},
+	)
 }
 
 func newStatusCmd() *cobra.Command {
-	return withHelp(newCobraCmd("status [target]", "detailed status of one provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("status", "health and live metrics of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStatus(rest)
 		})
-	}), "Show detailed status for one provider: user, unit, binary, version, state dir, PID, running state, network identity, and JWT expiry. On Linux this reproduces `systemctl status <unit>`; on Windows and macOS it renders a status panel with a proxy summary. When the provider answers, a live block follows: state, throughput, clients, proxies, uptime, last restart reason, memory. With several providers and no target, prints one compact row per provider. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --json prints the raw live snapshot for scripts. --plain uses a plain text table and ASCII live block.", "  urnet-tools status\n  urnet-tools status --network mynetwork\n  urnet-tools status --unit urnetwork-native.service\n  urnet-tools status --json")
+	}),
+		"Show a provider: the service status, an update and health line, the live\nmetrics and the extender block. With several providers and no target, it prints\none row per provider. Use --summary for a one-screen overview.",
+		"  urnet-tools status\n  urnet-tools status --live\n  urnet-tools status --brief && echo healthy\n  urnet-tools status --network mynetwork --json-summary",
+		helpFlag{name: "brief", usage: "one line: ok, warn, bad or unreachable (exit 0 to 3)"},
+		helpFlag{name: "live", short: "l", usage: "refresh until Ctrl-C"},
+		helpFlag{name: "interval", value: true, usage: "refresh every `duration`, for example 5s (default 2s)"},
+		helpFlag{name: "summary", usage: "one-screen overview rows instead of the full view"},
+		helpFlag{name: "detail", usage: "same as the default full view"},
+		helpFlag{name: "plain", usage: "plain text, no colors or box characters"},
+		helpFlag{name: "json", usage: "print the raw live snapshot as JSON"},
+		helpFlag{name: "json-summary", usage: "print summary as JSON (schema urnet-tools-status/1)"},
+	)
 }
 
 func newTopCmd() *cobra.Command {
-	return withHelp(newCobraCmd("top [target]", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("top", "live full-screen view of a provider", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdTop(rest)
 		})
-	}), "Open a live, full-screen view of one provider: billable and total throughput graphs for the last 10 minutes, current and average rates, bytes moved this run, clients, proxy pool, memory and descriptors, and recent events such as restarts and state changes. Reads only the provider's control socket and changes nothing. Also available as `urtop`. Keys: q, Esc or Ctrl-C quit; Tab and Shift-Tab switch provider; - refreshes faster and + slower, like btop; w zooms the graphs to the last 15 seconds; g lists where the provider's goroutines are parked; m opens a menu for the color theme and graph style (braille, block or tty), which is remembered; ? shows help. When the provider is slow to answer the screen keeps the last data and shows SLOW; when it stops answering the screen stays up, shows DISCONNECTED with a countdown, and resumes by itself. Needs an interactive terminal; use `status` for scripts. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. --interval sets the refresh period (default 1s, minimum 100ms; the rate numbers and the newest graph column update at that rate, the full snapshot at most once a second).", "  urnet-tools top\n  urnet-tools top --network mynetwork\n  urnet-tools top --interval 500ms\n  urtop")
+	}),
+		`Open a live full-screen view of one provider: throughput graphs for the last
+10 minutes, clients, the proxy pool, memory, descriptors and recent events. It
+reads the control socket and changes nothing. Also available as "urtop". It
+needs an interactive terminal, so use "status" in scripts.
+
+Keys:
+  q, Esc, Ctrl-C   quit
+  Tab, Shift-Tab   switch provider
+  - and +          refresh faster or slower
+  w                zoom the graphs to the last 15 seconds
+  g                show where the provider's goroutines are parked
+  m                menu for the color theme and graph style (remembered)
+  ?                help`,
+		"  urnet-tools top\n  urnet-tools top --interval 500ms\n  urnet-tools top --network mynetwork --copy",
+		helpFlag{name: "interval", value: true, usage: "refresh every `duration`, default 1s, minimum 100ms"},
+		helpFlag{name: "no-mouse", usage: "turn off mouse support"},
+		helpFlag{name: "copy", usage: "on quit, save the last screen as a text file"},
+		helpFlag{name: "plain", usage: "with --copy, use ASCII instead of box characters"},
+	)
 }
 
 func newDiagCmd() *cobra.Command {
@@ -283,35 +319,50 @@ func newSnStatusCmd() *cobra.Command {
 }
 
 func newStartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("start [target]", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("start", "start the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStart(rest, force, dryRun)
 		})
-	}), "Start the provider's systemd unit. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. Honors --dry-run, which prints the plan and starts nothing.", "  urnet-tools start\n  urnet-tools start --unit urnetwork-native.service\n  urnet-tools start --user urnet --dry-run")
+	}),
+		"Start the provider's systemd unit. With more than one provider on the box,\nchoose one with a target flag. Use --dry-run to see the plan without starting\nanything.",
+		"  urnet-tools start\n  urnet-tools start --unit urnetwork-native.service\n  urnet-tools start --user urnet --dry-run")
 }
 
 func newStopCmd() *cobra.Command {
-	return withHelp(newCobraCmd("stop [target]", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("stop", "stop the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdStop(rest, force, dryRun)
 		})
-	}), "Stop the provider's systemd unit. Target a specific provider with --unit, --user, --network, --network-id, or --state-dir. Honors --dry-run, which prints the plan and stops nothing.", "  urnet-tools stop\n  urnet-tools stop --unit urnetwork-native.service")
+	}),
+		"Stop the provider's systemd unit. With more than one provider on the box,\nchoose one with a target flag. Use --dry-run to see the plan without stopping\nanything.",
+		"  urnet-tools stop\n  urnet-tools stop --unit urnetwork-native.service\n  urnet-tools stop --user urnet --dry-run")
 }
 
 func newRestartCmd() *cobra.Command {
-	return withHelp(newCobraCmd("restart [target]", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("restart", "restart the provider's systemd unit", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdRestart(rest, force, dryRun)
 		})
-	}), "Restart the provider's systemd unit. This is a production action, so it asks for a typed \"yes\" unless you pass -f/--force (or -y/--yes). Use -n/--dry-run to print the plan without acting.", "  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network mynetwork --force")
+	}),
+		"Restart the provider's systemd unit. This acts on a running provider, so it\nasks you to type \"yes\" first. Pass --force to skip the question, or\n--dry-run to see the plan without restarting.",
+		"  urnet-tools restart --unit urnetwork-native.service\n  urnet-tools restart --network mynetwork --force\n  urnet-tools restart --dry-run")
 }
 
 func newUpdateCmd() *cobra.Command {
-	return withHelp(newCobraCmd("update [target]", "update provider(s) to latest", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelpFlags(newCobraCmd("update", "update provider(s) to the latest release", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdUpdate(rest, force, dryRun)
 		})
-	}), "Download and install the latest provider release, verify its sha256 digest, swap the binary, and restart the owning unit. With no target and multiple providers it prompts interactively; use --all to update every provider, or --include/--exclude to pick a subset. Pin a release with --tag, or an exact asset with --digest and --url. This also refreshes the urnet-tools binary itself from the same release.", "  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --tag v3.23.0-fix.30.5")
+	}),
+		"Download the latest provider release, check its sha256 digest, swap the binary\nand restart the unit. The urnet-tools binary is refreshed from the same\nrelease. With several providers and no target flag it asks which to update.\nNames in --include and --exclude are unit, user, network or network id.",
+		"  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --all --exclude mynetwork\n  urnet-tools update --tag v3.23.0-fix.30.5",
+		helpFlag{name: "all", usage: "update every provider on the box (no target flag)"},
+		helpFlag{name: "include", value: true, usage: "update only these providers, as a comma separated `list`"},
+		helpFlag{name: "exclude", value: true, usage: "skip these providers, as a comma separated `list`"},
+		helpFlag{name: "tag", value: true, usage: "install this release `tag` instead of the latest"},
+		helpFlag{name: "digest", value: true, usage: "expected `sha256` of the provider asset"},
+		helpFlag{name: "url", value: true, usage: "download the provider asset from this `url`"},
+	)
 }
 
 func newIdleUpdateCmd() *cobra.Command {
@@ -362,11 +413,13 @@ func newSelfUpdateCmd() *cobra.Command {
 }
 
 func newLogsCmd() *cobra.Command {
-	return withHelp(newCobraCmd("logs [target] [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
+	return withHelp(newCobraCmd("logs [N]", "show recent provider logs", nil, func(cmd *cobra.Command, args []string) error {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdLogs(rest)
 		})
-	}), "Show recent provider logs and then follow them. The default is 250 lines; pass a number to change it. If the unit runs with RAMLOGS or a low-memory profile, this streams from the RAM log buffer instead of journald.", "  urnet-tools logs\n  urnet-tools logs --unit urnetwork-native.service 200")
+	}),
+		"Show the last N lines of the provider's log, then follow it. N defaults to\n250. A unit that logs to RAM (RAMLOGS or a low-memory profile) is read from\nthe RAM buffer instead of journald.",
+		"  urnet-tools logs\n  urnet-tools logs 500\n  urnet-tools logs --unit urnetwork-native.service 200")
 }
 
 func newSummaryCmd() *cobra.Command {

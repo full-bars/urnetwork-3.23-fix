@@ -29,9 +29,32 @@ const (
 
 // ExtenderPort is one carrier port.
 type ExtenderPort struct {
-	Name  string `json:"name"`
-	Up    bool   `json:"up"`
-	Error string `json:"error,omitempty"`
+	Name     string `json:"name"`
+	Up       bool   `json:"up"`
+	Error    string `json:"error,omitempty"`
+	Disabled bool   `json:"disabled,omitempty"`
+	// Reason says why a port that is not up is down: address_in_use,
+	// permission_denied, unknown or not_requested. Providers that predate it
+	// leave it empty.
+	Reason string `json:"reason,omitempty"`
+}
+
+// extenderPortReasonText is the plain-words form of a port's Reason. The
+// second result is true when the reason is no fault, so a renderer can show it
+// as information and not as a warning.
+func extenderPortReasonText(reason string) (text string, informational bool) {
+	switch reason {
+	case "":
+		return "", false
+	case "address_in_use":
+		return "address already in use", false
+	case "permission_denied":
+		return "permission denied", false
+	case "not_requested":
+		return "not requested", true
+	default:
+		return "bind failed, cause unknown", false
+	}
 }
 
 // ExtenderFamilyPort is one carrier's platform state on one address family.
@@ -59,19 +82,28 @@ type ExtenderServed struct {
 	Lifetime uint64 `json:"lifetime"`
 }
 
+type ExtenderDialStats struct {
+	Attempts uint64 `json:"attempts"`
+	Timeout  uint64 `json:"timeout"`
+	Refused  uint64 `json:"refused"`
+	Canceled uint64 `json:"canceled"`
+	Other    uint64 `json:"other"`
+}
+
 type ExtenderDiscovery struct {
-	Requested             string  `json:"requested"`
-	State                 string  `json:"state"`
-	Failure               string  `json:"failure,omitempty"`
-	PeerId                string  `json:"peer_id"`
-	Peers                 int     `json:"peers"`
-	FeedSubscribers       int     `json:"feed_subscribers"`
-	ActiveRecords         *int    `json:"active_records,omitempty"`
-	ConnectedPeers        *int    `json:"connected_peers,omitempty"`
-	Connecting            *bool   `json:"connecting,omitempty"`
-	MessagesAccepted      *uint64 `json:"messages_accepted,omitempty"`
-	ApplyErrors           *uint64 `json:"apply_errors,omitempty"`
-	LastAcceptedUnixMilli int64   `json:"last_accepted_unix_milli,omitempty"`
+	Requested             string             `json:"requested"`
+	State                 string             `json:"state"`
+	Failure               string             `json:"failure,omitempty"`
+	PeerId                string             `json:"peer_id"`
+	Peers                 int                `json:"peers"`
+	FeedSubscribers       int                `json:"feed_subscribers"`
+	ActiveRecords         *int               `json:"active_records,omitempty"`
+	ConnectedPeers        *int               `json:"connected_peers,omitempty"`
+	Connecting            *bool              `json:"connecting,omitempty"`
+	DialStats             *ExtenderDialStats `json:"dial_stats,omitempty"`
+	MessagesAccepted      *uint64            `json:"messages_accepted,omitempty"`
+	ApplyErrors           *uint64            `json:"apply_errors,omitempty"`
+	LastAcceptedUnixMilli int64              `json:"last_accepted_unix_milli,omitempty"`
 }
 
 // ExtenderCarrierStats holds cumulative served and refused request counts for one carrier.
@@ -313,6 +345,12 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 			}
 			fmt.Fprintln(w)
 		}
+		if d.DialStats != nil {
+			dials := d.DialStats
+			fmt.Fprintf(w, "    Gossip dials: %d attempts; failures timeout=%d refused=%d canceled=%d other=%d\n", dials.Attempts, dials.Timeout, dials.Refused, dials.Canceled, dials.Other)
+		} else {
+			fmt.Fprintln(w, "    Gossip dials: not reported")
+		}
 		if d.MessagesAccepted != nil {
 			fmt.Fprintf(w, "    Gossip: %d valid peer messages received", *d.MessagesAccepted)
 			if d.ApplyErrors != nil {
@@ -356,8 +394,15 @@ func formatExtenderBlock(w io.Writer, r ExtenderReading, now time.Time) {
 	var ports []string
 	for _, port := range r.Ports {
 		switch {
+		case port.Disabled:
+			ports = append(ports, port.Name+" disabled by setting")
 		case port.Up:
 			ports = append(ports, port.Name+" bound")
+		case port.Reason == "not_requested":
+			ports = append(ports, port.Name+" not requested")
+		case port.Reason != "":
+			text, _ := extenderPortReasonText(port.Reason)
+			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, text))
 		case port.Error != "":
 			ports = append(ports, fmt.Sprintf("%s not bound (%s)", port.Name, port.Error))
 		default:

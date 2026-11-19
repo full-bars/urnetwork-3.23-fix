@@ -62,20 +62,25 @@ func writeTopCopy(text string, now time.Time) (string, error) {
 	if dir == "" {
 		return "", fmt.Errorf("no state dir to write the copy to")
 	}
-	if err := os.MkdirAll(dir, 0o700); err != nil {
+	// mkdirAllForOwner hands a directory it creates under sudo to the user the
+	// state dir belongs to, so a later run without sudo can still write there.
+	if err := mkdirAllForOwner(dir, 0o700); err != nil {
 		return "", err
 	}
 	f, err := os.CreateTemp(dir, "top-"+now.Format("20060102-150405")+"-*.txt")
 	if err != nil {
 		return "", err
 	}
+	chownConfigFdToDirOwner(f, dir)
 	path := f.Name()
 	_, writeErr := f.WriteString(text)
 	closeErr := f.Close()
 	if writeErr != nil {
+		_ = os.Remove(path)
 		return "", writeErr
 	}
 	if closeErr != nil {
+		_ = os.Remove(path)
 		return "", closeErr
 	}
 	return path, nil

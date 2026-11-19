@@ -43,6 +43,8 @@ type SystemPlatformConfigurer struct {
 	Lstat      func(name string) (os.FileInfo, error)
 	Route      string
 	SysctlUndo string
+	// SysctlPort is the lowest selected port; zero preserves the 443 default.
+	SysctlPort int
 	// SysctlDirs and SysctlConf override the sysctl search path for tests.
 	// Nil or empty means the documented default.
 	SysctlDirs []string
@@ -78,6 +80,13 @@ func (sp *SystemPlatformConfigurer) Platform() string {
 	return sp.PlatformName
 }
 
+func (sp *SystemPlatformConfigurer) sysctlPort() int {
+	if sp.SysctlPort == 53 {
+		return 53
+	}
+	return 443
+}
+
 // CheckRequirement checks whether the host platform requirement is already satisfied.
 func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool, string, error) {
 	switch sp.PlatformName {
@@ -88,14 +97,17 @@ func (sp *SystemPlatformConfigurer) CheckRequirement(binary, user string) (bool,
 		if sp.Route == "sysctl" {
 			if sp.ReadFile != nil {
 				if b, err := sp.ReadFile("/proc/sys/net/ipv4/ip_unprivileged_port_start"); err == nil {
-					if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v >= 0 && v <= 443 {
+					if v, err := strconv.Atoi(strings.TrimSpace(string(b))); err == nil && v >= 0 && v <= sp.sysctlPort() {
 						if !sp.sysctlPersisted() {
 							return false, fmt.Sprintf("ip_unprivileged_port_start=%d live, but not persisted; setup can write %s", v, extenderSysctlDropin), nil
 						}
-						if v == 443 {
-							return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443, persisted)", nil
+						if sp.sysctlPort() == 443 {
+							if v == 443 {
+								return true, "TCP 443 is available without a file capability (ip_unprivileged_port_start=443, persisted)", nil
+							}
+							return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443, persisted)", v), nil
 						}
-						return true, fmt.Sprintf("TCP 443 is available without a file capability (ip_unprivileged_port_start=%d is already lower than 443, persisted)", v), nil
+						return true, fmt.Sprintf("ports from %d are available without a file capability (ip_unprivileged_port_start=%d, persisted)", sp.sysctlPort(), v), nil
 					}
 				}
 			}
@@ -219,7 +231,7 @@ func (sp *SystemPlatformConfigurer) sysctlFiles() ([]string, bool) {
 
 // A live low threshold alone does not survive reboot. Scan the sysctl
 // configuration the way systemd-sysctl applies it; the last assignment wins
-// and must be at most 443. Unreadable files and unparsable values fail closed.
+// and must be at most the selected port. Unreadable files and unparsable values fail closed.
 func (sp *SystemPlatformConfigurer) sysctlPersisted() bool {
 	if sp.ReadFile == nil {
 		return false
@@ -255,7 +267,7 @@ func (sp *SystemPlatformConfigurer) sysctlPersisted() bool {
 			last, found = v, true
 		}
 	}
-	return found && last >= 0 && last <= 443
+	return found && last >= 0 && last <= sp.sysctlPort()
 }
 
 // PlanRequirement returns the exact commands that ApplyRequirement will run.
@@ -275,7 +287,7 @@ func (sp *SystemPlatformConfigurer) PlanRequirement(binary, user string) ([]setu
 				commands = append(commands, setupCommand{name: "cp", args: []string{"-p", "--", extenderSysctlDropin, extenderSysctlBackup}})
 			}
 			return append(commands,
-				setupCommand{name: "sh", args: []string{"-c", "echo net.ipv4.ip_unprivileged_port_start=443 > " + extenderSysctlDropin}},
+				setupCommand{name: "sh", args: []string{"-c", fmt.Sprintf("echo net.ipv4.ip_unprivileged_port_start=%d > %s", sp.sysctlPort(), extenderSysctlDropin)}},
 				setupCommand{name: "sysctl", args: []string{"--system"}},
 			), nil
 		}
@@ -583,7 +595,7 @@ func (sp *SystemPlatformConfigurer) applyLinuxSysctl() (applied bool, desc strin
 		}
 	}
 	wrote = true // even a partial write needs recovery guidance
-	if err := sp.WriteFile(extenderSysctlDropin, []byte(extenderSysctlContent), 0o644); err != nil {
+	if err := sp.WriteFile(extenderSysctlDropin, []byte(fmt.Sprintf("net.ipv4.ip_unprivileged_port_start=%d\n", sp.sysctlPort())), 0o644); err != nil {
 		return false, "", fmt.Errorf("writing %s: %w", extenderSysctlDropin, err)
 	}
 	var applyErr error
@@ -591,7 +603,7 @@ func (sp *SystemPlatformConfigurer) applyLinuxSysctl() (applied bool, desc strin
 		out, err := sp.ExecCmd("sysctl", "--system")
 		if err != nil {
 			applyErr = fmt.Errorf("sysctl --system failed (%s: %w)", strings.TrimSpace(string(out)), err)
-			out2, err2 := sp.ExecCmd("sysctl", "-w", "net.ipv4.ip_unprivileged_port_start=443")
+			out2, err2 := sp.ExecCmd("sysctl", "-w", fmt.Sprintf("net.ipv4.ip_unprivileged_port_start=%d", sp.sysctlPort()))
 			if err2 != nil {
 				return false, "", fmt.Errorf("applying sysctl failed: %v; fallback sysctl -w also failed: %s: %w", applyErr, strings.TrimSpace(string(out2)), err2)
 			}
@@ -603,8 +615,8 @@ func (sp *SystemPlatformConfigurer) applyLinuxSysctl() (applied bool, desc strin
 			return false, "", fmt.Errorf("verifying sysctl live value: %w", err)
 		}
 		val, err := strconv.Atoi(strings.TrimSpace(string(data)))
-		if err != nil || val > 443 {
-			return false, "", fmt.Errorf("sysctl live verification failed: net.ipv4.ip_unprivileged_port_start is %s (want <= 443)", strings.TrimSpace(string(data)))
+		if err != nil || val < 0 || val > sp.sysctlPort() {
+			return false, "", fmt.Errorf("sysctl live verification failed: net.ipv4.ip_unprivileged_port_start is %s (want <= %d)", strings.TrimSpace(string(data)), sp.sysctlPort())
 		}
 		return true, fmt.Sprintf("applied sysctl drop-in %s (net.ipv4.ip_unprivileged_port_start=%d); undo with: %s", extenderSysctlDropin, val, recovery), nil
 	}

@@ -114,6 +114,49 @@ func (m *extenderManager) Start(ctx context.Context, wg *sync.WaitGroup) {
 	}()
 }
 
+// isExtenderCarrierKey identifies settings that replace the running role.
+func isExtenderCarrierKey(key string) bool {
+	switch key {
+	case "extender_udp443", "extender_udp4053", "extender_udp53":
+		return true
+	}
+	return false
+}
+
+// RestartCarriers replaces only an active role. It must run after the control
+// transaction unlocks: draining a role can take time. The manager lock orders
+// competing replacements, each of which reads the latest persisted settings.
+func (m *extenderManager) RestartCarriers() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restartCarriersLocked(false)
+}
+
+func (m *extenderManager) restartCarriersIfChanged() error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return m.restartCarriersLocked(true)
+}
+
+func (m *extenderManager) restartCarriersLocked(onlyIfChanged bool) error {
+	if m.role == nil {
+		return nil
+	}
+	if onlyIfChanged {
+		current := m.newConfig().disabledCarriers
+		applied := m.role.config.disabledCarriers
+		changed := false
+		for _, name := range []string{"udp 443", "dns 4053", "dns 53"} {
+			changed = changed || current[name] != applied[name]
+		}
+		if !changed {
+			return nil
+		}
+	}
+	m.stopLocked("UDP carrier settings changed")
+	return m.reconcileLocked("UDP carrier settings changed")
+}
+
 // Reconcile starts or stops the role so it matches the setting and the direct
 // slot. Safe to call from any goroutine, any number of times.
 func (m *extenderManager) Reconcile(why string) {
@@ -122,9 +165,9 @@ func (m *extenderManager) Reconcile(why string) {
 	m.reconcileLocked(why)
 }
 
-func (m *extenderManager) reconcileLocked(why string) {
+func (m *extenderManager) reconcileLocked(why string) error {
 	if m.ctx == nil || m.ctx.Err() != nil {
-		return
+		return nil
 	}
 	on, source := extenderSetting(m.environ)
 	if bad := extenderUnrecognisedEnv(m.environ); bad == "" {
@@ -151,7 +194,7 @@ func (m *extenderManager) reconcileLocked(why string) {
 		if m.role == nil {
 			// a failed start keeps its reason and its dedupe marker, so a
 			// start that keeps failing is retried at every check but logged once
-			m.startLocked(why, source)
+			return m.startLocked(why, source)
 		}
 	case m.role != nil:
 		reason := m.notRunningReason(on, source, direct)
@@ -165,6 +208,7 @@ func (m *extenderManager) reconcileLocked(why string) {
 			importantLogf("%s\n", line)
 		}
 	}
+	return nil
 }
 
 func (m *extenderManager) notRunningReason(on bool, source string, direct bool) string {
@@ -177,7 +221,7 @@ func (m *extenderManager) notRunningReason(on bool, source string, direct bool) 
 	return "unknown"
 }
 
-func (m *extenderManager) startLocked(why string, source string) {
+func (m *extenderManager) startLocked(why string, source string) error {
 	config := m.newConfig()
 	// the platform's own hosts are always allowed, with any the operator added
 	// on top: its activation probe forwards to its api host through this role
@@ -190,7 +234,7 @@ func (m *extenderManager) startLocked(why string, source string) {
 			m.lastOffLine = line
 			importantLogf("%s\n", line)
 		}
-		return
+		return err
 	}
 	m.role = role
 	extenderDiscoveryApplyMu.Lock()
@@ -214,6 +258,7 @@ func (m *extenderManager) startLocked(why string, source string) {
 	if m.inputs != nil {
 		role.StartActivation(m.inputs)
 	}
+	return nil
 }
 
 func (m *extenderManager) stop(reason string) {

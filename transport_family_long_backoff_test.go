@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"context"
 	"testing"
 	"time"
 )
@@ -121,7 +122,7 @@ func TestNoteDialFailureUsesReachabilityToEnterTheLongTier(t *testing.T) {
 	outage := &PlatformTransport{failBackoff: newLongTestBackoff()}
 	lastPlatformSuccessNano.Store(0)
 	for i := 0; i < 40; i++ {
-		outage.noteDialFailure()
+		outage.noteDialFailure(context.DeadlineExceeded)
 	}
 	if d := outage.failBackoff.delay(); 60*time.Second < d {
 		t.Fatalf("failures with no platform success anywhere must not enter the tier, got %v", d)
@@ -130,7 +131,7 @@ func TestNoteDialFailureUsesReachabilityToEnterTheLongTier(t *testing.T) {
 	dead := &PlatformTransport{failBackoff: newLongTestBackoff()}
 	lastPlatformSuccessNano.Store(time.Now().UnixNano())
 	for i := 0; i < 10; i++ {
-		dead.noteDialFailure()
+		dead.noteDialFailure(context.DeadlineExceeded)
 	}
 	if d := dead.failBackoff.delay(); d < 5*time.Minute {
 		t.Fatalf("10 failures while the platform answers others must enter the tier, got %v", d)

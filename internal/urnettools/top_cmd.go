@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"strconv"
@@ -43,9 +44,12 @@ func cmdTop(args []string) error {
 	}
 	providers, cur := []Provider{demoProvider()}, 0
 	if !demo {
-		t, _, err := parseTargetFlags(targetArgs)
+		t, extra, err := parseTargetFlags(targetArgs)
 		if err != nil {
 			return err
+		}
+		if len(extra) > 0 {
+			return errUnexpectedPositional("top", extra)
 		}
 		providers = discoverStatusFn()
 		p, _, err := selectTargetOrSoleAccessible(providers, t, false)
@@ -105,14 +109,22 @@ func cmdTop(args []string) error {
 	}
 	// The copy is printed only after the terminal is back, so the screen text
 	// lands on the real stdout, not the alternate screen.
+	return reportTopCopy(m, os.Stdout, os.Stderr)
+}
+
+// reportTopCopy prints the copied screen and the result of saving it. A copy
+// that could not be saved is an error, so a script that asked for --copy sees
+// the failure in the exit status. The screen text is still printed first.
+func reportTopCopy(m *topModel, stdout, stderr io.Writer) error {
 	if m.copyText != "" {
-		fmt.Println(m.copyText)
+		fmt.Fprintln(stdout, m.copyText)
 	}
 	if m.copyErr != nil {
-		fmt.Fprintln(os.Stderr, "could not write the copy:", m.copyErr)
+		fmt.Fprintln(stderr, "could not write the copy:", m.copyErr)
+		return fmt.Errorf("could not write the copy: %w", m.copyErr)
 	}
 	if m.copyPath != "" {
-		fmt.Fprintf(os.Stderr, "copy written to %s\n", m.copyPath)
+		fmt.Fprintf(stderr, "copy written to %s\n", m.copyPath)
 	}
 	return nil
 }

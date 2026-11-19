@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -95,6 +96,22 @@ func udpProbeEnabled(state *controlState) bool {
 }
 
 type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
+
+// A UDP probe tick can take up to its whole interval, so it runs beside the
+// grading or reaper pass it belongs to, never in front of it. One tick of each
+// kind is in flight at a time: when the previous one is still running at the
+// next interval, that interval skips it.
+var paidUDPProbeRunning, urlUDPProbeRunning atomic.Bool
+
+func startUDPProbeTick(running *atomic.Bool, ctx context.Context, run func(context.Context)) {
+	if !running.CompareAndSwap(false, true) {
+		return
+	}
+	go func() {
+		defer running.Store(false)
+		run(ctx)
+	}()
+}
 
 func runURLUDPProbeTick(ctx context.Context) {
 	runURLUDPProbeTickWith(ctx, runUDPProbeTick)
