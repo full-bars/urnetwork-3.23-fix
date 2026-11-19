@@ -58,6 +58,14 @@ func containerTopExecWithTerminal(name string, args []string, terminal bool) err
 	if !terminal {
 		return errors.New("top needs an interactive terminal on stdin and stdout; use urnet-docker status for scripts")
 	}
+	check := exec.Command(dockerCLI(), "exec", name, "sh", "-c", "if [ -x /usr/local/bin/urnet-tools-go ]; then exit 0; else exit 42; fi")
+	if err := check.Run(); err != nil {
+		var exit *exec.ExitError
+		if errors.As(err, &exit) && exit.ExitCode() == 42 {
+			return fmt.Errorf("this container's image has no urnet-tools top; update the image")
+		}
+		return fmt.Errorf("cannot check top in container %q (it may have stopped): %w", name, err)
+	}
 	// Only place settings on the state mount when Docker confirms it is writable.
 	inspect := exec.Command(dockerCLI(), "inspect", "-f", `{{range .Mounts}}{{if and (eq .Destination "/root/.urnetwork") .RW}}yes{{end}}{{end}}`, name)
 	out, err := inspect.Output()

@@ -52,7 +52,7 @@ func TestDockerTopFakeCLI(t *testing.T) {
 	dir := t.TempDir()
 	fake := filepath.Join(dir, "docker")
 	log := filepath.Join(dir, "args")
-	script := "#!/bin/sh\nif [ \"$1\" = inspect ]; then printf yes; exit 0; fi\nprintf '%s\\n' \"$@\" > \"$TOP_TEST_LOG\"\nexit \"${TOP_TEST_EXIT:-0}\"\n"
+	script := "#!/bin/sh\nif [ \"$1\" = inspect ]; then printf yes; exit 0; fi\nif [ \"$3\" = sh ]; then exit \"${TOP_TEST_CHECK:-0}\"; fi\nprintf '%s\\n' \"$@\" > \"$TOP_TEST_LOG\"\nexit \"${TOP_TEST_EXIT:-0}\"\n"
 	if err := os.WriteFile(fake, []byte(script), 0755); err != nil {
 		t.Fatal(err)
 	}
@@ -76,6 +76,15 @@ func TestDockerTopFakeCLI(t *testing.T) {
 	if string(b) != want {
 		t.Fatalf("arguments: %q", b)
 	}
+	t.Setenv("TOP_TEST_CHECK", "42")
+	if err := containerTopExecWithTerminal("alpha", nil, true); err == nil || !strings.Contains(err.Error(), "update the image") {
+		t.Fatalf("missing binary preflight: %v", err)
+	}
+	t.Setenv("TOP_TEST_CHECK", "1")
+	if err := containerTopExecWithTerminal("alpha", nil, true); err == nil || !strings.Contains(err.Error(), "may have stopped") {
+		t.Fatalf("preflight failure: %v", err)
+	}
+	t.Setenv("TOP_TEST_CHECK", "0")
 	t.Setenv("TOP_TEST_EXIT", "127")
 	if err := containerTopExecWithTerminal("alpha", nil, true); err == nil || !strings.Contains(err.Error(), "update the image") {
 		t.Fatalf("missing binary: %v", err)
