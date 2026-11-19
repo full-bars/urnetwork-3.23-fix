@@ -542,6 +542,14 @@ type ProxySettings struct {
 	Auth    *proxy.Auth
 }
 
+// String omits credentials and rejects addresses that are not bare host:port.
+func (self ProxySettings) String() string {
+	return fmt.Sprintf("proxy[%d] (%s)", self.Index, safeProxyDisplayAddress(self.Address))
+}
+
+// GoString protects Go-syntax formatting as well as ordinary formatting.
+func (self ProxySettings) GoString() string { return self.String() }
+
 // proxyKeyUserSep separates Address from Auth.User in Key(). A proxy
 // provider that shares one gateway host:port across multiple accounts (the
 // account, not the address, decides which backend IP you land on) is
