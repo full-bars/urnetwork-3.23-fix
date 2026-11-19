@@ -576,7 +576,7 @@ func applyLiveDefault(key string, scoped ...*controlState) error {
 	return applyLiveSideEffect(key, def)
 }
 
-func handleControlRequest(state *controlState, req controlRequest) controlResponse {
+func handleControlRequest(state *controlState, req controlRequest) (response controlResponse) {
 	// Key check moved to individual cases — status and history don't need a key.
 
 	IncrControlCmd(req.Cmd)
@@ -752,10 +752,24 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// concurrent connections can't interleave (see controlState.txMu).
 		state.txMu.Lock()
 		restartCarrier := false
+		persistFailed := false
 		defer func() {
 			state.txMu.Unlock()
 			if restartCarrier {
-				globalExtenderManager.RestartCarriers()
+				var err error
+				if persistFailed {
+					err = globalExtenderManager.restartCarriersIfChanged()
+				} else {
+					err = globalExtenderManager.RestartCarriers()
+				}
+				if err != nil {
+					tlog("⚠️ [control] carrier live apply failed: %s\n", err)
+					if !persistFailed {
+						response = controlResponse{OK: false, Error: "persisted, but failed to apply carrier settings live: " + err.Error()}
+					} else {
+						response.Error += "; failed to restore carrier settings live: " + err.Error()
+					}
+				}
 			}
 		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
@@ -768,6 +782,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			restartCarrier = oldOn != !strings.EqualFold(req.Value, "off")
 		}
 		if err := state.persist(); err != nil {
+			persistFailed = true
 			// Restore both value and meta to preserve provenance.
 			state.mu.Lock()
 			if hadOld {
@@ -817,10 +832,24 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		}
 		state.txMu.Lock()
 		restartCarrier := false
+		persistFailed := false
 		defer func() {
 			state.txMu.Unlock()
 			if restartCarrier {
-				globalExtenderManager.RestartCarriers()
+				var err error
+				if persistFailed {
+					err = globalExtenderManager.restartCarriersIfChanged()
+				} else {
+					err = globalExtenderManager.RestartCarriers()
+				}
+				if err != nil {
+					tlog("⚠️ [control] carrier live apply failed: %s\n", err)
+					if !persistFailed {
+						response = controlResponse{OK: false, Error: "persisted, but failed to apply carrier settings live: " + err.Error()}
+					} else {
+						response.Error += "; failed to restore carrier settings live: " + err.Error()
+					}
+				}
 			}
 		}()
 		oldValue, oldMeta, hadOld := state.getWithMeta(req.Key)
@@ -832,6 +861,7 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			restartCarrier = true
 		}
 		if err := state.persist(); err != nil {
+			persistFailed = true
 			// Restore both value and meta to preserve provenance.
 			if hadOld {
 				state.mu.Lock()
