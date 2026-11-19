@@ -36,6 +36,7 @@ func udpPaidDesiredSet(state *ProxyState) (map[string]*connect.ProxySettings, bo
 		for _, ps := range settings {
 			out[ps.Key()] = ps
 		}
+		return out, true
 	}
 	home, err := os.UserHomeDir()
 	if err != nil {
