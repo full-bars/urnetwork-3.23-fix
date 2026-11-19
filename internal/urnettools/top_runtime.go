@@ -92,6 +92,40 @@ func seriesPeak(v []float64) float64 {
 	return p
 }
 
+// topTrafficHistory stores one rate per provider second. Missing seconds are
+// unknown, and repeated readings within a second update only that second.
+type topTrafficHistory struct {
+	billable, total []float64
+	second          int64
+}
+
+func (h *topTrafficHistory) push(at int64, b, t float64) {
+	second := at / int64(time.Second)
+	if len(h.billable) > 0 && second < h.second {
+		return
+	}
+	if len(h.billable) == 0 {
+		h.second = second
+		h.billable, h.total = []float64{b}, []float64{t}
+		return
+	}
+	gap := second - h.second
+	if gap >= topGraphCapacity {
+		h.billable, h.total = nil, nil
+		gap = topGraphCapacity
+	}
+	for i := int64(0); i < gap; i++ {
+		h.billable = append(h.billable, math.NaN())
+		h.total = append(h.total, math.NaN())
+	}
+	if len(h.billable) > topGraphCapacity {
+		h.billable = h.billable[len(h.billable)-topGraphCapacity:]
+		h.total = h.total[len(h.total)-topGraphCapacity:]
+	}
+	h.second = second
+	h.billable[len(h.billable)-1], h.total[len(h.total)-1] = b, t
+}
+
 // topZoom stores rates with the provider time of each accepted poll.
 type topZoom struct {
 	billable, total []float64

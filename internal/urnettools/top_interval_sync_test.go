@@ -7,6 +7,24 @@ import (
 	"time"
 )
 
+func TestTopTrafficHistoryTimeSlots(t *testing.T) {
+	var h topTrafficHistory
+	base := int64(time.Minute)
+	h.push(base, 1, 2)
+	h.push(base+int64(100*time.Millisecond), 3, 4)
+	if len(h.billable) != 1 || h.billable[0] != 3 {
+		t.Fatalf("same second: %v", h.billable)
+	}
+	h.push(base+int64(3*time.Second), 5, 6)
+	if len(h.billable) != 4 || !math.IsNaN(h.billable[1]) || !math.IsNaN(h.billable[2]) || h.billable[3] != 5 {
+		t.Fatalf("gap: %v", h.billable)
+	}
+	h.push(base+int64(1000*time.Second), 7, 8)
+	if len(h.billable) != topGraphCapacity || !math.IsNaN(h.billable[0]) || h.billable[len(h.billable)-1] != 7 {
+		t.Fatalf("long gap: length %d, first %v, last %v", len(h.billable), h.billable[0], h.billable[len(h.billable)-1])
+	}
+}
+
 func TestTopTenMinuteHistoryAdvancesWithTrafficPolls(t *testing.T) {
 	for _, interval := range topIntervalSteps {
 		t.Run(interval.String(), func(t *testing.T) {
