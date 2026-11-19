@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"runtime"
+	"sync"
 	"testing"
 	"time"
 )
@@ -25,6 +26,8 @@ func TestExtenderCarrierControlRestartsOutsideTransaction(t *testing.T) {
 		return cfg
 	}
 	entered, release := make(chan struct{}), make(chan struct{})
+	var releaseOnce sync.Once
+	unblock := func() { releaseOnce.Do(func() { close(release) }) }
 	starts := 0
 	m.startRole = func(ctx context.Context, cfg extenderRoleConfig) (*extenderRole, error) {
 		starts++
@@ -35,6 +38,7 @@ func TestExtenderCarrierControlRestartsOutsideTransaction(t *testing.T) {
 		return startExtenderRole(ctx, cfg)
 	}
 	t.Cleanup(func() {
+		unblock()
 		m.stop("test complete")
 		globalExtenderRole.Store(nil)
 		globalControlState = oldState
@@ -66,13 +70,13 @@ func TestExtenderCarrierControlRestartsOutsideTransaction(t *testing.T) {
 		}
 		select {
 		case <-deadline:
-			close(release)
+			unblock()
 			t.Fatal("second change could not persist while role restart blocked")
 		default:
 			runtime.Gosched()
 		}
 	}
-	close(release)
+	unblock()
 	for _, ch := range []<-chan controlResponse{first, second} {
 		select {
 		case res := <-ch:
