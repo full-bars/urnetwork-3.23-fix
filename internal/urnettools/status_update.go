@@ -2,6 +2,8 @@ package urnettools
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -59,19 +61,29 @@ func writeStatusUpdateCache(stateDir string, s statusUpdateState) {
 	if err != nil {
 		return
 	}
-	// Write a temporary file that is created exclusively and rename it over the
-	// cache. A rename replaces a symlink at the target instead of following it.
-	// The state dir can belong to another user when status runs elevated, and
-	// that user must not be able to aim this write at another file.
-	tmp, err := os.CreateTemp(stateDir, ".update-check-*.tmp")
+	// Open the state dir once and do every step through that handle: the
+	// temporary file, the rename over the cache and the cleanup. A symlink
+	// swapped in for the dir while the release check ran cannot redirect any of
+	// them, and a rename replaces a symlink at the cache name instead of
+	// following it. The state dir can belong to another user when status runs
+	// elevated, and that user must not be able to aim this write at another
+	// file. The handle gives the files to the dir's owner.
+	h, err := openStateDirIn("", stateDir)
 	if err != nil {
 		return
 	}
-	name := tmp.Name()
-	_, werr := tmp.Write(b)
-	cerr := tmp.Close()
-	if werr != nil || cerr != nil || os.Rename(name, filepath.Join(stateDir, statusUpdateCacheFile)) != nil {
-		_ = os.Remove(name)
+	defer h.Close()
+	var suffix [8]byte
+	if _, err := rand.Read(suffix[:]); err != nil {
+		return
+	}
+	tmp := ".update-check-" + hex.EncodeToString(suffix[:]) + ".tmp"
+	if h.writeOwned(tmp, b, 0o600) != nil {
+		_ = h.removeAll(tmp)
+		return
+	}
+	if h.rename(tmp, statusUpdateCacheFile) != nil {
+		_ = h.removeAll(tmp)
 	}
 }
 
