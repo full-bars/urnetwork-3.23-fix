@@ -3,6 +3,7 @@ package connect
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	mathrand "math/rand"
 	"net"
@@ -442,6 +443,8 @@ func DefaultWebRtcSettings() *WebRtcSettings {
 }
 
 type WebRtcSettings struct {
+	// DisablePeerConnections keeps streams on the platform transport.
+	DisablePeerConnections bool
 	// Log, when set, is used by the webrtc manager, p2p transports, and the
 	// pion stack. nil resolves to DefaultLogger().
 	// NewClientWithTag propagates the client log here when nil.
@@ -642,14 +645,25 @@ func (self *WebRtcManager) ReceiveSignal(source TransferPath, frame *protocol.Fr
 }
 
 func (self *WebRtcManager) NewP2pConnActive(ctx context.Context, path TransferPath) (WebRtcConn, error) {
-	return self.newP2pConn(ctx, path, true)
+	conn, err := self.newP2pConn(ctx, path, true)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (self *WebRtcManager) NewP2pConnPassive(ctx context.Context, path TransferPath) (WebRtcConn, error) {
-	return self.newP2pConn(ctx, path, false)
+	conn, err := self.newP2pConn(ctx, path, false)
+	if err != nil {
+		return nil, err
+	}
+	return conn, nil
 }
 
 func (self *WebRtcManager) newP2pConn(ctx context.Context, path TransferPath, active bool) (conn *peerConn, err error) {
+	if self.settings.DisablePeerConnections {
+		return nil, ErrPeerConnectionsDisabled
+	}
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
 
@@ -681,6 +695,8 @@ func (self *WebRtcManager) newP2pConn(ctx context.Context, path TransferPath, ac
 	self.peerConns[key] = conn
 	return
 }
+
+var ErrPeerConnectionsDisabled = errors.New("peer connections are disabled")
 
 type peerConnKey struct {
 	PeerId   Id

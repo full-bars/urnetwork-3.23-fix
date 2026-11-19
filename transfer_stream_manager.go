@@ -85,6 +85,9 @@ func (self *StreamManager) handleControlFrame(frame *protocol.Frame) error {
 		if message, err := FromFrame(frame); err == nil {
 
 			streamOpen := func(v *protocol.StreamOpen) error {
+				if self.webRtcManager != nil && self.webRtcManager.settings.DisablePeerConnections {
+					return nil
+				}
 				var sourceId *Id
 				if v.SourceId != nil {
 					sourceId_, err := IdFromBytes(v.SourceId)

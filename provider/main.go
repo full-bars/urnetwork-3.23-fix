@@ -3436,6 +3436,7 @@ func provide(opts docopt.Opts) {
 		clientStrategySettings := connect.DefaultClientStrategySettings()
 		clientStrategySettings.ProxySettings = proxySettings
 		clientSettings := connect.DefaultClientSettings()
+		applyIdentityPeerSettings(clientSettings, proxySettings)
 		if clientSettings.ContractManagerSettings != nil {
 			if proxySettings != nil {
 				clientSettings.ContractManagerSettings.ProxyDescription = fmt.Sprintf("proxy[%d] (%s)", proxySettings.Index, proxySettings.Address)
