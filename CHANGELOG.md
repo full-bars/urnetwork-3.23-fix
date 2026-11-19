@@ -15,6 +15,8 @@ Everything merged after `v3.23.0-fix.35.11`.
 - Choose the extender's UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. Changes restart the active extender role and persist. Status identifies disabled carriers.
 - Extender status reports the UDP port 53 state and bind failure reason. The `urnet_extender_dns53_state` metric exposes the state.
 - Gossip diagnostics include dial counters, health transitions, recent events and rate-limited anomaly dumps.
+- The proxy heatmap uses dots and can show a fading afterglow for recent activity.
+- Extender setup supports the TCP 443 sysctl route. The lower threshold for UDP port 53 is not selectable in setup yet.
 - The Linux interface counter reader exposes cumulative receive and transmit bytes.
 - The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
 
@@ -27,6 +29,9 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Fixed
 
+- Backend failure counts and timestamps are published together as one snapshot.
+- Proxy add accepts passwords containing an `@` sign.
+- The CFAA sync commits generated tables directly to the main branch after its format checks.
 - Status update checks do not follow symbolic links in the cache. Status honors `--pid` and reports an unavailable or stopped extender. A healthy `--brief` produces no output.
 - Failed carrier control writes restore the previous carrier configuration. Gossip cap pressure no longer hides a worse health state.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
