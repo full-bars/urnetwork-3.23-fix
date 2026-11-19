@@ -154,14 +154,12 @@ func TestExtenderCarrierRestartEffectiveAndPersistFailure(t *testing.T) {
 	if err := state.clear("extender_udp443"); err != nil {
 		t.Fatal(err)
 	}
-	if err := m.restartCarriersIfChanged(); err != nil {
-		t.Fatal(err)
-	}
-	if m.Role() == temporaryRole || m.Role().config.disabledCarriers["udp 443"] {
-		t.Fatal("restored settings were not applied after a concurrent replacement")
+	res := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
+	if res.OK || m.Role() == temporaryRole || m.Role().config.disabledCarriers["udp 443"] {
+		t.Fatal("failed write did not restore the role after a concurrent replacement")
 	}
 	before := m.Role()
-	res := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
+	res = handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
 	if res.OK || m.Role() != before || m.Role().config.disabledCarriers["udp 443"] {
 		t.Fatalf("failed set must restore the role: %+v", res)
 	}
