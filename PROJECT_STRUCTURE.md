@@ -11,7 +11,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `provider/` | The provider program, the relay node you run. |
 | `cmd/` | The three small programs built from this repo: `urnet-tools`, `urnet-docker` and `fake-provider` (a test double). |
 | `internal/urnettools/` | The code behind `urnet-tools` and `urnet-docker`, including the extender host setup, firewall planner and FreeBSD print-only setup. |
-| `internal/` (others) | Small shared helpers: `tui`, `promtext`, `verdictfeed`, `durablepath`, `durablehead`, `durablefixture`. |
+| `internal/` (others) | Small shared helpers: `tui`, `promtext`, `verdictfeed`, `durablepath`, `durablehead`, `durablefixture`, `nicstat`. |
 | `./*.go` (repo root) | The core network stack: transports, contracts, IP relay and security, DNS-over-HTTPS. Details below. |
 | `extender/` | The extender transport. |
 | `protocol/` | Protocol Buffer definitions. Generated Go code is not edited by hand. |
@@ -27,7 +27,7 @@ This is a map of the 3.23-fix repository. It is written for people who want to f
 | `workers/` | Cloudflare Worker sources for the download and install web addresses. |
 | `docs/` | The documentation. The wiki-sync workflow copies `docs/*.md` and `LOG_REFERENCE.md` to the GitHub wiki on pushes to `main` that change `docs/**` or `LOG_REFERENCE.md` (plus manual dispatch). `docs/guides/` and `docs/design/` are not copied. |
 | `releases/` | One release-notes file per tag (`v3.23.0-fix.*`). |
-| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables before it opens a PR. |
+| `.github/workflows/` | CI, release, installer tests, shakedown tests, blocklist sync and wiki sync. The blocklist sync runs the decoder tests against the upstream tables and commits directly to `main`. |
 
 ## The provider (`provider/`)
 

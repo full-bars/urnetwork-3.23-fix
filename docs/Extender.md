@@ -31,6 +31,19 @@ Use `urnet-tools set extender-discovery off` or `urnet-tools set extender-discov
 
 A host waiting for platform root keys or retrying a failed discovery start keeps working as an extender. It refuses both discovery services until discovery starts. A feed-only role costs little. A gossip role keeps up to 16 mesh peers and 256 feed subscribers.
 
+### Gossip events with `urnet-tools extender events`
+
+The extender keeps an in-memory flight recorder of recent gossip mesh events (connects, disconnects, dial timeouts, rejected messages, cap limits and health state transitions). Read the ring over the control socket:
+
+```sh
+urnet-tools extender events
+urnet-tools extender events --since 30m
+urnet-tools extender events --kind peer,reject,dial
+urnet-tools extender events --json
+```
+
+Use `--since <duration>` to filter by age, `--kind <list>` to select specific event classes (`peer`, `reject`, `state`, `dial`, `cap`, `publish`), and `--json` for automation. Anomaly dumps are logged when reject spikes or unexpected state regressions occur, rate-limited to avoid log flooding.
+
 ## Quick start
 
 ```sh
@@ -130,7 +143,7 @@ urnet-tools set extender-udp53 off
 
 Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
 
-UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
+UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. The lower threshold for UDP port 53 is not selectable in setup yet. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
 `urnet-tools extender status` and `urnet-tools top` always show a `dns 53` line, so you can tell why UDP 53 is not serving:
 

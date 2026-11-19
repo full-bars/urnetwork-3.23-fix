@@ -357,3 +357,13 @@ An extender host exports one series per carrier (`tcp-443`, `udp-443`, `udp-4053
 | `urnet_extender_carrier_refused_total` | counter | `carrier`, `stage` | Refusals by carrier and the stage that refused them |
 | `urnet_extender_carrier_bytes_total` | counter | `carrier`, `direction` | Bytes this extender relayed by carrier. `direction="ingress"` is from clients and `egress` is to clients. These are relayed bytes, not earnings: the network credits contracts |
 | `urnet_extender_carrier_connections` | gauge | `carrier` | Connections this extender is relaying now |
+| `urnet_extender_dns53_state` | gauge | `state` | 1 for the current state of dns port 53 (`bound`, `disabled`, `address_in_use`, `permission_denied`, `unknown`, `not_requested`, `pending`) |
+
+## Extender gossip metrics
+
+When extender discovery runs the gossip mesh, dial metrics report outgoing peering attempts and failures:
+
+| Metric | Type | Labels | Meaning |
+|---|---|---|---|
+| `urnet_gossip_dial_attempts_total` | counter | | Outgoing gossip peering calls since the role started |
+| `urnet_gossip_dial_failures_total` | counter | `class` | Failed outgoing gossip peering calls by error class (`timeout`, `refused`, `canceled`, `other`) |
