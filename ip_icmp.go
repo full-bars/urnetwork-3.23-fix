@@ -85,6 +85,7 @@ type icmpEgress interface {
 }
 
 type IcmpBufferSettings struct {
+	proxiedEgress bool
 	// nil resolves to the local user nat `Log`
 	Log          Logger
 	ReadTimeout  time.Duration
@@ -577,6 +578,9 @@ func (self *IcmpSequence) Run() {
 	}()
 
 	self.log.V(2).Infof("[init]icmp connect\n")
+	if self.icmpBufferSettings.proxiedEgress {
+		return
+	}
 	egress, err := currentIcmpEgressFactory()(self.ctx, self.ipVersion, self.destinationIp, self.icmpBufferSettings)
 	if err != nil {
 		// fork: a platform that refuses unprivileged icmp sockets (EACCES,

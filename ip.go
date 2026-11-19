@@ -464,6 +464,17 @@ func NewLocalUserNatWithDefaults(ctx context.Context, clientTag string, bw *Prox
 
 func NewLocalUserNat(ctx context.Context, clientTag string, bw *ProxyBandwidth, settings *LocalUserNatSettings) *LocalUserNat {
 	cancelCtx, cancel := context.WithCancel(ctx)
+	if (settings.TcpBufferSettings != nil && settings.TcpBufferSettings.ProxySettings != nil) || (settings.UdpBufferSettings != nil && settings.UdpBufferSettings.ProxySettings != nil) {
+		copied := *settings
+		icmpSettings := DefaultIcmpBufferSettings()
+		if settings.IcmpBufferSettings != nil {
+			copy := *settings.IcmpBufferSettings
+			icmpSettings = &copy
+		}
+		icmpSettings.proxiedEgress = true
+		copied.IcmpBufferSettings = icmpSettings
+		settings = &copied
+	}
 
 	log := loggerOrDefault(settings.Log)
 	// propagate so a nat-level logger covers the udp/tcp buffers and sequences
