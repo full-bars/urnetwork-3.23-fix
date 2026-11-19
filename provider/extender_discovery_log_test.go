@@ -101,3 +101,26 @@ func TestDiscoveryAnomalyDumpCapsAt50AndRateLimitsTo30Minutes(t *testing.T) {
 		t.Fatalf("missing anomaly dump on reject spike after cooldown:\n%s", gotSpike)
 	}
 }
+
+// A recent cap hit must not hide the loss of every mesh peer: the isolated state
+// and its health transition are reported even while the cap hold runs.
+func TestDiscoveryCapHoldDoesNotMaskIsolation(t *testing.T) {
+	var s discoveryLogState
+	base := time.Date(2026, 11, 18, 4, 0, 0, 0, time.UTC)
+	d := extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 2}
+	t1 := base.Add(time.Minute)
+	_ = s.linesWithEvents(d, nil, t1)
+
+	events := []gossip.Event{{Time: t1.Add(time.Second), Kind: "cap", Reason: "feed subscribers"}}
+	t2 := t1.Add(2 * time.Second)
+	if got := strings.Join(s.linesWithEvents(d, events, t2), ""); !strings.Contains(got, "gossip health is capped") {
+		t.Fatalf("a cap hit with a working mesh reports capped:\n%s", got)
+	}
+
+	d.Peers = 0
+	t3 := t2.Add(10 * time.Second)
+	got := strings.Join(s.linesWithEvents(d, events, t3), "")
+	if !strings.Contains(got, "gossip health is isolated") {
+		t.Fatalf("losing every mesh peer during the cap hold must report isolated:\n%s", got)
+	}
+}

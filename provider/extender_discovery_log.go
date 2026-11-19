@@ -112,11 +112,16 @@ func (s *discoveryLogState) linesWithEvents(d extenderDiscoverySnapshot, events 
 	} else {
 		s.isolationPending = false
 	}
+	// Cap pressure replaces only a better state. A node that lost its mesh peers,
+	// or is degraded, must still report that while the cap hold runs.
+	capWins := healthState != "" && gossipHealthRank(healthState) >= gossipHealthRank(gossipHealthCapped)
 	if capReason, ok := gossipHealthCappedReason(events, prevCheck, now); ok {
-		healthState = gossipHealthCapped
-		healthReason = capReason
 		s.capHoldUntil = now.Add(gossipHealthCapHold)
-	} else if now.Before(s.capHoldUntil) {
+		if capWins {
+			healthState = gossipHealthCapped
+			healthReason = capReason
+		}
+	} else if now.Before(s.capHoldUntil) && capWins {
 		healthState = gossipHealthCapped
 		healthReason = "cap hits are recent"
 	}
