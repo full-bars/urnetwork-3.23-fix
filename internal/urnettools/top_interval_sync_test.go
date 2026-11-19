@@ -2,9 +2,36 @@ package urnettools
 
 import (
 	"math"
+	"reflect"
 	"testing"
 	"time"
 )
+
+func TestTopTenMinuteHistoryAdvancesWithTrafficPolls(t *testing.T) {
+	for _, interval := range topIntervalSteps {
+		t.Run(interval.String(), func(t *testing.T) {
+			m, clock := liveModel(t, interval)
+			for i := 0; i < 3; i++ {
+				clock.Advance(interval)
+				gen, _, ok := m.wantTraffic(clock.Now())
+				if !ok {
+					t.Fatal("traffic poll was not requested")
+				}
+				m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i*i) * 1000, TotalBytes: uint64(i*i) * 2000}, nil)
+			}
+			before := append([]float64(nil), m.series().billable...)
+			clock.Advance(interval)
+			gen, _, ok := m.wantTraffic(clock.Now())
+			if !ok {
+				t.Fatal("traffic poll was not requested")
+			}
+			m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: 16000, TotalBytes: 32000}, nil)
+			if reflect.DeepEqual(before, m.series().billable) {
+				t.Fatal("ten minute graph history did not advance with the traffic poll")
+			}
+		})
+	}
+}
 
 func TestTopZoomGridUsesSampleTimes(t *testing.T) {
 	for _, interval := range topIntervalSteps {
