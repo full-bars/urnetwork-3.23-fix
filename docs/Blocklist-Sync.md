@@ -13,7 +13,7 @@ The workflow runs twice a day, at 04:00 and 16:00 UTC. You can also start it by 
 | Fetch | It reads both tables from the upstream main branch and counts the IPv4 and IPv6 prefixes. |
 | Skip | If both tables are identical to ours, the run ends. |
 | Format check | It runs our decoder and generator tests against the upstream tables. See below. |
-| Branch and PR | It commits the tables on `chore/cfaa-blocklist-sync` and opens a pull request with the `security` label. If a pull request from that branch is already open, it reuses it. |
+| Commit | It commits the tables, signed, and pushes the commit to `main`. There is no pull request, because the tables are generated data and the format check already ran the decoder tests. |
 | Notice | It posts the result to the maintainers' chat channel. |
 
 ## The format check
@@ -26,7 +26,7 @@ Upstream can change the table format and the decoder in the same window. If we c
 go test -count=1 -run 'Blocker|Cfaa|CFAA|Packed|Generated|Provenance|Telegram|Reflector|Security' . ./blocker/...
 ```
 
-If the tests pass, the sync goes on. If they fail, the sync stops before it opens a pull request. The script writes the failed tests and the recent upstream commits that touched the format code to `/tmp/cfaa_sync_info.json`, and the notice names them.
+If the tests pass, the sync goes on. If they fail, the sync stops before it commits anything. The script writes the failed tests and the recent upstream commits that touched the format code to `/tmp/cfaa_sync_info.json`, and the notice names them.
 
 ## When the sync is blocked
 
@@ -37,9 +37,9 @@ A blocked notice means one of two things.
 
 While the sync is blocked, the tables stay at the last refresh that passed. The provider keeps working. It only misses the newest entries.
 
-## Reviewing a sync pull request
+## Checking a sync commit
 
-A sync pull request changes generated data only. A pull request opened by the workflow does not start the CI checks. Before you merge it, review the table changes and the workflow result, and run the test command above on its branch. If the tests pass, merge it.
+A sync commit changes generated data only. A commit pushed by the workflow does not start the CI checks, so the format check is the test gate. To check a sync by hand, look at the table changes in the commit and run the test command above on it. If a sync commit is wrong, revert it like any other commit.
 
 ## Related files
 
@@ -48,6 +48,6 @@ A sync pull request changes generated data only. A pull request opened by the wo
 | `.github/workflows/cfaa-blocklist-sync.yml` | The workflow. |
 | `.github/scripts/cfaa_format_check.sh` | The format check. |
 | `.github/scripts/cfaa_sync.sh` | Writes the tables and makes the commit. |
-| `.github/scripts/create_pr.sh` | Opens or reuses the pull request. |
+| `.github/scripts/commit_sync.sh` | Puts the sync commit on `main`. |
 | `.github/scripts/write_sync_info.sh` | Records the prefix counts and the upstream commit. |
 | `.github/scripts/cfaa_sync_notify.py` | Posts the notice. |

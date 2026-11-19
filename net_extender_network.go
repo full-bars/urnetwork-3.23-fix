@@ -105,7 +105,7 @@ type ExtenderNetworkClientSettings struct {
 	HelloMinBackoff time.Duration
 	HelloMaxBackoff time.Duration
 
-	// The latency probe pass (DESIGNNOTES4.md §4). ProbeWindowCount is m:
+	// The latency probe pass (upstream connect DESIGNNOTES4.md §4). ProbeWindowCount is m:
 	// the pass stops once this many usable extenders of a family measure
 	// close enough. 0 disables probing.
 	ProbeWindowCount int
@@ -124,7 +124,7 @@ type ExtenderNetworkClientSettings struct {
 	ProbeCloseFloor  time.Duration
 
 	// A resume from a sleep of at least ResumeMinSleep is a path change for
-	// measurement (DESIGNNOTES4.md §6): the samples taken before the sleep
+	// measurement (upstream connect DESIGNNOTES4.md §6): the samples taken before the sleep
 	// stay in use, due a refresh, and the probe pass measures them again once
 	// a sample has completed after it. Every timer here runs on the monotonic
 	// clock, which stops while the host sleeps, so the probe loop reads the
@@ -174,7 +174,7 @@ type ExtenderNetworkClientSettings struct {
 	// probeFamilySupport, which is what the strategy also dials by.
 	IpVersionSupported func(ipVersion int) bool
 	// Probe, when set, replaces the whole probe of one candidate
-	// (DESIGNNOTES4.md): the carrier walk and every probe on it. Nil walks
+	// (upstream connect DESIGNNOTES4.md): the carrier walk and every probe on it. Nil walks
 	// the candidate's carriers in order with ProbeLatency. It returns the
 	// lowest rtt and what became of the attestation, of which only
 	// ExtenderPingCosigned marks the sample attested. It hands back no claim,
@@ -247,7 +247,7 @@ type ExtenderNetworkClientStatus struct {
 	GossipPeerId string
 	// The continent the candidate order prefers: the operator's hint, else
 	// the one inferred from the dns bootstrap; empty when neither has said
-	// (DESIGNNOTES4.md §4).
+	// (upstream connect DESIGNNOTES4.md §4).
 	ContinentHint string
 	// When the last probe pass that measured something ended, zero when
 	// there has been none.
@@ -321,13 +321,13 @@ type ExtenderNetworkClient struct {
 	manualHosts        []string
 	manualHostsVersion uint64
 
-	// the probe pass goroutine's join and wake (DESIGNNOTES4.md §4)
+	// the probe pass goroutine's join and wake (upstream connect DESIGNNOTES4.md §4)
 	probeDone chan struct{}
 	probeWake *Monitor
 	// closed by run after its first bootstrap/manual readiness and expiry,
 	// before sampling; early hints must not probe a partial bootstrap set
 	initialProbeReady chan struct{}
-	// the hint loop's join and wake (DESIGNNOTES4.md §4). The hello loop
+	// the hint loop's join and wake (upstream connect DESIGNNOTES4.md §4). The hello loop
 	// waits on the same wake: both look whether their read is due at each
 	// pass and at a path change, so whatever wakes the one wakes the other,
 	// even in a client built bare, without the hello loop's fields
@@ -439,14 +439,14 @@ func NewExtenderNetworkClient(
 	}, cancel)
 	// the hint has its own loop: a pass needs nothing from its answer, and a
 	// read the operator does not answer must not hold up the bootstrap and
-	// the sample that follow it (DESIGNNOTES4.md §4)
+	// the sample that follow it (upstream connect DESIGNNOTES4.md §4)
 	go HandleError(func() {
 		defer close(self.hintDone)
 		self.runHints()
 	}, cancel)
 	// the probe pass has its own loop: in the feed role the refresh loop is
 	// parked on the subscription for as long as it lives, and records that
-	// arrive over it must still be measured (DESIGNNOTES4.md §4)
+	// arrive over it must still be measured (upstream connect DESIGNNOTES4.md §4)
 	go HandleError(func() {
 		defer close(self.probeDone)
 		self.runProbes()
@@ -921,7 +921,7 @@ func (self *ExtenderNetworkClient) bootstrap() *ExtenderRootKeySet {
 	applied := 0
 	// the continents of the records that verified: the geo dns answered the
 	// set of the caller's continent, so they are the caller's continent as
-	// the operator judges it (DESIGNNOTES4.md §4)
+	// the operator judges it (upstream connect DESIGNNOTES4.md §4)
 	continentCounts := map[string]int{}
 	for _, txt := range txts {
 		message, err := DecodeExtenderDnsRecord(txt)
@@ -1248,7 +1248,7 @@ func (self *ExtenderNetworkClient) runFeed(
 				status.LastError = ""
 			})
 			self.markInitialAttemptDone()
-			// the sample is in the directory; measure it (DESIGNNOTES4.md)
+			// the sample is in the directory; measure it (upstream connect DESIGNNOTES4.md)
 			self.probeWake.NotifyAll()
 			if !self.settings.Subscribe {
 				return true, nil
@@ -1322,7 +1322,7 @@ func extenderFeedConfig(
 	}
 }
 
-// The hint (DESIGNNOTES4.md §4).
+// The hint (upstream connect DESIGNNOTES4.md §4).
 
 // The hint loop. The hint is read beside the refresh pass, never ahead of it:
 // nothing a pass does needs the answer -- while there is none the network
@@ -1597,7 +1597,7 @@ func extenderRecordContinentCode(message *protocol.ExtenderGossipMessage) string
 	return strings.ToUpper(strings.TrimSpace(body.ContinentCode))
 }
 
-// The latency probe pass (DESIGNNOTES4.md §4).
+// The latency probe pass (upstream connect DESIGNNOTES4.md §4).
 
 // Installs the attesting provider and the reporter its pings go to, or clears
 // both with a nil attestor. Only the provider role calls this, when it starts
@@ -1736,7 +1736,7 @@ func (self *ExtenderNetworkClient) probePass() {
 
 // Measures the candidates of one family that have no current sample, or one
 // due a refresh, hinted continent first, until the window holds enough close
-// extenders (DESIGNNOTES4.md §4). A sample due a refresh -- one from before a
+// extenders (upstream connect DESIGNNOTES4.md §4). A sample due a refresh -- one from before a
 // path change or a long sleep -- keeps ranking but does not count toward the
 // window, so the pass measures it again, and the new sample replaces it as it
 // lands. With an attestor a sample counts only once the target co-signed it
@@ -1769,7 +1769,7 @@ func (self *ExtenderNetworkClient) probeFamily(
 		}
 		// an attestor installed or cleared under the pass ends it: the change
 		// woke the next pass, which probes as the change says, so a provider
-		// that stops providing attests no further candidate (DESIGNNOTES4.md
+		// that stops providing attests no further candidate (upstream connect DESIGNNOTES4.md
 		// §1)
 		if currentAttestor, _ := self.probeAttestorValue(); currentAttestor != attestor {
 			return probed
@@ -1884,7 +1884,7 @@ func (self *extenderCandidateProbe) outcome() (ExtenderPingOutcome, uint32) {
 // is kept. A carrier that does not answer is a failed dial of that carrier,
 // exactly as a feed dial records it, and a carrier that does clears the hold.
 // Both probe passes walk carriers here -- the network client's
-// (DESIGNNOTES4.md §4) and the extender's peer pinger (GEOMAP §2.1) -- so the
+// (upstream connect DESIGNNOTES4.md §4) and the extender's peer pinger (GEOMAP §2.1) -- so the
 // two can never disagree about what a ping of one extender is.
 func probeExtenderCandidate(
 	ctx context.Context,
@@ -1958,7 +1958,7 @@ func probeExtenderCandidate(
 	return nil, resultErr
 }
 
-// How many of the latencies are close enough (DESIGNNOTES4.md §4): within
+// How many of the latencies are close enough (upstream connect DESIGNNOTES4.md §4): within
 // `factor` of the best, or under `floor`, whichever admits more.
 func extenderCloseCount(latencies []time.Duration, factor float64, floor time.Duration) int {
 	if len(latencies) == 0 {

@@ -50,7 +50,6 @@ func testingNewMultiClient(ctx context.Context, providerClient *Client, receiveP
 				next[RequireMultiHopId(providerClient.ClientId())] = DestinationStats{
 					EstimatedBytesPerSecond: ByteCount(0),
 					Tier:                    0,
-					IpFamily:                IpFamilyDualstack,
 				}
 			}
 			return next, nil

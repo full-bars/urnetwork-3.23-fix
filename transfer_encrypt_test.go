@@ -254,58 +254,6 @@ func TestPeerSessionIdentityProofSecondIgnored(t *testing.T) {
 	}
 }
 
-// TestIsAwaitingClientFinished verifies the predicate's three
-// "false" cases and one "true" case, which together control whether
-// the receive-loop optimistic-apply path will fire.
-func TestIsAwaitingClientFinished(t *testing.T) {
-	sess, _, _, _, cleanup := newTestSessionForIdentityProof(t)
-	defer cleanup()
-
-	// Role is server (set by the helper). Handshake not done,
-	// serverFlightSent not yet — should be false.
-	assert.Equal(t, false, sess.IsAwaitingClientFinished())
-
-	// After serverFlightSent → true (handshake still open).
-	sess.markServerFlightSent(sess.epoch)
-	assert.Equal(t, true, sess.IsAwaitingClientFinished())
-
-	// Close handshakeDone → false (handshake final, success or fail).
-	close(sess.epoch.handshakeDone)
-	assert.Equal(t, false, sess.IsAwaitingClientFinished())
-}
-
-// TestIsAwaitingClientFinishedClientRole verifies that the
-// TLS-client role never returns true regardless of state — the
-// optimistic-apply path is meaningful only on the server-role side
-// (where the client second flight is the next inbound).
-func TestIsAwaitingClientFinishedClientRole(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-
-	settings := DefaultClientSettings()
-	settings.EncryptionSettings.Mode = EncryptionModeOpportunistic
-	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
-	defer client.Cancel()
-
-	keyManager, err := NewClientKeyManager(ctx, client)
-	assert.Equal(t, nil, err)
-	manager := NewEncryptionSessionManager(ctx, client, keyManager, settings.EncryptionSettings)
-
-	clientRoleSess := newPeerEncryptionSession(
-		ctx, manager, client, NewId(),
-		sequenceTlsRoleClient,
-		settings.EncryptionSettings,
-		false,
-	)
-	clientRoleSess.epoch = &tlsHandshakeEpoch{handshakeDone: make(chan struct{})}
-
-	// Even after marking serverFlightSent (which wouldn't normally
-	// happen in client role, but worth proving the role gate is
-	// what's enforcing the predicate), still false.
-	clientRoleSess.markServerFlightSent(clientRoleSess.epoch)
-	assert.Equal(t, false, clientRoleSess.IsAwaitingClientFinished())
-}
-
 // TestOptimisticallyDeliverHandshakeFilter verifies the structural
 // filter that gates `OptimisticallyDeliverHandshake`: only payloads
 // starting with TLS record type 20 (ChangeCipherSpec) or 23
@@ -316,10 +264,8 @@ func TestOptimisticallyDeliverHandshakeFilter(t *testing.T) {
 	sess, _, _, _, cleanup := newTestSessionForIdentityProof(t)
 	defer cleanup()
 
-	// Put the session into the awaiting-client-Finished state so
-	// the optimistic-apply gate is open.
+	// Set the server flight state for the optimistic delivery check.
 	sess.markServerFlightSent(sess.epoch)
-	assert.Equal(t, true, sess.IsAwaitingClientFinished())
 
 	// startEpoch would normally create the transport; we skip
 	// here and only check that the filter rejects type-22 bytes

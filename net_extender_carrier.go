@@ -64,7 +64,7 @@ const (
 	ExtenderServiceForward uint32 = 0
 	ExtenderServiceGossip  uint32 = 1
 	ExtenderServiceFeed    uint32 = 2
-	// A latency probe (DESIGNNOTES4.md, GEOMAP §2). Reserved here so the
+	// A latency probe (upstream connect DESIGNNOTES4.md, GEOMAP §2). Reserved here so the
 	// service numbers are one list; the probe itself is a later phase.
 	ExtenderServiceProbe uint32 = 3
 )

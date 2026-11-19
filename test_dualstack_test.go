@@ -1,6 +1,6 @@
 package connect
 
-// test_dualstack_test.go — shared dual-stack test scaffolding (IPV6.md D3).
+// test_dualstack_test.go — shared dual-stack test scaffolding (upstream connect IPV6.md D3).
 //
 // Every test that touches addresses, sockets or packets runs its body once
 // per ip version through forEachIpVersion. Tests run on dual-stack hosts, so

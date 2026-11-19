@@ -462,12 +462,6 @@ type ClientSettings struct {
 	ProtocolVersion int
 
 	DefaultTransferOpts TransferOptions
-
-	// PeerCapabilityRecorder, when set, records per-peer wire evidence of
-	// transfer capabilities (end-to-end sessions, resizable windows). Opt-in:
-	// the zero value records nothing. Set one per owner (multi-client window)
-	// so every client toward the same peer sees that peer's evidence.
-	PeerCapabilityRecorder *PeerCapabilityRecorder
 }
 
 // MinimumMessageLenLimit returns the smallest per-transport framer
@@ -528,7 +522,6 @@ type Client struct {
 	forwardBuffer            *ForwardBuffer
 	clientKeyManager         *ClientKeyManager
 	encryptionSessionManager *EncryptionSessionManager
-	peerCapabilityRecorder   *PeerCapabilityRecorder
 
 	// ready is closed by NewClientWithTag right before it returns, once every
 	// manager, buffer, callback, and the `run` loop are wired up. See
@@ -550,7 +543,7 @@ type Client struct {
 	unreliableFlightMaximumMessages     atomic.Uint64
 	unreliableFlightMaximumMessageLimit atomic.Uint64
 
-	// receive-hold counters for the committed-prefix policy (THROUGHPUTFIX
+	// receive-hold counters for the committed-prefix policy (upstream connect THROUGHPUTFIX
 	// §37.20, ported from upstream 609cb1b6). receiveQueueEvictionCount and
 	// receiveQueueEvictionByteCount must stay at zero under
 	// ReceiveHoldCommittedPrefix: an acknowledged item is never discarded,
@@ -759,18 +752,17 @@ func NewClientWithTag(
 	cancelCtx, cancel := context.WithCancel(ctx)
 	log := loggerOrDefault(settings.Log)
 	client := &Client{
-		ctx:                    cancelCtx,
-		cancel:                 cancel,
-		clientId:               clientId,
-		clientTag:              clientTag,
-		clientOob:              clientOob,
-		log:                    log,
-		settings:               settings,
-		receiveCallbacks:       NewCallbackList[ReceiveFunction](),
-		forwardCallbacks:       NewCallbackList[ForwardFunction](),
-		loopback:               make(chan *SendPack),
-		ready:                  make(chan struct{}),
-		peerCapabilityRecorder: settings.PeerCapabilityRecorder,
+		ctx:              cancelCtx,
+		cancel:           cancel,
+		clientId:         clientId,
+		clientTag:        clientTag,
+		clientOob:        clientOob,
+		log:              log,
+		settings:         settings,
+		receiveCallbacks: NewCallbackList[ReceiveFunction](),
+		forwardCallbacks: NewCallbackList[ForwardFunction](),
+		loopback:         make(chan *SendPack),
+		ready:            make(chan struct{}),
 	}
 
 	routeManager := NewRouteManagerWithLogger(ctx, clientTag, log)
@@ -1570,10 +1562,8 @@ func (self *Client) run() {
 				// transport reform or loss). EC frames only piggyback that ordering
 				// to reuse the retransmit/route plumbing; each handler below is safe
 				// to invoke off-order:
-				//   - Handshake: gated on `IsAwaitingClientFinished` + a record-prefix
-				//     check in `OptimisticallyDeliverHandshake` that rejects
-				//     ClientHello-shaped retransmits, so no duplicate bytes reach the
-				//     TLS state machine.
+				//   - Handshake: the optimistic handler checks the role, epoch,
+				//     handshake state and record prefix before delivering bytes.
 				//   - IdentityProof: `receivePeerIdentityProof` short-circuits once
 				//     verified, failed, or already buffered — safe to re-deliver.
 				// The ReceiveSequence's later in-order delivery still runs and
@@ -2213,12 +2203,7 @@ type SendSequence struct {
 	destination       TransferPath
 	intermediaryIds   MultiHopId
 	companionContract bool
-	// ackSeen and peerReceiveWindowMax gate the peer capability observations
-	// so the recorder is only called on the first ack and on window increases
-	ackSeen               atomic.Bool
-	peerReceiveWindowMax  atomic.Uint64
-	peerReceiveWindowSeen atomic.Bool
-	forceStream           bool
+	forceStream       bool
 	// encryptionRole is the per-peer session role this send sequence uses:
 	// client for normal application data (the default), server for
 	// EncryptedControl carriers and server-session replies.
@@ -3025,38 +3010,6 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	}
 }
 
-// Records peer capability evidence from an acknowledgement: that the peer
-// answers, and the largest receive window it advertises.
-func (self *SendSequence) observePeerCapabilityAck(ack *protocol.Ack) {
-	if self.client == nil || self.client.peerCapabilityRecorder == nil {
-		return
-	}
-	recorder := self.client.peerCapabilityRecorder
-	peerId := self.destination.DestinationId
-	if ack.ReceiveWindowByteCount != nil {
-		window := min(*ack.ReceiveWindowByteCount, uint64(1<<32-1))
-		self.ackSeen.Store(true)
-		first := !self.peerReceiveWindowSeen.Swap(true)
-		for {
-			max := self.peerReceiveWindowMax.Load()
-			if window <= max && !first {
-				return
-			}
-			if self.peerReceiveWindowMax.CompareAndSwap(max, window) {
-				// the first advertisement or an increase; the recorder marks
-				// the acknowledgement itself observed in the same step
-				recorder.observeReceiveWindow(peerId, ByteCount(window))
-				return
-			}
-		}
-	}
-	if !self.ackSeen.Swap(true) {
-		// the first acknowledgement carries no window: the peer answers and
-		// does not advertise
-		recorder.observeAck(peerId)
-	}
-}
-
 func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, error) {
 	self.ackMutex.Lock()
 	defer self.ackMutex.Unlock()
@@ -3069,7 +3022,6 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 		// ack is for a different send sequence that no longer exists
 		return false, nil
 	}
-	self.observePeerCapabilityAck(ack)
 
 	select {
 	case <-self.ctx.Done():
@@ -4959,7 +4911,7 @@ func newResendQueue(budget *TransferMemoryBudget, minByteCount ByteCount) *resen
 
 // ReceiveHoldPolicyKind decides what a full receive hold does with an
 // arrival that is earlier than what it holds (ported from upstream
-// 609cb1b6, THROUGHPUTFIX §37.20).
+// 609cb1b6, upstream connect THROUGHPUTFIX §37.20).
 type ReceiveHoldPolicyKind int
 
 const (
@@ -5053,7 +5005,7 @@ type ReceiveBufferSettings struct {
 	ReliablePackHandoffTimeout time.Duration
 
 	// ReceiveHoldPolicy decides what a full hold does with an arrival that
-	// is earlier than what it holds (THROUGHPUTFIX §37.20, ported from
+	// is earlier than what it holds (upstream connect THROUGHPUTFIX §37.20, ported from
 	// upstream 609cb1b6). Defaults to ReceiveHoldCommittedPrefix (the zero
 	// value).
 	ReceiveHoldPolicy ReceiveHoldPolicyKind
@@ -6112,7 +6064,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 		}
 
 		// What a full hold does with an arrival earlier than what it holds
-		// (ported from upstream 609cb1b6/38d637c5, THROUGHPUTFIX §37.20).
+		// (ported from upstream 609cb1b6/38d637c5, upstream connect THROUGHPUTFIX §37.20).
 		// Refuse never removes anything; evict and committed-prefix both
 		// remove later held items to fit, in sequence order (newest first),
 		// but committed-prefix never removes an item once it has been
@@ -6166,7 +6118,7 @@ func (self *ReceiveSequence) receive(receivePack *ReceivePack) (bool, error) {
 }
 
 // commitHeldPrefix acknowledges every held item that can no longer be
-// evicted, and only those (THROUGHPUTFIX §37.20, ported from upstream
+// evicted, and only those (upstream connect THROUGHPUTFIX §37.20, ported from upstream
 // 609cb1b6/38d637c5).
 //
 // An item is evicted only by an earlier arrival at a full hold, so it is safe
@@ -6215,7 +6167,7 @@ func (self *ReceiveSequence) commitHeldPrefix() {
 	// whatever the sender does. Deciding that needs only the newest held
 	// item, the count and the byte total, all of which the queue answers
 	// without a walk, and it skips the sort the general case pays on every
-	// out-of-order arrival (THROUGHPUTFIX §37.20, ported from upstream
+	// out-of-order arrival (upstream connect THROUGHPUTFIX §37.20, ported from upstream
 	// 38d637c5).
 	heldCount, heldTotal := self.receiveQueue.QueueSize()
 	if heldCount == 0 {
@@ -6681,7 +6633,7 @@ type receiveItem struct {
 	unwrapped bool
 	// committed is set once this held item has been selectively
 	// acknowledged, which under the committed-prefix hold policy happens
-	// only when it can no longer be evicted (THROUGHPUTFIX §37.20). A
+	// only when it can no longer be evicted (upstream connect THROUGHPUTFIX §37.20). A
 	// committed item is never discarded.
 	committed bool
 }

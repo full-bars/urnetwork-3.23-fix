@@ -9,7 +9,7 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// The proximity order of DESIGNNOTES4.md §4: the hinted continent first, then
+// The proximity order of upstream connect DESIGNNOTES4.md §4: the hinted continent first, then
 // measured latency, and a sample that ages out counts as none.
 
 // A signed record with a continent tag, which the operator stamps at signing.

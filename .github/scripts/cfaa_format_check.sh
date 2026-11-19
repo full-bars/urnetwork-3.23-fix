@@ -9,7 +9,7 @@
 # This script writes the upstream tables into the working tree, runs the fork's decoder and
 # generator tests against them, and restores the tree.
 #   exit 0  the fork reads the new tables, the sync may go on
-#   exit 1  it does not. No PR must be opened. The reason and the upstream commits that changed
+#   exit 1  it does not. Nothing is committed. The reason and the upstream commits that changed
 #           the format code are written to /tmp/cfaa_sync_info.json for the notifier.
 set -uo pipefail
 

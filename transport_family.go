@@ -2,7 +2,7 @@ package connect
 
 // transport_family.go — family-pinned platform transports and the group that
 // runs a provider's v4 transport, v6 transport and family-agnostic standby
-// (IPV6.md decisions A2, A4, A5, A6, A7).
+// (upstream connect IPV6.md decisions A2, A4, A5, A6, A7).
 //
 // A PINNED transport proves one address family to the platform. It dials its
 // family url with the network narrowed to that family regardless of the

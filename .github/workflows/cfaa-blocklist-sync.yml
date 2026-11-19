@@ -13,7 +13,6 @@ concurrency:
 
 permissions:
   contents: write
-  pull-requests: write
 
 jobs:
   sync:
@@ -100,9 +99,9 @@ jobs:
           go-version-file: go.mod
           cache: true
 
-      # Upstream can change the table format together with its decoder. A PR opened with the
-      # GITHUB_TOKEN does not trigger CI, so the decoder tests run here. When they fail no
-      # branch and no PR is created, and the notification lists the upstream commits to port.
+      # Upstream can change the table format together with its decoder. A commit pushed with the
+      # GITHUB_TOKEN does not trigger CI, so the decoder tests run here. When they fail nothing
+      # is committed, and the notification lists the upstream commits to port.
       - name: Check the fork reads the upstream tables
         if: steps.fetch.outputs.files_identical == 'false'
         env:
@@ -128,15 +127,13 @@ jobs:
           git config commit.gpgsign true
           echo "GPG signing key configured: $SIGNING_KEY"
 
-      - name: Create branch and apply changes
+      - name: Apply the changes and commit them locally
         if: steps.fetch.outputs.files_identical == 'false'
         run: bash .github/scripts/cfaa_sync.sh "${{ steps.fetch.outputs.upstream_sha }}" "${{ steps.fetch.outputs.upstream_v4 }}" "${{ steps.fetch.outputs.upstream_v6 }}" "${{ steps.fetch.outputs.fork_v4 }}" "${{ steps.fetch.outputs.fork_v6 }}" "${{ steps.fetch.outputs.upstream_hosts }}" "${{ steps.fetch.outputs.fork_hosts }}" "${{ steps.fetch.outputs.cfaa_identical }}" "${{ steps.fetch.outputs.blocker_identical }}"
 
-      - name: Push and open PR
+      - name: Commit the sync to main
         if: steps.fetch.outputs.files_identical == 'false'
-        env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bash .github/scripts/create_pr.sh
+        run: bash .github/scripts/commit_sync.sh
 
       - name: Post confirmation to Discord
         if: always()

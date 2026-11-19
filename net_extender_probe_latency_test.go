@@ -14,7 +14,7 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// The attestation crypto (DESIGNNOTES4.md §2, §3, GEOMAP §2.2, §2.3): what a
+// The attestation crypto (upstream connect DESIGNNOTES4.md §2, §3, GEOMAP §2.2, §2.3): what a
 // pinger of either kind signs, what the target co-signs, what verifies, and
 // what must not.
 

@@ -75,7 +75,7 @@ IPv6 blocked prefixes: {info.get("fork_v6", 0)} -> {info.get("upstream_v6", 0)} 
 Blocked hosts: {info.get("fork_hosts", 0)} -> {info.get("upstream_hosts", 0)} (delta: {info.get("upstream_hosts", 0) - info.get("fork_hosts", 0):+d})
 Sync needed: {info.get("sync_needed", False)}
 Branch: {info.get("branch", "N/A")}
-PR: {info.get("pr_url", "N/A")} or already existed
+Commit: {info.get("pr_url", "N/A")}
 
 Keep it factual and concise — no emojis, no fluff."""
 
@@ -105,7 +105,7 @@ def post_to_discord(webhook: str, info: dict, summary: str) -> None:
 
     pr_url = info.get("pr_url", "")
     valid_pr_url = pr_url if (isinstance(pr_url, str) and pr_url.startswith("http")) else None
-    pr_field = {"name": "Pull Request", "value": valid_pr_url or "N/A", "inline": True}
+    pr_field = {"name": "Commit", "value": valid_pr_url or "N/A", "inline": True}
 
     fields = [
         {"name": "Action", "value": "synced" if sync_needed else "checked (no changes)", "inline": True},
@@ -159,7 +159,7 @@ def post_blocked_to_discord(webhook: str, info: dict) -> None:
     ]
     embed = {
         "title": "CFAA Blocklist Sync Blocked: table format changed",
-        "description": "The fork decoder cannot read the upstream blocklist tables. No branch and no PR were created. Port the decoder and generator change, then run the sync again.",
+        "description": "The fork decoder cannot read the upstream blocklist tables. Nothing was committed. Port the decoder and generator change, then run the sync again.",
         "color": 0xD93F3F,
         "fields": fields,
         "footer": {"text": "URNetwork CFAA Sync \u2022 Automated"},

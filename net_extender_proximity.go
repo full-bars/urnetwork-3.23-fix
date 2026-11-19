@@ -15,7 +15,7 @@ import (
 	"github.com/urnetwork/connect/protocol"
 )
 
-// The operator side of extender proximity (DESIGNNOTES4.md, GEOMAP §2.5): the
+// The operator side of extender proximity (upstream connect DESIGNNOTES4.md, GEOMAP §2.5): the
 // hint a client reads, and the ping report a pinger posts.
 
 // The hint endpoint, appended to the api url.
@@ -31,7 +31,7 @@ type ExtenderHintResult struct {
 	CountryCode   string `json:"country_code"`
 }
 
-// Reads the hint (DESIGNNOTES4.md §4), the continent upper case and the country
+// Reads the hint (upstream connect DESIGNNOTES4.md §4), the continent upper case and the country
 // lower case, each empty when the operator did not place the caller. It carries
 // no credential: the answer is derived from the caller's address, which the
 // operator sees on every request anyway, and a client needs it before it has

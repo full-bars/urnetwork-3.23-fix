@@ -121,7 +121,7 @@ func websocketAddr(gossipUrl string) (ma.Multiaddr, error) {
 		}
 	}
 	// `/dns` rather than `/dns4`: a dual stack or v6-only host must be able to
-	// reach the operator on whichever family it has (IPV6.md A4)
+	// reach the operator on whichever family it has (upstream connect IPV6.md A4)
 	hostProtocol := "dns"
 	if ip, err := netip.ParseAddr(host); err == nil {
 		hostProtocol = "ip4"

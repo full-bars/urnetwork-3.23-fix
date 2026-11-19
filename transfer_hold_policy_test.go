@@ -1,5 +1,5 @@
 // Regression tests for the receive hold policies (ported from upstream
-// 609cb1b6 + 38d637c5, THROUGHPUTFIX §37.20): the committed-prefix policy
+// 609cb1b6 + 38d637c5, upstream connect THROUGHPUTFIX §37.20): the committed-prefix policy
 // acknowledges a held item only once it can no longer be evicted, so a held
 // item that is later removed costs the sender a resend rather than a
 // withdrawal of an acknowledgement it is already leasing. The core invariant:

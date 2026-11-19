@@ -374,31 +374,22 @@ func shouldLogAuthErr() (bool, int64) { return authErrThrottle.Allow(time.Now())
 // shouldLogWriteErr reports whether a write error should be logged and returns the associated throttle value.
 func shouldLogWriteErr() (bool, int64) { return writeErrThrottle.Allow(time.Now()) }
 
-// lastBackendFailNano is the time of the most recent backend failure (auth or
-// contract OOB), in unix nanos. Not throttled — every failure updates it, so
-// isBackendDegraded can tell a live outage from a stale count left by an old
-// blip on an otherwise idle provider.
-var lastBackendFailNano atomic.Int64
+// backendFailureState is published as one immutable snapshot so readers cannot
+// combine a failure count with a timestamp from another transition. The signal
+// is shared across clients and platform URLs; an outage on one can gate another.
+type backendFailureState struct {
+	count int64
+	stamp int64
+}
 
-// consecutiveBackendFails counts backend failures since the last success. Any
-// successful auth or OOB round-trip resets it to 0. A real platform outage
-// drives this up quickly because every attempt fails with nothing to reset it;
-// isolated transient timeouts never accumulate, because an interleaved success
-// clears the count.
-//
-// This is process-wide rather than per-Client on purpose: "is the control API
-// reachable from this host" is a property of the host, not of any one client.
-// The known limit of that framing: a process talking to MULTIPLE platform urls
-// (separate network spaces) shares one signal across them, so a dead custom
-// endpoint can gate a healthy one. Accepted for now -- the fleet and app cases
-// run one platform per process -- and keying this state by platform url is the
-// upgrade path if that changes.
-// A host running many clients gets a stronger signal from sharing the counter,
-// because a success on any client clears it — so a single misbehaving client
-// cannot trip the threshold on its own, and only a fault broad enough to fail
-// every client in a row reads as an outage. That is exactly the distinction
-// isBackendDegraded is trying to draw.
-var consecutiveBackendFails atomic.Int64
+var backendFailures atomic.Pointer[backendFailureState]
+
+func loadBackendFailureState() backendFailureState {
+	if state := backendFailures.Load(); state != nil {
+		return *state
+	}
+	return backendFailureState{}
+}
 
 // backendDegradedFailThreshold is how many consecutive backend failures (with
 // no intervening success) are required before the backend is treated as
@@ -431,27 +422,16 @@ const backendDegradedWindow = 2 * time.Minute
 // therefore a bounded probe burst every ~backendDegradedWindow, not a latched
 // stop -- which is also what makes recovery need no timer of its own.
 func isBackendDegraded() bool {
-	// fork: the count and the timestamp are two atomics written one after the
-	// other, so a lock-free reader can load a count from one transition and a
-	// timestamp from the next. The interleaving that mattered: a stale-streak
-	// reset drops the count to 1 and then stamps a fresh time, so a reader that
-	// loaded the old count (past the threshold) and then the new timestamp would
-	// report an outage on the strength of a single recent failure. Every writer
-	// changes the timestamp last, so a timestamp that is unchanged across the
-	// count load proves the pair is consistent; otherwise read again.
-	for {
-		last := lastBackendFailNano.Load()
-		fails := consecutiveBackendFails.Load()
-		if last != lastBackendFailNano.Load() {
-			continue
-		}
-		if fails < backendDegradedFailThreshold {
-			return false
-		}
-		// the stamp was read before the clock: a failure stamped between the two
-		// reads would otherwise read as after now
-		return backendFailRecent(time.Now().UnixNano(), last)
+	state := loadBackendFailureState()
+	if state.count < backendDegradedFailThreshold {
+		return false
 	}
+	// Read the clock after the snapshot.
+	return backendFailureStateDegraded(state, time.Now().UnixNano())
+}
+
+func backendFailureStateDegraded(state backendFailureState, now int64) bool {
+	return state.count >= backendDegradedFailThreshold && backendFailRecent(now, state.stamp)
 }
 
 // backendFailRecent reports whether a failure stamped lastNanos is within
@@ -464,11 +444,7 @@ func backendFailRecent(nowNanos int64, lastNanos int64) bool {
 	return 0 <= age && age < int64(backendDegradedWindow)
 }
 
-// backendFailMu serializes the failure-state transition. Recording a failure is
-// a single logical step made of three stores (age out a dead streak, adjust the
-// counter, refresh the timestamp); interleaving them could half-clear a stale
-// streak and leave it readable as live. Backend failures are rare by definition,
-// so serializing them costs nothing, and isBackendDegraded stays lock-free.
+// backendFailMu serializes writers while readers load immutable snapshots.
 var backendFailMu sync.Mutex
 
 // noteBackendFailure records a failed backend round-trip (auth or contract OOB).
@@ -488,23 +464,18 @@ func noteBackendFailure() {
 	// they record, so none finds the stamp before it after its now and
 	// restarts the streak
 	now := time.Now().UnixNano()
-	last := lastBackendFailNano.Load()
-	if last != 0 && !backendFailRecent(now, last) {
-		consecutiveBackendFails.Store(1)
+	state := loadBackendFailureState()
+	if state.stamp != 0 && !backendFailRecent(now, state.stamp) {
+		state.count = 1
 	} else {
-		consecutiveBackendFails.Add(1)
+		state.count++
 	}
-	lastBackendFailNano.Store(now)
+	state.stamp = now
+	backendFailures.Store(&state)
 }
 
 // noteBackendSuccess clears the recorded backend failure state after a
-// successful auth or OOB round-trip.
-// It takes backendFailMu for the same reason noteBackendFailure does: clearing
-// the count and the timestamp is one logical transition. Unsynchronized, a
-// concurrent failure could land its increment and timestamp between the two
-// stores here, leaving a positive count with a zero timestamp — a state
-// isBackendDegraded reads as "not degraded" while failures are in fact
-// accumulating.
+// successful auth or OOB round-trip, serialized with concurrent failures.
 // lastPlatformSuccessNano is the time of the last success of any platform dial
 // or backend call in this process. See platformReachedRecently.
 var lastPlatformSuccessNano atomic.Int64
@@ -523,8 +494,7 @@ func noteBackendSuccess() {
 	backendFailMu.Lock()
 	defer backendFailMu.Unlock()
 
-	consecutiveBackendFails.Store(0)
-	lastBackendFailNano.Store(0)
+	backendFailures.Store(nil)
 }
 
 // (ctx, network, address)
@@ -908,7 +878,7 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 // The stream window takes six eighths of that draw and the connection window
 // the whole of it, keeping the 3:4 ratio the two have always had.
 //
-// These are THROUGHPUTFIX §43.2's receive-credit fractions. Its old assertion
+// These are upstream connect THROUGHPUTFIX §43.2's receive-credit fractions. Its old assertion
 // that connection credit must equal the entire reservation did not account
 // for concurrently retained non-receive owners. MEMSTEADY supersedes that
 // assertion on the constrained mobile surface: at a 20 MiB owner target the
@@ -920,7 +890,7 @@ func DefaultPlatformTransportSettingsWithMemoryTarget(
 // of `TestTheH3ReceiveWindowsAreADrawOnTheBudget`).
 //
 // It must never be a memory-scaled constant, and that distinction is the whole
-// finding (THROUGHPUTFIX §37.22, §42.1, §44.2 constraint 1). `memoryTargetScale`
+// finding (upstream connect THROUGHPUTFIX §37.22, §42.1, §44.2 constraint 1). `memoryTargetScale`
 // returns one at or above the reference and a fraction below it, so every
 // window in this file was sized for a 64 MiB device and could only shrink from
 // there: a desktop with a 256 MiB budget ran a 64 MiB device's window, which is
