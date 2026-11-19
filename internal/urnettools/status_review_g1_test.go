@@ -102,3 +102,30 @@ func TestBriefExitIsNilWhenHealthy(t *testing.T) {
 		t.Fatalf("a failing status keeps its exit code: %v", err)
 	}
 }
+
+// A file swapped in after the inspection must not be read: readRegularFile
+// refuses a symlink and reads a regular file.
+func TestReadRegularFileRefusesASymlinkAndReadsAFile(t *testing.T) {
+	dir := t.TempDir()
+	real := filepath.Join(dir, "real.json")
+	if err := os.WriteFile(real, []byte(`{"ok":true}`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	b, err := readRegularFile(real)
+	if err != nil || string(b) != `{"ok":true}` {
+		t.Fatalf("a regular file reads: %q %v", b, err)
+	}
+	if runtime.GOOS == "windows" {
+		return
+	}
+	link := filepath.Join(dir, "link.json")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := readRegularFile(link); err == nil {
+		t.Fatal("a symlink must be refused")
+	}
+	if _, err := readRegularFile(filepath.Join(dir, "missing")); err == nil {
+		t.Fatal("a missing file is an error")
+	}
+}

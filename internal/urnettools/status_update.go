@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -80,12 +81,7 @@ func readStatusUpdateCache(stateDir string) (statusUpdateState, bool) {
 		return statusUpdateState{}, false
 	}
 	path := filepath.Join(stateDir, statusUpdateCacheFile)
-	// Only a regular file counts. A symlink in a state dir owned by someone else
-	// is not followed.
-	if info, err := os.Lstat(path); err != nil || !info.Mode().IsRegular() {
-		return statusUpdateState{}, false
-	}
-	b, err := os.ReadFile(path)
+	b, err := readRegularFile(path)
 	if err != nil {
 		return statusUpdateState{}, false
 	}
@@ -203,4 +199,32 @@ func versionOrDash(v string) string {
 		return "unknown"
 	}
 	return v
+}
+
+// readRegularFile reads path only when it is a regular file, and reads the very
+// file it inspected. It opens the path, then compares the open file with what
+// Lstat saw at the path: a symlink, or a file swapped in between the two steps,
+// does not match and is refused. A state dir owned by another user can be
+// changed while status runs elevated, so the check and the read must agree.
+func readRegularFile(path string) ([]byte, error) {
+	before, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !before.Mode().IsRegular() {
+		return nil, fmt.Errorf("%s is not a regular file", path)
+	}
+	f, err := os.Open(path)
+	if err != nil {
+		return nil, err
+	}
+	defer f.Close()
+	opened, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if !opened.Mode().IsRegular() || !os.SameFile(before, opened) {
+		return nil, fmt.Errorf("%s changed while it was read", path)
+	}
+	return io.ReadAll(f)
 }
