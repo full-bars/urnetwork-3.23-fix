@@ -139,6 +139,17 @@ func TestProxySecretNestedURLError(t *testing.T) {
 	}
 }
 
+func TestProxySecretURLCause(t *testing.T) {
+	raw := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com/?token=" + secretCanaryToken
+	err := &url.Error{Op: "get", URL: raw, Err: errors.New("redirect refused: " + raw)}
+	got := stripURLFromError(err).Error()
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(got, secret) {
+			t.Error("URL error cause contains a canary")
+		}
+	}
+}
+
 func TestProxySecretRejectedPaste(t *testing.T) {
 	for _, line := range []string{
 		"socks5://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken,

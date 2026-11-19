@@ -8,7 +8,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	neturl "net/url"
 	"os"
 	"path/filepath"
 	"strings"
@@ -314,19 +313,15 @@ var proxyURLHTTPClient = &http.Client{
 // lines. It does not parse the lines — callers parse each line with
 // parseProxyURLLine. Returns an error on network failure, non-200 status, or
 // an empty body; never blocks longer than 30s.
-// stripURLFromError removes nested *net/url.Error values, whose messages repeat
-// request URLs. Other errors are returned unchanged.
+// stripURLFromError avoids exposing URLs or credentials from any error cause.
 func stripURLFromError(err error) error {
-	for {
-		var ue *neturl.Error
-		if !errors.As(err, &ue) {
-			return err
-		}
-		if ue.Err == nil {
-			return errors.New("URL request failed")
-		}
-		err = ue.Err
+	if errors.Is(err, context.Canceled) {
+		return context.Canceled
 	}
+	if errors.Is(err, context.DeadlineExceeded) {
+		return context.DeadlineExceeded
+	}
+	return errors.New("URL request failed")
 }
 
 func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {
