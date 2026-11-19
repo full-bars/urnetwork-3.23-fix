@@ -150,14 +150,17 @@ func TestTopSeriesKeepsTheLiveRateAsASeparateTail(t *testing.T) {
 		m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 3000}, nil)
 	}
 	sr = m.series()
-	if !sr.live || len(sr.billable) != base || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps) {
-		t.Fatalf("the live rate must not be appended to the series: live=%v %d samples (want %d)", sr.live, len(sr.billable), base)
+	if sr.live || len(sr.billable) != base+1 || len(sr.total) != len(m.snap.Traffic.TotalHistoryBps)+1 {
+		t.Fatalf("the series now includes the live rate: live=%v %d samples (want %d)", sr.live, len(sr.billable), base+1)
 	}
-	if sr.anchor != 4242 {
-		t.Fatalf("the live rate moved the anchor to %d", sr.anchor)
+	nowSec := clock.Now().Unix()
+	if sr.anchor != nowSec {
+		t.Fatalf("the live rate moved the anchor to %d, want %d", sr.anchor, nowSec)
 	}
-	if sr.tailBillable < 9_900 || sr.tailBillable > 10_100 || sr.tailTotal < 29_700 || sr.tailTotal > 30_300 {
-		t.Fatalf("tail = %.0f / %.0f, want the live 10000 / 30000", sr.tailBillable, sr.tailTotal)
+	last := sr.billable[len(sr.billable)-1]
+	lastTotal := sr.total[len(sr.total)-1]
+	if last < 9_900 || last > 10_100 || lastTotal < 29_700 || lastTotal > 30_300 {
+		t.Fatalf("last = %.0f / %.0f, want the live 10000 / 30000", last, lastTotal)
 	}
 }
 
