@@ -36,6 +36,12 @@ RUN GOOS=linux GOARCH=$TARGETARCH CGO_ENABLED=0 \
 # --- Final Stage ---
 FROM alpine:latest
 
+# Keep license paths consistent with release archives.
+COPY LICENSE THIRD_PARTY_LICENSES.md /usr/share/doc/urnetwork/LICENSES/
+COPY third_party/go-yamux/LICENSE third_party/go-yamux/LICENSE-BSD /usr/share/doc/urnetwork/LICENSES/third_party/go-yamux/
+COPY third_party/go-substrate-rpc-client/LICENSE /usr/share/doc/urnetwork/LICENSES/third_party/go-substrate-rpc-client/
+COPY third_party/go-substrate-rpc-client/gethrpc/COPYING third_party/go-substrate-rpc-client/gethrpc/COPYING.LESSER third_party/go-substrate-rpc-client/gethrpc/AUTHORS /usr/share/doc/urnetwork/LICENSES/third_party/go-substrate-rpc-client/gethrpc/
+
 ARG TARGETARCH
 ARG VERSION=v.unknown
 WORKDIR /app

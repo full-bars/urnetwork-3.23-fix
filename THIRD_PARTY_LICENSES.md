@@ -36,3 +36,12 @@ in-tree replacement for the archived `gopkg.in/natefinch/npipe.v2` module
 `github.com/Microsoft/go-winio` (MIT), resolved through the module graph. It
 exists so the vendored RPC client's Windows IPC transport builds without the
 unlicensed upstream module.
+
+## go-yamux (vendored stream multiplexer)
+
+- **Component**: `github.com/libp2p/go-yamux/v5` v5.1.0.
+- **Vendored at**: `third_party/go-yamux/`; `PATCH.md` describes the modification.
+- **Licenses**: MPL-2.0 (`third_party/go-yamux/LICENSE`) and BSD
+  (`third_party/go-yamux/LICENSE-BSD`).
+
+The Source Code Form of the modified file is in the public source tree at `third_party/go-yamux/session.go` and in the release tag’s source archive.

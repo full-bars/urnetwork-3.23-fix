@@ -37,3 +37,10 @@ mimo_suggested_test.go
 # Fetched/scratch dirs
 work/
 *.log
+
+# License notices included in shipped images
+!LICENSE
+!THIRD_PARTY_LICENSES.md
+!third_party/go-yamux/LICENSE
+!third_party/go-yamux/LICENSE-BSD
+!third_party/go-substrate-rpc-client/LICENSE
