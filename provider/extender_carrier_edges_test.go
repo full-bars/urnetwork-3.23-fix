@@ -139,10 +139,22 @@ func TestExtenderCarrierRestartEffectiveAndPersistFailure(t *testing.T) {
 	}
 	before := m.Role()
 	res := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
-	if res.OK || m.Role() != before {
-		t.Fatalf("failed persist must not restart: %+v", res)
+	if res.OK || m.Role() == before || m.Role().config.disabledCarriers["udp 443"] {
+		t.Fatalf("failed set must restore the role: %+v", res)
 	}
 	if _, ok := state.get("extender_udp443"); ok {
 		t.Fatal("failed persist did not roll back")
+	}
+	if err := state.set("extender_udp443", "off"); err != nil {
+		t.Fatal(err)
+	}
+	m.RestartCarriers()
+	before = m.Role()
+	res = handleControlRequest(state, controlRequest{Cmd: "clear", Key: "extender_udp443"})
+	if res.OK || m.Role() == before || !m.Role().config.disabledCarriers["udp 443"] {
+		t.Fatalf("failed clear must restore the role: %+v", res)
+	}
+	if value, ok := state.get("extender_udp443"); !ok || value != "off" {
+		t.Fatal("failed clear did not roll back")
 	}
 }

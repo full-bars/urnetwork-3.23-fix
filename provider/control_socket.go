@@ -763,6 +763,10 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			tlog("❌ [control] set %s=%s rejected: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
+		if isExtenderCarrierKey(req.Key) {
+			oldOn := !hadOld || !strings.EqualFold(oldValue, "off")
+			restartCarrier = oldOn != !strings.EqualFold(req.Value, "off")
+		}
 		if err := state.persist(); err != nil {
 			// Restore both value and meta to preserve provenance.
 			state.mu.Lock()
@@ -776,10 +780,6 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			state.mu.Unlock()
 			tlog("❌ [control] set %s=%s failed to persist, rolled back: %s\n", req.Key, req.Value, err)
 			return controlResponse{OK: false, Error: "set applied in memory but failed to persist: " + err.Error()}
-		}
-		if isExtenderCarrierKey(req.Key) {
-			oldOn := !hadOld || !strings.EqualFold(oldValue, "off")
-			restartCarrier = oldOn != !strings.EqualFold(req.Value, "off")
 		}
 		// Only a key classified live may take effect in this process. A
 		// restart-required key must not be half-applied here: the response
@@ -828,6 +828,9 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			tlog("❌ [control] clear %s rejected: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: err.Error()}
 		}
+		if isExtenderCarrierKey(req.Key) && hadOld && strings.EqualFold(oldValue, "off") {
+			restartCarrier = true
+		}
 		if err := state.persist(); err != nil {
 			// Restore both value and meta to preserve provenance.
 			if hadOld {
@@ -838,9 +841,6 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 			}
 			tlog("❌ [control] clear %s failed to persist, rolled back: %s\n", req.Key, err)
 			return controlResponse{OK: false, Error: "clear applied in memory but failed to persist: " + err.Error()}
-		}
-		if isExtenderCarrierKey(req.Key) && hadOld && strings.EqualFold(oldValue, "off") {
-			restartCarrier = true
 		}
 		// For live-applied keys, reapply the runtime default immediately
 		// instead of requiring a restart. For non-live keys, the cleared
