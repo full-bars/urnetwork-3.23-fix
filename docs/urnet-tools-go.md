@@ -229,7 +229,7 @@ urnet-tools proxy trim off
 `urnet-tools top` and `urnet-tools status` report coverage for online proxies. Online means up or degraded. The counts are:
 
 - `ok`: the relay works and its exit address matches TCP.
-- `no relay` (`no-rel` in narrow `top` views): the proxy refuses UDP ASSOCIATE or the relay does not answer.
+- `no UDP` (`no-udp` in narrow `top` views): the proxy refuses UDP ASSOCIATE or the relay does not answer.
 - `mismatch` (`diff` in narrow `top` views): the relay works but its exit address differs from TCP.
 - `unknown` (`unk` in narrow `top` views): the relay works but its TCP exit address is unknown.
 - `unchecked`: the result is missing, in flight or expired.

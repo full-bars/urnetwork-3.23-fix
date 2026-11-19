@@ -107,7 +107,7 @@ func TestTopUDPCoverageKeepsUncheckedInNarrowPanels(t *testing.T) {
 	buf := tui.New(120, 4)
 	m.drawUDPProxyCoverage(buf, 0)
 	line := strings.SplitN(buf.String(), "\n", 2)[0]
-	for _, want := range []string{"4000 ok", "1000 no relay", "1000 mismatch", "1000 unknown", "1000 unchecked"} {
+	for _, want := range []string{"4000 ok", "1000 no UDP", "1000 mismatch", "1000 unknown", "1000 unchecked"} {
 		if !strings.Contains(line, want) {
 			t.Fatalf("wide panel: %q missing from %q", want, line)
 		}

@@ -123,7 +123,7 @@ func statusUDPText(u *SnapshotProxyUDP) string {
 	for _, c := range []struct {
 		n    int
 		name string
-	}{{u.NoRelay, "no relay"}, {u.Mismatch, "mismatch"}, {u.Unknown, "unknown"}, {u.Unchecked, "unchecked"}} {
+	}{{u.NoRelay, "no UDP"}, {u.Mismatch, "mismatch"}, {u.Unknown, "unknown"}, {u.Unchecked, "unchecked"}} {
 		if c.n > 0 {
 			parts = append(parts, fmt.Sprintf("%d %s", c.n, c.name))
 		}

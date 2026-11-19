@@ -15,7 +15,7 @@ The network's quality checks include an HTTP/3 leg. An identity whose proxy cann
 The provider checks the relay when an identity needs HTTP/3 or client UDP. Background sweeps also check online proxies across paid and URL proxy sources. The provider remembers results and checks again later. The check reports one of four states:
 
 - `ok` means the relay answers and its exit address matches the TCP exit address.
-- `no-relay` means the proxy refuses UDP ASSOCIATE or the relay does not answer.
+- `no-relay` means the proxy refuses UDP ASSOCIATE or the relay does not answer. `top` and `status` show it as `no UDP`.
 - `exit-mismatch` means the relay answers but its exit address differs from the TCP exit address.
 - `unknown` means the check has no confirmed result. The relay may still be tried.
 

@@ -417,9 +417,9 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 		keep  bool // never dropped to make room
 	}
 	build := func(short bool) []udpSeg {
-		noRelay, mismatch, unknown := "no relay", "mismatch", "unknown"
+		noRelay, mismatch, unknown := "no UDP", "mismatch", "unknown"
 		if short {
-			noRelay, mismatch, unknown = "no-rel", "diff", "unk"
+			noRelay, mismatch, unknown = "no-udp", "diff", "unk"
 		}
 		var segs []udpSeg
 		// A state with no count is left out, except unchecked, which is always

@@ -14,7 +14,7 @@ func TestUDPLiveBlock(t *testing.T) {
 		{"missing", nil, nil},
 		{"unchecked", &SnapshotProxyUDP{Unchecked: 4}, []string{"4 unchecked", "n/a of checked, 0% of online"}},
 		{"empty", &SnapshotProxyUDP{}, []string{"n/a of checked, n/a of online"}},
-		{"mixed", &SnapshotProxyUDP{OK: 3, NoRelay: 1, Mismatch: 1, Unknown: 1, Unchecked: 4}, []string{"3 ok", "1 no relay", "1 mismatch", "1 unknown", "4 unchecked", "50% of checked, 30% of online"}},
+		{"mixed", &SnapshotProxyUDP{OK: 3, NoRelay: 1, Mismatch: 1, Unknown: 1, Unchecked: 4}, []string{"3 ok", "1 no UDP", "1 mismatch", "1 unknown", "4 unchecked", "50% of checked, 30% of online"}},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {

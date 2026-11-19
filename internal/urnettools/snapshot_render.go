@@ -489,7 +489,7 @@ func udprow(u *SnapshotProxyUDP) liveRow {
 	online := checked + u.Unchecked
 	segs := []string{
 		fmt.Sprintf("%d ok", u.OK),
-		fmt.Sprintf("%d no relay", u.NoRelay),
+		fmt.Sprintf("%d no UDP", u.NoRelay),
 		fmt.Sprintf("%d mismatch", u.Mismatch),
 		fmt.Sprintf("%d unchecked", u.Unchecked),
 	}
