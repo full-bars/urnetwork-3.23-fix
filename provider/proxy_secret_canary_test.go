@@ -4,6 +4,8 @@ import (
 	"encoding/json"
 	"errors"
 	"net/url"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
@@ -11,6 +13,27 @@ import (
 const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
+
+func TestProxySecretCorruptURLStateError(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "proxy_url.json")
+	value := secretCanaryUser + ":" + secretCanaryPassword + "?token=" + secretCanaryToken
+	data, err := json.Marshal(map[string]any{"cache": map[string]any{"example.com:1080": map[string]string{"last_probe": value}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, data, 0600); err != nil {
+		t.Fatal(err)
+	}
+	_, err = readProxyURLStateFrom(path)
+	if err == nil || !isProxyURLStateCorrupt(err) {
+		t.Fatal("expected corrupt state error")
+	}
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(err.Error(), secret) {
+			t.Error("corrupt state error contains a canary")
+		}
+	}
+}
 
 func TestProxySecretNestedURLError(t *testing.T) {
 	raw := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com/?token=" + secretCanaryToken

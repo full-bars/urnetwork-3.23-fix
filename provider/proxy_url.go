@@ -185,7 +185,7 @@ func copyURLBlacklist(in map[string]time.Time) map[string]time.Time {
 // content that nothing will ever make parse.
 type proxyURLParseError struct{ err error }
 
-func (e *proxyURLParseError) Error() string { return "parse proxy_url.json: " + e.err.Error() }
+func (e *proxyURLParseError) Error() string { return "parse proxy_url.json: invalid content" }
 func (e *proxyURLParseError) Unwrap() error { return e.err }
 
 // isProxyURLStateCorrupt reports whether err from readProxyURLState means the
