@@ -67,26 +67,6 @@ Most operators need to do one thing: sign a single wallet message, once, from th
 curl -fSsL https://dl.fullbars.xyz/install.sh | sh
 ```
 
-**🐡 FreeBSD (rc.d)**
-
-```sh
-fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && \
-  sudo sh urnet-install.sh install
-```
-
-The FreeBSD installer downloads the provider and installs an `rc.d` service. See [docs/FreeBSD.md](docs/FreeBSD.md).
-
-**🐡 OpenBSD (rc.d)**
-
-Run this as a regular user with configured `doas` or `sudo` access.
-
-```sh
-ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
-  sh urnet-install.sh install
-```
-
-The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
-
 For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.md](docs/OpenRC.md).
 
 **🍎 macOS (launchd)**
@@ -95,18 +75,6 @@ For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.m
 curl -fSsL https://dl.fullbars.xyz/install-mac.sh | sh -s -- install
 ```
 
-
-**🐋 Docker**
-
-```sh
-docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
-```
-
-**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
-
-```sh
-curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
-```
 
 **🪟 Windows (PowerShell)**
 
@@ -140,6 +108,38 @@ Windows Defender may flag this one-liner. See the note below.
 
 </details>
 
+**🐋 Docker**
+
+```sh
+docker pull ghcr.io/full-bars/urnetwork-3.23-fix:latest
+```
+
+**🐋 Docker Wrapper (Optional but Recommended -- For docker deployments, install this to control and interact with your container)**
+
+```sh
+curl -fSsL https://dl.fullbars.xyz/urnet-docker.sh | sh
+```
+
+**🐡 FreeBSD (rc.d)**
+
+```sh
+fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_FreeBSD.sh && \
+  sudo sh urnet-install.sh install
+```
+
+The FreeBSD installer downloads the provider and installs an `rc.d` service. See [docs/FreeBSD.md](docs/FreeBSD.md).
+
+**🐡 OpenBSD (rc.d)**
+
+Run this as a regular user with configured `doas` or `sudo` access.
+
+```sh
+ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
+  sh urnet-install.sh install
+```
+
+The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
+
 ### After you install
 
 After installation, authenticate and start providing:
@@ -172,10 +172,6 @@ curl -fSsL https://dl.fullbars.xyz/uninstall.sh | sh
 
 Manual — see [docs/Installation.md](docs/Installation.md).
 
-**🐡 FreeBSD**
-
-Manual — see [FreeBSD Guide](docs/FreeBSD.md#uninstall).
-
 **🪟 Windows (PowerShell)**
 
 ```powershell
@@ -194,6 +190,10 @@ docker rm -f <container> && docker rmi ghcr.io/full-bars/urnetwork-3.23-fix:late
 rm /usr/local/bin/urnet-docker   # root install
 rm ~/.local/bin/urnet-docker     # non-root install
 ```
+
+**🐡 FreeBSD**
+
+Manual — see [FreeBSD Guide](docs/FreeBSD.md#uninstall).
 
 ### 🐋 Docker (Production-Ready)
 
@@ -376,7 +376,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 - **Base engine:** UrNetwork v3.23, with the v2026 engine changes ported in (v34)
 - **Language:** Go 1.27.4, built on Alpine
-- **Platforms:** Linux (systemd and Alpine/OpenRC), FreeBSD, OpenBSD, macOS and Windows. See [FreeBSD](docs/FreeBSD.md), [OpenBSD](docs/OpenBSD.md) and [OpenRC](docs/OpenRC.md).
+- **Platforms:** Linux (systemd and Alpine/OpenRC), macOS, Windows, FreeBSD and OpenBSD. See [FreeBSD](docs/FreeBSD.md), [OpenBSD](docs/OpenBSD.md) and [OpenRC](docs/OpenRC.md).
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. Each release also attaches `darwin/amd64` + `darwin/arm64`, `windows/amd64` + `windows/arm64` and `freebsd/amd64` + `freebsd/arm64` binaries.
 - **Bridge-friendly:** runs on standard Docker bridge networks. The extender role needs its ports published (`-p 443:443 -p 443:443/udp -p 4053:4053/udp`), and the default bridge has no IPv6, so on it the role activates for IPv4 only. For IPv6, either turn on IPv6 on the bridge in Docker's daemon config and publish the same ports, or run with `--network host`. `docker run` and Compose examples for both: [docs/Extender.md](docs/Extender.md#docker)
 
