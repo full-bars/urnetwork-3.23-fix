@@ -265,14 +265,15 @@ func cmdDockerTop(args []string) error {
 	if err != nil {
 		return err
 	}
-	t, rest = consumeDockerBareTarget(providers, t, rest)
-	t, rest = consumeDockerTrailingTarget(providers, t, rest, 1)
+	t, rest = consumeDockerTopTarget(providers, t, rest)
 	p, err := selectTargetInteractive(providers, t)
 	if err != nil {
 		return err
 	}
-	inner := append([]string{"urnet-tools", "top"}, rest...)
-	return containerInteractiveExecByName(p.Unit, inner...)
+	if !p.Running {
+		return fmt.Errorf("container %q is not running; start it before opening top", p.Unit)
+	}
+	return containerTopExec(p.Unit, rest)
 }
 
 // cmdDockerExec runs a command inside the targeted container — the

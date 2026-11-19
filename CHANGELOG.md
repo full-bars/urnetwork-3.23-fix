@@ -11,6 +11,7 @@ Everything merged after `v3.23.0-fix.35.11`.
 ### Added
 
 - **Proxy UDP relay coverage**. Status, `top` and metrics report UDP relay coverage for online proxies. Background sweeps check paid and URL proxy sources. Turning off the proxy sweep or `udp_probe` stops new sweeps at the next tick. A running sweep continues. The state file is written in the background at most once every two seconds during normal operation. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours. The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`. A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
+- The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
 
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
 

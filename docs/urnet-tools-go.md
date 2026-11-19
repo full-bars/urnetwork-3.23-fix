@@ -154,6 +154,12 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 
 ---
 
+## Docker top
+
+`urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.
+
+The dashboard uses the writable `/root/.urnetwork` mount for its settings when that mount is present. Use a named volume or a bind mount and reuse it when recreating the container. An anonymous volume is not automatically reused. Without a writable state mount, settings remain in the container and can be lost on recreation. Terminal colors follow `TERM` and `COLORTERM` when they are set on the host. Container network interfaces describe the container namespace, not necessarily the host network.
+
 ## 🎯 Targeting & Selectors
 
 The tool accepts selectors in both space-separated and equals-separated format (`--flag value` or `--flag=value`):
