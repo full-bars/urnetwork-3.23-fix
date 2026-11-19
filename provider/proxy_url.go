@@ -314,15 +314,19 @@ var proxyURLHTTPClient = &http.Client{
 // lines. It does not parse the lines — callers parse each line with
 // parseProxyURLLine. Returns an error on network failure, non-200 status, or
 // an empty body; never blocks longer than 30s.
-// stripURLFromError returns the underlying cause of a *net/url.Error, whose own
-// message repeats the request URL (credentials and query tokens included). Any
-// other error is returned unchanged.
+// stripURLFromError removes nested *net/url.Error values, whose messages repeat
+// request URLs. Other errors are returned unchanged.
 func stripURLFromError(err error) error {
-	var ue *neturl.Error
-	if errors.As(err, &ue) && ue.Err != nil {
-		return ue.Err
+	for {
+		var ue *neturl.Error
+		if !errors.As(err, &ue) {
+			return err
+		}
+		if ue.Err == nil {
+			return errors.New("URL request failed")
+		}
+		err = ue.Err
 	}
-	return err
 }
 
 func fetchProxyURLLines(ctx context.Context, url string) ([]string, error) {

@@ -2,6 +2,8 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -9,6 +11,17 @@ import (
 const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
+
+func TestProxySecretNestedURLError(t *testing.T) {
+	raw := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com/?token=" + secretCanaryToken
+	err := &url.Error{Op: "get", URL: raw, Err: &url.Error{Op: "parse", URL: raw, Err: errors.New("invalid")}}
+	got := stripURLFromError(err).Error()
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(got, secret) {
+			t.Error("nested URL error contains a canary")
+		}
+	}
+}
 
 func TestProxySecretRejectedPaste(t *testing.T) {
 	for _, line := range []string{
