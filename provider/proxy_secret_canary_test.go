@@ -6,6 +6,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
 	"testing"
 
@@ -15,6 +16,56 @@ import (
 const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
+
+func TestProxySecretStateFilesPrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permission bits are not enforced on Windows")
+	}
+	dir := t.TempDir()
+	cases := []struct {
+		name  string
+		write func(string) error
+	}{
+		{"proxy.state", func(path string) error {
+			return writeProxyStateTo(path, &ProxyState{Proxies: map[string]ProxyEntry{
+				identityKey("example.com:1080", secretCanaryUser): {ID: 1},
+			}})
+		}},
+		{"proxy_url.json", func(path string) error {
+			return writeProxyURLStateTo(path, &ProxyURLState{Cache: map[string]ProxyURLEntry{
+				"example.com:1080": {User: secretCanaryUser, Password: secretCanaryPassword},
+			}})
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(dir, tc.name)
+			if err := os.WriteFile(path, []byte("old"), 0644); err != nil {
+				t.Fatal(err)
+			}
+			if err := tc.write(path); err != nil {
+				t.Fatal(err)
+			}
+			info, err := os.Stat(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if got := info.Mode().Perm(); got != 0600 {
+				t.Errorf("file mode = %04o, want 0600", got)
+			}
+			data, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !strings.Contains(string(data), secretCanaryUser) {
+				t.Error("expected identity in private state")
+			}
+			if tc.name == "proxy_url.json" && !strings.Contains(string(data), secretCanaryPassword) {
+				t.Error("expected credentials in private URL cache")
+			}
+		})
+	}
+}
 
 func TestProxySecretLegacyAdoptionLog(t *testing.T) {
 	address := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
