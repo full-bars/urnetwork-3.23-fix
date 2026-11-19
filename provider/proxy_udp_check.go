@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -376,14 +377,39 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 // prune drops identities nobody has asked about for two state lifetimes,
 // at most once per lazy lifetime. Called with the lock held.
 func (self *proxyUDPCheckStore) prune(now time.Time) {
-	if !self.lastPrune.IsZero() && now.Sub(self.lastPrune) < proxyUDPLazyTTL {
+	if self.lastPrune.IsZero() || now.Sub(self.lastPrune) >= proxyUDPLazyTTL {
+		self.lastPrune = now
+		for key, entry := range self.entries {
+			if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
+				delete(self.entries, key)
+			}
+		}
+	}
+	const limit = 4 * udpStateMaxEntries
+	if len(self.entries) <= limit {
 		return
 	}
-	self.lastPrune = now
+	type completed struct {
+		key string
+		at  time.Time
+	}
+	var oldest []completed
 	for key, entry := range self.entries {
-		if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
-			delete(self.entries, key)
+		if entry.done == nil {
+			oldest = append(oldest, completed{key, entry.at})
 		}
+	}
+	sort.Slice(oldest, func(i, j int) bool {
+		if oldest[i].at.Equal(oldest[j].at) {
+			return oldest[i].key < oldest[j].key
+		}
+		return oldest[i].at.Before(oldest[j].at)
+	})
+	for _, entry := range oldest {
+		if len(self.entries) <= limit {
+			break
+		}
+		delete(self.entries, entry.key)
 	}
 }
 
@@ -484,6 +510,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		running.at = now
 		close(running.done)
 		running.done = nil
+		self.prune(now)
 		if err := self.persistLocked(key, running, now); err != nil {
 			tlog("[proxy][udp] could not persist probe state\n")
 		}
@@ -588,6 +615,7 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	self.prune(now)
 	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true}
 	self.entries[key] = entry
+	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {
 		tlog("[proxy][udp] could not persist probe state\n")
 	}

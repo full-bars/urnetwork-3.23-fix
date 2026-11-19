@@ -188,6 +188,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 	settingsByKey := make(map[string]*connect.ProxySettings, len(online))
 	candidates := make([]udpProbeCandidate, 0, len(online))
 	store.mu.Lock()
+	store.prune(now)
 	for _, settings := range online {
 		if settings == nil {
 			continue
@@ -209,6 +210,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 		}
 		candidates = append(candidates, candidate)
 	}
+	store.prune(now)
 	store.mu.Unlock()
 	batch := selectUDPProbeBatch(now, candidates, recheckWindow, tick, rand.New(rand.NewSource(now.UnixNano())))
 	workers = min(workers, len(batch))
