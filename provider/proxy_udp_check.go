@@ -500,6 +500,9 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		// the probe may reuse the remembered TCP exit only while it is fresh
 		reusableTcpExit := ""
 		var reuseBudget time.Duration
+		// The reuse clock starts here, before the wait for a probe slot, so the
+		// queue time counts against the six hour limit.
+		reuseStart := time.Now()
 		if tcpExit != "" && !tcpExitAt.IsZero() && now.Sub(tcpExitAt) < proxyTCPExitMaxAge {
 			reusableTcpExit = tcpExit
 			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
@@ -513,7 +516,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		select {
 		case self.slots <- struct{}{}:
 			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, reusableTcpExit)
-			probeCtx = context.WithValue(probeCtx, cachedProxyTCPExitReuseKey{}, tcpExitReuse{start: time.Now(), budget: reuseBudget})
+			probeCtx = context.WithValue(probeCtx, cachedProxyTCPExitReuseKey{}, tcpExitReuse{start: reuseStart, budget: reuseBudget})
 			result = self.probe(probeCtx, settings)
 			<-self.slots
 		case <-ctx.Done():

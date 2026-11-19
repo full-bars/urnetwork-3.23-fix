@@ -6,8 +6,12 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
+	"golang.org/x/net/proxy"
 )
 
 // A check that started earlier can finish after one that started later. The
@@ -130,5 +134,45 @@ func TestReusableCachedTCPExitHonoursTheBudget(t *testing.T) {
 	}
 	if got := reusableCachedTCPExit(context.Background()); got != "" {
 		t.Fatalf("nothing cached: %q", got)
+	}
+}
+
+// A check that waits for a probe slot spends part of the cached TCP exit's life
+// in the queue. The probe must see the exit as expired when the wait used it up.
+func TestCheckCountsSlotWaitAgainstTCPExitReuse(t *testing.T) {
+	var cached atomic.Value
+	store := newProxyUDPCheckStore(func(ctx context.Context, _ *connect.ProxySettings) proxyUDPResult {
+		cached.Store(reusableCachedTCPExit(ctx))
+		return proxyUDPResult{Status: proxyUDPOK}
+	})
+	ps := &connect.ProxySettings{Network: "tcp", Address: "example.test:1234", Auth: &proxy.Auth{User: "u", Password: "p"}}
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	// the first check records a TCP exit observed just under six hours ago
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		at: now.Add(-proxyUDPOKTTL - time.Minute), tcpExit: "203.0.113.5", tcpExitAt: now.Add(-proxyTCPExitMaxAge + 150*time.Millisecond),
+		result: proxyUDPResult{Status: proxyUDPOK, TCPExit: "203.0.113.5", UDPExit: "203.0.113.5"},
+	}
+	store.mu.Unlock()
+	// fill every probe slot so the check waits
+	for i := 0; i < cap(store.slots); i++ {
+		store.slots <- struct{}{}
+	}
+	done := make(chan struct{})
+	go func() {
+		store.Check(context.Background(), ps, now)
+		close(done)
+	}()
+	time.Sleep(400 * time.Millisecond)
+	for i := 0; i < cap(store.slots); i++ {
+		<-store.slots
+	}
+	select {
+	case <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("check did not finish")
+	}
+	if got, _ := cached.Load().(string); got != "" {
+		t.Fatalf("the exit expired while the check waited, but the probe was offered %q", got)
 	}
 }
