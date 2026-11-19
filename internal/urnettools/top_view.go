@@ -61,6 +61,7 @@ const (
 // render draws the whole screen into b.
 func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
+	m.proxyGridW, m.proxyGridH = 0, 0
 	if m.overview {
 		m.drawOverview(b)
 		return
@@ -76,6 +77,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		return
 	}
 	m.drawFull(b)
+	if m.proxyPopup {
+		m.drawProxyPopup(b)
+	}
 	if m.panel != "" {
 		m.drawDetails(b)
 	}
@@ -156,6 +160,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		m.drawGraph(box(left[0], "graph", m.throughputTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 	}
 	m.drawProxies(box(left[1], "proxies", "Proxies"))
+	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
 	m.drawEvents(box(left[2], "events", "Events"))
 	m.drawNow(box(side[0], "now", "Now"))
 	m.drawResources(box(side[1], "resources", "Resources"))
@@ -964,6 +969,14 @@ var helpLines = []string{
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",
+	"Grid state: up green, dropped yellow, connecting blue, dead red.",
+	"Parked is dim. Green brightness is throughput.",
+	"A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time.",
+	"One dot is one proxy. A cell has upper and lower dots.",
+	"Groups show the worst state. Hover or click for addresses.",
+	"Mono uses blocks. Colorblind uses blocks and the worst state style.",
+	"Colorblind uses bold and dim. Hover for each state.",
+	"ASCII uses symbols for state and activity.",
 }
 
 // drawHelp draws the key reference centered over whatever is on screen.

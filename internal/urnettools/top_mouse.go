@@ -38,10 +38,14 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 	name := hitRegion(m.regions, ev.X, ev.Y)
 	switch ev.Action {
 	case tcellui.MouseMove:
+		m.proxyPopupAt(ev.X, ev.Y)
 		m.hover = name
 		return topNone
 	case tcellui.MousePress:
 		if ev.Button != tcellui.MouseLeft {
+			return topNone
+		}
+		if m.proxyPopupAt(ev.X, ev.Y) {
 			return topNone
 		}
 		now := m.now()

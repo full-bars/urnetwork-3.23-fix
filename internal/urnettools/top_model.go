@@ -249,7 +249,13 @@ type topModel struct {
 	proxyGridW, proxyGridH int
 	// proxyDetail is the full per-proxy records from proxy_cell_detail, keyed
 	// by index, for the hover/click popup. Fetched on demand, not polled.
-	proxyDetail map[int]ProxyCellDetail
+	proxyDetail              map[int]ProxyCellDetail
+	proxyDetailAt            time.Time
+	proxyPopup               bool
+	proxyPopupFetch          bool
+	proxyPopupX, proxyPopupY int
+	proxyPopupRect           tui.Rect
+	proxyPopupIndices        []int
 
 	// graph is the graph glyph style. themeLocked is set when the environment
 	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
@@ -652,6 +658,9 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
+		m.proxyPopup = false
+	}
 	if (m.menu || m.help || m.panel != "") && ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseRelease {
 		if m.drag != nil {
 			m.saveLayout()
@@ -788,6 +797,8 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
 	m.proxyDetail = nil
+	m.proxyDetailAt = time.Time{}
+	m.proxyPopup = false
 	m.extender = ExtenderReading{}
 	m.carriers.reset()
 	m.extenderBusy = false

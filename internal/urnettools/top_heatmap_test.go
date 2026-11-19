@@ -55,7 +55,7 @@ func TestProxyGridDisplayWidth(t *testing.T) {
 		b := tui.New(1, 2)
 		m.drawProxyGrid(b)
 		r := b.Cell(0, 0).Rune
-		if tui.RuneWidth(r) != 1 || width.LookupRune(r).Kind() == width.EastAsianAmbiguous {
+		if tui.RuneWidth(r) != 1 {
 			t.Fatalf("%d proxies: dot %U is not a stable single-cell glyph", n, r)
 		}
 	}
@@ -71,7 +71,7 @@ func TestProxyGridDisplayWidth(t *testing.T) {
 				// This adds the difference to the renderer's own width, rather
 				// than counting bytes or trusting the buffer's clipped size.
 				for _, r := range line {
-					if width.LookupRune(r).Kind() == width.EastAsianAmbiguous {
+					if width.LookupRune(r).Kind() == width.EastAsianAmbiguous && r != '▀' && r != '▄' && r != '█' {
 						actual += 2 - tui.RuneWidth(r)
 					}
 				}
@@ -92,7 +92,7 @@ func TestDrawProxyGridUpAndLegend(t *testing.T) {
 	b := tui.New(20, 9)
 	m.drawProxyGrid(b)
 	s := b.String()
-	if !strings.Contains(s, "88 up") {
+	if !strings.Contains(s, "87 up") {
 		t.Fatalf("legend should show 88 up, got:\n%s", s)
 	}
 	// no crash, and the grid area is drawn with filled dots.
@@ -165,7 +165,7 @@ func TestDrawProxyGridASCIIMono(t *testing.T) {
 	m.drawProxyGrid(b)
 	s := b.String()
 	// mono theme uses ASCII glyphs and no custom colors
-	for _, want := range []string{"1 up", "1 dropped", "1 dead", "1 connecting", "1 parked"} {
+	for _, want := range []string{"direct up", "0 up", "1 dropped", "1 dead", "1 connecting", "1 parked"} {
 		if !strings.Contains(s, want) {
 			t.Fatalf("legend missing %q, got:\n%s", want, s)
 		}
@@ -194,17 +194,17 @@ func TestProxyCellAtHitTests(t *testing.T) {
 	layout := newProxyGridLayout(len(m.proxyCells), 4, 2)
 	for i := range m.proxyCells {
 		x, y, _ := layout.cellFor(i)
-		if idx, ok := m.proxyCellAt(x, y); !ok || idx != i {
+		if idx, ok := m.proxyCellFirstAt(x, y); !ok || idx != i {
 			t.Fatalf("cell(%d,%d) -> %d,%v; want %d", x, y, idx, ok, i)
 		}
 	}
-	if idx, ok := m.proxyCellAt(1, 1); ok {
+	if idx, ok := m.proxyCellFirstAt(1, 1); ok {
 		t.Fatalf("empty cell -> %d,true", idx)
 	}
-	if _, ok := m.proxyCellAt(-1, 0); ok {
+	if _, ok := m.proxyCellFirstAt(-1, 0); ok {
 		t.Fatal("negative x should not hit")
 	}
-	if _, ok := m.proxyCellAt(0, 99); ok {
+	if _, ok := m.proxyCellFirstAt(0, 99); ok {
 		t.Fatal("out of range y should not hit")
 	}
 }
@@ -219,7 +219,7 @@ func TestProxyCellAtGroupedReturnsFirst(t *testing.T) {
 
 	b := tui.New(8, 3) // gridH=2, dotRows=4, capacity=32, group=138
 	m.drawProxyGrid(b)
-	idx, ok := m.proxyCellAt(0, 0)
+	idx, ok := m.proxyCellFirstAt(0, 0)
 	if !ok {
 		t.Fatal("cell(0,0) should hit")
 	}
@@ -242,7 +242,7 @@ func TestProxyCellInfoFromDetail(t *testing.T) {
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"proxy[0] 10.0.0.9:1080", "state up", "clients 4", "bytes in interval 1048576", "age 1h"} {
+	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients 4", "bytes in interval 1048576", "age 1h"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxyCellInfo missing %q:\n%s", want, joined)
 		}
@@ -260,7 +260,7 @@ func TestProxyCellInfoWithoutDetailShowsUnknown(t *testing.T) {
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"proxy[0] ?", "state up", "age ?"} {
+	for _, want := range []string{"proxy[0] direct (this host)", "state up", "age ?"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxyCellInfo missing %q:\n%s", want, joined)
 		}

@@ -12,7 +12,7 @@ import (
 func TestProxyCellStoreDetail(t *testing.T) {
 	connect.ResetProxyHealthForTesting()
 	defer connect.ResetProxyHealthForTesting()
-	connect.RegisterProxy(0, "10.0.0.1:1080", "10.0.0.1:1080")
+	connect.RegisterProxy(2, "10.0.0.1:1080", "10.0.0.1:1080")
 	connect.RegisterProxy(1, "10.0.0.2:1080", "10.0.0.2:1080")
 	connect.NoteLiveProxyHealth("10.0.0.1:1080", "up", time.Time{})
 
@@ -32,7 +32,7 @@ func TestProxyCellStoreDetail(t *testing.T) {
 	for _, d := range detail {
 		byIndex[d.Index] = d
 	}
-	if byIndex[0].Addr != "10.0.0.1:1080" || byIndex[1].Addr != "10.0.0.2:1080" {
+	if byIndex[2].Addr != "10.0.0.1:1080" || byIndex[1].Addr != "10.0.0.2:1080" {
 		t.Fatalf("detail addrs wrong: %+v", detail)
 	}
 	for _, d := range detail {
@@ -42,7 +42,7 @@ func TestProxyCellStoreDetail(t *testing.T) {
 	}
 
 	// advance counters and re-sample: interval = 512KiB rx + 256KiB tx
-	bw := connect.RegisterProxyBandwidth(0)
+	bw := connect.RegisterProxyBandwidth(2)
 	bw.TotalRx.Store(512 << 10)
 	bw.TotalTx.Store(256 << 10)
 	now2 := now.Add(time.Second)
@@ -53,11 +53,11 @@ func TestProxyCellStoreDetail(t *testing.T) {
 		byIndex[d.Index] = d
 	}
 	wantBytes := uint64(512<<10) + uint64(256<<10)
-	if byIndex[0].IntervalBytes != wantBytes {
-		t.Fatalf("proxy 0 interval bytes = %d, want %d", byIndex[0].IntervalBytes, wantBytes)
+	if byIndex[2].IntervalBytes != wantBytes {
+		t.Fatalf("proxy 0 interval bytes = %d, want %d", byIndex[2].IntervalBytes, wantBytes)
 	}
 	// the bucket for ~768 KiB in the interval must be >= 4 (512KiB..4MiB band)
-	bucket := cells2[2] & 0x07
+	bucket := cells2[6] & 0x07
 	if bucket < 4 {
 		t.Fatalf("proxy 0 bucket = %d, want >= 4 for a 768 KiB interval", bucket)
 	}
@@ -119,4 +119,15 @@ func TestProxyCellStoreConcurrentCellsAndDetail(t *testing.T) {
 		}()
 	}
 	wg.Wait()
+}
+
+func TestProxyCellDetailAddressPrivacy(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	defer connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(0, "198.51.100.1:1234", "direct")
+	connect.RegisterProxy(1, "socks5://alice:secret@proxy.example:1080/path?token=hidden", "key")
+	detail := (&proxyCellStore{prev: map[int]uint64{}}).Detail(time.Unix(100, 0))
+	if len(detail) != 2 || detail[0].Addr != "direct (this host)" || detail[1].Addr != "proxy.example:1080" {
+		t.Fatalf("unsafe detail: %+v", detail)
+	}
 }

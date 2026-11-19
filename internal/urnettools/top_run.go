@@ -29,12 +29,14 @@ type topResult struct {
 	isGroups    bool
 	groups      *GoroutineGroups
 	// the extender reading
-	isExtender   bool
-	extender     ExtenderReading
-	isProxyCells bool
-	proxyCells   []proxyCell
-	isOverview   bool
-	provider     int
+	isExtender    bool
+	extender      ExtenderReading
+	isProxyDetail bool
+	proxyDetail   map[int]ProxyCellDetail
+	isProxyCells  bool
+	proxyCells    []proxyCell
+	isOverview    bool
+	provider      int
 }
 
 // topFetchOverview reads one provider and recovers source panics.
@@ -91,6 +93,24 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				}
 			}()
 			res.snap, res.err = src.Fetch(p)
+		}()
+	}
+	var detailBusy bool
+	fetchDetail := func(gen int, p Provider) {
+		detailBusy = true
+		m.proxyDetailAt = m.now()
+		go func() {
+			res := topResult{gen: gen, isProxyDetail: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.err = fmt.Errorf("proxy detail fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.proxyDetail, res.err = fetchProxyCellDetail(p)
 		}()
 	}
 	var proxyBusy bool
@@ -216,6 +236,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			scr.SetMouse(m.mouse)
 			lastMouse = m.mouse
 		}
+		if m.proxyPopup && m.proxyPopupFetch && !detailBusy && m.cur >= 0 && m.cur < len(m.providers) {
+			m.proxyPopupFetch = false
+			if m.proxyDetailAt.IsZero() || m.now().Sub(m.proxyDetailAt) >= 5*time.Second {
+				if _, ok := src.(socketTopSource); ok {
+					fetchDetail(m.gen, m.providers[m.cur])
+				}
+			}
+		}
 		if gen, p, ok := m.wantFetch(m.now()); ok {
 			fetch(gen, p)
 			if _, ok := src.(socketTopSource); ok && !proxyBusy {
@@ -266,6 +294,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			}
 		case r := <-results:
 			switch {
+			case r.isProxyDetail:
+				detailBusy = false
+				m.applyProxyCellDetail(r.gen, r.proxyDetail, r.err)
 			case r.isProxyCells:
 				proxyBusy = false
 				m.applyProxyCells(r.gen, r.proxyCells, r.err)

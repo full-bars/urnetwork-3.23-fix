@@ -16,7 +16,7 @@
 │                                                ││                            │
 │                                                │╰────────────────────────────╯
 │∙  ∙  ∙  ∙  ∙  ∙  ∙  ∙   ∙  ∙  ∙  ∙             │╭ Resources ─────────────────╮
-│55 up  1 dropped  1 connecting  2 dead  1 parked││heap  ████▌░░░░░ 1.8/4.0 GiB│
+│direct up    54 up  1 dropped  1 connecting  2 d││heap  ████▌░░░░░ 1.8/4.0 GiB│
 ╰────────────────────────────────────────────────╯│fds   ░░░░░░░░░░░░ 310/65536│
 ╭ Events ────────────────────────────────────────╮│rss   2.1 GiB               │
 │3d ago • restart: update (v3.23.0-fix.32.0 to v…││gor   1204                  │
