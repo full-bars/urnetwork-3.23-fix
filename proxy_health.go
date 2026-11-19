@@ -239,7 +239,7 @@ func RegisterProxy(index int, address, key string) {
 	if h.key != "" && h.key != key {
 		delete(proxyHealthByKey, h.key)
 	}
-	h.address = address
+	h.address = safeProxyDisplayAddress(address)
 	h.key = key
 	h.connecting = true
 	h.connectingSince = time.Now()
@@ -473,8 +473,31 @@ func ProxyHealthCount() int {
 	return len(proxyHealthByIndex)
 }
 
+// safeProxyDisplayAddress accepts only a bare host and numeric port.
+// Malformed proxy input may contain userinfo or query secrets.
+func safeProxyDisplayAddress(address string) string {
+	if address == "" || address == "direct" {
+		return address
+	}
+	host, port, err := net.SplitHostPort(address)
+	if err != nil || host == "" || port == "" {
+		return "<unparsable proxy address>"
+	}
+	for _, c := range host {
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '-' || c == '_' || c == ':') {
+			return "<unparsable proxy address>"
+		}
+	}
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return "<unparsable proxy address>"
+		}
+	}
+	return address
+}
+
 func formatProxyEntry(index int, address string) string {
-	return fmt.Sprintf("proxy[%d] (%s)", index, address)
+	return fmt.Sprintf("proxy[%d] (%s)", index, safeProxyDisplayAddress(address))
 }
 
 func formatProxyErrorEntry(index int, address string, failures *ProxyFailureCounters, lastError string, lastErrorAt time.Time) string {
