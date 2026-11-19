@@ -7,7 +7,7 @@ spec and the benchmarks left out, and one change in `session.go`
 Upstream returns an error when the memory manager refuses the span or the
 initial stream window of an incoming stream. That error stops the receive loop
 and closes the whole session. The patch resets only the refused stream and
-carries on, the same way a stream past `MaxIncomingStreams` is handled.
+carries on, the same way a stream past `MaxIncomingStreams` is handled. A refused SYN that reuses the ID of a registered stream is a protocol error and still returns the cause, as before, so its frame never reaches the existing stream.
 
 `refusal_test.go` fails against the unpatched `session.go` and passes with the
 patch. Run it from this directory with `go test -race .`. The gossip level test

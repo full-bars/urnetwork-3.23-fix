@@ -71,6 +71,34 @@ func testSessionPair(t *testing.T, newServerMemoryManager func() (MemoryManager,
 	return client, server
 }
 
+// acceptStreamBounded accepts a stream and fails the test, instead of waiting
+// for the package timeout, when none arrives. It closes both sessions to
+// release the pending accept.
+func acceptStreamBounded(t *testing.T, client *Session, server *Session, phase string) *Stream {
+	t.Helper()
+	type result struct {
+		stream *Stream
+		err    error
+	}
+	results := make(chan result, 1)
+	go func() {
+		stream, err := server.AcceptStream()
+		results <- result{stream, err}
+	}()
+	select {
+	case r := <-results:
+		if r.err != nil {
+			t.Fatalf("%s: accept: %v", phase, r.err)
+		}
+		return r.stream
+	case <-time.After(10 * time.Second):
+		client.Close()
+		server.Close()
+		t.Fatalf("%s: no stream accepted within 10 seconds", phase)
+		return nil
+	}
+}
+
 // A refused stream is reset on its own. The session and the streams already
 // open on it carry on, and a later stream is accepted once memory is free.
 func testRefusedStreamLeavesSession(t *testing.T, newServerMemoryManager func() (MemoryManager, error), refuse *atomic.Bool) {
@@ -83,10 +111,7 @@ func testRefusedStreamLeavesSession(t *testing.T, newServerMemoryManager func() 
 	if _, err := healthy.Write([]byte("a")); err != nil {
 		t.Fatal(err)
 	}
-	accepted, err := server.AcceptStream()
-	if err != nil {
-		t.Fatal(err)
-	}
+	accepted := acceptStreamBounded(t, client, server, "first stream")
 	buf := make([]byte, 1)
 	if _, err := io.ReadFull(accepted, buf); err != nil {
 		t.Fatal(err)
@@ -122,10 +147,7 @@ func testRefusedStreamLeavesSession(t *testing.T, newServerMemoryManager func() 
 	if _, err := later.Write([]byte("d")); err != nil {
 		t.Fatal(err)
 	}
-	laterAccepted, err := server.AcceptStream()
-	if err != nil {
-		t.Fatalf("accept after memory was free again: %v", err)
-	}
+	laterAccepted := acceptStreamBounded(t, client, server, "stream after memory was free again")
 	if _, err := io.ReadFull(laterAccepted, buf); err != nil || buf[0] != 'd' {
 		t.Fatalf("read on the later stream = %q, %v", buf, err)
 	}
@@ -146,4 +168,32 @@ func TestIncomingStreamSpanRefusedResetsOnlyThatStream(t *testing.T) {
 		}
 		return refusingMemoryManager{refuse: refuse}, nil
 	}, refuse)
+}
+
+// A SYN that reuses the ID of a registered stream is a protocol error. When
+// memory is also refused, the refusal must not reset and dispatch it to the
+// existing stream: the cause is returned, which ends the session as it did
+// before the patch. A refused SYN with a new ID is only reset.
+func TestIncomingStreamRefusedDuplicateIDReturnsTheCause(t *testing.T) {
+	refuse := &atomic.Bool{}
+	client, server := testSessionPair(t, func() (MemoryManager, error) {
+		return refusingMemoryManager{refuse: refuse}, nil
+	})
+
+	healthy, err := client.OpenStream(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := healthy.Write([]byte("a")); err != nil {
+		t.Fatal(err)
+	}
+	accepted := acceptStreamBounded(t, client, server, "first stream")
+
+	refuse.Store(true)
+	if err := server.incomingStream(accepted.id); !errors.Is(err, errTestMemoryRefused) {
+		t.Fatalf("refused duplicate id returned %v, want the refusal cause", err)
+	}
+	if err := server.incomingStream(accepted.id + 2); err != nil {
+		t.Fatalf("refused new id returned %v, want nil", err)
+	}
 }

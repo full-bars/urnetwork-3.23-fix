@@ -842,6 +842,24 @@ func (s *Session) handleGoAway(hdr header) error {
 }
 
 // incomingStream is used to create a new incoming stream
+// refuseIncomingStream answers an incoming stream that the memory manager
+// refused. It resets that one stream and returns nil, so the session and its
+// other streams carry on. A SYN that reuses the ID of a registered stream is
+// a protocol error, not a new stream to refuse: there the cause is returned,
+// as before the patch, because the frame must not reach the existing stream.
+// (urnetwork patch, see PATCH.md.)
+func (s *Session) refuseIncomingStream(id uint32, cause error) error {
+	s.streamLock.Lock()
+	_, exists := s.streams[id]
+	s.streamLock.Unlock()
+	if exists {
+		return cause
+	}
+	s.logger.Printf("[WARN] yamux: stream memory refused, forcing stream reset: %v", cause)
+	hdr := encode(typeWindowUpdate, flagRST, id, 0)
+	return s.sendMsg(hdr, nil, nil, false)
+}
+
 func (s *Session) incomingStream(id uint32) error {
 	if s.client != (id%2 == 0) {
 		s.logger.Printf("[ERR] yamux: both endpoints are clients")
@@ -861,15 +879,11 @@ func (s *Session) incomingStream(id uint32) error {
 	// patch, see PATCH.md.)
 	span, err := s.newMemoryManager()
 	if err != nil {
-		s.logger.Printf("[WARN] yamux: failed to create resource span, forcing stream reset: %v", err)
-		hdr := encode(typeWindowUpdate, flagRST, id, 0)
-		return s.sendMsg(hdr, nil, nil, false)
+		return s.refuseIncomingStream(id, fmt.Errorf("failed to create resource span: %w", err))
 	}
 	if err := span.ReserveMemory(initialStreamWindow, 255); err != nil {
-		s.logger.Printf("[WARN] yamux: failed to reserve stream memory, forcing stream reset: %v", err)
 		span.Done()
-		hdr := encode(typeWindowUpdate, flagRST, id, 0)
-		return s.sendMsg(hdr, nil, nil, false)
+		return s.refuseIncomingStream(id, err)
 	}
 	stream := newStream(s, id, streamSYNReceived, initialStreamWindow, span)
 
