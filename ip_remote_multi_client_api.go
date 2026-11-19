@@ -114,10 +114,6 @@ func NewApiMultiClientGenerator(
 }
 
 func (self *ApiMultiClientGenerator) NextDestinations(count int, excludeDestinations []MultiHopId, rankMode string) (map[MultiHopId]DestinationStats, error) {
-	return self.NextDestinationsWithIpFamily(count, excludeDestinations, rankMode, IpFamilyFilterDefault)
-}
-
-func (self *ApiMultiClientGenerator) NextDestinationsWithIpFamily(count int, excludeDestinations []MultiHopId, rankMode string, ipFamilyFilter IpFamilyFilter) (map[MultiHopId]DestinationStats, error) {
 	excludeClientIds := slices.Clone(self.excludeClientIds)
 	excludeDestinationsIds := [][]Id{}
 	for _, excludeDestination := range excludeDestinations {
@@ -129,7 +125,6 @@ func (self *ApiMultiClientGenerator) NextDestinationsWithIpFamily(count int, exc
 		ExcludeDestinations: excludeDestinationsIds,
 		Count:               count,
 		RankMode:            rankMode,
-		IpFamily:            ipFamilyFilter,
 	}
 
 	result, err := self.api.FindProviders2Sync(findProviders2)
@@ -152,7 +147,6 @@ func (self *ApiMultiClientGenerator) NextDestinationsWithIpFamily(count int, exc
 			destinations[destination] = DestinationStats{
 				EstimatedBytesPerSecond: provider.EstimatedBytesPerSecond,
 				Tier:                    provider.Tier,
-				IpFamily:                provider.IpFamily.Normalize(),
 			}
 		}
 	}

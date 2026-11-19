@@ -4,6 +4,10 @@
 
 Everything merged after `v3.23.0-fix.35.11`.
 
+### Changed
+
+- Removed the unused FP2 client window. No shipped binary used it. This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
+
 ### Added
 
 - Extender discovery now defaults to on when the extender role runs. Explicit off and feed-only settings are preserved. `urnet-tools top` shows discovery state, mesh peers, feed subscribers and validated gossip messages received from peers; the carrier details panel also shows the peer ID, last receipt time and application errors. The message count includes duplicates and resets when the gossip role restarts. Earlier CLI versions cleared the override for `off`; operators who used that command and want discovery to remain off must set it again after upgrading.
@@ -54,10 +58,6 @@ This update has three parts. It ports the client side of the network operator's 
 ### Added
 
 - **Linux ARMv7 release builds** (`.github/workflows/release.yml`, `scripts/Provider_Install_Linux.sh`, `docs/Installation.md`). 32-bit ARM devices get provider and tool binaries built for their architecture, with matching release assets and installer detection. The ARM release uses software floating point, because some ARMv7 hosts have no floating-point unit and a hardware-float binary can fail at startup. ARMv6 stays outside the supported set, because ARMv7 binaries cannot run on those processors.
-- **IPv6 admission, a TCP-only window and the redial side of recent exit memory in the multi client** (`ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_window_client_stats.go`). A window now knows which exits carry IPv6 and keeps an IPv4 hard minimum, so a window of IPv6-only exits counts as empty for IPv4. When the IPv6 share falls short, the window asks the platform for an IPv6 candidate and swaps a loaded exit out for it. A failed IPv6 candidate counts toward a retry backoff, and two failures in a row pause the IPv6 fill for a retry period. A limited window holds providers that carry TCP only. It is half the size of the main window by default (`LimitedWindowSizeFraction`) and joins the race for each TCP connection. A user with a fixed exit never gets one, because it would change the exit address. A window can also take back an exit from a bounded recent exit memory, and a generation check drops a result that arrives after a newer one. Nothing fills that memory in this line yet, because it lacks upstream's typed transport-loss signal, so the redial path stays idle. The provider binary does not run this window. SDK and proxy clients built on this tree do, so a provider fleet sees no change from this entry alone.
-- **Peer capability observation** (`transfer_peer_capability_observation.go`, `transfer.go`, `transfer_encrypt.go`). The client records what each peer completed: the end-to-end handshake, the seal, and the receive window it advertised. A weak reference binds the record to the live session, so a stale session cannot replay it.
-- **Structured `[rel]` window log lines** (`ip_remote_multi_client_observability.go`). Each line is `[rel] event=<name>` followed by lowercase `key=value` pairs. The window prints `family_starved` today. `recent_exit` and `sticky_redial` are defined and wait for the memory to be filled. See `LOG_REFERENCE.md`.
-- **Connect successes and dial failures record the IP version they used.**
 
 ### Fixed
 
@@ -75,8 +75,6 @@ This update has three parts. It ports the client side of the network operator's 
 ### Known limits
 
 - The blocklist tables stay at the refresh before 2026-11-13. Upstream's tables from that day use a new format and list a Telegram call reflector (`91.108.13.57`) that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder.
-- Recent exit memory and the sticky redial of a fixed exit have no producer in this line. Filling them needs a typed transport-loss signal and an outage classifier that upstream has and this line does not.
-- With a fixed window size of one and a single IPv6-only exit, the window does not look for an IPv4 exit until it has room. Upstream behaves the same way.
 - This line does not have upstream's receive-sequence rejection records, so the handshake fix covers the handshake only. Whether an invalid contract can block lower sequence ids for good here is not verified.
 
 ## [v3.23.0-fix.35.9]

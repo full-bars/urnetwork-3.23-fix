@@ -462,12 +462,6 @@ type ClientSettings struct {
 	ProtocolVersion int
 
 	DefaultTransferOpts TransferOptions
-
-	// PeerCapabilityRecorder, when set, records per-peer wire evidence of
-	// transfer capabilities (end-to-end sessions, resizable windows). Opt-in:
-	// the zero value records nothing. Set one per owner (multi-client window)
-	// so every client toward the same peer sees that peer's evidence.
-	PeerCapabilityRecorder *PeerCapabilityRecorder
 }
 
 // MinimumMessageLenLimit returns the smallest per-transport framer
@@ -528,7 +522,6 @@ type Client struct {
 	forwardBuffer            *ForwardBuffer
 	clientKeyManager         *ClientKeyManager
 	encryptionSessionManager *EncryptionSessionManager
-	peerCapabilityRecorder   *PeerCapabilityRecorder
 
 	// ready is closed by NewClientWithTag right before it returns, once every
 	// manager, buffer, callback, and the `run` loop are wired up. See
@@ -759,18 +752,17 @@ func NewClientWithTag(
 	cancelCtx, cancel := context.WithCancel(ctx)
 	log := loggerOrDefault(settings.Log)
 	client := &Client{
-		ctx:                    cancelCtx,
-		cancel:                 cancel,
-		clientId:               clientId,
-		clientTag:              clientTag,
-		clientOob:              clientOob,
-		log:                    log,
-		settings:               settings,
-		receiveCallbacks:       NewCallbackList[ReceiveFunction](),
-		forwardCallbacks:       NewCallbackList[ForwardFunction](),
-		loopback:               make(chan *SendPack),
-		ready:                  make(chan struct{}),
-		peerCapabilityRecorder: settings.PeerCapabilityRecorder,
+		ctx:              cancelCtx,
+		cancel:           cancel,
+		clientId:         clientId,
+		clientTag:        clientTag,
+		clientOob:        clientOob,
+		log:              log,
+		settings:         settings,
+		receiveCallbacks: NewCallbackList[ReceiveFunction](),
+		forwardCallbacks: NewCallbackList[ForwardFunction](),
+		loopback:         make(chan *SendPack),
+		ready:            make(chan struct{}),
 	}
 
 	routeManager := NewRouteManagerWithLogger(ctx, clientTag, log)
@@ -2213,12 +2205,7 @@ type SendSequence struct {
 	destination       TransferPath
 	intermediaryIds   MultiHopId
 	companionContract bool
-	// ackSeen and peerReceiveWindowMax gate the peer capability observations
-	// so the recorder is only called on the first ack and on window increases
-	ackSeen               atomic.Bool
-	peerReceiveWindowMax  atomic.Uint64
-	peerReceiveWindowSeen atomic.Bool
-	forceStream           bool
+	forceStream       bool
 	// encryptionRole is the per-peer session role this send sequence uses:
 	// client for normal application data (the default), server for
 	// EncryptedControl carriers and server-session replies.
@@ -3025,38 +3012,6 @@ func (self *SendSequence) Pack(sendPack *SendPack, timeout time.Duration) (bool,
 	}
 }
 
-// Records peer capability evidence from an acknowledgement: that the peer
-// answers, and the largest receive window it advertises.
-func (self *SendSequence) observePeerCapabilityAck(ack *protocol.Ack) {
-	if self.client == nil || self.client.peerCapabilityRecorder == nil {
-		return
-	}
-	recorder := self.client.peerCapabilityRecorder
-	peerId := self.destination.DestinationId
-	if ack.ReceiveWindowByteCount != nil {
-		window := min(*ack.ReceiveWindowByteCount, uint64(1<<32-1))
-		self.ackSeen.Store(true)
-		first := !self.peerReceiveWindowSeen.Swap(true)
-		for {
-			max := self.peerReceiveWindowMax.Load()
-			if window <= max && !first {
-				return
-			}
-			if self.peerReceiveWindowMax.CompareAndSwap(max, window) {
-				// the first advertisement or an increase; the recorder marks
-				// the acknowledgement itself observed in the same step
-				recorder.observeReceiveWindow(peerId, ByteCount(window))
-				return
-			}
-		}
-	}
-	if !self.ackSeen.Swap(true) {
-		// the first acknowledgement carries no window: the peer answers and
-		// does not advertise
-		recorder.observeAck(peerId)
-	}
-}
-
 func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, error) {
 	self.ackMutex.Lock()
 	defer self.ackMutex.Unlock()
@@ -3069,7 +3024,6 @@ func (self *SendSequence) Ack(ack *protocol.Ack, timeout time.Duration) (bool, e
 		// ack is for a different send sequence that no longer exists
 		return false, nil
 	}
-	self.observePeerCapabilityAck(ack)
 
 	select {
 	case <-self.ctx.Done():

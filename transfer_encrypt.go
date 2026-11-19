@@ -1188,16 +1188,6 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 			"[tls]%s outbox batch %d: %d bytes (record type 0x%02x)\n",
 			self.logTag, batchIndex, len(b), firstByte,
 		)
-		var afterSent []func()
-		if batchIndex == 0 && self.role == sequenceTlsRoleClient &&
-			self.client.peerCapabilityRecorder != nil {
-			// a client-role epoch's first batch is its ClientHello: capability
-			// evidence that this client asked the peer for a session, recorded
-			// once the send path has accepted it rather than when produced
-			afterSent = append(afterSent, func() {
-				self.client.peerCapabilityRecorder.observeE2eAttempt(self.peerId)
-			})
-		}
 		batchIndex += 1
 		// In TLS-server role the first outbox batch is the server flight
 		// (containing the server's Finished). Mark the "awaiting client
@@ -1218,7 +1208,7 @@ func (self *peerEncryptionSession) outboxLoop(e *tlsHandshakeEpoch) {
 		if epochId := self.epochIdOf(e); epochId != (Id{}) {
 			ec.EpochId = epochId.Bytes()
 		}
-		self.sendEncryptedControl(ec, afterSent...)
+		self.sendEncryptedControl(ec)
 	}
 }
 
@@ -1281,7 +1271,7 @@ func peerCertificatesOfEpoch(log Logger, e *tlsHandshakeEpoch) []*x509.Certifica
 // flow to this session's peer. If the pack cannot be enqueued (all
 // SendSequences for this destination closed), the session is closed so
 // that the next Acquire creates a fresh session with a fresh handshake.
-func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedControl, afterSent ...func()) {
+func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedControl) {
 	if self.client == nil || self.client.sendBuffer == nil {
 		return
 	}
@@ -1292,10 +1282,6 @@ func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedCo
 		// identity `companion` that keys the session and tags the EC.
 		if !self.client.sendBuffer.SendEncryptedControl(self.ctx, self.peerId, self.role, ec, self.companion, self.carrierCompanion) {
 			self.close()
-			return
-		}
-		for _, f := range afterSent {
-			f()
 		}
 	}, self.cancel)
 }
@@ -1349,13 +1335,6 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 	// here would make a successful TLS handshake look like a failure.
 	if err == nil && self.manager != nil {
 		self.manager.notePqeEstablished(pqeCurveOf(e))
-	}
-	if err == nil && self.role == sequenceTlsRoleClient {
-		// capability evidence: the peer's responder answered this client's
-		// ClientHello with this group, whether or not a newer epoch has since
-		// replaced this one. A handshake the peer initiated is not evidence of
-		// its responder: its group is this client's choice, not the peer's.
-		self.client.peerCapabilityRecorder.observeE2eHandshake(self.peerId, pqeCurveOf(e))
 	}
 	// If this epoch has already been reset out from under us, don't emit
 	// an identity proof bound to a dead handshake.
@@ -1507,12 +1486,6 @@ func (self *peerEncryptionSession) maybeVerifyPendingPeerIdentityProof(e *tlsHan
 		}
 		_, pqeTag := pqeDisplay(pqeCurveOf(e))
 		self.client.log.V(1).Infof("[tls]%s%s peer identity proof verified — e2e session up\n", pqeTag, self.logTag)
-		if self.role == sequenceTlsRoleClient {
-			// capability evidence for a session this client initiated, as the
-			// handshake's is, recorded before the callbacks below so a Sealed
-			// event's consumer already reads it
-			self.client.peerCapabilityRecorder.observeE2eSealed(self.peerId, pqeCurveOf(e), self)
-		}
 		if manager := self.manager; manager != nil {
 			var report bool
 			self.stateLock.Lock()
@@ -1949,24 +1922,6 @@ func (self *peerEncryptionSession) optimisticallyDeliverHandshakeForEpoch(payloa
 	}()
 	if e != nil {
 		e.transport.Deliver(payload)
-	}
-}
-func (self *peerEncryptionSession) capabilitySession() PeerCapabilitySession {
-	if self.role != sequenceTlsRoleClient || self.companion || self.ctx.Err() != nil {
-		return PeerCapabilitySession{}
-	}
-	clientId := self.client.ClientId()
-	self.stateLock.Lock()
-	defer self.stateLock.Unlock()
-	if self.establishedEpoch == nil || self.establishedEpoch.derivedTlsCipher == nil {
-		return PeerCapabilitySession{}
-	}
-	curveId := pqeCurveOf(self.establishedEpoch)
-	return PeerCapabilitySession{
-		ClientId:    clientId,
-		EpochId:     self.establishedEpoch.epochId,
-		KeyExchange: tlsKeyExchangeName(curveId),
-		PostQuantum: isPostQuantumKeyExchange(curveId),
 	}
 }
 

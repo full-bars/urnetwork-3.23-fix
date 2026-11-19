@@ -4117,18 +4117,13 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **Status**: Prepared for v3.23.0-fix.35.6.
 
 
-## 218. FP2 Client Window, Handshake Generation Hardening, ARMv7/OpenBSD Guards and Go 1.27.4 (v35.10)
+## 218. Handshake Generation Hardening, ARMv7/OpenBSD Guards and Go 1.27.4 (v35.10)
 
-**Purpose**: Bring the client side of the network operator's FP2 provider selection into this line, close a handshake bug where a forged generation id could wedge a peer session, add Linux ARMv7 builds and OpenBSD service identity guards, align the reported app version suffix, and move the build to Go 1.27.4.
+**Purpose**: Close a handshake bug where a forged generation id could wedge a peer session, add Linux ARMv7 builds and OpenBSD service identity guards, align the reported app version suffix, and move the build to Go 1.27.4.
 
-**Files modified**: `ip_remote_multi_client.go`, `ip_remote_multi_client_family.go`, `ip_remote_multi_client_limited.go`, `ip_remote_multi_client_recent_exits.go`, `ip_remote_multi_client_sticky.go`, `ip_remote_multi_client_observability.go`, `ip_remote_multi_client_window_client_stats.go`, `ip_capability.go`, `transfer.go`, `transfer_encrypt.go`, `transfer_peer_capability_observation.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/jwt_read_openbsd.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `scripts/compute-app-version.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
+**Files modified**: `transfer.go`, `transfer_encrypt.go`, `ip_blocker_pack.go`, `cmd/blocklistgen/main.go`, `provider/proxy_url_source.go`, `internal/urnettools/lifecycle_bsd_cron.go`, `internal/urnettools/lifecycle_bsd_cron_unix.go`, `internal/urnettools/openbsd_managed.go`, `internal/urnettools/lifecycle_openbsd.go`, `internal/urnettools/lifecycle_openbsd_rc.go`, `internal/urnettools/discover_openbsd.go`, `internal/urnettools/jwt_read_openbsd.go`, `scripts/Provider_Install_Linux.sh`, `scripts/Provider_Install_OpenBSD.sh`, `scripts/compute-app-version.sh`, `go.mod`, `Dockerfile`, the workflows, `.github/scripts/cfaa_format_check.sh`, `.github/scripts/cfaa_sync.sh` and `.github/scripts/cfaa_sync_notify.py`.
 
 **Changes**:
-- Add IPv6 admission to the multi client window. The window tracks which exits carry IPv6, keeps an IPv4 hard minimum, asks for an IPv6 candidate when the IPv6 share falls short, and swaps a loaded exit for it. Two failed IPv6 candidates in a row pause the IPv6 fill for a retry period.
-- Add a limited window of TCP-only providers. It is half the main window by default and joins the race for each TCP connection. A fixed-exit user never gets one.
-- Add the redial side of the recent exit memory, with a bounded store and a generation check against stale results. Nothing records a lost exit yet.
-- Record what each peer completed (end-to-end handshake, seal, advertised receive window) and bind the record to the live session with a weak reference.
-- Print structured `[rel] event=<name> key=value` window lines, and record the IP version of connect successes and dial failures.
 - Take a handshake generation id from a peer only through a ClientHello, ignore foreign proofs and responses, order ids only while an attempt is in flight with a positive `TlsTimeout`, and pass the wire generation through the optimistic receive path.
 - Add Linux ARMv7 (`GOARCH=arm`, `GOARM=5` software floating point) provider and `urnet-tools` release binaries and installer architecture detection (`armv7l`, `armv8l`).
 - Harden OpenBSD service identity and installer guards: `urnet-tools` distinguishes an absent service from an ambiguous process match before running `rcctl`, keeps manually started providers on the direct stop path, verifies that `rcctl` actions and scheduled cron updates target the selected provider, and the OpenBSD installer checks the service user of an existing `rc.d` script, reports partial installs and unsafe state paths, and preserves a working provider when a step fails.
@@ -4138,9 +4133,9 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 - Build with Go 1.27.4.
 - Decode lossless prefix bucket blocklist tables (`ip_blocker_pack.go`), validate Frogeye feed metadata (`cmd/blocklistgen/main.go`), and make the blocklist sync run the blocker, CFAA, Telegram and security tests against the upstream tables before it opens a PR. When they fail the sync stops and the notification lists the upstream commits to port.
 
-**How to Identify in New Upstream**: Check `ip_remote_multi_client_*.go`, `transfer_peer_capability_observation.go`, `transfer_encrypt.go` (ClientHello-only peer generation id adoption), `provider/proxy_url_source.go` (`fetchAndMergeProxyURLs` context checks), `internal/urnettools/openbsd_managed.go`, and `scripts/compute-app-version.sh`.
+**How to Identify in New Upstream**: Check `transfer_encrypt.go` (ClientHello-only peer generation id adoption), `provider/proxy_url_source.go` (`fetchAndMergeProxyURLs` context checks), `internal/urnettools/openbsd_managed.go`, and `scripts/compute-app-version.sh`.
 
-**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The provider binary does not run the multi client window, so a provider fleet gets nothing from the window work by itself. The fleet gains from the operator's server change, which offers providers for the traffic they carry (see `docs/Dual-Stack.md`). The handshake fix does not include upstream's receive-sequence rejection records. Recent exit memory and the sticky redial have no producer, because this line lacks upstream's typed transport-loss signal and outage classifier. A window of size one with a single IPv6-only exit does not look for an IPv4 exit until it has room, as upstream.
+**Limits**: The blocklist tables stay at the refresh before 2026-11-13, because upstream's tables from that day use a new format and list a Telegram call reflector that upstream's own test rejects. The sync check blocks them until upstream fixes the table and this line takes the matching decoder. The handshake fix does not include upstream's receive-sequence rejection records.
 
 **Status**: Shipped in v3.23.0-fix.35.10.
 
@@ -4254,6 +4249,16 @@ The stage-1 table probe drew a contiguous block of the destination table, which 
 **How to Identify in New Upstream**: Check `provider/trim_held.go`, `internal/urnettools/process_start_linux.go`, `urnetwork@*.service` matching in `internal/urnettools/discover.go`, and `openbsdPrivilegePrefix` in `internal/urnettools/lifecycle_openbsd.go`.
 
 **Status**: Shipped in v3.23.0-fix.35.11.
+
+---
+
+## 226. Unused FP2 Client Window
+
+Removed the unused FP2 client window and peer capability recorder, including the address family request labels and the zero receive window handling that belonged to them. The removal covers the window, recorder and address family commits of the FP2 port.
+
+The sticky redial, the recent exit memory and the size-one IPv6 window that earlier entries listed as limits went with the window. Each window still starts with the effective performance profile, as it did before the FP2 port.
+
+This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds.
 
 ---
 
