@@ -159,6 +159,12 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 
 ---
 
+## Proxy heatmap
+
+The Proxies panel shows a heatmap when the window has room. The count for the direct connection is separate from the proxy counts. Hover or click a cell to see its addresses and states. The direct connection appears as `direct (this host)`. The address contains only the proxy host and port.
+
+Color shows state: up is green, dropped is yellow, connecting is blue, dead is red and parked is dim. Brighter green means higher throughput. A bright dot that fades shows recent traffic. Set `proxy.afterglow_seconds` to change the fade time. Each dot represents one proxy. Dense cells stack upper and lower dots. When proxies outnumber dot positions, each dot shows the worst state of its group and the popup lists the worst entries first. The mono theme uses block shapes without color. The colorblind theme shows the worst state style for a dense cell. The ASCII theme uses symbols for state and activity. Press `?` for the key.
+
 ## Docker top
 
 `urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.
