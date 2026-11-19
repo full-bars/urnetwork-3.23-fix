@@ -24,10 +24,11 @@ type Event struct {
 // EventRing keeps a bounded history. Writers drop an event rather than wait
 // for a concurrent snapshot or writer.
 type EventRing struct {
-	mu     sync.Mutex
-	events [EventCapacity]Event
-	next   int
-	count  int
+	mu       sync.Mutex
+	events   [EventCapacity]Event
+	next     int
+	count    int
+	capTimes [3]time.Time
 }
 
 func eventField(s string, limit int) string {
@@ -46,7 +47,42 @@ func (r *EventRing) Record(e Event) bool {
 		return false
 	}
 	defer r.mu.Unlock()
+	r.recordLocked(e)
+	return true
+}
+
+// RecordCap limits repeated cap events by reason while retaining the first hit.
+func (r *EventRing) RecordCap(e Event) bool {
+	if r == nil || !r.mu.TryLock() {
+		return false
+	}
+	defer r.mu.Unlock()
+	var i int
+	switch e.Reason {
+	case "subscriber_cap":
+		i = 0
+	case "accept_queue_full":
+		i = 1
+	case "resource_limit":
+		i = 2
+	default:
+		r.recordLocked(e)
+		return true
+	}
+	last := r.capTimes[i]
+	if !last.IsZero() && !e.Time.Before(last) && e.Time.Sub(last) < time.Minute {
+		return false
+	}
+	r.capTimes[i] = e.Time
+	r.recordLocked(e)
+	return true
+}
+
+func (r *EventRing) recordLocked(e Event) {
 	e.Kind = eventField(e.Kind, 16)
+	if len(e.Peer) > 8 {
+		e.Peer = e.Peer[len(e.Peer)-8:]
+	}
 	e.Peer = eventField(e.Peer, 8)
 	e.Direction = eventField(e.Direction, 16)
 	e.Reason = eventField(e.Reason, 64)
@@ -55,7 +91,6 @@ func (r *EventRing) Record(e Event) bool {
 	if r.count < len(r.events) {
 		r.count++
 	}
-	return true
 }
 
 // Snapshot returns events in insertion order without exposing the ring.

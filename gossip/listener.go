@@ -270,7 +270,7 @@ func (self *InProcessListener) recordCap(reason string) {
 	if self.settings.Now != nil {
 		now = self.settings.Now
 	}
-	self.settings.Events.Record(Event{
+	self.settings.Events.RecordCap(Event{
 		Time:      now(),
 		Kind:      "cap",
 		Direction: "in",

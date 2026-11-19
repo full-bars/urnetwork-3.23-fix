@@ -132,16 +132,16 @@ func TestNodePeerEventsAndDialFailureClasses(t *testing.T) {
 	if len(events) != 6 {
 		t.Fatalf("events count = %d, want 6", len(events))
 	}
-	if events[0].Kind != "peer" || events[0].Peer != peerIn.String()[:8] || events[0].Direction != "in" || events[0].Reason != "connect" {
+	if events[0].Kind != "peer" || events[0].Peer != peerIn.String()[len(peerIn.String())-8:] || events[0].Direction != "in" || events[0].Reason != "connect" {
 		t.Fatalf("event[0] = %+v", events[0])
 	}
-	if events[1].Kind != "peer" || events[1].Peer != peerOut.String()[:8] || events[1].Direction != "out" || events[1].Reason != "disconnect" {
+	if events[1].Kind != "peer" || events[1].Peer != peerOut.String()[len(peerOut.String())-8:] || events[1].Direction != "out" || events[1].Reason != "disconnect" {
 		t.Fatalf("event[1] = %+v", events[1])
 	}
 	wantReasons := []string{"timeout", "refused", "canceled", "other"}
 	for i, want := range wantReasons {
 		got := events[2+i]
-		if got.Kind != "dial" || got.Peer != peerDial.String()[:8] || got.Direction != "out" || got.Reason != want {
+		if got.Kind != "dial" || got.Peer != peerDial.String()[len(peerDial.String())-8:] || got.Direction != "out" || got.Reason != want {
 			t.Fatalf("dial event[%d] = %+v, want reason %q", i, got, want)
 		}
 	}
@@ -180,7 +180,7 @@ func TestValidatorRejectSamplingAndFloodBounds(t *testing.T) {
 	if len(events) != 1 {
 		t.Fatalf("events = %d, want 1", len(events))
 	}
-	if events[0].Kind != "reject" || events[0].Reason != "malformed" || events[0].Size != len(malformed) || events[0].Peer != senderPeer.String()[:8] {
+	if events[0].Kind != "reject" || events[0].Reason != "malformed" || events[0].Size != len(malformed) || events[0].Peer != senderPeer.String()[len(senderPeer.String())-8:] {
 		t.Fatalf("first reject event = %+v", events[0])
 	}
 	if strings.Contains(events[0].Reason, "secret-payload") {
@@ -305,7 +305,7 @@ func TestCapEventsAcrossFeedListenerAndTransport(t *testing.T) {
 	if events[1].Kind != "cap" || events[1].Reason != "accept_queue_full" || events[1].Direction != "in" {
 		t.Fatalf("event[1] = %+v", events[1])
 	}
-	if events[2].Kind != "cap" || events[2].Reason != "resource_limit" || events[2].Direction != "out" || events[2].Peer != peerId.String()[:8] {
+	if events[2].Kind != "cap" || events[2].Reason != "resource_limit" || events[2].Direction != "out" || events[2].Peer != peerId.String()[len(peerId.String())-8:] {
 		t.Fatalf("event[2] = %+v", events[2])
 	}
 }
