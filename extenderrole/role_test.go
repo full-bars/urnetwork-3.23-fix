@@ -518,4 +518,8 @@ func TestExtenderRolePublishesAndAppliesRecordsOverTheMesh(t *testing.T) {
 		t.Fatalf("the feed led with %s, expected the extender's own key %s",
 			hex.EncodeToString(publicKey), hex.EncodeToString(extenderKey.publicKey))
 	}
+
+	if events := role.Events(); len(events) > gossip.EventCapacity {
+		t.Fatalf("role returned %d events, limit %d", len(events), gossip.EventCapacity)
+	}
 }

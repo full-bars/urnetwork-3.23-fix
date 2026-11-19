@@ -876,9 +876,12 @@ func TestProfileAliasCanonicalization(t *testing.T) {
 
 func TestEveryControlKeyClassified(t *testing.T) {
 	restartOnly := map[string]bool{
-		"profile":      true, // initGlog/SHMLogger one-shot at startup
-		"ramlogs":      true, // stdout/stderr redirect irreversible
-		"smart_dialer": true, // probe loop is created per identity at start; a live enable would never probe
+		"profile":          true, // initGlog/SHMLogger one-shot at startup
+		"ramlogs":          true, // stdout/stderr redirect irreversible
+		"smart_dialer":     true, // probe loop is created per identity at start; a live enable would never probe
+		"extender_udp443":  true,
+		"extender_udp4053": true,
+		"extender_udp53":   true,
 	}
 
 	for key := range controlKeys {

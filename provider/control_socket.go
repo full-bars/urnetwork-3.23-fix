@@ -20,6 +20,7 @@ import (
 	"time"
 
 	"github.com/urnetwork/connect"
+	"github.com/urnetwork/connect/gossip"
 )
 
 // controlSocketPath returns ~/.urnetwork/provider.sock — the Unix domain
@@ -99,8 +100,9 @@ type controlResponse struct {
 	ProxyCellDetail []proxyCellDetail `json:"proxy_cell_detail,omitempty"`
 	// Extender is the extender's whole picture, answered by the "extender"
 	// command (extender_status.go).
-	Extender *extenderControlReading `json:"extender,omitempty"`
-	Audit    *proxyAuditStatus       `json:"audit,omitempty"`
+	Extender     *extenderControlReading `json:"extender,omitempty"`
+	GossipEvents []gossip.Event          `json:"gossip_events,omitempty"`
+	Audit        *proxyAuditStatus       `json:"audit,omitempty"`
 }
 
 // startControlSocket opens the control socket and serves it until ctx is
@@ -584,8 +586,13 @@ func handleControlRequest(state *controlState, req controlRequest) controlRespon
 		// Read-only. Turning the extender on or off is the persisted `set
 		// extender on|off`, so there is one way to change it and it survives a
 		// restart.
+		if req.Action == "events" {
+			return controlResponse{OK: true, GossipEvents: currentExtenderGossipEvents()}
+		}
 		reading := globalExtenderManager.Reading()
 		return controlResponse{OK: true, Extender: &reading}
+	case "extender_events", "gossip_events":
+		return controlResponse{OK: true, GossipEvents: currentExtenderGossipEvents()}
 	case "version":
 		// The provider answering for itself. Every other way to learn a
 		// running provider's version infers it from the filesystem: read

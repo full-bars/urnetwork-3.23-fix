@@ -83,7 +83,8 @@ type controlResponse struct {
 	NextCursor   string                 `json:"next_cursor,omitempty"`
 	Settings     map[string]SettingInfo `json:"settings,omitempty"`
 	// Extender answers the "extender" command (extender_status.go).
-	Extender *ExtenderReading `json:"extender,omitempty"`
+	Extender     *ExtenderReading      `json:"extender,omitempty"`
+	GossipEvents []ExtenderGossipEvent `json:"gossip_events,omitempty"`
 	// StartupValues maps restart-required keys to the values the running
 	// provider actually started with (from env vars set at startup).
 	// The dashboard compares these against current control-state values

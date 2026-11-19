@@ -33,6 +33,7 @@ import (
 	mathrand "math/rand"
 	"net/netip"
 	"slices"
+	"strings"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -136,6 +137,11 @@ type NodeSettings struct {
 	Now func() time.Time
 	// The seed of the peer choice. 0 seeds from the clock; a test pins it.
 	RandSeed int64
+	// Events is the shared flight-recorder ring. Nil uses the node's own ring.
+	Events *EventRing
+	// RejectSampleEvery controls 1-in-N sampling of rejected messages. <= 0
+	// uses DefaultRejectSampleEvery.
+	RejectSampleEvery uint64
 }
 
 // The defaults of one role (D1, D3).
@@ -208,9 +214,13 @@ type Node struct {
 	// state, because the round publishes it through `updateStatus`, which
 	// takes the status lock.
 	dialCount             atomic.Int64
+	dialStats             dialCounters
 	messagesAccepted      atomic.Uint64
 	applyErrors           atomic.Uint64
 	lastAcceptedUnixMilli atomic.Int64
+	rejectCount           atomic.Uint64
+	events                *EventRing
+	defaultEvents         EventRing
 
 	stateLock     sync.Mutex
 	operatorAddrs []ma.Multiaddr
@@ -291,6 +301,10 @@ func NewNode(ctx context.Context, settings *NodeSettings) (*Node, error) {
 		statusDone:      make(chan struct{}),
 		rand:            mathrand.New(mathrand.NewSource(randSeed)),
 		operatorAddrs:   slices.Clone(settings.OperatorAddrs),
+		events:          settings.Events,
+	}
+	if self.events == nil {
+		self.events = &self.defaultEvents
 	}
 
 	success := false
@@ -312,7 +326,11 @@ func NewNode(ctx context.Context, settings *NodeSettings) (*Node, error) {
 
 	// a peer that goes away should be replaced without waiting out the round
 	self.host.Network().Notify(&network.NotifyBundle{
-		DisconnectedF: func(network.Network, network.Conn) {
+		ConnectedF: func(_ network.Network, conn network.Conn) {
+			self.recordPeerEvent(conn, "connect")
+		},
+		DisconnectedF: func(_ network.Network, conn network.Conn) {
+			self.recordPeerEvent(conn, "disconnect")
 			self.wakeMonitor.NotifyAll()
 		},
 	})
@@ -412,6 +430,8 @@ func (self *Node) newHost(privateKey crypto.PrivKey) (host.Host, error) {
 		Listener:        self.settings.ExtenderListener,
 		Upgrader:        connUpgrader,
 		ResourceManager: swarmNetwork.ResourceManager(),
+		Events:          self.eventRing(),
+		Now:             self.now,
 	})
 	if err != nil {
 		return nil, err
@@ -496,8 +516,10 @@ func (self *Node) joinTopic() error {
 // revocation of this network space is rejected outright: there is nothing else
 // this topic carries, and accepting it would relay it.
 func (self *Node) validate(ctx context.Context, from peer.ID, message *pubsub.Message) pubsub.ValidationResult {
+	data := message.GetData()
 	gossipMessage := &protocol.ExtenderGossipMessage{}
-	if err := proto.Unmarshal(message.GetData(), gossipMessage); err != nil {
+	if err := proto.Unmarshal(data, gossipMessage); err != nil {
+		self.recordReject(from, "malformed", len(data))
 		return pubsub.ValidationReject
 	}
 	keySet := self.settings.Directory.RootKeys()
@@ -506,6 +528,7 @@ func (self *Node) validate(ctx context.Context, from peer.ID, message *pubsub.Me
 	case gossipMessage.GetRecord() != nil:
 		body, err := keySet.VerifyRecord(gossipMessage.GetRecord())
 		if err != nil {
+			self.recordReject(from, classifyVerifyRejectReason(err), len(data))
 			return pubsub.ValidationReject
 		}
 		if !connect.ExtenderRecordOpen(body) {
@@ -519,16 +542,30 @@ func (self *Node) validate(ctx context.Context, from peer.ID, message *pubsub.Me
 	case gossipMessage.GetRevocation() != nil:
 		body, err := keySet.VerifyRevocation(gossipMessage.GetRevocation())
 		if err != nil {
+			self.recordReject(from, classifyVerifyRejectReason(err), len(data))
 			return pubsub.ValidationReject
 		}
 		networkHost = body.NetworkHost
 	default:
+		self.recordReject(from, "malformed", len(data))
 		return pubsub.ValidationReject
 	}
 	if !connect.ExtenderNetworkHostAllowed(networkHost, self.settings.NetworkHost) {
+		self.recordReject(from, "network_host", len(data))
 		return pubsub.ValidationReject
 	}
 	return pubsub.ValidationAccept
+}
+
+func classifyVerifyRejectReason(err error) string {
+	if err == nil {
+		return "other"
+	}
+	msg := err.Error()
+	if strings.Contains(msg, "signature") || strings.Contains(msg, "root key") {
+		return "signature"
+	}
+	return "malformed"
 }
 
 // Publish sends one signed message to the topic. Only the operator publishes
@@ -536,6 +573,10 @@ func (self *Node) validate(ctx context.Context, from peer.ID, message *pubsub.Me
 func (self *Node) Publish(ctx context.Context, message *protocol.ExtenderGossipMessage) error {
 	if message == nil {
 		return fmt.Errorf("extender gossip message is missing")
+	}
+	reason := "record"
+	if message.GetRevocation() != nil {
+		reason = "revocation"
 	}
 	if record := message.GetRecord(); record != nil {
 		body, err := self.settings.Directory.RootKeys().VerifyRecord(record)
@@ -550,7 +591,17 @@ func (self *Node) Publish(ctx context.Context, message *protocol.ExtenderGossipM
 	if err != nil {
 		return err
 	}
-	return self.topic.Publish(ctx, messageBytes)
+	if err := self.topic.Publish(ctx, messageBytes); err != nil {
+		return err
+	}
+	self.eventRing().Record(Event{
+		Time:      self.now(),
+		Kind:      "publish",
+		Direction: "out",
+		Reason:    reason,
+		Size:      len(messageBytes),
+	})
+	return nil
 }
 
 // The mesh identity of this node, which on an extender is the identity in its
@@ -609,6 +660,80 @@ func (self *Node) Status() NodeStatus {
 // application errors and the last successful receipt time in Unix milliseconds.
 func (self *Node) ReceiveStats() (uint64, uint64, int64) {
 	return self.messagesAccepted.Load(), self.applyErrors.Load(), self.lastAcceptedUnixMilli.Load()
+}
+
+// DialStats returns cumulative outgoing peering attempts and failures.
+func (self *Node) DialStats() DialStats {
+	return self.dialStats.snapshot()
+}
+
+// Events returns a copy of the node's bounded flight-recorder events in
+// chronological order.
+func (self *Node) Events() []Event {
+	return self.eventRing().Snapshot()
+}
+
+func (self *Node) eventRing() *EventRing {
+	if self.events != nil {
+		return self.events
+	}
+	if self.settings != nil && self.settings.Events != nil {
+		return self.settings.Events
+	}
+	return &self.defaultEvents
+}
+
+func (self *Node) now() time.Time {
+	if self.settings != nil && self.settings.Now != nil {
+		return self.settings.Now()
+	}
+	return time.Now()
+}
+
+func connDirection(dir network.Direction) string {
+	switch dir {
+	case network.DirInbound:
+		return "in"
+	case network.DirOutbound:
+		return "out"
+	default:
+		return ""
+	}
+}
+
+func (self *Node) recordPeerEvent(conn network.Conn, reason string) {
+	var peerId string
+	var dir string
+	if conn != nil {
+		peerId = conn.RemotePeer().String()
+		dir = connDirection(conn.Stat().Direction)
+	}
+	self.eventRing().Record(Event{
+		Time:      self.now(),
+		Kind:      "peer",
+		Peer:      peerId,
+		Direction: dir,
+		Reason:    reason,
+	})
+}
+
+func (self *Node) recordReject(from peer.ID, reason string, size int) {
+	sampleEvery := uint64(DefaultRejectSampleEvery)
+	if self.settings != nil && self.settings.RejectSampleEvery > 0 {
+		sampleEvery = self.settings.RejectSampleEvery
+	}
+	n := self.rejectCount.Add(1)
+	if (n-1)%sampleEvery != 0 {
+		return
+	}
+	self.eventRing().Record(Event{
+		Time:      self.now(),
+		Kind:      "reject",
+		Peer:      from.String(),
+		Direction: "in",
+		Reason:    reason,
+		Size:      size,
+	})
 }
 
 // The status value and a channel armed at the same instant, for a consumer
@@ -750,7 +875,18 @@ func (self *Node) peer() {
 func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.DialTimeout)
 	defer cancel()
-	if err := self.host.Connect(ctx, addrInfo); err != nil {
+	self.dialStats.attempts.Add(1)
+	err := self.host.Connect(ctx, addrInfo)
+	if class := self.dialStats.recordResult(err); class != "" {
+		self.eventRing().Record(Event{
+			Time:      self.now(),
+			Kind:      "dial",
+			Peer:      addrInfo.ID.String(),
+			Direction: "out",
+			Reason:    class,
+		})
+	}
+	if err != nil {
 		if self.log.V(1).Enabled() {
 			self.log.Infof("[gossip]connect %s err = %s\n", addrInfo.ID, err)
 		}
@@ -856,6 +992,7 @@ func (self *Node) updateStatus() {
 	self.statusLock.Lock()
 	defer self.statusLock.Unlock()
 
+	previous := self.statusMonitor.Value()
 	status := NodeStatus{
 		PeerCount:     len(self.host.Network().Peers()),
 		MeshPeerCount: len(self.topic.ListPeers()),
@@ -870,6 +1007,19 @@ func (self *Node) updateStatus() {
 			status.OperatorConnected = true
 			break
 		}
+	}
+	if previous.MeshPeerCount == 0 && status.MeshPeerCount > 0 {
+		self.eventRing().Record(Event{
+			Time:   self.now(),
+			Kind:   "state",
+			Reason: "mesh_joined",
+		})
+	} else if previous.MeshPeerCount > 0 && status.MeshPeerCount == 0 {
+		self.eventRing().Record(Event{
+			Time:   self.now(),
+			Kind:   "state",
+			Reason: "mesh_empty",
+		})
 	}
 	self.statusMonitor.Set(status)
 }

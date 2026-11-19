@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -17,6 +18,8 @@ import (
 	"strings"
 	"sync"
 	"time"
+
+	"github.com/urnetwork/connect/gossip"
 )
 
 // A diagnostic bundle is the evidence for "why is this provider using so much
@@ -108,6 +111,7 @@ type diagEnv struct {
 	writeGoroutines func(w io.Writer) error
 	startCPU        func(w io.Writer) error
 	stopCPU         func()
+	gossipEvents    func() []gossip.Event
 }
 
 func productionDiagEnv(stateDir string) diagEnv {
@@ -127,8 +131,9 @@ func productionDiagEnv(stateDir string) diagEnv {
 		writeGoroutines: func(w io.Writer) error {
 			return pprof.Lookup("goroutine").WriteTo(w, 1)
 		},
-		startCPU: pprof.StartCPUProfile,
-		stopCPU:  pprof.StopCPUProfile,
+		startCPU:     pprof.StartCPUProfile,
+		stopCPU:      pprof.StopCPUProfile,
+		gossipEvents: currentExtenderGossipEvents,
 	}
 }
 
@@ -321,12 +326,27 @@ func runDiag(ctx context.Context, env diagEnv) (res diagResult, err error) {
 	if cerr := cause(); cerr != nil && !errors.Is(cerr, errDiagDeadline) {
 		return res, cerr
 	}
-	files := []string{"summary.txt", "heap.pb.gz", "goroutine.txt"}
+	files := []string{"summary.txt", "heap.pb.gz", "goroutine.txt", "gossip-events.json"}
 	if cpuCaptured {
 		files = append(files, "cpu.pb.gz")
 	}
 	if cpuNote != "" {
 		res.Notes = append(res.Notes, cpuNote)
+	}
+
+	if err := writeDiagFile(partial, "gossip-events.json", func(w io.Writer) error {
+		var events []gossip.Event
+		if env.gossipEvents != nil {
+			events = env.gossipEvents()
+		}
+		if events == nil {
+			events = []gossip.Event{}
+		}
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		return enc.Encode(events)
+	}); err != nil {
+		return res, err
 	}
 
 	summary := renderDiagSummary(stamp, before, after, cpuCaptured, res.Notes, env)
@@ -640,13 +660,14 @@ func renderDiagSummary(stamp string, before, after diagStats, cpuCaptured bool, 
 	w("  open goroutine.txt and look at the largest groups.\n")
 
 	w("\nFILES\n")
-	w("  summary.txt     this file\n")
-	w("  heap.pb.gz      Go heap profile, who allocated the memory still in use. Open with: go tool pprof -sample_index=inuse_space heap.pb.gz\n")
-	w("  goroutine.txt   every goroutine's stack, grouped with a count per distinct stack\n")
+	w("  summary.txt         this file\n")
+	w("  heap.pb.gz          Go heap profile, who allocated the memory still in use. Open with: go tool pprof -sample_index=inuse_space heap.pb.gz\n")
+	w("  goroutine.txt       every goroutine's stack, grouped with a count per distinct stack\n")
+	w("  gossip-events.json  recent structured gossip events from the in-memory flight recorder\n")
 	if cpuCaptured {
-		w("  cpu.pb.gz       %s CPU profile taken while the provider kept serving. Open with: go tool pprof cpu.pb.gz\n", env.cpuFor)
+		w("  cpu.pb.gz           %s CPU profile taken while the provider kept serving. Open with: go tool pprof cpu.pb.gz\n", env.cpuFor)
 	} else {
-		w("  cpu.pb.gz       NOT CAPTURED, see NOTES\n")
+		w("  cpu.pb.gz           NOT CAPTURED, see NOTES\n")
 	}
 
 	w("\nNOTES\n")

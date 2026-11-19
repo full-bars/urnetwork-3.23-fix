@@ -25,6 +25,7 @@ import (
 	"context"
 	"net"
 	"sync"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/transport"
 
@@ -49,6 +50,10 @@ type InProcessListenerSettings struct {
 	// Connections waiting for `Accept` before `Handle` refuses. <= 0 takes the
 	// default.
 	AcceptQueueCount int
+	// Events is the shared flight-recorder ring.
+	Events *EventRing
+	// Now is the clock for recorded events.
+	Now func() time.Time
 }
 
 func DefaultInProcessListenerSettings() *InProcessListenerSettings {
@@ -116,6 +121,7 @@ func (self *InProcessListener) Handle(conn net.Conn) {
 		// the mesh is not keeping up with new connections; refusing is the
 		// only bounded answer, since this runs on the extender's connection
 		// goroutine
+		self.recordCap("accept_queue_full")
 		if self.log.V(1).Enabled() {
 			self.log.Infof("[gossip]accept queue is full, refusing %s\n", conn.RemoteAddr())
 		}
@@ -254,6 +260,22 @@ func remoteMultiaddrOrDefault(conn net.Conn, defaultMultiaddr ma.Multiaddr) ma.M
 		}
 	}
 	return defaultMultiaddr
+}
+
+func (self *InProcessListener) recordCap(reason string) {
+	if self.settings == nil || self.settings.Events == nil {
+		return
+	}
+	now := time.Now
+	if self.settings.Now != nil {
+		now = self.settings.Now
+	}
+	self.settings.Events.RecordCap(Event{
+		Time:      now(),
+		Kind:      "cap",
+		Direction: "in",
+		Reason:    reason,
+	})
 }
 
 func loggerOrDefault(log connect.Logger) connect.Logger {
