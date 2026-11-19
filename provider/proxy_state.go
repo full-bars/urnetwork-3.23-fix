@@ -252,7 +252,7 @@ func adoptLegacyProxyState(state *ProxyState, desired []*connect.ProxySettings) 
 		if len(keys) > 1 {
 			split++
 			tlog("[proxy][identity] %s split into %d identities on adoption; %s kept id=%d and history, the rest start fresh\n",
-				address, len(keys), proxyKeyDisplay(winner), legacy.ID)
+				redactedProxyAddress(address), len(keys), proxyKeyDisplay(winner), legacy.ID)
 		}
 	}
 	return adopted, split

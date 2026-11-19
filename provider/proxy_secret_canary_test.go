@@ -8,11 +8,53 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/urnetwork/connect"
 )
 
 const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
+
+func TestProxySecretLegacyAdoptionLog(t *testing.T) {
+	address := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
+	state := &ProxyState{Proxies: map[string]ProxyEntry{address: {ID: 1}}}
+	desired := []*connect.ProxySettings{authSettings(address, "first", "p"), authSettings(address, "second", "p")}
+	out := captureTlog(t, func() { adoptLegacyProxyState(state, desired) })
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(out, secret) {
+			t.Error("legacy adoption log contains a canary")
+		}
+	}
+}
+
+func TestProxySecretAuditReleaseMultipleAccounts(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	address := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
+	one, two := identityKey(address, "one"), identityKey(address, "two")
+	h := newAuditHarness(one, two)
+	saved := globalProxyFailureHistory
+	globalProxyFailureHistory = h.hist
+	currentProxyAuditor.Store(h.g)
+	t.Cleanup(func() { currentProxyAuditor.Store(nil); globalProxyFailureHistory = saved })
+	cfg := defaultProxyAuditConfig()
+	for _, key := range []string{one, two} {
+		h.g.st.commitPark(cfg, key, h.now, 0.5)
+	}
+	var response controlResponse
+	out := captureTlog(t, func() {
+		response = handleControlRequest(newControlState(), controlRequest{Cmd: "audit", Action: "release", Address: address})
+	})
+	data, err := json.Marshal(response)
+	if err != nil || !response.OK {
+		t.Fatal("release failed")
+	}
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(out, secret) || strings.Contains(string(data), secret) {
+			t.Error("audit release output contains a canary")
+		}
+	}
+}
 
 func TestProxySecretCorruptURLStateError(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "proxy_url.json")

@@ -1004,7 +1004,7 @@ func handleControlRequest(state *controlState, req controlRequest) (response con
 			// gateway are reported as a count.
 			label := proxyKeyDisplay(keys[0])
 			if len(keys) > 1 {
-				label = fmt.Sprintf("%s (%d accounts)", req.Address, len(keys))
+				label = fmt.Sprintf("%s (%d accounts)", redactedProxyAddress(req.Address), len(keys))
 			}
 			if wasParked {
 				tlog("✓ [proxy][audit] released parked proxy %s via control socket\n", label)

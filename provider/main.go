@@ -3439,7 +3439,7 @@ func provide(opts docopt.Opts) {
 		applyIdentityPeerSettings(clientSettings, proxySettings)
 		if clientSettings.ContractManagerSettings != nil {
 			if proxySettings != nil {
-				clientSettings.ContractManagerSettings.ProxyDescription = fmt.Sprintf("proxy[%d] (%s)", proxySettings.Index, proxySettings.Address)
+				clientSettings.ContractManagerSettings.ProxyDescription = fmt.Sprintf("proxy[%d] (%s)", proxySettings.Index, redactedProxyAddress(proxySettings.Address))
 			} else if isNative {
 				clientSettings.ContractManagerSettings.ProxyDescription = "proxy[0] (direct)"
 			}
