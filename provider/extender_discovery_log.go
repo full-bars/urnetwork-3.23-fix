@@ -30,8 +30,9 @@ type discoveryLogState struct {
 	// capHold is the state the node keeps while cap hits keep arriving. A cap
 	// that clears is only reported once no further hit has been seen for the
 	// hold, so a busy feed does not flap the state on every refused subscriber.
-	capHoldUntil time.Time
-	record       func(gossip.Event) bool
+	capHoldUntil     time.Time
+	isolationPending bool
+	record           func(gossip.Event) bool
 }
 
 func (s *discoveryLogState) lines(d extenderDiscoverySnapshot, now time.Time) []string {
@@ -59,6 +60,10 @@ func (s *discoveryLogState) linesWithEvents(d extenderDiscoverySnapshot, events 
 		s.lastSummary = now
 	}
 	if d.State != extenderDiscoveryStateRunning {
+		s.health = ""
+		s.healthSince = time.Time{}
+		s.capHoldUntil = time.Time{}
+		s.isolationPending = false
 		if len(anomalyReasons) > 0 {
 			out = s.appendAnomalyDump(out, strings.Join(anomalyReasons, ", "), events, now)
 		}
@@ -99,6 +104,14 @@ func (s *discoveryLogState) linesWithEvents(d extenderDiscoverySnapshot, events 
 		anomalyReasons = append(anomalyReasons, fmt.Sprintf("reject spike (%d sampled rejects)", rejectEvents))
 	}
 	healthState, healthReason := gossipHealthFromSnapshot(d)
+	if s.health == gossipHealthBootstrapping && healthState == gossipHealthIsolated {
+		if !s.isolationPending {
+			s.isolationPending = true
+			healthState = gossipHealthBootstrapping
+		}
+	} else {
+		s.isolationPending = false
+	}
 	if capReason, ok := gossipHealthCappedReason(events, prevCheck, now); ok {
 		healthState = gossipHealthCapped
 		healthReason = capReason

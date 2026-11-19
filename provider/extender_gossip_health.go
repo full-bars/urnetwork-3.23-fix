@@ -102,7 +102,10 @@ func gossipHealthFromSnapshot(d extenderDiscoverySnapshot) (state string, reason
 			return gossipHealthBootstrapping, "dialing bootstrap peers"
 		}
 		class, count := dominantDialFailure(d.DialStats)
-		return gossipHealthIsolated, fmt.Sprintf("all dials failing (%s=%d)", class, count)
+		if count == 0 {
+			return gossipHealthIsolated, "no dial failures recorded"
+		}
+		return gossipHealthIsolated, fmt.Sprintf("dial failures recorded (%s=%d)", class, count)
 	}
 	if d.Peers < gossipHealthFloor {
 		return gossipHealthDegraded, fmt.Sprintf("%d mesh peer(s), below the floor of %d", d.Peers, gossipHealthFloor)

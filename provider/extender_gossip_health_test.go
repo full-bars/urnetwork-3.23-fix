@@ -24,7 +24,7 @@ func TestGossipHealthFromSnapshotTable(t *testing.T) {
 		{`feed-only`, extenderDiscoverySnapshot{State: extenderDiscoveryStateFeedOnly}, gossipHealthWaiting, "feed only"},
 		{`running no dials`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 0}, gossipHealthIsolated, "no bootstrap peers known"},
 		{`running dialing`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 0, Connecting: &connectingTrue, DialStats: &gossip.DialStats{Attempts: 4}}, gossipHealthBootstrapping, "dialing"},
-		{`running dials failing`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 0, DialStats: &gossip.DialStats{Attempts: 4, Timeout: 3, Refused: 1}}, gossipHealthIsolated, "all dials failing (timeout=3)"},
+		{`running dials failing`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 0, DialStats: &gossip.DialStats{Attempts: 4, Timeout: 3, Refused: 1}}, gossipHealthIsolated, "dial failures recorded (timeout=3)"},
 		{`running one peer`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 1}, gossipHealthDegraded, "below the floor"},
 		{`running healthy`, extenderDiscoverySnapshot{State: extenderDiscoveryStateRunning, Peers: 2}, gossipHealthHealthy, ""},
 	}
