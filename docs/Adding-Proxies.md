@@ -1,5 +1,11 @@
 # Adding Proxies
 
+## Proxy egress
+
+A proxied provider sends its platform connections and client TCP through its SOCKS proxy. Client UDP uses the proxy's UDP relay; when the relay is unavailable, the provider refuses the UDP flow. The provider opens no ICMP echo socket and no peer connections for a proxied identity. The direct identity keeps its normal behavior.
+
+The provider marks proxied platform connections. The platform may count a proxied provider at no head unit, capture-the-flag unit or extender unit; a bound proxy slot earns no pool share.
+
 This guide shows how to load your proxy list into the provider. The core command
 is identical on every OS. What differs is the file path, the shell syntax, and a
 couple of platform-specific pitfalls.

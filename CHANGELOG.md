@@ -6,6 +6,8 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Changed
 
+- Proxied providers send platform connections through their proxy and mark them for platform accounting. Proxied identities open no ICMP echo socket or peer connections. The platform may count them at no head, capture-the-flag or extender unit.
+
 - Removed the unused FP2 client window. No shipped binary used it. This also removes exported Go API: the peer capability recorder (`PeerCapabilityRecorder`, `NewPeerCapabilityRecorder`, `ClientSettings.PeerCapabilityRecorder`), `WindowTypeLimited` and the `LimitedWindow*` methods of `RemoteUserNatMultiClient`, the IPv6 and UDP availability methods of `RemoteUserNatMultiClient`, and the address family and capability types and fields (`DestinationStats.IpFamily`, `DestinationStats.Capabilities`, `ProviderCapabilities`, `FindProvidersSelect`, `MultiClientGeneratorWithCapabilities`). A program that imports these no longer builds. Each window still starts with the effective performance profile, as it did before the FP2 port.
 
 ### Added
