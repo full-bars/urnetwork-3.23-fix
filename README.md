@@ -28,6 +28,7 @@ If something looks wrong, start with [Troubleshooting](docs/Troubleshooting.md).
 | **Start here — pick your skill level** | [🐣 Beginner](docs/guides/beginner.md) · [🧭 Intermediate](docs/guides/intermediate.md) · [🚀 Advanced](docs/guides/advanced.md) |
 | Install on a Linux host as a user-level service | [Installation Guide](docs/Installation.md) |
 | Install on FreeBSD as an rc.d service | [FreeBSD Guide](docs/FreeBSD.md) |
+| Install on OpenBSD as an rc.d service | [OpenBSD Guide](docs/OpenBSD.md) |
 | Run one Docker container | [Docker Deployment](docs/Docker-Deployment.md) |
 | Run multiple containers on one host | [Multi-Container Scaling](docs/Multi-Container-Scaling.md) |
 | Choose profiles, turbo mode, or host tuning | [Performance Tuning](docs/High-Volume-Performance-Tuning.md) |
@@ -74,6 +75,19 @@ fetch -qo urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork
 ```
 
 The FreeBSD installer downloads the provider and installs an `rc.d` service. See [docs/FreeBSD.md](docs/FreeBSD.md).
+
+**🐡 OpenBSD (rc.d)**
+
+Run this as a regular user with configured `doas` or `sudo` access.
+
+```sh
+ftp -o urnet-install.sh https://raw.githubusercontent.com/full-bars/urnetwork-3.23-fix/refs/heads/main/scripts/Provider_Install_OpenBSD.sh && \
+  sh urnet-install.sh install
+```
+
+The installer installs the provider and an `rc.d` service managed by `rcctl`. See [docs/OpenBSD.md](docs/OpenBSD.md).
+
+For Alpine/OpenRC, run the Linux installer from a root shell. See [docs/OpenRC.md](docs/OpenRC.md).
 
 **🍎 macOS (launchd)**
 
@@ -362,7 +376,7 @@ dashboard. See [Monitoring](docs/Monitoring.md).
 
 - **Base engine:** UrNetwork v3.23, with the v2026 engine changes ported in (v34)
 - **Language:** Go 1.27.4, built on Alpine
-- **Platforms:** Linux (systemd, and Alpine/OpenRC with a native boot-start service), FreeBSD (amd64 and arm64), macOS and Windows. FreeBSD setup: [docs/FreeBSD.md](docs/FreeBSD.md). Alpine setup: [docs/OpenRC.md](docs/OpenRC.md)
+- **Platforms:** Linux (systemd and Alpine/OpenRC), FreeBSD, OpenBSD, macOS and Windows. See [FreeBSD](docs/FreeBSD.md), [OpenBSD](docs/OpenBSD.md) and [OpenRC](docs/OpenRC.md).
 - **Images:** Multi-arch `linux/amd64` + `linux/arm64` via GitHub Actions → GHCR. Each release also attaches `darwin/amd64` + `darwin/arm64`, `windows/amd64` + `windows/arm64` and `freebsd/amd64` + `freebsd/arm64` binaries.
 - **Bridge-friendly:** runs on standard Docker bridge networks. The extender role needs its ports published (`-p 443:443 -p 443:443/udp -p 4053:4053/udp`), and the default bridge has no IPv6, so on it the role activates for IPv4 only. For IPv6, either turn on IPv6 on the bridge in Docker's daemon config and publish the same ports, or run with `--network host`. `docker run` and Compose examples for both: [docs/Extender.md](docs/Extender.md#docker)
 
