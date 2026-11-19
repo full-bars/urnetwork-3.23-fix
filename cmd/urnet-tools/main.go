@@ -24,7 +24,10 @@ var Version = "dev"
 func main() {
 	urnettools.ToolVersion = Version
 	if err := urnettools.Run(argsForInvocation(os.Args[0], os.Args[1:])); err != nil {
-		fmt.Fprintf(os.Stderr, "urnet-tools: %v\n", err)
+		// a brief status exit carries only a code, so it has nothing to print
+		if err.Error() != "" {
+			fmt.Fprintf(os.Stderr, "urnet-tools: %v\n", err)
+		}
 		if s, ok := err.(urnettools.StatusBriefExit); ok {
 			os.Exit(s.ExitCode())
 		}
