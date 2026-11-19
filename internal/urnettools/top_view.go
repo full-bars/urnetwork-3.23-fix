@@ -149,15 +149,15 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	secondGraphTitle := -1
 	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
 		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], "graph", m.throughputTitle("Billable", sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
-		m.drawGraph(box(graphs[1], "graph", m.throughputTitle("Total traffic", sr)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
+		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
 		secondGraphTitle = graphs[1].Y
 	} else {
 		title := "Throughput"
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], "graph", m.throughputTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(left[0], "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, left[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 	}
 	m.drawProxies(box(left[1], "proxies", "Proxies"))
 	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
@@ -305,6 +305,49 @@ func (m *topModel) throughputTitle(name string, sr topSeries) string {
 	return title
 }
 
+// graphColumns matches DrawGraph's axis and symbol geometry.
+func (m *topModel) graphColumns(width int, samples []float64, scale *topScale) int {
+	top := 0.0
+	if scale != nil {
+		top = scale.top
+	}
+	if p := tui.NiceCeil(seriesPeak(samples), !tui.DecimalUnits()); p > top {
+		top = p
+	}
+	axis := tui.StringWidth(tui.RateShort(0))
+	if top > 0 {
+		axis = max(axis, tui.StringWidth(tui.RateShort(top)))
+	}
+	plot := width - axis - 1
+	if plot < 1 {
+		plot = width
+	}
+	perCell := 2
+	if m.graph == tui.GraphBlock && !m.theme.ASCII {
+		perCell = 1
+	}
+	return max(0, plot*perCell)
+}
+
+func (m *topModel) graphTitle(name string, sr topSeries, samples []float64, scale *topScale, width int) string {
+	if !sr.columns {
+		return m.throughputTitle(name, sr)
+	}
+	n := min(m.graphColumns(width, samples, scale), len(sr.spans))
+	if n == 0 {
+		return name + " (collecting)"
+	}
+	var span time.Duration
+	for _, d := range sr.spans[len(sr.spans)-n:] {
+		span += d
+	}
+	title := name + ", " + tui.Duration(span)
+	if m.conn == topDisconnected {
+		title += " (stale)"
+	}
+	return title
+}
+
 // drawGraph draws one rate series. sr.anchor is the absolute index of the newest
 // sample (zero when unknown), which keeps completed columns still while the
 // graph scrolls; the live rate is the tail, its own newest column. scale holds
@@ -335,6 +378,11 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	// fits: the axis never sits below what is drawn.
 	if p := tui.NiceCeil(seriesPeak(samples), !tui.DecimalUnits()); p > top {
 		top = p
+	}
+	if sr.columns {
+		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
+		samples = samples[len(samples)-n:]
+		sr.anchor, sr.capacity = 0, len(samples)
 	}
 	tui.DrawGraph(b, tui.Graph{
 		Samples: samples, Binary: !tui.DecimalUnits(), Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
@@ -942,8 +990,15 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 		p := m.snap.Proxies
 		in.Put(tui.Truncate(fmt.Sprintf("clients %d  up %d/%d", m.snap.Clients, p.Up, p.Up+p.Degraded+p.Connecting+p.Dead), in.Width(), th.ASCII), 0, 1, th.Dim)
 		if in.Height() > 2 {
-			vals := make([]uint64, len(m.history()))
-			for i, v := range m.history() {
+			history := m.history()
+			if len(m.trafficHistory.billable) > 0 {
+				history = m.trafficHistory.billable
+			}
+			if len(history) > in.Width() {
+				history = history[len(history)-in.Width():]
+			}
+			vals := make([]uint64, len(history))
+			for i, v := range history {
 				vals[i] = uint64(max(v, 0))
 			}
 			in.Put(tui.Spark(vals, in.Width(), th.ASCII), 0, 2, th.Graph)
@@ -958,7 +1013,7 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
-	"+  -             update slower or faster, down to 100ms",
+	"+  -             refresh slower or faster; graphs follow, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme and graph style",

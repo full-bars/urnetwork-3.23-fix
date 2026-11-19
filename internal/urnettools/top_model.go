@@ -421,8 +421,15 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 						m.trafficHistory.push(at, value, total)
 					}
 				}
-				m.trafficHistory.push(lt.AtUnixNano, b, t)
+				if m.interval <= time.Second {
+					m.trafficHistory.pushColumn(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
+				} else {
+					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
+				}
 				m.zoom.push(lt.AtUnixNano, b, t)
+				m.zoom.spans[len(m.zoom.spans)-1] = time.Duration(lt.AtUnixNano - last)
+				m.scaleB.update(seriesPeak(m.trafficHistory.billable), m.now(), true)
+				m.scaleT.update(seriesPeak(m.trafficHistory.total), m.now(), true)
 				m.zoomScaleB.update(seriesPeak(m.zoom.billable), m.now(), true)
 				m.zoomScaleT.update(seriesPeak(m.zoom.total), m.now(), true)
 			}
@@ -921,6 +928,8 @@ type topSeries struct {
 	capacity       int
 	scaleB, scaleT *topScale
 	zoom           bool
+	columns        bool
+	spans          []time.Duration
 }
 
 // series builds what the graphs draw from the last snapshot and the live rate.
@@ -934,7 +943,12 @@ func (m *topModel) series() topSeries {
 		out.zoom, out.capacity = true, m.zoomCapacity()
 		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
 		var total []float64
-		out.billable, total, out.anchor = m.zoom.grid()
+		if m.interval <= time.Second {
+			out.billable, total, out.anchor = m.zoom.billable, m.zoom.total, m.zoom.seq
+			out.spans, out.columns = m.zoom.spans, true
+		} else {
+			out.billable, total, out.anchor = m.zoom.grid()
+		}
 		if m.snap.Traffic != nil {
 			out.total = append([]float64{}, total...)
 		}
@@ -963,6 +977,9 @@ func (m *topModel) series() topSeries {
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
 	if len(m.trafficHistory.billable) > 0 {
 		out.anchor = m.trafficHistory.second
+		if m.interval <= time.Second {
+			out.anchor, out.columns, out.spans = m.trafficHistory.seq, true, m.trafficHistory.spans
+		}
 		out.billable = m.trafficHistory.billable
 		if m.snap.Traffic != nil {
 			out.total = m.trafficHistory.total

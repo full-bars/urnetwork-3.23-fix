@@ -284,22 +284,22 @@ func TestTopZoomKeyTogglesTheGraphs(t *testing.T) {
 		t.Fatalf("zoom before any reading: %+v", sr.zoom)
 	}
 	txt, _ := showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable, last 15s (collecting)") || !strings.Contains(txt, "collecting live readings") {
+	if !strings.Contains(txt, "Billable (collecting)") || !strings.Contains(txt, "collecting live readings") {
 		t.Fatalf("empty zoom must say it is collecting:\n%s", txt)
 	}
 
 	feedTraffic(t, m, clock, 30, 1_000_000, &at, &bytes)
 	txt, _ = showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable, last 15s") || strings.Contains(txt, "(collecting)") {
+	if !strings.Contains(txt, "Billable, 2s") || strings.Contains(txt, "(collecting)") {
 		t.Fatalf("zoom title:\n%s", txt)
 	}
-	if !strings.Contains(txt, "Total traffic, last 15s") {
+	if !strings.Contains(txt, "Total traffic, 2s") {
 		t.Fatalf("total graph did not zoom:\n%s", txt)
 	}
 
 	pressKey(m, 'w')
 	txt, _ = showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "Billable, 10m") || strings.Contains(txt, "last 15s") {
+	if !strings.Contains(txt, "Billable,") || strings.Contains(txt, "collecting") {
 		t.Fatalf("zoom did not toggle off:\n%s", txt)
 	}
 }
