@@ -96,8 +96,8 @@ func TestDrawProxyGridUpAndLegend(t *testing.T) {
 		t.Fatalf("legend should show 88 up, got:\n%s", s)
 	}
 	// no crash, and the grid area is drawn with filled dots.
-	if !strings.Contains(s, "⦁") {
-		t.Fatalf("expected filled dots in the grid, got:\n%s", s)
+	if !strings.Contains(s, "∙") {
+		t.Fatalf("expected dots in the grid, got:\n%s", s)
 	}
 }
 
@@ -191,14 +191,15 @@ func TestProxyCellAtHitTests(t *testing.T) {
 	b := tui.New(4, 3)
 	m.drawProxyGrid(b)
 
-	if idx, ok := m.proxyCellAt(0, 0); !ok || idx != 0 {
-		t.Fatalf("cell(0,0) -> %d,%v; want 0,true", idx, ok)
+	layout := newProxyGridLayout(len(m.proxyCells), 4, 2)
+	for i := range m.proxyCells {
+		x, y, _ := layout.cellFor(i)
+		if idx, ok := m.proxyCellAt(x, y); !ok || idx != i {
+			t.Fatalf("cell(%d,%d) -> %d,%v; want %d", x, y, idx, ok, i)
+		}
 	}
-	if idx, ok := m.proxyCellAt(0, 1); !ok || idx != 2 {
-		t.Fatalf("cell(0,1) -> %d,%v; want 2,true (dead proxy)", idx, ok)
-	}
-	if idx, ok := m.proxyCellAt(3, 0); ok {
-		t.Fatalf("cell(3,0) -> %d,true; want not ok (empty)", idx)
+	if idx, ok := m.proxyCellAt(1, 1); ok {
+		t.Fatalf("empty cell -> %d,true", idx)
 	}
 	if _, ok := m.proxyCellAt(-1, 0); ok {
 		t.Fatal("negative x should not hit")
@@ -345,6 +346,64 @@ func TestProxiesBoxMode(t *testing.T) {
 	for _, c := range cases {
 		if got := proxiesBoxMode(c.h, c.w); got != c.want {
 			t.Errorf("proxiesBoxMode(%d, %d) = %d, want %d", c.h, c.w, got, c.want)
+		}
+	}
+}
+
+func TestProxyGridLayoutSparse(t *testing.T) {
+	for _, tc := range []struct{ n, w, h int }{{1, 88, 11}, {5, 88, 11}, {25, 88, 11}, {60, 88, 11}, {100, 88, 11}, {400, 88, 11}, {968, 88, 11}, {969, 88, 11}, {5, 1, 10}, {1, 10, 0}} {
+		t.Run(fmt.Sprintf("%d_%dx%d", tc.n, tc.w, tc.h), func(t *testing.T) {
+			l := newProxyGridLayout(tc.n, tc.w, tc.h)
+			if tc.h == 0 {
+				if l.cols != 0 {
+					t.Fatal("zero height has cells")
+				}
+				return
+			}
+			if tc.n >= tc.w*tc.h {
+				if l.sparse {
+					t.Fatal("expected dense layout")
+				}
+				return
+			}
+			seen := map[[2]int]bool{}
+			for i := 0; i < tc.n; i++ {
+				x, y, _ := l.cellFor(i)
+				if x < 0 || x >= tc.w || y < 0 || y >= tc.h || seen[[2]int{x, y}] {
+					t.Fatalf("invalid position for %d: %d,%d", i, x, y)
+				}
+				seen[[2]int{x, y}] = true
+				a, _ := l.indices(x, y)
+				if a != i {
+					t.Fatalf("position %d,%d maps to %d, want %d", x, y, a, i)
+				}
+			}
+		})
+	}
+}
+
+func TestProxyGridFill(t *testing.T) {
+	l := newProxyGridLayout(60, 100, 30)
+	right := 0
+	for i := 0; i < 60; i++ {
+		x, _, _ := l.cellFor(i)
+		right = max(right, x)
+	}
+	stride := (l.width-1)/(l.cols-1) + 1
+	if l.width-1-right > stride {
+		t.Fatalf("right edge %d, stride %d", right, stride)
+	}
+}
+
+func TestTopProxyGridSmallGoldens(t *testing.T) {
+	for _, n := range []int{25, 60, 100} {
+		for _, sz := range []struct{ w, h int }{{80, 24}, {100, 30}, {120, 40}} {
+			name := fmt.Sprintf("top_proxy_grid_small_%dx%d_%d", sz.w, sz.h, n)
+			t.Run(name, func(t *testing.T) {
+				m := topHeatGridModel(t, tui.DefaultTheme(), n)
+				got, _ := showOnSim(t, m, sz.w, sz.h)
+				assertGolden(t, name, got)
+			})
 		}
 	}
 }
