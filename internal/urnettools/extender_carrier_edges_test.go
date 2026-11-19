@@ -18,7 +18,12 @@ func TestExtenderCarrierAliasesLiveAndQueued(t *testing.T) {
 			key := "extender" + sep + "udp" + port
 			t.Run(key, func(t *testing.T) {
 				for _, live := range []bool{false, true} {
-					dir := t.TempDir()
+					// a short path: the socket path limit is small on macOS and BSD
+					dir, err := os.MkdirTemp("", "carrier-")
+					if err != nil {
+						t.Fatal(err)
+					}
+					t.Cleanup(func() { _ = os.RemoveAll(dir) })
 					p := Provider{StateDir: dir}
 					var listener net.Listener
 					requests := make(chan controlRequest, 2)

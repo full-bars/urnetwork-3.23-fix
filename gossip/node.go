@@ -1151,6 +1151,11 @@ func (self *Node) connectPeer(addrInfo peer.AddrInfo) {
 	ctx, cancel := context.WithTimeout(self.ctx, self.settings.DialTimeout)
 	defer cancel()
 	self.dialStats.attempts.Add(1)
+	// The swarm resolves every address it holds for a peer before the dial
+	// gater runs, so a name the peer announced over identify would be looked up
+	// even though the gater refuses it. Drop what the peerstore holds for the
+	// peer first: Connect adds back the addresses this round chose.
+	self.host.Peerstore().ClearAddrs(addrInfo.ID)
 	err := self.host.Connect(ctx, addrInfo)
 	if class := self.dialStats.recordResult(err); class != "" {
 		self.eventRing().Record(Event{
