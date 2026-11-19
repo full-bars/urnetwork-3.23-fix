@@ -2,9 +2,11 @@ package main
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -141,9 +143,24 @@ func TestExtenderCarrierRestartEffectiveAndPersistFailure(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(home, ".urnetwork"), []byte("block"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	before := m.Role()
+	// A replacement can capture a temporary value while a write is in progress.
+	if err := state.set("extender_udp443", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if err := m.RestartCarriers(); err != nil {
+		t.Fatal(err)
+	}
+	temporaryRole := m.Role()
+	if err := state.clear("extender_udp443"); err != nil {
+		t.Fatal(err)
+	}
 	res := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
-	if res.OK || m.Role() == before || m.Role().config.disabledCarriers["udp 443"] {
+	if res.OK || m.Role() == temporaryRole || m.Role().config.disabledCarriers["udp 443"] {
+		t.Fatal("failed write did not restore the role after a concurrent replacement")
+	}
+	before := m.Role()
+	res = handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
+	if res.OK || m.Role() != before || m.Role().config.disabledCarriers["udp 443"] {
 		t.Fatalf("failed set must restore the role: %+v", res)
 	}
 	if _, ok := state.get("extender_udp443"); ok {
@@ -155,10 +172,50 @@ func TestExtenderCarrierRestartEffectiveAndPersistFailure(t *testing.T) {
 	m.RestartCarriers()
 	before = m.Role()
 	res = handleControlRequest(state, controlRequest{Cmd: "clear", Key: "extender_udp443"})
-	if res.OK || m.Role() == before || !m.Role().config.disabledCarriers["udp 443"] {
+	if res.OK || m.Role() != before || !m.Role().config.disabledCarriers["udp 443"] {
 		t.Fatalf("failed clear must restore the role: %+v", res)
 	}
 	if value, ok := state.get("extender_udp443"); !ok || value != "off" {
 		t.Fatal("failed clear did not roll back")
+	}
+}
+
+func TestExtenderCarrierLiveApplyFailure(t *testing.T) {
+	withTempHome(t)
+	oldState, oldManager := globalControlState, globalExtenderManager
+	state := newControlState()
+	globalControlState = state
+	m := newExtenderManager()
+	globalExtenderManager = m
+	m.environ = func(string) string { return "" }
+	m.directEnabled = func() bool { return true }
+	m.ctx = context.Background()
+	seams := testExtenderRoleConfig(t)
+	m.newConfig = func() extenderRoleConfig {
+		cfg := defaultExtenderRoleConfig()
+		cfg.keyPath, cfg.listen, cfg.listenPacket = seams.keyPath, seams.listen, seams.listenPacket
+		return cfg
+	}
+	t.Cleanup(func() {
+		m.stop("test complete")
+		globalExtenderRole.Store(nil)
+		globalControlState, globalExtenderManager = oldState, oldManager
+	})
+	m.Reconcile("test")
+	if m.Role() == nil {
+		t.Fatal("role not started")
+	}
+	m.startRole = func(context.Context, extenderRoleConfig) (*extenderRole, error) {
+		return nil, errors.New("injected start failure")
+	}
+	res := handleControlRequest(state, controlRequest{Cmd: "set", Key: "extender_udp443", Value: "off"})
+	if res.OK || !strings.Contains(res.Error, "persisted") || !strings.Contains(res.Error, "injected start failure") {
+		t.Fatalf("expected live apply error: %+v", res)
+	}
+	if value, ok := state.get("extender_udp443"); !ok || value != "off" {
+		t.Fatal("setting was not retained")
+	}
+	if m.Role() != nil {
+		t.Fatal("role should be absent after failed start")
 	}
 }
