@@ -38,6 +38,35 @@ func liveOptsFromEnv(isTTY bool, width int) liveOpts {
 }
 
 // paint wraps s in an ANSI style when color is on.
+// meter draws a short filled bar for a ratio between 0 and 1. It only draws on
+// color terminals, so plain and dumb output keep their exact text. goodHigh
+// says whether a full bar is good news (coverage) or bad news (memory).
+func (o liveOpts) meter(ratio float64, goodHigh bool) string {
+	if !o.Color || o.ASCII || ratio != ratio {
+		return ""
+	}
+	const cells = 12
+	if ratio < 0 {
+		ratio = 0
+	}
+	if ratio > 1 {
+		ratio = 1
+	}
+	fill := int(ratio*cells + 0.5)
+	good := ratio
+	if !goodHigh {
+		good = 1 - ratio
+	}
+	code := "32"
+	switch {
+	case good < 0.25:
+		code = "31"
+	case good < 0.5:
+		code = "33"
+	}
+	return o.paint(code, strings.Repeat("█", fill)) + o.paint("90", strings.Repeat("░", cells-fill))
+}
+
 func (o liveOpts) paint(code, s string) string {
 	if !o.Color || code == "" {
 		return s
@@ -115,6 +144,33 @@ type liveRow struct {
 }
 
 // wrapRow lays a row out within width columns.
+// visibleWidth counts the characters a terminal shows: color escape sequences
+// take no columns.
+func visibleWidth(s string) int {
+	n, inEsc := 0, false
+	for _, r := range s {
+		switch {
+		case inEsc:
+			if r == 'm' {
+				inEsc = false
+			}
+		case r == '\x1b':
+			inEsc = true
+		default:
+			n++
+		}
+	}
+	return n
+}
+
+// withMeter puts a meter after the row's last segment, set apart by a gap.
+func withMeter(r liveRow, m string) liveRow {
+	if m != "" && len(r.segs) > 0 {
+		r.segs[len(r.segs)-1] += "  " + m
+	}
+	return r
+}
+
 func wrapRow(r liveRow, width int) []string {
 	if width <= 0 {
 		width = liveWideWidth
@@ -128,7 +184,7 @@ func wrapRow(r liveRow, width int) []string {
 	var lines []string
 	cur, curW := prefix, 0
 	for _, seg := range r.segs {
-		w := utf8.RuneCountInString(seg)
+		w := visibleWidth(seg)
 		if curW > 0 && liveIndent+curW+utf8.RuneCountInString(sep)+w > width {
 			lines = append(lines, strings.TrimRight(cur, " "))
 			cur, curW = cont, 0
@@ -154,7 +210,7 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 	if state == "" {
 		state = "UNKNOWN"
 	}
-	header := fmt.Sprintf("Live (provider %s)   %s", orDash(s.Version), o.paint(stateColor(s.State), state))
+	header := fmt.Sprintf("%s (provider %s)   %s", o.paint("1;36", "Live"), orDash(s.Version), o.paint(stateColor(s.State), state))
 	if s.RestartPending {
 		header += "  " + o.paint("33", "RESTART PENDING")
 	}
@@ -215,17 +271,26 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 		fmt.Sprintf("%d (sessions: %d pqe, %d classical)", s.Clients, s.Sessions.PQE, classicalSessions(s.Clients, s.Sessions.PQE, s.Sessions.Classical)),
 	}})
 
-	emit(liveRow{label: "proxies", sep: ", ", segs: []string{
+	proxyRow := liveRow{label: "proxies", sep: ", ", segs: []string{
 		fmt.Sprintf("%d up", s.Proxies.Up),
 		fmt.Sprintf("%d dropped", s.Proxies.Degraded),
 		fmt.Sprintf("%d connecting", s.Proxies.Connecting),
 		fmt.Sprintf("%d dead", s.Proxies.Dead),
-	}})
+	}}
+	if n := s.Proxies.Up + s.Proxies.Degraded + s.Proxies.Connecting + s.Proxies.Dead; n > 0 {
+		proxyRow = withMeter(proxyRow, o.meter(float64(s.Proxies.Up)/float64(n), true))
+	}
+	emit(proxyRow)
 
 	// UDP coverage of online proxies (up or degraded). Older providers may
 	// omit it.
 	if s.Proxies.UDP != nil {
-		emit(udprow(s.Proxies.UDP))
+		udpRow := udprow(s.Proxies.UDP)
+		if u := s.Proxies.UDP; u.OK+u.NoRelay+u.Mismatch+u.Unknown+u.Unchecked > 0 {
+			online := u.OK + u.NoRelay + u.Mismatch + u.Unknown + u.Unchecked
+			udpRow = withMeter(udpRow, o.meter(float64(u.OK)/float64(online), true))
+		}
+		emit(udpRow)
 	}
 
 	// Trim: only when a cap is in force, and only when the provider reported
@@ -277,7 +342,11 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 		mem = append(mem, fmt.Sprintf("%d fds", *r.OpenFDs))
 	}
 	if len(mem) > 0 {
-		emit(liveRow{label: "memory", sep: ", ", segs: mem})
+		memRow := liveRow{label: "memory", sep: ", ", segs: mem}
+		if r.HeapInuseBytes > 0 && r.MemLimitBytes != nil && *r.MemLimitBytes > 0 {
+			memRow = withMeter(memRow, o.meter(float64(r.HeapInuseBytes)/float64(*r.MemLimitBytes), false))
+		}
+		emit(memRow)
 	}
 
 	// Plain language first: when the provider persists its summary sentence
@@ -319,6 +388,9 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 			// score instead of rendering an empty pressure row.
 			pressureSegs = []string{fmt.Sprintf("%.2f", s.Pressure)}
 		}
+	}
+	if m := o.meter(s.Pressure, false); m != "" {
+		pressureSegs[len(pressureSegs)-1] += "  " + m
 	}
 	emit(liveRow{label: "pressure", sep: " ", segs: pressureSegs})
 
