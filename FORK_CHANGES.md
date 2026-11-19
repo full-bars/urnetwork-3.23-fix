@@ -4346,3 +4346,11 @@ The `internal/nicstat` package reads cumulative interface receive and transmit b
 Proxy add accepts passwords containing an `@` sign. The blocklist sync checks the generated tables and commits them directly to the main branch.
 
 **Status**: Unreleased.
+
+---
+
+## 234. Command Help Text and Argument Cleanup
+
+Command help displays real flags and descriptions across `status`, `top`, `providers` and lifecycle commands (`start`, `stop`, `restart`, `update`, `logs`). Positional target placeholders are removed from usage lines for commands that select providers with flags.
+
+**Status**: Unreleased.
