@@ -956,20 +956,41 @@ func (self *ExtenderNetworkClient) resolveDnsTxt(
 	ctx context.Context,
 	name string,
 ) ([]string, error) {
-	dohSettings := self.settings.DohSettings
-	if dohSettings == nil && self.clientStrategy != nil {
-		dohSettings = self.clientStrategy.DohSettings()
-	}
+	dohSettings, systemFallback := self.bootstrapResolution()
 	if dohSettings != nil {
 		if txts := DohQueryTxt(ctx, dohSettings, name); 0 < len(txts) {
 			return txts, nil
 		}
+	}
+	if !systemFallback {
+		return nil, errExtenderBootstrapNoProxiedAnswer
 	}
 	var customResolver *net.Resolver
 	if self.clientStrategy != nil {
 		customResolver = self.clientStrategy.settings.ConnectSettings.Resolver
 	}
 	return dialResolver(customResolver).LookupTXT(ctx, name)
+}
+
+var errExtenderBootstrapNoProxiedAnswer = errors.New("no answer through the proxy's DoH")
+
+// bootstrapResolution keeps proxied DNS queries on the configured egress.
+func (self *ExtenderNetworkClient) bootstrapResolution() (*DohSettings, bool) {
+	dohSettings := self.settings.DohSettings
+	if dohSettings == nil && self.clientStrategy != nil {
+		dohSettings = self.clientStrategy.DohSettings()
+	}
+	if self.clientStrategy == nil || self.clientStrategy.settings.ConnectSettings.ProxySettings == nil {
+		return dohSettings, true
+	}
+	if dohSettings == nil {
+		dohSettings = DefaultDohSettings()
+	}
+	proxiedDohSettings := *dohSettings
+	proxiedDohSettings.DialContextSettings = &DialContextSettings{
+		DialContext: self.clientStrategy.settings.ConnectSettings.DialContext,
+	}
+	return &proxiedDohSettings, false
 }
 
 // DecodeExtenderDnsRecord decodes one TXT value of the extender dns name: the
