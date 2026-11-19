@@ -1621,6 +1621,9 @@ func (self *clientDialer) WsDialer(settings *ClientStrategySettings) *websocket.
 			// WriteBufferPool: pool,
 			EnableCompression: false,
 		}
+		if settings.ProxySettings != nil {
+			self.websocketDialer.NetDialContext = settings.ConnectSettings.DialContext
+		}
 	}
 	return self.websocketDialer
 }

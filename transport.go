@@ -2261,6 +2261,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 		attemptStats := &attemptStats{}
 		connect := func() (H1MessageConn, error) {
 			header := http.Header{}
+			applyEgressProxyHeader(header, self.clientStrategy)
 			if self.settings.V2H1Auth {
 				header.Add("Authorization", fmt.Sprintf("Bearer %s", auth.ByJwt))
 				header.Add("X-UR-AppVersion", auth.AppVersion)
