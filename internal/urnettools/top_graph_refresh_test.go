@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"math"
+	"strings"
 	"testing"
 	"time"
 )
@@ -104,5 +105,22 @@ func TestTopGraphRefreshSlowIntervalKeepsSecondSlots(t *testing.T) {
 	}
 	if math.IsNaN(h.billable[n-1]) {
 		t.Fatal("latest slot is missing")
+	}
+}
+
+func TestTopGraphRefreshFrames(t *testing.T) {
+	for _, interval := range []time.Duration{100 * time.Millisecond, time.Second} {
+		t.Run(interval.String(), func(t *testing.T) {
+			m, clock := liveModel(t, interval)
+			for i := 0; i < 25; i++ {
+				clock.Advance(interval)
+				m.applyTraffic(m.gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i*i) * 1000, TotalBytes: uint64(i*i) * 2000}, nil)
+			}
+			frame, _ := showOnSim(t, m, 100, 30)
+			if !strings.Contains(frame, "Billable,") || !strings.Contains(frame, "Total traffic,") {
+				t.Fatalf("missing graph titles:\n%s", frame)
+			}
+			t.Logf("frame at %v:\n%s", interval, frame)
+		})
 	}
 }
