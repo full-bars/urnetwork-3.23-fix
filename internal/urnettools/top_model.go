@@ -3,6 +3,7 @@ package urnettools
 import (
 	"errors"
 	"fmt"
+	"math"
 	"net"
 	"os"
 	"sort"
@@ -209,10 +210,11 @@ type topModel struct {
 	// live is the sliding-window rate built from the light traffic polls.
 	// trafficOK goes false once a provider says it does not know the command,
 	// and trafficBusy marks a traffic poll in flight.
-	live        topLive
-	trafficOK   bool
-	trafficBusy bool
-	lastTraffic time.Time
+	live           topLive
+	trafficHistory topTrafficHistory
+	trafficOK      bool
+	trafficBusy    bool
+	lastTraffic    time.Time
 
 	// zoomOn shows the last topZoomWindow at the poll rate instead of the
 	// provider's ten minutes. zoom is its ring, filled from the traffic polls.
@@ -402,6 +404,18 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
 			if b, t, ok := m.live.recent(topZoomSpan); ok {
+				if len(m.trafficHistory.billable) == 0 && m.snap != nil {
+					history := m.snap.Rate.HistoryBps
+					for i, value := range history {
+						total := math.NaN()
+						if m.snap.Traffic != nil && i < len(m.snap.Traffic.TotalHistoryBps) {
+							total = m.snap.Traffic.TotalHistoryBps[i]
+						}
+						at := lt.AtUnixNano - int64(len(history)-i)*int64(time.Second)
+						m.trafficHistory.push(at, value, total)
+					}
+				}
+				m.trafficHistory.push(lt.AtUnixNano, b, t)
 				m.zoom.push(lt.AtUnixNano, b, t)
 				m.zoomScaleB.update(seriesPeak(m.zoom.billable), m.now(), true)
 				m.zoomScaleT.update(seriesPeak(m.zoom.total), m.now(), true)
@@ -769,6 +783,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.downSince, m.nextRetry, m.lastErr = time.Time{}, time.Time{}, ""
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
+	m.trafficHistory = topTrafficHistory{}
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
@@ -935,6 +950,14 @@ func (m *topModel) series() topSeries {
 	}
 	out.capacity = topGraphCapacity
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
+	if len(m.trafficHistory.billable) > 0 {
+		out.anchor = m.trafficHistory.second
+		out.billable = m.trafficHistory.billable
+		if m.snap.Traffic != nil {
+			out.total = m.trafficHistory.total
+		}
+		return out
+	}
 	switch {
 	case m.snap.Rate.HistorySeq > 0:
 		out.anchor = int64(m.snap.Rate.HistorySeq)
