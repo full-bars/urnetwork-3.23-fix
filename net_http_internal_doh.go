@@ -32,12 +32,12 @@ type internalDohResolver struct {
 }
 
 // clientStrategySettingsWithInternalDoh installs the resolver ahead of every
-// normal, resilient, proxy, and injected control dial. The base settings are
+// normal, resilient, and injected control dial. The base settings are
 // captured before installing the wrapper so non-owned names retain their
 // existing resolution path and DoH endpoint dials cannot recurse through the
-// protected-domain rule.
+// protected-domain rule. Proxy dials keep names unresolved for the proxy.
 func clientStrategySettingsWithInternalDoh(settings *ClientStrategySettings) (*ClientStrategySettings, *internalDohResolver) {
-	if settings == nil || settings.ConnectSettings.Resolver != nil {
+	if settings == nil || settings.ConnectSettings.Resolver != nil || settings.ConnectSettings.ProxySettings != nil {
 		return settings, nil
 	}
 	domains := normalizeInternalDohDomains(settings.InternalDohDomains)

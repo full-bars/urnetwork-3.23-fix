@@ -722,6 +722,9 @@ func openExtenderPacketConn(
 	if connectSettings.DialContextSettings != nil && connectSettings.DialContextSettings.PacketConnFactory != nil {
 		return connectSettings.DialContextSettings.PacketConnFactory(ctx)
 	}
+	if connectSettings.ProxySettings != nil {
+		return nil, ErrExtenderPacketCarrierUnavailable
+	}
 	udpNetwork, wildcard := udpWildcardForFamily(udpAddrFamily(udpAddr))
 	return net.ListenUDP(udpNetwork, wildcard)
 }

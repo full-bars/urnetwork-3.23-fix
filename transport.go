@@ -1562,6 +1562,23 @@ func NewPlatformTransportWithTargetMode(
 			transport.targetMode = targetMode
 		}
 	}
+	if clientStrategy != nil && clientStrategy.ConnectSettings().ProxySettings != nil &&
+		clientStrategy.H3ExtenderConfig() == nil {
+		// H3 resolves the platform name locally. Use H1 to keep name
+		// resolution and transport on the configured proxy path.
+		for _, h3Mode := range []TransportMode{TransportModeH3, TransportModeH3Dns, TransportModeH3DnsPump} {
+			delete(transport.modePreferences, h3Mode)
+		}
+		if len(transport.modePreferences) == 0 {
+			transport.modePreferences[TransportModeH1] = DefaultTransportModePreferences()[TransportModeH1]
+		}
+		switch targetMode {
+		case TransportModeH3, TransportModeH3Dns, TransportModeH3DnsPump:
+			log.Infof("[t]%s is not available through a proxy; using h1\n", targetMode)
+			targetMode = TransportModeH1
+			transport.targetMode = targetMode
+		}
+	}
 	transport.h3Gate = newPlatformH3Gate(transport)
 	h1Enabled := targetMode == TransportModeH1 ||
 		(targetMode == TransportModeAuto &&
