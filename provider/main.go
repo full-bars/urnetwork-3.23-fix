@@ -6579,21 +6579,15 @@ func isDigits(s string) bool {
 func obfuscateUser(user string) string {
 	if user == "" {
 		return "<no user>"
-	} else if len(user) < 6 {
-		return "***"
-	} else {
-		return fmt.Sprintf("%s***%s", user[:2], user[len(user)-2:])
 	}
+	return "***"
 }
 
 func obfuscatePassword(password string) string {
 	if password == "" {
 		return "<no password>"
-	} else if len(password) < 6 {
-		return "***"
-	} else {
-		return fmt.Sprintf("%s***%s", password[:2], password[len(password)-2:])
 	}
+	return "***"
 }
 
 // resolveDuration returns the --flag value if set and parseable, else the

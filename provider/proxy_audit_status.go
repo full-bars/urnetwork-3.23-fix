@@ -75,7 +75,7 @@ func (g *proxyAuditor) publish(now time.Time, act bool, res proxyAuditResult) {
 	// release` takes) plus an obfuscated user, never the raw key.
 	for key, rec := range g.st.parks {
 		addr, user := connect.SplitProxyKey(key)
-		p := proxyAuditParkedStatus{Addr: addr, Until: rec.until}
+		p := proxyAuditParkedStatus{Addr: redactedProxyAddress(addr), Until: rec.until}
 		if user != "" {
 			p.User = obfuscateUser(user)
 		}

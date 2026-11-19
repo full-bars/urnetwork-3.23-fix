@@ -123,8 +123,7 @@ func TestProviderMetrics_ExportAuditGauges(t *testing.T) {
 
 // Parks are keyed by proxy identity. The published status is operator-facing
 // JSON: it must carry the ADDRESS (what `proxy audit release` takes) and an
-// obfuscated user to tell accounts at one gateway apart, never the raw key with
-// its \x1f separator.
+// redacted user, never the raw key with its \x1f separator.
 func TestProxyAuditStatus_ParkedIdentityKeyPublishedAsAddressAndUser(t *testing.T) {
 	resetProxyAuditStatus(t)
 	key := identityKey("gw.example:1080", "alice-01")
@@ -137,8 +136,8 @@ func TestProxyAuditStatus_ParkedIdentityKeyPublishedAsAddressAndUser(t *testing.
 		t.Fatalf("expected one parked proxy, got %+v", st)
 	}
 	p := st.Parked[0]
-	if p.Addr != "gw.example:1080" || p.User != "al***01" {
-		t.Fatalf("parked = %+v, want addr gw.example:1080 and obfuscated user al***01", p)
+	if p.Addr != "gw.example:1080" || p.User != "***" {
+		t.Fatalf("parked = %+v, want addr gw.example:1080 and redacted user", p)
 	}
 	b, err := json.Marshal(st)
 	if err != nil {
