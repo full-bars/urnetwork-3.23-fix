@@ -371,6 +371,28 @@ var (
 // shouldLogAuthErr reports whether an authentication error should be logged and returns the throttle state.
 func shouldLogAuthErr() (bool, int64) { return authErrThrottle.Allow(time.Now()) }
 
+// logAuthError logs a failed dial of one of this transport's modes, throttled
+// at INFO across every transport (shouldLogAuthErr) and every attempt at
+// V(1). The line names the mode and a pinned transport's family, and the
+// causes an exhausted strategy retained (httpRequestErrorWithCauses), which
+// its own message does not: which leg failed, and why.
+func (self *PlatformTransport) logAuthError(clientId Id, mode TransportMode, err error) {
+	leg := string(mode)
+	if self.pinned() {
+		leg = fmt.Sprintf("%s ipv%d", mode, self.ipFamily)
+	}
+	if ok, suppressed := shouldLogAuthErr(); ok {
+		if suppressed > 0 {
+			self.log.Infof("[t]auth error %s (%s) = %s (%d suppressed)\n", clientId, leg, httpRequestErrorWithCauses(err), suppressed)
+		} else {
+			self.log.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, httpRequestErrorWithCauses(err))
+		}
+	} else if v := self.log.V(1); v.Enabled() {
+		// throttled at INFO; -v=1 still shows every attempt
+		v.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, httpRequestErrorWithCauses(err))
+	}
+}
+
 // shouldLogWriteErr reports whether a write error should be logged and returns the associated throttle value.
 func shouldLogWriteErr() (bool, int64) { return writeErrThrottle.Allow(time.Now()) }
 
@@ -616,6 +638,23 @@ type PlatformTransportSettings struct {
 	// PinnedReconnectMaxTimeout caps a pinned transport's own exponential
 	// dial backoff. Non-positive resolves to five minutes.
 	PinnedReconnectMaxTimeout time.Duration
+	// PinnedNoRouteHoldTimeout is how long a pinned transport sleeps after a
+	// dial in which the routing refused every attempt with no route
+	// (EHOSTUNREACH, ENETUNREACH): a host with only ULA or link-local
+	// addresses of the family, or whose default route of the family is scoped
+	// to a vpn's tunnel, which the address probe counts as a path. Each such
+	// dial after a hold ran out doubles the next hold, up to
+	// PinnedNoRouteHoldMaxTimeout; a connection or a network change ends the
+	// hold and forgets the doubling (pinnedRouteHold). Five minutes, the first
+	// sentence of a demoted family (control_family.go). Non-positive holds
+	// nothing, and the pinned backoff alone paces such a transport.
+	PinnedNoRouteHoldTimeout time.Duration
+	// PinnedNoRouteHoldMaxTimeout caps the doubling of
+	// PinnedNoRouteHoldTimeout. One hour: a host that never reports a network
+	// change, such as a headless provider, still tries the family once an hour
+	// and finds a route that came back within the hour. At or below
+	// PinnedNoRouteHoldTimeout the hold does not grow.
+	PinnedNoRouteHoldMaxTimeout time.Duration
 	// ReconnectMaxTimeout caps a family-agnostic transport's exponential
 	// backoff after consecutive failed dials (see dialRetryAfter).
 	// Non-positive resolves to one minute.
@@ -729,6 +768,10 @@ type PlatformTransportSettings struct {
 	// client limit hold, right before it waits, so a test can hold the exact
 	// point after which no dial can happen until the hold changes.
 	clientLimitHoldForTest func()
+	// Nil outside package tests. Replaces time.After for the end of a pinned
+	// transport's no-route hold (runFamilyHoldWatcher), given the hold, so a
+	// test decides when the hold runs out.
+	routeHoldAfterForTest func(hold time.Duration) <-chan time.Time
 	// Nil outside package tests. Replaces the transport's own credential
 	// refusal hold, so a test can drive its clock.
 	credentialRefusalHold *credentialRefusalHold
@@ -770,7 +813,11 @@ func DefaultPlatformTransportSettings() *PlatformTransportSettings {
 		// upstream default policy.
 		ModePreferences:           nil,
 		PinnedReconnectMaxTimeout: 5 * time.Minute,
-		ReconnectMaxTimeout:       60 * time.Second,
+		// a family with no route sleeps 5, 10, 20, 40 minutes, then hourly,
+		// instead of a dial of every mode every few minutes
+		PinnedNoRouteHoldTimeout:    5 * time.Minute,
+		PinnedNoRouteHoldMaxTimeout: 1 * time.Hour,
+		ReconnectMaxTimeout:         60 * time.Second,
 		// MinConnectDelay:      0,
 		// MaxConnectDelay:      1 * time.Second,
 		ProtocolVersion: DefaultProtocolVersion,
@@ -1097,10 +1144,17 @@ type PlatformTransport struct {
 	// transport's own reason not to dial, a PlatformTransportState, with
 	// PlatformTransportStateConnecting meaning none. held derives from both
 	// and is what the mode runners wait on. See transport_family.go.
-	enabled       atomic.Bool
-	familyHold    atomic.Int32
-	held          *MonitorValue[bool]
-	pinnedBackoff *pinnedDialBackoff
+	enabled    atomic.Bool
+	familyHold atomic.Int32
+	// makes each evaluation of familyHold and its swap one step
+	// (refreshFamilyHold)
+	familyHoldLock sync.Mutex
+	held           *MonitorValue[bool]
+	pinnedBackoff  *pinnedDialBackoff
+	// a pinned transport's no-route hold, which puts it to sleep while the
+	// routing refuses its family. Nil for a family-agnostic transport, which
+	// holds nothing.
+	routeHold *pinnedRouteHold
 	// failBackoff paces a family-agnostic transport's retries after
 	// consecutive failed dials. See dialRetryAfter.
 	failBackoff *pinnedDialBackoff
@@ -1174,9 +1228,13 @@ func newPlatformQuicConfig(
 
 // Kick closes the transport's live connection (if any) and skips any pending
 // reconnect backoff so the run loop re-dials immediately over the new path.
-// The transport itself stays up; an in-flight dial is unaffected. Safe to
-// call at any time.
+// The transport itself stays up; an in-flight dial is unaffected. A pinned
+// transport's no-route hold ends too: the refusals were the old path's. Safe
+// to call at any time.
 func (self *PlatformTransport) Kick() {
+	// before the notify, so the hold watcher's refresh reads the new path's
+	// evidence
+	self.routeHold.reset()
 	self.kickMonitor.NotifyAll()
 }
 
@@ -1552,6 +1610,9 @@ func NewPlatformTransportWithTargetMode(
 	}
 	transport.failBackoff = newDialFailureBackoff(settings.ReconnectTimeout, reconnectMaxTimeout)
 	transport.failBackoff.setLongTier(settings.ReconnectLongAfter, settings.ReconnectLongMaxTimeout)
+	if transport.pinned() {
+		transport.routeHold = newPinnedRouteHold(settings.PinnedNoRouteHoldTimeout, settings.PinnedNoRouteHoldMaxTimeout)
+	}
 	if transport.ipFamily == 6 {
 		// the dns pump host publishes no AAAA record: the mode cannot work
 		// over a v6 pin, so it is not offered rather than left to fail
@@ -2364,26 +2425,18 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			// gated. The contract OOB path makes the same carve-out on
 			// client.Done.
 			if self.ctx.Err() == nil && refusal == 0 {
-				self.noteDialFailure()
+				self.noteDialFailure(err)
 				// fork: the proxy health record (identity eviction, reaper); a
 				// pinned transport's failure is about one family, not the identity
 				if idx, ok := self.proxyIndex(); ok && !self.pinned() {
 					RecordProxyAuthFailure(idx, err)
 				}
 			}
-			// err here is the strategy's flattened "Timeout."; a pinned
-			// transport classified each dialer attempt's typed error through
-			// the observer in dialContext (noteDialError)
-			if ok, suppressed := shouldLogAuthErr(); ok {
-				if suppressed > 0 {
-					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
-				} else {
-					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
-				}
-			} else if v := self.log.V(1); v.Enabled() {
-				// throttled at INFO; -v=1 still shows every attempt
-				v.Infof("[t]auth error %s = %s\n", clientId, err)
-			}
+			// err here is the strategy's exhaustion, whose own message names
+			// no cause; a pinned transport also classified each dialer
+			// attempt's typed error through the observer in dialContext
+			// (noteDialError)
+			self.logAuthError(clientId, TransportModeH1, err)
 			select {
 			case <-self.ctx.Done():
 				return
@@ -3424,13 +3477,13 @@ func (self *PlatformTransport) runH3(
 					if gated {
 						auxBackoff = nextH3Backoff(auxBackoff, self.settings.ReconnectTimeout, h3AuxiliaryMaxBackoff)
 					} else {
-						self.noteDialFailure()
+						self.noteDialFailure(err)
 						if idx, ok := self.proxyIndex(); ok && !self.pinned() {
 							RecordProxyAuthFailure(idx, err)
 						}
 					}
 					// the h3 resolve error reaches here typed, unlike the
-					// h1 strategy's flattened "Timeout."
+					// h1 strategy's exhaustion
 					self.noteDialError(err)
 				}
 			}
@@ -3442,15 +3495,8 @@ func (self *PlatformTransport) runH3(
 				} else if self.log.V(2).Enabled() {
 					self.log.Infof("[t]h3 unavailable: %s\n", err)
 				}
-			} else if ok, suppressed := shouldLogAuthErr(); ok {
-				if suppressed > 0 {
-					self.log.Infof("[t]auth error %s = %s (%d suppressed)\n", clientId, err, suppressed)
-				} else {
-					self.log.Infof("[t]auth error %s = %s\n", clientId, err)
-				}
-			} else if v := self.log.V(1); v.Enabled() {
-				// throttled at INFO; -v=1 still shows every attempt
-				v.Infof("[t]auth error %s = %s\n", clientId, err)
+			} else {
+				self.logAuthError(clientId, ptMode, err)
 			}
 			var retryAfter <-chan time.Time
 			var gateChanged <-chan struct{}

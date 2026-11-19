@@ -404,7 +404,7 @@ func TestAuthCancellationIsNotBackendFailure(t *testing.T) {
 		}
 		// the loops record the failure through noteDialFailure, which feeds
 		// noteBackendFailure for a family-agnostic transport (transport_family.go)
-		note := strings.Index(body, "self.noteDialFailure()")
+		note := strings.Index(body, "self.noteDialFailure(")
 		if note < 0 {
 			t.Fatalf("%s no longer records auth failures; the degraded signal lost its transport half", fn)
 		}

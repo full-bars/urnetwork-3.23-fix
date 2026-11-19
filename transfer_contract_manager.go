@@ -1267,11 +1267,14 @@ func (self *ContractManager) CreateContract(contractKey ContractKey, contractSeq
 					// no need to log warnings when the client closes
 				default:
 					noteBackendFailure()
+					// an exhausted request's own message names no cause: the
+					// line names the causes its attempts retained
+					// (httpRequestErrorWithCauses)
 					if ok, suppressed := shouldLogOobErr(); ok {
 						if suppressed > 0 {
-							self.client.log.Infof("⚠️ [contract]oob err = %s (%d suppressed)\n", err, suppressed)
+							self.client.log.Infof("⚠️ [contract]oob err = %s (%d suppressed)\n", httpRequestErrorWithCauses(err), suppressed)
 						} else {
-							self.client.log.Infof("⚠️ [contract]oob err = %s\n", err)
+							self.client.log.Infof("⚠️ [contract]oob err = %s\n", httpRequestErrorWithCauses(err))
 						}
 					}
 				}
