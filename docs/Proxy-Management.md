@@ -12,14 +12,20 @@ The network's quality checks include an HTTP/3 leg. An identity whose proxy cann
 
 ### What the provider checks
 
-The provider checks the relay the first time an identity tries HTTP/3 or client UDP. It remembers the result and checks again later. The check reports one of four states:
+The provider checks the relay when an identity needs HTTP/3 or client UDP. Background sweeps also check online proxies across paid and URL proxy sources. The provider remembers results and checks again later. The check reports one of four states:
 
 - `ok` means the relay answers and its exit address matches the TCP exit address.
 - `no-relay` means the proxy refuses UDP ASSOCIATE or the relay does not answer.
 - `exit-mismatch` means the relay answers but its exit address differs from the TCP exit address.
-- `unknown` means the relay answers but the TCP exit address could not be learned.
+- `unknown` means the check has no confirmed result. The relay may still be tried.
 
-For `ok` and `unknown`, the provider allows HTTP/3 and client UDP. For `no-relay` and `exit-mismatch`, it refuses both and uses TCP.
+For `ok` and `unknown`, the provider allows HTTP/3 and client UDP. For `no-relay` and `exit-mismatch`, it refuses both and uses TCP. A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
+
+Proxies are never rejected or graded down for lacking UDP. Only client UDP and QUIC flows are refused through a proxy proven not to relay (`no-relay` or `exit-mismatch`).
+
+The background sweep runs by default. Use `urnet-tools set udp-probe off` to stop new sweeps at the next tick. A running sweep continues. Use `urnet-tools set udp-probe on` to enable sweeps again. Client safety checks continue to run.
+
+The provider writes probe state to disk in the background after a two-second batching delay. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours.
 
 ### Choosing a proxy
 

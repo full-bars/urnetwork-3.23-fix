@@ -6,6 +6,7 @@ couple of platform-specific pitfalls.
 
 The command is `urnet-tools proxy add <file>`, where `<file>` points to a text
 file with one proxy per line. Each line is `host:port` or `host:port:user:pass`.
+Passwords may contain `@` characters.
 
 ## The universal sequence
 
