@@ -352,6 +352,7 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 
 type proxyUDPCheckEntry struct {
 	result  proxyUDPResult
+	ipv6    proxyIPv6Result
 	at      time.Time
 	tcpExit string // last known TCP exit, retained even when a relay fails
 	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
@@ -408,7 +409,7 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 	if self.lastPrune.IsZero() || now.Sub(self.lastPrune) >= proxyUDPLazyTTL {
 		self.lastPrune = now
 		for key, entry := range self.entries {
-			if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) {
+			if entry.done == nil && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) && !entry.ipv6.retain(now) {
 				delete(self.entries, key)
 			}
 		}
@@ -485,10 +486,12 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		var previous *proxyUDPResult
 		var previousAt time.Time
+		var ipv6 proxyIPv6Result
 		var tcpExit string
 		var tcpExitAt time.Time
 		if entry != nil {
 			previousAt = entry.at
+			ipv6 = entry.ipv6
 			copyOf := entry.result
 			previous = &copyOf
 			tcpExit = entry.tcpExit
@@ -508,7 +511,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6}
 		self.entries[key] = running
 		self.mu.Unlock()
 
@@ -528,7 +531,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: ipv6}
 			}
 			close(running.done)
 			self.mu.Unlock()
@@ -642,12 +645,14 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	}
 	var tcpExit string
 	var tcpExitAt time.Time
+	var ipv6 proxyIPv6Result
 	if entry != nil {
+		ipv6 = entry.ipv6
 		tcpExit = entry.tcpExit
 		tcpExitAt = entry.tcpExitAt
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, ipv6: ipv6}
 	self.entries[key] = entry
 	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {

@@ -16,11 +16,12 @@ const udpStateMaxBytes = 2 << 20
 const udpStateMaxEntries = 10000
 
 type udpPersistEntry struct {
-	Key     string         `json:"key"`
-	Status  proxyUDPStatus `json:"status"`
-	At      time.Time      `json:"at"`
-	TCPExit string         `json:"tcp_exit,omitempty"`
-	UDPExit string         `json:"udp_exit,omitempty"`
+	Key     string          `json:"key"`
+	Status  proxyUDPStatus  `json:"status"`
+	At      time.Time       `json:"at"`
+	TCPExit string          `json:"tcp_exit,omitempty"`
+	UDPExit string          `json:"udp_exit,omitempty"`
+	IPv6    proxyIPv6Result `json:"ipv6,omitempty"`
 }
 
 type udpPersistFile struct {
@@ -49,12 +50,15 @@ func (self *proxyUDPCheckStore) enablePersistence(path string, now time.Time) {
 		return
 	}
 	var state udpPersistFile
-	if json.Unmarshal(b, &state) != nil || state.Version != 1 || len(state.Entries) > udpStateMaxEntries {
+	if json.Unmarshal(b, &state) != nil || (state.Version != 1 && state.Version != 2) || len(state.Entries) > udpStateMaxEntries {
 		return
 	}
 	for _, entry := range state.Entries {
+		if !entry.IPv6.valid(now) {
+			entry.IPv6 = proxyIPv6Result{}
+		}
 		key, err := hex.DecodeString(entry.Key)
-		if err != nil || len(key) != sha256.Size || entry.Status < proxyUDPUnknown || entry.Status > proxyUDPExitMismatch || entry.At.IsZero() || entry.At.After(now) || now.Sub(entry.At) >= proxyUDPTTL(entry.Status) || (entry.TCPExit != "" && net.ParseIP(entry.TCPExit) == nil) || (entry.UDPExit != "" && net.ParseIP(entry.UDPExit) == nil) {
+		if err != nil || len(key) != sha256.Size || entry.Status < proxyUDPUnknown || entry.Status > proxyUDPExitMismatch || entry.At.IsZero() || entry.At.After(now) || (now.Sub(entry.At) >= proxyUDPTTL(entry.Status) && !entry.IPv6.retain(now)) || (entry.TCPExit != "" && net.ParseIP(entry.TCPExit) == nil) || (entry.UDPExit != "" && net.ParseIP(entry.UDPExit) == nil) {
 			continue
 		}
 		self.persisted[entry.Key] = entry
@@ -67,7 +71,7 @@ func (self *proxyUDPCheckStore) cachedEntryLocked(key string) *proxyUDPCheckEntr
 		return entry
 	}
 	if saved, ok := self.persisted[udpPersistKey(key)]; ok {
-		entry := &proxyUDPCheckEntry{at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, TCPExit: saved.TCPExit, UDPExit: saved.UDPExit}}
+		entry := &proxyUDPCheckEntry{ipv6: saved.IPv6, at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, TCPExit: saved.TCPExit, UDPExit: saved.UDPExit}}
 		self.entries[key] = entry
 		return entry
 	}
@@ -101,7 +105,7 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 		udpExit = ""
 	}
 	hash := udpPersistKey(key)
-	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit}
+	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit, IPv6: entry.ipv6}
 	self.persistDirty = true
 	// Checks for different identities finish in any order. The writer drops
 	// entries dated after persistNow, so it must never move backwards.
@@ -135,7 +139,7 @@ func (self *proxyUDPCheckStore) persistWriter() {
 		list := make([]udpPersistEntry, 0, len(self.persisted))
 		snapshot := make(map[string]udpPersistEntry, len(self.persisted))
 		for hash, saved := range self.persisted {
-			if saved.At.After(now) || now.Sub(saved.At) >= proxyUDPTTL(saved.Status) {
+			if saved.At.After(now) || (now.Sub(saved.At) >= proxyUDPTTL(saved.Status) && !saved.IPv6.retain(now)) {
 				delete(self.persisted, hash)
 				continue
 			}
@@ -225,7 +229,7 @@ func writeUDPPersistFile(path string, list []udpPersistEntry) (dropped []string,
 	// The encoded size of the file is the size of the empty file plus each
 	// entry and one comma between entries. Sum it once and cut the list at the
 	// last entry that fits, instead of encoding the whole list again per entry.
-	base, err := json.Marshal(udpPersistFile{Version: 1, Entries: []udpPersistEntry{}})
+	base, err := json.Marshal(udpPersistFile{Version: 2, Entries: []udpPersistEntry{}})
 	if err != nil {
 		return dropped, err
 	}
@@ -250,7 +254,7 @@ func writeUDPPersistFile(path string, list []udpPersistEntry) (dropped []string,
 		dropped = append(dropped, d.Key)
 	}
 	list = list[:fit]
-	b, err := json.Marshal(udpPersistFile{Version: 1, Entries: list})
+	b, err := json.Marshal(udpPersistFile{Version: 2, Entries: list})
 	if err != nil {
 		return dropped, err
 	}

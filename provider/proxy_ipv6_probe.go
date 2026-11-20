@@ -33,6 +33,33 @@ func (r proxyIPv6Result) due(now time.Time) bool {
 	return r.At.IsZero() || r.Interval <= 0 || !now.Before(r.At.Add(r.Interval))
 }
 
+// retain keeps previous evidence long enough to calculate the next interval.
+func (r proxyIPv6Result) retain(now time.Time) bool {
+	return !r.At.IsZero() && !r.At.After(now) && r.Interval > 0 && now.Sub(r.At) < 2*r.Interval
+}
+
+// valid checks persisted data before exposing it to callers.
+func (r proxyIPv6Result) valid(now time.Time) bool {
+	if r.At.IsZero() {
+		return r == (proxyIPv6Result{})
+	}
+	if r.At.After(now) || r.Interval <= 0 || r.Interval > 7*24*time.Hour || (r.Status != proxyIPv6Yes && r.Status != proxyIPv6No && r.Status != proxyIPv6Unknown) || (r.Source != "measured" && r.Source != "observed") {
+		return false
+	}
+	if r.UDP != "" && r.UDP != "yes" && r.UDP != "no" && r.UDP != "unknown" && r.UDP != "mismatch" {
+		return false
+	}
+	for _, raw := range []string{r.TCPExit, r.UDPExit} {
+		if raw != "" {
+			ip := net.ParseIP(raw)
+			if ip == nil || ip.To4() != nil {
+				return false
+			}
+		}
+	}
+	return true
+}
+
 // measured records a new observation and calculates its next check without
 // deriving a result from any other proxy.
 func (r proxyIPv6Result) measured(now time.Time, status proxyIPv6Status, udp, tcpExit, udpExit string) proxyIPv6Result {
