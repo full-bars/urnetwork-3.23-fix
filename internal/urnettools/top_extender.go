@@ -160,6 +160,13 @@ func extenderBoxRowsFor(r ExtenderReading, now time.Time, ascii bool) []topExten
 		}
 		rows = append(rows, topExtenderRow{strings.ReplaceAll(c.Carrier, "-", ""),
 			down + tui.Bytes(float64(c.IngressBytes)) + " " + up + tui.Bytes(float64(c.EgressBytes)), topInfo})
+		if c.IngressBytesV4 > 0 || c.EgressBytesV4 > 0 || c.LiveConnsV4 > 0 ||
+			c.IngressBytesV6 > 0 || c.EgressBytesV6 > 0 || c.LiveConnsV6 > 0 {
+			rows = append(rows, topExtenderRow{"  ipv4",
+				down + tui.Bytes(float64(c.IngressBytesV4)) + " " + up + tui.Bytes(float64(c.EgressBytesV4)), topInfo})
+			rows = append(rows, topExtenderRow{"  ipv6",
+				down + tui.Bytes(float64(c.IngressBytesV6)) + " " + up + tui.Bytes(float64(c.EgressBytesV6)), topInfo})
+		}
 	}
 	rows = append(rows, topExtenderRow{"served", extenderServedText(r.Served), topInfo})
 	return rows
