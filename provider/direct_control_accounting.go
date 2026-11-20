@@ -11,7 +11,12 @@ import (
 // streams. NAT sockets have their own accounting and use separate settings.
 func countDirectControl(settings *connect.ConnectSettings, bw *connect.ProxyBandwidth) {
 	base := *settings
+	var packetFactory func(context.Context) (net.PacketConn, error)
+	if base.DialContextSettings != nil {
+		packetFactory = base.DialContextSettings.PacketConnFactory
+	}
 	settings.DialContextSettings = &connect.DialContextSettings{
+		PacketConnFactory: packetFactory,
 		DialContext: func(ctx context.Context, network, addr string) (net.Conn, error) {
 			conn, err := base.DialContext(ctx, network, addr)
 			if err != nil || conn == nil {

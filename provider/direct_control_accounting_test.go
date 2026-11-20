@@ -18,7 +18,16 @@ func TestDirectControlCountsBothFamilies(t *testing.T) {
 		t.Run(family, func(t *testing.T) {
 			bw := &connect.ProxyBandwidth{}
 			settings := connect.ConnectSettings{DialContextSettings: &connect.DialContextSettings{DialContext: func(_ context.Context, _, _ string) (net.Conn, error) { return &memoryControlConn{}, nil }}}
+			called := false
+			settings.DialContextSettings.PacketConnFactory = func(context.Context) (net.PacketConn, error) { called = true; return nil, nil }
 			countDirectControl(&settings, bw)
+			if settings.DialContextSettings.PacketConnFactory == nil {
+				t.Fatal("packet factory lost")
+			}
+			_, _ = settings.DialContextSettings.PacketConnFactory(context.Background())
+			if !called {
+				t.Fatal("packet factory changed")
+			}
 			conn, err := settings.DialContext(context.Background(), family, "127.0.0.1:443")
 			if err != nil {
 				t.Fatal(err)
