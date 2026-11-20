@@ -109,6 +109,8 @@ type controlResponse struct {
 	// ProxyCells is the compact per-proxy grid payload answered by
 	// "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
 	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// UDPScanEvents is recent finished UDP check events for top's scan wave animation.
+	UDPScanEvents []ProxyUDPScanEvent `json:"udp_scan_events,omitempty"`
 	// ProxyCellDetail is the full per-proxy record for the grid's popup,
 	// answered by "proxy_cell_detail".
 	ProxyCellDetail []ProxyCellDetail `json:"proxy_cell_detail,omitempty"`
@@ -116,6 +118,13 @@ type controlResponse struct {
 	ProxyAudit *ProxyAuditStatus `json:"proxy_audit,omitempty"`
 	Audit      *ProxyAuditStatus `json:"audit,omitempty"`
 	Raw        []byte            `json:"-"`
+}
+
+// ProxyUDPScanEvent records one finished UDP check for top's scan wave animation.
+type ProxyUDPScanEvent struct {
+	Index  int       `json:"index"`
+	Status string    `json:"status"`
+	At     time.Time `json:"at"`
 }
 
 // pendingOp is an entry in ~/.urnetwork/pending_overrides.json.

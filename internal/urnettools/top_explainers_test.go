@@ -138,6 +138,7 @@ func TestTopExplainerRequiredTerms(t *testing.T) {
 		{"locality", "Locality Heatmap", "subnet blocks"},
 		{"blocks", "Blocks Heatmap", "Discrete block cells"},
 		{"timeline", "Timeline Heatmap", "Chronological activity bars"},
+		{"scan", "Scan Heatmap", "UDP sweep scan wave"},
 		{"title:graph", "Graph Mode & Scale", "Graph title"},
 		{"box:graph", "Throughput Graph", "Real-time bandwidth graph"},
 		{"legend:direct", "Direct Path", "proxy slot 0"},

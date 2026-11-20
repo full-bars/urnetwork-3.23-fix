@@ -1191,7 +1191,7 @@ var helpLines = []string{
 	"Mono uses blocks. Colorblind uses blocks and the worst state style.",
 	"Colorblind uses bold and dim. Hover for each state.",
 	"ASCII uses symbols for state and activity.",
-	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.",
+	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline, Scan.",
 }
 
 // drawHelp draws the key reference centered over whatever is on screen.

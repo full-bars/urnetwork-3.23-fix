@@ -11,13 +11,14 @@ const (
 	heatmapLocality
 	heatmapBlocks
 	heatmapTimeline
+	heatmapScan
 )
 
 var heatmapStyles = [...]heatmapStyle{
-	heatmapGlow, heatmapAurora, heatmapSonar, heatmapLocality, heatmapBlocks, heatmapTimeline,
+	heatmapGlow, heatmapAurora, heatmapSonar, heatmapLocality, heatmapBlocks, heatmapTimeline, heatmapScan,
 }
 
-var heatmapStyleNames = [...]string{"Glow", "Aurora", "Sonar", "Locality", "Blocks", "Timeline"}
+var heatmapStyleNames = [...]string{"Glow", "Aurora", "Sonar", "Locality", "Blocks", "Timeline", "Scan"}
 
 func (s heatmapStyle) String() string {
 	if int(s) >= len(heatmapStyleNames) {

@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added real-time UDP scan wave heatmap style that flashes finished background sweep check results in result colors and fades with the afterglow.
 - Added near full-screen proxy heatmap window opened with p, with scrolling, zooming, larger detail layout and hover popups.
 - Track dual-stack IPv4 and IPv6 direct connection outcomes and traffic counters, and display per-family statistics in the direct slot detail popup.
 - Render the direct provider slot as a dedicated star cell in top heatmaps and label it in the legend.

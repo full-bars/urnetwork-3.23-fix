@@ -469,6 +469,14 @@ var topExplainerCatalog = []topExplainer{
 			"Highlights recently active proxies against idle pool capacity.",
 		},
 	},
+	{
+		Region: "scan",
+		Title:  "Scan Heatmap",
+		Lines: []string{
+			"Real-time UDP sweep scan wave across configured proxies.",
+			"Flashes check results in real time with progressive afterglow fade.",
+		},
+	},
 
 	// Legend entries
 	{
@@ -842,12 +850,14 @@ func init() {
 		"heat:locality": "locality",
 		"heat:blocks":   "blocks",
 		"heat:timeline": "timeline",
+		"heat:scan":     "scan",
 		"Glow":          "glow",
 		"Aurora":        "aurora",
 		"Sonar":         "sonar",
 		"Locality":      "locality",
 		"Blocks":        "blocks",
 		"Timeline":      "timeline",
+		"Scan":          "scan",
 
 		// Graph
 		"graph:billable": "box:graph",

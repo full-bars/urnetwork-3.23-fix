@@ -373,6 +373,7 @@ type proxyUDPCheckStore struct {
 	// reaches its first H3 attempt within seconds of starting
 	slots     chan struct{}
 	lastPrune time.Time
+	events    *proxyUDPScanRing
 	// detachedRuns holds the one detached check in flight per identity
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
@@ -399,6 +400,7 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 		entries:      map[string]*proxyUDPCheckEntry{},
 		slots:        make(chan struct{}, udpCheckMaxConcurrent),
 		detachedRuns: map[string]*proxyUDPCheckRun{},
+		events:       newProxyUDPScanRing(defaultProxyUDPScanRingCap),
 	}
 }
 
@@ -550,6 +552,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		self.mu.Unlock()
 
+		self.recordEvent(settings, result, now)
 		logProxyUDPResult(settings, previous, result)
 		return result
 	}

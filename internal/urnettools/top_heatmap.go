@@ -78,25 +78,41 @@ func decodeProxyCells(b []byte) []proxyCell {
 	return out
 }
 
-// fetchProxyCells asks the provider for the compact grid payload. A provider
-// that predates the command (or has no proxies) leaves the field empty; the
-// caller treats that as "no grid" and falls back to the bars.
-func fetchProxyCells(p Provider) ([]proxyCell, error) {
+// fetchUDPScanEvents asks the provider for recent finished UDP checks for the scan wave.
+func fetchUDPScanEvents(p Provider) ([]ProxyUDPScanEvent, error) {
 	if p.StateDir == "" {
 		return nil, errSnapshotUnavailable
 	}
 	sockPath := filepath.Join(p.StateDir, "provider.sock")
-	resp, err := sendSocketRequestTimeout(sockPath, controlRequest{Cmd: "proxy_cells"}, topLightTimeout)
+	resp, err := sendSocketRequestTimeout(sockPath, controlRequest{Cmd: "udp_scan_events"}, topLightTimeout)
 	if err != nil {
 		return nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
 	}
 	if !resp.OK {
-		if len(resp.Error) >= 15 && resp.Error[:15] == "unknown command" {
-			return nil, errTrafficUnsupported
-		}
 		return nil, fmt.Errorf("%w: %s", errSnapshotUnavailable, resp.Error)
 	}
-	return decodeProxyCells(resp.ProxyCells), nil
+	return resp.UDPScanEvents, nil
+}
+
+// fetchProxyCells asks the provider for the compact grid payload. A provider
+// that predates the command (or has no proxies) leaves the field empty; the
+// caller treats that as "no grid" and falls back to the bars.
+func fetchProxyCells(p Provider) ([]proxyCell, []ProxyUDPScanEvent, error) {
+	if p.StateDir == "" {
+		return nil, nil, errSnapshotUnavailable
+	}
+	sockPath := filepath.Join(p.StateDir, "provider.sock")
+	resp, err := sendSocketRequestTimeout(sockPath, controlRequest{Cmd: "proxy_cells"}, topLightTimeout)
+	if err != nil {
+		return nil, nil, fmt.Errorf("%w: %w", errSnapshotUnavailable, err)
+	}
+	if !resp.OK {
+		if len(resp.Error) >= 15 && resp.Error[:15] == "unknown command" {
+			return nil, nil, errTrafficUnsupported
+		}
+		return nil, nil, fmt.Errorf("%w: %s", errSnapshotUnavailable, resp.Error)
+	}
+	return decodeProxyCells(resp.ProxyCells), resp.UDPScanEvents, nil
 }
 
 const defaultProxyAfterglowSeconds = 5

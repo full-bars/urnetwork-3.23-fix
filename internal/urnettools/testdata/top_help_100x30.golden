@@ -24,7 +24,7 @@
 │connect│ Mono uses blocks. Colorblind uses blocks and the worst state style.             │
 │dead   │ Colorblind uses bold and dim. Hover for each state.                             │
 ╰───────│ ASCII uses symbols for state and activity.                                      │
-╭ Events│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
+╭ Events│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline, Scan.          │
 │3d ago ╰─────────────────────────────────────────────────────────────────────────────────╯
 ╰────────────────────────────────────────────────────────────────────╯
  q quit   ? help   m menu   w zoom   - 1s +   M mouse on

@@ -10,12 +10,12 @@ func TestHeatmapStyleMenuCycles(t *testing.T) {
 	m, path := menuModel(t)
 	m.menuSel = topMenuHeatmap
 	m.menuCycle(-1)
-	if got := m.proxyHeatmapStyle; got != heatmapTimeline {
-		t.Fatalf("left from Glow = %v, want Timeline", got)
+	if got := m.proxyHeatmapStyle; got != heatmapScan {
+		t.Fatalf("left from Glow = %v, want Scan", got)
 	}
 	m.menuCycle(1)
 	if got := m.proxyHeatmapStyle; got != heatmapGlow {
-		t.Fatalf("right from Timeline = %v, want Glow", got)
+		t.Fatalf("right from Scan = %v, want Glow", got)
 	}
 	m.menuCycle(1)
 	if got := loadTopSettings(path).ProxyHeatmapStyle; got != heatmapAurora {

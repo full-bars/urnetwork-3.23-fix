@@ -43,6 +43,8 @@ type topResult struct {
 	proxyDetail   map[int]ProxyCellDetail
 	isProxyCells  bool
 	proxyCells    []proxyCell
+	scanEvents    []ProxyUDPScanEvent
+	isScanEvents  bool
 	isOverview    bool
 	provider      int
 }
@@ -137,7 +139,26 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				case <-ctx.Done():
 				}
 			}()
-			res.proxyCells, res.err = fetchProxyCells(p)
+			res.proxyCells, res.scanEvents, res.err = fetchProxyCells(p)
+		}()
+	}
+
+	var scanBusy bool
+	var lastScanFetch time.Time
+	fetchScan := func(gen int, p Provider) {
+		scanBusy = true
+		go func() {
+			res := topResult{gen: gen, isScanEvents: true}
+			defer func() {
+				if r := recover(); r != nil {
+					res.err = fmt.Errorf("scan events fetch panicked: %v", r)
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.scanEvents, res.err = fetchUDPScanEvents(p)
 		}()
 	}
 
@@ -266,6 +287,13 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				fetchCells(m.gen, m.providers[m.cur])
 			}
 		}
+		if _, ok := src.(socketTopSource); ok && m.proxyHeatmapStyle == heatmapScan && !scanBusy && m.cur >= 0 && m.cur < len(m.providers) && m.conn != topDisconnected {
+			now := m.now()
+			if lastScanFetch.IsZero() || now.Sub(lastScanFetch) >= min(m.interval, 200*time.Millisecond) {
+				lastScanFetch = now
+				fetchScan(m.gen, m.providers[m.cur])
+			}
+		}
 		if hasTraffic {
 			if gen, p, ok := m.wantTraffic(m.now()); ok {
 				fetchTraffic(gen, p)
@@ -341,6 +369,14 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			case r.isProxyCells:
 				proxyBusy = false
 				m.applyProxyCells(r.gen, r.proxyCells, r.err)
+				if m.proxyHeatmapStyle == heatmapScan && len(r.scanEvents) > 0 {
+					m.applyUDPScanEvents(r.scanEvents)
+				}
+			case r.isScanEvents:
+				scanBusy = false
+				if m.proxyHeatmapStyle == heatmapScan && len(r.scanEvents) > 0 {
+					m.applyUDPScanEvents(r.scanEvents)
+				}
 			case r.isExtender:
 				m.applyExtender(r.gen, r.extender)
 			case r.isOverview:

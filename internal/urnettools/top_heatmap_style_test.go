@@ -3,7 +3,7 @@ package urnettools
 import "testing"
 
 func TestHeatmapStyleNames(t *testing.T) {
-	want := []string{"Glow", "Aurora", "Sonar", "Locality", "Blocks", "Timeline"}
+	want := []string{"Glow", "Aurora", "Sonar", "Locality", "Blocks", "Timeline", "Scan"}
 	if len(heatmapStyles) != len(want) {
 		t.Fatalf("got %d styles, want %d", len(heatmapStyles), len(want))
 	}

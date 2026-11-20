@@ -95,6 +95,8 @@ type controlResponse struct {
 	// ProxyCells is the compact per-proxy grid payload for top's heatmap,
 	// answered by "proxy_cells". 4 packed bytes per proxy, base64 by JSON.
 	ProxyCells []byte `json:"proxy_cells,omitempty"`
+	// UDPScanEvents is recent finished UDP check events for top's scan wave animation.
+	UDPScanEvents []ProxyUDPScanEvent `json:"udp_scan_events,omitempty"`
 	// ProxyCellDetail is the full per-proxy record for the heatmap popup,
 	// answered by "proxy_cell_detail". Not polled; fetched on hover/click.
 	ProxyCellDetail []proxyCellDetail `json:"proxy_cell_detail,omitempty"`
@@ -627,7 +629,12 @@ func handleControlRequest(state *controlState, req controlRequest) (response con
 		// Packed and base64 by the JSON encoder; cached for a second so a
 		// 4400-proxy node does not pay for the registry scan per frame.
 		cells := getProxyCellStore().Cells(time.Now())
-		return controlResponse{OK: true, ProxyCells: cells}
+		events := globalProxyUDPCheck.RecentEvents()
+		return controlResponse{OK: true, ProxyCells: cells, UDPScanEvents: events}
+
+	case "udp_scan_events":
+		events := globalProxyUDPCheck.RecentEvents()
+		return controlResponse{OK: true, UDPScanEvents: events}
 
 	case "proxy_cell_detail":
 		// The full per-proxy record for the heatmap's hover/click popup:

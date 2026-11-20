@@ -165,7 +165,7 @@ The Proxies panel shows a heatmap when the window has room. The count for the di
 
 Color shows state: up is green, dropped is orange, connecting is violet, dead is bold red and parked is dim. Brighter green, toward aqua, means higher throughput. No throughput shade is orange, violet or red. A bright dot that fades shows recent traffic. Proxy cells refresh at the selected interval, capped at one second when requests complete in time. The `m` menu item `Dot fade time` (key `proxy.afterglow_seconds`, 1 to 60 seconds) sets how long a dot takes to fade out after its proxy's traffic drops, and the menu says so under the item. At 10 s a dot that carried traffic dims over ten seconds. A proxy that carries steady traffic stays lit at any setting, so the setting only changes dots with bursty traffic. The proxy popup shows how long clients have been attached, or idle when none are attached. It also shows traffic in the last second. Each dot represents one proxy. Dense cells stack upper and lower dots. When proxies outnumber dot positions, each dot shows the worst state of its group and the popup lists the worst entries first. The mono theme uses block shapes without color. The colorblind theme shows the worst state style for a dense cell. The ASCII theme uses symbols for state and activity. Press `?` for the key.
 
-The `m` menu includes a 'Heatmap style' row to cycle through six styles:
+The `m` menu includes a 'Heatmap style' row to cycle through seven styles:
 
 - `Glow` – the current behavior (state-colored dots, afterglow fade, grouped worst state)
 - `Aurora` – scrolling wave across contiguous index ranges, colored by aggregated throughput
@@ -173,8 +173,9 @@ The `m` menu includes a 'Heatmap style' row to cycle through six styles:
 - `Locality` – Hilbert curve: contiguous index along a stable curve for locality perception
 - `Blocks` – rectangular grid: per‑index group summary bars with health‑bucket colors
 - `Timeline` – per‑index bucket history while the panel is visible, scrolling with time
+- `Scan` - real-time UDP sweep scan wave across proxies, flashing check results in result colors (ok green, no UDP orange, mismatch violet, unknown dim) with afterglow decay
 
-The chosen style is saved in `~`/.config/urnet-tools/top.conf` (`proxy.heatmap_style`). All styles degrade gracefully:
+The chosen style is saved in `~/.config/urnet-tools/top.conf` (`proxy.heatmap_style`). All styles degrade gracefully:
 
 - `mono` – block shapes only (no color, symbols for state)
 - `colorblind` – blocks plus bold/dim for the worst state
@@ -182,7 +183,7 @@ The chosen style is saved in `~`/.config/urnet-tools/top.conf` (`proxy.heatmap_s
 
 If the panel is too small for a style (less than the minimum grid height), it falls back to the classic state‑bar display exactly as today.
 
-The style name appears in the legend row when the panel is wide enough; in narrow panels the help overlay (`?`) shows all six names.
+The style name appears in the legend row when the panel is wide enough. In narrow panels the help overlay (`?`) shows all seven names.
 
 ## Top screen glossary
 
@@ -256,6 +257,7 @@ Hovering over any element on the `top` screen (or tapping on a touch screen) ope
 - **Locality Heatmap (`locality`)**: Groups proxies into subnet blocks and network provider clusters. Displays diversity and concentration across egress routes.
 - **Blocks Heatmap (`blocks`)**: Discrete block cells showing high-contrast proxy state characters. Avoids half-block packing for maximum readability on small fonts.
 - **Timeline Heatmap (`timeline`)**: Chronological activity bars tracking client session distribution. Highlights recently active proxies against idle pool capacity.
+- **Scan Heatmap (`scan`)**: Real-time UDP probe sweep wave across configured proxies. Flashes check results in result colors with progressive afterglow fade.
 
 ### Legend and layout
 - **Direct Path (`legend:direct`)**: Local host network interface (proxy slot 0, drawn as a star). Routes client traffic directly through host egress without a proxy. Hovering the star displays dual-stack IPv4 and IPv6 connection success and failure counts, directional traffic totals, and last success timing.

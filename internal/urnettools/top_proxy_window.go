@@ -219,6 +219,16 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 					}
 					continue
 				}
+				if m.proxyHeatmapStyle == heatmapScan {
+					if status, frac, flashing := m.proxyScanFlashState(c.index, now); flashing {
+						glyph, st := m.proxyScanFlashStyle(status, frac, c.state)
+						in.Set(sx0, y, tui.Cell{Rune: glyph, Style: st})
+						if cellWidth == 2 {
+							in.Set(sx1, y, tui.Cell{Rune: ' ', Style: st})
+						}
+						continue
+					}
+				}
 				bucket := m.proxyGlowBucket(c, now)
 				st := m.proxyCellStyle(c.state, bucket)
 				if ascii && (th.Name != "mono" || layout.sparse) {
@@ -245,6 +255,9 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 			upperState, lowerState := uint8(connect.ProxyCellUp), uint8(connect.ProxyCellUp)
 			var upperBucket, lowerBucket uint8
 			hasUpper, hasLower := false, false
+			var upperFlashing, lowerFlashing bool
+			var upperStatus, lowerStatus string
+			var upperFrac, lowerFrac float64
 
 			for k := 0; k < group; k++ {
 				if ui := upperIdx + k*capacity; upperIdx >= 0 && ui < len(cells) {
@@ -259,6 +272,13 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 					if bucket := m.proxyGlowBucket(cells[ui], now); bucket > worstBucket {
 						worstBucket = bucket
 					}
+					if m.proxyHeatmapStyle == heatmapScan {
+						if st, fr, fl := m.proxyScanFlashState(cells[ui].index, now); fl {
+							if !upperFlashing || fr > upperFrac {
+								upperFlashing, upperStatus, upperFrac = true, st, fr
+							}
+						}
+					}
 				}
 				if li := lowerIdx + k*capacity; lowerIdx >= 0 && li < len(cells) {
 					hasLower = true
@@ -271,6 +291,13 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 					}
 					if bucket := m.proxyGlowBucket(cells[li], now); bucket > worstBucket {
 						worstBucket = bucket
+					}
+					if m.proxyHeatmapStyle == heatmapScan {
+						if st, fr, fl := m.proxyScanFlashState(cells[li].index, now); fl {
+							if !lowerFlashing || fr > lowerFrac {
+								lowerFlashing, lowerStatus, lowerFrac = true, st, fr
+							}
+						}
 					}
 				}
 			}
@@ -292,8 +319,18 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 				continue
 			}
 
-			upperStyle := m.proxyCellStyle(upperState, upperBucket)
-			lowerStyle := m.proxyCellStyle(lowerState, lowerBucket)
+			var upperStyle, lowerStyle tui.Style
+			if upperFlashing {
+				_, upperStyle = m.proxyScanFlashStyle(upperStatus, upperFrac, upperState)
+			} else {
+				upperStyle = m.proxyCellStyle(upperState, upperBucket)
+			}
+			if lowerFlashing {
+				_, lowerStyle = m.proxyScanFlashStyle(lowerStatus, lowerFrac, lowerState)
+			} else {
+				lowerStyle = m.proxyCellStyle(lowerState, lowerBucket)
+			}
+
 			glyph := '▀'
 			if !hasUpper {
 				glyph = '▄'
@@ -302,7 +339,13 @@ func (m *topModel) drawProxyWindow(b *tui.Buffer) {
 			if hasUpper && hasLower {
 				if th.Name == "colorblind" || th.Name == "mono" || upperStyle.FG.Kind == tui.ColorDefault || lowerStyle.FG.Kind == tui.ColorDefault {
 					glyph = '█'
-					upperStyle = st
+					if upperFlashing && (!lowerFlashing || upperFrac >= lowerFrac) {
+						_, upperStyle = m.proxyScanFlashStyle(upperStatus, upperFrac, worst)
+					} else if lowerFlashing {
+						_, upperStyle = m.proxyScanFlashStyle(lowerStatus, lowerFrac, worst)
+					} else {
+						upperStyle = st
+					}
 				} else {
 					upperStyle.BG = lowerStyle.FG
 				}

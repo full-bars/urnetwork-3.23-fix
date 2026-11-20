@@ -247,6 +247,7 @@ type topModel struct {
 	proxyHeatmapStyle     heatmapStyle
 	proxyTimeline         []proxyTimelineSample
 	proxyTimelineGroups   int
+	proxyScanFlashes      map[int]proxyScanFlash
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -884,6 +885,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
+	m.proxyScanFlashes = nil
 	m.proxyDetail = nil
 	m.proxyDetailAt = time.Time{}
 	m.proxyPopup = false
