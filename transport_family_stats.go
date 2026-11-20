@@ -222,14 +222,19 @@ func addrString(addr net.Addr) string {
 
 // addrFamily is 4 or 6 for an address with a literal ip, else 0.
 func addrFamily(addr net.Addr) int {
+	if addr == nil {
+		return 0
+	}
 	var ip net.IP
 	switch a := addr.(type) {
 	case *net.TCPAddr:
 		ip = a.IP
 	case *net.UDPAddr:
 		ip = a.IP
+	case *net.IPAddr:
+		ip = a.IP
 	default:
-		return 0
+		return ipLiteralFamily(addr.String())
 	}
 	if ip == nil {
 		return 0

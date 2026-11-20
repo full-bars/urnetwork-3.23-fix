@@ -510,6 +510,30 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 	}
 
 	conn, err := dialContext(ctx, network, addr)
+	if self.ProxySettings == nil {
+		if err == nil {
+			fam := addrFamily(conn.RemoteAddr())
+			if fam == 0 {
+				fam = dialNamesFamily(network, addr)
+			}
+			globalDirectDualStack.RecordConnect(fam, true, time.Now())
+		} else {
+			fam := dialNamesFamily(network, addr)
+			if fam == 0 {
+				if opErr, ok := err.(*net.OpError); ok && opErr.Addr != nil {
+					fam = addrFamily(opErr.Addr)
+				}
+			}
+			if fam == 0 {
+				if self.DisableIpv4 {
+					fam = 6
+				} else {
+					fam = 4
+				}
+			}
+			globalDirectDualStack.RecordConnect(fam, false, time.Now())
+		}
+	}
 	if log := loggerOrDefault(self.Log).V(2); log.Enabled() {
 		if err == nil {
 			log.Infof("[net]dial %s %s success\n", network, addr)
@@ -764,13 +788,20 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 // returned as is, so a byte is never counted twice, and a nil bw leaves the conn
 // alone.
 func trackDirect(conn net.Conn, bw *ProxyBandwidth) net.Conn {
+	return trackDirectFamily(conn, bw, 0)
+}
+
+func trackDirectFamily(conn net.Conn, bw *ProxyBandwidth, family int) net.Conn {
 	if bw == nil {
 		return conn
 	}
 	if _, ok := conn.(*trackedConn); ok {
 		return conn
 	}
-	return &trackedConn{Conn: conn, bw: bw}
+	if family == 0 {
+		family = addrFamily(conn.RemoteAddr())
+	}
+	return &trackedConn{Conn: conn, bw: bw, isDirect: true, family: family}
 }
 
 type trackedConn struct {
@@ -778,8 +809,10 @@ type trackedConn struct {
 	bw *ProxyBandwidth
 	// attempt, when set, also credits the bytes to the connect attempt that
 	// opened this connection (see attemptStats)
-	attempt *attemptStats
-	once    sync.Once
+	attempt  *attemptStats
+	isDirect bool
+	family   int
+	once     sync.Once
 }
 
 // Read reads from the underlying connection and, when bw is set, credits the
@@ -794,6 +827,9 @@ func (self *trackedConn) Read(b []byte) (n int, err error) {
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.rx.Add(int64(n))
+	}
+	if n > 0 && self.isDirect {
+		globalDirectDualStack.AddRx(self.family, uint64(n))
 	}
 	return
 }
@@ -810,6 +846,9 @@ func (self *trackedConn) Write(b []byte) (n int, err error) {
 	}
 	if n > 0 && self.attempt != nil {
 		self.attempt.tx.Add(int64(n))
+	}
+	if n > 0 && self.isDirect {
+		globalDirectDualStack.AddTx(self.family, uint64(n))
 	}
 	return
 }

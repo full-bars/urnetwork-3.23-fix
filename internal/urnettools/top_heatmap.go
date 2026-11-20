@@ -590,16 +590,26 @@ type ProxyCellTraffic struct {
 	Tx uint64 `json:"tx"`
 }
 
+type ProxyCellFamilyStats struct {
+	ConnectsOK      uint64 `json:"connects_ok"`
+	ConnectsFailed  uint64 `json:"connects_failed"`
+	RxBytes         uint64 `json:"rx_bytes"`
+	TxBytes         uint64 `json:"tx_bytes"`
+	LastSuccessUnix int64  `json:"last_success_unix,omitempty"`
+}
+
 type ProxyCellDetail struct {
-	LifetimeBillable *ProxyCellTraffic `json:"lifetime_billable,omitempty"`
-	LifetimeTotal    *ProxyCellTraffic `json:"lifetime_total,omitempty"`
-	Index            int               `json:"index"`
-	Addr             string            `json:"addr"`
-	State            uint8             `json:"state"`
-	Clients          int64             `json:"clients"`
-	IntervalBytes    uint64            `json:"interval_bytes"`
-	AgeSeconds       int64             `json:"age_seconds"`
-	UDP              string            `json:"udp,omitempty"`
+	LifetimeBillable *ProxyCellTraffic     `json:"lifetime_billable,omitempty"`
+	LifetimeTotal    *ProxyCellTraffic     `json:"lifetime_total,omitempty"`
+	Index            int                   `json:"index"`
+	Addr             string                `json:"addr"`
+	State            uint8                 `json:"state"`
+	Clients          int64                 `json:"clients"`
+	IntervalBytes    uint64                `json:"interval_bytes"`
+	AgeSeconds       int64                 `json:"age_seconds"`
+	UDP              string                `json:"udp,omitempty"`
+	IPv4             *ProxyCellFamilyStats `json:"ipv4,omitempty"`
+	IPv6             *ProxyCellFamilyStats `json:"ipv6,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -701,7 +711,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 	if index == 0 {
 		addr = "direct (this host)"
 	}
-	return []string{
+	lines := []string{
 		fmt.Sprintf("proxy[%d] %s", c.index, addr),
 		fmt.Sprintf("state %s", st),
 		fmt.Sprintf("udp %s", udp),
@@ -711,6 +721,39 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("lifetime total %s", total),
 		fmt.Sprintf("clients attached for %s", age),
 	}
+	if index == 0 {
+		now := time.Now()
+		if m != nil && m.now != nil {
+			now = m.now()
+		}
+		var d ProxyCellDetail
+		if m != nil && m.proxyDetail != nil {
+			d = m.proxyDetail[0]
+		}
+		lines = append(lines,
+			formatProxyFamilyLine("ipv4", d.IPv4, now),
+			formatProxyFamilyLine("ipv6", d.IPv6, now),
+		)
+	}
+	return lines
+}
+
+func formatProxyFamilyLine(name string, f *ProxyCellFamilyStats, now time.Time) string {
+	if f == nil {
+		return fmt.Sprintf("%s ok 0 fail 0  in 0 B out 0 B  last never", name)
+	}
+	last := "never"
+	if f.LastSuccessUnix > 0 {
+		lastTime := time.Unix(f.LastSuccessUnix, 0)
+		if !now.Before(lastTime) {
+			last = tui.Duration(now.Sub(lastTime)) + " ago"
+		} else {
+			last = "0s ago"
+		}
+	}
+	inStr := tui.Bytes(float64(f.RxBytes))
+	outStr := tui.Bytes(float64(f.TxBytes))
+	return fmt.Sprintf("%s ok %d fail %d  in %s out %s  last %s", name, f.ConnectsOK, f.ConnectsFailed, inStr, outStr, last)
 }
 
 // proxyUDPDisplay names a provider UDP check state the way the UDP row does.
@@ -812,10 +855,13 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 			} else {
 				lines = append(lines, info[2:]...)
 			}
+			if len(info) > 8 {
+				lines = append(lines, info[8:]...)
+			}
 		} else if len(info) > 2 {
 			lines[len(lines)-1] += "  " + info[2]
 		}
-		if len(lines) >= 5 {
+		if len(m.proxyPopupIndices) > 1 && len(lines) >= 5 {
 			break
 		}
 	}

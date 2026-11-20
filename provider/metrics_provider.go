@@ -361,6 +361,7 @@ func providerExtraMetrics() string {
 	writeFamilyTransportMetrics(&b)
 	writeH1PlusMetrics(&b)
 	writePeerKeyCrosscheckMetrics(&b)
+	writeDirectFamilyMetrics(&b)
 
 	fmt.Fprintf(&b, "# HELP urnet_info Provider identity: the version label, value always 1.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_info gauge\n")

@@ -38,6 +38,8 @@ type ProxyCellRaw struct {
 	HasBandwidth                             bool
 	Clients                                  int64
 	Age                                      time.Duration
+	DirectIPv4                               *DirectFamilySnapshot
+	DirectIPv6                               *DirectFamilySnapshot
 }
 
 // ProxyCells reads one compact record per registered proxy, index-sorted,
@@ -80,6 +82,12 @@ func ProxyCells(now time.Time) []ProxyCellRaw {
 			c.Total = c.TotalRx + c.TotalTx
 			c.Clients = h.bw.Clients.Load()
 			c.Age = h.bw.MaxAge()
+		}
+		if idx == 0 {
+			v4 := globalDirectDualStack.IPv4.Snapshot()
+			v6 := globalDirectDualStack.IPv6.Snapshot()
+			c.DirectIPv4 = &v4
+			c.DirectIPv6 = &v6
 		}
 		out = append(out, c)
 	}
