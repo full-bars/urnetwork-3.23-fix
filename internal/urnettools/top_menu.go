@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"slices"
 	"strconv"
 
@@ -138,8 +139,15 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 		topMenuGraph:     {"Graph style", m.graph.String()},
 		topMenuAfterglow: {"Dot fade time", strconv.Itoa(seconds) + " s"},
 	}
+	// One hint under the rows says what the selected item changes, in words and
+	// with its current value, so a number such as the fade time explains itself.
+	hints := [topMenuRows][3]string{
+		topMenuTheme:     {"The colors of the whole dashboard.", "", ""},
+		topMenuGraph:     {"The symbols the graphs are drawn with.", "", ""},
+		topMenuAfterglow: {fmt.Sprintf("A bright dot fades out over %d s after", seconds), "its proxy's traffic drops.", "Steady traffic stays lit."},
+	}
 	const w = 46
-	h := topMenuRows + 6
+	h := topMenuRows + 9
 	note := m.menuNote
 	switch {
 	case note != "":
@@ -166,8 +174,14 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 		vx := max(x, 20)
 		in.Put(tui.Truncate(left+r.value+right, max(in.Width()-vx, 0), th.ASCII), vx, i, tui.Style{})
 	}
+	hint := hints[min(max(m.menuSel, 0), topMenuRows-1)]
+	for i, line := range hint {
+		if line != "" {
+			in.Put(tui.Truncate("  "+line, in.Width(), th.ASCII), 0, topMenuRows+i, th.Dim)
+		}
+	}
 	// The palette as the screen will use it: one word per role, in its own style.
-	y := topMenuRows + 1
+	y := topMenuRows + 4
 	x := in.Put("  ", 0, y, tui.Style{})
 	for _, sw := range []struct {
 		word  string

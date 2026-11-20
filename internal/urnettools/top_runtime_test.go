@@ -628,6 +628,7 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 	}{
 		{"top_internals_120x40", 120, 40, func(m *topModel) {}},
 		{"top_goroutines_120x40", 120, 40, func(m *topModel) {
+			m.withInternals = true // a drawn frame found room for the panel
 			pressKey(m, 'g')
 			m.applyGroups(0, &GoroutineGroups{Total: 1168, Groups: []GoroutineGroup{
 				{"github.com/urnetwork/connect.(*Client).run", 640},
@@ -636,7 +637,7 @@ func TestTopInternalsGoldenScreens(t *testing.T) {
 				{"net/http.(*persistConn).readLoop", 98},
 			}}, nil)
 		}},
-		{"top_goroutines_collecting_120x40", 120, 40, func(m *topModel) { pressKey(m, 'g') }},
+		{"top_goroutines_collecting_120x40", 120, 40, func(m *topModel) { m.withInternals = true; pressKey(m, 'g') }},
 		// H3 up beside H1 and carrying a fifth of the outbound payload: the
 		// panel gains the transport rows.
 		{"top_transport_120x40", 120, 40, func(m *topModel) {

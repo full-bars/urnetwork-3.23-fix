@@ -30,9 +30,19 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 	// While the help overlay is up, a click closes it and nothing else
 	// happens, like Esc.
 	if m.help || m.panel != "" {
-		if ev.Action == tcellui.MousePress {
+		switch {
+		case ev.Action == tcellui.MousePress:
 			m.help = false
+			if m.panel == "goroutines" {
+				m.rt.showing = false
+			}
 			m.panel = ""
+		case ev.Action == tcellui.MouseWheel && m.panel == "goroutines" && m.rt.groups != nil:
+			dir := 1
+			if ev.Button == tcellui.MouseWheelUp {
+				dir = -1
+			}
+			m.gorScroll = min(max(m.gorScroll+dir, 0), max(0, len(m.rt.groups.Groups)-m.gorHeight))
 		}
 		return topNone
 	}

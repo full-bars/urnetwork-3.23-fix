@@ -5,11 +5,14 @@ import "github.com/urnetwork/connect/internal/tui"
 // drawDetails shows the selected diagnostics without changing the panel layout.
 func (m *topModel) drawDetails(b *tui.Buffer) {
 	w, h := min(b.Width(), 76), min(b.Height(), 18)
+	if m.panel == "goroutines" {
+		w, h = min(b.Width(), 100), min(b.Height(), 30)
+	}
 	if w < 4 || h < 4 {
 		return
 	}
 	r := tui.Rect{X: (b.Width() - w) / 2, Y: (b.Height() - h) / 2, W: w, H: h}
-	title := map[string]string{"alerts": "Alerts", "gauges": "Resource gauges", "carriers": "Extender carriers"}[m.panel]
+	title := map[string]string{"alerts": "Alerts", "gauges": "Resource gauges", "carriers": "Extender carriers", "goroutines": "Goroutines"}[m.panel]
 	in := tui.DrawBox(b.Sub(r), title, m.theme.Frame, m.theme.Border, m.theme.Accent, m.theme.ASCII)
 	in.Fill(in.Rect(), ' ', tui.Style{})
 	if in.Height() < 2 {
@@ -27,6 +30,8 @@ func (m *topModel) drawDetails(b *tui.Buffer) {
 		m.drawGauges(content)
 	case "carriers":
 		m.drawCarriers(content)
+	case "goroutines":
+		m.drawGoroutineGroups(content)
 	}
 	in.Put("Esc closes", 0, in.Height()-1, m.theme.Dim)
 }

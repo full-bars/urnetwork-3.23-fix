@@ -92,11 +92,14 @@ func TestGraphAxisFollowsVisibleColumns(t *testing.T) {
 	if scale.top > 16<<20 {
 		t.Fatalf("the axis is held at %.0f MiB/s by a burst that is not on screen", scale.top/(1<<20))
 	}
-	// A burst on screen still raises it at once.
-	samples[len(samples)-3] = 40 << 20
+	// A rise that fills a tenth of the columns on screen raises it at once. A
+	// single spike would be clipped instead (TestGraphAxisIgnoresAShortBurst).
+	for i := len(samples) - 16; i < len(samples); i++ {
+		samples[i] = 40 << 20
+	}
 	draw()
 	if scale.top < 40<<20 {
-		t.Fatalf("a visible 40 MiB/s burst does not fit: axis %.0f MiB/s", scale.top/(1<<20))
+		t.Fatalf("a visible 40 MiB/s rise does not fit: axis %.0f MiB/s", scale.top/(1<<20))
 	}
 }
 
@@ -167,5 +170,50 @@ func TestHoverSignatureChangesOnlyWhenTheHoverDoes(t *testing.T) {
 	move(12, 2)
 	if m.hoverSignature() == first {
 		t.Fatal("moving to another region did not change the hover signature")
+	}
+}
+
+// A few seconds of burst, such as every proxy connecting after a restart, must
+// not hold the axis so high that the steady traffic draws one pixel high. The
+// burst is clipped and its real height is noted.
+func TestGraphAxisIgnoresAShortBurst(t *testing.T) {
+	if got := robustPeak(append(make([]float64, 0), 1, 2, 3)); got != 3 {
+		t.Fatalf("a short series uses its highest value, got %v", got)
+	}
+	samples := make([]float64, 300)
+	for i := range samples {
+		samples[i] = float64(1<<20) * (0.8 + 0.4*float64(i%5)/4) // about 1 MiB/s
+	}
+	for i := 100; i < 106; i++ {
+		samples[i] = 160 << 20 // six seconds of 160 MiB/s
+	}
+	if peak := robustPeak(samples); peak > 2<<20 {
+		t.Fatalf("the axis peak is %.1f MiB/s, a six second burst set it", peak/(1<<20))
+	}
+	// a sustained rise is not a burst
+	for i := 100; i < 200; i++ {
+		samples[i] = 50 << 20
+	}
+	if peak := robustPeak(samples); peak < 50<<20 {
+		t.Fatalf("a sustained 50 MiB/s rise was treated as a burst: peak %.1f MiB/s", peak/(1<<20))
+	}
+}
+
+func TestClippedGraphNamesItsRealPeak(t *testing.T) {
+	m := topHeatGridModel(t, tui.DefaultTheme(), 1)
+	m.now = (&fakeClock{t: topBase}).Now
+	samples := make([]float64, 200)
+	for i := range samples {
+		samples[i] = 1 << 20
+	}
+	samples[50] = 160 << 20
+	b := tui.New(60, 8)
+	m.drawGraph(b, topSeries{}, samples, &topScale{}, 0, tui.Style{})
+	var text strings.Builder
+	for x := 0; x < b.Width(); x++ {
+		text.WriteRune(b.Cell(x, 0).Rune)
+	}
+	if !strings.Contains(text.String(), "clipped, peak 160") {
+		t.Fatalf("the first row does not name the clipped peak: %q", text.String())
 	}
 }

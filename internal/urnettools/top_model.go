@@ -698,6 +698,9 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return topQuit
 		case tcellui.KeyEsc:
 			if m.panel != "" {
+				if m.panel == "goroutines" {
+					m.rt.showing = false
+				}
 				m.panel = ""
 				return topNone
 			}
@@ -757,7 +760,18 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			// Only where the provider can answer; the list is fetched on the
 			// next loop turn.
 			if m.rt.gOK && m.rt.ok {
-				m.rt.showing = !m.rt.showing
+				switch {
+				case m.panel == "goroutines":
+					m.panel, m.rt.showing = "", false
+				case m.withInternals:
+					// The Internals panel is on screen: the list replaces its rows.
+					m.rt.showing = !m.rt.showing
+				default:
+					// No room for the Internals panel, so the list opens as an
+					// overlay like the alerts and the gauges. Without this the
+					// key flipped a hidden switch and nothing showed.
+					m.panel, m.rt.showing = "goroutines", true
+				}
 				m.rt.gLast = time.Time{}
 			}
 		}

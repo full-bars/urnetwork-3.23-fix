@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
@@ -384,9 +385,16 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	// burst that has scrolled off the left edge no longer holds the axis high.
 	// The held scale still rises at once and comes down only after the peak
 	// has stayed low for a while.
-	peak := seriesPeak(samples)
+	// A few seconds of burst, such as every proxy connecting after a restart,
+	// would otherwise hold the axis so high that the steady traffic draws one
+	// pixel high. When the peak is more than four times the 90th percentile the
+	// axis follows the percentile, the burst is clipped at the top of the plot,
+	// and a note gives its real height.
+	truePeak := seriesPeak(samples)
+	peak := robustPeak(samples)
 	if sr.live && tail > peak {
 		peak = tail
+		truePeak = max(truePeak, tail)
 	}
 	top := 0.0
 	if scale != nil {
@@ -400,6 +408,35 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 		Samples: samples, Binary: !tui.DecimalUnits(), Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
 		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top, Symbols: m.graph,
 	}, th.ASCII)
+	if truePeak > top {
+		note := "clipped, peak " + tui.RateShort(truePeak)
+		if x := tui.StringWidth(tui.RateShort(top)) + 2; b.Width() > x+tui.StringWidth(note) {
+			b.Put(note, x, 0, th.Dim)
+		}
+	}
+}
+
+// robustPeak is the axis peak of a series: its highest value, unless a short
+// burst dominates it. A peak over four times the 90th percentile of the values
+// is a burst, and the percentile is returned instead. Short series and series
+// that are mostly zero use their highest value.
+func robustPeak(samples []float64) float64 {
+	values := make([]float64, 0, len(samples))
+	for _, v := range samples {
+		if v > 0 {
+			values = append(values, v)
+		}
+	}
+	if len(values) < 30 {
+		return seriesPeak(samples)
+	}
+	sort.Float64s(values)
+	peak := values[len(values)-1]
+	p90 := values[(len(values)-1)*9/10]
+	if p90 > 0 && peak > 4*p90 {
+		return p90
+	}
+	return peak
 }
 
 // hasTraffic reports whether the provider sends billable-versus-total figures.
