@@ -2,11 +2,13 @@ package main
 
 import (
 	"encoding/json"
+	"errors"
 	"os"
 	"path/filepath"
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
@@ -47,6 +49,22 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 	const index = 991733
 	connect.RegisterProxy(index, address, address)
 	defer connect.UnregisterProxy(index)
+	connect.RecordProxyAuthFailure(index, errors.New(address))
+	report := connect.ProxyHealthHeartbeat(true)
+	now := time.Now()
+	for _, cell := range connect.ProxyCells(now) {
+		if cell.Index == index {
+			report.NewlyDead = append(report.NewlyDead, connect.ProxyEvent{Index: index, Address: cell.Addr})
+		}
+	}
+	writeProxyHealthState(home, report, now)
+	writeProxyTrafficState(home, report, now)
+	writeProxyHealthEvents(home, report, now)
+	resetProxyAuditStatus(t)
+	key := identityKey("example.com:1080?token="+canaryToken, canaryUser)
+	h := newGovHarness(key)
+	h.act = true
+	h.twoBadTicks(key)
 
 	// Collect all control reply output
 	var controlBuilder strings.Builder
