@@ -71,7 +71,7 @@ func TestProxyGridDisplayWidth(t *testing.T) {
 				// This adds the difference to the renderer's own width, rather
 				// than counting bytes or trusting the buffer's clipped size.
 				for _, r := range line {
-					if width.LookupRune(r).Kind() == width.EastAsianAmbiguous && r != '▀' && r != '▄' && r != '█' {
+					if width.LookupRune(r).Kind() == width.EastAsianAmbiguous && r != '▀' && r != '▄' && r != '█' && r != '★' {
 						actual += 2 - tui.RuneWidth(r)
 					}
 				}

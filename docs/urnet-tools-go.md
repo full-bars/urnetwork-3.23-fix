@@ -258,7 +258,7 @@ Hovering over any element on the `top` screen (or tapping on a touch screen) ope
 - **Timeline Heatmap (`timeline`)**: Chronological activity bars tracking client session distribution. Highlights recently active proxies against idle pool capacity.
 
 ### Legend and layout
-- **Direct Path (`legend:direct`)**: Local host network interface (proxy slot 0). Routes client traffic directly through host egress without a proxy.
+- **Direct Path (`legend:direct`)**: Local host network interface (proxy slot 0, drawn as a star). Routes client traffic directly through host egress without a proxy.
 - **Up Count (`legend:up`)**: Count of healthy, verified proxies ready for client traffic.
 - **Dropped Count (`legend:dropped`)**: Count of degraded proxies recovering from dropped connections.
 - **Connecting Count (`legend:connecting`)**: Count of proxies actively establishing upstream connections.

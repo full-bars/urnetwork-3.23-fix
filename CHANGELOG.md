@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Render the direct provider slot as a dedicated star cell in top heatmaps and label it in the legend.
 - Added hover and touch explainer tooltips for all top screen components, metrics, states and keys.
 - Added a reference glossary of top screen components and controls to the documentation.
 - Added split upload and download graphs in urnet-tools top, drawing download above the center baseline and upload mirrored below it.

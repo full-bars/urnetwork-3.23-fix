@@ -11,19 +11,34 @@ import (
 func TestProxyPopupMouseDenseAndLeave(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
 	m.proxyCells = makeProxyCells([]uint8{connect.ProxyCellUp, connect.ProxyCellDead})
-	m.proxyDetail = map[int]ProxyCellDetail{1: {Index: 1, Addr: "proxy.example:1080"}}
-	b := tui.New(1, 2)
+	m.proxyDetail = map[int]ProxyCellDetail{
+		0: {Index: 0},
+		1: {Index: 1, Addr: "proxy.example:1080"},
+	}
+	b := tui.New(2, 2)
 	m.drawProxyGrid(b)
 	m.proxyPopupRect = tui.Rect{X: 2, Y: 2, W: 45, H: 6}
+	// Direct slot (0, 0) at x=2, y=2:
 	m.mouseHandle(mouseEv(tcellui.MouseMove, tcellui.MouseNone, 2, 2))
-	if !m.proxyPopup || len(m.proxyPopupIndices) != 2 || m.proxyPopupIndices[0] != 0 || m.proxyPopupIndices[1] != 1 {
-		t.Fatalf("popup indices: %v", m.proxyPopupIndices)
+	if !m.proxyPopup || len(m.proxyPopupIndices) != 1 || m.proxyPopupIndices[0] != 0 {
+		t.Fatalf("direct popup indices: %v", m.proxyPopupIndices)
 	}
 	frame := tui.New(50, 10)
 	m.drawProxyPopup(frame)
-	if s := frame.String(); !strings.Contains(s, "direct (this host)") || !strings.Contains(s, "proxy.example") {
-		t.Fatalf("popup: %s", s)
+	if s := frame.String(); !strings.Contains(s, "direct (this host)") {
+		t.Fatalf("direct popup missing this host: %s", s)
 	}
+	// Proxy 1 at x=3, y=2:
+	m.mouseHandle(mouseEv(tcellui.MouseMove, tcellui.MouseNone, 3, 2))
+	if !m.proxyPopup || len(m.proxyPopupIndices) != 1 || m.proxyPopupIndices[0] != 1 {
+		t.Fatalf("proxy 1 popup indices: %v", m.proxyPopupIndices)
+	}
+	frame = tui.New(50, 10)
+	m.drawProxyPopup(frame)
+	if s := frame.String(); !strings.Contains(s, "proxy.example") {
+		t.Fatalf("proxy 1 popup missing addr: %s", s)
+	}
+	// Mouse leaving closes popup:
 	m.mouseHandle(mouseEv(tcellui.MouseMove, tcellui.MouseNone, 49, 9))
 	if m.proxyPopup {
 		t.Fatal("popup stayed open")
@@ -40,8 +55,13 @@ func TestProxyPopupMouseDenseAndLeave(t *testing.T) {
 
 func TestProxyPopupSmallBoundsAndGrouped(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
-	m.proxyCells = makeProxyCells(repeatState(connect.ProxyCellUp, 10))
-	m.proxyCells[8].state = connect.ProxyCellDead
+	// 10 proxies without direct slot (indices 1..10)
+	cells := make([]proxyCell, 10)
+	for i := range cells {
+		cells[i] = proxyCell{index: i + 1, state: connect.ProxyCellUp}
+	}
+	cells[7].state = connect.ProxyCellDead // proxy 8
+	m.proxyCells = cells
 	m.drawProxyGrid(tui.New(1, 2))
 	m.proxyPopupRect = tui.Rect{X: 1, Y: 1, W: 3, H: 3}
 	if !m.proxyPopupAt(1, 1) || len(m.proxyPopupIndices) != 10 || m.proxyPopupIndices[0] != 8 {
@@ -93,7 +113,8 @@ func TestProxyPopupRejectsCredentialsFromOldProvider(t *testing.T) {
 
 func TestProxyHeatmapDenseHalfStyles(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
-	m.proxyCells = makeProxyCells([]uint8{connect.ProxyCellUp, connect.ProxyCellDead})
+	// Proxies 1 and 2 (dense half dots, neither is direct slot)
+	m.proxyCells = []proxyCell{{index: 1, state: connect.ProxyCellUp}, {index: 2, state: connect.ProxyCellDead}}
 	b := tui.New(1, 2)
 	m.drawProxyGrid(b)
 	c := b.Cell(0, 0)
@@ -108,6 +129,23 @@ func TestProxyHeatmapDenseHalfStyles(t *testing.T) {
 		if c := b.Cell(0, 0); c.Rune != '█' {
 			t.Fatalf("%s dense cell: %+v", name, c)
 		}
+	}
+
+	// When direct slot (index 0) is present, cell (0, 0) is a full cell star
+	m.theme = tui.DefaultTheme()
+	m.proxyCells = []proxyCell{{index: 0, state: connect.ProxyCellUp}, {index: 1, state: connect.ProxyCellDead}}
+	b = tui.New(1, 2)
+	m.drawProxyGrid(b)
+	if c := b.Cell(0, 0); c.Rune != '★' || c.Style.FG != m.proxyCellStyle(connect.ProxyCellUp, 0).FG {
+		t.Fatalf("direct star cell: %+v", c)
+	}
+	// ASCII fallback: '*' bold
+	thMono, _ := tui.ThemeByName("mono")
+	m.theme = thMono
+	b = tui.New(1, 2)
+	m.drawProxyGrid(b)
+	if c := b.Cell(0, 0); c.Rune != '*' || c.Style.Attrs&tui.AttrBold == 0 {
+		t.Fatalf("mono star cell: %+v", c)
 	}
 }
 
