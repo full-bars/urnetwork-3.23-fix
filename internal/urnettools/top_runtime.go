@@ -199,6 +199,27 @@ func (z *topZoom) grid() (billable, total []float64, anchor int64) {
 	return billable, total, anchor
 }
 
+// resample places each measured interval on the fixed fifteen-second plot.
+func (z *topZoom) resample(values []float64, columns int) []float64 {
+	if columns <= 0 || len(z.at) == 0 || len(values) != len(z.at) {
+		return nil
+	}
+	out := make([]float64, columns)
+	end := z.at[len(z.at)-1]
+	i := 0
+	for col := range out {
+		out[col] = math.NaN()
+		at := end - int64(topZoomWindow) + int64((float64(col)+0.5)*float64(topZoomWindow)/float64(columns))
+		for i < len(z.at) && z.at[i] < at {
+			i++
+		}
+		if i < len(z.at) && at >= z.at[i]-int64(z.spans[i]) {
+			out[col] = values[i]
+		}
+	}
+	return out
+}
+
 func (m *topModel) zoomCapacity() int {
 	return int(topZoomWindow / topMinInterval)
 }

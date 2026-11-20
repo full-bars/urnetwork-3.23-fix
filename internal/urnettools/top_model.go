@@ -947,15 +947,10 @@ func (m *topModel) series() topSeries {
 		// The time grid keeps readings aligned across interval changes.
 		out.zoom, out.capacity = true, m.zoomCapacity()
 		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
-		var total []float64
-		if m.interval <= time.Second {
-			out.billable, total, out.anchor = m.zoom.billable, m.zoom.total, m.zoom.seq
-			out.spans, out.columns = m.zoom.spans, true
-		} else {
-			out.billable, total, out.anchor = m.zoom.grid()
-		}
+		out.billable = m.zoom.billable
+		out.spans, out.columns = m.zoom.spans, true
 		if m.snap.Traffic != nil {
-			out.total = append([]float64{}, total...)
+			out.total = append([]float64{}, m.zoom.total...)
 		}
 		return out
 	}

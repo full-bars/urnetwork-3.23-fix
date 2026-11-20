@@ -18,6 +18,11 @@ const topTick = topMinInterval
 // topMinFrame is the shortest time between two redraws, 20 frames a second.
 const topMinFrame = 50 * time.Millisecond
 
+// proxyCellsDue limits slow refresh settings to a one-second cell cadence.
+func proxyCellsDue(now, last time.Time, interval time.Duration) bool {
+	return last.IsZero() || now.Sub(last) >= min(interval, time.Second)
+}
+
 // topResult is one finished fetch, tagged with the selection it was for. A
 // traffic result carries the light live counters instead of a snapshot.
 type topResult struct {
@@ -117,6 +122,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 	var proxyBusy bool
+	var lastProxyFetch time.Time
+	lastProxyGen := -1
 	fetchCells := func(gen int, p Provider) {
 		proxyBusy = true
 		go func() {
@@ -251,8 +258,12 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}
 		if gen, p, ok := m.wantFetch(m.now()); ok {
 			fetch(gen, p)
-			if _, ok := src.(socketTopSource); ok && !proxyBusy {
-				fetchCells(gen, p)
+		}
+		if _, ok := src.(socketTopSource); ok && !proxyBusy && m.cur >= 0 && m.cur < len(m.providers) && m.conn != topDisconnected {
+			now := m.now()
+			if lastProxyGen != m.gen || lastProxyFetch.IsZero() || proxyCellsDue(now, lastProxyFetch, m.interval) {
+				lastProxyFetch, lastProxyGen = now, m.gen
+				fetchCells(m.gen, m.providers[m.cur])
 			}
 		}
 		if hasTraffic {

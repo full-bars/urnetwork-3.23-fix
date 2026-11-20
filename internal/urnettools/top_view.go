@@ -374,7 +374,11 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	if m.conn == topDisconnected {
 		style = th.Dim
 	}
-	if sr.columns {
+	if sr.zoom {
+		n := m.graphColumns(b.Width(), samples, scale)
+		samples = m.zoom.resample(samples, n)
+		sr.anchor, sr.capacity = 0, len(samples)
+	} else if sr.columns {
 		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
 		samples = samples[len(samples)-n:]
 		sr.anchor, sr.capacity = 0, len(samples)

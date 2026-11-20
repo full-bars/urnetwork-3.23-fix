@@ -242,7 +242,7 @@ func TestProxyCellInfoFromDetail(t *testing.T) {
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients 4", "traffic, last second 1048576", "age 1h"} {
+	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients 4", "traffic, last second 1048576", "clients attached for 1h"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxyCellInfo missing %q:\n%s", want, joined)
 		}
@@ -260,7 +260,7 @@ func TestProxyCellInfoWithoutDetailShowsUnknown(t *testing.T) {
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"proxy[0] direct (this host)", "state up", "age ?"} {
+	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients attached for ?"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxyCellInfo missing %q:\n%s", want, joined)
 		}
@@ -405,5 +405,16 @@ func TestTopProxyGridSmallGoldens(t *testing.T) {
 				assertGolden(t, name, got)
 			})
 		}
+	}
+}
+
+func TestProxyCellAttachmentDuration(t *testing.T) {
+	m := &topModel{proxyCells: []proxyCell{{index: 1}}, proxyDetail: map[int]ProxyCellDetail{1: {Clients: 0, AgeSeconds: 0}}}
+	if got := strings.Join(m.proxyCellInfo(1), "\n"); !strings.Contains(got, "clients attached for idle") {
+		t.Fatalf("idle detail: %s", got)
+	}
+	m.proxyDetail[1] = ProxyCellDetail{Clients: 1, AgeSeconds: 0}
+	if got := strings.Join(m.proxyCellInfo(1), "\n"); !strings.Contains(got, "clients attached for 0s") {
+		t.Fatalf("attached detail: %s", got)
 	}
 }

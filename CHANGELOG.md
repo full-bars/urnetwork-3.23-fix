@@ -2,6 +2,10 @@
 
 ## [Unreleased]
 
+- Made zoomed graphs use the available plot width.
+- Clarified the proxy popup attachment duration and idle state.
+- Increased heatmap fade contrast and refreshed proxy cells at least once per second when requests complete in time.
+
 ## [v3.23.0-fix.36.0] - 2026-11-20
 
 Everything merged after `v3.23.0-fix.35.11`.

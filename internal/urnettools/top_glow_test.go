@@ -114,3 +114,19 @@ func TestProxyAfterglowMenuPersists(t *testing.T) {
 		t.Fatalf("saved afterglow = %d, want 6", got)
 	}
 }
+
+func TestProxyCellsDue(t *testing.T) {
+	for _, tc := range []struct {
+		interval, elapsed time.Duration
+		want              bool
+	}{
+		{100 * time.Millisecond, 99 * time.Millisecond, false},
+		{100 * time.Millisecond, 100 * time.Millisecond, true},
+		{5 * time.Second, 999 * time.Millisecond, false},
+		{5 * time.Second, time.Second, true},
+	} {
+		if got := proxyCellsDue(topBase.Add(tc.elapsed), topBase, tc.interval); got != tc.want {
+			t.Errorf("interval %s elapsed %s: got %v", tc.interval, tc.elapsed, got)
+		}
+	}
+}

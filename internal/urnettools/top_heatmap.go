@@ -399,9 +399,9 @@ func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 		return st
 	}
 	ramp := []tui.Color{
-		th.OK.FG,
+		tui.Xterm(22),
 		tui.Xterm(28), tui.Xterm(34), tui.Xterm(40), tui.Xterm(46),
-		tui.Xterm(48), tui.Xterm(49), tui.Xterm(86),
+		tui.Xterm(48), tui.Xterm(49), tui.Xterm(121),
 	}
 	if int(bucket) >= len(ramp) {
 		bucket = uint8(len(ramp) - 1)
@@ -496,7 +496,7 @@ func (m *topModel) proxyCellFirstAt(x, y int) (int, bool) {
 }
 
 // proxyCellInfo builds the detail lines for one proxy index: address, state,
-// clients, bytes in the interval, age. Reads the model's detail map; a proxy
+// clients, traffic and attachment duration. Reads the model's detail map; a proxy
 // the detail fetch has not seen reads "?" for the fields only detail carries.
 // Pure: reads only the model.
 func (m *topModel) proxyCellInfo(index int) []string {
@@ -519,7 +519,11 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		addr = proxyDisplayAddress(d.Addr)
 		intervalBytes = fmt.Sprint(d.IntervalBytes)
 		clients = d.Clients
-		age = tui.Duration(time.Duration(d.AgeSeconds) * time.Second)
+		if d.Clients == 0 {
+			age = "idle"
+		} else {
+			age = tui.Duration(time.Duration(d.AgeSeconds) * time.Second)
+		}
 		udp = proxyUDPDisplay(d.UDP)
 		if d.LifetimeBillable != nil {
 			billable = fmt.Sprintf("in %s out %s", tui.Bytes(float64(d.LifetimeBillable.Rx)), tui.Bytes(float64(d.LifetimeBillable.Tx)))
@@ -539,7 +543,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("traffic, last second %s", intervalBytes),
 		fmt.Sprintf("lifetime billable %s", billable),
 		fmt.Sprintf("lifetime total %s", total),
-		fmt.Sprintf("age %s", age),
+		fmt.Sprintf("clients attached for %s", age),
 	}
 }
 

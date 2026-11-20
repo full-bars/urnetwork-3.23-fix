@@ -55,13 +55,13 @@ func getProxyCellStore() *proxyCellStore {
 	return proxyCellStore_
 }
 
-// proxyCellDetail is the hover/popup record for one proxy. Built only on
-// demand; the grid poll never pays for it.
+// proxyCellTraffic holds lifetime byte counters for a proxy.
 type proxyCellTraffic struct {
 	Rx uint64 `json:"rx"`
 	Tx uint64 `json:"tx"`
 }
 
+// proxyCellDetail is the hover record for one proxy, built on demand.
 type proxyCellDetail struct {
 	LifetimeBillable *proxyCellTraffic `json:"lifetime_billable,omitempty"`
 	LifetimeTotal    *proxyCellTraffic `json:"lifetime_total,omitempty"`
