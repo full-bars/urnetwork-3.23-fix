@@ -39,6 +39,7 @@ var (
 
 // updateConfig holds the release metadata for the update command.
 type updateConfig struct {
+	NoUTAlias bool
 	// Tag is the release tag to install, e.g. "v3.23.0-fix.26.8".
 	Tag string
 	// Digest is the sha256 of the release tarball asset (hex). When empty,
@@ -153,6 +154,8 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 			}
 			exclude = splitLabels(rest[i+1])
 			i++
+		case "--no-ut-alias":
+			cfg.NoUTAlias = true
 		case "--all", "-all":
 			all = true
 		default:
@@ -458,6 +461,8 @@ func cmdSelfUpdate(args []string, force, dryRun bool) error {
 	cfg := updateConfig{}
 	for i := 0; i < len(args); i++ {
 		switch args[i] {
+		case "--no-ut-alias":
+			cfg.NoUTAlias = true
 		case "--tag":
 			if i+1 >= len(args) {
 				return fmt.Errorf("--tag requires a value")
@@ -1648,6 +1653,7 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 	// release digest BEFORE downloading (no point re-downloading ourselves).
 	if cur, err := fileSHA256(exePath); err == nil && strings.EqualFold(cur, cfg.ToolDigest) {
 		fmt.Printf("tool %s already on %s\n", cfg.ToolAsset, cfg.Tag)
+		updateUTSymlink(exePath, cfg)
 		return nil
 	}
 
@@ -1722,6 +1728,7 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		}
 	}
 	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
+	updateUTSymlink(exePath, cfg)
 	return nil
 }
 
