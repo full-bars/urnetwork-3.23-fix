@@ -443,6 +443,8 @@ type ProxyCellDetail struct {
 	UDP              string            `json:"udp,omitempty"`
 	TCPExit          string            `json:"tcp_exit,omitempty"`
 	UDPExit          string            `json:"udp_exit,omitempty"`
+	IPv6             string            `json:"ipv6,omitempty"`
+	IPv6Exit         string            `json:"ipv6_exit,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -552,6 +554,15 @@ func (m *topModel) proxyCellInfo(index int) []string {
 				}
 				lines = append(lines, fmt.Sprintf("%s exit (%s) %s", exit.name, family, ip.String()))
 			}
+		}
+		st := d.IPv6
+		if st == "" {
+			st = "unknown"
+		}
+		if d.IPv6Exit != "" {
+			lines = append(lines, fmt.Sprintf("IPv6 exit: %s (%s)", st, d.IPv6Exit))
+		} else {
+			lines = append(lines, fmt.Sprintf("IPv6 exit: %s", st))
 		}
 	}
 	return lines

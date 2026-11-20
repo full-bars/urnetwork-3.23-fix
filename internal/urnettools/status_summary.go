@@ -78,6 +78,9 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 		}
 		rows = append(rows, statusRow{"UDP", level, statusUDPText(u)})
 	}
+	if s != nil && s.Proxies.IPv6 != nil {
+		rows = append(rows, statusRow{"IPv6", statusOK, statusIPv6Text(s.Proxies.IPv6)})
+	}
 	extender := statusRow{"Extender", statusUnknown, "unavailable"}
 	if e.Known {
 		extender.Level, extender.Text = statusOK, "off"
@@ -133,6 +136,26 @@ func statusUDPText(u *SnapshotProxyUDP) string {
 		text += fmt.Sprintf(" (%d%% of checked)", u.OK*100/checked)
 	}
 	return text
+}
+
+// statusIPv6Text is the IPv6 row of the summary.
+func statusIPv6Text(v6 *SnapshotProxyIPv6) string {
+	parts := []string{
+		fmt.Sprintf("%d yes", v6.Yes),
+		fmt.Sprintf("%d no", v6.No),
+		fmt.Sprintf("%d unknown", v6.Unknown),
+	}
+	if v6.NotProbed > 0 {
+		parts = append(parts, fmt.Sprintf("%d not probed", v6.NotProbed))
+	}
+	udpParts := []string{fmt.Sprintf("%d yes", v6.UDPYes)}
+	if v6.UDPNo > 0 {
+		udpParts = append(udpParts, fmt.Sprintf("%d no", v6.UDPNo))
+	}
+	if v6.UDPUnknown > 0 {
+		udpParts = append(udpParts, fmt.Sprintf("%d unknown", v6.UDPUnknown))
+	}
+	return fmt.Sprintf("IPv6 proxies: %s (udp: %s)", strings.Join(parts, ", "), strings.Join(udpParts, ", "))
 }
 
 // formatStatusSummary formats the one-screen summary into a string buffer:

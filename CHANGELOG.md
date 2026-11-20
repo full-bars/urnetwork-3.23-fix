@@ -3,6 +3,8 @@
 ## [Unreleased]
 
 - Show cached proxy TCP and UDP exit addresses in the local popup.
+- Proxy IPv6 capability probing. The background sweep checks proxies for IPv6 egress alongside the UDP relay check, controlled live by the `proxy_ipv6_probe` key and `URNETWORK_PROXY_IPV6_PROBE` environment variable.
+- Status, top and metrics report IPv6 proxy counts and UDP relay capability. The top proxy popup displays IPv6 exit status and exit address.
 
 ## [v3.23.0-fix.36.0] - 2026-11-20
 
