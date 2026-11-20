@@ -650,6 +650,10 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	if b.Height() > 4 {
 		m.drawUDPProxyCoverage(b, 4)
 	}
+	// Legend row: non-Glow heatmap styles show the style name.
+	if m.proxyHeatmapStyle != heatmapGlow && gridH > 1 {
+		b.Put(m.proxyHeatmapStyle.String(), 0, gridH, th.Dim)
+	}
 }
 
 func (m *topModel) drawEvents(b *tui.Buffer) {
@@ -1036,7 +1040,7 @@ var helpLines = []string{
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"u                switch units between GiB (binary) and GB (decimal)",
-	"m                menu: color theme and graph style",
+	"m                menu: color theme, graph style and heatmap style",
 	"M                mouse on/off (Shift+drag selects text in most terminals)",
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
@@ -1052,6 +1056,7 @@ var helpLines = []string{
 	"Mono uses blocks. Colorblind uses blocks and the worst state style.",
 	"Colorblind uses bold and dim. Hover for each state.",
 	"ASCII uses symbols for state and activity.",
+	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.",
 }
 
 // drawHelp draws the key reference centered over whatever is on screen.

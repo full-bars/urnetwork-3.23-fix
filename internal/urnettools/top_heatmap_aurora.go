@@ -48,14 +48,13 @@ func (m *topModel) drawProxyAurora(b *tui.Buffer) {
 			s := sums[x*groups/w]
 			wave := (math.Sin(float64(x)*0.17+float64(y)*0.42-phase) + 1) / 2
 			level := min(3, int(wave*1.5+float64(s.bucket)/3))
-			glyph := []rune{'░', '▒', '▓', '█'}[level]
+			var glyph rune
 			if m.theme.ASCII {
 				glyph = []rune{'.', ':', '+', '#'}[level]
-			}
-			if m.theme.Name == "colorblind" || m.theme.Name == "mono" {
-				if s.state != connect.ProxyCellUp {
-					glyph = proxyCellASCII(s.state)
-				}
+			} else if m.theme.Name == "mono" || m.theme.Name == "colorblind" {
+				glyph = proxyCellASCII(s.state)
+			} else {
+				glyph = []rune{'░', '▒', '▓', '█'}[level]
 			}
 			b.Set(x, y, tui.Cell{Rune: glyph, Style: m.proxyCellStyle(s.state, uint8(level*2))})
 		}

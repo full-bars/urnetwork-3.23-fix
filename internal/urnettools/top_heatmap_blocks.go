@@ -48,7 +48,10 @@ func (m *topModel) drawProxyBlocks(b *tui.Buffer) {
 			c := cells[start+p*(end-start)/area]
 			bucket := m.proxyGlowBucket(c, now)
 			glyph := []rune{'░', '▒', '▓', '█'}[min(3, int(bucket)/2)]
-			if m.theme.ASCII || m.theme.Name == "mono" || m.theme.Name == "colorblind" {
+			if m.theme.ASCII {
+				glyph = []rune{'.', ':', '+', '#'}[min(3, int(bucket)/2)]
+			}
+			if m.theme.Name == "mono" || m.theme.Name == "colorblind" {
 				glyph = proxyCellASCII(c.state)
 			}
 			b.Set(x0+p%(x1-x0), y0+1+p/(x1-x0), tui.Cell{Rune: glyph, Style: m.proxyCellStyle(c.state, bucket)})
