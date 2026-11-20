@@ -619,9 +619,9 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	if m.hasProxyGridData() && proxiesBoxMode(gridH, b.Width()) == proxyBoxGrid {
 		if m.snap.Proxies.UDP == nil {
-			m.drawProxyGrid(b)
+			m.drawProxyHeatmap(b)
 		} else {
-			m.drawProxyGrid(b.Sub(tui.Rect{W: b.Width(), H: gridH}))
+			m.drawProxyHeatmap(b.Sub(tui.Rect{W: b.Width(), H: gridH}))
 			m.drawUDPProxyCoverage(b, gridH)
 		}
 		return
