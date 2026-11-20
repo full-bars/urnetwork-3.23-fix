@@ -18,10 +18,12 @@ Nothing needs to be configured for this today, and it does not affect earnings.
   the primary control plane.
 - **The proxy data plane** understands both families. The SOCKS5 UDP packet
   format carries IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1
-  and 4). For a proxied identity, the provider relays IPv4 UDP only. It refuses
-  an IPv6 destination with `proxy udp: ipv6 destinations are not relayed`,
-  because the relay check proves the relay over IPv4 and most relays have no
-  IPv6 exit. The provider logs `client udp refused` for a refused flow.
+  and 4). For a proxied identity, the provider relays IPv6 UDP only through a
+  proxy whose background check measured IPv6 for TCP and UDP, with the UDP exit
+  address equal to the TCP exit address. Every other proxy refuses an IPv6
+  destination at once with `proxy udp: ipv6 destinations are not relayed`, and
+  the provider logs `client udp refused`. `urnet-tools set proxy-udp-ipv6 off`
+  restores the refusal for every proxy.
 - **Clients reaching a proxy over IPv6** works when that proxy's endpoint is
   registered/advertised that way; the provider does not block it.
 - **The direct identity** is dual stack, with IPv4 primary and IPv6 as a

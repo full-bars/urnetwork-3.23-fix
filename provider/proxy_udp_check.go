@@ -827,3 +827,40 @@ func (self *proxyUDPCheckStore) size() int {
 	defer self.mu.Unlock()
 	return len(self.entries)
 }
+
+// proxyUDPIPv6EnabledIn reports the proxy_udp_ipv6 setting. It is on by
+// default, and off restores the refusal of every ipv6 destination.
+func proxyUDPIPv6EnabledIn(state *controlState) bool {
+	if state == nil {
+		return true
+	}
+	value, found := state.get("proxy_udp_ipv6")
+	return !found || strings.EqualFold(value, "on")
+}
+
+func proxyUDPIPv6Enabled() bool {
+	return proxyUDPIPv6EnabledIn(globalControlState)
+}
+
+// ipv6UDPAllowed reports whether a client udp flow to an ipv6 destination may
+// use this identity's relay. It reads the cached measurement and never probes.
+// All of these must hold: the setting is on, the udp check of the relay is ok,
+// the measured ipv6 result is a fresh yes for both tcp and udp (the udp exit
+// matched the tcp exit), and the result is younger than twice its interval, so
+// a proxy that stopped being measured stops being trusted.
+func (self *proxyUDPCheckStore) ipv6UDPAllowed(key string, now time.Time) bool {
+	if !proxyUDPIPv6Enabled() {
+		return false
+	}
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.result.Status != proxyUDPOK {
+		return false
+	}
+	r := entry.ipv6
+	if r.Status != proxyIPv6Yes || r.UDP != "yes" || !r.valid(now) {
+		return false
+	}
+	return now.Before(r.At.Add(2 * r.Interval))
+}

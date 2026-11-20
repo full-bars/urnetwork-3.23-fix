@@ -252,6 +252,7 @@ var setKeyHelps = []string{
 	"  proxy-audit         on|off        grade proxies and park the ones that prove junk. Observe mode by default (logs verdicts without acting); parking only acts when hot-restart is on (default: off)",
 	"  udp-probe           on|off        run background UDP coverage sweeps (default: on; client safety checks remain active)",
 	"  proxy-ipv6-probe    on|off        probe proxies for IPv6 capability during background sweeps (default: on)",
+	"  proxy-udp-ipv6      on|off        relay client UDP to IPv6 destinations through proxies measured to carry it (default: on; off refuses every IPv6 destination)",
 	"  extender-discovery  off|on|feed-only  serve the directory feed and optionally join gossip (default: on with extender)",
 	"  extender-udp443     on|off        QUIC carrier on UDP 443 (default: on)",
 	"  extender-udp4053    on|off        DNS carrier on UDP 4053 (default: on)",
@@ -282,7 +283,7 @@ var setKeyHelps = []string{
 // the parrot at the next start.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "extender_udp443", "extender_udp4053", "extender_udp53", "pprof", "udp_probe", "proxy_ipv6_probe":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "extender_udp443", "extender_udp4053", "extender_udp53", "pprof", "udp_probe", "proxy_udp_ipv6", "proxy_ipv6_probe":
 		return false
 	}
 	return true

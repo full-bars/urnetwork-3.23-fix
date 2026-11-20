@@ -119,6 +119,7 @@ var controlKeys = map[string]bool{
 	"extender_udp53":              true,
 	"proxy_audit":                 true,
 	"udp_probe":                   true,
+	"proxy_udp_ipv6":              true,
 	"pprof":                       true,
 	"smart_dialer":                true,
 	"h3":                          true,
