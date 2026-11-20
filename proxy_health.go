@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/url"
 	"sort"
 	"strings"
 	"sync"
@@ -488,6 +489,13 @@ func ProxyHealthCount() int {
 func safeProxyDisplayAddress(address string) string {
 	if address == "" || address == "direct" {
 		return address
+	}
+	if strings.Contains(address, "://") {
+		u, err := url.Parse(address)
+		if err != nil {
+			return "<unparsable proxy address>"
+		}
+		address = u.Host
 	}
 	host, port, err := net.SplitHostPort(address)
 	if err != nil || host == "" || port == "" {
