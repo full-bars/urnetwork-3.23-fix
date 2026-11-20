@@ -29,6 +29,8 @@
 - Show cached proxy TCP and UDP exit addresses in the local popup.
 - Proxy IPv6 capability probing. The background sweep checks proxies for IPv6 egress alongside the UDP relay check, controlled live by the `proxy_ipv6_probe` key and `URNETWORK_PROXY_IPV6_PROBE` environment variable.
 - Status, top and metrics report IPv6 proxy counts and UDP relay capability. The top proxy popup displays IPv6 exit status and exit address.
+- Extender carrier traffic splits by IP family (IPv4 and IPv6) in extender status, top and metrics.
+- Extender carrier Prometheus metrics include the family label (v4, v6) with bounded cardinality.
 
 - **Proxy IPv6 measurement.** The background UDP sweep measures IPv6 for every online proxy when its own result is due. It opens a SOCKS5 connection to an IPv6 address, and for a proxy that reaches IPv6 it learns the IPv6 TCP exit and checks the IPv6 UDP relay. The result is stored with the UDP result and survives a restart. UDP flows and H3 dials never wait for it. [redeploy]
 

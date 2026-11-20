@@ -12,10 +12,12 @@ You normally do nothing. This page covers how to see whether it is working, the 
   Traffic:
     carrier           in        out      rate in     rate out  connections
     tcp-443:     1.2 GiB    4.0 GiB   45.0 KiB/s  310.0 KiB/s  3 live, 1280 total
+      ipv4:      1.0 GiB    3.0 GiB             -            - 2 live, 1000 total
+      ipv6:    200.0 MiB    1.0 GiB             -            - 1 live, 280 total
     udp-443:    12.0 MiB    3.0 MiB      0.0 B/s      0.0 B/s  0 live, 40 total
 ```
 
-`in` is the bytes from clients and `out` is the bytes to them. The rates are measured between two samples of the counters. `top` shows the same totals in its Extender box, one row per carrier that has carried traffic, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction}` and `urnet_extender_carrier_connections{carrier}`.
+`in` is the bytes from clients and `out` is the bytes to them. The rates are measured between two samples of the counters. The table splits relayed traffic by address family (ipv4 and ipv6) under each carrier. `top` shows the same totals and family split in its Extender box, one row per carrier that has carried traffic, and `/metrics` exports `urnet_extender_carrier_bytes_total{carrier,direction,family}` and `urnet_extender_carrier_connections{carrier,family}`.
 
 These are the bytes this extender relayed. What the network credits depends on the contracts it counts, so these figures measure relayed traffic and are not a statement of earnings. The counts start at zero when the provider starts.
 
