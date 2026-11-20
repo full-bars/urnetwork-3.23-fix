@@ -18,6 +18,12 @@ func TestExtenderSetupUDP53FlagAndRoutes(t *testing.T) {
 	if !got.UDP53 || got.Route != "sysctl" || !got.Yes {
 		t.Fatalf("unexpected options: %+v", got)
 	}
+	if err := cmdExtenderSetup([]string{"setup", "--route=sysctl", "--udp53", "--force"}); err != nil {
+		t.Fatal(err)
+	}
+	if got.Yes {
+		t.Fatal("--force must not bypass UDP 53 consent")
+	}
 	for _, route := range []string{"capability", "skip"} {
 		err := RunExtenderSetup(ExtenderSetupOptions{Platform: "linux", UDP53: true, Route: route})
 		if err == nil || !strings.Contains(err.Error(), "sysctl") {
@@ -54,6 +60,7 @@ func TestExtenderSetupUDP53PlanAndConsent(t *testing.T) {
 	}{
 		{"dry run", false, true, false, false},
 		{"declined", false, false, false, false},
+		{"non interactive", false, false, false, false},
 		{"confirmed", false, false, true, true},
 		{"yes", true, false, false, true},
 	} {
@@ -83,15 +90,19 @@ func TestExtenderSetupUDP53PlanAndConsent(t *testing.T) {
 				WriteFile:  func(_ string, data []byte, _ os.FileMode) error { writes++; content = string(data); return nil },
 				LookupPath: func(string) (string, error) { return "/usr/bin/sudo", nil },
 			}
-			err := RunExtenderSetup(ExtenderSetupOptions{Platform: "linux", UDP53: true, Route: "sysctl", Yes: tc.yes, DryRun: tc.dry,
+			confirm := func() (bool, error) { return tc.consent, nil }
+			if tc.name == "non interactive" {
+				confirm = nil
+			}
+			err := RunExtenderSetup(ExtenderSetupOptions{Platform: "linux", UDP53: true, Route: "sysctl", Yes: tc.yes, DryRun: tc.dry, NonInteractive: tc.name == "non interactive",
 				IsRoot: func() bool { return true }, Stdout: &out, Stderr: &out,
-				ConfirmFunc: func() (bool, error) { return tc.consent, nil }, PlatformCfg: cfg,
+				ConfirmFunc: confirm, PlatformCfg: cfg,
 				PortChecker: &PortChecker{Platform: "linux", ExecCmd: execFn},
 				FirewallMgr: &FirewallManager{Platform: "linux", LookPath: func(string) (string, error) { return "", os.ErrNotExist }, ExecCmd: execFn},
 			})
-			if tc.name == "declined" {
+			if tc.name == "declined" || tc.name == "non interactive" {
 				if err == nil {
-					t.Fatal("expected cancellation")
+					t.Fatal("expected confirmation error")
 				}
 			} else if err != nil {
 				t.Fatalf("%v\n%s", err, out.String())
