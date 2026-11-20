@@ -294,6 +294,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"proxy-audit", "proxy_audit", "on"},
 		{"udp-probe", "udp_probe", "off"},
 		{"proxy-udp-ipv6", "proxy_udp_ipv6", "off"},
+		{"proxy-dualstack", "proxy_dualstack", "off"},
 		{"extender-discovery", "extender_discovery", "feed-only"},
 		{"extender-udp443", "extender_udp443", "on"},
 		{"extender-udp4053", "extender_udp4053", "on"},

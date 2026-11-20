@@ -1,0 +1,336 @@
+package main
+
+// IPv6 platform transport of a proxied identity.
+//
+// The platform decides a provider's address family from its platform
+// connections (a connection declares a family and the platform observes the
+// family it arrived on). A proxied identity holds one family-agnostic
+// connection through its proxy, which the platform counts as IPv4, so clients
+// that need IPv6 never reach it, whatever its proxy can do.
+//
+// For a proxy whose measured result says it carries IPv6, the identity gets one
+// extra platform transport pinned to IPv6 and dialed through the same proxy. The
+// platform then sees the proxy's IPv6 exit with the IPv6 declaration and
+// categorizes the identity as dual stack. The legacy transport is never touched:
+// the extra one starts and stops beside it, so an identity without a measured
+// IPv6 proxy behaves exactly as before.
+//
+// The decision reads the cached measurement of the UDP sweep
+// (proxy_ipv6_stage.go) and never probes. It needs two consecutive new results
+// to start and two to stop, so a proxy that flips between answers does not
+// flap between families.
+
+import (
+	"context"
+	"fmt"
+	"strings"
+	"sync"
+	"sync/atomic"
+	"time"
+
+	"github.com/urnetwork/connect"
+)
+
+const (
+	proxyDualstackPollInterval = time.Minute
+	proxyDualstackStartStreak  = 2
+	proxyDualstackStopStreak   = 2
+)
+
+// proxyIPv6TransportWanted is the policy: does the measured result of this
+// proxy justify declaring IPv6 for its identity?
+//
+//   - IPv6 works for TCP and for UDP with matching exits, and the IPv4 UDP
+//     relay is ok: the proxy carries everything the platform probes
+//     (dual stack, dual protocol).
+//   - IPv6 works for TCP and the proxy has no UDP relay at all: the platform
+//     labels such a provider dual stack with TCP only after its own probes, and
+//     the identity refuses UDP flows at once (proxy_udp_egress.go).
+//
+// A proxy with IPv4 UDP but a failing IPv6 UDP relay is left out: the platform
+// would drop its IPv6 label before it dropped UDP, so declaring IPv6 gains
+// nothing. An IPv6-only proxy (no IPv4 egress) is not covered by this first
+// version, because the stage does not record its IPv4 control.
+func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.Time) bool {
+	if v6.Status != proxyIPv6Yes || !v6.valid(now) {
+		return false
+	}
+	if !now.Before(v6.At.Add(2 * v6.Interval)) {
+		return false
+	}
+	switch {
+	case udp.Status == proxyUDPOK && v6.UDP == "yes":
+		return true
+	case udp.Status == proxyUDPNoRelay:
+		return true
+	}
+	return false
+}
+
+// proxyIPv6Gate turns the policy into start and stop decisions with
+// hysteresis. Only a NEW measurement counts toward a streak, so polling more
+// often than the measurements arrive cannot start or stop the transport.
+type proxyIPv6Gate struct {
+	running bool
+	lastAt  time.Time
+	yes     int
+	no      int
+}
+
+// observe is called on every poll. It reports whether to start or to stop the
+// extra transport. A running transport whose measurement went stale stops at
+// once: a proxy that is no longer measured is no longer trusted.
+func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIPv6Result) (start bool, stop bool) {
+	want := proxyIPv6TransportWanted(udp, v6, now)
+	if !v6.At.IsZero() && !v6.At.Equal(self.lastAt) {
+		self.lastAt = v6.At
+		if want {
+			self.yes++
+			self.no = 0
+		} else {
+			self.no++
+			self.yes = 0
+		}
+	} else if self.running && !want && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
+		self.no = proxyDualstackStopStreak
+	}
+	if !self.running && self.yes >= proxyDualstackStartStreak && want {
+		self.running = true
+		return true, false
+	}
+	if self.running && self.no >= proxyDualstackStopStreak {
+		self.running = false
+		self.yes = 0
+		return false, true
+	}
+	return false, false
+}
+
+// proxyDualstackEnabledIn reports the proxy_dualstack setting, an operator kill
+// switch that is on by default.
+func proxyDualstackEnabledIn(state *controlState) bool {
+	if state == nil {
+		return true
+	}
+	value, found := state.get("proxy_dualstack")
+	return !found || strings.EqualFold(value, "on")
+}
+
+func proxyDualstackEnabled() bool {
+	return proxyDualstackEnabledIn(globalControlState)
+}
+
+var (
+	proxyIPv6TransportsRunning atomic.Int64
+	proxyIPv6TransportStarts   atomic.Int64
+	proxyIPv6TransportStops    atomic.Int64
+)
+
+// proxiedPlatformTransport is the identity's platform transport: the legacy
+// transport plus at most one extra IPv6 transport. It forwards the credential
+// to both, so a renewed token reaches the extra one too, and closes both.
+type proxiedPlatformTransport struct {
+	providerPlatformTransport
+	mu    sync.Mutex
+	auth  *connect.ClientAuth
+	extra providerPlatformTransport
+}
+
+func newProxiedPlatformTransport(base providerPlatformTransport, auth *connect.ClientAuth) *proxiedPlatformTransport {
+	return &proxiedPlatformTransport{providerPlatformTransport: base, auth: auth}
+}
+
+func (self *proxiedPlatformTransport) SetAuth(auth *connect.ClientAuth) {
+	self.mu.Lock()
+	self.auth = auth
+	extra := self.extra
+	self.mu.Unlock()
+	self.providerPlatformTransport.SetAuth(auth)
+	if extra != nil {
+		extra.SetAuth(auth)
+	}
+}
+
+func (self *proxiedPlatformTransport) Kick() {
+	self.mu.Lock()
+	extra := self.extra
+	self.mu.Unlock()
+	self.providerPlatformTransport.Kick()
+	if extra != nil {
+		extra.Kick()
+	}
+}
+
+func (self *proxiedPlatformTransport) Close() {
+	self.stopExtra()
+	self.providerPlatformTransport.Close()
+}
+
+// startExtra builds and keeps the extra transport with the latest credential.
+// It reports false when one already runs or the builder declines.
+func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.ClientAuth) providerPlatformTransport) bool {
+	self.mu.Lock()
+	if self.extra != nil {
+		self.mu.Unlock()
+		return false
+	}
+	auth := self.auth
+	self.mu.Unlock()
+	extra := build(auth)
+	if extra == nil {
+		return false
+	}
+	self.mu.Lock()
+	if self.extra != nil {
+		self.mu.Unlock()
+		extra.Close()
+		return false
+	}
+	self.extra = extra
+	self.mu.Unlock()
+	return true
+}
+
+// stopExtra closes the extra transport and leaves the legacy one running.
+func (self *proxiedPlatformTransport) stopExtra() bool {
+	self.mu.Lock()
+	extra := self.extra
+	self.extra = nil
+	self.mu.Unlock()
+	if extra == nil {
+		return false
+	}
+	extra.Close()
+	return true
+}
+
+func (self *proxiedPlatformTransport) hasExtra() bool {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	return self.extra != nil
+}
+
+// proxiedIPv6Controller watches one proxied identity's cached measurement and
+// starts or stops its extra IPv6 transport.
+type proxiedIPv6Controller struct {
+	store     *proxyUDPCheckStore
+	key       string
+	transport *proxiedPlatformTransport
+	build     func(auth *connect.ClientAuth) providerPlatformTransport
+	enabled   func() bool
+	gate      proxyIPv6Gate
+}
+
+// step runs one poll at time now.
+func (self *proxiedIPv6Controller) step(now time.Time) {
+	if self.enabled != nil && !self.enabled() {
+		if self.transport.stopExtra() {
+			proxyIPv6TransportsRunning.Add(-1)
+			proxyIPv6TransportStops.Add(1)
+			tlog("[ipv6] proxy identity: IPv6 transport stopped (proxy_dualstack is off)\n")
+		}
+		self.gate = proxyIPv6Gate{}
+		return
+	}
+	udp, v6, ok := self.store.measurement(self.key)
+	if !ok {
+		return
+	}
+	start, stop := self.gate.observe(now, udp, v6)
+	if start && self.transport.startExtra(self.build) {
+		proxyIPv6TransportsRunning.Add(1)
+		proxyIPv6TransportStarts.Add(1)
+		tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
+	} else if start {
+		// the builder declined or one runs already: forget the start so the
+		// next two measurements try again
+		self.gate.running = false
+	}
+	if stop && self.transport.stopExtra() {
+		proxyIPv6TransportsRunning.Add(-1)
+		proxyIPv6TransportStops.Add(1)
+		tlog("[ipv6] proxy identity: IPv6 transport stopped (the proxy no longer qualifies)\n")
+	}
+}
+
+// run polls until ctx ends and closes the extra transport on the way out.
+func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Duration) {
+	ticker := time.NewTicker(interval)
+	defer ticker.Stop()
+	defer func() {
+		if self.transport.stopExtra() {
+			proxyIPv6TransportsRunning.Add(-1)
+			proxyIPv6TransportStops.Add(1)
+		}
+	}()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			self.step(time.Now())
+		}
+	}
+}
+
+// measurement returns the cached UDP result and IPv6 result of an identity.
+func (self *proxyUDPCheckStore) measurement(key string) (proxyUDPResult, proxyIPv6Result, bool) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil {
+		return proxyUDPResult{}, proxyIPv6Result{}, false
+	}
+	return entry.result, entry.ipv6, true
+}
+
+// newProxiedIPv6Builder returns the builder of the extra transport, or nil when
+// the platform has no IPv6 service name for this connect url. The transport is
+// pinned to IPv6 and dialed through the identity's proxy (see
+// connect.NewProxiedFamilyClientStrategy). It owns its budget, runs H1 only and
+// shares the identity's client limit backoff, so a client limit hold of the
+// identity holds it too.
+func newProxiedIPv6Builder(
+	ctx context.Context,
+	clientStrategySettings *connect.ClientStrategySettings,
+	routeManager *connect.RouteManager,
+	connectUrl string,
+	platformSettings *connect.PlatformTransportSettings,
+) func(auth *connect.ClientAuth) providerPlatformTransport {
+	urlV6 := familyServiceUrl(connectUrl, 6)
+	if urlV6 == "" || !familyTransportHostAllowed(connectUrl) {
+		return nil
+	}
+	return func(auth *connect.ClientAuth) providerPlatformTransport {
+		settings := *platformSettings
+		settings.IpFamily = 6
+		settings.EnableH3 = false
+		settings.H3PacketConnFactory = nil
+		settings.ModePreferences = map[connect.TransportMode]int{connect.TransportModeH1: 1}
+		settings.FamilyEvents = false
+		settings.AltUrl = ""
+		settings.PlatformTransportBudgetPriority = connect.PlatformTransportBudgetPriorityBackground
+		target := connect.MemoryBudget()
+		if target <= 0 {
+			target = familyBudgetReferenceByteCount
+		}
+		settings.PlatformTransportBudget = connect.NewPlatformTransportBudgetForMemoryTarget(target)
+		strategy := connect.NewProxiedFamilyClientStrategy(ctx, clientStrategySettings, 6)
+		return connect.NewPlatformTransportWithTargetMode(
+			ctx, strategy, routeManager, urlV6, auth, connect.TransportModeAuto, &settings,
+		)
+	}
+}
+
+// writeProxyIPv6TransportMetrics exports how many proxied identities hold the
+// extra IPv6 platform transport right now and how often one started or stopped.
+// Counts only: no proxy address or identity appears in a label.
+func writeProxyIPv6TransportMetrics(b *strings.Builder) {
+	fmt.Fprintf(b, "# HELP urnet_proxy_ipv6_transports Proxied identities that hold an extra IPv6 platform transport.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_ipv6_transports gauge\n")
+	fmt.Fprintf(b, "urnet_proxy_ipv6_transports %d\n", proxyIPv6TransportsRunning.Load())
+	fmt.Fprintf(b, "# HELP urnet_proxy_ipv6_transport_changes_total Starts and stops of the extra IPv6 platform transport of proxied identities.\n")
+	fmt.Fprintf(b, "# TYPE urnet_proxy_ipv6_transport_changes_total counter\n")
+	fmt.Fprintf(b, "urnet_proxy_ipv6_transport_changes_total{change=\"start\"} %d\n", proxyIPv6TransportStarts.Load())
+	fmt.Fprintf(b, "urnet_proxy_ipv6_transport_changes_total{change=\"stop\"} %d\n", proxyIPv6TransportStops.Load())
+}

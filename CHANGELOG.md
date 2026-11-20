@@ -8,6 +8,8 @@
 
 - **Proxy IPv6 measurement.** The background UDP sweep measures IPv6 for every online proxy when its own result is due. It opens a SOCKS5 connection to an IPv6 address, and for a proxy that reaches IPv6 it learns the IPv6 TCP exit and checks the IPv6 UDP relay. The result is stored with the UDP result and survives a restart. UDP flows and H3 dials never wait for it. [redeploy]
 
+- **A proxied identity the platform sees as dual stack.** When a proxy was measured to carry IPv6 (IPv6 TCP and UDP with matching exits, or IPv6 TCP on a proxy that has no UDP relay), its identity opens one extra platform connection pinned to IPv6 through the same proxy, beside the connection it already has. The platform then sees the proxy's IPv6 exit and categorizes the identity as dual stack, so clients that need IPv6 can reach it. It needs two new measurements to start and two to stop. `urnet-tools set proxy-dualstack on|off` is an emergency switch, default on. `urnet_proxy_ipv6_transports` counts the identities that hold one. IPv6-only proxies are not covered yet. [redeploy]
+
 - **Client UDP to IPv6 destinations through measured proxies.** A proxied identity relays UDP to an IPv6 destination when its proxy was measured to carry IPv6 for TCP and UDP with matching exit addresses. Every other proxy refuses the flow at once, as before. `urnet-tools set proxy-udp-ipv6 on|off` controls it, default on. [redeploy]
 
 ## [v3.23.0-fix.36.0] - 2026-11-20

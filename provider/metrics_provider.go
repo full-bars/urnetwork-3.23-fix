@@ -589,6 +589,7 @@ func providerExtraMetrics() string {
 	if proxied {
 		writeUDPProxyMetrics(&b, globalProxyUDPCheck.coverage(online, time.Now()))
 		writeIPv6ProxyMetrics(&b, globalProxyUDPCheck.ipv6Coverage(online, time.Now()))
+		writeProxyIPv6TransportMetrics(&b)
 	}
 
 	// --- URL proxy grades ---

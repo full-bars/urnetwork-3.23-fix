@@ -292,6 +292,8 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_proxy_graded_recent` | gauge | | Proxies graded in the last hour |
 | `urnet_proxy_graded_stale` | gauge | | Proxies with an older grade |
 | `urnet_proxy_auth_failures` | gauge | | Auth failures summed over current proxies |
+| `urnet_proxy_ipv6_transports` | gauge | - | Proxied identities that hold an extra IPv6 platform connection through their proxy |
+| `urnet_proxy_ipv6_transport_changes_total` | counter | `change` | Starts and stops (`start`, `stop`) of that extra connection |
 | `urnet_proxy_udp_proxies` | gauge | `state` | Online proxies by cached UDP check result: `ok`, `no_relay`, `mismatch`, `unknown`, `unchecked` |
 | `urnet_proxy_ipv6_proxies` | gauge | `state` | Online proxies by cached IPv6 capability result: `yes`, `no`, `unknown`, `not_probed_yet` |
 | `urnet_proxy_ipv6_udp_proxies` | gauge | `state` | Online IPv6 proxies by cached UDP relay result: `yes`, `no`, `unknown` |

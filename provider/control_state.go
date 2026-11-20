@@ -120,6 +120,7 @@ var controlKeys = map[string]bool{
 	"proxy_audit":                 true,
 	"udp_probe":                   true,
 	"proxy_udp_ipv6":              true,
+	"proxy_dualstack":             true,
 	"pprof":                       true,
 	"smart_dialer":                true,
 	"h3":                          true,
