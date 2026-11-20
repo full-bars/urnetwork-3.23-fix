@@ -61,6 +61,33 @@ func TestExtenderSysctlPort53RecoveryRestoresPrior443(t *testing.T) {
 	}
 }
 
+func TestExtenderSysctlPort53SystemApply(t *testing.T) {
+	var written string
+	var calls []string
+	live := "443"
+	cfg := &SystemPlatformConfigurer{PlatformName: "linux", Route: "sysctl", SysctlPort: 53,
+		ReadFile: func(path string) ([]byte, error) {
+			if path == "/proc/sys/net/ipv4/ip_unprivileged_port_start" {
+				return []byte(live), nil
+			}
+			return nil, os.ErrNotExist
+		},
+		WriteFile: func(_ string, data []byte, _ os.FileMode) error { written = string(data); return nil },
+		ExecCmd: func(name string, args ...string) ([]byte, error) {
+			calls = append(calls, setupCommand{name: name, args: args}.String())
+			live = "53"
+			return nil, nil
+		},
+	}
+	applied, _, err := cfg.ApplyRequirement("/provider", "provider")
+	if err != nil || !applied || written != "net.ipv4.ip_unprivileged_port_start=53\n" {
+		t.Fatalf("applied=%v written=%q err=%v", applied, written, err)
+	}
+	if len(calls) != 1 || calls[0] != "sysctl --system" {
+		t.Fatalf("calls=%v", calls)
+	}
+}
+
 func TestExtenderSysctlPort53PlanAndFallback(t *testing.T) {
 	var written string
 	var calls []string
