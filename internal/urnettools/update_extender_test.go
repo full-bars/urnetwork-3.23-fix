@@ -139,6 +139,7 @@ func TestExtenderSysctlRouteActive(t *testing.T) {
 	}{
 		{name: "linux 443 active", platform: "linux", content: "443\n", want: true},
 		{name: "linux 443 with spaces", platform: "linux", content: "  443  \n", want: true},
+		{name: "linux 53 active", platform: "linux", content: "53\n", want: true},
 		{name: "linux 0 active", platform: "linux", content: "0\n", want: true},
 		{name: "linux 80 active", platform: "linux", content: "80\n", want: true},
 		{name: "linux 444 inactive", platform: "linux", content: "444\n", want: false},
@@ -179,6 +180,8 @@ func TestInstallProviderBinaryExtenderSysctlActive(t *testing.T) {
 	}{
 		{name: "port 443 without previous cap", sysctlContent: "443\n", hadCap: false},
 		{name: "port 443 with previous cap", sysctlContent: "443\n", hadCap: true},
+		{name: "port 53 without previous cap", sysctlContent: "53\n", hadCap: false},
+		{name: "port 53 with previous cap", sysctlContent: "53\n", hadCap: true},
 		{name: "port 0 without previous cap", sysctlContent: "0\n", hadCap: false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
