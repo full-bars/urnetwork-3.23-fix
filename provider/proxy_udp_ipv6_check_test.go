@@ -417,3 +417,36 @@ func TestIPv6StageDoesNotStartAfterTheProbeIsSwitchedOff(t *testing.T) {
 		t.Fatalf("the stage started %d times after the probe was switched off", got)
 	}
 }
+
+// Check decides that the stage is due before its UDP probe, so refreshIPv6
+// decides again under the lock. A measurement that another call completed, or a
+// wait set after the first decision, must not start a second one.
+func TestIPv6RefreshRechecksTheDueStateUnderTheLock(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ctx := withIPv6Sweep(context.Background())
+
+	// one completed measurement makes the result fresh
+	h.store.Check(ctx, settings, now)
+	if got := h.ipv6Runs.Load(); got != 1 {
+		t.Fatalf("stage ran %d times, want 1", got)
+	}
+	h.store.refreshIPv6(ctx, settings, settings.Key(), now.Add(time.Minute))
+	if got := h.ipv6Runs.Load(); got != 1 {
+		t.Fatalf("a refresh of a fresh result started the stage again: %d runs", got)
+	}
+
+	// a stage that stopped early sets a wait, and a refresh decided earlier honors it
+	h2 := newIPv6CheckHarness(t)
+	h2.ipv6OK = false
+	h2.store.Check(ctx, settings, now)
+	h2.store.refreshIPv6(ctx, settings, settings.Key(), now.Add(time.Minute))
+	if got := h2.ipv6Runs.Load(); got != 1 {
+		t.Fatalf("a refresh inside the wait started the stage: %d runs", got)
+	}
+	h2.store.refreshIPv6(ctx, settings, settings.Key(), now.Add(proxyIPv6StopBackoff))
+	if got := h2.ipv6Runs.Load(); got != 2 {
+		t.Fatalf("a refresh after the wait did not start the stage: %d runs", got)
+	}
+}

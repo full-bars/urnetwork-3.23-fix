@@ -617,7 +617,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *connect.ProxySettings, key string, now time.Time) {
 	self.mu.Lock()
 	entry := self.cachedEntryLocked(key)
-	if entry == nil || entry.ipv6Running || self.ipv6Probe == nil || !proxyIPv6ProbeEnabled(globalControlState) {
+	if entry == nil || entry.ipv6Running || !entry.ipv6DueLocked(now) || self.ipv6Probe == nil || !proxyIPv6ProbeEnabled(globalControlState) {
 		self.mu.Unlock()
 		return
 	}
