@@ -803,6 +803,12 @@ func (r *extenderRole) foldCountsLocked(
 		base.IngressBytes += byteStats.IngressBytes
 		base.EgressBytes += byteStats.EgressBytes
 		base.ConnsTotal += byteStats.ConnsTotal
+		base.IngressBytesV4 += byteStats.IngressBytesV4
+		base.IngressBytesV6 += byteStats.IngressBytesV6
+		base.EgressBytesV4 += byteStats.EgressBytesV4
+		base.EgressBytesV6 += byteStats.EgressBytesV6
+		base.ConnsTotalV4 += byteStats.ConnsTotalV4
+		base.ConnsTotalV6 += byteStats.ConnsTotalV6
 		r.baseCarrierByteCounts[carrier] = base
 	}
 }
@@ -1101,6 +1107,14 @@ func mergeCarrierByteStats(
 			merged.ConnsTotal += serverStats.ConnsTotal
 			merged.RateInBps += serverStats.RateInBps
 			merged.RateOutBps += serverStats.RateOutBps
+			merged.IngressBytesV4 += serverStats.IngressBytesV4
+			merged.IngressBytesV6 += serverStats.IngressBytesV6
+			merged.EgressBytesV4 += serverStats.EgressBytesV4
+			merged.EgressBytesV6 += serverStats.EgressBytesV6
+			merged.LiveConnsV4 += serverStats.LiveConnsV4
+			merged.LiveConnsV6 += serverStats.LiveConnsV6
+			merged.ConnsTotalV4 += serverStats.ConnsTotalV4
+			merged.ConnsTotalV6 += serverStats.ConnsTotalV6
 			if len(serverStats.Minutes) > 0 {
 				if len(merged.Minutes) == 0 {
 					merged.Minutes = slices.Clone(serverStats.Minutes)
@@ -1343,20 +1357,27 @@ func renderExtenderRoleMetrics(snapshot extenderRoleSnapshot) string {
 	fmt.Fprintf(&b, "# TYPE urnet_extender_relay_bytes_total counter\n")
 	fmt.Fprintf(&b, "urnet_extender_relay_bytes_total{dir=\"ingress\"} %d\n", snapshot.Stats.IngressByteCount)
 	fmt.Fprintf(&b, "urnet_extender_relay_bytes_total{dir=\"egress\"} %d\n", snapshot.Stats.EgressByteCount)
-	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_bytes_total Bytes the extender relayed per carrier and direction.\n")
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_bytes_total Bytes the extender relayed per carrier, direction and family.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_bytes_total counter\n")
 	for _, carrier := range extender.ExtenderCarrierPorts() {
 		byteStats := snapshot.CarrierBytes[carrier]
-		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"ingress\"} %d\n",
-			connect.PrometheusLabelValue(carrier), byteStats.IngressBytes)
-		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"egress\"} %d\n",
-			connect.PrometheusLabelValue(carrier), byteStats.EgressBytes)
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"ingress\",family=\"v4\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.IngressBytesV4)
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"ingress\",family=\"v6\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.IngressBytesV6)
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"egress\",family=\"v4\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.EgressBytesV4)
+		fmt.Fprintf(&b, "urnet_extender_carrier_bytes_total{carrier=%s,direction=\"egress\",family=\"v6\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.EgressBytesV6)
 	}
-	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_connections Relayed connections open now over each extender carrier.\n")
+	fmt.Fprintf(&b, "# HELP urnet_extender_carrier_connections Relayed connections open now over each extender carrier and family.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_carrier_connections gauge\n")
 	for _, carrier := range extender.ExtenderCarrierPorts() {
-		fmt.Fprintf(&b, "urnet_extender_carrier_connections{carrier=%s} %d\n",
-			connect.PrometheusLabelValue(carrier), snapshot.CarrierBytes[carrier].LiveConns)
+		byteStats := snapshot.CarrierBytes[carrier]
+		fmt.Fprintf(&b, "urnet_extender_carrier_connections{carrier=%s,family=\"v4\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.LiveConnsV4)
+		fmt.Fprintf(&b, "urnet_extender_carrier_connections{carrier=%s,family=\"v6\"} %d\n",
+			connect.PrometheusLabelValue(carrier), byteStats.LiveConnsV6)
 	}
 	fmt.Fprintf(&b, "# HELP urnet_extender_tcp_retry_total Attempts to take tcp 443 after a bind failure.\n")
 	fmt.Fprintf(&b, "# TYPE urnet_extender_tcp_retry_total counter\n")

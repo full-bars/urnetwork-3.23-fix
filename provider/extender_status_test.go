@@ -1,12 +1,14 @@
 package main
 
 import (
+	"encoding/json"
 	"net/netip"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/urnetwork/connect"
+	"github.com/urnetwork/connect/extender"
 )
 
 func TestExtenderHealthLineWhenOff(t *testing.T) {
@@ -134,5 +136,129 @@ func TestExtenderFamilyReadingUsesTheRecordExpiryWhenTheActivationHasNone(t *tes
 	family.RecordExpireTime = now.Add(time.Hour)
 	if got := extenderFamilyReadingOf(4, family, true, true, now); got.State != extenderFamilyActivated {
 		t.Fatalf("a record that is still valid must read activated, got %q", got.State)
+	}
+}
+
+func TestExtenderCarrierBytesReadingBackwardCompatibility(t *testing.T) {
+	// JSON payload from older provider without family fields
+	oldJSON := `{"carrier":"tcp-443","ingress_bytes":1000,"egress_bytes":2000,"live_conns":5,"conns_total":20}`
+	var r extenderCarrierBytesReading
+	if err := json.Unmarshal([]byte(oldJSON), &r); err != nil {
+		t.Fatalf("unmarshal old JSON: %v", err)
+	}
+	if r.Carrier != "tcp-443" || r.IngressBytes != 1000 || r.EgressBytes != 2000 || r.LiveConns != 5 || r.ConnsTotal != 20 {
+		t.Fatalf("unexpected unmarshaled totals: %+v", r)
+	}
+	if r.IngressBytesV4 != 0 || r.IngressBytesV6 != 0 || r.EgressBytesV4 != 0 || r.EgressBytesV6 != 0 {
+		t.Fatalf("family fields must default to 0, got: %+v", r)
+	}
+
+	// Marshaling with family fields
+	r.IngressBytesV4 = 700
+	r.IngressBytesV6 = 300
+	r.EgressBytesV4 = 1400
+	r.EgressBytesV6 = 600
+	r.LiveConnsV4 = 3
+	r.LiveConnsV6 = 2
+	r.ConnsTotalV4 = 14
+	r.ConnsTotalV6 = 6
+
+	data, err := json.Marshal(r)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	for _, want := range []string{
+		`"ingress_bytes_v4":700`,
+		`"ingress_bytes_v6":300`,
+		`"egress_bytes_v4":1400`,
+		`"egress_bytes_v6":600`,
+		`"live_conns_v4":3`,
+		`"live_conns_v6":2`,
+		`"conns_total_v4":14`,
+		`"conns_total_v6":6`,
+	} {
+		if !strings.Contains(string(data), want) {
+			t.Errorf("marshaled json missing %s:\n%s", want, string(data))
+		}
+	}
+}
+
+func TestExtenderMetricsCarrierFamilySplit(t *testing.T) {
+	snapshot := extenderRoleSnapshot{
+		Enabled: true,
+		State:   extenderStateServing,
+		CarrierBytes: map[string]extender.ExtenderCarrierByteStats{
+			extender.ExtenderCarrierTcp443: {
+				Carrier:        extender.ExtenderCarrierTcp443,
+				IngressBytes:   1000,
+				EgressBytes:    2000,
+				IngressBytesV4: 800,
+				IngressBytesV6: 200,
+				EgressBytesV4:  1600,
+				EgressBytesV6:  400,
+				LiveConns:      3,
+				LiveConnsV4:    2,
+				LiveConnsV6:    1,
+			},
+		},
+	}
+	text := renderExtenderRoleMetrics(snapshot)
+
+	expectedMetrics := []string{
+		`urnet_extender_carrier_bytes_total{carrier="tcp-443",direction="ingress",family="v4"} 800`,
+		`urnet_extender_carrier_bytes_total{carrier="tcp-443",direction="ingress",family="v6"} 200`,
+		`urnet_extender_carrier_bytes_total{carrier="tcp-443",direction="egress",family="v4"} 1600`,
+		`urnet_extender_carrier_bytes_total{carrier="tcp-443",direction="egress",family="v6"} 400`,
+		`urnet_extender_carrier_connections{carrier="tcp-443",family="v4"} 2`,
+		`urnet_extender_carrier_connections{carrier="tcp-443",family="v6"} 1`,
+	}
+	for _, expected := range expectedMetrics {
+		if !strings.Contains(text, expected) {
+			t.Errorf("metrics output missing expected line %q:\n%s", expected, text)
+		}
+	}
+
+	// Verify cardinality: exactly 4 carriers * 2 directions * 2 families = 16 bytes series
+	lines := strings.Split(text, "\n")
+	byteSeriesCount := 0
+	connSeriesCount := 0
+	for _, line := range lines {
+		if strings.HasPrefix(line, "urnet_extender_carrier_bytes_total{") {
+			byteSeriesCount++
+		}
+		if strings.HasPrefix(line, "urnet_extender_carrier_connections{") {
+			connSeriesCount++
+		}
+	}
+	if byteSeriesCount != 16 {
+		t.Errorf("urnet_extender_carrier_bytes_total series count = %d, want 16", byteSeriesCount)
+	}
+	if connSeriesCount != 8 {
+		t.Errorf("urnet_extender_carrier_connections series count = %d, want 8", connSeriesCount)
+	}
+}
+
+func TestMergeCarrierByteStatsFamilySplit(t *testing.T) {
+	base := map[string]extender.ExtenderCarrierByteStats{
+		extender.ExtenderCarrierTcp443: {
+			Carrier:        extender.ExtenderCarrierTcp443,
+			IngressBytes:   500,
+			EgressBytes:    600,
+			IngressBytesV4: 400,
+			IngressBytesV6: 100,
+			EgressBytesV4:  500,
+			EgressBytesV6:  100,
+			ConnsTotal:     5,
+			ConnsTotalV4:   4,
+			ConnsTotalV6:   1,
+		},
+	}
+	merged := mergeCarrierByteStats(base, nil, time.Now())
+	tcp := merged[extender.ExtenderCarrierTcp443]
+	if tcp.IngressBytesV4 != 400 || tcp.IngressBytesV6 != 100 || tcp.EgressBytesV4 != 500 || tcp.EgressBytesV6 != 100 {
+		t.Fatalf("unexpected merged family byte counts: %+v", tcp)
+	}
+	if tcp.ConnsTotalV4 != 4 || tcp.ConnsTotalV6 != 1 {
+		t.Fatalf("unexpected merged family conn counts: %+v", tcp)
 	}
 }

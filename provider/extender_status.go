@@ -74,14 +74,22 @@ type extenderCarrierReading struct {
 // opened since start, and the last 30 one minute buckets of ingress plus
 // egress as whole KiB.
 type extenderCarrierBytesReading struct {
-	Carrier      string   `json:"carrier"`
-	IngressBytes uint64   `json:"ingress_bytes"`
-	EgressBytes  uint64   `json:"egress_bytes"`
-	RateInBps    uint64   `json:"rate_in_bps,omitempty"`
-	RateOutBps   uint64   `json:"rate_out_bps,omitempty"`
-	LiveConns    uint64   `json:"live_conns"`
-	ConnsTotal   uint64   `json:"conns_total"`
-	Minutes      []uint32 `json:"minutes,omitempty"`
+	Carrier        string   `json:"carrier"`
+	IngressBytes   uint64   `json:"ingress_bytes"`
+	EgressBytes    uint64   `json:"egress_bytes"`
+	RateInBps      uint64   `json:"rate_in_bps,omitempty"`
+	RateOutBps     uint64   `json:"rate_out_bps,omitempty"`
+	LiveConns      uint64   `json:"live_conns"`
+	ConnsTotal     uint64   `json:"conns_total"`
+	Minutes        []uint32 `json:"minutes,omitempty"`
+	IngressBytesV4 uint64   `json:"ingress_bytes_v4,omitempty"`
+	IngressBytesV6 uint64   `json:"ingress_bytes_v6,omitempty"`
+	EgressBytesV4  uint64   `json:"egress_bytes_v4,omitempty"`
+	EgressBytesV6  uint64   `json:"egress_bytes_v6,omitempty"`
+	LiveConnsV4    uint64   `json:"live_conns_v4,omitempty"`
+	LiveConnsV6    uint64   `json:"live_conns_v6,omitempty"`
+	ConnsTotalV4   uint64   `json:"conns_total_v4,omitempty"`
+	ConnsTotalV6   uint64   `json:"conns_total_v6,omitempty"`
 }
 
 // extenderControlReading is the whole extender picture, and the JSON the
@@ -174,14 +182,22 @@ func (m *extenderManager) Reading() extenderControlReading {
 	}
 	for carrier, byteStats := range snapshot.CarrierBytes {
 		reading.CarrierBytes = append(reading.CarrierBytes, extenderCarrierBytesReading{
-			Carrier:      carrier,
-			IngressBytes: byteStats.IngressBytes,
-			EgressBytes:  byteStats.EgressBytes,
-			RateInBps:    byteStats.RateInBps,
-			RateOutBps:   byteStats.RateOutBps,
-			LiveConns:    byteStats.LiveConns,
-			ConnsTotal:   byteStats.ConnsTotal,
-			Minutes:      byteStats.Minutes,
+			Carrier:        carrier,
+			IngressBytes:   byteStats.IngressBytes,
+			EgressBytes:    byteStats.EgressBytes,
+			RateInBps:      byteStats.RateInBps,
+			RateOutBps:     byteStats.RateOutBps,
+			LiveConns:      byteStats.LiveConns,
+			ConnsTotal:     byteStats.ConnsTotal,
+			Minutes:        byteStats.Minutes,
+			IngressBytesV4: byteStats.IngressBytesV4,
+			IngressBytesV6: byteStats.IngressBytesV6,
+			EgressBytesV4:  byteStats.EgressBytesV4,
+			EgressBytesV6:  byteStats.EgressBytesV6,
+			LiveConnsV4:    byteStats.LiveConnsV4,
+			LiveConnsV6:    byteStats.LiveConnsV6,
+			ConnsTotalV4:   byteStats.ConnsTotalV4,
+			ConnsTotalV6:   byteStats.ConnsTotalV6,
 		})
 	}
 	slices.SortFunc(reading.CarrierBytes, func(a extenderCarrierBytesReading, b extenderCarrierBytesReading) int {
