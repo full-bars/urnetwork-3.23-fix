@@ -39,6 +39,9 @@ func TestProxySecretAddAndControlOutputs(t *testing.T) {
 		if err != nil {
 			t.Fatalf("marshal %s: %v", cmd, err)
 		}
+		if cmd == "proxy_cell_detail" && !strings.Contains(string(data), `"index":991733`) {
+			t.Fatal("proxy detail did not include the registered canary proxy")
+		}
 		output += string(data)
 	}
 	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
