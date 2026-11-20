@@ -260,7 +260,7 @@ func (s *proxySlowRetryState) adoptLegacy(desired []*connect.ProxySettings) (ado
 		if len(keys) > 1 {
 			split++
 			tlog("[proxy][identity] slow-retry state for %s split into %d identities on adoption; %s kept its clock, the rest start fresh\n",
-				address, len(keys), proxyKeyDisplay(winner))
+				redactedProxyAddress(address), len(keys), proxyKeyDisplay(winner))
 		}
 	}
 	return adopted, split

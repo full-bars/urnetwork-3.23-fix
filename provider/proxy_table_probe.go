@@ -1177,7 +1177,7 @@ func urlProxyPassesAdmission(ctx context.Context, address string) bool {
 	if cfg.Enabled {
 		state, err := cachedProxyURLState()
 		if err != nil {
-			tlog("[proxy][url] warning: could not read proxy_url.json for admission gate (%v); DENYING %s\n", err, address)
+			tlog("[proxy][url] warning: could not read proxy_url.json for admission gate (%v); DENYING %s\n", err, redactedProxyAddress(address))
 			return false
 		}
 		entry, ok := state.Cache[address]
