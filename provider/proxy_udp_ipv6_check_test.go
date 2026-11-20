@@ -283,3 +283,54 @@ func TestIPv6StageRunsAfterTheUDPResultIsPublished(t *testing.T) {
 		t.Fatal("the stage ran before the UDP result was published")
 	}
 }
+
+// An IPv6 refresh that finishes while a UDP check is running must not be undone
+// when that UDP check is cancelled: the measurement and the cleared flag stay.
+func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) {
+	h := newIPv6CheckHarness()
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	// a completed entry whose UDP result is stale, with an IPv6 refresh in flight
+	stale := now.Add(-2 * time.Hour)
+	storeWithEntry(h.store, settings, proxyUDPOK, stale, proxyIPv6Result{})
+	h.store.mu.Lock()
+	h.store.entries[settings.Key()].ipv6Running = true
+	h.store.mu.Unlock()
+
+	probing := make(chan struct{})
+	release := make(chan struct{})
+	h.store.probe = func(ctx context.Context, _ *connect.ProxySettings) proxyUDPResult {
+		close(probing)
+		<-release
+		return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	done := make(chan struct{})
+	go func() { h.store.Check(ctx, settings, now); close(done) }()
+	<-probing
+
+	// the refresh finishes meanwhile: it updates the installed entry and clears the flag
+	measured := v6Result(proxyIPv6No, "unknown", now, 24*time.Hour)
+	h.store.mu.Lock()
+	running := h.store.entries[settings.Key()]
+	running.ipv6 = measured
+	running.ipv6Running = false
+	h.store.mu.Unlock()
+
+	cancel()
+	close(release)
+	<-done
+
+	h.store.mu.Lock()
+	entry := h.store.entries[settings.Key()]
+	h.store.mu.Unlock()
+	if entry == nil {
+		t.Fatal("the entry was lost")
+	}
+	if entry.ipv6 != measured {
+		t.Fatalf("the rollback restored the old IPv6 result: %+v", entry.ipv6)
+	}
+	if entry.ipv6Running {
+		t.Fatal("the rollback restored a refresh flag nothing will clear")
+	}
+}

@@ -555,7 +555,11 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
 			if previous != nil {
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: ipv6, ipv6Running: ipv6Running}
+				// the IPv6 fields come from the entry this check installed: an IPv6
+				// refresh that ran meanwhile updated it and cleared its flag, and a
+				// restore from the snapshot taken before the probe would bring back
+				// the old measurement and a flag nothing will clear
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running}
 			}
 			close(running.done)
 			self.mu.Unlock()

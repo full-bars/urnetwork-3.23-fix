@@ -11,12 +11,14 @@ import (
 )
 
 type fakePlatformTransport struct {
-	mu       sync.Mutex
-	auths    []*connect.ClientAuth
-	kicks    int
-	closes   int
-	started  *connect.ClientAuth
-	notifyCh chan struct{}
+	// onSetAuth, when set, runs after the call is recorded and may block
+	onSetAuth func(auth *connect.ClientAuth)
+	mu        sync.Mutex
+	auths     []*connect.ClientAuth
+	kicks     int
+	closes    int
+	started   *connect.ClientAuth
+	notifyCh  chan struct{}
 }
 
 func (self *fakePlatformTransport) IsConnected() bool { return true }
@@ -25,8 +27,12 @@ func (self *fakePlatformTransport) ConnectedNotify() <-chan struct{} {
 }
 func (self *fakePlatformTransport) SetAuth(auth *connect.ClientAuth) {
 	self.mu.Lock()
-	defer self.mu.Unlock()
 	self.auths = append(self.auths, auth)
+	hook := self.onSetAuth
+	self.mu.Unlock()
+	if hook != nil {
+		hook(auth)
+	}
 }
 func (self *fakePlatformTransport) Kick() {
 	self.mu.Lock()
@@ -523,4 +529,56 @@ func TestControllerStopsWhenTheMeasurementIsGone(t *testing.T) {
 	if controller.transport.hasExtra() {
 		t.Fatal("started again on one result")
 	}
+}
+
+// Two credentials renewed around the publication reach the extra transport in
+// order: the older one never arrives after the newer one.
+func TestCredentialsReachTheExtraTransportInOrder(t *testing.T) {
+	authA := &connect.ClientAuth{ByJwt: "a"}
+	authB := &connect.ClientAuth{ByJwt: "b"}
+	authC := &connect.ClientAuth{ByJwt: "c"}
+	transport := newProxiedPlatformTransport(&fakePlatformTransport{}, authA)
+	inFirst := make(chan struct{})
+	releaseFirst := make(chan struct{})
+	built := &fakePlatformTransport{}
+	first := true
+	built.onSetAuth = func(*connect.ClientAuth) {
+		if first {
+			first = false
+			close(inFirst)
+			<-releaseFirst
+		}
+	}
+	building := make(chan struct{})
+	release := make(chan struct{})
+	build := func(*connect.ClientAuth) providerPlatformTransport {
+		close(building)
+		<-release
+		return built
+	}
+	started := make(chan bool, 1)
+	go func() { started <- transport.startExtra(build) }()
+	<-building
+	transport.SetAuth(authB) // completes during the build
+	close(release)
+	<-inFirst // startExtra is forwarding B to the extra transport
+	renewed := make(chan struct{})
+	go func() { transport.SetAuth(authC); close(renewed) }() // must wait for B
+	select {
+	case <-renewed:
+		t.Fatal("a newer credential was forwarded while the older one was still being applied")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releaseFirst)
+	if !<-started {
+		t.Fatal("the extra transport did not start")
+	}
+	<-renewed
+	built.mu.Lock()
+	got := append([]*connect.ClientAuth(nil), built.auths...)
+	built.mu.Unlock()
+	if len(got) != 2 || got[0] != authB || got[1] != authC {
+		t.Fatalf("the extra transport saw %v, want B then C", got)
+	}
+	transport.stopExtra()
 }

@@ -131,6 +131,10 @@ var (
 // to both, so a renewed token reaches the extra one too, and closes both.
 type proxiedPlatformTransport struct {
 	providerPlatformTransport
+	// authMu orders credential forwarding: a SetAuth and the publication of the
+	// extra transport never interleave, so an older credential cannot reach the
+	// extra transport after a newer one
+	authMu sync.Mutex
 	mu     sync.Mutex
 	auth   *connect.ClientAuth
 	extra  providerPlatformTransport
@@ -142,6 +146,8 @@ func newProxiedPlatformTransport(base providerPlatformTransport, auth *connect.C
 }
 
 func (self *proxiedPlatformTransport) SetAuth(auth *connect.ClientAuth) {
+	self.authMu.Lock()
+	defer self.authMu.Unlock()
 	self.mu.Lock()
 	self.auth = auth
 	extra := self.extra
@@ -186,9 +192,11 @@ func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.Client
 	if extra == nil {
 		return false
 	}
+	self.authMu.Lock()
 	self.mu.Lock()
 	if self.extra != nil || self.closed {
 		self.mu.Unlock()
+		self.authMu.Unlock()
 		extra.Close()
 		return false
 	}
@@ -198,6 +206,7 @@ func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.Client
 	if latest != auth {
 		extra.SetAuth(latest)
 	}
+	self.authMu.Unlock()
 	proxyIPv6TransportsRunning.Add(1)
 	proxyIPv6TransportStarts.Add(1)
 	return true
