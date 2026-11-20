@@ -45,6 +45,18 @@ func (m *topModel) drawProxyAurora(b *tui.Buffer) {
 	phase := float64(now.UnixNano()) / 1e9 * 0.8
 	for y := 0; y < h-1; y++ {
 		for x := 0; x < w; x++ {
+			if x == 0 && y == 0 {
+				for _, c := range cells {
+					if c.index == 0 {
+						glyph, st := m.directCellStar(c, now)
+						b.Set(0, 0, tui.Cell{Rune: glyph, Style: st})
+						break
+					}
+				}
+				if len(cells) > 0 && cells[0].index == 0 {
+					continue
+				}
+			}
 			s := sums[x*groups/w]
 			wave := (math.Sin(float64(x)*0.17+float64(y)*0.42-phase) + 1) / 2
 			level := min(3, int(wave*1.5+float64(s.bucket)/3))
@@ -59,5 +71,12 @@ func (m *topModel) drawProxyAurora(b *tui.Buffer) {
 			b.Set(x, y, tui.Cell{Rune: glyph, Style: m.proxyCellStyle(s.state, uint8(level*2))})
 		}
 	}
-	b.Put("Aurora", 0, h-1, m.theme.Dim)
+	x := b.Put("Aurora", 0, h-1, m.theme.Dim)
+	for _, c := range cells {
+		if c.index == 0 {
+			b.Put("    ", x, h-1, tui.Style{})
+			m.drawLegendDirect(b, x+4, h-1, c)
+			break
+		}
+	}
 }

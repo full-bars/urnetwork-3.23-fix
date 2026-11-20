@@ -46,6 +46,11 @@ func (m *topModel) drawProxyBlocks(b *tui.Buffer) {
 		area := (x1 - x0) * (y1 - y0 - 1)
 		for p := 0; p < area; p++ {
 			c := cells[start+p*(end-start)/area]
+			if c.index == 0 {
+				glyph, st := m.directCellStar(c, now)
+				b.Set(x0+p%(x1-x0), y0+1+p/(x1-x0), tui.Cell{Rune: glyph, Style: st})
+				continue
+			}
 			bucket := m.proxyGlowBucket(c, now)
 			glyph := []rune{'░', '▒', '▓', '█'}[min(3, int(bucket)/2)]
 			if m.theme.ASCII {
@@ -57,5 +62,12 @@ func (m *topModel) drawProxyBlocks(b *tui.Buffer) {
 			b.Set(x0+p%(x1-x0), y0+1+p/(x1-x0), tui.Cell{Rune: glyph, Style: m.proxyCellStyle(c.state, bucket)})
 		}
 	}
-	b.Put("Blocks", 0, h, m.theme.Dim)
+	x := b.Put("Blocks", 0, h, m.theme.Dim)
+	for _, c := range cells {
+		if c.index == 0 {
+			b.Put("    ", x, h, tui.Style{})
+			m.drawLegendDirect(b, x+4, h, c)
+			break
+		}
+	}
 }

@@ -68,5 +68,12 @@ func (m *topModel) drawProxyTimeline(b *tui.Buffer) {
 			b.Set(labelW+x, g, tui.Cell{Rune: glyph, Style: m.proxyCellStyle(c.state, c.bucket)})
 		}
 	}
-	b.Put("Timeline", 0, h, m.theme.Dim)
+	x := b.Put("Timeline", 0, h, m.theme.Dim)
+	for _, c := range cells {
+		if c.index == 0 {
+			b.Put("    ", x, h, tui.Style{})
+			m.drawLegendDirect(b, x+4, h, c)
+			break
+		}
+	}
 }

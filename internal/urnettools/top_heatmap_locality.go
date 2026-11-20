@@ -41,6 +41,11 @@ func (m *topModel) drawProxyLocality(b *tui.Buffer) {
 	for i, c := range cells {
 		x, y := heatmapHilbert(side, i)
 		x, y = x*w/side, y*h/side
+		if c.index == 0 {
+			glyph, st := m.directCellStar(c, now)
+			b.Set(x, y, tui.Cell{Rune: glyph, Style: st})
+			continue
+		}
 		bucket := m.proxyGlowBucket(c, now)
 		glyph := []rune{'░', '▒', '▓', '█'}[min(3, int(bucket)/2)]
 		if m.theme.ASCII || m.theme.Name == "mono" || m.theme.Name == "colorblind" {
@@ -48,5 +53,12 @@ func (m *topModel) drawProxyLocality(b *tui.Buffer) {
 		}
 		b.Set(x, y, tui.Cell{Rune: glyph, Style: m.proxyCellStyle(c.state, bucket)})
 	}
-	b.Put("Locality", 0, h, m.theme.Dim)
+	x := b.Put("Locality", 0, h, m.theme.Dim)
+	for _, c := range cells {
+		if c.index == 0 {
+			b.Put("    ", x, h, tui.Style{})
+			m.drawLegendDirect(b, x+4, h, c)
+			break
+		}
+	}
 }

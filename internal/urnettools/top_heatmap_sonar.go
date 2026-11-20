@@ -50,6 +50,11 @@ func (m *topModel) drawProxySonar(b *tui.Buffer) {
 	now := m.now()
 	phase := float64(now.UnixNano()) / 1e9 * 0.65
 	for i, c := range cells {
+		if c.index == 0 {
+			glyph, st := m.directCellStar(c, now)
+			put(int(cx), int(cy), glyph, st)
+			continue
+		}
 		a := float64(i) * 2 * math.Pi / float64(len(cells))
 		r := 0.2 + 0.8*float64(c.bucket)/7
 		x := int(math.Round(cx + math.Cos(a)*rx*r))
@@ -74,5 +79,12 @@ func (m *topModel) drawProxySonar(b *tui.Buffer) {
 		y := int(math.Round(cy + math.Sin(phase)*ry*r))
 		put(x, y, ring, m.theme.Dim)
 	}
-	b.Put("Sonar", 0, h-1, m.theme.Dim)
+	x := b.Put("Sonar", 0, h-1, m.theme.Dim)
+	for _, c := range cells {
+		if c.index == 0 {
+			b.Put("    ", x, h-1, tui.Style{})
+			m.drawLegendDirect(b, x+4, h-1, c)
+			break
+		}
+	}
 }

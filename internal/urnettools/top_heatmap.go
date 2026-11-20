@@ -152,13 +152,19 @@ func (m *topModel) applyProxyCells(gen int, cells []proxyCell, err error) {
 
 // proxyGridLayout maps text cells to proxy positions. Sparse grids give each
 // proxy a text cell. Dense grids retain the two dot-rows per text cell.
+// When hasDirect is true, cell (0, 0) is reserved as a full cell for the
+// direct slot (index 0), and proxies start after it without being grouped with it.
 type proxyGridLayout struct {
 	width, height, cols, rows int
 	sparse                    bool
+	hasDirect                 bool
 }
 
-func newProxyGridLayout(n, w, h int) proxyGridLayout {
+func newProxyGridLayout(n, w, h int, direct ...bool) proxyGridLayout {
 	l := proxyGridLayout{width: w, height: h}
+	if len(direct) > 0 {
+		l.hasDirect = direct[0]
+	}
 	if n <= 0 || w <= 0 || h <= 0 {
 		return l
 	}
@@ -176,8 +182,28 @@ func newProxyGridLayout(n, w, h int) proxyGridLayout {
 	return l
 }
 
-func gridCoordinate(i, count, size int) int {
+func (l proxyGridLayout) proxyCapacity() int {
+	if !l.hasDirect {
+		return l.cols * l.rows
+	}
+	if l.sparse {
+		return l.cols*l.rows - 1
+	}
+	if l.width <= 0 || l.height <= 0 {
+		return 0
+	}
+	cap := 2 * (l.width*l.height - 1)
+	if cap < 1 {
+		return 1
+	}
+	return cap
+}
+
+func gridCoordinate(i, count, size int, direct ...bool) int {
 	if count <= 1 {
+		if len(direct) > 0 && direct[0] {
+			return 0
+		}
 		return (size - 1) / 2
 	}
 	return i * (size - 1) / (count - 1)
@@ -188,36 +214,118 @@ func (l proxyGridLayout) indices(x, y int) (int, int) {
 	if x < 0 || y < 0 || x >= l.width || y >= l.height || l.cols == 0 {
 		return -1, -1
 	}
-	if !l.sparse {
+	if l.sparse {
+		if l.hasDirect && x == 0 && y == 0 {
+			return 0, -1
+		}
+		col, row := -1, -1
+		for i := 0; i < l.cols; i++ {
+			if gridCoordinate(i, l.cols, l.width, l.hasDirect) == x {
+				col = i
+				break
+			}
+		}
+		for i := 0; i < l.rows; i++ {
+			if gridCoordinate(i, l.rows, l.height, l.hasDirect) == y {
+				row = i
+				break
+			}
+		}
+		if col < 0 || row < 0 {
+			return -1, -1
+		}
+		return row*l.cols + col, -1
+	}
+
+	if !l.hasDirect {
 		return x*l.rows + 2*y, x*l.rows + 2*y + 1
 	}
-	col, row := -1, -1
-	for i := 0; i < l.cols; i++ {
-		if gridCoordinate(i, l.cols, l.width) == x {
-			col = i
-			break
-		}
+
+	// Dense layout with direct slot:
+	// Cell (0, 0) is reserved for the full cell direct star.
+	if x == 0 && y == 0 {
+		return 0, -1
 	}
-	for i := 0; i < l.rows; i++ {
-		if gridCoordinate(i, l.rows, l.height) == y {
-			row = i
-			break
-		}
+	if x == 0 {
+		upper := 1 + 2*(y-1)
+		return upper, upper + 1
 	}
-	if col < 0 || row < 0 {
-		return -1, -1
-	}
-	return row*l.cols + col, -1
+	col0Proxies := 2 * (l.height - 1)
+	start := 1 + col0Proxies + (x-1)*l.rows
+	upper := start + 2*y
+	return upper, upper + 1
 }
 
 func (l proxyGridLayout) cellFor(index int) (x, y int, upper bool) {
-	if index < 0 || index >= l.cols*l.rows || l.cols == 0 {
+	if index < 0 || l.cols == 0 {
 		return -1, -1, false
 	}
 	if l.sparse {
-		return gridCoordinate(index%l.cols, l.cols, l.width), gridCoordinate(index/l.cols, l.rows, l.height), true
+		if index >= l.cols*l.rows {
+			return -1, -1, false
+		}
+		if l.hasDirect && index == 0 {
+			return 0, 0, true
+		}
+		return gridCoordinate(index%l.cols, l.cols, l.width, l.hasDirect), gridCoordinate(index/l.cols, l.rows, l.height, l.hasDirect), true
 	}
-	return index / l.rows, (index % l.rows) / 2, index%2 == 0
+
+	if !l.hasDirect {
+		if index >= l.cols*l.rows {
+			return -1, -1, false
+		}
+		return index / l.rows, (index % l.rows) / 2, index%2 == 0
+	}
+
+	// Dense layout with direct slot
+	if index == 0 {
+		return 0, 0, true
+	}
+	col0Proxies := 2 * (l.height - 1)
+	if index-1 < col0Proxies {
+		return 0, 1 + (index-1)/2, (index-1)%2 == 0
+	}
+	rem := (index - 1) - col0Proxies
+	if rem < 0 || l.rows == 0 {
+		return -1, -1, false
+	}
+	x = 1 + rem/l.rows
+	colRem := rem % l.rows
+	y = colRem / 2
+	upper = colRem%2 == 0
+	if x >= l.width || y >= l.height {
+		return -1, -1, false
+	}
+	return x, y, upper
+}
+
+func (m *topModel) directCellStar(c proxyCell, now time.Time) (rune, tui.Style) {
+	glyph := '★'
+	if m.theme.ASCII {
+		glyph = '*'
+	}
+	st := m.proxyCellStyle(c.state, m.proxyGlowBucket(c, now))
+	if m.theme.ASCII {
+		st.Attrs |= tui.AttrBold
+	}
+	return glyph, st
+}
+
+func (m *topModel) drawLegendDirect(b *tui.Buffer, x, y int, c proxyCell) int {
+	star := "★"
+	if m.theme.ASCII {
+		star = "*"
+	}
+	starStyle := m.proxyCellStyle(c.state, 4)
+	if m.theme.ASCII {
+		starStyle.Attrs |= tui.AttrBold
+	}
+	dirText := star + " direct " + proxyCellStateName(c.state)
+	wDir := tui.StringWidth(dirText)
+	m.record("legend:direct", b.Absolute(tui.Rect{X: x, Y: y, W: wDir, H: 1}))
+	b.Put(star, x, y, starStyle)
+	x += tui.StringWidth(star)
+	return b.Put(" direct "+proxyCellStateName(c.state), x, y, m.theme.Dim)
 }
 
 // drawProxyGrid draws the proxy heatmap into b: a grid of colored cells plus a
@@ -237,11 +345,26 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 	}
 	// record the drawn grid size for hit testing
 	m.proxyGridW, m.proxyGridH = w, gridH
-	layout := newProxyGridLayout(len(cells), w, gridH)
-	capacity := layout.cols * layout.rows
-	// Grouping: when there are more proxies than dot-positions, several
-	// proxies share one dot-position and the cell shows the worst state.
-	group := (len(cells) + capacity - 1) / capacity
+	hasDirect := false
+	var directCell proxyCell
+	for _, c := range cells {
+		if c.index == 0 {
+			hasDirect = true
+			directCell = c
+			break
+		}
+	}
+	layout := newProxyGridLayout(len(cells), w, gridH, hasDirect)
+	capacity := layout.proxyCapacity()
+	group := 1
+	if hasDirect {
+		numProxies := len(cells) - 1
+		if capacity > 0 && numProxies > capacity {
+			group = (numProxies + capacity - 1) / capacity
+		}
+	} else if capacity > 0 && len(cells) > capacity {
+		group = (len(cells) + capacity - 1) / capacity
+	}
 	if group < 1 {
 		group = 1
 	}
@@ -250,6 +373,36 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 	now := m.now()
 	for y := 0; y < gridH; y++ {
 		for x := 0; x < w; x++ {
+			if hasDirect && x == 0 && y == 0 {
+				glyph, st := m.directCellStar(directCell, now)
+				b.Set(0, 0, tui.Cell{Rune: glyph, Style: st})
+				continue
+			}
+			if layout.sparse {
+				idx, _ := layout.indices(x, y)
+				if idx < 0 || idx >= len(cells) {
+					continue
+				}
+				c := cells[idx]
+				if c.index == 0 {
+					glyph, st := m.directCellStar(c, now)
+					b.Set(x, y, tui.Cell{Rune: glyph, Style: st})
+					continue
+				}
+				bucket := m.proxyGlowBucket(c, now)
+				st := m.proxyCellStyle(c.state, bucket)
+				if ascii && (th.Name != "mono" || layout.sparse) {
+					glyph := proxyCellASCII(c.state)
+					if c.state == connect.ProxyCellUp {
+						glyph = []rune{'.', ':', '+', '*'}[min(int(bucket)/2, 3)]
+					}
+					b.Set(x, y, tui.Cell{Rune: glyph, Style: st})
+					continue
+				}
+				b.Set(x, y, tui.Cell{Rune: '∙', Style: st})
+				continue
+			}
+
 			upperIdx, lowerIdx := layout.indices(x, y)
 			var worst uint8 = connect.ProxyCellUp
 			var worstBucket uint8
@@ -296,10 +449,6 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 				b.Set(x, y, tui.Cell{Rune: glyph, Style: st})
 				continue
 			}
-			if layout.sparse {
-				b.Set(x, y, tui.Cell{Rune: '∙', Style: st})
-				continue
-			}
 			upperStyle := m.proxyCellStyle(upperState, upperBucket)
 			lowerStyle := m.proxyCellStyle(lowerState, lowerBucket)
 			glyph := '▀'
@@ -330,16 +479,21 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 	}
 	names := []string{"up", "dropped", "connecting", "dead", "parked"}
 	legend := fmt.Sprintf("%d up  %d dropped  %d connecting  %d dead  %d parked", counts[0], counts[1], counts[2], counts[3], counts[4])
-	if tui.StringWidth(legend) > w {
+	totalWidth := tui.StringWidth(legend)
+	if hasDirect {
+		star := "★"
+		if th.ASCII {
+			star = "*"
+		}
+		totalWidth += tui.StringWidth(star+" direct "+proxyCellStateName(directCell.state)) + 2
+	}
+	if totalWidth > w {
 		names = []string{"up", "drop", "conn", "dead", "park"}
 	}
 	x := 0
 	for _, c := range cells {
 		if c.index == 0 {
-			dirText := "direct " + proxyCellStateName(c.state) + "  "
-			wDir := tui.StringWidth(dirText)
-			m.record("legend:direct", b.Absolute(tui.Rect{X: x, Y: gridH, W: wDir, H: 1}))
-			x = b.Put(dirText, x, gridH, th.Dim)
+			x = m.drawLegendDirect(b, x, gridH, c)
 			break
 		}
 	}
@@ -492,7 +646,14 @@ func (m *topModel) proxyCellFirstAt(x, y int) (int, bool) {
 	if x < 0 || x >= m.proxyGridW || y < 0 || y >= m.proxyGridH {
 		return 0, false
 	}
-	layout := newProxyGridLayout(len(cells), m.proxyGridW, m.proxyGridH)
+	hasDirect := false
+	for _, c := range cells {
+		if c.index == 0 {
+			hasDirect = true
+			break
+		}
+	}
+	layout := newProxyGridLayout(len(cells), m.proxyGridW, m.proxyGridH, hasDirect)
 	upperIdx, _ := layout.indices(x, y)
 	if upperIdx < 0 || upperIdx >= len(cells) {
 		return 0, false
@@ -577,9 +738,19 @@ func (m *topModel) proxyCellAt(x, y int) []int {
 	if m.proxyGridW <= 0 || m.proxyGridH <= 0 || len(m.proxyCells) == 0 {
 		return nil
 	}
-	l := newProxyGridLayout(len(m.proxyCells), m.proxyGridW, m.proxyGridH)
+	hasDirect := false
+	for _, c := range m.proxyCells {
+		if c.index == 0 {
+			hasDirect = true
+			break
+		}
+	}
+	if hasDirect && x == 0 && y == 0 {
+		return []int{0}
+	}
+	l := newProxyGridLayout(len(m.proxyCells), m.proxyGridW, m.proxyGridH, hasDirect)
 	upper, lower := l.indices(x, y)
-	capacity := l.cols * l.rows
+	capacity := l.proxyCapacity()
 	if capacity == 0 {
 		return nil
 	}
