@@ -95,6 +95,19 @@ func udpProbeEnabled(state *controlState) bool {
 	return !found || strings.EqualFold(value, "on")
 }
 
+// proxyIPv6ProbeEnabled controls whether IPv6 capability checks run during sweeps.
+func proxyIPv6ProbeEnabled(state *controlState) bool {
+	if state != nil {
+		if value, found := state.get("proxy_ipv6_probe"); found {
+			return strings.EqualFold(value, "on")
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("URNETWORK_PROXY_IPV6_PROBE")); env != "" {
+		return strings.EqualFold(env, "on") || env == "1" || strings.EqualFold(env, "true") || strings.EqualFold(env, "yes")
+	}
+	return true
+}
+
 type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
 
 // A UDP probe tick can take up to its whole interval, so it runs beside the
@@ -223,7 +236,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			} else {
 				candidate.lastChecked = entry.at
 				candidate.status = entry.result.Status
-				candidate.ipv6Due = store.ipv6Probe != nil && entry.ipv6.due(now)
+				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6.due(now)
 			}
 		}
 		candidates = append(candidates, candidate)

@@ -11,6 +11,7 @@ import (
 	"sort"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -389,7 +390,8 @@ type proxyUDPCheckStore struct {
 	// ipv6Probe runs the three-stage IPv6 probe for an identity when its
 	// previous IPv6 result is due. It is nil by default; the store used by
 	// the sweep sets it to runProxyIPv6Stage.
-	ipv6Probe func(context.Context, *connect.ProxySettings, proxyIPv6Result, time.Time, proxyIPv6Dials) (proxyIPv6Result, bool)
+	ipv6Probe     func(context.Context, *connect.ProxySettings, proxyIPv6Result, time.Time, proxyIPv6Dials) (proxyIPv6Result, bool)
+	ipv6ProbesRun atomic.Int64
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -490,7 +492,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		freshUDP := entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status)
 		// the IPv6 stage runs only in checks the background sweep starts, so a
 		// UDP flow or an H3 dial never waits for it
-		ipv6Due := self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && (entry == nil || entry.ipv6.due(now))
+		ipv6Due := proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && (entry == nil || entry.ipv6.due(now))
 		if freshUDP && !ipv6Due {
 			result := entry.result
 			self.mu.Unlock()
@@ -565,6 +567,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		running.result = result
 		if measuredOK {
 			running.ipv6 = measuredIPv6
+			self.ipv6ProbesRun.Add(1)
 		}
 		if result.TCPExit != "" {
 			running.tcpExit = result.TCPExit
@@ -758,6 +761,64 @@ func (self *proxyUDPCheckStore) exitsFor(key string, now time.Time) (string, str
 		return ""
 	}
 	return safe(entry.result.TCPExit), safe(entry.result.UDPExit)
+}
+
+// ipv6Coverage reads cached IPv6 results for online identities.
+func (self *proxyUDPCheckStore) ipv6Coverage(online []string, now time.Time) *SnapshotProxyIPv6 {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	out := &SnapshotProxyIPv6{
+		Probes: self.ipv6ProbesRun.Load(),
+	}
+	for _, key := range online {
+		entry := self.cachedEntryLocked(key)
+		if entry == nil || entry.ipv6.At.IsZero() || !entry.ipv6.retain(now) {
+			out.NotProbed++
+			continue
+		}
+		switch entry.ipv6.Status {
+		case proxyIPv6Yes:
+			out.Yes++
+			switch entry.ipv6.UDP {
+			case "yes":
+				out.UDPYes++
+			case "no", "mismatch":
+				out.UDPNo++
+			default:
+				out.UDPUnknown++
+			}
+		case proxyIPv6No:
+			out.No++
+		case proxyIPv6Unknown:
+			out.Unknown++
+		default:
+			out.NotProbed++
+		}
+	}
+	return out
+}
+
+// ipv6For returns the cached IPv6 status and safe IPv6 exit address.
+func (self *proxyUDPCheckStore) ipv6For(key string, now time.Time) (string, string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.ipv6.At.IsZero() || !entry.ipv6.retain(now) {
+		return "unknown", ""
+	}
+	exit := entry.ipv6.TCPExit
+	if exit == "" {
+		exit = entry.ipv6.UDPExit
+	}
+	safeExit := ""
+	if ip := net.ParseIP(exit); ip != nil && ip.To4() == nil {
+		safeExit = ip.String()
+	}
+	status := string(entry.ipv6.Status)
+	if status == "" {
+		status = "unknown"
+	}
+	return status, safeExit
 }
 
 // size is how many identities the store currently remembers.
