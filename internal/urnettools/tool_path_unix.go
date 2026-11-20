@@ -22,13 +22,14 @@ var toolLinks = []toolLink{
 	{"urnet-tools", "urnet-tools"},
 	{"urnetwork", "urnetwork"},
 	{"urtop", "urnet-tools"},
+	{"ut", "urnet-tools"},
 }
 
 // linkToolsIntoDir symlinks each tool that exists in srcDir into dir, creating
 // dir. A real file that is not a symlink is left alone (it is not ours); a
 // symlink that already points at the right place is left alone; a stale one
 // is repointed. It returns the names it created or repointed.
-func linkToolsIntoDir(dir, srcDir string) (changed []string, err error) {
+func linkToolsIntoDir(dir, srcDir string, noUTAlias bool) (changed []string, err error) {
 	if dir == srcDir {
 		return nil, nil
 	}
@@ -36,6 +37,9 @@ func linkToolsIntoDir(dir, srcDir string) (changed []string, err error) {
 		return nil, err
 	}
 	for _, l := range toolLinks {
+		if l.name == "ut" && (noUTAlias || os.Getenv("URNETWORK_NO_UT_ALIAS") == "1") {
+			continue
+		}
 		name := l.name
 		src := filepath.Join(srcDir, l.target)
 		if _, err := os.Stat(src); err != nil {
@@ -43,6 +47,9 @@ func linkToolsIntoDir(dir, srcDir string) (changed []string, err error) {
 		}
 		dst := filepath.Join(dir, name)
 		if fi, err := os.Lstat(dst); err == nil {
+			if name == "ut" && !utAliasOwned(src, dst) {
+				continue
+			}
 			if fi.Mode()&os.ModeSymlink == 0 {
 				continue
 			}
@@ -62,7 +69,7 @@ func linkToolsIntoDir(dir, srcDir string) (changed []string, err error) {
 }
 
 // sudoLinkTools does the same into a root-owned dir through passwordless sudo.
-func sudoLinkTools(dir, srcDir string) []string {
+func sudoLinkTools(dir, srcDir string, noUTAlias bool) []string {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Second)
 	defer cancel()
 	if exec.CommandContext(ctx, "sudo", "-n", "true").Run() != nil {
@@ -73,6 +80,9 @@ func sudoLinkTools(dir, srcDir string) []string {
 	}
 	var changed []string
 	for _, l := range toolLinks {
+		if l.name == "ut" && (noUTAlias || os.Getenv("URNETWORK_NO_UT_ALIAS") == "1") {
+			continue
+		}
 		name := l.name
 		src := filepath.Join(srcDir, l.target)
 		if _, err := os.Stat(src); err != nil {
@@ -80,6 +90,9 @@ func sudoLinkTools(dir, srcDir string) []string {
 		}
 		dst := filepath.Join(dir, name)
 		if fi, err := os.Lstat(dst); err == nil {
+			if name == "ut" && !utAliasOwned(src, dst) {
+				continue
+			}
 			if fi.Mode()&os.ModeSymlink == 0 {
 				continue // a real file, not ours
 			}
@@ -100,7 +113,7 @@ func sudoLinkTools(dir, srcDir string) []string {
 // user (via /usr/local/bin). Nodes installed before the installer did this
 // only ever run `update`, never the installer again, so update repairs them.
 // Best-effort and quiet unless it changes something.
-func ensureToolOnPath() {
+func ensureToolOnPath(noUTAlias bool) {
 	exe, err := os.Executable()
 	if err != nil {
 		return
@@ -125,7 +138,7 @@ func ensureToolOnPath() {
 	if staged := openrcStagedRootToolPath(); staged != "" {
 		if home, err := os.UserHomeDir(); err == nil && home != "" {
 			dir := filepath.Join(home, ".local", "bin")
-			if changed, err := linkToolsIntoDir(dir, srcDir); err != nil {
+			if changed, err := linkToolsIntoDir(dir, srcDir, noUTAlias); err != nil {
 				fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", dir, err)
 			} else if len(changed) > 0 {
 				fmt.Printf("linked %v into %s so shells without ~/.bashrc find them\n", changed, dir)
@@ -133,12 +146,12 @@ func ensureToolOnPath() {
 		}
 		stagedDir := filepath.Dir(staged)
 		if os.Geteuid() == 0 {
-			if changed, err := linkToolsIntoDir(sysDir, stagedDir); err != nil {
+			if changed, err := linkToolsIntoDir(sysDir, stagedDir, noUTAlias); err != nil {
 				fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", sysDir, err)
 			} else if len(changed) > 0 {
 				fmt.Printf("linked %v into %s\n", changed, sysDir)
 			}
-		} else if changed := sudoLinkTools(sysDir, stagedDir); len(changed) > 0 {
+		} else if changed := sudoLinkTools(sysDir, stagedDir, noUTAlias); len(changed) > 0 {
 			fmt.Printf("linked %v into %s so root and other users find them\n", changed, sysDir)
 		}
 		return
@@ -146,19 +159,19 @@ func ensureToolOnPath() {
 
 	if home, err := os.UserHomeDir(); err == nil && home != "" {
 		dir := filepath.Join(home, ".local", "bin")
-		if changed, err := linkToolsIntoDir(dir, srcDir); err != nil {
+		if changed, err := linkToolsIntoDir(dir, srcDir, noUTAlias); err != nil {
 			fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", dir, err)
 		} else if len(changed) > 0 {
 			fmt.Printf("linked %v into %s so shells without ~/.bashrc find them\n", changed, dir)
 		}
 	}
 	if os.Geteuid() == 0 {
-		if changed, err := linkToolsIntoDir(sysDir, srcDir); err != nil {
+		if changed, err := linkToolsIntoDir(sysDir, srcDir, noUTAlias); err != nil {
 			fmt.Fprintf(os.Stderr, "note: could not link urnet-tools into %s: %v\n", sysDir, err)
 		} else if len(changed) > 0 {
 			fmt.Printf("linked %v into %s\n", changed, sysDir)
 		}
-	} else if changed := sudoLinkTools(sysDir, srcDir); len(changed) > 0 {
+	} else if changed := sudoLinkTools(sysDir, srcDir, noUTAlias); len(changed) > 0 {
 		fmt.Printf("linked %v into %s so root and other users find them\n", changed, sysDir)
 	}
 }

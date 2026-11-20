@@ -1,5 +1,8 @@
 # 📦 Installation Guide
 
+
+The installer creates `ut` next to `urnet-tools` as a shortcut. Windows uses a copy named `ut.exe`. An existing unrelated `ut` is left unchanged. Set `URNETWORK_NO_UT_ALIAS=1` or pass `--no-ut-alias` to the Unix installer or update command to skip the shortcut. The PowerShell installer accepts `-NoUTAlias`. The `urnet-docker` wrapper has no short alias.
+
 This guide covers the Linux installer, user-level systemd service, post-install commands, and host optimization tools. Alpine Linux (OpenRC), FreeBSD and OpenBSD have their own pages: [OpenRC](/full-bars/urnetwork-3.23-fix/wiki/OpenRC), [FreeBSD](/full-bars/urnetwork-3.23-fix/wiki/FreeBSD) and [OpenBSD](/full-bars/urnetwork-3.23-fix/wiki/OpenBSD). OpenBSD has its own installer, described on its page.
 
 ## 🚀 Quick Start

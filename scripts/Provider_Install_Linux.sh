@@ -1,4 +1,17 @@
 #!/bin/sh
+# Create the optional short command beside the installed tool.
+ensure_ut_alias() {
+    [ "${URNETWORK_NO_UT_ALIAS:-}" = 1 ] && return 0
+    _ut_dir="$install_path/bin"
+    [ -f "$_ut_dir/urnet-tools" ] || return 0
+    if [ -e "$_ut_dir/ut" ] || [ -L "$_ut_dir/ut" ]; then
+        if [ -L "$_ut_dir/ut" ] && [ "$(readlink "$_ut_dir/ut")" = urnet-tools ]; then return 0; fi
+        printf '%s\n' "ut alias: $_ut_dir/ut already exists, leaving it unchanged" >&2
+        return 0
+    fi
+    ln -s urnet-tools "$_ut_dir/ut" || printf '%s\n' "ut alias: could not create $_ut_dir/ut" >&2
+}
+
 # urnet-tools: URnetwork provider manager
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
@@ -1123,6 +1136,10 @@ while [ $# -gt 0 ]; do
             shift
             ;;
 
+        --no-ut-alias)
+            URNETWORK_NO_UT_ALIAS=1; export URNETWORK_NO_UT_ALIAS; shift
+            ;;
+
         --)
             shift
             break
@@ -1398,9 +1415,15 @@ link_tools_into_dir ()
     local dir="$1" src="$2" entry name target
     shift 2
     "$@" mkdir -p "$dir" 2>/dev/null || return 1
-    for entry in urnet-tools:urnet-tools urnetwork:urnetwork urtop:urnet-tools; do
+    for entry in urnet-tools:urnet-tools urnetwork:urnetwork urtop:urnet-tools ut:urnet-tools; do
         name="${entry%%:*}"
         target="${entry#*:}"
+        if [ "$name" = ut ]; then
+            [ "${URNETWORK_NO_UT_ALIAS:-}" = 1 ] && continue
+            if [ -e "$dir/ut" ] || [ -L "$dir/ut" ]; then
+                [ -L "$dir/ut" ] && [ "$dir/ut" -ef "$src/urnet-tools" ] || continue
+            fi
+        fi
         [ -e "$src/$target" ] || continue
         if [ -e "$dir/$name" ] && [ ! -L "$dir/$name" ]; then
             continue
@@ -3195,6 +3218,7 @@ do_install ()
 
     # The symlinks are not a shell-startup edit, so they are made regardless of
     # -B; the rc-file blocks honour it.
+    ensure_ut_alias
     ensure_tools_on_path "$install_path"
     if [ "$no_modify_bashrc" -eq 0 ]; then
         add_path_blocks "$install_path"

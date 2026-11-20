@@ -10,6 +10,7 @@ param(
 
     [Switch]$NoRestartDownload = $false,
     [Switch]$NoCleanup = $false,
+    [Switch]$NoUTAlias = $false,
     [Switch]$NonInteractive = $false,
     [Switch]$AddToStartup = $false
 );
@@ -252,6 +253,11 @@ Write-Host "Installing $BinaryPath => $InstalledBinaryPath"
 Move-Item -Path $BinaryPath $InstalledBinaryPath
 
 $InstalledToolsBinaryPath = Join-Path $Destination -ChildPath "urnet-tools.exe"
+$UTAliasPath = Join-Path $Destination -ChildPath "ut.exe"
+$UTAliasOwned = -not (Test-Path -LiteralPath $UTAliasPath)
+if ((Test-Path -LiteralPath $UTAliasPath -PathType Leaf) -and (Test-Path -LiteralPath $InstalledToolsBinaryPath -PathType Leaf)) {
+    $UTAliasOwned = (Get-FileHash -LiteralPath $UTAliasPath).Hash -eq (Get-FileHash -LiteralPath $InstalledToolsBinaryPath).Hash
+}
 
 # The tool is a Go binary shipped as a standalone release asset
 # (urnet-tools-windows-<arch>, v3.23.0-fix.28+). Digest-verified
@@ -373,6 +379,11 @@ if (-not $ToolGoInstalled -and $ToolAsset -and $ToolDigest) {
 if (-not $ToolGoInstalled) {
     Write-Error "Failed to install Go urnet-tools binary. The provider requires urnet-tools.exe (Go binary) to manage lifecycle on Windows. Please download it manually from the release page."
     exit 1
+}
+
+if (-not $NoUTAlias -and $env:URNETWORK_NO_UT_ALIAS -ne "1") {
+    if ($UTAliasOwned) { Copy-Item -LiteralPath $InstalledToolsBinaryPath -Destination $UTAliasPath -Force }
+    else { Write-Warning "ut alias: $UTAliasPath already exists, leaving it unchanged" }
 }
 
 Set-Content $VersionFile $ReleaseVersion

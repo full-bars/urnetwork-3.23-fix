@@ -432,7 +432,7 @@ func cmdUpdate(args []string, force, dryRun bool) error {
 
 	// Make the tool findable from non-interactive shells and from root.
 	// Installs that predate the installer doing this are repaired here.
-	ensureToolOnPath()
+	ensureToolOnPath(cfg.NoUTAlias)
 
 	if failures > 0 {
 		return fmt.Errorf("%d of %d provider(s) failed to update", failures, len(chosen))
@@ -1600,6 +1600,9 @@ func runningToolAssetName() (string, error) {
 	// the .exe name there, but release assets are bare. On non-Windows hosts
 	// this is a no-op for any real tool binary (none ship with .exe names).
 	base = strings.TrimSuffix(base, ".exe")
+	if base == "ut" {
+		base = "urnet-tools"
+	}
 	if base == "" {
 		return "", fmt.Errorf("empty executable base name for %q", exe)
 	}
@@ -1649,11 +1652,13 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		return fmt.Errorf("stage dir: %w", err)
 	}
 
+	aliasState := captureUTCopy(exePath, cfg)
+
 	// Skip when already current: compare the installed binary against the
 	// release digest BEFORE downloading (no point re-downloading ourselves).
 	if cur, err := fileSHA256(exePath); err == nil && strings.EqualFold(cur, cfg.ToolDigest) {
 		fmt.Printf("tool %s already on %s\n", cfg.ToolAsset, cfg.Tag)
-		updateUTSymlink(exePath, cfg)
+		updateUTAlias(exePath, cfg, aliasState)
 		return nil
 	}
 
@@ -1728,7 +1733,7 @@ func selfUpdateToolTo(exePath string, cfg updateConfig) error {
 		}
 	}
 	fmt.Printf("updated %s -> %s\n", cfg.ToolAsset, cfg.Tag)
-	updateUTSymlink(exePath, cfg)
+	updateUTAlias(exePath, cfg, aliasState)
 	return nil
 }
 

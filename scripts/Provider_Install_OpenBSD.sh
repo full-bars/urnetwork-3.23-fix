@@ -1,4 +1,17 @@
 #!/bin/sh
+# Create the optional short command beside the installed tool.
+ensure_ut_alias() {
+    [ "${URNETWORK_NO_UT_ALIAS:-}" = 1 ] && return 0
+    _ut_dir="$install_path/bin"
+    [ -f "$_ut_dir/urnet-tools" ] || return 0
+    if [ -e "$_ut_dir/ut" ] || [ -L "$_ut_dir/ut" ]; then
+        if [ -L "$_ut_dir/ut" ] && [ "$(readlink "$_ut_dir/ut")" = urnet-tools ]; then return 0; fi
+        printf '%s\n' "ut alias: $_ut_dir/ut already exists, leaving it unchanged" >&2
+        return 0
+    fi
+    priv ln -s urnet-tools "$_ut_dir/ut" || printf '%s\n' "ut alias: could not create $_ut_dir/ut" >&2
+}
+
 # urnet-tools: URnetwork provider manager (OpenBSD)
 # Author: full-bars (GitHub), onlyinthe707 / "mesocyclone" (Discord)
 # Based on: Ar Rakin, Ryan Mello (original)
@@ -911,6 +924,7 @@ do_install() {
 
     priv mv -f "$staged_tool" "$install_path/bin/urnet-tools" || { pr_err "Failed to install urnet-tools"; exit 1; }
     staged_tool=""
+    ensure_ut_alias
     link_tool || { rm -rf "$tmpdir"; exit 1; }
     priv mv -f "$staged" "$provider_bin" || {
         pr_err "Failed to install binary"
@@ -1342,6 +1356,7 @@ while [ $# -gt 0 ]; do
         -h|--help)    show_help; exit 0 ;;
         -v|--version) do_version; exit 0 ;;
         -f|--force)   FORCE=1; shift ;;
+        --no-ut-alias) URNETWORK_NO_UT_ALIAS=1; export URNETWORK_NO_UT_ALIAS; shift ;;
         *)            break ;;
     esac
 done

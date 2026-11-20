@@ -1,5 +1,8 @@
 # urnet-tools (Go) — Provider-Aware Fleet Ops
 
+
+The installer creates `ut` next to `urnet-tools` as a shortcut. Windows uses a copy named `ut.exe`. An existing unrelated `ut` is left unchanged. Set `URNETWORK_NO_UT_ALIAS=1` or pass `--no-ut-alias` to the Unix installer or update command to skip the shortcut. The PowerShell installer accepts `-NoUTAlias`. The `urnet-docker` wrapper has no short alias.
+
 > Applies to v3.23.0-fix.27.0+ (updated through v3.23.0-fix.34.2). The legacy shell tool (POSIX `Provider_Install_Linux.sh` + Windows `urnet-tools.ps1`) is replaced by a single provider-aware Go binary. Subcommand names and usage are preserved and expanded; what changed is **how the tool decides which provider it operates on**.
 
 ## Why this exists

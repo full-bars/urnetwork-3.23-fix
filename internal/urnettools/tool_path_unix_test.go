@@ -21,18 +21,18 @@ func mkInstall(t *testing.T) string {
 
 func TestLinkToolsIntoDirCreatesAndIsIdempotent(t *testing.T) {
 	src, dir := mkInstall(t), filepath.Join(t.TempDir(), "bin")
-	changed, err := linkToolsIntoDir(dir, src)
-	if err != nil || len(changed) != 3 {
+	changed, err := linkToolsIntoDir(dir, src, false)
+	if err != nil || len(changed) != 4 {
 		t.Fatalf("first run: changed=%v err=%v", changed, err)
 	}
 	// urtop is not a binary of its own: it is a name urnet-tools answers to, so
 	// it points at the urnet-tools binary.
-	for link, target := range map[string]string{"urnet-tools": "urnet-tools", "urnetwork": "urnetwork", "urtop": "urnet-tools"} {
+	for link, target := range map[string]string{"urnet-tools": "urnet-tools", "urnetwork": "urnetwork", "urtop": "urnet-tools", "ut": "urnet-tools"} {
 		if got, _ := os.Readlink(filepath.Join(dir, link)); got != filepath.Join(src, target) {
 			t.Fatalf("%s -> %q, want %q", link, got, filepath.Join(src, target))
 		}
 	}
-	if changed, err := linkToolsIntoDir(dir, src); err != nil || len(changed) != 0 {
+	if changed, err := linkToolsIntoDir(dir, src, false); err != nil || len(changed) != 0 {
 		t.Fatalf("second run must be a quiet no-op: changed=%v err=%v", changed, err)
 	}
 }
@@ -45,7 +45,7 @@ func TestLinkToolsIntoDirNeverClobbersAndRepointsStale(t *testing.T) {
 	if err := os.Symlink("/nonexistent/urnetwork", filepath.Join(dir, "urnetwork")); err != nil {
 		t.Skipf("symlinks unsupported: %v", err)
 	}
-	changed, err := linkToolsIntoDir(dir, src)
+	changed, err := linkToolsIntoDir(dir, src, false)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -55,7 +55,7 @@ func TestLinkToolsIntoDirNeverClobbersAndRepointsStale(t *testing.T) {
 	if got, _ := os.Readlink(filepath.Join(dir, "urnetwork")); got != filepath.Join(src, "urnetwork") {
 		t.Fatalf("stale link not repointed: %q", got)
 	}
-	if len(changed) != 2 || changed[0] != "urnetwork" || changed[1] != "urtop" {
+	if len(changed) != 3 || changed[0] != "urnetwork" || changed[1] != "urtop" || changed[2] != "ut" {
 		t.Fatalf("changed = %v, want urnetwork (repointed) and urtop (new); urnet-tools is not ours", changed)
 	}
 }
@@ -70,8 +70,8 @@ func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
 			t.Skipf("symlinks unsupported: %v", err)
 		}
 	}
-	changed, err := linkToolsIntoDir(dir, src)
-	if err != nil || len(changed) != 1 || changed[0] != "urtop" {
+	changed, err := linkToolsIntoDir(dir, src, false)
+	if err != nil || len(changed) != 2 || changed[0] != "urtop" || changed[1] != "ut" {
 		t.Fatalf("an older install should gain only urtop: changed=%v err=%v", changed, err)
 	}
 
@@ -82,7 +82,7 @@ func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
 	if err := os.Symlink("/nonexistent/urnet-tools", filepath.Join(dir, "urtop")); err != nil {
 		t.Fatal(err)
 	}
-	if changed, err := linkToolsIntoDir(dir, src); err != nil || len(changed) != 1 || changed[0] != "urtop" {
+	if changed, err := linkToolsIntoDir(dir, src, false); err != nil || len(changed) != 1 || changed[0] != "urtop" {
 		t.Fatalf("stale urtop should be repointed: changed=%v err=%v", changed, err)
 	}
 
@@ -91,7 +91,7 @@ func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(dir, "urtop"), []byte("theirs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	linkToolsIntoDir(dir, src)
+	linkToolsIntoDir(dir, src, false)
 	if b, _ := os.ReadFile(filepath.Join(dir, "urtop")); string(b) != "theirs" {
 		t.Fatalf("a real urtop file was overwritten: %q", b)
 	}
@@ -99,7 +99,7 @@ func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
 
 func TestLinkToolsIntoDirSkipsTheInstallDirItself(t *testing.T) {
 	src := mkInstall(t)
-	if changed, err := linkToolsIntoDir(src, src); err != nil || len(changed) != 0 {
+	if changed, err := linkToolsIntoDir(src, src, false); err != nil || len(changed) != 0 {
 		t.Fatalf("linking a dir into itself must do nothing: %v %v", changed, err)
 	}
 }
@@ -109,7 +109,7 @@ func TestLinkToolsIntoDirSkipsTheInstallDirItself(t *testing.T) {
 func TestEnsureToolOnPathIgnoresNonToolBinaries(t *testing.T) {
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	ensureToolOnPath()
+	ensureToolOnPath(false)
 	if _, err := os.Stat(filepath.Join(home, ".local")); err == nil {
 		t.Fatal("ensureToolOnPath created files for a non-urnet-tools executable")
 	}

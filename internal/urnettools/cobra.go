@@ -356,6 +356,7 @@ func newUpdateCmd() *cobra.Command {
 	}),
 		"Download the latest provider release, check its sha256 digest, swap the binary\nand restart the unit. The urnet-tools binary is refreshed from the same\nrelease. With several providers and no target flag it asks which to update.\nNames in --include and --exclude are unit, user, network or network id.",
 		"  urnet-tools update\n  urnet-tools update --unit urnetwork-native.service\n  urnet-tools update --all --force\n  urnet-tools update --all --exclude mynetwork\n  urnet-tools update --tag v3.23.0-fix.30.5",
+		helpFlag{name: "no-ut-alias", usage: "skip creating or refreshing the ut shortcut"},
 		helpFlag{name: "all", usage: "update every provider on the box (no target flag)"},
 		helpFlag{name: "include", value: true, usage: "update only these providers, as a comma separated `list`"},
 		helpFlag{name: "exclude", value: true, usage: "skip these providers, as a comma separated `list`"},
@@ -409,7 +410,7 @@ func newSelfUpdateCmd() *cobra.Command {
 		return parseGlobal(args, func(force, dryRun bool, rest []string) error {
 			return cmdSelfUpdate(rest, force, dryRun)
 		})
-	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force")
+	}), "Update only the urnet-tools binary itself to the latest release, verifying its sha256 digest before swapping it in. No provider is touched or restarted. Pin a version with --tag, or point at an exact asset with --digest and --url. Pass --no-ut-alias to skip the ut shortcut.", "  urnet-tools self-update\n  urnet-tools self-update --tag v3.23.0-fix.30.5\n  urnet-tools self-update --force")
 }
 
 func newLogsCmd() *cobra.Command {

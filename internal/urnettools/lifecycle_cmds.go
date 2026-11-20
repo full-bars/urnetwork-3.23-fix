@@ -135,6 +135,9 @@ func cmdUninstall(args []string, force, dryRun bool) error {
 	// a bare relative path.
 	// Both guards clean the path so "/" and "/./" are caught identically.
 	// Removal errors are REPORTED, not hidden.
+	if err := removeInstalledUTAlias(filepath.Dir(p.Binary)); err != nil {
+		fmt.Fprintf(os.Stderr, "uninstall: ut alias: %v\n", err)
+	}
 	removedAny := false
 	hadErrors := false
 	if safeRemoveTarget(p.Binary) {
