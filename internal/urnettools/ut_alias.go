@@ -56,6 +56,10 @@ func captureUTCopy(exe string, cfg updateConfig) bool {
 	}
 	dir := filepath.Dir(exe)
 	tool, alias := filepath.Join(dir, "urnet-tools.exe"), filepath.Join(dir, "ut.exe")
+	return utCopyOwned(tool, alias)
+}
+
+func utCopyOwned(tool, alias string) bool {
 	info, err := os.Lstat(alias)
 	if os.IsNotExist(err) {
 		return true

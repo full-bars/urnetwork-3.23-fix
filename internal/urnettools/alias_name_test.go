@@ -31,4 +31,12 @@ func TestAliasCobraName(t *testing.T) {
 	if got := root.HelpTemplate(); !strings.Contains(got, "Usage:\n  ut [command]") {
 		t.Fatalf("help does not use alias")
 	}
+	cmd, _, err := root.Find([]string{"update"})
+	if err != nil || !strings.Contains(cmd.Example, "ut update") || strings.Contains(cmd.Example, "urnet-tools update") {
+		t.Fatalf("update examples do not use alias: %q, %v", cmd.Example, err)
+	}
+	var completion strings.Builder
+	if err := root.GenBashCompletion(&completion); err != nil || !strings.Contains(completion.String(), "complete -o default -F __start_ut ut") {
+		t.Fatalf("completion does not register ut: %v", err)
+	}
 }

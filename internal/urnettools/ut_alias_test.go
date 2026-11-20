@@ -71,3 +71,26 @@ func TestRemoveInstalledUTAlias(t *testing.T) {
 		t.Fatalf("foreign alias changed: %q %v", b, err)
 	}
 }
+
+func TestUTCopyOwnership(t *testing.T) {
+	dir := t.TempDir()
+	tool, alias := filepath.Join(dir, "urnet-tools.exe"), filepath.Join(dir, "ut.exe")
+	if err := os.WriteFile(tool, []byte("one"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if !utCopyOwned(tool, alias) {
+		t.Fatal("missing alias should be creatable")
+	}
+	if err := os.WriteFile(alias, []byte("one"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if !utCopyOwned(tool, alias) {
+		t.Fatal("matching copy should be owned")
+	}
+	if err := os.WriteFile(alias, []byte("other"), 0755); err != nil {
+		t.Fatal(err)
+	}
+	if utCopyOwned(tool, alias) {
+		t.Fatal("foreign copy must not be owned")
+	}
+}

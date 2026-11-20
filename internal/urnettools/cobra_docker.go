@@ -3,6 +3,7 @@ package urnettools
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 )
@@ -15,6 +16,9 @@ import (
 func withHelp(cmd *cobra.Command, long, example string) *cobra.Command {
 	cmd.Long = long
 	if example != "" {
+		if programName() == "ut" {
+			example = strings.ReplaceAll(example, "urnet-tools ", "ut ")
+		}
 		cmd.Example = example
 	}
 	return cmd
