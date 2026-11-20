@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -48,11 +49,13 @@ func TestUDPPersistNowNeverMovesBackwards(t *testing.T) {
 // The byte limit cuts at the last entry that fits and the file stays valid.
 func TestUDPPersistByteLimitCutsAtLastFittingEntry(t *testing.T) {
 	base := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
-	list := make([]udpPersistEntry, 0, udpStateMaxEntries)
-	for i := 0; i < udpStateMaxEntries; i++ {
+	const entryCount = 1025
+	list := make([]udpPersistEntry, 0, entryCount)
+	oversized := strings.Repeat("x", 64<<10)
+	for i := 0; i < entryCount; i++ {
 		list = append(list, udpPersistEntry{
 			Key: fmt.Sprintf("%064x", i), Status: proxyUDPOK, At: base.Add(-time.Duration(i) * time.Second),
-			TCPExit: "2001:db8:ffff:ffff:ffff:ffff:ffff:ffff", UDPExit: "2001:db8:ffff:ffff:ffff:ffff:ffff:fffe",
+			TCPExit: oversized,
 		})
 	}
 	path := filepath.Join(t.TempDir(), "state.json")
@@ -71,7 +74,7 @@ func TestUDPPersistByteLimitCutsAtLastFittingEntry(t *testing.T) {
 	if err := json.Unmarshal(b, &f); err != nil {
 		t.Fatal(err)
 	}
-	if len(f.Entries)+len(dropped) != udpStateMaxEntries || len(dropped) == 0 {
+	if len(f.Entries)+len(dropped) != entryCount || len(dropped) == 0 {
 		t.Fatalf("kept %d dropped %d", len(f.Entries), len(dropped))
 	}
 	// one more entry must not have fitted
