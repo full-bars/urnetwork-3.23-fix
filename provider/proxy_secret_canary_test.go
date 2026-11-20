@@ -51,6 +51,67 @@ func TestProxySecretAddAndControlOutputs(t *testing.T) {
 	}
 }
 
+func TestProxySecretImportOutputAndFiles(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	line := "example.com:1080:" + secretCanaryUser + ":" + secretCanaryPassword
+	source := filepath.Join(t.TempDir(), "input")
+	if err := os.WriteFile(source, []byte(line+"\n"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	output := captureOutput(t, func() {
+		proxyAdd(docopt.Opts{"<key_address>": []string{}, "--file": source, "-f": true})
+	})
+	if _, ok := readProxyConfig().Servers[line]; !ok {
+		t.Fatal("proxy was not imported")
+	}
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(output, secret) {
+			t.Error("import output contains a canary")
+		}
+	}
+	privateConfig := filepath.Join(home, ".urnetwork", "proxy")
+	err := filepath.WalkDir(home, func(path string, entry os.DirEntry, err error) error {
+		if err != nil {
+			return err
+		}
+		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
+			t.Error("unexpected non-regular file in test home")
+			return nil
+		}
+		data, err := os.ReadFile(path)
+		if err != nil {
+			return err
+		}
+		if path == privateConfig {
+			if runtime.GOOS != "windows" && info.Mode().Perm() != 0600 {
+				t.Error("private proxy configuration is not mode 0600")
+			}
+			if !strings.Contains(string(data), secretCanaryPassword) {
+				t.Error("private proxy configuration does not contain imported credentials")
+			}
+			return nil
+		}
+		for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+			if strings.Contains(string(data), secret) {
+				t.Error("unexpected file in test home contains a canary")
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+}
+
 func TestProxySecretStateFilesPrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
 		t.Skip("Unix file permission bits are not enforced on Windows")
