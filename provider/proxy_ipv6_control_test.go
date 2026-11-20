@@ -26,7 +26,17 @@ func TestProxyIPv6ProbeControl(t *testing.T) {
 	if validateControlValue("proxy_ipv6_probe", "invalid") == nil {
 		t.Fatal("invalid value accepted")
 	}
-	if err := state.clear("proxy_ipv6_probe"); err != nil || !proxyIPv6ProbeEnabled(state) {
+	// clear from an explicit off, so a clear that kept the override fails here
+	if err := state.set("proxy_ipv6_probe", "off"); err != nil || proxyIPv6ProbeEnabled(state) {
+		t.Fatal("off must disable the probe before the clear")
+	}
+	if err := state.clear("proxy_ipv6_probe"); err != nil {
+		t.Fatalf("clear failed: %v", err)
+	}
+	if _, found := state.get("proxy_ipv6_probe"); found {
+		t.Fatal("clear must remove the override")
+	}
+	if !proxyIPv6ProbeEnabled(state) {
 		t.Fatal("clear must restore default (on)")
 	}
 }

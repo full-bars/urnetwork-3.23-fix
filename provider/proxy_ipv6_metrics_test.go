@@ -74,8 +74,13 @@ func TestWriteIPv6ProxyMetrics(t *testing.T) {
 		`# TYPE urnet_proxy_ipv6_probes_total counter`,
 		`urnet_proxy_ipv6_probes_total 1004`,
 	}
+	// whole lines, so "...} 120" cannot satisfy an expected "...} 12"
+	rendered := make(map[string]bool)
+	for _, line := range strings.Split(out, "\n") {
+		rendered[line] = true
+	}
 	for _, exp := range expectedLines {
-		if !strings.Contains(out, exp) {
+		if !rendered[exp] {
 			t.Fatalf("missing expected metric line: %q in:\n%s", exp, out)
 		}
 	}

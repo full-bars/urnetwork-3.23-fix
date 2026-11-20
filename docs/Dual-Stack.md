@@ -64,6 +64,8 @@ The extra connection starts when the cached measurement shows IPv6 for TCP and o
 - IPv6 UDP works with matching exit addresses and the IPv4 UDP relay is ok.
 - The proxy has no UDP relay at all. The platform then labels the provider dual stack with TCP only, and the identity refuses UDP flows at once.
 
+The provider does not see which family the proxy used for the name. The pin relies on the platform's IPv6 service name having only an AAAA record. A name with both records could let a proxy connect over IPv4, and a SOCKS5 CONNECT reply does not say which family it used. The platform decides the family from the exit it observes.
+
 A proxy with IPv4 UDP but a failing IPv6 UDP relay stays as it is, because the platform would drop its IPv6 label before it dropped UDP. A proxy that has IPv6 only, with no IPv4 egress, is not covered yet.
 
 The connection needs two new measurements in a row to start and two to stop, so a proxy that changes its answer does not flap. A measurement older than twice its interval stops it at once. `urnet-tools set proxy-dualstack off` is an emergency switch that stops every extra connection and keeps them off. It is on by default. `urnet_proxy_ipv6_transports` shows how many identities hold one.

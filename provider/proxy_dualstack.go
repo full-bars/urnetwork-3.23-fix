@@ -201,14 +201,15 @@ func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.Client
 		return false
 	}
 	self.extra = extra
+	// counted under mu, so a stopExtra that follows cannot decrement first
+	proxyIPv6TransportsRunning.Add(1)
+	proxyIPv6TransportStarts.Add(1)
 	latest := self.auth
 	self.mu.Unlock()
 	if latest != auth {
 		extra.SetAuth(latest)
 	}
 	self.authMu.Unlock()
-	proxyIPv6TransportsRunning.Add(1)
-	proxyIPv6TransportStarts.Add(1)
 	return true
 }
 
@@ -217,13 +218,15 @@ func (self *proxiedPlatformTransport) stopExtra() bool {
 	self.mu.Lock()
 	extra := self.extra
 	self.extra = nil
+	if extra != nil {
+		proxyIPv6TransportsRunning.Add(-1)
+		proxyIPv6TransportStops.Add(1)
+	}
 	self.mu.Unlock()
 	if extra == nil {
 		return false
 	}
 	extra.Close()
-	proxyIPv6TransportsRunning.Add(-1)
-	proxyIPv6TransportStops.Add(1)
 	return true
 }
 
@@ -253,10 +256,17 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		self.gate = proxyIPv6Gate{}
 		return
 	}
-	udp, v6, state := self.store.measurement(self.key)
+	udp, v6, state := self.store.measurement(self.key, now)
 	if state == measurementInFlight {
 		// a UDP check is running: its zero result would read as a bad
-		// observation, so this poll changes nothing
+		// observation, so this poll changes nothing. An IPv6 record that has
+		// expired meanwhile still stops a running transport
+		if self.gate.running && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
+			if self.transport.stopExtra() {
+				tlog("[ipv6] proxy identity: IPv6 transport stopped (the IPv6 result expired)\n")
+			}
+			self.gate = proxyIPv6Gate{lastAt: self.gate.lastAt}
+		}
 		return
 	}
 	if state == measurementMissing {
@@ -274,8 +284,10 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 			tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
 		} else {
 			// the builder declined, one runs already, or the wrapper is closed:
-			// forget the start so the next two measurements try again
+			// forget the start and its streak, so a poll of the same result
+			// does not retry and the next two new measurements do
 			self.gate.running = false
+			self.gate.yes = 0
 		}
 	}
 	if stop && self.transport.stopExtra() {
@@ -312,7 +324,9 @@ const (
 )
 
 // measurement returns the cached UDP result and IPv6 result of an identity.
-func (self *proxyUDPCheckStore) measurement(key string) (proxyUDPResult, proxyIPv6Result, measurementState) {
+// A UDP result past its TTL is returned as unknown, so a result restored from
+// disk cannot qualify a transport after its own evidence expired.
+func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDPResult, proxyIPv6Result, measurementState) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 	entry := self.cachedEntryLocked(key)
@@ -321,6 +335,9 @@ func (self *proxyUDPCheckStore) measurement(key string) (proxyUDPResult, proxyIP
 	}
 	if entry.done != nil {
 		return proxyUDPResult{}, entry.ipv6, measurementInFlight
+	}
+	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementReady
 	}
 	return entry.result, entry.ipv6, measurementReady
 }

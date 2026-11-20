@@ -144,3 +144,19 @@ func TestTopIPv6CoverageIsNotOverwrittenByTheStyleLegend(t *testing.T) {
 		}
 	}
 }
+
+// The compact panel of a small pool has three content rows. The IPv6 row must
+// keep its place when the optional UDP percentage line would take it.
+func TestTopCompactPanelKeepsTheIPv6Row(t *testing.T) {
+	m := modelWithProxies(t, 1, 0, 0, 0)
+	m.snap.Proxies.UDP = &SnapshotProxyUDP{OK: 1}
+	m.snap.Proxies.IPv6 = &SnapshotProxyIPv6{Yes: 1}
+	buf := tui.New(100, m.proxiesRows()-2)
+	m.drawProxiesCompact(buf)
+	out := buf.String()
+	for _, want := range []string{"1 up", "udp 1 ok", "IPv6 proxies: ", "1 yes"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("compact panel missing %q:\n%s", want, out)
+		}
+	}
+}

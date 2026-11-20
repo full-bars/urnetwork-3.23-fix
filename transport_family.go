@@ -273,7 +273,10 @@ func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettin
 // (withPinnedIpFamily), the control family dial narrows the network, and
 // ProxySettings.NewDialContext hands the family hostname to the proxy
 // (proxyDialCarriesName), so the proxy reaches the platform over the pinned
-// family. Extenders and VLESS servers stay off, as for a direct pin. The
+// family. That relies on the platform name having only an AAAA record: the
+// provider cannot see which family the proxy used, so a name with both records
+// could be reached over IPv4 and the platform would observe that exit instead.
+// Extenders and VLESS servers stay off, as for a direct pin. The
 // caller's settings are not mutated.
 func NewProxiedFamilyClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
 	proxied := *settings
@@ -628,6 +631,12 @@ func (self *PlatformTransport) pinned() bool {
 	return self.ipFamily != 0
 }
 
+// proxiedPin reports whether this pinned transport reaches the platform
+// through a proxy (NewProxiedFamilyClientStrategy).
+func (self *PlatformTransport) proxiedPin() bool {
+	return self.pinned() && self.clientStrategy != nil && self.clientStrategy.ConnectSettings().ProxySettings != nil
+}
+
 // SetEnabled is the owner's switch. Disabling closes the live connection and
 // parks every mode runner before its next dial; enabling lets them dial again.
 // A transport constructed with StartDisabled begins parked.
@@ -739,7 +748,10 @@ func (self *PlatformTransport) refreshFamilyHold() {
 		defer self.familyHoldLock.Unlock()
 		if pinnedFamilyPolicyConflict(self.ipFamily) {
 			hold = PlatformTransportStateIdlePolicy
-		} else if !pinnedFamilySupported(self.ipFamily) {
+		} else if !self.proxiedPin() && !pinnedFamilySupported(self.ipFamily) {
+			// a pin that dials through a proxy does not use this host's address
+			// of the family: the proxy supplies the exit, so the local probe and
+			// the interface bind say nothing about whether it can connect
 			hold = PlatformTransportStateSleeping
 		} else if routeHold = self.routeHold.value().hold; 0 < routeHold {
 			hold = PlatformTransportStateSleeping

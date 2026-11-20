@@ -237,6 +237,9 @@ func controllerFixture(t *testing.T) (*proxiedIPv6Controller, *fakePlatformTrans
 			return &fakePlatformTransport{}
 		},
 	}
+	// a test that ends with the extra transport running must not leak its
+	// increment of the running gauge into later tests
+	t.Cleanup(func() { transport.stopExtra() })
 	return controller, base, &builds, store, settings
 }
 
@@ -334,16 +337,65 @@ func TestProxiedIPv6ControllerDecliningBuilderTriesAgain(t *testing.T) {
 		return nil
 	}
 	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	// new measurements 0..3: the build is tried on the second and on the fourth
+	// only, because a decline needs two new results before the next attempt
+	wantAttempts := []int{0, 1, 1, 2}
 	for i := 0; i < 4; i++ {
 		at := t0.Add(time.Duration(i) * 13 * time.Hour)
 		storeWithEntry(store, settings, proxyUDPOK, at, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
 		controller.step(at)
+		if attempts != wantAttempts[i] {
+			t.Fatalf("after measurement %d the builder ran %d times, want %d", i, attempts, wantAttempts[i])
+		}
+		// a poll of the same result changes nothing
+		controller.step(at.Add(time.Minute))
+		if attempts != wantAttempts[i] {
+			t.Fatalf("a repeated poll of measurement %d ran the builder (%d, want %d)", i, attempts, wantAttempts[i])
+		}
 	}
 	if controller.transport.hasExtra() {
 		t.Fatal("a declined build left a transport")
 	}
-	if attempts < 2 {
-		t.Fatalf("the controller tried %d times, want a retry after the decline", attempts)
+}
+
+// An IPv6 record that expires while a UDP check runs still stops the transport.
+func TestControllerStopsOnAnExpiredIPv6RecordDuringAUDPCheck(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	var last time.Time
+	for i := 0; i < 2; i++ {
+		last = t0.Add(time.Duration(i) * 13 * time.Hour)
+		storeWithEntry(store, settings, proxyUDPOK, last, v6Result(proxyIPv6Yes, "yes", last, 12*time.Hour))
+		controller.step(last)
+	}
+	if !controller.transport.hasExtra() {
+		t.Fatal("did not start")
+	}
+	store.mu.Lock()
+	store.entries[settings.Key()] = &proxyUDPCheckEntry{done: make(chan struct{}), ipv6: v6Result(proxyIPv6Yes, "yes", last, 12*time.Hour)}
+	store.mu.Unlock()
+	controller.step(last.Add(23 * time.Hour))
+	if !controller.transport.hasExtra() {
+		t.Fatal("stopped while the IPv6 record was still fresh")
+	}
+	controller.step(last.Add(25 * time.Hour))
+	if controller.transport.hasExtra() {
+		t.Fatal("the expired IPv6 record left the transport running during a UDP check")
+	}
+}
+
+// A UDP result past its TTL is no evidence, even when the IPv6 result is fresh.
+func TestControllerIgnoresAnExpiredUDPResult(t *testing.T) {
+	controller, _, builds, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	udpAt := t0.Add(-30 * time.Hour)
+	for i := 0; i < 3; i++ {
+		at := t0.Add(time.Duration(i) * 13 * time.Hour)
+		storeWithEntry(store, settings, proxyUDPOK, udpAt, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
+		controller.step(at)
+	}
+	if controller.transport.hasExtra() || *builds != 0 {
+		t.Fatalf("an expired UDP result started a transport (builds %d)", *builds)
 	}
 }
 

@@ -551,6 +551,8 @@ func formatSets(p Provider, want string) error {
 		{"ip-version", "ip_version"},
 		{"proxy-target-family", "proxy_target_family"},
 		{"proxy-ipv6-probe", "proxy_ipv6_probe"},
+		{"proxy-udp-ipv6", "proxy_udp_ipv6"},
+		{"proxy-dualstack", "proxy_dualstack"},
 		{"h1-plus", "h1_plus"},
 		{"baseline", "baseline"},
 		{"proxy-audit", "proxy_audit"},

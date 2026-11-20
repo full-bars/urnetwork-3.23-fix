@@ -21,7 +21,24 @@ type ipv6CheckHarness struct {
 	ipv6OK    bool
 }
 
-func newIPv6CheckHarness() *ipv6CheckHarness {
+func newIPv6CheckHarness(t *testing.T) *ipv6CheckHarness {
+	t.Helper()
+	// the sweep selector reads the probe setting, so a disabling value in the
+	// environment or the control state must not leak into these tests
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "on")
+	if globalControlState != nil {
+		previous, found := globalControlState.get("proxy_ipv6_probe")
+		if err := globalControlState.set("proxy_ipv6_probe", "on"); err != nil {
+			t.Fatalf("could not enable the probe setting: %v", err)
+		}
+		t.Cleanup(func() {
+			if found {
+				globalControlState.set("proxy_ipv6_probe", previous)
+			} else {
+				globalControlState.clear("proxy_ipv6_probe")
+			}
+		})
+	}
 	h := &ipv6CheckHarness{
 		udpResult: proxyUDPResult{Status: proxyUDPOK, TCPExit: "198.51.100.7", TCPExitObserved: true},
 		ipv6OK:    true,
@@ -55,7 +72,7 @@ func (h *ipv6CheckHarness) entryIPv6(settings *connect.ProxySettings) proxyIPv6R
 }
 
 func TestIPv6StageRunsOnlyInSweepChecks(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 
@@ -69,7 +86,7 @@ func TestIPv6StageRunsOnlyInSweepChecks(t *testing.T) {
 }
 
 func TestIPv6StageRunsInSweepAndIsStored(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 
@@ -87,7 +104,7 @@ func TestIPv6StageRunsInSweepAndIsStored(t *testing.T) {
 }
 
 func TestIPv6StageNotDueDoesNotRunAgain(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	ctx := withIPv6Sweep(context.Background())
@@ -104,7 +121,7 @@ func TestIPv6StageNotDueDoesNotRunAgain(t *testing.T) {
 }
 
 func TestIPv6StageDueWithFreshUDPSkipsTheUDPProbe(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	ctx := withIPv6Sweep(context.Background())
@@ -128,7 +145,7 @@ func TestIPv6StageDueWithFreshUDPSkipsTheUDPProbe(t *testing.T) {
 }
 
 func TestIPv6StageRunsAfterAFailedUDPCheck(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	h.udpResult = proxyUDPResult{Status: proxyUDPUnknown, Err: errors.New("relay unreachable")}
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
@@ -143,7 +160,7 @@ func TestIPv6StageRunsAfterAFailedUDPCheck(t *testing.T) {
 }
 
 func TestIPv6StageWithoutAMeasurementKeepsThePreviousResult(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	h.ipv6OK = false
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
@@ -155,7 +172,7 @@ func TestIPv6StageWithoutAMeasurementKeepsThePreviousResult(t *testing.T) {
 }
 
 func TestNoIPv6ProbeLeavesTheCheckUnchanged(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	h.store.ipv6Probe = nil
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
@@ -186,7 +203,7 @@ func TestSweepSelectsAProxyWhoseIPv6ResultIsDue(t *testing.T) {
 // While the IPv6 stage measures a proxy whose UDP result is fresh, the
 // completed UDP result stays readable and nobody waits for the stage.
 func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	ctx := withIPv6Sweep(context.Background())
@@ -233,7 +250,7 @@ func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
 
 // Two sweep calls for one proxy measure IPv6 once.
 func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	ctx := withIPv6Sweep(context.Background())
@@ -267,7 +284,7 @@ func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
 
 // When the UDP check is due too, its result is published before the stage runs.
 func TestIPv6StageRunsAfterTheUDPResultIsPublished(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	published := false
@@ -287,7 +304,7 @@ func TestIPv6StageRunsAfterTheUDPResultIsPublished(t *testing.T) {
 // An IPv6 refresh that finishes while a UDP check is running must not be undone
 // when that UDP check is cancelled: the measurement and the cleared flag stay.
 func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) {
-	h := newIPv6CheckHarness()
+	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	// a completed entry whose UDP result is stale, with an IPv6 refresh in flight

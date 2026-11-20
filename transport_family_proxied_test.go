@@ -96,3 +96,26 @@ func TestProxyDialCarriesNameDecision(t *testing.T) {
 		t.Fatal("proxy mode does not carry the name")
 	}
 }
+
+// A pinned transport that dials through a proxy is not held by the local
+// family probe: the proxy supplies the exit. A direct pin keeps the hold.
+func TestProxiedPinIsNotHeldByTheLocalFamilyProbe(t *testing.T) {
+	defer swapControlFamilyProbe(func(int) bool { return false })()
+
+	settings := DefaultClientStrategySettings()
+	settings.ConnectSettings.ProxySettings = &ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+
+	proxied := newPinnedRouteTestTransport()
+	proxied.clientStrategy = NewProxiedFamilyClientStrategy(context.Background(), settings, 6)
+	proxied.refreshFamilyHold()
+	if got := PlatformTransportState(proxied.familyHold.Load()); got != PlatformTransportStateConnecting {
+		t.Fatalf("a proxied pin is held with state %s, want connecting", got)
+	}
+
+	direct := newPinnedRouteTestTransport()
+	direct.clientStrategy = NewDirectClientStrategy(context.Background(), settings, 6)
+	direct.refreshFamilyHold()
+	if got := PlatformTransportState(direct.familyHold.Load()); got != PlatformTransportStateSleeping {
+		t.Fatalf("a direct pin without local IPv6 has state %s, want sleeping", got)
+	}
+}

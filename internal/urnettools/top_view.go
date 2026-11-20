@@ -697,7 +697,13 @@ func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
 	// Coverage: add below when there is room.
 	curY := 1
 	if b.Height() > curY && m.snap.Proxies.UDP != nil {
-		curY += m.drawUDPProxyCoverage(b, curY)
+		// the optional UDP percentage line must not take the row the IPv6 line
+		// needs, so the UDP block gets one row less when IPv6 is shown
+		avail := b.Height() - curY
+		if m.snap.Proxies.IPv6 != nil && avail > 1 {
+			avail--
+		}
+		curY += m.drawUDPProxyCoverage(b.Sub(tui.Rect{Y: curY, W: b.Width(), H: avail}), 0)
 	}
 	if b.Height() > curY && m.snap.Proxies.IPv6 != nil {
 		m.drawIPv6ProxyCoverage(b, curY)

@@ -157,10 +157,22 @@ func proxyIPv6ConnectOnConnPort(ctx context.Context, conn net.Conn, settings *co
 	if _, err := conn.Write(request); err != nil {
 		return 0, err
 	}
+	// the reply gets a full window that starts now, so the time spent on the
+	// greeting does not shorten it. The caller deadline stays a hard limit, and
+	// a reply cut short by it proves nothing about the proxy
+	replyDeadline := time.Now().Add(udpCheckReplyTimeout)
+	cutByCaller := false
+	if d, ok := ctx.Deadline(); ok && d.Before(replyDeadline) {
+		replyDeadline = d
+		cutByCaller = true
+	}
+	if err := conn.SetReadDeadline(replyDeadline); err != nil {
+		return 0, err
+	}
 	var header [4]byte
 	if _, err := io.ReadFull(conn, header[:]); err != nil {
 		var netErr net.Error
-		if errors.As(err, &netErr) && netErr.Timeout() {
+		if errors.As(err, &netErr) && netErr.Timeout() && !cutByCaller {
 			return 0, proxyIPv6ConnectTimeout{err}
 		}
 		return 0, err

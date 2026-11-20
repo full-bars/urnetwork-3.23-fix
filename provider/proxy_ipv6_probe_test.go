@@ -236,3 +236,54 @@ func TestProxyIPv6FallbackAndTimeout(t *testing.T) {
 		})
 	}
 }
+
+// serveSilentSocks answers the SOCKS greeting, reads the CONNECT request and
+// then never replies.
+func serveSilentSocks(t *testing.T, conn net.Conn) {
+	t.Helper()
+	go func() {
+		defer conn.Close()
+		var greeting [3]byte
+		if _, err := io.ReadFull(conn, greeting[:]); err != nil {
+			return
+		}
+		if _, err := conn.Write([]byte{5, 0}); err != nil {
+			return
+		}
+		var request [22]byte
+		if _, err := io.ReadFull(conn, request[:]); err != nil {
+			return
+		}
+		time.Sleep(2 * time.Second)
+	}()
+}
+
+// A reply window cut short by the caller deadline proves nothing about the
+// proxy. Only a full window without a reply is a CONNECT timeout.
+func TestProxyIPv6ConnectReplyCutByTheCallerIsInconclusive(t *testing.T) {
+	ip := net.ParseIP("2001:db8::1")
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+
+	previous := udpCheckReplyTimeout
+	udpCheckReplyTimeout = 400 * time.Millisecond
+	defer func() { udpCheckReplyTimeout = previous }()
+
+	client, server := net.Pipe()
+	defer client.Close()
+	serveSilentSocks(t, server)
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	_, err := proxyIPv6ConnectOnConn(ctx, client, settings, ip)
+	var connectTimeout proxyIPv6ConnectTimeout
+	if err == nil || errors.As(err, &connectTimeout) {
+		t.Fatalf("a reply cut short by the caller deadline gave %v, want a plain error", err)
+	}
+
+	client, server = net.Pipe()
+	defer client.Close()
+	serveSilentSocks(t, server)
+	_, err = proxyIPv6ConnectOnConn(context.Background(), client, settings, ip)
+	if !errors.As(err, &connectTimeout) {
+		t.Fatalf("a full window without a reply gave %v, want a CONNECT timeout", err)
+	}
+}
