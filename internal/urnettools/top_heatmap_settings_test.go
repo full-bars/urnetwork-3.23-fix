@@ -6,6 +6,23 @@ import (
 	"testing"
 )
 
+func TestHeatmapStyleMenuCycles(t *testing.T) {
+	m, path := menuModel(t)
+	m.menuSel = topMenuHeatmap
+	m.menuCycle(-1)
+	if got := m.proxyHeatmapStyle; got != heatmapTimeline {
+		t.Fatalf("left from Glow = %v, want Timeline", got)
+	}
+	m.menuCycle(1)
+	if got := m.proxyHeatmapStyle; got != heatmapGlow {
+		t.Fatalf("right from Timeline = %v, want Glow", got)
+	}
+	m.menuCycle(1)
+	if got := loadTopSettings(path).ProxyHeatmapStyle; got != heatmapAurora {
+		t.Fatalf("saved style = %v, want Aurora", got)
+	}
+}
+
 func TestHeatmapStyleSettings(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "top.conf")
 	for _, style := range heatmapStyles {

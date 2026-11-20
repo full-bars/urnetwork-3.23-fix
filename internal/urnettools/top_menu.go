@@ -16,6 +16,7 @@ const (
 	topMenuTheme = iota
 	topMenuGraph
 	topMenuAfterglow
+	topMenuHeatmap
 	topMenuRows
 )
 
@@ -121,6 +122,13 @@ func (m *topModel) menuCycle(d int) {
 			seconds = defaultProxyAfterglowSeconds
 		}
 		m.proxyAfterglowSeconds = (seconds-1+d+60)%60 + 1
+	case topMenuHeatmap:
+		n := len(heatmapStyles)
+		i := slices.Index(heatmapStyles[:], m.proxyHeatmapStyle)
+		if i < 0 {
+			i = 0
+		}
+		m.proxyHeatmapStyle = heatmapStyles[((i+d)%n+n)%n]
 	}
 	if err := saveTopSettings(m.settingsPath, m.settings()); err != nil {
 		m.menuNote = "could not save: " + err.Error()
@@ -139,6 +147,7 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 		topMenuTheme:     {"Theme", m.theme.Name},
 		topMenuGraph:     {"Graph style", m.graph.String()},
 		topMenuAfterglow: {"Dot fade time", strconv.Itoa(seconds) + " s"},
+		topMenuHeatmap:   {"Heatmap style", m.proxyHeatmapStyle.String()},
 	}
 	// One hint under the rows says what the selected item changes, in words and
 	// with its current value, so a number such as the fade time explains itself.
@@ -146,6 +155,7 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 		topMenuTheme:     {"The colors of the whole dashboard.", "", ""},
 		topMenuGraph:     {"The symbols the graphs are drawn with.", "", ""},
 		topMenuAfterglow: {fmt.Sprintf("A bright dot fades out over %d s after", seconds), "its proxy's traffic drops.", "Steady traffic stays lit."},
+		topMenuHeatmap:   {"How the proxy dots are laid out and drawn.", "Glow is the classic grid.", ""},
 	}
 	const w = 46
 	h := topMenuRows + 9
