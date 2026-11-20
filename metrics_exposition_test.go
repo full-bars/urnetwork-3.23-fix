@@ -33,8 +33,8 @@ func scrape(t *testing.T, acceptEncoding string) (*httptest.ResponseRecorder, st
 	return w, body
 }
 
-// registerTestProxies adds proxies whose addresses need escaping, and removes
-// them when the test ends so other tests see the registry unchanged.
+// registerTestProxies includes malformed addresses and removes the entries
+// when the test ends so other tests see the registry unchanged.
 func registerTestProxies(t *testing.T) {
 	t.Helper()
 	addrs := map[int]string{
@@ -56,13 +56,13 @@ func registerTestProxies(t *testing.T) {
 }
 
 // TestPrometheusExpositionLints runs the full handler output through the
-// text-format linter with per-proxy series present: interleaved families,
-// Go-only escapes and misnamed types all fail here.
+// text-format linter with per-proxy series present: interleaved families and
+// misnamed types fail here, and malformed addresses must be hidden.
 func TestPrometheusExpositionLints(t *testing.T) {
 	registerTestProxies(t)
 	_, body := scrape(t, "")
-	if !strings.Contains(body, `urnet_proxy_bytes_total{proxy="proxy[900002] (quote\"back\\slash:1080)",direction="in"} 100`) {
-		t.Fatalf("escaped per-proxy sample missing from output")
+	if !strings.Contains(body, `urnet_proxy_bytes_total{proxy="proxy[900002] (<unparsable proxy address>)",direction="in"} 100`) {
+		t.Fatalf("redacted per-proxy sample missing from output")
 	}
 	for _, err := range promtext.Lint(body) {
 		t.Error(err)
