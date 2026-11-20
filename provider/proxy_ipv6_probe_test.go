@@ -1,16 +1,79 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
 	"strconv"
 	"testing"
 	"time"
 
 	"github.com/urnetwork/connect"
 )
+
+func TestProxyIPv6HTTPExit(t *testing.T) {
+	for _, tc := range []struct {
+		body string
+		want string
+	}{
+		{"2001:db8::42\n", "2001:db8::42"},
+		{"192.0.2.1\n", ""},
+		{"not an address", ""},
+	} {
+		t.Run(tc.body, func(t *testing.T) {
+			client, server := net.Pipe()
+			done := make(chan error, 1)
+			go func() {
+				defer server.Close()
+				var greeting [3]byte
+				if _, err := io.ReadFull(server, greeting[:]); err != nil {
+					done <- err
+					return
+				}
+				if _, err := server.Write([]byte{5, 0}); err != nil {
+					done <- err
+					return
+				}
+				var request [22]byte
+				if _, err := io.ReadFull(server, request[:]); err != nil {
+					done <- err
+					return
+				}
+				if request[3] != 4 || request[20] != 0 || request[21] != 80 {
+					done <- errors.New("invalid target")
+					return
+				}
+				if _, err := server.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0}); err != nil {
+					done <- err
+					return
+				}
+				req, err := http.ReadRequest(bufio.NewReader(server))
+				if err != nil {
+					done <- err
+					return
+				}
+				if req.Host != proxyIPv6ExitHost {
+					done <- errors.New("invalid host")
+					return
+				}
+				_, err = fmt.Fprintf(server, "HTTP/1.0 200 OK\r\nContent-Length: %d\r\n\r\n%s", len(tc.body), tc.body)
+				done <- err
+			}()
+			got, err := proxyIPv6HTTPExitOnConn(context.Background(), client, &connect.ProxySettings{}, net.ParseIP("2001:db8::1"))
+			client.Close()
+			if got != tc.want || (err == nil) != (tc.want != "") {
+				t.Fatalf("got %q, %v; want %q", got, err, tc.want)
+			}
+			if err := <-done; err != nil {
+				t.Fatal(err)
+			}
+		})
+	}
+}
 
 func TestProxyIPv6Reply(t *testing.T) {
 	for _, tc := range []struct {

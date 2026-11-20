@@ -1,11 +1,15 @@
 package main
 
 import (
+	"bufio"
 	"context"
 	"encoding/binary"
 	"errors"
+	"fmt"
 	"io"
 	"net"
+	"net/http"
+	"strings"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -20,6 +24,8 @@ const (
 )
 
 var proxyIPv6Targets = []string{"2606:4700:4700::1111", "2001:4860:4860::8888"}
+
+const proxyIPv6ExitHost = "api6.ipify.org"
 
 // proxyIPv6ConnectTimeout identifies a timeout after the CONNECT request was
 // sent, rather than a timeout reaching or authenticating to the proxy.
@@ -75,6 +81,10 @@ func probeProxyIPv6Connect(ctx context.Context, settings *connect.ProxySettings,
 }
 
 func proxyIPv6ConnectOnConn(ctx context.Context, conn net.Conn, settings *connect.ProxySettings, ip net.IP) (byte, error) {
+	return proxyIPv6ConnectOnConnPort(ctx, conn, settings, ip, 443)
+}
+
+func proxyIPv6ConnectOnConnPort(ctx context.Context, conn net.Conn, settings *connect.ProxySettings, ip net.IP, port uint16) (byte, error) {
 	deadline := time.Now().Add(udpCheckReplyTimeout)
 	if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 		deadline = d
@@ -91,7 +101,7 @@ func proxyIPv6ConnectOnConn(ctx context.Context, conn net.Conn, settings *connec
 	}
 	request := []byte{5, 1, 0, 4}
 	request = append(request, ip.To16()...)
-	request = binary.BigEndian.AppendUint16(request, 443)
+	request = binary.BigEndian.AppendUint16(request, port)
 	if _, err := conn.Write(request); err != nil {
 		return 0, err
 	}
@@ -125,6 +135,41 @@ func proxyIPv6ConnectOnConn(ctx context.Context, conn net.Conn, settings *connec
 		return 0, err
 	}
 	return header[1], nil
+}
+
+// proxyIPv6HTTPExitOnConn uses a previously resolved IPv6 address so each
+// proxy receives the same destination without doing its own DNS lookup.
+func proxyIPv6HTTPExitOnConn(ctx context.Context, conn net.Conn, settings *connect.ProxySettings, ip net.IP) (string, error) {
+	if ip == nil || ip.To4() != nil || ip.To16() == nil {
+		return "", errors.New("invalid IPv6 target")
+	}
+	code, err := proxyIPv6ConnectOnConnPort(ctx, conn, settings, ip, 80)
+	if err != nil {
+		return "", err
+	}
+	if code != 0 {
+		return "", errors.New("SOCKS CONNECT refused")
+	}
+	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", proxyIPv6ExitHost); err != nil {
+		return "", err
+	}
+	response, err := http.ReadResponse(bufio.NewReader(io.LimitReader(conn, tcpExitReplyMaxBytes)), nil)
+	if err != nil {
+		return "", err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != http.StatusOK {
+		return "", errors.New("address service rejected request")
+	}
+	body, err := io.ReadAll(response.Body)
+	if err != nil {
+		return "", err
+	}
+	exit := net.ParseIP(strings.TrimSpace(string(body)))
+	if exit == nil || exit.To4() != nil {
+		return "", errors.New("address service returned no IPv6 address")
+	}
+	return exit.String(), nil
 }
 
 // proxyIPv6Greet retains transport errors for timeout classification.
