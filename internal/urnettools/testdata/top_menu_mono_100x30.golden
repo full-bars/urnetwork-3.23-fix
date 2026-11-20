@@ -11,7 +11,7 @@
 + Total traffic, 10m ------+ Menu --------------------------------------+ients   212               |
 |60 MiB/s+                 |> Theme             < mono >                |ssions  200 pqe / 12 cl   |
 |        |                 |  Graph style       < braille >             |essure  ###---------- 0.21|
-|        |         -+#*~   |  Proxy afterglow   < 5 s >                 |                          |
+|        |         -+#*~   |  Dot fade time     < 5 s >                 |                          |
 |30 MiB/s+      .=#######=.|                                            |                          |
 |        |   _~*###########|  ok warn bad accent graph dim              |                          |
 |        |_~+##############| theme fixed by NO_COLOR or TERM            |--------------------------+

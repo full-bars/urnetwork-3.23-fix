@@ -341,17 +341,7 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 		}
 	}
 	for i, name := range names {
-		st := th.OK
-		switch i {
-		case 1:
-			st = th.Warn
-		case 2:
-			st = tui.Style{}
-		case 3:
-			st = th.Bad
-		case 4:
-			st = th.Dim
-		}
+		st := m.proxyCellStyle(uint8(i), 4)
 		if counts[i] == 0 {
 			st = th.Dim
 		}
@@ -367,14 +357,29 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 // brightened by their throughput bucket.
 func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 	th := m.theme
+	// The default colored theme gives every state a hue of its own, and the
+	// throughput ramp of an up proxy stays in green to aqua, so no state is
+	// ever mistaken for a bright up dot: dropped is orange, connecting is
+	// violet, dead is bright red, parked is dim. Mono, ASCII and colorblind
+	// themes keep their own marks below.
+	colored := th.OK.FG.Kind != tui.ColorDefault && th.Name != "colorblind" && !th.ASCII
 	switch state {
 	case connect.ProxyCellDead:
+		if colored {
+			return tui.Style{FG: tui.Xterm(196), Attrs: tui.AttrBold}
+		}
 		return th.Bad
 	case connect.ProxyCellDegraded:
+		if colored {
+			return tui.Style{FG: tui.Xterm(208)}
+		}
 		return th.Warn
 	case connect.ProxyCellConnecting:
 		if th.ASCII {
 			return tui.Style{}
+		}
+		if colored {
+			return tui.Style{FG: tui.Xterm(141)}
 		}
 		return tui.Style{FG: tui.Ansi(4)} // blue
 	case connect.ProxyCellParked:
@@ -396,7 +401,7 @@ func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 	ramp := []tui.Color{
 		th.OK.FG,
 		tui.Xterm(28), tui.Xterm(34), tui.Xterm(40), tui.Xterm(46),
-		tui.Xterm(83), tui.Xterm(118), tui.Xterm(154),
+		tui.Xterm(48), tui.Xterm(49), tui.Xterm(86),
 	}
 	if int(bucket) >= len(ramp) {
 		bucket = uint8(len(ramp) - 1)
@@ -428,6 +433,7 @@ type ProxyCellDetail struct {
 	Clients       int64  `json:"clients"`
 	IntervalBytes uint64 `json:"interval_bytes"`
 	AgeSeconds    int64  `json:"age_seconds"`
+	UDP           string `json:"udp,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -499,13 +505,14 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		return nil
 	}
 	st := proxyCellStateName(c.state)
-	addr, intervalBytes, age := "?", "?", "?"
+	addr, intervalBytes, age, udp := "?", "?", "?", "?"
 	clients := int64(c.clients)
 	if d, ok := m.proxyDetail[c.index]; ok {
 		addr = proxyDisplayAddress(d.Addr)
 		intervalBytes = fmt.Sprint(d.IntervalBytes)
 		clients = d.Clients
 		age = tui.Duration(time.Duration(d.AgeSeconds) * time.Second)
+		udp = proxyUDPDisplay(d.UDP)
 	}
 	if index == 0 {
 		addr = "direct (this host)"
@@ -513,10 +520,31 @@ func (m *topModel) proxyCellInfo(index int) []string {
 	return []string{
 		fmt.Sprintf("proxy[%d] %s", c.index, addr),
 		fmt.Sprintf("state %s", st),
+		fmt.Sprintf("udp %s", udp),
 		fmt.Sprintf("clients %d", clients),
 		fmt.Sprintf("bytes in interval %s", intervalBytes),
 		fmt.Sprintf("age %s", age),
 	}
+}
+
+// proxyUDPDisplay names a provider UDP check state the way the UDP row does.
+// An empty value is a provider that predates the field.
+func proxyUDPDisplay(state string) string {
+	switch state {
+	case "ok":
+		return "ok"
+	case "no_relay":
+		return "no UDP"
+	case "mismatch":
+		return "mismatch"
+	case "unknown":
+		return "unknown"
+	case "unchecked":
+		return "unchecked"
+	case "direct":
+		return "native (no relay)"
+	}
+	return "?"
 }
 
 // proxyCellIndices returns all proxies represented by a text cell.
@@ -583,6 +611,8 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 		lines = append(lines, info[0]+" "+info[1])
 		if len(m.proxyPopupIndices) == 1 {
 			lines = append(lines, info[2:]...)
+		} else if len(info) > 2 {
+			lines[len(lines)-1] += "  " + info[2]
 		}
 		if len(lines) >= 5 {
 			break

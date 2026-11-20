@@ -428,10 +428,6 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				}
 				m.zoom.push(lt.AtUnixNano, b, t)
 				m.zoom.spans[len(m.zoom.spans)-1] = time.Duration(lt.AtUnixNano - last)
-				m.scaleB.update(seriesPeak(m.trafficHistory.billable), m.now(), true)
-				m.scaleT.update(seriesPeak(m.trafficHistory.total), m.now(), true)
-				m.zoomScaleB.update(seriesPeak(m.zoom.billable), m.now(), true)
-				m.zoomScaleT.update(seriesPeak(m.zoom.total), m.now(), true)
 			}
 		}
 	}
@@ -485,17 +481,9 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 		m.providerSnaps[m.cur] = snap
 	}
 	m.lastErr = ""
-	m.scaleB.update(seriesPeak(snap.Rate.HistoryBps), now, true)
 	m.windowB.push(snap.Rate.NowBps, now)
 	if snap.Traffic != nil {
-		m.scaleT.update(seriesPeak(snap.Traffic.TotalHistoryBps), now, true)
 		m.windowT.push(snap.Traffic.TotalNowBps, now)
-	}
-	if m.windowHours > 0 {
-		m.windowScaleB.update(seriesPeak(m.windowB.windowFor(m.windowHours, now)), now, true)
-		if snap.Traffic != nil {
-			m.windowScaleT.update(seriesPeak(m.windowT.windowFor(m.windowHours, now)), now, true)
-		}
 	}
 }
 

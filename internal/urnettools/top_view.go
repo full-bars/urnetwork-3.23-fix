@@ -374,19 +374,27 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	if m.conn == topDisconnected {
 		style = th.Dim
 	}
-	top := 0.0
-	if scale != nil {
-		top = scale.top
-	}
-	// A series that outgrew the held axis (nothing has folded it in yet) still
-	// fits: the axis never sits below what is drawn.
-	if p := tui.NiceCeil(seriesPeak(samples), !tui.DecimalUnits()); p > top {
-		top = p
-	}
 	if sr.columns {
 		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
 		samples = samples[len(samples)-n:]
 		sr.anchor, sr.capacity = 0, len(samples)
+	}
+	// The axis follows what is drawn. The peak is taken over the columns on
+	// screen and the live value, not over the whole retained history, so a
+	// burst that has scrolled off the left edge no longer holds the axis high.
+	// The held scale still rises at once and comes down only after the peak
+	// has stayed low for a while.
+	peak := seriesPeak(samples)
+	if sr.live && tail > peak {
+		peak = tail
+	}
+	top := 0.0
+	if scale != nil {
+		scale.update(peak, m.now(), !tui.DecimalUnits())
+		top = scale.top
+	}
+	if p := tui.NiceCeil(peak, !tui.DecimalUnits()); p > top {
+		top = p
 	}
 	tui.DrawGraph(b, tui.Graph{
 		Samples: samples, Binary: !tui.DecimalUnits(), Format: tui.RateShort, Style: style, AxisStyle: th.Dim,

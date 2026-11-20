@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"time"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -206,4 +207,11 @@ func (m *topModel) drawHover(b *tui.Buffer) {
 		}
 		return
 	}
+}
+
+// hoverSignature names everything a mouse move can change on screen: the hover
+// highlight and the proxy popup. The run loop redraws for a move only when it
+// changed, so a pointer drifting inside one region costs nothing.
+func (m *topModel) hoverSignature() string {
+	return fmt.Sprint(m.hover, "|", m.proxyPopup, m.proxyPopupX, m.proxyPopupY, m.proxyPopupIndices)
 }

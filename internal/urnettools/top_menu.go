@@ -136,7 +136,7 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 	rows := [topMenuRows]row{
 		topMenuTheme:     {"Theme", m.theme.Name},
 		topMenuGraph:     {"Graph style", m.graph.String()},
-		topMenuAfterglow: {"Proxy afterglow", strconv.Itoa(seconds) + " s"},
+		topMenuAfterglow: {"Dot fade time", strconv.Itoa(seconds) + " s"},
 	}
 	const w = 46
 	h := topMenuRows + 6

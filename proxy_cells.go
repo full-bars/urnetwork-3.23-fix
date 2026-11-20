@@ -30,10 +30,12 @@ type ProxyCellRaw struct {
 	Index        int
 	State        uint8
 	Addr         string
-	Billable     uint64
-	Total        uint64
-	Clients      int64
-	Age          time.Duration
+	// Key is the proxy's identity, the key the provider's UDP check store uses.
+	Key      string
+	Billable uint64
+	Total    uint64
+	Clients  int64
+	Age      time.Duration
 }
 
 // ProxyCells reads one compact record per registered proxy, index-sorted,
@@ -47,7 +49,7 @@ func ProxyCells(now time.Time) []ProxyCellRaw {
 	out := make([]ProxyCellRaw, 0, len(proxyHealthByIndex))
 	for _, idx := range sortedIndicesLocked() {
 		h := proxyHealthByIndex[idx]
-		c := ProxyCellRaw{Index: idx, Addr: h.address, Registration: ProxyCellRegistration{health: h, revision: h.cellRevision}}
+		c := ProxyCellRaw{Index: idx, Addr: h.address, Key: h.key, Registration: ProxyCellRegistration{health: h, revision: h.cellRevision}}
 		switch {
 		case h.parked:
 			// Parked is its own state, checked before connectingActive: a

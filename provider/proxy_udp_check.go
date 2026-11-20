@@ -683,6 +683,29 @@ func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *Snapsh
 	return out
 }
 
+// statusFor reads the cached UDP result of one identity without starting a
+// check, for the hover detail. It uses the same rules as coverage: a missing,
+// in-flight or expired result is unchecked.
+func (self *proxyUDPCheckStore) statusFor(key string, now time.Time) string {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return "unchecked"
+	}
+	switch entry.result.Status {
+	case proxyUDPOK:
+		return "ok"
+	case proxyUDPNoRelay:
+		return "no_relay"
+	case proxyUDPExitMismatch:
+		return "mismatch"
+	case proxyUDPUnknown:
+		return "unknown"
+	}
+	return "unchecked"
+}
+
 // size is how many identities the store currently remembers.
 func (self *proxyUDPCheckStore) size() int {
 	self.mu.Lock()

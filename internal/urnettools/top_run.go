@@ -15,6 +15,9 @@ import (
 // that is a multiple of it is met exactly.
 const topTick = topMinInterval
 
+// topMinFrame is the shortest time between two redraws, 20 frames a second.
+const topMinFrame = 50 * time.Millisecond
+
 // topResult is one finished fetch, tagged with the selection it was for. A
 // traffic result carries the light live counters instead of a snapshot.
 type topResult struct {
@@ -231,6 +234,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	}()
 	scr.SetMouse(m.mouse)
 	lastMouse := m.mouse
+	var lastDraw time.Time
+	dirty := true
 	for {
 		if m.mouse != lastMouse {
 			scr.SetMouse(m.mouse)
@@ -276,23 +281,48 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				fetchGroupsFn(gen, p)
 			}
 		}
-		w, h := scr.Size()
-		buf.Resize(w, h)
-		buf.Fill(buf.Rect(), ' ', tui.Style{})
-		m.render(buf)
-		scr.Draw(buf)
+		// Draw only when something changed, and at most once per topMinFrame.
+		// Every poll result, tick and mouse move wakes the loop, which at a
+		// fast refresh interval is over a hundred wakeups a second. Drawing on
+		// each one costs a core's worth of CPU and sends the whole changed
+		// screen down the terminal link every time.
+		var frameWait <-chan time.Time
+		if dirty {
+			if since := time.Since(lastDraw); lastDraw.IsZero() || since >= topMinFrame {
+				w, h := scr.Size()
+				buf.Resize(w, h)
+				buf.Fill(buf.Rect(), ' ', tui.Style{})
+				m.render(buf)
+				scr.Draw(buf)
+				lastDraw, dirty = time.Now(), false
+			} else {
+				frameWait = time.After(topMinFrame - since)
+			}
+		}
 
 		select {
 		case <-ctx.Done():
 			return nil
+		case <-frameWait:
 		case ev, ok := <-scr.Events():
 			if !ok {
 				return nil
 			}
+			// A mouse move that leaves the hover as it was changes nothing on
+			// screen, so it does not ask for a redraw.
+			move := ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseMove
+			before := ""
+			if move {
+				before = m.hoverSignature()
+			}
 			if m.handle(ev) == topQuit {
 				return nil
 			}
+			if !move || m.hoverSignature() != before {
+				dirty = true
+			}
 		case r := <-results:
+			dirty = true
 			switch {
 			case r.isProxyDetail:
 				detailBusy = false
@@ -317,6 +347,7 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				m.apply(r.gen, r.snap, r.err)
 			}
 		case <-ticker.C:
+			dirty = true
 		}
 	}
 }
