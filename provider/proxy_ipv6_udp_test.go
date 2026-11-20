@@ -12,6 +12,7 @@ import (
 type ipv6STUNPacketConn struct {
 	destination *net.UDPAddr
 	mapped      net.IP
+	source      *net.UDPAddr
 	request     []byte
 	read        bool
 }
@@ -30,7 +31,11 @@ func (c *ipv6STUNPacketConn) ReadFrom(p []byte) (int, net.Addr, error) {
 	binary.BigEndian.PutUint16(response[22:24], 20)
 	response[25] = stunFamilyIpv6
 	copy(response[28:44], c.mapped.To16())
-	return copy(p, response), c.destination, nil
+	source := c.destination
+	if c.source != nil {
+		source = c.source
+	}
+	return copy(p, response), source, nil
 }
 func (c *ipv6STUNPacketConn) WriteTo(p []byte, addr net.Addr) (int, error) {
 	c.request = append([]byte(nil), p...)
@@ -52,6 +57,26 @@ func TestProxyIPv6UDPExit(t *testing.T) {
 	}
 	if _, err := proxyIPv6UDPExit(context.Background(), pc, &net.UDPAddr{IP: net.ParseIP("192.0.2.1"), Port: 3478}); err == nil {
 		t.Fatal("accepted IPv4 destination")
+	}
+}
+
+func TestProxyIPv6UDPExitRejectsUntrustedReply(t *testing.T) {
+	dst := &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 3478}
+	for _, tc := range []struct {
+		name   string
+		mapped string
+		source *net.UDPAddr
+	}{
+		{"wrong source address", "2001:db8::42", &net.UDPAddr{IP: net.ParseIP("2001:db8::2"), Port: 3478}},
+		{"wrong source port", "2001:db8::42", &net.UDPAddr{IP: net.ParseIP("2001:db8::1"), Port: 3479}},
+		{"mapped IPv4", "192.0.2.42", nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			pc := &ipv6STUNPacketConn{mapped: net.ParseIP(tc.mapped), source: tc.source}
+			if exit, err := proxyIPv6UDPExit(context.Background(), pc, dst); err == nil {
+				t.Fatalf("accepted untrusted exit %q", exit)
+			}
+		})
 	}
 }
 
