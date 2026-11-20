@@ -23,7 +23,7 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 	canaryToken := "canary-token-5518"
 
 	line := "example.com:1080:" + canaryUser + ":" + canaryPass
-	_ = captureOutput(t, func() {
+	addOutput := captureOutput(t, func() {
 		proxyAdd(docopt.Opts{"<key_address>": []string{line}, "-f": true})
 	})
 	if _, ok := readProxyConfig().Servers[line]; !ok {
@@ -35,7 +35,7 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 	if err := os.WriteFile(source, []byte(line+"\n"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	_ = captureOutput(t, func() {
+	importOutput := captureOutput(t, func() {
 		proxyAdd(docopt.Opts{"<key_address>": []string{}, "--file": source, "-f": true})
 	})
 	if _, ok := readProxyConfig().Servers[line]; !ok {
@@ -61,14 +61,14 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 
 	// ---- Scan control output for canary strings ----
 	for _, secret := range []string{canaryUser, canaryPass, canaryToken} {
-		if strings.Contains(controlBuilder.String(), secret) {
-			t.Errorf("%s found in control output", secret)
+		if strings.Contains(addOutput+importOutput+controlBuilder.String(), secret) {
+			t.Error("canary found in add, import or control output")
 		}
 	}
 
 	// ---- Walk test home for any files containing canary strings ----
 	privateConfig := filepath.Join(home, ".urnetwork", "proxy")
-	filepath.WalkDir(home, func(path string, entry os.DirEntry, err error) error {
+	err := filepath.WalkDir(home, func(path string, entry os.DirEntry, err error) error {
 		if err != nil {
 			return err
 		}
@@ -77,7 +77,7 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 		}
 		data, err := os.ReadFile(path)
 		if err != nil {
-			return nil
+			return err
 		}
 		if path == privateConfig {
 			// Private proxy configuration holds credentials by design and must be mode 0600.
@@ -100,4 +100,7 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 		}
 		return nil
 	})
+	if err != nil {
+		t.Fatalf("scan test home: %v", err)
+	}
 }
