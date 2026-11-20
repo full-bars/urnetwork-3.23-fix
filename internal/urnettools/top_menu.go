@@ -33,6 +33,7 @@ func (m *topModel) applySettings(s topSettings) {
 		m.graph = g
 	}
 	m.proxyAfterglowSeconds = s.ProxyAfterglowSeconds
+	m.proxyHeatmapStyle = s.ProxyHeatmapStyle
 	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
 }
 
@@ -41,7 +42,7 @@ func (m *topModel) settings() topSettings {
 	if m.themeLocked {
 		theme = m.savedTheme
 	}
-	return topSettings{Theme: theme, Graph: m.graph.String(), ProxyAfterglowSeconds: m.proxyAfterglowSeconds, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	return topSettings{Theme: theme, Graph: m.graph.String(), ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether

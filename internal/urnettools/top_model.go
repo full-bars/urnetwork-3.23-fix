@@ -244,6 +244,7 @@ type topModel struct {
 	proxyCellsAt          time.Time
 	proxyGlow             map[int]proxyGlowSample
 	proxyAfterglowSeconds int
+	proxyHeatmapStyle     heatmapStyle
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
