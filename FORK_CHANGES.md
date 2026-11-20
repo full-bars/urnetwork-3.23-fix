@@ -4407,3 +4407,20 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - The UDP row names a proxy without a relay `no UDP`. The fade time menu item is `Dot fade time`.
 
 **Status**: Unreleased.
+
+---
+
+## 238. Proxy Credential Redaction, Heatmap Styles, UDP 53 Setup and Popup Traffic
+
+**Purpose**: Keep proxy credentials out of every output, make the proxy heatmap selectable, let `extender setup` lower the UDP 53 bind threshold on request, and show lifetime traffic in the proxy popup.
+
+**Files Modified**: `proxy_health.go`, `net.go`, `net_http.go`, `provider/proxy_state.go`, `provider/proxy_cells.go`, `provider/proxy_url.go`, `provider/proxy_paste.go`, `provider/main.go`, `internal/urnettools/top_*.go`, `internal/urnettools/extender_setup.go`, `internal/urnettools/proxy_ids.go`, `docs/Adding-Proxies.md`, `docs/urnet-tools-go.md`
+
+**Changes**:
+- Proxy passwords, user names and URL tokens no longer reach logs, status, health and audit output, error text or metrics labels. One shared check (`ProxyHostAllowed`, `ProxyPortAllowed`) decides what a displayed host may look like: a name or IPv4 address, or an IPv6 literal without a zone. Anything else shows as `<unparsable proxy address>`. `urnet-tools proxy ids` shows `(user ***)`. The proxy config file is written with mode 0600. Canary tests pass a known secret through add, import, start, status, health and audit.
+- The `m` menu in `top` has a `Heatmap style` row (`Glow`, `Aurora`, `Sonar`, `Locality`, `Blocks`, `Timeline`) and a hint line under the selected item. `g` opens the goroutine list as an overlay when the Internals panel has no room.
+- `extender setup --route=sysctl --udp53` sets `net.ipv4.ip_unprivileged_port_start` to 53 after a typed `yes`. `--force` does not confirm it.
+- The proxy popup reads `traffic, last second` and adds lifetime billable and total traffic per direction from the persisted per-proxy counters.
+- A test dials an IPv6 address, an IPv4 address and an IPv6-only name through a dual stack SOCKS5 server in both `proxy_target_family` modes.
+
+**Status**: Unreleased.
