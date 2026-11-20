@@ -386,6 +386,10 @@ type proxyUDPCheckStore struct {
 	persistKick    chan struct{}
 	persistDone    chan struct{}
 	persistFailed  bool
+	// ipv6Probe runs the three-stage IPv6 probe for an identity when its
+	// previous IPv6 result is due. It is nil by default; the store used by
+	// the sweep sets it to runProxyIPv6Stage.
+	ipv6Probe func(context.Context, *connect.ProxySettings, proxyIPv6Result, time.Time, proxyIPv6Dials) (proxyIPv6Result, bool)
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -444,6 +448,10 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 
 var globalProxyUDPCheck = newProxyUDPCheckStore(checkProxyUDP)
 
+func init() {
+	globalProxyUDPCheck.ipv6Probe = runProxyIPv6Stage
+}
+
 func proxyUDPTTL(status proxyUDPStatus) time.Duration {
 	switch status {
 	case proxyUDPOK:
@@ -479,7 +487,11 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 			}
 		}
-		if entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status) {
+		freshUDP := entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status)
+		// the IPv6 stage runs only in checks the background sweep starts, so a
+		// UDP flow or an H3 dial never waits for it
+		ipv6Due := self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && (entry == nil || entry.ipv6.due(now))
+		if freshUDP && !ipv6Due {
 			result := entry.result
 			self.mu.Unlock()
 			return result
@@ -516,11 +528,24 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		self.mu.Unlock()
 
 		var result proxyUDPResult
+		var measuredIPv6 proxyIPv6Result
+		measuredOK := false
 		select {
 		case self.slots <- struct{}{}:
 			probeCtx := context.WithValue(ctx, cachedProxyTCPExitKey{}, reusableTcpExit)
 			probeCtx = context.WithValue(probeCtx, cachedProxyTCPExitReuseKey{}, tcpExitReuse{start: reuseStart, budget: reuseBudget})
-			result = self.probe(probeCtx, settings)
+			if freshUDP {
+				result = *previous
+			} else {
+				result = self.probe(probeCtx, settings)
+			}
+			if ipv6Due {
+				// the stage is independent of the UDP result: a proxy without a
+				// UDP relay can still have IPv6, so it runs after a failed check too
+				stageCtx, stageCancel := context.WithTimeout(ctx, udpCheckOverallLimit)
+				measuredIPv6, measuredOK = self.ipv6Probe(stageCtx, settings, ipv6, now, defaultProxyIPv6Dials())
+				stageCancel()
+			}
 			<-self.slots
 		case <-ctx.Done():
 			result = proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
@@ -538,13 +563,20 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 		}
 		running.result = result
+		if measuredOK {
+			running.ipv6 = measuredIPv6
+		}
 		if result.TCPExit != "" {
 			running.tcpExit = result.TCPExit
 		}
-		if result.TCPExitObserved {
-			running.tcpExitAt = now
+		if !freshUDP {
+			if result.TCPExitObserved {
+				running.tcpExitAt = now
+			}
+			running.at = now
+		} else {
+			running.at = previousAt
 		}
-		running.at = now
 		close(running.done)
 		running.done = nil
 		self.prune(now)

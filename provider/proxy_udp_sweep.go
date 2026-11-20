@@ -223,6 +223,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			} else {
 				candidate.lastChecked = entry.at
 				candidate.status = entry.result.Status
+				candidate.ipv6Due = store.ipv6Probe != nil && entry.ipv6.due(now)
 			}
 		}
 		candidates = append(candidates, candidate)
@@ -244,7 +245,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 				if ctx.Err() != nil {
 					return
 				}
-				store.Check(ctx, settingsByKey[candidate.key], now)
+				store.Check(withIPv6Sweep(ctx), settingsByKey[candidate.key], now)
 			}
 		}()
 	}
@@ -266,6 +267,7 @@ type udpProbeCandidate struct {
 	online      bool
 	status      proxyUDPStatus
 	lastChecked time.Time
+	ipv6Due     bool
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -283,7 +285,7 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		}
 		online++
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
-		if candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
+		if candidate.ipv6Due || candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
 				recheckWindow = refreshWindow
