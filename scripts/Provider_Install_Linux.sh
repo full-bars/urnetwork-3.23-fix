@@ -1421,7 +1421,10 @@ link_tools_into_dir ()
         if [ "$name" = ut ]; then
             [ "${URNETWORK_NO_UT_ALIAS:-}" = 1 ] && continue
             if [ -e "$dir/ut" ] || [ -L "$dir/ut" ]; then
-                [ -L "$dir/ut" ] && [ "$dir/ut" -ef "$src/urnet-tools" ] || continue
+                if ! { [ -L "$dir/ut" ] && [ "$dir/ut" -ef "$src/urnet-tools" ]; }; then
+                    printf '%s\n' "ut alias: $dir/ut already exists, leaving it unchanged" >&2
+                    continue
+                fi
             fi
         fi
         [ -e "$src/$target" ] || continue

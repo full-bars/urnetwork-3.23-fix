@@ -5,6 +5,7 @@ package urnettools
 import (
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 )
 
@@ -94,6 +95,32 @@ func TestLinkToolsIntoDirAddsUrtopToAnOlderInstall(t *testing.T) {
 	linkToolsIntoDir(dir, src, false)
 	if b, _ := os.ReadFile(filepath.Join(dir, "urtop")); string(b) != "theirs" {
 		t.Fatalf("a real urtop file was overwritten: %q", b)
+	}
+}
+
+func TestLinkToolsPreservesForeignUT(t *testing.T) {
+	src, dir := mkInstall(t), t.TempDir()
+	alias := filepath.Join(dir, "ut")
+	if err := os.WriteFile(alias, []byte("foreign"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	old := os.Stderr
+	out, err := os.CreateTemp(t.TempDir(), "warning")
+	if err != nil {
+		t.Fatal(err)
+	}
+	os.Stderr = out
+	t.Cleanup(func() { os.Stderr = old; out.Close() })
+	if _, err := linkToolsIntoDir(dir, src, false); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(alias)
+	if err != nil || string(data) != "foreign" {
+		t.Fatalf("foreign shortcut changed: %q, %v", data, err)
+	}
+	warning, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(warning), "leaving it unchanged") {
+		t.Fatalf("missing collision warning: %q, %v", warning, err)
 	}
 }
 

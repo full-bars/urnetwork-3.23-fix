@@ -48,6 +48,7 @@ func linkToolsIntoDir(dir, srcDir string, noUTAlias bool) (changed []string, err
 		dst := filepath.Join(dir, name)
 		if fi, err := os.Lstat(dst); err == nil {
 			if name == "ut" && !utAliasOwned(src, dst) {
+				fmt.Fprintf(os.Stderr, "ut alias: %s already exists, leaving it unchanged\n", dst)
 				continue
 			}
 			if fi.Mode()&os.ModeSymlink == 0 {
@@ -91,6 +92,7 @@ func sudoLinkTools(dir, srcDir string, noUTAlias bool) []string {
 		dst := filepath.Join(dir, name)
 		if fi, err := os.Lstat(dst); err == nil {
 			if name == "ut" && !utAliasOwned(src, dst) {
+				fmt.Fprintf(os.Stderr, "ut alias: %s already exists, leaving it unchanged\n", dst)
 				continue
 			}
 			if fi.Mode()&os.ModeSymlink == 0 {
