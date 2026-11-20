@@ -91,3 +91,34 @@ func TestProxyIPv6ProbeLiveSideEffect(t *testing.T) {
 		t.Fatal("expected globalControlState to be enabled after set on")
 	}
 }
+
+func TestProxyIPv6ProbeReplayValueMatchesTheSweep(t *testing.T) {
+	for _, envVal := range []string{"true", "1", "yes", "on"} {
+		t.Setenv("URNETWORK_PROXY_IPV6_PROBE", envVal)
+		if got := proxyIPv6ProbeReplayValue(newControlState()); got != "on" {
+			t.Fatalf("env %q replays as %q, want on", envVal, got)
+		}
+	}
+	for _, envVal := range []string{"false", "0", "no", "off"} {
+		t.Setenv("URNETWORK_PROXY_IPV6_PROBE", envVal)
+		if got := proxyIPv6ProbeReplayValue(newControlState()); got != "off" {
+			t.Fatalf("env %q replays as %q, want off", envVal, got)
+		}
+	}
+	// an explicit persisted value wins over the environment, in both directions
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "true")
+	state := newControlState()
+	if err := state.set("proxy_ipv6_probe", "off"); err != nil {
+		t.Fatal(err)
+	}
+	if got := proxyIPv6ProbeReplayValue(state); got != "off" {
+		t.Fatalf("persisted off replays as %q", got)
+	}
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "off")
+	if err := state.set("proxy_ipv6_probe", "on"); err != nil {
+		t.Fatal(err)
+	}
+	if got := proxyIPv6ProbeReplayValue(state); got != "on" {
+		t.Fatalf("persisted on replays as %q", got)
+	}
+}

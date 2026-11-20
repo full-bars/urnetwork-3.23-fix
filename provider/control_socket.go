@@ -1636,17 +1636,19 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	if err := applyLiveSideEffect("baseline", v); err != nil {
 		tlog("[control] failed to apply baseline=%s: %s\n", v, err)
 	}
-	v6ProbeVal, ok := state.get("proxy_ipv6_probe")
-	if !ok {
-		if env := strings.TrimSpace(os.Getenv("URNETWORK_PROXY_IPV6_PROBE")); env != "" {
-			v6ProbeVal = env
-		} else {
-			v6ProbeVal = liveDefaults["proxy_ipv6_probe"]
-		}
-	}
+	v6ProbeVal := proxyIPv6ProbeReplayValue(state)
 	if err := applyLiveSideEffect("proxy_ipv6_probe", v6ProbeVal); err != nil {
 		tlog("[control] failed to apply proxy_ipv6_probe=%s: %s\n", v6ProbeVal, err)
 	}
+}
+
+// proxyIPv6ProbeReplayValue is the value the startup replay applies for
+// proxy_ipv6_probe. The sweep reads the setting through proxyIPv6ProbeEnabled
+// (persisted value, then the environment, then the default), so the replay uses
+// the same answer. A raw env value such as "true" or "1" would log as off
+// otherwise, because the side effect recognizes only "on".
+func proxyIPv6ProbeReplayValue(state *controlState) string {
+	return onOff(proxyIPv6ProbeEnabled(state))
 }
 
 // persistedRuntimeTuningActive reports whether the operator has an explicit,

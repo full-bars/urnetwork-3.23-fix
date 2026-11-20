@@ -160,7 +160,7 @@ func TestProxyIPv6MeasurementDueAndBackoff(t *testing.T) {
 	if !result.due(now) {
 		t.Fatal("unmeasured proxy must be due")
 	}
-	result = result.measured(now, proxyIPv6Yes, "unknown", "", "")
+	result = result.measured(now, proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
 	if result.Interval != 12*time.Hour || result.Source != "measured" || result.due(now.Add(12*time.Hour-time.Nanosecond)) || !result.due(now.Add(12*time.Hour)) {
 		t.Fatalf("first measurement: %+v", result)
 	}
@@ -285,5 +285,24 @@ func TestProxyIPv6ConnectReplyCutByTheCallerIsInconclusive(t *testing.T) {
 	_, err = proxyIPv6ConnectOnConn(context.Background(), client, settings, ip)
 	if !errors.As(err, &connectTimeout) {
 		t.Fatalf("a full window without a reply gave %v, want a CONNECT timeout", err)
+	}
+}
+
+// A yes whose UDP exit could not be learned is retried in an hour and never
+// backs off, because ipv6UDPAllowed needs UDP == "yes".
+func TestProxyIPv6YesWithUnknownUDPRetriesSoon(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var result proxyIPv6Result
+	for i := 0; i < 4; i++ {
+		result = result.measured(now, proxyIPv6Yes, "unknown", "2001:db8::1", "")
+		if result.Interval != time.Hour {
+			t.Fatalf("run %d: yes/unknown interval %s, want 1h", i, result.Interval)
+		}
+		now = now.Add(time.Hour)
+	}
+	// once the UDP exit is learned the normal schedule applies
+	result = result.measured(now, proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
+	if result.Interval == time.Hour {
+		t.Fatalf("yes/yes must leave the one hour retry, got %s", result.Interval)
 	}
 }

@@ -236,7 +236,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			} else {
 				candidate.lastChecked = entry.at
 				candidate.status = entry.result.Status
-				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6.due(now)
+				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6DueLocked(now)
 			}
 		}
 		candidates = append(candidates, candidate)

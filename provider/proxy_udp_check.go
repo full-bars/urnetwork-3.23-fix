@@ -364,6 +364,21 @@ type proxyUDPCheckEntry struct {
 	// ipv6Running is true while the IPv6 stage measures this identity, so a
 	// second sweep call does not start another measurement. It is not persisted.
 	ipv6Running bool
+	// ipv6RetryAt holds back the next IPv6 measurement after one stopped early
+	// (its own timeout, not a cancelled sweep). Without it the identity stays
+	// due and every sweep tick holds a probe slot for it again. It keeps the
+	// previous result and is not persisted: a restart retries once.
+	ipv6RetryAt time.Time
+}
+
+// proxyIPv6StopBackoff is how long an identity waits after a measurement that
+// stopped early before the sweep measures it again.
+const proxyIPv6StopBackoff = 15 * time.Minute
+
+// ipv6DueLocked is whether the sweep should measure the identity now. The
+// caller holds the store lock (or owns the entry).
+func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
+	return e == nil || (e.ipv6.due(now) && !now.Before(e.ipv6RetryAt))
 }
 
 // proxyUDPCheckStore remembers the check per proxy IDENTITY (address plus
@@ -495,7 +510,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		freshUDP := entry != nil && !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPLazyRecheckTTL(entry.result.Status)
 		// the IPv6 stage runs only in checks the background sweep starts, so a
 		// UDP flow or an H3 dial never waits for it
-		ipv6Due := proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && (entry == nil || entry.ipv6.due(now))
+		ipv6Due := proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && ipv6SweepFromContext(ctx) && entry.ipv6DueLocked(now)
 		if freshUDP {
 			// the completed UDP result stays in place while the IPv6 stage runs, so
 			// no caller waits for it and ipv6UDPAllowed keeps reading it
@@ -510,12 +525,14 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		var previousAt time.Time
 		var ipv6 proxyIPv6Result
 		ipv6Running := false
+		var ipv6RetryAt time.Time
 		var tcpExit string
 		var tcpExitAt time.Time
 		if entry != nil {
 			previousAt = entry.at
 			ipv6 = entry.ipv6
 			ipv6Running = entry.ipv6Running
+			ipv6RetryAt = entry.ipv6RetryAt
 			copyOf := entry.result
 			previous = &copyOf
 			tcpExit = entry.tcpExit
@@ -535,7 +552,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Running: ipv6Running}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Running: ipv6Running, ipv6RetryAt: ipv6RetryAt}
 		self.entries[key] = running
 		self.mu.Unlock()
 
@@ -559,7 +576,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				// refresh that ran meanwhile updated it and cleared its flag, and a
 				// restore from the snapshot taken before the probe would bring back
 				// the old measurement and a flag nothing will clear
-				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running}
+				self.entries[key] = &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6RetryAt: running.ipv6RetryAt}
 			}
 			close(running.done)
 			self.mu.Unlock()
@@ -600,7 +617,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *connect.ProxySettings, key string, now time.Time) {
 	self.mu.Lock()
 	entry := self.cachedEntryLocked(key)
-	if entry == nil || entry.ipv6Running || self.ipv6Probe == nil {
+	if entry == nil || entry.ipv6Running || self.ipv6Probe == nil || !proxyIPv6ProbeEnabled(globalControlState) {
 		self.mu.Unlock()
 		return
 	}
@@ -626,8 +643,14 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		return
 	}
 	current.ipv6Running = false
+	if !measuredOK && ctx.Err() == nil {
+		// the stage stopped on its own: keep the previous result and wait before
+		// the next tick measures this identity again
+		current.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)
+	}
 	if measuredOK && ctx.Err() == nil {
 		current.ipv6 = measured
+		current.ipv6RetryAt = time.Time{}
 		self.ipv6ProbesRun.Add(1)
 		if err := self.persistLocked(key, current, now); err != nil {
 			tlog("[proxy][udp] could not persist probe state\n")

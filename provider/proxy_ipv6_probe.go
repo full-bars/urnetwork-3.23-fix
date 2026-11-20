@@ -63,9 +63,16 @@ func (r proxyIPv6Result) valid(now time.Time) bool {
 // measured records a new observation and calculates its next check without
 // deriving a result from any other proxy.
 func (r proxyIPv6Result) measured(now time.Time, status proxyIPv6Status, udp, tcpExit, udpExit string) proxyIPv6Result {
+	interval := proxyIPv6Interval(status, r.Status, r.Interval)
+	if status == proxyIPv6Yes && udp == "unknown" {
+		// the UDP exit is not established yet. Retry soon and do not back off,
+		// because ipv6UDPAllowed needs a yes and a long interval would keep the
+		// IPv6 UDP relay refused after one failed lookup.
+		interval = time.Hour
+	}
 	return proxyIPv6Result{
 		Status: status, Source: "measured", UDP: udp, TCPExit: tcpExit, UDPExit: udpExit,
-		At: now, Interval: proxyIPv6Interval(status, r.Status, r.Interval),
+		At: now, Interval: interval,
 	}
 }
 

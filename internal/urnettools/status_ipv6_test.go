@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"strings"
 	"testing"
 )
 
@@ -65,5 +66,21 @@ func TestStatusIPv6OmittedWhenNil(t *testing.T) {
 		if row.Name == "IPv6" {
 			t.Fatalf("unexpected IPv6 row when nil: %+v", row)
 		}
+	}
+}
+
+// A narrow width must wrap the UDP summary at its separators. The whole
+// summary is one segment otherwise and pushes the line past the width.
+func TestIPv6RowWrapsTheUDPSummary(t *testing.T) {
+	v6 := &SnapshotProxyIPv6{Yes: 1, No: 2, Unknown: 3, UDPYes: 10, UDPNo: 2, UDPUnknown: 1}
+	row := ipv6row(v6)
+	for _, ln := range wrapRow(row, 40) {
+		if w := visibleWidth(ln); w > 40 {
+			t.Fatalf("line %q is %d columns wide, want at most 40", ln, w)
+		}
+	}
+	wide := wrapRow(row, 0)
+	if len(wide) != 1 || !strings.Contains(wide[0], "(udp: 10 yes, 2 no, 1 unknown)") {
+		t.Fatalf("unlimited width must keep the whole summary on one line: %q", wide)
 	}
 }

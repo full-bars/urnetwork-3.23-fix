@@ -526,6 +526,8 @@ func ipv6row(v6 *SnapshotProxyIPv6) liveRow {
 	if v6.NotProbed > 0 {
 		segs = append(segs, fmt.Sprintf("%d not probed", v6.NotProbed))
 	}
+	// the UDP summary is one segment per count, so wrapRow can break it at a
+	// separator. Joined with ", " it reads as one parenthesis.
 	udpParts := []string{fmt.Sprintf("%d yes", v6.UDPYes)}
 	if v6.UDPNo > 0 {
 		udpParts = append(udpParts, fmt.Sprintf("%d no", v6.UDPNo))
@@ -533,6 +535,8 @@ func ipv6row(v6 *SnapshotProxyIPv6) liveRow {
 	if v6.UDPUnknown > 0 {
 		udpParts = append(udpParts, fmt.Sprintf("%d unknown", v6.UDPUnknown))
 	}
-	segs = append(segs, fmt.Sprintf("(udp: %s)", strings.Join(udpParts, ", ")))
+	udpParts[0] = "(udp: " + udpParts[0]
+	udpParts[len(udpParts)-1] += ")"
+	segs = append(segs, udpParts...)
 	return liveRow{label: "ipv6", sep: ", ", segs: segs}
 }

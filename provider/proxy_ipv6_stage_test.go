@@ -96,7 +96,7 @@ func TestRunProxyIPv6Stage(t *testing.T) {
 			dials:        newIPv6StageDials(0, nil, nil, "", other, "2001:db8::1", nil),
 			wantStatus:   proxyIPv6Yes,
 			wantUDP:      "unknown",
-			wantInterval: 12 * time.Hour,
+			wantInterval: time.Hour, // the UDP exit is not known: retry soon
 			wantStage23:  true,
 		},
 		{
@@ -104,7 +104,7 @@ func TestRunProxyIPv6Stage(t *testing.T) {
 			dials:        newIPv6StageDials(0, nil, nil, "2001:db8::1", nil, "", other),
 			wantStatus:   proxyIPv6Yes,
 			wantUDP:      "unknown",
-			wantInterval: 12 * time.Hour,
+			wantInterval: time.Hour, // the UDP exit is not known: retry soon
 			wantTCPExit:  "2001:db8::1",
 			wantStage23:  true,
 		},

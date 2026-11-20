@@ -351,3 +351,69 @@ func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) 
 		t.Fatal("the rollback restored a refresh flag nothing will clear")
 	}
 }
+
+// A stage that stops on its own keeps the previous result and waits before the
+// next sweep tick measures the identity again. Without the wait every tick holds
+// a probe slot for the same identity.
+func TestIPv6StageThatStopsEarlyBacksOff(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	h.ipv6OK = false
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ctx := withIPv6Sweep(context.Background())
+
+	h.store.Check(ctx, settings, now)
+	if got := h.ipv6Runs.Load(); got != 1 {
+		t.Fatalf("stage ran %d times, want 1", got)
+	}
+	if !h.entryIPv6(settings).At.IsZero() {
+		t.Fatal("a stage that stopped early must keep the previous (empty) result")
+	}
+	h.store.mu.Lock()
+	dueSoon := h.store.entries[settings.Key()].ipv6DueLocked(now.Add(time.Minute))
+	dueLater := h.store.entries[settings.Key()].ipv6DueLocked(now.Add(proxyIPv6StopBackoff))
+	h.store.mu.Unlock()
+	if dueSoon || !dueLater {
+		t.Fatalf("due after 1 minute = %v (want false), after the backoff = %v (want true)", dueSoon, dueLater)
+	}
+	h.store.Check(ctx, settings, now.Add(time.Minute))
+	if got := h.ipv6Runs.Load(); got != 1 {
+		t.Fatalf("stage ran again inside the backoff: %d runs", got)
+	}
+	h.store.Check(ctx, settings, now.Add(proxyIPv6StopBackoff))
+	if got := h.ipv6Runs.Load(); got != 2 {
+		t.Fatalf("stage did not run after the backoff: %d runs", got)
+	}
+	// a measurement that completes clears the wait
+	h.ipv6OK = true
+	h.store.Check(ctx, settings, now.Add(2*proxyIPv6StopBackoff))
+	h.store.mu.Lock()
+	retry := h.store.entries[settings.Key()].ipv6RetryAt
+	h.store.mu.Unlock()
+	if !retry.IsZero() || h.entryIPv6(settings).At.IsZero() {
+		t.Fatalf("a completed measurement must clear the wait and store the result, retry=%v", retry)
+	}
+}
+
+// The operator turns the probe off while the UDP check runs. Check read the
+// setting before that, so the stage must read it again before it measures.
+func TestIPv6StageDoesNotStartAfterTheProbeIsSwitchedOff(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	h.store.probe = func(context.Context, *connect.ProxySettings) proxyUDPResult {
+		h.udpRuns.Add(1)
+		if err := globalControlState.set("proxy_ipv6_probe", "off"); err != nil {
+			t.Errorf("could not switch the probe off: %v", err)
+		}
+		return h.udpResult
+	}
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	h.store.Check(withIPv6Sweep(context.Background()), settings, now)
+	if got := h.udpRuns.Load(); got != 1 {
+		t.Fatalf("UDP probe ran %d times, want 1", got)
+	}
+	if got := h.ipv6Runs.Load(); got != 0 {
+		t.Fatalf("the stage started %d times after the probe was switched off", got)
+	}
+}
