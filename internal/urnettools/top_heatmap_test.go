@@ -242,7 +242,7 @@ func TestProxyCellInfoFromDetail(t *testing.T) {
 	for _, l := range lines {
 		joined += l + "\n"
 	}
-	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients 4", "bytes in interval 1048576", "age 1h"} {
+	for _, want := range []string{"proxy[0] direct (this host)", "state up", "clients 4", "traffic, last second 1048576", "age 1h"} {
 		if !strings.Contains(joined, want) {
 			t.Fatalf("proxyCellInfo missing %q:\n%s", want, joined)
 		}

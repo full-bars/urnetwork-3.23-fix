@@ -131,3 +131,25 @@ func TestProxyCellDetailAddressPrivacy(t *testing.T) {
 		t.Fatalf("unsafe detail: %+v", detail)
 	}
 }
+
+func TestProxyCellDetailLifetimeAndMissingBandwidth(t *testing.T) {
+	connect.ResetProxyHealthForTesting()
+	defer connect.ResetProxyHealthForTesting()
+	connect.RegisterProxy(0, "direct", "direct")
+	connect.RegisterProxy(1, "proxy.example:1080", "detail-lifetime-test")
+	bw := connect.RegisterProxyBandwidth(0)
+	bw.TotalRx.Store(100)
+	bw.TotalTx.Store(200)
+	bw.BillableRx.Store(30)
+	bw.BillableTx.Store(40)
+	details := (&proxyCellStore{}).Detail(time.Unix(1000, 0))
+	if len(details) != 2 {
+		t.Fatalf("details: %+v", details)
+	}
+	if details[0].LifetimeTotal == nil || *details[0].LifetimeTotal != (proxyCellTraffic{Rx: 100, Tx: 200}) || details[0].LifetimeBillable == nil || *details[0].LifetimeBillable != (proxyCellTraffic{Rx: 30, Tx: 40}) {
+		t.Fatalf("direct: %+v", details[0])
+	}
+	if details[1].LifetimeTotal != nil || details[1].LifetimeBillable != nil {
+		t.Fatalf("missing: %+v", details[1])
+	}
+}

@@ -11,11 +11,11 @@ import (
 func TestProxyCellInfoUnknownAndZeroInterval(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
 	m.proxyCells = makeProxyCells([]uint8{connect.ProxyCellUp})
-	if got := strings.Join(m.proxyCellInfo(0), "\n"); !strings.Contains(got, "bytes in interval ?") {
+	if got := strings.Join(m.proxyCellInfo(0), "\n"); !strings.Contains(got, "traffic, last second ?") {
 		t.Fatalf("missing detail: %s", got)
 	}
 	m.proxyDetail = map[int]ProxyCellDetail{0: {Index: 0, IntervalBytes: 0}}
-	if got := strings.Join(m.proxyCellInfo(0), "\n"); !strings.Contains(got, "bytes in interval 0") {
+	if got := strings.Join(m.proxyCellInfo(0), "\n"); !strings.Contains(got, "traffic, last second 0") {
 		t.Fatalf("known zero: %s", got)
 	}
 }

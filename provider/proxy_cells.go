@@ -57,13 +57,20 @@ func getProxyCellStore() *proxyCellStore {
 
 // proxyCellDetail is the hover/popup record for one proxy. Built only on
 // demand; the grid poll never pays for it.
+type proxyCellTraffic struct {
+	Rx uint64 `json:"rx"`
+	Tx uint64 `json:"tx"`
+}
+
 type proxyCellDetail struct {
-	Index         int    `json:"index"`
-	Addr          string `json:"addr"`
-	State         uint8  `json:"state"`
-	Clients       int64  `json:"clients"`
-	IntervalBytes uint64 `json:"interval_bytes"`
-	AgeSeconds    int64  `json:"age_seconds"`
+	LifetimeBillable *proxyCellTraffic `json:"lifetime_billable,omitempty"`
+	LifetimeTotal    *proxyCellTraffic `json:"lifetime_total,omitempty"`
+	Index            int               `json:"index"`
+	Addr             string            `json:"addr"`
+	State            uint8             `json:"state"`
+	Clients          int64             `json:"clients"`
+	IntervalBytes    uint64            `json:"interval_bytes"`
+	AgeSeconds       int64             `json:"age_seconds"`
 	// UDP is the cached relay check result: ok, no_relay, mismatch, unknown or
 	// unchecked, and direct for the direct slot, which has no proxy to check.
 	UDP string `json:"udp"`
@@ -145,7 +152,7 @@ func (c *proxyCellStore) Detail(now time.Time) []proxyCellDetail {
 		if clients < 0 {
 			clients = 0
 		}
-		out = append(out, proxyCellDetail{
+		detail := proxyCellDetail{
 			Index:         p.Index,
 			Addr:          proxyCellSafeAddress(p.Index, p.Addr),
 			State:         p.State,
@@ -153,7 +160,12 @@ func (c *proxyCellStore) Detail(now time.Time) []proxyCellDetail {
 			IntervalBytes: deltas[p.Index],
 			AgeSeconds:    int64(p.Age / time.Second),
 			UDP:           proxyCellUDPStatus(p, now),
-		})
+		}
+		if p.HasBandwidth {
+			detail.LifetimeBillable = &proxyCellTraffic{Rx: p.BillableRx, Tx: p.BillableTx}
+			detail.LifetimeTotal = &proxyCellTraffic{Rx: p.TotalRx, Tx: p.TotalTx}
+		}
+		out = append(out, detail)
 	}
 	return out
 }

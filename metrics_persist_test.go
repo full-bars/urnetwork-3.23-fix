@@ -478,9 +478,27 @@ func TestMetricsCountersProxyTotalsSurviveChurn(t *testing.T) {
 		t.Errorf("restored billable tx = %d, want 50", got)
 	}
 
+	cells := ProxyCells(time.Unix(1000, 0))
+	var cell *ProxyCellRaw
+	for i := range cells {
+		if cells[i].Index == 910043 {
+			cell = &cells[i]
+			break
+		}
+	}
+	if cell == nil || !cell.HasBandwidth || cell.TotalRx != 1500 || cell.BillableTx != 50 {
+		t.Fatalf("restored cell: %+v", cell)
+	}
+	reborn.TotalRx.Add(25)
+	for _, current := range ProxyCells(time.Unix(1001, 0)) {
+		if current.Index == 910043 && current.TotalRx != 1525 {
+			t.Fatalf("continued total = %d, want 1525", current.TotalRx)
+		}
+	}
+
 	// The /metrics exposition must carry the continued per-proxy series.
 	_, body := scrape(t, "gzip")
-	if !strings.Contains(body, `urnet_proxy_bytes_total{proxy="proxy[910043] (10.42.42.42:1080)",direction="in"} 1500`) {
+	if !strings.Contains(body, `urnet_proxy_bytes_total{proxy="proxy[910043] (10.42.42.42:1080)",direction="in"} 1525`) {
 		t.Errorf("per-proxy series not continued in exposition:\n%s", grepSeries(body, "urnet_proxy_bytes_total"))
 	}
 }

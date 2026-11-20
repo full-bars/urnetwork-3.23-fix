@@ -426,14 +426,21 @@ func proxyCellASCII(state uint8) rune {
 
 // ProxyCellDetail is the full per-proxy record from the provider's
 // "proxy_cell_detail" command, used for the hover/click popup.
+type ProxyCellTraffic struct {
+	Rx uint64 `json:"rx"`
+	Tx uint64 `json:"tx"`
+}
+
 type ProxyCellDetail struct {
-	Index         int    `json:"index"`
-	Addr          string `json:"addr"`
-	State         uint8  `json:"state"`
-	Clients       int64  `json:"clients"`
-	IntervalBytes uint64 `json:"interval_bytes"`
-	AgeSeconds    int64  `json:"age_seconds"`
-	UDP           string `json:"udp,omitempty"`
+	LifetimeBillable *ProxyCellTraffic `json:"lifetime_billable,omitempty"`
+	LifetimeTotal    *ProxyCellTraffic `json:"lifetime_total,omitempty"`
+	Index            int               `json:"index"`
+	Addr             string            `json:"addr"`
+	State            uint8             `json:"state"`
+	Clients          int64             `json:"clients"`
+	IntervalBytes    uint64            `json:"interval_bytes"`
+	AgeSeconds       int64             `json:"age_seconds"`
+	UDP              string            `json:"udp,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -506,6 +513,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 	}
 	st := proxyCellStateName(c.state)
 	addr, intervalBytes, age, udp := "?", "?", "?", "?"
+	billable, total := "?", "?"
 	clients := int64(c.clients)
 	if d, ok := m.proxyDetail[c.index]; ok {
 		addr = proxyDisplayAddress(d.Addr)
@@ -513,6 +521,12 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		clients = d.Clients
 		age = tui.Duration(time.Duration(d.AgeSeconds) * time.Second)
 		udp = proxyUDPDisplay(d.UDP)
+		if d.LifetimeBillable != nil {
+			billable = fmt.Sprintf("in %s out %s", tui.Bytes(float64(d.LifetimeBillable.Rx)), tui.Bytes(float64(d.LifetimeBillable.Tx)))
+		}
+		if d.LifetimeTotal != nil {
+			total = fmt.Sprintf("in %s out %s", tui.Bytes(float64(d.LifetimeTotal.Rx)), tui.Bytes(float64(d.LifetimeTotal.Tx)))
+		}
 	}
 	if index == 0 {
 		addr = "direct (this host)"
@@ -522,7 +536,9 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("state %s", st),
 		fmt.Sprintf("udp %s", udp),
 		fmt.Sprintf("clients %d", clients),
-		fmt.Sprintf("bytes in interval %s", intervalBytes),
+		fmt.Sprintf("traffic, last second %s", intervalBytes),
+		fmt.Sprintf("lifetime billable %s", billable),
+		fmt.Sprintf("lifetime total %s", total),
 		fmt.Sprintf("age %s", age),
 	}
 }
@@ -610,7 +626,12 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 		}
 		lines = append(lines, info[0]+" "+info[1])
 		if len(m.proxyPopupIndices) == 1 {
-			lines = append(lines, info[2:]...)
+			if len(info) >= 8 {
+				lines = append(lines, info[4:7]...)
+				lines = append(lines, info[2]+"  "+info[3]+"  "+info[7])
+			} else {
+				lines = append(lines, info[2:]...)
+			}
 		} else if len(info) > 2 {
 			lines[len(lines)-1] += "  " + info[2]
 		}

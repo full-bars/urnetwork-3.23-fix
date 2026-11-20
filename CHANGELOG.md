@@ -12,6 +12,8 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Added
 
+- The proxy heatmap popup shows lifetime billable and total traffic in each direction.
+
 - **Proxy UDP relay coverage**. Status, `top` and metrics report UDP relay coverage for online proxies. Background sweeps check paid and URL proxy sources. Turning off the proxy sweep or `udp_probe` stops new sweeps at the next tick. A running sweep continues. The state file is written in the background at most once every two seconds during normal operation. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours. The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`. A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
 - **`urnet-tools status` redesign** (`internal/urnettools/`). Default output is a one-screen health summary showing version, time-boxed cached update availability, proxy pool counts, UDP coverage, extender state, unit health with SIGPIPE restart risk detection, and resource utilization. `--brief` reports warnings and failures with script exit codes (0 healthy, 1 warning, 2 broken, 3 unreachable). `--json` still prints the raw snapshot. `--json-summary` prints the summary as a stable schema document (`urnet-tools-status/1`) and omits `jwt_expires` when the provider has no token. `--live` (and `-l`) refreshes the summary in place with cursor home on terminals (`--interval` to adjust rate). `--detail` restores the platform status output.
 - Choose the extender's UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`. Changes restart the active extender role and persist. Status identifies disabled carriers.

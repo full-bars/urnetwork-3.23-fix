@@ -31,11 +31,13 @@ type ProxyCellRaw struct {
 	State        uint8
 	Addr         string
 	// Key is the proxy's identity, the key the provider's UDP check store uses.
-	Key      string
-	Billable uint64
-	Total    uint64
-	Clients  int64
-	Age      time.Duration
+	Key                                      string
+	Billable                                 uint64
+	Total                                    uint64
+	TotalRx, TotalTx, BillableRx, BillableTx uint64
+	HasBandwidth                             bool
+	Clients                                  int64
+	Age                                      time.Duration
 }
 
 // ProxyCells reads one compact record per registered proxy, index-sorted,
@@ -71,8 +73,11 @@ func ProxyCells(now time.Time) []ProxyCellRaw {
 			c.State = ProxyCellDead
 		}
 		if h.bw != nil {
-			c.Billable = h.bw.BillableRx.Load() + h.bw.BillableTx.Load()
-			c.Total = h.bw.TotalRx.Load() + h.bw.TotalTx.Load()
+			c.HasBandwidth = true
+			c.BillableRx, c.BillableTx = h.bw.BillableRx.Load(), h.bw.BillableTx.Load()
+			c.TotalRx, c.TotalTx = h.bw.TotalRx.Load(), h.bw.TotalTx.Load()
+			c.Billable = c.BillableRx + c.BillableTx
+			c.Total = c.TotalRx + c.TotalTx
 			c.Clients = h.bw.Clients.Load()
 			c.Age = h.bw.MaxAge()
 		}
