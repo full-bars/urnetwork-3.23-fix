@@ -43,6 +43,12 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 	if _, ok := readProxyConfig().Servers[line]; !ok {
 		t.Fatal("proxy was not imported")
 	}
+	if err := os.WriteFile(filepath.Join(home, ".urnetwork", "jwt"), []byte("test-network-jwt"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	hang := hangServer(t)
+	started := runProviderChild(t, home, []string{"provide", "--api_url=" + hang.URL, "--connect_url=ws://127.0.0.1:1"}, providerStartWindow)
+	assertNoGateRefusal(t, started)
 
 	// ---- Register the canary proxy in connect and drive control requests ----
 	address := "socks5://" + canaryUser + ":" + canaryPass + "@example.com:1080?token=" + canaryToken
@@ -79,8 +85,8 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 
 	// ---- Scan control output for canary strings ----
 	for _, secret := range []string{canaryUser, canaryPass, canaryToken} {
-		if strings.Contains(addOutput+importOutput+controlBuilder.String(), secret) {
-			t.Error("canary found in add, import or control output")
+		if strings.Contains(addOutput+importOutput+started.output+controlBuilder.String(), secret) {
+			t.Error("canary found in add, import, startup or control output")
 		}
 	}
 
@@ -91,6 +97,13 @@ func TestProxySecretCatchAllFlow(t *testing.T) {
 			return err
 		}
 		if entry.IsDir() {
+			return nil
+		}
+		info, err := entry.Info()
+		if err != nil {
+			return err
+		}
+		if !info.Mode().IsRegular() {
 			return nil
 		}
 		data, err := os.ReadFile(path)
