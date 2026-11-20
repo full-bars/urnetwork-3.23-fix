@@ -4354,3 +4354,56 @@ Proxy add accepts passwords containing an `@` sign. The blocklist sync checks th
 Command help displays real flags and descriptions across `status`, `top`, `providers` and lifecycle commands (`start`, `stop`, `restart`, `update`, `logs`). Positional target placeholders are removed from usage lines for commands that select providers with flags.
 
 **Status**: Unreleased.
+
+---
+
+## 235. Proxied Egress Isolation
+
+**Purpose**: Keep a proxied provider's host-side sockets and addresses out of its network traffic.
+
+**Files Modified**: `ip.go`, `ip_icmp.go`, `net_http.go`, `transfer_stream_manager.go`, `transport.go`, `transport_p2p_webrtc.go` and `provider/main.go`.
+
+**Files Added**: `transport_egress_proxy.go`, `provider/proxy_peer_egress.go` and their tests.
+
+**Changes**:
+- A provider that runs through a proxy opens no host ICMP echo socket. The NAT marks its ICMP settings as proxied and drops echo flows.
+- A proxied provider client makes no peer-to-peer connections (`WebRtcSettings.DisablePeerConnections`), so no ICE candidate of the host is gathered.
+- Every HTTP/1 platform dial made through a proxy sends `X-UR-Egress-Proxy: 1`. A direct slot sends nothing. The platform counts a provider that sends the header at no head tier, capture-the-flag or extender unit.
+
+**Status**: Unreleased.
+
+---
+
+## 236. Patched go-yamux and License Texts
+
+**Purpose**: Reset only the refused stream when the gossip node's memory budget is full, and ship the license texts with every artifact.
+
+**Files Modified**: `go.mod`, `go.sum`, `gossip/node_yamux_refusal_test.go`, `Dockerfile`, `.dockerignore`, `.github/workflows/release.yml` and `THIRD_PARTY_LICENSES.md`.
+
+**Files Added**: `third_party/go-yamux` (go-yamux v5.1.0 with one changed function, `PATCH.md` and `refusal_test.go`) and `scripts/stage-licenses.sh`.
+
+**Changes**:
+- The vendored copy resets the incoming stream whose span or window reservation the memory manager refused. The session and its other streams stay up. A refused stream that reuses the ID of a registered stream still returns the error.
+- The copy is MPL-2.0 with BSD parts. Only `session.go` differs from v5.1.0. `go.mod` replaces the module with the copy.
+- Release archives carry a `LICENSES/` directory and images carry `/usr/share/doc/urnetwork/LICENSES/`.
+
+**Status**: Unreleased.
+
+---
+
+## 237. Top Redraw, Graph Axes, Heatmap Colors and Popup
+
+**Purpose**: Make `urnet-tools top` lighter on a remote terminal, keep its graph axes meaningful and make the proxy heatmap readable.
+
+**Files Modified**: `internal/urnettools/top_run.go`, `top_view.go`, `top_model.go`, `top_heatmap.go`, `top_menu.go`, `top_mouse.go`, `provider/proxy_cells.go`, `provider/proxy_udp_check.go` and `proxy_cells.go`.
+
+**Files Added**: `internal/urnettools/top_fixes_1119_test.go` and `provider/proxy_cells_udp_test.go`.
+
+**Changes**:
+- The loop draws only when something changed and at most 20 times a second. A mouse move that leaves the hover as it was asks for no redraw.
+- The graph axes follow the columns on screen and the live value. The held scale still rises at once for a visible burst.
+- Dropped, connecting and dead proxies are orange, violet and bold red. The throughput shades stay in green to aqua.
+- The hover popup shows the address (host and port), state, UDP check result, clients, bytes in the interval and age. The provider detail carries the cached UDP result.
+- The UDP row names a proxy without a relay `no UDP`. The fade time menu item is `Dot fade time`.
+
+**Status**: Unreleased.
