@@ -441,6 +441,8 @@ type ProxyCellDetail struct {
 	IntervalBytes    uint64            `json:"interval_bytes"`
 	AgeSeconds       int64             `json:"age_seconds"`
 	UDP              string            `json:"udp,omitempty"`
+	TCPExit          string            `json:"tcp_exit,omitempty"`
+	UDPExit          string            `json:"udp_exit,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -531,7 +533,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 	if index == 0 {
 		addr = "direct (this host)"
 	}
-	return []string{
+	lines := []string{
 		fmt.Sprintf("proxy[%d] %s", c.index, addr),
 		fmt.Sprintf("state %s", st),
 		fmt.Sprintf("udp %s", udp),
@@ -541,6 +543,18 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("lifetime total %s", total),
 		fmt.Sprintf("age %s", age),
 	}
+	if d, ok := m.proxyDetail[c.index]; ok && index != 0 {
+		for _, exit := range []struct{ name, address string }{{"TCP", d.TCPExit}, {"UDP", d.UDPExit}} {
+			if ip := net.ParseIP(exit.address); ip != nil {
+				family := "IPv6"
+				if ip.To4() != nil {
+					family = "IPv4"
+				}
+				lines = append(lines, fmt.Sprintf("%s exit (%s) %s", exit.name, family, ip.String()))
+			}
+		}
+	}
+	return lines
 }
 
 // proxyUDPDisplay names a provider UDP check state the way the UDP row does.
@@ -629,6 +643,7 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 			if len(info) >= 8 {
 				lines = append(lines, info[4:7]...)
 				lines = append(lines, info[2]+"  "+info[3]+"  "+info[7])
+				lines = append(lines, info[8:]...)
 			} else {
 				lines = append(lines, info[2:]...)
 			}

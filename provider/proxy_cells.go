@@ -73,7 +73,9 @@ type proxyCellDetail struct {
 	AgeSeconds       int64             `json:"age_seconds"`
 	// UDP is the cached relay check result: ok, no_relay, mismatch, unknown or
 	// unchecked, and direct for the direct slot, which has no proxy to check.
-	UDP string `json:"udp"`
+	UDP     string `json:"udp"`
+	TCPExit string `json:"tcp_exit,omitempty"`
+	UDPExit string `json:"udp_exit,omitempty"`
 }
 
 // sample refreshes the cache if expired and returns the raw pool plus the
@@ -160,6 +162,9 @@ func (c *proxyCellStore) Detail(now time.Time) []proxyCellDetail {
 			IntervalBytes: deltas[p.Index],
 			AgeSeconds:    int64(p.Age / time.Second),
 			UDP:           proxyCellUDPStatus(p, now),
+		}
+		if p.Index != 0 {
+			detail.TCPExit, detail.UDPExit = globalProxyUDPCheck.exitsFor(p.Key, now)
 		}
 		if p.HasBandwidth {
 			detail.LifetimeBillable = &proxyCellTraffic{Rx: p.BillableRx, Tx: p.BillableTx}

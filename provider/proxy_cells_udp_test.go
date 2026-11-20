@@ -43,3 +43,19 @@ func TestProxyCellDetailUDPStatus(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyCellExitAddresses(t *testing.T) {
+	now := time.Date(2026, 1, 1, 0, 0, 0, 0, time.UTC)
+	store := newProxyUDPCheckStore(nil)
+	store.entries["valid"] = &proxyUDPCheckEntry{at: now, result: proxyUDPResult{Status: proxyUDPOK, TCPExit: "192.0.2.1", UDPExit: "2001:db8::1"}}
+	store.entries["invalid"] = &proxyUDPCheckEntry{at: now, result: proxyUDPResult{Status: proxyUDPOK, TCPExit: "user:secret@example", UDPExit: "192.0.2.2\nsecret"}}
+	if tcp, udp := store.exitsFor("valid", now); tcp != "192.0.2.1" || udp != "2001:db8::1" {
+		t.Fatalf("unexpected exits: %q %q", tcp, udp)
+	}
+	if tcp, udp := store.exitsFor("invalid", now); tcp != "" || udp != "" {
+		t.Fatal("invalid exits exposed")
+	}
+	if tcp, udp := store.exitsFor("valid", now.Add(proxyUDPOKTTL)); tcp != "" || udp != "" {
+		t.Fatal("expired exits exposed")
+	}
+}

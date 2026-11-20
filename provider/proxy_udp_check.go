@@ -595,13 +595,13 @@ func logProxyUDPResult(settings *connect.ProxySettings, previous *proxyUDPResult
 	identity := udpProxyIdentity(settings)
 	switch result.Status {
 	case proxyUDPOK:
-		tlog("[proxy][udp] %s udp relay ok, exit %s matches tcp; h3 and client udp allowed\n", identity, result.UDPExit)
+		tlog("[proxy][udp] %s udp relay ok, exit matches tcp; h3 and client udp allowed\n", identity)
 	case proxyUDPExitMismatch:
-		tlog("[proxy][udp] %s udp exits from %s but tcp from %s; h3 and client udp not used for this proxy\n", identity, result.UDPExit, result.TCPExit)
+		tlog("[proxy][udp] %s udp and tcp exits differ; h3 and client udp not used for this proxy\n", identity)
 	case proxyUDPNoRelay:
 		tlog("[proxy][udp] %s no udp relay (%s); h3 and client udp not used for this proxy, tcp only\n", identity, proxyUDPFailureClass(result.Err))
 	default:
-		tlog("[proxy][udp] %s udp relay works (exit %s) but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", identity, result.UDPExit, proxyUDPFailureClass(result.Err))
+		tlog("[proxy][udp] %s udp relay works but the tcp exit could not be learned (%s); h3 and client udp allowed, checking again soon\n", identity, proxyUDPFailureClass(result.Err))
 	}
 }
 
@@ -704,6 +704,23 @@ func (self *proxyUDPCheckStore) statusFor(key string, now time.Time) string {
 		return "unknown"
 	}
 	return "unchecked"
+}
+
+// exitsFor returns only valid IP addresses from a fresh cached check.
+func (self *proxyUDPCheckStore) exitsFor(key string, now time.Time) (string, string) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	entry := self.cachedEntryLocked(key)
+	if entry == nil || entry.done != nil || entry.at.IsZero() || now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return "", ""
+	}
+	safe := func(raw string) string {
+		if ip := net.ParseIP(raw); ip != nil {
+			return ip.String()
+		}
+		return ""
+	}
+	return safe(entry.result.TCPExit), safe(entry.result.UDPExit)
 }
 
 // size is how many identities the store currently remembers.
