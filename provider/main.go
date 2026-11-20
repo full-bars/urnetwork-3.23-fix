@@ -3480,6 +3480,10 @@ func provide(opts docopt.Opts) {
 		applyIdentityNatConnectSettings(localUserNatSettings, clientStrategySettings.ConnectSettings, proxySettings, globalProxyUDPCheck)
 		remoteUserNatProviderSettings := connect.DefaultRemoteUserNatProviderSettings()
 
+		if isNative && proxySettings == nil {
+			countDirectControl(&clientStrategySettings.ConnectSettings, connect.RegisterProxyBandwidth(0))
+		}
+
 		clientStrategy := connect.NewClientStrategy(proxyCtx, clientStrategySettings)
 		probeTag := "proxy"
 		if isNative {
