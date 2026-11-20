@@ -9,6 +9,7 @@ import (
 	"runtime"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
@@ -109,6 +110,41 @@ func TestProxySecretImportOutputAndFiles(t *testing.T) {
 	})
 	if err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestProxySecretHealthPersistence(t *testing.T) {
+	dir := t.TempDir()
+	address := "socks5://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
+	const index = 991734
+	connect.RegisterProxy(index, address, address)
+	defer connect.UnregisterProxy(index)
+	connect.RecordProxyAuthFailure(index, errors.New(address))
+	report := connect.ProxyHealthHeartbeat(true)
+	now := time.Now()
+	found := false
+	for _, cell := range connect.ProxyCells(now) {
+		if cell.Index == index {
+			report.NewlyDead = append(report.NewlyDead, connect.ProxyEvent{Index: index, Address: cell.Addr})
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("registered canary proxy missing from health cells")
+	}
+	writeProxyHealthState(dir, report, now)
+	writeProxyTrafficState(dir, report, now)
+	writeProxyHealthEvents(dir, report, now)
+	for _, name := range []string{"proxy_health.state", "proxy_traffic.state", "proxy_health.log"} {
+		data, err := os.ReadFile(filepath.Join(dir, name))
+		if err != nil {
+			t.Fatalf("read %s: %v", name, err)
+		}
+		for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+			if strings.Contains(string(data), secret) {
+				t.Errorf("%s contains a canary", name)
+			}
+		}
 	}
 }
 
