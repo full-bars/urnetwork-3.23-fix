@@ -20,6 +20,23 @@ func TestAliasNames(t *testing.T) {
 	}
 }
 
+func TestAliasCompletionStdout(t *testing.T) {
+	oldArgs, oldOut := os.Args, os.Stdout
+	out, err := os.CreateTemp(t.TempDir(), "completion")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { os.Args, os.Stdout = oldArgs, oldOut; out.Close() })
+	os.Args, os.Stdout = []string{"ut"}, out
+	if err := Run([]string{"completion", "bash"}); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(out.Name())
+	if err != nil || !strings.Contains(string(data), "complete -o default -F __start_ut ut") {
+		t.Fatalf("completion not written to stdout: %v", err)
+	}
+}
+
 func TestAliasCobraName(t *testing.T) {
 	old := os.Args
 	t.Cleanup(func() { os.Args = old })

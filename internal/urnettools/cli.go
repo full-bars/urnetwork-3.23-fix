@@ -40,6 +40,9 @@ func Run(args []string) error {
 		}
 	}
 	rootCmd := buildRootCmd()
+	if len(args) > 0 && (args[0] == "completion" || args[0] == "__complete" || args[0] == "__completeNoDesc") {
+		rootCmd.SetOut(os.Stdout)
+	}
 	rootCmd.SetArgs(args)
 	return rootCmd.Execute()
 }
