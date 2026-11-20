@@ -264,6 +264,29 @@ func NewDirectClientStrategy(ctx context.Context, settings *ClientStrategySettin
 	return strategy
 }
 
+// NewProxiedFamilyClientStrategy builds the client strategy an extra
+// family-pinned platform transport of a PROXIED identity dials with. It keeps
+// the caller's ProxySettings, so the connection to the platform leaves through
+// the proxy and the platform observes the proxy's exit address, which is the
+// family the pin proves for that identity. The pin is not applied to the hop to
+// the proxy. The pinned transport tags its dials with the family
+// (withPinnedIpFamily), the control family dial narrows the network, and
+// ProxySettings.NewDialContext hands the family hostname to the proxy
+// (proxyDialCarriesName), so the proxy reaches the platform over the pinned
+// family. Extenders and VLESS servers stay off, as for a direct pin. The
+// caller's settings are not mutated.
+func NewProxiedFamilyClientStrategy(ctx context.Context, settings *ClientStrategySettings, ipFamily int) *ClientStrategy {
+	proxied := *settings
+	proxied.ExpandExtenderProfileCount = 0
+	proxied.MaxExtenderCount = 0
+	proxied.DisableManualExtenders = true
+	proxied.VlessConfigs = nil
+	proxied.DisableVless = true
+	strategy := NewClientStrategy(ctx, &proxied)
+	strategy.ipFamily = normalizeIpFamily(ipFamily)
+	return strategy
+}
+
 // pinnedDialContext is the enforcement below name resolution: the network is
 // narrowed to the pin, a Force that contradicts the pin is an error (so a plain
 // ws:// dial, which bypasses the tls chain, still cannot connect against the
