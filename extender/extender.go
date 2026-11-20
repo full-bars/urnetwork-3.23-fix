@@ -460,14 +460,22 @@ type ExtenderServer struct {
 	// per-carrier relayed bytes and reads, counted at the same copy points
 	// as the totals. Indexed by extenderCarrierPortIndex. Atomic arrays for
 	// lock-free counting on the relay path.
-	ingressByteCountByCarrier [extenderCarrierPortCount]atomic.Uint64
-	ingressReadCountByCarrier [extenderCarrierPortCount]atomic.Uint64
-	egressByteCountByCarrier  [extenderCarrierPortCount]atomic.Uint64
-	egressReadCountByCarrier  [extenderCarrierPortCount]atomic.Uint64
+	ingressByteCountByCarrier   [extenderCarrierPortCount]atomic.Uint64
+	ingressReadCountByCarrier   [extenderCarrierPortCount]atomic.Uint64
+	egressByteCountByCarrier    [extenderCarrierPortCount]atomic.Uint64
+	egressReadCountByCarrier    [extenderCarrierPortCount]atomic.Uint64
+	ingressByteCountByCarrierV4 [extenderCarrierPortCount]atomic.Uint64
+	ingressByteCountByCarrierV6 [extenderCarrierPortCount]atomic.Uint64
+	egressByteCountByCarrierV4  [extenderCarrierPortCount]atomic.Uint64
+	egressByteCountByCarrierV6  [extenderCarrierPortCount]atomic.Uint64
 
 	// per-carrier live relayed connection count and total connections opened
-	liveConnsByCarrier  [extenderCarrierPortCount]atomic.Int64
-	connsTotalByCarrier [extenderCarrierPortCount]atomic.Uint64
+	liveConnsByCarrier    [extenderCarrierPortCount]atomic.Int64
+	connsTotalByCarrier   [extenderCarrierPortCount]atomic.Uint64
+	liveConnsByCarrierV4  [extenderCarrierPortCount]atomic.Int64
+	liveConnsByCarrierV6  [extenderCarrierPortCount]atomic.Int64
+	connsTotalByCarrierV4 [extenderCarrierPortCount]atomic.Uint64
+	connsTotalByCarrierV6 [extenderCarrierPortCount]atomic.Uint64
 
 	// the per-carrier rate and minute history, derived from the counters above
 	// on the periodic sample rather than per byte.
@@ -2002,14 +2010,22 @@ type ExtenderStats struct {
 
 // ExtenderCarrierByteStats holds per-carrier relayed byte counters, rates and history.
 type ExtenderCarrierByteStats struct {
-	Carrier      string   `json:"carrier"`
-	IngressBytes uint64   `json:"ingress_bytes"`
-	EgressBytes  uint64   `json:"egress_bytes"`
-	RateInBps    uint64   `json:"rate_in_bps,omitempty"`
-	RateOutBps   uint64   `json:"rate_out_bps,omitempty"`
-	LiveConns    uint64   `json:"live_conns"`
-	ConnsTotal   uint64   `json:"conns_total"`
-	Minutes      []uint32 `json:"minutes"` // last 30 one-minute buckets, ingress+egress as KiB
+	Carrier        string   `json:"carrier"`
+	IngressBytes   uint64   `json:"ingress_bytes"`
+	EgressBytes    uint64   `json:"egress_bytes"`
+	RateInBps      uint64   `json:"rate_in_bps,omitempty"`
+	RateOutBps     uint64   `json:"rate_out_bps,omitempty"`
+	LiveConns      uint64   `json:"live_conns"`
+	ConnsTotal     uint64   `json:"conns_total"`
+	Minutes        []uint32 `json:"minutes"` // last 30 one-minute buckets, ingress+egress as KiB
+	IngressBytesV4 uint64   `json:"ingress_bytes_v4,omitempty"`
+	IngressBytesV6 uint64   `json:"ingress_bytes_v6,omitempty"`
+	EgressBytesV4  uint64   `json:"egress_bytes_v4,omitempty"`
+	EgressBytesV6  uint64   `json:"egress_bytes_v6,omitempty"`
+	LiveConnsV4    uint64   `json:"live_conns_v4,omitempty"`
+	LiveConnsV6    uint64   `json:"live_conns_v6,omitempty"`
+	ConnsTotalV4   uint64   `json:"conns_total_v4,omitempty"`
+	ConnsTotalV6   uint64   `json:"conns_total_v6,omitempty"`
 }
 
 // CarrierByteStats returns per-carrier byte stats for relayed traffic.
@@ -2020,13 +2036,29 @@ func (self *ExtenderServer) CarrierByteStats(now time.Time) map[string]ExtenderC
 		egressBytes := self.egressByteCountByCarrier[idx].Load()
 		liveConns := self.liveConnsByCarrier[idx].Load()
 		connsTotal := self.connsTotalByCarrier[idx].Load()
+		ingressBytesV4 := self.ingressByteCountByCarrierV4[idx].Load()
+		ingressBytesV6 := self.ingressByteCountByCarrierV6[idx].Load()
+		egressBytesV4 := self.egressByteCountByCarrierV4[idx].Load()
+		egressBytesV6 := self.egressByteCountByCarrierV6[idx].Load()
+		liveConnsV4 := self.liveConnsByCarrierV4[idx].Load()
+		liveConnsV6 := self.liveConnsByCarrierV6[idx].Load()
+		connsTotalV4 := self.connsTotalByCarrierV4[idx].Load()
+		connsTotalV6 := self.connsTotalByCarrierV6[idx].Load()
 		carrierStats := ExtenderCarrierByteStats{
-			Carrier:      carrier,
-			IngressBytes: ingressBytes,
-			EgressBytes:  egressBytes,
-			LiveConns:    uint64(liveConns),
-			ConnsTotal:   uint64(connsTotal),
-			Minutes:      self.carrierRate.minutes(idx, extenderRateMinuteCount, now),
+			Carrier:        carrier,
+			IngressBytes:   ingressBytes,
+			EgressBytes:    egressBytes,
+			LiveConns:      uint64(max(0, liveConns)),
+			ConnsTotal:     connsTotal,
+			Minutes:        self.carrierRate.minutes(idx, extenderRateMinuteCount, now),
+			IngressBytesV4: ingressBytesV4,
+			IngressBytesV6: ingressBytesV6,
+			EgressBytesV4:  egressBytesV4,
+			EgressBytesV6:  egressBytesV6,
+			LiveConnsV4:    uint64(max(0, liveConnsV4)),
+			LiveConnsV6:    uint64(max(0, liveConnsV6)),
+			ConnsTotalV4:   connsTotalV4,
+			ConnsTotalV6:   connsTotalV6,
 		}
 		// fill rates using the tracker
 		if self.carrierRate.haveSample {
@@ -2475,6 +2507,22 @@ func forwardNetwork(clientAddress string) string {
 	return "tcp6"
 }
 
+// clientAddressFamily returns "v4" or "v6" for the given client address.
+func clientAddressFamily(clientAddress string) string {
+	host := clientAddress
+	if h, _, err := net.SplitHostPort(host); err == nil {
+		host = h
+	}
+	addr, err := netip.ParseAddr(host)
+	if err != nil {
+		return "v4"
+	}
+	if addr.Is4() || addr.Is4In6() {
+		return "v4"
+	}
+	return "v6"
+}
+
 // Copies both directions until either ends, then releases both connections.
 func (self *ExtenderServer) relay(
 	ctx context.Context,
@@ -2482,8 +2530,9 @@ func (self *ExtenderServer) relay(
 	clientConn net.Conn,
 	forwardConn net.Conn,
 ) {
-	self.noteRelayedConnOpen(ctx)
-	defer self.noteRelayedConnClose(ctx)
+	family := clientAddressFamily(remoteAddressString(clientConn.RemoteAddr()))
+	self.noteRelayedConnOpen(ctx, family)
+	defer self.noteRelayedConnClose(ctx, family)
 
 	var relayWorkers sync.WaitGroup
 	relayWorkers.Add(2)
@@ -2517,6 +2566,11 @@ func (self *ExtenderServer) relay(
 				if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 					self.ingressByteCountByCarrier[cIdx].Add(uint64(n))
 					self.ingressReadCountByCarrier[cIdx].Add(1)
+					if family == "v4" {
+						self.ingressByteCountByCarrierV4[cIdx].Add(uint64(n))
+					} else {
+						self.ingressByteCountByCarrierV6[cIdx].Add(uint64(n))
+					}
 				}
 
 				forwardConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
@@ -2566,6 +2620,11 @@ func (self *ExtenderServer) relay(
 				if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 					self.egressByteCountByCarrier[cIdx].Add(uint64(n))
 					self.egressReadCountByCarrier[cIdx].Add(1)
+					if family == "v4" {
+						self.egressByteCountByCarrierV4[cIdx].Add(uint64(n))
+					} else {
+						self.egressByteCountByCarrierV6[cIdx].Add(uint64(n))
+					}
 				}
 
 				clientConn.SetWriteDeadline(time.Now().Add(self.settings.WriteTimeout))
@@ -2604,8 +2663,8 @@ func guessOrganizationName(host string) string {
 	return host
 }
 
-// noteRelayedConnOpen marks one relayed connection as open on its carrier.
-func (self *ExtenderServer) noteRelayedConnOpen(ctx context.Context) {
+// noteRelayedConnOpen marks one relayed connection as open on its carrier and family.
+func (self *ExtenderServer) noteRelayedConnOpen(ctx context.Context, family string) {
 	carrier := extenderContextCarrier(ctx)
 	if carrier == "" {
 		carrier = ExtenderCarrierTcp443
@@ -2613,17 +2672,29 @@ func (self *ExtenderServer) noteRelayedConnOpen(ctx context.Context) {
 	if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 		self.liveConnsByCarrier[cIdx].Add(1)
 		self.connsTotalByCarrier[cIdx].Add(1)
+		if family == "v4" {
+			self.liveConnsByCarrierV4[cIdx].Add(1)
+			self.connsTotalByCarrierV4[cIdx].Add(1)
+		} else {
+			self.liveConnsByCarrierV6[cIdx].Add(1)
+			self.connsTotalByCarrierV6[cIdx].Add(1)
+		}
 	}
 }
 
-// noteRelayedConnClose marks one relayed connection as closed on its carrier.
-func (self *ExtenderServer) noteRelayedConnClose(ctx context.Context) {
+// noteRelayedConnClose marks one relayed connection as closed on its carrier and family.
+func (self *ExtenderServer) noteRelayedConnClose(ctx context.Context, family string) {
 	carrier := extenderContextCarrier(ctx)
 	if carrier == "" {
 		carrier = ExtenderCarrierTcp443
 	}
 	if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 		self.liveConnsByCarrier[cIdx].Add(-1)
+		if family == "v4" {
+			self.liveConnsByCarrierV4[cIdx].Add(-1)
+		} else {
+			self.liveConnsByCarrierV6[cIdx].Add(-1)
+		}
 	}
 }
 

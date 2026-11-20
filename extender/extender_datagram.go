@@ -54,7 +54,8 @@ func (self *ExtenderServer) relayDatagram(
 	// The family of the client's outer socket, exactly as the stream relay
 	// resolves it (A7): a destination with no address in that family fails
 	// here rather than crossing families.
-	network := datagramForwardNetwork(remoteAddressString(clientConn.RemoteAddr()))
+	clientAddress := remoteAddressString(clientConn.RemoteAddr())
+	network := datagramForwardNetwork(clientAddress)
 
 	forwardConn, err := self.dialDatagramForward(ctx, network, destination)
 	if err != nil {
@@ -62,8 +63,9 @@ func (self *ExtenderServer) relayDatagram(
 	}
 	defer forwardConn.Close()
 
-	self.noteRelayedConnOpen(ctx)
-	defer self.noteRelayedConnClose(ctx)
+	family := clientAddressFamily(clientAddress)
+	self.noteRelayedConnOpen(ctx, family)
+	defer self.noteRelayedConnClose(ctx, family)
 
 	// Either direction ending ends both: a udp socket with no reader is a
 	// leak, and a carrier with no writer is a client waiting forever.
@@ -109,6 +111,11 @@ func (self *ExtenderServer) relayDatagram(
 			if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 				self.ingressByteCountByCarrier[cIdx].Add(uint64(n))
 				self.ingressReadCountByCarrier[cIdx].Add(1)
+				if family == "v4" {
+					self.ingressByteCountByCarrierV4[cIdx].Add(uint64(n))
+				} else {
+					self.ingressByteCountByCarrierV6[cIdx].Add(uint64(n))
+				}
 			}
 
 			if _, err := forwardConn.Write(buffer[:n]); err != nil {
@@ -143,6 +150,11 @@ func (self *ExtenderServer) relayDatagram(
 			if cIdx, ok := extenderCarrierPortIndex(carrier); ok {
 				self.egressByteCountByCarrier[cIdx].Add(uint64(n))
 				self.egressReadCountByCarrier[cIdx].Add(1)
+				if family == "v4" {
+					self.egressByteCountByCarrierV4[cIdx].Add(uint64(n))
+				} else {
+					self.egressByteCountByCarrierV6[cIdx].Add(uint64(n))
+				}
 			}
 
 			if err := writer.Write(clientConn, buffer[:n]); err != nil {
