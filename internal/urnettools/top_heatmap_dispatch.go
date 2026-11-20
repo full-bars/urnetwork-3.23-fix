@@ -11,6 +11,9 @@ func (m *topModel) drawProxyHeatmap(b *tui.Buffer) {
 	case heatmapSonar:
 		m.drawProxySonar(b)
 		return
+	case heatmapLocality:
+		m.drawProxyLocality(b)
+		return
 	}
 	m.drawProxyGrid(b)
 }
