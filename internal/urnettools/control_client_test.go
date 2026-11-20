@@ -305,6 +305,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"h3-datagram-send", "h3_datagram_send", "on"},
 		{"ip-version", "ip_version", "ipv6"},
 		{"proxy-target-family", "proxy_target_family", "proxy"},
+		{"proxy-ipv6-probe", "proxy_ipv6_probe", "on"},
 		{"h1-plus", "h1_plus", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},

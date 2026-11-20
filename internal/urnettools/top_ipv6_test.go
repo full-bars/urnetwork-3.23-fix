@@ -80,6 +80,7 @@ func TestTopIPv6CoverageNarrow(t *testing.T) {
 
 func TestTopProxyPopupIPv6(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.proxyCells = []proxyCell{{index: 0}, {index: 1}, {index: 2}, {index: 3}}
 	m.proxyDetail = map[int]ProxyCellDetail{
 		1: {
 			IPv6:     "yes",
