@@ -4,8 +4,12 @@ import "github.com/urnetwork/connect/internal/tui"
 
 // drawProxyHeatmap selects the heatmap renderer for the Proxies panel.
 func (m *topModel) drawProxyHeatmap(b *tui.Buffer) {
-	if m.proxyHeatmapStyle == heatmapAurora {
+	switch m.proxyHeatmapStyle {
+	case heatmapAurora:
 		m.drawProxyAurora(b)
+		return
+	case heatmapSonar:
+		m.drawProxySonar(b)
 		return
 	}
 	m.drawProxyGrid(b)
