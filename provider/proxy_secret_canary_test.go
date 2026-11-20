@@ -10,12 +10,43 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/docopt/docopt-go"
 	"github.com/urnetwork/connect"
 )
 
 const secretCanaryUser = "canary-user-7731"
 const secretCanaryPassword = "canary-pass-9042"
 const secretCanaryToken = "canary-token-5518"
+
+func TestProxySecretAddAndControlOutputs(t *testing.T) {
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	t.Setenv("USERPROFILE", home)
+	line := "example.com:1080:" + secretCanaryUser + ":" + secretCanaryPassword
+	output := captureOutput(t, func() {
+		proxyAdd(docopt.Opts{"<key_address>": []string{line}, "-f": true})
+	})
+	if _, ok := readProxyConfig().Servers[line]; !ok {
+		t.Fatal("proxy was not added")
+	}
+	address := "socks5://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
+	const index = 991733
+	connect.RegisterProxy(index, address, address)
+	defer connect.UnregisterProxy(index)
+	for _, cmd := range []string{"status", "snapshot", "proxy_cells", "proxy_cell_detail", "audit"} {
+		response := handleControlRequest(newControlState(), controlRequest{Cmd: cmd})
+		data, err := json.Marshal(response)
+		if err != nil {
+			t.Fatalf("marshal %s: %v", cmd, err)
+		}
+		output += string(data)
+	}
+	for _, secret := range []string{secretCanaryUser, secretCanaryPassword, secretCanaryToken} {
+		if strings.Contains(output, secret) {
+			t.Error("add or control output contains a canary")
+		}
+	}
+}
 
 func TestProxySecretStateFilesPrivate(t *testing.T) {
 	if runtime.GOOS == "windows" {
