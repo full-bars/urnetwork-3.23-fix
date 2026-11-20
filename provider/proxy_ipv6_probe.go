@@ -17,6 +17,31 @@ import (
 
 type proxyIPv6Status string
 
+// proxyIPv6Result is kept per proxy identity. A zero value represents an
+// identity that has not yet been probed.
+type proxyIPv6Result struct {
+	Status   proxyIPv6Status `json:"status,omitempty"`
+	Source   string          `json:"source,omitempty"`
+	UDP      string          `json:"udp,omitempty"`
+	TCPExit  string          `json:"tcp_exit,omitempty"`
+	UDPExit  string          `json:"udp_exit,omitempty"`
+	At       time.Time       `json:"at,omitempty"`
+	Interval time.Duration   `json:"interval,omitempty"`
+}
+
+func (r proxyIPv6Result) due(now time.Time) bool {
+	return r.At.IsZero() || r.Interval <= 0 || !now.Before(r.At.Add(r.Interval))
+}
+
+// measured records a new observation and calculates its next check without
+// deriving a result from any other proxy.
+func (r proxyIPv6Result) measured(now time.Time, status proxyIPv6Status, udp, tcpExit, udpExit string) proxyIPv6Result {
+	return proxyIPv6Result{
+		Status: status, Source: "measured", UDP: udp, TCPExit: tcpExit, UDPExit: udpExit,
+		At: now, Interval: proxyIPv6Interval(status, r.Status, r.Interval),
+	}
+}
+
 const (
 	proxyIPv6Unknown proxyIPv6Status = "unknown"
 	proxyIPv6Yes     proxyIPv6Status = "yes"

@@ -154,6 +154,30 @@ func TestProxyIPv6Interval(t *testing.T) {
 	}
 }
 
+func TestProxyIPv6MeasurementDueAndBackoff(t *testing.T) {
+	now := time.Date(2026, 11, 20, 12, 0, 0, 0, time.UTC)
+	var result proxyIPv6Result
+	if !result.due(now) {
+		t.Fatal("unmeasured proxy must be due")
+	}
+	result = result.measured(now, proxyIPv6Yes, "unknown", "", "")
+	if result.Interval != 12*time.Hour || result.Source != "measured" || result.due(now.Add(12*time.Hour-time.Nanosecond)) || !result.due(now.Add(12*time.Hour)) {
+		t.Fatalf("first measurement: %+v", result)
+	}
+	result = result.measured(now.Add(12*time.Hour), proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
+	if result.Interval != 24*time.Hour {
+		t.Fatalf("unchanged measurement interval: %s", result.Interval)
+	}
+	result = result.measured(now.Add(36*time.Hour), proxyIPv6No, "unknown", "", "")
+	if result.Interval != 24*time.Hour || result.TCPExit != "" || result.UDPExit != "" {
+		t.Fatalf("changed measurement: %+v", result)
+	}
+	result = result.measured(now.Add(60*time.Hour), proxyIPv6Unknown, "unknown", "", "")
+	if result.Interval != time.Hour {
+		t.Fatalf("unknown interval: %s", result.Interval)
+	}
+}
+
 func TestProxyIPv6CancelledBeforeFallback(t *testing.T) {
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
