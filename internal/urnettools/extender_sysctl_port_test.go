@@ -40,6 +40,27 @@ func TestExtenderSysctlSelectedPort(t *testing.T) {
 	}
 }
 
+func TestExtenderSysctlPort53RecoveryRestoresPrior443(t *testing.T) {
+	cfg := &SystemPlatformConfigurer{
+		PlatformName: "linux", Route: "sysctl", SysctlPort: 53,
+		ReadFile: func(path string) ([]byte, error) {
+			switch path {
+			case "/proc/sys/net/ipv4/ip_unprivileged_port_start":
+				return []byte("443\n"), nil
+			case extenderSysctlDropin:
+				return []byte(extenderSysctlContent), nil
+			default:
+				return nil, os.ErrNotExist
+			}
+		},
+	}
+	got, err := cfg.sysctlRecovery()
+	want := "sudo mv " + extenderSysctlBackup + " " + extenderSysctlDropin + " && sudo sysctl -w net.ipv4.ip_unprivileged_port_start=443"
+	if err != nil || got != want {
+		t.Fatalf("recovery = %q, %v; want %q", got, err, want)
+	}
+}
+
 func TestExtenderSysctlPort53PlanAndFallback(t *testing.T) {
 	var written string
 	var calls []string
