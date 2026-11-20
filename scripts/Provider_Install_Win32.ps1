@@ -254,8 +254,9 @@ Move-Item -Path $BinaryPath $InstalledBinaryPath
 
 $InstalledToolsBinaryPath = Join-Path $Destination -ChildPath "urnet-tools.exe"
 $UTAliasPath = Join-Path $Destination -ChildPath "ut.exe"
-$UTAliasOwned = -not (Test-Path -LiteralPath $UTAliasPath)
-if ((Test-Path -LiteralPath $UTAliasPath -PathType Leaf) -and (Test-Path -LiteralPath $InstalledToolsBinaryPath -PathType Leaf)) {
+$UTAliasItem = Get-Item -LiteralPath $UTAliasPath -Force -ErrorAction SilentlyContinue
+$UTAliasOwned = $null -eq $UTAliasItem
+if ($null -ne $UTAliasItem -and -not ($UTAliasItem.Attributes -band [IO.FileAttributes]::ReparsePoint) -and (Test-Path -LiteralPath $UTAliasPath -PathType Leaf) -and (Test-Path -LiteralPath $InstalledToolsBinaryPath -PathType Leaf)) {
     $UTAliasOwned = (Get-FileHash -LiteralPath $UTAliasPath).Hash -eq (Get-FileHash -LiteralPath $InstalledToolsBinaryPath).Hash
 }
 
