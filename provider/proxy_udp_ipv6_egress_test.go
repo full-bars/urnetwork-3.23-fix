@@ -169,3 +169,36 @@ func TestProxiedIdentityUdpRelaysIpv6ThroughAMeasuredProxy(t *testing.T) {
 		t.Fatalf("control connections = %d, want 1 association", got)
 	}
 }
+
+// The decision is made again after the wait for the check result: a concurrent
+// change of the eligibility refuses the flow before the association opens.
+func TestProxiedIdentityUdpRechecksIpv6AfterTheCheckWait(t *testing.T) {
+	server := startFakeSocks5(t, "", "", false)
+	proxySettings := &connect.ProxySettings{Network: "tcp", Address: server.address()}
+	state := newControlState()
+	previous := globalControlState
+	globalControlState = state
+	defer func() { globalControlState = previous }()
+
+	store := newProxyUDPCheckStore(func(context.Context, *connect.ProxySettings) proxyUDPResult {
+		// while the flow waits for this check, an operator turns the feature off
+		state.set("proxy_udp_ipv6", "off")
+		return proxyUDPResult{Status: proxyUDPOK}
+	})
+	staleUDP := time.Now().Add(-time.Hour)
+	storeWithEntry(store, proxySettings, proxyUDPOK, staleUDP, measuredIPv6(proxyIPv6Yes, "yes", time.Now().Add(-time.Hour), 12*time.Hour))
+	natSettings := proxiedIdentityNatSettings(proxySettings, store)
+	conn, err := natSettings.UdpBufferSettings.DialContext(context.Background(), "udp", "[2001:db8::1]:443")
+	if conn != nil {
+		conn.Close()
+	}
+	if !errors.Is(err, errProxiedUdpIpv6Refused) {
+		t.Fatalf("err = %v, want the ipv6 refusal after the recheck", err)
+	}
+	if proxiedUdpRefusals.count(proxySettings, proxiedUdpRefusalIpv6) != 1 {
+		t.Fatal("the refusal was not counted once")
+	}
+	if got := server.accepts.Load(); got != 0 {
+		t.Fatalf("the flow reached the proxy %d times", got)
+	}
+}

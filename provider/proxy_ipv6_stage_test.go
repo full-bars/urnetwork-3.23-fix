@@ -209,3 +209,63 @@ func TestRunProxyIPv6StageDoublesAStableInterval(t *testing.T) {
 		t.Fatalf("a changed answer gave %+v", back)
 	}
 }
+
+// Only a reply that proves forwarding counts as the IPv4 control.
+func TestIPv4ControlNeedsAReplyThatProvesForwarding(t *testing.T) {
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	timeout := proxyIPv6ConnectTimeout{errors.New("connect reply timeout")}
+	for _, test := range []struct {
+		code byte
+		want proxyIPv6Status
+	}{
+		{0, proxyIPv6No},      // forwarded: an IPv6 timeout is a real answer
+		{5, proxyIPv6No},      // refused by the target: the proxy still forwarded
+		{2, proxyIPv6Unknown}, // not allowed by the ruleset: it forwarded nothing
+		{3, proxyIPv6Unknown}, // network unreachable
+		{1, proxyIPv6Unknown}, // general failure
+	} {
+		d := newIPv6StageDials(0, timeout, nil, "", nil, "", nil)
+		code := test.code
+		d.dials.control = func(context.Context, *connect.ProxySettings, string) (byte, error) { return code, nil }
+		result, _ := runProxyIPv6Stage(context.Background(), settings, proxyIPv6Result{}, now, d.dials)
+		if result.Status != test.want {
+			t.Fatalf("control reply %d gave %v, want %v", code, result.Status, test.want)
+		}
+	}
+}
+
+// A run cut short by its context keeps the previous result.
+func TestRunProxyIPv6StageCancelledDuringTheFirstDialKeepsThePreviousResult(t *testing.T) {
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	previous := proxyIPv6Result{Status: proxyIPv6Yes, Source: "measured", UDP: "yes", At: now.Add(-13 * time.Hour), Interval: 12 * time.Hour}
+	ctx, cancel := context.WithCancel(context.Background())
+	d := newIPv6StageDials(0, nil, nil, "", nil, "", nil)
+	d.dials.connect = func(context.Context, *connect.ProxySettings, string) (byte, error) {
+		cancel()
+		return 0, errors.New("context canceled")
+	}
+	result, measured := runProxyIPv6Stage(ctx, settings, previous, now, d.dials)
+	if measured || result != previous {
+		t.Fatalf("a cancelled run returned %+v, %v", result, measured)
+	}
+}
+
+func TestResolveProxyIPv6UDPAddr(t *testing.T) {
+	ctx := context.Background()
+	addr, err := resolveProxyIPv6UDPAddr(ctx, "[2001:db8::1]:3478")
+	if err != nil || addr.Port != 3478 || addr.IP.String() != "2001:db8::1" {
+		t.Fatalf("literal = %v, %v", addr, err)
+	}
+	for _, bad := range []string{"192.0.2.1:3478", "[2001:db8::1]", "[2001:db8::1]:0", "[2001:db8::1]:70000", "[2001:db8::1]:x"} {
+		if _, err := resolveProxyIPv6UDPAddr(ctx, bad); err == nil {
+			t.Fatalf("%q was accepted", bad)
+		}
+	}
+	cancelled, cancel := context.WithCancel(ctx)
+	cancel()
+	if _, err := resolveProxyIPv6UDPAddr(cancelled, "stun.invalid:3478"); err == nil {
+		t.Fatal("a cancelled lookup returned an address")
+	}
+}

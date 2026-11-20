@@ -182,3 +182,104 @@ func TestSweepSelectsAProxyWhoseIPv6ResultIsDue(t *testing.T) {
 		t.Fatalf("a proxy with a due IPv6 result was not selected: %v", got)
 	}
 }
+
+// While the IPv6 stage measures a proxy whose UDP result is fresh, the
+// completed UDP result stays readable and nobody waits for the stage.
+func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
+	h := newIPv6CheckHarness()
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ctx := withIPv6Sweep(context.Background())
+	h.store.Check(ctx, settings, now)
+
+	inStage := make(chan struct{})
+	release := make(chan struct{})
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		close(inStage)
+		<-release
+		return previous.measured(at, proxyIPv6No, "unknown", "", ""), true
+	}
+	h.store.mu.Lock()
+	h.store.entries[settings.Key()].ipv6.Interval = 10 * time.Minute
+	h.store.mu.Unlock()
+	later := now.Add(11 * time.Minute)
+	finished := make(chan struct{})
+	go func() {
+		h.store.Check(ctx, settings, later)
+		close(finished)
+	}()
+	<-inStage
+
+	// a foreground check returns the completed result at once, with a tight deadline
+	quick, cancel := context.WithTimeout(context.Background(), time.Second)
+	result := h.store.Check(quick, settings, later)
+	cancel()
+	if result.Status != proxyUDPOK || result.Err != nil {
+		t.Fatalf("a foreground check during the stage returned %+v", result)
+	}
+	h.store.mu.Lock()
+	entry := h.store.entries[settings.Key()]
+	completed := entry != nil && entry.done == nil && entry.result.Status == proxyUDPOK
+	h.store.mu.Unlock()
+	if !completed {
+		t.Fatal("the stage replaced the completed UDP entry")
+	}
+	close(release)
+	<-finished
+	if h.udpRuns.Load() != 1 {
+		t.Fatalf("UDP probe ran %d times, want 1", h.udpRuns.Load())
+	}
+}
+
+// Two sweep calls for one proxy measure IPv6 once.
+func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
+	h := newIPv6CheckHarness()
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ctx := withIPv6Sweep(context.Background())
+	h.store.Check(ctx, settings, now)
+
+	var runs atomic.Int32
+	inStage := make(chan struct{})
+	release := make(chan struct{})
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		if runs.Add(1) == 1 {
+			close(inStage)
+		}
+		<-release
+		return previous.measured(at, proxyIPv6No, "unknown", "", ""), true
+	}
+	h.store.mu.Lock()
+	h.store.entries[settings.Key()].ipv6.Interval = 10 * time.Minute
+	h.store.mu.Unlock()
+	later := now.Add(11 * time.Minute)
+	done := make(chan struct{}, 2)
+	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
+	<-inStage
+	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
+	<-done // the second call returns without measuring
+	close(release)
+	<-done
+	if got := runs.Load(); got != 1 {
+		t.Fatalf("the stage ran %d times at once, want 1", got)
+	}
+}
+
+// When the UDP check is due too, its result is published before the stage runs.
+func TestIPv6StageRunsAfterTheUDPResultIsPublished(t *testing.T) {
+	h := newIPv6CheckHarness()
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	published := false
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		h.store.mu.Lock()
+		entry := h.store.entries[settings.Key()]
+		published = entry != nil && entry.done == nil && entry.result.Status == proxyUDPOK
+		h.store.mu.Unlock()
+		return previous.measured(at, proxyIPv6No, "unknown", "", ""), true
+	}
+	h.store.Check(withIPv6Sweep(context.Background()), settings, now)
+	if !published {
+		t.Fatal("the stage ran before the UDP result was published")
+	}
+}

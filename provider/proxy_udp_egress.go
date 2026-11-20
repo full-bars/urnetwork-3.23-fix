@@ -164,6 +164,13 @@ func dialProxiedUdp(ctx context.Context, proxySettings *connect.ProxySettings, c
 		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalExitMismatch)
 		return nil, errProxiedUdpExitMismatch
 	}
+	// the wait above can outlast the first decision: a concurrent sweep may
+	// have changed the measurement, so an ipv6 destination is decided again
+	// from the current result before the association opens
+	if destination.IP.To4() == nil && !checkStore.ipv6UDPAllowed(proxySettings.Key(), time.Now()) {
+		proxiedUdpRefusals.note(proxySettings, proxiedUdpRefusalIpv6)
+		return nil, errProxiedUdpIpv6Refused
+	}
 
 	relayed, err := func() (net.PacketConn, error) {
 		relayCtx, cancel := context.WithTimeout(ctx, proxiedUdpRelayDialTimeout)

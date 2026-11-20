@@ -131,9 +131,10 @@ var (
 // to both, so a renewed token reaches the extra one too, and closes both.
 type proxiedPlatformTransport struct {
 	providerPlatformTransport
-	mu    sync.Mutex
-	auth  *connect.ClientAuth
-	extra providerPlatformTransport
+	mu     sync.Mutex
+	auth   *connect.ClientAuth
+	extra  providerPlatformTransport
+	closed bool
 }
 
 func newProxiedPlatformTransport(base providerPlatformTransport, auth *connect.ClientAuth) *proxiedPlatformTransport {
@@ -162,15 +163,20 @@ func (self *proxiedPlatformTransport) Kick() {
 }
 
 func (self *proxiedPlatformTransport) Close() {
+	self.mu.Lock()
+	self.closed = true
+	self.mu.Unlock()
 	self.stopExtra()
 	self.providerPlatformTransport.Close()
 }
 
 // startExtra builds and keeps the extra transport with the latest credential.
-// It reports false when one already runs or the builder declines.
+// It reports false when one already runs, the wrapper is closed, or the builder
+// declines. A credential renewed while the transport was being built is applied
+// before startExtra returns, and a Close that ran meanwhile closes what was built.
 func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.ClientAuth) providerPlatformTransport) bool {
 	self.mu.Lock()
-	if self.extra != nil {
+	if self.extra != nil || self.closed {
 		self.mu.Unlock()
 		return false
 	}
@@ -181,13 +187,19 @@ func (self *proxiedPlatformTransport) startExtra(build func(auth *connect.Client
 		return false
 	}
 	self.mu.Lock()
-	if self.extra != nil {
+	if self.extra != nil || self.closed {
 		self.mu.Unlock()
 		extra.Close()
 		return false
 	}
 	self.extra = extra
+	latest := self.auth
 	self.mu.Unlock()
+	if latest != auth {
+		extra.SetAuth(latest)
+	}
+	proxyIPv6TransportsRunning.Add(1)
+	proxyIPv6TransportStarts.Add(1)
 	return true
 }
 
@@ -201,6 +213,8 @@ func (self *proxiedPlatformTransport) stopExtra() bool {
 		return false
 	}
 	extra.Close()
+	proxyIPv6TransportsRunning.Add(-1)
+	proxyIPv6TransportStops.Add(1)
 	return true
 }
 
@@ -225,8 +239,6 @@ type proxiedIPv6Controller struct {
 func (self *proxiedIPv6Controller) step(now time.Time) {
 	if self.enabled != nil && !self.enabled() {
 		if self.transport.stopExtra() {
-			proxyIPv6TransportsRunning.Add(-1)
-			proxyIPv6TransportStops.Add(1)
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (proxy_dualstack is off)\n")
 		}
 		self.gate = proxyIPv6Gate{}
@@ -234,21 +246,25 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 	}
 	udp, v6, ok := self.store.measurement(self.key)
 	if !ok {
+		// no measurement is no evidence: a running transport is treated like one
+		// whose result went stale and stops, and the streaks start over
+		if self.transport.stopExtra() {
+			tlog("[ipv6] proxy identity: IPv6 transport stopped (the proxy has no measurement)\n")
+		}
+		self.gate = proxyIPv6Gate{}
 		return
 	}
 	start, stop := self.gate.observe(now, udp, v6)
-	if start && self.transport.startExtra(self.build) {
-		proxyIPv6TransportsRunning.Add(1)
-		proxyIPv6TransportStarts.Add(1)
-		tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
-	} else if start {
-		// the builder declined or one runs already: forget the start so the
-		// next two measurements try again
-		self.gate.running = false
+	if start {
+		if self.transport.startExtra(self.build) {
+			tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
+		} else {
+			// the builder declined, one runs already, or the wrapper is closed:
+			// forget the start so the next two measurements try again
+			self.gate.running = false
+		}
 	}
 	if stop && self.transport.stopExtra() {
-		proxyIPv6TransportsRunning.Add(-1)
-		proxyIPv6TransportStops.Add(1)
 		tlog("[ipv6] proxy identity: IPv6 transport stopped (the proxy no longer qualifies)\n")
 	}
 }
@@ -257,12 +273,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	defer func() {
-		if self.transport.stopExtra() {
-			proxyIPv6TransportsRunning.Add(-1)
-			proxyIPv6TransportStops.Add(1)
-		}
-	}()
+	defer self.transport.stopExtra()
 	for {
 		select {
 		case <-ctx.Done():

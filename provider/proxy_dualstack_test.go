@@ -404,3 +404,123 @@ func TestProxiedIPv6BuilderOnlyForTheProductionPlatformName(t *testing.T) {
 	// the proxy at 127.0.0.1:1 refuses at once, the transport closes cleanly
 	transport.Close()
 }
+
+// A credential renewed while the extra transport is being built reaches it
+// before startExtra returns.
+func TestStartExtraAppliesACredentialRenewedDuringTheBuild(t *testing.T) {
+	base := &fakePlatformTransport{}
+	authA := &connect.ClientAuth{ByJwt: "a"}
+	authB := &connect.ClientAuth{ByJwt: "b"}
+	transport := newProxiedPlatformTransport(base, authA)
+	built := &fakePlatformTransport{}
+	building := make(chan struct{})
+	release := make(chan struct{})
+	build := func(auth *connect.ClientAuth) providerPlatformTransport {
+		if auth != authA {
+			t.Errorf("built with %v, want the credential at the start", auth)
+		}
+		close(building)
+		<-release
+		return built
+	}
+	started := make(chan bool, 1)
+	go func() { started <- transport.startExtra(build) }()
+	<-building
+	transport.SetAuth(authB)
+	close(release)
+	if !<-started {
+		t.Fatal("the extra transport did not start")
+	}
+	built.mu.Lock()
+	got := append([]*connect.ClientAuth(nil), built.auths...)
+	built.mu.Unlock()
+	if len(got) != 1 || got[0] != authB {
+		t.Fatalf("the extra transport saw %v, want the renewed credential", got)
+	}
+	transport.stopExtra()
+}
+
+// A Close that runs while the extra transport is being built closes what was
+// built and installs nothing.
+func TestCloseDuringTheBuildClosesTheBuiltTransport(t *testing.T) {
+	base := &fakePlatformTransport{}
+	transport := newProxiedPlatformTransport(base, &connect.ClientAuth{ByJwt: "a"})
+	built := &fakePlatformTransport{}
+	building := make(chan struct{})
+	release := make(chan struct{})
+	build := func(*connect.ClientAuth) providerPlatformTransport {
+		close(building)
+		<-release
+		return built
+	}
+	runningBefore := proxyIPv6TransportsRunning.Load()
+	started := make(chan bool, 1)
+	go func() { started <- transport.startExtra(build) }()
+	<-building
+	transport.Close()
+	close(release)
+	if <-started {
+		t.Fatal("a closed wrapper accepted the extra transport")
+	}
+	if _, _, c := built.counts(); c != 1 {
+		t.Fatalf("the built transport closed %d times, want 1", c)
+	}
+	if transport.hasExtra() {
+		t.Fatal("the closed wrapper holds an extra transport")
+	}
+	if proxyIPv6TransportsRunning.Load() != runningBefore {
+		t.Fatal("the running gauge moved for a transport that never ran")
+	}
+	if transport.startExtra(func(*connect.ClientAuth) providerPlatformTransport { return &fakePlatformTransport{} }) {
+		t.Fatal("a closed wrapper started an extra transport")
+	}
+}
+
+// Closing the wrapper counts the stop of a running extra transport.
+func TestCloseAccountsTheRunningExtraTransport(t *testing.T) {
+	transport := newProxiedPlatformTransport(&fakePlatformTransport{}, &connect.ClientAuth{ByJwt: "a"})
+	runningBefore := proxyIPv6TransportsRunning.Load()
+	stopsBefore := proxyIPv6TransportStops.Load()
+	startsBefore := proxyIPv6TransportStarts.Load()
+	if !transport.startExtra(func(*connect.ClientAuth) providerPlatformTransport { return &fakePlatformTransport{} }) {
+		t.Fatal("did not start")
+	}
+	if got := proxyIPv6TransportsRunning.Load() - runningBefore; got != 1 {
+		t.Fatalf("running gauge moved by %d after the start, want 1", got)
+	}
+	transport.Close()
+	if got := proxyIPv6TransportsRunning.Load() - runningBefore; got != 0 {
+		t.Fatalf("running gauge moved by %d after Close, want 0", got)
+	}
+	if proxyIPv6TransportStarts.Load()-startsBefore != 1 || proxyIPv6TransportStops.Load()-stopsBefore != 1 {
+		t.Fatal("the start or the stop was not counted once")
+	}
+}
+
+// A running extra transport whose measurement disappeared stops.
+func TestControllerStopsWhenTheMeasurementIsGone(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		at := t0.Add(time.Duration(i) * 13 * time.Hour)
+		storeWithEntry(store, settings, proxyUDPOK, at, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
+		controller.step(at)
+	}
+	if !controller.transport.hasExtra() {
+		t.Fatal("did not start")
+	}
+	store.mu.Lock()
+	delete(store.entries, settings.Key())
+	store.mu.Unlock()
+	controller.step(t0.Add(30 * time.Hour))
+	if controller.transport.hasExtra() {
+		t.Fatal("the extra transport kept running with no measurement")
+	}
+	// the streaks start over: one new result does not start it again
+	at := t0.Add(31 * time.Hour)
+	storeWithEntry(store, settings, proxyUDPOK, at, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
+	controller.step(at)
+	if controller.transport.hasExtra() {
+		t.Fatal("started again on one result")
+	}
+}

@@ -6,6 +6,7 @@ import (
 	"errors"
 	"io"
 	"net"
+	"strconv"
 	"time"
 
 	"github.com/urnetwork/connect"
@@ -108,14 +109,18 @@ func readSocks5ConnectCode(conn net.Conn) (byte, error) {
 }
 
 // proxyIPv4ControlAlive runs the fresh control of the same run: one SOCKS
-// connection through the proxy to an IPv4 target. A reply of any kind means
-// the proxy forwards traffic, so a timeout on IPv6 is a real IPv6 result.
+// connection through the proxy to an IPv4 target. A reply that proves the proxy
+// forwarded to the target means it forwards traffic, so a timeout on IPv6 is a
+// real IPv6 result.
 func proxyIPv4ControlAlive(ctx context.Context, settings *connect.ProxySettings, targets []string, dial func(context.Context, *connect.ProxySettings, string) (byte, error)) bool {
 	for _, target := range targets {
 		if ctx.Err() != nil {
 			return false
 		}
-		if _, err := dial(ctx, settings, target); err == nil {
+		// only a reply that proves the proxy forwarded to the target counts: a
+		// success, or a connection refused by the target itself. A ruleset
+		// refusal or a network failure says the proxy did not forward
+		if code, err := dial(ctx, settings, target); err == nil && (code == 0 || code == 5) {
 			return true
 		}
 	}
@@ -165,7 +170,7 @@ func proxyIPv6STUNExit(ctx context.Context, settings *connect.ProxySettings) (st
 	defer pc.Close()
 	var lastErr error
 	for _, server := range proxyIPv6StunServers {
-		destination, err := net.ResolveUDPAddr("udp6", server)
+		destination, err := resolveProxyIPv6UDPAddr(ctx, server)
 		if err != nil {
 			lastErr = err
 			continue
@@ -180,6 +185,29 @@ func proxyIPv6STUNExit(ctx context.Context, settings *connect.ProxySettings) (st
 		lastErr = errors.New("the relay did not return an IPv6 STUN address")
 	}
 	return "", lastErr
+}
+
+// resolveProxyIPv6UDPAddr resolves a host:port to an IPv6 UDP address with the
+// probe's context, so a slow lookup ends with the probe.
+func resolveProxyIPv6UDPAddr(ctx context.Context, server string) (*net.UDPAddr, error) {
+	host, portText, err := net.SplitHostPort(server)
+	if err != nil {
+		return nil, err
+	}
+	port, err := strconv.Atoi(portText)
+	if err != nil || port <= 0 || port > 65535 {
+		return nil, errors.New("invalid STUN port")
+	}
+	addrs, err := net.DefaultResolver.LookupIPAddr(ctx, host)
+	if err != nil {
+		return nil, err
+	}
+	for _, addr := range addrs {
+		if addr.IP.To4() == nil {
+			return &net.UDPAddr{IP: addr.IP, Port: port}, nil
+		}
+	}
+	return nil, errors.New("the STUN host has no IPv6 address")
 }
 
 // runProxyIPv6Stage measures the IPv6 capability of one identity and returns
@@ -209,6 +237,11 @@ func runProxyIPv6Stage(ctx context.Context, settings *connect.ProxySettings, pre
 				udp = proxyIPv6UDPStatus(tcpExit, udpExit)
 			}
 		}
+	}
+	// a run the context cut short observed nothing reliable: keep the previous
+	// result instead of recording the interruption as an answer
+	if ctx.Err() != nil {
+		return previous, false
 	}
 	return previous.measured(now, status, udp, tcpExit, udpExit), true
 }
