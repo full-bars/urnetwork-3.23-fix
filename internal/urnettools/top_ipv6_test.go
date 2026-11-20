@@ -124,3 +124,23 @@ func TestTopProxyPopupIPv6(t *testing.T) {
 		t.Fatalf("direct slot unexpectedly showed IPv6 exit: %s", joined0)
 	}
 }
+
+// The style legend of a non-Glow heatmap goes below the coverage rows, so it
+// never overwrites the IPv6 row in a short box (five rows is the smallest box
+// that shows the row after the four bars).
+func TestTopIPv6CoverageIsNotOverwrittenByTheStyleLegend(t *testing.T) {
+	for height := 5; height <= 8; height++ {
+		m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+		s := topFlowing(t)
+		s.Proxies.UDP = nil
+		s.Proxies.IPv6 = &SnapshotProxyIPv6{Yes: 12, No: 988, Unknown: 4}
+		m.apply(0, s, nil)
+		m.proxyHeatmapStyle = heatmapAurora
+		buf := tui.New(100, height)
+		m.drawProxies(buf)
+		out := buf.String()
+		if !strings.Contains(out, "IPv6 proxies: ") || !strings.Contains(out, "12 yes") {
+			t.Fatalf("height %d: the IPv6 row was overwritten:\n%s", height, out)
+		}
+	}
+}

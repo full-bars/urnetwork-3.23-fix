@@ -765,11 +765,12 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 		curY += m.drawUDPProxyCoverage(b, curY)
 	}
 	if b.Height() > curY && m.snap.Proxies.IPv6 != nil {
-		m.drawIPv6ProxyCoverage(b, curY)
+		curY += m.drawIPv6ProxyCoverage(b, curY)
 	}
-	// Legend row: non-Glow heatmap styles show the style name.
-	if m.proxyHeatmapStyle != heatmapGlow && gridH > 1 {
-		b.Put(m.proxyHeatmapStyle.String(), 0, gridH, th.Dim)
+	// Legend row: non-Glow heatmap styles show the style name, below the
+	// coverage rows so it never overwrites one of them.
+	if m.proxyHeatmapStyle != heatmapGlow && b.Height() > curY {
+		b.Put(m.proxyHeatmapStyle.String(), 0, curY, th.Dim)
 	}
 }
 

@@ -253,8 +253,13 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		self.gate = proxyIPv6Gate{}
 		return
 	}
-	udp, v6, ok := self.store.measurement(self.key)
-	if !ok {
+	udp, v6, state := self.store.measurement(self.key)
+	if state == measurementInFlight {
+		// a UDP check is running: its zero result would read as a bad
+		// observation, so this poll changes nothing
+		return
+	}
+	if state == measurementMissing {
 		// no measurement is no evidence: a running transport is treated like one
 		// whose result went stale and stops, and the streaks start over
 		if self.transport.stopExtra() {
@@ -293,15 +298,31 @@ func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Durati
 	}
 }
 
+// measurementState says whether a cached measurement can be read now.
+type measurementState int
+
+const (
+	// measurementMissing: the store has no entry for the identity
+	measurementMissing measurementState = iota
+	// measurementInFlight: a UDP check is running, so the entry holds no
+	// completed UDP result yet. The IPv6 result alone says nothing about the
+	// policy, so a reader waits for the check to finish
+	measurementInFlight
+	measurementReady
+)
+
 // measurement returns the cached UDP result and IPv6 result of an identity.
-func (self *proxyUDPCheckStore) measurement(key string) (proxyUDPResult, proxyIPv6Result, bool) {
+func (self *proxyUDPCheckStore) measurement(key string) (proxyUDPResult, proxyIPv6Result, measurementState) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
 	entry := self.cachedEntryLocked(key)
 	if entry == nil {
-		return proxyUDPResult{}, proxyIPv6Result{}, false
+		return proxyUDPResult{}, proxyIPv6Result{}, measurementMissing
 	}
-	return entry.result, entry.ipv6, true
+	if entry.done != nil {
+		return proxyUDPResult{}, entry.ipv6, measurementInFlight
+	}
+	return entry.result, entry.ipv6, measurementReady
 }
 
 // newProxiedIPv6Builder returns the builder of the extra transport, or nil when

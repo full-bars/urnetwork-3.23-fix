@@ -1,11 +1,12 @@
 package main
 
 import (
-	"os"
 	"testing"
 )
 
 func TestProxyIPv6ProbeControl(t *testing.T) {
+	// the defaults are asserted, so an inherited override must not leak in
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "")
 	state := newControlState()
 	if !proxyIPv6ProbeEnabled(state) || needsRestart("proxy_ipv6_probe") {
 		t.Fatal("default must be enabled and live")
@@ -32,18 +33,18 @@ func TestProxyIPv6ProbeControl(t *testing.T) {
 
 func TestProxyIPv6ProbeEnvDefault(t *testing.T) {
 	for _, envVal := range []string{"off", "0", "false", "no"} {
-		os.Setenv("URNETWORK_PROXY_IPV6_PROBE", envVal)
+		t.Setenv("URNETWORK_PROXY_IPV6_PROBE", envVal)
 		state := newControlState()
 		if proxyIPv6ProbeEnabled(state) {
 			t.Fatalf("expected env %q to disable ipv6 probe", envVal)
 		}
 	}
-	os.Setenv("URNETWORK_PROXY_IPV6_PROBE", "on")
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "on")
 	state := newControlState()
 	if !proxyIPv6ProbeEnabled(state) {
 		t.Fatal("expected env on to enable ipv6 probe")
 	}
-	os.Unsetenv("URNETWORK_PROXY_IPV6_PROBE")
+	t.Setenv("URNETWORK_PROXY_IPV6_PROBE", "")
 	state = newControlState()
 	if !proxyIPv6ProbeEnabled(state) {
 		t.Fatal("expected unset env to default to on")

@@ -582,3 +582,35 @@ func TestCredentialsReachTheExtraTransportInOrder(t *testing.T) {
 	}
 	transport.stopExtra()
 }
+
+// A poll during a running UDP check changes nothing: the in-flight entry has no
+// completed UDP result, and reading it as unknown would stop a good transport.
+func TestControllerIgnoresAnInFlightUDPCheck(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	for i := 0; i < 2; i++ {
+		at := t0.Add(time.Duration(i) * 13 * time.Hour)
+		storeWithEntry(store, settings, proxyUDPOK, at, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
+		controller.step(at)
+	}
+	if !controller.transport.hasExtra() {
+		t.Fatal("did not start")
+	}
+	// a new IPv6 result arrives while a UDP check is in flight
+	at := t0.Add(26 * time.Hour)
+	store.mu.Lock()
+	store.entries[settings.Key()] = &proxyUDPCheckEntry{done: make(chan struct{}), ipv6: v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour)}
+	store.mu.Unlock()
+	for i := 0; i < 3; i++ {
+		controller.step(at.Add(time.Duration(i) * time.Minute))
+	}
+	if !controller.transport.hasExtra() {
+		t.Fatal("a poll during a running UDP check stopped the transport")
+	}
+	// the check completes with ok: the new result counts normally
+	storeWithEntry(store, settings, proxyUDPOK, at, v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour))
+	controller.step(at.Add(5 * time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("the transport stopped after the check completed with ok")
+	}
+}
