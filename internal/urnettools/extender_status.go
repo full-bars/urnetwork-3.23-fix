@@ -168,6 +168,24 @@ var (
 	}
 )
 
+func udp53ThresholdStatus(platform string, readFile func(string) ([]byte, error)) string {
+	if platform != "linux" {
+		return "UDP 53 sysctl threshold: not applicable on this platform"
+	}
+	data, err := readFile(extenderSysctlPortStartPath)
+	if err != nil {
+		return "UDP 53 sysctl threshold: unknown"
+	}
+	value, err := strconv.Atoi(strings.TrimSpace(string(data)))
+	if err != nil || value < 0 || value > 65535 {
+		return "UDP 53 sysctl threshold: unknown"
+	}
+	if value <= 53 {
+		return fmt.Sprintf("UDP 53 sysctl threshold: in force (live value %d)", value)
+	}
+	return fmt.Sprintf("UDP 53 sysctl threshold: not in force (live value %d)", value)
+}
+
 func detectBindRoute(binary, user string) string {
 	return detectBindRouteWith(portRoutePlatformFn(), binary, user, portRouteReadFileFn, portRouteExecCmdFn)
 }

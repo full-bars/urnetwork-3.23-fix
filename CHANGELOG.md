@@ -18,7 +18,7 @@ Everything merged after `v3.23.0-fix.35.11`.
 - Extender status reports the UDP port 53 state and bind failure reason. The `urnet_extender_dns53_state` metric exposes the state.
 - Gossip diagnostics include dial counters, health transitions, recent events and rate-limited anomaly dumps.
 - The proxy heatmap shows addresses on hover or click, separates the direct connection and explains the grid in help. Dense cells use stacked blocks and recent traffic fades over the afterglow interval.
-- Extender sysctl handling supports a lower port threshold. Setup continues to offer the TCP 443 threshold. The UDP port 53 threshold is not selectable in setup yet.
+- Extender setup offers the UDP port 53 sysctl threshold as an explicit opt-in. The default remains 443.
 - The Linux interface counter reader exposes cumulative receive and transmit bytes.
 - The container image includes the Go top dashboard. `urnet-docker top` forwards terminal color settings and stores preferences on a writable state mount when available. Reusing a named volume preserves them across container recreation. [redeploy]
 

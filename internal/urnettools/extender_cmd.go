@@ -12,7 +12,7 @@ import (
 )
 
 const extenderUsage = "usage: urnet-tools extender [status|events|about|on|off|enable|disable|setup]"
-const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [--route=sysctl|capability|skip] [target]"
+const extenderSetupUsage = "usage: urnet-tools extender setup [-y|--yes] [-f|--force] [-n|--dry-run] [--route=sysctl|capability|skip] [--udp53] [target]"
 const extenderEventsUsage = "usage: urnet-tools extender events [--since <duration>] [--kind peer,reject,state,dial,cap,publish] [--json] [target]"
 
 // normalizeExtenderAction accepts enable and disable as plain names for on and
@@ -41,7 +41,7 @@ func isExtenderSetupArgs(args []string) bool {
 	}
 	for _, a := range rest {
 		switch a {
-		case "-f", "--force", "-y", "--yes", "-n", "--dry-run":
+		case "-f", "--force", "-y", "--yes", "-n", "--dry-run", "--udp53":
 			continue
 		default:
 			return strings.EqualFold(strings.TrimSpace(a), "setup")
@@ -96,12 +96,28 @@ func parseExtenderSetupArgs(args []string) (yes, dryRun bool, route string, targ
 var runExtenderSetupFn = RunExtenderSetup
 
 func cmdExtenderSetup(args []string) error {
-	yes, dryRun, route, target, err := parseExtenderSetupArgs(args)
+	var filtered []string
+	udp53, explicitYes := false, false
+	for _, arg := range args {
+		if arg == "--udp53" {
+			udp53 = true
+			continue
+		}
+		if arg == "--yes" || arg == "-y" {
+			explicitYes = true
+		}
+		filtered = append(filtered, arg)
+	}
+	yes, dryRun, route, target, err := parseExtenderSetupArgs(filtered)
 	if err != nil {
 		return err
 	}
+	if udp53 {
+		yes = explicitYes
+	}
 	argv := append([]string{"extender"}, args...)
 	return runExtenderSetupFn(ExtenderSetupOptions{
+		UDP53:  udp53,
 		Yes:    yes,
 		Force:  yes,
 		DryRun: dryRun,
@@ -122,7 +138,7 @@ func newExtenderCmd() *cobra.Command {
 			"'status' shows whether it is working: which ports are up, what IPv4 and IPv6 are doing and when each tries next, who it is helping, and what to fix if it is blocked. " +
 			"'events' reads the in-memory gossip flight recorder over the control socket (--since, --kind, --json). " +
 			"'about' explains the ports, the firewall, IPv6, Docker and what survives a restart, and works with the provider stopped. " +
-			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). UDP 53 is optional and user-managed; setup does not open it. FreeBSD extender setup is untested and prints manual instructions only. " +
+			"'setup' inspects port 443 occupancy, binary bind capability and host firewall rules, prints the exact commands needed, and asks for confirmation before changing anything (use -y/--yes for non-interactive runs). UDP 53 is optional. On Linux --udp53 with the sysctl route permits all local users to bind ports 53 to 1023. UDP 53 firewall access is user-managed. FreeBSD extender setup is untested and prints manual instructions only. " +
 			"'off' (or 'disable') turns it off and keeps it off across restarts; 'on' (or 'enable') turns it back on. Both apply to the running provider at once, with no restart and no unit file edit. " +
 			"In Docker this command is not available: read `docker logs <container> | grep 🌉` and set URNETWORK_EXTENDER=off to disable it. " +
 			"Honors -n/--dry-run, which prints the plan and sends nothing.",
@@ -158,6 +174,7 @@ func cmdExtender(args []string, dryRun bool) error {
 		case "about", "help", "explain":
 			// static text: works with the provider stopped
 			fmt.Print(extenderAboutText)
+			fmt.Fprintln(os.Stdout, udp53ThresholdStatus(portRoutePlatformFn(), portRouteReadFileFn))
 			return nil
 		}
 	}
@@ -228,12 +245,14 @@ func printExtenderStatus(p Provider) error {
 	reading, err := socketExtenderFn(p)
 	if err != nil {
 		fmt.Fprintf(os.Stdout, "\nExtender: unavailable: %v\n", err)
+		fmt.Fprintln(os.Stdout, udp53ThresholdStatus(portRoutePlatformFn(), portRouteReadFileFn))
 		return err
 	}
 	if reading.BindRoute == "" {
 		reading.BindRoute = detectBindRoute(p.Binary, p.User)
 	}
 	formatExtenderBlock(os.Stdout, *reading, time.Now())
+	fmt.Fprintln(os.Stdout, udp53ThresholdStatus(portRoutePlatformFn(), portRouteReadFileFn))
 	return nil
 }
 
@@ -261,9 +280,10 @@ PORTS
             1024: sudo setcap cap_net_bind_service=+ep <provider binary>
   udp 443   optional. QUIC carrier.
   udp 4053  optional. DNS carrier.
-  udp 53    optional and user-managed. Setup does not open UDP 53. It is tried
-            automatically; if a resolver holds it, the extender warns and
-            keeps using 4053. URNETWORK_EXTENDER_DNS53=off skips it.
+  udp 53    optional. On Linux, setup --route=sysctl --udp53 can permit any
+            local user to bind ports 53 to 1023 after confirmation. UDP 53
+            firewall access is user-managed. If a resolver holds the port,
+            the extender keeps using 4053. URNETWORK_EXTENDER_DNS53=off skips it.
   Without tcp 443 the extender opens none of the other ports: the platform
   could not list this host anew, so nothing could use them. (A listing the
   platform made earlier stays valid until it expires.) It retries tcp 443

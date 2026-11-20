@@ -60,7 +60,7 @@ For it to work the host needs:
 2. **Permission to use TCP 443.** On Linux, a non-root provider can use the host-wide sysctl route or `cap_net_bind_service` on the binary. The sysctl route lets any local user bind ports 443 and above. The installer may offer the file capability on an interactive terminal. When the sysctl route is not active, the updater attempts to restore the capability only if the old binary had a verified capability and prints a manual command when needed. FreeBSD setup is print-only and untested this release; regular providing on FreeBSD is unaffected.
 3. **A public IPv4 address**, and for IPv6 a public IPv6 address with a working route out.
 
-UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP. UDP 53 is user-managed: setup does not open it.
+UDP 443, UDP 4053 and UDP 53 are optional. Without them the host is still listed over TCP. Setup does not add a UDP 53 firewall rule. On Linux, `--udp53` can lower the sysctl bind threshold after confirmation.
 
 ## Is it working?
 
@@ -117,7 +117,7 @@ The role runs from the provider's direct slot, because only that slot's egress i
 | TCP 443 | TLS carrier | **Required.** The platform proves the host over this port. |
 | UDP 443 | QUIC carrier | Optional. Control it with `extender-udp443`. |
 | UDP 4053 | DNS carrier | Optional. Control it with `extender-udp4053`. See the note on DNS below. |
-| UDP 53 | Second DNS port | Optional and user-managed. Control it with `extender-udp53`. Setup does not open it. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
+| UDP 53 | Second DNS port | Optional. Control it with `extender-udp53`. Setup can lower the bind threshold with `--udp53`. Manage firewall access separately. `URNETWORK_EXTENDER_DNS53=off` also disables it. |
 
 TCP 443 gates everything. The extender binds it first, and **while it fails no other port is opened**: the platform could not list the host anyway, so nothing could use them. It retries every three minutes and opens the rest once it has the port. It says so plainly, naming what holds the port when the host will tell it:
 
@@ -143,7 +143,7 @@ urnet-tools set extender-udp53 off
 
 Use `on` to enable a carrier again. The provider saves each choice and automatically restarts an active extender role when the choice changes. An `off` carrier is not bound or listed. Status shows it as `disabled by setting`. TCP 443 remains required.
 
-UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The setup sysctl limit of 443 alone does not permit binding port 53. The lower threshold for UDP port 53 is not selectable in setup yet. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
+UDP 53 is tried by default. A port already in use cannot bind. On Linux, a non-root provider needs `cap_net_bind_service` or an `ip_unprivileged_port_start` limit of 53 or lower. The default setup sysctl limit of 443 does not permit binding port 53. To choose 53 instead, run `urnet-tools extender setup --route=sysctl --udp53`. The plan shows the current value, the persistent drop-in and the undo command. Confirm by typing `yes` or use `--yes` for non-interactive setup. This change permits every local user to bind ports 53 to 1023. Use `--dry-run` to inspect the plan without changing the host. Manage the UDP 53 firewall rule separately. FreeBSD and other platforms do not support this flag. `URNETWORK_EXTENDER_DNS53=off` also disables UDP 53 even when its setting is `on`.
 
 `urnet-tools extender status` and `urnet-tools top` always show a `dns 53` line, so you can tell why UDP 53 is not serving:
 
