@@ -6,6 +6,19 @@ import (
 	"github.com/urnetwork/connect/internal/tui"
 )
 
+func TestHeatmapBlocksDraws(t *testing.T) {
+	for _, n := range []int{1, 3, 50, 1001, 4000, 20000} {
+		m := topHeatGridModel(t, tui.DefaultTheme(), n)
+		m.proxyHeatmapStyle = heatmapBlocks
+		got, glow := tui.New(80, 20), tui.New(80, 20)
+		m.drawProxyHeatmap(got)
+		m.drawProxyGrid(glow)
+		if got.String() == glow.String() {
+			t.Fatalf("n=%d: Blocks must differ from Glow", n)
+		}
+	}
+}
+
 func TestHeatmapLocalityDraws(t *testing.T) {
 	for _, n := range []int{1, 3, 50, 1001, 4000, 20000} {
 		m := topHeatGridModel(t, tui.DefaultTheme(), n)
