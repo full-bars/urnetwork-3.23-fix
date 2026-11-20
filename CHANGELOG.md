@@ -31,6 +31,10 @@ Everything merged after `v3.23.0-fix.35.11`.
 
 ### Fixed
 
+- `urnet-tools top` redraws at most 20 times a second. It used to redraw on every poll result, tick and mouse move, over a hundred times a second at a fast refresh interval, which used about 12 percent of a core and sent hundreds of kilobytes a second down a remote terminal.
+- The graph axes follow the columns on screen. A burst that had scrolled off the left edge kept the axis high, so live traffic drew one pixel high.
+- The heatmap gives each proxy state its own color: dropped is orange, connecting is violet and dead is bold red, and the throughput shades stay in green to aqua. The popup shows the UDP check result of the proxy. The menu item for the fade time is called `Dot fade time`.
+
 - `urnet-tools top` advances live traffic graphs on each fast refresh and labels the visible duration.
 
 - Backend failure counts and timestamps are published together as one snapshot.
