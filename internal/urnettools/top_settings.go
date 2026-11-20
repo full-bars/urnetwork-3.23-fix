@@ -22,6 +22,7 @@ import (
 type topSettings struct {
 	Theme                 string       // a tui.ThemeNames entry, or "" for the environment's choice
 	Graph                 string       // a tui.GraphSymbolNames entry, or "" for braille
+	GraphSplit            bool         // true for split rx/tx graph, false for combined
 	ProxyAfterglowSeconds int          // 0 selects the default
 	ProxyHeatmapStyle     heatmapStyle // zero selects Glow
 	// The operator's arrangement of the top screen, drawn by their own hand:
@@ -46,7 +47,7 @@ func topSettingsPath() string {
 // is anything that does not name a real theme or style, so a stale or hand-
 // edited file cannot select something that is not there.
 func loadTopSettings(path string) topSettings {
-	var s topSettings
+	s := topSettings{GraphSplit: true}
 	if path == "" {
 		return s
 	}
@@ -75,6 +76,8 @@ func loadTopSettings(path string) topSettings {
 			if _, ok := tui.GraphSymbolsByName(val); ok {
 				s.Graph = val
 			}
+		case key == "graph.split" || key == "graph_split":
+			s.GraphSplit = (val == "true" || val == "1" || val == "yes" || val == "on")
 		case key == "proxy.heatmap_style":
 			s.ProxyHeatmapStyle = parseHeatmapStyle(val)
 		case key == "proxy.afterglow_seconds":
@@ -112,6 +115,7 @@ func saveTopSettings(path string, s topSettings) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	out := "# urnet-tools top: chosen in the m menu\ntheme = " + s.Theme + "\ngraph = " + s.Graph + "\n"
+	out += fmt.Sprintf("graph.split = %t\n", s.GraphSplit)
 	out += "proxy.heatmap_style = " + s.ProxyHeatmapStyle.String() + "\n"
 	if s.ProxyAfterglowSeconds > 0 {
 		out += fmt.Sprintf("proxy.afterglow_seconds = %d\n", s.ProxyAfterglowSeconds)

@@ -2,6 +2,9 @@
 
 ## [Unreleased]
 
+- Added split upload and download graphs in urnet-tools top, drawing download above the center baseline and upload mirrored below it.
+- Added peak and valley rate labels on visible graph extrema with formatting that tracks the active unit choice.
+- Added the s key and a Traffic view menu item to switch between split and combined graph views.
 - Made zoomed graphs use the available plot width.
 - Clarified the proxy popup attachment duration and idle state.
 - Increased heatmap fade contrast and refreshed proxy cells at least once per second when requests complete in time.

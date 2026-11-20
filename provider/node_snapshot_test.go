@@ -346,6 +346,8 @@ func TestRestartPendingFor(t *testing.T) {
 type fakeSnapshotEnv struct {
 	now         time.Time
 	billable    map[string]uint64
+	billableRx  map[string]uint64
+	billableTx  map[string]uint64
 	proxies     SnapshotProxies
 	clients     int64
 	auth        int64
@@ -354,6 +356,8 @@ type fakeSnapshotEnv struct {
 	pending     bool
 	startup     string
 	traffic     map[string]uint64
+	trafficRx   map[string]uint64
+	trafficTx   map[string]uint64
 	lifetime    uint64
 	hasLifetime bool
 	reads       int
@@ -361,9 +365,11 @@ type fakeSnapshotEnv struct {
 
 func (f *fakeSnapshotEnv) sources() snapshotSources {
 	return snapshotSources{
-		now:       func() time.Time { return f.now },
-		startedAt: snapT0,
-		billable:  func() map[string]uint64 { return f.billable },
+		now:        func() time.Time { return f.now },
+		startedAt:  snapT0,
+		billable:   func() map[string]uint64 { return f.billable },
+		billableRx: func() map[string]uint64 { return f.billableRx },
+		billableTx: func() map[string]uint64 { return f.billableTx },
 		pool: func() (SnapshotProxies, int64) {
 			f.reads++
 			return f.proxies, f.clients
@@ -378,6 +384,8 @@ func (f *fakeSnapshotEnv) sources() snapshotSources {
 		restartPending:   func() bool { return f.pending },
 		startup:          func() string { return f.startup },
 		traffic:          func() map[string]uint64 { return f.traffic },
+		trafficRx:        func() map[string]uint64 { return f.trafficRx },
+		trafficTx:        func() map[string]uint64 { return f.trafficTx },
 		lifetimeBillable: func() (uint64, bool) { return f.lifetime, f.hasLifetime },
 	}
 }

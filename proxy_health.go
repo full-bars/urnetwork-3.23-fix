@@ -665,6 +665,23 @@ func ProxyBandwidthTotals() (billable, total uint64) {
 	return billable, total
 }
 
+// ProxyBandwidthTotalsDirectional sums cumulative billable rx/tx and total rx/tx
+// byte counters across every registered proxy.
+func ProxyBandwidthTotalsDirectional() (billableRx, billableTx, totalRx, totalTx uint64) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		billableRx += h.bw.BillableRx.Load()
+		billableTx += h.bw.BillableTx.Load()
+		totalRx += h.bw.TotalRx.Load()
+		totalTx += h.bw.TotalTx.Load()
+	}
+	return billableRx, billableTx, totalRx, totalTx
+}
+
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
 // IDENTITY (ProxySettings.Key(): address, or address+user for a shared-
 // gateway proxy) instead of ProxyHealthSnapshot's display format

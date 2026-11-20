@@ -15,6 +15,7 @@ import (
 const (
 	topMenuTheme = iota
 	topMenuGraph
+	topMenuTrafficView
 	topMenuAfterglow
 	topMenuHeatmap
 	topMenuRows
@@ -33,6 +34,7 @@ func (m *topModel) applySettings(s topSettings) {
 	if g, ok := tui.GraphSymbolsByName(s.Graph); ok {
 		m.graph = g
 	}
+	m.graphSplit = s.GraphSplit
 	m.proxyAfterglowSeconds = s.ProxyAfterglowSeconds
 	m.proxyHeatmapStyle = s.ProxyHeatmapStyle
 	m.layout = topLayout{SideWidth: s.LayoutSideWidth, Dividers: s.LayoutDividers}
@@ -43,7 +45,7 @@ func (m *topModel) settings() topSettings {
 	if m.themeLocked {
 		theme = m.savedTheme
 	}
-	return topSettings{Theme: theme, Graph: m.graph.String(), ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
+	return topSettings{Theme: theme, Graph: m.graph.String(), GraphSplit: m.graphSplit, ProxyAfterglowSeconds: m.proxyAfterglowSeconds, ProxyHeatmapStyle: m.proxyHeatmapStyle, LayoutSideWidth: m.layout.SideWidth, LayoutDividers: m.layout.Dividers}
 }
 
 // menuHandle applies one input event while the menu is open. It reports whether
@@ -116,6 +118,8 @@ func (m *topModel) menuCycle(d int) {
 	case topMenuGraph:
 		n := len(tui.GraphSymbolNames)
 		m.graph = tui.GraphSymbols(((int(m.graph)+d)%n + n) % n)
+	case topMenuTrafficView:
+		m.graphSplit = !m.graphSplit
 	case topMenuAfterglow:
 		seconds := m.proxyAfterglowSeconds
 		if seconds == 0 {
@@ -143,19 +147,25 @@ func (m *topModel) drawMenu(b *tui.Buffer) {
 	if seconds == 0 {
 		seconds = defaultProxyAfterglowSeconds
 	}
+	trafficView := "Split (Rx/Tx)"
+	if !m.graphSplit {
+		trafficView = "Combined"
+	}
 	rows := [topMenuRows]row{
-		topMenuTheme:     {"Theme", m.theme.Name},
-		topMenuGraph:     {"Graph style", m.graph.String()},
-		topMenuAfterglow: {"Dot fade time", strconv.Itoa(seconds) + " s"},
-		topMenuHeatmap:   {"Heatmap style", m.proxyHeatmapStyle.String()},
+		topMenuTheme:       {"Theme", m.theme.Name},
+		topMenuGraph:       {"Graph style", m.graph.String()},
+		topMenuTrafficView: {"Traffic view", trafficView},
+		topMenuAfterglow:   {"Dot fade time", strconv.Itoa(seconds) + " s"},
+		topMenuHeatmap:     {"Heatmap style", m.proxyHeatmapStyle.String()},
 	}
 	// One hint under the rows says what the selected item changes, in words and
 	// with its current value, so a number such as the fade time explains itself.
 	hints := [topMenuRows][3]string{
-		topMenuTheme:     {"The colors of the whole dashboard.", "", ""},
-		topMenuGraph:     {"The symbols the graphs are drawn with.", "", ""},
-		topMenuAfterglow: {fmt.Sprintf("A bright dot fades out over %d s after", seconds), "its proxy's traffic drops.", "Steady traffic stays lit."},
-		topMenuHeatmap:   {"How the proxy dots are laid out and drawn.", "Glow is the classic grid.", ""},
+		topMenuTheme:       {"The colors of the whole dashboard.", "", ""},
+		topMenuGraph:       {"The symbols the graphs are drawn with.", "", ""},
+		topMenuTrafficView: {"Split draws download and upload in one graph.", "Combined sums them into a single line.", ""},
+		topMenuAfterglow:   {fmt.Sprintf("A bright dot fades out over %d s after", seconds), "its proxy's traffic drops.", "Steady traffic stays lit."},
+		topMenuHeatmap:     {"How the proxy dots are laid out and drawn.", "Glow is the classic grid.", ""},
 	}
 	const w = 46
 	h := topMenuRows + 9

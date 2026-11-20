@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"math"
 	"strconv"
 	"strings"
 	"time"
@@ -352,12 +353,47 @@ func (m *topModel) graphTitle(name string, sr topSeries, samples []float64, scal
 	return title
 }
 
+func hasDirectionalData(rx, tx []float64) bool {
+	if len(rx) == 0 || len(tx) == 0 {
+		return false
+	}
+	for _, v := range rx {
+		if !math.IsNaN(v) {
+			return true
+		}
+	}
+	for _, v := range tx {
+		if !math.IsNaN(v) {
+			return true
+		}
+	}
+	return false
+}
+
 // drawGraph draws one rate series. sr.anchor is the absolute index of the newest
 // sample (zero when unknown), which keeps completed columns still while the
 // graph scrolls; the live rate is the tail, its own newest column. scale holds
 // the axis steady: it never sits below what the series needs, and only comes
 // down after the peak has stayed low for a while.
 func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, scale *topScale, tail float64, live tui.Style) {
+	rx, tx := []float64(nil), []float64(nil)
+	tailRx, tailTx := 0.0, 0.0
+	styleTx := m.theme.Accent
+	if len(samples) > 0 {
+		if len(sr.total) > 0 && &samples[0] == &sr.total[0] {
+			rx, tx = sr.totalRx, sr.totalTx
+			tailRx, tailTx = sr.tailTotalRx, sr.tailTotalTx
+			styleTx = m.theme.Graph
+		} else if len(sr.billable) > 0 && &samples[0] == &sr.billable[0] {
+			rx, tx = sr.billableRx, sr.billableTx
+			tailRx, tailTx = sr.tailBillableRx, sr.tailBillableTx
+			styleTx = m.theme.Accent
+		}
+	}
+	m.drawGraphDirectional(b, sr, samples, rx, tx, scale, tail, tailRx, tailTx, live, styleTx)
+}
+
+func (m *topModel) drawGraphDirectional(b *tui.Buffer, sr topSeries, samples, rx, tx []float64, scale *topScale, tail, tailRx, tailTx float64, live, styleTx tui.Style) {
 	th := m.theme
 	if len(samples) == 0 {
 		msg := "waiting for the provider"
@@ -373,28 +409,47 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	style := live
 	if m.conn == topDisconnected {
 		style = th.Dim
+		styleTx = th.Dim
 	}
 	if sr.zoom {
 		n := m.graphColumns(b.Width(), samples, scale)
 		samples = m.zoom.resample(samples, n)
+		if len(rx) > 0 {
+			rx = m.zoom.resample(rx, n)
+		}
+		if len(tx) > 0 {
+			tx = m.zoom.resample(tx, n)
+		}
 		sr.anchor, sr.capacity = 0, len(samples)
 	} else if sr.columns {
 		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
 		samples = samples[len(samples)-n:]
+		if len(rx) > n {
+			rx = rx[len(rx)-n:]
+		}
+		if len(tx) > n {
+			tx = tx[len(tx)-n:]
+		}
 		sr.anchor, sr.capacity = 0, len(samples)
 	}
-	// The axis follows what is drawn. The peak is taken over the columns on
-	// screen and the live value, not over the whole retained history, so a
-	// burst that has scrolled off the left edge no longer holds the axis high.
-	// The held scale still rises at once and comes down only after the peak
-	// has stayed low for a while.
-	// The axis follows what is drawn: the peak over the columns on screen and
-	// the live value. A burst on screen shows at its real height. Once it has
-	// scrolled off the left edge the held scale comes down to the next level
-	// that fits what is left.
+	split := m.graphSplit && hasDirectionalData(rx, tx)
 	peak := seriesPeak(samples)
-	if sr.live && tail > peak {
-		peak = tail
+	if split {
+		pRx := seriesPeak(rx)
+		pTx := seriesPeak(tx)
+		if sr.live {
+			if !math.IsNaN(tailRx) && tailRx > pRx {
+				pRx = tailRx
+			}
+			if !math.IsNaN(tailTx) && tailTx > pTx {
+				pTx = tailTx
+			}
+		}
+		peak = max(pRx, pTx)
+	} else {
+		if sr.live && tail > peak {
+			peak = tail
+		}
 	}
 	top := 0.0
 	if scale != nil {
@@ -405,8 +460,24 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 		top = p
 	}
 	tui.DrawGraph(b, tui.Graph{
-		Samples: samples, Binary: !tui.DecimalUnits(), Format: tui.RateShort, Style: style, AxisStyle: th.Dim,
-		Anchor: sr.anchor, Capacity: sr.capacity, Tail: tail, HasTail: sr.live, Max: top, Symbols: m.graph,
+		Samples:    samples,
+		Binary:     !tui.DecimalUnits(),
+		Format:     tui.RateShort,
+		Style:      style,
+		StyleTx:    styleTx,
+		AxisStyle:  th.Dim,
+		Anchor:     sr.anchor,
+		Capacity:   sr.capacity,
+		Tail:       tail,
+		TailRx:     tailRx,
+		TailTx:     tailTx,
+		HasTail:    sr.live,
+		Max:        top,
+		Symbols:    m.graph,
+		PeakLabels: true,
+		Split:      split,
+		RxSamples:  rx,
+		TxSamples:  tx,
 	}, th.ASCII)
 }
 
@@ -1043,6 +1114,7 @@ var helpLines = []string{
 	"Tab, Shift-Tab   next or previous provider",
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
+	"s                switch between split (download/upload) and combined graphs",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme, graph style and heatmap style",
 	"M                mouse on/off (Shift+drag selects text in most terminals)",

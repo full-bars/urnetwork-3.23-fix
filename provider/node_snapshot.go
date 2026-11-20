@@ -63,10 +63,12 @@ type SnapshotTraffic struct {
 
 	// The total-traffic rate, sampled the same way and at the same interval as
 	// Rate.HistoryBps.
-	TotalNowBps     int64   `json:"total_now_bps"`
-	TotalAvg1mBps   int64   `json:"total_avg_1m_bps"`
-	TotalAvg5mBps   int64   `json:"total_avg_5m_bps"`
-	TotalHistoryBps []int64 `json:"total_history_bps"`
+	TotalNowBps       int64   `json:"total_now_bps"`
+	TotalAvg1mBps     int64   `json:"total_avg_1m_bps"`
+	TotalAvg5mBps     int64   `json:"total_avg_5m_bps"`
+	TotalHistoryBps   []int64 `json:"total_history_bps"`
+	TotalHistoryRxBps []int64 `json:"total_history_rx_bps,omitempty"`
+	TotalHistoryTxBps []int64 `json:"total_history_tx_bps,omitempty"`
 }
 
 // LiveTraffic is the light reply to the "traffic" command: live counter sums and
@@ -74,15 +76,33 @@ type SnapshotTraffic struct {
 // at 100ms and derives rates from the deltas, so it never rebuilds a snapshot.
 // The sums drop when a proxy is removed or respawns; readers skip a decrease.
 type LiveTraffic struct {
-	AtUnixNano    int64  `json:"at_unix_nano"`
-	BillableBytes uint64 `json:"billable_bytes"`
-	TotalBytes    uint64 `json:"total_bytes"`
+	AtUnixNano      int64  `json:"at_unix_nano"`
+	BillableBytes   uint64 `json:"billable_bytes"`
+	TotalBytes      uint64 `json:"total_bytes"`
+	BillableRxBytes uint64 `json:"billable_rx_bytes,omitempty"`
+	BillableTxBytes uint64 `json:"billable_tx_bytes,omitempty"`
+	TotalRxBytes    uint64 `json:"total_rx_bytes,omitempty"`
+	TotalTxBytes    uint64 `json:"total_tx_bytes,omitempty"`
 }
 
 // liveTrafficSample reads the counter sums at now.
 func liveTrafficSample(now time.Time, totals func() (billable, total uint64)) *LiveTraffic {
 	billable, total := totals()
 	return &LiveTraffic{AtUnixNano: now.UnixNano(), BillableBytes: billable, TotalBytes: total}
+}
+
+// liveTrafficSampleDirectional reads both aggregate and directional counter sums at now.
+func liveTrafficSampleDirectional(now time.Time, totals func() (bRx, bTx, tRx, tTx uint64)) *LiveTraffic {
+	bRx, bTx, tRx, tTx := totals()
+	return &LiveTraffic{
+		AtUnixNano:      now.UnixNano(),
+		BillableBytes:   bRx + bTx,
+		TotalBytes:      tRx + tTx,
+		BillableRxBytes: bRx,
+		BillableTxBytes: bTx,
+		TotalRxBytes:    tRx,
+		TotalTxBytes:    tTx,
+	}
 }
 
 // SnapshotRate is billable throughput in bytes per second. HistoryBps holds
@@ -96,8 +116,10 @@ type SnapshotRate struct {
 	// number of samples ever recorded. A reader that draws the history against
 	// this, not against a clock, sees each sample keep its place from one
 	// snapshot to the next however the poll and the sampler tick line up.
-	HistorySeq uint64  `json:"history_seq,omitempty"`
-	HistoryBps []int64 `json:"history_bps"`
+	HistorySeq   uint64  `json:"history_seq,omitempty"`
+	HistoryBps   []int64 `json:"history_bps"`
+	HistoryRxBps []int64 `json:"history_rx_bps,omitempty"`
+	HistoryTxBps []int64 `json:"history_tx_bps,omitempty"`
 }
 
 type SnapshotSessions struct {
@@ -521,7 +543,11 @@ type snapshotSources struct {
 
 	// traffic maps proxy key to cumulative TOTAL bytes (rx+tx), like billable
 	// does for billable bytes. Nil means no total-traffic figures.
-	traffic func() map[string]uint64
+	billableRx func() map[string]uint64
+	billableTx func() map[string]uint64
+	traffic    func() map[string]uint64
+	trafficRx  func() map[string]uint64
+	trafficTx  func() map[string]uint64
 	// lifetimeBillable reports the persisted lifetime billable total, false
 	// when the lifetime store is not running. Nil means not available.
 	lifetimeBillable func() (uint64, bool)
@@ -529,10 +555,14 @@ type snapshotSources struct {
 
 // nodeSnapshotCollector samples the node once a second and builds snapshots.
 type nodeSnapshotCollector struct {
-	src     snapshotSources
-	rate    *rateSampler // billable bytes
-	traffic *rateSampler // total bytes
-	hist    *cumulativeHistory
+	src       snapshotSources
+	rate      *rateSampler // billable bytes
+	rateRx    *rateSampler
+	rateTx    *rateSampler
+	traffic   *rateSampler // total bytes
+	trafficRx *rateSampler
+	trafficTx *rateSampler
+	hist      *cumulativeHistory
 
 	mu       sync.Mutex
 	cached   *NodeSnapshot
@@ -548,7 +578,16 @@ type nodeSnapshotCollector struct {
 }
 
 func newNodeSnapshotCollector(src snapshotSources) *nodeSnapshotCollector {
-	return &nodeSnapshotCollector{src: src, rate: newRateSampler(), traffic: newRateSampler(), hist: &cumulativeHistory{}}
+	return &nodeSnapshotCollector{
+		src:       src,
+		rate:      newRateSampler(),
+		rateRx:    newRateSampler(),
+		rateTx:    newRateSampler(),
+		traffic:   newRateSampler(),
+		trafficRx: newRateSampler(),
+		trafficTx: newRateSampler(),
+		hist:      &cumulativeHistory{},
+	}
 }
 
 // tick takes one rate sample and, when due, one counter sample.
@@ -556,14 +595,38 @@ func (c *nodeSnapshotCollector) tick() {
 	now := c.src.now()
 	// The counter reads walk the proxy pool; do them before taking the lock.
 	billable := c.src.billable()
-	var total map[string]uint64
+	var billableRx, billableTx, total, totalRx, totalTx map[string]uint64
+	if c.src.billableRx != nil {
+		billableRx = c.src.billableRx()
+	}
+	if c.src.billableTx != nil {
+		billableTx = c.src.billableTx()
+	}
 	if c.src.traffic != nil {
 		total = c.src.traffic()
 	}
+	if c.src.trafficRx != nil {
+		totalRx = c.src.trafficRx()
+	}
+	if c.src.trafficTx != nil {
+		totalTx = c.src.trafficTx()
+	}
 	c.sampleMu.Lock()
 	c.rate.sample(billable, now)
-	if c.src.traffic != nil {
+	if billableRx != nil {
+		c.rateRx.sample(billableRx, now)
+	}
+	if billableTx != nil {
+		c.rateTx.sample(billableTx, now)
+	}
+	if total != nil {
 		c.traffic.sample(total, now)
+	}
+	if totalRx != nil {
+		c.trafficRx.sample(totalRx, now)
+	}
+	if totalTx != nil {
+		c.trafficTx.sample(totalTx, now)
 	}
 	c.sampleMu.Unlock()
 	if c.hist.due(now) {
@@ -607,6 +670,10 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 	c.sampleMu.Lock()
 	nowBps, avg1m, avg5m := c.rate.rates()
 	histSeq, histBps := c.rate.seq(), c.rate.history()
+	var histRx, histTx []int64
+	if c.src.billableRx != nil {
+		histRx, histTx = c.rateRx.history(), c.rateTx.history()
+	}
 	traffic := c.trafficSnapshot()
 	c.sampleMu.Unlock()
 	c.withLifetime(traffic)
@@ -635,6 +702,8 @@ func (c *nodeSnapshotCollector) build(now time.Time) *NodeSnapshot {
 			HistoryInterval: 1,
 			HistorySeq:      histSeq,
 			HistoryBps:      histBps,
+			HistoryRxBps:    histRx,
+			HistoryTxBps:    histTx,
 		},
 		Clients:   clients,
 		Sessions:  SnapshotSessions{PQE: pqe, Classical: classical},
@@ -666,6 +735,10 @@ func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
 		TotalAvg1mBps:   avg1m,
 		TotalAvg5mBps:   avg5m,
 		TotalHistoryBps: c.traffic.history(),
+	}
+	if c.src.trafficRx != nil {
+		tr.TotalHistoryRxBps = c.trafficRx.history()
+		tr.TotalHistoryTxBps = c.trafficTx.history()
 	}
 	return tr
 }
@@ -724,53 +797,103 @@ var nodeSnapshots = newNodeSnapshotCollector(productionSnapshotSources())
 // total samplers tick together, so without this every tick would build it twice.
 // The maps are only read by the samplers, which copy what they keep.
 type bandwidthShare struct {
-	mu      sync.Mutex
-	now     func() time.Time
-	ttl     time.Duration
-	read    func() (billable, total map[string]uint64)
-	at      time.Time
-	billed  map[string]uint64
-	moved   map[string]uint64
-	fetched bool
+	mu       sync.Mutex
+	now      func() time.Time
+	ttl      time.Duration
+	read     func() (billable, total map[string]uint64)
+	readDir  func() (billable, total, bRx, bTx, tRx, tTx map[string]uint64)
+	at       time.Time
+	billed   map[string]uint64
+	moved    map[string]uint64
+	billedRx map[string]uint64
+	billedTx map[string]uint64
+	movedRx  map[string]uint64
+	movedTx  map[string]uint64
+	fetched  bool
 }
 
 func newBandwidthShare(now func() time.Time, ttl time.Duration, read func() (map[string]uint64, map[string]uint64)) *bandwidthShare {
 	return &bandwidthShare{now: now, ttl: ttl, read: read}
 }
 
+func newBandwidthShareDirectional(now func() time.Time, ttl time.Duration, read func() (map[string]uint64, map[string]uint64, map[string]uint64, map[string]uint64, map[string]uint64, map[string]uint64)) *bandwidthShare {
+	return &bandwidthShare{now: now, ttl: ttl, readDir: read}
+}
+
+func (s *bandwidthShare) fetch() {
+	if at := s.now(); !s.fetched || at.Sub(s.at) >= s.ttl {
+		if s.readDir != nil {
+			s.billed, s.moved, s.billedRx, s.billedTx, s.movedRx, s.movedTx = s.readDir()
+		} else if s.read != nil {
+			s.billed, s.moved = s.read()
+		}
+		s.at, s.fetched = at, true
+	}
+}
+
 func (s *bandwidthShare) get() (billable, total map[string]uint64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	if at := s.now(); !s.fetched || at.Sub(s.at) >= s.ttl {
-		s.billed, s.moved = s.read()
-		s.at, s.fetched = at, true
-	}
+	s.fetch()
 	return s.billed, s.moved
 }
 
-// readProxyBandwidth reads both per-proxy counters from one proxy snapshot.
-func readProxyBandwidth() (billable, total map[string]uint64) {
+func (s *bandwidthShare) getDirectional() (billable, total, bRx, bTx, tRx, tTx map[string]uint64) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.fetch()
+	return s.billed, s.moved, s.billedRx, s.billedTx, s.movedRx, s.movedTx
+}
+
+// readProxyBandwidthDirectional reads aggregate and directional per-proxy counters from one proxy snapshot.
+func readProxyBandwidthDirectional() (billable, total, billableRx, billableTx, totalRx, totalTx map[string]uint64) {
 	if connect.ProxyHealthCount() == 0 {
-		return map[string]uint64{}, map[string]uint64{}
+		return map[string]uint64{}, map[string]uint64{}, map[string]uint64{}, map[string]uint64{}, map[string]uint64{}, map[string]uint64{}
 	}
 	_, _, _, bw, _ := connect.ProxyHealthSnapshot()
 	billable = make(map[string]uint64, len(bw))
 	total = make(map[string]uint64, len(bw))
+	billableRx = make(map[string]uint64, len(bw))
+	billableTx = make(map[string]uint64, len(bw))
+	totalRx = make(map[string]uint64, len(bw))
+	totalTx = make(map[string]uint64, len(bw))
 	for k, p := range bw {
-		billable[k] = p.BillableRx.Load() + p.BillableTx.Load()
-		total[k] = p.TotalRx.Load() + p.TotalTx.Load()
+		bRx := p.BillableRx.Load()
+		bTx := p.BillableTx.Load()
+		tRx := p.TotalRx.Load()
+		tTx := p.TotalTx.Load()
+		billable[k] = bRx + bTx
+		total[k] = tRx + tTx
+		billableRx[k] = bRx
+		billableTx[k] = bTx
+		totalRx[k] = tRx
+		totalTx[k] = tTx
 	}
-	return billable, total
+	return billable, total, billableRx, billableTx, totalRx, totalTx
+}
+
+// readProxyBandwidth reads both per-proxy counters from one proxy snapshot.
+func readProxyBandwidth() (billable, total map[string]uint64) {
+	b, t, _, _, _, _ := readProxyBandwidthDirectional()
+	return b, t
 }
 
 func productionSnapshotSources() snapshotSources {
-	bandwidth := newBandwidthShare(time.Now, 500*time.Millisecond, readProxyBandwidth)
+	bandwidth := newBandwidthShareDirectional(time.Now, 500*time.Millisecond, readProxyBandwidthDirectional)
 	return snapshotSources{
 		now:       time.Now,
 		startedAt: providerStartTime,
 		billable: func() map[string]uint64 {
 			b, _ := bandwidth.get()
 			return b
+		},
+		billableRx: func() map[string]uint64 {
+			_, _, rx, _, _, _ := bandwidth.getDirectional()
+			return rx
+		},
+		billableTx: func() map[string]uint64 {
+			_, _, _, tx, _, _ := bandwidth.getDirectional()
+			return tx
 		},
 		pool: func() (SnapshotProxies, int64) {
 			held := trimHeldSnapshot()
@@ -826,6 +949,14 @@ func productionSnapshotSources() snapshotSources {
 		traffic: func() map[string]uint64 {
 			_, t := bandwidth.get()
 			return t
+		},
+		trafficRx: func() map[string]uint64 {
+			_, _, _, _, rx, _ := bandwidth.getDirectional()
+			return rx
+		},
+		trafficTx: func() map[string]uint64 {
+			_, _, _, _, _, tx := bandwidth.getDirectional()
+			return tx
 		},
 		lifetimeBillable: func() (uint64, bool) {
 			if lifetimeStore == nil {

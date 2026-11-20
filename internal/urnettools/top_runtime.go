@@ -94,17 +94,27 @@ func seriesPeak(v []float64) float64 {
 // topTrafficHistory keeps sampled rates and the time represented by each column.
 // Slow polling uses one-second slots and leaves missing seconds unknown.
 type topTrafficHistory struct {
-	billable, total []float64
-	second          int64
-	spans           []time.Duration
-	seq             int64
+	billable, total        []float64
+	billableRx, billableTx []float64
+	totalRx, totalTx       []float64
+	second                 int64
+	spans                  []time.Duration
+	seq                    int64
 }
 
 func (h *topTrafficHistory) push(at int64, b, t float64) {
-	h.pushSlot(at, b, t)
+	h.pushDirectional(at, b, t, math.NaN(), math.NaN(), math.NaN(), math.NaN())
+}
+
+func (h *topTrafficHistory) pushDirectional(at int64, b, t, bRx, bTx, tRx, tTx float64) {
+	h.pushSlotDirectional(at, b, t, bRx, bTx, tRx, tTx)
 }
 
 func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
+	h.pushSlotDirectional(at, b, t, math.NaN(), math.NaN(), math.NaN(), math.NaN())
+}
+
+func (h *topTrafficHistory) pushSlotDirectional(at int64, b, t, bRx, bTx, tRx, tTx float64) {
 	second := at / int64(time.Second)
 	if len(h.billable) > 0 && second < h.second {
 		return
@@ -112,6 +122,8 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 	if len(h.billable) == 0 {
 		h.second = second
 		h.billable, h.total = []float64{b}, []float64{t}
+		h.billableRx, h.billableTx = []float64{bRx}, []float64{bTx}
+		h.totalRx, h.totalTx = []float64{tRx}, []float64{tTx}
 		h.spans = []time.Duration{time.Second}
 		h.seq++
 		return
@@ -119,51 +131,90 @@ func (h *topTrafficHistory) pushSlot(at int64, b, t float64) {
 	gap := second - h.second
 	if gap >= topGraphCapacity {
 		h.billable, h.total, h.spans = nil, nil, nil
+		h.billableRx, h.billableTx, h.totalRx, h.totalTx = nil, nil, nil, nil
 		gap = topGraphCapacity
 	}
 	for i := int64(0); i < gap; i++ {
 		h.billable = append(h.billable, math.NaN())
 		h.total = append(h.total, math.NaN())
+		h.billableRx = append(h.billableRx, math.NaN())
+		h.billableTx = append(h.billableTx, math.NaN())
+		h.totalRx = append(h.totalRx, math.NaN())
+		h.totalTx = append(h.totalTx, math.NaN())
 		h.spans = append(h.spans, time.Second)
 		h.seq++
 	}
 	if len(h.billable) > topGraphCapacity {
 		h.billable = h.billable[len(h.billable)-topGraphCapacity:]
 		h.total = h.total[len(h.total)-topGraphCapacity:]
+		if len(h.billableRx) > topGraphCapacity {
+			h.billableRx = h.billableRx[len(h.billableRx)-topGraphCapacity:]
+			h.billableTx = h.billableTx[len(h.billableTx)-topGraphCapacity:]
+			h.totalRx = h.totalRx[len(h.totalRx)-topGraphCapacity:]
+			h.totalTx = h.totalTx[len(h.totalTx)-topGraphCapacity:]
+		}
 		h.spans = h.spans[len(h.spans)-topGraphCapacity:]
 	}
 	h.second = second
 	h.billable[len(h.billable)-1], h.total[len(h.total)-1] = b, t
+	if len(h.billableRx) > 0 {
+		h.billableRx[len(h.billableRx)-1] = bRx
+		h.billableTx[len(h.billableTx)-1] = bTx
+		h.totalRx[len(h.totalRx)-1] = tRx
+		h.totalTx[len(h.totalTx)-1] = tTx
+	}
 }
 
 // pushColumn retains a reading with its actual elapsed span.
 func (h *topTrafficHistory) pushColumn(at int64, span time.Duration, b, t float64) {
+	h.pushColumnDirectional(at, span, b, t, math.NaN(), math.NaN(), math.NaN(), math.NaN())
+}
+
+func (h *topTrafficHistory) pushColumnDirectional(at int64, span time.Duration, b, t, bRx, bTx, tRx, tTx float64) {
 	const keep = 8192
 	h.billable = append(h.billable, b)
 	h.total = append(h.total, t)
+	h.billableRx = append(h.billableRx, bRx)
+	h.billableTx = append(h.billableTx, bTx)
+	h.totalRx = append(h.totalRx, tRx)
+	h.totalTx = append(h.totalTx, tTx)
 	h.spans = append(h.spans, span)
 	h.second = at / int64(time.Second)
 	h.seq++
 	if len(h.billable) > keep {
 		h.billable = h.billable[len(h.billable)-keep:]
 		h.total = h.total[len(h.total)-keep:]
+		h.billableRx = h.billableRx[len(h.billableRx)-keep:]
+		h.billableTx = h.billableTx[len(h.billableTx)-keep:]
+		h.totalRx = h.totalRx[len(h.totalRx)-keep:]
+		h.totalTx = h.totalTx[len(h.totalTx)-keep:]
 		h.spans = h.spans[len(h.spans)-keep:]
 	}
 }
 
 // topZoom stores rates with the provider time of each accepted poll.
 type topZoom struct {
-	billable, total []float64
-	at              []int64
-	spans           []time.Duration
-	seq             int64
+	billable, total        []float64
+	billableRx, billableTx []float64
+	totalRx, totalTx       []float64
+	at                     []int64
+	spans                  []time.Duration
+	seq                    int64
 }
 
 func (z *topZoom) reset() { *z = topZoom{} }
 
 func (z *topZoom) push(at int64, b, t float64) {
+	z.pushDirectional(at, b, t, math.NaN(), math.NaN(), math.NaN(), math.NaN())
+}
+
+func (z *topZoom) pushDirectional(at int64, b, t, bRx, bTx, tRx, tTx float64) {
 	z.billable = append(z.billable, b)
 	z.total = append(z.total, t)
+	z.billableRx = append(z.billableRx, bRx)
+	z.billableTx = append(z.billableTx, bTx)
+	z.totalRx = append(z.totalRx, tRx)
+	z.totalTx = append(z.totalTx, tTx)
 	span := time.Second
 	if len(z.at) > 0 {
 		span = time.Duration(at - z.at[len(z.at)-1])
@@ -176,7 +227,14 @@ func (z *topZoom) push(at int64, b, t float64) {
 	for n < len(z.at) && z.at[n] <= cut {
 		n++
 	}
-	z.at, z.billable, z.total, z.spans = z.at[n:], z.billable[n:], z.total[n:], z.spans[n:]
+	z.at = z.at[n:]
+	z.billable = z.billable[n:]
+	z.total = z.total[n:]
+	z.billableRx = z.billableRx[n:]
+	z.billableTx = z.billableTx[n:]
+	z.totalRx = z.totalRx[n:]
+	z.totalTx = z.totalTx[n:]
+	z.spans = z.spans[n:]
 }
 
 // grid places readings on a fixed time axis. Empty slots remain unknown.

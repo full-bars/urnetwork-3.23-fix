@@ -52,6 +52,8 @@ type SnapshotTraffic struct {
 	TotalAvg1mBps         float64   `json:"total_avg_1m_bps"`
 	TotalAvg5mBps         float64   `json:"total_avg_5m_bps"`
 	TotalHistoryBps       []float64 `json:"total_history_bps"` // oldest first, newest last
+	TotalHistoryRxBps     []float64 `json:"total_history_rx_bps,omitempty"`
+	TotalHistoryTxBps     []float64 `json:"total_history_tx_bps,omitempty"`
 }
 
 // LiveTraffic is the light reply to the "traffic" command: live counter sums
@@ -59,9 +61,13 @@ type SnapshotTraffic struct {
 // derives rates from the deltas. The sums drop when a proxy is removed or
 // respawns, so a decrease is skipped, not read as negative traffic.
 type LiveTraffic struct {
-	AtUnixNano    int64  `json:"at_unix_nano"`
-	BillableBytes uint64 `json:"billable_bytes"`
-	TotalBytes    uint64 `json:"total_bytes"`
+	AtUnixNano      int64  `json:"at_unix_nano"`
+	BillableBytes   uint64 `json:"billable_bytes"`
+	TotalBytes      uint64 `json:"total_bytes"`
+	BillableRxBytes uint64 `json:"billable_rx_bytes,omitempty"`
+	BillableTxBytes uint64 `json:"billable_tx_bytes,omitempty"`
+	TotalRxBytes    uint64 `json:"total_rx_bytes,omitempty"`
+	TotalTxBytes    uint64 `json:"total_tx_bytes,omitempty"`
 }
 
 // errTrafficUnsupported means the provider predates the "traffic" command. top
@@ -117,8 +123,10 @@ type SnapshotRate struct {
 	// HistorySeq is the absolute index of the newest history sample (the count
 	// of samples the provider has ever recorded). Zero from a provider that
 	// predates it, in which case the graph falls back to the snapshot's clock.
-	HistorySeq uint64    `json:"history_seq,omitempty"`
-	HistoryBps []float64 `json:"history_bps"` // oldest first, newest last
+	HistorySeq   uint64    `json:"history_seq,omitempty"`
+	HistoryBps   []float64 `json:"history_bps"` // oldest first, newest last
+	HistoryRxBps []float64 `json:"history_rx_bps,omitempty"`
+	HistoryTxBps []float64 `json:"history_tx_bps,omitempty"`
 }
 
 type SnapshotSessions struct {

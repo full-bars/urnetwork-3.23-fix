@@ -76,6 +76,57 @@ func TestLiveTrafficSample(t *testing.T) {
 	}
 }
 
+func TestLiveTrafficSampleDirectional(t *testing.T) {
+	at := snapT0.Add(90 * time.Minute)
+	got := liveTrafficSampleDirectional(at, func() (uint64, uint64, uint64, uint64) {
+		return 300, 400, 1000, 1100
+	})
+	if got.AtUnixNano != at.UnixNano() || got.BillableBytes != 700 || got.TotalBytes != 2100 {
+		t.Fatalf("totals = %+v", got)
+	}
+	if got.BillableRxBytes != 300 || got.BillableTxBytes != 400 || got.TotalRxBytes != 1000 || got.TotalTxBytes != 1100 {
+		t.Fatalf("directional counters = %+v", got)
+	}
+}
+
+func TestSnapshotReportsDirectionalTrafficHistories(t *testing.T) {
+	env := &fakeSnapshotEnv{
+		now: snapT0, proxies: SnapshotProxies{Up: 1},
+		billable:   map[string]uint64{"p": 0},
+		billableRx: map[string]uint64{"p": 0},
+		billableTx: map[string]uint64{"p": 0},
+		traffic:    map[string]uint64{"p": 0},
+		trafficRx:  map[string]uint64{"p": 0},
+		trafficTx:  map[string]uint64{"p": 0},
+	}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+
+	env.now = env.now.Add(time.Second)
+	env.billable = map[string]uint64{"p": 1000}
+	env.billableRx = map[string]uint64{"p": 600}
+	env.billableTx = map[string]uint64{"p": 400}
+	env.traffic = map[string]uint64{"p": 4000}
+	env.trafficRx = map[string]uint64{"p": 2500}
+	env.trafficTx = map[string]uint64{"p": 1500}
+	c.tick()
+
+	snap := c.Get()
+	if len(snap.Rate.HistoryRxBps) != 1 || snap.Rate.HistoryRxBps[0] != 600 {
+		t.Fatalf("billable rx history = %v", snap.Rate.HistoryRxBps)
+	}
+	if len(snap.Rate.HistoryTxBps) != 1 || snap.Rate.HistoryTxBps[0] != 400 {
+		t.Fatalf("billable tx history = %v", snap.Rate.HistoryTxBps)
+	}
+	tr := snap.Traffic
+	if len(tr.TotalHistoryRxBps) != 1 || tr.TotalHistoryRxBps[0] != 2500 {
+		t.Fatalf("total rx history = %v", tr.TotalHistoryRxBps)
+	}
+	if len(tr.TotalHistoryTxBps) != 1 || tr.TotalHistoryTxBps[0] != 1500 {
+		t.Fatalf("total tx history = %v", tr.TotalHistoryTxBps)
+	}
+}
+
 // The billable and total samplers read the same per-proxy counters. Building the
 // proxy snapshot is the expensive part (about 2ms and 35k allocations at 5000
 // proxies), so a tick that samples both must build it once, not twice.

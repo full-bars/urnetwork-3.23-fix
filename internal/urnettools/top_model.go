@@ -264,6 +264,7 @@ type topModel struct {
 	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
 	// override. settingsPath is where the menu saves; empty means nowhere.
 	graph        tui.GraphSymbols
+	graphSplit   bool
 	themeLocked  bool
 	savedTheme   string
 	settingsPath string
@@ -310,7 +311,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, graphSplit: true}
 	m.providerSnaps = make([]*NodeSnapshot, len(providers))
 	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
@@ -408,28 +409,45 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				m.live.reset()
 			}
 		}
-		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		m.live.addDirectional(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes, lt.BillableRxBytes, lt.BillableTxBytes, lt.TotalRxBytes, lt.TotalTxBytes)
 		// One zoom column per reading the window accepted; a stalled clock adds
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
 			if b, t, ok := m.live.recent(topZoomSpan); ok {
+				bRx, bTx, tRx, tTx, _ := m.live.recentDirectional(topZoomSpan)
 				if len(m.trafficHistory.billable) == 0 && m.snap != nil {
 					history := m.snap.Rate.HistoryBps
+					histRx := m.snap.Rate.HistoryRxBps
+					histTx := m.snap.Rate.HistoryTxBps
+					totHistRx := []float64(nil)
+					totHistTx := []float64(nil)
+					if m.snap.Traffic != nil {
+						totHistRx = m.snap.Traffic.TotalHistoryRxBps
+						totHistTx = m.snap.Traffic.TotalHistoryTxBps
+					}
 					for i, value := range history {
 						total := math.NaN()
 						if m.snap.Traffic != nil && i < len(m.snap.Traffic.TotalHistoryBps) {
 							total = m.snap.Traffic.TotalHistoryBps[i]
 						}
+						rx, tx := math.NaN(), math.NaN()
+						if i < len(histRx) && i < len(histTx) {
+							rx, tx = histRx[i], histTx[i]
+						}
+						tRxVal, tTxVal := math.NaN(), math.NaN()
+						if i < len(totHistRx) && i < len(totHistTx) {
+							tRxVal, tTxVal = totHistRx[i], totHistTx[i]
+						}
 						at := lt.AtUnixNano - int64(len(history)-i)*int64(time.Second)
-						m.trafficHistory.push(at, value, total)
+						m.trafficHistory.pushDirectional(at, value, total, rx, tx, tRxVal, tTxVal)
 					}
 				}
 				if m.interval <= time.Second {
-					m.trafficHistory.pushColumn(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
+					m.trafficHistory.pushColumnDirectional(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t, bRx, bTx, tRx, tTx)
 				} else {
-					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
+					m.trafficHistory.pushSlotDirectional(lt.AtUnixNano, b, t, bRx, bTx, tRx, tTx)
 				}
-				m.zoom.push(lt.AtUnixNano, b, t)
+				m.zoom.pushDirectional(lt.AtUnixNano, b, t, bRx, bTx, tRx, tTx)
 				m.zoom.spans[len(m.zoom.spans)-1] = time.Duration(lt.AtUnixNano - last)
 			}
 		}
@@ -757,6 +775,11 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(-1)
 		case 'w', 'W':
 			m.zoomOn = !m.zoomOn
+		case 's', 'S':
+			m.graphSplit = !m.graphSplit
+			if err := saveTopSettings(m.settingsPath, m.settings()); err != nil {
+				m.menuNote = "could not save: " + err.Error()
+			}
 		case 'u', 'U':
 			tui.SetDecimalUnits(!tui.DecimalUnits())
 		case 'g', 'G':
@@ -913,9 +936,13 @@ func (m *topModel) rates() topRates {
 // topSeries is what the two graphs draw: the provider's per-second history, the
 // time base to bucket it against, and the live rate as a separate tail.
 type topSeries struct {
-	billable []float64
+	billable   []float64
+	billableRx []float64
+	billableTx []float64
 	// total is nil when the provider has no total-traffic history.
-	total []float64
+	total   []float64
+	totalRx []float64
+	totalTx []float64
 	// anchor is the absolute index of the newest history sample. It is the
 	// provider's own sample count when it sends one: that identifies each sample
 	// exactly, however the poll and the provider's tick line up. From a provider
@@ -926,8 +953,10 @@ type topSeries struct {
 	// the series. Appended to the series it would sit at a guessed index and be
 	// replaced by the provider's real sample a second later, changing a column
 	// that was already complete.
-	tailBillable, tailTotal float64
-	live                    bool
+	tailBillable, tailTotal        float64
+	tailBillableRx, tailBillableTx float64
+	tailTotalRx, tailTotalTx       float64
+	live                           bool
 	// capacity is the most columns the graph holds, and scaleB and scaleT the
 	// steady axis of each graph. zoom marks the fifteen second window.
 	capacity       int
@@ -948,9 +977,13 @@ func (m *topModel) series() topSeries {
 		out.zoom, out.capacity = true, m.zoomCapacity()
 		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
 		out.billable = m.zoom.billable
+		out.billableRx = m.zoom.billableRx
+		out.billableTx = m.zoom.billableTx
 		out.spans, out.columns = m.zoom.spans, true
 		if m.snap.Traffic != nil {
 			out.total = append([]float64{}, m.zoom.total...)
+			out.totalRx = append([]float64{}, m.zoom.totalRx...)
+			out.totalTx = append([]float64{}, m.zoom.totalTx...)
 		}
 		return out
 	}
@@ -970,6 +1003,10 @@ func (m *topModel) series() topSeries {
 		}
 		if m.conn == topConnected {
 			out.tailBillable, out.tailTotal, out.live = m.live.rates()
+			if bRx, bTx, tRx, tTx, ok := m.live.ratesDirectional(); ok {
+				out.tailBillableRx, out.tailBillableTx = bRx, bTx
+				out.tailTotalRx, out.tailTotalTx = tRx, tTx
+			}
 		}
 		return out
 	}
@@ -981,8 +1018,12 @@ func (m *topModel) series() topSeries {
 			out.anchor, out.columns, out.spans = m.trafficHistory.seq, true, m.trafficHistory.spans
 		}
 		out.billable = m.trafficHistory.billable
+		out.billableRx = m.trafficHistory.billableRx
+		out.billableTx = m.trafficHistory.billableTx
 		if m.snap.Traffic != nil {
 			out.total = m.trafficHistory.total
+			out.totalRx = m.trafficHistory.totalRx
+			out.totalTx = m.trafficHistory.totalTx
 		}
 		return out
 	}
@@ -995,11 +1036,19 @@ func (m *topModel) series() topSeries {
 		}
 	}
 	out.billable = m.snap.Rate.HistoryBps
+	out.billableRx = m.snap.Rate.HistoryRxBps
+	out.billableTx = m.snap.Rate.HistoryTxBps
 	if m.snap.Traffic != nil {
 		out.total = m.snap.Traffic.TotalHistoryBps
+		out.totalRx = m.snap.Traffic.TotalHistoryRxBps
+		out.totalTx = m.snap.Traffic.TotalHistoryTxBps
 	}
 	if m.conn == topConnected {
 		out.tailBillable, out.tailTotal, out.live = m.live.rates()
+		if bRx, bTx, tRx, tTx, ok := m.live.ratesDirectional(); ok {
+			out.tailBillableRx, out.tailBillableTx = bRx, bTx
+			out.tailTotalRx, out.tailTotalTx = tRx, tTx
+		}
 	}
 	return out
 }

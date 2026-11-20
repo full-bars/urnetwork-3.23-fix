@@ -128,6 +128,17 @@ type Graph struct {
 	// Symbols is the glyph style. A DrawGraph call with ascii set draws GraphTTY
 	// whatever this says: the terminal cannot show anything else.
 	Symbols GraphSymbols
+	// PeakLabels marks local maxima when there is room in the plot.
+	PeakLabels bool
+	// Split draws download above the center line and upload mirrored below it.
+	Split     bool
+	RxSamples []float64
+	TxSamples []float64
+	MaxRx     float64
+	MaxTx     float64
+	TailRx    float64
+	TailTx    float64
+	StyleTx   Style
 }
 
 // DrawGraph draws g into b and returns the value at the top of the axis (zero
@@ -142,6 +153,28 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 	w, h := b.Width(), b.Height()
 	if w <= 0 || h <= 0 {
 		return 0
+	}
+	if g.Split && len(g.RxSamples) > 0 && len(g.TxSamples) > 0 {
+		rx, tx := DrawSplitGraph(b, SplitGraph{
+			RxSamples:  g.RxSamples,
+			TxSamples:  g.TxSamples,
+			Max:        g.Max,
+			MaxRx:      g.MaxRx,
+			MaxTx:      g.MaxTx,
+			Binary:     g.Binary,
+			Format:     g.Format,
+			StyleRx:    g.Style,
+			StyleTx:    g.StyleTx,
+			AxisStyle:  g.AxisStyle,
+			Anchor:     g.Anchor,
+			Capacity:   g.Capacity,
+			TailRx:     g.TailRx,
+			TailTx:     g.TailTx,
+			HasTail:    g.HasTail,
+			Symbols:    g.Symbols,
+			PeakLabels: g.PeakLabels,
+		}, ascii)
+		return max(rx, tx)
 	}
 	format := g.Format
 	if format == nil {
@@ -239,6 +272,9 @@ func DrawGraph(b *Buffer, g Graph, ascii bool) float64 {
 		}
 	} else {
 		cols = plotColumnsAnchored(samples, perCell*plotW, g.Anchor, g.Capacity)
+	}
+	if g.PeakLabels {
+		defer drawPeakLabels(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, perCell, top, format, g.AxisStyle)
 	}
 	if ascii || g.Symbols == GraphTTY {
 		drawGraphCells(b.Sub(Rect{X: x0, Y: 0, W: plotW, H: h}), cols, 2, top, g.Style, sparkASCII)
