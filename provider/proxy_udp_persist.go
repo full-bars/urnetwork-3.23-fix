@@ -12,8 +12,12 @@ import (
 	"time"
 )
 
-const udpStateMaxBytes = 2 << 20
-const udpStateMaxEntries = 10000
+const (
+	// A full proxy table has at most 65,535 identities. Allow 1 KiB per
+	// identity, including JSON overhead, while bounding untrusted state files.
+	udpStateMaxEntries = 65535
+	udpStateMaxBytes   = 64 << 20
+)
 
 type udpPersistEntry struct {
 	Key     string          `json:"key"`
