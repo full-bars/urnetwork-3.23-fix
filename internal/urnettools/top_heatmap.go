@@ -663,7 +663,7 @@ func proxyDisplayAddress(raw string) string {
 		raw = "//" + raw
 	}
 	u, err := url.Parse(raw)
-	if err != nil || u.Hostname() == "" || u.Port() == "" || strings.ContainsAny(u.Hostname(), "\r\n\t ") {
+	if err != nil || !connect.ProxyHostAllowed(u.Hostname()) || !connect.ProxyPortAllowed(u.Port()) {
 		return "?"
 	}
 	return net.JoinHostPort(u.Hostname(), u.Port())

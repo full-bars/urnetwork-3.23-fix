@@ -1860,7 +1860,7 @@ func (self *clientDialer) routeIdentity() string {
 		return fmt.Sprintf("extender|%v", self.extenderConfig)
 	}
 	if self.settings != nil && self.settings.ProxySettings != nil {
-		return fmt.Sprintf("proxy|%d|%s|%s", self.settings.ProxySettings.Index, self.settings.ProxySettings.Address, self.description)
+		return fmt.Sprintf("proxy|%d|%s|%s", self.settings.ProxySettings.Index, safeProxyDisplayAddress(self.settings.ProxySettings.Address), self.description)
 	}
 	return fmt.Sprintf("direct|%s", self.description)
 }

@@ -3,6 +3,7 @@ package urnettools
 import (
 	"encoding/json"
 	"fmt"
+	"github.com/urnetwork/connect"
 	"os"
 	"path/filepath"
 	"sort"
@@ -42,10 +43,7 @@ func renderProxyIDs(w *tabwriter.Writer, entries map[string]clientJWTEntryMinima
 	fmt.Fprintln(w, "PROXY	CLIENT_ID	NETWORK_ID	AGE")
 	for _, k := range keys {
 		e := entries[k]
-		label := k
-		if label == "direct" {
-			label = "(direct)"
-		}
+		label := proxyIDLabel(k)
 		// Show full client_id — this subcommand exists specifically to
 		// inspect and correlate client identities.
 		cid := e.ClientID
@@ -133,4 +131,18 @@ func cmdProxyIDsTarget(p Provider) error {
 		return err
 	}
 	return nil
+}
+
+// proxyIDLabel shows a store key without its user name: the address when it is a
+// plain host and port, and a user marker when the key carries a user.
+func proxyIDLabel(key string) string {
+	if key == "direct" {
+		return "(direct)"
+	}
+	address, user := connect.SplitProxyKey(key)
+	label := connect.SafeProxyDisplayAddress(address)
+	if user != "" {
+		label += " (user ***)"
+	}
+	return label
 }

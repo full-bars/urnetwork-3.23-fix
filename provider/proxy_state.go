@@ -8,7 +8,6 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
-	"strconv"
 	"sync"
 	"time"
 
@@ -285,28 +284,11 @@ func redactedProxyAddress(address string) string {
 }
 
 // plainHostPort reports whether s is a bare host:port that cannot carry
-// credentials: a host of letters, digits and . - _ : (an IPv6 literal may be
-// bracketed), and a decimal port in 1-65535.
+// credentials: a host name, an IPv4 address or an IPv6 literal (bracketed), and
+// a decimal port in 1-65535.
 func plainHostPort(s string) bool {
 	host, port, err := net.SplitHostPort(s)
-	if err != nil || host == "" || port == "" {
-		return false
-	}
-	for _, c := range host {
-		switch {
-		case c >= 'a' && c <= 'z', c >= 'A' && c <= 'Z', c >= '0' && c <= '9',
-			c == '.', c == '-', c == '_', c == ':':
-		default:
-			return false
-		}
-	}
-	n, err := strconv.Atoi(port)
-	for _, c := range port {
-		if c < '0' || '9' < c {
-			return false
-		}
-	}
-	return err == nil && 1 <= n && n <= 65535
+	return err == nil && connect.ProxyHostAllowed(host) && connect.ProxyPortAllowed(port)
 }
 
 // resolveProxyID returns the stable ID for an address.

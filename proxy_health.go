@@ -484,6 +484,43 @@ func ProxyHealthCount() int {
 	return len(proxyHealthByIndex)
 }
 
+// ProxyHostAllowed reports whether host can be shown as a proxy host. A host
+// name or an IPv4 address uses letters, digits and . - _ only. A host with a
+// colon must be an IPv6 literal without a zone (a zone is free text), so text
+// like canary-user:canary-pass between brackets is refused.
+func ProxyHostAllowed(host string) bool {
+	if host == "" {
+		return false
+	}
+	if !strings.Contains(host, ":") {
+		for _, c := range host {
+			if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '-' || c == '_') {
+				return false
+			}
+		}
+		return true
+	}
+	return net.ParseIP(host) != nil
+}
+
+// ProxyPortAllowed reports whether port is a decimal port in 1-65535.
+func ProxyPortAllowed(port string) bool {
+	if port == "" || len(port) > 5 {
+		return false
+	}
+	n := 0
+	for _, c := range port {
+		if c < '0' || c > '9' {
+			return false
+		}
+		n = n*10 + int(c-'0')
+	}
+	return n >= 1 && n <= 65535
+}
+
+// SafeProxyDisplayAddress is safeProxyDisplayAddress for other packages.
+func SafeProxyDisplayAddress(address string) string { return safeProxyDisplayAddress(address) }
+
 // safeProxyDisplayAddress accepts only a bare host and numeric port.
 // Malformed proxy input may contain userinfo or query secrets.
 func safeProxyDisplayAddress(address string) string {
@@ -498,18 +535,8 @@ func safeProxyDisplayAddress(address string) string {
 		address = u.Host
 	}
 	host, port, err := net.SplitHostPort(address)
-	if err != nil || host == "" || port == "" {
+	if err != nil || !ProxyHostAllowed(host) || !ProxyPortAllowed(port) {
 		return "<unparsable proxy address>"
-	}
-	for _, c := range host {
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' || c == '.' || c == '-' || c == '_' || c == ':') {
-			return "<unparsable proxy address>"
-		}
-	}
-	for _, c := range port {
-		if c < '0' || c > '9' {
-			return "<unparsable proxy address>"
-		}
 	}
 	return address
 }

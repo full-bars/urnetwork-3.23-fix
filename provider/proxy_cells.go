@@ -184,7 +184,7 @@ func proxyCellSafeAddress(index int, address string) string {
 		return "?"
 	}
 	host := u.Hostname()
-	if strings.ContainsAny(host, "\r\n\t ") {
+	if !connect.ProxyHostAllowed(host) || !connect.ProxyPortAllowed(u.Port()) {
 		return "?"
 	}
 	return net.JoinHostPort(host, u.Port())
