@@ -67,6 +67,24 @@ func TestProxySecretStateFilesPrivate(t *testing.T) {
 	}
 }
 
+func TestProxySecretConfigFilePrivate(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix file permission bits are not enforced on Windows")
+	}
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	writeProxyConfig(&ProxyConfig{Servers: map[string]string{
+		"example.com:1080:" + secretCanaryUser + ":" + secretCanaryPassword: "",
+	}})
+	info, err := os.Stat(filepath.Join(home, ".urnetwork", "proxy"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := info.Mode().Perm(); got != 0600 {
+		t.Errorf("proxy config mode = %04o, want 0600", got)
+	}
+}
+
 func TestProxySecretLegacyAdoptionLog(t *testing.T) {
 	address := "http://" + secretCanaryUser + ":" + secretCanaryPassword + "@example.com:1080?token=" + secretCanaryToken
 	state := &ProxyState{Proxies: map[string]ProxyEntry{address: {ID: 1}}}

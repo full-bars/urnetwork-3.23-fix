@@ -7627,7 +7627,7 @@ func writeProxyConfig(proxyConfig *ProxyConfig) {
 		return
 	}
 
-	err = atomicWriteFile(proxyPath, b, 0700)
+	err = atomicWriteFile(proxyPath, b, 0600)
 	if err != nil {
 		tlog("[proxy] Error: could not write proxy config at %s: %v\n", proxyPath, err)
 		return
