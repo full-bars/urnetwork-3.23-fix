@@ -51,13 +51,45 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 	case tcellui.MouseMove:
 		m.proxyPopupAt(ev.X, ev.Y)
 		m.hover = name
+		if m.proxyPopup {
+			m.explainerPopup = false
+		} else if !m.explainerPinned {
+			if _, ok := topExplainerFor(name); ok {
+				m.explainerPopup = true
+				m.explainerName = name
+				m.explainerX = ev.X
+				m.explainerY = ev.Y
+			} else {
+				m.explainerPopup = false
+				m.explainerName = ""
+			}
+		}
 		return topNone
 	case tcellui.MousePress:
 		if ev.Button != tcellui.MouseLeft {
 			return topNone
 		}
 		if m.proxyPopupAt(ev.X, ev.Y) {
+			m.explainerPopup = false
+			m.explainerPinned = false
 			return topNone
+		}
+		if _, ok := topExplainerFor(name); ok {
+			if m.explainerPinned && m.explainerName == name {
+				m.explainerPinned = false
+				m.explainerPopup = false
+				m.explainerName = ""
+			} else {
+				m.explainerPinned = true
+				m.explainerPopup = true
+				m.explainerName = name
+				m.explainerX = ev.X
+				m.explainerY = ev.Y
+			}
+		} else if m.explainerPinned {
+			m.explainerPinned = false
+			m.explainerPopup = false
+			m.explainerName = ""
 		}
 		now := m.now()
 		// A second press on the same divider inside the double-click window
@@ -223,5 +255,5 @@ func (m *topModel) drawHover(b *tui.Buffer) {
 // highlight and the proxy popup. The run loop redraws for a move only when it
 // changed, so a pointer drifting inside one region costs nothing.
 func (m *topModel) hoverSignature() string {
-	return fmt.Sprint(m.hover, "|", m.proxyPopup, m.proxyPopupX, m.proxyPopupY, m.proxyPopupIndices)
+	return fmt.Sprint(m.hover, "|", m.explainerPopup, m.explainerName, "|", m.proxyPopup, m.proxyPopupX, m.proxyPopupY, m.proxyPopupIndices)
 }

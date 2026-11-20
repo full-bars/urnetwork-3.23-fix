@@ -260,6 +260,11 @@ type topModel struct {
 	proxyPopupRect           tui.Rect
 	proxyPopupIndices        []int
 
+	explainerPopup         bool
+	explainerPinned        bool
+	explainerName          string
+	explainerX, explainerY int
+
 	// graph is the graph glyph style. themeLocked is set when the environment
 	// forced a theme (NO_COLOR, a dumb terminal), which the menu does not
 	// override. settingsPath is where the menu saves; empty means nowhere.
@@ -676,6 +681,8 @@ const (
 func (m *topModel) handle(ev tcellui.Event) topEffect {
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
+		m.explainerPopup = false
+		m.explainerPinned = false
 	}
 	if (m.menu || m.help || m.panel != "") && ev.Kind == tcellui.EventMouse && ev.Action == tcellui.MouseRelease {
 		if m.drag != nil {
@@ -834,6 +841,8 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.proxyDetail = nil
 	m.proxyDetailAt = time.Time{}
 	m.proxyPopup = false
+	m.explainerPopup = false
+	m.explainerPinned = false
 	m.extender = ExtenderReading{}
 	m.carriers.reset()
 	m.extenderBusy = false

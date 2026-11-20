@@ -184,6 +184,119 @@ If the panel is too small for a style (less than the minimum grid height), it fa
 
 The style name appears in the legend row when the panel is wide enough; in narrow panels the help overlay (`?`) shows all six names.
 
+## Top screen glossary
+
+Hovering over any element on the `top` screen (or tapping on a touch screen) opens an explainer tooltip. Below is the glossary of components, metrics, states and controls:
+
+### Sessions and clients
+- **Client Sessions (`now:sessions`)**: Active client sessions connected through this node. Shows post-quantum encrypted (pqe) and classical (cl) split.
+- **PQE Sessions (`pqe`)**: Post-Quantum Encrypted client sessions. Uses hybrid ML-KEM and Kyber key exchange algorithms.
+- **Classical Sessions (`cl`)**: Client sessions using classical cryptographic algorithms. Includes traditional key exchange and unencrypted fallback sessions.
+- **Clients (`clients`)**: Count of distinct client endpoints currently routing traffic. Each client may maintain one or more concurrent transport sessions.
+- **Memory Pressure (`now:pressure`)**: Host memory and scheduler pressure score from 0.00 to 1.00. High pressure above 0.70 triggers autopilot protective trims.
+- **Billable Bandwidth (`now:billable`)**: Current rate of client data that earns network rewards. Excludes internal management overhead, proxy checks, and health probes.
+- **Total Bandwidth (`now:total`)**: Total current network transfer rate across all node interfaces. Includes billable client traffic, health checks, gossip, and retransmits.
+- **1-Minute Average (`now:avg1m`)**: Rolling 1-minute moving average of billable network transfer rate.
+- **5-Minute Average (`now:avg5m`)**: Rolling 5-minute moving average of billable network transfer rate.
+- **1-Minute Total Average (`now:total_avg1m`)**: Rolling 1-minute moving average of total network transfer rate.
+- **5-Minute Total Average (`now:total_avg5m`)**: Rolling 5-minute moving average of total network transfer rate.
+- **Cumulative Billed (`now:billed`)**: Total billable client volume transferred since provider startup.
+- **Cumulative Moved (`now:moved`)**: Total raw byte volume transferred across all paths since startup.
+- **Restart Pending (`now:restart_pending`)**: A configuration update or binary hotswap is scheduled. The provider will restart when active client sessions drain.
+
+### Proxy activity and states
+- **Clients Attached For (`age`)**: Continuous time clients have been attached to this proxy. Resets to idle when no clients have been connected for 10 seconds. Idle means no active clients right now, not a broken proxy.
+- **Up State (`up`)**: Proxy is authenticated, passing health checks, and serving traffic. Actively accepting incoming connections from the client pool.
+- **Dropped State (`dropped`)**: Proxy experienced transient network errors or packet loss. Temporarily degraded while health checks verify connectivity.
+- **Connecting State (`connecting`)**: Proxy is establishing connection and authenticating credentials. Transitions to up once the upstream handshake succeeds.
+- **Dead State (`dead`)**: Proxy failed health verification or authentication repeatedly. Excluded from routing until the next periodic retry cycle.
+- **Parked State (`parked`)**: Proxy is temporarily idle under autopilot capacity controls. Conserves host memory while staying ready for fast unparking.
+
+### UDP coverage states
+- **UDP OK (`udp:ok`)**: Proxy passed UDP ASSOCIATE test with verified relay delivery. Outbound UDP packets match the proxy TCP public IP address.
+- **No UDP (`udp:no_relay`)**: Proxy refused UDP ASSOCIATE or relay endpoint did not answer. Only TCP client traffic is routed through this proxy.
+- **UDP Mismatch (`udp:mismatch`)**: UDP relay succeeded but emerged from a different public IP than TCP. Flagged for routing transparency and protocol consistency.
+- **UDP Unknown (`udp:unknown`)**: UDP relay test answered but TCP exit address could not be verified. Egress parity could not be determined in this check cycle.
+- **Native UDP (`udp:native`)**: Direct network interface handles UDP without proxy encapsulation. Routes packets through host default gateway with native performance.
+- **UDP Unchecked (`udp:unchecked`)**: Proxy is online but background probe has not completed yet. UDP sweeps run periodically in background to verify support.
+- **UDP Coverage (`udp:coverage`)**: Percentage of online proxies verified for UDP relay capability. Shows checked ratio and total online pool coverage.
+
+### Resources and runtime internals
+- **Heap Memory (`res:heap`)**: Go runtime heap memory in use against the configured memory cap. Tracked by autopilot to prevent process out-of-memory termination.
+- **File Descriptors (`res:fds`)**: Open file descriptors against host operating system process limit. Each active proxy connection and client socket consumes a descriptor.
+- **Resident Memory (RSS) (`res:rss`)**: Physical RAM occupied by the provider process in host memory. Includes Go runtime heap, execution stacks, and internal buffers.
+- **Swap Usage (`swap`)**: Host swap space utilized by provider process or operating system. Non-zero swap indicates host physical memory limits are saturated.
+- **Goroutines (`gor`)**: Active Go goroutines executing inside the provider runtime. Press g to open the detailed goroutine stack inspection panel.
+- **Heap Objects (`internals:objects`)**: Total allocated live heap objects managed by the Go runtime.
+- **Stack Memory (`internals:stacks`)**: Memory allocated for goroutine execution stacks.
+- **GC Goal (`internals:goal`)**: Target heap size for the next garbage collection cycle.
+- **Allocation Rate (`internals:alloc`)**: Byte rate of new memory allocations per second by the provider.
+- **GC Cycles (`internals:gc`)**: Garbage collection frequency per minute and 99th percentile pause time.
+- **GC CPU Fraction (`internals:gccpu`)**: Fraction of total available CPU time consumed by garbage collection.
+- **Scheduler Latency (`internals:sched`)**: 99th percentile time runnable goroutines wait for available OS threads.
+- **HTTP/1.1 Transport (`h1`)**: Standard TCP-based HTTP connection transport fallback. Used when UDP, QUIC, or HTTP/3 paths are blocked by network firewalls.
+- **HTTP/3 Transport (`h3`)**: High-performance QUIC transport running over UDP datagrams. Provides multiplexed streams and zero round-trip connection restarts.
+- **H3 Outbound Share (`internals:h3all`)**: Cumulative outbound bytes transferred over HTTP/3 versus total payload.
+
+### Extender and gossip mesh
+- **Extender Role (`extender:state`)**: Status of the local extender relay role and registration. Extenders announce their availability to clients through the gossip mesh.
+- **Gossip Mesh (`extender:gossip`)**: Gossip carries the directory of working extenders, not client traffic. Nodes exchange membership announcements to maintain network topology.
+- **Gossip Peers (`gossip:peers`)**: Number of other nodes linked to this extender in the gossip mesh. Peers exchange signed extender directory updates across the network.
+- **Directory Feeds (`gossip:feeds`)**: Number of clients holding an open subscription to this directory feed. Feeds 0 means no client is subscribed right now, not that nobody uses it.
+- **Gossip Messages (`gossip:msgs`)**: Number of valid directory messages received from peers since start. Gossip carries the directory of working extenders, not client traffic.
+- **Extender Clients (`extender:clients`)**: Number of client connections currently routing through this extender.
+- **Extender Carriers (`carriers`)**: Transport carriers listening for client traffic on this extender. Shows bytes transferred, active connections, and refusal diagnostics.
+- **Extender Served History (`extender:served`)**: Unique clients served by this extender over 24 hours, 7 days, and lifetime.
+- **Extender Port Bindings (`extender:ports`)**: Network port listeners bound for incoming extender client traffic.
+
+### Heatmap styles
+- **Glow Heatmap (`glow`)**: Default half-block proxy grid with afterglow decay. Brightens cells based on real-time throughput intensity.
+- **Aurora Heatmap (`aurora`)**: Flowing color wave visualizer showing relative proxy bandwidth. Smoothly transitions hues across active and recovering proxies.
+- **Sonar Heatmap (`sonar`)**: Periodic radial scan highlighting background health probe sweeps. Visualizes check completion order across configured proxies.
+- **Locality Heatmap (`locality`)**: Groups proxies into subnet blocks and network provider clusters. Displays diversity and concentration across egress routes.
+- **Blocks Heatmap (`blocks`)**: Discrete block cells showing high-contrast proxy state characters. Avoids half-block packing for maximum readability on small fonts.
+- **Timeline Heatmap (`timeline`)**: Chronological activity bars tracking client session distribution. Highlights recently active proxies against idle pool capacity.
+
+### Legend and layout
+- **Direct Path (`legend:direct`)**: Local host network interface (proxy slot 0). Routes client traffic directly through host egress without a proxy.
+- **Up Count (`legend:up`)**: Count of healthy, verified proxies ready for client traffic.
+- **Dropped Count (`legend:dropped`)**: Count of degraded proxies recovering from dropped connections.
+- **Connecting Count (`legend:connecting`)**: Count of proxies actively establishing upstream connections.
+- **Dead Count (`legend:dead`)**: Count of unreachable proxies removed from active rotation.
+- **Parked Count (`legend:parked`)**: Count of idle proxies parked by autopilot to conserve host RAM.
+- **Heatmap Style Selector (`legend:style`)**: Current proxy heatmap visualization style. Change via the m settings menu to customize visual appearance.
+- **Throughput Graph (`box:graph`)**: Real-time bandwidth graph showing transfer history. Press s to split upload and download, and press w to toggle vertical zoom.
+- **Graph Mode & Scale (`title:graph`)**: Graph title showing active history window and vertical peak scale. Click or press w to toggle zoom, and press t to cycle time intervals.
+- **Proxy Pool Panel (`box:proxies`)**: Visual heatmap and status distribution of configured proxies. Hover individual dots for address, state, and traffic details.
+- **Proxies Header (`title:proxies`)**: Proxy pool management panel header. Displays real-time cell matrix and background UDP probe telemetry.
+- **Events Panel (`box:events`)**: Chronological log of recent node events, transitions, and errors. Scroll with mouse wheel or Up and Down arrow keys.
+- **Events Header (`title:events`)**: Provider diagnostic event log header.
+- **Now Panel (`box:now`)**: Real-time summary of bandwidth rates, client sessions, and pressure. Displays active performance state and operational diagnostics.
+- **Now Header (`title:now`)**: Current node telemetry and status overview.
+- **Resources Panel (`box:resources`)**: Operating system and Go runtime resource utilization. Monitors memory heap, file descriptors, and physical resident memory.
+- **Resources Header (`title:resources`)**: Process resource consumption metrics and limits.
+- **Extender Panel (`box:extender`)**: Extender relay status, port listeners, carriers, and gossip mesh. Shown when the provider operates in relay extender mode.
+- **Extender Header (`title:extender`)**: Extender service and mesh directory status.
+- **Internals Panel (`box:internals`)**: Go runtime internals: memory allocation, GC pacing, and QUIC/H3 stats. Press g to view active goroutine stack groups.
+- **Internals Header (`title:internals`)**: Go runtime engine performance metrics.
+- **Side Column Divider (`side`)**: Vertical boundary between main charts and sidebar panels. Click and drag to resize width, or double-click to reset default.
+- **Proxies Divider (`left:proxies`)**: Horizontal boundary between throughput graph and proxy pool. Click and drag to adjust height, or double-click to reset default.
+- **Events Divider (`left:events`)**: Horizontal boundary between proxy pool and events log. Click and drag to adjust height, or double-click to reset default.
+- **Resources Divider (`side:resources`)**: Horizontal boundary between now and resources panels. Click and drag to adjust height, or double-click to reset default.
+- **Extender Divider (`side:extender`)**: Horizontal boundary between resources and extender panels. Click and drag to adjust height, or double-click to reset default.
+- **Internals Divider (`side:internals`)**: Horizontal boundary between extender and internals panels. Click and drag to adjust height, or double-click to reset default.
+- **Provider Selector (`tab:provider`)**: Current provider instance, software version, and uptime duration. Click or press Tab to cycle between running providers on this host.
+
+### Footer navigation shortcuts
+- **Quit Shortcut (`footer:quit`)**: Exit urnet-tools top and restore the terminal display. Keyboard shortcut: q or Ctrl+C.
+- **Provider Switch (`footer:provider`)**: Cycle display to the next running provider found on this host. Keyboard shortcut: Tab.
+- **Help Overlay (`footer:help`)**: Open overlay listing all navigation keys and interactive commands. Keyboard shortcut: ? (question mark).
+- **Settings Menu (`footer:menu`)**: Open menu to configure heatmap styles, themes, and unit formatting. Keyboard shortcut: m.
+- **Graph Zoom (`footer:zoom`)**: Toggle vertical graph scaling between auto-range and peak zoom. Keyboard shortcut: w.
+- **Goroutines Panel (`footer:goroutines`)**: Open live stack view grouping all active runtime goroutines. Keyboard shortcut: g.
+- **Refresh Interval (`footer:interval`)**: Adjust dashboard polling and redraw frequency from 100ms to 10s. Click - half to poll faster, and click + half to poll slower.
+- **Mouse Reporting (`footer:mouse`)**: Toggle terminal mouse event capture and click interactions. Keyboard shortcut: M (Shift+m).
+
 ## Docker top
 
 `urnet-docker top [container]` opens the dashboard in the selected running container. It needs an interactive terminal and an image that includes the Go dashboard. The image keeps the existing shell tool for other Docker commands. Update and recreate an older image if the dashboard executable is missing.

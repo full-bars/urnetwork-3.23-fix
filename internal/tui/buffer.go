@@ -51,6 +51,12 @@ func (self *Buffer) Height() int { return self.h }
 // Rect returns the view's own bounds, anchored at the origin.
 func (self *Buffer) Rect() Rect { return Rect{W: self.w, H: self.h} }
 
+// Absolute maps a rectangle r from view coordinates to coordinates relative
+// to the root buffer's top-left origin.
+func (self *Buffer) Absolute(r Rect) Rect {
+	return Rect{X: self.ox + r.X, Y: self.oy + r.Y, W: r.W, H: r.H}
+}
+
 func (self *Buffer) index(x, y int) int { return (self.oy+y)*self.stride + self.ox + x }
 
 func (self *Buffer) inView(x, y int) bool { return x >= 0 && y >= 0 && x < self.w && y < self.h }

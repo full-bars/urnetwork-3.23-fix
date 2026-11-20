@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+- Added hover and touch explainer tooltips for all top screen components, metrics, states and keys.
+- Added a reference glossary of top screen components and controls to the documentation.
 - Added split upload and download graphs in urnet-tools top, drawing download above the center baseline and upload mirrored below it.
 - Added peak and valley rate labels on visible graph extrema with formatting that tracks the active unit choice.
 - Added the s key and a Traffic view menu item to switch between split and combined graph views.

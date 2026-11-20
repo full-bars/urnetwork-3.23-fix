@@ -336,7 +336,10 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 	x := 0
 	for _, c := range cells {
 		if c.index == 0 {
-			x = b.Put("direct "+proxyCellStateName(c.state)+"  ", x, gridH, th.Dim)
+			dirText := "direct " + proxyCellStateName(c.state) + "  "
+			wDir := tui.StringWidth(dirText)
+			m.record("legend:direct", b.Absolute(tui.Rect{X: x, Y: gridH, W: wDir, H: 1}))
+			x = b.Put(dirText, x, gridH, th.Dim)
 			break
 		}
 	}
@@ -349,6 +352,8 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 			x = b.Put("  ", x, gridH, tui.Style{})
 		}
 		label := fmt.Sprintf("%d %s", counts[i], name)
+		wLabel := tui.StringWidth(label)
+		m.record("legend:"+proxyCellStateName(uint8(i)), b.Absolute(tui.Rect{X: x, Y: gridH, W: wLabel, H: 1}))
 		x = b.Put(label, x, gridH, st)
 	}
 }

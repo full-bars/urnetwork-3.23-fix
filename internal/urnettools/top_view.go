@@ -69,6 +69,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if !topMin.FitsRect(b.Rect()) {
 		m.drawCompact(b)
+		if m.explainerPopup && !m.proxyPopup {
+			m.drawExplainerPopup(b)
+		}
 		if m.help {
 			m.drawHelp(b)
 		}
@@ -80,6 +83,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	m.drawFull(b)
 	if m.proxyPopup {
 		m.drawProxyPopup(b)
+	}
+	if m.explainerPopup && !m.proxyPopup {
+		m.drawExplainerPopup(b)
 	}
 	if m.panel != "" {
 		m.drawDetails(b)
@@ -142,47 +148,14 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	m.nowRows, m.resRows, m.extRows = nowRows, resRows, extRows
 	m.showExtender, m.withInternals = showExtender, withInternals
 	side := m.splitSide(cols[1])
-	box := func(r tui.Rect, name, title string) *tui.Buffer {
-		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, m.hoverStyle("title:"+name, th.Accent), th.ASCII)
-	}
-
-	sr := m.series()
-	secondGraphTitle := -1
-	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
-		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
-		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
-		secondGraphTitle = graphs[1].Y
-	} else {
-		title := "Throughput"
-		if sr.total != nil {
-			title = "Billable"
-		}
-		m.drawGraph(box(left[0], "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, left[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
-	}
-	m.drawProxies(box(left[1], "proxies", "Proxies"))
-	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
-	m.drawEvents(box(left[2], "events", "Events"))
-	m.drawNow(box(side[0], "now", "Now"))
-	m.drawResources(box(side[1], "resources", "Resources"))
 	internalsAt := 2
 	if showExtender {
-		m.drawExtender(box(side[2], "extender", "Extender"))
 		internalsAt = 3
 	}
-	if withInternals {
-		title := "Internals"
-		if m.rt.showing {
-			title = "Goroutines"
-		}
-		m.drawInternals(box(side[internalsAt], "internals", title))
-	}
 
-	// Hit regions: every box, its title row, and the dividers between them.
+	// Hit regions: base boxes, title rows, and the dividers between them.
+	// Recorded before panel contents so row-level elements recorded inside panels win over the box.
 	m.recordBox("graph", left[0])
-	if secondGraphTitle >= 0 {
-		m.record("title:graph", tui.Rect{X: left[0].X, Y: secondGraphTitle, W: left[0].W, H: 1})
-	}
 	m.recordBox("proxies", left[1])
 	m.recordBox("events", left[2])
 	m.recordBox("now", side[0])
@@ -205,6 +178,44 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	if withInternals {
 		m.record("side:internals", tui.Rect{X: side[0].X, Y: side[internalsAt].Y - 1, W: side[0].W, H: 1})
 	}
+
+	box := func(r tui.Rect, name, title string) *tui.Buffer {
+		return tui.DrawBox(b.Sub(r), title, th.Frame, th.Border, m.hoverStyle("title:"+name, th.Accent), th.ASCII)
+	}
+
+	sr := m.series()
+	secondGraphTitle := -1
+	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
+		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
+		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
+		secondGraphTitle = graphs[1].Y
+	} else {
+		title := "Throughput"
+		if sr.total != nil {
+			title = "Billable"
+		}
+		m.drawGraph(box(left[0], "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, left[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+	}
+	if secondGraphTitle >= 0 {
+		m.record("title:graph", tui.Rect{X: left[0].X, Y: secondGraphTitle, W: left[0].W, H: 1})
+	}
+	m.drawProxies(box(left[1], "proxies", "Proxies"))
+	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
+	m.drawEvents(box(left[2], "events", "Events"))
+	m.drawNow(box(side[0], "now", "Now"))
+	m.drawResources(box(side[1], "resources", "Resources"))
+	if showExtender {
+		m.drawExtender(box(side[2], "extender", "Extender"))
+	}
+	if withInternals {
+		title := "Internals"
+		if m.rt.showing {
+			title = "Goroutines"
+		}
+		m.drawInternals(box(side[internalsAt], "internals", title))
+	}
+
 	// An operator hovering a divider sees it is draggable.
 	m.drawHover(b)
 }
@@ -618,13 +629,29 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 		if i > 0 {
 			x += gap
 		}
+		segW := utf8.RuneCountInString(sg.text)
+		regName := "udp:unknown"
+		switch {
+		case strings.Contains(sg.text, "ok"):
+			regName = "udp:ok"
+		case strings.Contains(sg.text, "no-udp") || strings.Contains(sg.text, "no UDP"):
+			regName = "udp:no_relay"
+		case strings.Contains(sg.text, "diff") || strings.Contains(sg.text, "mismatch"):
+			regName = "udp:mismatch"
+		case strings.Contains(sg.text, "unk") || strings.Contains(sg.text, "unknown"):
+			regName = "udp:unknown"
+		case strings.Contains(sg.text, "unchecked"):
+			regName = "udp:unchecked"
+		}
+		m.record(regName, b.Absolute(tui.Rect{X: x, Y: y, W: segW, H: 1}))
 		b.Put(sg.text, x, y, sg.style)
-		x += utf8.RuneCountInString(sg.text)
+		x += segW
 	}
 
 	// Percentage line: only when there is room.
 	rows := 1
 	if y+1 < b.Height() {
+		m.record("udp:coverage", b.Absolute(tui.Rect{X: 0, Y: y + 1, W: b.Width(), H: 1}))
 		var pctLine string
 		switch {
 		case checked > 0 && online > 0:
@@ -727,6 +754,7 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	// Legend row: non-Glow heatmap styles show the style name.
 	if m.proxyHeatmapStyle != heatmapGlow && gridH > 1 {
+		m.record("legend:style", b.Absolute(tui.Rect{X: 0, Y: gridH, W: tui.StringWidth(m.proxyHeatmapStyle.String()), H: 1}))
 		b.Put(m.proxyHeatmapStyle.String(), 0, gridH, th.Dim)
 	}
 }
@@ -801,34 +829,50 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 		return th.OK
 	}
 	y := 0
-	row := func(key, value string, style tui.Style) {
+	row := func(name, key, value string, style tui.Style) {
+		m.record("now:"+name, b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kv(b, y, key, value, style)
 		y++
 	}
 	if tr := s.Traffic; tr != nil {
 		// Billable is what earns; total is everything moved. Session bytes count
 		// from provider start.
-		row("billable", tui.Rate(rates.billable), rateStyle(rates.billable))
-		row(" 1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
-		row(" 5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
-		row("total", tui.Rate(rates.total), rateStyle(rates.total))
-		row(" 1m avg", tui.Rate(tr.TotalAvg1mBps), tui.Style{})
-		row(" 5m avg", tui.Rate(tr.TotalAvg5mBps), tui.Style{})
-		row("billed", tui.Bytes(float64(tr.BillableBytes)), tui.Style{})
-		row("moved", tui.Bytes(float64(tr.TotalBytes)), tui.Style{})
+		row("billable", "billable", tui.Rate(rates.billable), rateStyle(rates.billable))
+		row("avg1m", " 1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
+		row("avg5m", " 5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
+		row("total", "total", tui.Rate(rates.total), rateStyle(rates.total))
+		row("total_avg1m", " 1m avg", tui.Rate(tr.TotalAvg1mBps), tui.Style{})
+		row("total_avg5m", " 5m avg", tui.Rate(tr.TotalAvg5mBps), tui.Style{})
+		row("billed", "billed", tui.Bytes(float64(tr.BillableBytes)), tui.Style{})
+		row("moved", "moved", tui.Bytes(float64(tr.TotalBytes)), tui.Style{})
 	} else {
-		row("current", tui.Rate(rates.billable), rateStyle(rates.billable))
-		row("1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
-		row("5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
+		row("billable", "current", tui.Rate(rates.billable), rateStyle(rates.billable))
+		row("avg1m", "1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
+		row("avg5m", "5m avg", tui.Rate(s.Rate.Avg5mBps), tui.Style{})
 	}
-	row("clients", strconv.Itoa(s.Clients), tui.Style{})
-	row("sessions", fmt.Sprintf("%d pqe / %d cl", s.Sessions.PQE, classicalSessions(s.Clients, s.Sessions.PQE, s.Sessions.Classical)), tui.Style{})
+	row("clients", "clients", strconv.Itoa(s.Clients), tui.Style{})
+
+	m.record("now:sessions", b.Absolute(tui.Rect{X: 0, Y: y, W: topKeyColumn, H: 1}))
+	pqePart := fmt.Sprintf("%d pqe", s.Sessions.PQE)
+	pqeWidth := tui.StringWidth(pqePart)
+	if topKeyColumn+pqeWidth <= b.Width() {
+		m.record("now:pqe", b.Absolute(tui.Rect{X: topKeyColumn, Y: y, W: pqeWidth, H: 1}))
+	}
+	clStart := topKeyColumn + pqeWidth + 3
+	if clStart < b.Width() {
+		m.record("now:cl", b.Absolute(tui.Rect{X: clStart, Y: y, W: b.Width() - clStart, H: 1}))
+	}
+	m.kv(b, y, "sessions", fmt.Sprintf("%s / %d cl", pqePart, classicalSessions(s.Clients, s.Sessions.PQE, s.Sessions.Classical)), tui.Style{})
+	y++
+
+	m.record("now:pressure", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 	tui.DrawBar(b.Sub(tui.Rect{Y: y, W: b.Width(), H: 1}), tui.Bar{
 		Label: "pressure", LabelWidth: topKeyColumn - 1, Value: fmt.Sprintf("%.2f", s.Pressure), Frac: s.Pressure,
 		LabelStyle: th.Dim, Fill: th.Level(s.Pressure, 0.7, 0.9), Empty: th.Dim,
 	}, th.ASCII)
 	y++
 	if s.RestartPending {
+		m.record("now:restart_pending", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		b.Put("RESTART PENDING", 0, y, th.Warn)
 	}
 	y++ // the row stays reserved so the reason below does not jump when it appears
@@ -882,26 +926,32 @@ func (m *topModel) drawResources(b *tui.Buffer) {
 	// Fields the platform could not supply are left out, not drawn as zero.
 	switch {
 	case r.MemLimitBytes != nil && *r.MemLimitBytes > 0:
+		m.record("res:heap", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		bar(y, "heap", topBytesPair(float64(r.HeapInuseBytes), float64(*r.MemLimitBytes)),
 			float64(r.HeapInuseBytes)/float64(*r.MemLimitBytes))
 		y++
 	case r.HeapInuseBytes > 0:
+		m.record("res:heap", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kvAt(b, col, y, "heap", tui.Bytes(float64(r.HeapInuseBytes)), tui.Style{})
 		y++
 	}
 	switch {
 	case r.OpenFDs != nil && r.FDLimit != nil && *r.FDLimit > 0:
+		m.record("res:fds", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		bar(y, "fds", fmt.Sprintf("%d/%d", *r.OpenFDs, *r.FDLimit), float64(*r.OpenFDs)/float64(*r.FDLimit))
 		y++
 	case r.OpenFDs != nil:
+		m.record("res:fds", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kvAt(b, col, y, "fds", strconv.Itoa(*r.OpenFDs), tui.Style{})
 		y++
 	}
 	if r.RSSBytes != nil {
+		m.record("res:rss", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kvAt(b, col, y, "rss", tui.Bytes(float64(*r.RSSBytes)), tui.Style{})
 		y++
 	}
 	if r.Goroutines > 0 && !m.hasInternals() {
+		m.record("res:gor", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kvAt(b, col, y, "gor", strconv.Itoa(r.Goroutines), tui.Style{})
 	}
 }
@@ -923,12 +973,14 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 	}
 	const col = 8
 	y := 0
-	row := func(key, value string, style tui.Style) {
+	row := func(name, key, value string, style tui.Style) {
+		m.record("internals:"+name, b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 		m.kvAt(b, col, y, key, value, style)
 		y++
 	}
 	// The trend fits what is left of the row after the count.
 	gor := strconv.FormatUint(in.Goroutines, 10)
+	m.record("internals:gor", b.Absolute(tui.Rect{X: 0, Y: y, W: b.Width(), H: 1}))
 	m.kvAt(b, col, y, "gor", gor, tui.Style{})
 	if room := b.Width() - col - len(gor) - 1; room >= 4 && len(r.gor) > 1 {
 		// Scaled from the window's own minimum: a count that moves between 1000
@@ -948,13 +1000,13 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		b.Put(tui.Spark(vals, min(room, 12), th.ASCII), col+len(gor)+1, y, th.Graph)
 	}
 	y++
-	row("objects", tui.Bytes(float64(in.HeapObjectsBytes)), tui.Style{})
-	row("stacks", tui.Bytes(float64(in.HeapStacksBytes)), tui.Style{})
+	row("objects", "objects", tui.Bytes(float64(in.HeapObjectsBytes)), tui.Style{})
+	row("stacks", "stacks", tui.Bytes(float64(in.HeapStacksBytes)), tui.Style{})
 	if in.HeapGoalBytes > 0 {
-		row("goal", tui.Bytes(float64(in.HeapGoalBytes)), th.Dim)
+		row("goal", "goal", tui.Bytes(float64(in.HeapGoalBytes)), th.Dim)
 	}
 	if v, ok := r.internalsRate(func(n *NodeInternals) uint64 { return n.AllocBytes }); ok {
-		row("alloc", tui.Rate(v), tui.Style{})
+		row("alloc", "alloc", tui.Rate(v), tui.Style{})
 	}
 	// The pause and latency quantiles are only figures once a full window
 	// completes; before that the provider reports IntervalSeconds 0 and p99
@@ -965,14 +1017,14 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		if ready {
 			p99 = topMillis(in.GCPauseP99Ms)
 		}
-		row("gc", fmt.Sprintf("%.0f/min p99 %s", v*60, p99), tui.Style{})
+		row("gc", "gc", fmt.Sprintf("%.0f/min p99 %s", v*60, p99), tui.Style{})
 	}
-	row("gc cpu", fmt.Sprintf("%.1f%%", in.GCCPUFraction*100), m.style(topLevelFor(in.GCCPUFraction, 0.10, 0.25)))
+	row("gccpu", "gc cpu", fmt.Sprintf("%.1f%%", in.GCCPUFraction*100), m.style(topLevelFor(in.GCCPUFraction, 0.10, 0.25)))
 	sched := "--"
 	if ready {
 		sched = topMillis(in.SchedLatP99Ms)
 	}
-	row("sched", "p99 "+sched, m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
+	row("sched", "sched", "p99 "+sched, m.style(topLevelFor(in.SchedLatP99Ms, 10, 50)))
 	// The transport split, once the provider has run H3. Both rows are drawn
 	// only when the box that is left can hold them: on a terminal where the
 	// panel fits its runtime figures but not these two, the panel keeps the
@@ -990,8 +1042,8 @@ func (m *topModel) drawInternals(b *tui.Buffer) {
 		if t.H3Up <= 0 {
 			level = topWarn
 		}
-		row("h3", fmt.Sprintf("up %d tx %s drops %d", t.H3Up, share, t.H3Drops), m.style(level))
-		row("h3/all", topBytePair(t.H3BytesTx, t.TxBytesTotal()), th.Dim)
+		row("h3", "h3", fmt.Sprintf("up %d tx %s drops %d", t.H3Up, share, t.H3Drops), m.style(level))
+		row("h3all", "h3/all", topBytePair(t.H3BytesTx, t.TxBytesTotal()), th.Dim)
 	}
 }
 

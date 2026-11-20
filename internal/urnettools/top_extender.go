@@ -225,5 +225,45 @@ func (m *topModel) drawExtender(b *tui.Buffer) {
 			col = len(row.key) + 1
 		}
 		m.kvAt(b, col, y, row.key, row.value, m.style(row.level))
+		regName := "extender:" + row.key
+		switch row.key {
+		case "state":
+			regName = "extender:state"
+		case "gossip":
+			regName = "extender:gossip"
+		case "clients":
+			regName = "extender:clients"
+		case "served":
+			regName = "extender:served"
+		default:
+			if strings.Contains(row.key, "53") || strings.Contains(row.key, "tcp") || strings.Contains(row.key, "udp") {
+				regName = "extender:ports"
+			} else {
+				regName = "extender:carriers"
+			}
+		}
+		wKey := b.Width()
+		if row.key == "gossip" {
+			wKey = col
+		}
+		m.record(regName, b.Absolute(tui.Rect{X: 0, Y: y, W: wKey, H: 1}))
+		if row.key == "gossip" {
+			valX := col
+			if idx := strings.Index(row.value, "peers"); idx >= 0 {
+				start := max(0, strings.LastIndex(row.value[:idx], " ")+1)
+				end := idx + len("peers")
+				m.record("gossip:peers", b.Absolute(tui.Rect{X: valX + start, Y: y, W: end - start, H: 1}))
+			}
+			if idx := strings.Index(row.value, "feeds"); idx >= 0 {
+				start := max(0, strings.LastIndex(row.value[:idx], " ")+1)
+				end := idx + len("feeds")
+				m.record("gossip:feeds", b.Absolute(tui.Rect{X: valX + start, Y: y, W: end - start, H: 1}))
+			}
+			if idx := strings.Index(row.value, "msgs"); idx >= 0 {
+				start := max(0, strings.LastIndex(row.value[:idx], " ")+1)
+				end := idx + len("msgs")
+				m.record("gossip:msgs", b.Absolute(tui.Rect{X: valX + start, Y: y, W: end - start, H: 1}))
+			}
+		}
 	}
 }

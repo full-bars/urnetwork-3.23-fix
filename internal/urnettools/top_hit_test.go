@@ -92,6 +92,11 @@ func TestTopFrameRecordsHitRegions(t *testing.T) {
 		if key, ok := strings.CutPrefix(r.Name, "title:"); ok && got == "box:"+key {
 			continue
 		}
+		if key, ok := strings.CutPrefix(r.Name, "box:"); ok {
+			if strings.HasPrefix(got, key+":") || strings.HasPrefix(got, "now:") || strings.HasPrefix(got, "res:") || strings.HasPrefix(got, "internals:") || strings.HasPrefix(got, "extender:") || strings.HasPrefix(got, "legend:") || strings.HasPrefix(got, "udp:") {
+				continue
+			}
+		}
 		t.Fatalf("region %q center %v mapped to %q", r.Name, [2]int{x, y}, got)
 	}
 
