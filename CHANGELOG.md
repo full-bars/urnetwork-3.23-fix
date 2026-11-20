@@ -47,6 +47,7 @@ Everything merged after `v3.23.0-fix.35.11`.
 - Status update checks do not follow symbolic links in the cache. Status honors `--pid` and reports an unavailable or stopped extender. A healthy `--brief` produces no output.
 - Failed carrier control writes restore the previous carrier configuration. Gossip cap pressure no longer hides a worse health state.
 - **Lossless prefix-bucket host blocker format and Telegram reflector test alignment** (`ip_blocker.go`, `ip_security_cfaa.go`, `ip_security_telegram_test.go`, `blocker/`). The host blocker generator and decoder support the bucketed table layout with 257 bucket offsets and 5-byte tails, preserving all 48 fingerprint bits while reducing embedded table size. Generator tests emit and verify single packed string literals and Frogeye host feed variants. The Telegram call reflector test suite aligns with upstream precedence where an address on an active IP reputation blocklist yields an IP reputation drop.
+- Proxy credentials stay out of logs, status and control replies. Proxy addresses (`host:port`) remain visible; credentials (`user:pass`) and URL query tokens are redacted wherever they could otherwise appear.
 
 ## [v3.23.0-fix.35.11]
 

@@ -14,7 +14,7 @@ The command is `urnet-tools proxy add <file>`, where `<file>` points to a text
 file with one proxy per line. Each line is `host:port` or `host:port:user:pass`.
 Passwords may contain `@` characters.
 
-## The universal sequence
+Security: Proxy addresses (`host:port`) may appear in logs and status output for troubleshooting, but credentials (`user:pass`) and URL query tokens are never logged. This ensures operator credentials are never exposed.
 
 Install the provider and authenticate first. Then load your proxy file:
 
