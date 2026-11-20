@@ -1555,6 +1555,9 @@ func copyFileToFd(src string, out *os.File) error {
 // <base>-<os>-<arch> (e.g. urnet-tools-linux-amd64). Release assets are
 // bare binaries — never a .exe suffix, even on Windows.
 func toolAssetName(base, goos, arch string) string {
+	if base == "ut" {
+		base = "urnet-tools"
+	}
 	return fmt.Sprintf("%s-%s-%s", base, goos, arch)
 }
 
@@ -1564,13 +1567,12 @@ func toolAssetName(base, goos, arch string) string {
 // wrong when urnet-docker routes into the same code (verified 2026-08-12
 // review).
 func programName() string {
-	base := "urnet-tools"
-	if exe, err := os.Executable(); err == nil {
-		if b := filepath.Base(exe); b != "" {
-			base = strings.TrimSuffix(b, ".exe")
+	if len(os.Args) > 0 {
+		if base := filepath.Base(os.Args[0]); base != "" && base != "." {
+			return strings.TrimSuffix(base, ".exe")
 		}
 	}
-	return base
+	return "urnet-tools"
 }
 
 // runningToolAssetName derives the asset name from the ACTUAL running

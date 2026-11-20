@@ -115,9 +115,9 @@ var errHelpShown = fmt.Errorf("help shown")
 // an operator should be able to figure out targeting + force rules from
 // this alone, without the README/wiki.
 func usage() {
-	fmt.Fprintf(os.Stderr, `urnet-tools — provider-aware URnetwork manager
+	fmt.Fprintf(os.Stderr, `%s — provider-aware URnetwork manager
 
-Usage: urnet-tools <command> [flags]
+Usage: %s <command> [flags]
 
 Core Commands:
   providers                       🌐  list all providers on this box (all users, JWT identity)
@@ -189,7 +189,7 @@ Force (machines/scripts):
   -y, --yes              alias for --force
   -n, --dry-run          print the plan, change nothing (safe anywhere)
   -h, --help             show help (never executes anything)
-`)
+`, programName(), programName())
 }
 
 // parseTargetFlagsLenient is like parseTargetFlags but does NOT reject
