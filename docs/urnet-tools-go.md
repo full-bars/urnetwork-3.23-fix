@@ -293,6 +293,7 @@ Hovering over any element on the `top` screen (or tapping on a touch screen) ope
 - **Help Overlay (`footer:help`)**: Open overlay listing all navigation keys and interactive commands. Keyboard shortcut: ? (question mark).
 - **Settings Menu (`footer:menu`)**: Open menu to configure heatmap styles, themes, and unit formatting. Keyboard shortcut: m.
 - **Graph Zoom (`footer:zoom`)**: Toggle vertical graph scaling between auto-range and peak zoom. Keyboard shortcut: w.
+- **Proxy Heatmap Window (`footer:proxies`)**: Open near full-screen proxy heatmap window for fleet inspection. Keyboard shortcut: p.
 - **Goroutines Panel (`footer:goroutines`)**: Open live stack view grouping all active runtime goroutines. Keyboard shortcut: g.
 - **Refresh Interval (`footer:interval`)**: Adjust dashboard polling and redraw frequency from 100ms to 10s. Click - half to poll faster, and click + half to poll slower.
 - **Mouse Reporting (`footer:mouse`)**: Toggle terminal mouse event capture and click interactions. Keyboard shortcut: M (Shift+m).

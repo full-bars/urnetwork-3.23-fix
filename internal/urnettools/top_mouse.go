@@ -27,9 +27,9 @@ type topPress struct {
 // mouseHandle applies one mouse event. It returns the effect to run (quit),
 // like the key handlers.
 func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
-	// While the help overlay is up, a click closes it and nothing else
-	// happens, like Esc.
-	if m.help || m.panel != "" {
+	// While the help overlay or another panel is up, a click closes it and
+	// nothing else happens, like Esc. The proxy heatmap window stays interactive.
+	if m.help || (m.panel != "" && m.panel != "proxies") {
 		switch {
 		case ev.Action == tcellui.MousePress:
 			m.help = false
@@ -43,6 +43,41 @@ func (m *topModel) mouseHandle(ev tcellui.Event) topEffect {
 				dir = -1
 			}
 			m.gorScroll = min(max(m.gorScroll+dir, 0), max(0, len(m.rt.groups.Groups)-m.gorHeight))
+		}
+		return topNone
+	}
+	if m.panel == "proxies" {
+		switch ev.Action {
+		case tcellui.MouseMove:
+			m.proxyPopupAt(ev.X, ev.Y)
+			return topNone
+		case tcellui.MousePress:
+			if ev.Button != tcellui.MouseLeft {
+				return topNone
+			}
+			if m.proxyPopupAt(ev.X, ev.Y) {
+				return topNone
+			}
+			r := m.proxyWinRect
+			if ev.X < r.X || ev.X >= r.X+r.W || ev.Y < r.Y || ev.Y >= r.Y+r.H {
+				m.panel = ""
+				m.proxyPopup = false
+				return topNone
+			}
+			if m.proxyPopup {
+				m.proxyPopup = false
+			}
+			return topNone
+		case tcellui.MouseWheel:
+			dir := 1
+			if ev.Button == tcellui.MouseWheelUp {
+				dir = -1
+			}
+			m.scrollProxyWin(dir)
+			if m.proxyPopup {
+				m.proxyPopupAt(m.proxyPopupX, m.proxyPopupY)
+			}
+			return topNone
 		}
 		return topNone
 	}
@@ -145,6 +180,16 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 		m.menu, m.help, m.menuNote = true, false, ""
 	case "footer:zoom", "title:graph":
 		m.zoomOn = !m.zoomOn
+	case "footer:proxies":
+		if m.panel == "proxies" {
+			m.panel = ""
+			m.proxyPopup = false
+		} else {
+			m.panel = "proxies"
+			m.proxyPopup = false
+			m.proxyWinScroll = 0
+			m.proxyWinZoom = false
+		}
 	case "footer:goroutines":
 		// Only where the provider can answer, like the g key.
 		if m.rt.gOK && m.rt.ok {

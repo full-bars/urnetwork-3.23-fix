@@ -151,6 +151,7 @@ func TestTopExplainerRequiredTerms(t *testing.T) {
 		{"footer:help", "Help Overlay", "navigation keys"},
 		{"footer:menu", "Settings Menu", "heatmap styles"},
 		{"footer:zoom", "Graph Zoom", "vertical graph scaling"},
+		{"footer:proxies", "Proxy Heatmap Window", "fleet inspection"},
 		{"footer:goroutines", "Goroutines Panel", "runtime goroutines"},
 		{"footer:interval", "Refresh Interval", "polling and redraw"},
 		{"footer:mouse", "Mouse Reporting", "mouse event capture"},

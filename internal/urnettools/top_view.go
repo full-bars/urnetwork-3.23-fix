@@ -69,6 +69,12 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if !topMin.FitsRect(b.Rect()) {
 		m.drawCompact(b)
+		if m.panel != "" {
+			m.drawDetails(b)
+		}
+		if m.proxyPopup {
+			m.drawProxyPopup(b)
+		}
 		if m.explainerPopup && !m.proxyPopup {
 			m.drawExplainerPopup(b)
 		}
@@ -81,14 +87,14 @@ func (m *topModel) render(b *tui.Buffer) {
 		return
 	}
 	m.drawFull(b)
+	if m.panel != "" {
+		m.drawDetails(b)
+	}
 	if m.proxyPopup {
 		m.drawProxyPopup(b)
 	}
 	if m.explainerPopup && !m.proxyPopup {
 		m.drawExplainerPopup(b)
-	}
-	if m.panel != "" {
-		m.drawDetails(b)
 	}
 	if m.help {
 		m.drawHelp(b)
@@ -1173,6 +1179,7 @@ var helpLines = []string{
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
 	"a / i / v        alerts / resource gauges / carriers",
+	"p                full-screen proxy heatmap window (Esc or p closes)",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
 	"?                show or hide this help",

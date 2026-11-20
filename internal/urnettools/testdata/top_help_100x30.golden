@@ -12,19 +12,19 @@
 │60 MiB/│ t                cycle graph history: 10m, 1h, 24h                              │12 cl   │
 │       │ o                show all providers                                             │░░░ 0.21│
 │       │ a / i / v        alerts / resource gauges / carriers                            │        │
-│30 MiB/│ g                list where goroutines are parked                               │        │
-│       │ billed, moved    billable and total bytes this session                          │        │
-│       │ ?                show or hide this help                                         │────────╯
-│       │ Grid state: up green, dropped yellow, connecting blue, dead red.                │────────╮
-│   0 B/│ Parked is dim. Green brightness is throughput.                                  │/4.0 GiB│
-╰───────│ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │10/65536│
-╭ Proxie│ One dot is one proxy. A cell has upper and lower dots.                          │        │
-│up     │ Groups show the worst state. Hover or click for addresses.                      │        │
-│dropped│ Mono uses blocks. Colorblind uses blocks and the worst state style.             │────────╯
-│connect│ Colorblind uses bold and dim. Hover for each state.                             │
-│dead   │ ASCII uses symbols for state and activity.                                      │
-╰───────│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
-╭ Events╰─────────────────────────────────────────────────────────────────────────────────╯
-│3d ago • restart: update (v3.23.0-fix.32.0 to v3.23.0-fix.32.1)     │
+│30 MiB/│ p                full-screen proxy heatmap window (Esc or p closes)             │        │
+│       │ g                list where goroutines are parked                               │        │
+│       │ billed, moved    billable and total bytes this session                          │────────╯
+│       │ ?                show or hide this help                                         │────────╮
+│   0 B/│ Grid state: up green, dropped yellow, connecting blue, dead red.                │/4.0 GiB│
+╰───────│ Parked is dim. Green brightness is throughput.                                  │10/65536│
+╭ Proxie│ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │        │
+│up     │ One dot is one proxy. A cell has upper and lower dots.                          │        │
+│dropped│ Groups show the worst state. Hover or click for addresses.                      │────────╯
+│connect│ Mono uses blocks. Colorblind uses blocks and the worst state style.             │
+│dead   │ Colorblind uses bold and dim. Hover for each state.                             │
+╰───────│ ASCII uses symbols for state and activity.                                      │
+╭ Events│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
+│3d ago ╰─────────────────────────────────────────────────────────────────────────────────╯
 ╰────────────────────────────────────────────────────────────────────╯
  q quit   ? help   m menu   w zoom   - 1s +   M mouse on

@@ -788,11 +788,19 @@ func (m *topModel) proxyCellAt(x, y int) []int {
 			break
 		}
 	}
-	if hasDirect && x == 0 && y == 0 {
+	gridX := x
+	gridY := y
+	if m.panel == "proxies" {
+		if m.proxyWinCellWidth == 2 {
+			gridX = x / 2
+		}
+		gridY = y + m.proxyWinScroll
+	}
+	if hasDirect && gridX == 0 && gridY == 0 {
 		return []int{0}
 	}
 	l := newProxyGridLayout(len(m.proxyCells), m.proxyGridW, m.proxyGridH, hasDirect)
-	upper, lower := l.indices(x, y)
+	upper, lower := l.indices(gridX, gridY)
 	capacity := l.proxyCapacity()
 	if capacity == 0 {
 		return nil

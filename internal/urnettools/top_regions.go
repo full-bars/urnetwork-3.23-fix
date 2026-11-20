@@ -44,6 +44,9 @@ func (m *topModel) footerHints() []topFooterHint {
 	if m.trafficOK {
 		hints = append(hints, topFooterHint{"footer:zoom", "w zoom"})
 	}
+	if len(m.proxyCells) > 0 {
+		hints = append(hints, topFooterHint{"footer:proxies", "p proxies"})
+	}
 	if m.rt.ok && m.rt.gOK && m.hasInternals() {
 		hints = append(hints, topFooterHint{"footer:goroutines", "g goroutines"})
 	}

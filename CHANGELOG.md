@@ -2,6 +2,7 @@
 
 ## [Unreleased]
 
+- Added near full-screen proxy heatmap window opened with p, with scrolling, zooming, larger detail layout and hover popups.
 - Track dual-stack IPv4 and IPv6 direct connection outcomes and traffic counters, and display per-family statistics in the direct slot detail popup.
 - Render the direct provider slot as a dedicated star cell in top heatmaps and label it in the legend.
 - Added hover and touch explainer tooltips for all top screen components, metrics, states and keys.

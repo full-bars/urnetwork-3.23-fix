@@ -301,6 +301,13 @@ type topModel struct {
 	gorScroll int
 	gorHeight int
 
+	// proxyWinScroll is the vertical scroll offset in the proxy heatmap window.
+	proxyWinScroll    int
+	proxyWinZoom      bool
+	proxyWinCellWidth int
+	proxyWinMaxScroll int
+	proxyWinRect      tui.Rect
+
 	help  bool
 	quit  bool
 	panel string
@@ -679,6 +686,7 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	hadPopup := m.proxyPopup
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 		m.explainerPopup = false
@@ -725,6 +733,9 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.quit = true
 			return topQuit
 		case tcellui.KeyEsc:
+			if hadPopup {
+				return topNone
+			}
 			if m.panel != "" {
 				if m.panel == "goroutines" {
 					m.rt.showing = false
@@ -740,6 +751,16 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			}
 			m.quit = true
 			return topQuit
+		case tcellui.KeyUp:
+			if m.panel == "proxies" {
+				m.scrollProxyWin(-1)
+				return topNone
+			}
+		case tcellui.KeyDown:
+			if m.panel == "proxies" {
+				m.scrollProxyWin(1)
+				return topNone
+			}
 		case tcellui.KeyTab:
 			return m.selectProvider(1)
 		case tcellui.KeyBacktab:
@@ -775,6 +796,31 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.panel = "gauges"
 		case 'v':
 			m.panel = "carriers"
+		case 'p', 'P':
+			if m.panel == "proxies" {
+				m.panel = ""
+				m.proxyPopup = false
+				m.proxyWinScroll = 0
+			} else {
+				m.panel = "proxies"
+				m.proxyPopup = false
+				m.proxyWinScroll = 0
+				m.proxyWinScroll = 0
+				m.proxyWinZoom = false
+			}
+		case 'z', 'Z':
+			if m.panel == "proxies" {
+				m.proxyWinZoom = !m.proxyWinZoom
+				m.proxyWinScroll = 0
+			}
+		case 'j':
+			if m.panel == "proxies" {
+				m.scrollProxyWin(1)
+			}
+		case 'k':
+			if m.panel == "proxies" {
+				m.scrollProxyWin(-1)
+			}
 		// Like btop: + lengthens the update interval (slower), - shortens it.
 		case '+', '=':
 			m.stepInterval(1)
@@ -841,6 +887,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.proxyDetail = nil
 	m.proxyDetailAt = time.Time{}
 	m.proxyPopup = false
+	m.proxyWinScroll = 0
 	m.explainerPopup = false
 	m.explainerPinned = false
 	m.extender = ExtenderReading{}

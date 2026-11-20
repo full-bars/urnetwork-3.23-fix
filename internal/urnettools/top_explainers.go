@@ -736,6 +736,14 @@ var topExplainerCatalog = []topExplainer{
 		},
 	},
 	{
+		Region: "footer:proxies",
+		Title:  "Proxy Heatmap Window",
+		Lines: []string{
+			"Open near full-screen proxy heatmap window for fleet inspection.",
+			"Keyboard shortcut: p.",
+		},
+	},
+	{
 		Region: "footer:goroutines",
 		Title:  "Goroutines Panel",
 		Lines: []string{

@@ -4,6 +4,10 @@ import "github.com/urnetwork/connect/internal/tui"
 
 // drawDetails shows the selected diagnostics without changing the panel layout.
 func (m *topModel) drawDetails(b *tui.Buffer) {
+	if m.panel == "proxies" {
+		m.drawProxyWindow(b)
+		return
+	}
 	w, h := min(b.Width(), 76), min(b.Height(), 18)
 	if m.panel == "goroutines" {
 		w, h = min(b.Width(), 100), min(b.Height(), 30)
