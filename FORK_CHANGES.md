@@ -778,7 +778,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
     - `all` / `full`: Streams the entire buffer from the beginning (useful for capturing startup sequences after the buffer has rolled over in normal tail mode).
     - `dump`: Copies the current RAM buffer to `~/urlogs.txt` and exits. Simplifies log gathering for operators on remote systems.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -792,7 +792,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 - Bumped `github.com/quic-go/quic-go` from `v0.59.0` to `v0.59.1`.
 - This version includes protection against handshakes that attempt to stall or leak memory before authentication is complete.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -810,7 +810,7 @@ All non‑zero exit codes write a `FATAL [exit <code>]: ...` line to both stderr
 
 **Benefit**: Eliminates the risk of tokens expiring unexpectedly. Multi-day outages don't cause exit-78 failures because the 48h expiry buffer provides recovery time even if weekly refresh is missed. All auth modes benefit equally via JWT-to-JWT mechanism.
 
-**Status**: 🛠 [Unreleased]
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4278,7 +4278,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 **How to Identify in New Upstream**: Check `containsHostHash` and `blockerBlockedHostBuckets` in `ip_blocker.go`, `packHostHashes` in `blocker/main.go`, and `TestTelegramCallReflectorRanges` in `ip_security_telegram_test.go`.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4297,7 +4297,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 - The shared source line classifier rejects unbracketed IPv6 lines as `invalid_fields`.
 - A check still running after 20 seconds is treated as unknown and the relay attempt is allowed.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4305,7 +4305,7 @@ This also removes exported Go API: the peer capability recorder (`PeerCapability
 
 The status command presents a health summary and UDP coverage. `--brief` reports warnings and failures with exit codes 0 for healthy, 1 for warning, 2 for broken and 3 for unreachable. Healthy brief output is empty. `--json` keeps the raw snapshot. `--json-summary` emits schema `urnet-tools-status/1`. `--live` refreshes the summary. Update checks use a time-limited cache that does not follow symbolic links. Status honors `--pid` and identifies an unavailable or stopped extender.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4313,7 +4313,7 @@ The status command presents a health summary and UDP coverage. `--brief` reports
 
 The `extender-udp443`, `extender-udp4053` and `extender-udp53` settings enable or disable each UDP carrier. A change restarts the active role. A failed control write restores the previous carrier configuration. Extender status reports UDP port 53 state and bind failure reason. The `urnet_extender_dns53_state` metric reports the state. Setup does not offer the lower sysctl threshold for port 53 yet.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4321,7 +4321,7 @@ The `extender-udp443`, `extender-udp4053` and `extender-udp53` settings enable o
 
 Gossip diagnostics report dial attempts and failures, health transitions and recent events. Anomaly dumps are rate limited. The health calculation retains a more severe state when cap pressure is present. `urnet-tools extender events` displays recent events.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4329,7 +4329,7 @@ Gossip diagnostics report dial attempts and failures, health transitions and rec
 
 The top display includes proxy heatmap dots, a configurable fading afterglow and a UDP coverage row. The container image includes the dashboard. The Docker helper checks for the dashboard before launch.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4337,7 +4337,7 @@ The top display includes proxy heatmap dots, a configurable fading afterglow and
 
 The `internal/nicstat` package reads cumulative interface receive and transmit byte counters on Linux.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4345,7 +4345,7 @@ The `internal/nicstat` package reads cumulative interface receive and transmit b
 
 Proxy add accepts passwords containing an `@` sign. The blocklist sync checks the generated tables and commits them directly to the main branch.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4353,7 +4353,7 @@ Proxy add accepts passwords containing an `@` sign. The blocklist sync checks th
 
 Command help displays real flags and descriptions across `status`, `top`, `providers` and lifecycle commands (`start`, `stop`, `restart`, `update`, `logs`). Positional target placeholders are removed from usage lines for commands that select providers with flags.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4370,7 +4370,7 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - A proxied provider client makes no peer-to-peer connections (`WebRtcSettings.DisablePeerConnections`), so no ICE candidate of the host is gathered.
 - Every HTTP/1 platform dial made through a proxy sends `X-UR-Egress-Proxy: 1`. A direct slot sends nothing. The platform counts a provider that sends the header at no head tier, capture-the-flag or extender unit.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4387,7 +4387,7 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - The copy is MPL-2.0 with BSD parts. Only `session.go` differs from v5.1.0. `go.mod` replaces the module with the copy.
 - Release archives carry a `LICENSES/` directory and images carry `/usr/share/doc/urnetwork/LICENSES/`.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4406,7 +4406,7 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - The hover popup shows the address (host and port), state, UDP check result, clients, bytes in the interval and age. The provider detail carries the cached UDP result.
 - The UDP row names a proxy without a relay `no UDP`. The fade time menu item is `Dot fade time`.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.
 
 ---
 
@@ -4423,4 +4423,4 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - The proxy popup reads `traffic, last second` and adds lifetime billable and total traffic per direction from the persisted per-proxy counters.
 - A test dials an IPv6 address, an IPv4 address and an IPv6-only name through a dual stack SOCKS5 server in both `proxy_target_family` modes.
 
-**Status**: Unreleased.
+**Status**: Released in v3.23.0-fix.36.0.

@@ -2,6 +2,8 @@
 
 ## [Unreleased]
 
+## [v3.23.0-fix.36.0] - 2026-11-20
+
 Everything merged after `v3.23.0-fix.35.11`.
 
 ### Changed
