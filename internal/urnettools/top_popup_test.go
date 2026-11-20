@@ -110,3 +110,24 @@ func TestProxyHeatmapDenseHalfStyles(t *testing.T) {
 		}
 	}
 }
+
+func TestProxyPopupLifetimeTrafficAndMissingData(t *testing.T) {
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.proxyCells = makeProxyCells([]uint8{connect.ProxyCellUp})
+	m.proxyPopupIndices = []int{0}
+	m.proxyPopupRect = tui.Rect{X: 0, Y: 0, W: 64, H: 6}
+	m.proxyDetail = map[int]ProxyCellDetail{0: {Index: 0, LifetimeBillable: &ProxyCellTraffic{Rx: 1024, Tx: 2048}, LifetimeTotal: &ProxyCellTraffic{Rx: 3072, Tx: 4096}}}
+	frame := tui.New(64, 6)
+	m.drawProxyPopup(frame)
+	got := frame.String()
+	for _, want := range []string{"traffic, last second", "lifetime billable in " + tui.Bytes(1024) + " out " + tui.Bytes(2048), "lifetime total in " + tui.Bytes(3072) + " out " + tui.Bytes(4096)} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("missing %q in:\n%s", want, got)
+		}
+	}
+	m.proxyDetail = nil
+	got = strings.Join(m.proxyCellInfo(0), "\n")
+	if !strings.Contains(got, "lifetime billable ?") || !strings.Contains(got, "lifetime total ?") {
+		t.Fatalf("missing unknown values: %s", got)
+	}
+}
