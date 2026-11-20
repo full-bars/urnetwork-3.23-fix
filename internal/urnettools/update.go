@@ -1568,8 +1568,10 @@ func toolAssetName(base, goos, arch string) string {
 // review).
 func programName() string {
 	if len(os.Args) > 0 {
-		if base := filepath.Base(os.Args[0]); base != "" && base != "." {
-			return strings.TrimSuffix(base, ".exe")
+		base := strings.TrimSuffix(filepath.Base(os.Args[0]), ".exe")
+		switch base {
+		case "ut", "urnet-tools", "urnet-docker", "urtop":
+			return base
 		}
 	}
 	return "urnet-tools"

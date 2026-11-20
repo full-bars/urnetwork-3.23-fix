@@ -120,9 +120,9 @@ Need help? Email support@fullbars.xyz, join https://discord.gg/urnetwork, or vis
 // buildRootCmd creates the root Cobra command for urnet-tools.
 func buildRootCmd() *cobra.Command {
 	rootCmd := &cobra.Command{
-		Use:           "urnet-tools",
+		Use:           programName(),
 		Short:         "provider-aware URnetwork manager",
-		Long:          "urnet-tools — provider-aware URnetwork manager",
+		Long:          programName() + " — provider-aware URnetwork manager",
 		SilenceUsage:  true,
 		SilenceErrors: true,
 	}
@@ -134,11 +134,11 @@ func buildRootCmd() *cobra.Command {
 	// Using SetHelpTemplate here would CASCADE to subcommands and break their
 	// per-command help pages, so instead we bind the menu to the root only.
 	rootCmd.Run = func(cmd *cobra.Command, args []string) {
-		fmt.Fprint(cmd.OutOrStderr(), rootHelpMenu)
+		fmt.Fprint(cmd.OutOrStderr(), strings.Replace(rootHelpMenu, "urnet-tools", programName(), 2))
 	}
 	// Root -h/--help renders the same curated menu. Subcommands reset their own
 	// help template so they keep Cobra's per-command page (see newCobraCmd).
-	rootCmd.SetHelpTemplate(rootHelpMenu)
+	rootCmd.SetHelpTemplate(strings.Replace(rootHelpMenu, "urnet-tools", programName(), 2))
 	// Shell completion: the modern cobra completion command (bash/zsh/fish/
 	// powershell) is registered, so `urnet-tools completion <shell>` works.
 	rootCmd.CompletionOptions.DisableDefaultCmd = false
