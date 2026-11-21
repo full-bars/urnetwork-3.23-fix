@@ -60,7 +60,14 @@ func TestUDPPersistInvalidInput(t *testing.T) {
 	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
 	ps := &connect.ProxySettings{Address: "example.test:1234"}
 	path := filepath.Join(t.TempDir(), "state.json")
-	future := udpPersistFile{Version: 1, Entries: []udpPersistEntry{{Key: udpPersistKey(ps.Key()), Status: proxyUDPOK, At: now.Add(time.Second)}}}
+	// the entry itself is well formed, so a rejection can only come from the version
+	future := udpPersistFile{Version: 1, Entries: []udpPersistEntry{{
+		Key:     udpPersistKey(ps.Key()),
+		Status:  proxyUDPOK,
+		At:      now.Add(time.Second),
+		TCPExit: "192.0.2.7",
+		UDPExit: "192.0.2.7",
+	}}}
 	futureJSON, _ := json.Marshal(future)
 	for _, data := range [][]byte{[]byte("{"), []byte(`{"version":3,"entries":[]}`), futureJSON, []byte(strings.Repeat("x", udpStateMaxBytes+1))} {
 		if err := os.WriteFile(path, data, 0600); err != nil {
