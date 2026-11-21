@@ -147,8 +147,18 @@ func TestProxyIPv6GateStopsOnNewDisqualifyingUdpChecks(t *testing.T) {
 			t.Fatalf("polling the same UDP check stopped it at poll %d", i)
 		}
 	}
+	// a check that qualifies in between ends the failure streak: bad, ok, bad
+	// is not two consecutive failures
+	uOk := u1.Add(30 * time.Minute)
+	if _, stop := gate.observe(uOk, ok(uOk), v6b); stop {
+		t.Fatal("a qualifying UDP check stopped it")
+	}
+	uBad := uOk.Add(30 * time.Minute)
+	if _, stop := gate.observe(uBad, bad(uBad), v6b); stop {
+		t.Fatal("an isolated failure after a qualifying check stopped it")
+	}
 	// the second new bad check stops it, once
-	u2 := u1.Add(time.Hour)
+	u2 := uBad.Add(time.Hour)
 	if _, stop := gate.observe(u2, bad(u2), v6b); !stop {
 		t.Fatal("two new disqualifying UDP checks did not stop it")
 	}

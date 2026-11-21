@@ -100,9 +100,17 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		}
 	} else if self.running && !want && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
 		self.no = proxyDualstackStopStreak
-	} else if self.running && !want && !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastUdpAt) {
-		self.no++
-		self.yes = 0
+	} else if self.running && !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastUdpAt) {
+		// a new IPv4 UDP check while the IPv6 record is unchanged: a failure
+		// counts once, and a check that qualifies ends the failure streak, so
+		// only consecutive failures stop the transport. It does not add to the
+		// start streak, which counts IPv6 measurements.
+		if want {
+			self.no = 0
+		} else {
+			self.no++
+			self.yes = 0
+		}
 	}
 	if !udp.CheckedAt.IsZero() {
 		self.lastUdpAt = udp.CheckedAt

@@ -155,8 +155,10 @@ func statusIPv6Text(v6 *SnapshotProxyIPv6) string {
 	return fmt.Sprintf("IPv6 proxies: %s", strings.Join(parts, ", "))
 }
 
-// statusIPv6UDPText is the IPv6 UDP row of the summary: how many proxies carry
-// UDP to IPv6 destinations, which refuse it, and which are still unknown.
+// statusIPv6UDPText is the IPv6 UDP row of the summary: the cached results of
+// the IPv6 UDP probe, how many proxies passed it, failed it, or are unknown. It
+// reports measurements. Whether the relay is in use also depends on the
+// proxy-udp-ipv6 setting, so the row does not say the proxies relay UDP.
 func statusIPv6UDPText(v6 *SnapshotProxyIPv6) string {
 	parts := []string{fmt.Sprintf("%d yes", v6.UDPYes)}
 	if v6.UDPNo > 0 {
@@ -165,7 +167,7 @@ func statusIPv6UDPText(v6 *SnapshotProxyIPv6) string {
 	if v6.UDPUnknown > 0 {
 		parts = append(parts, fmt.Sprintf("%d unknown", v6.UDPUnknown))
 	}
-	return "IPv6 proxies relaying UDP: " + strings.Join(parts, ", ")
+	return "IPv6 UDP probes: " + strings.Join(parts, ", ")
 }
 
 // formatStatusSummary formats the one-screen summary into a string buffer:

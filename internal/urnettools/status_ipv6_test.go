@@ -35,7 +35,7 @@ func TestStatusSummaryIPv6(t *testing.T) {
 		}
 		if row.Name == "IPv6 UDP" {
 			udpFound = true
-			want := "IPv6 proxies relaying UDP: 10 yes, 2 no"
+			want := "IPv6 UDP probes: 10 yes, 2 no"
 			if row.Text != want {
 				t.Fatalf("IPv6 UDP row text got %q, want %q", row.Text, want)
 			}
@@ -59,7 +59,7 @@ func TestStatusIPv6TextFormats(t *testing.T) {
 	if got, want := statusIPv6Text(v6), "IPv6 proxies: 5 yes, 10 no, 1 unknown"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
-	if got, want := statusIPv6UDPText(v6), "IPv6 proxies relaying UDP: 4 yes, 1 no, 1 unknown"; got != want {
+	if got, want := statusIPv6UDPText(v6), "IPv6 UDP probes: 4 yes, 1 no, 1 unknown"; got != want {
 		t.Fatalf("got %q, want %q", got, want)
 	}
 }
