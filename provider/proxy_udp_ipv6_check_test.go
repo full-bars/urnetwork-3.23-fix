@@ -461,6 +461,11 @@ func TestIPv6StageDoesNotStartAfterTheProbeIsSwitchedOff(t *testing.T) {
 // wait set after the first decision, must not start a second one.
 func TestIPv6RefreshRechecksTheDueStateUnderTheLock(t *testing.T) {
 	h := newIPv6CheckHarness(t)
+	// the retry is stamped from the completion clock, so pin it to the test's own
+	// clock: the waits below are then measured on the synthetic times
+	previousCompletion := ipv6CompletionTime
+	ipv6CompletionTime = func(now time.Time) time.Time { return now }
+	t.Cleanup(func() { ipv6CompletionTime = previousCompletion })
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	ctx := withIPv6Sweep(context.Background())
