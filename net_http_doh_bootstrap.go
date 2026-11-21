@@ -44,5 +44,18 @@ func newBootstrapPlainDnsLookup(settings *DohSettings, dialer *net.Dialer) func(
 		}
 		return dialer.DialContext(ctx, network, net.JoinHostPort(dnsResolverAddrPick(ctx, servers, next), port))
 	}}
-	return resolver.LookupIP
+	return rootedBootstrapLookup(resolver.LookupIP)
+}
+
+// rootedBootstrapLookup asks for the exact name. A name without a trailing dot
+// goes through the host resolver's search list when it has fewer dots than
+// ndots, so a search domain could answer for a protected control name. A rooted
+// name is queried as written.
+func rootedBootstrapLookup(lookup func(context.Context, string, string) ([]net.IP, error)) func(context.Context, string, string) ([]net.IP, error) {
+	return func(ctx context.Context, network, host string) ([]net.IP, error) {
+		if host != "" && !strings.HasSuffix(host, ".") {
+			host += "."
+		}
+		return lookup(ctx, network, host)
+	}
 }
