@@ -19,12 +19,17 @@ func proxyIPv6UDPExit(ctx context.Context, pc net.PacketConn, destination *net.U
 		if err := ctx.Err(); err != nil {
 			return "", err
 		}
-		if _, err := pc.WriteTo(request, destination); err != nil {
-			return "", err
-		}
 		deadline := time.Now().Add(udpCheckReplyTimeout)
 		if d, ok := ctx.Deadline(); ok && d.Before(deadline) {
 			deadline = d
+		}
+		// the send is bounded like the read: a full local send buffer must not
+		// hold the probe past its context
+		if err := pc.SetWriteDeadline(deadline); err != nil {
+			return "", err
+		}
+		if _, err := pc.WriteTo(request, destination); err != nil {
+			return "", err
 		}
 		if err := pc.SetReadDeadline(deadline); err != nil {
 			return "", err

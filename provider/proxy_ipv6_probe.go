@@ -57,6 +57,14 @@ func (r proxyIPv6Result) valid(now time.Time) bool {
 			}
 		}
 	}
+	if r.UDP == "yes" {
+		// ipv6UDPAllowed admits IPv6 UDP on a yes, and its contract is that the
+		// UDP exit is the TCP exit: compare the parsed addresses
+		tcp, udp := net.ParseIP(r.TCPExit), net.ParseIP(r.UDPExit)
+		if tcp == nil || udp == nil || !tcp.Equal(udp) {
+			return false
+		}
+	}
 	return true
 }
 

@@ -62,7 +62,9 @@ func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.T
 	case udp.Status == proxyUDPOK && v6.UDP == "yes":
 		return true
 	case udp.Status == proxyUDPNoRelay:
-		return true
+		// a refused CONNECT counts as yes, so a result with no TCP exit may
+		// not have had a successful IPv6 TCP check at all
+		return v6.TCPExit != ""
 	}
 	return false
 }
@@ -73,8 +75,13 @@ func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.T
 type proxyIPv6Gate struct {
 	running bool
 	lastAt  time.Time
-	yes     int
-	no      int
+	// lastUdpAt is the IPv4 UDP check the gate last counted against a running
+	// transport. A new check that disqualifies counts once even while the IPv6
+	// record is unchanged, so an active proxy that loses its UDP relay stops
+	// after two such checks, not after the IPv6 record expires days later.
+	lastUdpAt time.Time
+	yes       int
+	no        int
 }
 
 // observe is called on every poll. It reports whether to start or to stop the
@@ -93,6 +100,17 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		}
 	} else if self.running && !want && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
 		self.no = proxyDualstackStopStreak
+	} else if self.running && !want && !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastUdpAt) {
+		self.no++
+		self.yes = 0
+	}
+	if !udp.CheckedAt.IsZero() {
+		self.lastUdpAt = udp.CheckedAt
+	}
+	if !self.running && self.yes > 0 && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
+		// a pending first result that expired before a second one came is no
+		// evidence: two results seen before the first expires start it
+		self.yes = 0
 	}
 	if !self.running && self.yes >= proxyDualstackStartStreak && want {
 		self.running = true
@@ -339,7 +357,9 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
 		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementReady
 	}
-	return entry.result, entry.ipv6, measurementReady
+	result := entry.result
+	result.CheckedAt = entry.at
+	return result, entry.ipv6, measurementReady
 }
 
 // newProxiedIPv6Builder returns the builder of the extra transport, or nil when

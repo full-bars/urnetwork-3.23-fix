@@ -68,6 +68,10 @@ type proxyUDPResult struct {
 	// TCPExitObserved is true when this check looked the TCP exit up itself
 	// instead of reusing a remembered one.
 	TCPExitObserved bool
+	// CheckedAt is when the check completed. The store sets it when it hands a
+	// stored result to the dual stack gate (measurement), so the gate can tell
+	// a new check from a repeated poll of the same one. A probe leaves it zero.
+	CheckedAt time.Time
 }
 
 type udpCheckTcpExitServer struct {
@@ -627,8 +631,16 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 
 	var measured proxyIPv6Result
 	measuredOK := false
+	skipped := false
 	select {
 	case self.slots <- struct{}{}:
+		if ctx.Err() != nil || !proxyIPv6ProbeEnabled(globalControlState) {
+			// the operator switched the probe off while this waited for a slot:
+			// no measurement was made and none is held against the identity
+			<-self.slots
+			skipped = true
+			break
+		}
 		stageCtx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
 		measured, measuredOK = self.ipv6Probe(stageCtx, settings, previous, now, defaultProxyIPv6Dials())
 		cancel()
@@ -643,7 +655,7 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		return
 	}
 	current.ipv6Running = false
-	if !measuredOK && ctx.Err() == nil {
+	if !measuredOK && !skipped && ctx.Err() == nil {
 		// the stage stopped on its own: keep the previous result and wait before
 		// the next tick measures this identity again
 		current.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)

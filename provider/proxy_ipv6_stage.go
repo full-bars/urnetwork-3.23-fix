@@ -87,6 +87,9 @@ func readSocks5ConnectCode(conn net.Conn) (byte, error) {
 	if head[0] != 5 {
 		return 0, errors.New("invalid SOCKS reply version")
 	}
+	if head[2] != 0 {
+		return 0, errors.New("invalid SOCKS reply reserved byte")
+	}
 	var addressBytes int
 	switch head[3] {
 	case 1:

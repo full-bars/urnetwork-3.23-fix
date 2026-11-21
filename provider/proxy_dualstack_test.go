@@ -120,6 +120,43 @@ func TestProxyIPv6GateNeedsTwoNewResultsToStartAndToStop(t *testing.T) {
 	}
 }
 
+// A running transport whose IPv6 record is still fresh stops when two new IPv4
+// UDP checks disqualify it. Polling the same check again does not count.
+func TestProxyIPv6GateStopsOnNewDisqualifyingUdpChecks(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	v6 := v6Result(proxyIPv6Yes, "yes", t0, 12*time.Hour)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	bad := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPExitMismatch, CheckedAt: at} }
+
+	// start it on two qualifying IPv6 results
+	t1 := t0.Add(13 * time.Hour)
+	v6b := v6Result(proxyIPv6Yes, "yes", t1, 12*time.Hour)
+	gate.observe(t0, ok(t0), v6)
+	if start, _ := gate.observe(t1, ok(t1), v6b); !start {
+		t.Fatal("did not start")
+	}
+	// the IPv6 record stays the same and fresh. One new bad UDP check does not stop it
+	u1 := t1.Add(time.Hour)
+	if _, stop := gate.observe(u1, bad(u1), v6b); stop {
+		t.Fatal("one disqualifying UDP check stopped it")
+	}
+	// polling the same check again does not count
+	for i := 1; i <= 5; i++ {
+		if _, stop := gate.observe(u1.Add(time.Duration(i)*time.Minute), bad(u1), v6b); stop {
+			t.Fatalf("polling the same UDP check stopped it at poll %d", i)
+		}
+	}
+	// the second new bad check stops it, once
+	u2 := u1.Add(time.Hour)
+	if _, stop := gate.observe(u2, bad(u2), v6b); !stop {
+		t.Fatal("two new disqualifying UDP checks did not stop it")
+	}
+	if _, stop := gate.observe(u2.Add(time.Minute), bad(u2), v6b); stop {
+		t.Fatal("the same check stopped it again")
+	}
+}
+
 func TestProxyIPv6GateDoesNotFlap(t *testing.T) {
 	var gate proxyIPv6Gate
 	at := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)

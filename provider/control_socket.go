@@ -573,6 +573,12 @@ func applyLiveDefault(key string, scoped ...*controlState) error {
 		// is the way to follow the environment again.
 		return applyLiveSideEffect(key, resolveTlsHelloName(state))
 	}
+	if key == "proxy_ipv6_probe" {
+		// Clearing hands the decision back to URNETWORK_PROXY_IPV6_PROBE (or the
+		// on default), which is what a restart would use. The key is already
+		// cleared in state here.
+		return applyLiveSideEffect(key, proxyIPv6ProbeReplayValue(state))
+	}
 	def, ok := liveDefaults[key]
 	if !ok {
 		return nil
