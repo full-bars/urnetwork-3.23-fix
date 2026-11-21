@@ -131,12 +131,13 @@ func writeGovernMetrics(b *strings.Builder) {
 }
 
 // writeTlsCancellationMetrics exposes why TLS handshake epochs were cancelled
-// before they established. A coalesced failure line cannot say which transition
+// before their TLS handshake completed. A cancellation after TLS completes,
+// during the identity proof, is not counted. A coalesced failure line cannot say which transition
 // cancelled an epoch; these counters can, and a canary reads the rate per
 // source. Every cell is exported, zeros included, so a rate query has a series
 // to grow into from the first scrape.
 func writeTlsCancellationMetrics(b *strings.Builder) {
-	fmt.Fprintf(b, "# HELP urnet_tls_handshake_cancel_total Handshake epochs cancelled before they established, by the transition that cancelled them.\n# TYPE urnet_tls_handshake_cancel_total counter\n")
+	fmt.Fprintf(b, "# HELP urnet_tls_handshake_cancel_total TLS handshake epochs cancelled before the TLS handshake completed, by the transition that cancelled them.\n# TYPE urnet_tls_handshake_cancel_total counter\n")
 	for _, cell := range connect.GetTlsHandshakeCancellationCounts() {
 		fmt.Fprintf(
 			b,

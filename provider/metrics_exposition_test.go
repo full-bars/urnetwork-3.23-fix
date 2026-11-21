@@ -63,7 +63,15 @@ func TestTlsCancellationMetricsExposed(t *testing.T) {
 			cell.Companion,
 			cell.Count,
 		)
-		if !strings.Contains(body, want) {
+		// whole lines: a count of 10 must not satisfy a wanted count of 1
+		found := false
+		for _, line := range strings.Split(body, "\n") {
+			if line == want {
+				found = true
+				break
+			}
+		}
+		if !found {
 			t.Errorf("missing cell %s", want)
 		}
 	}
