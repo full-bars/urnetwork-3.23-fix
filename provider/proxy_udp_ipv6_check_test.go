@@ -212,6 +212,10 @@ func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
 
 	inStage := make(chan struct{})
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseStage := func() { releaseOnce.Do(func() { close(release) }) }
+	// the stage must never be left holding a goroutine, whatever the test does
+	t.Cleanup(releaseStage)
 	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
 		close(inStage)
 		<-release
@@ -226,7 +230,11 @@ func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
 		h.store.Check(ctx, settings, later)
 		close(finished)
 	}()
-	<-inStage
+	select {
+	case <-inStage:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the ipv6 stage did not start")
+	}
 
 	// a foreground check returns the completed result at once, with a tight deadline
 	quick, cancel := context.WithTimeout(context.Background(), time.Second)
@@ -242,7 +250,7 @@ func TestIPv6RefreshKeepsTheUDPResultAvailable(t *testing.T) {
 	if !completed {
 		t.Fatal("the stage replaced the completed UDP entry")
 	}
-	close(release)
+	releaseStage()
 	<-finished
 	if h.udpRuns.Load() != 1 {
 		t.Fatalf("UDP probe ran %d times, want 1", h.udpRuns.Load())
