@@ -578,6 +578,34 @@ func (self *packetTranslation) encodeDns() {
 	}
 }
 
+// dnsExpiryTimer keeps an earlier pending deadline and moves it only when
+// an earlier expiry is required.
+type dnsExpiryTimer struct {
+	timer    *time.Timer
+	deadline time.Time
+}
+
+func newDnsExpiryTimer() *dnsExpiryTimer {
+	timer := time.NewTimer(time.Hour)
+	timer.Stop()
+	return &dnsExpiryTimer{timer: timer}
+}
+
+func (self *dnsExpiryTimer) armBy(deadline time.Time) <-chan time.Time {
+	if !self.deadline.IsZero() {
+		if !deadline.Before(self.deadline) {
+			return self.timer.C
+		}
+		self.timer.Stop()
+	}
+	self.timer.Reset(max(time.Duration(0), time.Until(deadline)))
+	self.deadline = deadline
+	return self.timer.C
+}
+
+func (self *dnsExpiryTimer) fired() { self.deadline = time.Time{} }
+func (self *dnsExpiryTimer) stop()  { self.timer.Stop() }
+
 func (self *packetTranslation) decodeDns() {
 	type readData struct {
 		addr   net.Addr
@@ -628,25 +656,12 @@ func (self *packetTranslation) decodeDns() {
 				}
 			}
 		}()
-		expiryTimer := time.NewTimer(time.Hour)
-		if !expiryTimer.Stop() {
-			<-expiryTimer.C
-		}
-		defer expiryTimer.Stop()
+		expiryTimer := newDnsExpiryTimer()
+		defer expiryTimer.stop()
 		var expiry <-chan time.Time
 		resetExpiry := func() {
-			if !expiryTimer.Stop() && expiry != nil {
-				select {
-				case <-expiryTimer.C:
-				default:
-				}
-			}
 			if oldest, ok := dnsCombineQueue.OldestUpdateTime(); ok {
-				delay := time.Until(oldest.Add(self.settings.DnsStateTimeout))
-				expiryTimer.Reset(max(time.Duration(0), delay))
-				expiry = expiryTimer.C
-			} else {
-				expiry = nil
+				expiry = expiryTimer.armBy(oldest.Add(self.settings.DnsStateTimeout))
 			}
 		}
 
@@ -655,6 +670,8 @@ func (self *packetTranslation) decodeDns() {
 			case <-self.ctx.Done():
 				return
 			case <-expiry:
+				expiryTimer.fired()
+				expiry = nil
 				dnsCombineQueue.RemoveOlder(time.Now().Add(-self.settings.DnsStateTimeout))
 				resetExpiry()
 			case r := <-readPipeline:
@@ -701,25 +718,12 @@ func (self *packetTranslation) decodeDns() {
 			<-self.ctx.Done()
 			return
 		}
-		expiryTimer := time.NewTimer(time.Hour)
-		if !expiryTimer.Stop() {
-			<-expiryTimer.C
-		}
-		defer expiryTimer.Stop()
+		expiryTimer := newDnsExpiryTimer()
+		defer expiryTimer.stop()
 		var expiry <-chan time.Time
 		resetExpiry := func() {
-			if !expiryTimer.Stop() && expiry != nil {
-				select {
-				case <-expiryTimer.C:
-				default:
-				}
-			}
 			if oldest, ok := self.dnsPumpQueue.OldestUpdateTime(); ok {
-				delay := time.Until(oldest.Add(self.settings.DnsStateTimeout))
-				expiryTimer.Reset(max(time.Duration(0), delay))
-				expiry = expiryTimer.C
-			} else {
-				expiry = nil
+				expiry = expiryTimer.armBy(oldest.Add(self.settings.DnsStateTimeout))
 			}
 		}
 
@@ -728,6 +732,8 @@ func (self *packetTranslation) decodeDns() {
 			case <-self.ctx.Done():
 				return
 			case <-expiry:
+				expiryTimer.fired()
+				expiry = nil
 				self.dnsPumpQueue.RemoveOlder(time.Now().Add(-self.settings.DnsStateTimeout))
 				resetExpiry()
 			case item := <-pumpPipeline:
