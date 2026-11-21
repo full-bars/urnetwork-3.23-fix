@@ -241,9 +241,16 @@ func runProxyIPv6Stage(ctx context.Context, settings *connect.ProxySettings, pre
 			}
 		}
 	}
-	// a run the context cut short observed nothing reliable: keep the previous
-	// result instead of recording the interruption as an answer
-	if ctx.Err() != nil {
+	// A stage budget that ran out after IPv6 TCP was established does not undo
+	// that evidence: the exit checks stopped, so record the yes with what was
+	// learned and the UDP result as unknown (UDP relay stays off until both
+	// exits match, and the next run retries soon). A run that was cancelled, or
+	// that had no yes yet, observed nothing reliable: keep the previous result
+	// instead of recording the interruption as an answer.
+	if err := ctx.Err(); err != nil {
+		if errors.Is(err, context.DeadlineExceeded) && status == proxyIPv6Yes {
+			return previous.measured(now, status, "unknown", tcpExit, ""), true
+		}
 		return previous, false
 	}
 	return previous.measured(now, status, udp, tcpExit, udpExit), true

@@ -229,6 +229,16 @@ func proxyIPv6HTTPExitOnConn(ctx context.Context, conn net.Conn, settings *conne
 	if code != 0 {
 		return "", errors.New("SOCKS CONNECT refused")
 	}
+	// the tunnel is open: the HTTP exchange gets its own window that starts now,
+	// so a slow greeting and CONNECT do not leave the GET with an expired write
+	// deadline. The caller's deadline stays the hard limit.
+	exchangeDeadline := time.Now().Add(udpCheckReplyTimeout)
+	if d, ok := ctx.Deadline(); ok && d.Before(exchangeDeadline) {
+		exchangeDeadline = d
+	}
+	if err := conn.SetDeadline(exchangeDeadline); err != nil {
+		return "", err
+	}
 	if _, err := fmt.Fprintf(conn, "GET / HTTP/1.0\r\nHost: %s\r\nConnection: close\r\n\r\n", proxyIPv6ExitHost); err != nil {
 		return "", err
 	}

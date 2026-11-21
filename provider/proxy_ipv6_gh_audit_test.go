@@ -2,7 +2,10 @@ package main
 
 import (
 	"context"
+	"fmt"
+	"github.com/urnetwork/connect"
 	"net"
+	"path/filepath"
 	"testing"
 	"time"
 )
@@ -180,5 +183,188 @@ func TestIPv6RefreshWaitingForASlotHonorsAProbeSwitchedOff(t *testing.T) {
 	h.store.mu.Unlock()
 	if !retry.IsZero() || running {
 		t.Fatalf("a skipped refresh left a wait (%v) or the running flag (%v)", retry, running)
+	}
+}
+
+type deadlineRecordingConn struct {
+	net.Conn
+	deadlines []time.Time
+}
+
+func (c *deadlineRecordingConn) SetDeadline(t time.Time) error {
+	c.deadlines = append(c.deadlines, t)
+	return c.Conn.SetDeadline(t)
+}
+
+// After CONNECT succeeds the HTTP exchange gets a deadline of its own. The
+// deadline set before the greeting would otherwise expire the GET when the
+// greeting and CONNECT were slow.
+func TestProxyIPv6HTTPExitGetsItsOwnDeadlineAfterConnect(t *testing.T) {
+	client, server := net.Pipe()
+	defer client.Close()
+	go func() {
+		defer server.Close()
+		buffer := make([]byte, 64)
+		server.Read(buffer[:3])
+		time.Sleep(300 * time.Millisecond) // a slow greeting
+		server.Write([]byte{5, 0})
+		server.Read(buffer[:22])
+		time.Sleep(300 * time.Millisecond) // a slow CONNECT
+		server.Write([]byte{5, 0, 0, 1, 0, 0, 0, 0, 0, 0})
+		request := make([]byte, 512)
+		server.Read(request)
+		server.Write([]byte("HTTP/1.0 200 OK\r\nContent-Length: 12\r\n\r\n2001:db8::42"))
+	}()
+	conn := &deadlineRecordingConn{Conn: client}
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	exit, err := proxyIPv6HTTPExitOnConn(context.Background(), conn, settings, net.ParseIP("2001:db8::1"))
+	if err != nil || exit != "2001:db8::42" {
+		t.Fatalf("exit %q: %v", exit, err)
+	}
+	if len(conn.deadlines) < 2 {
+		t.Fatalf("the exchange set %d deadlines, want a new one after CONNECT", len(conn.deadlines))
+	}
+	first, last := conn.deadlines[0], conn.deadlines[len(conn.deadlines)-1]
+	if !last.After(first.Add(500 * time.Millisecond)) {
+		t.Fatalf("the exchange deadline %s was not renewed past the pre greeting one %s", last, first)
+	}
+}
+
+// The stage budget can run out in the UDP exit check after IPv6 TCP and its
+// exit were established. That evidence is kept as a yes with UDP unknown. A run
+// the caller cancelled still keeps the previous result.
+func TestRunProxyIPv6StageKeepsTcpEvidenceWhenTheBudgetRunsOut(t *testing.T) {
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	previous := proxyIPv6Result{}
+	blockedUdp := func(ctx context.Context, _ *connect.ProxySettings) (string, error) {
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	dials := newIPv6StageDials(0, nil, nil, "2001:db8::1", nil, "", nil).dials
+	dials.udpExit = blockedUdp
+
+	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
+	defer cancel()
+	result, measured := runProxyIPv6Stage(ctx, settings, previous, now, dials)
+	if !measured {
+		t.Fatal("a budget that ran out after the TCP evidence discarded it")
+	}
+	if result.Status != proxyIPv6Yes || result.UDP != "unknown" || result.TCPExit != "2001:db8::1" || result.UDPExit != "" {
+		t.Fatalf("result = %+v, want yes with the TCP exit and UDP unknown", result)
+	}
+
+	cancelled, cancelNow := context.WithCancel(context.Background())
+	dials.udpExit = func(ctx context.Context, _ *connect.ProxySettings) (string, error) {
+		cancelNow()
+		<-ctx.Done()
+		return "", ctx.Err()
+	}
+	if _, measured := runProxyIPv6Stage(cancelled, settings, previous, now, dials); measured {
+		t.Fatal("a cancelled run recorded a measurement")
+	}
+}
+
+// A refresh whose entry was replaced while it ran (capacity pruning evicted it
+// and a later check recreated it with a refresh of its own) must not clear the
+// flag of the new reservation or publish its result into the new entry.
+func TestIPv6RefreshDoesNotTouchAReplacedEntry(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	key := settings.Key()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	started := make(chan struct{})
+	release := make(chan struct{})
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		close(started)
+		<-release
+		return previous.measured(at, proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1"), true
+	}
+	h.store.Check(context.Background(), settings, now)
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		h.store.refreshIPv6(withIPv6Sweep(context.Background()), settings, key, now)
+	}()
+	<-started
+	// the entry is replaced by one whose own refresh holds another reservation
+	h.store.mu.Lock()
+	replacement := &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now, ipv6Running: true, ipv6Token: 1 << 40}
+	h.store.entries[key] = replacement
+	h.store.mu.Unlock()
+	close(release)
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the refresh did not finish")
+	}
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	if !replacement.ipv6Running {
+		t.Fatal("the first refresh cleared the flag of the refresh that holds the new reservation")
+	}
+	if !replacement.ipv6.At.IsZero() {
+		t.Fatalf("the first refresh published its result into the replacement: %+v", replacement.ipv6)
+	}
+}
+
+// An entry that holds an IPv6 reservation is not evicted, by age or by the
+// capacity bound, because its refresh would publish into a replacement.
+func TestPruneKeepsAnEntryWithAnIPv6Reservation(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	old := now.Add(-1000 * time.Hour)
+	store := newProxyUDPCheckStore(okProbe)
+	store.entries["reserved"] = &proxyUDPCheckEntry{at: old, result: proxyUDPResult{Status: proxyUDPNoRelay}, ipv6Running: true, ipv6Token: 1}
+	store.entries["idle"] = &proxyUDPCheckEntry{at: old, result: proxyUDPResult{Status: proxyUDPNoRelay}}
+	store.prune(now)
+	if store.entries["reserved"] == nil {
+		t.Fatal("age pruning evicted an entry that holds a reservation")
+	}
+	if store.entries["idle"] != nil {
+		t.Fatal("age pruning kept an idle old entry")
+	}
+
+	capped := newProxyUDPCheckStore(okProbe)
+	capped.entries["reserved"] = &proxyUDPCheckEntry{at: old.Add(-time.Hour), result: proxyUDPResult{Status: proxyUDPNoRelay}, ipv6Running: true, ipv6Token: 1}
+	for i := 0; i < 4*udpStateMaxEntries+2; i++ {
+		capped.entries[fmt.Sprintf("%05d", i)] = &proxyUDPCheckEntry{at: now.Add(-time.Duration(4*udpStateMaxEntries+2-i) * time.Second), result: proxyUDPResult{Status: proxyUDPNoRelay}}
+	}
+	capped.lastPrune = now
+	capped.prune(now)
+	if capped.entries["reserved"] == nil {
+		t.Fatal("capacity pruning evicted the oldest entry although it holds a reservation")
+	}
+}
+
+// An IPv6 refresh that finishes during a UDP recheck sees a placeholder entry
+// with no UDP result. Persisting it would replace the last completed UDP
+// result on disk with that placeholder.
+func TestIPv6RefreshDuringAUdpRecheckKeepsThePersistedUdpResult(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	h.store.persistPath = filepath.Join(t.TempDir(), "udp.json")
+	settings := ipv6TestSettings()
+	key := settings.Key()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	h.ipv6OK = true
+	h.store.Check(context.Background(), settings, now)
+	h.store.mu.Lock()
+	persisted := h.store.persisted[udpPersistKey(key)]
+	completed := h.store.entries[key]
+	placeholder := &proxyUDPCheckEntry{done: make(chan struct{}), ipv6: completed.ipv6, tcpExit: completed.tcpExit}
+	h.store.entries[key] = placeholder
+	h.store.mu.Unlock()
+	if persisted.Status != proxyUDPOK {
+		t.Fatalf("the completed UDP result was not persisted: %+v", persisted)
+	}
+
+	h.store.refreshIPv6(withIPv6Sweep(context.Background()), settings, key, now)
+	h.store.mu.Lock()
+	defer h.store.mu.Unlock()
+	if got := h.store.persisted[udpPersistKey(key)]; got.Status != proxyUDPOK || got.At.IsZero() {
+		t.Fatalf("the refresh replaced the persisted UDP result with a placeholder: %+v", got)
+	}
+	if placeholder.ipv6.At.IsZero() {
+		t.Fatal("the refresh did not record its result on the entry")
 	}
 }
