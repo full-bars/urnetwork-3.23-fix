@@ -980,3 +980,36 @@ func TestProxiedIPv6ControllerDropsAPendingStartOnAZeroRecord(t *testing.T) {
 		t.Fatal("two fresh results after the zero record did not start the transport")
 	}
 }
+
+// Disabling dual stack clears the streaks but keeps every stamp that says a
+// result was already counted, so a UDP-only check after re-enable cannot make
+// the cached ipv6 result count again.
+func TestProxiedIPv6ControllerKeepsTheCountedIpv6ResultAcrossASwitch(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	enabled := true
+	controller.enabled = func() bool { return enabled }
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+
+	enabled = false
+	controller.step(t0.Add(time.Minute))
+	enabled = true
+
+	// a udp-only check runs before any new ipv6 measurement
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(2*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0.Add(2 * time.Minute))
+	// one fresh measurement must not be enough
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(3*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(3*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(3 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("the cached ipv6 result counted again after the re-enable")
+	}
+	// two fresh measurements still start it
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(4*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(4*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(4 * time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements after the re-enable did not start the transport")
+	}
+}

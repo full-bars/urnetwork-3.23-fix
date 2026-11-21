@@ -303,7 +303,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		}
 		// clear the streak, keep which results were already counted: a cached
 		// result must not be counted again when the switch comes back on
-		self.gate = proxyIPv6Gate{lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry}
+		self.gate = proxyIPv6Gate{lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry, lastV6At: self.gate.lastV6At}
 		return
 	}
 	udp, v6, state := self.store.measurement(self.key, now)
