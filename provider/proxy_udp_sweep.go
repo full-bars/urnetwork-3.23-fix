@@ -315,11 +315,14 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 	// untouched; only the order inside the budget changes.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
-		if a.ipv6Due != b.ipv6Due {
-			return a.ipv6Due
-		}
+		// an identity that was never checked goes first: IPv6 retries can hold
+		// every slot of a small batch, and it leaves this group after one check,
+		// so it cannot starve them in turn
 		if a.lastChecked.IsZero() != b.lastChecked.IsZero() {
 			return a.lastChecked.IsZero()
+		}
+		if a.ipv6Due != b.ipv6Due {
+			return a.ipv6Due
 		}
 		if !a.lastChecked.Equal(b.lastChecked) {
 			return a.lastChecked.Before(b.lastChecked)

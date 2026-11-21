@@ -173,3 +173,39 @@ func TestSelectUDPProbeBatchPutsIpv6DueFirst(t *testing.T) {
 		t.Fatalf("second candidate = %q, want the other ipv6-due one", batch[1].key)
 	}
 }
+
+// An identity that was never checked must get a measurement even while IPv6
+// retries are due. IPv6-due candidates sorted first, so with a small budget they
+// can fill every batch and an unchecked identity never runs.
+func TestSelectUDPProbeBatchDoesNotStarveAnUncheckedIdentity(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	var candidates []udpProbeCandidate
+	for i := 0; i < 20; i++ {
+		// measured a minute ago, so only the IPv6 retry makes it due, and it
+		// stays un-held: this is the state a stage that ran and learned nothing
+		// leaves behind
+		candidates = append(candidates, udpProbeCandidate{
+			key:         fmt.Sprintf("v6-%02d", i),
+			online:      true,
+			status:      proxyUDPOK,
+			lastChecked: now.Add(-time.Minute),
+			ipv6Due:     true,
+		})
+	}
+	candidates = append(candidates, udpProbeCandidate{key: "unchecked", online: true, status: proxyUDPUnknown})
+
+	seen := map[string]bool{}
+	for tick := 0; tick < 10; tick++ {
+		at := now.Add(time.Duration(tick) * time.Minute)
+		batch := selectUDPProbeBatch(at, candidates, 24*time.Hour, time.Minute, nil)
+		if len(batch) != 1 {
+			t.Fatalf("tick %d selected %d candidates, want the budget of 1", tick, len(batch))
+		}
+		for _, candidate := range batch {
+			seen[candidate.key] = true
+		}
+	}
+	if !seen["unchecked"] {
+		t.Fatal("an unchecked identity never reached a batch while the ipv6 retries were due")
+	}
+}
