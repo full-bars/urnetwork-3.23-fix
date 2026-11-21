@@ -19,6 +19,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	// "golang.org/x/net/proxy"
@@ -215,6 +216,15 @@ type ClientStrategy struct {
 	// dohSettings is the strategy's current DoH settings, replaced live by
 	// SetInternalDohSettings (ported from upstream at 20b29f79).
 	dohSettings *DohSettings
+
+	// closeOnce makes Close safe to call more than once: the first call releases
+	// the pooled connections and the internal DoH resolver, later calls do
+	// nothing. This matters when a transport owns a strategy that a shorter
+	// lived owner may also close.
+	closeOnce sync.Once
+	// closed records that Close ran, so an owner can tell the strategy was
+	// released (PlatformTransportSettings.OwnClientStrategy).
+	closed atomic.Bool
 
 	mutex sync.Mutex
 	// dialers are only updated inside the mutex

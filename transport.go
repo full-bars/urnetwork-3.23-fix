@@ -523,6 +523,15 @@ func noteBackendSuccess() {
 // type DialContextFunc func(ctx context.Context, network string, address string) (net.Conn, error)
 
 type PlatformTransportSettings struct {
+	// fork: OwnClientStrategy hands this transport the client strategy it was
+	// built with: Close releases it (idle connections and the internal DoH
+	// resolver). It is OFF by default because most transports share their
+	// strategy with the caller (the smart dialer probes, a family group's other
+	// transports), and closing a shared strategy would break those users. Only a
+	// caller that builds one strategy per transport sets it, as the proxied IPv6
+	// builder does.
+	OwnClientStrategy bool
+
 	// fork: EnableH3 makes this identity eligible for an H3 (QUIC) transport
 	// beside H1 in Auto mode. It is OFF by default and is meant for an identity
 	// that reaches the platform from the host's own address (the direct
@@ -4315,6 +4324,11 @@ func (self *PlatformTransport) Close() {
 	// transport whose owner already considers it dead.
 	if self.unsubNetworkChange != nil {
 		self.unsubNetworkChange()
+	}
+	// a strategy that only this transport built dies with it; a shared one is
+	// left to its owner
+	if self.settings != nil && self.settings.OwnClientStrategy && self.clientStrategy != nil {
+		self.clientStrategy.Close()
 	}
 }
 
