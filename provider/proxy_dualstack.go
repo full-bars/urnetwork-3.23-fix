@@ -37,6 +37,12 @@ const (
 	proxyDualstackStopStreak   = 2
 )
 
+// proxyIPv6RecordQualifies reports whether the ipv6 measurement alone is
+// evidence a transport may run on, whatever the udp check says.
+func proxyIPv6RecordQualifies(v6 proxyIPv6Result, now time.Time) bool {
+	return v6.Status == proxyIPv6Yes && v6.valid(now) && now.Before(v6.At.Add(2*v6.Interval))
+}
+
 // proxyIPv6TransportWanted is the policy: does the measured result of this
 // proxy justify declaring IPv6 for its identity?
 //
@@ -51,12 +57,6 @@ const (
 // would drop its IPv6 label before it dropped UDP, so declaring IPv6 gains
 // nothing. An IPv6-only proxy (no IPv4 egress) is not covered by this first
 // version, because the stage does not record its IPv4 control.
-// proxyIPv6RecordQualifies reports whether the ipv6 measurement alone is
-// evidence a transport may run on, whatever the udp check says.
-func proxyIPv6RecordQualifies(v6 proxyIPv6Result, now time.Time) bool {
-	return v6.Status == proxyIPv6Yes && v6.valid(now) && now.Before(v6.At.Add(2*v6.Interval))
-}
-
 func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.Time) bool {
 	if v6.Status != proxyIPv6Yes || !v6.valid(now) {
 		return false
@@ -427,16 +427,16 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 	return result, entry.ipv6, measurementReady
 }
 
+// newProxiedIPv6Strategy builds the strategy of the extra transport. It is a
+// variable so a test can hold the strategy the builder hands to the transport.
+var newProxiedIPv6Strategy = connect.NewProxiedFamilyClientStrategy
+
 // newProxiedIPv6Builder returns the builder of the extra transport, or nil when
 // the platform has no IPv6 service name for this connect url. The transport is
 // pinned to IPv6 and dialed through the identity's proxy (see
 // connect.NewProxiedFamilyClientStrategy). It owns its budget, runs H1 only and
 // shares the identity's client limit backoff, so a client limit hold of the
 // identity holds it too.
-// newProxiedIPv6Strategy builds the strategy of the extra transport. It is a
-// variable so a test can hold the strategy the builder hands to the transport.
-var newProxiedIPv6Strategy = connect.NewProxiedFamilyClientStrategy
-
 func newProxiedIPv6Builder(
 	ctx context.Context,
 	clientStrategySettings *connect.ClientStrategySettings,
