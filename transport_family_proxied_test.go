@@ -31,8 +31,43 @@ func TestNewProxiedFamilyClientStrategyKeepsTheProxy(t *testing.T) {
 	}
 }
 
+// A custom dialer is taken before the proxy, so it must not survive into a
+// proxied family strategy: the transport would connect from this host.
+func TestNewProxiedFamilyClientStrategyDropsACustomDialer(t *testing.T) {
+	proxySettings := &ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	customDialer := &DialContextSettings{
+		DialContext: func(ctx context.Context, network string, addr string) (net.Conn, error) {
+			return nil, fmt.Errorf("a direct dial left this host")
+		},
+	}
+	settings := DefaultClientStrategySettings()
+	settings.ConnectSettings.ProxySettings = proxySettings
+	settings.ConnectSettings.DialContextSettings = customDialer
+
+	strategy := NewProxiedFamilyClientStrategy(context.Background(), settings, 6)
+	got := strategy.ConnectSettings()
+	if got.ProxySettings == nil || got.ProxySettings.Address != proxySettings.Address {
+		t.Fatalf("the strategy lost the proxy: %+v", got.ProxySettings)
+	}
+	if got.DialContextSettings != nil {
+		t.Fatal("a custom dialer survived next to the proxy and would be taken before it")
+	}
+	if settings.ConnectSettings.DialContextSettings != customDialer {
+		t.Fatal("the caller's strategy settings were changed")
+	}
+}
+
 func TestPinnedIpv6DialThroughProxyCarriesTheName(t *testing.T) {
 	resetDnsCache()
+	// a fresh IPv4 answer for the name is cached, so a dial that resolved the
+	// name here would send this literal and fail the stub below, instead of
+	// passing because a local lookup of an AAAA-only name found nothing
+	const name = "connect-v6.example"
+	seededExpiry := time.Now().Add(time.Hour)
+	dnsCache.mu.Lock()
+	dnsCache.m = map[string]dnsCacheEntry{name: {ip: "192.0.2.77", ips: []string{"192.0.2.77"}, expiry: seededExpiry}}
+	dnsCache.mu.Unlock()
+	defer resetDnsCache()
 	// the default mode: without the pin the name would be resolved here with an
 	// A-only lookup, which finds nothing for a name that has only an AAAA record
 	previous := SetProxyTargetFamily(ProxyTargetFamilyV4)
@@ -47,7 +82,6 @@ func TestPinnedIpv6DialThroughProxyCarriesTheName(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	const name = "connect-v6.example"
 	go serveOneReady(dest)
 
 	proxyAddr, seen, stop := startSocks5Stub(t, func(req socks5Connect) (string, error) {
@@ -74,8 +108,8 @@ func TestPinnedIpv6DialThroughProxyCarriesTheName(t *testing.T) {
 	if req.atyp != 0x03 || req.host != name || req.port != destPort {
 		t.Fatalf("CONNECT = atyp 0x%02x host %q port %q", req.atyp, req.host, req.port)
 	}
-	if _, ok := dnsCacheLookup(name); ok {
-		t.Fatal("the pinned dial filled the proxy-target DNS cache")
+	if entry, ok := dnsCacheLookup(name); !ok || entry.ip != "192.0.2.77" || !entry.expiry.Equal(seededExpiry) {
+		t.Fatalf("the pinned dial touched the proxy-target DNS cache: %+v (found %v)", entry, ok)
 	}
 }
 

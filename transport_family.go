@@ -285,6 +285,14 @@ func NewProxiedFamilyClientStrategy(ctx context.Context, settings *ClientStrateg
 	proxied.DisableManualExtenders = true
 	proxied.VlessConfigs = nil
 	proxied.DisableVless = true
+	if proxied.ConnectSettings.ProxySettings != nil && proxied.ConnectSettings.DialContextSettings != nil {
+		// ConnectSettings.DialContext takes a custom dialer before the proxy, so
+		// a caller's dialer would connect from this host while the transport is
+		// treated as proxy-backed (proxiedPin). The proxy is the only route of
+		// this strategy: drop the custom dial settings on this copy. The
+		// caller's settings are not changed.
+		proxied.ConnectSettings.DialContextSettings = nil
+	}
 	strategy := NewClientStrategy(ctx, &proxied)
 	strategy.ipFamily = normalizeIpFamily(ipFamily)
 	return strategy

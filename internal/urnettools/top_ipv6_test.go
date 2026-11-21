@@ -160,3 +160,57 @@ func TestTopCompactPanelKeepsTheIPv6Row(t *testing.T) {
 		}
 	}
 }
+
+// In the bar view the four bars leave two rows at height six. The IPv6 row must
+// keep its place when the optional UDP percentage line would take it.
+func TestTopBarViewKeepsTheIPv6Row(t *testing.T) {
+	for height := 6; height <= 8; height++ {
+		m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+		s := topFlowing(t)
+		s.Proxies.UDP = &SnapshotProxyUDP{OK: 1, Unchecked: 1}
+		s.Proxies.IPv6 = &SnapshotProxyIPv6{Yes: 12, No: 988, Unknown: 4}
+		m.apply(0, s, nil)
+		buf := tui.New(100, height)
+		m.drawProxies(buf)
+		out := buf.String()
+		if !strings.Contains(out, "udp ") || !strings.Contains(out, "IPv6 proxies: ") || !strings.Contains(out, "12 yes") {
+			t.Fatalf("height %d: the bar view lost the UDP or the IPv6 row:\n%s", height, out)
+		}
+	}
+}
+
+// A popup with five content rows cannot hold the title, the four field lines
+// and the exit details. The exit details are the lines that were clipped, so
+// they keep their rows and the fields give way. A tall popup keeps every line.
+func TestFitPopupLinesKeepsTheTitleAndTheExitDetails(t *testing.T) {
+	lines := []string{"title", "state", "latency", "tcp", "combined", "IPv6 exit: yes (2001:db8::1)", "TCP exit 192.0.2.1"}
+	got := fitPopupLines(lines, 5, 2)
+	want := []string{"title", "state", "latency", "IPv6 exit: yes (2001:db8::1)", "TCP exit 192.0.2.1"}
+	if strings.Join(got, "|") != strings.Join(want, "|") {
+		t.Fatalf("fitted lines = %v, want %v", got, want)
+	}
+	if got := fitPopupLines(lines, 9, 2); strings.Join(got, "|") != strings.Join(lines, "|") {
+		t.Fatalf("a tall popup lost lines: %v", got)
+	}
+	if got := fitPopupLines(lines, 2, 2); len(got) != 3 || got[0] != "title" {
+		t.Fatalf("a popup with no room for the exit details: %v", got)
+	}
+}
+
+// A single proxy's popup in the shortest box (five content rows) still shows
+// its IPv6 exit.
+func TestTopProxyPopupShowsTheExitInAShortBox(t *testing.T) {
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.proxyCells = []proxyCell{{index: 0}, {index: 1}}
+	m.proxyDetail = map[int]ProxyCellDetail{
+		1: {IPv6: "yes", IPv6Exit: "2001:db8::1", TCPExit: "192.0.2.1", UDPExit: "192.0.2.1"},
+	}
+	m.proxyPopup = true
+	m.proxyPopupIndices = []int{1}
+	m.proxyPopupRect = tui.Rect{X: 0, Y: 0, W: 70, H: 7}
+	buf := tui.New(70, 7)
+	m.drawProxyPopup(buf)
+	if out := buf.String(); !strings.Contains(out, "IPv6 exit: yes") {
+		t.Fatalf("the short popup clipped the exit details:\n%s", out)
+	}
+}

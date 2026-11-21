@@ -641,6 +641,8 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 		return
 	}
 	lines := []string{}
+	// the number of trailing lines that are the exit details of a single proxy
+	exitCount := 0
 	if len(m.proxyPopupIndices) > 2 {
 		lines = append(lines, fmt.Sprintf("%d proxies. Worst first", len(m.proxyPopupIndices)))
 	}
@@ -655,6 +657,7 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 				lines = append(lines, info[4:7]...)
 				lines = append(lines, info[2]+"  "+info[3]+"  "+info[7])
 				lines = append(lines, info[8:]...)
+				exitCount = len(info[8:])
 			} else {
 				lines = append(lines, info[2:]...)
 			}
@@ -667,6 +670,13 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 	}
 	if len(lines) == 0 {
 		return
+	}
+	// A short popup has too few rows for every line, and the exit details are
+	// the last lines, so they would be the ones clipped. Keep the title and the
+	// exit details and drop the middle fields that do not fit. A tall popup
+	// keeps the complete layout.
+	if inner := r.H - 2; exitCount > 0 && inner > 0 && len(lines) > inner {
+		lines = fitPopupLines(lines, inner, exitCount)
 	}
 	w := 0
 	for _, line := range lines {
@@ -681,6 +691,25 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 	for i, line := range lines {
 		in.Put(tui.Truncate(line, in.Width(), m.theme.ASCII), 0, i, tui.Style{})
 	}
+}
+
+// fitPopupLines cuts lines to fit rows rows: the first line (the title) and the
+// last exitCount lines (the exit details) stay, and the fields between them keep
+// what room is left, in order.
+func fitPopupLines(lines []string, rows int, exitCount int) []string {
+	if len(lines) <= rows || exitCount >= len(lines)-1 {
+		return lines
+	}
+	middle := lines[1 : len(lines)-exitCount]
+	room := max(0, rows-1-exitCount)
+	if room > len(middle) {
+		room = len(middle)
+	}
+	out := make([]string, 0, rows)
+	out = append(out, lines[0])
+	out = append(out, middle[:room]...)
+	out = append(out, lines[len(lines)-exitCount:]...)
+	return out
 }
 
 // proxyDisplayAddress also protects the screen when an older provider sends a URL.

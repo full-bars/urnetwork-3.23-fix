@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"errors"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -258,10 +259,18 @@ func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
 
 	var runs atomic.Int32
 	inStage := make(chan struct{})
+	duplicate := make(chan struct{}, 1)
 	release := make(chan struct{})
+	var releaseOnce sync.Once
+	releaseAll := func() { releaseOnce.Do(func() { close(release) }) }
+	// a failing run must not leave the goroutines blocked in the stage
+	t.Cleanup(releaseAll)
 	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
-		if runs.Add(1) == 1 {
+		switch runs.Add(1) {
+		case 1:
 			close(inStage)
+		case 2:
+			duplicate <- struct{}{}
 		}
 		<-release
 		return previous.measured(at, proxyIPv6No, "unknown", "", ""), true
@@ -274,9 +283,19 @@ func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
 	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
 	<-inStage
 	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
-	<-done // the second call returns without measuring
-	close(release)
-	<-done
+	select {
+	case <-done: // the second call returns without measuring
+	case <-duplicate:
+		t.Fatal("both calls entered the stage")
+	case <-time.After(5 * time.Second):
+		t.Fatal("the second call did not return")
+	}
+	releaseAll()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first call did not finish")
+	}
 	if got := runs.Load(); got != 1 {
 		t.Fatalf("the stage ran %d times at once, want 1", got)
 	}
