@@ -59,12 +59,14 @@ func DefaultDohSettings() *DohSettings {
 	return &DohSettings{
 		ConnectSettings: *DefaultConnectSettings(),
 		// both families when the host has global IPv6, else 4 (see defaultDohIpVersion)
-		IpVersion:                defaultDohIpVersion(),
-		MissExpiration:           300 * time.Second,
-		LocalExpiration:          300 * time.Second,
-		MinCacheTtl:              30 * time.Second,
-		CacheMaxEntries:          4096,
-		MaxConcurrentResolutions: 64,
+		IpVersion:                   defaultDohIpVersion(),
+		MissExpiration:              300 * time.Second,
+		LocalExpiration:             300 * time.Second,
+		MinCacheTtl:                 30 * time.Second,
+		BootstrapPlainDnsReserve:    2 * time.Second,
+		BootstrapPlainDnsExpiration: 60 * time.Second,
+		CacheMaxEntries:             4096,
+		MaxConcurrentResolutions:    64,
 		// staggered hedge: a slow/dead primary fires one redundant server per
 		// 750ms wave instead of all at once; a winning answer stops the rest.
 		DohServerStagger:    750 * time.Millisecond,
@@ -119,9 +121,17 @@ func DefaultDnsResolverSettings() *DnsResolverSettings {
 
 type DohSettings struct {
 	ConnectSettings
-	IpVersion       int
-	MissExpiration  time.Duration
-	LocalExpiration time.Duration
+	// BootstrapPlainDnsDomains limits plain DNS fallback to these control domains.
+	BootstrapPlainDnsDomains []string
+	// BootstrapPlainDnsReserve bounds the fallback share while reserving at least
+	// the same duration for the preceding resolvers.
+
+	BootstrapPlainDnsReserve time.Duration
+	// BootstrapPlainDnsExpiration caps the lifetime of fallback answers.
+	BootstrapPlainDnsExpiration time.Duration
+	IpVersion                   int
+	MissExpiration              time.Duration
+	LocalExpiration             time.Duration
 	// MinCacheTtl floors the cache lifetime of a resolved record so very-low / zero-TTL records
 	// don't re-resolve (a full fan-out) on nearly every query. 0 disables the floor.
 	MinCacheTtl     time.Duration
@@ -305,12 +315,13 @@ func SetSharedDohCache(c *DohCache) {
 }
 
 type DohCache struct {
-	httpClient      *http.Client
-	localHttpClient *http.Client
-	remoteResolver  *net.Resolver
-	localResolver   *net.Resolver
-	settings        *DohSettings
-	log             Logger
+	httpClient        *http.Client
+	localHttpClient   *http.Client
+	remoteResolver    *net.Resolver
+	localResolver     *net.Resolver
+	bootstrapLookupIP func(context.Context, string, string) ([]net.IP, error)
+	settings          *DohSettings
+	log               Logger
 
 	// remoteDnsNext and localDnsNext rotate the plain-dns server pick for a
 	// dial that carries no per-lookup attempt counter (see dnsResolverAddrPick).
@@ -531,6 +542,7 @@ func NewDohCache(settings *DohSettings) *DohCache {
 		localHttpClient:       httpClientWithDialer(settings, wrapDohDial(settings.Log, dohPathHost, settings.NetDialer().DialContext)),
 		remoteResolver:        remoteResolver,
 		localResolver:         localResolver,
+		bootstrapLookupIP:     newBootstrapPlainDnsLookup(settings, netDialer),
 		remoteDnsNext:         remoteDnsNext,
 		localDnsNext:          localDnsNext,
 		settings:              settings,
@@ -868,12 +880,23 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	}
 	defer dohCancel()
 
+	resolverCtx := dohCtx
+	if reserve := self.settings.BootstrapPlainDnsReserve; reserve > 0 && bootstrapPlainDnsName(self.settings, q.Domain) {
+		if deadline, ok := dohCtx.Deadline(); ok {
+			if share := min(reserve, time.Until(deadline)-reserve); share > 0 {
+				var cancel context.CancelFunc
+				resolverCtx, cancel = context.WithDeadline(dohCtx, deadline.Add(-share))
+				defer cancel()
+			}
+		}
+	}
+
 	addrExpirations := map[netip.Addr]time.Time{}
 	cacheMiss := false
 	minCacheTtl := self.settings.MinCacheTtl
 
 	if self.settings.DnsResolverSettings.EnableRemoteDoh {
-		queryResult := dohQueryWithClientResult(dohCtx, self.httpClient, self.stats, remoteDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
+		queryResult := dohQueryWithClientResult(resolverCtx, self.httpClient, self.stats, remoteDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
 
 		for addr, ttlSeconds := range queryResult.AddrTtls {
 			addrExpirations[addr] = now.Add(max(time.Duration(ttlSeconds)*time.Second, minCacheTtl))
@@ -884,7 +907,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	}
 
 	if len(addrExpirations) == 0 && self.settings.DnsResolverSettings.EnableLocalDoh {
-		queryResult := dohQueryWithClientResult(dohCtx, self.localHttpClient, self.stats, localDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
+		queryResult := dohQueryWithClientResult(resolverCtx, self.localHttpClient, self.stats, localDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
 
 		for addr, ttlSeconds := range queryResult.AddrTtls {
 			addrExpirations[addr] = now.Add(max(time.Duration(ttlSeconds)*time.Second, minCacheTtl))
@@ -905,7 +928,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableRemoteDns {
 		// try the remote resolver. the per-lookup counter keeps this lookup's
 		// resolver attempts consecutive whichever other lookups run meanwhile.
-		resolvedIps, err := self.remoteResolver.LookupIP(dnsLookupCtx(ctx, self.remoteDnsNext), lookupNetwork, q.Domain)
+		resolvedIps, err := self.remoteResolver.LookupIP(dnsLookupCtx(resolverCtx, self.remoteDnsNext), lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {
@@ -936,7 +959,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 
 	if len(addrExpirations) == 0 && lookupFamilyEnabled && self.settings.DnsResolverSettings.EnableLocalDns {
 		// try the local resolver, with its own per-lookup counter
-		resolvedIps, err := self.localResolver.LookupIP(dnsLookupCtx(ctx, self.localDnsNext), lookupNetwork, q.Domain)
+		resolvedIps, err := self.localResolver.LookupIP(dnsLookupCtx(resolverCtx, self.localDnsNext), lookupNetwork, q.Domain)
 		if err == nil {
 			found := false
 			for _, ip := range resolvedIps {
@@ -958,6 +981,21 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 					self.log.Infof("🌐 [doh] local (%s) err = %s (%d suppressed)\n", q.Domain, err, suppressed)
 				} else {
 					self.log.Infof("🌐 [doh] local (%s) err = %s\n", q.Domain, err)
+				}
+			}
+		}
+	}
+
+	if len(addrExpirations) == 0 && !cacheMiss && lookupFamilyEnabled && dohCtx.Err() == nil && bootstrapPlainDnsName(self.settings, q.Domain) {
+		ips, err := self.bootstrapLookupIP(dohCtx, lookupNetwork, q.Domain)
+		if err == nil {
+			expiration := self.settings.LocalExpiration
+			if self.settings.BootstrapPlainDnsExpiration > 0 {
+				expiration = min(expiration, self.settings.BootstrapPlainDnsExpiration)
+			}
+			for _, ip := range ips {
+				if addr, ok := netIPAddr(ip); ok {
+					addrExpirations[addr] = now.Add(expiration)
 				}
 			}
 		}
