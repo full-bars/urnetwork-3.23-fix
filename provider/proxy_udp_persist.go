@@ -75,7 +75,10 @@ func (self *proxyUDPCheckStore) cachedEntryLocked(key string) *proxyUDPCheckEntr
 		return entry
 	}
 	if saved, ok := self.persisted[udpPersistKey(key)]; ok {
-		entry := &proxyUDPCheckEntry{ipv6: saved.IPv6, at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, TCPExit: saved.TCPExit, UDPExit: saved.UDPExit}}
+		// the saved tcp exit is reuse material for the next probe, not part of
+		// the check: a failed check that never recorded an exit must not report
+		// one after a restart
+		entry := &proxyUDPCheckEntry{ipv6: saved.IPv6, at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, UDPExit: saved.UDPExit}}
 		self.entries[key] = entry
 		return entry
 	}

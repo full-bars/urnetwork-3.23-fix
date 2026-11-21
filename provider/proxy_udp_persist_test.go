@@ -207,3 +207,40 @@ func TestUDPPersistIPv6AndLegacy(t *testing.T) {
 		t.Fatalf("legacy IPv6 = %+v", got)
 	}
 }
+
+// A remembered TCP exit is reuse material, not part of a failed check: after a
+// restart a NoRelay result must not report an exit the check never recorded.
+func TestUDPPersistRememberedExitDoesNotJoinAFailedCheck(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "example.test:1234"}
+	path := filepath.Join(t.TempDir(), "state.json")
+	file := udpPersistFile{Version: 2, Entries: []udpPersistEntry{{
+		Key:     udpPersistKey(ps.Key()),
+		Status:  proxyUDPNoRelay,
+		At:      now,
+		TCPExit: "192.0.2.7",
+	}}}
+	b, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := newProxyUDPCheckStore(nil)
+	store.enablePersistence(path, now)
+	if tcp, udp := store.exitsFor(ps.Key(), now); tcp != "" || udp != "" {
+		t.Fatalf("a failed check reported exits after a restart: tcp %q udp %q", tcp, udp)
+	}
+	// the remembered exit survives for reuse
+	store.mu.Lock()
+	entry := store.cachedEntryLocked(ps.Key())
+	remembered := ""
+	if entry != nil {
+		remembered = entry.tcpExit
+	}
+	store.mu.Unlock()
+	if remembered != "192.0.2.7" {
+		t.Fatalf("remembered exit lost on restore: %q", remembered)
+	}
+}
