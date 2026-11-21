@@ -211,3 +211,54 @@ func TestProxiedIdentityUdpRechecksIpv6AfterTheCheckWait(t *testing.T) {
 		t.Fatalf("the flow reached the proxy %d times", got)
 	}
 }
+
+// A full recheck must not deny an ipv6 udp dial on its own: while it runs, the
+// last completed result is still the evidence the decision is made from, and
+// its own TTL still decides whether it counts.
+func TestIPv6UDPAllowedReadsTheLastResultDuringARecheck(t *testing.T) {
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	blockedStore := func() (*proxyUDPCheckStore, chan struct{}, chan struct{}) {
+		release := make(chan struct{})
+		started := make(chan struct{}, 1)
+		store := newProxyUDPCheckStore(func(context.Context, *connect.ProxySettings) proxyUDPResult {
+			started <- struct{}{}
+			<-release
+			return proxyUDPResult{Status: proxyUDPOK}
+		})
+		return store, started, release
+	}
+	// past the lazy recheck interval, so Check installs a placeholder, and well
+	// inside the evidence TTL, so the last result still counts
+	stale := now.Add(-(proxyUDPLazyTTL + time.Minute))
+
+	live, liveStarted, liveRelease := blockedStore()
+	storeWithEntry(live, settings, proxyUDPOK, stale, measuredIPv6(proxyIPv6Yes, "yes", now.Add(-time.Hour), 12*time.Hour))
+	liveDone := make(chan struct{})
+	go func() {
+		defer close(liveDone)
+		live.Check(context.Background(), settings, now)
+	}()
+	<-liveStarted
+	if !live.ipv6UDPAllowed(settings.Key(), now) {
+		t.Fatal("an in-flight recheck denied an ipv6 dial on a live result")
+	}
+	close(liveRelease)
+	<-liveDone
+
+	// an expired last result still refuses while a recheck runs
+	expired, expiredStarted, expiredRelease := blockedStore()
+	storeWithEntry(expired, settings, proxyUDPOK, now.Add(-(proxyUDPOKTTL + time.Minute)), measuredIPv6(proxyIPv6Yes, "yes", now.Add(-time.Hour), 12*time.Hour))
+	expiredDone := make(chan struct{})
+	go func() {
+		defer close(expiredDone)
+		expired.Check(context.Background(), settings, now)
+	}()
+	<-expiredStarted
+	if expired.ipv6UDPAllowed(settings.Key(), now) {
+		t.Fatal("an in-flight recheck admitted an ipv6 dial on an expired result")
+	}
+	close(expiredRelease)
+	<-expiredDone
+}

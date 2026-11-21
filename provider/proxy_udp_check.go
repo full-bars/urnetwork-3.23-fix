@@ -568,6 +568,14 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		self.prune(now)
 		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
+		if previous != nil {
+			// the last completed result stays readable while the recheck runs:
+			// a dial decision taken now must read it, and its own TTL still
+			// decides whether it counts (measurement reports this entry in
+			// flight, so no reader treats it as a fresh check)
+			running.result = *previous
+			running.at = previousAt
+		}
 		self.entries[key] = running
 		self.mu.Unlock()
 
