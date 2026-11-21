@@ -787,8 +787,9 @@ type peerEncryptionSession struct {
 	afterSealingEpochForTest      func()
 	beforeCertVerifiedMarkForTest func()
 
-	ctx    context.Context
-	cancel context.CancelFunc
+	ctx         context.Context
+	cancel      context.CancelFunc
+	cancelCause context.CancelCauseFunc
 
 	manager *EncryptionSessionManager
 	client  *Client
@@ -910,7 +911,10 @@ func newPeerEncryptionSession(
 	// companion is the session's identity companion (see the `companion` field).
 	companion bool,
 ) *peerEncryptionSession {
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancelCause := context.WithCancelCause(parentCtx)
+	// Keep the plain cancel func for callers that only stop the session; the
+	// cause tells a coalesced handshake failure who cancelled it.
+	cancel := func() { cancelCause(tlsSessionRetired) }
 	// Client carrier rides the identity bit; a server reply always rides
 	// EncryptionControlUseCompanion.
 	carrierCompanion := companion
@@ -920,6 +924,7 @@ func newPeerEncryptionSession(
 	s := &peerEncryptionSession{
 		ctx:              ctx,
 		cancel:           cancel,
+		cancelCause:      cancelCause,
 		manager:          manager,
 		client:           client,
 		peerId:           peerId,
@@ -1085,10 +1090,10 @@ func (self *peerEncryptionSession) buildAndStartEpochWithLock() {
 	if self.epoch != nil && self.epoch != self.establishedEpoch {
 		self.epoch.cancel()
 	}
-	ctx, cancel := context.WithCancel(self.ctx)
+	ctx, cancelEpoch := epochHandshakeContext(self.ctx)
 	e := &tlsHandshakeEpoch{
 		ctx:           ctx,
-		cancel:        cancel,
+		cancel:        cancelEpoch,
 		transport:     newSequenceTlsTransport(ctx),
 		handshakeDone: make(chan struct{}),
 	}
@@ -1285,7 +1290,7 @@ func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedCo
 		// carrier rides `carrierCompanion`'s contract, decoupled from the
 		// identity `companion` that keys the session and tags the EC.
 		if !self.client.sendBuffer.SendEncryptedControl(self.ctx, self.peerId, self.role, ec, self.companion, self.carrierCompanion) {
-			self.close()
+			self.closeFor(tlsControlEnqueueRejected)
 		}
 	}, self.cancel)
 }
@@ -1362,6 +1367,11 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 	} else {
 		reason := handshakeReasonClass(err)
 		if ok, suppressed := shouldLogHandshakeErr(reason); ok {
+			if errors.Is(err, context.Canceled) {
+				// Read the cause before failure cleanup cancels the epoch, so a
+				// coalesced line still says which transition cancelled it.
+				tlsHandshakeCancellationOwner(e.ctx).record(self.role, self.companion)
+			}
 			if suppressed > 0 {
 				self.client.log.Errorf("[tls]%s completeHandshake failed: %s (%d suppressed)\n", self.logTag, err, suppressed)
 			} else {
@@ -2408,6 +2418,12 @@ func (self *peerEncryptionSession) retain() {
 // wire — there is no explicit TLS close. A later SendSequence that
 // re-acquires the peer starts a fresh session and handshake.
 func (self *peerEncryptionSession) close() {
+	self.closeFor(tlsSessionRetired)
+}
+
+// closeFor is close with the owning cancellation recorded, so a handshake
+// failure woken by this close can say which transition cancelled it.
+func (self *peerEncryptionSession) closeFor(owner *tlsCancellationOwner) {
 	// Decrement the live counter exactly once per established session. close()
 	// is re-entrant (multiple call sites), so a once-guard keeps the tracker's
 	// active count from being under-counted on double-close.
@@ -2425,7 +2441,7 @@ func (self *peerEncryptionSession) close() {
 			mgr.notePqeSessionClose(wasPQE)
 		}
 	}
-	self.cancel()
+	self.cancelCause(owner)
 	self.closeTls()
 }
 
