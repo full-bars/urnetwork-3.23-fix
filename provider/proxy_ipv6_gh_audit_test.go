@@ -164,7 +164,22 @@ func TestIPv6RefreshWaitingForASlotHonorsAProbeSwitchedOff(t *testing.T) {
 		defer close(done)
 		h.store.refreshIPv6(ctx, settings, settings.Key(), now)
 	}()
-	time.Sleep(50 * time.Millisecond)
+	// wait for the refresh to take its reservation while every slot is held,
+	// so the switch-off below lands after the initial enable check and the test
+	// cannot pass by taking the early return
+	reserved := func() bool {
+		h.store.mu.Lock()
+		defer h.store.mu.Unlock()
+		entry := h.store.cachedEntryLocked(settings.Key())
+		return entry != nil && entry.ipv6Running
+	}
+	deadline := time.Now().Add(5 * time.Second)
+	for !reserved() {
+		if time.Now().After(deadline) {
+			t.Fatal("the refresh never took its reservation")
+		}
+		time.Sleep(time.Millisecond)
+	}
 	if err := globalControlState.set("proxy_ipv6_probe", "off"); err != nil {
 		t.Fatal(err)
 	}
