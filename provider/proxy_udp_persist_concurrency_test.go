@@ -79,7 +79,14 @@ func TestUDPPersistFlushBounded(t *testing.T) {
 	t.Cleanup(func() { udpPersistWriteFile, udpPersistDelay = oldWrite, oldDelay })
 	udpPersistDelay = 0
 	entered, release := make(chan struct{}), make(chan struct{})
-	udpPersistWriteFile = func(_ string, _ []udpPersistEntry) ([]string, error) { close(entered); <-release; return nil, nil }
+	// the writer runs in a goroutine that can outlive one test, so the signal
+	// must be idempotent: a second write used to panic on the closed channel
+	var enteredOnce sync.Once
+	udpPersistWriteFile = func(_ string, _ []udpPersistEntry) ([]string, error) {
+		enteredOnce.Do(func() { close(entered) })
+		<-release
+		return nil, nil
+	}
 	now := time.Now()
 	store := newProxyUDPCheckStore(nil)
 	store.enablePersistence(filepath.Join(t.TempDir(), "state"), now)
