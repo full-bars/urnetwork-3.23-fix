@@ -59,8 +59,9 @@ func tlsHandshakeCancellationOwner(ctx context.Context) *tlsCancellationOwner {
 	return tlsParentLifetime
 }
 
-// Counts once on the same edge as the handshake failure line. An unknown role
-// is a synthetic epoch with no wire peer, so it is not counted.
+// Counts once per current-epoch handshake that failed as cancelled, whether or
+// not the shared failure line was throttled. An unknown role is a synthetic
+// epoch with no wire peer, so it is not counted.
 func (self *tlsCancellationOwner) record(role sequenceTlsRole, companion bool) {
 	if role != sequenceTlsRoleClient && role != sequenceTlsRoleServer {
 		return
@@ -72,8 +73,8 @@ func (self *tlsCancellationOwner) record(role sequenceTlsRole, companion bool) {
 	self.counts[role][companionIndex].Add(1)
 }
 
-// A cumulative process count of coalesced, context-canceled handshake
-// completions. Each field has a fixed domain.
+// A cumulative process count of context-canceled completions of a current
+// handshake epoch. Each field has a fixed domain.
 type TlsHandshakeCancellationCount struct {
 	Source    string
 	Role      string

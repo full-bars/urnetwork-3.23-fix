@@ -4,12 +4,14 @@ package connect
 // cancelled the epoch. These tests pin the attribution: each local lifetime
 // transition stamps its own cause, an inherited cancellation is reported as
 // the parent lifetime without exposing the inherited message, and the counter
-// records on the same edge as the failure line.
+// records each current-epoch cancellation once, whether or not the shared
+// failure line is throttled.
 
 import (
 	"context"
 	"errors"
 	"testing"
+	"time"
 )
 
 // Builds a session through the production constructor so the cancellation
@@ -84,13 +86,9 @@ func TestTlsCancellationOwnerNamesLocalTransitions(t *testing.T) {
 	}
 }
 
-// The counter records on the same edge as the failure line: a session close
-// that wakes the handshake is attributed to the session retirement, once per
-// completed handshake.
+// A session close that wakes the handshake is attributed to the session
+// retirement, once per completed handshake.
 func TestCoalescedHandshakeFailureAttributesOwner(t *testing.T) {
-	// the failure line is throttled per reason class; let this test emit
-	handshakeErrThrottle.Store("context_canceled", newLogThrottle(0))
-
 	session := newCancellationSession(t, false)
 	epoch := &tlsHandshakeEpoch{
 		ctx:           session.ctx,
@@ -120,8 +118,6 @@ func TestCoalescedHandshakeFailureAttributesOwner(t *testing.T) {
 // A cancelled epoch is attributed to whichever transition owns the cause, so a
 // superseded handshake is not mistaken for a retired session.
 func TestSupersededEpochAttributesEpochRetirement(t *testing.T) {
-	handshakeErrThrottle.Store("context_canceled", newLogThrottle(0))
-
 	session := newCancellationSession(t, true)
 	epochCtx, cancelEpoch := epochHandshakeContext(session.ctx)
 	epoch := &tlsHandshakeEpoch{
@@ -135,12 +131,55 @@ func TestSupersededEpochAttributesEpochRetirement(t *testing.T) {
 	session.stateLock.Unlock()
 
 	before := tlsCancellationCount(tlsEpochRetired, sequenceTlsRoleClient, true)
+	retiredBefore := tlsCancellationCount(tlsSessionRetired, sequenceTlsRoleClient, true)
 	cancelEpoch()
 	session.completeHandshake(epoch, context.Canceled)
 	if got := tlsCancellationCount(tlsEpochRetired, sequenceTlsRoleClient, true); got != before+1 {
 		t.Fatalf("epoch_retired count %d -> %d, want one record", before, got)
 	}
-	if got := tlsCancellationCount(tlsSessionRetired, sequenceTlsRoleClient, true); got != 0 {
-		t.Fatalf("superseded epoch counted as session retirement: %d", got)
+	if got := tlsCancellationCount(tlsSessionRetired, sequenceTlsRoleClient, true); got != retiredBefore {
+		t.Fatalf("superseded epoch counted as session retirement: %d -> %d", retiredBefore, got)
+	}
+}
+
+// The failure line is throttled per reason class across every peer. A
+// cancellation whose line that throttle suppresses is still counted, so a wave
+// of cancellations is sized by its handshakes and not by the log cadence.
+func TestTlsCancellationCountsThrottledFailure(t *testing.T) {
+	previous, hadPrevious := handshakeErrThrottle.Load("context_canceled")
+	t.Cleanup(func() {
+		if hadPrevious {
+			handshakeErrThrottle.Store("context_canceled", previous)
+		} else {
+			handshakeErrThrottle.Delete("context_canceled")
+		}
+	})
+	// an hour-long window that has just emitted: every further line is suppressed
+	throttle := newLogThrottle(time.Hour)
+	if ok, _ := throttle.Allow(time.Now()); !ok {
+		t.Fatal("fresh throttle refused its first line")
+	}
+	handshakeErrThrottle.Store("context_canceled", throttle)
+
+	before := tlsCancellationCount(tlsControlEnqueueRejected, sequenceTlsRoleClient, false)
+	for i := 0; i < 3; i += 1 {
+		session := newCancellationSession(t, false)
+		epoch := &tlsHandshakeEpoch{
+			ctx:           session.ctx,
+			cancel:        func() {},
+			handshakeDone: make(chan struct{}),
+			epochId:       NewId(),
+		}
+		session.stateLock.Lock()
+		session.epoch = epoch
+		session.stateLock.Unlock()
+		session.closeFor(tlsControlEnqueueRejected)
+		session.completeHandshake(epoch, context.Canceled)
+	}
+	if got := tlsCancellationCount(tlsControlEnqueueRejected, sequenceTlsRoleClient, false); got != before+3 {
+		t.Fatalf("control_enqueue_rejected count %d -> %d, want three records", before, got)
+	}
+	if ok, _ := throttle.Allow(time.Now()); ok {
+		t.Fatal("test throttle let a failure line through")
 	}
 }

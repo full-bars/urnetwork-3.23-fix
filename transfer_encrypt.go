@@ -1365,13 +1365,14 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 		self.sendIdentityProofOnce(e)
 		self.maybeVerifyPendingPeerIdentityProof(e)
 	} else {
+		if errors.Is(err, context.Canceled) {
+			// Count every current-epoch cancellation. The failure line below is
+			// throttled per reason class across all peers, so counting only on
+			// that edge would record one cancellation per minute for a whole wave.
+			tlsHandshakeCancellationOwner(e.ctx).record(self.role, self.companion)
+		}
 		reason := handshakeReasonClass(err)
 		if ok, suppressed := shouldLogHandshakeErr(reason); ok {
-			if errors.Is(err, context.Canceled) {
-				// Read the cause before failure cleanup cancels the epoch, so a
-				// coalesced line still says which transition cancelled it.
-				tlsHandshakeCancellationOwner(e.ctx).record(self.role, self.companion)
-			}
 			if suppressed > 0 {
 				self.client.log.Errorf("[tls]%s completeHandshake failed: %s (%d suppressed)\n", self.logTag, err, suppressed)
 			} else {
