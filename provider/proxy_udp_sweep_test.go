@@ -136,3 +136,40 @@ func TestSelectUDPProbeEmptyAndLimits(t *testing.T) {
 		t.Fatalf("due cap = %d, want 1", len(got))
 	}
 }
+
+// An identity whose IPv6 retry is due is scheduled ahead of candidates that are
+// only due for their udp recheck, inside the same batch budget: its retry must
+// run on its own interval, not wait most of a twelve hour cycle.
+func TestSelectUDPProbeBatchPutsIpv6DueFirst(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	candidates := []udpProbeCandidate{
+		// recently measured, but its ipv6 retry is due now
+		{key: "ipv6-due", online: true, status: proxyUDPOK, lastChecked: now.Add(-time.Minute), ipv6Due: true},
+		{key: "old-a", online: true, status: proxyUDPOK, lastChecked: now.Add(-13 * time.Hour)},
+		{key: "old-b", online: true, status: proxyUDPOK, lastChecked: now.Add(-14 * time.Hour)},
+		{key: "old-c", online: true, status: proxyUDPOK, lastChecked: now.Add(-15 * time.Hour)},
+	}
+	// 4 online, a one minute tick and a twelve hour effective window select one
+	batch := selectUDPProbeBatch(now, candidates, 24*time.Hour, time.Minute, nil)
+	if len(batch) != 1 {
+		t.Fatalf("batch size = %d, want the unchanged budget of 1", len(batch))
+	}
+	if batch[0].key != "ipv6-due" {
+		t.Fatalf("first candidate = %q, want the ipv6-due one", batch[0].key)
+	}
+
+	// with room for two, a second ipv6-due candidate follows
+	candidates = append(candidates, udpProbeCandidate{key: "ipv6-due-2", online: true, status: proxyUDPOK, lastChecked: now.Add(-2 * time.Minute), ipv6Due: true})
+	// five online and a three hour tick over the twelve hour effective window
+	// select two
+	batch = selectUDPProbeBatch(now, candidates, 24*time.Hour, 3*time.Hour, nil)
+	if len(batch) != 2 {
+		t.Fatalf("batch size = %d, want 2", len(batch))
+	}
+	if batch[0].key != "ipv6-due-2" && batch[0].key != "ipv6-due" {
+		t.Fatalf("first candidate = %q, want an ipv6-due one", batch[0].key)
+	}
+	if batch[1].key != "ipv6-due-2" && batch[1].key != "ipv6-due" {
+		t.Fatalf("second candidate = %q, want the other ipv6-due one", batch[1].key)
+	}
+}

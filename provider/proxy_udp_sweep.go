@@ -309,8 +309,15 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		return nil
 	}
 
+	// an ipv6 retry goes first: it runs on its own interval, which is far
+	// shorter than the udp recheck cycle, so leaving it in lastChecked order
+	// would hold it for most of a cycle. The batch size and the tick pacing are
+	// untouched; only the order inside the budget changes.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
+		if a.ipv6Due != b.ipv6Due {
+			return a.ipv6Due
+		}
 		if a.lastChecked.IsZero() != b.lastChecked.IsZero() {
 			return a.lastChecked.IsZero()
 		}
