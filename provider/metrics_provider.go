@@ -356,6 +356,7 @@ func providerExtraMetrics() string {
 	// they changed on every scrape and created a new series each time.
 	proxyVersion := RequireVersion()
 	writeGovernMetrics(&b)
+	writeTlsCancellationMetrics(&b)
 	writeEnforcementMetrics(&b)
 	writeDiskBenchMetrics(&b)
 	writeFamilyTransportMetrics(&b)

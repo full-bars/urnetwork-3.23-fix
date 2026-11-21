@@ -783,8 +783,13 @@ type tlsHandshakeEpoch struct {
 // ReceiveSequence that talks to the same peer/stream. The session lives
 // inside `EncryptionSessionManager`.
 type peerEncryptionSession struct {
-	ctx    context.Context
-	cancel context.CancelFunc
+	// Test barriers around epoch selection and certificate match recording.
+	afterSealingEpochForTest      func()
+	beforeCertVerifiedMarkForTest func()
+
+	ctx         context.Context
+	cancel      context.CancelFunc
+	cancelCause context.CancelCauseFunc
 
 	manager *EncryptionSessionManager
 	client  *Client
@@ -906,7 +911,10 @@ func newPeerEncryptionSession(
 	// companion is the session's identity companion (see the `companion` field).
 	companion bool,
 ) *peerEncryptionSession {
-	ctx, cancel := context.WithCancel(parentCtx)
+	ctx, cancelCause := context.WithCancelCause(parentCtx)
+	// Keep the plain cancel func for callers that only stop the session; the
+	// cause tells a coalesced handshake failure who cancelled it.
+	cancel := func() { cancelCause(tlsSessionRetired) }
 	// Client carrier rides the identity bit; a server reply always rides
 	// EncryptionControlUseCompanion.
 	carrierCompanion := companion
@@ -916,6 +924,7 @@ func newPeerEncryptionSession(
 	s := &peerEncryptionSession{
 		ctx:              ctx,
 		cancel:           cancel,
+		cancelCause:      cancelCause,
 		manager:          manager,
 		client:           client,
 		peerId:           peerId,
@@ -1081,10 +1090,10 @@ func (self *peerEncryptionSession) buildAndStartEpochWithLock() {
 	if self.epoch != nil && self.epoch != self.establishedEpoch {
 		self.epoch.cancel()
 	}
-	ctx, cancel := context.WithCancel(self.ctx)
+	ctx, cancelEpoch := epochHandshakeContext(self.ctx)
 	e := &tlsHandshakeEpoch{
 		ctx:           ctx,
-		cancel:        cancel,
+		cancel:        cancelEpoch,
 		transport:     newSequenceTlsTransport(ctx),
 		handshakeDone: make(chan struct{}),
 	}
@@ -1281,7 +1290,7 @@ func (self *peerEncryptionSession) sendEncryptedControl(ec *protocol.EncryptedCo
 		// carrier rides `carrierCompanion`'s contract, decoupled from the
 		// identity `companion` that keys the session and tags the EC.
 		if !self.client.sendBuffer.SendEncryptedControl(self.ctx, self.peerId, self.role, ec, self.companion, self.carrierCompanion) {
-			self.close()
+			self.closeFor(tlsControlEnqueueRejected)
 		}
 	}, self.cancel)
 }
@@ -1356,6 +1365,12 @@ func (self *peerEncryptionSession) completeHandshake(e *tlsHandshakeEpoch, err e
 		self.sendIdentityProofOnce(e)
 		self.maybeVerifyPendingPeerIdentityProof(e)
 	} else {
+		if errors.Is(err, context.Canceled) {
+			// Count every current-epoch cancellation. The failure line below is
+			// throttled per reason class across all peers, so counting only on
+			// that edge would record one cancellation per minute for a whole wave.
+			tlsHandshakeCancellationOwner(e.ctx).record(self.role, self.companion)
+		}
 		reason := handshakeReasonClass(err)
 		if ok, suppressed := shouldLogHandshakeErr(reason); ok {
 			if suppressed > 0 {
@@ -1938,6 +1953,10 @@ func (self *peerEncryptionSession) optimisticallyDeliverHandshakeForEpoch(payloa
 func (self *peerEncryptionSession) Cipher() *sequenceCipher {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
+	return self.cipherWithLock()
+}
+
+func (self *peerEncryptionSession) cipherWithLock() *sequenceCipher {
 	if self.establishedEpoch == nil {
 		if self.client.log.V(2).Enabled() {
 			// V(2) only (called per send): trace the specific reason the
@@ -2095,61 +2114,78 @@ func (self *peerEncryptionSession) closeTls() {
 	// starts a fresh handshake instead.
 }
 
-// PeerCertificates returns the peer's certificate chain observed during
-// the current epoch's TLS handshake. Returns nil if the handshake has not
-// completed.
-func (self *peerEncryptionSession) PeerCertificates() []*x509.Certificate {
-	return peerCertificatesOfEpoch(self.client.log, self.currentEpoch())
+// The epoch whose cipher seals one send: a single locked read of the
+// established epoch, its cipher, and that same epoch's certificate
+// verification. A send seals with exactly this cipher and checks exactly this
+// epoch's certificate, so a rekey promoted in between can neither borrow the
+// verification of the epoch it replaces nor lend its own to it. The zero value
+// has no cipher, the same as a nil `Cipher()`.
+type sealingEpochState struct {
+	// nil exactly when cipher is nil
+	epoch  *tlsHandshakeEpoch
+	cipher *sequenceCipher
+	// the epoch's own flag, read with its cipher
+	certVerified bool
+	// the trusted set is empty: verification skips without marking, so a later
+	// commitment still arms it
+	noCommitment bool
 }
 
-// establishedPeerCertificates returns the peer certificate chain from the
-// established epoch — the epoch whose cipher `Cipher()` hands out and which
-// therefore seals outbound frames. That is the identity a SendSequence must
-// verify against the contract commitment.
-//
-// Unlike `currentEpoch()` — which during a re-handshake is an in-flight epoch
-// whose `tls.Conn.ConnectionState()` blocks on the handshake mutex — the
-// established epoch's handshake is by definition complete (it is promoted only
-// after the handshake finished and the identity proof verified, see
-// markEstablishedWithLock), so reading its peer certificates never blocks.
-// Verifying the in-flight epoch here was the source of a deadlock: the
-// SendSequence Run loop parked on the in-flight handshake's mutex while that
-// same handshake's ClientHello waited to be packed onto the very same
-// (unbuffered) send sequence.
-//
-// Returns nil if no epoch has established yet; in practice verification is only
-// reached once `Cipher()` is non-nil, which implies an established epoch.
-func (self *peerEncryptionSession) establishedPeerCertificates() []*x509.Certificate {
+// Snapshots the sealing epoch for one send. The cipher is the one `Cipher()`
+// returns at the same instant.
+func (self *peerEncryptionSession) sealingState() sealingEpochState {
 	self.stateLock.Lock()
-	e := self.establishedEpoch
-	self.stateLock.Unlock()
-	return peerCertificatesOfEpoch(self.client.log, e)
+	defer self.stateLock.Unlock()
+	state := sealingEpochState{
+		cipher:       self.cipherWithLock(),
+		noCommitment: len(self.trustedPeerCertPems) == 0,
+	}
+	if state.cipher != nil {
+		state.epoch = self.establishedEpoch
+		state.certVerified = state.epoch.certVerified
+	}
+	return state
 }
 
-// CertVerificationState returns the cached certificate verification result.
-// `verified` is true once a peer cert was matched to the trusted set, and is
-// sticky for the session lifetime. `noCommitment` is true exactly when the
-// trusted set is empty, so callers can distinguish "no commitment held yet"
-// (verification should skip without latching) from "have a commitment not yet
-// checked" (verification should run). Not sticky: if an empty-chain contract is
-// later followed by one with a cert, noCommitment flips off and verification
-// runs against the new commitment.
+// CertVerificationState reports the established epoch's own certificate
+// verification: `verified` is true once that epoch's peer cert matched the
+// trusted set. A rekey epoch starts unverified, so after its promotion this
+// reads false until its own cert is checked. `noCommitment` is true exactly
+// when the trusted set is empty, so callers can distinguish "no commitment
+// held yet" (verification should skip without latching) from "have a
+// commitment not yet checked" (verification should run). Not sticky: if an
+// empty-chain contract is later followed by one with a cert, noCommitment
+// flips off and verification runs against the new commitment. A send does not
+// pair this with a separately read cipher; it uses `sealingState`.
 func (self *peerEncryptionSession) CertVerificationState() (verified bool, noCommitment bool) {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	verified = self.epoch != nil && self.epoch.certVerified
+	verified = self.establishedEpoch != nil && self.establishedEpoch.certVerified
 	return verified, len(self.trustedPeerCertPems) == 0
 }
 
-// MarkCertVerified records that the peer's TLS-handshake cert was matched
-// against the trusted set. Sticky for the current epoch; a re-handshake
-// (new epoch) re-verifies against the peer's freshly presented cert.
+// MarkCertVerified records a cert match for the established epoch, never for
+// an in-flight rekey epoch. It marks whichever epoch is established when it
+// runs, so a caller that checked a cert before taking the lock marks that
+// exact epoch with `markCertVerifiedForEpoch` instead.
 func (self *peerEncryptionSession) MarkCertVerified() {
 	self.stateLock.Lock()
 	defer self.stateLock.Unlock()
-	if self.epoch != nil {
-		self.epoch.certVerified = true
+	if self.establishedEpoch != nil {
+		self.establishedEpoch.certVerified = true
 	}
+}
+
+// Records that e's own peer certificate matched the trusted set. Only e is
+// marked, whether or not it is still established: a rekey promoted after the
+// check stays unverified, so its certificate is checked before it seals.
+func (self *peerEncryptionSession) markCertVerifiedForEpoch(e *tlsHandshakeEpoch) {
+	if e == nil {
+		return
+	}
+	self.stateLock.Lock()
+	defer self.stateLock.Unlock()
+	e.certVerified = true
 }
 
 // AddTrustedPeerCertChain extends the session's trusted peer cert set with
@@ -2383,6 +2419,12 @@ func (self *peerEncryptionSession) retain() {
 // wire — there is no explicit TLS close. A later SendSequence that
 // re-acquires the peer starts a fresh session and handshake.
 func (self *peerEncryptionSession) close() {
+	self.closeFor(tlsSessionRetired)
+}
+
+// closeFor is close with the owning cancellation recorded, so a handshake
+// failure woken by this close can say which transition cancelled it.
+func (self *peerEncryptionSession) closeFor(owner *tlsCancellationOwner) {
 	// Decrement the live counter exactly once per established session. close()
 	// is re-entrant (multiple call sites), so a once-guard keeps the tracker's
 	// active count from being under-counted on double-close.
@@ -2400,7 +2442,7 @@ func (self *peerEncryptionSession) close() {
 			mgr.notePqeSessionClose(wasPQE)
 		}
 	}
-	self.cancel()
+	self.cancelCause(owner)
 	self.closeTls()
 }
 
