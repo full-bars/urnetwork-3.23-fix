@@ -88,7 +88,9 @@ func TestOpenBSDIgnoresHomeBinaries(t *testing.T) {
 func TestOpenBSDDiscoverProcesses(t *testing.T) {
 	dir := t.TempDir()
 	ps := filepath.Join(dir, "ps")
-	if err := os.WriteFile(ps, []byte("#!/bin/sh\nprintf '123 4294967295 urnetwork\\n456 0 unrelated\\n'\n"), 0755); err != nil {
+	// echo, not printf: the OpenBSD sh has no printf builtin, and PATH below
+	// holds only this directory, so a printf call would not be found.
+	if err := os.WriteFile(ps, []byte("#!/bin/sh\necho '123 4294967295 urnetwork'\necho '456 0 unrelated'\n"), 0755); err != nil {
 		t.Fatal(err)
 	}
 	t.Setenv("PATH", dir)

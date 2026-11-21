@@ -1,0 +1,283 @@
+name: OpenBSD verification
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    paths-ignore:
+      - '**/*.md'
+      - 'docs/**'
+      - 'releases/**'
+  workflow_dispatch:
+
+# Same reasoning as freebsd.yml: every feature branch reaches CI through a pull
+# request, so a branch-scoped push would only duplicate the pull_request run.
+# cancel-in-progress supersedes rapid pushes to a PR. main's runs finish.
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  openbsd-runtime:
+    name: urnet-tools + provider on OpenBSD ${{ matrix.release }} (real kernel)
+    # OpenBSD supports the current and the previous release, so both are
+    # checked. They run in parallel on separate runners, so the wall time is
+    # that of one run.
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.9", "8.0"]
+    # The action boots a QEMU VM on the runner. runs-on stays ubuntu-latest
+    # even for other arches, which is the action's documented requirement.
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          # The job only reads the repository. A persisted token in .git/config
+          # would otherwise be available to every step, including the ones that
+          # exec into the VM.
+          persist-credentials: false
+
+      - name: Set up Go
+        uses: actions/setup-go@v5
+        with:
+          go-version: "1.27.4"
+
+      - name: Build OpenBSD binaries and test binaries on the runner (cross)
+        env:
+          GOPROXY: "https://proxy.golang.org|https://goproxy.io,direct"
+          GOOS: openbsd
+          GOARCH: amd64
+          CGO_ENABLED: "0"
+        run: |
+          set -e
+          # The test binaries run INSIDE the VM, so the real OpenBSD code paths
+          # execute against a real kernel without a Go toolchain in the image.
+          # The ports Go package can be older than go.mod requires, which is
+          # why the VM never compiles anything.
+          for attempt in 1 2 3; do
+            echo "Build attempt $attempt..."
+            if go build -o out/urnet-tools ./cmd/urnet-tools/ && \
+               go build -o out/provider ./provider/ && \
+               go test -c -o out/root.test . && \
+               go test -c -o out/provider.test ./provider && \
+               go test -c -o out/urnettools.test ./internal/urnettools; then
+              echo "Build succeeded"; break
+            fi
+            if [ $attempt -lt 3 ]; then echo "Build failed, retrying in 10s..."; sleep 10
+            else echo "Build failed after 3 attempts"; exit 1; fi
+          done
+          file out/urnet-tools out/provider
+          ls -la out/
+
+      - name: Run on a real OpenBSD kernel
+        id: openbsd
+        # Pinned by commit SHA: the tag is mutable, so a third-party change
+        # would silently alter what this job verifies. Bump deliberately.
+        uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1
+        with:
+          release: ${{ matrix.release }}
+          mem: 4096
+          cpu: 2
+          sync: rsync
+          prepare: |
+            # Everything the checks use ships in the base system (rcctl, ps,
+            # pgrep, sysctl, cc, ksh, doas). Nothing is installed with pkg_add,
+            # because a failed install must never turn a check into a no-op.
+            for c in rcctl ps pgrep sysctl cc ksh doas; do
+              command -v "$c" >/dev/null 2>&1 || { echo "FATAL: $c missing from the base image"; exit 1; }
+            done
+          run: |
+            echo "=== kernel ==="
+            uname -a
+            sysctl kern.version
+
+            echo "=== binaries link and run natively ==="
+            ./out/urnet-tools --version
+            ./out/provider help > /dev/null
+            echo "provider help exit=$?"
+
+            # --- the reason this workflow exists -------------------------------
+            # The checks below assert behaviour that cross-compiling on Linux
+            # cannot show: what the kernel and rc.subr actually write, and
+            # whether rcctl does what the Go code assumes.
+
+            echo "=== host memory: hw.physmem answers with a 64-bit value ==="
+            sysctl hw.physmem
+            # sysmem_openbsd.go reads hw.physmem with SysctlUint64. The test
+            # fails here when the total is unreadable on this kernel, so a
+            # 32-bit width shows up as a red check and not as silent
+            # "unknown" memory on every OpenBSD provider.
+            URNET_REQUIRE_HOST_MEMORY=1 ./out/root.test -test.v -test.run 'TestHostMemoryReaders|TestEffectiveRAMLimit' > /tmp/t0.log 2>&1 || { tail -30 /tmp/t0.log; echo "FATAL: host memory check failed"; exit 1; }
+            tail -8 /tmp/t0.log
+
+            echo "=== installer script parses under the real OpenBSD sh ==="
+            # /bin/sh on OpenBSD is ksh, not dash. The Linux unit tests parse
+            # the installer with dash, so only this run proves it loads here.
+            sh -n scripts/Provider_Install_OpenBSD.sh || { echo "FATAL: installer syntax check failed"; exit 1; }
+            echo "installer SYNTAX OK"
+
+            echo "=== stand-in provider keeps the provider argv ==="
+            # The rc.d template finds the process by argv ("<binary> provide")
+            # and discovery matches the ucomm. A compiled stand-in keeps both.
+            # No heredocs here: these run blocks execute with sh in the VM and
+            # a heredoc inside a YAML block scalar is a reliable way to corrupt
+            # the script, so printf builds the files.
+            bin_dir=/usr/local/libexec/urnetwork-provider/bin
+            mkdir -p "$bin_dir" /tmp/ci
+            printf '%s\n' \
+              '#include <stdio.h>' \
+              '#include <unistd.h>' \
+              'int main(int argc, char **argv) {' \
+              '    printf("standin stdout: %s\n", argc > 1 ? argv[1] : "");' \
+              '    fflush(NULL);' \
+              '    for (;;) sleep(60);' \
+              '}' > /tmp/ci/standin.c
+            cc -o "$bin_dir/urnetwork" /tmp/ci/standin.c || { echo "FATAL: could not build the provider stand-in"; exit 1; }
+            # installedOpenBSDProvider only accepts a root-owned, other-executable,
+            # not group or other writable file at this exact path.
+            chown root:bin "$bin_dir/urnetwork"
+            chmod 755 "$bin_dir/urnetwork"
+            ls -l "$bin_dir/urnetwork"
+
+            echo "=== render the rc.d script from the installer ==="
+            # Extract only write_rc_script_body. The first line of the file to
+            # the heredoc end marker would also run top-level code, and the
+            # closing brace of the rc_pre function inside the heredoc ends a
+            # naive brace match early. Stop at the marker and add the brace.
+            service_name=urnetwork
+            provider_bin="$bin_dir/urnetwork"
+            export service_name provider_bin
+            { awk '/^write_rc_script_body\(\) \{/{p=1} p{print} p&&/^RCSCRIPT$/{exit}' scripts/Provider_Install_OpenBSD.sh; printf '%s\n' '}' 'write_rc_script_body nobody'; } > /tmp/ci/rcgen.sh
+            [ "$(wc -l < /tmp/ci/rcgen.sh)" -gt 10 ] || { echo "FATAL: could not extract write_rc_script_body"; cat /tmp/ci/rcgen.sh; exit 1; }
+            sh /tmp/ci/rcgen.sh > /tmp/ci/urnetwork.rc || { echo "FATAL: could not render the rc.d script"; exit 1; }
+            # The template starts with #!/bin/ksh, so check it with ksh as well.
+            ksh -n /tmp/ci/urnetwork.rc || { echo "FATAL: rendered rc.d script is not valid ksh"; cat /tmp/ci/urnetwork.rc; exit 1; }
+            install -o root -g wheel -m 555 /tmp/ci/urnetwork.rc /etc/rc.d/urnetwork
+            echo "rendered rc.d script OK"
+
+            echo "=== rcctl: enable, start, check, duplicate start, stop, disable ==="
+            rcctl enable urnetwork || { echo "FATAL: rcctl enable failed"; exit 1; }
+            rcctl ls on | grep -qx urnetwork || { echo "FATAL: urnetwork is not listed as enabled"; rcctl ls on; exit 1; }
+            rcctl start urnetwork || { echo "FATAL: rcctl start failed"; exit 1; }
+            sleep 2
+            rcctl check urnetwork || { echo "FATAL: rcctl check says not running after a successful start"; exit 1; }
+            pid1="$(pgrep -xf "$provider_bin provide")"
+            case "$pid1" in ''|*[!0-9]*) echo "FATAL: expected exactly one provider process, got '$pid1'"; ps -ax | head -30; exit 1 ;; esac
+            echo "provider pid $pid1"
+
+            echo "=== rc.d runfile carries the fields openbsdManagedPID parses ==="
+            # openbsd_managed.go reads pexp and daemon_rtable from this file and
+            # then asks pgrep -T for exactly one match.
+            cat /var/run/rc.d/urnetwork
+            grep -q '^pexp=' /var/run/rc.d/urnetwork || { echo "FATAL: runfile has no pexp"; exit 1; }
+            grep -q '^daemon_rtable=' /var/run/rc.d/urnetwork || { echo "FATAL: runfile has no daemon_rtable"; exit 1; }
+            table="$(sed -n 's/^daemon_rtable=//p' /var/run/rc.d/urnetwork)"
+            pexp="$(sed -n 's/^pexp=//p' /var/run/rc.d/urnetwork)"
+            matched="$(pgrep -T "$table" -xf "$pexp")"
+            [ "$matched" = "$pid1" ] || { echo "FATAL: pgrep -T $table -xf '$pexp' matched '$matched', want $pid1"; exit 1; }
+            echo "managed pid resolves uniquely"
+
+            echo "=== the tool discovers the LIVE rc.d-managed provider ==="
+            # Assert on the PID. discoverStopped adds a row for the installed
+            # service even when it is down, so printing any row proves nothing.
+            printf '%s\n' '#!/bin/sh' 'exec sleep 600' > /tmp/ci/notaprovider
+            chmod 755 /tmp/ci/notaprovider
+            /tmp/ci/notaprovider &
+            npid=$!
+            sleep 1
+            ./out/urnet-tools providers > /tmp/providers.out 2>&1 || true
+            cat /tmp/providers.out
+            grep -qw -- "$pid1" /tmp/providers.out || { echo "FATAL: discovery did not report the live pid $pid1"; ps -A -o pid=,uid=,ucomm= | head -30; exit 1; }
+            echo "DISCOVERY OK: live pid $pid1 found"
+            # The negative case: a live process that is NOT a provider must not
+            # be reported, or isExactProviderBinary could match anything.
+            if grep -qw -- "$npid" /tmp/providers.out; then
+              echo "FATAL: discovery reported non-provider pid $npid"
+              exit 1
+            fi
+            echo "NEGATIVE OK: non-provider pid $npid ignored"
+            kill "$npid" 2>/dev/null || true
+
+            echo "=== a second start does not replace the running provider ==="
+            rcctl start urnetwork || true
+            pid2="$(pgrep -xf "$provider_bin provide")"
+            [ "$pid1" = "$pid2" ] || { echo "FATAL: a second start changed the provider process ($pid1 -> '$pid2')"; exit 1; }
+
+            echo "=== stop is prompt and leaves nothing behind ==="
+            t0="$(date +%s)"
+            rcctl stop urnetwork || { echo "FATAL: rcctl stop failed"; exit 1; }
+            t1="$(date +%s)"
+            [ $((t1 - t0)) -le 10 ] || { echo "FATAL: stop took $((t1 - t0))s (expected <= 10)"; exit 1; }
+            if rcctl check urnetwork; then echo "FATAL: rcctl check still reports running after stop"; exit 1; fi
+            if pgrep -xf "$provider_bin provide" >/dev/null; then echo "FATAL: provider process survived stop"; exit 1; fi
+            rcctl disable urnetwork || { echo "FATAL: rcctl disable failed"; exit 1; }
+            if rcctl ls on | grep -qx urnetwork; then echo "FATAL: urnetwork is still enabled after disable"; exit 1; fi
+            echo "rc.d end-to-end OK"
+
+            echo "=== run the OpenBSD-tagged Go tests ==="
+            # These are compiled for openbsd/amd64 on the runner and run here.
+            # The //go:build openbsd tests do not exist for any other job.
+            # PIPELINE EXIT STATUS: cmd | tail returns tail's status, so each
+            # binary writes to a file and its status is checked separately.
+            failures=0
+            # Print the failing tests of one log. tail alone can cut the
+            # failure off the end of a long run.
+            show_failures() {
+              grep -E -B14 -A4 -- '^(--- FAIL|panic:|    --- FAIL)' "$1" | head -120
+            }
+
+            cd provider || exit 1
+            ../out/provider.test -test.v -test.run 'TestOpenBSD|Wallet|FamilyServiceUrl|UseFamilyTransports|ProbeIpv6|NewProviderPlatformTransport' > /tmp/t1.log 2>&1 || failures=1
+            tail -30 /tmp/t1.log
+            show_failures /tmp/t1.log
+            echo "--- provider tests done ---"
+
+            cd .. || exit 1
+            out/root.test -test.v -test.run 'TestHostMemory|TestEffectiveRAMLimit' > /tmp/t2.log 2>&1 || failures=1
+            tail -20 /tmp/t2.log
+            show_failures /tmp/t2.log
+            echo "--- root sysmem tests done ---"
+
+            # ip layer: fragments, reassembly, dial-failure answers, packet parse
+            out/root.test -test.v -test.run 'Fragment|Reassembl|DialFailure|DialErrno|IcmpParse|IpPacket|DualStack|ParseIpPath|NatFragment' > /tmp/t2b.log 2>&1 || failures=1
+            tail -30 /tmp/t2b.log
+            show_failures /tmp/t2b.log
+            echo "--- root ip tests done ---"
+
+            # The package tests read ../../scripts/Provider_Install_OpenBSD.sh,
+            # so they run from their own directory.
+            cd internal/urnettools || exit 1
+            ../../out/urnettools.test -test.v -test.run 'OpenBSD|Openbsd' > /tmp/t3.log 2>&1 || failures=1
+            tail -60 /tmp/t3.log
+            show_failures /tmp/t3.log
+            echo "--- urnettools OpenBSD tests done ---"
+
+            # A run with zero matching tests exits 0, so require that the
+            # OpenBSD-tagged tests really executed.
+            if ! grep -Eq '^--- PASS: TestOpenBSDInstalledProvider' /tmp/t3.log; then
+              echo "FATAL: TestOpenBSDInstalledProvider did not run and pass"
+              failures=1
+            fi
+
+            if [ "$failures" -ne 0 ]; then
+              echo "FATAL: an OpenBSD Go test binary failed"
+              exit 1
+            fi
+            echo "ALL OPENBSD CHECKS PASSED"
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "OpenBSD runtime verification finished."
+          echo "Review the step log above for the authoritative result:"
+          echo "  - hw.physmem width and host memory tests"
+          echo "  - rc.d script render, ksh syntax, rcctl lifecycle"
+          echo "  - rc.d runfile fields and the managed pid match"
+          echo "  - live process discovery, positive and negative"
+          echo "  - OpenBSD-tagged Go tests"

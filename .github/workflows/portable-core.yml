@@ -1,10 +1,11 @@
 name: Portable core (cross-OS)
 
-# The provider ships for linux, windows, macOS and FreeBSD. Most of the unit
+# The provider ships for linux, windows, macOS, FreeBSD and OpenBSD. Most of the unit
 # suite is linux-only in build.yml, so this workflow covers what differs by
 # platform: (1) every target compiles and vets, (2) the platform-sensitive
 # deterministic tests run natively on windows and macOS, (3) the same tests run
-# on a real FreeBSD kernel in freebsd.yml. The focused list is kept short and
+# on a real FreeBSD kernel in freebsd.yml and on a real OpenBSD kernel in
+# openbsd.yml. The focused list is kept short and
 # deterministic on purpose: no network, no timers beyond a few hundred ms.
 
 on:
@@ -48,6 +49,8 @@ jobs:
           - {goos: darwin, goarch: arm64}
           - {goos: freebsd, goarch: amd64}
           - {goos: freebsd, goarch: arm64}
+          - {goos: openbsd, goarch: amd64}
+          - {goos: openbsd, goarch: arm64}
     steps:
       - uses: actions/checkout@v4
         with:

@@ -1,6 +1,7 @@
 package connect
 
 import (
+	"os"
 	"runtime"
 	"testing"
 )
@@ -12,6 +13,12 @@ func TestHostMemoryReaders(t *testing.T) {
 	case "linux", "darwin", "windows", "freebsd":
 	case "openbsd":
 		// Allow unknown readings until the sysctl width is verified on a host.
+		// The OpenBSD CI job runs on a real kernel and sets
+		// URNET_REQUIRE_HOST_MEMORY, which turns an unreadable total into a
+		// failure so the width question is answered by a measurement.
+		if os.Getenv("URNET_REQUIRE_HOST_MEMORY") != "" && !tok {
+			t.Fatalf("hw.physmem total is unreadable on this kernel")
+		}
 		if tok && total <= 0 {
 			t.Fatalf("non-positive total: %d", total)
 		}
