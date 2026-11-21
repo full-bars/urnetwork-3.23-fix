@@ -294,3 +294,33 @@ func TestH3FactoryOpensWhenTheUdpPathIsVerified(t *testing.T) {
 }
 
 func authFor(user string) *proxy.Auth { return &proxy.Auth{User: user, Password: "pw"} }
+
+// A flow reply moves the evidence timestamp, so measurement must expose the
+// completed check time instead: otherwise the gate would read the same result
+// as a new observation.
+func TestUDPMeasurementExposesTheCompletedCheckTime(t *testing.T) {
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(func(context.Context, *connect.ProxySettings) proxyUDPResult {
+		return proxyUDPResult{Status: proxyUDPUnknown}
+	})
+	store.Check(context.Background(), ps, now)
+
+	udp, _, state := store.measurement(ps.Key(), now)
+	if state != measurementReady || !udp.CheckedAt.Equal(now) {
+		t.Fatalf("a completed check exposed CheckedAt %v (state %v), want %v", udp.CheckedAt, state, now)
+	}
+
+	// flow evidence moves the result's own timestamp
+	store.noteFlowReply(ps.Key(), now.Add(time.Minute))
+	udp, _, _ = store.measurement(ps.Key(), now.Add(time.Minute))
+	if !udp.CheckedAt.Equal(now) {
+		t.Fatalf("flow evidence moved the completed check time to %v", udp.CheckedAt)
+	}
+	store.mu.Lock()
+	at := store.entries[ps.Key()].at
+	store.mu.Unlock()
+	if !at.Equal(now.Add(time.Minute)) {
+		t.Fatalf("flow evidence did not move the evidence timestamp: %v", at)
+	}
+}

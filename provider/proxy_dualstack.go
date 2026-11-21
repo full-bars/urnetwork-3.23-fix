@@ -387,7 +387,7 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementReady
 	}
 	result := entry.result
-	result.CheckedAt = entry.at
+	result.CheckedAt = entry.completedAt
 	return result, entry.ipv6, measurementReady
 }
 

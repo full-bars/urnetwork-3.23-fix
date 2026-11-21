@@ -356,10 +356,15 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 }
 
 type proxyUDPCheckEntry struct {
-	result  proxyUDPResult
-	ipv6    proxyIPv6Result
-	at      time.Time
-	tcpExit string // last known TCP exit, retained even when a relay fails
+	result proxyUDPResult
+	ipv6   proxyIPv6Result
+	at     time.Time
+	// completedAt is when a check last published a result here. at also moves
+	// for flow evidence (noteFlowReply), so only this timestamp says a new
+	// observation exists. It is not persisted: the gate that reads it does not
+	// survive a restart either.
+	completedAt time.Time
+	tcpExit     string // last known TCP exit, retained even when a relay fails
 	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
 	tcpExitAt time.Time
 	flowReply bool
@@ -536,6 +541,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		var previous *proxyUDPResult
 		var previousAt time.Time
+		var previousCompletedAt time.Time
 		var ipv6 proxyIPv6Result
 		ipv6Running := false
 		var ipv6RetryAt time.Time
@@ -544,6 +550,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		var tcpExitAt time.Time
 		if entry != nil {
 			previousAt = entry.at
+			previousCompletedAt = entry.completedAt
 			ipv6 = entry.ipv6
 			ipv6Running = entry.ipv6Running
 			ipv6RetryAt = entry.ipv6RetryAt
@@ -575,6 +582,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			// flight, so no reader treats it as a fresh check)
 			running.result = *previous
 			running.at = previousAt
+			running.completedAt = previousCompletedAt
 		}
 		self.entries[key] = running
 		self.mu.Unlock()
@@ -599,7 +607,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				// refresh that ran meanwhile updated it and cleared its flag, and a
 				// restore from the snapshot taken before the probe would bring back
 				// the old measurement and a flag nothing will clear
-				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
+				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
 				self.entries[key] = restored
 				if err := self.persistLocked(key, restored, now); err != nil {
 					tlog("[proxy][udp] could not persist probe state\n")
@@ -617,6 +625,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			running.tcpExitAt = now
 		}
 		running.at = now
+		running.completedAt = now
 		close(running.done)
 		running.done = nil
 		self.prune(now)

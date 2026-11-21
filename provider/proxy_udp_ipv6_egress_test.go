@@ -22,7 +22,9 @@ func measuredIPv6(status proxyIPv6Status, udp string, at time.Time, interval tim
 func storeWithEntry(store *proxyUDPCheckStore, settings *connect.ProxySettings, status proxyUDPStatus, at time.Time, ipv6 proxyIPv6Result) {
 	store.mu.Lock()
 	defer store.mu.Unlock()
-	store.entries[settings.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: status}, at: at, ipv6: ipv6}
+	// a completed check sets both stamps: at is the evidence time and
+	// completedAt says an observation exists
+	store.entries[settings.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: status}, at: at, completedAt: at, ipv6: ipv6}
 }
 
 func TestIPv6UDPAllowedDecision(t *testing.T) {
