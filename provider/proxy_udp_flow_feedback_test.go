@@ -84,9 +84,11 @@ func TestUDPFlowReplyPreservesCheck(t *testing.T) {
 	if store.entries["key"] != running {
 		t.Fatal("in-flight check replaced")
 	}
+	// a flow reply is not a measurement: an expired result stays expired, so the
+	// controller still sees the expiry and stops a running transport
 	store.entries["key"] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now.Add(-proxyUDPOKTTL)}
 	store.noteFlowReply("key", now)
-	if got := store.coverage([]string{"key"}, now); got.Unknown != 1 {
+	if got := store.coverage([]string{"key"}, now); got.Unchecked != 1 || got.Unknown != 0 {
 		t.Fatalf("expired coverage: %+v", got)
 	}
 }

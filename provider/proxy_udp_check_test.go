@@ -324,3 +324,29 @@ func TestUDPMeasurementExposesTheCompletedCheckTime(t *testing.T) {
 		t.Fatalf("flow evidence did not move the evidence timestamp: %v", at)
 	}
 }
+
+// Flow evidence must not revive an expired result: replacing it with a fresh
+// unknown hides the expiry from the controller, which then keeps a running
+// transport up past the UDP evidence.
+func TestUDPFlowReplyDoesNotReviveAnExpiredResult(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	entry := store.entries[ps.Key()]
+	if entry.ipv6.At.IsZero() {
+		// no ipv6 record in this fixture, nothing else to check
+	}
+	udp, _, state := store.measurement(ps.Key(), now)
+	if state != measurementExpired {
+		t.Fatalf("state = %v, want measurementExpired: flow evidence revived an expired result (status %q)", state, udp.Status)
+	}
+}

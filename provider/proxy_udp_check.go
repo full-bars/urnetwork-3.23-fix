@@ -822,6 +822,12 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 			return
 		}
 	}
+	if entry != nil {
+		// the cached result is expired, and a flow reply is not a measurement:
+		// replacing it with a fresh unknown would hide the expiry from the
+		// controller, which stops a running transport on that signal
+		return
+	}
 	var tcpExit string
 	var tcpExitAt time.Time
 	var ipv6 proxyIPv6Result
