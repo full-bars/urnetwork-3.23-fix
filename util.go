@@ -718,15 +718,24 @@ func NewReconnect(minTimeout time.Duration) *Reconnect {
 }
 
 func (self *Reconnect) After() <-chan time.Time {
-	timeout := self.minTimeout - time.Now().Sub(self.startTime)
+	return afterDelay(self.delay())
+}
+
+func (self *Reconnect) delay() time.Duration {
+	timeout := self.minTimeout - time.Since(self.startTime)
 	if timeout <= 0 {
+		return 0
+	}
+	return time.Duration(mathrand.Int63n(int64(timeout)))
+}
+
+func afterDelay(delay time.Duration) <-chan time.Time {
+	if delay <= 0 {
 		c := make(chan time.Time)
 		close(c)
 		return c
-	} else {
-		randomTimeout := time.Duration(mathrand.Int63n(int64(timeout)))
-		return time.After(randomTimeout)
 	}
+	return time.After(delay)
 }
 
 // networkChangeListeners are callbacks fired when the host reports a network path change
