@@ -270,18 +270,36 @@ func TestResolveProxyIPv6UDPAddr(t *testing.T) {
 	}
 }
 
+// deadlineCtx is a context whose deadline fires when the test says so, so the
+// test does not depend on how long the stage setup takes: a real budget can be
+// spent before the stage reaches the exit lookups.
+type deadlineCtx struct {
+	context.Context
+	done chan struct{}
+}
+
+func (c *deadlineCtx) Deadline() (time.Time, bool) { return time.Time{}, false }
+func (c *deadlineCtx) Done() <-chan struct{}       { return c.done }
+func (c *deadlineCtx) Err() error {
+	select {
+	case <-c.done:
+		return context.DeadlineExceeded
+	default:
+		return nil
+	}
+}
+
 // A stage whose exit lookups both finished before the deadline keeps the udp
 // result. Only an answer that was not finished is unknown.
 func TestRunProxyIPv6StageKeepsACompletedUdpExitAtTheDeadline(t *testing.T) {
 	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
-	defer cancel()
+	ctx := &deadlineCtx{Context: context.Background(), done: make(chan struct{})}
 	d := newIPv6StageDials(0, nil, nil, "2001:db8::1", nil, "2001:db8::1", nil)
-	// the udp exit finishes after the deadline with an address that matches the
-	// tcp exit, so the lookup did complete
-	d.dials.udpExit = func(ctx context.Context, _ *connect.ProxySettings) (string, error) {
-		<-ctx.Done()
+	// the udp exit completes with a matching address, and the deadline fires as
+	// it returns
+	d.dials.udpExit = func(context.Context, *connect.ProxySettings) (string, error) {
+		close(ctx.done)
 		return "2001:db8::1", nil
 	}
 	result, ok := runProxyIPv6Stage(ctx, settings, proxyIPv6Result{}, now, d.dials)
