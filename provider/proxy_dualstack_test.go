@@ -1013,3 +1013,35 @@ func TestProxiedIPv6ControllerKeepsTheCountedIpv6ResultAcrossASwitch(t *testing.
 		t.Fatal("two fresh measurements after the re-enable did not start the transport")
 	}
 }
+
+// A refresh that starts after the carried udp result expired must not keep a
+// running transport up: the evidence is gone even though the check is in
+// flight, while a fresh ipv6 record stays.
+func TestProxiedIPv6ControllerStopsOnExpiredUdpDuringARecheck(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	controller.step(t0.Add(time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+
+	// a recheck is running while the result it carries has expired
+	now := t0.Add(time.Minute + proxyUDPOKTTL + time.Minute)
+	store.mu.Lock()
+	store.entries[settings.Key()] = &proxyUDPCheckEntry{
+		done:        make(chan struct{}),
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          t0.Add(time.Minute),
+		completedAt: t0.Add(time.Minute),
+		ipv6:        measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 72*time.Hour),
+	}
+	store.mu.Unlock()
+	controller.step(now)
+	if controller.transport.hasExtra() {
+		t.Fatal("expired udp evidence kept the transport up during a recheck")
+	}
+}

@@ -418,6 +418,12 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 		return proxyUDPResult{}, proxyIPv6Result{}, measurementMissing
 	}
 	if entry.done != nil {
+		// a recheck keeps the last completed result on the entry. If that result
+		// is past its TTL the evidence is gone whatever the check is doing, so
+		// the caller sees the expiry rather than a wait
+		if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+			return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementExpired
+		}
 		return proxyUDPResult{}, entry.ipv6, measurementInFlight
 	}
 	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
