@@ -466,7 +466,7 @@ func TestIPv6RefreshRechecksTheDueStateUnderTheLock(t *testing.T) {
 	if got := h2.ipv6Runs.Load(); got != 1 {
 		t.Fatalf("a refresh inside the wait started the stage: %d runs", got)
 	}
-	h2.store.refreshIPv6(ctx, settings, settings.Key(), now.Add(proxyIPv6StopBackoff))
+	h2.store.refreshIPv6(ctx, settings, settings.Key(), now.Add(proxyIPv6StopBackoff+time.Second))
 	if got := h2.ipv6Runs.Load(); got != 2 {
 		t.Fatalf("a refresh after the wait did not start the stage: %d runs", got)
 	}
