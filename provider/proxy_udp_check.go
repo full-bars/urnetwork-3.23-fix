@@ -728,7 +728,10 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		// front of every batch, starving the other due identities
 		current.ipv6RetryAt = completedAt.Add(proxyIPv6CutShortRetry)
 	}
-	if measuredOK && ctx.Err() == nil {
+	if measuredOK {
+		// a measurement that was made is kept even when the parent context ends
+		// right after it: throwing it away would also skip the retry clear and
+		// send the identity into a backoff for a result it already has
 		current.ipv6 = measured
 		current.ipv6RetryAt = time.Time{}
 		self.ipv6ProbesRun.Add(1)

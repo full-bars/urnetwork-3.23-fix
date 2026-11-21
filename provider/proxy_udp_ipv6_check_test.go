@@ -538,3 +538,41 @@ func TestIPv6StageRetryBackoffStartsAtCompletion(t *testing.T) {
 		t.Fatalf("retry at %v, want %v (backoff measured from completion)", retry, want)
 	}
 }
+
+// A parent deadline that fires after the stage measured something must not throw
+// the measurement away: publish it and drop the retry, or the identity waits out
+// a backoff for a result it already has.
+func TestIPv6StagePublishesAPartialResultWhenTheParentExpires(t *testing.T) {
+	pinSyntheticStageClock(t)
+	h := newIPv6CheckHarness(t)
+	h.ipv6OK = true
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+
+	h.store.mu.Lock()
+	h.store.entries[settings.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now, completedAt: now}
+	h.store.mu.Unlock()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// the stage measures, then the parent ends before refreshIPv6 returns
+	measured := h.store.ipv6Probe
+	h.store.ipv6Probe = func(ctx context.Context, settings *connect.ProxySettings, previous proxyIPv6Result, now time.Time, dials proxyIPv6Dials) (proxyIPv6Result, bool) {
+		result, ok := measured(ctx, settings, previous, now, dials)
+		cancel()
+		return result, ok
+	}
+	h.store.refreshIPv6(ctx, settings, settings.Key(), now)
+
+	h.store.mu.Lock()
+	entry := h.store.entries[settings.Key()]
+	at := entry.ipv6.At
+	retry := entry.ipv6RetryAt
+	h.store.mu.Unlock()
+	if at.IsZero() {
+		t.Fatal("a measurement was thrown away because the parent context ended after it")
+	}
+	if !retry.IsZero() {
+		t.Fatalf("a published measurement still carries a retry stamp: %v", retry)
+	}
+}
