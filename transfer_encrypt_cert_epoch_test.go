@@ -155,7 +155,8 @@ func takeCertEpochWire(
 	default:
 		return nil
 	}
-	defer MessagePoolReturn(message)
+	// message is the capture writer's private copy and the opened plaintext is
+	// a fresh slice: neither came from the message pool
 	var outer protocol.TransferFrame
 	if err := ProtoUnmarshal(message, &outer); err != nil {
 		t.Fatal(err)
@@ -164,11 +165,9 @@ func takeCertEpochWire(
 		t.Fatal("send with an established cipher wrote plaintext")
 	}
 	for _, e := range epochs {
-		plaintext, err := e.derivedTlsCipher.Open(outer.EncryptedTransferFrame)
-		if err != nil {
+		if _, err := e.derivedTlsCipher.Open(outer.EncryptedTransferFrame); err != nil {
 			continue
 		}
-		MessagePoolReturn(plaintext)
 		if !certEpochVerified(session, e) {
 			t.Errorf("frame sealed by epoch %s whose own peer certificate was never verified", e.epochId)
 		}
