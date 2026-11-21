@@ -137,40 +137,78 @@ func TestSelectUDPProbeEmptyAndLimits(t *testing.T) {
 	}
 }
 
-// An identity whose IPv6 retry is due is scheduled ahead of candidates that are
-// only due for their udp recheck, inside the same batch budget: its retry must
-// run on its own interval, not wait most of a twelve hour cycle.
-func TestSelectUDPProbeBatchPutsIpv6DueFirst(t *testing.T) {
-	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	candidates := []udpProbeCandidate{
-		// recently measured, but its ipv6 retry is due now
-		{key: "ipv6-due", online: true, status: proxyUDPOK, lastChecked: now.Add(-time.Minute), ipv6Due: true},
-		{key: "old-a", online: true, status: proxyUDPOK, lastChecked: now.Add(-13 * time.Hour)},
-		{key: "old-b", online: true, status: proxyUDPOK, lastChecked: now.Add(-14 * time.Hour)},
-		{key: "old-c", online: true, status: proxyUDPOK, lastChecked: now.Add(-15 * time.Hour)},
+// The selector orders by the earlier due time, so neither kind of due time has a
+// standing priority: the oldest outstanding due goes first.
+func TestSelectUDPProbeBatchOrdersByTheEarliestDueTime(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+
+	ipv6Earliest := []udpProbeCandidate{
+		{key: "ipv6-earlier", online: true, status: proxyUDPOK, lastChecked: now.Add(-time.Minute), ipv6Due: true, ipv6DueAt: now.Add(-30 * time.Minute)},
+		{key: "udp-later", online: true, status: proxyUDPOK, lastChecked: now.Add(-11 * time.Hour)},
 	}
-	// 4 online, a one minute tick and a twelve hour effective window select one
-	batch := selectUDPProbeBatch(now, candidates, 24*time.Hour, time.Minute, nil)
-	if len(batch) != 1 {
-		t.Fatalf("batch size = %d, want the unchanged budget of 1", len(batch))
-	}
-	if batch[0].key != "ipv6-due" {
-		t.Fatalf("first candidate = %q, want the ipv6-due one", batch[0].key)
+	batch := selectUDPProbeBatch(now, ipv6Earliest, 24*time.Hour, time.Minute, nil)
+	if len(batch) != 1 || batch[0].key != "ipv6-earlier" {
+		t.Fatalf("batch = %v, want the identity whose ipv6 retry is the oldest due", batch)
 	}
 
-	// with room for two, a second ipv6-due candidate follows
-	candidates = append(candidates, udpProbeCandidate{key: "ipv6-due-2", online: true, status: proxyUDPOK, lastChecked: now.Add(-2 * time.Minute), ipv6Due: true})
-	// five online and a three hour tick over the twelve hour effective window
-	// select two
-	batch = selectUDPProbeBatch(now, candidates, 24*time.Hour, 3*time.Hour, nil)
-	if len(batch) != 2 {
-		t.Fatalf("batch size = %d, want 2", len(batch))
+	udpEarliest := []udpProbeCandidate{
+		{key: "udp-earlier", online: true, status: proxyUDPOK, lastChecked: now.Add(-20 * time.Hour)},
+		{key: "ipv6-later", online: true, status: proxyUDPOK, lastChecked: now.Add(-time.Minute), ipv6Due: true, ipv6DueAt: now.Add(-10 * time.Minute)},
 	}
-	if batch[0].key != "ipv6-due-2" && batch[0].key != "ipv6-due" {
-		t.Fatalf("first candidate = %q, want an ipv6-due one", batch[0].key)
+	batch = selectUDPProbeBatch(now, udpEarliest, 24*time.Hour, time.Minute, nil)
+	if len(batch) != 1 || batch[0].key != "udp-earlier" {
+		t.Fatalf("batch = %v, want the identity whose udp recheck is the oldest due", batch)
 	}
-	if batch[1].key != "ipv6-due-2" && batch[1].key != "ipv6-due" {
-		t.Fatalf("second candidate = %q, want the other ipv6-due one", batch[1].key)
+}
+
+// Sol's trace: four identities hold the batch with IPv6 retries that are only
+// due soon, and one identity's udp evidence expired hours ago. The expired one
+// is the earliest due, so it takes the single slot.
+func TestSelectUDPProbeBatchSelectsTheOldestDueOverIpv6Retries(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	var candidates []udpProbeCandidate
+	for i := 0; i < 4; i++ {
+		candidates = append(candidates, udpProbeCandidate{
+			key:         fmt.Sprintf("retry-%d", i),
+			online:      true,
+			status:      proxyUDPNoRelay,
+			lastChecked: now.Add(-time.Minute),
+			ipv6Due:     true,
+			// the stage stopped fifteen minutes before this tick
+			ipv6DueAt: now.Add(15 * time.Minute),
+		})
+	}
+	candidates = append(candidates, udpProbeCandidate{
+		key:         "expired-udp",
+		online:      true,
+		status:      proxyUDPOK,
+		lastChecked: now.Add(-25 * time.Hour),
+	})
+	batch := selectUDPProbeBatch(now, candidates, 24*time.Hour, 5*time.Minute, nil)
+	if len(batch) != 1 {
+		t.Fatalf("batch size = %d, want the budget of 1", len(batch))
+	}
+	if batch[0].key != "expired-udp" {
+		t.Fatalf("first candidate = %q, want the identity whose udp evidence expired first", batch[0].key)
+	}
+}
+
+// Equal due times fall back to the older check, then the key.
+func TestSelectUDPProbeBatchBreaksDueTimeTies(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	same := now.Add(-20 * time.Hour)
+	candidates := []udpProbeCandidate{
+		{key: "b", online: true, status: proxyUDPOK, lastChecked: same},
+		{key: "a", online: true, status: proxyUDPOK, lastChecked: same},
+		{key: "older", online: true, status: proxyUDPOK, lastChecked: now.Add(-21 * time.Hour)},
+	}
+	batch := selectUDPProbeBatch(now, candidates, 24*time.Hour, 5*time.Minute, nil)
+	if len(batch) != 1 || batch[0].key != "older" {
+		t.Fatalf("batch = %v, want the older check first", batch)
+	}
+	two := selectUDPProbeBatch(now, candidates, 24*time.Hour, 12*time.Hour, nil)
+	if len(two) < 2 || two[1].key != "a" {
+		t.Fatalf("batch = %v, want the key order to break a due time tie", two)
 	}
 }
 

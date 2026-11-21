@@ -414,7 +414,23 @@ const proxyIPv6CutShortRetry = 5 * time.Minute
 // ipv6DueLocked is whether the sweep should measure the identity now. The
 // caller holds the store lock (or owns the entry).
 func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
-	return e == nil || (e.ipv6.due(now) && !now.Before(e.ipv6RetryAt))
+	return e == nil || !now.Before(e.ipv6DueAtLocked())
+}
+
+// ipv6DueAtLocked is when the identity becomes due for the IPv6 stage: the
+// record's next measurement time, or the retry hold when that is later. The
+// sweep picks its batch by this time, so the same function decides both.
+func (e *proxyUDPCheckEntry) ipv6DueAtLocked() time.Time {
+	if e == nil {
+		return time.Time{}
+	}
+	due := e.ipv6RetryAt
+	if !e.ipv6.At.IsZero() && e.ipv6.Interval > 0 {
+		if next := e.ipv6.At.Add(e.ipv6.Interval); next.After(due) {
+			due = next
+		}
+	}
+	return due
 }
 
 // proxyUDPCheckStore remembers the check per proxy IDENTITY (address plus

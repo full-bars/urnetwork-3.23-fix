@@ -237,6 +237,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 				candidate.lastChecked = entry.at
 				candidate.status = entry.result.Status
 				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6DueLocked(now)
+				candidate.ipv6DueAt = entry.ipv6DueAtLocked()
 			}
 		}
 		candidates = append(candidates, candidate)
@@ -281,6 +282,11 @@ type udpProbeCandidate struct {
 	status      proxyUDPStatus
 	lastChecked time.Time
 	ipv6Due     bool
+	// ipv6DueAt is when the identity became due for the IPv6 stage, from
+	// ipv6DueAtLocked, so the selector can order by the earlier of its due times
+	ipv6DueAt time.Time
+	// dueAt is filled by the selector: the earlier of the udp and ipv6 due times
+	dueAt time.Time
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -299,6 +305,16 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		online++
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
 		if candidate.ipv6Due || candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
+			// one due time per candidate: a never-checked identity has none, so
+			// it goes first; otherwise the earlier of its udp and ipv6 due times
+			switch {
+			case candidate.lastChecked.IsZero():
+				candidate.dueAt = time.Time{}
+			case candidate.ipv6Due && !candidate.ipv6DueAt.IsZero() && candidate.ipv6DueAt.Before(candidate.lastChecked.Add(refreshWindow)):
+				candidate.dueAt = candidate.ipv6DueAt
+			default:
+				candidate.dueAt = candidate.lastChecked.Add(refreshWindow)
+			}
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
 				recheckWindow = refreshWindow
@@ -315,14 +331,10 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 	// untouched; only the order inside the budget changes.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
-		// an identity that was never checked goes first: IPv6 retries can hold
-		// every slot of a small batch, and it leaves this group after one check,
-		// so it cannot starve them in turn
-		if a.lastChecked.IsZero() != b.lastChecked.IsZero() {
-			return a.lastChecked.IsZero()
-		}
-		if a.ipv6Due != b.ipv6Due {
-			return a.ipv6Due
+		// earliest due first: one due time per candidate, the earlier of its udp
+		// and ipv6 due times, so neither kind can starve the other
+		if !a.dueAt.Equal(b.dueAt) {
+			return a.dueAt.Before(b.dueAt)
 		}
 		if !a.lastChecked.Equal(b.lastChecked) {
 			return a.lastChecked.Before(b.lastChecked)
