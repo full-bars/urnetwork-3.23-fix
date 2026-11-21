@@ -897,3 +897,36 @@ func TestProxiedIPv6ControllerStopsInFlightOnAZeroIPv6Record(t *testing.T) {
 		t.Fatal("an in-flight check with a zero ipv6 record left the transport running")
 	}
 }
+
+// One ipv6 failure must count once. A new ok udp check that leaves the same
+// ipv6 record in place does not count it again, so the stop still needs two
+// fresh observations.
+func TestProxyIPv6GateDoesNotCountAnIpv6FailureTwice(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+	no := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6No, "unknown", at, 24*time.Hour) }
+
+	gate.observe(t0, ok(t0), yes(t0))
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, ok(t1), yes(t1)); !start {
+		t.Fatal("two good checks did not start the transport")
+	}
+
+	// one ipv6 failure
+	t2 := t1.Add(13 * time.Hour)
+	if _, stop := gate.observe(t2, ok(t2), no(t2)); stop {
+		t.Fatal("one ipv6 failure stopped the transport")
+	}
+	// a new ok udp check with the same ipv6 record must not count it again
+	t3 := t2.Add(13 * time.Hour)
+	if _, stop := gate.observe(t3, ok(t3), no(t2)); stop {
+		t.Fatal("a udp check counted the same ipv6 failure again")
+	}
+	// a second ipv6 failure still stops it
+	t4 := t3.Add(13 * time.Hour)
+	if _, stop := gate.observe(t4, ok(t4), no(t4)); !stop {
+		t.Fatal("two ipv6 failures did not stop the transport")
+	}
+}

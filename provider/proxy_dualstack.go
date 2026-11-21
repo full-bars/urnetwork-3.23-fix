@@ -51,6 +51,12 @@ const (
 // would drop its IPv6 label before it dropped UDP, so declaring IPv6 gains
 // nothing. An IPv6-only proxy (no IPv4 egress) is not covered by this first
 // version, because the stage does not record its IPv4 control.
+// proxyIPv6RecordQualifies reports whether the ipv6 measurement alone is
+// evidence a transport may run on, whatever the udp check says.
+func proxyIPv6RecordQualifies(v6 proxyIPv6Result, now time.Time) bool {
+	return v6.Status == proxyIPv6Yes && v6.valid(now) && now.Before(v6.At.Add(2*v6.Interval))
+}
+
 func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.Time) bool {
 	if v6.Status != proxyIPv6Yes || !v6.valid(now) {
 		return false
@@ -84,8 +90,11 @@ type proxyIPv6Gate struct {
 	// counting. A pending first result whose evidence expired before the next
 	// observation arrived does not contribute to the start streak.
 	lastExpiry time.Time
-	yes        int
-	no         int
+	// lastV6At is the ipv6 record last counted, so the same record is not
+	// counted again by a later udp check.
+	lastV6At time.Time
+	yes      int
+	no       int
 }
 
 // observe is called on every poll. It reports whether to start or to stop the
@@ -103,10 +112,19 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		if !v6.At.IsZero() {
 			self.lastExpiry = v6.At.Add(2 * v6.Interval)
 		}
-		if want {
+		v6New := !v6.At.IsZero() && !v6.At.Equal(self.lastV6At)
+		if v6New {
+			self.lastV6At = v6.At
+		}
+		switch {
+		case want:
 			self.yes++
 			self.no = 0
-		} else {
+		case v6New, proxyIPv6RecordQualifies(v6, now):
+			// a new ipv6 measurement that disqualifies, or a udp result that
+			// disqualifies while the ipv6 record qualifies: either is one
+			// failure. A udp check alone must not count the ipv6 failure that
+			// is still standing, or one failure plus any check would stop it.
 			self.no++
 			self.yes = 0
 		}
