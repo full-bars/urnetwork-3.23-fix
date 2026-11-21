@@ -22,7 +22,14 @@ concurrency:
 
 jobs:
   openbsd-runtime:
-    name: urnet-tools + provider on OpenBSD (real kernel)
+    name: urnet-tools + provider on OpenBSD ${{ matrix.release }} (real kernel)
+    # OpenBSD supports the current and the previous release, so both are
+    # checked. They run in parallel on separate runners, so the wall time is
+    # that of one run.
+    strategy:
+      fail-fast: false
+      matrix:
+        release: ["7.9", "8.0"]
     # The action boots a QEMU VM on the runner. runs-on stays ubuntu-latest
     # even for other arches, which is the action's documented requirement.
     runs-on: ubuntu-latest
@@ -74,7 +81,7 @@ jobs:
         # would silently alter what this job verifies. Bump deliberately.
         uses: vmactions/openbsd-vm@f1ca8bc8ecc5b6ef7218e5b914836e067e1546d3 # v1
         with:
-          release: "7.9"
+          release: ${{ matrix.release }}
           mem: 4096
           cpu: 2
           sync: rsync
