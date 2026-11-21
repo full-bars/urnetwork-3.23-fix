@@ -952,3 +952,31 @@ func TestProxyIPv6GateStartsOnlyOnNewIpv6Measurements(t *testing.T) {
 		t.Fatal("a second ipv6 measurement did not start the transport")
 	}
 }
+
+// A record that disappears takes the pending start streak with it: after one
+// qualifying result, an entry recreated without an ipv6 record resets the
+// streak, so one fresh result cannot start the transport.
+func TestProxiedIPv6ControllerDropsAPendingStartOnAZeroRecord(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+
+	// the entry is recreated without an ipv6 measurement, transport stopped
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), proxyIPv6Result{})
+	controller.step(t0.Add(time.Minute))
+
+	// one fresh measurement now must not be enough
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(2*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(2*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(2 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("one fresh result started the transport on a streak that survived a zero record")
+	}
+	// and two do start it
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(3*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(3*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(3 * time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh results after the zero record did not start the transport")
+	}
+}

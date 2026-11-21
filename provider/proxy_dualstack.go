@@ -311,10 +311,10 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		// a UDP check is running: its zero result would read as a bad
 		// observation, so this poll changes nothing. An IPv6 record that has
 		// expired meanwhile still stops a running transport
-		if self.gate.running && v6.At.IsZero() {
+		if v6.At.IsZero() {
 			// the in-flight check's record carries no ipv6 measurement: no
 			// measurement is no evidence, the same rule the completed-record
-			// guard below applies
+			// guard below applies, and a pending start streak goes with it
 			if self.transport.stopExtra() {
 				tlog("[ipv6] proxy identity: IPv6 transport stopped (the record has no IPv6 measurement)\n")
 			}
@@ -346,10 +346,11 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		self.gate = proxyIPv6Gate{}
 		return
 	}
-	if self.gate.running && v6.At.IsZero() {
+	if v6.At.IsZero() {
 		// the identity's record was pruned and recreated without an ipv6
 		// measurement: no measurement is no evidence, the same as having no
-		// entry at all, so the transport stops on this poll
+		// entry at all, so a running transport stops and a pending start streak
+		// is dropped on this poll
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (the record has no IPv6 measurement)\n")
 		}
