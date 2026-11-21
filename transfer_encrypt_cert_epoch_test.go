@@ -214,16 +214,17 @@ func (self *certEpochCaptureWriter) GetInactiveRoutes() []Route { return nil }
 // manager, so the test owns its lifetime.
 func newCertEpochWriteFixture(t *testing.T) (*SendSequence, *peerEncryptionSession, chan []byte) {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
-
 	// The fixture client runs the real contract path, and its oob has no
 	// backend, so a failed contract round trip records a process-wide backend
 	// failure. Two of these tests inside the degraded window push
 	// isBackendDegraded() true for every later test in the package, which paces
 	// their contract creation at 30s and wedges establishment. Restore it.
+	// Cleanups run last in, first out, so the restore is registered before the
+	// cancel and runs after it.
 	backendFailuresBefore := loadBackendFailureState()
 	t.Cleanup(func() { backendFailures.Store(&backendFailuresBefore) })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeRequired

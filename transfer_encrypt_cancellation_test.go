@@ -18,12 +18,15 @@ import (
 // wiring under test is the real one.
 func newCancellationSession(t *testing.T, companion bool) *peerEncryptionSession {
 	t.Helper()
-	ctx, cancel := context.WithCancel(context.Background())
-	t.Cleanup(cancel)
 	// Same global to restore as the cert epoch fixture: the client's failing
 	// contract round trip must not export a degraded backend to later tests.
+	// Cleanups run last in, first out, so the restore is registered before the
+	// cancel and runs after it. The client has no join point for its
+	// background work, so this narrows the window and does not close it.
 	backendFailuresBefore := loadBackendFailureState()
 	t.Cleanup(func() { backendFailures.Store(&backendFailuresBefore) })
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
 
 	clientSettings := DefaultClientSettings()
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
