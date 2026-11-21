@@ -863,9 +863,10 @@ func TestProxiedIPv6ControllerStopsWhenTheUdpEvidenceExpires(t *testing.T) {
 		t.Fatal("two fresh measurements did not start the transport")
 	}
 
-	// the ipv6 record is still fresh, and only the udp result is past its TTL
+	// the ipv6 record is still fresh (72h interval, so twice it outlives the
+	// udp result's own TTL), and only the udp result is past its TTL
 	now := t0.Add(time.Minute + proxyUDPOKTTL + time.Minute)
-	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 72*time.Hour))
 	controller.step(now)
 	if controller.transport.hasExtra() {
 		t.Fatal("expired udp evidence left the transport running")
