@@ -695,20 +695,23 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 
 // fitPopupLines cuts lines to fit rows rows: the first line (the title) and the
 // last exitCount lines (the exit details) stay, and the fields between them keep
-// what room is left, in order.
+// what room is left, in order. When the exit details alone do not fit, the last
+// ones stay (the IPv6 exit is the last), so the result never has more than rows
+// lines.
 func fitPopupLines(lines []string, rows int, exitCount int) []string {
-	if len(lines) <= rows || exitCount >= len(lines)-1 {
+	if rows <= 0 || len(lines) <= rows || exitCount <= 0 || exitCount >= len(lines) {
 		return lines
 	}
-	middle := lines[1 : len(lines)-exitCount]
-	room := max(0, rows-1-exitCount)
-	if room > len(middle) {
-		room = len(middle)
+	exits := lines[len(lines)-exitCount:]
+	if rows <= exitCount {
+		return append([]string(nil), exits[exitCount-rows:]...)
 	}
+	middle := lines[1 : len(lines)-exitCount]
+	room := min(rows-1-exitCount, len(middle))
 	out := make([]string, 0, rows)
 	out = append(out, lines[0])
 	out = append(out, middle[:room]...)
-	out = append(out, lines[len(lines)-exitCount:]...)
+	out = append(out, exits...)
 	return out
 }
 

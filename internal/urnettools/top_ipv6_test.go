@@ -183,17 +183,26 @@ func TestTopBarViewKeepsTheIPv6Row(t *testing.T) {
 // and the exit details. The exit details are the lines that were clipped, so
 // they keep their rows and the fields give way. A tall popup keeps every line.
 func TestFitPopupLinesKeepsTheTitleAndTheExitDetails(t *testing.T) {
-	lines := []string{"title", "state", "latency", "tcp", "combined", "IPv6 exit: yes (2001:db8::1)", "TCP exit 192.0.2.1"}
+	lines := []string{"title", "state", "latency", "tcp", "combined", "TCP exit 192.0.2.1", "IPv6 exit: yes (2001:db8::1)"}
 	got := fitPopupLines(lines, 5, 2)
-	want := []string{"title", "state", "latency", "IPv6 exit: yes (2001:db8::1)", "TCP exit 192.0.2.1"}
+	want := []string{"title", "state", "latency", "TCP exit 192.0.2.1", "IPv6 exit: yes (2001:db8::1)"}
 	if strings.Join(got, "|") != strings.Join(want, "|") {
 		t.Fatalf("fitted lines = %v, want %v", got, want)
 	}
 	if got := fitPopupLines(lines, 9, 2); strings.Join(got, "|") != strings.Join(lines, "|") {
 		t.Fatalf("a tall popup lost lines: %v", got)
 	}
-	if got := fitPopupLines(lines, 2, 2); len(got) != 3 || got[0] != "title" {
-		t.Fatalf("a popup with no room for the exit details: %v", got)
+	// no room for a title and the exits: the exits stay, and the result never has
+	// more lines than rows. With one row the IPv6 exit (the last) is the one left
+	if got := fitPopupLines(lines, 2, 2); strings.Join(got, "|") != "TCP exit 192.0.2.1|IPv6 exit: yes (2001:db8::1)" {
+		t.Fatalf("two rows: %v", got)
+	}
+	if got := fitPopupLines(lines, 1, 2); strings.Join(got, "|") != "IPv6 exit: yes (2001:db8::1)" {
+		t.Fatalf("one row: %v", got)
+	}
+	three := []string{"title", "state", "TCP exit 192.0.2.1", "UDP exit 192.0.2.1", "IPv6 exit: yes (2001:db8::1)"}
+	if got := fitPopupLines(three, 3, 3); len(got) != 3 || got[2] != "IPv6 exit: yes (2001:db8::1)" {
+		t.Fatalf("three rows with three exits: %v", got)
 	}
 }
 

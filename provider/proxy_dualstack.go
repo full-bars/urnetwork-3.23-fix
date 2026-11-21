@@ -75,6 +75,10 @@ func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.T
 type proxyIPv6Gate struct {
 	running bool
 	lastAt  time.Time
+	// lastExpiry is when the result counted at lastAt stops being evidence. A
+	// replacement that arrives after it does not add to a streak the expired
+	// result started.
+	lastExpiry time.Time
 	// lastUdpAt is the IPv4 UDP check the gate last counted against a running
 	// transport. A new check that disqualifies counts once even while the IPv6
 	// record is unchanged, so an active proxy that loses its UDP relay stops
@@ -90,7 +94,12 @@ type proxyIPv6Gate struct {
 func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIPv6Result) (start bool, stop bool) {
 	want := proxyIPv6TransportWanted(udp, v6, now)
 	if !v6.At.IsZero() && !v6.At.Equal(self.lastAt) {
+		if !self.running && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
+			// the pending first result had expired before this one arrived
+			self.yes = 0
+		}
 		self.lastAt = v6.At
+		self.lastExpiry = v6.At.Add(2 * v6.Interval)
 		if want {
 			self.yes++
 			self.no = 0
