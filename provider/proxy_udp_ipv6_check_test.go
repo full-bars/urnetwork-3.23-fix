@@ -374,7 +374,16 @@ func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) 
 // A stage that stops on its own keeps the previous result and waits before the
 // next sweep tick measures the identity again. Without the wait every tick holds
 // a probe slot for the same identity.
+// pinSyntheticStageClock keeps a test on the times it passes in.
+func pinSyntheticStageClock(t *testing.T) {
+	t.Helper()
+	previous := ipv6CompletionTime
+	ipv6CompletionTime = func(now time.Time) time.Time { return now }
+	t.Cleanup(func() { ipv6CompletionTime = previous })
+}
+
 func TestIPv6StageThatStopsEarlyBacksOff(t *testing.T) {
+	pinSyntheticStageClock(t)
 	h := newIPv6CheckHarness(t)
 	h.ipv6OK = false
 	settings := ipv6TestSettings()
@@ -476,6 +485,7 @@ func TestIPv6RefreshRechecksTheDueStateUnderTheLock(t *testing.T) {
 // due on every tick, or the IPv6-due order keeps it at the front of the batch
 // and the other due identities are never dispatched.
 func TestIPv6StageCutShortByTheTickDefersTheRetry(t *testing.T) {
+	pinSyntheticStageClock(t)
 	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
@@ -509,9 +519,10 @@ func TestIPv6StageCutShortByTheTickDefersTheRetry(t *testing.T) {
 // that was passed in, so time spent waiting for a slot and probing does not eat
 // into it.
 func TestIPv6StageRetryBackoffStartsAtCompletion(t *testing.T) {
-	previous := ipv6StageElapsed
-	ipv6StageElapsed = func(time.Time) time.Duration { return 5 * time.Minute }
-	t.Cleanup(func() { ipv6StageElapsed = previous })
+	previous := ipv6CompletionTime
+	// the batch took five minutes to reach this refresh
+	ipv6CompletionTime = func(now time.Time) time.Time { return now.Add(5 * time.Minute) }
+	t.Cleanup(func() { ipv6CompletionTime = previous })
 
 	h := newIPv6CheckHarness(t)
 	h.ipv6OK = false

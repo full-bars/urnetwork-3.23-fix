@@ -389,11 +389,20 @@ type proxyUDPCheckEntry struct {
 // stopped early before the sweep measures it again.
 const proxyIPv6StopBackoff = 15 * time.Minute
 
-// ipv6StageElapsed measures how long a refresh has been running when it stamps
-// its retry, so the backoff starts when the stage finished rather than when the
-// sweep passed its time in. A variable so a test can pass a synthetic duration
-// with a synthetic now.
-var ipv6StageElapsed = time.Since
+// ipv6CompletionTime returns the time the stage finished. A variable so a test
+// can pin it; production reads the real clock, which also counts the time
+// between the sweep picking its batch and this refresh running.
+var ipv6CompletionTime = func(now time.Time) time.Time { return time.Now() }
+
+// ipv6StageCompletedAt is the stamp base for a retry. It never lands before the
+// sweep's own time, so a pinned synthetic clock stays consistent with it.
+func ipv6StageCompletedAt(now time.Time) time.Time {
+	completed := ipv6CompletionTime(now)
+	if completed.Before(now) {
+		return now
+	}
+	return completed
+}
 
 // proxyIPv6CutShortRetry is how long an identity waits when the sweep's tick
 // deadline cut its stage short, so nothing was measured. It retries sooner than
@@ -670,7 +679,6 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		self.mu.Unlock()
 		return
 	}
-	startedAt := time.Now()
 	previous := entry.ipv6
 	self.ipv6Seq++
 	token := self.ipv6Seq
@@ -706,10 +714,9 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		return
 	}
 	current.ipv6Running = false
-	// the stage finished about now plus the time this refresh has run: the
-	// backoff counts from completion, so a wait for a slot or a long probe does
-	// not shorten it
-	completedAt := now.Add(ipv6StageElapsed(startedAt))
+	// the backoff counts from the moment the stage finished, so neither the wait
+	// for a worker slot nor a long probe shortens it
+	completedAt := ipv6StageCompletedAt(now)
 	if !measuredOK && !skipped && ctx.Err() == nil {
 		// the stage stopped on its own: keep the previous result and wait before
 		// the next tick measures this identity again
