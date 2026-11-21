@@ -217,6 +217,14 @@ func newCertEpochWriteFixture(t *testing.T) (*SendSequence, *peerEncryptionSessi
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
 
+	// The fixture client runs the real contract path, and its oob has no
+	// backend, so a failed contract round trip records a process-wide backend
+	// failure. Two of these tests inside the degraded window push
+	// isBackendDegraded() true for every later test in the package, which paces
+	// their contract creation at 30s and wedges establishment. Restore it.
+	backendFailuresBefore := loadBackendFailureState()
+	t.Cleanup(func() { backendFailures.Store(&backendFailuresBefore) })
+
 	clientSettings := DefaultClientSettings()
 	clientSettings.EncryptionSettings.Mode = EncryptionModeRequired
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)

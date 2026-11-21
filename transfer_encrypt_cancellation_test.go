@@ -20,6 +20,11 @@ func newCancellationSession(t *testing.T, companion bool) *peerEncryptionSession
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	t.Cleanup(cancel)
+	// Same global to restore as the cert epoch fixture: the client's failing
+	// contract round trip must not export a degraded backend to later tests.
+	backendFailuresBefore := loadBackendFailureState()
+	t.Cleanup(func() { backendFailures.Store(&backendFailuresBefore) })
+
 	clientSettings := DefaultClientSettings()
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), clientSettings)
 	manager := NewEncryptionSessionManager(ctx, client, client.ClientKeyManager(), clientSettings.EncryptionSettings)
