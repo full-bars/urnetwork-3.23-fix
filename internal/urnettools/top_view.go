@@ -596,6 +596,8 @@ func (m *topModel) drawIPv6ProxyCoverage(b *tui.Buffer, y int) int {
 		text  string
 		style tui.Style
 		keep  bool
+		// optional segments go first when the line has to shrink
+		optional bool
 	}
 	build := func(short bool) []seg {
 		unkLabel := "unknown"
@@ -603,15 +605,15 @@ func (m *topModel) drawIPv6ProxyCoverage(b *tui.Buffer, y int) int {
 			unkLabel = "unk"
 		}
 		var s []seg
-		s = append(s, seg{strconv.Itoa(v6.Yes) + " yes", th.OK, true})
-		s = append(s, seg{strconv.Itoa(v6.No) + " no", th.Warn, false})
-		s = append(s, seg{strconv.Itoa(v6.Unknown) + " " + unkLabel, th.Dim, false})
+		s = append(s, seg{text: strconv.Itoa(v6.Yes) + " yes", style: th.OK, keep: true})
+		s = append(s, seg{text: strconv.Itoa(v6.No) + " no", style: th.Warn, keep: false})
+		s = append(s, seg{text: strconv.Itoa(v6.Unknown) + " " + unkLabel, style: th.Dim, keep: false})
 		if v6.NotProbed > 0 {
 			npLabel := "not probed"
 			if short {
 				npLabel = "unprobed"
 			}
-			s = append(s, seg{strconv.Itoa(v6.NotProbed) + " " + npLabel, th.Dim, false})
+			s = append(s, seg{text: strconv.Itoa(v6.NotProbed) + " " + npLabel, style: th.Dim, keep: false})
 		}
 		udpText := fmt.Sprintf("(udp: %d yes", v6.UDPYes)
 		if v6.UDPNo > 0 {
@@ -621,7 +623,7 @@ func (m *topModel) drawIPv6ProxyCoverage(b *tui.Buffer, y int) int {
 			udpText += fmt.Sprintf(", %d %s", v6.UDPUnknown, unkLabel)
 		}
 		udpText += ")"
-		s = append(s, seg{udpText, th.Dim, true})
+		s = append(s, seg{text: udpText, style: th.Dim, keep: true, optional: true})
 		return s
 	}
 
@@ -647,9 +649,17 @@ func (m *topModel) drawIPv6ProxyCoverage(b *tui.Buffer, y int) int {
 	for width(segs) > room {
 		drop := -1
 		for i := len(segs) - 1; i >= 0; i-- {
-			if !segs[i].keep {
+			if segs[i].optional {
 				drop = i
 				break
+			}
+		}
+		if drop < 0 {
+			for i := len(segs) - 1; i >= 0; i-- {
+				if !segs[i].keep {
+					drop = i
+					break
+				}
 			}
 		}
 		if drop < 0 {
