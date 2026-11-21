@@ -111,14 +111,9 @@ type proxyIPv6Gate struct {
 // once: a proxy that is no longer measured is no longer trusted.
 func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIPv6Result) (start bool, stop bool) {
 	want := proxyIPv6TransportWanted(udp, v6, now)
-	// the record is consumed whether or not it arrives with a new check: a sweep
-	// publishes its udp result and its ipv6 result under the same check, and the
-	// second one must not look new to the next check
+	newCheck := !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastCheckedAt)
 	v6New := !v6.At.IsZero() && !v6.At.Equal(self.lastV6At)
-	if v6New {
-		self.lastV6At = v6.At
-	}
-	if !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastCheckedAt) {
+	if newCheck {
 		if !self.running && self.yes > 0 && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
 			// the pending first result expired before this observation: its
 			// evidence does not carry over
@@ -128,24 +123,31 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		if !v6.At.IsZero() {
 			self.lastExpiry = v6.At.Add(2 * v6.Interval)
 		}
-		alreadyCounted := !udp.CheckedAt.IsZero() && udp.CheckedAt.Equal(self.lastCountedCheck)
 		switch {
 		case want:
-			// a qualifying udp check ends the failure streak. It does not add
-			// to the start streak: the transport is started on measurements,
-			// and udp checks arrive far more often than ipv6 measurements
+			// a qualifying udp check ends the failure streak
 			self.no = 0
-			if v6New {
-				self.yes++
-			}
-		case alreadyCounted:
-			// one udp check adds at most one failure, whatever order its udp and
-			// ipv6 results are published in
-		case v6New, proxyIPv6RecordQualifies(udp, v6, now):
-			// a new ipv6 measurement that disqualifies, or a udp result that
-			// disqualifies while the ipv6 record qualifies: either is one
-			// failure. A udp check alone must not count the ipv6 failure that
-			// is still standing, or one failure plus any check would stop it.
+		case udp.CheckedAt.Equal(self.lastCountedCheck):
+			// one udp check adds at most one stop observation
+		case proxyIPv6RecordQualifies(udp, v6, now):
+			// the udp result disqualifies while the record itself qualifies
+			self.no++
+			self.yes = 0
+			self.lastCountedCheck = udp.CheckedAt
+		}
+	}
+	if v6New {
+		// the record is consumed whenever it arrives, with its check or a poll
+		// later: a sweep publishes its udp result first and its measurement a
+		// moment after, and that measurement must still count
+		self.lastV6At = v6.At
+		if want {
+			// a new qualifying measurement advances the start streak
+			self.yes++
+			self.no = 0
+		} else if !udp.CheckedAt.Equal(self.lastCountedCheck) {
+			// the check has not added a stop observation yet, so the new
+			// measurement supplies the one this sweep is allowed
 			self.no++
 			self.yes = 0
 			self.lastCountedCheck = udp.CheckedAt

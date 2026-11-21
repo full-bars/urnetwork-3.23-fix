@@ -1106,3 +1106,25 @@ func TestProxyIPv6GateDoesNotRecountARecordThatSaysNoUdp(t *testing.T) {
 		t.Fatalf("stop streak = %d, want 1: the same record was counted again", gate.no)
 	}
 }
+
+// A sweep publishes its udp result first and its ipv6 result a moment later,
+// under the same check. A poll between the two consumes the check, and the
+// measurement that arrives after it must still count: the start streak counts
+// new measurements, not checks.
+func TestProxyIPv6GateCountsAMeasurementPublishedAfterItsCheck(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+
+	gate.observe(t0, ok(t0), yes(t0))
+	t1 := t0.Add(13 * time.Hour)
+	// the udp publication of the second sweep, still paired with the old record
+	if start, _ := gate.observe(t1, ok(t1), yes(t0)); start {
+		t.Fatal("the udp publication alone started the transport")
+	}
+	// the ipv6 publication of the same sweep, one poll later
+	if start, _ := gate.observe(t1.Add(time.Second), ok(t1), yes(t1)); !start {
+		t.Fatal("a measurement published after its own check did not count toward the start streak")
+	}
+}
