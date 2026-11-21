@@ -389,6 +389,13 @@ type proxyUDPCheckEntry struct {
 // stopped early before the sweep measures it again.
 const proxyIPv6StopBackoff = 15 * time.Minute
 
+// proxyIPv6CutShortRetry is how long an identity waits when the sweep's tick
+// deadline cut its stage short, so nothing was measured. It retries sooner than
+// after a completed measurement, but not on the next tick: a stage that is cut
+// short stays due, and the IPv6-due order would then keep it at the front of
+// every batch and starve the other due identities.
+const proxyIPv6CutShortRetry = 5 * time.Minute
+
 // ipv6DueLocked is whether the sweep should measure the identity now. The
 // caller holds the store lock (or owns the entry).
 func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
@@ -696,6 +703,12 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		// the stage stopped on its own: keep the previous result and wait before
 		// the next tick measures this identity again
 		current.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)
+	}
+	if !measuredOK && ctx.Err() != nil {
+		// the tick deadline cut the stage short, so nothing was measured. Without
+		// a stamp the identity stays due and the IPv6-due order keeps it at the
+		// front of every batch, starving the other due identities
+		current.ipv6RetryAt = now.Add(proxyIPv6CutShortRetry)
 	}
 	if measuredOK && ctx.Err() == nil {
 		current.ipv6 = measured

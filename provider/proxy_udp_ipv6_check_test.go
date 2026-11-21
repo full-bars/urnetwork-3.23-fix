@@ -469,3 +469,36 @@ func TestIPv6RefreshRechecksTheDueStateUnderTheLock(t *testing.T) {
 		t.Fatalf("a refresh after the wait did not start the stage: %d runs", got)
 	}
 }
+
+// A stage the sweep's tick deadline cut short measured nothing. It must not stay
+// due on every tick, or the IPv6-due order keeps it at the front of the batch
+// and the other due identities are never dispatched.
+func TestIPv6StageCutShortByTheTickDefersTheRetry(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	h.store.mu.Lock()
+	h.store.entries[settings.Key()] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now, completedAt: now}
+	h.store.mu.Unlock()
+
+	// the tick deadline fires before the stage can start
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	h.store.refreshIPv6(ctx, settings, settings.Key(), now)
+
+	h.store.mu.Lock()
+	entry := h.store.entries[settings.Key()]
+	retry := entry.ipv6RetryAt
+	dueNextTick := entry.ipv6DueLocked(now.Add(time.Second))
+	dueAfter := entry.ipv6DueLocked(now.Add(proxyIPv6CutShortRetry))
+	h.store.mu.Unlock()
+	if got := h.ipv6Runs.Load(); got != 0 {
+		t.Fatalf("the stage ran with a cancelled context: %d runs", got)
+	}
+	if dueNextTick {
+		t.Fatal("a cut-short stage left the identity due on the next tick")
+	}
+	if !dueAfter {
+		t.Fatalf("the identity is not due after the short deferral (retry %v, want %v)", retry, now.Add(proxyIPv6CutShortRetry))
+	}
+}
