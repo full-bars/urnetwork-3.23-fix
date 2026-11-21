@@ -100,3 +100,48 @@ func TestBootstrapLookupAsksForTheRootedName(t *testing.T) {
 		}
 	}
 }
+
+func TestBootstrapLookupGetsTheAsciiNameOfAnInternationalName(t *testing.T) {
+	cache, _, _ := bootstrapTestCache(t, 200*time.Millisecond)
+	var got atomic.Value
+	cache.bootstrapLookupIP = func(ctx context.Context, network, host string) ([]net.IP, error) {
+		got.Store(host)
+		return []net.IP{net.ParseIP("192.0.2.81")}, nil
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	cache.QueryResult(ctx, "A", "bücher.space.example")
+	if host, _ := got.Load().(string); host != "xn--bcher-kva.space.example" {
+		t.Fatalf("fallback asked for %q, want the ascii form", host)
+	}
+}
+
+func TestBootstrapAnswerIsNotServedStalePastItsCap(t *testing.T) {
+	now := time.Now()
+	addr := netip.MustParseAddr("192.0.2.81")
+	ordinary := &DohResult{Time: now, AddrExpirations: map[netip.Addr]time.Time{addr: now.Add(time.Minute)}}
+	bootstrap := &DohResult{Time: now, AddrExpirations: ordinary.AddrExpirations, HardExpiration: now.Add(time.Minute)}
+	if !bootstrap.staleUsable(now.Add(30*time.Second)) || !ordinary.staleUsable(now.Add(90*time.Second)) {
+		t.Fatal("an answer inside its cap and an ordinary stale answer must stay usable")
+	}
+	if bootstrap.staleUsable(now.Add(90 * time.Second)) {
+		t.Fatal("a bootstrap answer past its cap was served stale")
+	}
+}
+
+func TestBootstrapResolveRecordsTheHardExpiration(t *testing.T) {
+	cache, _, _ := bootstrapTestCache(t, 200*time.Millisecond)
+	ctx, cancel := context.WithTimeout(context.Background(), 300*time.Millisecond)
+	defer cancel()
+	cache.QueryResult(ctx, "A", "connect.space.example")
+	cache.stateLock.Lock()
+	defer cache.stateLock.Unlock()
+	if len(cache.queryResultExpiration) != 1 {
+		t.Fatalf("cached results = %d", len(cache.queryResultExpiration))
+	}
+	for _, r := range cache.queryResultExpiration {
+		if r.HardExpiration.IsZero() || r.HardExpiration.After(r.Time.Add(cache.settings.LocalExpiration)) {
+			t.Fatalf("hard expiration %v for a result at %v", r.HardExpiration, r.Time)
+		}
+	}
+}

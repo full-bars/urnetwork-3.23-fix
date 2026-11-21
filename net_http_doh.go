@@ -894,6 +894,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	addrExpirations := map[netip.Addr]time.Time{}
 	cacheMiss := false
 	minCacheTtl := self.settings.MinCacheTtl
+	var bootstrapHardExpiration time.Time
 
 	if self.settings.DnsResolverSettings.EnableRemoteDoh {
 		queryResult := dohQueryWithClientResult(resolverCtx, self.httpClient, self.stats, remoteDohServers(self.settings, self.settings.IpVersion), self.settings.IpVersion, q.RecordType, self.settings, q.Domain)
@@ -987,7 +988,10 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 	}
 
 	if len(addrExpirations) == 0 && !cacheMiss && lookupFamilyEnabled && dohCtx.Err() == nil && bootstrapPlainDnsName(self.settings, q.Domain) {
-		ips, err := self.bootstrapLookupIP(dohCtx, lookupNetwork, q.Domain)
+		// The scope check above matches the ASCII form of the name, so the
+		// fallback asks for the same form. The pure-Go resolver rejects a name
+		// in Unicode form before it sends a query.
+		ips, err := self.bootstrapLookupIP(dohCtx, lookupNetwork, normalizeInternalDohName(q.Domain))
 		if err == nil {
 			expiration := self.settings.LocalExpiration
 			if self.settings.BootstrapPlainDnsExpiration > 0 {
@@ -996,6 +1000,8 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			for _, ip := range ips {
 				if addr, ok := netIPAddr(ip); ok {
 					addrExpirations[addr] = now.Add(expiration)
+					// serve-stale must not extend a fallback answer past its cap
+					bootstrapHardExpiration = now.Add(expiration)
 				}
 			}
 		}
@@ -1007,6 +1013,7 @@ func (self *DohCache) resolve(ctx context.Context, q DohKey, now time.Time) ([]n
 			Time:            now,
 			AddrExpirations: addrExpirations,
 			Miss:            cacheMiss && len(addrExpirations) == 0,
+			HardExpiration:  bootstrapHardExpiration,
 		}
 		func() {
 			self.stateLock.Lock()
@@ -1896,6 +1903,10 @@ type DohResult struct {
 	Time            time.Time
 	AddrExpirations map[netip.Addr]time.Time
 	Miss            bool
+	// HardExpiration, when set, is the last instant the result may be served
+	// at all. Serve-stale does not extend it. Only answers from the bootstrap
+	// plain dns fallback carry one.
+	HardExpiration time.Time
 }
 
 // Valid reports whether the result can still be served at now: a result
@@ -1923,6 +1934,9 @@ func (self *DohResult) Valid(now time.Time, missExpiration time.Duration) bool {
 // resolver outage instead of returning SERVFAIL.
 func (self *DohResult) staleUsable(now time.Time) bool {
 	if len(self.AddrExpirations) == 0 {
+		return false
+	}
+	if !self.HardExpiration.IsZero() && !self.HardExpiration.After(now) {
 		return false
 	}
 	return self.Time.Add(dohStaleServeBound).After(now)
