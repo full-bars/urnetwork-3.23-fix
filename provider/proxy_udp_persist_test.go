@@ -244,3 +244,29 @@ func TestUDPPersistRememberedExitDoesNotJoinAFailedCheck(t *testing.T) {
 		t.Fatalf("remembered exit lost on restore: %q", remembered)
 	}
 }
+
+// A successful or mismatched check recorded its exits, so a restart keeps them
+// visible; only a result that never recorded an exit stays empty.
+func TestUDPPersistKeepsTheExitOfARestoredGoodCheck(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "example.test:1234"}
+	path := filepath.Join(t.TempDir(), "state.json")
+	file := udpPersistFile{Version: 2, Entries: []udpPersistEntry{{
+		Key:     udpPersistKey(ps.Key()),
+		Status:  proxyUDPOK,
+		At:      now,
+		TCPExit: "192.0.2.7",
+	}}}
+	b, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, b, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	store := newProxyUDPCheckStore(nil)
+	store.enablePersistence(path, now)
+	if tcp, _ := store.exitsFor(ps.Key(), now); tcp != "192.0.2.7" {
+		t.Fatalf("a restored successful check lost its tcp exit: %q", tcp)
+	}
+}
