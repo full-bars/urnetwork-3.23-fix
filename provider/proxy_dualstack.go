@@ -397,6 +397,10 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 // connect.NewProxiedFamilyClientStrategy). It owns its budget, runs H1 only and
 // shares the identity's client limit backoff, so a client limit hold of the
 // identity holds it too.
+// newProxiedIPv6Strategy builds the strategy of the extra transport. It is a
+// variable so a test can hold the strategy the builder hands to the transport.
+var newProxiedIPv6Strategy = connect.NewProxiedFamilyClientStrategy
+
 func newProxiedIPv6Builder(
 	ctx context.Context,
 	clientStrategySettings *connect.ClientStrategySettings,
@@ -422,7 +426,10 @@ func newProxiedIPv6Builder(
 			target = familyBudgetReferenceByteCount
 		}
 		settings.PlatformTransportBudget = connect.NewPlatformTransportBudgetForMemoryTarget(target)
-		strategy := connect.NewProxiedFamilyClientStrategy(ctx, clientStrategySettings, 6)
+		// this strategy is built for this transport alone, so the transport
+		// releases it when the extra transport stops
+		settings.OwnClientStrategy = true
+		strategy := newProxiedIPv6Strategy(ctx, clientStrategySettings, 6)
 		return connect.NewPlatformTransportWithTargetMode(
 			ctx, strategy, routeManager, urlV6, auth, connect.TransportModeAuto, &settings,
 		)

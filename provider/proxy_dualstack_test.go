@@ -776,3 +776,44 @@ func TestProxiedIPv6ControllerDoesNotRecountACachedResultAfterReEnable(t *testin
 		t.Fatal("two new results after the re-enable did not start the transport")
 	}
 }
+
+// The extra transport builds its own strategy, so it owns it: stopping the
+// extra transport releases the strategy it was given.
+func TestProxiedIPv6BuilderOwnsItsStrategy(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	platformSettings := &connect.PlatformTransportSettings{}
+	build := newProxiedIPv6Builder(
+		ctx,
+		&connect.ClientStrategySettings{},
+		&connect.RouteManager{},
+		"wss://connect.bringyour.com",
+		platformSettings,
+	)
+	if build == nil {
+		t.Fatal("the builder declined")
+	}
+
+	var built *connect.ClientStrategy
+	previous := newProxiedIPv6Strategy
+	newProxiedIPv6Strategy = func(ctx context.Context, settings *connect.ClientStrategySettings, ipFamily int) *connect.ClientStrategy {
+		built = connect.NewClientStrategy(ctx, connect.DefaultClientStrategySettings())
+		return built
+	}
+	t.Cleanup(func() { newProxiedIPv6Strategy = previous })
+
+	extra := build(&connect.ClientAuth{ByJwt: "jwt"})
+	if extra == nil {
+		t.Fatal("the builder returned no transport")
+	}
+	if built == nil {
+		t.Fatal("the builder built no strategy")
+	}
+	if built.Closed() {
+		t.Fatal("the strategy was closed before the transport ran")
+	}
+	extra.Close()
+	if !built.Closed() {
+		t.Fatal("closing the extra transport left its own strategy open")
+	}
+}
