@@ -389,8 +389,10 @@ func TestIPv6StageThatStopsEarlyBacksOff(t *testing.T) {
 		t.Fatal("a stage that stopped early must keep the previous (empty) result")
 	}
 	h.store.mu.Lock()
+	// the stamp is now plus the backoff plus however long the run took, so the
+	// checks below allow a second for that
 	dueSoon := h.store.entries[settings.Key()].ipv6DueLocked(now.Add(time.Minute))
-	dueLater := h.store.entries[settings.Key()].ipv6DueLocked(now.Add(proxyIPv6StopBackoff))
+	dueLater := h.store.entries[settings.Key()].ipv6DueLocked(now.Add(proxyIPv6StopBackoff + time.Second))
 	h.store.mu.Unlock()
 	if dueSoon || !dueLater {
 		t.Fatalf("due after 1 minute = %v (want false), after the backoff = %v (want true)", dueSoon, dueLater)
@@ -399,13 +401,13 @@ func TestIPv6StageThatStopsEarlyBacksOff(t *testing.T) {
 	if got := h.ipv6Runs.Load(); got != 1 {
 		t.Fatalf("stage ran again inside the backoff: %d runs", got)
 	}
-	h.store.Check(ctx, settings, now.Add(proxyIPv6StopBackoff))
+	h.store.Check(ctx, settings, now.Add(proxyIPv6StopBackoff+time.Second))
 	if got := h.ipv6Runs.Load(); got != 2 {
 		t.Fatalf("stage did not run after the backoff: %d runs", got)
 	}
 	// a measurement that completes clears the wait
 	h.ipv6OK = true
-	h.store.Check(ctx, settings, now.Add(2*proxyIPv6StopBackoff))
+	h.store.Check(ctx, settings, now.Add(2*proxyIPv6StopBackoff+2*time.Second))
 	h.store.mu.Lock()
 	retry := h.store.entries[settings.Key()].ipv6RetryAt
 	h.store.mu.Unlock()
@@ -490,7 +492,7 @@ func TestIPv6StageCutShortByTheTickDefersTheRetry(t *testing.T) {
 	entry := h.store.entries[settings.Key()]
 	retry := entry.ipv6RetryAt
 	dueNextTick := entry.ipv6DueLocked(now.Add(time.Second))
-	dueAfter := entry.ipv6DueLocked(now.Add(proxyIPv6CutShortRetry))
+	dueAfter := entry.ipv6DueLocked(now.Add(proxyIPv6CutShortRetry + time.Second))
 	h.store.mu.Unlock()
 	if got := h.ipv6Runs.Load(); got != 0 {
 		t.Fatalf("the stage ran with a cancelled context: %d runs", got)
@@ -499,6 +501,29 @@ func TestIPv6StageCutShortByTheTickDefersTheRetry(t *testing.T) {
 		t.Fatal("a cut-short stage left the identity due on the next tick")
 	}
 	if !dueAfter {
-		t.Fatalf("the identity is not due after the short deferral (retry %v, want %v)", retry, now.Add(proxyIPv6CutShortRetry))
+		t.Fatalf("the identity is not due after the short deferral (retry %v, want about %v)", retry, now.Add(proxyIPv6CutShortRetry))
+	}
+}
+
+// The retry backoff runs from when the stage finished, not from the sweep time
+// that was passed in, so time spent waiting for a slot and probing does not eat
+// into it.
+func TestIPv6StageRetryBackoffStartsAtCompletion(t *testing.T) {
+	previous := ipv6StageElapsed
+	ipv6StageElapsed = func(time.Time) time.Duration { return 5 * time.Minute }
+	t.Cleanup(func() { ipv6StageElapsed = previous })
+
+	h := newIPv6CheckHarness(t)
+	h.ipv6OK = false
+	settings := ipv6TestSettings()
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	h.store.Check(withIPv6Sweep(context.Background()), settings, now)
+	h.store.mu.Lock()
+	retry := h.store.entries[settings.Key()].ipv6RetryAt
+	h.store.mu.Unlock()
+	want := now.Add(5*time.Minute + proxyIPv6StopBackoff)
+	if !retry.Equal(want) {
+		t.Fatalf("retry at %v, want %v (backoff measured from completion)", retry, want)
 	}
 }

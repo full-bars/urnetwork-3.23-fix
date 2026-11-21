@@ -389,6 +389,12 @@ type proxyUDPCheckEntry struct {
 // stopped early before the sweep measures it again.
 const proxyIPv6StopBackoff = 15 * time.Minute
 
+// ipv6StageElapsed measures how long a refresh has been running when it stamps
+// its retry, so the backoff starts when the stage finished rather than when the
+// sweep passed its time in. A variable so a test can pass a synthetic duration
+// with a synthetic now.
+var ipv6StageElapsed = time.Since
+
 // proxyIPv6CutShortRetry is how long an identity waits when the sweep's tick
 // deadline cut its stage short, so nothing was measured. It retries sooner than
 // after a completed measurement, but not on the next tick: a stage that is cut
@@ -664,6 +670,7 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		self.mu.Unlock()
 		return
 	}
+	startedAt := time.Now()
 	previous := entry.ipv6
 	self.ipv6Seq++
 	token := self.ipv6Seq
@@ -699,16 +706,20 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		return
 	}
 	current.ipv6Running = false
+	// the stage finished about now plus the time this refresh has run: the
+	// backoff counts from completion, so a wait for a slot or a long probe does
+	// not shorten it
+	completedAt := now.Add(ipv6StageElapsed(startedAt))
 	if !measuredOK && !skipped && ctx.Err() == nil {
 		// the stage stopped on its own: keep the previous result and wait before
 		// the next tick measures this identity again
-		current.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)
+		current.ipv6RetryAt = completedAt.Add(proxyIPv6StopBackoff)
 	}
 	if !measuredOK && ctx.Err() != nil {
 		// the tick deadline cut the stage short, so nothing was measured. Without
 		// a stamp the identity stays due and the IPv6-due order keeps it at the
 		// front of every batch, starving the other due identities
-		current.ipv6RetryAt = now.Add(proxyIPv6CutShortRetry)
+		current.ipv6RetryAt = completedAt.Add(proxyIPv6CutShortRetry)
 	}
 	if measuredOK && ctx.Err() == nil {
 		current.ipv6 = measured
