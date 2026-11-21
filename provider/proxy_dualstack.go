@@ -362,7 +362,14 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (the UDP evidence expired)\n")
 		}
-		self.gate = proxyIPv6Gate{}
+		// clear the streaks but keep which results were already counted: the ipv6
+		// record is still valid, and the next check must not count it again
+		self.gate = proxyIPv6Gate{
+			lastCheckedAt:    self.gate.lastCheckedAt,
+			lastExpiry:       self.gate.lastExpiry,
+			lastV6At:         self.gate.lastV6At,
+			lastCountedCheck: self.gate.lastCountedCheck,
+		}
 		return
 	}
 	if v6.At.IsZero() {

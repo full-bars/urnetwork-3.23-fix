@@ -1128,3 +1128,37 @@ func TestProxyIPv6GateCountsAMeasurementPublishedAfterItsCheck(t *testing.T) {
 		t.Fatal("a measurement published after its own check did not count toward the start streak")
 	}
 }
+
+// Stopping because the udp evidence expired clears the streaks but keeps the
+// stamps that say which results were counted, so the still-valid ipv6 record
+// does not count as a new measurement after the next check.
+func TestProxiedIPv6ControllerKeepsCountedStampsAcrossAnExpiryStop(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 72*time.Hour))
+	controller.step(t0.Add(time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+
+	// the udp result expires and the transport stops; the ipv6 record stays valid
+	now := t0.Add(time.Minute + proxyUDPOKTTL + time.Minute)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 72*time.Hour))
+	controller.step(now)
+	if controller.transport.hasExtra() {
+		t.Fatal("expired udp evidence left the transport running")
+	}
+
+	// a new check arrives with the same ipv6 record: one fresh measurement after
+	// that must not be enough to start again
+	storeWithEntry(store, settings, proxyUDPOK, now.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 72*time.Hour))
+	controller.step(now.Add(time.Minute))
+	storeWithEntry(store, settings, proxyUDPOK, now.Add(2*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", now.Add(2*time.Minute), 72*time.Hour))
+	controller.step(now.Add(2 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("the cached ipv6 record counted again after an expiry stop")
+	}
+}
