@@ -371,6 +371,14 @@ var (
 // shouldLogAuthErr reports whether an authentication error should be logged and returns the throttle state.
 func shouldLogAuthErr() (bool, int64) { return authErrThrottle.Allow(time.Now()) }
 
+// proxySettings returns the proxy this transport dials through, if any.
+func (self *PlatformTransport) proxySettings() *ProxySettings {
+	if self == nil || self.clientStrategy == nil {
+		return nil
+	}
+	return self.clientStrategy.ConnectSettings().ProxySettings
+}
+
 // logAuthError logs a failed dial of one of this transport's modes, throttled
 // at INFO across every transport (shouldLogAuthErr) and every attempt at
 // V(1). The line names the mode and a pinned transport's family, and the
@@ -381,15 +389,17 @@ func (self *PlatformTransport) logAuthError(clientId Id, mode TransportMode, err
 	if self.pinned() {
 		leg = fmt.Sprintf("%s ipv%d", mode, self.ipFamily)
 	}
+	// the cause chain can name the proxy endpoint: report the slot instead
+	causes := RedactProxyEndpoint(httpRequestErrorWithCauses(err), self.proxySettings())
 	if ok, suppressed := shouldLogAuthErr(); ok {
 		if suppressed > 0 {
-			self.log.Infof("[t]auth error %s (%s) = %s (%d suppressed)\n", clientId, leg, httpRequestErrorWithCauses(err), suppressed)
+			self.log.Infof("[t]auth error %s (%s) = %s (%d suppressed)\n", clientId, leg, causes, suppressed)
 		} else {
-			self.log.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, httpRequestErrorWithCauses(err))
+			self.log.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, causes)
 		}
 	} else if v := self.log.V(1); v.Enabled() {
 		// throttled at INFO; -v=1 still shows every attempt
-		v.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, httpRequestErrorWithCauses(err))
+		v.Infof("[t]auth error %s (%s) = %s\n", clientId, leg, causes)
 	}
 }
 

@@ -511,10 +511,13 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 
 	conn, err := dialContext(ctx, network, addr)
 	if log := loggerOrDefault(self.Log).V(2); log.Enabled() {
+		// a proxied dial reports the slot, never the proxy endpoint: the raw
+		// dialer error carries it
+		line := RedactProxyEndpoint(fmt.Sprintf("[net]dial %s %s", network, addr), self.ProxySettings)
 		if err == nil {
-			log.Infof("[net]dial %s %s success\n", network, addr)
+			log.Infof("%s success\n", line)
 		} else {
-			log.Infof("[net]dial %s %s err=%s\n", network, addr, err)
+			log.Infof("%s err=%s\n", line, RedactProxyEndpoint(err.Error(), self.ProxySettings))
 		}
 	}
 	return conn, err
@@ -540,6 +543,29 @@ type ProxySettings struct {
 	Network string
 	Address string
 	Auth    *proxy.Auth
+}
+
+// proxyLogLabel names a proxy slot in a log line without its endpoint.
+func proxyLogLabel(settings *ProxySettings) string {
+	if settings == nil {
+		return "proxy"
+	}
+	return fmt.Sprintf("proxy[%d]", settings.Index)
+}
+
+// RedactProxyEndpoint replaces the configured proxy's address and host in text
+// with its slot label. A log line or metric label on the proxy path says which
+// slot failed, never where the proxy is.
+func RedactProxyEndpoint(text string, settings *ProxySettings) string {
+	if settings == nil || settings.Address == "" {
+		return text
+	}
+	label := proxyLogLabel(settings)
+	text = strings.ReplaceAll(text, settings.Address, label)
+	if host, _, err := net.SplitHostPort(settings.Address); err == nil && host != "" {
+		text = strings.ReplaceAll(text, host, label)
+	}
+	return text
 }
 
 // String omits credentials and rejects addresses that are not bare host:port.
