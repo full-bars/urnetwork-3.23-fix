@@ -17,7 +17,7 @@ permissions:
   contents: read
 
 concurrency:
-  group: ${{ github.workflow }}-${{ github.event.pull_request.head.ref || github.ref }}
+  group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
@@ -119,7 +119,8 @@ jobs:
             echo "=== installer script parses under the real OpenBSD sh ==="
             # /bin/sh on OpenBSD is ksh, not dash. The Linux unit tests parse
             # the installer with dash, so only this run proves it loads here.
-            sh -n scripts/Provider_Install_OpenBSD.sh && echo "installer SYNTAX OK"
+            sh -n scripts/Provider_Install_OpenBSD.sh || { echo "FATAL: installer syntax check failed"; exit 1; }
+            echo "installer SYNTAX OK"
 
             echo "=== stand-in provider keeps the provider argv ==="
             # The rc.d template finds the process by argv ("<binary> provide")
@@ -192,11 +193,11 @@ jobs:
             sleep 1
             ./out/urnet-tools providers > /tmp/providers.out 2>&1 || true
             cat /tmp/providers.out
-            grep -q "$pid1" /tmp/providers.out || { echo "FATAL: discovery did not report the live pid $pid1"; ps -A -o pid=,uid=,ucomm= | head -30; exit 1; }
+            grep -qw -- "$pid1" /tmp/providers.out || { echo "FATAL: discovery did not report the live pid $pid1"; ps -A -o pid=,uid=,ucomm= | head -30; exit 1; }
             echo "DISCOVERY OK: live pid $pid1 found"
             # The negative case: a live process that is NOT a provider must not
             # be reported, or isExactProviderBinary could match anything.
-            if grep -q "$npid" /tmp/providers.out; then
+            if grep -qw -- "$npid" /tmp/providers.out; then
               echo "FATAL: discovery reported non-provider pid $npid"
               exit 1
             fi
