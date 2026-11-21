@@ -85,37 +85,39 @@ func TestProxyIPv6TransportWantedPolicy(t *testing.T) {
 func TestProxyIPv6GateNeedsTwoNewResultsToStartAndToStop(t *testing.T) {
 	var gate proxyIPv6Gate
 	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	okUDP := proxyUDPResult{Status: proxyUDPOK}
+	// one observation is one completed check, so each new result carries its
+	// own completion stamp, as the sweep hands it over
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
 	yesAt := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
 	noAt := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6No, "unknown", at, 24*time.Hour) }
 
 	// the first qualifying result does not start it, polling again does not count
-	if start, stop := gate.observe(t0, okUDP, yesAt(t0)); start || stop {
+	if start, stop := gate.observe(t0, ok(t0), yesAt(t0)); start || stop {
 		t.Fatal("started on the first result")
 	}
 	for i := 1; i <= 5; i++ {
-		if start, stop := gate.observe(t0.Add(time.Duration(i)*time.Minute), okUDP, yesAt(t0)); start || stop {
+		if start, stop := gate.observe(t0.Add(time.Duration(i)*time.Minute), ok(t0), yesAt(t0)); start || stop {
 			t.Fatalf("polling the same result changed the gate at poll %d", i)
 		}
 	}
 	// the second new qualifying result starts it, once
 	t1 := t0.Add(13 * time.Hour)
-	if start, _ := gate.observe(t1, okUDP, yesAt(t1)); !start {
+	if start, _ := gate.observe(t1, ok(t1), yesAt(t1)); !start {
 		t.Fatal("did not start on the second qualifying result")
 	}
-	if start, stop := gate.observe(t1.Add(time.Minute), okUDP, yesAt(t1)); start || stop {
+	if start, stop := gate.observe(t1.Add(time.Minute), ok(t1), yesAt(t1)); start || stop {
 		t.Fatal("the same result started it again")
 	}
 	// one bad result keeps it running, the second stops it, once
 	t2 := t1.Add(13 * time.Hour)
-	if start, stop := gate.observe(t2, okUDP, noAt(t2)); start || stop {
+	if start, stop := gate.observe(t2, ok(t2), noAt(t2)); start || stop {
 		t.Fatal("one bad result changed the gate")
 	}
 	t3 := t2.Add(25 * time.Hour)
-	if _, stop := gate.observe(t3, okUDP, noAt(t3)); !stop {
+	if _, stop := gate.observe(t3, ok(t3), noAt(t3)); !stop {
 		t.Fatal("did not stop on the second bad result")
 	}
-	if start, stop := gate.observe(t3.Add(time.Minute), okUDP, noAt(t3)); start || stop {
+	if start, stop := gate.observe(t3.Add(time.Minute), ok(t3), noAt(t3)); start || stop {
 		t.Fatal("the same bad result stopped it again")
 	}
 }
@@ -170,7 +172,6 @@ func TestProxyIPv6GateStopsOnNewDisqualifyingUdpChecks(t *testing.T) {
 func TestProxyIPv6GateDoesNotFlap(t *testing.T) {
 	var gate proxyIPv6Gate
 	at := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	okUDP := proxyUDPResult{Status: proxyUDPOK}
 	for i := 0; i < 10; i++ {
 		at = at.Add(13 * time.Hour)
 		var v6 proxyIPv6Result
@@ -179,7 +180,7 @@ func TestProxyIPv6GateDoesNotFlap(t *testing.T) {
 		} else {
 			v6 = v6Result(proxyIPv6No, "unknown", at, 24*time.Hour)
 		}
-		if start, stop := gate.observe(at, okUDP, v6); start || stop {
+		if start, stop := gate.observe(at, proxyUDPResult{Status: proxyUDPOK, CheckedAt: at}, v6); start || stop {
 			t.Fatalf("an alternating proxy changed state at result %d", i)
 		}
 	}
@@ -188,16 +189,16 @@ func TestProxyIPv6GateDoesNotFlap(t *testing.T) {
 func TestProxyIPv6GateStopsAStaleResultAtOnce(t *testing.T) {
 	var gate proxyIPv6Gate
 	at := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	okUDP := proxyUDPResult{Status: proxyUDPOK}
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
 	r1 := v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour)
-	gate.observe(at, okUDP, r1)
+	gate.observe(at, ok(at), r1)
 	r2 := v6Result(proxyIPv6Yes, "yes", at.Add(13*time.Hour), 24*time.Hour)
-	if start, _ := gate.observe(at.Add(13*time.Hour), okUDP, r2); !start {
+	if start, _ := gate.observe(at.Add(13*time.Hour), ok(at.Add(13*time.Hour)), r2); !start {
 		t.Fatal("did not start")
 	}
 	// the proxy is no longer measured: its result passes twice its interval
 	stale := r2.At.Add(2*r2.Interval + time.Minute)
-	if _, stop := gate.observe(stale, okUDP, r2); !stop {
+	if _, stop := gate.observe(stale, ok(at.Add(13*time.Hour)), r2); !stop {
 		t.Fatal("a stale result did not stop the transport")
 	}
 }
@@ -815,5 +816,34 @@ func TestProxiedIPv6BuilderOwnsItsStrategy(t *testing.T) {
 	extra.Close()
 	if !built.Closed() {
 		t.Fatal("closing the extra transport left its own strategy open")
+	}
+}
+
+// One bad sweep publishes its udp result and its ipv6 record separately. A poll
+// that lands between the two publications must count that failure once, so a
+// single bad sweep cannot stop the transport.
+func TestProxyIPv6GateCountsOneBadSweepOnce(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	good := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	bad := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPExitMismatch, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+
+	gate.observe(t0, good(t0), yes(t0))
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, good(t1), yes(t1)); !start {
+		t.Fatal("two good checks did not start the transport")
+	}
+
+	t2 := t1.Add(13 * time.Hour)
+	if _, stop := gate.observe(t2, bad(t2), yes(t1)); stop {
+		t.Fatal("the first publication of one bad sweep stopped the transport")
+	}
+	if _, stop := gate.observe(t2.Add(time.Second), bad(t2), yes(t2)); stop {
+		t.Fatal("one bad sweep stopped the transport when a poll landed between its publications")
+	}
+	t3 := t2.Add(13 * time.Hour)
+	if _, stop := gate.observe(t3, bad(t3), yes(t3)); !stop {
+		t.Fatal("a second bad sweep did not stop the transport")
 	}
 }

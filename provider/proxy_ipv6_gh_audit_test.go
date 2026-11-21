@@ -35,21 +35,22 @@ func TestProxyIPv6TcpOnlyPathNeedsAMeasuredTcpExit(t *testing.T) {
 func TestProxyIPv6GateDropsAPendingStartWhenItsEvidenceExpires(t *testing.T) {
 	var gate proxyIPv6Gate
 	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	okUDP := proxyUDPResult{Status: proxyUDPOK}
+	// each observation is a completed check with its own stamp
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
 	first := v6Result(proxyIPv6Yes, "yes", t0, 12*time.Hour)
-	if start, _ := gate.observe(t0, okUDP, first); start {
+	if start, _ := gate.observe(t0, ok(t0), first); start {
 		t.Fatal("started on the first result")
 	}
 	// the first result expires (twice its interval) and is polled again
-	if start, _ := gate.observe(t0.Add(25*time.Hour), okUDP, first); start {
+	if start, _ := gate.observe(t0.Add(25*time.Hour), ok(t0), first); start {
 		t.Fatal("started on an expired result")
 	}
 	t1 := t0.Add(26 * time.Hour)
-	if start, _ := gate.observe(t1, okUDP, v6Result(proxyIPv6Yes, "yes", t1, 12*time.Hour)); start {
+	if start, _ := gate.observe(t1, ok(t1), v6Result(proxyIPv6Yes, "yes", t1, 12*time.Hour)); start {
 		t.Fatal("one fresh result after the gap started the transport on a stale streak")
 	}
 	t2 := t1.Add(13 * time.Hour)
-	if start, _ := gate.observe(t2, okUDP, v6Result(proxyIPv6Yes, "yes", t2, 12*time.Hour)); !start {
+	if start, _ := gate.observe(t2, ok(t2), v6Result(proxyIPv6Yes, "yes", t2, 12*time.Hour)); !start {
 		t.Fatal("two fresh results did not start it")
 	}
 }
@@ -388,25 +389,25 @@ func TestIPv6RefreshDuringAUdpRecheckKeepsThePersistedUdpResult(t *testing.T) {
 // arrives after that, with no poll in between, does not complete the start. One
 // that arrives before it does.
 func TestProxyIPv6GateExpiresPendingEvidenceBeforeCountingAReplacement(t *testing.T) {
-	okUDP := proxyUDPResult{Status: proxyUDPOK}
 	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
 	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
 
 	var late proxyIPv6Gate
-	late.observe(t0, okUDP, yes(t0))
+	late.observe(t0, ok(t0), yes(t0))
 	t1 := t0.Add(26 * time.Hour)
-	if start, _ := late.observe(t1, okUDP, yes(t1)); start {
+	if start, _ := late.observe(t1, ok(t1), yes(t1)); start {
 		t.Fatal("a result that replaced an expired one started the transport")
 	}
 	t2 := t1.Add(13 * time.Hour)
-	if start, _ := late.observe(t2, okUDP, yes(t2)); !start {
+	if start, _ := late.observe(t2, ok(t2), yes(t2)); !start {
 		t.Fatal("two fresh results did not start it")
 	}
 
 	var inTime proxyIPv6Gate
-	inTime.observe(t0, okUDP, yes(t0))
+	inTime.observe(t0, ok(t0), yes(t0))
 	t3 := t0.Add(13 * time.Hour)
-	if start, _ := inTime.observe(t3, okUDP, yes(t3)); !start {
+	if start, _ := inTime.observe(t3, ok(t3), yes(t3)); !start {
 		t.Fatal("a second result before the first expired did not start it")
 	}
 }
