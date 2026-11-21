@@ -1045,3 +1045,64 @@ func TestProxiedIPv6ControllerStopsOnExpiredUdpDuringARecheck(t *testing.T) {
 		t.Fatal("expired udp evidence kept the transport up during a recheck")
 	}
 }
+
+// One bad sweep adds one failure to the stop streak, whatever order its udp and
+// ipv6 results are published in, and a udp-only check does not add another.
+func TestProxyIPv6GateCountsOneBadSweepOnAnyPublishOrder(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	bad := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPExitMismatch, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+	no := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6No, "unknown", at, 24*time.Hour) }
+
+	gate.observe(t0, ok(t0), yes(t0))
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, ok(t1), yes(t1)); !start {
+		t.Fatal("two good checks did not start the transport")
+	}
+
+	// the bad sweep publishes its udp result first
+	t2 := t1.Add(13 * time.Hour)
+	if _, stop := gate.observe(t2, bad(t2), yes(t1)); stop {
+		t.Fatal("the first publication stopped the transport")
+	}
+	// and its ipv6 result a moment later, under the same check
+	if _, stop := gate.observe(t2.Add(time.Second), bad(t2), no(t2)); stop {
+		t.Fatal("one bad sweep stopped the transport across its two publications")
+	}
+	// a later udp-only check does not count the standing ipv6 failure again
+	t3 := t2.Add(13 * time.Hour)
+	if _, stop := gate.observe(t3, bad(t3), no(t2)); stop {
+		t.Fatal("a udp-only check counted the standing ipv6 failure again")
+	}
+	// the second ipv6 measurement still stops it
+	t4 := t3.Add(13 * time.Hour)
+	if _, stop := gate.observe(t4, bad(t4), no(t4)); !stop {
+		t.Fatal("a second ipv6 measurement that disqualifies did not stop the transport")
+	}
+}
+
+// A record whose own udp verdict is not yes makes the policy refuse, and a
+// udp-only check must not count that same record twice.
+func TestProxyIPv6GateDoesNotRecountARecordThatSaysNoUdp(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	// ipv6 tcp is there, but the udp exit was never confirmed
+	unknownUdp := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "unknown", at, 12*time.Hour) }
+
+	gate.observe(t0, ok(t0), unknownUdp(t0))
+	t1 := t0.Add(time.Minute)
+	if start, _ := gate.observe(t1, ok(t1), unknownUdp(t0)); start {
+		t.Fatal("one record that says no udp started the transport")
+	}
+	if gate.no != 1 {
+		t.Fatalf("stop streak = %d, want 1 after the first observation", gate.no)
+	}
+	t2 := t0.Add(2 * time.Minute)
+	gate.observe(t2, ok(t2), unknownUdp(t0))
+	if gate.no != 1 {
+		t.Fatalf("stop streak = %d, want 1: the same record was counted again", gate.no)
+	}
+}
