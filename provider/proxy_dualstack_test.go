@@ -738,3 +738,41 @@ func TestProxiedIPv6ControllerStopsOnAZeroIPv6Record(t *testing.T) {
 		t.Fatal("the gate still reports the transport running")
 	}
 }
+
+// Switching the switch off must not make an already counted result eligible
+// again: after a re-enable the cached result is not recounted, so the start
+// streak still needs two new measurements.
+func TestProxiedIPv6ControllerDoesNotRecountACachedResultAfterReEnable(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	enabled := true
+	controller.enabled = func() bool { return enabled }
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	// the first result is counted, and is not enough on its own
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	if controller.transport.hasExtra() {
+		t.Fatal("one measurement started the transport")
+	}
+
+	// the switch goes off and comes back on; the same result is still cached
+	enabled = false
+	controller.step(t0.Add(time.Minute))
+	enabled = true
+	controller.step(t0.Add(2 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("the cached result was counted again after the re-enable")
+	}
+
+	// two genuinely new measurements still start it
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(3*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(3*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(3 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("the first new result started the transport")
+	}
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(4*time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(4*time.Minute), 12*time.Hour))
+	controller.step(t0.Add(4 * time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two new results after the re-enable did not start the transport")
+	}
+}

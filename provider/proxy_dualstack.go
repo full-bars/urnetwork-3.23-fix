@@ -288,7 +288,9 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (proxy_dualstack is off)\n")
 		}
-		self.gate = proxyIPv6Gate{}
+		// clear the streak, keep which results were already counted: a cached
+		// result must not be counted again when the switch comes back on
+		self.gate = proxyIPv6Gate{lastAt: self.gate.lastAt, lastExpiry: self.gate.lastExpiry, lastUdpAt: self.gate.lastUdpAt}
 		return
 	}
 	udp, v6, state := self.store.measurement(self.key, now)
