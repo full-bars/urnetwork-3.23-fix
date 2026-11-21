@@ -843,6 +843,62 @@ func (self *proxyUDPCheckStore) coverage(online []string, now time.Time) *Snapsh
 	return out
 }
 
+// proxyUDPDetail is one identity's udp row for the hover detail: the result
+// verdict, both exits and the ipv6 pair, all from one entry state.
+type proxyUDPDetail struct {
+	Status   string
+	TCPExit  string
+	UDPExit  string
+	IPv6     string
+	IPv6Exit string
+}
+
+// detailFor reads every field of the detail row under one hold of the store
+// lock, so a check that completes between two reads cannot pair one check's
+// verdict with another check's exits. The row describes the last completed
+// check, which stays on the entry while a recheck runs (see Check).
+func (self *proxyUDPCheckStore) detailFor(key string, now time.Time) proxyUDPDetail {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	detail := proxyUDPDetail{Status: "unchecked", IPv6: "unknown"}
+	entry := self.cachedEntryLocked(key)
+	if entry == nil {
+		return detail
+	}
+	if !entry.at.IsZero() && now.Sub(entry.at) < proxyUDPTTL(entry.result.Status) {
+		switch entry.result.Status {
+		case proxyUDPOK:
+			detail.Status = "ok"
+		case proxyUDPNoRelay:
+			detail.Status = "no_relay"
+		case proxyUDPExitMismatch:
+			detail.Status = "mismatch"
+		case proxyUDPUnknown:
+			detail.Status = "unknown"
+		}
+		safe := func(raw string) string {
+			if ip := net.ParseIP(raw); ip != nil {
+				return ip.String()
+			}
+			return ""
+		}
+		detail.TCPExit, detail.UDPExit = safe(entry.result.TCPExit), safe(entry.result.UDPExit)
+	}
+	if !entry.ipv6.At.IsZero() && entry.ipv6.retain(now) {
+		exit := entry.ipv6.TCPExit
+		if exit == "" {
+			exit = entry.ipv6.UDPExit
+		}
+		if ip := net.ParseIP(exit); ip != nil && ip.To4() == nil {
+			detail.IPv6Exit = ip.String()
+		}
+		if status := string(entry.ipv6.Status); status != "" {
+			detail.IPv6 = status
+		}
+	}
+	return detail
+}
+
 // statusFor reads the cached UDP result of one identity without starting a
 // check, for the hover detail. It uses the same rules as coverage: a missing,
 // in-flight or expired result is unchecked.

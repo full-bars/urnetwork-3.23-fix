@@ -163,11 +163,15 @@ func (c *proxyCellStore) Detail(now time.Time) []proxyCellDetail {
 			Clients:       clients,
 			IntervalBytes: deltas[p.Index],
 			AgeSeconds:    int64(p.Age / time.Second),
-			UDP:           proxyCellUDPStatus(p, now),
 		}
-		if p.Index != 0 {
-			detail.TCPExit, detail.UDPExit = globalProxyUDPCheck.exitsFor(p.Key, now)
-			detail.IPv6, detail.IPv6Exit = globalProxyUDPCheck.ipv6For(p.Key, now)
+		if p.Index == 0 {
+			detail.UDP = proxyCellUDPStatus(p, now)
+		} else {
+			// one snapshot for the whole row: a recheck that completes between
+			// two reads cannot mix its verdict with another check's exits
+			udp := globalProxyUDPCheck.detailFor(p.Key, now)
+			detail.UDP, detail.TCPExit, detail.UDPExit = udp.Status, udp.TCPExit, udp.UDPExit
+			detail.IPv6, detail.IPv6Exit = udp.IPv6, udp.IPv6Exit
 		}
 		if p.HasBandwidth {
 			detail.LifetimeBillable = &proxyCellTraffic{Rx: p.BillableRx, Tx: p.BillableTx}
@@ -243,5 +247,5 @@ func proxyCellUDPStatus(p connect.ProxyCellRaw, now time.Time) string {
 	if p.Index == 0 {
 		return "direct"
 	}
-	return globalProxyUDPCheck.statusFor(p.Key, now)
+	return globalProxyUDPCheck.detailFor(p.Key, now).Status
 }
