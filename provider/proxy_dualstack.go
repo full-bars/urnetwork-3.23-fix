@@ -305,6 +305,16 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		self.gate = proxyIPv6Gate{}
 		return
 	}
+	if state == measurementExpired {
+		// the udp evidence behind a running transport expired: the proxy is no
+		// longer measured, so it stops on this poll instead of waiting for two
+		// more checks that may never come
+		if self.transport.stopExtra() {
+			tlog("[ipv6] proxy identity: IPv6 transport stopped (the UDP evidence expired)\n")
+		}
+		self.gate = proxyIPv6Gate{}
+		return
+	}
 	if self.gate.running && v6.At.IsZero() {
 		// the identity's record was pruned and recreated without an ipv6
 		// measurement: no measurement is no evidence, the same as having no
@@ -358,6 +368,11 @@ const (
 	// policy, so a reader waits for the check to finish
 	measurementInFlight
 	measurementReady
+	// measurementExpired: the identity has a completed check, but its result is
+	// past the TTL that makes it evidence. It is distinct from measurementMissing,
+	// which means no check has completed yet: a running transport stops in both
+	// cases, and neither counts toward a streak.
+	measurementExpired
 )
 
 // measurement returns the cached UDP result and IPv6 result of an identity.
@@ -374,7 +389,7 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 		return proxyUDPResult{}, entry.ipv6, measurementInFlight
 	}
 	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
-		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementReady
+		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementExpired
 	}
 	result := entry.result
 	result.CheckedAt = entry.completedAt

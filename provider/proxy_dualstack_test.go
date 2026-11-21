@@ -847,3 +847,27 @@ func TestProxyIPv6GateCountsOneBadSweepOnce(t *testing.T) {
 		t.Fatal("a second bad sweep did not stop the transport")
 	}
 }
+
+// The udp result is the evidence the transport runs on. When it expires the
+// transport stops on that poll, the same as when the identity has no
+// measurement at all.
+func TestProxiedIPv6ControllerStopsWhenTheUdpEvidenceExpires(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	controller.step(t0.Add(time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+
+	// the ipv6 record is still fresh, and only the udp result is past its TTL
+	now := t0.Add(time.Minute + proxyUDPOKTTL + time.Minute)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	controller.step(now)
+	if controller.transport.hasExtra() {
+		t.Fatal("expired udp evidence left the transport running")
+	}
+}
