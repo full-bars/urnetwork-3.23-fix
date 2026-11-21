@@ -249,7 +249,9 @@ func runProxyIPv6Stage(ctx context.Context, settings *connect.ProxySettings, pre
 	// instead of recording the interruption as an answer.
 	if err := ctx.Err(); err != nil {
 		if errors.Is(err, context.DeadlineExceeded) && status == proxyIPv6Yes {
-			return previous.measured(now, status, "unknown", tcpExit, ""), true
+			// the udp result is unknown only when that lookup did not finish:
+			// a completed matching pair is evidence the deadline cannot undo
+			return previous.measured(now, status, udp, tcpExit, udpExit), true
 		}
 		return previous, false
 	}

@@ -269,3 +269,26 @@ func TestResolveProxyIPv6UDPAddr(t *testing.T) {
 		t.Fatal("a cancelled lookup returned an address")
 	}
 }
+
+// A stage whose exit lookups both finished before the deadline keeps the udp
+// result. Only an answer that was not finished is unknown.
+func TestRunProxyIPv6StageKeepsACompletedUdpExitAtTheDeadline(t *testing.T) {
+	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Millisecond)
+	defer cancel()
+	d := newIPv6StageDials(0, nil, nil, "2001:db8::1", nil, "2001:db8::1", nil)
+	// the udp exit finishes after the deadline with an address that matches the
+	// tcp exit, so the lookup did complete
+	d.dials.udpExit = func(ctx context.Context, _ *connect.ProxySettings) (string, error) {
+		<-ctx.Done()
+		return "2001:db8::1", nil
+	}
+	result, ok := runProxyIPv6Stage(ctx, settings, proxyIPv6Result{}, now, d.dials)
+	if !ok {
+		t.Fatal("the stage reported nothing")
+	}
+	if result.UDP != "yes" {
+		t.Fatalf("udp = %q, want yes: a completed exit pair must survive the stage deadline", result.UDP)
+	}
+}
