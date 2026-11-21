@@ -49,7 +49,7 @@ func clientStrategySettingsWithInternalDoh(settings *ClientStrategySettings) (*C
 	copied.ConnectSettings = settings.ConnectSettings
 	baseConnectSettings := copied.ConnectSettings
 	resolver := &internalDohResolver{
-		cache:   NewDohCache(internalDohSettings(settings.DohSettings)),
+		cache:   NewDohCache(internalDohSettings(settings.DohSettings, domains)),
 		domains: domains,
 	}
 	// the wrapper replaces the stream dial only: an injected packet endpoint
@@ -64,10 +64,8 @@ func clientStrategySettingsWithInternalDoh(settings *ClientStrategySettings) (*C
 }
 
 // internalDohSettings makes an owned copy because the control-name policy
-// deliberately excludes plain DNS fallback. The DoH endpoints themselves are
-// still resolved by DohCache's bootstrap rule when a caller configured a
-// hostname endpoint; production defaults are IP literals and need no DNS.
-func internalDohSettings(settings *DohSettings) *DohSettings {
+// excludes general plain DNS modes. Protected names may fall back to plain DNS.
+func internalDohSettings(settings *DohSettings, domains []string) *DohSettings {
 	if settings == nil {
 		settings = DefaultDohSettings()
 	}
@@ -86,6 +84,7 @@ func internalDohSettings(settings *DohSettings) *DohSettings {
 		resolver.LocalDnsIpv6 = append([]string(nil), resolver.LocalDnsIpv6...)
 		copied.DnsResolverSettings = &resolver
 	}
+	copied.BootstrapPlainDnsDomains = append([]string(nil), domains...)
 	copied.DnsResolverSettings.EnableRemoteDns = false
 	copied.DnsResolverSettings.EnableLocalDns = false
 	// The protected set is a handful of service names, so retain enough room
