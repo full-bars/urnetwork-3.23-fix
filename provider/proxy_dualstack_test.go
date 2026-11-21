@@ -713,3 +713,28 @@ func TestControllerIgnoresAnInFlightUDPCheck(t *testing.T) {
 		t.Fatal("the transport stopped after the check completed with ok")
 	}
 }
+
+// A running transport whose identity record is recreated with no ipv6
+// measurement keeps no evidence, the same as an identity with no entry, so it
+// stops on that poll instead of waiting for two disqualifying udp checks.
+func TestProxiedIPv6ControllerStopsOnAZeroIPv6Record(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	controller.step(t0.Add(time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(2*time.Minute), proxyIPv6Result{})
+	controller.step(t0.Add(2 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("a zero ipv6 record left the transport running")
+	}
+	if controller.gate.running {
+		t.Fatal("the gate still reports the transport running")
+	}
+}

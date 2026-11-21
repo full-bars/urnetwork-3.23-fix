@@ -313,6 +313,16 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		self.gate = proxyIPv6Gate{}
 		return
 	}
+	if self.gate.running && v6.At.IsZero() {
+		// the identity's record was pruned and recreated without an ipv6
+		// measurement: no measurement is no evidence, the same as having no
+		// entry at all, so the transport stops on this poll
+		if self.transport.stopExtra() {
+			tlog("[ipv6] proxy identity: IPv6 transport stopped (the record has no IPv6 measurement)\n")
+		}
+		self.gate = proxyIPv6Gate{}
+		return
+	}
 	start, stop := self.gate.observe(now, udp, v6)
 	if start {
 		if self.transport.startExtra(self.build) {
