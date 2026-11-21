@@ -930,3 +930,25 @@ func TestProxyIPv6GateDoesNotCountAnIpv6FailureTwice(t *testing.T) {
 		t.Fatal("two ipv6 failures did not stop the transport")
 	}
 }
+
+// The start streak counts new ipv6 measurements, not udp checks: a proxy is
+// started on what was measured, so many qualifying udp checks under one
+// measurement must not start it, and a second measurement must.
+func TestProxyIPv6GateStartsOnlyOnNewIpv6Measurements(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+
+	gate.observe(t0, ok(t0), yes(t0))
+	for i := 1; i <= 4; i++ {
+		at := t0.Add(time.Duration(i) * 30 * time.Minute)
+		if start, _ := gate.observe(at, ok(at), yes(t0)); start {
+			t.Fatalf("udp check %d started the transport with no new ipv6 measurement", i)
+		}
+	}
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, ok(t1), yes(t1)); !start {
+		t.Fatal("a second ipv6 measurement did not start the transport")
+	}
+}

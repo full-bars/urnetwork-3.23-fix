@@ -118,8 +118,13 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		}
 		switch {
 		case want:
-			self.yes++
+			// a qualifying udp check ends the failure streak. It does not add
+			// to the start streak: the transport is started on measurements,
+			// and udp checks arrive far more often than ipv6 measurements
 			self.no = 0
+			if v6New {
+				self.yes++
+			}
 		case v6New, proxyIPv6RecordQualifies(v6, now):
 			// a new ipv6 measurement that disqualifies, or a udp result that
 			// disqualifies while the ipv6 record qualifies: either is one
