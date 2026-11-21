@@ -1,6 +1,7 @@
 package main
 
 import (
+	"fmt"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
@@ -31,6 +32,40 @@ func TestProviderMetricsExpositionLints(t *testing.T) {
 	}
 	for _, err := range promtext.Lint(body) {
 		t.Error(err)
+	}
+}
+
+// The cancellation counter is only usable by a canary if the provider serves
+// it: every cell the accessor reports must appear in the scrape, with that
+// cell's value behind it.
+func TestTlsCancellationMetricsExposed(t *testing.T) {
+	withTempHome(t)
+	connect.SetExtraMetricsProvider(providerExtraMetrics)
+	t.Cleanup(func() { connect.SetExtraMetricsProvider(nil) })
+
+	req := httptest.NewRequest("GET", "/metrics", nil)
+	w := httptest.NewRecorder()
+	connect.PrometheusHandler().ServeHTTP(w, req)
+	body := w.Body.String()
+
+	if !strings.Contains(body, "# TYPE urnet_tls_handshake_cancel_total counter") {
+		t.Fatal("cancellation family missing from the scrape")
+	}
+	cells := connect.GetTlsHandshakeCancellationCounts()
+	if len(cells) == 0 {
+		t.Fatal("no cancellation cells to expose")
+	}
+	for _, cell := range cells {
+		want := fmt.Sprintf(
+			"urnet_tls_handshake_cancel_total{source=%s,role=%s,companion=\"%t\"} %d",
+			connect.PrometheusLabelValue(cell.Source),
+			connect.PrometheusLabelValue(cell.Role),
+			cell.Companion,
+			cell.Count,
+		)
+		if !strings.Contains(body, want) {
+			t.Errorf("missing cell %s", want)
+		}
 	}
 }
 
