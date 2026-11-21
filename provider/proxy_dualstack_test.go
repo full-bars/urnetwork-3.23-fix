@@ -871,3 +871,28 @@ func TestProxiedIPv6ControllerStopsWhenTheUdpEvidenceExpires(t *testing.T) {
 		t.Fatal("expired udp evidence left the transport running")
 	}
 }
+
+// While a udp check runs the poll reads the in-flight branch, which must apply
+// the same zero-record rule: a record with no ipv6 measurement is no evidence,
+// so a running transport stops on that poll.
+func TestProxiedIPv6ControllerStopsInFlightOnAZeroIPv6Record(t *testing.T) {
+	controller, _, _, store, settings := controllerFixture(t)
+	t0 := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+
+	storeWithEntry(store, settings, proxyUDPOK, t0, measuredIPv6(proxyIPv6Yes, "yes", t0, 12*time.Hour))
+	controller.step(t0)
+	storeWithEntry(store, settings, proxyUDPOK, t0.Add(time.Minute), measuredIPv6(proxyIPv6Yes, "yes", t0.Add(time.Minute), 12*time.Hour))
+	controller.step(t0.Add(time.Minute))
+	if !controller.transport.hasExtra() {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+
+	// a check is running and the record it left carries no ipv6 measurement
+	store.mu.Lock()
+	store.entries[settings.Key()] = &proxyUDPCheckEntry{done: make(chan struct{}), at: t0, ipv6: proxyIPv6Result{}}
+	store.mu.Unlock()
+	controller.step(t0.Add(2 * time.Minute))
+	if controller.transport.hasExtra() {
+		t.Fatal("an in-flight check with a zero ipv6 record left the transport running")
+	}
+}
