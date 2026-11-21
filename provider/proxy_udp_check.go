@@ -961,6 +961,11 @@ func (self *proxyUDPCheckStore) ipv6UDPAllowed(key string, now time.Time) bool {
 	if entry == nil || entry.result.Status != proxyUDPOK {
 		return false
 	}
+	// the same age rule measurement applies: a result past its TTL is not
+	// evidence, whatever the cached status says
+	if !entry.at.IsZero() && now.Sub(entry.at) >= proxyUDPTTL(entry.result.Status) {
+		return false
+	}
 	r := entry.ipv6
 	if r.Status != proxyIPv6Yes || r.UDP != "yes" || !r.valid(now) {
 		return false

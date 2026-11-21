@@ -61,6 +61,15 @@ func TestIPv6UDPAllowedDecision(t *testing.T) {
 			t.Fatal("an identity with no entry was allowed")
 		}
 	})
+	t.Run("udp result expired under a fresh ipv6 record", func(t *testing.T) {
+		// the ipv6 record is current, so only the udp result's age can refuse:
+		// the same rule measurement applies to every other reader
+		store := stubUdpCheckStore(proxyUDPOK)
+		storeWithEntry(store, settings, proxyUDPOK, now.Add(-(proxyUDPOKTTL + time.Minute)), measuredIPv6(proxyIPv6Yes, "yes", now.Add(-hour), 12*hour))
+		if store.ipv6UDPAllowed(settings.Key(), now) {
+			t.Fatal("an expired udp result admitted an ipv6 dial")
+		}
+	})
 }
 
 func TestIPv6UDPSettingOffRefusesEveryProxy(t *testing.T) {
