@@ -41,6 +41,26 @@ type HTTPUpgradeError struct {
 	StatusCode int
 	Reason     string
 	Terminal   bool
+	// For a refusal with 429 Too Many Requests, the wait its Retry-After
+	// asked for, at most PlatformRetryAfterMaxTimeout; zero without one, and
+	// for every other status. A transport's next dial waits at least this
+	// long (transport_retry_after.go).
+	RetryAfter time.Duration
+}
+
+// The refusal of an upgrade answered with status. A 429's Retry-After, read
+// from its header, rides along (HTTPUpgradeError.RetryAfter), and a 429 that
+// has one is terminal, as an authorization refusal is: the server answered
+// and asked the client to wait, so neither a fresh negotiation nor another
+// route of the same logical dial is tried before the wait is out. A 429
+// without one is as before.
+func newHTTPUpgradeRejection(statusCode int, header http.Header, terminal bool) *HTTPUpgradeError {
+	rejection := &HTTPUpgradeError{StatusCode: statusCode, Reason: "rejected", Terminal: terminal}
+	if statusCode == http.StatusTooManyRequests {
+		rejection.RetryAfter = platformRetryAfter(header, time.Now())
+		rejection.Terminal = rejection.Terminal || 0 < rejection.RetryAfter
+	}
+	return rejection
 }
 
 func (e *HTTPUpgradeError) Error() string {
@@ -346,7 +366,7 @@ func DialFramedUpgrade(ctx context.Context, address string, header http.Header, 
 	// No response body is drained: it can be unbounded or an upgraded socket.
 	if response.StatusCode != http.StatusSwitchingProtocols {
 		terminal := response.StatusCode == http.StatusUnauthorized || response.StatusCode == http.StatusForbidden || response.StatusCode/100 == 3
-		return nil, &HTTPUpgradeError{StatusCode: response.StatusCode, Reason: "rejected", Terminal: terminal}
+		return nil, newHTTPUpgradeRejection(response.StatusCode, response.Header, terminal)
 	}
 	if response.ProtoMajor != 1 || response.ProtoMinor != 1 || !exactUpgrade(response.Header, protocol) ||
 		!headerContainsToken(response.Header, "Connection", "upgrade") || response.ContentLength > 0 || len(response.TransferEncoding) != 0 ||
@@ -417,6 +437,9 @@ func dialH1MessagesWithinDeadline(ctx context.Context, address string, header ht
 	ws, response, err := dialH1WebSocket(ctx, address, header, dialer)
 	if err != nil {
 		if response != nil {
+			if response.StatusCode == http.StatusTooManyRequests {
+				err = errors.Join(err, newHTTPUpgradeRejection(response.StatusCode, response.Header, false))
+			}
 			// keep the platform's answer, as WsDialContext does: "bad handshake"
 			// alone cannot tell a refused token from an overloaded backend
 			err = &wsStatusError{status: response.StatusCode, err: err}
