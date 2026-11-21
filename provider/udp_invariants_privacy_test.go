@@ -35,7 +35,7 @@ func TestUDPInvariantLogOmitsProxyIdentity(t *testing.T) {
 			if !strings.Contains(out, udpProxyIdentity(settings)) {
 				t.Error("log lacks proxy slot and stable identity")
 			}
-			for _, secret := range []string{settings.Address, settings.Auth.User, settings.Auth.Password} {
+			for _, secret := range []string{settings.Address, settings.Auth.User, settings.Auth.Password, "192.0.2.2", "192.0.2.3"} {
 				if strings.Contains(out, secret) {
 					t.Error("log contains proxy identity or credentials")
 				}

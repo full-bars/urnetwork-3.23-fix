@@ -4122,6 +4122,27 @@ func provide(opts docopt.Opts) {
 			proxyCtx, clientStrategySettings, clientStrategy, connectClient.RouteManager(),
 			connectUrl, auth, platformSettings, useFamily,
 		)
+		// A proxied identity keeps exactly the legacy transport it always had. When
+		// its proxy was measured to carry IPv6, a controller adds one IPv6 pinned
+		// transport through the same proxy beside it (proxy_dualstack.go), so the
+		// platform sees the proxy's IPv6 exit and categorizes the identity as dual
+		// stack. The wrapper forwards credential renewals to both and closes both.
+		if proxySettings != nil && !useFamily {
+			proxiedTransport := newProxiedPlatformTransport(platformTransport, auth)
+			platformTransport = proxiedTransport
+			if buildIPv6 := newProxiedIPv6Builder(proxyCtx, clientStrategySettings, connectClient.RouteManager(), connectUrl, platformSettings); buildIPv6 != nil {
+				ipv6Controller := &proxiedIPv6Controller{
+					store:     globalProxyUDPCheck,
+					key:       proxySettings.Key(),
+					transport: proxiedTransport,
+					build:     buildIPv6,
+					enabled:   proxyDualstackEnabled,
+				}
+				go connect.HandleError(func() {
+					ipv6Controller.run(proxyCtx, proxyDualstackPollInterval)
+				})
+			}
+		}
 		// Register coordinator closer so HotSwap yields the coordinator session cleanly during handoff.
 		// Defer unregister so proxy reloads or shutdowns don't leak stale closers (F-5).
 		unregCloser := RegisterCoordinatorCloser(func() {

@@ -95,6 +95,19 @@ func udpProbeEnabled(state *controlState) bool {
 	return !found || strings.EqualFold(value, "on")
 }
 
+// proxyIPv6ProbeEnabled controls whether IPv6 capability checks run during sweeps.
+func proxyIPv6ProbeEnabled(state *controlState) bool {
+	if state != nil {
+		if value, found := state.get("proxy_ipv6_probe"); found {
+			return strings.EqualFold(value, "on")
+		}
+	}
+	if env := strings.TrimSpace(os.Getenv("URNETWORK_PROXY_IPV6_PROBE")); env != "" {
+		return strings.EqualFold(env, "on") || env == "1" || strings.EqualFold(env, "true") || strings.EqualFold(env, "yes")
+	}
+	return true
+}
+
 type udpTickRunner func(context.Context, *proxyUDPCheckStore, []*connect.ProxySettings, time.Time, time.Duration, time.Duration, float64, bool)
 
 // A UDP probe tick can take up to its whole interval, so it runs beside the
@@ -223,6 +236,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			} else {
 				candidate.lastChecked = entry.at
 				candidate.status = entry.result.Status
+				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6DueLocked(now)
 			}
 		}
 		candidates = append(candidates, candidate)
@@ -244,7 +258,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 				if ctx.Err() != nil {
 					return
 				}
-				store.Check(ctx, settingsByKey[candidate.key], now)
+				store.Check(withIPv6Sweep(ctx), settingsByKey[candidate.key], now)
 			}
 		}()
 	}
@@ -266,6 +280,7 @@ type udpProbeCandidate struct {
 	online      bool
 	status      proxyUDPStatus
 	lastChecked time.Time
+	ipv6Due     bool
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -283,7 +298,7 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		}
 		online++
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
-		if candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
+		if candidate.ipv6Due || candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
 				recheckWindow = refreshWindow

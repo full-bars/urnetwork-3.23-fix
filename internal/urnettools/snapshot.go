@@ -140,7 +140,8 @@ type SnapshotProxies struct {
 	TrimCapSource string `json:"trim_cap_source,omitempty"`
 	// UDP coverage counts for online proxies (up or degraded).
 	// omitted when the provider has no proxied identities or an old provider never sets it.
-	UDP *SnapshotProxyUDP `json:"udp,omitempty"`
+	UDP  *SnapshotProxyUDP  `json:"udp,omitempty"`
+	IPv6 *SnapshotProxyIPv6 `json:"ipv6,omitempty"`
 }
 
 // SnapshotProxyUDP counts online proxies (up or degraded) by non-expired UDP
@@ -153,6 +154,18 @@ type SnapshotProxyUDP struct {
 	Mismatch  int `json:"mismatch"`
 	Unknown   int `json:"unknown"`
 	Unchecked int `json:"unchecked"`
+}
+
+// SnapshotProxyIPv6 counts online proxies by cached IPv6 capability and UDP relay result.
+type SnapshotProxyIPv6 struct {
+	Yes        int   `json:"yes"`
+	No         int   `json:"no"`
+	Unknown    int   `json:"unknown"`
+	NotProbed  int   `json:"not_probed"`
+	Probes     int64 `json:"probes"`
+	UDPYes     int   `json:"udp_yes"`
+	UDPNo      int   `json:"udp_no"`
+	UDPUnknown int   `json:"udp_unknown"`
 }
 
 type SnapshotRestart struct {

@@ -672,7 +672,7 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		targetUsesLocalAddress := false
 		if err == nil {
 			if ip := net.ParseIP(host); ip == nil {
-				if ProxyTargetFamilyCarriesName() {
+				if proxyDialCarriesName(ctx) {
 					// proxy mode: the CONNECT carries the hostname and the proxy
 					// resolves it, so its own A and AAAA answers decide the
 					// family. No local lookup and no dnsCache entry, which is

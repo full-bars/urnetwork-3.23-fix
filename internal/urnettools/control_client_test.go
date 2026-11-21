@@ -293,6 +293,8 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		// what noticed they were missing.
 		{"proxy-audit", "proxy_audit", "on"},
 		{"udp-probe", "udp_probe", "off"},
+		{"proxy-udp-ipv6", "proxy_udp_ipv6", "off"},
+		{"proxy-dualstack", "proxy_dualstack", "off"},
 		{"extender-discovery", "extender_discovery", "feed-only"},
 		{"extender-udp443", "extender_udp443", "on"},
 		{"extender-udp4053", "extender_udp4053", "on"},
@@ -305,6 +307,7 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"h3-datagram-send", "h3_datagram_send", "on"},
 		{"ip-version", "ip_version", "ipv6"},
 		{"proxy-target-family", "proxy_target_family", "proxy"},
+		{"proxy-ipv6-probe", "proxy_ipv6_probe", "on"},
 		{"h1-plus", "h1_plus", "on"},
 		{"oom-cap", "oom_cap", "shadow"},
 		{"metrics", "metrics", "on"},

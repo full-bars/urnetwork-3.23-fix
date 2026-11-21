@@ -62,7 +62,7 @@ func TestUDPPersistInvalidInput(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "state.json")
 	future := udpPersistFile{Version: 1, Entries: []udpPersistEntry{{Key: udpPersistKey(ps.Key()), Status: proxyUDPOK, At: now.Add(time.Second)}}}
 	futureJSON, _ := json.Marshal(future)
-	for _, data := range [][]byte{[]byte("{"), []byte(`{"version":2,"entries":[]}`), futureJSON, []byte(strings.Repeat("x", udpStateMaxBytes+1))} {
+	for _, data := range [][]byte{[]byte("{"), []byte(`{"version":3,"entries":[]}`), futureJSON, []byte(strings.Repeat("x", udpStateMaxBytes+1))} {
 		if err := os.WriteFile(path, data, 0600); err != nil {
 			t.Fatal(err)
 		}
@@ -172,5 +172,38 @@ func TestUDPPersistWriterExitsWhenIdle(t *testing.T) {
 	store.mu.Unlock()
 	if writing || dirty {
 		t.Fatalf("writer still active after flush: writing=%v dirty=%v", writing, dirty)
+	}
+}
+
+func TestUDPPersistIPv6AndLegacy(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	path := filepath.Join(t.TempDir(), "state.json")
+	key := "test-proxy"
+	v6 := proxyIPv6Result{Status: proxyIPv6Yes, Source: "measured", UDP: "yes", TCPExit: "2001:db8::1", UDPExit: "2001:db8::1", At: now, Interval: 7 * 24 * time.Hour}
+	store := newProxyUDPCheckStore(nil)
+	store.enablePersistence(path, now)
+	store.mu.Lock()
+	entry := &proxyUDPCheckEntry{at: now, result: proxyUDPResult{Status: proxyUDPOK}, ipv6: v6}
+	if err := store.persistLocked(key, entry, now); err != nil {
+		t.Fatal(err)
+	}
+	store.mu.Unlock()
+	store.flushPersist()
+	loaded := newProxyUDPCheckStore(nil)
+	loaded.enablePersistence(path, now.Add(2*24*time.Hour))
+	if got := loaded.cachedEntryLocked(key); got == nil || got.ipv6 != v6 {
+		t.Fatalf("restored IPv6 = %+v", got)
+	}
+	legacy, err := json.Marshal(udpPersistFile{Version: 1, Entries: []udpPersistEntry{{Key: udpPersistKey(key), At: now, Status: proxyUDPOK}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, legacy, 0600); err != nil {
+		t.Fatal(err)
+	}
+	loaded = newProxyUDPCheckStore(nil)
+	loaded.enablePersistence(path, now)
+	if got := loaded.cachedEntryLocked(key); got == nil || got.ipv6 != (proxyIPv6Result{}) {
+		t.Fatalf("legacy IPv6 = %+v", got)
 	}
 }

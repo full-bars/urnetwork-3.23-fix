@@ -18,10 +18,12 @@ Nothing needs to be configured for this today, and it does not affect earnings.
   the primary control plane.
 - **The proxy data plane** understands both families. The SOCKS5 UDP packet
   format carries IPv4 and IPv6 destinations (`socks5_udp.go` accepts both ATYP 1
-  and 4). For a proxied identity, the provider relays IPv4 UDP only. It refuses
-  an IPv6 destination with `proxy udp: ipv6 destinations are not relayed`,
-  because the relay check proves the relay over IPv4 and most relays have no
-  IPv6 exit. The provider logs `client udp refused` for a refused flow.
+  and 4). For a proxied identity, the provider relays IPv6 UDP only through a
+  proxy whose background check measured IPv6 for TCP and UDP, with the UDP exit
+  address equal to the TCP exit address. Every other proxy refuses an IPv6
+  destination at once with `proxy udp: ipv6 destinations are not relayed`, and
+  the provider logs `client udp refused`. `urnet-tools set proxy-udp-ipv6 off`
+  restores the refusal for every proxy.
 - **Clients reaching a proxy over IPv6** works when that proxy's endpoint is
   registered/advertised that way; the provider does not block it.
 - **The direct identity** is dual stack, with IPv4 primary and IPv6 as a
@@ -50,6 +52,23 @@ configured servers one entry per resolver attempt, and that rotation is per
 lookup rather than per process, so one lookup's attempts walk consecutive
 entries of the paired v4-then-v6 list however many other lookups resolve at
 the same time.
+
+## A proxied identity that the platform sees as dual stack
+
+The platform decides a provider's address family from its platform connections: a connection declares a family and the platform records the family it arrived on. A proxied identity holds one connection without a declaration, which the platform counts as IPv4. Clients that need IPv6 therefore never reach it.
+
+When the background UDP sweep measured that a proxy carries IPv6, its identity gets one extra platform connection pinned to IPv6 and dialed through the same proxy. The pinned dial hands the IPv6-only platform name to the proxy, so the proxy reaches the platform over IPv6 and the platform sees the proxy's IPv6 exit. The identity's own connection is never touched. The extra connection starts and stops beside it.
+
+The extra connection starts when the cached measurement shows IPv6 for TCP and one of these holds:
+
+- IPv6 UDP works with matching exit addresses and the IPv4 UDP relay is ok.
+- The proxy has no UDP relay at all. The platform then labels the provider dual stack with TCP only, and the identity refuses UDP flows at once.
+
+The provider does not see which family the proxy used for the name. The pin relies on the platform's IPv6 service name having only an AAAA record. A name with both records could let a proxy connect over IPv4, and a SOCKS5 CONNECT reply does not say which family it used. The platform decides the family from the exit it observes.
+
+A proxy with IPv4 UDP but a failing IPv6 UDP relay stays as it is, because the platform would drop its IPv6 label before it dropped UDP. A proxy that has IPv6 only, with no IPv4 egress, is not covered yet.
+
+The connection needs two new measurements in a row to start and two to stop, so a proxy that changes its answer does not flap. A measurement older than twice its interval stops it at once. `urnet-tools set proxy-dualstack off` is an emergency switch that stops every extra connection and keeps them off. It is on by default. `urnet_proxy_ipv6_transports` shows how many identities hold one.
 
 ## Let the proxy choose the family
 
