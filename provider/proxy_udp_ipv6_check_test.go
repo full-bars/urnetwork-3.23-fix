@@ -589,3 +589,67 @@ func TestIPv6StagePublishesAPartialResultWhenTheParentExpires(t *testing.T) {
 		t.Fatalf("a published measurement still carries a retry stamp: %v", retry)
 	}
 }
+
+// The record's own deadline comes from a wall-clock time restored with the
+// state file, while a retry hold is stamped from the live clock and carries a
+// monotonic reading beside its wall one. The due decision keeps the two apart,
+// so a wall clock stepped back cannot let the retry stamp stand in for the
+// record's deadline, and the time the sweep orders by carries the wall clock
+// alone.
+func TestIPv6DueKeepsTheRecordDeadlineApartFromTheRetryStamp(t *testing.T) {
+	base := time.Now()
+	// the record was measured seven and a half hours ago and its six hour
+	// interval ran out ninety minutes ago; the stage stopped early ten minutes
+	// ago, so its retry hold has passed too
+	recordedAt := base.Add(-7*time.Hour - 30*time.Minute).Round(0)
+	next := recordedAt.Add(6 * time.Hour)
+	entry := &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          base.Add(-time.Hour),
+		ipv6RetryAt: base.Add(-10 * time.Minute),
+		ipv6:        proxyIPv6Result{At: recordedAt, Interval: 6 * time.Hour, Status: proxyIPv6No, Source: "measured"},
+	}
+
+	// the order the sweep sorts by keeps the later of the two deadlines, on the
+	// wall clock alone: a restored deadline carries the wall clock alone and a
+	// live retry hold carries a monotonic reading too, so a value that mixes
+	// them orders the two by different clocks
+	due := entry.ipv6DueAtLocked()
+	if want := base.Add(-10 * time.Minute).Round(0); !due.Equal(want) {
+		t.Fatalf("due time for ordering = %v, want the later deadline %v", due, want)
+	}
+	if due != due.Round(0) {
+		t.Fatalf("due time for ordering carries a monotonic reading: %v", due)
+	}
+
+	// the wall clock stepped back two hours, which leaves the record's deadline
+	// ninety minutes away again. The record alone decides that, so the identity
+	// is not due: the retry hold cannot stand in for the record's deadline
+	steppedBack := base.Add(-2 * time.Hour).Round(0)
+	if entry.ipv6DueLocked(steppedBack) {
+		t.Fatalf("due at %v, want not due before the record deadline %v", steppedBack, next)
+	}
+	// a retry hold decides on its own too: a record whose deadline has passed
+	// stays held back
+	held := &proxyUDPCheckEntry{
+		ipv6:        proxyIPv6Result{At: recordedAt, Interval: 6 * time.Hour},
+		ipv6RetryAt: base.Add(10 * time.Minute),
+	}
+	if held.ipv6DueLocked(base) {
+		t.Fatal("due while its retry hold is still in force")
+	}
+	// and the identity is due once both have passed, which here is when the
+	// retry hold, the later of the two, runs out
+	if !entry.ipv6DueLocked(base) {
+		t.Fatalf("not due at %v, want due once both deadlines have passed", base)
+	}
+
+	// the sweep orders by those times: the identity whose IPv6 due time is the
+	// older one takes the slot
+	stepped := udpProbeCandidate{key: "stepped", online: true, status: proxyUDPOK, lastChecked: base.Add(-time.Minute), ipv6Due: true, ipv6DueAt: due}
+	later := udpProbeCandidate{key: "later", online: true, status: proxyUDPOK, lastChecked: base.Add(-time.Minute), ipv6Due: true, ipv6DueAt: base.Add(time.Minute).Round(0)}
+	batch := selectUDPProbeBatch(base, []udpProbeCandidate{later, stepped}, 24*time.Hour, 5*time.Minute, nil)
+	if len(batch) != 1 || batch[0].key != "stepped" {
+		t.Fatalf("batch = %v, want the identity whose IPv6 due time is the older one", batch)
+	}
+}

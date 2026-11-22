@@ -411,24 +411,46 @@ func ipv6StageCompletedAt(now time.Time) time.Time {
 // every batch and starve the other due identities.
 const proxyIPv6CutShortRetry = 5 * time.Minute
 
-// ipv6DueLocked is whether the sweep should measure the identity now. The
-// caller holds the store lock (or owns the entry).
-func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
-	return e == nil || !now.Before(e.ipv6DueAtLocked())
+// ipv6RecordDueAtLocked is when the stored record calls for its next
+// measurement: the time of the last one plus its interval. A record restored
+// with the state file carries the wall clock alone. Zero is no deadline at all,
+// for a record that was never measured.
+func (e *proxyUDPCheckEntry) ipv6RecordDueAtLocked() time.Time {
+	if e == nil || e.ipv6.At.IsZero() || e.ipv6.Interval <= 0 {
+		return time.Time{}
+	}
+	return e.ipv6.At.Add(e.ipv6.Interval)
 }
 
-// ipv6DueAtLocked is when the identity becomes due for the IPv6 stage: the
-// record's next measurement time, or the retry hold when that is later. The
-// sweep picks its batch by this time, so the same function decides both.
+// ipv6DueLocked is whether the sweep should measure the identity now. The two
+// deadlines are independent and both must have passed: the record's own
+// deadline, and the retry hold. Combining them into one stamp would compare a
+// restored wall-clock deadline against a live retry stamp that carries a
+// monotonic reading, so a backward wall-clock step could let the retry stamp
+// stand in for the record's deadline. The caller holds the store lock (or owns
+// the entry).
+func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
+	if e == nil {
+		return true
+	}
+	if next := e.ipv6RecordDueAtLocked(); !next.IsZero() && now.Before(next) {
+		return false
+	}
+	return !now.Before(e.ipv6RetryAt)
+}
+
+// ipv6DueAtLocked orders the sweep: the later of the record's deadline and the
+// retry hold, on the wall clock alone. The sweep sorts candidates by it, beside
+// wall-clock times restored from the state file, so t.Round(0) drops the
+// monotonic reading a live retry stamp carries and the sort never mixes the two
+// clocks. The due decision does not use this value; see ipv6DueLocked.
 func (e *proxyUDPCheckEntry) ipv6DueAtLocked() time.Time {
 	if e == nil {
 		return time.Time{}
 	}
-	due := e.ipv6RetryAt
-	if !e.ipv6.At.IsZero() && e.ipv6.Interval > 0 {
-		if next := e.ipv6.At.Add(e.ipv6.Interval); next.After(due) {
-			due = next
-		}
+	due := e.ipv6RetryAt.Round(0)
+	if next := e.ipv6RecordDueAtLocked(); next.After(due) {
+		due = next
 	}
 	return due
 }
