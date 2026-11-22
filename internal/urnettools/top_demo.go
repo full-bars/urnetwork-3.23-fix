@@ -101,11 +101,45 @@ func (d demoTopSource) FetchTraffic(Provider) (*LiveTraffic, error) {
 		t = t.Add(step)
 	}
 	d.live.last = now
+	billable := uint64(d.live.billable)
+	total := uint64(d.live.billable * demoTotalFactor)
+	// The split is exact: rx is a share rounded down, tx takes the rest, so the
+	// four counters add up to the two sums a reader that predates them sees.
+	billableRx := billable * 3 / 4
+	billableTx := billable - billableRx
+	totalRx := total * 7 / 10
+	totalTx := total - totalRx
 	return &LiveTraffic{
-		AtUnixNano:    now.UnixNano(),
-		BillableBytes: uint64(d.live.billable),
-		TotalBytes:    uint64(d.live.billable * demoTotalFactor),
+		AtUnixNano:      now.UnixNano(),
+		BillableBytes:   billable,
+		TotalBytes:      total,
+		BillableRxBytes: &billableRx,
+		BillableTxBytes: &billableTx,
+		TotalRxBytes:    &totalRx,
+		TotalTxBytes:    &totalTx,
 	}, nil
+}
+
+// demoDirection fills one lane's figures from its history, the way the
+// provider's sampler fills a real lane: the newest sample, the mean of the
+// newest 60 and 300 samples, and the whole ring.
+func demoDirection(hist []float64) SnapshotTrafficDirection {
+	if len(hist) == 0 {
+		return SnapshotTrafficDirection{}
+	}
+	var sum1, sum5 float64
+	for i := len(hist) - 1; i >= 0 && len(hist)-i <= 300; i-- {
+		if len(hist)-i <= 60 {
+			sum1 += hist[i]
+		}
+		sum5 += hist[i]
+	}
+	return SnapshotTrafficDirection{
+		NowBps:     hist[len(hist)-1],
+		Avg1mBps:   math.Round(sum1 / float64(min(60, len(hist)))),
+		Avg5mBps:   math.Round(sum5 / float64(min(300, len(hist)))),
+		HistoryBps: hist,
+	}
 }
 
 func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
@@ -151,6 +185,26 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 		TotalAvg1mBps:         math.Round(sum1 / 60 * demoTotalFactor),
 		TotalAvg5mBps:         math.Round(sum5 / 300 * demoTotalFactor),
 		TotalHistoryBps:       totalHist,
+	}
+
+	// The direction block splits each quantity: rx is the download (the larger
+	// share here), tx the upload, and the pair adds back to the sum above.
+	split := func(src []float64, downShare float64) (down, up []float64) {
+		down = make([]float64, len(src))
+		up = make([]float64, len(src))
+		for i, v := range src {
+			d := math.Round(v * downShare)
+			down[i], up[i] = d, v-d
+		}
+		return down, up
+	}
+	billableDown, billableUp := split(hist, 0.75)
+	totalDown, totalUp := split(totalHist, 0.7)
+	traffic.Directions = &SnapshotTrafficDirections{
+		BillableRx: demoDirection(billableDown),
+		BillableTx: demoDirection(billableUp),
+		TotalRx:    demoDirection(totalDown),
+		TotalTx:    demoDirection(totalUp),
 	}
 
 	return &NodeSnapshot{

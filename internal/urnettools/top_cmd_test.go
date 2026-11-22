@@ -139,6 +139,37 @@ func TestDemoSourceProducesValidSnapshotsThatMove(t *testing.T) {
 		t.Fatal("demo needs proxies to draw the pool panel")
 	}
 
+	// The direction block and the light reply both carry the split, and the
+	// lanes add back to the sums, so the direction pages have real data.
+	d := first.Traffic.Directions
+	if d == nil {
+		t.Fatal("demo snapshot has no direction block")
+	}
+	if len(d.BillableRx.HistoryBps) != 600 || len(d.BillableTx.HistoryBps) != 600 ||
+		len(d.TotalRx.HistoryBps) != 600 || len(d.TotalTx.HistoryBps) != 600 {
+		t.Fatal("demo direction history is not a full ring")
+	}
+	if got := d.BillableRx.NowBps + d.BillableTx.NowBps; got != first.Rate.NowBps {
+		t.Fatalf("billable split sums to %v, rate is %v", got, first.Rate.NowBps)
+	}
+	if got := d.TotalRx.NowBps + d.TotalTx.NowBps; got != first.Traffic.TotalNowBps {
+		t.Fatalf("total split sums to %v, total rate is %v", got, first.Traffic.TotalNowBps)
+	}
+	tr, ok := src.(interface {
+		FetchTraffic(Provider) (*LiveTraffic, error)
+	})
+	if !ok {
+		t.Fatal("the demo source does not serve the light traffic reply")
+	}
+	lt, _ := tr.FetchTraffic(Provider{})
+	if lt.BillableRxBytes == nil || lt.BillableTxBytes == nil || lt.TotalRxBytes == nil || lt.TotalTxBytes == nil {
+		t.Fatalf("demo live traffic has no direction counters: %+v", lt)
+	}
+	if *lt.BillableRxBytes+*lt.BillableTxBytes != lt.BillableBytes ||
+		*lt.TotalRxBytes+*lt.TotalTxBytes != lt.TotalBytes {
+		t.Fatalf("demo live split does not add up: %+v", lt)
+	}
+
 	now = t0.Add(37 * time.Second)
 	later, _ := src.Fetch(Provider{})
 	if later.UptimeSeconds <= first.UptimeSeconds {

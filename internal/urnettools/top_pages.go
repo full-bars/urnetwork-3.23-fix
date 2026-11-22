@@ -38,6 +38,8 @@ type topPage struct {
 var topPages = []topPage{
 	{id: "overview", title: "Overview", available: func(*topModel, tui.Rect) bool { return true }, draw: (*topModel).drawDashboard},
 	{id: "remote", title: "Remote", available: (*topModel).remotePageAvailable, draw: (*topModel).drawRemotePage},
+	{id: "billable", title: "Billable", available: (*topModel).billablePageAvailable, draw: (*topModel).drawBillablePage},
+	{id: "total", title: "Total", available: (*topModel).totalPageAvailable, draw: (*topModel).drawTotalPage},
 }
 
 // pageIndex is the selected page's table index, clamped to the table.
