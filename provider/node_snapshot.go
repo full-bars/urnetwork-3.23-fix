@@ -72,6 +72,7 @@ type SnapshotTraffic struct {
 	// It carries the same rate and history figures split by rx and tx, which is
 	// how the reader tells download from upload.
 	Directions *SnapshotTrafficDirections `json:"directions,omitempty"`
+	Packets    *SnapshotTrafficPackets    `json:"packets,omitempty"`
 }
 
 // SnapshotTrafficDirection is one direction's billable or total rate, sampled
@@ -95,6 +96,19 @@ type SnapshotTrafficDirections struct {
 	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
 }
 
+// SnapshotPacketRate reports billable IP packets per second.
+type SnapshotPacketRate struct {
+	NowPps     int64   `json:"now_pps"`
+	Avg1mPps   int64   `json:"avg_1m_pps"`
+	Avg5mPps   int64   `json:"avg_5m_pps"`
+	HistoryPps []int64 `json:"history_pps"`
+}
+
+type SnapshotTrafficPackets struct {
+	BillableRx SnapshotPacketRate `json:"billable_rx"`
+	BillableTx SnapshotPacketRate `json:"billable_tx"`
+}
+
 // LiveTraffic is the light reply to the "traffic" command: live counter sums and
 // the provider's clock at the moment they were read. urnet-tools top polls it
 // at 100ms and derives rates from the deltas, so it never rebuilds a snapshot.
@@ -108,23 +122,28 @@ type LiveTraffic struct {
 	BillableBytes uint64 `json:"billable_bytes"`
 	TotalBytes    uint64 `json:"total_bytes"`
 
-	BillableRxBytes uint64 `json:"billable_rx_bytes"`
-	BillableTxBytes uint64 `json:"billable_tx_bytes"`
-	TotalRxBytes    uint64 `json:"total_rx_bytes"`
-	TotalTxBytes    uint64 `json:"total_tx_bytes"`
+	BillableRxBytes   uint64 `json:"billable_rx_bytes"`
+	BillableTxBytes   uint64 `json:"billable_tx_bytes"`
+	TotalRxBytes      uint64 `json:"total_rx_bytes"`
+	TotalTxBytes      uint64 `json:"total_tx_bytes"`
+	BillableRxPackets uint64 `json:"billable_rx_packets"`
+	BillableTxPackets uint64 `json:"billable_tx_packets"`
 }
 
 // liveTrafficSample reads the counter sums at now.
-func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, totalRx, totalTx uint64)) *LiveTraffic {
+func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, totalRx, totalTx uint64), packets func() (uint64, uint64)) *LiveTraffic {
 	billableRx, billableTx, totalRx, totalTx := totals()
+	rxPackets, txPackets := packets()
 	return &LiveTraffic{
-		AtUnixNano:      now.UnixNano(),
-		BillableBytes:   billableRx + billableTx,
-		TotalBytes:      totalRx + totalTx,
-		BillableRxBytes: billableRx,
-		BillableTxBytes: billableTx,
-		TotalRxBytes:    totalRx,
-		TotalTxBytes:    totalTx,
+		AtUnixNano:        now.UnixNano(),
+		BillableBytes:     billableRx + billableTx,
+		TotalBytes:        totalRx + totalTx,
+		BillableRxBytes:   billableRx,
+		BillableTxBytes:   billableTx,
+		TotalRxBytes:      totalRx,
+		TotalTxBytes:      totalTx,
+		BillableRxPackets: rxPackets,
+		BillableTxPackets: txPackets,
 	}
 }
 
@@ -350,6 +369,7 @@ func avgTail(h []int64, n int) int64 {
 type directionLanes struct {
 	billableRx, billableTx uint64
 	totalRx, totalTx       uint64
+	packetRx, packetTx     uint64
 }
 
 // The four directional lanes, in sampler order: billable rx, billable tx,
@@ -359,6 +379,8 @@ const (
 	dirBillableTx
 	dirTotalRx
 	dirTotalTx
+	dirPacketRx
+	dirPacketTx
 	directionLaneCount
 )
 
@@ -412,6 +434,12 @@ func (s *directionSampler) sample(cur map[string]directionLanes, now time.Time) 
 		}
 		if v.totalTx >= p.totalTx {
 			deltas[dirTotalTx] += v.totalTx - p.totalTx
+		}
+		if v.packetRx >= p.packetRx {
+			deltas[dirPacketRx] += v.packetRx - p.packetRx
+		}
+		if v.packetTx >= p.packetTx {
+			deltas[dirPacketTx] += v.packetTx - p.packetTx
 		}
 	}
 	next := make(map[string]directionLanes, len(cur))
@@ -484,6 +512,14 @@ func (s *directionSampler) block() SnapshotTrafficDirections {
 		TotalRx:    s.direction(dirTotalRx, s.history(dirTotalRx)),
 		TotalTx:    s.direction(dirTotalTx, s.history(dirTotalTx)),
 	}
+}
+
+func (s *directionSampler) packetRate(lane int) SnapshotPacketRate {
+	h := s.history(lane)
+	if len(h) == 0 {
+		return SnapshotPacketRate{}
+	}
+	return SnapshotPacketRate{NowPps: h[len(h)-1], Avg1mPps: avgTail(h, 60), Avg5mPps: avgTail(h, 300), HistoryPps: h}
 }
 
 // cumulativeSample is one reading of the monotonic counters behind the idle
@@ -708,7 +744,8 @@ type snapshotSources struct {
 	traffic func() map[string]uint64
 	// directions maps proxy key to its four cumulative directional counters. Nil
 	// means no per-direction figures.
-	directions func() map[string]directionLanes
+	directions     func() map[string]directionLanes
+	packetCounters bool
 	// lifetimeBillable reports the persisted lifetime billable total, false
 	// when the lifetime store is not running. Nil means not available.
 	lifetimeBillable func() (uint64, bool)
@@ -866,6 +903,9 @@ func (c *nodeSnapshotCollector) trafficSnapshot() *SnapshotTraffic {
 		d := c.dir.block()
 		tr.Directions = &d
 	}
+	if c.src.packetCounters && c.src.directions != nil {
+		tr.Packets = &SnapshotTrafficPackets{BillableRx: c.dir.packetRate(dirPacketRx), BillableTx: c.dir.packetRate(dirPacketTx)}
+	}
 	return tr
 }
 
@@ -975,6 +1015,8 @@ func readProxyBandwidth() (billable, total map[string]uint64, directions map[str
 			billableTx: p.BillableTx.Load(),
 			totalRx:    p.TotalRx.Load(),
 			totalTx:    p.TotalTx.Load(),
+			packetRx:   p.BillableRxPackets.Load(),
+			packetTx:   p.BillableTxPackets.Load(),
 		}
 	}
 	return billable, total, directions
@@ -986,8 +1028,9 @@ func productionSnapshotSources() snapshotSources {
 		return proxyBandwidthRead{billable: b, total: t, directions: d}
 	})
 	return snapshotSources{
-		now:       time.Now,
-		startedAt: providerStartTime,
+		packetCounters: true,
+		now:            time.Now,
+		startedAt:      providerStartTime,
 		billable: func() map[string]uint64 {
 			b, _, _ := bandwidth.get()
 			return b

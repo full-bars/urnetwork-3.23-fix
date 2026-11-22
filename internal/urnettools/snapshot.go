@@ -55,6 +55,7 @@ type SnapshotTraffic struct {
 	// Directions is the per-direction block, nil from a provider that predates
 	// it. Its presence is the availability signal for the direction pages.
 	Directions *SnapshotTrafficDirections `json:"directions,omitempty"`
+	Packets    *SnapshotTrafficPackets    `json:"packets,omitempty"`
 }
 
 // SnapshotTrafficDirection mirrors one direction's billable or total rate.
@@ -74,6 +75,18 @@ type SnapshotTrafficDirections struct {
 	TotalTx    SnapshotTrafficDirection `json:"total_tx"`
 }
 
+type SnapshotPacketRate struct {
+	NowPps     float64   `json:"now_pps"`
+	Avg1mPps   float64   `json:"avg_1m_pps"`
+	Avg5mPps   float64   `json:"avg_5m_pps"`
+	HistoryPps []float64 `json:"history_pps"`
+}
+
+type SnapshotTrafficPackets struct {
+	BillableRx SnapshotPacketRate `json:"billable_rx"`
+	BillableTx SnapshotPacketRate `json:"billable_tx"`
+}
+
 // LiveTraffic is the light reply to the "traffic" command: live counter sums
 // and the provider's clock when they were read. top polls it at up to 100ms and
 // derives rates from the deltas. The sums drop when a proxy is removed or
@@ -87,10 +100,12 @@ type LiveTraffic struct {
 	BillableBytes uint64 `json:"billable_bytes"`
 	TotalBytes    uint64 `json:"total_bytes"`
 
-	BillableRxBytes *uint64 `json:"billable_rx_bytes,omitempty"`
-	BillableTxBytes *uint64 `json:"billable_tx_bytes,omitempty"`
-	TotalRxBytes    *uint64 `json:"total_rx_bytes,omitempty"`
-	TotalTxBytes    *uint64 `json:"total_tx_bytes,omitempty"`
+	BillableRxBytes   *uint64 `json:"billable_rx_bytes,omitempty"`
+	BillableTxBytes   *uint64 `json:"billable_tx_bytes,omitempty"`
+	TotalRxBytes      *uint64 `json:"total_rx_bytes,omitempty"`
+	TotalTxBytes      *uint64 `json:"total_tx_bytes,omitempty"`
+	BillableRxPackets *uint64 `json:"billable_rx_packets,omitempty"`
+	BillableTxPackets *uint64 `json:"billable_tx_packets,omitempty"`
 }
 
 // errTrafficUnsupported means the provider predates the "traffic" command. top
