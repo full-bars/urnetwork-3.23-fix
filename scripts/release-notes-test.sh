@@ -135,6 +135,11 @@ printf '#!/bin/sh\n' > "$repo/scripts/Provider_Install_Test.sh"
 git -C "$repo" add scripts/Provider_Install_Test.sh
 git -C "$repo" commit -qm 'installer'
 installsha=$(git -C "$repo" rev-parse HEAD)
+mkdir -p "$repo/miner"
+printf 'package miner\n' > "$repo/miner/change.go"
+git -C "$repo" add miner/change.go
+git -C "$repo" commit -qm 'miner'
+minersha=$(git -C "$repo" rev-parse HEAD)
 cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
 # Changelog
 
@@ -145,13 +150,15 @@ cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
 - **Docs.** Explain the behavior.
 - **Installer.** Update the installer.
 - **Combined.** Update both.
+- **Miner.** Change the miner.
 CHANGELOG
-printf 'Docs\t%s\nInstaller\t%s\nCombined\t%s,%s\n' "$docsha" "$installsha" "$sha" "$installsha" > "$repo/releases/_map/v-test.tsv"
+printf 'Docs\t%s\nInstaller\t%s\nCombined\t%s,%s\nMiner\t%s\n' "$docsha" "$installsha" "$sha" "$installsha" "$minersha" > "$repo/releases/_map/v-test.tsv"
 (cd "$repo" && PATH="$repo/bin:$PATH" scripts/release-notes.sh v-test --out "$tmp/generated.md")
 rg -q '^\- \*\*Docs\. \[no redeploy\]' "$tmp/generated.md"
 rg -q '^\- \*\*Installer\. \[installer\]' "$tmp/generated.md"
 rg -q '^\- \*\*Combined\. \[redeploy\]' "$tmp/generated.md"
-echo 'PASS: documentation and installer classification and redeploy precedence'
+rg -q '^\- \*\*Miner\. \[redeploy\]' "$tmp/generated.md"
+echo 'PASS: documentation, installer and miner classification and redeploy precedence'
 # Merge a branch so the changelog suffix resolves from first-parent history.
 git -C "$repo" checkout -qb feature
 printf 'package provider\n// feature\n' > "$repo/provider/merge.go"

@@ -147,7 +147,7 @@ def main():
             deploy = 'no redeploy'
             for f in files:
                 name = Path(f).name
-                if (f.endswith('.go') and not f.endswith('_test.go') and (f.startswith(('provider/', 'internal/')) or '/' not in f)) or name.startswith('Dockerfile') or re.match(r'^(docker-)?compose.*\.ya?ml$', name):
+                if (f.endswith('.go') and not f.endswith('_test.go') and (f.startswith(('provider/', 'miner/', 'internal/')) or '/' not in f)) or name.startswith('Dockerfile') or re.match(r'^(docker-)?compose.*\.ya?ml$', name):
                     deploy = 'redeploy'
                     break
                 if f.startswith('scripts/Provider_Install') or name.startswith('install-') and name.endswith(('.sh', '.ps1')):
