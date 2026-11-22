@@ -75,10 +75,14 @@ func forgedSourceKind(disposition transferReceiveDisposition, localId Id, source
 }
 
 // boundSourceMismatch reports whether a frame named a source other than the
-// peer its receive lane is bound to. An unbound lane accepts any source,
+// peer its receive lane is bound to. Only a direct peer-to-peer lane is bound:
+// the binding is the source the adjacent peer's signalling authenticated, and
+// no other transport type carries one. An unbound lane accepts any source,
 // because a multihop endpoint only knows its adjacent hop.
 func boundSourceMismatch(disposition transferReceiveDisposition, sourceId Id) bool {
-	return disposition.boundSourceId != (Id{}) && sourceId != disposition.boundSourceId
+	return disposition.transportType == TransportTypeP2p &&
+		disposition.boundSourceId != (Id{}) &&
+		sourceId != disposition.boundSourceId
 }
 
 // p2pSourceCounters holds the counters behind the two source policy metrics.
