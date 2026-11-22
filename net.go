@@ -657,40 +657,146 @@ func dropProxyCredentials(text string, host string) string {
 }
 
 // proxyTokenAfter is the host of the address token starting at start, and
-// whether one starts there at all.
+// whether one starts there at all. An error prints the address it failed on
+// followed by a colon ("dial host:port: connection refused"), and that colon is
+// part of the token but not of the address, so it is dropped before the host is
+// read: otherwise the address is never recognised and the credential in front
+// of it stays in the line.
 func proxyTokenAfter(text string, start int) (string, bool) {
 	if len(text) <= start || (text[start] != '[' && !addressTokenByte(text[start])) {
 		return "", false
 	}
-	host, _ := splitAddressToken(text[start:readAddressToken(text, start)])
+	token := text[start:readAddressToken(text, start)]
+	if head, ok := strings.CutSuffix(token, ":"); ok && addressHeadIsHostPort(head) {
+		token = head
+	}
+	host, _ := splitAddressToken(token)
 	return host, true
+}
+
+// addressHeadIsHostPort reports whether head, a token that ended with the colon
+// an error prints after an address, is that address without the colon. A bare
+// v6 literal that ends in ':' is left alone, since the colon there is part of
+// the address.
+func addressHeadIsHostPort(head string) bool {
+	if host, port, err := net.SplitHostPort(head); err == nil {
+		return host != "" && port != ""
+	}
+	return strings.HasPrefix(head, "[") && strings.HasSuffix(head, "]")
 }
 
 // proxyAuthorityStart is where the userinfo in front of the '@' at end begins.
 // A scheme delimits it exactly, since a password may carry the '/' a path also
-// uses; with no scheme the credential run is taken back to the first byte that
-// is no part of it.
+// uses. With no scheme the credential begins the token it sits in, so the scan
+// runs back over the bytes RFC 3986 allows in userinfo and stops at the first
+// byte that cannot be part of it. Whitespace, a quote and the brackets and
+// punctuation a log line puts around a value end the token there, so a password
+// carrying one of those loses only the part behind it instead of taking the
+// surrounding prose with it.
+//
+// '=' is both a sub-delimiter a password may carry and the separator a log line
+// puts between a key and its value ("err=", "addr="). It separates a key when
+// the bytes between it and the token start are a plain identifier, and is part
+// of the credential otherwise: "err=demo:pw@host" keeps "err=", and
+// "demo:p=ss@host" loses "demo:p=ss". A bare "user=pw@host" is read as a key,
+// because an unquoted line of that shape is far more often a key than a
+// credential.
 func proxyAuthorityStart(text string, end int) int {
 	if i := strings.LastIndex(text[:end], "://"); 0 <= i {
-		if !strings.ContainsAny(text[i+3:end], " 	\"'") {
+		if !strings.ContainsAny(text[i+3:end], " 	\"'") && proxySchemeEndsAt(text, i) {
 			return i + 3
 		}
 	}
 	start := end
-	for 0 < start && proxyCredentialByte(text[start-1]) {
+	for 0 < start {
+		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
+			break
+		}
+		if !proxyCredentialByte(text[start-1]) {
+			break
+		}
 		start--
 	}
 	return start
 }
 
+// proxySchemeEndsAt reports whether the bytes in front of the "://" at i are a
+// URI scheme at the start of their token (RFC 3986: ALPHA *( ALPHA / DIGIT /
+// "+" / "-" / "." )). A password may carry the ':' and the "//" that together
+// spell "://", and a run that is not a scheme at a token start cannot be one.
+func proxySchemeEndsAt(text string, i int) bool {
+	start := i
+	for 0 < start && proxySchemeByte(text[start-1]) {
+		start--
+	}
+	if start == i || ('0' <= text[start] && text[start] <= '9') {
+		return false
+	}
+	// a log line can carry the URL after a key, as in "err=socks5://..."
+	return start == 0 || text[start-1] == '=' || proxyTokenBoundaryByte(text[start-1])
+}
+
+// proxySchemeByte reports whether b can belong to a URI scheme.
+func proxySchemeByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '+', b == '-', b == '.':
+		return true
+	}
+	return false
+}
+
+// proxyEqualsIsKey reports whether the '=' at index i separates a key from its
+// value rather than sitting inside userinfo. A key is a plain identifier at the
+// start of the token.
+func proxyEqualsIsKey(text string, i int) bool {
+	start := i
+	for 0 < start && proxyKeyByte(text[start-1]) {
+		start--
+	}
+	if start == i {
+		return false
+	}
+	return start == 0 || proxyTokenBoundaryByte(text[start-1])
+}
+
+// proxyKeyByte reports whether b can belong to a plain key such as "err".
+func proxyKeyByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '_', b == '-', b == '.':
+		return true
+	}
+	return false
+}
+
+// proxyTokenBoundaryByte reports whether b ends the token a credential sits in:
+// whitespace, a quote, and the brackets and punctuation a log line puts around
+// a value. A password may carry ',' or ';', but taking those back would swallow
+// the prose around a line, so the boundary wins.
+func proxyTokenBoundaryByte(b byte) bool {
+	switch b {
+	case ' ', '	', '\n', '\r', '\v', '\f':
+		return true
+	case '"', '\'', '`', '(', ')', '<', '>', '[', ']', '{', '}', '|', ',', ';':
+		return true
+	}
+	return false
+}
+
 // proxyCredentialByte reports whether b can belong to userinfo. It includes the
-// '@' a password may carry, so the run is taken from its true start.
+// '@' a password may carry and the sub-delimiters "& = ? #" as well as the
+// unreserved and percent-encoded forms, so the run is taken from its true
+// start.
 func proxyCredentialByte(b byte) bool {
 	switch {
 	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
 		return true
 	case b == '-', b == '.', b == '_', b == '~', b == '%', b == ':', b == '!',
-		b == '$', b == '*', b == '+', b == '/', b == '@':
+		b == '$', b == '&', b == '*', b == '+', b == '/', b == '=', b == '?',
+		b == '#', b == '@':
 		return true
 	}
 	return false
