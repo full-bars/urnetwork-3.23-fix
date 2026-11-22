@@ -84,6 +84,12 @@ func (m *topModel) drawDirectionPage(b *tui.Buffer, content tui.Rect, id, title 
 		box.Put(tui.Truncate(msg, box.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
+	if len(up) == 0 && len(down) == 0 {
+		// A new provider sends the block before its first sample. The chart's
+		// own empty state names the Remote panel, so the page says its piece.
+		box.Put(tui.Truncate("waiting for the first direction samples", box.Width(), th.ASCII), 0, 0, th.Dim)
+		return
+	}
 	if m.directionScales == nil {
 		m.directionScales = map[string]*remoteScale{}
 	}

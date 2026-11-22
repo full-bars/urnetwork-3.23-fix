@@ -165,6 +165,22 @@ func TestTopDirectionPageFigures(t *testing.T) {
 	}
 }
 
+// A new provider sends the block before its first sample. The page then shows
+// its own waiting line rather than the Remote chart's.
+func TestTopDirectionPageBeforeTheFirstSample(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	s := topFlowing(t)
+	s.Traffic.Directions = &SnapshotTrafficDirections{}
+	m.apply(0, s, nil)
+	m.page = pageByID("billable")
+	b := tui.New(80, 24)
+	renderFresh(m, b)
+	if !strings.Contains(b.String(), "waiting for the first direction samples") {
+		t.Fatalf("the page has no waiting line:\n%s", b.String())
+	}
+}
+
 // The pages at a wide, a narrow and the smallest full-layout size. The goldens
 // catch a curve that drifts, a label that moves or a strip that changes.
 func TestTopDirectionPageGoldens(t *testing.T) {
