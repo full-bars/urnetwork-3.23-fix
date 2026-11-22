@@ -258,6 +258,74 @@ func TestRedactProxyEndpointKeepsTheDestinationOnAProxyPort(t *testing.T) {
 	}
 }
 
+// A credential-bearing proxy URL is the proxy endpoint too: an error that
+// repeats the URL had its host and port redacted and still printed the user
+// name and the password. The whole authority goes, split at the last '@'
+// before the host, because a password may contain one.
+func TestRedactProxyEndpointCredentials(t *testing.T) {
+	const (
+		user     = "sentinel-user"
+		password = "s3n@t:in/el%2Fpw"
+	)
+	withPort := &ProxySettings{Index: 6, Network: "tcp", Address: "gw.example.net:443"}
+	noPort := &ProxySettings{Index: 6, Network: "tcp", Address: "gw.example.net"}
+	for _, settings := range []*ProxySettings{withPort, noPort} {
+		port := ":443"
+		if settings == noPort {
+			port = ""
+		}
+		for _, scheme := range []string{"http", "https", "socks5", "socks5h"} {
+			// built by concatenation, not fmt: this fmt redacts a URL's
+			// userinfo in its own output, and the text handed to the redactor
+			// is what is under test
+			link := scheme + "://" + user + ":" + password + "@gw.example.net" + port
+			for _, text := range []string{
+				"h1 dial: Get \"" + link + "\": proxyconnect tcp: connection refused",
+				"proxyconnect tcp: dial tcp 203.0.113.9" + port + ": i/o timeout for " + link,
+			} {
+				got := RedactProxyEndpoint(text, settings)
+				for _, leaked := range []string{user, password, "gw.example.net"} {
+					if strings.Contains(got, leaked) {
+						t.Fatalf("%s%s: the credential or the endpoint survived: %q in %q", scheme, port, leaked, got)
+					}
+				}
+				if !strings.Contains(got, "proxy[6]") || !strings.Contains(got, scheme) {
+					t.Fatalf("%s%s: the line lost the slot or the scheme: %q", scheme, port, got)
+				}
+			}
+		}
+	}
+
+	// an endpoint without a scheme keeps its existing replacement, and the
+	// userinfo in front of it goes with the authority
+	bare := &ProxySettings{Index: 2, Network: "tcp", Address: "10.9.8.7:3128"}
+	got := RedactProxyEndpoint("dial "+user+":"+password+"@10.9.8.7:3128 failed", bare)
+	if strings.Contains(got, user) || strings.Contains(got, password) {
+		t.Fatalf("a scheme-less endpoint kept its credentials: %q", got)
+	}
+	if !strings.Contains(got, "proxy[2]") || !strings.Contains(got, "failed") {
+		t.Fatalf("a scheme-less endpoint lost the slot or the reason: %q", got)
+	}
+
+	// the shape the transport hands over: Go masks the URL's userinfo up to its
+	// first '@', which a password containing one splits, so the tail of the
+	// password is still the redactor's to remove
+	link := "socks5://" + user + ":" + password + "@gw.example.net:443"
+	got = RedactProxyEndpoint((&url.Error{
+		Op:  "Get",
+		URL: link,
+		Err: errors.New("proxyconnect tcp: connection refused"),
+	}).Error(), withPort)
+	for _, leaked := range []string{user, "el%2Fpw", "@t:in", "gw.example.net"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("a url.Error kept %q: %q", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "proxy[6]") {
+		t.Fatalf("a url.Error lost the slot: %q", got)
+	}
+}
+
 // A wrapped url.Error and an errors.As chain are the shapes the transport hands
 // the redactor, and an empty or nil proxy must not touch the text at all.
 func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {

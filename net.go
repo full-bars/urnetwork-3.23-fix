@@ -607,6 +607,7 @@ func redactAddressTokens(text string, host string, port string, label string) st
 	if host == "" {
 		return text
 	}
+	text = dropProxyCredentials(text, host)
 	// a hop is only ever named inside the error string of the line, never in
 	// the dial target printed in front of it
 	errorFrom := proxyErrorRegionStart(text)
@@ -622,6 +623,82 @@ func redactAddressTokens(text string, host string, port string, label string) st
 		i = end
 	}
 	return b.String()
+}
+
+// dropProxyCredentials removes the userinfo in front of a proxy host. An error
+// that repeats a credential-bearing proxy URL - a url.Error's "Get
+// \"socks5://user:secret@gw:443\": ..." - otherwise keeps the user name and
+// password next to the redacted endpoint. The delimiter is the last '@' in
+// front of the host, since a password may contain one, so the credentials go
+// whole and only the host is left for the token pass to replace.
+func dropProxyCredentials(text string, host string) string {
+	out := text
+	search := 0
+	for {
+		rel := strings.IndexByte(out[search:], '@')
+		if rel < 0 {
+			return out
+		}
+		at := search + rel
+		tokenHost, ok := proxyTokenAfter(out, at+1)
+		if !ok || !proxyHostMatches(host, tokenHost) {
+			search = at + 1
+			continue
+		}
+		start := proxyAuthorityStart(out, at)
+		if at <= start {
+			search = at + 1
+			continue
+		}
+		out = out[:start] + out[at+1:]
+		search = start
+	}
+}
+
+// proxyTokenAfter is the host of the address token starting at start, and
+// whether one starts there at all.
+func proxyTokenAfter(text string, start int) (string, bool) {
+	if len(text) <= start || (text[start] != '[' && !addressTokenByte(text[start])) {
+		return "", false
+	}
+	host, _ := splitAddressToken(text[start:readAddressToken(text, start)])
+	return host, true
+}
+
+// proxyAuthorityStart is where the userinfo in front of the '@' at end begins.
+// A scheme delimits it exactly, since a password may carry the '/' a path also
+// uses; with no scheme the credential run is taken back to the first byte that
+// is no part of it.
+func proxyAuthorityStart(text string, end int) int {
+	if i := strings.LastIndex(text[:end], "://"); 0 <= i {
+		if !strings.ContainsAny(text[i+3:end], " 	\"'") {
+			return i + 3
+		}
+	}
+	start := end
+	for 0 < start && proxyCredentialByte(text[start-1]) {
+		start--
+	}
+	return start
+}
+
+// proxyCredentialByte reports whether b can belong to userinfo. It includes the
+// '@' a password may carry, so the run is taken from its true start.
+func proxyCredentialByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '-', b == '.', b == '_', b == '~', b == '%', b == ':', b == '!',
+		b == '$', b == '*', b == '+', b == '/', b == '@':
+		return true
+	}
+	return false
+}
+
+// proxyHostMatches reports whether a host read out of text names the configured
+// one.
+func proxyHostMatches(configured string, host string) bool {
+	return strings.EqualFold(configured, host)
 }
 
 // proxyErrorRegionStart is where the error string of text begins. A log line is
