@@ -164,7 +164,7 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 `urnet-tools top` groups its graph screens into pages. Page 1 is the dashboard and it is what `top` opens. The strip under the title lists the pages the provider has data for, and the page on screen is marked:
 
 ```
-[1 Overview] [2 Remote]
+[1 Overview] [2 Remote] [3 Billable] [4 Total]
 ```
 
 Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp`. A number key goes straight to that page, and a click on a strip tab does the same. The page stays selected when you switch provider, and it is remembered for the session only.
@@ -172,6 +172,19 @@ Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp
 The strip is drawn on every page except the dashboard, so a user who never switches sees exactly the screen they saw before. Page 1 keeps today's layout, and only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
 
 Below the full layout's minimum size, the compact single panel keeps showing the dashboard whatever page is selected.
+
+## Billable and total by direction
+
+Two pages split the traffic figures into the two directions. Page 3 draws billable traffic and page 4 draws total traffic. Each page draws upload above the centre line and download below it:
+
+- upload is the traffic the provider sent away from the client (`tx`).
+- download is the traffic it received toward the client (`rx`).
+
+The packet path in `ip.go` and the socket path in `net.go` count them the same way. The curves are green. The pink packet series slots in beside them later through the same series list.
+
+Both pages use the mirrored chart renderer, so the direction labels, the corner averages and the peak labels work as they do on the Remote page. Each half scales to its own peak, because upload is a fraction of download on most links.
+
+The pages are listed only when the provider reports the split. A provider that predates it keeps the overview and Remote pages and offers no direction page.
 
 ## Remote transfer chart
 
