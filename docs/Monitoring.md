@@ -256,8 +256,10 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_bytes_total` | counter | `direction` | All bytes, all proxies, persisted across restarts |
 | `urnet_clients_active` | gauge | | Active clients, all proxies |
 | `urnet_connections_active` | gauge | | Active connections |
-| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h3`, `h3dns`, `h3dnspump`) per direction. Keepalives and speed or latency echoes are excluded, persisted across restarts |
-| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts |
+| `urnet_transport_frames_total` | counter | `mode`, `dir` | Payload frames carried by each platform transport mode (`h1`, `h1_websocket`, `h1_plus`, `h3`, `h3dns`, `h3dnspump`) per direction. The `h1` total is the sum of `h1_websocket` and `h1_plus`. Keepalives and speed or latency echoes are excluded, persisted across restarts |
+| `urnet_transport_payload_bytes_total` | counter | `mode`, `dir` | Payload bytes carried by each platform transport mode, before framing, persisted across restarts. Split by carrier the same way as the frame counter |
+| `urnet_h1plus_rx_messages_total` | counter | | Messages read on H1+ connections, persisted across restarts. `urnet_h1plus_messages_total` is the write side |
+| `urnet_h1plus_rx_bytes_total` | counter | | Message payload bytes read on H1+ connections, persisted across restarts. The framing is stripped on read, so this is the payload and not the wire bytes, unlike the write side |
 | `urnet_transport_direct_h1_frames_total` | counter | `dir` | Payload frames carried by H1 for the direct identity only. In the default setting this is the fair comparison for H3, which then runs for that identity alone. Under `auto`, a number or `all`, proxies can run H3 too. `urnet_transport_frames_total{mode="h1"}` is every proxy identity together, persisted across restarts |
 | `urnet_transport_direct_h1_payload_bytes_total` | counter | `dir` | Payload bytes carried by H1 for the direct identity only, persisted across restarts |
 | `urnet_h3_up` | gauge | | H3 connections up now |
