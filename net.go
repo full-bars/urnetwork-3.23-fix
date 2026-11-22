@@ -608,7 +608,7 @@ func redactAddressTokens(text string, host string, port string, label string) st
 	if host == "" {
 		return text
 	}
-	text = dropProxyCredentials(text, host)
+	text = dropProxyCredentials(text, host, port)
 	// a hop is only ever named inside the error string of the line, never in
 	// the dial target printed in front of it
 	errorFrom := proxyErrorRegionStart(text)
@@ -626,13 +626,15 @@ func redactAddressTokens(text string, host string, port string, label string) st
 	return b.String()
 }
 
-// dropProxyCredentials removes the userinfo in front of a proxy host. An error
-// that repeats a credential-bearing proxy URL - a url.Error's "Get
-// \"socks5://user:secret@gw:443\": ..." - otherwise keeps the user name and
-// password next to the redacted endpoint. The delimiter is the last '@' in
-// front of the host, since a password may contain one, so the credentials go
-// whole and only the host is left for the token pass to replace.
-func dropProxyCredentials(text string, host string) string {
+// dropProxyCredentials removes the userinfo in front of the address a proxy
+// error names. An error that repeats a credential-bearing proxy URL - a
+// url.Error's "Get \"socks5://user:secret@gw:443\": ..." - otherwise keeps the
+// user name and password next to the redacted endpoint. The delimiter is the
+// last '@' in front of the address, since a password may contain one, so the
+// credentials go whole and only the address is left for the token pass to
+// replace. The address is the configured one, or the hop a name-configured
+// proxy resolved to, which the token pass redacts by the same rule.
+func dropProxyCredentials(text string, host string, port string) string {
 	out := text
 	search := 0
 	for {
@@ -641,8 +643,8 @@ func dropProxyCredentials(text string, host string) string {
 			return out
 		}
 		at := search + rel
-		tokenHost, ok := proxyTokenAfter(out, at+1)
-		if !ok || !proxyHostMatches(host, tokenHost) {
+		tokenHost, tokenPort, ok := proxyTokenAfter(out, at+1)
+		if !ok {
 			search = at + 1
 			continue
 		}
@@ -651,27 +653,31 @@ func dropProxyCredentials(text string, host string) string {
 			search = at + 1
 			continue
 		}
+		if !proxyHostMatches(host, tokenHost) && !proxyIsResolvedHop(host, tokenHost, tokenPort, port, out[:start]) {
+			search = at + 1
+			continue
+		}
 		out = out[:start] + out[at+1:]
 		search = start
 	}
 }
 
-// proxyTokenAfter is the host of the address token starting at start, and
-// whether one starts there at all. An error prints the address it failed on
+// proxyTokenAfter is the host and port of the address token starting at start,
+// and whether one starts there at all. An error prints the address it failed on
 // followed by a colon ("dial host:port: connection refused"), and that colon is
 // part of the token but not of the address, so it is dropped before the host is
 // read: otherwise the address is never recognised and the credential in front
 // of it stays in the line.
-func proxyTokenAfter(text string, start int) (string, bool) {
+func proxyTokenAfter(text string, start int) (string, string, bool) {
 	if len(text) <= start || (text[start] != '[' && !addressTokenByte(text[start])) {
-		return "", false
+		return "", "", false
 	}
 	token := text[start:readAddressToken(text, start)]
 	if head, ok := strings.CutSuffix(token, ":"); ok && addressHeadIsHostPort(head) {
 		token = head
 	}
-	host, _ := splitAddressToken(token)
-	return host, true
+	host, port := splitAddressToken(token)
+	return host, port, true
 }
 
 // addressHeadIsHostPort reports whether head, a token that ended with the colon
@@ -819,6 +825,16 @@ func proxyHostMatches(configured string, host string) bool {
 func proxyIsAddr(host string) bool {
 	_, err := netip.ParseAddr(host)
 	return err == nil
+}
+
+// proxyIsResolvedHop reports whether a host and port name the hop a
+// name-configured proxy resolved to rather than a destination: a numeric address
+// on the proxy's port or with no port, where the words in front of it name a
+// hop. A proxy configured by a numeric address matches through
+// proxyHostMatches instead. The address pass and the credential pass share the
+// rule, so a credential in front of the hop goes with the hop.
+func proxyIsResolvedHop(host string, tokenHost string, tokenPort string, port string, before string) bool {
+	return !proxyIsAddr(host) && proxyIsAddr(tokenHost) && (tokenPort == "" || tokenPort == port) && proxyNamesItsHop(before)
 }
 
 // proxyErrorRegionStart is where the error string of text begins, or the end of
@@ -976,7 +992,7 @@ func redactAddressToken(token string, before string, inError bool, host string, 
 	case hostMatches:
 		// the same host on another port is still where the proxy is
 		return label + ":" + tokenPort + separators
-	case inError && !proxyIsAddr(host) && (tokenPort == "" || tokenPort == port) && proxyIsAddr(tokenHost) && proxyNamesItsHop(before):
+	case inError && proxyIsResolvedHop(host, tokenHost, tokenPort, port, before):
 		// a name-configured proxy's resolved hop, named as the dialed address
 		return label + separators
 	}
