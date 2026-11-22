@@ -68,13 +68,13 @@ func TestHealthSuffixHiddenUntilH3Attempted(t *testing.T) {
 func TestPrometheusExposesTransportModeStats(t *testing.T) {
 	before := TransportModeStats()
 	h3ModeStats.addTx(500)
-	h1ModeStats.addRx(700)
+	h1ModeStats.counters(false).addRx(700)
 	defer func() {
 		// leave the process counters as found
 		h3ModeStats.framesTx.Add(^uint64(0))
 		h3ModeStats.bytesTx.Add(^uint64(499))
-		h1ModeStats.framesRx.Add(^uint64(0))
-		h1ModeStats.bytesRx.Add(^uint64(699))
+		h1ModeStats.webSocket.framesRx.Add(^uint64(0))
+		h1ModeStats.webSocket.bytesRx.Add(^uint64(699))
 	}()
 
 	w := httptest.NewRecorder()

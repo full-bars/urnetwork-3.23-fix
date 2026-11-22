@@ -128,6 +128,87 @@ type LiveTraffic struct {
 	TotalTxBytes      uint64 `json:"total_tx_bytes"`
 	BillableRxPackets uint64 `json:"billable_rx_packets"`
 	BillableTxPackets uint64 `json:"billable_tx_packets"`
+
+	// Transports is the per-kind transport block. A provider that predates it
+	// sends nothing here.
+	Transports *LiveTransports `json:"transports,omitempty"`
+}
+
+// LiveTransport is one transport kind's cumulative payload counters and the
+// number of its connections up now. The counters are cumulative like the byte
+// totals, so a reader derives a window share from two samples.
+type LiveTransport struct {
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	Up       int64  `json:"up"`
+}
+
+// LiveTransports is the per-kind transport block of the traffic reply. The two
+// H1 carriers are always present because they are the segments the bar splits;
+// a mode the provider never ran is left out rather than sent as zeros.
+type LiveTransports struct {
+	H1WebSocket *LiveTransport `json:"h1_websocket,omitempty"`
+	H1Plus      *LiveTransport `json:"h1_plus,omitempty"`
+	H3          *LiveTransport `json:"h3,omitempty"`
+	DNS         *LiveTransport `json:"dns,omitempty"`
+	DNSPump     *LiveTransport `json:"dns_pump,omitempty"`
+}
+
+// liveTransportsSample copies the mode counters and the live H1 gauge into the
+// transports block.
+func liveTransportsSample(modes connect.TransportModeStatsSnapshot, conns connect.H1ConnectionStatsSnapshot) *LiveTransports {
+	transports := &LiveTransports{
+		H1WebSocket: &LiveTransport{
+			BytesTx:  modes.H1WebSocketBytesTx,
+			BytesRx:  modes.H1WebSocketBytesRx,
+			FramesTx: modes.H1WebSocketFramesTx,
+			FramesRx: modes.H1WebSocketFramesRx,
+			Up:       conns.WebSocketConnectionCount,
+		},
+		H1Plus: &LiveTransport{
+			BytesTx:  modes.H1PlusBytesTx,
+			BytesRx:  modes.H1PlusBytesRx,
+			FramesTx: modes.H1PlusFramesTx,
+			FramesRx: modes.H1PlusFramesRx,
+			Up:       conns.H1PlusConnectionCount,
+		},
+	}
+	if carried(modes.H3FramesTx, modes.H3FramesRx, modes.H3BytesTx, modes.H3BytesRx, modes.H3Up) {
+		transports.H3 = &LiveTransport{
+			BytesTx:  modes.H3BytesTx,
+			BytesRx:  modes.H3BytesRx,
+			FramesTx: modes.H3FramesTx,
+			FramesRx: modes.H3FramesRx,
+			Up:       modes.H3Up,
+		}
+	}
+	if carried(modes.Dns.FramesTx, modes.Dns.FramesRx, modes.Dns.BytesTx, modes.Dns.BytesRx, modes.Dns.Up) || modes.Dns.Drops > 0 {
+		transports.DNS = &LiveTransport{
+			BytesTx:  modes.Dns.BytesTx,
+			BytesRx:  modes.Dns.BytesRx,
+			FramesTx: modes.Dns.FramesTx,
+			FramesRx: modes.Dns.FramesRx,
+			Up:       modes.Dns.Up,
+		}
+	}
+	if carried(modes.DnsPump.FramesTx, modes.DnsPump.FramesRx, modes.DnsPump.BytesTx, modes.DnsPump.BytesRx, modes.DnsPump.Up) || modes.DnsPump.Drops > 0 {
+		transports.DNSPump = &LiveTransport{
+			BytesTx:  modes.DnsPump.BytesTx,
+			BytesRx:  modes.DnsPump.BytesRx,
+			FramesTx: modes.DnsPump.FramesTx,
+			FramesRx: modes.DnsPump.FramesRx,
+			Up:       modes.DnsPump.Up,
+		}
+	}
+	return transports
+}
+
+// carried reports whether a mode has ever carried a frame or has a connection
+// up now. A mode that has never been used is left out of the block.
+func carried(framesTx, framesRx, bytesTx, bytesRx uint64, up int64) bool {
+	return framesTx|framesRx|bytesTx|bytesRx != 0 || up != 0
 }
 
 // liveTrafficSample reads the counter sums at now.
@@ -144,6 +225,7 @@ func liveTrafficSample(now time.Time, totals func() (billableRx, billableTx, tot
 		TotalTxBytes:      totalTx,
 		BillableRxPackets: rxPackets,
 		BillableTxPackets: txPackets,
+		Transports:        liveTransportsSample(connect.TransportModeStats(), h1ConnectionProcessStats.Snapshot()),
 	}
 }
 

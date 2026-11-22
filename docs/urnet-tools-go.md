@@ -192,6 +192,14 @@ The pages are listed only when the provider reports the split. A provider that p
 
 The live `traffic` reply includes `billable_rx_packets` and `billable_tx_packets`. The snapshot `traffic.packets` block contains `billable_rx` and `billable_tx` rates with `now_pps`, `avg_1m_pps`, `avg_5m_pps` and `history_pps`. Rx counts packets received by the provider and tx counts packets sent by it. These are billable IP packets only. Total socket traffic has no packet count. Counters reset on restart and may decrease when a proxy is removed. Snapshot sampling skips decreases. An older provider omits these fields.
 
+## Transports in the live traffic reply
+
+The provider's `traffic` reply carries a `transports` block beside the byte totals. Each kind has `bytes_tx`, `bytes_rx`, `frames_tx`, `frames_rx` and `up`, where `up` is the number of that kind's connections open now. The counters are cumulative like the byte totals, so a reader takes the difference of two readings to get a window.
+
+The kinds are `h1_websocket`, `h1_plus`, `h3`, `dns` and `dns_pump`. H1 is split into its two carriers, so a plain websocket and the authenticated framed upgrade appear as separate segments. The two H1 kinds are always present, and a provider with H1+ off reports zero for `h1_plus`. A kind the provider never ran is left out instead of sent as zeros.
+
+A provider that predates the block sends no `transports` at all. A reader then hides the transport view, the same way it hides the direction pages.
+
 ## Remote transfer chart
 
 `urnet-tools top` can draw the client app's mirrored transfer chart under the throughput graphs. Press `r` to show or hide it. The panel needs a graph band tall enough for it and the two throughput graphs, so a short terminal leaves it out and a taller one brings it back, and the key keeps the choice.

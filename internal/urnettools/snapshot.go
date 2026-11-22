@@ -100,6 +100,8 @@ type LiveTraffic struct {
 	BillableBytes uint64 `json:"billable_bytes"`
 	TotalBytes    uint64 `json:"total_bytes"`
 
+	Transports *LiveTransports `json:"transports,omitempty"`
+
 	BillableRxBytes   *uint64 `json:"billable_rx_bytes,omitempty"`
 	BillableTxBytes   *uint64 `json:"billable_tx_bytes,omitempty"`
 	TotalRxBytes      *uint64 `json:"total_rx_bytes,omitempty"`
@@ -108,7 +110,29 @@ type LiveTraffic struct {
 	BillableTxPackets *uint64 `json:"billable_tx_packets,omitempty"`
 }
 
-// errTrafficUnsupported means the provider predates the "traffic" command. top
+// LiveTransport is one transport kind's cumulative counters plus its live
+// connection gauge. The tags match the provider's wire names.
+type LiveTransport struct {
+	BytesTx  uint64 `json:"bytes_tx"`
+	BytesRx  uint64 `json:"bytes_rx"`
+	FramesTx uint64 `json:"frames_tx"`
+	FramesRx uint64 `json:"frames_rx"`
+	Up       int64  `json:"up"`
+}
+
+// LiveTransports is the per-kind transport block of the traffic reply. A kind
+// the provider does not run is absent; h1_websocket and h1_plus are always
+// present so a provider with H1+ off reports zero for it. Window shares are
+// reported in the order h3, h1_websocket, h1_plus, dns, dns_pump.
+type LiveTransports struct {
+	H1WebSocket *LiveTransport `json:"h1_websocket,omitempty"`
+	H1Plus      *LiveTransport `json:"h1_plus,omitempty"`
+	H3          *LiveTransport `json:"h3,omitempty"`
+	DNS         *LiveTransport `json:"dns,omitempty"`
+	DNSPump     *LiveTransport `json:"dns_pump,omitempty"`
+}
+
+// errTrafficUnsupported means the provider predates the \"traffic\" command. top
 // then falls back to the snapshot's own once-a-second rates.
 var errTrafficUnsupported = errors.New("provider does not answer the traffic command")
 
