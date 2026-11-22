@@ -136,6 +136,13 @@ func TestLingerBannerDrawsAndTakesARow(t *testing.T) {
 	if m.contentRect.Y != 2 {
 		t.Fatalf("content starts at y=%d, want 2 without the banner", m.contentRect.Y)
 	}
+	// No readings at all is the not-applicable case: nothing is shown and the
+	// layout is the one top always had.
+	m.linger = nil
+	renderFresh(m, b)
+	if strings.Contains(b.String(), "LINGERING") || m.contentRect.Y != 2 {
+		t.Fatal("a provider with no linger reading must draw no banner")
+	}
 }
 
 func TestLingerBannerClickAndKeyOpenTheDialog(t *testing.T) {

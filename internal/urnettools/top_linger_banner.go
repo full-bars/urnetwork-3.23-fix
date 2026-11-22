@@ -351,21 +351,33 @@ func (m *topModel) enableLingering(term topLingerTerminal) {
 		return
 	}
 	// The password prompt has to be readable, so the terminal goes back to the
-	// shell for the length of the command and is taken over again after, on
-	// every path including a panic in the command.
+	// shell for the length of the command and is taken over again after. The
+	// deferred resume covers a panic in the command; the explicit one before
+	// the recheck gives the screen back as soon as the child is done.
+	var resume func()
 	if term != nil {
 		if err := term.Suspend(); err == nil {
-			defer term.Resume()
+			once := false
+			resume = func() {
+				if !once {
+					once = true
+					term.Resume()
+				}
+			}
+			defer resume()
 		}
 	}
 	sudo := append([]string{"loginctl"}, args...)
 	// Ctrl-C at the password prompt belongs to sudo. top ignores SIGINT for
 	// the length of the command and comes back when sudo ends.
 	topSignalIgnore.Store(true)
-	err := topLingerRunFn("sudo", sudo, true)
+	runErr := topLingerRunFn("sudo", sudo, true)
 	topSignalIgnore.Store(false)
-	if err != nil {
-		m.finishLingering(users, "sudo "+plain, topLingerFirstLine(err))
+	if resume != nil {
+		resume()
+	}
+	if runErr != nil {
+		m.finishLingering(users, "sudo "+plain, topLingerFirstLine(runErr))
 		return
 	}
 	m.finishLingering(users, "sudo "+plain, "")
