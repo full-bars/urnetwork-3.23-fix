@@ -10,7 +10,7 @@ INSTALLER = Path(__file__).resolve().parent / "Provider_Install_Linux.sh"
 
 
 class InstallerSystemdFailures(unittest.TestCase):
-    def run_install(self, failure, backup=False, existing_unit=False, stopped=True):
+    def run_install(self, failure, backup=False, existing_unit=False, stopped=True, user="alice", uid="1000"):
         script = INSTALLER.read_text()
         start = script.index("install_systemd_units ()\n{\n")
         end = script.index("\n}\n", start) + 3
@@ -34,7 +34,7 @@ install_path="$ROOT"
 update_timer_oncalendar=daily
 sanitize_restart_dropins() { :; }
 ensure_extender_cap() { :; }
-id() { printf '1000\n'; }
+id() { case "$1" in -un) printf '%s\n' "$UNIT_USER";; *) printf '%s\n' "$UNIT_UID";; esac; }
 pr_info() { printf 'INFO: %s\n' "$*"; }
 pr_warn() { printf 'WARN: %s\n' "$*"; }
 pr_err() { printf 'ERROR: %s\n' "$*"; }
@@ -53,12 +53,20 @@ systemctl() {
     esac
     return 0
 }
-''' + script[start:end] + '\ninstall_systemd_units prepare\ninstall_systemd_units\n'
-            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp, FAILURE=failure, STOPPED=str(int(stopped))), text=True, capture_output=True)
+''' + script[start:end] + '\ninstall_systemd_units prepare\ninstall_systemd_units\nprintf "TARGET:%s\\n" "${installer_linger_user:-}"\n'
+            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, ROOT=tmp, FAILURE=failure, STOPPED=str(int(stopped)), UNIT_USER=user, UNIT_UID=uid), text=True, capture_output=True)
             unit = (root / "units/urnetwork.service").read_text()
             binary = (root / "bin/urnetwork").read_text()
             calls = (root / "calls").read_text()
             return result, binary, calls, unit
+
+    def test_linger_target_tracks_enabled_user_unit(self):
+        for user, uid in (("alice", "1000"), ("service", "1001")):
+            with self.subTest(user=user):
+                result, _, _, _ = self.run_install("", stopped=False, user=user, uid=uid)
+                self.assertIn("TARGET:" + user, result.stdout)
+        result, _, _, _ = self.run_install("service", stopped=False, user="root", uid="0")
+        self.assertIn("TARGET:\n", result.stdout)
 
     def test_backup_failure_and_stale_backup(self):
         script = INSTALLER.read_text()

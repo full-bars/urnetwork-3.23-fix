@@ -1670,6 +1670,7 @@ Persistent=true
 WantedBy=default.target
 EOF
 
+    installer_linger_user=""
     if ! enable_out=$(systemctl --user enable urnetwork.service 2>&1); then
         if [ "$(id -u)" -eq 0 ]; then
             pr_warn "Running as root: user systemd service skipped (requires user session bus). Use Docker 'restart: unless-stopped' or manually run the provider binary."
@@ -1679,6 +1680,8 @@ EOF
             pr_info "The new binary and unit files are installed; service enable failed and this installer has not restarted the service. Once systemd works for your user, finish with: systemctl --user daemon-reload && systemctl --user enable --now urnetwork.service urnetwork-update.timer"
             exit 1
         fi
+    else
+        installer_linger_user="$(id -un)"
     fi
 
     if ! enable_out=$(systemctl --user enable --now urnetwork-update.timer 2>&1); then
@@ -2556,6 +2559,8 @@ func_assisted_user_setup ()
 
         if func_run_as_user "$newuser" "systemctl --user is-enabled urnetwork.service >/dev/null 2>&1"; then
             pr_info "Done. The provider is installed as a user service under '%s'." "$newuser"
+            installer_linger_user="$newuser"
+            installer_linger_summary "$installer_linger_user"
             exit 0
         fi
         pr_warn "Could not confirm the user service from this session."
@@ -3222,7 +3227,9 @@ do_install ()
 
     if [ "$has_systemd" -eq 1 ]; then
         install_systemd_units
-        installer_enable_linger "$(id -un)" install || :
+        if [ -n "$installer_linger_user" ]; then
+            installer_enable_linger "$installer_linger_user" install || :
+        fi
     fi
 
     if [ "$has_systemd" -eq 0 ] && [ "$has_openrc" -eq 1 ]; then
@@ -3304,8 +3311,8 @@ do_install ()
             pr_info "Updated successfully"
             ;;
     esac
-    if [ "$has_systemd" -eq 1 ]; then
-        installer_linger_summary "$(id -un)"
+    if [ -n "${installer_linger_user:-}" ]; then
+        installer_linger_summary "$installer_linger_user"
     fi
 }
 
