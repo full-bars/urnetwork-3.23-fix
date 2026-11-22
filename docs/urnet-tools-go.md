@@ -167,11 +167,13 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 [1 Overview] [2 Remote] [3 Billable] [4 Total]
 ```
 
+The strip is on by default on every page, page 1 included, so the pages are visible without switching to one. Press `p` to hide it or show it again. A hidden strip gives its row back to the graphs, and the footer keeps the `[/] page` and `p tabs` hints in both states. The choice lasts for the session only. A new `top` starts with the strip on.
+
 Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp`. A number key goes straight to that page, and a click on a strip tab does the same. The page stays selected when you switch provider, and it is remembered for the session only.
 
-The strip is drawn on every page except the dashboard, so a user who never switches sees exactly the screen they saw before. Page 1 keeps today's layout, and only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
+Page 1 keeps the dashboard's layout, and the rest of the frame is shared, so only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
 
-Below the full layout's minimum size, the compact single panel keeps showing the dashboard whatever page is selected.
+The strip needs the full layout, which is 72 columns by 20 rows. Below that `top` draws the compact single panel, which has no tabs and keeps every row for its graph.
 
 ## Billable and total by direction
 
