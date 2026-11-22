@@ -2,7 +2,9 @@ package urnettools
 
 import (
 	"errors"
+	"os"
 	"strings"
+	"syscall"
 	"testing"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -456,5 +458,36 @@ func TestLingerStaleCheckIsDropped(t *testing.T) {
 	}
 	if m.lingerRev == 0 {
 		t.Fatal("the fix did not bump the reading revision")
+	}
+}
+
+func TestLingerCtrlCBelongsToTheChildCommand(t *testing.T) {
+	// In raw mode Ctrl-C is a key; this is the signal path for the stretch
+	// where a child owns the terminal.
+	topSignalIgnore.Store(false)
+	if !topSignalEndsTop(os.Interrupt) {
+		t.Fatal("SIGINT ended top late")
+	}
+	topSignalIgnore.Store(true)
+	if topSignalEndsTop(os.Interrupt) {
+		t.Fatal("SIGINT ended top while a child owned the terminal")
+	}
+	if !topSignalEndsTop(syscall.SIGTERM) {
+		t.Fatal("SIGTERM did not end top")
+	}
+	topSignalIgnore.Store(false)
+
+	// The flag is cleared after the run, success or failure.
+	m, _ := lingerModel(t, false)
+	lingerSeams(t, func(name string, args []string, interactive bool) error {
+		if name == "sudo" {
+			return errors.New("cancelled")
+		}
+		return errors.New("denied")
+	}, false, true)
+	lingerChecks(t, map[string]bool{})
+	m.enableLingering(&fakeLingerTerminal{})
+	if topSignalIgnore.Load() {
+		t.Fatal("the signal guard stayed on after the command")
 	}
 }

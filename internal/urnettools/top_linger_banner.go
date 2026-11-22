@@ -359,7 +359,12 @@ func (m *topModel) enableLingering(term topLingerTerminal) {
 		}
 	}
 	sudo := append([]string{"loginctl"}, args...)
-	if err := topLingerRunFn("sudo", sudo, true); err != nil {
+	// Ctrl-C at the password prompt belongs to sudo. top ignores SIGINT for
+	// the length of the command and comes back when sudo ends.
+	topSignalIgnore.Store(true)
+	err := topLingerRunFn("sudo", sudo, true)
+	topSignalIgnore.Store(false)
+	if err != nil {
 		m.finishLingering(users, "sudo "+plain, topLingerFirstLine(err))
 		return
 	}

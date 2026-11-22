@@ -3,7 +3,10 @@ package urnettools
 import (
 	"context"
 	"fmt"
+	"os"
 	"runtime/debug"
+	"sync/atomic"
+	"syscall"
 	"time"
 
 	"github.com/urnetwork/connect/internal/tui"
@@ -14,6 +17,20 @@ import (
 // rate and the DISCONNECTED countdown. It is the poll floor, so any interval
 // that is a multiple of it is met exactly.
 const topTick = topMinInterval
+
+// topSignalIgnore is set while a child command owns the terminal, so a Ctrl-C
+// at its prompt reaches the child instead of ending top.
+var topSignalIgnore atomic.Bool
+
+// topSignalEndsTop reports whether a signal should cancel the loop. SIGTERM
+// always does. SIGINT does unless a child owns the terminal, where it is the
+// child's to handle.
+func topSignalEndsTop(sig os.Signal) bool {
+	if sig == syscall.SIGTERM {
+		return true
+	}
+	return !topSignalIgnore.Load()
+}
 
 // topMinFrame is the shortest time between two redraws, 20 frames a second.
 const topMinFrame = 50 * time.Millisecond
