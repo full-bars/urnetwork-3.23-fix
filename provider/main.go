@@ -6567,11 +6567,16 @@ func parseProxyAddress(proxyAddress string) (address string, user string, passwo
 
 // splitProxyAddress reads the forms parseProxyAddress accepts: host:port,
 // host:port:user:password, the same two with an IPv6 host in brackets, and a
-// proxy URL in front of the address. The userinfo forms are offered first and
-// the trailing-credential reading last.
+// proxy URL in front of the address. A line that opens with host:port: is read
+// as the trailing-credential form first, because a password may carry an '@'
+// and a host:port of its own and the userinfo forms would split that password
+// at its '@' and move the address. Every other line is offered to the userinfo
+// forms first.
 func splitProxyAddress(proxyAddress string) (address string, user string, password string) {
-	if rest, urlUser, urlPassword, ok := splitProxyURLUserinfo(proxyAddress); ok {
-		proxyAddress, user, password = rest, urlUser, urlPassword
+	if !opensWithHostPort(proxyAddress) {
+		if rest, urlUser, urlPassword, ok := splitProxyURLUserinfo(proxyAddress); ok {
+			proxyAddress, user, password = rest, urlUser, urlPassword
+		}
 	}
 	if strings.HasPrefix(proxyAddress, "[") {
 		if end := strings.Index(proxyAddress, "]"); end > 0 {
@@ -6598,9 +6603,65 @@ func splitProxyAddress(proxyAddress string) (address string, user string, passwo
 		password = groups[3]
 		return
 	}
+	if trailingAddress, trailingUser, trailingPassword, ok := splitTrailingAtSignCredential(proxyAddress); ok {
+		return trailingAddress, trailingUser, trailingPassword
+	}
 	// assume host:port
 	address = proxyAddress
 	return
+}
+
+// opensWithHostPort reports whether the line starts with a plain host:port
+// followed by another colon, which is the host:port:user:password form. The
+// second colon is the one that ends the address, so the prefix it cuts is the
+// address the trailing-credential reading would use.
+func opensWithHostPort(line string) bool {
+	_, _, _, ok := splitTrailingAtSignCredential(line)
+	if ok {
+		return true
+	}
+	// the same shape without an '@' after it: host:port:user:password
+	first := strings.IndexByte(line, ':')
+	if first < 0 {
+		return false
+	}
+	rest := line[first+1:]
+	second := strings.IndexByte(rest, ':')
+	if second < 0 {
+		return false
+	}
+	return plainHostPort(line[:first+1+second])
+}
+
+// splitTrailingAtSignCredential reads host:port:user:password for a password
+// that carries an '@' and a host:port of its own. That password puts more
+// colons behind the address than the last-two-colons reading can hold, so the
+// fields are cut at the first two colons behind the address instead. The shape
+// is claimed only when the line opens with a plain host:port and carries an
+// '@'; without one the last-two-colons reading stays the whole rule.
+func splitTrailingAtSignCredential(line string) (address string, user string, password string, ok bool) {
+	if !strings.Contains(line, "@") {
+		return "", "", "", false
+	}
+	first := strings.IndexByte(line, ':')
+	if first < 0 {
+		return "", "", "", false
+	}
+	rest := line[first+1:]
+	second := strings.IndexByte(rest, ':')
+	if second < 0 {
+		return "", "", "", false
+	}
+	hostPort := line[:first+1+second]
+	if !plainHostPort(hostPort) {
+		return "", "", "", false
+	}
+	fields := line[first+1+second+1:]
+	colon := strings.IndexByte(fields, ':')
+	if colon < 0 {
+		return "", "", "", false
+	}
+	return hostPort, fields[:colon], fields[colon+1:], true
 }
 
 // splitProxyURLUserinfo separates a proxy URL's credentials from its address.
