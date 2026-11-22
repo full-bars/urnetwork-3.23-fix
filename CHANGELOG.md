@@ -4,6 +4,8 @@
 
 ### Added
 
+- **The URnetwork logo in the tools.** `urnet-tools --version`, the help pages, the full `status` view and the Linux installer welcome draw the wordmark and icon as terminal block art. The artwork never prints into a pipe, `--plain`, `--json`, `--json-summary` or `--brief`. Turn it off with `--no-logo`, `URNET_NO_LOGO=1`, or `ui.logo = off` in the top settings file.
+
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
 
 - Show cached proxy TCP and UDP exit addresses in the local popup.
