@@ -164,7 +164,7 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 `urnet-tools top` groups its graph screens into pages. Page 1 is the dashboard and it is what `top` opens. The strip under the title lists the pages the provider has data for, and the page on screen is marked:
 
 ```
-[1 Overview] [2 Remote] [3 Billable] [4 Total]
+[1 Overview] [2 Remote] [3 Billable] [4 Total] [5 Transports]
 ```
 
 The strip is on by default on every page, page 1 included, so the pages are visible without switching to one. Press `p` to hide it or show it again. A hidden strip gives its row back to the graphs, and the footer keeps the `[/] page` and `p tabs` hints in both states. The choice lasts for the session only. A new `top` starts with the strip on.
@@ -199,6 +199,37 @@ The provider's `traffic` reply carries a `transports` block beside the byte tota
 The kinds are `h1_websocket`, `h1_plus`, `h3`, `dns` and `dns_pump`. H1 is split into its two carriers, so a plain websocket and the authenticated framed upgrade appear as separate segments. The two H1 kinds are always present, and a provider with H1+ off reports zero for `h1_plus`. A kind the provider never ran is left out instead of sent as zeros.
 
 A provider that predates the block sends no `transports` at all. A reader then hides the transport view, the same way it hides the direction pages.
+
+## The Transports page
+
+Page 5 draws the share of the window's traffic that each transport carried, in the shape of the client app's transport bar. It appears once the provider has answered with a transport block, and it stays out of the strip on a provider that predates the block.
+
+```
+last 60s
+▌████████████████████████████████████████████████████████████████████████████▐
+
+● H3 60%   ● H1 30%   ● H1+ 9%   ● whodis 1%
+
+unused ○ whodis pump
+
+transport      share                                               rate  conns
+H3               60%                                          1.0 MiB/s
+H1               30%                                        512.0 KiB/s     20
+H1+               9%                                        153.6 KiB/s      5
+whodis            1%                                         17.1 KiB/s
+whodis pump   unused                                              0 B/s
+H1 connections: 25, of them 5 on the H1+ carrier (20%)
+```
+
+The window is 60 seconds, the same window the Remote page draws. The page keeps the transport counters from the traffic polls `top` already makes, and differences the newest reading against the newest one a window back. A session shorter than a window uses the oldest reading it has, so the bar is live from the second poll and the caption names the span it covers.
+
+The bar is one row across the content width. Each kind takes a run of cells in proportion to the bytes it carried, by the largest remainder, so the runs add up to exactly the bar width and every kind that carried traffic keeps at least one cell. The first and last cells are half blocks, which rounds the ends. H1 and H1+ are separate carriers and separate segments. The colours are green for H3, light blue for H1, the URnetwork blue for H1+, pink for WhoDis and yellow for its pump. The mono and ASCII themes draw the bar in `#` cells and use `*` and `o` for the markers.
+
+The legend gives the whole percent of each kind that carried traffic. Whole percents add up to exactly 100, and the largest remainder takes the spare point where one is needed. The footer lists every kind the provider runs that carried nothing, with a hollow marker, so a kind that sat out is not read as a zero share. A window with no traffic at all says `idle`, draws the bar as empty cells and lists every kind in the footer.
+
+The table repeats the window per kind, with the payload as a rate over the span, and the live connection gauge. Only the two H1 carriers report a gauge. The line under the table splits the live H1 connections over the two carriers, because one total would hide which carrier carries the traffic.
+
+A counter that went down, for example when a proxy is removed, is skipped instead of read as negative traffic, so that kind shows as unused for the window.
 
 ## Remote transfer chart
 
