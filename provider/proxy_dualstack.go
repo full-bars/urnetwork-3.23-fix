@@ -208,7 +208,10 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		return true, false
 	}
 	if self.running && self.no >= proxyDualstackStopStreak {
+		// an expired record stops with the streak full, so the start streak goes
+		// too: a transport that just stopped needs two measurements to come back
 		self.running = false
+		self.yes = 0
 		return false, true
 	}
 	return false, false
