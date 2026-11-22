@@ -958,13 +958,13 @@ func proxyNamesItsHop(before string) bool {
 
 // proxyPeerForms are the phrases that put an address in the peer slot of a
 // printed operation: a socket read or write, whose address after the arrow is
-// the peer, and a socks connect, whose source address is the proxy it reached.
-// A socks handshake read or write can fail after the connect, and the peer it
-// names is the address the proxy dial reached. A bare dial is left out: its
-// target after the arrow is the destination, never the hop.
+// the peer, and so the address the proxy dial reached. A socks connect prints the
+// proxy it connected to before the arrow and the command target after it, so
+// neither of those is the peer slot: the proxy is named as the hop in front of
+// the arrow and the target stays visible.
 var proxyPeerForms = func() []string {
 	var forms []string
-	for _, phrase := range []string{"read ", "write ", "socks connect ", "socks5 connect ", "socks5h connect ", "socks5 dial "} {
+	for _, phrase := range []string{"read ", "write "} {
 		for _, network := range proxyNetworks {
 			forms = append(forms, phrase+network+" ")
 		}
