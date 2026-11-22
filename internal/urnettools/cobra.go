@@ -301,7 +301,7 @@ Keys:
 		helpFlag{name: "no-mouse", usage: "turn off mouse support"},
 		helpFlag{name: "copy", usage: "on quit, save the last screen as a text file"},
 		helpFlag{name: "plain", usage: "with --copy, use ASCII instead of box characters"},
-		helpFlag{name: "theme", value: true, usage: "colour `theme`: default, neon, nord, mono and others; saved for next time"},
+		helpFlag{name: "theme", value: true, usage: "colour theme; saved for next time"},
 	)
 }
 
