@@ -380,6 +380,11 @@ type proxiedIPv6Controller struct {
 	build     func(auth *connect.ClientAuth) providerPlatformTransport
 	enabled   func() bool
 	gate      proxyIPv6Gate
+	// pinToken is the store pin this controller took for its running extra
+	// transport, and zero while it holds none. It releases this token and no
+	// other, so a controller that is being replaced cannot clear the pin of the
+	// one that replaced it.
+	pinToken uint64
 }
 
 // step runs one poll at time now. It keeps the store's pin in step with the
@@ -387,7 +392,29 @@ type proxiedIPv6Controller struct {
 // stops it.
 func (self *proxiedIPv6Controller) step(now time.Time) {
 	self.poll(now)
-	self.store.pinIPv6Transport(self.key, self.transport.hasExtra())
+	self.syncPin()
+}
+
+// syncPin ties the store's pin to the extra transport: the token is taken while a
+// transport runs and released as soon as none does.
+func (self *proxiedIPv6Controller) syncPin() {
+	if self.transport.hasExtra() {
+		if self.pinToken == 0 {
+			self.pinToken = self.store.pinIPv6Transport(self.key)
+		}
+		return
+	}
+	self.releasePin()
+}
+
+// releasePin releases the pin this controller took, and only that one. It is
+// safe to call more than once.
+func (self *proxiedIPv6Controller) releasePin() {
+	if self.pinToken == 0 {
+		return
+	}
+	self.store.releaseIPv6Transport(self.key, self.pinToken)
+	self.pinToken = 0
 }
 
 // poll is one pass of the start and stop decision.
@@ -470,7 +497,9 @@ func (self *proxiedIPv6Controller) poll(now time.Time) {
 		// the pin goes in before the builder runs: the builder can take long
 		// enough for capacity pruning to evict the entry, and the entry holds the
 		// real-check pair that stops the transport on the UDP expiry
-		self.store.pinIPv6Transport(self.key, true)
+		if self.pinToken == 0 {
+			self.pinToken = self.store.pinIPv6Transport(self.key)
+		}
 		if self.transport.startExtra(self.build) {
 			tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
 		} else {
@@ -480,7 +509,7 @@ func (self *proxiedIPv6Controller) poll(now time.Time) {
 			self.gate.running = false
 			self.gate.yes = 0
 			// the pin taken for the start goes with it, unless a transport runs
-			self.store.pinIPv6Transport(self.key, self.transport.hasExtra())
+			self.syncPin()
 		}
 	}
 	if stop && self.transport.stopExtra() {
@@ -492,10 +521,11 @@ func (self *proxiedIPv6Controller) poll(now time.Time) {
 func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	defer func() {
-		self.transport.stopExtra()
-		self.store.pinIPv6Transport(self.key, false)
-	}()
+	// the pin is released in its own deferred call, so a close that panics still
+	// releases it: a defer that runs the release after the close call never
+	// reaches it, because the panic leaves the function there
+	defer self.releasePin()
+	defer func() { self.transport.stopExtra() }()
 	for {
 		select {
 		case <-ctx.Done():

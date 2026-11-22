@@ -506,13 +506,17 @@ type proxyUDPCheckStore struct {
 	// ipv6Seq numbers the IPv6 reservations (proxyUDPCheckEntry.ipv6Token)
 	ipv6Seq uint64
 	// ipv6TransportPinned names the identities whose extra IPv6 transport is
-	// running. Capacity pruning keeps their entries: the real-check pair that
-	// stops a running transport on the UDP expiry (completedAt, realStatus)
-	// lives in the entry only, and the restore path cannot bring it back. Age
-	// pruning may still drop one, which costs only evidence the gate already
-	// reads as expired. In memory only, and bounded by the number of proxies,
-	// so it cannot hold the cap open.
-	ipv6TransportPinned map[string]struct{}
+	// running, with the token of the controller that took the pin. Capacity
+	// pruning keeps their entries: the real-check pair that stops a running
+	// transport on the UDP expiry (completedAt, realStatus) lives in the entry
+	// only, and the restore path cannot bring it back. Age pruning may still
+	// drop one, which costs only evidence the gate already reads as expired. In
+	// memory only, and bounded by the number of proxies, so it cannot hold the
+	// cap open.
+	ipv6TransportPinned map[string]uint64
+	// pinSeq numbers those tokens. Zero never names a pin, so a controller that
+	// holds no pin can tell that from one it holds.
+	pinSeq uint64
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -528,7 +532,7 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 		slots:               make(chan struct{}, udpCheckMaxConcurrent),
 		detachedRuns:        map[string]*proxyUDPCheckRun{},
 		attempts:            map[string]time.Time{},
-		ipv6TransportPinned: map[string]struct{}{},
+		ipv6TransportPinned: map[string]uint64{},
 	}
 }
 
@@ -554,19 +558,29 @@ func (self *proxyUDPCheckStore) clearAttemptLocked(key string) {
 	delete(self.attempts, key)
 }
 
-// pinIPv6Transport records whether an identity runs its extra IPv6 transport,
-// so pruning keeps its entry while it does.
-func (self *proxyUDPCheckStore) pinIPv6Transport(key string, pinned bool) {
+// pinIPv6Transport records that an identity runs its extra IPv6 transport, so
+// pruning keeps its entry while it does, and returns the token this caller owns.
+// A later pin on the same identity replaces the token, which is what keeps a
+// retiring controller's release from clearing the pin of its replacement.
+func (self *proxyUDPCheckStore) pinIPv6Transport(key string) uint64 {
 	self.mu.Lock()
 	defer self.mu.Unlock()
-	if !pinned {
-		delete(self.ipv6TransportPinned, key)
-		return
-	}
 	if self.ipv6TransportPinned == nil {
-		self.ipv6TransportPinned = map[string]struct{}{}
+		self.ipv6TransportPinned = map[string]uint64{}
 	}
-	self.ipv6TransportPinned[key] = struct{}{}
+	self.pinSeq++
+	self.ipv6TransportPinned[key] = self.pinSeq
+	return self.pinSeq
+}
+
+// releaseIPv6Transport releases a pin its owner took. A token a later pin
+// replaced is left alone: that pin belongs to another controller.
+func (self *proxyUDPCheckStore) releaseIPv6Transport(key string, token uint64) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if self.ipv6TransportPinned[key] == token {
+		delete(self.ipv6TransportPinned, key)
+	}
 }
 
 // pinnedLocked reports whether an identity runs an extra IPv6 transport whose
