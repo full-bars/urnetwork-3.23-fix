@@ -575,21 +575,27 @@ func TestTopMouseToggleAndHelpText(t *testing.T) {
 		t.Fatal("mouse should be enabled by default")
 	}
 	txt, _ := showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "M mouse on") {
-		t.Fatalf("footer should show mouse on:\n%s", txt)
+	if !strings.Contains(txt, "K keyboard mode") {
+		t.Fatalf("footer should offer keyboard mode:\n%s", txt)
 	}
-	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'M'})
+	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: 'K'})
 	if m.mouse {
-		t.Fatal("M should toggle mouse off")
+		t.Fatal("K should switch to keyboard mode")
 	}
 	txt, _ = showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "M mouse off") {
-		t.Fatalf("footer should show mouse off:\n%s", txt)
+	if !strings.Contains(txt, "Keyboard Mode: select text with your terminal") {
+		t.Fatalf("the switch should say what keyboard mode does:\n%s", txt)
+	}
+	// Once the message has had its few seconds, the footer hints are back.
+	clock.t = topBase.Add(10 * time.Second)
+	txt, _ = showOnSim(t, m, 100, 30)
+	if !strings.Contains(txt, "K mouse mode") || !strings.Contains(txt, "keyboard") {
+		t.Fatalf("footer should offer mouse mode and mark keyboard mode:\n%s", txt)
 	}
 	m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 	txt, _ = showOnSim(t, m, 100, 30)
-	if !strings.Contains(txt, "Shift+drag selects text in most terminals") {
-		t.Fatalf("help overlay should explain Shift+drag text selection:\n%s", txt)
+	if !strings.Contains(txt, "keyboard mode to select text") {
+		t.Fatalf("help overlay should explain keyboard mode:\n%s", txt)
 	}
 }
 

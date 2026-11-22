@@ -37,4 +37,4 @@
 │                                                                                                          40.0 MiB/s ▼│
 │download ▼                                                                                               39.3 MiB/s  ▼│
 ╰──────────────────────────────────────────────────────────────────────────────────────────────────────────────────────╯
- q quit   [/] page   ? help   m menu   w zoom   - 1s +   M mouse on
+ q quit   [/] page   ? help   m menu   K keyboard mode   w zoom   - 1s +                                          mouse

@@ -37,4 +37,4 @@
 ╭ Events ────────────────────────────────────────────────────────────────────────────────╮
 │3d ago • restart: unclean                                                               │
 ╰────────────────────────────────────────────────────────────────────────────────────────╯
- q quit   ? help   m menu   w zoom   - 1s +   M mouse on
+ q quit   ? help   m menu   K keyboard mode   w zoom   - 1s +                                                     mouse

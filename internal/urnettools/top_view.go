@@ -65,6 +65,7 @@ func (m *topModel) render(b *tui.Buffer) {
 	m.compact = false
 	if m.overview {
 		m.drawOverview(b)
+		m.drawNotice(b)
 		return
 	}
 	if !topMin.FitsRect(b.Rect()) {
@@ -78,6 +79,7 @@ func (m *topModel) render(b *tui.Buffer) {
 		if m.menu {
 			m.drawMenu(b)
 		}
+		m.drawNotice(b)
 		return
 	}
 	m.drawFrame(b)
@@ -93,6 +95,7 @@ func (m *topModel) render(b *tui.Buffer) {
 	if m.menu {
 		m.drawMenu(b)
 	}
+	m.drawNotice(b)
 }
 
 // topFrameRows splits the full screen into the shared header, the page strip,
@@ -128,10 +131,11 @@ func (m *topModel) drawFrame(b *tui.Buffer) {
 	}
 	m.contentRect = content
 	m.drawFooter(b.Sub(footer))
-	// The footer hints are clickable: record one region per hint.
-	for _, r := range footerHintRects(footer, m.footerHints()) {
-		if r.Rect.W > 0 {
-			m.record(r.Name, r.Rect)
+	// The footer hints are clickable: record one region per hint that is on
+	// the row. While a message holds the row there are no hints to click.
+	for _, p := range footerHintPlaces(footer, m.footerHints()) {
+		if p.rect.W > 0 {
+			m.record(p.hint.name, p.rect)
 		}
 	}
 	m.selectedPage().draw(m, b, content)
@@ -299,16 +303,36 @@ func (m *topModel) drawHeader(h *tui.Buffer) {
 }
 
 func (m *topModel) drawFooter(f *tui.Buffer) {
-	hints := m.footerHints()
-	// The drawn line and the hit map come from the same list, so a click lands
-	// where the operator sees the label.
-	x := 1
-	for i, h := range hints {
-		if i > 0 {
-			x += 3 // the gap between hints
-		}
-		x = f.Put(h.label, x, 0, m.hoverStyle(h.name, m.theme.Dim))
+	// A one-line message holds the row while it lasts, so the message is
+	// never half a hint.
+	if m.noticeActive() {
+		return
 	}
+	places := footerHintPlaces(f.Rect(), m.footerHints())
+	end := 0
+	for _, p := range places {
+		f.Put(p.hint.label, p.rect.X, p.rect.Y, m.hoverStyle(p.hint.name, m.theme.Dim))
+		end = p.rect.X + p.rect.W
+	}
+	// The mode marker takes the right end of the row, and is dropped whole
+	// when it cannot sit clear of the last hint.
+	if label := m.modeMarker(); label != "" {
+		w := tui.StringWidth(label)
+		if sx := f.Width() - 1 - w; sx >= end+2 {
+			f.Put(label, sx, 0, m.theme.Dim)
+		}
+	}
+}
+
+// drawNotice draws the one-line message on the bottom row of b, in place of
+// the footer hints, whichever view is up.
+func (m *topModel) drawNotice(b *tui.Buffer) {
+	if !m.noticeActive() || b.Height() == 0 {
+		return
+	}
+	row := b.Sub(tui.Rect{Y: b.Height() - 1, W: b.Width(), H: 1})
+	row.Fill(row.Rect(), ' ', tui.Style{})
+	row.Put(tui.Truncate(" "+m.notice, row.Width(), m.theme.ASCII), 0, 0, m.theme.Accent)
 }
 
 // topIntervalText is 100ms, 250ms, 500ms, 1s, 2s.
@@ -1091,7 +1115,8 @@ var helpLines = []string{
 	"r                show or hide the mirrored Remote transfer chart",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme, graph style and heatmap style",
-	"M                mouse on/off (Shift+drag selects text in most terminals)",
+	"K                mouse mode, or keyboard mode to select text",
+	"c                copy the screen to the clipboard",
 	"t                cycle graph history: 10m, 1h, 24h",
 	"o                show all providers",
 	"a / i / v        alerts / resource gauges / carriers",

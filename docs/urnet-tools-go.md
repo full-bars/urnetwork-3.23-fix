@@ -35,7 +35,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `K` switches between mouse mode and keyboard mode, and `--no-mouse` starts in keyboard mode. |
 | `extender [status|events|about|on|off|enable|disable|setup]` | Manage the extender role: `status` shows ports and relayed traffic; `events` reads recent gossip events (`--since`, `--kind`, `--json`); `about` explains ports and requirements; `setup` configures low-port bind privilege and firewall rules; `on`/`off` controls the role live without restart. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
@@ -218,6 +218,20 @@ The chosen style is saved in `~`/.config/urnet-tools/top.conf` (`proxy.heatmap_s
 If the panel is too small for a style (less than the minimum grid height), it falls back to the classic state‑bar display exactly as today.
 
 The style name appears in the legend row when the panel is wide enough; in narrow panels the help overlay (`?`) shows all six names.
+
+## Mouse and keyboard mode
+
+`urnet-tools top` runs the terminal in one of two modes. In mouse mode the terminal reports clicks, hover and the wheel to top, so a click on a footer hint, a page tab or a divider works. In keyboard mode that reporting is off, so the terminal keeps the mouse and its own text selection works with an ordinary drag.
+
+Press `K` to switch between the two. The footer hint names the mode the key would switch to, and the mode that is on is written at the right end of the same row. A one-line message at the bottom says what changed:
+
+```
+Keyboard Mode: select text with your terminal. K for Mouse Mode
+```
+
+`--no-mouse` starts top in keyboard mode. A terminal that cannot report the mouse, such as one with `TERM=dumb` or no `TERM` at all, also starts there, and `K` says why it stays. The old `M` key still switches the mode, but it is not listed in the footer, the help overlay or this page.
+
+Copying the screen with `c` works in either mode. The copy does not touch the terminal's mouse setting.
 
 ## Docker top
 

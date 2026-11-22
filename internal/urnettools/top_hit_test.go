@@ -68,7 +68,7 @@ func TestTopFrameRecordsHitRegions(t *testing.T) {
 		"box:graph", "title:graph", "box:proxies", "title:proxies", "box:events", "title:events",
 		"box:now", "title:now", "box:resources", "title:resources",
 		"side", "left:proxies", "left:events", "side:resources",
-		"footer:quit", "footer:provider", "footer:help", "footer:menu", "footer:zoom", "footer:interval", "footer:mouse",
+		"footer:quit", "footer:provider", "footer:help", "footer:menu", "footer:zoom", "footer:interval", "footer:mode",
 		"tab:provider",
 	}
 	for _, n := range need {
@@ -122,25 +122,38 @@ func TestFooterHintRectsFollowTheDrawOrder(t *testing.T) {
 	m := newTestModel(tui.DefaultTheme(), topProviders(2), clock)
 	m.apply(0, topFlowing(t), nil)
 	hints := m.footerHints()
-	frects := footerHintRects(tui.Rect{X: 0, Y: 39, W: 120, H: 1}, hints)
-	if len(frects) != len(hints) {
-		t.Fatalf("got %d rects for %d hints", len(frects), len(hints))
+	places := footerHintPlaces(tui.Rect{X: 0, Y: 39, W: 120, H: 1}, hints)
+	if len(places) != len(hints) {
+		t.Fatalf("got %d places for %d hints", len(places), len(hints))
 	}
 	// hints are laid out left to right with 3 spaces between them
 	prev := 0
-	for i, r := range frects {
+	for i, p := range places {
 		if i > 0 {
-			prev = frects[i-1].Rect.X + frects[i-1].Rect.W
+			prev = places[i-1].rect.X + places[i-1].rect.W
 		}
 		wantX := prev + 3
 		if i == 0 {
 			wantX = 1
 		}
-		if r.Rect.X != wantX {
-			t.Fatalf("hint %d (%s) at x %d, want %d", i, hints[i].name, r.Rect.X, wantX)
+		if p.rect.X != wantX {
+			t.Fatalf("hint %d (%s) at x %d, want %d", i, hints[i].name, p.rect.X, wantX)
 		}
-		if r.Rect.W != tui.StringWidth(hints[i].label) {
-			t.Fatalf("hint %d (%s) width %d, want %d", i, hints[i].name, r.Rect.W, tui.StringWidth(hints[i].label))
+		if p.rect.W != tui.StringWidth(hints[i].label) {
+			t.Fatalf("hint %d (%s) width %d, want %d", i, hints[i].name, p.rect.W, tui.StringWidth(hints[i].label))
 		}
+		if p.rect.Y != 39 || p.rect.H != 1 {
+			t.Fatalf("hint %d (%s) at y %d h %d, want the footer row", i, hints[i].name, p.rect.Y, p.rect.H)
+		}
+	}
+	// A narrow row is filled with whole hints only.
+	narrow := footerHintPlaces(tui.Rect{W: 60, H: 1}, hints)
+	for _, p := range narrow {
+		if p.rect.X+p.rect.W > 60 {
+			t.Fatalf("hint %s runs past the row: %+v", p.hint.name, p.rect)
+		}
+	}
+	if len(narrow) == 0 || len(narrow) >= len(hints) {
+		t.Fatalf("60 columns should drop some but not all hints, got %d of %d", len(narrow), len(hints))
 	}
 }

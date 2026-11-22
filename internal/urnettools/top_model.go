@@ -279,9 +279,19 @@ type topModel struct {
 	menuSel      int
 	menuNote     string
 
-	// mouse controls terminal mouse reporting; M and --no-mouse toggle it off so
-	// unshifted drag selects text in the terminal.
+	// mouse is on in Mouse Mode, where the terminal reports clicks and hover to
+	// top, and off in Keyboard Mode, where the terminal keeps them so its own
+	// text selection works. K switches between the two (M is an alias) and
+	// --no-mouse starts in Keyboard Mode.
 	mouse bool
+	// mouseSupported is false for a terminal that cannot report the mouse, so
+	// K can say why it changed nothing instead of doing it silently.
+	mouseSupported bool
+
+	// notice is a one-line message shown in place of the footer hints for a
+	// few seconds, and noticeUntil is when it gives the row back.
+	notice      string
+	noticeUntil time.Time
 
 	// regions is the hit map for the last frame, rebuilt by every render.
 	regions []topRegion
@@ -324,7 +334,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, mouseSupported: true}
 	m.providerSnaps = make([]*NodeSnapshot, len(providers))
 	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
@@ -755,8 +765,12 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.help = !m.help
 		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
+		case 'K':
+			m.toggleMouseMode()
 		case 'M':
-			m.mouse = !m.mouse
+			// The old key, kept as a hidden alias of K so nobody loses the
+			// toggle. It is not in the footer, the help or the docs.
+			m.toggleMouseMode()
 		case 't':
 			switch m.windowHours {
 			case 0:

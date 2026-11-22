@@ -138,8 +138,8 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 				break
 			}
 		}
-	case "footer:mouse":
-		m.mouse = !m.mouse
+	case "footer:mode":
+		m.toggleMouseMode()
 	}
 	return topNone
 }
