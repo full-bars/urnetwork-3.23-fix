@@ -35,7 +35,7 @@ Both are cross-compiled from one Go source — the shell↔PowerShell drift is g
 | `hotswap` (`hot-swap`) | Zero-downtime in-process binary reload: hands live service to a verified candidate with no restart. Requires a `Type=notify` unit; see the deep-dive below. |
 | `self-update` (`selfupdate`) | Update the tool binary itself without touching running providers. |
 | `logs [N]` | Stream provider logs (N lines, default 250). RAMLOGS-aware. The ramlog and file views use a native follower, so they work on Windows (no `tail` needed) and wherever `tail` is missing. It prints the last N lines and then follows. If the log is rotated or replaced it finishes the old file and follows the new one from its start, and a truncated log is followed from its start. |
-| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Drag panel dividers to resize them; `M` toggles mouse reporting. |
+| `top [--interval D] [--no-mouse] [--copy] [--plain]` (also `urtop`) | Live full-screen view of one provider: throughput graphs, clients, proxy pool, memory and recent events. Read-only. Press `?` for keys, `q` to quit. Needs an interactive terminal; use `status` in scripts. `--copy` writes the screen to `~/.local/state/urnet-tools/top-<time>.txt` and prints it to stdout on exit; `--plain` turns the box characters into `+ - \|` for pasting. The Events panel shows relative times (`12m ago`), severity icons and collapsed repeats (`x12`). Press `+` or `-` to change the refresh interval down to 100 ms. At one second or faster, each live traffic reading adds a graph column. The title shows the duration of the visible columns; changing the interval keeps earlier columns. Longer intervals use one-second slots. The `1h` and `24h` views use binned snapshot history. Press `t` to cycle graph history, `o` for the provider overview, and `a`, `i`, or `v` for alerts, resource gauges, or carriers. Press `]` or `[` (or `PageDown`, `PageUp`, or a digit) to move between pages of graphs. Drag panel dividers to resize them; `M` toggles mouse reporting. |
 | `extender [status|events|about|on|off|enable|disable|setup]` | Manage the extender role: `status` shows ports and relayed traffic; `events` reads recent gossip events (`--since`, `--kind`, `--json`); `about` explains ports and requirements; `setup` configures low-port bind privilege and firewall rules; `on`/`off` controls the role live without restart. |
 | `get [key] [target]` (alias `show`) | Read-only view of the runtime overrides. With no key it lists every active override; pass one key to see its value. Use `set` to change anything. |
 | `version` (`--version`, `-v`) | Print stamped binary version and build metadata. |
@@ -158,6 +158,20 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 | `dashboard` | Rich terminal status panel: state indicators, active settings, proxy sources, and restart warnings. Aliases `dash`, `panel`. |
 
 ---
+
+## Pages
+
+`urnet-tools top` groups its graph screens into pages. Page 1 is the dashboard and it is what `top` opens. The strip under the title lists the pages the provider has data for, and the page on screen is marked:
+
+```
+[1 Overview] [2 Remote]
+```
+
+Press `]` or `[` to move to the next or previous page, or `PageDown` and `PageUp`. A number key goes straight to that page, and a click on a strip tab does the same. The page stays selected when you switch provider, and it is remembered for the session only.
+
+The strip is drawn on every page except the dashboard, so a user who never switches sees exactly the screen they saw before. Page 1 keeps today's layout, and only the page's own draw function changes when you move to another page. A page with no data, such as Remote before the provider has answered, is left out of the strip unless it is the page you are on, which then shows its own waiting message.
+
+Below the full layout's minimum size, the compact single panel keeps showing the dashboard whatever page is selected.
 
 ## Remote transfer chart
 

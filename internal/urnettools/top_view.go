@@ -1084,6 +1084,8 @@ func (m *topModel) drawCompact(b *tui.Buffer) {
 var helpLines = []string{
 	"q, Esc, Ctrl-C   quit",
 	"Tab, Shift-Tab   next or previous provider",
+	"]  [             next or previous page",
+	"1 - 9            go to a page",
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"r                show or hide the mirrored Remote transfer chart",

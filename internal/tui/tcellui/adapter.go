@@ -82,6 +82,8 @@ const (
 	KeyDown
 	KeyLeft
 	KeyRight
+	KeyPageUp
+	KeyPageDown
 )
 
 // Event is the terminal input the screens understand.
@@ -347,6 +349,10 @@ func translateKey(ev *tcell.EventKey) Event {
 		return Event{Kind: EventKey, Key: KeyLeft}
 	case tcell.KeyRight:
 		return Event{Kind: EventKey, Key: KeyRight}
+	case tcell.KeyPgUp:
+		return Event{Kind: EventKey, Key: KeyPageUp}
+	case tcell.KeyPgDn:
+		return Event{Kind: EventKey, Key: KeyPageDown}
 	case tcell.KeyEnter:
 		return Event{Kind: EventKey, Key: KeyEnter}
 	case tcell.KeyCtrlC:

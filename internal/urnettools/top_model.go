@@ -666,6 +666,10 @@ const (
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	// Whether this event may switch pages is decided before the event closes
+	// anything: the key or click that dismisses a popup must not also jump to
+	// another page.
+	pageKeys := m.pageKeysActive()
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 	}
@@ -729,6 +733,14 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return m.selectProvider(1)
 		case tcellui.KeyBacktab:
 			return m.selectProvider(-1)
+		case tcellui.KeyPageDown:
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case tcellui.KeyPageUp:
+			if pageKeys {
+				m.stepPage(-1)
+			}
 		}
 	case tcellui.EventRune:
 		switch ev.Rune {
@@ -794,6 +806,20 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 					m.panel, m.rt.showing = "goroutines", true
 				}
 				m.rt.gLast = time.Time{}
+			}
+		case ']':
+			if pageKeys {
+				m.stepPage(1)
+			}
+		case '[':
+			if pageKeys {
+				m.stepPage(-1)
+			}
+		default:
+			// 1 to 9 jump straight to a page, numbered as the strip numbers
+			// them.
+			if ev.Rune >= '1' && ev.Rune <= '9' && pageKeys {
+				m.selectPage(int(ev.Rune - '1'))
 			}
 		}
 	}

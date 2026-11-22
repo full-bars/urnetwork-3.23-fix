@@ -40,6 +40,11 @@ func (m *topModel) footerHints() []topFooterHint {
 	if len(m.providers) > 1 {
 		hints = append(hints, topFooterHint{"footer:provider", "tab provider"})
 	}
+	// The page hint belongs with the strip, so it appears on the same pages the
+	// strip does. That keeps the dashboard's footer exactly as it was.
+	if pages, _ := m.pageStrip(m.pageArea()); len(pages) > 1 && m.pageIndex() != 0 {
+		hints = append(hints, topFooterHint{"footer:pages", "[/] page"})
+	}
 	hints = append(hints, topFooterHint{"footer:help", "? help"}, topFooterHint{"footer:menu", "m menu"})
 	if m.trafficOK {
 		hints = append(hints, topFooterHint{"footer:zoom", "w zoom"})
