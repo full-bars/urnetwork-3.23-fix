@@ -7,6 +7,7 @@ import (
 	"reflect"
 	"testing"
 	"time"
+	"unsafe"
 
 	"github.com/urnetwork/connect"
 )
@@ -446,5 +447,97 @@ func TestUDPProbeSweepMeasuresANeverMeasuredIpv6Identity(t *testing.T) {
 	}
 	if len(seen) != 5 {
 		t.Fatalf("the trace measured %d identities, want all 5: %v", len(seen), seen)
+	}
+}
+
+// mixedClock returns a stamp whose wall clock comes from wallLive and whose
+// monotonic reading comes from elapsed, the pair a live stamp carries after the
+// wall clock stepped between two reads. A test needs it because the public
+// clock cannot produce two stamps whose wall order and elapsed order disagree
+// while the wall clock stands still.
+func mixedClock(wallLive, elapsed time.Time) time.Time {
+	type timeRepr struct {
+		wall uint64
+		ext  int64
+		loc  *time.Location
+	}
+	t := wallLive
+	tRepr := (*timeRepr)(unsafe.Pointer(&t))
+	eRepr := (*timeRepr)(unsafe.Pointer(&elapsed))
+	tRepr.ext = eRepr.ext
+	return t
+}
+
+// Sol's trace: after a backward wall step two live stamps compare by elapsed
+// time while each compares with a restored stamp by the wall clock, so the
+// comparator runs in a cycle. Every permutation of the triple must come out in
+// wall order.
+func TestSelectUDPProbeBatchOrdersMixedClocks(t *testing.T) {
+	base := time.Now()
+	// wall order is restored, live-early, live-late; the live pair's elapsed
+	// order runs the other way, as it does when the wall clock steps back
+	// between their stamps
+	liveLate := udpProbeCandidate{key: "live-late", online: true, status: proxyUDPOK, lastChecked: mixedClock(base.Add(-20*time.Hour), base.Add(-48*time.Hour))}
+	liveEarly := udpProbeCandidate{key: "live-early", online: true, status: proxyUDPOK, lastChecked: mixedClock(base.Add(-21*time.Hour), base.Add(-40*time.Hour))}
+	restored := udpProbeCandidate{key: "restored", online: true, status: proxyUDPOK, lastChecked: base.Add(-20*time.Hour - 30*time.Minute).Round(0)}
+	triple := []udpProbeCandidate{liveLate, liveEarly, restored}
+	want := []string{"live-early", "restored", "live-late"}
+	permutations := [][3]int{{0, 1, 2}, {0, 2, 1}, {1, 0, 2}, {1, 2, 0}, {2, 0, 1}, {2, 1, 0}}
+	for _, permutation := range permutations {
+		input := []udpProbeCandidate{triple[permutation[0]], triple[permutation[1]], triple[permutation[2]]}
+		batch := selectUDPProbeBatch(base, input, 24*time.Hour, 24*time.Hour, nil)
+		var got []string
+		for _, candidate := range batch {
+			got = append(got, candidate.key)
+		}
+		if !reflect.DeepEqual(got, want) {
+			t.Fatalf("permutation %v ordered %v, want the wall order %v", permutation, got, want)
+		}
+	}
+}
+
+// A comparator that mixes the two clocks can put a later due time before an
+// earlier one, so sorting is not a total order. Every candidate here carries a
+// random pair of a wall clock and an elapsed reading, and the batch must still
+// come out in wall order.
+func TestSelectUDPProbeBatchComparatorIsATotalOrder(t *testing.T) {
+	base := time.Now()
+	window := proxyUDPTTL(proxyUDPOK) / 2
+	rng := rand.New(rand.NewSource(7))
+	for trial := 0; trial < 200; trial++ {
+		candidates := make([]udpProbeCandidate, 0, 12)
+		for i := 0; i < 12; i++ {
+			// all due, with wall stamps far enough apart that the window cannot
+			// reorder them
+			wall := base.Add(-time.Duration(13+rng.Intn(23)) * time.Hour)
+			lastChecked := wall.Round(0)
+			if rng.Intn(2) == 0 {
+				// an elapsed reading of its own, far enough back that the
+				// window has run out on either clock
+				lastChecked = mixedClock(wall, base.Add(-time.Duration(13+rng.Intn(48))*time.Hour))
+			}
+			candidates = append(candidates, udpProbeCandidate{
+				key:         fmt.Sprintf("k%02d", i),
+				online:      true,
+				status:      proxyUDPOK,
+				lastChecked: lastChecked,
+			})
+		}
+		batch := selectUDPProbeBatch(base, candidates, udpProbeRecheckWindow, udpProbeRecheckWindow, nil)
+		if len(batch) != len(candidates) {
+			t.Fatalf("trial %d selected %d of %d due candidates", trial, len(batch), len(candidates))
+		}
+		for i := 1; i < len(batch); i++ {
+			previous := batch[i-1]
+			current := batch[i]
+			previousDue := previous.lastChecked.Add(window).Round(0)
+			currentDue := current.lastChecked.Add(window).Round(0)
+			if currentDue.Before(previousDue) {
+				t.Fatalf("trial %d put %q (due %v) before %q (due %v)", trial, current.key, currentDue, previous.key, previousDue)
+			}
+			if currentDue.Equal(previousDue) && current.key <= previous.key {
+				t.Fatalf("trial %d broke the key order on equal due times: %q then %q", trial, previous.key, current.key)
+			}
+		}
 	}
 }

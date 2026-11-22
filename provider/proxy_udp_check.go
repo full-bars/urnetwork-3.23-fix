@@ -462,7 +462,7 @@ func (e *proxyUDPCheckEntry) ipv6DueAtLocked() time.Time {
 	if next := e.ipv6RecordDueAtLocked(); next.After(due) {
 		due = next
 	}
-	return due
+	return due.Round(0)
 }
 
 // proxyUDPCheckStore remembers the check per proxy IDENTITY (address plus

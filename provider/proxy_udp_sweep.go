@@ -289,16 +289,16 @@ type udpProbeCandidate struct {
 // with the entry (ipv6DueLocked) and with the selector's own interval test.
 // Called with the lock held.
 func (self *proxyUDPCheckStore) probeCandidateLocked(key string, now time.Time) udpProbeCandidate {
-	candidate := udpProbeCandidate{key: key, online: true, attemptedAt: self.attempts[key]}
+	candidate := udpProbeCandidate{key: key, online: true, attemptedAt: self.attempts[key].Round(0)}
 	if entry := self.cachedEntryLocked(key); entry != nil {
 		if entry.done != nil {
 			// An active check will publish a fresh answer itself.
-			candidate.lastChecked = now
+			candidate.lastChecked = now.Round(0)
 		} else {
-			candidate.lastChecked = entry.at
+			candidate.lastChecked = entry.at.Round(0)
 			candidate.status = entry.result.Status
 			candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && entry.ipv6DueLocked(now)
-			candidate.ipv6DueAt = entry.ipv6DueAtLocked()
+			candidate.ipv6DueAt = entry.ipv6DueAtLocked().Round(0)
 		}
 	}
 	return candidate
@@ -329,15 +329,15 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 			case candidate.lastChecked.IsZero():
 				candidate.dueAt = time.Time{}
 			case candidate.ipv6Due:
-				candidate.dueAt = candidate.ipv6DueAt
+				candidate.dueAt = candidate.ipv6DueAt.Round(0)
 				if candidate.dueAt.IsZero() {
-					candidate.dueAt = candidate.lastChecked
+					candidate.dueAt = candidate.lastChecked.Round(0)
 				}
-				if udpDueAt := candidate.lastChecked.Add(refreshWindow); udpDueAt.Before(candidate.dueAt) {
+				if udpDueAt := candidate.lastChecked.Add(refreshWindow).Round(0); udpDueAt.Before(candidate.dueAt) {
 					candidate.dueAt = udpDueAt
 				}
 			default:
-				candidate.dueAt = candidate.lastChecked.Add(refreshWindow)
+				candidate.dueAt = candidate.lastChecked.Add(refreshWindow).Round(0)
 			}
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
@@ -367,12 +367,16 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 			return a.attemptedAt.Before(b.attemptedAt)
 		}
 		// earliest due first: one due time per candidate, the earlier of its udp
-		// and ipv6 due times, so neither kind can starve the other
-		if !a.dueAt.Equal(b.dueAt) {
-			return a.dueAt.Before(b.dueAt)
+		// and ipv6 due times, so neither kind can starve the other. Every key is
+		// compared on the wall clock alone, so a comparator over live stamps and
+		// restored ones is a strict weak order.
+		aDue, bDue := a.dueAt.Round(0), b.dueAt.Round(0)
+		if !aDue.Equal(bDue) {
+			return aDue.Before(bDue)
 		}
-		if !a.lastChecked.Equal(b.lastChecked) {
-			return a.lastChecked.Before(b.lastChecked)
+		aChecked, bChecked := a.lastChecked.Round(0), b.lastChecked.Round(0)
+		if !aChecked.Equal(bChecked) {
+			return aChecked.Before(bChecked)
 		}
 		return a.key < b.key
 	})
