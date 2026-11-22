@@ -130,7 +130,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 	renew := func() bool {
 		accountJWT, err := readAccountJWT()
 		if err != nil {
-			tlog("⚠️ [jwt-renew] proxy[%d] %s: cannot read account JWT: %v\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			tlog("⚠️ [jwt-renew] proxy[%d] %s: cannot read account JWT: %v\n", cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), err)
 			return false
 		}
 
@@ -145,7 +145,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		// renewal per backend-401 — the fast-path fires as fast as the
 		// backend rejects, and the mutex serializes but does not rate-limit.
 		if err := globalAuthRateLimiter.Wait(renewCtx); err != nil {
-			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal skipped: rate limiter: %v\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal skipped: rate limiter: %v\n", cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), err)
 			return false
 		}
 
@@ -159,12 +159,12 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		globalAuthRateLimiter.ReportResult(err)
 		if err != nil {
 			if isRenewalTransient(err) {
-				tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+				tlog("⚠️ [jwt-renew] proxy[%d] %s renewal failed: %v (will retry)\n", cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), err)
 			} else {
 				// the platform answered and said no: the identity cannot be
 				// renewed. Retrying is all this watcher can do; a fresh
 				// identity needs a restart (or URNETWORK_EVICT_REVOKED_IDENTITIES=1)
-				tlog("⚠️ [jwt-renew] proxy[%d] %s the platform refused the renewal: %v (the identity may be revoked; a restart mints a fresh one)\n", cfg.ProxyIndex, cfg.IdentityKey, err)
+				tlog("⚠️ [jwt-renew] proxy[%d] %s the platform refused the renewal: %v (the identity may be revoked; a restart mints a fresh one)\n", cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), err)
 			}
 			return false
 		}
@@ -192,7 +192,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			MintedAt:    time.Now(),
 		}); err != nil {
 			tlog("⚠️ [jwt-renew] proxy[%d] %s renewal OK in memory but store write failed: %v — keeping old token armed for retry\n",
-				cfg.ProxyIndex, cfg.IdentityKey, err)
+				cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), err)
 			// Do NOT ResetAudit401Count and do NOT stand down the revocation
 			// watcher: the in-memory swap is live but the persistence failed, so
 			// a restart would load the old (expiring) token. Keep the 401 counter
@@ -213,10 +213,10 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 		}
 		if exp := parseJWTExpiryTime(newJwt); exp != nil {
 			tlog("🔁 [jwt-renew] proxy[%d] %s renewed client JWT (client_id %s, exp %s)\n",
-				cfg.ProxyIndex, cfg.IdentityKey, cfg.ClientID, formatDuration(time.Until(*exp)))
+				cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), cfg.ClientID, formatDuration(time.Until(*exp)))
 		} else {
 			tlog("🔁 [jwt-renew] proxy[%d] %s renewed client JWT (client_id %s)\n",
-				cfg.ProxyIndex, cfg.IdentityKey, cfg.ClientID)
+				cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), cfg.ClientID)
 		}
 		return true
 	}
@@ -260,7 +260,7 @@ func runProxyJWTWatcher(ctx context.Context, cfg proxyJWTWatcherConfig) {
 			}
 		}
 		if need {
-			tlog("🔁 [jwt-renew] proxy[%d] %s renewal trigger: %s\n", cfg.ProxyIndex, cfg.IdentityKey, reason)
+			tlog("🔁 [jwt-renew] proxy[%d] %s renewal trigger: %s\n", cfg.ProxyIndex, proxyKeyDisplay(cfg.IdentityKey), reason)
 			if renew() {
 				if entry, ok := globalClientJWTStore.Get(cfg.IdentityKey); ok {
 					currentJwt = entry.ByClientJWT

@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -272,13 +273,22 @@ func proxyKeyDisplay(key string) string {
 }
 
 // redactedProxyAddress returns an address that is safe to print: the "direct"
-// sentinel or a plain host:port, and a placeholder for anything else. The
-// legacy parser keeps a malformed entry (userinfo, token path, trailing
-// parameters) verbatim as the address, so a bare Address field is never printed
-// without going through here.
+// sentinel, a plain host:port, or a host:port with the credentials in front of
+// it removed. Anything else is a placeholder. The legacy parser keeps a
+// malformed entry (userinfo, token path, trailing parameters) verbatim as the
+// address, so a bare Address field is never printed without going through here.
 func redactedProxyAddress(address string) string {
 	if address == "direct" || plainHostPort(address) {
 		return address
+	}
+	// userinfo and a URI scheme say who the proxy authenticates as and how it
+	// is reached, not where it is: both go, the address stays
+	stripped := connect.RedactProxyCredentials(address)
+	if scheme := strings.Index(stripped, "://"); 0 <= scheme {
+		stripped = stripped[scheme+3:]
+	}
+	if plainHostPort(stripped) {
+		return stripped
 	}
 	return "<unparsable proxy address>"
 }
