@@ -25,6 +25,12 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 	out.BillableTx.Store(bw.BillableTx.Load())
 	out.BillableRxPackets.Store(bw.BillableRxPackets.Load())
 	out.BillableTxPackets.Store(bw.BillableTxPackets.Load())
+	out.TotalRxV6.Store(bw.TotalRxV6.Load())
+	out.TotalTxV6.Store(bw.TotalTxV6.Load())
+	out.BillableRxV6.Store(bw.BillableRxV6.Load())
+	out.BillableTxV6.Store(bw.BillableTxV6.Load())
+	out.BillableRxV6Packets.Store(bw.BillableRxV6Packets.Load())
+	out.BillableTxV6Packets.Store(bw.BillableTxV6Packets.Load())
 	out.Clients.Store(bw.Clients.Load())
 	out.LatencyNs.Store(bw.LatencyNs.Load())
 	out.SocksLatencyNs.Store(bw.SocksLatencyNs.Load())
@@ -45,6 +51,12 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
 	BillableRxPackets, BillableTxPackets     atomic.Uint64
+	// The IPv6 counters are written only for IPv6 traffic. The IPv4 figure is
+	// the matching base counter minus the IPv6 one, so the IPv4 path takes no
+	// extra atomic add and a reader clamps the difference at zero.
+	TotalRxV6, TotalTxV6                     atomic.Uint64
+	BillableRxV6, BillableTxV6               atomic.Uint64
+	BillableRxV6Packets, BillableTxV6Packets atomic.Uint64
 	Clients                                  atomic.Int64
 	LatencyNs                                atomic.Int64
 	SocksLatencyNs                           atomic.Int64
@@ -695,6 +707,41 @@ func ProxyBandwidthPacketTotals() (billableRxPackets, billableTxPackets uint64) 
 		}
 	}
 	return
+}
+
+// ProxyBandwidthFamily is the IPv6 share of the bandwidth counters summed
+// across registered proxies. The IPv4 share is each base total minus the field
+// here, clamped at zero, so a reader needs no separate IPv4 walk.
+type ProxyBandwidthFamily struct {
+	BillableRx, BillableTx               uint64
+	TotalRx, TotalTx                     uint64
+	BillableRxPackets, BillableTxPackets uint64
+}
+
+// ProxyBandwidthFamilyTotals sums the IPv6 byte and billable packet counters
+// across every registered proxy. They cover only IPv6 traffic: IPv4 is derived
+// by the reader from the matching ProxyBandwidth*Totals figure minus these,
+// which is why the IPv4 accounting path pays no extra atomic add. A record
+// re-registered after a provider restart starts these counters at zero (they
+// are not persisted), so the persisted bytes read as IPv4 until new IPv6
+// traffic arrives. The sums drop when a proxy is removed from the pool, so a
+// reader derives rates from deltas and skips a decrease.
+func ProxyBandwidthFamilyTotals() ProxyBandwidthFamily {
+	var f ProxyBandwidthFamily
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.bw == nil {
+			continue
+		}
+		f.BillableRx += h.bw.BillableRxV6.Load()
+		f.BillableTx += h.bw.BillableTxV6.Load()
+		f.TotalRx += h.bw.TotalRxV6.Load()
+		f.TotalTx += h.bw.TotalTxV6.Load()
+		f.BillableRxPackets += h.bw.BillableRxV6Packets.Load()
+		f.BillableTxPackets += h.bw.BillableTxV6Packets.Load()
+	}
+	return f
 }
 
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy

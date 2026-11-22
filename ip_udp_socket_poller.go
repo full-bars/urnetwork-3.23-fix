@@ -361,6 +361,10 @@ func (self *udpSocketReadPollShard) readDatagrams(fd int, sequence *UdpSequence)
 			// cannot credit the receive direction itself
 			if sequence.bw != nil {
 				sequence.bw.TotalRx.Add(uint64(n))
+				// a flow's socket has one family for its whole life
+				if sequence.ipVersion == 6 {
+					sequence.bw.TotalRxV6.Add(uint64(n))
+				}
 			}
 			packets, packetsErr := sequence.DataPackets(self.readBuffer, n, settings.Mtu)
 			if packetsErr != nil {
