@@ -36,6 +36,8 @@ for n, line in enumerate(lines, 1):
     prose = re.sub(r'(`+).*?\1', '', line)
     if line.startswith('## '):
         changed = line == "## What's changed"
+    if line.startswith("### Operator actions"):
+        changed = False
     if not intro_done and not intro_started and line.strip() and not line.startswith(('#', '**Released:**', 'Previous release:')):
         intro_started = True
     if intro_started and not intro_done:

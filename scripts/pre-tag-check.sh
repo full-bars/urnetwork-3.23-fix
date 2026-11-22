@@ -20,17 +20,34 @@ export TMPDIR=/tmp
 
 quick=0
 skip_docker=0
+tag=
 for arg in "$@"; do
   case "$arg" in
     --quick) quick=1 ;;
     --skip-docker) skip_docker=1 ;;
+    v*)
+      if [ -n "$tag" ] || [[ "$arg" == */* ]]; then
+        echo "invalid or duplicate tag: $arg" >&2
+        exit 2
+      fi
+      tag=$arg ;;
     *)
       echo "unknown option: $arg" >&2
-      echo "usage: scripts/pre-tag-check.sh [--quick] [--skip-docker]" >&2
+      echo "usage: scripts/pre-tag-check.sh [--quick] [--skip-docker] [<tag>]" >&2
       exit 2
       ;;
   esac
 done
+
+if [ -n "$tag" ]; then
+  notes="releases/$tag.md"
+  if [ ! -f "$notes" ]; then
+    echo "ERROR: missing release notes: $notes" >&2
+    exit 1
+  fi
+  echo "== release notes"
+  scripts/release-notes-lint.sh "$notes"
+fi
 
 echo "== gofmt (build.yml lint job)"
 unformatted=$(gofmt -l . | grep -v "^third_party/" || true)

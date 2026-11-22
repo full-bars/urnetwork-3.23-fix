@@ -485,25 +485,21 @@ jobs:
         id: body_src
         run: |
           CUSTOM="releases/${GITHUB_REF_NAME}.md"
-          # Scans moved to the parallel 'scan' job (posts a release comment).
-          # The release body is the custom notes, or auto-generated.
-          if [ -f "$CUSTOM" ]; then
-            # The reported app_version derives from the tagged commit's time, so
-            # it cannot be written into the notes before the commit exists.
-            # Resolve the placeholder here, into a temp copy, and keep the
-            # committed file when the tag yields no calendar version.
-            APP_VERSION=$(scripts/compute-app-version.sh "${GITHUB_REF_NAME}")
-            if [ -n "$APP_VERSION" ] && grep -q 'TO BE FILLED IN AT TAG TIME' "$CUSTOM"; then
-              BODY="${RUNNER_TEMP}/release-notes.md"
-              sed "s|TO BE FILLED IN AT TAG TIME|${APP_VERSION}|g" "$CUSTOM" > "$BODY"
-              CUSTOM="$BODY"
-            fi
-            echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
-            echo "auto=false" >> "$GITHUB_OUTPUT"
-          else
-            echo "path=" >> "$GITHUB_OUTPUT"
-            echo "auto=true" >> "$GITHUB_OUTPUT"
+          if [ ! -f "$CUSTOM" ]; then
+            echo "Missing release notes: $CUSTOM" >&2
+            exit 1
           fi
+          APP_VERSION=$(scripts/compute-app-version.sh "${GITHUB_REF_NAME}")
+          if [ -n "$APP_VERSION" ] && grep -q 'TO BE FILLED IN AT TAG TIME' "$CUSTOM"; then
+            BODY="${RUNNER_TEMP}/release-notes.md"
+            sed "s|TO BE FILLED IN AT TAG TIME|${APP_VERSION}|g" "$CUSTOM" > "$BODY"
+            CUSTOM="$BODY"
+          fi
+          echo "path=${CUSTOM}" >> "$GITHUB_OUTPUT"
+
+      - name: Lint release notes
+        if: startsWith(github.ref, 'refs/tags/')
+        run: scripts/release-notes-lint.sh "${{ steps.body_src.outputs.path }}"
 
       - name: Test the ClamAV scanner script
         run: bash .github/scripts/test-clamav-scan.sh
@@ -543,7 +539,6 @@ jobs:
           draft: false
           prerelease: ${{ contains(github.ref, '-rc') || contains(github.ref, '-alpha') || contains(github.ref, '-beta') }}
           body_path: ${{ steps.body_src.outputs.path }}
-          generate_release_notes: ${{ steps.body_src.outputs.auto }}
 
       - name: Post ClamAV verdict to release
         if: startsWith(github.ref, 'refs/tags/')
