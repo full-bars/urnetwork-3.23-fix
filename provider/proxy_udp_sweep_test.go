@@ -359,12 +359,17 @@ func TestSweepEligibilityReadsTheLiveStamp(t *testing.T) {
 	if got := selectUDPProbeBatch(now, []udpProbeCandidate{candidate}, udpProbeRecheckWindow, time.Minute, nil); len(got) != 1 {
 		t.Fatalf("the entry is %s old on the elapsed clock and %s old on the wall clock, and the batch left it out: the threshold is %s", now.Sub(stamp), now.Sub(stamp.Round(0)), half)
 	}
-	// the selector agrees with the entry's own stamp, which is the shape it read
-	// before the sort keys were normalized
-	live := candidate
-	live.lastChecked = stamp
-	if got := selectUDPProbeBatch(now, []udpProbeCandidate{live}, udpProbeRecheckWindow, time.Minute, nil); len(got) != 1 {
-		t.Fatal("the selector left out an entry stamped by the store itself")
+	// the same entry with only the stripped sort key left: with no eligibility
+	// stamp the freshness test falls back to lastChecked, which here still
+	// carries the elapsed reading, so the entry is seven hours old and due.
+	// Rounding that fallback to the wall clock would read it as five hours old
+	// and leave it out, which is how the two assertions tell the fields apart.
+	fallback := udpProbeCandidate{key: candidate.key, online: true, status: candidate.status, lastChecked: stamp}
+	if !fallback.eligibilityAt.IsZero() {
+		t.Fatalf("the fallback case carries an eligibility stamp: %s", fallback.eligibilityAt)
+	}
+	if got := selectUDPProbeBatch(now, []udpProbeCandidate{fallback}, udpProbeRecheckWindow, time.Minute, nil); len(got) != 1 {
+		t.Fatalf("with no eligibility stamp the entry is %s old on the elapsed clock, and the batch left it out: the threshold is %s", now.Sub(stamp), half)
 	}
 }
 
