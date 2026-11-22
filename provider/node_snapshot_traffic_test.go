@@ -1,6 +1,7 @@
 package main
 
 import (
+	"reflect"
 	"testing"
 	"time"
 )
@@ -65,14 +66,90 @@ func TestSnapshotLifetimeBillableIsOptional(t *testing.T) {
 	}
 }
 
+// The per-direction block is present only when the provider reports the
+// directional counters. An older provider leaves it nil, which is how top knows
+// to hide the direction pages.
+func TestSnapshotDirectionsBlock(t *testing.T) {
+	old := &fakeSnapshotEnv{now: snapT0.Add(time.Hour), proxies: SnapshotProxies{Up: 1}}
+	if tr := newNodeSnapshotCollector(old.sources()).Get().Traffic; tr.Directions != nil {
+		t.Fatalf("provider without directional counters reported a block: %+v", tr.Directions)
+	}
+
+	var state map[string]directionLanes
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
+	c := newNodeSnapshotCollector(env.sources())
+
+	state = map[string]directionLanes{"p": {billableRx: 1000, billableTx: 100, totalRx: 5000, totalTx: 500}}
+	c.tick() // baseline, counts nothing
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {billableRx: 1300, billableTx: 200, totalRx: 5400, totalTx: 700}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {billableRx: 1600, billableTx: 400, totalRx: 5800, totalTx: 1000}}
+	c.tick()
+
+	d := c.Get().Traffic.Directions
+	if d == nil {
+		t.Fatal("provider with directional counters did not report a block")
+	}
+	// rx is download (bytes received) and tx is upload (bytes sent). The four
+	// lanes carry distinct deltas so a swapped mapping cannot pass.
+	wantBillableRx := []int64{300, 300}
+	wantBillableTx := []int64{100, 200}
+	wantTotalRx := []int64{400, 400}
+	wantTotalTx := []int64{200, 300}
+	if !reflect.DeepEqual(d.BillableRx.HistoryBps, wantBillableRx) || !reflect.DeepEqual(d.BillableTx.HistoryBps, wantBillableTx) ||
+		!reflect.DeepEqual(d.TotalRx.HistoryBps, wantTotalRx) || !reflect.DeepEqual(d.TotalTx.HistoryBps, wantTotalTx) {
+		t.Fatalf("history = %v/%v/%v/%v, want %v/%v/%v/%v",
+			d.BillableRx.HistoryBps, d.BillableTx.HistoryBps, d.TotalRx.HistoryBps, d.TotalTx.HistoryBps,
+			wantBillableRx, wantBillableTx, wantTotalRx, wantTotalTx)
+	}
+	if d.BillableRx.NowBps != 300 || d.BillableRx.Avg1mBps != 300 ||
+		d.BillableTx.NowBps != 200 || d.BillableTx.Avg1mBps != 150 ||
+		d.TotalRx.NowBps != 400 || d.TotalRx.Avg1mBps != 400 ||
+		d.TotalTx.NowBps != 300 || d.TotalTx.Avg1mBps != 250 {
+		t.Fatalf("rates = %+v", d)
+	}
+}
+
+// A respawned proxy restarts its counters at zero. The direction sampler must
+// add nothing for that tick instead of wrapping the uint64 subtraction.
+func TestDirectionSamplerSkipsDecreases(t *testing.T) {
+	s := newDirectionSampler()
+	s.sample(map[string]directionLanes{"p": {billableRx: 1000, billableTx: 100, totalRx: 5000, totalTx: 500}}, snapT0) // baseline
+	s.sample(map[string]directionLanes{"p": {billableRx: 10, billableTx: 20, totalRx: 30, totalTx: 40}}, snapT0.Add(time.Second))
+
+	for lane := 0; lane < directionLaneCount; lane++ {
+		if got := s.history(lane); len(got) != 1 || got[0] != 0 {
+			t.Fatalf("lane %d history = %v, want [0]", lane, got)
+		}
+	}
+
+	// A proxy that disappears adds nothing, and a new key contributes from its
+	// own baseline, not from zero.
+	s.sample(map[string]directionLanes{}, snapT0.Add(2*time.Second))
+	s.sample(map[string]directionLanes{"q": {billableRx: 9000, billableTx: 9000, totalRx: 9000, totalTx: 9000}}, snapT0.Add(3*time.Second))
+	if got := s.history(dirTotalTx); !reflect.DeepEqual(got, []int64{0, 0, 0}) {
+		t.Fatalf("total tx history = %v, want [0 0 0]", got)
+	}
+}
+
 // The light reply top polls at 100ms: live counter sums plus a timestamp, no
 // snapshot build. The timestamp is the provider's, so rates are computed
 // against the provider's clock, not the socket round trip.
 func TestLiveTrafficSample(t *testing.T) {
 	at := snapT0.Add(90 * time.Minute)
-	got := liveTrafficSample(at, func() (uint64, uint64) { return 700, 2100 })
-	if got.AtUnixNano != at.UnixNano() || got.BillableBytes != 700 || got.TotalBytes != 2100 {
-		t.Fatalf("sample = %+v", got)
+	got := liveTrafficSample(at, func() (billableRx, billableTx, totalRx, totalTx uint64) {
+		return 300, 400, 900, 1200
+	})
+	if got.AtUnixNano != at.UnixNano() {
+		t.Fatalf("timestamp = %d, want %d", got.AtUnixNano, at.UnixNano())
+	}
+	if got.BillableBytes != 700 || got.TotalBytes != 2100 {
+		t.Fatalf("sums = %d/%d, want 700/2100", got.BillableBytes, got.TotalBytes)
+	}
+	if got.BillableRxBytes != 300 || got.BillableTxBytes != 400 || got.TotalRxBytes != 900 || got.TotalTxBytes != 1200 {
+		t.Fatalf("directions = %+v", got)
 	}
 }
 
@@ -82,21 +159,24 @@ func TestLiveTrafficSample(t *testing.T) {
 func TestBandwidthShareBuildsOncePerTick(t *testing.T) {
 	now := snapT0
 	reads := 0
-	share := newBandwidthShare(func() time.Time { return now }, 500*time.Millisecond, func() (map[string]uint64, map[string]uint64) {
+	share := newBandwidthShare(func() time.Time { return now }, 500*time.Millisecond, func() proxyBandwidthRead {
 		reads++
-		return map[string]uint64{"p": uint64(reads)}, map[string]uint64{"p": uint64(reads) * 10}
+		return proxyBandwidthRead{
+			billable:   map[string]uint64{"p": uint64(reads)},
+			total:      map[string]uint64{"p": uint64(reads) * 10},
+			directions: map[string]directionLanes{"p": {billableRx: 1, billableTx: 2, totalRx: 3, totalTx: 4}},
+		}
 	})
 
-	b1, _ := share.get()
-	_, t1 := share.get() // the second sampler in the same tick
-	if reads != 1 || b1["p"] != 1 || t1["p"] != 10 {
-		t.Fatalf("reads=%d billable=%v total=%v, want one read serving both", reads, b1, t1)
+	b1, t1, d1 := share.get()
+	if reads != 1 || b1["p"] != 1 || t1["p"] != 10 || d1["p"].billableRx != 1 || d1["p"].totalTx != 4 {
+		t.Fatalf("reads=%d billable=%v total=%v directions=%v, want one read serving both", reads, b1, t1, d1)
 	}
 
 	now = now.Add(time.Second) // the next tick
-	b2, t2 := share.get()
-	if reads != 2 || b2["p"] != 2 || t2["p"] != 20 {
-		t.Fatalf("next tick: reads=%d billable=%v total=%v, want a fresh read", reads, b2, t2)
+	b2, t2, d2 := share.get()
+	if reads != 2 || b2["p"] != 2 || t2["p"] != 20 || d2["p"].billableTx != 2 {
+		t.Fatalf("next tick: reads=%d billable=%v total=%v directions=%v, want a fresh read", reads, b2, t2, d2)
 	}
 }
 
