@@ -2,6 +2,27 @@
 
 ## [Unreleased]
 
+### Added
+
+- **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
+
+### Changed
+
+- **The provider waits as long as the platform front asks.** A 429 answer with a `Retry-After` header holds the next dial for that long, up to 60 seconds. It ends the dial negotiation, so no other route of the same dial is tried before the wait is over. When an address holds its cap of QUIC connections, the front closes the next one with a specific error. The provider then waits a minimum time plus a random share, so the refused connections come back apart. The wait covers the h1+, WebSocket and QUIC dial paths. A 429 without the header behaves as before.
+- **Control name lookups keep time for plain DNS.** For the control domains that the internal DoH resolver protects, the encrypted resolvers get the caller's deadline minus a reserve of 2 seconds. The remaining time goes to a plain DNS fallback. Fallback answers are cached for at most 60 seconds and are never served stale after that. A miss from the fallback is not cached. The fallback asks for the fully qualified name and uses the ASCII form of an international name. The settings are `BootstrapPlainDnsDomains`, `BootstrapPlainDnsReserve` and `BootstrapPlainDnsExpiration`.
+
+### Security
+
+- **Certificate verification follows the sealing epoch.** A sequence verifies the peer certificate for the epoch it seals under, and a rekey that promotes a new epoch verifies that epoch's certificate again. A send that races a promotion whose new epoch presents a certificate the contract did not commit to is refused and retried. No wire message or file changes.
+
+### Performance
+
+- **The DNS translation keeps its pending expiry timer.** It no longer moves the timer on every packet. The timer can fire early, and then the loop expires what has aged out and arms the timer again. It never fires late. This avoids the walk over the processor's timer heap that moving a pending timer caused on every packet. The wire does not change.
+
+### CI
+
+- **Pull requests run the provider on a real OpenBSD kernel.** The new `openbsd.yml` workflow cross-compiles the provider, `urnet-tools` and test binaries, then runs them in VMs on OpenBSD 7.9 and 8.0. It installs the generated rc.d script, drives it through `rcctl`, checks process discovery and runs the tests tagged `openbsd`. `portable-core.yml` also builds and vets `openbsd/amd64` and `openbsd/arm64`. The host memory test can require a readable total, which confirmed that `hw.physmem` reads as a 64-bit value on OpenBSD.
+
 ## [v3.23.0-fix.36.0] - 2026-11-20
 
 Everything merged after `v3.23.0-fix.35.11`.

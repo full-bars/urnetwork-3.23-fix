@@ -9,6 +9,20 @@ This document tracks all modifications made to the upstream URNetwork v3.23 code
 
 ---
 
+## Platform front Retry-After, control DNS bootstrap, TLS epoch binding and DNS timer
+
+**Purpose**: Keep four upstream connect changes in step with upstream and record where this fork differs from them.
+
+**Brought over as upstream has them**:
+- The wait after a 429 answer with `Retry-After` and after a QUIC connection cap close (`transport_retry_after.go` and the dial paths).
+- The DNS translation expiry timer that keeps a pending deadline (`transport_pt.go`, type `dnsExpiryTimer`).
+
+**Where this fork differs from upstream**:
+- Control name bootstrap (`net_http_doh.go`, `net_http_doh_bootstrap.go`): the plain DNS lookup asks for the fully qualified name (a trailing dot) and for the ASCII form of an international name. A bootstrap answer carries `DohResult.HardExpiration`, so it is never served stale after its 60 second cap.
+- TLS epoch binding (`transfer_encrypt.go`, `transfer.go`, `transfer_encrypt_cancellation.go`): every cancellation in a wave is counted, and the provider metrics expose the count as `urnet_tls_handshake_cancel_total`. The test fixtures restore `backendFailures` in the cleanup order that the cancel function needs.
+
+---
+
 ## OpenBSD build support
 
 **Purpose**: Build the provider and `urnet-tools` for OpenBSD, and install and run them with an installer, release assets and an `rc.d` service.
