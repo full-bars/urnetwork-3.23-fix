@@ -50,11 +50,22 @@ func TestUDPInvariantReorderAndRemovalAttribution(t *testing.T) {
 	}
 }
 
+// The label names the slot and the address, so a password rotation prints the
+// same identity and two identities on one address stay apart by their slot. The
+// account is never part of it.
 func TestUDPInvariantStableIdentity(t *testing.T) {
 	a := &connect.ProxySettings{Address: "127.0.0.1:24001", Index: 7, Auth: &proxy.Auth{User: "a", Password: "first"}}
 	rotation := &connect.ProxySettings{Address: a.Address, Index: 7, Auth: &proxy.Auth{User: "a", Password: "second"}}
-	other := &connect.ProxySettings{Address: a.Address, Index: 7, Auth: &proxy.Auth{User: "b", Password: "first"}}
-	if udpProxyIdentity(a) != udpProxyIdentity(rotation) || udpProxyIdentity(a) == udpProxyIdentity(other) {
-		t.Fatal("identity must survive password rotation and distinguish accounts")
+	otherSlot := &connect.ProxySettings{Address: a.Address, Index: 8, Auth: &proxy.Auth{User: "b", Password: "first"}}
+	if udpProxyIdentity(a) != udpProxyIdentity(rotation) {
+		t.Fatalf("identity did not survive a password rotation: %q against %q", udpProxyIdentity(a), udpProxyIdentity(rotation))
+	}
+	if udpProxyIdentity(a) == udpProxyIdentity(otherSlot) {
+		t.Fatalf("two identities on one address printed the same label: %q", udpProxyIdentity(a))
+	}
+	for _, leaked := range []string{a.Auth.User, a.Auth.Password} {
+		if strings.Contains(udpProxyIdentity(a), leaked) {
+			t.Fatalf("identity carries the account: %q", udpProxyIdentity(a))
+		}
 	}
 }
