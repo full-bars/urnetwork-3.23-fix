@@ -382,8 +382,16 @@ type proxiedIPv6Controller struct {
 	gate      proxyIPv6Gate
 }
 
-// step runs one poll at time now.
+// step runs one poll at time now. It keeps the store's pin in step with the
+// extra transport, so an identity that runs one never loses the entry that
+// stops it.
 func (self *proxiedIPv6Controller) step(now time.Time) {
+	self.poll(now)
+	self.store.pinIPv6Transport(self.key, self.transport.hasExtra())
+}
+
+// poll is one pass of the start and stop decision.
+func (self *proxiedIPv6Controller) poll(now time.Time) {
 	if self.enabled != nil && !self.enabled() {
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (proxy_dualstack is off)\n")
@@ -478,7 +486,10 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Duration) {
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
-	defer self.transport.stopExtra()
+	defer func() {
+		self.transport.stopExtra()
+		self.store.pinIPv6Transport(self.key, false)
+	}()
 	for {
 		select {
 		case <-ctx.Done():

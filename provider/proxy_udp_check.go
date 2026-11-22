@@ -505,6 +505,14 @@ type proxyUDPCheckStore struct {
 	ipv6ProbesRun atomic.Int64
 	// ipv6Seq numbers the IPv6 reservations (proxyUDPCheckEntry.ipv6Token)
 	ipv6Seq uint64
+	// ipv6TransportPinned names the identities whose extra IPv6 transport is
+	// running. Capacity pruning keeps their entries: the real-check pair that
+	// stops a running transport on the UDP expiry (completedAt, realStatus)
+	// lives in the entry only, and the restore path cannot bring it back. Age
+	// pruning may still drop one, which costs only evidence the gate already
+	// reads as expired. In memory only, and bounded by the number of proxies,
+	// so it cannot hold the cap open.
+	ipv6TransportPinned map[string]struct{}
 }
 
 // proxyUDPCheckRun is one check whose result is ready once done is closed.
@@ -515,11 +523,12 @@ type proxyUDPCheckRun struct {
 
 func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) proxyUDPResult) *proxyUDPCheckStore {
 	return &proxyUDPCheckStore{
-		probe:        probe,
-		entries:      map[string]*proxyUDPCheckEntry{},
-		slots:        make(chan struct{}, udpCheckMaxConcurrent),
-		detachedRuns: map[string]*proxyUDPCheckRun{},
-		attempts:     map[string]time.Time{},
+		probe:               probe,
+		entries:             map[string]*proxyUDPCheckEntry{},
+		slots:               make(chan struct{}, udpCheckMaxConcurrent),
+		detachedRuns:        map[string]*proxyUDPCheckRun{},
+		attempts:            map[string]time.Time{},
+		ipv6TransportPinned: map[string]struct{}{},
 	}
 }
 
@@ -543,6 +552,28 @@ func (self *proxyUDPCheckStore) noteAttemptLocked(key string, now time.Time) {
 // result. Called with the lock held.
 func (self *proxyUDPCheckStore) clearAttemptLocked(key string) {
 	delete(self.attempts, key)
+}
+
+// pinIPv6Transport records whether an identity runs its extra IPv6 transport,
+// so pruning keeps its entry while it does.
+func (self *proxyUDPCheckStore) pinIPv6Transport(key string, pinned bool) {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	if !pinned {
+		delete(self.ipv6TransportPinned, key)
+		return
+	}
+	if self.ipv6TransportPinned == nil {
+		self.ipv6TransportPinned = map[string]struct{}{}
+	}
+	self.ipv6TransportPinned[key] = struct{}{}
+}
+
+// pinnedLocked reports whether an identity runs an extra IPv6 transport whose
+// entry capacity pruning must keep. Called with the lock held.
+func (self *proxyUDPCheckStore) pinnedLocked(key string) bool {
+	_, pinned := self.ipv6TransportPinned[key]
+	return pinned
 }
 
 // prune drops identities nobody has asked about for two state lifetimes,
@@ -592,8 +623,10 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 	var oldest []completed
 	for key, entry := range self.entries {
 		// an entry with an IPv6 reservation is not evicted: its refresh would
-		// publish into a replacement
-		if entry.done == nil && !entry.ipv6Running {
+		// publish into a replacement. Neither is the entry of an identity that
+		// runs an extra IPv6 transport: its real-check pair is what stops that
+		// transport on the UDP expiry, and a restored row does not carry it.
+		if entry.done == nil && !entry.ipv6Running && !self.pinnedLocked(key) {
 			oldest = append(oldest, completed{key, entry.at})
 		}
 	}
