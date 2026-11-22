@@ -99,7 +99,7 @@ func TestTopPeaksShowInTheNowPanel(t *testing.T) {
 	var bytes uint64
 	feedTrafficAt(t, m, clock, 8, 500*time.Millisecond, 2_000_000, &at, &bytes)
 	txt, _ := showOnSim(t, m, 120, 40)
-	if !strings.Contains(txt, "peak/s") || !strings.Contains(txt, "billable") || !strings.Contains(txt, "total") {
+	if !strings.Contains(txt, "peak/s") || !strings.Contains(txt, "bill") || !strings.Contains(txt, "total") {
 		t.Fatalf("the peaks block is missing:\n%s", txt)
 	}
 	// The live peak is about 2 MB/s, and the averages are dashes until their
@@ -110,7 +110,7 @@ func TestTopPeaksShowInTheNowPanel(t *testing.T) {
 				t.Fatalf("peak header lacks its columns: %q", ln)
 			}
 		}
-		if strings.Contains(ln, "billable") && strings.Contains(ln, "2.0M") {
+		if strings.Contains(ln, "bill") && strings.Contains(ln, "1.9M") {
 			if !strings.Contains(ln, "-") {
 				t.Fatalf("the averages are not dashes yet: %q", ln)
 			}

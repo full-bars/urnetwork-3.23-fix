@@ -199,14 +199,14 @@ The Remote chart and the direction pages use the same scale. They read the one-s
 The Now panel keeps the highest rates `top` has seen since it started, for billable and for total traffic. Three rows appear under `moved` when the panel has the room for them:
 
 ```
-peak/s    live    1m    5m
-billable  1.4M   310K   120K
-total     2.1M   500K   120K
+peak/s    live    1m      5m
+bill      1.9M    41.0M   35.7M
+total     3.8M    82.0M   71.3M
 ```
 
 `live` is the highest rate of a single traffic reading, in bytes per second. `1m` and `5m` are the highest of the provider's one and five minute averages. A one or five minute peak is recorded only once its window is full, 60 seconds and 300 seconds after `top` started, so a partial window early after start cannot set it. Until then the cell shows a dash. A peak never comes down.
 
-The block uses the chosen unit, so `u` switches it with the rows above. It is left out when the panel has no rows to spare, and nothing about it is stored: a new `top` starts with no peaks.
+The block shows one number and one unit letter per cell, so three rates fit the narrow panel. The number follows the chosen unit base, so `u` switches it with the rows above. It is left out when the panel has no rows to spare, and nothing about it is stored: a new `top` starts with no peaks.
 
 ## Billable and total by direction
 

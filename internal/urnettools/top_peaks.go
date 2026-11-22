@@ -1,6 +1,7 @@
 package urnettools
 
 import (
+	"fmt"
 	"strings"
 	"time"
 
@@ -82,13 +83,26 @@ func (p *topPeaks) observeAverages(now time.Time, billable1m, billable5m, total1
 // topPeakRows is how many rows the peaks block adds to the Now panel.
 const topPeakRows = 3
 
-// peakCell is a rate without its per second suffix: the block header says the
-// numbers are rates, and the panel is narrow. A missing or empty rate is a dash.
+// peakCell is a rate as one number and one unit letter, without the per second
+// suffix and without the byte word: the block header says the numbers are
+// rates, and three of them have to fit a narrow panel. The number follows the
+// chosen unit base, so u switches it with the rows above. A missing rate is a
+// dash.
 func peakCell(v float64, set bool) string {
 	if !set || v <= 0 {
 		return "-"
 	}
-	return strings.TrimSuffix(tui.RateShort(v), "/s")
+	const scales = "KMGTP"
+	base, i := tui.UnitBase(), 0
+	for v >= base && i < len(scales) {
+		v /= base
+		i++
+	}
+	cell := strings.TrimSuffix(fmt.Sprintf("%.1f", v), ".0")
+	if i == 0 {
+		return cell
+	}
+	return cell + string(scales[i-1])
 }
 
 // drawPeaks draws the block under the traffic rows: a header, then billable and
@@ -96,7 +110,8 @@ func peakCell(v float64, set bool) string {
 func (m *topModel) drawPeaks(b *tui.Buffer, y int) {
 	th := m.theme
 	p := m.peaks
-	label := 8
+	// "bill" and "total" leave the three rate columns room for a unit.
+	label := 6
 	cell := max(4, (b.Width()-label)/3)
 	right := func(s string, i, row int, style tui.Style) {
 		if x := label + i*cell; x < b.Width() {
@@ -121,7 +136,7 @@ func (m *topModel) drawPeaks(b *tui.Buffer, y int) {
 	for i, row := range []struct {
 		label string
 		r     topPeakRates
-	}{{"billable", p.billable}, {"total", p.total}} {
+	}{{"bill", p.billable}, {"total", p.total}} {
 		row := row
 		at := y + 1 + i
 		b.Put(row.label, 0, at, th.Dim)
