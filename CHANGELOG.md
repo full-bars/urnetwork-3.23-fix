@@ -4,6 +4,10 @@
 
 ### Added
 
+- **IPv4 versus IPv6 traffic.** The provider counts IPv6 traffic beside the existing billable and total byte counters — bytes and packets, receive and send — and IPv4 is the difference, so an IPv4 packet costs nothing extra. IPv6 byte and packet counters are not persisted and read as zero after a restart.
+
+- **IPv6 metrics.** `urnet_traffic_v6_bytes_total{kind="billable"|"total",dir="rx"|"tx"}` and `urnet_billable_v6_packets_total{dir="rx"|"tx"}` report the IPv6 share of traffic across proxies, alongside the IPv6 packet totals. See docs/Monitoring.md.
+
 - **Billable packet counts.** The live traffic reply and snapshot report billable IP packets by direction. The provider also exposes packet metrics. Counts reset on restart.
 
 - **Billable and total traffic split by direction in `urnet-tools top`.** Page 3 draws billable traffic and page 4 draws total traffic, each with upload above the centre line and download below it. The pages reuse the mirrored chart's labels, corner averages and peak labels, and they appear only when the provider reports the per-direction counters. The provider snapshot gains the split beside the existing sums, which stay in place for older readers.
