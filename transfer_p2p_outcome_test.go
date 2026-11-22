@@ -27,8 +27,7 @@ func TestP2PSourceMismatchPlaintextRejectedWhenEncryptionRequired(t *testing.T) 
 	expectNoDelivery(t, delivered)
 	if stats := client.ReceiveStats(); stats.SourceMismatchCount != 1 ||
 		stats.SourceMismatchDecodedCount != 0 ||
-		stats.SourceMismatchDroppedCount != 0 ||
-		stats.SourceMismatchForwardedCount != 0 {
+		stats.SourceMismatchDroppedCount != 0 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }

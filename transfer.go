@@ -586,7 +586,6 @@ type ClientReceiveStatsSnapshot struct {
 	SourceMismatchDecodedCount    uint64
 	SourceMismatchRejectedCount   uint64
 	SourceMismatchDroppedCount    uint64
-	SourceMismatchForwardedCount  uint64
 	PackHandoffDropCount          uint64
 	PackHandoffDropByteCount      uint64
 	PackHandoffWaitCount          uint64
@@ -605,7 +604,6 @@ func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 		SourceMismatchDecodedCount:    self.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDecoded),
 		SourceMismatchRejectedCount:   self.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeRejected),
 		SourceMismatchDroppedCount:    self.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDropped) + self.p2pSources.mismatchAt(p2pSourceModeDrop, p2pSourceOutcomeDropped),
-		SourceMismatchForwardedCount:  self.p2pSources.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeForwarded),
 		PackHandoffDropCount:          self.receivePackHandoffDropCount.Load(),
 		PackHandoffDropByteCount:      self.receivePackHandoffDropByteCount.Load(),
 		PackHandoffWaitCount:          self.receivePackHandoffWaitCount.Load(),
@@ -1745,9 +1743,10 @@ func (self *Client) run() {
 				}
 			}
 		} else {
-			// a transit hop forwards the buffer unchanged, without decoding it,
-			// so the only outcome it can report is forwarded. A frame no
-			// callback takes is discarded here instead.
+			// A frame for another destination. A forward callback takes it and
+			// leaves this client, which neither decoded nor dropped it, so no
+			// mismatch outcome is recorded. A frame no callback takes is
+			// discarded here and counted as dropped.
 			c := func() int {
 				return self.forward(
 					path,
@@ -1763,9 +1762,7 @@ func (self *Client) run() {
 			} else {
 				forwardCount = c()
 			}
-			if 0 < forwardCount {
-				mismatch.forwarded()
-			} else {
+			if forwardCount == 0 {
 				mismatch.dropped()
 			}
 		}

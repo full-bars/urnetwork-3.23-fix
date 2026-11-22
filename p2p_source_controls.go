@@ -15,11 +15,13 @@ const (
 )
 
 // What happened to a frame whose source did not match its lane's bound peer.
+// A transit hop forwards the bytes without decoding them and is not a policy
+// point, so it reports no outcome: what it does is not evidence about the
+// traffic it carries.
 const (
 	p2pSourceOutcomeDecoded = iota
 	p2pSourceOutcomeRejected
 	p2pSourceOutcomeDropped
-	p2pSourceOutcomeForwarded
 )
 
 var p2pSourceBinding atomic.Uint32
@@ -88,7 +90,7 @@ func boundSourceMismatch(disposition transferReceiveDisposition, sourceId Id) bo
 type p2pSourceCounters struct {
 	forgedPlatform atomic.Uint64
 	forgedSelf     atomic.Uint64
-	mismatch       [3][4]atomic.Uint64
+	mismatch       [3][3]atomic.Uint64
 }
 
 // p2pSourceMetrics aggregates every client in the process for /metrics.
@@ -108,14 +110,14 @@ func (self *p2pSourceCounters) forged() (platform uint64, self_ uint64) {
 }
 
 func (self *p2pSourceCounters) addMismatch(mode uint32, outcome int) {
-	if p2pSourceModeDrop < mode || p2pSourceOutcomeForwarded < outcome {
+	if p2pSourceModeDrop < mode || p2pSourceOutcomeDropped < outcome {
 		return
 	}
 	self.mismatch[mode][outcome].Add(1)
 }
 
 func (self *p2pSourceCounters) mismatchAt(mode uint32, outcome int) uint64 {
-	if p2pSourceModeDrop < mode || p2pSourceOutcomeForwarded < outcome {
+	if p2pSourceModeDrop < mode || p2pSourceOutcomeDropped < outcome {
 		return 0
 	}
 	return self.mismatch[mode][outcome].Load()
@@ -162,8 +164,8 @@ func (self *p2pSourceMismatch) record(outcome int) {
 	}
 }
 
-// decoded means the frame, and its encrypted wrap when it had one, decoded
-// and decrypted in the receive path.
+// decoded means the frame was accepted: it parsed, and it was not discarded by
+// the receive path or the encryption policy.
 func (self *p2pSourceMismatch) decoded() { self.record(p2pSourceOutcomeDecoded) }
 
 // rejected means the frame failed to decode or to decrypt.
@@ -172,7 +174,3 @@ func (self *p2pSourceMismatch) rejected() { self.record(p2pSourceOutcomeRejected
 // dropped means the frame was not decoded here: binding drop mode, or a
 // routing guard that discards a frame it cannot place.
 func (self *p2pSourceMismatch) dropped() { self.record(p2pSourceOutcomeDropped) }
-
-// forwarded means the frame left this client for another destination without
-// being decoded, which is what a transit hop does.
-func (self *p2pSourceMismatch) forwarded() { self.record(p2pSourceOutcomeForwarded) }

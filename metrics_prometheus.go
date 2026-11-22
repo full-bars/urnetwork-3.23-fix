@@ -374,7 +374,6 @@ func PrometheusHandler() http.Handler {
 		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"decoded\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDecoded))
 		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"rejected\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeRejected))
 		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"dropped\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDropped))
-		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"forwarded\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeForwarded))
 		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"drop\",outcome=\"dropped\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeDrop, p2pSourceOutcomeDropped))
 
 		// --- Provider-injected extra metrics (PQE, grades, churn) ---

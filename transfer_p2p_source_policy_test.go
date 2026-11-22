@@ -128,8 +128,7 @@ func TestP2PSourceMismatchDecodedInCountMode(t *testing.T) {
 	}, "one decoded mismatch")
 	if stats := client.ReceiveStats(); stats.SourceMismatchCount != 1 ||
 		stats.SourceMismatchRejectedCount != 0 ||
-		stats.SourceMismatchDroppedCount != 0 ||
-		stats.SourceMismatchForwardedCount != 0 {
+		stats.SourceMismatchDroppedCount != 0 {
 		t.Fatalf("unexpected stats: %+v", stats)
 	}
 }
@@ -162,35 +161,55 @@ func TestP2PSourceMismatchRejectedInCountMode(t *testing.T) {
 	}
 }
 
-// A frame on a bound lane addressed elsewhere is forwarded unchanged and
-// counted as forwarded, which is what a transit hop can report.
-func TestP2PSourceMismatchForwardedInCountMode(t *testing.T) {
-	setSourcePolicy(t, "count", true)
-	peer := NewId()
-	client, route := newSourcePolicyClient(t, TransportTypeP2p, peer, 2)
-	forwarded := make(chan TransferPath, 2)
-	client.AddForwardCallback(func(path TransferPath, _ []byte) {
-		forwarded <- path
-	})
-	third := NewId()
-	destination := NewId()
+// A mismatched frame addressed to another destination is handed to a forward
+// callback and leaves this client. This client neither decoded nor dropped it,
+// so it records no mismatch outcome: the frame was not evidence about traffic
+// this client accepted. With no callback the frame is discarded and counted
+// dropped.
+func TestP2PSourceMismatchAddressedElsewhere(t *testing.T) {
+	t.Run("forwarded by callback", func(t *testing.T) {
+		setSourcePolicy(t, "count", true)
+		peer := NewId()
+		client, route := newSourcePolicyClient(t, TransportTypeP2p, peer, 2)
+		forwarded := make(chan TransferPath, 2)
+		client.AddForwardCallback(func(path TransferPath, _ []byte) {
+			forwarded <- path
+		})
+		third := NewId()
+		destination := NewId()
 
-	route <- forgeBarrierFrame(t, third, destination, "transit")
+		route <- forgeBarrierFrame(t, third, destination, "transit")
 
-	select {
-	case path := <-forwarded:
-		if path.SourceId != third || path.DestinationId != destination {
-			t.Fatalf("forwarded %v -> %v", path.SourceId, path.DestinationId)
+		select {
+		case path := <-forwarded:
+			if path.SourceId != third || path.DestinationId != destination {
+				t.Fatalf("forwarded %v -> %v", path.SourceId, path.DestinationId)
+			}
+		case <-time.After(10 * time.Second):
+			t.Fatal("frame not forwarded")
 		}
-	case <-time.After(10 * time.Second):
-		t.Fatal("frame not forwarded")
-	}
-	waitP2PSourceStats(t, client, func(stats ClientReceiveStatsSnapshot) bool {
-		return stats.SourceMismatchForwardedCount == 1
-	}, "one forwarded mismatch")
-	if stats := client.ReceiveStats(); stats.SourceMismatchCount != 1 || stats.SourceMismatchDecodedCount != 0 {
-		t.Fatalf("unexpected stats: %+v", stats)
-	}
+		// give the receive loop a moment to reach the policy check
+		time.Sleep(100 * time.Millisecond)
+		if stats := client.ReceiveStats(); stats.SourceMismatchCount != 0 ||
+			stats.SourceMismatchDecodedCount != 0 ||
+			stats.SourceMismatchRejectedCount != 0 ||
+			stats.SourceMismatchDroppedCount != 0 {
+			t.Fatalf("forwarded frame recorded an outcome it did not have: %+v", stats)
+		}
+	})
+
+	t.Run("discarded without a callback", func(t *testing.T) {
+		setSourcePolicy(t, "count", true)
+		peer := NewId()
+		client, route := newSourcePolicyClient(t, TransportTypeP2p, peer, 2)
+		third := NewId()
+
+		route <- forgeBarrierFrame(t, third, NewId(), "transit")
+
+		waitP2PSourceStats(t, client, func(stats ClientReceiveStatsSnapshot) bool {
+			return stats.SourceMismatchDroppedCount == 1
+		}, "one dropped mismatch")
+	})
 }
 
 // Drop mode is the strict rule: the mismatching frame does not reach the
