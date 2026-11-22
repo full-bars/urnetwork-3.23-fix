@@ -26,8 +26,11 @@ import (
 // back to TCP). The last one puts the identity at an address the grade never
 // looked at, so H3 is not used for it.
 //
-// The check runs once per identity, for identities that actually reach an H3
-// attempt (not for every candidate in the pool), and is remembered for a while:
+// The check runs for an online identity that reaches an H3 attempt, and for a
+// bounded batch of the online identities the sweep finds due on each reaper
+// tick. The batch is paced by the tick interval against the recheck window, so a
+// tick covers only its share of the pool. A result is remembered for a while,
+// and the sweep asks for it again after about half of its TTL:
 //
 //	ok        the relay works and its exit address equals the TCP exit address
 //	no-relay  the proxy refuses UDP ASSOCIATE, or the relay never answers
