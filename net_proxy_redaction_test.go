@@ -3,7 +3,9 @@ package connect
 import (
 	"context"
 	"errors"
+	"fmt"
 	"net"
+	"net/url"
 	"strings"
 	"testing"
 )
@@ -130,5 +132,107 @@ func TestRedactProxyEndpointResolvedHop(t *testing.T) {
 	}
 	if strings.Contains(got, "10.9.8.7") {
 		t.Fatalf("the configured proxy was not redacted: %q", got)
+	}
+}
+
+// Only whole address tokens are the proxy: a plain substring replace turned a
+// proxy at 10.0.0.1 into corruption elsewhere on the line.
+func TestProxyRedactWholeTokens(t *testing.T) {
+	settings := &ProxySettings{Index: 2, Network: "tcp", Address: "10.0.0.1:1080"}
+	got := RedactProxyEndpoint("10.0.0.1:1080 -> 110.0.0.15:80 and 10.0.0.10:80", settings)
+	if strings.Contains(got, "10.0.0.1:1080") {
+		t.Fatalf("the proxy endpoint survived: %q", got)
+	}
+	for _, kept := range []string{"110.0.0.15:80", "10.0.0.10:80"} {
+		if !strings.Contains(got, kept) {
+			t.Fatalf("a neighbouring address was corrupted: %q in %q", kept, got)
+		}
+	}
+	if !strings.Contains(got, "proxy[2]") {
+		t.Fatalf("the slot is missing: %q", got)
+	}
+
+	// the bare host is a token too, and its longer neighbours are not
+	got = RedactProxyEndpoint("dial 10.0.0.1 then 10.0.0.11 and 110.0.0.1", settings)
+	if strings.Contains(got, "1proxy[2]") || strings.Contains(got, "proxy[2]1") || strings.Contains(got, "proxy[2]5") {
+		t.Fatalf("a neighbouring address was corrupted: %q", got)
+	}
+	if !strings.Contains(got, "10.0.0.11") || !strings.Contains(got, "110.0.0.1") {
+		t.Fatalf("a neighbouring address was redacted: %q", got)
+	}
+	if !strings.Contains(got, "proxy[2]") {
+		t.Fatalf("the slot is missing: %q", got)
+	}
+}
+
+// A v6 proxy is bracketed with its port, and a hostname proxy matches its name
+// whatever the case, while a longer name that merely ends in it does not.
+func TestProxyRedactBracketsAndNames(t *testing.T) {
+	v6 := &ProxySettings{Index: 8, Network: "tcp", Address: "[2001:db8::1]:1080"}
+	got := RedactProxyEndpoint("dial tcp [2001:db8::1]:1080: refused", v6)
+	if strings.Contains(got, "[2001:db8::1]") {
+		t.Fatalf("the v6 endpoint survived: %q", got)
+	}
+	if !strings.Contains(got, "proxy[8]") || !strings.Contains(got, "refused") {
+		t.Fatalf("the line lost the slot or the reason: %q", got)
+	}
+	got = RedactProxyEndpoint("also [2001:db8::1]:8080 and 2001:db8::10", v6)
+	if strings.Contains(got, "[2001:db8::1]:8080") {
+		t.Fatalf("the v6 host on another port survived: %q", got)
+	}
+	if !strings.Contains(got, "2001:db8::10") {
+		t.Fatalf("a neighbouring v6 address was redacted: %q", got)
+	}
+
+	name := &ProxySettings{Index: 9, Network: "tcp", Address: "Socks.Example.NET:1080"}
+	got = RedactProxyEndpoint("socks5 dial socks.example.net:1080: refused", name)
+	if strings.Contains(got, "socks.example.net") {
+		t.Fatalf("the hostname endpoint survived: %q", got)
+	}
+	if !strings.Contains(got, "proxy[9]") {
+		t.Fatalf("the slot is missing: %q", got)
+	}
+	got = RedactProxyEndpoint("notsocks.example.net:1080 other.example.net:1080", name)
+	if !strings.Contains(got, "notsocks.example.net:1080") || !strings.Contains(got, "other.example.net:1080") {
+		t.Fatalf("a neighbouring hostname was redacted: %q", got)
+	}
+}
+
+// A wrapped url.Error and an errors.As chain are the shapes the transport hands
+// the redactor, and an empty or nil proxy must not touch the text at all.
+func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {
+	settings := &ProxySettings{Index: 5, Network: "tcp", Address: "10.0.0.1:1080"}
+	wrapped := fmt.Errorf("h1 dial: %w", &url.Error{
+		Op:  "Get",
+		URL: "https://example.com",
+		Err: errors.New("socks5 connect 10.0.0.1:1080: connection refused"),
+	})
+	var urlErr *url.Error
+	if !errors.As(wrapped, &urlErr) {
+		t.Fatal("the url.Error was not reachable")
+	}
+	for _, text := range []string{wrapped.Error(), urlErr.Error()} {
+		got := RedactProxyEndpoint(text, settings)
+		if strings.Contains(got, "10.0.0.1") {
+			t.Fatalf("the endpoint survived a wrapped error: %q", got)
+		}
+		if !strings.Contains(got, "proxy[5]") || !strings.Contains(got, "connection refused") {
+			t.Fatalf("the line lost the slot or the reason: %q", got)
+		}
+		if !strings.Contains(got, "example.com") {
+			t.Fatalf("the target was redacted: %q", got)
+		}
+	}
+
+	// a line about the proxy names its slot even when it does not name it
+	if got := RedactProxyEndpoint("connection reset by peer", settings); !strings.Contains(got, "proxy[5]") {
+		t.Fatalf("an unlabelled line about the proxy: %q", got)
+	}
+
+	// no proxy configured: the text passes through untouched
+	for _, empty := range []*ProxySettings{nil, {}} {
+		if got := RedactProxyEndpoint("plain text", empty); got != "plain text" {
+			t.Fatalf("text changed with no proxy configured: %q", got)
+		}
 	}
 }

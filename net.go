@@ -555,28 +555,42 @@ func proxyLogLabel(settings *ProxySettings) string {
 
 // RedactProxyEndpoint replaces the configured proxy's address and host in text
 // with its slot label. A log line or metric label on the proxy path says which
-// slot failed, never where the proxy is.
+// slot failed, never where the proxy is, so a line about the proxy always
+// carries the label, even when it did not name the proxy.
 func RedactProxyEndpoint(text string, settings *ProxySettings) string {
 	if settings == nil || settings.Address == "" {
 		return text
 	}
 	label := proxyLogLabel(settings)
-	text = strings.ReplaceAll(text, settings.Address, label)
-	host, port, err := net.SplitHostPort(settings.Address)
-	if err != nil || host == "" {
-		return text
+	host, port := proxyRedactHostPort(settings.Address)
+	redacted := redactAddressTokens(text, host, port, label)
+	if strings.Contains(redacted, label) {
+		return redacted
 	}
-	text = strings.ReplaceAll(text, host, label)
-	if net.ParseIP(host) == nil {
-		// a proxy configured by name dials an address it resolved, and a socks
-		// failure names that hop, not the name
-		text = redactResolvedProxyHops(text, port, label)
+	if redacted == "" {
+		return label
 	}
-	return text
+	return redacted + " " + label
+}
+
+// proxyRedactHostPort is the host and port a proxy address names, tolerating a
+// scheme and userinfo: settings.Address is operator input and may carry either.
+func proxyRedactHostPort(address string) (string, string) {
+	if i := strings.LastIndex(address, "@"); 0 <= i {
+		address = address[i+1:]
+	}
+	if i := strings.Index(address, "://"); 0 <= i {
+		address = address[i+3:]
+	}
+	if host, port, err := net.SplitHostPort(address); err == nil {
+		return host, port
+	}
+	return strings.TrimSuffix(strings.TrimPrefix(address, "["), "]"), ""
 }
 
 // addressTokenByte reports whether b can belong to a host, a port or the closing
-// bracket of a v6 literal, so a candidate address can be read whole.
+// bracket of a v6 literal, so a candidate address is read whole and a token that
+// merely contains the proxy (110.0.0.15 next to 10.0.0.1) is left alone.
 func addressTokenByte(b byte) bool {
 	switch {
 	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
@@ -587,39 +601,86 @@ func addressTokenByte(b byte) bool {
 	return false
 }
 
-// redactResolvedProxyHops replaces an `ip:port` candidate carrying the proxy's
-// port with label. Only a name-configured proxy needs this: it resolves the
-// name itself, so the numeric hop is that proxy and nothing else on the line.
-func redactResolvedProxyHops(text string, port string, label string) string {
-	suffix := ":" + port
+// redactAddressTokens rewrites every whole address token of text through
+// redactAddressToken, copying everything else through unchanged.
+func redactAddressTokens(text string, host string, port string, label string) string {
+	if host == "" {
+		return text
+	}
 	var b strings.Builder
-	rest := text
-	for {
-		i := strings.Index(rest, suffix)
-		if i < 0 {
-			b.WriteString(rest)
-			return b.String()
-		}
-		end := i + len(suffix)
-		if end < len(rest) && '0' <= rest[end] && rest[end] <= '9' {
-			// the port continues into a longer one, e.g. :10800
-			b.WriteString(rest[:end])
-			rest = rest[end:]
+	for i := 0; i < len(text); {
+		if text[i] != '[' && !addressTokenByte(text[i]) {
+			b.WriteByte(text[i])
+			i++
 			continue
 		}
-		start := i
-		for 0 < start && addressTokenByte(rest[start-1]) {
-			start--
-		}
-		hop := strings.TrimSuffix(strings.TrimPrefix(rest[start:i], "["), "]")
-		if hop != "" && net.ParseIP(hop) != nil {
-			b.WriteString(rest[:start])
-			b.WriteString(label)
-		} else {
-			b.WriteString(rest[:end])
-		}
-		rest = rest[end:]
+		end := readAddressToken(text, i)
+		b.WriteString(redactAddressToken(text[i:end], host, port, label))
+		i = end
 	}
+	return b.String()
+}
+
+// readAddressToken is the end of the address token starting at start. A
+// bracketed v6 literal is read as one token with the port that follows it.
+func readAddressToken(text string, start int) int {
+	i := start
+	if text[i] == '[' {
+		closing := strings.IndexByte(text[i:], ']')
+		if closing < 0 {
+			return len(text)
+		}
+		i += closing + 1
+	}
+	for i < len(text) && addressTokenByte(text[i]) {
+		i++
+	}
+	return i
+}
+
+// redactAddressToken is one token with the proxy in place of its address. The
+// configured host matches on any port, since the host is what locates the
+// proxy; and a proxy configured by name also owns a resolved hop on its own
+// port, which is the address a socks failure names. Trailing separators such as
+// the colon an error puts after an address are kept.
+func redactAddressToken(token string, host string, port string, label string) string {
+	address := token
+	separators := ""
+	for strings.HasSuffix(address, ":") {
+		address = strings.TrimSuffix(address, ":")
+		separators += ":"
+	}
+	if address == "" {
+		return token
+	}
+	tokenHost, tokenPort := splitAddressToken(address)
+	switch {
+	case strings.EqualFold(tokenHost, host) && (tokenPort == "" || tokenPort == port):
+		return label + separators
+	case strings.EqualFold(tokenHost, host):
+		// the same host on another port is still where the proxy is
+		return label + ":" + tokenPort + separators
+	case net.ParseIP(host) == nil && tokenPort == port && net.ParseIP(tokenHost) != nil:
+		// a name-configured proxy's resolved hop, and only on the proxy's port
+		return label + separators
+	}
+	return token
+}
+
+// splitAddressToken separates a token into host and port. The port is empty for
+// a bare host, and a bare v6 literal is read whole.
+func splitAddressToken(token string) (string, string) {
+	if strings.HasPrefix(token, "[") {
+		closing := strings.IndexByte(token, ']')
+		if closing < 0 {
+			return "", ""
+		}
+		return token[1:closing], strings.TrimPrefix(token[closing+1:], ":")
+	}
+	if host, port, err := net.SplitHostPort(token); err == nil {
+		return host, port
+	}
+	return token, ""
 }
 
 // String omits credentials and rejects addresses that are not bare host:port.
