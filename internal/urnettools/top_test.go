@@ -546,7 +546,7 @@ func TestParseTopFlags(t *testing.T) {
 		{[]string{"--interval"}, 0, nil, "needs a value"},
 	}
 	for _, c := range cases {
-		iv, copyOnQuit, plain, rest, err := parseTopFlags(c.args)
+		iv, copyOnQuit, plain, _, rest, err := parseTopFlags(c.args)
 		if c.err != "" {
 			if err == nil || !strings.Contains(err.Error(), c.err) {
 				t.Errorf("%v: err = %v, want %q", c.args, err, c.err)
@@ -558,9 +558,22 @@ func TestParseTopFlags(t *testing.T) {
 		}
 	}
 	// --copy and --plain ride along without disturbing the target flags.
-	iv, copyOnQuit, plain, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
-	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || strings.Join(rest, " ") != "--network n" {
-		t.Fatalf("unexpected flags: %v %v %v %v %v", iv, copyOnQuit, plain, rest, err)
+	iv, copyOnQuit, plain, theme, rest, err := parseTopFlags([]string{"--copy", "--network", "n", "--plain", "--interval", "2s"})
+	if err != nil || iv != 2*time.Second || !copyOnQuit || !plain || theme != "" || strings.Join(rest, " ") != "--network n" {
+		t.Fatalf("unexpected flags: %v %v %v %q %v %v", iv, copyOnQuit, plain, theme, rest, err)
+	}
+	// --theme takes a value in both spelled forms and stays out of the target args.
+	for _, args := range [][]string{
+		{"--theme", "neon", "--network", "n"},
+		{"--theme=neon", "--network", "n"},
+	} {
+		_, _, _, theme, rest, err := parseTopFlags(args)
+		if err != nil || theme != "neon" || strings.Join(rest, " ") != "--network n" {
+			t.Errorf("%v: theme = %q rest = %v err = %v", args, theme, rest, err)
+		}
+	}
+	if _, _, _, _, _, err := parseTopFlags([]string{"--theme"}); err == nil || !strings.Contains(err.Error(), "needs a value") {
+		t.Errorf("--theme without a value: err = %v, want needs a value", err)
 	}
 	if !hasNoMouseFlag([]string{"--interval", "1s", "--no-mouse"}) {
 		t.Fatal("hasNoMouseFlag should detect --no-mouse")

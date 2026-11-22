@@ -357,6 +357,9 @@ func (m *topModel) drawProxyGrid(b *tui.Buffer) {
 // brightened by their throughput bucket.
 func (m *topModel) proxyCellStyle(state, bucket uint8) tui.Style {
 	th := m.theme
+	if th.Name == "neon" && !th.ASCII {
+		return neonProxyCellStyle(th, state, bucket)
+	}
 	// The default colored theme gives every state a hue of its own, and the
 	// throughput ramp of an up proxy stays in green to aqua, so no state is
 	// ever mistaken for a bright up dot: dropped is orange, connecting is
