@@ -11,7 +11,9 @@ import (
 // family, a port or no port, the proxy configured by name or by literal, and the
 // words in front of the address - leaves neither the resolved proxy address nor
 // a character of the credential in the line. The credential is generated from
-// the RFC 3986 userinfo set, so its sub-delimiters are exercised too.
+// the RFC 3986 userinfo set, so its sub-delimiters are exercised too. The line is
+// compared whole, because a check against the whole credential string alone
+// accepted a line that kept the user name and its colon in front of the slot.
 func TestRedactProxyEndpointNetworkSweep(t *testing.T) {
 	const v4 = "203.0.113.9"
 	const v6 = "2001:db8::9"
@@ -57,14 +59,24 @@ func TestRedactProxyEndpointNetworkSweep(t *testing.T) {
 							name := fmt.Sprintf("%s/%s/%s/%s proxy/%q", network, family.name, withPort.name, settingsForm, prelude)
 							t.Run(name, func(t *testing.T) {
 								got := RedactProxyEndpoint(line, settings)
+								want := prelude + network + " proxy[3]"
 								if strings.Contains(got, family.host) {
 									t.Fatalf("the proxy address stayed:\n in : %s\n got: %s", line, got)
 								}
-								if !strings.Contains(got, "proxy[3]") {
-									t.Fatalf("the line does not name the slot:\n in : %s\n got: %s", line, got)
+								// no piece of the credential survives: the user name, the
+								// password and each run long enough to be theirs. A part
+								// the fixed words of the line carry anyway is not residue.
+								for _, part := range credentialParts(credential) {
+									if strings.Contains(want, part) {
+										continue
+									}
+									if strings.Contains(got, part) {
+										t.Fatalf("a part of the credential stayed: %q\n in : %s\n got: %s", part, line, got)
+									}
 								}
-								if userinfo := strings.TrimSuffix(credential, "@"); userinfo != "" && strings.Contains(got, userinfo) {
-									t.Fatalf("the credential stayed:\n in : %s\n got: %s", line, got)
+								// and the line is the redacted one, whole
+								if got != want {
+									t.Fatalf("the line is not the redacted one:\n in : %s\n got: %s\nwant: %s", line, got, want)
 								}
 							})
 						}
@@ -73,6 +85,34 @@ func TestRedactProxyEndpointNetworkSweep(t *testing.T) {
 			}
 		}
 	}
+}
+
+// credentialParts is every piece of a generated credential that must not appear
+// in a redacted line: the user name, the password, and each run of letters and
+// digits long enough that a match in the line cannot be a coincidence.
+func credentialParts(credential string) []string {
+	userinfo := strings.TrimSuffix(credential, "@")
+	if userinfo == "" {
+		return nil
+	}
+	parts := append(strings.SplitN(userinfo, ":", 2), userinfo)
+	const shortestRun = 4
+	run := 0
+	for i := 0; i <= len(userinfo); i++ {
+		if i < len(userinfo) && isAlnumByte(userinfo[i]) {
+			run++
+			continue
+		}
+		if shortestRun <= run {
+			parts = append(parts, userinfo[i-run:i])
+		}
+		run = 0
+	}
+	return parts
+}
+
+func isAlnumByte(b byte) bool {
+	return ('0' <= b && b <= '9') || ('a' <= b && b <= 'z') || ('A' <= b && b <= 'Z')
 }
 
 // A password carrying a scheme of its own is removed whole, whatever precedes
