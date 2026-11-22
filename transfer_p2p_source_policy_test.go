@@ -13,10 +13,26 @@ import (
 // carries the peer the adjacent signalling authenticated and drains every
 // frame handed to it.
 func newSourcePolicyClient(t *testing.T, transportType TransportType, boundSourceId Id, routeCapacity int) (*Client, Route) {
+	return newSourcePolicyClientWith(t, transportType, boundSourceId, routeCapacity, nil)
+}
+
+// newSourcePolicyClientWithEncryption is newSourcePolicyClient with the
+// receive client's per-peer encryption mode set, for the fail-closed plaintext
+// gate.
+func newSourcePolicyClientWithEncryption(t *testing.T, transportType TransportType, boundSourceId Id, routeCapacity int, mode EncryptionMode) (*Client, Route) {
+	return newSourcePolicyClientWith(t, transportType, boundSourceId, routeCapacity, func(settings *ClientSettings) {
+		settings.EncryptionSettings.Mode = mode
+	})
+}
+
+func newSourcePolicyClientWith(t *testing.T, transportType TransportType, boundSourceId Id, routeCapacity int, configure func(*ClientSettings)) (*Client, Route) {
 	t.Helper()
 	ctx, cancel := context.WithCancel(context.Background())
 	settings := DefaultClientSettings()
 	settings.ControlPingTimeout = 0
+	if configure != nil {
+		configure(settings)
+	}
 	client := NewClient(ctx, NewId(), NewNoContractClientOob(), settings)
 	t.Cleanup(func() { cancel(); client.Close() })
 	route := make(Route, routeCapacity)

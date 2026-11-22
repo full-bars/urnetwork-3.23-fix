@@ -1275,6 +1275,18 @@ func (self *Client) AddForwardCallback(forwardCallback ForwardFunction) func() {
 	}
 }
 
+// plaintextReceiveDiscarded reports whether the receive sequence for sourceId
+// will discard a plaintext application frame. It mirrors the fail-closed gate
+// in ReceiveSequence: a session is expected for the source (so the source is
+// not the platform and this client holds an identity of its own) and the
+// session runs in EncryptionModeRequired. Such a frame is acked to keep the
+// sequence moving and then thrown away, so the receive path must not report it
+// as decoded.
+func (self *Client) plaintextReceiveDiscarded(sourceId Id) bool {
+	manager := self.encryptionSessionManager
+	return manager != nil && manager.RequireEncryption() && !manager.ReceiveNoSession(sourceId)
+}
+
 // run is the client's main loop, launched by NewClientWithTag. It is
 // started with the client's cancel as the HandleError error handler, so a
 // panic in the loop cancels the client context, tearing down the managers,
@@ -1532,8 +1544,10 @@ func (self *Client) run() {
 				transferFrameBytes = unwrappedTransferFrameBytes
 				transferFrame = unwrappedTransferFrame
 			}
-			// the frame, and the wrap it carried, decoded and decrypted
-			mismatch.decoded()
+			// The frame and the wrap it carried are parsed, but that is not the
+			// same as accepted: the ack and pack branches below record the
+			// outcome once the consumer took the frame, and a plaintext frame
+			// this client will discard records rejected instead.
 
 			// A plaintext pack with a sender-role hint is the peer's
 			// EncryptedControl carrier (its server-role stream). Map the whole
@@ -1563,6 +1577,7 @@ func (self *Client) run() {
 					ack = &protocol.Ack{}
 					if err := ProtoUnmarshal(frame.GetMessageBytes(), ack); err != nil {
 						// bad protobuf
+						mismatch.rejected()
 						updatePeerAudit(source, func(a *PeerAudit) {
 							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
@@ -1574,6 +1589,7 @@ func (self *Client) run() {
 					pack = &protocol.Pack{}
 					if err := ProtoUnmarshal(frame.GetMessageBytes(), pack); err != nil {
 						// bad protobuf
+						mismatch.rejected()
 						updatePeerAudit(source, func(a *PeerAudit) {
 							a.badMessage(ByteCount(len(transferFrameBytes)))
 						})
@@ -1582,6 +1598,7 @@ func (self *Client) run() {
 					}
 
 				default:
+					mismatch.rejected()
 					updatePeerAudit(source, func(a *PeerAudit) {
 						a.badMessage(ByteCount(len(transferFrameBytes)))
 					})
@@ -1599,19 +1616,27 @@ func (self *Client) run() {
 						self.settings.BufferTimeout,
 					)
 				}
+				var accepted bool
 				if self.log.V(2).Enabled() {
-					TraceWithReturn(
+					accepted = TraceWithReturn(
 						fmt.Sprintf("[cr]ack %s %s<-%s s(%s)", self.clientTag, path.DestinationId, path.SourceId, path.SourceId),
 						c,
 					)
 				} else {
-					c()
+					accepted = c()
+				}
+				// Only an ack the buffer matched to a pending send was accepted
+				if accepted {
+					mismatch.decoded()
+				} else {
+					mismatch.rejected()
 				}
 			}
 			if pack != nil {
 				sequenceId, err := IdFromBytes(pack.SequenceId)
 				if err != nil {
 					// bad protobuf
+					mismatch.rejected()
 					MessagePoolReturn(transferFrameBytes)
 					continue
 				}
@@ -1698,13 +1723,25 @@ func (self *Client) run() {
 					}
 					return success && err == nil
 				}
+				var accepted bool
 				if self.log.V(2).Enabled() {
-					TraceWithReturn(
+					accepted = TraceWithReturn(
 						fmt.Sprintf("[cr]pack %s %s<-%s s(%s)", self.clientTag, path.DestinationId, path.SourceId, path.StreamId),
 						c,
 					)
 				} else {
-					c()
+					accepted = c()
+				}
+				switch {
+				case !accepted:
+					mismatch.rejected()
+				case unwrapped && self.plaintextReceiveDiscarded(path.SourceId):
+					// The pack is acked, then discarded by the fail-closed
+					// receive gate because this client requires encryption for
+					// this source. It was never accepted, so it is not decoded.
+					mismatch.rejected()
+				default:
+					mismatch.decoded()
 				}
 			}
 		} else {
