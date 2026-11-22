@@ -562,10 +562,64 @@ func RedactProxyEndpoint(text string, settings *ProxySettings) string {
 	}
 	label := proxyLogLabel(settings)
 	text = strings.ReplaceAll(text, settings.Address, label)
-	if host, _, err := net.SplitHostPort(settings.Address); err == nil && host != "" {
-		text = strings.ReplaceAll(text, host, label)
+	host, port, err := net.SplitHostPort(settings.Address)
+	if err != nil || host == "" {
+		return text
+	}
+	text = strings.ReplaceAll(text, host, label)
+	if net.ParseIP(host) == nil {
+		// a proxy configured by name dials an address it resolved, and a socks
+		// failure names that hop, not the name
+		text = redactResolvedProxyHops(text, port, label)
 	}
 	return text
+}
+
+// addressTokenByte reports whether b can belong to a host, a port or the closing
+// bracket of a v6 literal, so a candidate address can be read whole.
+func addressTokenByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '.', b == ':', b == '-', b == '_', b == '%', b == ']':
+		return true
+	}
+	return false
+}
+
+// redactResolvedProxyHops replaces an `ip:port` candidate carrying the proxy's
+// port with label. Only a name-configured proxy needs this: it resolves the
+// name itself, so the numeric hop is that proxy and nothing else on the line.
+func redactResolvedProxyHops(text string, port string, label string) string {
+	suffix := ":" + port
+	var b strings.Builder
+	rest := text
+	for {
+		i := strings.Index(rest, suffix)
+		if i < 0 {
+			b.WriteString(rest)
+			return b.String()
+		}
+		end := i + len(suffix)
+		if end < len(rest) && '0' <= rest[end] && rest[end] <= '9' {
+			// the port continues into a longer one, e.g. :10800
+			b.WriteString(rest[:end])
+			rest = rest[end:]
+			continue
+		}
+		start := i
+		for 0 < start && addressTokenByte(rest[start-1]) {
+			start--
+		}
+		hop := strings.TrimSuffix(strings.TrimPrefix(rest[start:i], "["), "]")
+		if hop != "" && net.ParseIP(hop) != nil {
+			b.WriteString(rest[:start])
+			b.WriteString(label)
+		} else {
+			b.WriteString(rest[:end])
+		}
+		rest = rest[end:]
+	}
 }
 
 // String omits credentials and rejects addresses that are not bare host:port.

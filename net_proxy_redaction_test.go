@@ -88,3 +88,47 @@ func TestProxyDialLogSelectLineNamesTheSlot(t *testing.T) {
 		t.Fatalf("the select error lost the slot or the reason: %q", errLine)
 	}
 }
+
+// A proxy configured by DNS name dials an address it resolved, and a SOCKS
+// failure carries that numeric hop: redacting only the configured literal
+// leaves the proxy's address in the log.
+func TestRedactProxyEndpointResolvedHop(t *testing.T) {
+	settings := &ProxySettings{Index: 4, Network: "tcp", Address: "proxy.example.net:1080"}
+	got := RedactProxyEndpoint(
+		"socks5 dial proxy.example.net:1080: dial tcp 203.0.113.9:1080: connect: connection refused",
+		settings,
+	)
+	for _, leaked := range []string{"proxy.example.net", "203.0.113.9"} {
+		if strings.Contains(got, leaked) {
+			t.Fatalf("the resolved proxy hop survived: %q in %q", leaked, got)
+		}
+	}
+	if !strings.Contains(got, "proxy[4]") || !strings.Contains(got, "connection refused") {
+		t.Fatalf("the line lost the slot or the reason: %q", got)
+	}
+
+	// the resolved hop can be v6, with brackets and the same port
+	got = RedactProxyEndpoint("dial tcp [2001:db8::9]:1080: connect: connection refused", settings)
+	if strings.Contains(got, "2001:db8::9") {
+		t.Fatalf("the resolved v6 proxy hop survived: %q", got)
+	}
+
+	// a target address on another port is not the proxy and must survive
+	got = RedactProxyEndpoint("proxy.example.net:1080 -> example.com:443, retry 198.51.100.20:443", settings)
+	for _, kept := range []string{"example.com:443", "198.51.100.20:443"} {
+		if !strings.Contains(got, kept) {
+			t.Fatalf("a target address was redacted: %q in %q", kept, got)
+		}
+	}
+
+	// a proxy configured by numeric address is not a name: another host on the
+	// same port cannot be told apart from it and must not be rewritten
+	numeric := &ProxySettings{Index: 6, Network: "tcp", Address: "10.9.8.7:1080"}
+	got = RedactProxyEndpoint("10.9.8.7:1080 -> 10.0.0.15:1080", numeric)
+	if !strings.Contains(got, "10.0.0.15:1080") {
+		t.Fatalf("an unrelated dial target was redacted: %q", got)
+	}
+	if strings.Contains(got, "10.9.8.7") {
+		t.Fatalf("the configured proxy was not redacted: %q", got)
+	}
+}
