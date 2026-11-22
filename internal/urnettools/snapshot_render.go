@@ -293,6 +293,11 @@ func renderLiveBlock(s *NodeSnapshot, o liveOpts, pressureSummary string) string
 		emit(udpRow)
 	}
 
+	// IPv6 coverage of online proxies.
+	if s.Proxies.IPv6 != nil {
+		emit(ipv6row(s.Proxies.IPv6))
+	}
+
 	// Trim: only when a cap is in force, and only when the provider reported
 	// one. The configured count is the pool size before the cap, so the row
 	// says how much capacity the cap is holding back.
@@ -509,4 +514,29 @@ func udprow(u *SnapshotProxyUDP) liveRow {
 	}
 	segs = append(segs, pct)
 	return liveRow{label: "udp", sep: ", ", segs: segs}
+}
+
+// ipv6row renders the IPv6 capability row for the live block.
+func ipv6row(v6 *SnapshotProxyIPv6) liveRow {
+	segs := []string{
+		fmt.Sprintf("%d yes", v6.Yes),
+		fmt.Sprintf("%d no", v6.No),
+		fmt.Sprintf("%d unknown", v6.Unknown),
+	}
+	if v6.NotProbed > 0 {
+		segs = append(segs, fmt.Sprintf("%d not probed", v6.NotProbed))
+	}
+	// the UDP summary is one segment per count, so wrapRow can break it at a
+	// separator. Joined with ", " it reads as one parenthesis.
+	udpParts := []string{fmt.Sprintf("%d yes", v6.UDPYes)}
+	if v6.UDPNo > 0 {
+		udpParts = append(udpParts, fmt.Sprintf("%d no", v6.UDPNo))
+	}
+	if v6.UDPUnknown > 0 {
+		udpParts = append(udpParts, fmt.Sprintf("%d unknown", v6.UDPUnknown))
+	}
+	udpParts[0] = "(udp: " + udpParts[0]
+	udpParts[len(udpParts)-1] += ")"
+	segs = append(segs, udpParts...)
+	return liveRow{label: "ipv6", sep: ", ", segs: segs}
 }

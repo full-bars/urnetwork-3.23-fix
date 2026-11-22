@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"syscall"
@@ -511,10 +512,13 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 
 	conn, err := dialContext(ctx, network, addr)
 	if log := loggerOrDefault(self.Log).V(2); log.Enabled() {
+		// the address is printed as it was dialed and the error as it came
+		// back, so a failed proxied dial says which proxy it reached; only a
+		// credential in the error text is removed
 		if err == nil {
 			log.Infof("[net]dial %s %s success\n", network, addr)
 		} else {
-			log.Infof("[net]dial %s %s err=%s\n", network, addr, err)
+			log.Infof("[net]dial %s %s err=%s\n", network, addr, errText(err))
 		}
 	}
 	return conn, err
@@ -540,6 +544,350 @@ type ProxySettings struct {
 	Network string
 	Address string
 	Auth    *proxy.Auth
+}
+
+// RedactProxyCredentials removes the userinfo a proxy address in text carries:
+// the "user:password@" in front of the host, with or without a URI scheme, and
+// a user name alone when it sits in front of an address. It is the only
+// transformation a line about a proxy needs. The address, the hop it resolved
+// to, the dial error around it and the words in front of it are copied through
+// unchanged, so a log line still says which proxy it is about and a dial error
+// still carries the address Go printed.
+func RedactProxyCredentials(text string) string {
+	return redactProxyCredentials(text, nil)
+}
+
+// errText is err's message with any proxy credential removed, for a log line.
+// It is nil safe so a site that logs an error which may be nil needs no branch.
+func errText(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return RedactProxyCredentials(err.Error())
+}
+
+// proxyRedactStats counts the work one pass did, so a test can assert that the
+// cost stays linear in the length of the line instead of timing it.
+type proxyRedactStats struct {
+	// scanned is the number of bytes the backward credential scans walked.
+	scanned int
+}
+
+// add records n scanned bytes; a nil stats is the production path.
+func (self *proxyRedactStats) add(n int) {
+	if self != nil {
+		self.scanned += n
+	}
+}
+
+func redactProxyCredentials(text string, stats *proxyRedactStats) string {
+	if !strings.Contains(text, "@") {
+		return text
+	}
+	out := text
+	search := 0
+	for {
+		rel := strings.IndexByte(out[search:], '@')
+		if rel < 0 {
+			return out
+		}
+		at := search + rel
+		// the text after the '@' decides whether the run in front of it is
+		// userinfo: only an address a proxy could be dialed at has any
+		host, port, ok := proxyTokenAfter(out, at+1)
+		if !ok || !proxyTokenNamesAddress(host, port) {
+			search = at + 1
+			continue
+		}
+		start := proxyAuthorityStart(out, at, stats)
+		if at <= start {
+			search = at + 1
+			continue
+		}
+		out = out[:start] + out[at+1:]
+		search = start
+	}
+}
+
+// proxyTokenNamesAddress reports whether the token after an '@' is an address a
+// proxy is dialed at, which is what makes the run in front of it a credential.
+// A name needs its port, and a token with no port at all counts only when it is
+// a numeric address, so a bare "@name" in prose stays as it is.
+func proxyTokenNamesAddress(host string, port string) bool {
+	if !ProxyHostAllowed(host) {
+		return false
+	}
+	if port == "" {
+		return proxyIsAddr(host)
+	}
+	return ProxyPortAllowed(port)
+}
+
+// proxyCredentialScanLimit bounds one backward credential scan, in bytes. A
+// credential is a userinfo run, so the bound only matters for text that is not
+// one: a long run of credential bytes in front of an '@' would otherwise be
+// walked once per at-sign and make the pass quadratic in the length of the line.
+// Text over the bound keeps the bytes in front of it, which is at most the run
+// minus the bound, and loses the rest.
+const proxyCredentialScanLimit = 1024
+
+// proxyTokenAfter is the host and port of the address token starting at start,
+// and whether one starts there at all. An error prints the address it failed on
+// followed by a colon ("dial host:port: connection refused"), and that colon is
+// part of the token but not of the address, so it is dropped before the host is
+// read.
+func proxyTokenAfter(text string, start int) (string, string, bool) {
+	if len(text) <= start || (text[start] != '[' && !addressTokenByte(text[start])) {
+		return "", "", false
+	}
+	token := text[start:readAddressToken(text, start)]
+	if head, ok := strings.CutSuffix(token, ":"); ok && addressHeadIsHostPort(head) {
+		token = head
+	}
+	host, port := splitAddressToken(token)
+	return host, port, true
+}
+
+// addressHeadIsHostPort reports whether head, a token that ended with the colon
+// an error prints after an address, is that address without the colon. A bare
+// v6 literal that ends in ':' is left alone, since the colon there is part of
+// the address.
+func addressHeadIsHostPort(head string) bool {
+	if host, port, err := net.SplitHostPort(head); err == nil {
+		return host != "" && port != ""
+	}
+	return strings.HasPrefix(head, "[") && strings.HasSuffix(head, "]")
+}
+
+// addressTokenByte reports whether b can belong to a host or a port. A closing
+// bracket is not one of them: a v6 literal is read whole by readAddressToken,
+// and past that literal a ']' is the bracket a log line wrapped the value in,
+// which ends the token rather than belonging to the port behind it.
+func addressTokenByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '.', b == ':', b == '-', b == '_', b == '%':
+		return true
+	}
+	return false
+}
+
+// readAddressToken is the end of the address token starting at start. A
+// bracketed v6 literal is read as one token with the port that follows it. The
+// hyphen of the "->" an OpError prints between two addresses ends the token, so
+// the port in front of it is read whole.
+func readAddressToken(text string, start int) int {
+	i := start
+	if text[i] == '[' {
+		closing := strings.IndexByte(text[i:], ']')
+		if closing < 0 {
+			return len(text)
+		}
+		i += closing + 1
+	}
+	for i < len(text) && addressTokenByte(text[i]) {
+		// the hyphen of the "->" between two printed addresses is a separator,
+		// not part of a host or a port; a token that would otherwise be empty
+		// takes it, so the caller always moves forward
+		if text[i] == '-' && i+1 < len(text) && text[i+1] == '>' {
+			if i == start {
+				i++
+			}
+			break
+		}
+		i++
+	}
+	return i
+}
+
+// splitAddressToken separates a token into host and port. The port is empty for
+// a bare host, and a bare v6 literal is read whole.
+func splitAddressToken(token string) (string, string) {
+	if strings.HasPrefix(token, "[") {
+		closing := strings.IndexByte(token, ']')
+		if closing < 0 {
+			return "", ""
+		}
+		return token[1:closing], strings.TrimPrefix(token[closing+1:], ":")
+	}
+	if host, port, err := net.SplitHostPort(token); err == nil {
+		return host, port
+	}
+	return token, ""
+}
+
+// proxyAuthorityStart is where the credential in front of the '@' at end begins.
+// The token the credential sits in is read first. '=' is both a sub-delimiter a
+// password may carry and the separator a log line puts between a key and its
+// value ("err=", "addr="): it separates a key when the bytes between it and the
+// token start are a plain identifier, so "err=demo:pw@host" keeps "err=", and
+// "demo:p=ss@host" loses "demo:p=ss". A bare "user=pw@host" is read as a key,
+// because an unquoted line of that shape is far more often a key than a
+// credential.
+//
+// A token that opens with a URI scheme starts the credential after the scheme
+// instead. The scheme fixes the start of that credential and the '@' its end, so
+// the punctuation that bounds a scheme-less one - ',', ';', the brackets, a
+// pipe, a quote, a backslash - is part of the password and goes with it. Only
+// the outermost scheme belongs to the URL: a password may carry a scheme of its
+// own ("demo:p=https://tail@host"), and a proxy URL with that shape is one an
+// operator ends up with, so a later "://" is part of the credential and never a
+// new URL to start from.
+func proxyAuthorityStart(text string, end int, stats *proxyRedactStats) int {
+	if start := proxySchemeTokenStart(text, end, stats); 0 <= start {
+		return start
+	}
+	return proxyCredentialStart(text, end, stats)
+}
+
+// proxySchemeTokenStart is where the credential begins when the token holding it
+// opens with a URI scheme, and -1 when it does not. The scan runs back over the
+// punctuation a password may carry in that form, stops at whitespace and at a
+// key's '=', then skips the quote or bracket a log line puts in front of the
+// value. The token counts only when a run of scheme bytes opens it and the
+// bytes after that run are "://".
+func proxySchemeTokenStart(text string, end int, stats *proxyRedactStats) int {
+	start := end
+	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
+		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
+			break
+		}
+		if !proxySchemeCredentialByte(text[start-1]) {
+			break
+		}
+		start--
+	}
+	stats.add(end - start)
+	for start < end && proxyTokenOpenByte(text[start]) {
+		start++
+	}
+	run := start
+	for run < end && proxySchemeByte(text[run]) {
+		run++
+	}
+	stats.add(run - start)
+	if start < run && !('0' <= text[start] && text[start] <= '9') && strings.HasPrefix(text[run:end], "://") {
+		return run + 3
+	}
+	return -1
+}
+
+// proxySchemeCredentialByte reports whether b can belong to the credential of a
+// token that opens with a URI scheme: the userinfo set, plus the sub-delimiters
+// and punctuation a password may carry there, since the scheme and the '@' fix
+// both ends of the run and nothing in it has to bound the prose around it.
+func proxySchemeCredentialByte(b byte) bool {
+	if proxyCredentialByte(b) {
+		return true
+	}
+	switch b {
+	case ',', ';', '(', ')', '<', '>', '[', ']', '{', '}', '|', '"', '\'', '`', '\\':
+		return true
+	}
+	return false
+}
+
+// proxyTokenOpenByte reports whether b is a character a log line puts in front
+// of a value rather than part of it.
+func proxyTokenOpenByte(b byte) bool {
+	switch b {
+	case '"', '\'', '`', '(', '[', '{', '<':
+		return true
+	}
+	return false
+}
+
+// proxyCredentialStart is the first byte of the token the userinfo in front of
+// end sits in, with the '=' of a key left in front of it. Whitespace, a quote
+// and the brackets and punctuation a log line puts around a value end the token
+// there, so a password carrying one of those loses only the part behind it
+// instead of taking the surrounding prose with it.
+func proxyCredentialStart(text string, end int, stats *proxyRedactStats) int {
+	start := end
+	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
+		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
+			break
+		}
+		if !proxyCredentialByte(text[start-1]) {
+			break
+		}
+		start--
+	}
+	stats.add(end - start)
+	return start
+}
+
+// proxySchemeByte reports whether b can belong to a URI scheme.
+func proxySchemeByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '+', b == '-', b == '.':
+		return true
+	}
+	return false
+}
+
+// proxyEqualsIsKey reports whether the '=' at index i separates a key from its
+// value rather than sitting inside userinfo. A key is a plain identifier at the
+// start of the token.
+func proxyEqualsIsKey(text string, i int) bool {
+	start := i
+	for 0 < start && proxyKeyByte(text[start-1]) {
+		start--
+	}
+	if start == i {
+		return false
+	}
+	return start == 0 || proxyTokenBoundaryByte(text[start-1])
+}
+
+// proxyKeyByte reports whether b can belong to a plain key such as "err".
+func proxyKeyByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '_', b == '-', b == '.':
+		return true
+	}
+	return false
+}
+
+// proxyTokenBoundaryByte reports whether b ends the token a credential sits in:
+// whitespace, a quote, and the brackets and punctuation a log line puts around
+// a value. A password may carry ',' or ';', but taking those back would swallow
+// the prose around a line, so the boundary wins.
+func proxyTokenBoundaryByte(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	case '"', '\'', '`', '(', ')', '<', '>', '[', ']', '{', '}', '|', ',', ';':
+		return true
+	}
+	return false
+}
+
+// proxyCredentialByte reports whether b can belong to userinfo. It includes the
+// '@' a password may carry and the sub-delimiters "& = ? #" as well as the
+// unreserved and percent-encoded forms, so the run is taken from its true
+// start.
+func proxyCredentialByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '-', b == '.', b == '_', b == '~', b == '%', b == ':', b == '!',
+		b == '$', b == '&', b == '*', b == '+', b == '/', b == '=', b == '?',
+		b == '#', b == '@':
+		return true
+	}
+	return false
+}
+
+// proxyIsAddr reports whether host is a numeric address rather than a name.
+func proxyIsAddr(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }
 
 // String omits credentials and rejects addresses that are not bare host:port.
@@ -672,7 +1020,7 @@ func (self *ProxySettings) NewDialContext(ctx context.Context, forward proxy.Dia
 		targetUsesLocalAddress := false
 		if err == nil {
 			if ip := net.ParseIP(host); ip == nil {
-				if ProxyTargetFamilyCarriesName() {
+				if proxyDialCarriesName(ctx) {
 					// proxy mode: the CONNECT carries the hostname and the proxy
 					// resolves it, so its own A and AAAA answers decide the
 					// family. No local lookup and no dnsCache entry, which is

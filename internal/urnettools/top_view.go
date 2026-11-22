@@ -417,14 +417,21 @@ func (m *topModel) hasTraffic() bool {
 func (m *topModel) proxiesRows() int {
 	if m.snap != nil {
 		p := m.snap.Proxies
+		extra := 0
+		if p.UDP != nil {
+			extra += 2
+		}
+		if p.IPv6 != nil {
+			extra += 1
+		}
 		if p.Up+p.Degraded+p.Connecting+p.Dead <= topProxiesCompactMax {
-			if p.UDP != nil {
-				return topProxiesCompactRows + 1
+			if extra > 0 {
+				return topProxiesCompactRows + (extra+1)/2
 			}
 			return topProxiesCompactRows
 		}
-		if p.UDP != nil {
-			return topProxiesRows + 2
+		if extra > 0 {
+			return topProxiesRows + extra
 		}
 	}
 	return topProxiesRows
@@ -569,6 +576,107 @@ func (m *topModel) drawUDPProxyCoverage(b *tui.Buffer, y int) int {
 	return rows
 }
 
+// drawIPv6ProxyCoverage draws the IPv6 proxy capability line starting at row y of b.
+// It returns the number of rows drawn (1).
+func (m *topModel) drawIPv6ProxyCoverage(b *tui.Buffer, y int) int {
+	th := m.theme
+	v6 := m.snap.Proxies.IPv6
+	if v6 == nil || y >= b.Height() {
+		return 0
+	}
+
+	prefix := "IPv6 proxies: "
+	if b.Width() < 60 {
+		prefix = "ipv6: "
+	}
+	b.Put(prefix, 0, y, th.Dim)
+	x := utf8.RuneCountInString(prefix)
+
+	type seg struct {
+		text  string
+		style tui.Style
+		keep  bool
+		// optional segments go first when the line has to shrink
+		optional bool
+	}
+	build := func(short bool) []seg {
+		unkLabel := "unknown"
+		if short {
+			unkLabel = "unk"
+		}
+		var s []seg
+		s = append(s, seg{text: strconv.Itoa(v6.Yes) + " yes", style: th.OK, keep: true})
+		s = append(s, seg{text: strconv.Itoa(v6.No) + " no", style: th.Warn, keep: false})
+		s = append(s, seg{text: strconv.Itoa(v6.Unknown) + " " + unkLabel, style: th.Dim, keep: false})
+		if v6.NotProbed > 0 {
+			npLabel := "not probed"
+			if short {
+				npLabel = "unprobed"
+			}
+			s = append(s, seg{text: strconv.Itoa(v6.NotProbed) + " " + npLabel, style: th.Dim, keep: false})
+		}
+		udpText := fmt.Sprintf("(udp: %d yes", v6.UDPYes)
+		if v6.UDPNo > 0 {
+			udpText += fmt.Sprintf(", %d no", v6.UDPNo)
+		}
+		if v6.UDPUnknown > 0 {
+			udpText += fmt.Sprintf(", %d %s", v6.UDPUnknown, unkLabel)
+		}
+		udpText += ")"
+		s = append(s, seg{text: udpText, style: th.Dim, keep: true, optional: true})
+		return s
+	}
+
+	gap := 1
+	if b.Width() >= 60 {
+		gap = 2
+	}
+	room := b.Width() - x
+	width := func(segs []seg) int {
+		w := 0
+		for i, sg := range segs {
+			if i > 0 {
+				w += gap
+			}
+			w += utf8.RuneCountInString(sg.text)
+		}
+		return w
+	}
+	segs := build(b.Width() < 60)
+	if width(segs) > room {
+		segs = build(true)
+	}
+	for width(segs) > room {
+		drop := -1
+		for i := len(segs) - 1; i >= 0; i-- {
+			if segs[i].optional {
+				drop = i
+				break
+			}
+		}
+		if drop < 0 {
+			for i := len(segs) - 1; i >= 0; i-- {
+				if !segs[i].keep {
+					drop = i
+					break
+				}
+			}
+		}
+		if drop < 0 {
+			break
+		}
+		segs = append(segs[:drop], segs[drop+1:]...)
+	}
+	for i, sg := range segs {
+		if i > 0 {
+			x += gap
+		}
+		b.Put(sg.text, x, y, sg.style)
+		x += utf8.RuneCountInString(sg.text)
+	}
+	return 1
+}
+
 // drawProxiesCompact is the one-line pool summary: every state with its count,
 // a zero dimmed so the states that matter stand out.
 func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
@@ -596,9 +704,19 @@ func (m *topModel) drawProxiesCompact(b *tui.Buffer) {
 		}
 		x = b.Put(strconv.Itoa(st.n)+" "+st.label, x, 0, style)
 	}
-	// UDP coverage: add below when there is room (height >= 2).
-	if b.Height() >= 2 {
-		m.drawUDPProxyCoverage(b, 1)
+	// Coverage: add below when there is room.
+	curY := 1
+	if b.Height() > curY && m.snap.Proxies.UDP != nil {
+		// the optional UDP percentage line must not take the row the IPv6 line
+		// needs, so the UDP block gets one row less when IPv6 is shown
+		avail := b.Height() - curY
+		if m.snap.Proxies.IPv6 != nil && avail > 1 {
+			avail--
+		}
+		curY += m.drawUDPProxyCoverage(b.Sub(tui.Rect{Y: curY, W: b.Width(), H: avail}), 0)
+	}
+	if b.Height() > curY && m.snap.Proxies.IPv6 != nil {
+		m.drawIPv6ProxyCoverage(b, curY)
 	}
 }
 
@@ -614,15 +732,26 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 	}
 	// Grid mode: the provider feeds proxy_cells and the box is tall enough.
 	gridH := b.Height()
+	extra := 0
 	if m.snap.Proxies.UDP != nil {
-		gridH -= 2
+		extra += 2
 	}
+	if m.snap.Proxies.IPv6 != nil {
+		extra += 1
+	}
+	gridH -= extra
 	if m.hasProxyGridData() && proxiesBoxMode(gridH, b.Width()) == proxyBoxGrid {
-		if m.snap.Proxies.UDP == nil {
+		if extra == 0 {
 			m.drawProxyHeatmap(b)
 		} else {
 			m.drawProxyHeatmap(b.Sub(tui.Rect{W: b.Width(), H: gridH}))
-			m.drawUDPProxyCoverage(b, gridH)
+			curY := gridH
+			if m.snap.Proxies.UDP != nil {
+				curY += m.drawUDPProxyCoverage(b, curY)
+			}
+			if m.snap.Proxies.IPv6 != nil {
+				m.drawIPv6ProxyCoverage(b, curY)
+			}
 		}
 		return
 	}
@@ -646,13 +775,24 @@ func (m *topModel) drawProxies(b *tui.Buffer) {
 			LabelStyle: th.Dim, Fill: bar.fill, Empty: th.Dim,
 		}, th.ASCII)
 	}
-	// UDP coverage: draw below the bars when there is room.
-	if b.Height() > 4 {
-		m.drawUDPProxyCoverage(b, 4)
+	// Coverage rows: draw below the bars when there is room.
+	curY := 4
+	if b.Height() > curY && m.snap.Proxies.UDP != nil {
+		// the optional UDP percentage line must not take the row the IPv6 line
+		// needs, so the UDP block gets one row less when IPv6 is shown
+		avail := b.Height() - curY
+		if m.snap.Proxies.IPv6 != nil && avail > 1 {
+			avail--
+		}
+		curY += m.drawUDPProxyCoverage(b.Sub(tui.Rect{Y: curY, W: b.Width(), H: avail}), 0)
 	}
-	// Legend row: non-Glow heatmap styles show the style name.
-	if m.proxyHeatmapStyle != heatmapGlow && gridH > 1 {
-		b.Put(m.proxyHeatmapStyle.String(), 0, gridH, th.Dim)
+	if b.Height() > curY && m.snap.Proxies.IPv6 != nil {
+		curY += m.drawIPv6ProxyCoverage(b, curY)
+	}
+	// Legend row: non-Glow heatmap styles show the style name, below the
+	// coverage rows so it never overwrites one of them.
+	if m.proxyHeatmapStyle != heatmapGlow && b.Height() > curY {
+		b.Put(m.proxyHeatmapStyle.String(), 0, curY, th.Dim)
 	}
 }
 

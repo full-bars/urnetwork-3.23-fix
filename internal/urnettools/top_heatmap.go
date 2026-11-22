@@ -441,6 +441,10 @@ type ProxyCellDetail struct {
 	IntervalBytes    uint64            `json:"interval_bytes"`
 	AgeSeconds       int64             `json:"age_seconds"`
 	UDP              string            `json:"udp,omitempty"`
+	TCPExit          string            `json:"tcp_exit,omitempty"`
+	UDPExit          string            `json:"udp_exit,omitempty"`
+	IPv6             string            `json:"ipv6,omitempty"`
+	IPv6Exit         string            `json:"ipv6_exit,omitempty"`
 }
 
 // fetchProxyCellDetail asks the provider for the full per-proxy records. It is
@@ -531,7 +535,7 @@ func (m *topModel) proxyCellInfo(index int) []string {
 	if index == 0 {
 		addr = "direct (this host)"
 	}
-	return []string{
+	lines := []string{
 		fmt.Sprintf("proxy[%d] %s", c.index, addr),
 		fmt.Sprintf("state %s", st),
 		fmt.Sprintf("udp %s", udp),
@@ -541,6 +545,27 @@ func (m *topModel) proxyCellInfo(index int) []string {
 		fmt.Sprintf("lifetime total %s", total),
 		fmt.Sprintf("age %s", age),
 	}
+	if d, ok := m.proxyDetail[c.index]; ok && index != 0 {
+		for _, exit := range []struct{ name, address string }{{"TCP", d.TCPExit}, {"UDP", d.UDPExit}} {
+			if ip := net.ParseIP(exit.address); ip != nil {
+				family := "IPv6"
+				if ip.To4() != nil {
+					family = "IPv4"
+				}
+				lines = append(lines, fmt.Sprintf("%s exit (%s) %s", exit.name, family, ip.String()))
+			}
+		}
+		st := d.IPv6
+		if st == "" {
+			st = "unknown"
+		}
+		if d.IPv6Exit != "" {
+			lines = append(lines, fmt.Sprintf("IPv6 exit: %s (%s)", st, d.IPv6Exit))
+		} else {
+			lines = append(lines, fmt.Sprintf("IPv6 exit: %s", st))
+		}
+	}
+	return lines
 }
 
 // proxyUDPDisplay names a provider UDP check state the way the UDP row does.
@@ -616,6 +641,8 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 		return
 	}
 	lines := []string{}
+	// the number of trailing lines that are the exit details of a single proxy
+	exitCount := 0
 	if len(m.proxyPopupIndices) > 2 {
 		lines = append(lines, fmt.Sprintf("%d proxies. Worst first", len(m.proxyPopupIndices)))
 	}
@@ -629,6 +656,8 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 			if len(info) >= 8 {
 				lines = append(lines, info[4:7]...)
 				lines = append(lines, info[2]+"  "+info[3]+"  "+info[7])
+				lines = append(lines, info[8:]...)
+				exitCount = len(info[8:])
 			} else {
 				lines = append(lines, info[2:]...)
 			}
@@ -641,6 +670,13 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 	}
 	if len(lines) == 0 {
 		return
+	}
+	// A short popup has too few rows for every line, and the exit details are
+	// the last lines, so they would be the ones clipped. Keep the title and the
+	// exit details and drop the middle fields that do not fit. A tall popup
+	// keeps the complete layout.
+	if inner := r.H - 2; exitCount > 0 && inner > 0 && len(lines) > inner {
+		lines = fitPopupLines(lines, inner, exitCount)
 	}
 	w := 0
 	for _, line := range lines {
@@ -655,6 +691,28 @@ func (m *topModel) drawProxyPopup(b *tui.Buffer) {
 	for i, line := range lines {
 		in.Put(tui.Truncate(line, in.Width(), m.theme.ASCII), 0, i, tui.Style{})
 	}
+}
+
+// fitPopupLines cuts lines to fit rows rows: the first line (the title) and the
+// last exitCount lines (the exit details) stay, and the fields between them keep
+// what room is left, in order. When the exit details alone do not fit, the last
+// ones stay (the IPv6 exit is the last), so the result never has more than rows
+// lines.
+func fitPopupLines(lines []string, rows int, exitCount int) []string {
+	if rows <= 0 || len(lines) <= rows || exitCount <= 0 || exitCount >= len(lines) {
+		return lines
+	}
+	exits := lines[len(lines)-exitCount:]
+	if rows <= exitCount {
+		return append([]string(nil), exits[exitCount-rows:]...)
+	}
+	middle := lines[1 : len(lines)-exitCount]
+	room := min(rows-1-exitCount, len(middle))
+	out := make([]string, 0, rows)
+	out = append(out, lines[0])
+	out = append(out, middle[:room]...)
+	out = append(out, exits...)
+	return out
 }
 
 // proxyDisplayAddress also protects the screen when an older provider sends a URL.

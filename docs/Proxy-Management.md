@@ -27,11 +27,13 @@ Proxies are never rejected or graded down for lacking UDP. Only client UDP and Q
 
 The background sweep runs by default. Use `urnet-tools set udp-probe off` to stop new sweeps at the next tick. A running sweep continues. Use `urnet-tools set udp-probe on` to enable sweeps again. Client safety checks continue to run.
 
+When a proxy's IPv6 result is due, the sweep also measures its IPv6 capability. It opens a SOCKS5 connection to an IPv6 address and sends no data. A proxy that reaches IPv6 then gets an IPv6 exit address lookup and an IPv6 UDP check through its relay. The result is stored with the UDP result. It is checked again after 12 hours when IPv6 works, 24 hours when it does not, and 1 hour when the answer is unknown. A yes whose UDP exit could not be learned is checked again after 1 hour and the interval does not double. Otherwise the interval doubles while the answer stays the same. Yes and no answers go up to 7 days and an unknown answer goes up to 12 hours. A run that ends without recording a measurement waits 15 minutes before the next try when the stage ends on its own, and 5 minutes when the sweep tick's deadline cut the stage short and nothing was measured. A run that reaches IPv6 TCP but runs out of time before the UDP exit lookup finishes records a yes with an unknown UDP answer, and that one retries after 1 hour. A timeout counts as "no IPv6" only when the proxy passed a fresh IPv4 connection test in the same run.
+
 The provider writes probe state to disk in the background after a two-second batching delay. Shutdown can request an immediate flush. A remembered TCP exit is reused for at most six hours.
 
 ### Choosing a proxy
 
-Choose a SOCKS5 proxy that relays UDP and uses the same exit address for UDP and TCP. A proxy with no UDP relay shows as `no UDP` in `top` and `status`. Ask the proxy provider for UDP ASSOCIATE support, or replace the proxy. Proxied identities do not carry UDP to IPv6 destinations.
+Choose a SOCKS5 proxy that relays UDP and uses the same exit address for UDP and TCP. A proxy with no UDP relay shows as `no UDP` in `top` and `status`. Ask the proxy provider for UDP ASSOCIATE support, or replace the proxy. A proxy carries UDP to IPv6 destinations only when the background check measured IPv6 for it, for TCP and for UDP with the same exit address. Other proxies refuse IPv6 destinations at once.
 
 ### Seeing the result
 

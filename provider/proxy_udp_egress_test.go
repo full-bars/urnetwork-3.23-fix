@@ -384,9 +384,9 @@ func TestProxiedUdpDestination(t *testing.T) {
 	}{
 		{network: "udp", addr: "192.0.2.1:53", ok: true},
 		{network: "udp4", addr: "192.0.2.1:53", ok: true},
-		// the check only proves the relay over ipv4
-		{network: "udp6", addr: "[2001:db8::1]:53", ok: false},
-		{network: "udp", addr: "[2001:db8::1]:53", ok: false},
+		// an ipv6 literal parses, dialProxiedUdp decides whether the proxy relays it
+		{network: "udp6", addr: "[2001:db8::1]:53", ok: true},
+		{network: "udp", addr: "[2001:db8::1]:53", ok: true},
 		{network: "udp6", addr: "192.0.2.1:53", ok: false},
 		{network: "udp4", addr: "[2001:db8::1]:53", ok: false},
 		// a name would be resolved off the proxy

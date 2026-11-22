@@ -131,3 +131,60 @@ func TestProxyPopupLifetimeTrafficAndMissingData(t *testing.T) {
 		t.Fatalf("missing unknown values: %s", got)
 	}
 }
+
+func TestProxyPopupExitAddresses(t *testing.T) {
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), &fakeClock{t: topBase})
+	m.proxyCells = []proxyCell{{index: 1}}
+	m.proxyDetail = map[int]ProxyCellDetail{1: {Index: 1, TCPExit: "192.0.2.1", UDPExit: "2001:db8::1"}}
+	got := strings.Join(m.proxyCellInfo(1), "\n")
+	for _, want := range []string{"TCP exit (IPv4) 192.0.2.1", "UDP exit (IPv6) 2001:db8::1"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("missing %q", want)
+		}
+	}
+	m.proxyDetail[1] = ProxyCellDetail{Index: 1, TCPExit: "secret\npassword"}
+	if strings.Contains(strings.Join(m.proxyCellInfo(1), "\n"), "secret") {
+		t.Fatal("invalid exit exposed")
+	}
+}
+
+func TestProxyPopupExitAddressesThemesAndBounds(t *testing.T) {
+	for _, name := range []string{"mono", "ascii", "colorblind"} {
+		t.Run(name, func(t *testing.T) {
+			themeName := name
+			if name == "ascii" {
+				themeName = "mono"
+			}
+			theme, ok := tui.ThemeByName(themeName)
+			if !ok {
+				t.Fatal("theme unavailable")
+			}
+			if name == "ascii" {
+				theme.ASCII = true
+			}
+			m := newTestModel(theme, topProviders(1), &fakeClock{t: topBase})
+			m.proxyCells = []proxyCell{{index: 1}}
+			m.proxyDetail = map[int]ProxyCellDetail{1: {Index: 1, TCPExit: "192.0.2.1", UDPExit: "2001:db8::1"}}
+			m.proxyPopupIndices = []int{1}
+			m.proxyPopupRect = tui.Rect{X: 1, Y: 1, W: 45, H: 12}
+			frame := tui.New(47, 14)
+			m.drawProxyPopup(frame)
+			for _, want := range []string{"TCP exit (IPv4) 192.0.2.1", "UDP exit (IPv6) 2001:db8::1"} {
+				if !strings.Contains(frame.String(), want) {
+					t.Fatalf("missing %q in popup: %s", want, frame.String())
+				}
+			}
+			m.proxyPopupRect = tui.Rect{X: 1, Y: 1, W: 3, H: 3}
+			frame = tui.New(5, 5)
+			frame.Fill(frame.Rect(), '!', tui.Style{})
+			m.drawProxyPopup(frame)
+			for y := 0; y < 5; y++ {
+				for x := 0; x < 5; x++ {
+					if (x < 1 || x >= 4 || y < 1 || y >= 4) && frame.Cell(x, y).Rune != '!' {
+						t.Fatal("popup crossed panel bounds")
+					}
+				}
+			}
+		})
+	}
+}

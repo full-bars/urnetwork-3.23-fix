@@ -6,6 +6,16 @@
 
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
 
+- Show cached proxy TCP and UDP exit addresses in the local popup.
+- Proxy IPv6 capability probing. The background sweep checks proxies for IPv6 egress alongside the UDP relay check, controlled live by the `proxy_ipv6_probe` key and `URNETWORK_PROXY_IPV6_PROBE` environment variable.
+- Status, top and metrics report IPv6 proxy counts and UDP relay capability. The top proxy popup displays IPv6 exit status and exit address.
+
+- **Proxy IPv6 measurement.** The background UDP sweep measures IPv6 for every online proxy when its own result is due. It opens a SOCKS5 connection to an IPv6 address, and for a proxy that reaches IPv6 it learns the IPv6 TCP exit and checks the IPv6 UDP relay. The result is stored with the UDP result and survives a restart. UDP flows and H3 dials never wait for it. [redeploy]
+
+- **A proxied identity the platform sees as dual stack.** When a proxy carries IPv6 for TCP and UDP with matching exits and its IPv4 UDP check is ok, its identity opens one extra platform connection pinned to IPv6 through the same proxy, beside the connection it already has. Matching IPv6 exits do not qualify a proxy when its IPv4 UDP check reports an exit mismatch. A proxy with no IPv4 UDP relay can still qualify on a measured IPv6 TCP exit. The platform then sees the proxy's IPv6 exit and categorizes the identity as dual stack, so clients that need IPv6 can reach it. It needs two new measurements to start. It stops after two consecutive disqualifying observations, on the first poll after the IPv4 UDP evidence or the IPv6 evidence expires, or when an operator turns the switch off. `urnet-tools set proxy-dualstack on|off` is an emergency switch, default on. `urnet_proxy_ipv6_transports` counts the identities that hold one. IPv6-only proxies are not covered yet. [redeploy]
+
+- **Client UDP to IPv6 destinations through measured proxies.** A proxied identity relays UDP to an IPv6 destination when its proxy was measured to carry IPv6 for TCP and UDP with matching exit addresses. Every other proxy refuses the flow at once, as before. `urnet-tools set proxy-udp-ipv6 on|off` controls it, default on. [redeploy]
+
 ### Changed
 
 - **The provider waits as long as the platform front asks.** A 429 answer with a `Retry-After` header holds the next dial for that long, up to 60 seconds. It ends the dial negotiation, so no other route of the same dial is tried before the wait is over. When an address holds its cap of QUIC connections, the front closes the next one with a specific error. The provider then waits a minimum time plus a random share, so the refused connections come back apart. The wait covers the h1+, WebSocket and QUIC dial paths. A 429 without the header behaves as before.
@@ -14,6 +24,7 @@
 ### Security
 
 - **Certificate verification follows the sealing epoch.** A sequence verifies the peer certificate for the epoch it seals under, and a rekey that promotes a new epoch verifies that epoch's certificate again. A send that races a promotion whose new epoch presents a certificate the contract did not commit to is refused and retried. No wire message or file changes.
+- **Proxy credentials are parsed out of the address.** A proxy written as `user:pass@host:port` or `socks5://user:pass@host:port` in the internal proxy config now becomes a proxy login instead of part of the address, so the password no longer reaches the startup proxy list or the authentication log lines. Log text, status output and identity labels remove a user name, a password and URL query tokens. Log lines about a proxy keep its slot and address, and a dial error keeps the same address. [redeploy]
 
 ### Performance
 

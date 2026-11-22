@@ -155,11 +155,17 @@ var controlKeyCanonical = map[string]string{
 	"ip":                          "ip_version",
 	"proxy-target-family":         "proxy_target_family",
 	"proxy_target_family":         "proxy_target_family",
+	"proxy-ipv6-probe":            "proxy_ipv6_probe",
+	"proxy_ipv6_probe":            "proxy_ipv6_probe",
 	"h3_datagram_send":            "h3_datagram_send",
 	"proxy-audit":                 "proxy_audit",
 	"proxy_audit":                 "proxy_audit",
 	"udp-probe":                   "udp_probe",
 	"udp_probe":                   "udp_probe",
+	"proxy-udp-ipv6":              "proxy_udp_ipv6",
+	"proxy_udp_ipv6":              "proxy_udp_ipv6",
+	"proxy-dualstack":             "proxy_dualstack",
+	"proxy_dualstack":             "proxy_dualstack",
 	"pprof":                       "pprof",
 	"proxy-url-max":               "proxy_url_max",
 	"proxy_url_max":               "proxy_url_max",
@@ -250,7 +256,7 @@ func validateControlValue(canonicalKey, value string) error {
 		default:
 			return fmt.Errorf("proxy-target-family: must be v4 or proxy (got %q)", value)
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "extender_udp443", "extender_udp4053", "extender_udp53", "proxy_ipv6_probe":
 		switch strings.ToLower(value) {
 		case "on", "off":
 		default:

@@ -78,6 +78,13 @@ func makeStatusRows(p Provider, s *NodeSnapshot, e ExtenderReading, sigpipeRisk 
 		}
 		rows = append(rows, statusRow{"UDP", level, statusUDPText(u)})
 	}
+	if s != nil && s.Proxies.IPv6 != nil {
+		rows = append(rows, statusRow{"IPv6", statusOK, statusIPv6Text(s.Proxies.IPv6)})
+		// the UDP counts are a row of their own: one row with both is wider than
+		// the 80 columns a row is clipped to, and the clip would cut the
+		// unknown count
+		rows = append(rows, statusRow{"IPv6 UDP", statusOK, statusIPv6UDPText(s.Proxies.IPv6)})
+	}
 	extender := statusRow{"Extender", statusUnknown, "unavailable"}
 	if e.Known {
 		extender.Level, extender.Text = statusOK, "off"
@@ -133,6 +140,34 @@ func statusUDPText(u *SnapshotProxyUDP) string {
 		text += fmt.Sprintf(" (%d%% of checked)", u.OK*100/checked)
 	}
 	return text
+}
+
+// statusIPv6Text is the IPv6 row of the summary.
+func statusIPv6Text(v6 *SnapshotProxyIPv6) string {
+	parts := []string{
+		fmt.Sprintf("%d yes", v6.Yes),
+		fmt.Sprintf("%d no", v6.No),
+		fmt.Sprintf("%d unknown", v6.Unknown),
+	}
+	if v6.NotProbed > 0 {
+		parts = append(parts, fmt.Sprintf("%d not probed", v6.NotProbed))
+	}
+	return fmt.Sprintf("IPv6 proxies: %s", strings.Join(parts, ", "))
+}
+
+// statusIPv6UDPText is the IPv6 UDP row of the summary: the cached results of
+// the IPv6 UDP probe, how many proxies passed it, failed it, or are unknown. It
+// reports measurements. Whether the relay is in use also depends on the
+// proxy-udp-ipv6 setting, so the row does not say the proxies relay UDP.
+func statusIPv6UDPText(v6 *SnapshotProxyIPv6) string {
+	parts := []string{fmt.Sprintf("%d yes", v6.UDPYes)}
+	if v6.UDPNo > 0 {
+		parts = append(parts, fmt.Sprintf("%d no", v6.UDPNo))
+	}
+	if v6.UDPUnknown > 0 {
+		parts = append(parts, fmt.Sprintf("%d unknown", v6.UDPUnknown))
+	}
+	return "IPv6 UDP probes: " + strings.Join(parts, ", ")
 }
 
 // formatStatusSummary formats the one-screen summary into a string buffer:

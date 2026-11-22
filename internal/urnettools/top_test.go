@@ -869,3 +869,19 @@ func TestTopCopyOnContextCancel(t *testing.T) {
 		t.Fatalf("copy path=%q error=%v", m.copyPath, m.copyErr)
 	}
 }
+
+// The udp counts in the IPv6 summary are optional: when the line has to shrink,
+// they go before the yes/no/unknown counts do.
+func TestTopIPv6SummaryDropsTheUdpCountsBeforeThePrimaryOnes(t *testing.T) {
+	m, _ := mouseModel(t, 80, 20)
+	m.snap.Proxies.IPv6 = &SnapshotProxyIPv6{Yes: 120, No: 45, Unknown: 7, UDPYes: 118, UDPNo: 4}
+	b := tui.New(30, 3)
+	m.drawIPv6ProxyCoverage(b, 0)
+	line := strings.Split(b.String(), "\n")[0]
+	if strings.Contains(line, "udp:") {
+		t.Fatalf("the optional udp counts survived the clip: %q", line)
+	}
+	if !strings.Contains(line, "120 yes") {
+		t.Fatalf("the primary counts were dropped before the optional ones: %q", line)
+	}
+}

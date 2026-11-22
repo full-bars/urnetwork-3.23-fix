@@ -28,10 +28,18 @@ func (self *ClientStrategy) CloseIdleConnections() {
 // resolver. The fork's strategy carries no cancel or listener-unsubscribe
 // fields yet, so this closes what exists.
 func (self *ClientStrategy) Close() {
-	self.CloseIdleConnections()
-	if self.internalDohResolver != nil {
-		self.internalDohResolver.Close()
-	}
+	self.closeOnce.Do(func() {
+		self.CloseIdleConnections()
+		if self.internalDohResolver != nil {
+			self.internalDohResolver.Close()
+		}
+		self.closed.Store(true)
+	})
+}
+
+// Closed reports whether Close has already released the strategy.
+func (self *ClientStrategy) Closed() bool {
+	return self.closed.Load()
 }
 
 // DohSettings returns the strategy's current DoH settings (ported from

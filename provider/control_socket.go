@@ -340,6 +340,8 @@ var liveEffectKeys = map[string]bool{
 	"proxy_self_heal":             true,
 	"proxy_audit":                 true,
 	"udp_probe":                   true,
+	"proxy_udp_ipv6":              true,
+	"proxy_dualstack":             true,
 	"pprof":                       true,
 	"oom_cap":                     true,
 	"proxy_url_refresh":           true,
@@ -356,6 +358,7 @@ var liveEffectKeys = map[string]bool{
 	"extender_udp4053":            true,
 	"extender_udp53":              true,
 	"proxy_target_family":         true,
+	"proxy_ipv6_probe":            true,
 }
 
 // needsRestart returns true if setting this key requires a provider restart
@@ -416,7 +419,7 @@ func validateControlValue(key, value string) error {
 		if _, err := connect.ParseProxyTargetFamily(value); err != nil {
 			return err
 		}
-	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello":
+	case "fast_auth", "proxy_self_heal", "proxy_audit", "udp_probe", "proxy_dualstack", "proxy_udp_ipv6", "smart_dialer", "baseline", "h3_datagram", "h3_datagram_send", "h1_plus", "tls_hello", "proxy_ipv6_probe":
 		switch valLower {
 		case "on", "off":
 		default:
@@ -530,6 +533,7 @@ var liveDefaults = map[string]string{
 	// sending the proxy an IPv4 literal, which is what every release before the
 	// key did.
 	"proxy_target_family": proxyTargetFamilyDefault,
+	"proxy_ipv6_probe":    "on",
 	// Clearing h1_plus restores the default: H1+ upgrades allowed.
 	"h1_plus": "on",
 	// Clearing h3_datagram_send returns to the default: on, as upstream.
@@ -568,6 +572,12 @@ func applyLiveDefault(key string, scoped ...*controlState) error {
 		// is the only way to keep the parrot off across a restart, and a clear
 		// is the way to follow the environment again.
 		return applyLiveSideEffect(key, resolveTlsHelloName(state))
+	}
+	if key == "proxy_ipv6_probe" {
+		// Clearing hands the decision back to URNETWORK_PROXY_IPV6_PROBE (or the
+		// on default), which is what a restart would use. The key is already
+		// cleared in state here.
+		return applyLiveSideEffect(key, proxyIPv6ProbeReplayValue(state))
 	}
 	def, ok := liveDefaults[key]
 	if !ok {
@@ -1290,6 +1300,9 @@ func applyLiveSideEffect(key, value string) error {
 		enabled := strings.EqualFold(value, "on")
 		connect.SetH1PlusDisabled(!enabled)
 		tlog("⚙️ [control] applied h1_plus=%s (takes effect on the next connect)\n", onOff(enabled))
+	case "proxy_ipv6_probe":
+		enabled := strings.EqualFold(value, "on")
+		tlog("⚙️ [control] applied proxy_ipv6_probe=%s\n", onOff(enabled))
 	case "h3_datagram_send":
 		// Read per message, so this takes effect at once with no reconnect. It
 		// only matters on an H3 connection where the server accepted DATAGRAM
@@ -1629,6 +1642,19 @@ func applyPersistedRuntimeTuning(state *controlState) {
 	if err := applyLiveSideEffect("baseline", v); err != nil {
 		tlog("[control] failed to apply baseline=%s: %s\n", v, err)
 	}
+	v6ProbeVal := proxyIPv6ProbeReplayValue(state)
+	if err := applyLiveSideEffect("proxy_ipv6_probe", v6ProbeVal); err != nil {
+		tlog("[control] failed to apply proxy_ipv6_probe=%s: %s\n", v6ProbeVal, err)
+	}
+}
+
+// proxyIPv6ProbeReplayValue is the value the startup replay applies for
+// proxy_ipv6_probe. The sweep reads the setting through proxyIPv6ProbeEnabled
+// (persisted value, then the environment, then the default), so the replay uses
+// the same answer. A raw env value such as "true" or "1" would log as off
+// otherwise, because the side effect recognizes only "on".
+func proxyIPv6ProbeReplayValue(state *controlState) string {
+	return onOff(proxyIPv6ProbeEnabled(state))
 }
 
 // persistedRuntimeTuningActive reports whether the operator has an explicit,

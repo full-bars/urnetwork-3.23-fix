@@ -119,6 +119,8 @@ var controlKeys = map[string]bool{
 	"extender_udp53":              true,
 	"proxy_audit":                 true,
 	"udp_probe":                   true,
+	"proxy_udp_ipv6":              true,
+	"proxy_dualstack":             true,
 	"pprof":                       true,
 	"smart_dialer":                true,
 	"h3":                          true,
@@ -129,6 +131,7 @@ var controlKeys = map[string]bool{
 	"tls_hello":                   true,
 	"oom_cap":                     true,
 	"proxy_target_family":         true,
+	"proxy_ipv6_probe":            true,
 }
 
 // globalControlState is the single provider-wide instance. Set by
@@ -294,12 +297,13 @@ func (s *controlState) statusSnapshot() map[string]struct {
 
 	// Pre-populate with env or code defaults for all known keys.
 	envDefaults := map[string]string{
-		"ramlogs":    os.Getenv("URNETWORK_RAMLOGS"),
-		"fast_auth":  os.Getenv("URNETWORK_FAST_AUTH"),
-		"metrics":    os.Getenv("URNETWORK_METRICS"),
-		"profile":    os.Getenv("URNETWORK_PROFILE"),
-		"gogc":       os.Getenv("GOGC"),
-		"gomemlimit": os.Getenv("GOMEMLIMIT"),
+		"ramlogs":          os.Getenv("URNETWORK_RAMLOGS"),
+		"fast_auth":        os.Getenv("URNETWORK_FAST_AUTH"),
+		"metrics":          os.Getenv("URNETWORK_METRICS"),
+		"profile":          os.Getenv("URNETWORK_PROFILE"),
+		"proxy_ipv6_probe": os.Getenv("URNETWORK_PROXY_IPV6_PROBE"),
+		"gogc":             os.Getenv("GOGC"),
+		"gomemlimit":       os.Getenv("GOMEMLIMIT"),
 	}
 
 	out := make(map[string]struct {

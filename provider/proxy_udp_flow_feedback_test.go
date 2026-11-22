@@ -84,6 +84,9 @@ func TestUDPFlowReplyPreservesCheck(t *testing.T) {
 	if store.entries["key"] != running {
 		t.Fatal("in-flight check replaced")
 	}
+	// admission keeps its old evidence: an expired result hit by a matching flow
+	// reply becomes fresh unknown, and the controller sees the expiry through the
+	// real check's own timestamp instead
 	store.entries["key"] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now.Add(-proxyUDPOKTTL)}
 	store.noteFlowReply("key", now)
 	if got := store.coverage([]string{"key"}, now); got.Unknown != 1 {
