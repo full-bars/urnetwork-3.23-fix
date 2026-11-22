@@ -155,7 +155,7 @@ Unlike traditional services that run as root, this build defaults to a **systemd
 
 - **Security:** the provider binary does not need root privileges.
 - **Isolation:** configuration and JWT tokens are stored in the user's home directory.
-- **Linger:** the installer enables `loginctl enable-linger`, so the provider starts automatically on boot and keeps running after logout.
+- **Linger:** the installer tries to enable lingering for the systemd service user and prints the exact command if it cannot. This lets the provider start at boot and keep running after logout. For non-interactive installs, set `URNET_INSTALL_LINGER=sudo` to permit `sudo -n loginctl enable-linger USER` without a password prompt.
 - **Root guard:** if installed as root, the script can create a restricted `urnet` user and add it to the appropriate admin group.
 
 ## 🛠️ Post-Install Commands

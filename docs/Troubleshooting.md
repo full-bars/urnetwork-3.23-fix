@@ -1,5 +1,13 @@
 # Troubleshooting Guide
 
+## The provider stops when I log out
+
+For a systemd user service, check lingering with `loginctl show-user $USER -p Linger`. If it is off, enable it for the service user:
+
+```sh
+sudo loginctl enable-linger "$USER"
+```
+
 ## Provider stopped after SIGPIPE
 
 If `systemctl --user status urnetwork.service` shows `code=killed, signal=PIPE` and the provider stays inactive, systemd may have treated the signal as a clean exit. Start the provider with `urnet-tools start`. Run `urnet-tools update` to reconcile the restart setting for an existing systemd unit. Check warnings for `RestartPreventExitStatus` or later overrides that reset `RestartForceExitStatus`: these can prevent recovery even after the managed drop-in is written. The reconciliation does not restart the provider.
