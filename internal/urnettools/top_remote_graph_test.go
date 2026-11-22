@@ -290,6 +290,21 @@ func TestRemoteTwoSeries(t *testing.T) {
 	}
 }
 
+// TestRemoteWithoutScaleState draws a chart whose caller holds no easing state:
+// it must still be scaled to its window peak instead of collapsing to nothing.
+func TestRemoteWithoutScaleState(t *testing.T) {
+	c := remoteTestChart(remoteFlat(60, 100*1024), nil)
+	c.Scales = nil
+	b := tui.New(40, 10)
+	drawRemoteChart(b, c)
+	l := remoteLayout(10)
+	for x := 0; x < b.Width(); x++ {
+		if r := b.Cell(x, l.upY).Rune; r < 0x2800 || r > 0x28ff {
+			t.Fatalf("the curve does not reach the top of its half without scale state:\n%s", b.String())
+		}
+	}
+}
+
 // TestRemoteSlidesOneDotAtATime advances the clock inside one sample and checks
 // the curve moves left: the sub-column scroll comes from the clock, with no
 // second timer and no extra state.

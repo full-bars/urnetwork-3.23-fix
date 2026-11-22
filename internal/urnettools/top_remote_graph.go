@@ -184,8 +184,8 @@ func drawRemoteChart(b *tui.Buffer, c remoteChart) {
 	}
 	c.drawHalf(b, l, c.Up, true, scales)
 	c.drawHalf(b, l, c.Down, false, scales)
-	c.drawPeak(b, c.Up, true, l.upPeak, scales)
-	c.drawPeak(b, c.Down, false, l.downPeak, scales)
+	c.drawPeak(b, c.Up, true, l.upPeak)
+	c.drawPeak(b, c.Down, false, l.downPeak)
 	if l.footer >= 0 {
 		if len(c.Down) == 0 {
 			b.Put(tui.Truncate("total not reported", w, c.ASCII), 0, l.footer, c.Dim)
@@ -216,10 +216,6 @@ func drawRemoteSummary(b *tui.Buffer, c remoteChart) {
 // and returns the scale each group is drawn against this frame. Groups are
 // walked in sorted order so the easing never depends on map iteration.
 func remoteScales(c remoteChart) map[string]float64 {
-	out := map[string]float64{}
-	if c.Scales == nil {
-		return out
-	}
 	peaks := map[string]float64{}
 	for _, dir := range [][]remoteSeries{c.Up, c.Down} {
 		for _, s := range dir {
@@ -229,6 +225,15 @@ func remoteScales(c remoteChart) map[string]float64 {
 			}
 		}
 	}
+	if c.Scales == nil {
+		// No state to ease: draw at the window peak, held away from zero.
+		out := map[string]float64{}
+		for g, peak := range peaks {
+			out[g] = max(peak, 1)
+		}
+		return out
+	}
+	out := map[string]float64{}
 	groups := make([]string, 0, len(peaks))
 	for g := range peaks {
 		groups = append(groups, g)
@@ -429,8 +434,8 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 		glyph = []rune{'#', '+', '*', 'o'}[idx%4]
 	}
 	for x := 0; x < b.Width(); x++ {
-		v := remoteCurveAt(pts, float64(2*x))
-		h := int(math.Round(max(0, v) / scale * float64(rows)))
+		frac := max(0, remoteCurveAt(pts, float64(2*x))) / scale
+		h := int(math.Round(min(frac, 1) * float64(rows)))
 		h = min(max(h, 0), rows)
 		for i := 0; i < h; i++ {
 			y := y0 + rows - 1 - i
@@ -444,7 +449,7 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 
 // drawPeak labels the window peak of the direction's first series. The label
 // slides sideways with the peak's column and stays inside the plot.
-func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row int, scales map[string]float64) {
+func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row int) {
 	if row < 0 || len(dir) == 0 {
 		return
 	}
@@ -518,8 +523,10 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 	maxH := float64(cv.rows*4 - 1)
 	prev := -1
 	for x := 0; x < cv.cells*2; x++ {
-		v := max(0, remoteCurveAt(pts, float64(x)))
-		h := int(math.Round(v / scale * maxH))
+		frac := max(0, remoteCurveAt(pts, float64(x))) / scale
+		// A curve drawn while an ease is still under it can exceed its half;
+		// clamping the fraction keeps the conversion to an int well defined.
+		h := int(math.Round(min(frac, 1) * maxH))
 		h = min(max(h, 0), cv.rows*4-1)
 		var y, base int
 		if up {
