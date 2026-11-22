@@ -614,7 +614,7 @@ func handleControlRequest(state *controlState, req controlRequest) (response con
 		return controlResponse{OK: true, Snapshot: nodeSnapshots.Get()}
 
 	case "traffic":
-		return controlResponse{OK: true, Traffic: liveTrafficSample(time.Now(), connect.ProxyBandwidthDirectionTotals, connect.ProxyBandwidthPacketTotals)}
+		return controlResponse{OK: true, Traffic: liveTrafficSample(time.Now(), connect.ProxyBandwidthDirectionTotals, connect.ProxyBandwidthPacketTotals, connect.ProxyBandwidthFamilyTotals)}
 
 	case "internals":
 		return controlResponse{OK: true, Internals: nodeInternals.Get(time.Now())}
