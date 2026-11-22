@@ -1005,17 +1005,6 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 			}
 			entry.flowReply = true
 			entry.at = now
-			// Carry over the IPv6 reservation and retry deadline so a held
-			// refresh keeps its result at publication.
-			if entry.ipv6Running {
-				entry.ipv6Running = true
-			}
-			if entry.ipv6Token != 0 {
-				entry.ipv6Token = self.pinIPv6Transport(key)
-			}
-			if entry.ipv6RetryAt.IsZero() {
-				entry.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)
-			}
 			if err := self.persistLocked(key, entry, now); err != nil {
 				tlog("[proxy][udp] could not persist probe state\n")
 			}
@@ -1028,9 +1017,17 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	var tcpExitAt time.Time
 	var ipv6 proxyIPv6Result
 	var ipv6Restored bool
+	var ipv6Running bool
+	var ipv6Token uint64
+	var ipv6RetryAt time.Time
 	if entry != nil {
 		ipv6 = entry.ipv6
 		ipv6Restored = entry.ipv6Restored
+		// a refresh holds its reservation on the identity, and a finished
+		// stage holds its retry deadline: both outlive the entry this replaces
+		ipv6Running = entry.ipv6Running
+		ipv6Token = entry.ipv6Token
+		ipv6RetryAt = entry.ipv6RetryAt
 		tcpExit = entry.tcpExit
 		tcpExitAt = entry.tcpExitAt
 		// the real check behind this evidence keeps its time and status, so the
@@ -1039,7 +1036,7 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 		realStatus = entry.realStatus
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6, ipv6Restored: ipv6Restored}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6, ipv6Restored: ipv6Restored, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
 	self.entries[key] = entry
 	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {
