@@ -81,9 +81,18 @@ func proxyIPv6TransportWanted(udp proxyUDPResult, v6 proxyIPv6Result, now time.T
 	return false
 }
 
+// proxyIPv6RecordForCheck reports whether the record was published with the udp
+// check rather than left in place by the sweep before it. A sweep stamps its
+// check and its measurement with the same instant (proxy_udp_check.go), so an
+// older stamp is the previous sweep's record.
+func proxyIPv6RecordForCheck(udp proxyUDPResult, v6 proxyIPv6Result) bool {
+	return !v6.At.IsZero() && !v6.At.Before(udp.CheckedAt)
+}
+
 // proxyIPv6Gate turns the policy into start and stop decisions with
-// hysteresis. Only a NEW measurement counts toward a streak, so polling more
-// often than the measurements arrive cannot start or stop the transport.
+// hysteresis. Only a NEW measurement counts toward the start streak, and only a
+// completed check counts toward the stop streak, so polling more often than the
+// measurements arrive cannot start or stop the transport.
 type proxyIPv6Gate struct {
 	running bool
 	// lastCheckedAt is the completion stamp of the last udp check counted.
@@ -92,9 +101,9 @@ type proxyIPv6Gate struct {
 	// publications cannot count the same failure twice, and flow evidence, which
 	// moves the evidence time without a check, cannot count a result again.
 	lastCheckedAt time.Time
-	// lastExpiry is when the ipv6 evidence of the last counted observation stops
-	// counting. A pending first result whose evidence expired before the next
-	// observation arrived does not contribute to the start streak.
+	// lastExpiry is when the ipv6 evidence of the newest counted measurement
+	// stops counting. A pending first result whose evidence expired before the
+	// next observation arrived does not contribute to the start streak.
 	lastExpiry time.Time
 	// lastV6At is the ipv6 record last counted, so the same record is not
 	// counted again by a later udp check.
@@ -102,8 +111,14 @@ type proxyIPv6Gate struct {
 	// lastCountedCheck is the udp check that last added a failure, so one check
 	// counts once even when its udp and ipv6 results arrive in two polls.
 	lastCountedCheck time.Time
-	yes              int
-	no               int
+	// pending is set while the check at lastCheckedAt is a qualifying udp result
+	// whose own measurement has not been published yet. The store publishes a
+	// sweep's udp result first and its measurement a moment after, and a poll
+	// can land between the two, so such a check decides nothing until its
+	// measurement arrives and the verdict cannot depend on that poll.
+	pending bool
+	yes     int
+	no      int
 }
 
 // observe is called on every poll. It reports whether to start or to stop the
@@ -113,19 +128,33 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 	want := proxyIPv6TransportWanted(udp, v6, now)
 	newCheck := !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastCheckedAt)
 	v6New := !v6.At.IsZero() && !v6.At.Equal(self.lastV6At)
-	if newCheck {
-		if !self.running && self.yes > 0 && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
-			// the pending first result expired before this observation: its
-			// evidence does not carry over
-			self.yes = 0
-		}
-		self.lastCheckedAt = udp.CheckedAt
-		if !v6.At.IsZero() {
-			self.lastExpiry = v6.At.Add(2 * v6.Interval)
-		}
+	if !self.running && self.yes > 0 && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
+		// the pending first result expired before this poll: its evidence does
+		// not carry over, so the second result has nothing to pair with
+		self.yes = 0
+	}
+	if self.pending {
 		switch {
+		case v6New && proxyIPv6RecordForCheck(udp, v6):
+			// the measurement of the deferred check arrived: the sweep decides
+			self.pending = false
+		case newCheck:
+			// no measurement came for the deferred check, so it was a udp-only
+			// check, and it qualified with the record that still stood
+			self.no = 0
+			self.pending = false
+		}
+	}
+	if newCheck {
+		self.lastCheckedAt = udp.CheckedAt
+		switch {
+		case want && !proxyIPv6RecordForCheck(udp, v6):
+			// the check landed before its own measurement and the record in
+			// place qualifies: nothing can be decided until the measurement
+			// arrives, whatever the number of polls in between
+			self.pending = true
 		case want:
-			// a qualifying udp check ends the failure streak
+			// a qualifying check ends the failure streak
 			self.no = 0
 		case udp.CheckedAt.Equal(self.lastCountedCheck):
 			// one udp check adds at most one stop observation
@@ -141,13 +170,17 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		// later: a sweep publishes its udp result first and its measurement a
 		// moment after, and that measurement must still count
 		self.lastV6At = v6.At
-		if want {
+		switch {
+		case want:
 			// a new qualifying measurement advances the start streak
 			self.yes++
 			self.no = 0
-		} else if !udp.CheckedAt.Equal(self.lastCountedCheck) {
-			// the check has not added a stop observation yet, so the new
-			// measurement supplies the one this sweep is allowed
+			self.lastExpiry = v6.At.Add(2 * v6.Interval)
+		case udp.CheckedAt.Equal(self.lastCountedCheck):
+			// the check already added the one stop observation of this sweep
+		case proxyIPv6RecordForCheck(udp, v6):
+			// the measurement belongs to the check and disqualifies: it
+			// supplies the one stop observation this sweep is allowed
 			self.no++
 			self.yes = 0
 			self.lastCountedCheck = udp.CheckedAt
@@ -156,11 +189,6 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 	if self.running && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
 		// the measurement behind a running transport expired: no evidence
 		self.no = proxyDualstackStopStreak
-	}
-	if !self.running && self.yes > 0 && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
-		// a pending first result that expired before a second one came is no
-		// evidence: two results seen before the first expires start it
-		self.yes = 0
 	}
 	if !self.running && self.yes >= proxyDualstackStartStreak && want {
 		self.running = true

@@ -1162,3 +1162,51 @@ func TestProxiedIPv6ControllerKeepsCountedStampsAcrossAnExpiryStop(t *testing.T)
 		t.Fatal("the cached ipv6 record counted again after an expiry stop")
 	}
 }
+
+// A sweep publishes its udp check first, still paired with the record of the
+// sweep before it. When that record is a fresh yes, a new qualifying udp check
+// must not clear the stop streak: the sweep's own measurement is not known yet,
+// and one bad sweep polled in two publications must stop the transport exactly
+// as the same sweep polled whole does.
+func TestProxyIPv6GateStopsOneBadSweepPolledInTwoPublications(t *testing.T) {
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+	mismatch := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPExitMismatch, CheckedAt: at} }
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 24*time.Hour) }
+	no := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6No, "unknown", at, 24*time.Hour) }
+	t1 := t0.Add(13 * time.Hour)
+	t2 := t1.Add(13 * time.Hour)
+	t3 := t2.Add(13 * time.Hour)
+
+	// stopped reports whether the second bad sweep stops a running transport,
+	// polled in its two publications or whole
+	stopped := func(split bool) bool {
+		var gate proxyIPv6Gate
+		gate.observe(t0, ok(t0), yes(t0))
+		if start, _ := gate.observe(t1, ok(t1), yes(t1)); !start {
+			t.Fatal("two fresh measurements did not start the transport")
+		}
+		// the first bad sweep: its udp result disqualifies while the record
+		// still says yes, so it counts one stop observation
+		if _, stop := gate.observe(t2, mismatch(t2), yes(t1)); stop {
+			t.Fatal("one bad sweep stopped the transport")
+		}
+		if split {
+			// the udp publication of the second bad sweep, still paired with
+			// the fresh record of the first one
+			if _, stop := gate.observe(t3, ok(t3), yes(t1)); stop {
+				t.Fatal("the udp publication of a sweep stopped the transport")
+			}
+			_, stop := gate.observe(t3.Add(time.Second), ok(t3), no(t3))
+			return stop
+		}
+		_, stop := gate.observe(t3, ok(t3), no(t3))
+		return stop
+	}
+	if !stopped(true) {
+		t.Fatal("a second bad sweep polled in two publications did not stop the transport: a stale record cleared the stop streak")
+	}
+	if !stopped(false) {
+		t.Fatal("a second bad sweep polled whole did not stop the transport")
+	}
+}
