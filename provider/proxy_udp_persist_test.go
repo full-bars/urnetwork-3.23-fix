@@ -277,3 +277,41 @@ func TestUDPPersistKeepsTheExitOfARestoredGoodCheck(t *testing.T) {
 		t.Fatalf("a restored successful check lost its tcp exit: %q", tcp)
 	}
 }
+
+// The unsupported-version rejection is about the version, not the shape of the
+// entry: the identical file loads under version 2 and is refused when only the
+// version changes, so an empty fixture cannot pass for the wrong reason.
+func TestUDPPersistRejectsAnUnsupportedVersionOfAValidFile(t *testing.T) {
+	now := time.Date(2026, 1, 2, 3, 4, 5, 0, time.UTC)
+	ps := &connect.ProxySettings{Address: "example.test:1234"}
+	path := filepath.Join(t.TempDir(), "state.json")
+
+	valid := udpPersistFile{Version: 2, Entries: []udpPersistEntry{{
+		Key:     udpPersistKey(ps.Key()),
+		Status:  proxyUDPOK,
+		At:      now.Add(-time.Minute),
+		TCPExit: "192.0.2.7",
+		UDPExit: "192.0.2.7",
+	}}}
+	load := func(state udpPersistFile) *SnapshotProxyUDP {
+		b, err := json.Marshal(state)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, b, 0600); err != nil {
+			t.Fatal(err)
+		}
+		store := newProxyUDPCheckStore(nil)
+		store.enablePersistence(path, now)
+		return store.coverage([]string{ps.Key()}, now)
+	}
+
+	if got := load(valid); got.OK != 1 {
+		t.Fatalf("the valid file did not load: %+v", got)
+	}
+	unsupported := valid
+	unsupported.Version = 3
+	if got := load(unsupported); got.Unchecked != 1 || got.OK != 0 {
+		t.Fatalf("version 3 was accepted with a loadable entry: %+v", got)
+	}
+}
