@@ -65,12 +65,15 @@ func TestRenderedWidth(t *testing.T) {
 				t.Fatalf("%s %s: %d lines, want %d", name, d.name, len(lines), a.Rows)
 			}
 			for i, line := range lines {
-				if w := visibleWidth(line); w != a.Cols {
-					t.Errorf("%s %s line %d: %d cells, want %d", name, d.name, i, w, a.Cols)
+				if w := visibleWidth(line); w > a.Cols {
+					t.Errorf("%s %s line %d: %d cells, more than %d", name, d.name, i, w, a.Cols)
 				}
 				if n := utf8.RuneCountInString(line); n < visibleWidth(line) {
 					t.Errorf("%s %s line %d: %d runes below %d cells", name, d.name, i, n, a.Cols)
 				}
+			}
+			if w := widestRow(lines); w != a.Cols {
+				t.Errorf("%s %s: widest row %d cells, want %d", name, d.name, w, a.Cols)
 			}
 		}
 	}
@@ -89,11 +92,25 @@ func TestNoColorWidth(t *testing.T) {
 			t.Fatalf("%s: %d lines, want %d", name, len(lines), a.Rows)
 		}
 		for i, line := range lines {
-			if w := visibleWidth(line); w != a.Cols {
-				t.Errorf("%s line %d: %d cells, want %d", name, i, w, a.Cols)
+			if w := visibleWidth(line); w > a.Cols {
+				t.Errorf("%s line %d: %d cells, more than %d", name, i, w, a.Cols)
 			}
 		}
+		if w := widestRow(lines); w != a.Cols {
+			t.Errorf("%s: widest row %d cells, want %d", name, w, a.Cols)
+		}
 	}
+}
+
+// widestRow reports the cell width of the widest row in a rendering.
+func widestRow(lines []string) int {
+	widest := 0
+	for _, line := range lines {
+		if w := visibleWidth(line); w > widest {
+			widest = w
+		}
+	}
+	return widest
 }
 
 func TestAssetsAndCapabilities(t *testing.T) {

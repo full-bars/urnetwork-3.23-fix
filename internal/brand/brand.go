@@ -57,7 +57,8 @@ func Choose(width, height int) *Asset {
 	return nil
 }
 
-// Render returns artwork with no trailing newline.
+// Render returns artwork with no trailing newline. Padding at the end of a
+// row carries no meaning, so it is dropped from the returned text.
 func Render(a *Asset, caps Capabilities) string {
 	if a == nil {
 		return ""
@@ -66,7 +67,7 @@ func Render(a *Asset, caps Capabilities) string {
 		return "URnetwork"
 	}
 	if a.Kind != "halfblock" {
-		return strings.Join(a.Lines, "\n")
+		return trimRowEnds(strings.Join(a.Lines, "\n"))
 	}
 	var out strings.Builder
 	for y, row := range a.Cells {
@@ -102,7 +103,16 @@ func Render(a *Asset, caps Capabilities) string {
 			}
 		}
 	}
-	return out.String()
+	return trimRowEnds(out.String())
+}
+
+// trimRowEnds drops the spaces at the end of each row of a multi row block.
+func trimRowEnds(text string) string {
+	rows := strings.Split(text, "\n")
+	for i, row := range rows {
+		rows[i] = strings.TrimRight(row, " ")
+	}
+	return strings.Join(rows, "\n")
 }
 func color(out *strings.Builder, rgb []int, bg bool, depth Depth) {
 	code := 38
