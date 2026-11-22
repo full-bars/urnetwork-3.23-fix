@@ -39,3 +39,37 @@ if "$lint" "$tmp/bad.md" >"$tmp/out" 2>&1; then
 fi
 echo 'PASS: excessive first person rejected'
 echo 'Lint fixture checks passed.'
+repo="$tmp/repo"
+mkdir -p "$repo/scripts" "$repo/releases/_intro" "$repo/releases/_map" "$repo/provider" "$repo/bin"
+cp scripts/release-notes.sh scripts/release-notes.py scripts/release-notes-lint.sh scripts/private-host-patterns.txt "$repo/scripts/"
+cp releases/_quickstart.md "$repo/releases/"
+git -C "$repo" init -q
+git -C "$repo" config user.name Test
+git -C "$repo" config user.email test@example.invalid
+printf 'base\n' > "$repo/README.md"
+git -C "$repo" add README.md
+git -C "$repo" commit -qm 'base'
+git -C "$repo" tag v-old
+printf 'package provider\n' > "$repo/provider/provider.go"
+git -C "$repo" add provider/provider.go
+git -C "$repo" commit -qm 'add provider'
+sha=$(git -C "$repo" rev-parse HEAD)
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [Unreleased]
+
+### Added
+
+- **Feature.** New behavior.
+CHANGELOG
+printf 'I added a feature.\n\nUpdate and restart the provider.\n' > "$repo/releases/_intro/v-test.md"
+printf 'Feature\t%s\n' "$sha" > "$repo/releases/_map/v-test.tsv"
+printf '#!/usr/bin/env bash\nprintf "[]\\n"\n' > "$repo/bin/gh"
+chmod +x "$repo/bin/gh"
+(cd "$repo" && PATH="$repo/bin:$PATH" scripts/release-notes.sh v-test)
+rg -q '^### Added$' "$repo/releases/v-test.md"
+rg -q '\[redeploy\]' "$repo/releases/v-test.md"
+rg -q "/commit/$sha" "$repo/releases/v-test.md"
+(cd "$repo" && scripts/release-notes-lint.sh releases/v-test.md)
+echo 'PASS: generator creates sections, deploy tag and commit link'
