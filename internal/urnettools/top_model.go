@@ -217,9 +217,13 @@ type topModel struct {
 	lastTraffic    time.Time
 
 	// winLevel selects the fixed graph window and winRing holds the readings it
-	// draws, one per traffic poll, trimmed to the longest window.
-	winLevel int
-	winRing  topGraphRing
+	// draws, one per traffic poll, trimmed to the longest window. peaks keeps
+	// the highest rates since start, and showPeaks says the Now panel had the
+	// rows for them this frame.
+	winLevel  int
+	winRing   topGraphRing
+	peaks     topPeaks
+	showPeaks bool
 
 	// The steady axis of each graph: one pair for the provider's own history
 	// and one per graph window, so a level change does not carry a scale.
@@ -442,6 +446,16 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 			}
 		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		// The peak is the reading's own rate, per second however fast the poll
+		// is. A counter that went backwards restarts the live window, so the
+		// pair is only read when it moves forward.
+		if n := len(m.live.samples); n >= 2 {
+			a, b := m.live.samples[n-2], m.live.samples[n-1]
+			if span := time.Duration(b.at - a.at); span > 0 && b.billable >= a.billable && b.total >= a.total {
+				secs := span.Seconds()
+				m.peaks.observeLive(m.now(), float64(b.billable-a.billable)/secs, float64(b.total-a.total)/secs)
+			}
+		}
 		// One zoom column per reading the window accepted; a stalled clock adds
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
@@ -514,6 +528,15 @@ func (m *topModel) apply(gen int, snap *NodeSnapshot, err error) {
 	}
 	m.conn = topConnected
 	m.snap = snap
+	// The provider computes its own one and five minute averages, so the peaks
+	// come from the same figures the rows above them show.
+	{
+		total1m, total5m := 0.0, 0.0
+		if tr := snap.Traffic; tr != nil {
+			total1m, total5m = tr.TotalAvg1mBps, tr.TotalAvg5mBps
+		}
+		m.peaks.observeAverages(now, snap.Rate.Avg1mBps, snap.Rate.Avg5mBps, total1m, total5m)
+	}
 	if m.cur < len(m.providerSnaps) {
 		// The overview rows read the same snapshot the live screen does, so
 		// the per provider history accumulates as top polls.
@@ -900,6 +923,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.live.reset()
 	m.trafficHistory = topTrafficHistory{}
 	m.winRing.reset()
+	m.peaks.reset()
 	for i := range m.winScaleB {
 		m.winScaleB[i].reset()
 		m.winScaleT[i].reset()

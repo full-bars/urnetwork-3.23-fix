@@ -150,14 +150,21 @@ func (m *topModel) drawDashboard(b *tui.Buffer, content tui.Rect) {
 	sideW := m.sideCols(content.W)
 	cols := tui.SplitCols(content, tui.Flex(1), tui.Fixed(sideW))
 	left := m.splitLeft(cols[0])
-	nowRows := topNowRows
-	if m.hasTraffic() {
-		nowRows = topNowRowsTraffic
-	}
 	// The side column is Now over Resources; when the provider reports runtime
 	// internals and the column is tall enough, Resources shrinks to its three
 	// rows and Internals takes the rest.
 	resRows := m.resourceRows() + 2
+	nowRows := topNowRows
+	m.showPeaks = false
+	if m.hasTraffic() {
+		nowRows = topNowRowsTraffic
+		// The peaks block takes three rows when the column has them to spare.
+		// The rows above it keep their place either way.
+		if m.peaks.watching() && cols[1].H >= nowRows+topPeakRows+resRows {
+			m.showPeaks = true
+			nowRows += topPeakRows
+		}
+	}
 	// The Extender box sits under Resources and ahead of Internals: whether the
 	// extender is on and listed is the thing an operator opens top to check, and
 	// it is left out (no empty box) for a provider that cannot report it.
@@ -809,6 +816,10 @@ func (m *topModel) drawNow(b *tui.Buffer) {
 		row(" 5m avg", tui.Rate(tr.TotalAvg5mBps), tui.Style{})
 		row("billed", tui.Bytes(float64(tr.BillableBytes)), tui.Style{})
 		row("moved", tui.Bytes(float64(tr.TotalBytes)), tui.Style{})
+		if m.showPeaks {
+			m.drawPeaks(b, y)
+			y += topPeakRows
+		}
 	} else {
 		row("current", tui.Rate(rates.billable), rateStyle(rates.billable))
 		row("1m avg", tui.Rate(s.Rate.Avg1mBps), tui.Style{})
