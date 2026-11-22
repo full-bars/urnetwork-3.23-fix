@@ -263,7 +263,8 @@ func (m *modelGate) staleRecord(now time.Time, udp proxyUDPStatus, checkAt time.
 	} else {
 		// the check may still contradict a record that stands on its own udp
 		// verdict, which is what a contradiction is counted against
-		if m.recordQualifies(m.recordUDP, v6, now) && checkAt != m.stopOf {
+		if m.recordQualifies(m.recordUDP, v6, now) && checkAt != m.stopOf &&
+			(m.lastV6.IsZero() || v6.At.After(m.lastV6)) {
 			m.stops++
 			m.stopOf = checkAt
 		}

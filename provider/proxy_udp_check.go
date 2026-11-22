@@ -1005,6 +1005,17 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 			}
 			entry.flowReply = true
 			entry.at = now
+			// Carry over the IPv6 reservation and retry deadline so a held
+			// refresh keeps its result at publication.
+			if entry.ipv6Running {
+				entry.ipv6Running = true
+			}
+			if entry.ipv6Token != 0 {
+				entry.ipv6Token = self.pinIPv6Transport(key)
+			}
+			if entry.ipv6RetryAt.IsZero() {
+				entry.ipv6RetryAt = now.Add(proxyIPv6StopBackoff)
+			}
 			if err := self.persistLocked(key, entry, now); err != nil {
 				tlog("[proxy][udp] could not persist probe state\n")
 			}

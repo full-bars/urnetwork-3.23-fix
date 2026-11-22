@@ -219,8 +219,16 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 			// check: an IPv6-only refresh can finish beside a newer lazy
 			// check, so it is not this check's measurement and adds no
 			// observation of its own. It still breaks a pending start streak:
-			// one bad measurement must not leave the next good one a start
-			self.yes = 0
+			// one bad measurement must not leave the next good one a start.
+			// Count it only once, keyed by its own stamp: if this record is
+			// newer than the last v6 record the stop streak counted, it is a
+			// new observation; otherwise it is a repeat of an old one.
+			if self.lastV6At.IsZero() || v6.At.After(self.lastV6At) {
+				self.no++
+				self.yes = 0
+			} else {
+				self.yes = 0
+			}
 		}
 	}
 	if self.running && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
