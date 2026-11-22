@@ -75,3 +75,24 @@ func TestSnapshotTrafficDirectionsRoundTrip(t *testing.T) {
 		t.Fatalf("rates = %+v", d)
 	}
 }
+
+func TestPacketFieldsCompatibility(t *testing.T) {
+	var old SnapshotTraffic
+	if err := json.Unmarshal([]byte(`{}`), &old); err != nil || old.Packets != nil {
+		t.Fatalf("old snapshot: %+v, %v", old, err)
+	}
+	var got SnapshotTraffic
+	if err := json.Unmarshal([]byte(`{"packets":{"billable_rx":{"history_pps":[3,0]},"billable_tx":{"history_pps":[7,3]}}}`), &got); err != nil {
+		t.Fatal(err)
+	}
+	if got.Packets == nil || !reflect.DeepEqual(got.Packets.BillableRx.HistoryPps, []float64{3, 0}) || !reflect.DeepEqual(got.Packets.BillableTx.HistoryPps, []float64{7, 3}) {
+		t.Fatalf("packets: %+v", got.Packets)
+	}
+	var live LiveTraffic
+	if err := json.Unmarshal([]byte(`{"billable_rx_packets":0,"billable_tx_packets":9}`), &live); err != nil {
+		t.Fatal(err)
+	}
+	if live.BillableRxPackets == nil || *live.BillableRxPackets != 0 || live.BillableTxPackets == nil || *live.BillableTxPackets != 9 {
+		t.Fatalf("live: %+v", live)
+	}
+}

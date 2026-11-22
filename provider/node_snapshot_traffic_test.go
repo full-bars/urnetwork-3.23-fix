@@ -141,7 +141,7 @@ func TestLiveTrafficSample(t *testing.T) {
 	at := snapT0.Add(90 * time.Minute)
 	got := liveTrafficSample(at, func() (billableRx, billableTx, totalRx, totalTx uint64) {
 		return 300, 400, 900, 1200
-	})
+	}, func() (uint64, uint64) { return 5, 7 })
 	if got.AtUnixNano != at.UnixNano() {
 		t.Fatalf("timestamp = %d, want %d", got.AtUnixNano, at.UnixNano())
 	}
@@ -222,5 +222,29 @@ func TestSnapshotCarriesTheHistorySeqOfItsNewestSample(t *testing.T) {
 	// The billable and total samplers tick together, so one index serves both.
 	if len(snap.Traffic.TotalHistoryBps) != 5 {
 		t.Fatalf("total history has %d samples, want 5 to match the shared index", len(snap.Traffic.TotalHistoryBps))
+	}
+}
+
+func TestSnapshotPacketRates(t *testing.T) {
+	old := &fakeSnapshotEnv{now: snapT0}
+	if newNodeSnapshotCollector(old.sources()).Get().Traffic.Packets != nil {
+		t.Fatal("old source has packets")
+	}
+	var state map[string]directionLanes
+	env := &fakeSnapshotEnv{now: snapT0, dirSource: func() map[string]directionLanes { return state }}
+	src := env.sources()
+	src.packetCounters = true
+	c := newNodeSnapshotCollector(src)
+	state = map[string]directionLanes{"p": {packetRx: 10, packetTx: 20}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {packetRx: 13, packetTx: 27}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {packetRx: 1, packetTx: 30}}
+	c.tick()
+	got := c.Get().Traffic.Packets
+	if got == nil || !reflect.DeepEqual(got.BillableRx.HistoryPps, []int64{3, 0}) || !reflect.DeepEqual(got.BillableTx.HistoryPps, []int64{7, 3}) {
+		t.Fatalf("packet rates: %+v", got)
 	}
 }

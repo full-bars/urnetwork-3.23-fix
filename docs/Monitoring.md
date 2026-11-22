@@ -4,6 +4,10 @@ Every provider can serve Prometheus metrics at `/metrics`. The `monitoring/` bun
 
 It takes two steps: confirm metrics is on at each provider (it is on by default, and `urnet-tools metrics on` turns it back on after an `off`), then start the bundle on any machine that can reach them.
 
+## Billable packet metrics
+
+`urnet_billable_packets_total{dir="rx"}` and `urnet_billable_packets_total{dir="tx"}` count billable IP packets received and sent by the provider. They reset on restart and can decrease when a proxy is removed. These counts do not include all socket traffic.
+
 ## Extender discovery metrics
 
 `urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers. `urnet_extender_carrier_requests_total{carrier=...,outcome=...}` counts served and refused requests for `tcp-443`, `udp-443`, `udp-4053` and `udp-53`. `urnet_extender_carrier_refused_total{carrier=...,stage=...}` splits refused requests by carrier and refusal stage.

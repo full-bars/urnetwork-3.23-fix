@@ -52,3 +52,16 @@ func TestProviderMetrics_ExposeTheGovernor(t *testing.T) {
 		}
 	}
 }
+
+func TestProviderMetricsBillablePackets(t *testing.T) {
+	bw := connect.RegisterProxyBandwidth(712345)
+	defer connect.UnregisterProxy(712345)
+	bw.BillableRxPackets.Store(31)
+	bw.BillableTxPackets.Store(47)
+	body := providerExtraMetrics()
+	for _, want := range []string{"# HELP urnet_billable_packets_total ", "# TYPE urnet_billable_packets_total counter", `urnet_billable_packets_total{dir="rx"} 31`, `urnet_billable_packets_total{dir="tx"} 47`} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("missing %q", want)
+		}
+	}
+}

@@ -4,6 +4,7 @@
 
 ### Added
 
+- **Billable packet counts.** The live traffic reply and snapshot report billable IP packets by direction. The provider also exposes packet metrics. Counts reset on restart.
 - **`K` switches `urnet-tools top` between mouse mode and keyboard mode.** In mouse mode the terminal reports clicks and hover to top. In keyboard mode it does not, so the terminal's own text selection works. The footer names the mode that is on, and a one-line message says what changed. `--no-mouse` starts in keyboard mode, and so does a terminal that cannot report the mouse. The old `M` key still switches the mode.
 - **`c` copies the screen of `urnet-tools top` to the clipboard.** The copy is the same plain text `--copy` writes. It uses a local clipboard tool when the session is local, the terminal's OSC 52 sequence over SSH, and the `--copy` file when neither works. The message says which one ran and how many lines were copied.
 - **Billable and total traffic split by direction in `urnet-tools top`.** Page 3 draws billable traffic and page 4 draws total traffic, each with upload above the centre line and download below it. The pages reuse the mirrored chart's labels, corner averages and peak labels, and they appear only when the provider reports the per-direction counters. The provider snapshot gains the split beside the existing sums, which stay in place for older readers.
