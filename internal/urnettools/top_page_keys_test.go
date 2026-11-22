@@ -95,8 +95,8 @@ func TestTopPageStripClickSwitches(t *testing.T) {
 		t.Fatalf("the click left page %d, want 0", m.page)
 	}
 	renderFresh(m, b)
-	if m.contentRect.Y != 1 {
-		t.Fatalf("back on the dashboard the content starts at y=%d, want 1", m.contentRect.Y)
+	if m.contentRect.Y != 2 {
+		t.Fatalf("back on the dashboard the content starts at y=%d, want 2", m.contentRect.Y)
 	}
 }
 

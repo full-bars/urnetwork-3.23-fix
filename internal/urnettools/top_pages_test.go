@@ -26,21 +26,21 @@ func renderFresh(m *topModel, b *tui.Buffer) {
 	m.render(b)
 }
 
-// The dashboard keeps the frame every earlier version of top drew: no strip
-// row, so the content starts directly under the title.
-func TestTopDashboardFrameWithoutAPageStrip(t *testing.T) {
+// The dashboard draws the strip row too: the pages are visible without
+// switching to one, so the content starts under the tabs.
+func TestTopDashboardDrawsThePageStrip(t *testing.T) {
 	m, _, text := pageModel(t, 120, 40)
-	if m.contentRect.Y != 1 || m.contentRect.H != 38 {
-		t.Fatalf("content rect = %+v, want the full band at y=1 h=38", m.contentRect)
+	if m.contentRect.Y != 2 || m.contentRect.H != 37 {
+		t.Fatalf("content rect = %+v, want the band under the strip at y=2 h=37", m.contentRect)
 	}
-	for _, label := range []string{"Overview", "Remote", "[/] page"} {
-		if strings.Contains(text, label) {
-			t.Fatalf("the dashboard frame grew %q; it must stay as it was:\n%s", label, text)
+	for _, label := range []string{"[1 Overview]", "[2 Remote]", "[/] page", "p tabs"} {
+		if !strings.Contains(text, label) {
+			t.Fatalf("the dashboard frame is missing %q:\n%s", label, text)
 		}
 	}
-	for _, name := range []string{"footer:pages", "page:overview", "page:remote"} {
-		if regionByName(m.regions, name) != nil {
-			t.Fatalf("region %q recorded on the dashboard", name)
+	for _, name := range []string{"footer:pages", "footer:tabs", "page:overview", "page:remote"} {
+		if regionByName(m.regions, name) == nil {
+			t.Fatalf("region %q not recorded on the dashboard", name)
 		}
 	}
 }

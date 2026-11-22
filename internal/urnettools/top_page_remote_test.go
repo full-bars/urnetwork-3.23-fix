@@ -7,19 +7,20 @@ import (
 	"github.com/urnetwork/connect/internal/tui"
 )
 
-// The dashboard is still the frame it always was, even with a second page
-// registered: no strip row while page 1 is on screen.
-func TestTopDashboardKeepsTheFrameWithPagesRegistered(t *testing.T) {
+// The dashboard draws the strip with a second page registered, and the page
+// keys reach both pages from it. The Remote page's own chart keeps its
+// rectangle: hiding the strip only gives the row back to the content.
+func TestTopDashboardFrameWithPagesRegistered(t *testing.T) {
 	m, _, text := pageModel(t, 120, 40)
 	if pages, _ := m.pageStrip(m.pageArea()); len(pages) < 2 {
 		t.Fatalf("the fixture should offer both pages, got %v", pages)
 	}
-	if m.contentRect.Y != 1 || m.contentRect.H != 38 {
-		t.Fatalf("content rect = %+v, want the full band at y=1 h=38", m.contentRect)
+	if m.contentRect.Y != 2 || m.contentRect.H != 37 {
+		t.Fatalf("content rect = %+v, want the band under the strip at y=2 h=37", m.contentRect)
 	}
-	for _, label := range []string{"Overview", "Remote", "[/] page"} {
-		if strings.Contains(text, label) {
-			t.Fatalf("the dashboard frame grew %q; it must stay as it was:\n%s", label, text)
+	for _, label := range []string{"[1 Overview]", "[2 Remote]", "[/] page", "p tabs"} {
+		if !strings.Contains(text, label) {
+			t.Fatalf("the dashboard frame is missing %q:\n%s", label, text)
 		}
 	}
 }

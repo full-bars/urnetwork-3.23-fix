@@ -11,15 +11,16 @@ import (
 )
 
 // The Remote panel is hidden until the operator asks for it, so every existing
-// screen keeps its layout and its goldens.
+// screen keeps its layout and its goldens. The strip names the page, so the
+// check is the panel's own hit region.
 func TestTopRemoteHiddenByDefault(t *testing.T) {
 	clock := &fakeClock{t: topBase}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
 	m.apply(0, topFlowing(t), nil)
 	b := tui.New(120, 40)
 	m.render(b)
-	if strings.Contains(b.String(), "Remote") {
-		t.Fatalf("the Remote panel drew without being asked for:\n%s", b.String())
+	if r := regionByName(m.regions, "box:remote"); r != nil {
+		t.Fatalf("the Remote panel drew without being asked for, at %+v", *r)
 	}
 }
 
@@ -52,7 +53,7 @@ func TestTopRemoteSuppressedOnAShortBand(t *testing.T) {
 	m.remote = true
 	short := tui.New(100, 30)
 	m.render(short)
-	if strings.Contains(short.String(), "Remote") {
+	if regionByName(m.regions, "box:remote") != nil {
 		t.Fatalf("the panel drew in a band too short for it:\n%s", short.String())
 	}
 	if !strings.Contains(short.String(), "Billable") {
@@ -60,7 +61,7 @@ func TestTopRemoteSuppressedOnAShortBand(t *testing.T) {
 	}
 	tall := tui.New(120, 40)
 	m.render(tall)
-	if !strings.Contains(tall.String(), "Remote") {
+	if regionByName(m.regions, "box:remote") == nil {
 		t.Fatalf("the panel did not come back on a taller screen:\n%s", tall.String())
 	}
 }
