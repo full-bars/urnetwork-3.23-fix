@@ -1,11 +1,11 @@
  urnet-tools top   tornado   v3.23.0-fix.32.1   up 3d 4h                        FLOWING    16:04:31
 ╭ Billable, 10m ─────────────────────────────────────────────────────╮╭ Now ───────────────────────╮
-│40 MiB/s┤                                                           ││billable  38.2 MiB/s        │
-│       ╭ Keys ───────────────────────────────────────────────────────────────────────────╮        │
+│40 MiB/╭ Keys ───────────────────────────────────────────────────────────────────────────╮        │
 │       │ q, Esc, Ctrl-C   quit                                                           │        │
-│20 MiB/│ Tab, Shift-Tab   next or previous provider                                      │        │
-│       │ +  -             change refresh interval, down to 100ms                         │        │
+│       │ Tab, Shift-Tab   next or previous provider                                      │        │
+│20 MiB/│ +  -             change refresh interval, down to 100ms                         │        │
 │       │ w                zoom the graphs to the last 15 seconds                         │        │
+│       │ r                show or hide the mirrored Remote transfer chart                │        │
 │   0 B/│ u                switch units between GiB (binary) and GB (decimal)             │        │
 ╰───────│ m                menu: color theme, graph style and heatmap style               │        │
 ╭ Total │ M                mouse on/off (Shift+drag selects text in most terminals)       │        │

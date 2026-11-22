@@ -146,9 +146,13 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	}
 
 	sr := m.series()
+	// [remote chart] The Remote panel takes the bottom of the graph band when
+	// it is on and the band can hold both, so the rest of the layout is
+	// untouched. See top_remote_panel.go.
+	graphArea, remoteArea, showRemote := m.remoteSplit(left[0])
 	secondGraphTitle := -1
-	if sr.total != nil && left[0].H >= topTwoGraphsMinRows {
-		graphs := tui.SplitRows(left[0], tui.Flex(1), tui.Flex(1))
+	if sr.total != nil && graphArea.H >= topTwoGraphsMinRows {
+		graphs := tui.SplitRows(graphArea, tui.Flex(1), tui.Flex(1))
 		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
 		secondGraphTitle = graphs[1].Y
@@ -157,7 +161,10 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(left[0], "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, left[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphArea, "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, graphArea.W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+	}
+	if showRemote {
+		m.drawRemote(box(remoteArea, "remote", "Remote"))
 	}
 	m.drawProxies(box(left[1], "proxies", "Proxies"))
 	m.proxyPopupRect = tui.Rect{X: left[1].X + 1, Y: left[1].Y + 1, W: max(0, left[1].W-2), H: max(0, left[1].H-2)}
@@ -178,7 +185,10 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	}
 
 	// Hit regions: every box, its title row, and the dividers between them.
-	m.recordBox("graph", left[0])
+	m.recordBox("graph", graphArea)
+	if showRemote {
+		m.recordBox("remote", remoteArea)
+	}
 	if secondGraphTitle >= 0 {
 		m.record("title:graph", tui.Rect{X: left[0].X, Y: secondGraphTitle, W: left[0].W, H: 1})
 	}
@@ -1039,6 +1049,7 @@ var helpLines = []string{
 	"Tab, Shift-Tab   next or previous provider",
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
+	"r                show or hide the mirrored Remote transfer chart",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme, graph style and heatmap style",
 	"M                mouse on/off (Shift+drag selects text in most terminals)",

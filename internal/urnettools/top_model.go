@@ -247,6 +247,10 @@ type topModel struct {
 	proxyHeatmapStyle     heatmapStyle
 	proxyTimeline         []proxyTimelineSample
 	proxyTimelineGroups   int
+	// remote shows the mirrored transfer chart in the graph band (key r), and
+	// remoteScales holds the easing state of each of its scales by group.
+	remote       bool
+	remoteScales map[string]*remoteScale
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -757,6 +761,14 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(-1)
 		case 'w', 'W':
 			m.zoomOn = !m.zoomOn
+		case 'r', 'R':
+			// The Remote chart takes the bottom of the graph band. Switching it
+			// on starts its scales from the current window, not from whatever
+			// they eased to the last time it was shown.
+			m.remote = !m.remote
+			if m.remote {
+				m.remoteScales = nil
+			}
 		case 'u', 'U':
 			tui.SetDecimalUnits(!tui.DecimalUnits())
 		case 'g', 'G':
@@ -825,6 +837,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.windowT.reset()
 	m.windowScaleB.reset()
 	m.windowScaleT.reset()
+	m.remoteScales = nil
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's
