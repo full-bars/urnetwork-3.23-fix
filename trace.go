@@ -1,7 +1,7 @@
 package connect
 
 import (
-	// "context"
+	"context"
 	// "sync"
 	"time"
 	// "slices"
@@ -52,6 +52,10 @@ func HandleError(do func(), handlers ...any) (r any) {
 			for _, handler := range handlers {
 				switch v := handler.(type) {
 				case func():
+					v()
+				case context.CancelFunc:
+					// a defined type does not match the plain func() case
+					// above, and the TLS workers pass their cancel this way
 					v()
 				case func(error):
 					v(err)
