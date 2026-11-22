@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math/rand"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 	"unsafe"
@@ -334,6 +335,48 @@ func TestCancelledAttemptsRotateTheOnlySlot(t *testing.T) {
 	}
 	if len(seen) != identities {
 		t.Fatalf("%d of %d identities never reached the only slot: %v", identities-len(seen), identities, order)
+	}
+}
+
+// A recheck the tick deadline cancels leaves the identity with the result it had
+// before, so a cancelled attempt of an identity that already has one is not
+// recorded; the identity beside it, whose older result is due as well, then keeps
+// the only slot on every tick. A cancelled check records its attempt for an
+// identity with a previous result too, so the oldest attempt goes first and the
+// slot rotates.
+func TestCancelledRecheckRotatesTheOnlySlot(t *testing.T) {
+	pinSyntheticStageClock(t)
+	t0 := time.Date(2026, 11, 21, 12, 0, 0, 0, time.UTC)
+	a := &connect.ProxySettings{Network: "tcp", Address: "a.example.test:1080"}
+	b := &connect.ProxySettings{Network: "tcp", Address: "b.example.test:1080"}
+	online := []*connect.ProxySettings{a, b}
+	store := newProxyUDPCheckStore(nil)
+	var cancel context.CancelFunc
+	var probed []string
+	store.probe = func(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		probed = append(probed, settings.Address)
+		// the tick deadline cancels the check before it can publish
+		cancel()
+		return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
+	}
+	// b holds an unknown result from a check that was not cancelled
+	store.entries[b.Key()] = &proxyUDPCheckEntry{
+		at:     t0.Add(-40 * time.Minute),
+		result: proxyUDPResult{Status: proxyUDPUnknown},
+	}
+	// a's first check is cancelled before it publishes anything at all
+	var ctx context.Context
+	ctx, cancel = context.WithCancel(context.Background())
+	store.Check(ctx, a, t0)
+	for tick := 1; tick <= 8; tick++ {
+		ctx, cancel = context.WithCancel(context.Background())
+		runUDPProbeTick(ctx, store, online, t0.Add(time.Duration(tick)*5*time.Minute), udpProbeRecheckWindow, 5*time.Minute, 0, true)
+		cancel()
+	}
+	// the first cancelled check, then the two identities take turns
+	want := []string{a.Address, b.Address, a.Address, b.Address, a.Address, b.Address, a.Address, b.Address, a.Address}
+	if strings.Join(probed, ",") != strings.Join(want, ",") {
+		t.Fatalf("dispatches %v, want %v: the slot did not rotate", probed, want)
 	}
 }
 

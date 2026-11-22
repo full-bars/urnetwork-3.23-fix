@@ -481,13 +481,13 @@ type proxyUDPCheckStore struct {
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
 	// attempts remembers a check that was dispatched and then cancelled before
-	// it published, while the identity had no result at all. Such a check
-	// removes the placeholder it installed, so nothing else records that the
-	// identity had its turn, and the sweep would rank it as never checked on
-	// every tick. The value is when that attempt was dispatched. In memory
-	// only: no admission path reads it, it is never attached to an entry, and
-	// no state file field carries it. It is bounded and pruned with the
-	// entries.
+	// it published. Such a check removes the placeholder it installed or puts
+	// the previous result back unchanged, so nothing else records that the
+	// identity had its turn, and the sweep would rank it as never checked (or as
+	// long overdue) on every tick. The value is when that attempt was
+	// dispatched. In memory only: no admission path reads it, it is never
+	// attached to an entry, and no state file field carries it. It is bounded
+	// and pruned with the entries.
 	attempts    map[string]time.Time
 	persistPath string
 	persisted   map[string]udpPersistEntry
@@ -538,7 +538,7 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 const udpProbeAttemptMaxEntries = 4 * udpStateMaxEntries
 
 // noteAttemptLocked remembers an attempt that was cancelled before it could
-// publish, for an identity that had no earlier result. The stamp is the wall
+// publish, whatever result the identity had before it. The stamp is the wall
 // clock alone, because the sweep sorts by it beside times restored from the
 // state file. Called with the lock held.
 func (self *proxyUDPCheckStore) noteAttemptLocked(key string, now time.Time) {
@@ -766,14 +766,14 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 
 		self.mu.Lock()
 		if ctx.Err() != nil {
-			// an interrupted check says nothing: forget it
+			// an interrupted check says nothing: forget it and remember that the
+			// identity had its turn, so the sweep does not hand it the same slot
+			// on every tick. An identity that had a previous result needs that
+			// mark too: the result comes back unchanged and carries no sign of
+			// the attempt, so the sweep would keep it at the front of its due
+			// list beside an identity that never gets a turn.
 			delete(self.entries, key)
-			if previous == nil {
-				// nothing published and no entry is left to say the identity
-				// had its turn: remember the attempt, so the sweep does not
-				// hand it the never-checked rank on every tick
-				self.noteAttemptLocked(key, now)
-			}
+			self.noteAttemptLocked(key, now)
 			if previous != nil {
 				// the IPv6 fields come from the entry this check installed: an IPv6
 				// refresh that ran meanwhile updated it and cleared its flag, and a
