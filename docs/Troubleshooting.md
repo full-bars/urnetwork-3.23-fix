@@ -2,10 +2,10 @@
 
 ## The provider stops when I log out
 
-For a systemd user service, check lingering with `loginctl show-user $USER -p Linger`. If it is off, enable it for the service user:
+For a systemd user service, check lingering with `loginctl show-user USER -p Linger`. Replace `USER` with the service owner, including a dedicated user created by the installer. If it is off, enable it for that user:
 
 ```sh
-sudo loginctl enable-linger "$USER"
+sudo loginctl enable-linger USER
 ```
 
 ## Provider stopped after SIGPIPE

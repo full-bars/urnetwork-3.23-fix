@@ -4,7 +4,7 @@
 
 ### Fixed
 
-- **Systemd lingering.** The installer enables lingering so a user service keeps running after logout. Status warns when it is off.
+- **Systemd lingering.** The installer tries to enable lingering for the service user and reports its final state. Status, update and restart warn when it is off. Auto-start refuses to enable the user unit when it is off.
 
 ### Added
 
