@@ -8,6 +8,12 @@ It takes two steps: confirm metrics is on at each provider (it is on by default,
 
 `urnet_billable_packets_total{dir="rx"}` and `urnet_billable_packets_total{dir="tx"}` count billable IP packets received and sent by the provider. They reset on restart and can decrease when a proxy is removed. These counts do not include all socket traffic.
 
+## IPv4 versus IPv6 metrics
+
+`urnet_traffic_v6_bytes_total{kind="billable"|"total",dir="rx"|"tx"}` counts the IPv6 share of the billable and total byte counters. IPv4 is the matching total minus the IPv6 figure: the provider counts IPv6 only, so an IPv4 packet costs the accounting path no extra work.
+
+The IPv6 counters start at zero on every provider start and are never persisted, so the persisted byte totals read as IPv4 until new IPv6 traffic arrives. Like the other provider counters, they can decrease when a proxy is removed, so read rates from the change between two samples and skip a decrease.
+
 ## Extender discovery metrics
 
 `urnet_extender_discovery_state` is a gauge with one series for each bounded state: `off`, `waiting`, `running`, `feed-only` and `failed`. The active state is 1. `urnet_extender_discovery_peers` counts mesh peers and `urnet_extender_discovery_feed_subscribers` counts feed subscribers. `urnet_extender_carrier_requests_total{carrier=...,outcome=...}` counts served and refused requests for `tcp-443`, `udp-443`, `udp-4053` and `udp-53`. `urnet_extender_carrier_refused_total{carrier=...,stage=...}` splits refused requests by carrier and refusal stage.

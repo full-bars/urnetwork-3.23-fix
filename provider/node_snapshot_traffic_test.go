@@ -4,6 +4,8 @@ import (
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 // Session totals accumulate the same deltas the rate uses, so a proxy that was
@@ -141,7 +143,9 @@ func TestLiveTrafficSample(t *testing.T) {
 	at := snapT0.Add(90 * time.Minute)
 	got := liveTrafficSample(at, func() (billableRx, billableTx, totalRx, totalTx uint64) {
 		return 300, 400, 900, 1200
-	}, func() (uint64, uint64) { return 5, 7 })
+	}, func() (uint64, uint64) { return 5, 7 }, func() connect.ProxyBandwidthFamily {
+		return connect.ProxyBandwidthFamily{BillableRx: 10, BillableTx: 12, TotalRx: 20, TotalTx: 30}
+	})
 	if got.AtUnixNano != at.UnixNano() {
 		t.Fatalf("timestamp = %d, want %d", got.AtUnixNano, at.UnixNano())
 	}
@@ -150,6 +154,81 @@ func TestLiveTrafficSample(t *testing.T) {
 	}
 	if got.BillableRxBytes != 300 || got.BillableTxBytes != 400 || got.TotalRxBytes != 900 || got.TotalTxBytes != 1200 {
 		t.Fatalf("directions = %+v", got)
+	}
+	if got.BillableRxBytesV6 != 10 || got.BillableTxBytesV6 != 12 ||
+		got.TotalRxBytesV6 != 20 || got.TotalTxBytesV6 != 30 {
+		t.Fatalf("ipv6 counters = %+v", got)
+	}
+}
+
+// The IP family split reports the IPv6 lane as counted and IPv4 as the base
+// lane minus it. The two are separate counters, so a tick can read the IPv6
+// delta ahead of its base and drive the difference negative; the split clamps
+// it to zero rather than reporting a negative rate.
+func TestSnapshotFamilySplit(t *testing.T) {
+	var state map[string]directionLanes
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
+	src := env.sources()
+	src.familyCounters = true
+	c := newNodeSnapshotCollector(src)
+
+	state = map[string]directionLanes{"p": {billableRx: 1000, billableTx: 1000, totalRx: 1000, totalTx: 1000, billableRxV6: 100, billableTxV6: 100, totalRxV6: 100, totalTxV6: 100}}
+	c.tick() // baseline
+	env.now = env.now.Add(time.Second)
+	// All v4: the base lanes move and the IPv6 lanes stand still.
+	state = map[string]directionLanes{"p": {billableRx: 1400, billableTx: 1400, totalRx: 1400, totalTx: 1400, billableRxV6: 100, billableTxV6: 100, totalRxV6: 100, totalTxV6: 100}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	// Mixed: base +1000, IPv6 +400, so IPv4 is 600.
+	state = map[string]directionLanes{"p": {billableRx: 2400, billableTx: 2400, totalRx: 2400, totalTx: 2400, billableRxV6: 500, billableTxV6: 500, totalRxV6: 500, totalTxV6: 500}}
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	// The IPv6 counter arrives one sample before its base: +300 IPv6 over a
+	// +100 base. IPv4 must read 0, not -200.
+	state = map[string]directionLanes{"p": {billableRx: 2500, billableTx: 2500, totalRx: 2500, totalTx: 2500, billableRxV6: 800, billableTxV6: 800, totalRxV6: 800, totalTxV6: 800}}
+	c.tick()
+
+	d := c.Get().Traffic.Directions
+	if d == nil || d.Families == nil {
+		t.Fatalf("family counters present but no split reported: %+v", d)
+	}
+	for _, q := range []struct {
+		name   string
+		split  SnapshotFamilySplit
+		v4Want []int64
+		v6Want []int64
+	}{
+		{"billable rx", d.Families.BillableRx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+		{"billable tx", d.Families.BillableTx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+		{"total rx", d.Families.TotalRx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+		{"total tx", d.Families.TotalTx, []int64{400, 600, 0}, []int64{0, 400, 300}},
+	} {
+		if !reflect.DeepEqual(q.split.V4.HistoryBps, q.v4Want) || !reflect.DeepEqual(q.split.V6.HistoryBps, q.v6Want) {
+			t.Fatalf("%s history = v4 %v v6 %v, want v4 %v v6 %v", q.name, q.split.V4.HistoryBps, q.split.V6.HistoryBps, q.v4Want, q.v6Want)
+		}
+		if q.split.V4.NowBps != q.v4Want[len(q.v4Want)-1] || q.split.V6.NowBps != q.v6Want[len(q.v6Want)-1] {
+			t.Fatalf("%s now = v4 %d v6 %d, want v4 %d v6 %d", q.name, q.split.V4.NowBps, q.split.V6.NowBps, q.v4Want[len(q.v4Want)-1], q.v6Want[len(q.v6Want)-1])
+		}
+	}
+}
+
+// A source that does not count IPv6 traffic reports directional rates without a
+// family split, so a reader draws the old page instead of a flat IPv6 line.
+func TestSnapshotFamilySplitAbsentWithoutCounters(t *testing.T) {
+	state := map[string]directionLanes{"p": {billableRx: 1000, totalRx: 1000}}
+	env := &fakeSnapshotEnv{now: snapT0, proxies: SnapshotProxies{Up: 1}, dirSource: func() map[string]directionLanes { return state }}
+	c := newNodeSnapshotCollector(env.sources())
+	c.tick()
+	env.now = env.now.Add(time.Second)
+	state = map[string]directionLanes{"p": {billableRx: 2000, totalRx: 2000}}
+	c.tick()
+
+	d := c.Get().Traffic.Directions
+	if d == nil {
+		t.Fatal("directional block missing")
+	}
+	if d.Families != nil {
+		t.Fatalf("family split reported without family counters: %+v", d.Families)
 	}
 }
 

@@ -450,6 +450,15 @@ func providerExtraMetrics() string {
 	fmt.Fprintf(&b, "# TYPE urnet_billable_packets_total counter\n")
 	fmt.Fprintf(&b, "urnet_billable_packets_total{dir=\"rx\"} %d\nurnet_billable_packets_total{dir=\"tx\"} %d\n", packetRx, packetTx)
 
+	// --- IPv6 traffic share ---
+	fam := connect.ProxyBandwidthFamilyTotals()
+	fmt.Fprintf(&b, "# HELP urnet_traffic_v6_bytes_total IPv6 traffic bytes across registered proxies by kind and direction.\n")
+	fmt.Fprintf(&b, "# TYPE urnet_traffic_v6_bytes_total counter\n")
+	fmt.Fprintf(&b, "urnet_traffic_v6_bytes_total{kind=\"billable\",dir=\"rx\"} %d\n", fam.BillableRx)
+	fmt.Fprintf(&b, "urnet_traffic_v6_bytes_total{kind=\"billable\",dir=\"tx\"} %d\n", fam.BillableTx)
+	fmt.Fprintf(&b, "urnet_traffic_v6_bytes_total{kind=\"total\",dir=\"rx\"} %d\n", fam.TotalRx)
+	fmt.Fprintf(&b, "urnet_traffic_v6_bytes_total{kind=\"total\",dir=\"tx\"} %d\n", fam.TotalTx)
+
 	// --- Lifetime persisted metrics ---
 	if lm := lifetimeStore; lm != nil {
 		pqe, clas, up, deny, recov, lost, bill := lm.Snapshot()
