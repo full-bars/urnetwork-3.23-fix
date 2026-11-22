@@ -686,27 +686,40 @@ func addressHeadIsHostPort(head string) bool {
 }
 
 // proxyAuthorityStart is where the userinfo in front of the '@' at end begins.
-// A scheme delimits it exactly, since a password may carry the '/' a path also
-// uses. With no scheme the credential begins the token it sits in, so the scan
-// runs back over the bytes RFC 3986 allows in userinfo and stops at the first
-// byte that cannot be part of it. Whitespace, a quote and the brackets and
-// punctuation a log line puts around a value end the token there, so a password
-// carrying one of those loses only the part behind it instead of taking the
-// surrounding prose with it.
-//
-// '=' is both a sub-delimiter a password may carry and the separator a log line
-// puts between a key and its value ("err=", "addr="). It separates a key when
-// the bytes between it and the token start are a plain identifier, and is part
-// of the credential otherwise: "err=demo:pw@host" keeps "err=", and
+// The token the credential sits in is read first. '=' is both a sub-delimiter a
+// password may carry and the separator a log line puts between a key and its
+// value ("err=", "addr="): it separates a key when the bytes between it and the
+// token start are a plain identifier, so "err=demo:pw@host" keeps "err=", and
 // "demo:p=ss@host" loses "demo:p=ss". A bare "user=pw@host" is read as a key,
 // because an unquoted line of that shape is far more often a key than a
 // credential.
+//
+// A token that opens with a URI scheme starts the credential after the scheme
+// instead. Only the outermost scheme belongs to the URL: a password may carry a
+// scheme of its own ("demo:p=https://tail@host"), and a proxy URL with that
+// shape is one an operator ends up with, so a later "://" is part of the
+// credential and never a new URL to start from.
 func proxyAuthorityStart(text string, end int) int {
-	if i := strings.LastIndex(text[:end], "://"); 0 <= i {
-		if !strings.ContainsAny(text[i+3:end], " 	\"'") && proxySchemeEndsAt(text, i) {
-			return i + 3
-		}
+	start := proxyCredentialStart(text, end)
+	if end <= start {
+		return start
 	}
+	run := start
+	for run < end && proxySchemeByte(text[run]) {
+		run++
+	}
+	if start < run && !('0' <= text[start] && text[start] <= '9') && strings.HasPrefix(text[run:end], "://") {
+		return run + 3
+	}
+	return start
+}
+
+// proxyCredentialStart is the first byte of the token the userinfo in front of
+// end sits in, with the '=' of a key left in front of it. Whitespace, a quote
+// and the brackets and punctuation a log line puts around a value end the token
+// there, so a password carrying one of those loses only the part behind it
+// instead of taking the surrounding prose with it.
+func proxyCredentialStart(text string, end int) int {
 	start := end
 	for 0 < start {
 		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
@@ -718,22 +731,6 @@ func proxyAuthorityStart(text string, end int) int {
 		start--
 	}
 	return start
-}
-
-// proxySchemeEndsAt reports whether the bytes in front of the "://" at i are a
-// URI scheme at the start of their token (RFC 3986: ALPHA *( ALPHA / DIGIT /
-// "+" / "-" / "." )). A password may carry the ':' and the "//" that together
-// spell "://", and a run that is not a scheme at a token start cannot be one.
-func proxySchemeEndsAt(text string, i int) bool {
-	start := i
-	for 0 < start && proxySchemeByte(text[start-1]) {
-		start--
-	}
-	if start == i || ('0' <= text[start] && text[start] <= '9') {
-		return false
-	}
-	// a log line can carry the URL after a key, as in "err=socks5://..."
-	return start == 0 || text[start-1] == '=' || proxyTokenBoundaryByte(text[start-1])
 }
 
 // proxySchemeByte reports whether b can belong to a URI scheme.
