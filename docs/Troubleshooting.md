@@ -12,6 +12,18 @@ sudo loginctl enable-linger USER
 
 If `systemctl --user status urnetwork.service` shows `code=killed, signal=PIPE` and the provider stays inactive, systemd may have treated the signal as a clean exit. Start the provider with `urnet-tools start`. Run `urnet-tools update` to reconcile the restart setting for an existing systemd unit. Check warnings for `RestartPreventExitStatus` or later overrides that reset `RestartForceExitStatus`: these can prevent recovery even after the managed drop-in is written. The reconciliation does not restart the provider.
 
+## Provider stops after you log out
+
+A provider that runs as a systemd user unit (`systemctl --user`) stops when the account logs out unless lingering is on for that user. Check it with:
+
+```bash
+loginctl show-user "$USER" -p Linger --value
+```
+
+`no` means the provider will stop at logout. Enable it with `loginctl enable-linger "$USER"`, which needs no password for your own account on many systems, and `sudo loginctl enable-linger "$USER"` where it does.
+
+`urnet-tools status` prints a warning row for this. `urnet-tools top` shows a banner while it is off and offers the fix: click the banner or press `L`, then Yes in the dialog. Top shows the command it will run, tries it as your user first, asks for the sudo password on the terminal when it has to, and rechecks before it reports success.
+
 ## 🚨 Incident Quick Diagnosis Matrix
 
 > [!NOTE]
