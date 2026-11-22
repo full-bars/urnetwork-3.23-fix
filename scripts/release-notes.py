@@ -113,7 +113,7 @@ def main():
                 try:
                     sha = git('rev-parse', '--verify', ref.strip() + '^{commit}')
                     commits.append(sha)
-                    files.extend(git('diff-tree', '--root', '--first-parent', '--no-commit-id', '--name-only', '-r', sha).splitlines())
+                    files.extend(git('diff-tree', '--root', '-m', '--first-parent', '--no-commit-id', '--name-only', '-r', sha).splitlines())
                 except subprocess.CalledProcessError:
                     fail(f'invalid commit {ref} for bullet: {title}')
             deploy = 'no redeploy'

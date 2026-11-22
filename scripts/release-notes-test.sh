@@ -144,8 +144,33 @@ esac
 STUB
 chmod +x "$repo/bin/gh"
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_MERGE_SHA="$merge_sha" scripts/release-notes.sh v-test --out "$tmp/merge.md")
-rg -q "/commit/$merge_sha" "$tmp/merge.md"
-rg -q '^- Restart the provider$' "$tmp/merge.md"
+expect() {
+  local name=$1 file=$2 pattern=$3
+  if rg -q -- "$pattern" "$file"; then echo "PASS: $name"; else echo "FAIL: $name" >&2; exit 1; fi
+}
+expect 'merge commit link' "$tmp/merge.md" "/commit/$merge_sha"
+expect 'labelled operator action' "$tmp/merge.md" '^- Restart the provider$'
+expect 'merge of provider code needs redeploy' "$tmp/merge.md" '^\- \*\*Merge feature\. \[redeploy\]'
+# A merge that only carries documentation stays no redeploy.
+mkdir -p "$repo/docs"
+git -C "$repo" checkout -qb docs-feature
+printf 'documentation\n' > "$repo/docs/merge.md"
+git -C "$repo" add docs/merge.md
+git -C "$repo" commit -qm 'docs feature'
+git -C "$repo" checkout -q master
+git -C "$repo" merge -q --no-ff docs-feature -m 'Merge docs (#43)'
+docs_merge_sha=$(git -C "$repo" rev-parse HEAD)
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Merge feature.** The feature works. (#42)
+- **Merge docs.** The text changed. (#43)
+CHANGELOG
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/merge2.md")
+expect 'provider merge stays redeploy with two bullets' "$tmp/merge2.md" '^\- \*\*Merge feature\. \[redeploy\]'
+expect 'documentation merge stays no redeploy' "$tmp/merge2.md" "^\\- \\*\\*Merge docs\\. \\[no redeploy\\].*/commit/$docs_merge_sha"
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/empty.md")
 rg -q '^None\.$' "$tmp/empty.md"
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=paginated GH_MERGE_SHA="$merge_sha" scripts/release-notes.sh v-test --out "$tmp/pages.md")
