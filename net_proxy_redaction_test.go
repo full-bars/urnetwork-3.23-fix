@@ -382,6 +382,57 @@ func TestRedactProxyEndpointIPv6Spellings(t *testing.T) {
 	}
 }
 
+// The header a dial prints about its target is not an error. A hostname proxy
+// on 443 made "[net]dial tcp 203.0.113.20:443" satisfy the "dial tcp " hop
+// marker, and the destination was replaced by the slot, so the log lost the
+// address that was dialed. A bare error with the same shape is still an error.
+func TestRedactProxyEndpointDialHeader(t *testing.T) {
+	settings := &ProxySettings{Index: 4, Network: "tcp", Address: "gw.example.net:443"}
+	const destination = "203.0.113.20:443"
+	const hop = "198.51.100.9:443"
+
+	header := RedactProxyEndpoint("[net]dial tcp "+destination, settings)
+	if !strings.Contains(header, destination) {
+		t.Fatalf("the dial header lost the destination: %q", header)
+	}
+	if !strings.Contains(header, "proxy[4]") {
+		t.Fatalf("the dial header lost the slot: %q", header)
+	}
+
+	// the header the dial builds, as the dial logs it next to the error
+	log := &captureLogger{enabled: true}
+	dialing := &ConnectSettings{
+		Log:           log,
+		ProxySettings: settings,
+		DialContextSettings: &DialContextSettings{
+			DialContext: func(context.Context, string, string) (net.Conn, error) {
+				return nil, errors.New("socks5 connect tcp " + hop + ": connection refused")
+			},
+		},
+	}
+	if _, err := dialing.DialContext(context.Background(), "tcp", destination); err == nil {
+		t.Fatal("the dial was expected to fail")
+	}
+	log.mu.Lock()
+	text := strings.Join(append(append([]string{}, log.info...), log.verbose...), "")
+	log.mu.Unlock()
+	if !strings.Contains(text, destination) {
+		t.Fatalf("the dial log lost the destination: %q", text)
+	}
+	if strings.Contains(text, hop) || !strings.Contains(text, "proxy[4]") {
+		t.Fatalf("the dial log kept the hop or lost the slot: %q", text)
+	}
+
+	// a bare error is still an error, and names its hop
+	bare := RedactProxyEndpoint("dial tcp "+hop+": connect: connection refused", settings)
+	if strings.Contains(bare, hop) {
+		t.Fatalf("a bare dial error kept the hop: %q", bare)
+	}
+	if !strings.Contains(bare, "proxy[4]") || !strings.Contains(bare, "connection refused") {
+		t.Fatalf("a bare dial error lost the slot or the reason: %q", bare)
+	}
+}
+
 // A wrapped url.Error and an errors.As chain are the shapes the transport hands
 // the redactor, and an empty or nil proxy must not touch the text at all.
 func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {

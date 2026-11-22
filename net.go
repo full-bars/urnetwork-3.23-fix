@@ -514,7 +514,7 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 	if log := loggerOrDefault(self.Log).V(2); log.Enabled() {
 		// a proxied dial reports the slot, never the proxy endpoint: the raw
 		// dialer error carries it
-		line := RedactProxyEndpoint(fmt.Sprintf("[net]dial %s %s", network, addr), self.ProxySettings)
+		line := RedactProxyEndpoint(dialHeader(network, addr), self.ProxySettings)
 		if err == nil {
 			log.Infof("%s success\n", line)
 		} else {
@@ -718,15 +718,29 @@ func proxyIsAddr(host string) bool {
 	return err == nil
 }
 
-// proxyErrorRegionStart is where the error string of text begins. A log line is
-// the printed dial target followed by " err=" and the error, and a caller that
-// hands over a bare error has its whole text be one.
+// proxyErrorRegionStart is where the error string of text begins, or the end of
+// text when it carries none. A log line is the printed dial target followed by
+// " err=" and the error, and a caller that hands over a bare error has its
+// whole text be one. The printed dial target alone is no error: its address is
+// the destination, never the hop the proxy dial reached.
 func proxyErrorRegionStart(text string) int {
 	const marker = " err="
 	if i := strings.LastIndex(text, marker); 0 <= i {
 		return i + len(marker)
 	}
+	if strings.HasPrefix(text, dialHeaderPrefix) {
+		return len(text)
+	}
 	return 0
+}
+
+// dialHeaderPrefix opens the line a dial prints about its target, which the
+// error follows after " err=".
+const dialHeaderPrefix = "[net]dial "
+
+// dialHeader is the line a dial prints about the address it dialed.
+func dialHeader(network string, addr string) string {
+	return dialHeaderPrefix + network + " " + addr
 }
 
 // proxyHopMarkers are the phrases a transport puts directly in front of the
