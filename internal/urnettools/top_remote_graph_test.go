@@ -2,6 +2,7 @@ package urnettools
 
 import (
 	"fmt"
+	"math"
 	"os"
 	"strings"
 	"testing"
@@ -362,12 +363,17 @@ func TestRemoteRenderProof(t *testing.T) {
 	}
 	up := remoteFlat(60, 0)
 	down := remoteFlat(60, 0)
+	// bursty traffic, like a real client: narrow peaks on a quiet floor
+	spike := func(i int, centre, width, height float64) float64 {
+		d := (float64(i) - centre) / width
+		return height * math.Exp(-d*d)
+	}
 	for i := 0; i < 60; i++ {
-		up[i] = float64(400 + max(0, 40-absInt(i-25))*1800)
-		down[i] = float64(2000 + max(0, 30-absInt(i-25))*14000)
+		up[i] = 600 + spike(i, 25, 2.2, 72000) + spike(i, 48, 1.5, 10000) + spike(i, 6, 1.2, 6000)
+		down[i] = 2000 + spike(i, 25, 2.0, 449000) + spike(i, 48, 1.4, 60000) + spike(i, 36, 1.0, 20000) + spike(i, 52, 1.0, 14000)
 	}
 	c := remoteTestChart(up, down)
-	b := tui.New(78, 11)
+	b := tui.New(100, 24)
 	drawRemoteChart(b, c)
 	path := dir + "/remote_panel.ansi"
 	if err := os.MkdirAll(dir, 0o755); err != nil {

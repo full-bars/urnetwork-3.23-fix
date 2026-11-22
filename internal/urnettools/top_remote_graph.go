@@ -541,10 +541,9 @@ func (cv *remoteCanvas) plot(pts []remotePoint, scale float64, up bool, idx int)
 			lo, hi = base, y-1
 		}
 		for yy := lo; yy <= hi; yy++ {
-			// One dot in each cell row, on every other cell column: a fine
-			// stipple that reads as a wash under the curve without competing
-			// with it.
-			if yy%4 == 0 && x%2 == 0 {
+			// A diagonal stipple, one dot in three: a wash under the curve that
+			// reads as a filled area without competing with the line.
+			if (x+yy)%3 == 0 {
 				cv.setFill(x, yy, idx)
 			}
 		}
