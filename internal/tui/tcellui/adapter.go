@@ -112,6 +112,15 @@ type Screen interface {
 	// SetMouse turns terminal mouse reporting on or off. Turning it off lets
 	// the terminal handle text selection directly without holding Shift.
 	SetMouse(on bool)
+	// Suspend gives the terminal back: it leaves the alternate screen, turns
+	// mouse reporting off, shows the cursor and restores the terminal to
+	// cooked mode, so a command started afterwards can prompt on it. Draw does
+	// nothing until Resume. A second Suspend without a Resume changes nothing.
+	Suspend() error
+	// Resume takes the terminal over again after Suspend. The mouse setting
+	// that was in force is applied again, and the next Draw repaints the whole
+	// screen. A Resume with nothing suspended changes nothing.
+	Resume() error
 	// Events is the input stream. It ends (after an EventQuit) once the screen
 	// is closed.
 	Events() <-chan Event
@@ -153,6 +162,9 @@ type screen struct {
 	// motion with a button held translates as MouseDrag and button release as
 	// MouseRelease.
 	held MouseButton
+	// suspended is set while a child owns the terminal (for example a sudo
+	// password prompt). Draw is ignored until Resume clears it again.
+	suspended bool
 }
 
 // Open takes over the controlling terminal with the alternate screen and raw
@@ -193,11 +205,68 @@ func (self *screen) SetMouse(on bool) {
 		self.mouseDisabled = !on
 		self.mouseEpoch.Add(1)
 	}
+	if self.suspended {
+		// The shell owns the terminal. The flag above is what Resume applies,
+		// so an escape sequence is never sent to a terminal mid-prompt.
+		return
+	}
 	if on {
 		self.s.EnableMouse()
 	} else {
 		self.s.DisableMouse()
 	}
+}
+
+// Suspend hands the terminal to the shell: mouse reporting off, cursor shown,
+// cooked mode, and tcell disengaged from the tty. Draw is ignored until Resume
+// so a frame written while a child owns the terminal is never sent.
+func (self *screen) Suspend() error {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	select {
+	case <-self.done:
+		return errors.New("the screen is closed")
+	default:
+	}
+	if self.suspended {
+		return nil
+	}
+	if err := self.s.Suspend(); err != nil {
+		return err
+	}
+	self.suspended = true
+	return nil
+}
+
+// Resume takes the terminal back and reapplies the mouse setting that was in
+// force, so a session that was in Keyboard Mode stays in it. The suspended
+// state is cleared even when the terminal refuses, because a screen that stays
+// suspended would ignore every draw for the rest of the session.
+func (self *screen) Resume() error {
+	self.mu.Lock()
+	defer self.mu.Unlock()
+	select {
+	case <-self.done:
+		return errors.New("the screen is closed")
+	default:
+	}
+	if !self.suspended {
+		return nil
+	}
+	self.suspended = false
+	err := self.s.Resume()
+	if err == nil {
+		if self.mouseDisabled {
+			self.s.DisableMouse()
+		} else {
+			self.s.EnableMouse()
+		}
+	}
+	self.resized.Store(true)
+	// The mouse epoch moves so the pump re-reads the setting: a suspension can
+	// change what the terminal reports even when top's own mode did not change.
+	self.mouseEpoch.Add(1)
+	return err
 }
 
 // Close finalizes the terminal exactly once. tcell's Fini unblocks PollEvent,
@@ -237,6 +306,12 @@ func (self *screen) WriteTerminal(p []byte) error {
 func (self *screen) Draw(b *tui.Buffer) {
 	self.mu.Lock()
 	defer self.mu.Unlock()
+	// While the terminal is borrowed (for example a sudo password prompt is
+	// up) the shell owns it, so the frame must not reach it. A panicked
+	// handler that resumes afterwards still gets a fresh draw.
+	if self.suspended {
+		return
+	}
 	if self.resized.Swap(false) {
 		self.s.Sync()
 	}
