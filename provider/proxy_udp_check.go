@@ -451,9 +451,9 @@ func (e *proxyUDPCheckEntry) ipv6DueLocked(now time.Time) bool {
 
 // ipv6DueAtLocked orders the sweep: the later of the record's deadline and the
 // retry hold, on the wall clock alone. The sweep sorts candidates by it, beside
-// wall-clock times restored from the state file, so t.Round(0) drops the
-// monotonic reading a live retry stamp carries and the sort never mixes the two
-// clocks. The due decision does not use this value; see ipv6DueLocked.
+// wall-clock times restored from the state file, so the result is stripped of
+// the monotonic reading that a live stamp carries and the sort never mixes the
+// two clocks. The due decision does not use this value; see ipv6DueLocked.
 func (e *proxyUDPCheckEntry) ipv6DueAtLocked() time.Time {
 	if e == nil {
 		return time.Time{}
@@ -480,8 +480,17 @@ type proxyUDPCheckStore struct {
 	// detachedRuns holds the one detached check in flight per identity
 	// (checkDetached)
 	detachedRuns map[string]*proxyUDPCheckRun
-	persistPath  string
-	persisted    map[string]udpPersistEntry
+	// attempts remembers a check that was dispatched and then cancelled before
+	// it published, while the identity had no result at all. Such a check
+	// removes the placeholder it installed, so nothing else records that the
+	// identity had its turn, and the sweep would rank it as never checked on
+	// every tick. The value is when that attempt was dispatched. In memory
+	// only: no admission path reads it, it is never attached to an entry, and
+	// no state file field carries it. It is bounded and pruned with the
+	// entries.
+	attempts    map[string]time.Time
+	persistPath string
+	persisted   map[string]udpPersistEntry
 	// background state writer (proxy_udp_persist.go)
 	persistDirty   bool
 	persistWriting bool
@@ -510,7 +519,30 @@ func newProxyUDPCheckStore(probe func(context.Context, *connect.ProxySettings) p
 		entries:      map[string]*proxyUDPCheckEntry{},
 		slots:        make(chan struct{}, udpCheckMaxConcurrent),
 		detachedRuns: map[string]*proxyUDPCheckRun{},
+		attempts:     map[string]time.Time{},
 	}
+}
+
+// udpProbeAttemptMaxEntries bounds the cancelled-attempt table. It is the same
+// bound the store puts on its own entries, so the table that only shadows them
+// for ordering can never outgrow them.
+const udpProbeAttemptMaxEntries = 4 * udpStateMaxEntries
+
+// noteAttemptLocked remembers an attempt that was cancelled before it could
+// publish, for an identity that had no earlier result. The stamp is the wall
+// clock alone, because the sweep sorts by it beside times restored from the
+// state file. Called with the lock held.
+func (self *proxyUDPCheckStore) noteAttemptLocked(key string, now time.Time) {
+	if self.attempts == nil {
+		self.attempts = map[string]time.Time{}
+	}
+	self.attempts[key] = now.Round(0)
+}
+
+// clearAttemptLocked forgets a cancelled attempt once the identity publishes a
+// result. Called with the lock held.
+func (self *proxyUDPCheckStore) clearAttemptLocked(key string) {
+	delete(self.attempts, key)
 }
 
 // prune drops identities nobody has asked about for two state lifetimes,
@@ -521,7 +553,32 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 		for key, entry := range self.entries {
 			if entry.done == nil && !entry.ipv6Running && now.Sub(entry.at) > 2*proxyUDPTTL(entry.result.Status) && !entry.ipv6.retain(now) {
 				delete(self.entries, key)
+				delete(self.attempts, key)
 			}
+		}
+	}
+	// the shadow table is bounded on its own: an identity whose checks keep
+	// being cancelled has no entry for the entry bound to evict
+	if len(self.attempts) > udpProbeAttemptMaxEntries {
+		type attempt struct {
+			key string
+			at  time.Time
+		}
+		oldest := make([]attempt, 0, len(self.attempts))
+		for key, at := range self.attempts {
+			oldest = append(oldest, attempt{key, at})
+		}
+		sort.Slice(oldest, func(i, j int) bool {
+			if oldest[i].at.Equal(oldest[j].at) {
+				return oldest[i].key < oldest[j].key
+			}
+			return oldest[i].at.Before(oldest[j].at)
+		})
+		for _, attempt := range oldest {
+			if len(self.attempts) <= udpProbeAttemptMaxEntries {
+				break
+			}
+			delete(self.attempts, attempt.key)
 		}
 	}
 	const limit = 4 * udpStateMaxEntries
@@ -551,6 +608,7 @@ func (self *proxyUDPCheckStore) prune(now time.Time) {
 			break
 		}
 		delete(self.entries, entry.key)
+		delete(self.attempts, entry.key)
 	}
 }
 
@@ -677,6 +735,12 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		if ctx.Err() != nil {
 			// an interrupted check says nothing: forget it
 			delete(self.entries, key)
+			if previous == nil {
+				// nothing published and no entry is left to say the identity
+				// had its turn: remember the attempt, so the sweep does not
+				// hand it the never-checked rank on every tick
+				self.noteAttemptLocked(key, now)
+			}
 			if previous != nil {
 				// the IPv6 fields come from the entry this check installed: an IPv6
 				// refresh that ran meanwhile updated it and cleared its flag, and a
@@ -702,6 +766,9 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		running.at = now
 		running.completedAt = now
 		running.realStatus = running.result.Status
+		// the identity has a result now, so a cancelled attempt no longer
+		// describes it
+		self.clearAttemptLocked(key)
 		close(running.done)
 		running.done = nil
 		self.prune(now)

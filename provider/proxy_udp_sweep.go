@@ -228,19 +228,7 @@ func runUDPProbeTick(ctx context.Context, store *proxyUDPCheckStore, online []*c
 			continue
 		}
 		settingsByKey[key] = settings
-		candidate := udpProbeCandidate{key: key, online: true}
-		if entry := store.cachedEntryLocked(key); entry != nil {
-			if entry.done != nil {
-				// An active check will publish a fresh answer itself.
-				candidate.lastChecked = now
-			} else {
-				candidate.lastChecked = entry.at
-				candidate.status = entry.result.Status
-				candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && store.ipv6Probe != nil && entry.ipv6DueLocked(now)
-				candidate.ipv6DueAt = entry.ipv6DueAtLocked()
-			}
-		}
-		candidates = append(candidates, candidate)
+		candidates = append(candidates, store.probeCandidateLocked(key, now))
 	}
 	store.prune(now)
 	store.mu.Unlock()
@@ -285,8 +273,35 @@ type udpProbeCandidate struct {
 	// ipv6DueAt is when the identity became due for the IPv6 stage, from
 	// ipv6DueAtLocked, so the selector can order by the earlier of its due times
 	ipv6DueAt time.Time
+	// attemptedAt is when the store last dispatched a check for this identity
+	// that was cancelled before it published anything. Zero when there is no
+	// such attempt, which is every identity that has published or has not been
+	// tried.
+	attemptedAt time.Time
 	// dueAt is filled by the selector: the earlier of the udp and ipv6 due times
 	dueAt time.Time
+}
+
+// probeCandidateLocked builds the selector's view of one online identity. Every
+// time it reports is a sort key, so each one keeps the wall clock alone: entry
+// times carry a monotonic reading beside their wall clock, and a comparator
+// that mixes the two clocks is not transitive. The due decision itself stays
+// with the entry (ipv6DueLocked) and with the selector's own interval test.
+// Called with the lock held.
+func (self *proxyUDPCheckStore) probeCandidateLocked(key string, now time.Time) udpProbeCandidate {
+	candidate := udpProbeCandidate{key: key, online: true, attemptedAt: self.attempts[key]}
+	if entry := self.cachedEntryLocked(key); entry != nil {
+		if entry.done != nil {
+			// An active check will publish a fresh answer itself.
+			candidate.lastChecked = now
+		} else {
+			candidate.lastChecked = entry.at
+			candidate.status = entry.result.Status
+			candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && entry.ipv6DueLocked(now)
+			candidate.ipv6DueAt = entry.ipv6DueAtLocked()
+		}
+	}
+	return candidate
 }
 
 // selectUDPProbeBatch selects due online candidates without modifying the input.
@@ -340,6 +355,17 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 	// untouched; only the order inside the budget changes.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
+		// a cancelled first check publishes nothing, so its identity would keep
+		// the never-checked rank and take the batch on every tick. Such an
+		// identity ranks after every identity with no cancelled attempt, and
+		// among themselves the oldest attempt goes first, so they rotate.
+		attemptedA, attemptedB := !a.attemptedAt.IsZero(), !b.attemptedAt.IsZero()
+		if attemptedA != attemptedB {
+			return !attemptedA
+		}
+		if attemptedA && !a.attemptedAt.Equal(b.attemptedAt) {
+			return a.attemptedAt.Before(b.attemptedAt)
+		}
 		// earliest due first: one due time per candidate, the earlier of its udp
 		// and ipv6 due times, so neither kind can starve the other
 		if !a.dueAt.Equal(b.dueAt) {

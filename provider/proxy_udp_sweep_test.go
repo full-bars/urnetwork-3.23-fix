@@ -251,6 +251,121 @@ func TestSelectUDPProbeBatchDoesNotStarveAnUncheckedIdentity(t *testing.T) {
 	}
 }
 
+// A first check the tick deadline cancels publishes nothing and leaves no
+// entry, so nothing records that the identity had its turn. The selector keeps
+// giving it the only slot, and the identity beside it never runs.
+func TestCancelledFirstCheckReleasesTheOnlySlot(t *testing.T) {
+	pinSyntheticStageClock(t)
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	a := &connect.ProxySettings{Network: "tcp", Address: "a.example.test:1080"}
+	b := &connect.ProxySettings{Network: "tcp", Address: "b.example.test:1080"}
+	online := []*connect.ProxySettings{a, b}
+	store := newProxyUDPCheckStore(nil)
+	var cancel context.CancelFunc
+	probed := []string{}
+	store.probe = func(_ context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		probed = append(probed, settings.Address)
+		if settings.Key() == a.Key() {
+			// the tick deadline cancels the check before it can publish
+			cancel()
+			return proxyUDPResult{Status: proxyUDPUnknown}
+		}
+		return proxyUDPResult{Status: proxyUDPOK}
+	}
+	for tick := 0; tick < 2; tick++ {
+		at := now.Add(time.Duration(tick) * 5 * time.Minute)
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		runUDPProbeTick(ctx, store, online, at, udpProbeRecheckWindow, 5*time.Minute, 0, true)
+		cancel()
+		if store.size() != 0 && tick == 0 {
+			t.Fatalf("a cancelled first check left %d entries behind", store.size())
+		}
+	}
+	if len(probed) != 2 {
+		t.Fatalf("two ticks measured %v, want one identity each", probed)
+	}
+	if probed[0] != a.Address || probed[1] != b.Address {
+		t.Fatalf("the two ticks measured %v, want %q and then %q: the identity beside a cancelled first check never reached the only slot", probed, a.Address, b.Address)
+	}
+}
+
+// Every check below is cancelled by its tick deadline, so no identity ever
+// publishes. The oldest attempt goes first, so the single slot rotates through
+// all of them instead of staying with the identity that sorts first.
+func TestCancelledAttemptsRotateTheOnlySlot(t *testing.T) {
+	pinSyntheticStageClock(t)
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	const identities = 9
+	online := make([]*connect.ProxySettings, 0, identities)
+	for i := 0; i < identities; i++ {
+		online = append(online, &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("%02d.example.test:1080", i)})
+	}
+	store := newProxyUDPCheckStore(nil)
+	var cancel context.CancelFunc
+	var order []string
+	store.probe = func(_ context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		order = append(order, settings.Address)
+		cancel()
+		return proxyUDPResult{Status: proxyUDPUnknown}
+	}
+	for tick := 0; tick < 3*identities; tick++ {
+		at := now.Add(time.Duration(tick) * 5 * time.Minute)
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		runUDPProbeTick(ctx, store, online, at, udpProbeRecheckWindow, 5*time.Minute, 0, true)
+		cancel()
+		if store.size() != 0 {
+			t.Fatalf("tick %d left %d entries after a cancelled first check", tick, store.size())
+		}
+	}
+	if len(order) != 3*identities {
+		t.Fatalf("three rounds measured %d identities, want %d", len(order), 3*identities)
+	}
+	for i := range order {
+		if order[i] != order[i%identities] {
+			t.Fatalf("selection sequence %v does not rotate by attempt time", order)
+		}
+	}
+	seen := map[string]bool{}
+	for _, address := range order {
+		seen[address] = true
+	}
+	if len(seen) != identities {
+		t.Fatalf("%d of %d identities never reached the only slot: %v", identities-len(seen), identities, order)
+	}
+}
+
+// Without a cancelled attempt there is nothing to rank: a check that publishes
+// keeps the identity out of the due set for its own TTL and the next
+// never-checked identity takes the slot, as before.
+func TestPublishedChecksKeepTheExistingOrder(t *testing.T) {
+	pinSyntheticStageClock(t)
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	online := make([]*connect.ProxySettings, 0, 4)
+	for i := 0; i < 4; i++ {
+		online = append(online, &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("%02d.example.test:1080", i)})
+	}
+	store := newProxyUDPCheckStore(nil)
+	var order []string
+	store.probe = func(_ context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		order = append(order, settings.Address)
+		return proxyUDPResult{Status: proxyUDPOK}
+	}
+	for tick := 0; tick < len(online); tick++ {
+		at := now.Add(time.Duration(tick) * 5 * time.Minute)
+		runUDPProbeTick(context.Background(), store, online, at, udpProbeRecheckWindow, 5*time.Minute, 0, true)
+	}
+	if len(order) != len(online) {
+		t.Fatalf("measured %v, want each identity once", order)
+	}
+	for i, address := range order {
+		if want := online[i].Address; address != want {
+			t.Fatalf("measured %v, want the unchanged key order with %q at position %d", order, want, i)
+		}
+	}
+}
+
 // The trace: five identities share a single sweep slot on five-minute ticks.
 // Four of them hold the slot with IPv6 retries that come due again and again,
 // and the fifth has an expired UDP result and no IPv6 record at all, so its
