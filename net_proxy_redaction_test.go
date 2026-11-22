@@ -198,6 +198,66 @@ func TestProxyRedactBracketsAndNames(t *testing.T) {
 	}
 }
 
+// A proxy that listens on the port its destinations use (443, 80, 8080) made
+// the port useless as evidence of the proxy's resolved hop: taking every
+// ip:port on that port as the hop destroyed the printed dial target and blinded
+// the line. The hop is redacted where a transport names it, and the destination
+// survives, in a plain line and in the wrapped shapes the transport hands over.
+func TestRedactProxyEndpointKeepsTheDestinationOnAProxyPort(t *testing.T) {
+	for _, port := range []string{"443", "80", "8080"} {
+		settings := &ProxySettings{Index: 3, Network: "tcp", Address: "gw.example.net:" + port}
+		destination := "93.184.216.34:" + port
+		hop := "203.0.113.9:" + port
+		text := fmt.Sprintf("dial tcp %s err=socks5 connect tcp %s: connection refused", destination, hop)
+
+		got := RedactProxyEndpoint(text, settings)
+		for _, leaked := range []string{"gw.example.net", "203.0.113.9"} {
+			if strings.Contains(got, leaked) {
+				t.Fatalf("port %s: the proxy or its hop survived: %q in %q", port, leaked, got)
+			}
+		}
+		for _, kept := range []string{destination, "connection refused", "proxy[3]"} {
+			if !strings.Contains(got, kept) {
+				t.Fatalf("port %s: the line lost the destination, the reason or the slot: %q in %q", port, kept, got)
+			}
+		}
+
+		// the same line in the shapes the transport hands the redactor
+		wrapped := fmt.Errorf("h1 dial: %w", &url.Error{Op: "Get", URL: "https://example.com", Err: errors.New(text)})
+		var urlErr *url.Error
+		if !errors.As(wrapped, &urlErr) {
+			t.Fatal("the url.Error was not reachable")
+		}
+		for _, variant := range []string{wrapped.Error(), urlErr.Error()} {
+			out := RedactProxyEndpoint(variant, settings)
+			if strings.Contains(out, hop) || strings.Contains(out, "gw.example.net") {
+				t.Fatalf("port %s: a wrapped error leaked the hop: %q", port, out)
+			}
+			if !strings.Contains(out, destination) {
+				t.Fatalf("port %s: a wrapped error lost the destination: %q", port, out)
+			}
+		}
+
+		// an address that is neither the proxy nor a named hop is untouched
+		unrelated := fmt.Sprintf("retry %s later", "198.51.100.20:"+port)
+		if out := RedactProxyEndpoint(unrelated, settings); !strings.Contains(out, "198.51.100.20:"+port) {
+			t.Fatalf("port %s: an unrelated address was redacted: %q", port, out)
+		}
+		// and a line about the proxy still names its slot
+		if out := RedactProxyEndpoint("connection reset by peer", settings); !strings.Contains(out, "proxy[3]") {
+			t.Fatalf("port %s: an unlabelled line about the proxy: %q", port, out)
+		}
+	}
+
+	// no proxy configured: nothing changes
+	text := "dial tcp 93.184.216.34:443 err=socks5 connect tcp 203.0.113.9:443: connection refused"
+	for _, empty := range []*ProxySettings{nil, {}} {
+		if got := RedactProxyEndpoint(text, empty); got != text {
+			t.Fatalf("text changed with no proxy configured: %q", got)
+		}
+	}
+}
+
 // A wrapped url.Error and an errors.As chain are the shapes the transport hands
 // the redactor, and an empty or nil proxy must not touch the text at all.
 func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {

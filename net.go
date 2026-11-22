@@ -607,6 +607,9 @@ func redactAddressTokens(text string, host string, port string, label string) st
 	if host == "" {
 		return text
 	}
+	// a hop is only ever named inside the error string of the line, never in
+	// the dial target printed in front of it
+	errorFrom := proxyErrorRegionStart(text)
 	var b strings.Builder
 	for i := 0; i < len(text); {
 		if text[i] != '[' && !addressTokenByte(text[i]) {
@@ -615,10 +618,45 @@ func redactAddressTokens(text string, host string, port string, label string) st
 			continue
 		}
 		end := readAddressToken(text, i)
-		b.WriteString(redactAddressToken(text[i:end], host, port, label))
+		b.WriteString(redactAddressToken(text[i:end], text[:i], errorFrom <= i, host, port, label))
 		i = end
 	}
 	return b.String()
+}
+
+// proxyErrorRegionStart is where the error string of text begins. A log line is
+// the printed dial target followed by " err=" and the error, and a caller that
+// hands over a bare error has its whole text be one.
+func proxyErrorRegionStart(text string) int {
+	const marker = " err="
+	if i := strings.LastIndex(text, marker); 0 <= i {
+		return i + len(marker)
+	}
+	return 0
+}
+
+// proxyHopMarkers are the phrases a transport puts directly in front of the
+// address a proxy dial reached: the socks client's hop, or the proxy dial's own
+// target when it is reported as a net.OpError.
+var proxyHopMarkers = []string{
+	"socks5 connect tcp ",
+	"socks5h connect tcp ",
+	"socks connect tcp ",
+	"socks5 connect ",
+	"socks5 dial ",
+	"proxyconnect tcp: dial tcp ",
+	"dial tcp ",
+}
+
+// proxyNamesItsHop reports whether before ends with a phrase that names the
+// proxy hop rather than a destination.
+func proxyNamesItsHop(before string) bool {
+	for _, marker := range proxyHopMarkers {
+		if strings.HasSuffix(before, marker) {
+			return true
+		}
+	}
+	return false
 }
 
 // readAddressToken is the end of the address token starting at start. A
@@ -640,10 +678,12 @@ func readAddressToken(text string, start int) int {
 
 // redactAddressToken is one token with the proxy in place of its address. The
 // configured host matches on any port, since the host is what locates the
-// proxy; and a proxy configured by name also owns a resolved hop on its own
-// port, which is the address a socks failure names. Trailing separators such as
-// the colon an error puts after an address are kept.
-func redactAddressToken(token string, host string, port string, label string) string {
+// proxy; and a proxy configured by name also owns the hop it resolved to, but
+// only where the error string in front of the token names that hop as the
+// address the proxy dial reached. A bare ip:port on the proxy's port is
+// otherwise a destination, and the port alone cannot tell it apart. Trailing
+// separators such as the colon an error puts after an address are kept.
+func redactAddressToken(token string, before string, inError bool, host string, port string, label string) string {
 	address := token
 	separators := ""
 	for strings.HasSuffix(address, ":") {
@@ -660,8 +700,8 @@ func redactAddressToken(token string, host string, port string, label string) st
 	case strings.EqualFold(tokenHost, host):
 		// the same host on another port is still where the proxy is
 		return label + ":" + tokenPort + separators
-	case net.ParseIP(host) == nil && tokenPort == port && net.ParseIP(tokenHost) != nil:
-		// a name-configured proxy's resolved hop, and only on the proxy's port
+	case inError && net.ParseIP(host) == nil && tokenPort == port && net.ParseIP(tokenHost) != nil && proxyNamesItsHop(before):
+		// a name-configured proxy's resolved hop, named as the dialed address
 		return label + separators
 	}
 	return token
