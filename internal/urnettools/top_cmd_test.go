@@ -155,6 +155,28 @@ func TestDemoSourceProducesValidSnapshotsThatMove(t *testing.T) {
 	if got := d.TotalRx.NowBps + d.TotalTx.NowBps; got != first.Traffic.TotalNowBps {
 		t.Fatalf("total split sums to %v, total rate is %v", got, first.Traffic.TotalNowBps)
 	}
+	// The family block splits the same lanes again, so the IPv4 / IPv6 page
+	// draws two families that add back to each direction.
+	if d.Families == nil {
+		t.Fatal("demo snapshot has no IP family block")
+	}
+	for _, c := range []struct {
+		name  string
+		split SnapshotFamilySplit
+		lane  SnapshotTrafficDirection
+	}{
+		{"billable rx", d.Families.BillableRx, d.BillableRx},
+		{"billable tx", d.Families.BillableTx, d.BillableTx},
+		{"total rx", d.Families.TotalRx, d.TotalRx},
+		{"total tx", d.Families.TotalTx, d.TotalTx},
+	} {
+		if c.split.V4.NowBps+c.split.V6.NowBps != c.lane.NowBps {
+			t.Fatalf("%s: families sum to %v, lane is %v", c.name, c.split.V4.NowBps+c.split.V6.NowBps, c.lane.NowBps)
+		}
+		if c.split.V6.NowBps <= 0 || c.split.V4.NowBps <= 0 {
+			t.Fatalf("%s: the demo split is all one family: v4 %v v6 %v", c.name, c.split.V4.NowBps, c.split.V6.NowBps)
+		}
+	}
 	tr, ok := src.(interface {
 		FetchTraffic(Provider) (*LiveTraffic, error)
 	})

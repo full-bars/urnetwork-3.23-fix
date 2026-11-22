@@ -275,6 +275,9 @@ type topModel struct {
 	// direction pages, keyed per page and direction so the two pages never
 	// share a height and neither eases against the other's peak.
 	directionScales map[string]*remoteScale
+	// familyScales is the same easing state for the IPv4 / IPv6 page, kept
+	// apart from the direction pages so the two never share a height.
+	familyScales map[string]*remoteScale
 	// proxyGridW and proxyGridH are the text-cell size of the drawn grid, used
 	// for hit testing. Set by drawProxyGrid each frame.
 	proxyGridW, proxyGridH int
@@ -1011,6 +1014,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.windowScaleT.reset()
 	m.remoteScales = nil
 	m.directionScales = nil
+	m.familyScales = nil
 	showing := m.rt.showing
 	m.rt.reset()
 	m.rt.showing = showing // the view choice is the user's, not the provider's

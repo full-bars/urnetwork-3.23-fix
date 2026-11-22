@@ -68,6 +68,10 @@ func demoRateAtF(t time.Time) float64 {
 // demo: everything moved is billable plus 60%.
 const demoTotalFactor = 1.6
 
+// demoV6Share is the share of each demo lane that reads as IPv6, so the
+// IPv4 / IPv6 page shows a split that is not all one family.
+const demoV6Share = 0.22
+
 // demoLive integrates the demo rate into cumulative counters for the light
 // traffic poll, the way a real provider's byte counters grow.
 type demoLive struct {
@@ -200,11 +204,28 @@ func (d demoTopSource) Fetch(Provider) (*NodeSnapshot, error) {
 	}
 	billableDown, billableUp := split(hist, 0.75)
 	totalDown, totalUp := split(totalHist, 0.7)
+	// The family block splits each lane again by IP version, so the IPv4 / IPv6
+	// page has real data in demo mode. IPv4 is the remainder of each lane.
+	family := func(src []float64) SnapshotFamilySplit {
+		v6 := make([]float64, len(src))
+		v4 := make([]float64, len(src))
+		for i, v := range src {
+			s := math.Round(v * demoV6Share)
+			v6[i], v4[i] = s, v-s
+		}
+		return SnapshotFamilySplit{V4: demoDirection(v4), V6: demoDirection(v6)}
+	}
 	traffic.Directions = &SnapshotTrafficDirections{
 		BillableRx: demoDirection(billableDown),
 		BillableTx: demoDirection(billableUp),
 		TotalRx:    demoDirection(totalDown),
 		TotalTx:    demoDirection(totalUp),
+		Families: &SnapshotTrafficFamilies{
+			BillableRx: family(billableDown),
+			BillableTx: family(billableUp),
+			TotalRx:    family(totalDown),
+			TotalTx:    family(totalUp),
+		},
 	}
 
 	return &NodeSnapshot{

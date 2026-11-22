@@ -503,30 +503,44 @@ func (c remoteChart) drawHalfASCII(b *tui.Buffer, s remoteSeries, pts []remotePo
 	}
 }
 
-// drawPeak labels the window peak of the direction's first series. The label
-// slides sideways with the peak's column and stays inside the plot.
+// drawPeak labels the window peak of a half. Every series with a peak gets its
+// figure in the label, in series order, at the column where the first of them
+// peaked: two curves that move together still print both figures without one
+// label covering the other. The label slides sideways with the peak's column
+// and stays inside the plot.
 func (c remoteChart) drawPeak(b *tui.Buffer, dir []remoteSeries, up bool, row int) {
 	if row < 0 || len(dir) == 0 {
-		return
-	}
-	pts := remotePointsOf(c, dir[0].Values, 2*b.Width())
-	if len(pts) == 0 {
-		return
-	}
-	peak, at := 0.0, 0.0
-	for _, p := range pts {
-		if p.v > peak {
-			peak, at = p.v, p.x
-		}
-	}
-	if peak <= 0 {
 		return
 	}
 	arrow := '▲'
 	if !up {
 		arrow = '▼'
 	}
-	text := tui.Rate(peak) + " " + string(arrow)
+	figures := make([]string, 0, len(dir))
+	at := 0.0
+	for _, s := range dir {
+		pts := remotePointsOf(c, s.Values, 2*b.Width())
+		if len(pts) == 0 {
+			continue
+		}
+		peak, x := 0.0, 0.0
+		for _, p := range pts {
+			if p.v > peak {
+				peak, x = p.v, p.x
+			}
+		}
+		if peak <= 0 {
+			continue
+		}
+		if len(figures) == 0 {
+			at = x
+		}
+		figures = append(figures, tui.Rate(peak))
+	}
+	if len(figures) == 0 {
+		return
+	}
+	text := strings.Join(figures, " ") + " " + string(arrow)
 	width := tui.StringWidth(text)
 	if width >= b.Width() {
 		b.Put(tui.Truncate(text, b.Width(), c.ASCII), 0, row, c.Dim)
