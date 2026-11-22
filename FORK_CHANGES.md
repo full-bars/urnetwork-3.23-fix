@@ -4438,3 +4438,43 @@ Command help displays real flags and descriptions across `status`, `top`, `provi
 - A test dials an IPv6 address, an IPv4 address and an IPv6-only name through a dual stack SOCKS5 server in both `proxy_target_family` modes.
 
 **Status**: Released in v3.23.0-fix.36.0.
+
+## 239. Proxy IPv6: Measurement, Client UDP, Extra Platform Transport and Sweep Order
+
+**Purpose**: Let a proxy that reaches the internet over IPv6 carry IPv6. The provider measures each proxy in the background, relays client UDP to IPv6 destinations only through proxies that passed, and gives each of them one extra IPv6 platform connection so the platform sees the identity as dual stack.
+
+**Files Added**: `provider/proxy_ipv6_probe.go` (the result type, the retry intervals, the stage 1 connect probe), `provider/proxy_ipv6_stage.go` (the three stages and the IPv4 control dial), `provider/proxy_ipv6_udp.go` (the IPv6 UDP exit learned through the SOCKS relay), `provider/proxy_dualstack.go` (the start and stop gate, the controller and the pins).
+
+**Files Modified**: `provider/proxy_udp_check.go`, `provider/proxy_udp_sweep.go`, `provider/proxy_udp_persist.go`, `provider/proxy_udp_egress.go`, `provider/proxy_udp_identity.go`, `provider/control_state.go`, `provider/control_socket.go`, `provider/metrics_provider.go`, `provider/node_snapshot.go`, `provider/main.go`, `transport.go`, `transport_family.go`, `proxy_target_family.go`, `internal/urnettools/status_summary.go`, `internal/urnettools/snapshot.go`, `internal/urnettools/snapshot_render.go`, `internal/urnettools/top_view.go`, `internal/urnettools/top_heatmap.go`, `internal/urnettools/control_client.go`, `internal/urnettools/restore_delegate.go`.
+
+**Changes**:
+- Measurement has three stages. Stage 1 opens a SOCKS connection through the proxy to an IPv6 target and sends no data. A timeout counts as `no` only when a fresh IPv4 connection through the same proxy works. Stages 2 and 3 run after a stage 1 `yes`. Stage 2 learns the IPv6 TCP exit address and stage 3 learns the IPv6 UDP exit address through the SOCKS UDP relay. A result is `yes`, `no` or `unknown`.
+- The retry interval depends on the answer. A `yes` starts at 12 hours and doubles up to 7 days. A `no` starts at 24 hours and doubles up to 7 days. An `unknown` starts at 1 hour and doubles up to 12 hours. A changed answer starts again at the base. A stage that ends on its own without a measurement waits 15 minutes (`proxyIPv6StopBackoff`). A stage that the sweep tick deadline cut short waits 5 minutes (`proxyIPv6CutShortRetry`). The result is saved with the UDP result in the existing state file, and the file format does not change.
+- Client UDP to an IPv6 destination goes through a proxied identity only when its proxy passed the IPv6 checks with matching exits, the IPv4 UDP check is ok and both results are fresh. Every other proxy refuses the flow at once, as before.
+- The extra platform connection is dialed through the same proxy and pinned to IPv6. The legacy connection is never touched. A controller polls every minute. It starts the extra connection after two new qualifying measurements in a row. It stops it after two failed checks, when the evidence expires (twice the result interval) or when the record disappears. The controller owns the client strategy of the extra connection and closes it on stop. Capacity pruning keeps the check entry of an identity that runs an extra connection, and a pin is released only by the controller that took it.
+- The sweep checks the identity that has been due the longest, whether its UDP check or its IPv6 check is due, and an identity that was never checked goes first. A cancelled check counts as the identity's turn in memory, so the slot rotates. The batch size and the pacing do not change.
+- Three live switches, all on by default: `proxy_ipv6_probe`, `proxy_udp_ipv6` and `proxy_dualstack`. `urnet-tools set proxy-ipv6-probe|proxy-udp-ipv6|proxy-dualstack on|off` changes them without a restart.
+- `urnet-tools status` prints `IPv6 proxies:` and `IPv6 UDP probes:` lines. The top proxy popup shows the IPv6 state and the exit addresses. The metrics `urnet_proxy_ipv6_probes_total`, `urnet_proxy_ipv6_proxies`, `urnet_proxy_ipv6_udp_proxies`, `urnet_proxy_ipv6_transports` and `urnet_proxy_ipv6_transport_changes_total` count the measurements and the extra connections.
+
+**Impact**: A proxy that cannot carry IPv6 behaves exactly as before. The extra connection depends on the platform name having only an AAAA record, and the provider cannot see which address family the proxy used for the name.
+
+**How to Identify in New Upstream**: Search for `proxyIPv6Result`, `proxyIPv6Gate`, `proxiedIPv6Controller` and `proxy_ipv6_probe`.
+
+**Status**: ✅ Shipped, pending next tagged release.
+
+## 240. Proxy Login in the Address and Credentials-Only Log Redaction
+
+**Purpose**: Stop a proxy password from reaching the startup list or the authentication log lines when the operator writes the login into the proxy address, and keep every other detail about a proxy visible in logs.
+
+**Files Modified**: `net.go`, `net_http.go`, `ip.go`, `transport.go`, `provider/main.go`, `provider/renewal_watcher.go`, `provider/proxy_state.go`, `provider/proxy_udp_identity.go`.
+
+**Changes**:
+- The internal proxy config reads `host:port`, `host:port:user:pass`, `user:pass@host:port` and `scheme://user:pass@host:port`. The last two forms are split into a host, a port and a login. Before, the whole text stayed in the address and the password printed in the startup list and in the authentication lines. A line that holds a credential and that the parser cannot split is refused with a message that does not print the credential.
+- `RedactProxyCredentials` removes the `user:pass@` prefix in front of a proxy address from log text, including text inside brackets, with or without a scheme. The scan is bounded and linear. It keeps the address and the rest of the line.
+- Log lines about a proxy keep its slot and its address, for example `proxy[3] (203.0.113.10:1080)`, and dial errors keep the address that Go prints. The identity label in the renewal watcher no longer prints the user name.
+
+**Impact**: Operators who wrote `user:pass@host:port` in the proxy config now get a working login. Nothing else changes in what a proxy line shows.
+
+**How to Identify in New Upstream**: Search for `RedactProxyCredentials`, `splitProxyURLUserinfo` and `proxyKeyDisplay`.
+
+**Status**: ✅ Shipped, pending next tagged release.
