@@ -961,6 +961,8 @@ Logged at INFO level in the 3.23-fix fork (promoted from debug level 2). Each li
 | `clients=N` | **Independent metric.** Number of end-user relay sessions currently routing through this proxy via LocalUserNat. Zero is normal when no users are assigned. |
 | `age=Xs` | How long the oldest current user session has been continuously present on this proxy. Only shown when `clients > 0`. |
 
+Proxy lines name the proxy by its slot and address, for example `proxy[3] (203.0.113.10:1080)`, and a dial error keeps the address Go printed, so a line says which proxy failed and where. Only credentials are removed: the user name and password in front of an address, a user name in an identity label, and URL query tokens.
+
 ### Connection strategies
 
 The provider tries multiple strategies for its outbound connections to avoid DPI and firewall interference. These are techniques applied to the TLS handshake, not to user traffic:
