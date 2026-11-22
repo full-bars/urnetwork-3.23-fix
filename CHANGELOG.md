@@ -4,6 +4,8 @@
 
 ### Added
 
+- **Billable packet counts.** The live traffic reply and snapshot report billable IP packets by direction. The provider also exposes packet metrics. Counts reset on restart.
+
 - **Billable and total traffic split by direction in `urnet-tools top`.** Page 3 draws billable traffic and page 4 draws total traffic, each with upload above the centre line and download below it. The pages reuse the mirrored chart's labels, corner averages and peak labels, and they appear only when the provider reports the per-direction counters. The provider snapshot gains the split beside the existing sums, which stay in place for older readers.
 - **Pages in `urnet-tools top`.** Press `]` or `[`, `PageDown` or `PageUp`, or a number key to move between pages of graphs, and click a tab for the same. Page 1 is the dashboard and page 2 draws the mirrored transfer chart on a page of its own. The strip under the title lists the pages the provider has data for, and marks the one on screen. The page survives a provider switch. The dashboard keeps its layout and its keys for anyone who never switches.
 - **A mirrored transfer chart in `urnet-tools top`.** The Remote panel draws billable traffic above a centre line and total traffic below it, like the transfer chart of the URnetwork client app. The curves are smoothed and drawn in braille, each side scales to its own window peak, and a peak label slides sideways with its column. The corner shows the average of the newest five samples per side. Press `r` to show or hide the panel.

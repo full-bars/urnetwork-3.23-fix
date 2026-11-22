@@ -186,6 +186,10 @@ Both pages use the mirrored chart renderer, so the direction labels, the corner 
 
 The pages are listed only when the provider reports the split. A provider that predates it keeps the overview and Remote pages and offers no direction page.
 
+## Billable packet data
+
+The live `traffic` reply includes `billable_rx_packets` and `billable_tx_packets`. The snapshot `traffic.packets` block contains `billable_rx` and `billable_tx` rates with `now_pps`, `avg_1m_pps`, `avg_5m_pps` and `history_pps`. Rx counts packets received by the provider and tx counts packets sent by it. These are billable IP packets only. Total socket traffic has no packet count. Counters reset on restart and may decrease when a proxy is removed. Snapshot sampling skips decreases. An older provider omits these fields.
+
 ## Remote transfer chart
 
 `urnet-tools top` can draw the client app's mirrored transfer chart under the throughput graphs. Press `r` to show or hide it. The panel needs a graph band tall enough for it and the two throughput graphs, so a short terminal leaves it out and a taller one brings it back, and the key keeps the choice.
