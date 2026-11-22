@@ -566,6 +566,7 @@ type Client struct {
 	// here selects a behaviour.
 	receivePackHandoffWaitCount     atomic.Uint64
 	receivePackHandoffWaitSuccess   atomic.Uint64
+	receiveForgedSourceDropCount    atomic.Uint64
 	receivePackHandoffDropCount     atomic.Uint64
 	receivePackHandoffDropByteCount atomic.Uint64
 }
@@ -574,6 +575,7 @@ type Client struct {
 // admission loss. Pack bytes are application message bytes, not encoded
 // carrier bytes. Counters are monotonic for the lifetime of one Client.
 type ClientReceiveStatsSnapshot struct {
+	ForgedSourceDropCount    uint64
 	PackHandoffDropCount     uint64
 	PackHandoffDropByteCount uint64
 	PackHandoffWaitCount     uint64
@@ -584,6 +586,7 @@ type ClientReceiveStatsSnapshot struct {
 // stopping receive processing.
 func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 	return ClientReceiveStatsSnapshot{
+		ForgedSourceDropCount:    self.receiveForgedSourceDropCount.Load(),
 		PackHandoffDropCount:     self.receivePackHandoffDropCount.Load(),
 		PackHandoffDropByteCount: self.receivePackHandoffDropByteCount.Load(),
 		PackHandoffWaitCount:     self.receivePackHandoffWaitCount.Load(),
@@ -1348,9 +1351,10 @@ func (self *Client) run() {
 		}
 
 		var transferFrameBytes []byte
+		var disposition transferReceiveDisposition
 		var err error
 		c := func() error {
-			transferFrameBytes, err = multiRouteReader.Read(self.ctx, self.settings.ReadTimeout)
+			transferFrameBytes, disposition, err = multiRouteReader.(*MultiRouteSelector).readWithDisposition(self.ctx, self.settings.ReadTimeout)
 			return err
 		}
 		if self.log.V(2).Enabled() {
@@ -1372,6 +1376,12 @@ func (self *Client) run() {
 		path, err := FilteredTransferPath(transferFrameBytes)
 		if err != nil {
 			// bad protobuf (unexpected, see route note above)
+			MessagePoolReturn(transferFrameBytes)
+			continue
+		}
+		if (disposition.transportType == TransportTypeP2p && (path.SourceId == ControlId || path.SourceId == self.clientId)) ||
+			(disposition.boundSourceId != (Id{}) && path.SourceId != disposition.boundSourceId) {
+			self.receiveForgedSourceDropCount.Add(1)
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
