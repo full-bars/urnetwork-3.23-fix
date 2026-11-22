@@ -350,3 +350,50 @@ func TestUDPFlowReplyDoesNotReviveAnExpiredResult(t *testing.T) {
 		t.Fatalf("state = %v, want measurementExpired: flow evidence revived an expired result (status %q)", state, udp.Status)
 	}
 }
+
+// Admission keeps the behaviour it had before the expiry work: an expired entry
+// hit by a matching flow reply becomes fresh unknown evidence, so a new UDP flow
+// or H3 dial may still attempt an association through it.
+func TestUDPFlowReplyGivesAnExpiredEntryItsOldAdmissionEvidence(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		realStatus:  proxyUDPOK,
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	store.mu.Lock()
+	entry := store.entries[ps.Key()]
+	status, at, flow := entry.result.Status, entry.at, entry.flowReply
+	store.mu.Unlock()
+	if status != proxyUDPUnknown || !at.Equal(now) || !flow {
+		t.Fatalf("flow reply left %q at %v flow=%v, want fresh unknown evidence", status, at, flow)
+	}
+}
+
+// The controller keeps its own signal: the last real check expired, so the
+// measurement is stale even though a flow reply refreshed the evidence.
+func TestUDPMeasurementReportsTheRealCheckExpiryAfterAFlowReply(t *testing.T) {
+	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
+	store := newProxyUDPCheckStore(nil)
+	store.mu.Lock()
+	store.entries[ps.Key()] = &proxyUDPCheckEntry{
+		result:      proxyUDPResult{Status: proxyUDPOK},
+		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
+		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		realStatus:  proxyUDPOK,
+	}
+	store.mu.Unlock()
+
+	store.noteFlowReply(ps.Key(), now)
+	if _, _, state := store.measurement(ps.Key(), now); state != measurementExpired {
+		t.Fatalf("state = %v, want measurementExpired: the real check is past its ttl", state)
+	}
+}

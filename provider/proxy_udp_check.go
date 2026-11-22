@@ -364,7 +364,12 @@ type proxyUDPCheckEntry struct {
 	// observation exists. It is not persisted: the gate that reads it does not
 	// survive a restart either.
 	completedAt time.Time
-	tcpExit     string // last known TCP exit, retained even when a relay fails
+	// realStatus is the status of the last real check. A flow reply replaces
+	// result with unknown, and unknown's TTL is the wrong one to expire the
+	// controller's evidence on. In memory only: never persisted, and no
+	// admission path reads it.
+	realStatus proxyUDPStatus
+	tcpExit    string // last known TCP exit, retained even when a relay fails
 	// tcpExitAt is when a lookup last observed tcpExit. Only a lookup renews it.
 	tcpExitAt time.Time
 	flowReply bool
@@ -602,6 +607,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		var previous *proxyUDPResult
 		var previousAt time.Time
 		var previousCompletedAt time.Time
+		var previousRealStatus proxyUDPStatus
 		var ipv6 proxyIPv6Result
 		ipv6Running := false
 		var ipv6RetryAt time.Time
@@ -611,6 +617,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		if entry != nil {
 			previousAt = entry.at
 			previousCompletedAt = entry.completedAt
+			previousRealStatus = entry.realStatus
 			ipv6 = entry.ipv6
 			ipv6Running = entry.ipv6Running
 			ipv6RetryAt = entry.ipv6RetryAt
@@ -643,6 +650,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			running.result = *previous
 			running.at = previousAt
 			running.completedAt = previousCompletedAt
+			running.realStatus = previousRealStatus
 		}
 		self.entries[key] = running
 		self.mu.Unlock()
@@ -667,7 +675,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				// refresh that ran meanwhile updated it and cleared its flag, and a
 				// restore from the snapshot taken before the probe would bring back
 				// the old measurement and a flag nothing will clear
-				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
+				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, realStatus: previousRealStatus, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
 				self.entries[key] = restored
 				if err := self.persistLocked(key, restored, now); err != nil {
 					tlog("[proxy][udp] could not persist probe state\n")
@@ -686,6 +694,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		}
 		running.at = now
 		running.completedAt = now
+		running.realStatus = running.result.Status
 		close(running.done)
 		running.done = nil
 		self.prune(now)
@@ -870,12 +879,8 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 			return
 		}
 	}
-	if entry != nil {
-		// the cached result is expired, and a flow reply is not a measurement:
-		// replacing it with a fresh unknown would hide the expiry from the
-		// controller, which stops a running transport on that signal
-		return
-	}
+	var realCompletedAt time.Time
+	var realStatus proxyUDPStatus
 	var tcpExit string
 	var tcpExitAt time.Time
 	var ipv6 proxyIPv6Result
@@ -883,9 +888,13 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 		ipv6 = entry.ipv6
 		tcpExit = entry.tcpExit
 		tcpExitAt = entry.tcpExitAt
+		// the real check behind this evidence keeps its time and status, so the
+		// controller can still see it expire while admission reads the unknown
+		realCompletedAt = entry.completedAt
+		realStatus = entry.realStatus
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, ipv6: ipv6}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6}
 	self.entries[key] = entry
 	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {

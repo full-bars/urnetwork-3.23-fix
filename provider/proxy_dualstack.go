@@ -492,6 +492,11 @@ func (self *proxyUDPCheckStore) measurement(key string, now time.Time) (proxyUDP
 	if entry == nil {
 		return proxyUDPResult{}, proxyIPv6Result{}, measurementMissing
 	}
+	if !entry.completedAt.IsZero() && now.Sub(entry.completedAt) >= proxyUDPTTL(entry.realStatus) {
+		// the evidence of the last real check is gone, whatever a flow reply or
+		// a recheck has put in its place since
+		return proxyUDPResult{Status: proxyUDPUnknown}, entry.ipv6, measurementExpired
+	}
 	if entry.done != nil {
 		// a recheck keeps the last completed result on the entry. If that result
 		// is past its TTL the evidence is gone whatever the check is doing, so
