@@ -523,6 +523,197 @@ func TestUDPProbeSweepMeasuresANeverMeasuredIpv6Identity(t *testing.T) {
 	}
 }
 
+// The trace: five identities share a single sweep slot on five-minute ticks.
+// Four of them hold the slot with an IPv6 retry that comes due again fifteen
+// minutes after each stage stops. The fifth had its UDP check cancelled before
+// it could publish. A cancelled attempt ranks behind every identity without one,
+// and the four retries always have one, so the fifth never reaches the slot
+// again however long the run lasts.
+func TestUDPProbeSweepDoesNotStarveACancelledIdentity(t *testing.T) {
+	pinSyntheticStageClock(t)
+	h := newIPv6CheckHarness(t)
+	// every stage stops on its own, so each measurement leaves a retry hold
+	h.ipv6OK = false
+	// a proxy without a UDP relay: only the IPv6 retry makes these due
+	h.udpResult = proxyUDPResult{Status: proxyUDPNoRelay}
+
+	start := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	const tickDuration = 5 * time.Minute
+	names := map[string]string{}
+	hits := map[string]bool{}
+	var online []*connect.ProxySettings
+	for i := 0; i < 4; i++ {
+		settings := &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("192.0.2.%d:1080", i+1)}
+		online = append(online, settings)
+		names[settings.Key()] = fmt.Sprintf("retry-%d", i)
+		h.store.entries[settings.Key()] = &proxyUDPCheckEntry{
+			result:      proxyUDPResult{Status: proxyUDPNoRelay},
+			at:          start.Add(-30 * proxyIPv6StopBackoff),
+			completedAt: start.Add(-30 * proxyIPv6StopBackoff),
+			// an IPv6 record that is due, with a retry hold that has passed
+			ipv6:        proxyIPv6Result{At: start.Add(-7 * time.Hour), Interval: 6 * time.Hour, Status: proxyIPv6No, Source: "measured"},
+			ipv6RetryAt: start.Add(-time.Duration(i+1) * time.Minute),
+		}
+	}
+	waiting := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.5:1080"}
+	online = append(online, waiting)
+	names[waiting.Key()] = "cancelled"
+
+	probe := h.store.probe
+	// the fifth identity's only check is cancelled before it publishes
+	firstCtx, cancelFirst := context.WithCancel(context.Background())
+	defer cancelFirst()
+	firstCancel := true
+	h.store.probe = func(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		hits[names[settings.Key()]] = true
+		if settings.Key() == waiting.Key() && firstCancel {
+			firstCancel = false
+			cancelFirst()
+			return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
+		}
+		return probe(ctx, settings)
+	}
+	stage := h.store.ipv6Probe
+	h.store.ipv6Probe = func(ctx context.Context, settings *connect.ProxySettings, previous proxyIPv6Result, now time.Time, dials proxyIPv6Dials) (proxyIPv6Result, bool) {
+		hits[names[settings.Key()]] = true
+		return stage(ctx, settings, previous, now, dials)
+	}
+
+	h.store.Check(firstCtx, waiting, start)
+	if h.store.attempts[waiting.Key()].IsZero() {
+		t.Fatal("the cancelled check must leave an attempt stamp")
+	}
+
+	const ticks = 48
+	dispatched := -1
+	for tick := 0; tick < ticks; tick++ {
+		now := start.Add(time.Duration(tick) * tickDuration)
+		hits = map[string]bool{}
+		runUDPProbeTick(context.Background(), h.store, online, now, udpProbeRecheckWindow, tickDuration, 0, true)
+		if len(hits) != 1 {
+			t.Fatalf("tick %d measured %d identities, want the single sweep slot", tick, len(hits))
+		}
+		if hits["cancelled"] && dispatched < 0 {
+			dispatched = tick
+		}
+	}
+	// one slot per tick over five identities: no identity can be held longer
+	// than a handful of ticks, whatever the other four are retrying
+	if dispatched < 0 || dispatched > 8 {
+		t.Fatalf("the identity whose check was cancelled reached the slot at tick %d of %d, want within 8", dispatched, ticks)
+	}
+}
+
+// A long run over identities that all stay due: one slot per five-minute tick
+// and six identities. Every one of them, including the identity whose checks
+// are cancelled and the one whose only attempt is long past, must reach the slot
+// within a bounded number of ticks for the whole run.
+func TestUDPProbeSweepIsFairOverALongRun(t *testing.T) {
+	pinSyntheticStageClock(t)
+	h := newIPv6CheckHarness(t)
+	// every stage stops on its own, so each measurement leaves a retry hold
+	h.ipv6OK = false
+	h.udpResult = proxyUDPResult{Status: proxyUDPNoRelay}
+
+	start := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	const tickDuration = 5 * time.Minute
+	const identityCount = 6
+	names := map[string]string{}
+	var online []*connect.ProxySettings
+	for i := 0; i < 4; i++ {
+		settings := &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("192.0.2.%d:1080", i+1)}
+		online = append(online, settings)
+		names[settings.Key()] = fmt.Sprintf("retry-%d", i)
+		h.store.entries[settings.Key()] = &proxyUDPCheckEntry{
+			result:      proxyUDPResult{Status: proxyUDPNoRelay},
+			at:          start.Add(-30 * proxyIPv6StopBackoff),
+			completedAt: start.Add(-30 * proxyIPv6StopBackoff),
+			ipv6:        proxyIPv6Result{At: start.Add(-7 * time.Hour), Interval: 6 * time.Hour, Status: proxyIPv6No, Source: "measured"},
+			ipv6RetryAt: start.Add(-time.Duration(i+1) * time.Minute),
+		}
+	}
+	// an identity whose checks are cancelled every time it is dispatched, and
+	// one whose only attempt is long past: neither ever publishes, so both stay
+	// due for the whole run
+	for i, attempt := range []time.Time{start.Add(-6 * 24 * time.Hour), start.Add(-30 * time.Minute)} {
+		settings := &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("192.0.2.%d:1080", i+5)}
+		online = append(online, settings)
+		names[settings.Key()] = fmt.Sprintf("cancelled-%d", i)
+		h.store.attempts[settings.Key()] = attempt
+	}
+
+	probe := h.store.probe
+	stage := h.store.ipv6Probe
+	var cancel context.CancelFunc
+	hits := map[string]bool{}
+	h.store.probe = func(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		hits[names[settings.Key()]] = true
+		if strings.HasPrefix(names[settings.Key()], "cancelled") {
+			// the tick deadline cancels the check before it can publish
+			cancel()
+			return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
+		}
+		return probe(ctx, settings)
+	}
+	h.store.ipv6Probe = func(ctx context.Context, settings *connect.ProxySettings, previous proxyIPv6Result, now time.Time, dials proxyIPv6Dials) (proxyIPv6Result, bool) {
+		hits[names[settings.Key()]] = true
+		return stage(ctx, settings, previous, now, dials)
+	}
+
+	const ticks = 288
+	last := map[string]int{}
+	skipped := map[string]int{}
+	worst, worstName := 0, ""
+	for tick := 0; tick < ticks; tick++ {
+		now := start.Add(time.Duration(tick) * tickDuration)
+		hits = map[string]bool{}
+		h.store.mu.Lock()
+		candidates := make([]udpProbeCandidate, 0, len(online))
+		for _, settings := range online {
+			candidates = append(candidates, h.store.probeCandidateLocked(settings.Key(), now))
+		}
+		h.store.mu.Unlock()
+		batch := selectUDPProbeBatch(now, candidates, udpProbeRecheckWindow, tickDuration, nil)
+		if len(batch) != 1 {
+			t.Fatalf("tick %d selected %d identities, want the single sweep slot", tick, len(batch))
+		}
+		selected := batch[0].key
+		// a due identity the tick left out is waiting; the longest such run is
+		// how long some identity waited while others took the slot
+		for _, candidate := range candidates {
+			if candidate.key == selected {
+				skipped[candidate.key] = 0
+				continue
+			}
+			if len(selectUDPProbeBatch(now, []udpProbeCandidate{candidate}, udpProbeRecheckWindow, tickDuration, nil)) != 1 {
+				skipped[candidate.key] = 0
+				continue
+			}
+			skipped[candidate.key]++
+			if skipped[candidate.key] > worst {
+				worst, worstName = skipped[candidate.key], names[candidate.key]
+			}
+		}
+		var ctx context.Context
+		ctx, cancel = context.WithCancel(context.Background())
+		runUDPProbeTick(ctx, h.store, online, now, udpProbeRecheckWindow, tickDuration, 0, true)
+		cancel()
+		if !hits[names[selected]] {
+			t.Fatalf("tick %d selected %s and measured %v", tick, names[selected], hits)
+		}
+		last[selected] = tick
+	}
+	if len(last) != identityCount {
+		t.Fatalf("%d of %d identities reached the slot over %d ticks: %v", len(last), identityCount, ticks, last)
+	}
+	t.Logf("%d identities over %d ticks, longest wait for a due identity: %s, %d ticks", identityCount, ticks, worstName, worst)
+	// one slot per tick over six identities: a fair order serves a due identity
+	// within a few ticks, and none of them waits anywhere near the run length
+	if worst > 2*identityCount {
+		t.Fatalf("%s waited %d ticks while due, want at most %d", worstName, worst, 2*identityCount)
+	}
+}
+
 // mixedClock returns a stamp whose wall clock comes from wallLive and whose
 // monotonic reading comes from elapsed, the pair a live stamp carries after the
 // wall clock stepped between two reads. A test needs it because the public

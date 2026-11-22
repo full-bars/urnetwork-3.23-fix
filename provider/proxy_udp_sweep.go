@@ -282,9 +282,11 @@ type udpProbeCandidate struct {
 	// attemptedAt is when the store last dispatched a check for this identity
 	// that was cancelled before it published. Zero when there is no such
 	// attempt, which is every identity that has published since or has not been
-	// tried.
+	// tried. The selector will not rank an identity earlier than this, so an
+	// attempt that publishes nothing still counts as its turn.
 	attemptedAt time.Time
-	// dueAt is filled by the selector: the earlier of the udp and ipv6 due times
+	// dueAt is filled by the selector: the earlier of the udp and ipv6 due
+	// times, and never earlier than attemptedAt
 	dueAt time.Time
 }
 
@@ -352,6 +354,14 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 			default:
 				candidate.dueAt = candidate.lastChecked.Add(refreshWindow).Round(0)
 			}
+			// an identity whose check was cancelled before it published had its
+			// turn then, so it is never ranked earlier than that attempt. The
+			// stamp moves on with every attempt, so the identity keeps coming
+			// round, and it cannot be held behind identities whose retries keep
+			// renewing an earlier due time.
+			if candidate.attemptedAt.After(candidate.dueAt) {
+				candidate.dueAt = candidate.attemptedAt.Round(0)
+			}
 			due = append(due, candidate)
 			if !candidate.lastChecked.IsZero() && refreshWindow < recheckWindow {
 				recheckWindow = refreshWindow
@@ -362,27 +372,14 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		return nil
 	}
 
-	// an ipv6 retry goes first: it runs on its own interval, which is far
-	// shorter than the udp recheck cycle, so leaving it in lastChecked order
-	// would hold it for most of a cycle. The batch size and the tick pacing are
-	// untouched; only the order inside the budget changes.
+	// earliest due first: one due time per candidate, the earlier of its udp
+	// and ipv6 due times and no earlier than its last cancelled attempt, so
+	// neither kind can starve the other and a retry that keeps renewing cannot
+	// hold an identity that has already had its turn. Every key is compared on
+	// the wall clock alone, so a comparator over live stamps and restored ones
+	// is a strict weak order.
 	sort.Slice(due, func(i, j int) bool {
 		a, b := due[i], due[j]
-		// a cancelled first check publishes nothing, so its identity would keep
-		// the never-checked rank and take the batch on every tick. Such an
-		// identity ranks after every identity with no cancelled attempt, and
-		// among themselves the oldest attempt goes first, so they rotate.
-		attemptedA, attemptedB := !a.attemptedAt.IsZero(), !b.attemptedAt.IsZero()
-		if attemptedA != attemptedB {
-			return !attemptedA
-		}
-		if attemptedA && !a.attemptedAt.Equal(b.attemptedAt) {
-			return a.attemptedAt.Before(b.attemptedAt)
-		}
-		// earliest due first: one due time per candidate, the earlier of its udp
-		// and ipv6 due times, so neither kind can starve the other. Every key is
-		// compared on the wall clock alone, so a comparator over live stamps and
-		// restored ones is a strict weak order.
 		aDue, bDue := a.dueAt.Round(0), b.dueAt.Round(0)
 		if !aDue.Equal(bDue) {
 			return aDue.Before(bDue)
