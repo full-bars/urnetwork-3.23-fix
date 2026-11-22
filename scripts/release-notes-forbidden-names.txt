@@ -1,0 +1,16 @@
+# Forbidden in release notes prose. One name per line; lines starting with
+# # are comments. Names are model, tool and lane names that must not appear
+# in public release text. The release note lint reads this list and the
+# review gate exempts this exact file.
+claude
+gpt
+terra
+sol
+luna
+gemini
+deepseek
+codex
+hermes
+copilot
+anthropic
+openai

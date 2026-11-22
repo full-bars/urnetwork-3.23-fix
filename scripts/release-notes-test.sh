@@ -40,9 +40,19 @@ if "$lint" "$tmp/bad.md" >"$tmp/out" 2>&1; then
 fi
 echo 'PASS: excessive first person rejected'
 echo 'Lint fixture checks passed.'
+# Semicolon inside inline code must not be rejected.
+printf 'Semicolons inside `code; here` are allowed.\n' > "$tmp/ok.md"
+cp "$fixture" "$tmp/bad.md"
+cat "$tmp/ok.md" >> "$tmp/bad.md"
+"$lint" "$tmp/bad.md" >/dev/null && echo 'PASS: semicolon inside inline code allowed'
+# Intro with zero first-person I is a warning, not an error.
+sed 's/I made the release/Added a feature/' "$fixture" > "$tmp/no-i.md"
+"$lint" "$tmp/no-i.md" 2>"$tmp/err" >/dev/null
+rg -q 'warning: intro has no first-person I' "$tmp/err" && echo 'PASS: zero first person warns without failing'
+
 repo="$tmp/repo"
 mkdir -p "$repo/scripts" "$repo/releases/_intro" "$repo/releases/_map" "$repo/provider" "$repo/bin"
-cp scripts/release-notes.sh scripts/release-notes.py scripts/release-notes-lint.sh scripts/private-host-patterns.txt "$repo/scripts/"
+cp scripts/release-notes.sh scripts/release-notes.py scripts/release-notes-lint.sh scripts/private-host-patterns.txt scripts/release-notes-forbidden-names.txt "$repo/scripts/"
 cp releases/_quickstart.md "$repo/releases/"
 git -C "$repo" init -q
 git -C "$repo" config user.name Test
@@ -51,6 +61,34 @@ printf 'base\n' > "$repo/README.md"
 git -C "$repo" add README.md
 git -C "$repo" commit -qm 'base'
 git -C "$repo" tag v-old
+# A release note file that is already committed keeps its unchanged long lines
+# with a warning. A line added or edited in this working copy must fit.
+mkdir -p "$repo/releases"
+long=$(printf '%0601d' 0)
+printf '# v-long\n\n%s\n' "$long" > "$repo/releases/v-long.md"
+git -C "$repo" add releases/v-long.md
+git -C "$repo" commit -qm 'long notes'
+if (cd "$repo" && scripts/release-notes-lint.sh releases/v-long.md 2>"$tmp/warn" >/dev/null); then
+  rg -q 'warning: unchanged historical line exceeds 600 characters' "$tmp/warn"
+  echo 'PASS: unchanged historical long line warns only'
+else
+  echo 'FAIL: unchanged historical long line rejected' >&2
+  exit 1
+fi
+printf '%s\n' "$(printf '%0602d' 0)" >> "$repo/releases/v-long.md"
+if (cd "$repo" && scripts/release-notes-lint.sh releases/v-long.md >/dev/null 2>&1); then
+  echo 'FAIL: added long line accepted' >&2
+  exit 1
+fi
+echo 'PASS: added long line rejected'
+git -C "$repo" checkout -q -- releases/v-long.md
+printf '# v-long\n\n%s changed\n' "$long" > "$repo/releases/v-long.md"
+if (cd "$repo" && scripts/release-notes-lint.sh releases/v-long.md >/dev/null 2>&1); then
+  echo 'FAIL: edited historical long line accepted' >&2
+  exit 1
+fi
+echo 'PASS: edited historical long line rejected'
+git -C "$repo" checkout -q -- releases/v-long.md
 printf 'package provider\n' > "$repo/provider/provider.go"
 git -C "$repo" add provider/provider.go
 git -C "$repo" commit -qm 'add provider'

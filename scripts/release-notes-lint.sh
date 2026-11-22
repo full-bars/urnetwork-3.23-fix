@@ -12,6 +12,7 @@ file, root = pathlib.Path(sys.argv[1]), pathlib.Path(sys.argv[2])
 try:
     lines = file.read_text(encoding='utf-8').splitlines()
     patterns = (root / 'scripts/private-host-patterns.txt').read_text().splitlines()
+    forbidden = (root / 'scripts/release-notes-forbidden-names.txt').read_text().splitlines()
 except OSError as exc:
     sys.exit(str(exc))
 errors = 0
@@ -20,11 +21,22 @@ changed = False
 intro_started = False
 intro_done = False
 intro = []
-base = 'https://github.com/full-bars/urnetwork-3.23-fix'
+# The repository is read from origin so the same scripts serve every fork.
+try:
+    url = subprocess.run(['git', '-C', str(root), 'config', '--get', 'remote.origin.url'], text=True, capture_output=True).stdout.strip()
+except OSError:
+    url = ''
+match = re.search(r'github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$', url)
+base = 'https://github.com/' + (f'{match.group(1)}/{match.group(2)}' if match else 'full-bars/urnetwork-3.23-fix')
 legacy_lines = []
-legacy_path = root / 'releases/v3.23.0-fix.36.0.md'
-if file.resolve() == legacy_path.resolve():
-    result = subprocess.run(['git', '-C', str(root), 'cat-file', 'blob', 'bb504a4a96a365516846a0add8d2e1168ec28c0b'], text=True, capture_output=True)
+# A release note file that is already committed keeps its unchanged long lines
+# with a warning. Only lines added or edited in this working copy must fit.
+try:
+    relative = file.resolve().relative_to(root.resolve())
+except ValueError:
+    relative = None
+if relative is not None:
+    result = subprocess.run(['git', '-C', str(root), 'show', f'HEAD:{relative.as_posix()}'], text=True, capture_output=True)
     if result.returncode == 0:
         legacy_lines = result.stdout.splitlines()
 
@@ -66,8 +78,11 @@ for n, line in enumerate(lines, 1):
     for pattern in patterns:
         if pattern.strip() and not pattern.lstrip().startswith('#') and re.search(pattern, prose, re.I):
             error(n, 'private host or fleet pattern')
-    if re.search(r'\b(?:claude|gpt|terra|sol|luna|gemini|deepseek|codex|hermes|copilot|anthropic|openai)\b', prose, re.I):
-        error(n, 'model or tool name')
+    for name in forbidden:
+        name = name.strip()
+        if name and not name.startswith('#') and re.search(r'\b' + re.escape(name) + r'\b', prose, re.I):
+            error(n, 'model or tool name')
+            break
     if re.search(r'\bexactly\b', prose, re.I):
         error(n, 'word exactly in prose')
     if re.search(r',\s+not\b', prose, re.I):

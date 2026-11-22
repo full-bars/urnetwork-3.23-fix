@@ -11,8 +11,21 @@ import sys
 import textwrap
 
 ROOT = Path(subprocess.check_output(['git', 'rev-parse', '--show-toplevel'], text=True).strip())
-BASE = 'https://github.com/full-bars/urnetwork-3.23-fix'
 os.chdir(ROOT)
+# The repository is read from origin so the same scripts serve every fork. The
+# fallback is this repository and is only used when origin is not a GitHub url.
+DEFAULT_SLUG = 'full-bars/urnetwork-3.23-fix'
+
+def repo_slug():
+    try:
+        url = subprocess.check_output(['git', 'config', '--get', 'remote.origin.url'], text=True, stderr=subprocess.DEVNULL).strip()
+    except (OSError, subprocess.CalledProcessError):
+        return DEFAULT_SLUG
+    match = re.search(r'github\.com[:/]+([^/]+)/([^/]+?)(?:\.git)?/?$', url)
+    return f'{match.group(1)}/{match.group(2)}' if match else DEFAULT_SLUG
+
+SLUG = repo_slug()
+BASE = 'https://github.com/' + SLUG
 
 
 def git(*args):
@@ -145,7 +158,7 @@ def main():
             if re.search(r'\b(restart|setting)\b', body, re.I):
                 actions.append(title)
     try:
-        raw = subprocess.check_output(['gh', 'pr', 'list', '-R', 'full-bars/urnetwork-3.23-fix', '--state', 'merged', '--label', 'needs-fleet-deploy', '--limit', '1000', '--json', 'number,title,mergeCommit'], text=True, stderr=subprocess.PIPE)
+        raw = subprocess.check_output(['gh', 'pr', 'list', '-R', SLUG, '--state', 'merged', '--label', 'needs-fleet-deploy', '--limit', '1000', '--json', 'number,title,mergeCommit'], text=True, stderr=subprocess.PIPE)
         prs = json.loads(raw)
         if not isinstance(prs, list) or len(prs) >= 1000:
             fail('labelled PR list is invalid or may be truncated')
