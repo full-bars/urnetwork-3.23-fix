@@ -58,3 +58,33 @@ func TestRedactProxyEndpoint(t *testing.T) {
 		t.Fatalf("a nil proxy changed the text: %q", same)
 	}
 }
+
+// The H1 strategy's V(2) select line names the slot that answered, never where
+// the proxy is: clientDialer.String() carries the endpoint for diagnostics, so
+// the select line has to be built from the redacted form.
+func TestProxyDialLogSelectLineNamesTheSlot(t *testing.T) {
+	const sentinel = "198.51.100.7:1080"
+	settings := &ClientStrategySettings{
+		ProxySettings: &ProxySettings{Index: 5, Network: "tcp", Address: sentinel},
+	}
+	dialer := &clientDialer{settings: settings, description: "h1"}
+
+	line := dialer.logText()
+	if strings.Contains(line, sentinel) || strings.Contains(line, "198.51.100.7") {
+		t.Fatalf("the select line carries the proxy endpoint: %q", line)
+	}
+	if !strings.Contains(line, "proxy[5]") {
+		t.Fatalf("the select line does not name the proxy slot: %q", line)
+	}
+	if !strings.Contains(line, "success=") || !strings.Contains(line, "h1") {
+		t.Fatalf("the select line lost the dialer's diagnostics: %q", line)
+	}
+
+	errLine := dialer.logErrText(errors.New("socks5 connect tcp " + sentinel + ": connection refused"))
+	if strings.Contains(errLine, sentinel) || strings.Contains(errLine, "198.51.100.7") {
+		t.Fatalf("the select error carries the proxy endpoint: %q", errLine)
+	}
+	if !strings.Contains(errLine, "proxy[5]") || !strings.Contains(errLine, "connection refused") {
+		t.Fatalf("the select error lost the slot or the reason: %q", errLine)
+	}
+}

@@ -901,10 +901,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				noteFailed(result)
 				if result != nil {
 					if result.err == nil || result.terminal {
-						self.log.V(2).Infof("[net][p]select: %s\n", dialer.String())
+						self.log.V(2).Infof("[net][p]select: %s\n", dialer.logText())
 						return result, nil
 					}
-					self.log.V(2).Infof("[net][p]select: %s = %s\n", dialer.String(), result.err)
+					self.log.V(2).Infof("[net][p]select: %s = %s\n", dialer.logText(), dialer.logErrText(result.err))
 					result.Close()
 				}
 			}
@@ -925,10 +925,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logText())
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.logText(), result.dialer.logErrText(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -953,10 +953,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.String())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logText())
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.String(), result.err)
+						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.logText(), result.dialer.logErrText(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -1830,7 +1830,44 @@ func (self *clientDialer) ResetHealth() {
 	self.connectObservedAt = time.Time{}
 }
 
+// proxySettings returns the proxy this dialer dials through, if any.
+func (self *clientDialer) proxySettings() *ProxySettings {
+	if self.settings == nil {
+		return nil
+	}
+	return self.settings.ProxySettings
+}
+
+// logText is the dialer's summary for a log line: the slot the line is about,
+// never where the proxy is.
+func (self *clientDialer) logText() string {
+	return self.describe(proxyLogLabel)
+}
+
+// logErrText is err's message for a log line about this dialer, on the same
+// terms as logText: a SOCKS failure can name the proxy, so the endpoint is
+// replaced by the slot label.
+func (self *clientDialer) logErrText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return RedactProxyEndpoint(err.Error(), self.proxySettings())
+}
+
+// String is the dialer's summary for diagnostics: it names the proxy endpoint,
+// so it must not be used for a log line (see logText).
 func (self *clientDialer) String() string {
+	return self.describe(proxyEndpointText)
+}
+
+// proxyEndpointText is the endpoint display String uses for a proxy.
+func proxyEndpointText(settings *ProxySettings) string {
+	return safeProxyDisplayAddress(settings.Address)
+}
+
+// describe formats the dialer summary, taking the proxy's address text from
+// display so a caller chooses between the endpoint and its slot label.
+func (self *clientDialer) describe(display func(*ProxySettings) string) string {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1853,7 +1890,8 @@ func (self *clientDialer) String() string {
 		if clients > 0 {
 			ageStr = fmt.Sprintf(" age=%s", maxAge.Round(time.Second).String())
 		}
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", self.settings.ProxySettings.Index, safeProxyDisplayAddress(self.settings.ProxySettings.Address), self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
+		settings := self.settings.ProxySettings
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", settings.Index, display(settings), self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
 	} else {
 		return fmt.Sprintf("[direct] %s success=%d error=%d%s", self.description, self.successCount, self.errorCount, latencyStr)
 	}
