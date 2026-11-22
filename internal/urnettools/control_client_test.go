@@ -301,6 +301,8 @@ func TestControlClient_AllKeysCanonicalizationAndValidation(t *testing.T) {
 		{"smart-dialer", "smart_dialer", "on"},
 		{"h3", "h3", "on"},
 		{"tls-hello", "tls_hello", "on"},
+		{"p2p-source-binding", "p2p_source_binding", "count"},
+		{"p2p-forged-source-drop", "p2p_forged_source_drop", "on"},
 		{"h3-datagram", "h3_datagram", "on"},
 		{"h3-datagram-send", "h3_datagram_send", "on"},
 		{"ip-version", "ip_version", "ipv6"},

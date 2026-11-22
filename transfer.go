@@ -1382,13 +1382,20 @@ func (self *Client) run() {
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
-		if disposition.transportType == TransportTypeP2p && (path.SourceId == ControlId || path.SourceId == self.clientId) {
+		if P2PForgedSourceDropEnabled() && disposition.transportType == TransportTypeP2p && (path.SourceId == ControlId || path.SourceId == self.clientId) {
 			self.receiveForgedSourceDropCount.Add(1)
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
 		if disposition.boundSourceId != (Id{}) && path.SourceId != disposition.boundSourceId {
-			self.receiveSourceMismatchCount.Add(1)
+			switch P2PSourceBinding() {
+			case "count":
+				self.receiveSourceMismatchCount.Add(1)
+			case "drop":
+				self.receiveSourceMismatchCount.Add(1)
+				MessagePoolReturn(transferFrameBytes)
+				continue
+			}
 		}
 		if path.IsStream() {
 			if v := self.log.V(1); v.Enabled() {
