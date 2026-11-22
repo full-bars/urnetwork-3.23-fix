@@ -1214,27 +1214,30 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 	return message, err
 }
 
+// receiveDispositionForRoute reports how the given route delivered: which
+// transport type it is and, for a peer-to-peer lane, the source the adjacent
+// peer's authenticated signalling bound it to. A route that was removed
+// between the read and this lookup reports an unbound, unknown-type
+// disposition, which every source policy accepts.
+func (self *MultiRouteSelector) receiveDispositionForRoute(route Route) transferReceiveDisposition {
+	self.mutex.Lock()
+	defer self.mutex.Unlock()
+	return transferReceiveDisposition{
+		transportType: self.routeTransportTypes[route],
+		boundSourceId: self.routeCarrierProperties[route].boundSourceId,
+	}
+}
+
 func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout time.Duration) ([]byte, transferReceiveDisposition, error) {
 	// read from the first channel available, in random priority
 	enterTime := time.Now()
 	for {
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
-		self.mutex.Lock()
-		dispositions := make(map[Route]transferReceiveDisposition, len(activeRoutes))
-		retained := activeRoutes[:0]
-		for _, route := range activeRoutes {
-			props, ok := self.routeCarrierProperties[route]
-			if !ok {
-				continue
-			}
-			retained = append(retained, route)
-			dispositions[route] = transferReceiveDisposition{transportType: self.routeTransportTypes[route], boundSourceId: props.boundSourceId}
-		}
-		activeRoutes = retained
-		self.mutex.Unlock()
 
-		self.log.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
+		if v := self.log.V(2); v.Enabled() {
+			v.Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
+		}
 
 		// non-blocking priority
 		retry := false
@@ -1242,9 +1245,11 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 			select {
 			case transferFrameBytes, ok := <-route:
 				if ok {
-					self.log.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+					if v := self.log.V(2); v.Enabled() {
+						v.Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+					}
 					self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-					return transferFrameBytes, dispositions[route], nil
+					return transferFrameBytes, self.receiveDispositionForRoute(route), nil
 				} else {
 					// mark the route as closed, try again
 					self.setActive(route, false)
@@ -1335,7 +1340,7 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 			if ok {
 				transferFrameBytes := value.Bytes()
 				self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-				return transferFrameBytes, dispositions[route], nil
+				return transferFrameBytes, self.receiveDispositionForRoute(route), nil
 			} else {
 				// mark the route as closed, try again
 				self.setActive(route, false)
