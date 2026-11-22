@@ -47,12 +47,15 @@ var (
 // remoteSeries is one curve: evenly spaced samples, oldest first, the newest at
 // the chart's Newest time. Group names the scale it is drawn against. Glyph is
 // the character the ASCII fallback draws; zero picks one from the series order.
+// Packets marks a packet rate series, formatted in pkt/s rather than bytes per
+// second in the corner figures.
 type remoteSeries struct {
-	Label  string
-	Style  tui.Style
-	Group  string
-	Glyph  rune
-	Values []float64
+	Label   string
+	Style   tui.Style
+	Group   string
+	Glyph   rune
+	Packets bool
+	Values  []float64
 }
 
 // remoteChart is one frame of the mirrored chart. Now is the clock the plot
@@ -292,14 +295,21 @@ func remoteNewest(dir []remoteSeries) float64 {
 
 // drawLegend prints the direction's series names on the row and gives the rest
 // of the row to the averages. The figures come first: when both do not fit side
-// by side, the legend is dropped rather than the numbers.
+// by side, the legend is dropped rather than the numbers. Empty labels are
+// skipped so a packet series with no name does not clutter the row.
 func (c remoteChart) drawLegend(b *tui.Buffer, row int, dir []remoteSeries, arrow rune) {
 	if row < 0 || len(dir) == 0 {
 		return
 	}
 	labels := make([]string, 0, len(dir))
 	for _, s := range dir {
+		if s.Label == "" {
+			continue
+		}
 		labels = append(labels, s.Label)
+	}
+	if len(labels) == 0 {
+		return
 	}
 	text := strings.Join(labels, " ") + " " + string(arrow)
 	b.Put(tui.Truncate(text, b.Width(), c.ASCII), 0, row, c.Dim)
@@ -321,12 +331,23 @@ func (c remoteChart) averageSegments(dir []remoteSeries, arrow rune) ([]remoteSe
 	for _, s := range dir {
 		avg := remoteAverage(s.Values)
 		st := s.Style
-		if avg <= 0 {
-			st = c.Dim
+		if s.Packets {
+			// packets formatted as pkt/s, pink style, muted when zero
+			text := tui.PacketRate(avg)
+			if avg <= 0 {
+				st = c.Dim
+			} else {
+				active = true
+			}
+			segs = append(segs, remoteSegment{text: text, style: st})
 		} else {
-			active = true
+			if avg <= 0 {
+				st = c.Dim
+			} else {
+				active = true
+			}
+			segs = append(segs, remoteSegment{text: tui.Rate(avg), style: st})
 		}
-		segs = append(segs, remoteSegment{tui.Rate(avg), st})
 	}
 	st := c.Dim
 	if active {
@@ -385,6 +406,9 @@ func (c remoteChart) drawAverages(b *tui.Buffer, row int, dir []remoteSeries, ar
 func (c remoteChart) legendWidth(dir []remoteSeries) int {
 	labels := make([]string, 0, len(dir))
 	for _, s := range dir {
+		if s.Label == "" {
+			continue
+		}
 		labels = append(labels, s.Label)
 	}
 	if len(labels) == 0 {
@@ -394,6 +418,8 @@ func (c remoteChart) legendWidth(dir []remoteSeries) int {
 }
 
 // drawHalf draws every curve of one half into the rows the layout gave it.
+// A packet series with no positive sample draws nothing: its corner figure
+// still says so, muted, and the half keeps its bytes-only picture.
 func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSeries, up bool, scales map[string]float64) {
 	y0, rows := l.upY, l.upRows
 	if !up {
@@ -403,7 +429,13 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		return
 	}
 	if c.ASCII {
-		for i, s := range dir {
+		// Draw from the back so the first series (the byte curve) lands on top
+		// of the packet curve in the cells they share.
+		for i := len(dir) - 1; i >= 0; i-- {
+			s := dir[i]
+			if s.Packets && !anyPositive(s.Values) {
+				continue
+			}
 			pts := remotePointsOf(c, s.Values, 2*b.Width())
 			if len(pts) == 0 {
 				continue
@@ -413,7 +445,13 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		return
 	}
 	cv := newRemoteCanvas(b.Width(), rows, dir)
-	for i, s := range dir {
+	// The byte series is first and must stay readable, so it is plotted last
+	// and wins the cells where a packet curve crosses it.
+	for i := len(dir) - 1; i >= 0; i-- {
+		s := dir[i]
+		if s.Packets && !anyPositive(s.Values) {
+			continue
+		}
 		pts := remotePointsOf(c, s.Values, 2*b.Width())
 		if len(pts) == 0 {
 			continue
@@ -421,6 +459,16 @@ func (c remoteChart) drawHalf(b *tui.Buffer, l remoteChartLayout, dir []remoteSe
 		cv.plot(pts, scales[s.Group], up, i)
 	}
 	cv.draw(b, y0)
+}
+
+// anyPositive reports whether a series carries at least one positive sample.
+func anyPositive(vals []float64) bool {
+	for _, v := range vals {
+		if v > 0 && !math.IsNaN(v) && !math.IsInf(v, 0) {
+			return true
+		}
+	}
+	return false
 }
 
 // drawHalfASCII is the fallback for terminals without braille: one column per

@@ -73,6 +73,26 @@ func Rate(v float64) string { return humanBytes(v, false) + "/s" }
 // width is tight: 41 MiB/s.
 func RateShort(v float64) string { return humanBytes(v, true) + "/s" }
 
+// PacketRate formats packets per second: 42 pkt/s. Uses compact notation
+// for large counts (1.2k pkt/s, 3.5M pkt/s).
+func PacketRate(v float64) string {
+	if math.IsNaN(v) || math.IsInf(v, 0) || v <= 0 {
+		return "0 pkt/s"
+	}
+	const (
+		k = 1_000
+		m = 1_000_000
+	)
+	switch {
+	case v >= m:
+		return fmt.Sprintf("%.1fM pkt/s", v/float64(m))
+	case v >= k:
+		return fmt.Sprintf("%.1fk pkt/s", v/float64(k))
+	default:
+		return fmt.Sprintf("%.0f pkt/s", v)
+	}
+}
+
 // Duration formats an elapsed time as its two most significant units:
 // 3d 4h, 4h 12m, 12m 5s, 5s. Negative and sub-second values read as "0s".
 // A zero second unit is dropped, so 3d 0h 5m is "3d".

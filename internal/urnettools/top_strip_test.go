@@ -320,7 +320,7 @@ func TestTopDirectionPagesInsideTheirRectangles(t *testing.T) {
 		billable bool
 	}{{"billable", true}, {"total", false}} {
 		m, b, clock := stripFrame(t, 120, 40, pageByID(c.id))
-		up, down, _, _, ok := m.directionData(c.billable)
+		up, down, _, _, _, _, ok := m.directionData(c.billable)
 		if !ok {
 			t.Fatalf("%s: direction data missing", c.id)
 		}
