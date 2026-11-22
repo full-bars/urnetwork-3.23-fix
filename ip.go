@@ -3623,6 +3623,7 @@ func (self *RemoteUserNatProvider) Receive(
 ) {
 	if self.bw != nil {
 		self.bw.BillableRx.Add(uint64(len(packet)))
+		self.bw.BillableRxPackets.Add(1)
 	}
 	// self.client.log.Infof("[trace]provider return packet for %s\n", source.SourceId)
 
@@ -3726,6 +3727,7 @@ func (self *RemoteUserNatProvider) ClientReceive(source TransferPath, frames []*
 			ipPacketToProvider := ipPacketToProvider_.(*protocol.IpPacketToProvider)
 			if self.bw != nil {
 				self.bw.BillableTx.Add(uint64(len(ipPacketToProvider.IpPacket.PacketBytes)))
+				self.bw.BillableTxPackets.Add(1)
 			}
 
 			if isIpFragmentPacket(ipPacketToProvider.IpPacket.PacketBytes) {

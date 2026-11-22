@@ -23,6 +23,8 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 	out.TotalTx.Store(bw.TotalTx.Load())
 	out.BillableRx.Store(bw.BillableRx.Load())
 	out.BillableTx.Store(bw.BillableTx.Load())
+	out.BillableRxPackets.Store(bw.BillableRxPackets.Load())
+	out.BillableTxPackets.Store(bw.BillableTxPackets.Load())
 	out.Clients.Store(bw.Clients.Load())
 	out.LatencyNs.Store(bw.LatencyNs.Load())
 	out.SocksLatencyNs.Store(bw.SocksLatencyNs.Load())
@@ -42,6 +44,7 @@ func proxyBandwidthSnapshot(bw *ProxyBandwidth) *ProxyBandwidth {
 // ProxyBandwidth tracks the data usage and session timing of a proxy.
 type ProxyBandwidth struct {
 	TotalRx, TotalTx, BillableRx, BillableTx atomic.Uint64
+	BillableRxPackets, BillableTxPackets     atomic.Uint64
 	Clients                                  atomic.Int64
 	LatencyNs                                atomic.Int64
 	SocksLatencyNs                           atomic.Int64
@@ -678,6 +681,20 @@ func ProxyBandwidthDirectionTotals() (billableRx, billableTx, totalRx, totalTx u
 		totalTx += h.bw.TotalTx.Load()
 	}
 	return billableRx, billableTx, totalRx, totalTx
+}
+
+// ProxyBandwidthPacketTotals sums billable IP packets across registered proxies.
+// The sums can decrease when a proxy is removed.
+func ProxyBandwidthPacketTotals() (billableRxPackets, billableTxPackets uint64) {
+	proxyHealthMu.Lock()
+	defer proxyHealthMu.Unlock()
+	for _, h := range proxyHealthByIndex {
+		if h.bw != nil {
+			billableRxPackets += h.bw.BillableRxPackets.Load()
+			billableTxPackets += h.bw.BillableTxPackets.Load()
+		}
+	}
+	return
 }
 
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
