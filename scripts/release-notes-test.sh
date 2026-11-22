@@ -113,3 +113,44 @@ rg -q '^\- \*\*Docs\. \[no redeploy\]' "$tmp/generated.md"
 rg -q '^\- \*\*Installer\. \[installer\]' "$tmp/generated.md"
 rg -q '^\- \*\*Combined\. \[redeploy\]' "$tmp/generated.md"
 echo 'PASS: documentation and installer classification and redeploy precedence'
+# Merge a branch so the changelog suffix resolves from first-parent history.
+git -C "$repo" checkout -qb feature
+printf 'package provider\n// feature\n' > "$repo/provider/merge.go"
+git -C "$repo" add provider/merge.go
+git -C "$repo" commit -qm 'feature'
+git -C "$repo" checkout -q master
+git -C "$repo" merge -q --no-ff feature -m 'Merge feature (#42)'
+merge_sha=$(git -C "$repo" rev-parse HEAD)
+rm "$repo/releases/_map/v-test.tsv"
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Merge feature.** The feature works. (#42)
+CHANGELOG
+cat > "$repo/bin/gh" <<'STUB'
+#!/usr/bin/env bash
+set -eu
+[ "$1" = pr ] && [ "$2" = list ]
+case "${GH_STUB_MODE:-ok}" in
+  ok) printf '[{"number":42,"title":"Restart the provider","mergeCommit":{"oid":"%s"}}]' "$GH_MERGE_SHA" ;;
+  empty) printf '[]' ;;
+  fail) printf 'partial page' ; exit 1 ;;
+  capped) python3 -c 'import json; print(json.dumps([{"number":1,"title":"x","mergeCommit":{"oid":"x"}}]*1000))' ;;
+esac
+STUB
+chmod +x "$repo/bin/gh"
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_MERGE_SHA="$merge_sha" scripts/release-notes.sh v-test --out "$tmp/merge.md")
+rg -q "/commit/$merge_sha" "$tmp/merge.md"
+rg -q '^- Restart the provider$' "$tmp/merge.md"
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/empty.md")
+rg -q '^None\.$' "$tmp/empty.md"
+for mode in fail capped; do
+  if (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE="$mode" scripts/release-notes.sh v-test --out "$tmp/$mode.md" > /dev/null 2>&1); then
+    echo "FAIL: gh $mode accepted" >&2
+    exit 1
+  fi
+  test ! -e "$tmp/$mode.md"
+done
+echo 'PASS: first-parent merge, labelled actions, empty labels and closed failures'

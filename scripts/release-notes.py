@@ -127,15 +127,21 @@ def main():
     try:
         raw = subprocess.check_output(['gh', 'pr', 'list', '-R', 'full-bars/urnetwork-3.23-fix', '--state', 'merged', '--label', 'needs-fleet-deploy', '--limit', '1000', '--json', 'number,title,mergeCommit'], text=True, stderr=subprocess.PIPE)
         prs = json.loads(raw)
+        if not isinstance(prs, list) or len(prs) >= 1000:
+            fail('labelled PR list is invalid or may be truncated')
+        if any(not isinstance(pr, dict) or not isinstance(pr.get('title'), str) or not isinstance(pr.get('mergeCommit'), dict) or not isinstance(pr['mergeCommit'].get('oid'), str) for pr in prs):
+            fail('labelled PR list contains incomplete entries')
     except (OSError, subprocess.CalledProcessError, ValueError) as exc:
         fail(f'cannot retrieve labelled operator actions: {exc}')
     for pr in prs:
         sha = (pr.get('mergeCommit') or {}).get('oid')
         if not sha:
             continue
-        inside = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        before = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, previous], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode == 0
-        if inside and not before:
+        inside_rc = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, target], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        before_rc = subprocess.run(['git', 'merge-base', '--is-ancestor', sha, previous], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode
+        if inside_rc not in (0, 1) or before_rc not in (0, 1):
+            fail(f'cannot place labelled PR merge commit in history: {sha}')
+        if inside_rc == 0 and before_rc == 1:
             actions.append(pr['title'])
     output += ['', '### Operator actions (needs-fleet-deploy)', '']
     output += [f'- {item}' for item in dict.fromkeys(actions)] if actions else ['None.']
