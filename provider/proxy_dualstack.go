@@ -93,9 +93,10 @@ func proxyIPv6RecordForCheck(udp proxyUDPResult, v6 proxyIPv6Result) bool {
 }
 
 // proxyIPv6Gate turns the policy into start and stop decisions with
-// hysteresis. Only a NEW measurement counts toward the start streak, and only a
-// completed check counts toward the stop streak, so polling more often than the
-// measurements arrive cannot start or stop the transport.
+// hysteresis. Only a NEW measurement counts toward the start streak, and one
+// stop observation is one completed check or one new measurement, never both
+// for the same sweep, so polling more often than the results arrive cannot
+// start or stop the transport.
 type proxyIPv6Gate struct {
 	running bool
 	// lastCheckedAt is the completion stamp of the last udp check counted.
@@ -111,6 +112,10 @@ type proxyIPv6Gate struct {
 	// lastV6At is the ipv6 record last counted, so the same record is not
 	// counted again by a later udp check.
 	lastV6At time.Time
+	// lastCountedV6 is the measurement that last added a stop observation of
+	// its own, so a measurement counts once by its own stamp whatever poll it
+	// lands in, and a record older than one already counted adds nothing.
+	lastCountedV6 time.Time
 	// lastCountedCheck is the udp check that last added a failure, so one check
 	// counts once even when its udp and ipv6 results arrive in two polls.
 	lastCountedCheck time.Time
@@ -161,8 +166,12 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 	}
 	if self.pending {
 		switch {
-		case v6New && proxyIPv6RecordForCheck(udp, v6):
-			// the measurement of the deferred check arrived: the sweep decides
+		case v6New:
+			// a measurement arrived, so the deferral is over and the record is
+			// judged on its own below. A record stamped before the deferred
+			// check cannot be that check's measurement, and the check's
+			// qualification is not carried over: only a measurement that comes
+			// with its own check ends the failure streak.
 			self.pending = false
 		case newCheck:
 			// no measurement came for the deferred check, so it was a udp-only
@@ -206,28 +215,31 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 			self.yes++
 			self.no = 0
 			self.lastExpiry = v6.At.Add(2 * v6.Interval)
-		case udp.CheckedAt.Equal(self.lastCountedCheck):
-			// the check already added the one stop observation of this sweep
 		case proxyIPv6RecordForCheck(udp, v6):
-			// the measurement belongs to the check and disqualifies: it
-			// supplies the one stop observation this sweep is allowed
-			self.no++
-			self.yes = 0
-			self.lastCountedCheck = udp.CheckedAt
-		default:
-			// the record disqualifies but carries a stamp from an earlier
-			// check: an IPv6-only refresh can finish beside a newer lazy
-			// check, so it is not this check's measurement and adds no
-			// observation of its own. It still breaks a pending start streak:
-			// one bad measurement must not leave the next good one a start.
-			// Count it only once, keyed by its own stamp: if this record is
-			// newer than the last v6 record the stop streak counted, it is a
-			// new observation; otherwise it is a repeat of an old one.
-			if self.lastV6At.IsZero() || v6.At.After(self.lastV6At) {
+			// the measurement belongs to this check's sweep, so the sweep is
+			// allowed one stop observation and the check may already have
+			// supplied it
+			if !udp.CheckedAt.Equal(self.lastCountedCheck) {
 				self.no++
 				self.yes = 0
-			} else {
-				self.yes = 0
+				self.lastCountedCheck = udp.CheckedAt
+				self.lastCountedV6 = v6.At
+			}
+		default:
+			// the record disqualifies but carries a stamp from an earlier
+			// check. The IPv6 stage stamps its result when the probe starts, so
+			// a lazy udp check that completes during a long probe always lands
+			// with a later stamp, and such a record is never the check's own
+			// measurement. It is a measurement of its own all the same, and a
+			// proxy that has lost IPv6 must not keep its transport because each
+			// negative arrives behind a newer check. It supplies one stop
+			// observation, keyed by its own stamp so a repeated publication
+			// adds nothing and a record older than one already counted adds
+			// nothing either.
+			self.yes = 0
+			if v6.At.After(self.lastCountedV6) {
+				self.no++
+				self.lastCountedV6 = v6.At
 			}
 		}
 	}

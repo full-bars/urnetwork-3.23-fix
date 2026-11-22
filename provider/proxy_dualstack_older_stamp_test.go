@@ -43,13 +43,14 @@ func TestProxyIPv6GateCountsAMeasurementOlderThanItsCheck(t *testing.T) {
 				checkAt := probeAt.Add(time.Second)
 				negative := standing.measured(probeAt, proxyIPv6No, "unknown", "", "")
 				if split {
-					// the poll lands on the check alone: it qualifies with the
-					// record that still stands and decides nothing yet
+					// the poll lands on the check alone: it defers only when
+					// the record that still stands qualifies
+					qualifies := proxyIPv6TransportWanted(udpOK(checkAt), standing, checkAt)
 					if started, stopped := gate.observe(checkAt, udpOK(checkAt), standing); started || stopped {
 						t.Fatalf("round %d: the deferred check decided on its own: start %t stop %t", round, started, stopped)
 					}
-					if !gate.pending {
-						t.Fatalf("round %d: the check beside a newer record did not defer", round)
+					if gate.pending != qualifies {
+						t.Fatalf("round %d: pending %t, want %t for a standing record that qualifies %t", round, gate.pending, qualifies, qualifies)
 					}
 				}
 				started, stopped := gate.observe(checkAt.Add(time.Minute), udpOK(checkAt), negative)

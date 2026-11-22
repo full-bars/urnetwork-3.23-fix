@@ -40,12 +40,13 @@ import (
 //     that basis away and counts one observation, while the same check against
 //     a record that stands on its own udp verdict counts nothing extra.
 //   - a record stamped before the check it lands beside is not that check's
-//     measurement: it adds no stop observation of its own, but a disqualifying
-//     one clears the pending start streak.
+//     measurement, so the sweep cannot supply two observations; the record is a
+//     measurement of its own and supplies one, counted once by its own stamp. A
+//     disqualifying one also clears the pending start streak.
 //   - a record the state file supplied is state, not an observation: the first
 //     poll baselines it, and only measurements made since can start or stop.
 //   - a check whose measurement has not arrived yet decides nothing; its
-//     deferral ends with that measurement or with the next check.
+//     deferral ends with any measurement or with the next check.
 
 // modelGate reports the same three outcomes as the gate: start, stop, or
 // neither. Its state is the evidence it has counted, not a poll history.
@@ -77,6 +78,10 @@ type modelGate struct {
 	// the check that supplied the newest one, so one sweep adds at most one.
 	stops  int
 	stopOf time.Time
+	// stopV6 is the measurement that supplied the newest observation of its
+	// own, so a measurement counts once by its stamp and one older than a
+	// counted one adds nothing.
+	stopV6 time.Time
 	// pending is the check whose measurement has not arrived yet. Such a check
 	// decides nothing at once: the gate cannot tell it from a deferred sweep,
 	// so the failure streak it would end stays until its measurement or the
@@ -143,6 +148,19 @@ func (m *modelGate) countStart(v6 proxyIPv6Result, now time.Time) {
 	m.startExpiry = v6.At.Add(2 * v6.Interval)
 }
 
+// countMeasurementStop adds the one stop observation a new disqualifying
+// measurement supplies. A measurement of its own counts by its stamp, so a
+// publication that lands again adds nothing and one older than a counted
+// measurement adds nothing either.
+func (m *modelGate) countMeasurementStop(v6 proxyIPv6Result) {
+	if !m.stopV6.IsZero() && !v6.At.After(m.stopV6) {
+		return
+	}
+	m.stops++
+	m.stopV6 = v6.At
+	m.starts = 0
+}
+
 // judge applies one observation: a completed check together with the
 // measurement it published, or with the standing record when the sweep did not
 // measure IPv6 again. A qualifying observation ends the failure streak; a
@@ -169,18 +187,25 @@ func (m *modelGate) judge(checkAt time.Time, udp proxyUDPStatus, v6 proxyIPv6Res
 		m.stops++
 		m.stopOf = checkAt
 		m.starts = 0
+		if measured {
+			// the record that counted with its check is a measurement of its
+			// own, so it is never counted again by its stamp
+			m.stopV6 = v6.At
+		}
 	}
 }
 
-// resolvePending applies the poll that ends a deferred check. A record stamped
-// for it (or for a later check) just ends the deferral: the record is judged on
-// its own. A new check that brought no record of its own also ends the failure
-// streak, because that deferral cannot be a sweep of the new check.
-func (m *modelGate) resolvePending(checkNew bool, recordForCheck bool) {
+// resolvePending applies the poll that ends a deferred check. A measurement
+// ends it whatever its stamp: one that came for the check is judged on its own,
+// and one stamped before the check cannot be the check's, so the qualification
+// it would have supplied is not carried over either. A new check that brought
+// no measurement of its own also ends the failure streak, because that deferral
+// cannot be a sweep of the new check.
+func (m *modelGate) resolvePending(checkNew bool, recordNew bool) {
 	if m.pending.IsZero() {
 		return
 	}
-	if recordForCheck {
+	if recordNew {
 		m.pending = time.Time{}
 		return
 	}
@@ -248,14 +273,16 @@ func (m *modelGate) sweep(now time.Time, udp proxyUDPStatus, checkAt time.Time, 
 
 // staleRecord is a record published by an earlier check than the one the store
 // now holds: an IPv6-only refresh that started before a lazy check completed,
-// so its stamp is older than the check it lands beside. It is not that check's
-// measurement and adds no stop observation of its own, but a disqualifying one
-// still clears the pending start streak: one bad measurement must not leave the
-// next good one a start. A qualifying one counts like any new measurement.
+// so its stamp is older than the check it lands beside. The sweep counts at most
+// one observation: the check contradicts a record that stands on its own udp
+// verdict, and the record supplies one of its own, counted by its stamp. A
+// disqualifying record also clears the pending start streak: one bad
+// measurement must not leave the next good one a start. A qualifying one counts
+// like any new measurement.
 func (m *modelGate) staleRecord(now time.Time, udp proxyUDPStatus, checkAt time.Time, v6 proxyIPv6Result) (start bool, stop bool) {
 	m.baseline = false
 	m.pruneStart(now)
-	m.resolvePending(true, false)
+	m.resolvePending(true, true)
 	if m.qualifies(udp, v6, now) {
 		m.stops = 0
 		m.recordUDP = udp
@@ -263,13 +290,13 @@ func (m *modelGate) staleRecord(now time.Time, udp proxyUDPStatus, checkAt time.
 	} else {
 		// the check may still contradict a record that stands on its own udp
 		// verdict, which is what a contradiction is counted against
-		if m.recordQualifies(m.recordUDP, v6, now) && checkAt != m.stopOf &&
-			(m.lastV6.IsZero() || v6.At.After(m.lastV6)) {
+		if m.recordQualifies(m.recordUDP, v6, now) && checkAt != m.stopOf {
 			m.stops++
 			m.stopOf = checkAt
 		}
 		m.starts = 0
 		m.recordUDP = proxyUDPUnknown
+		m.countMeasurementStop(v6)
 	}
 	m.lastCheck, m.lastV6 = checkAt, v6.At
 	m.standing, m.standingUDP = v6, udp
@@ -316,7 +343,7 @@ func (m *modelGate) measurement(now time.Time, v6 proxyIPv6Result) (start bool, 
 	if m.baseline {
 		m.base(m.lastCheck, m.standingUDP, v6, now)
 	} else {
-		m.resolvePending(false, !m.pending.IsZero() && !v6.At.Before(m.pending))
+		m.resolvePending(false, true)
 		m.standing = v6
 		m.judge(m.lastCheck, m.standingUDP, v6, true, now)
 	}
@@ -428,6 +455,7 @@ func (m *modelGate) inFlight(now time.Time, v6 proxyIPv6Result) (stop bool) {
 		m.recordUDP = proxyUDPUnknown
 		m.pending = time.Time{}
 		m.stopOf = time.Time{}
+		m.stopV6 = time.Time{}
 		return true
 	}
 	return false
