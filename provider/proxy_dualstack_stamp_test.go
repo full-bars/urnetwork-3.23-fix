@@ -116,7 +116,7 @@ func TestIPv6OnlyRefreshStampsLaterAndTheGateStillDecides(t *testing.T) {
 		t.Fatal("a refreshed record no longer pairs with the check it followed")
 	}
 
-	gate := &proxyIPv6Gate{since: now.Add(-time.Minute)}
+	gate := &proxyIPv6Gate{}
 	if start, stop := gate.observe(now, check0, v6At0); start || stop {
 		t.Fatalf("one measurement decided start=%v stop=%v", start, stop)
 	}
@@ -179,7 +179,7 @@ func TestGateDefersToTheMeasurementOfItsOwnCheck(t *testing.T) {
 		t.Fatalf("measurement state = %v, want ready", state)
 	}
 
-	gate := &proxyIPv6Gate{since: now.Add(-time.Minute)}
+	gate := &proxyIPv6Gate{}
 	if start, stop := gate.observe(now, check0, v6At0); start || stop {
 		t.Fatalf("one sweep decided start=%v stop=%v", start, stop)
 	}

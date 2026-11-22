@@ -358,7 +358,12 @@ func checkProxyUDP(ctx context.Context, settings *connect.ProxySettings) proxyUD
 type proxyUDPCheckEntry struct {
 	result proxyUDPResult
 	ipv6   proxyIPv6Result
-	at     time.Time
+	// ipv6Restored is true while ipv6 is a record this store loaded from disk
+	// and no measurement of this process has replaced. The dual stack gate
+	// baselines such a record instead of counting it as a new measurement. In
+	// memory only: it is never written to the state file.
+	ipv6Restored bool
+	at           time.Time
 	// completedAt is when a check last published a result here. at also moves
 	// for flow evidence (noteFlowReply), so only this timestamp says a new
 	// observation exists. It is not persisted: the gate that reads it does not
@@ -609,6 +614,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 		var previousCompletedAt time.Time
 		var previousRealStatus proxyUDPStatus
 		var ipv6 proxyIPv6Result
+		ipv6Restored := false
 		ipv6Running := false
 		var ipv6RetryAt time.Time
 		var ipv6Token uint64
@@ -619,6 +625,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			previousCompletedAt = entry.completedAt
 			previousRealStatus = entry.realStatus
 			ipv6 = entry.ipv6
+			ipv6Restored = entry.ipv6Restored
 			ipv6Running = entry.ipv6Running
 			ipv6RetryAt = entry.ipv6RetryAt
 			ipv6Token = entry.ipv6Token
@@ -641,7 +648,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 			reuseBudget = proxyTCPExitMaxAge - now.Sub(tcpExitAt)
 		}
 		self.prune(now)
-		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
+		running := &proxyUDPCheckEntry{done: make(chan struct{}), tcpExit: tcpExit, tcpExitAt: tcpExitAt, ipv6: ipv6, ipv6Restored: ipv6Restored, ipv6Running: ipv6Running, ipv6Token: ipv6Token, ipv6RetryAt: ipv6RetryAt}
 		if previous != nil {
 			// the last completed result stays readable while the recheck runs:
 			// a dial decision taken now must read it, and its own TTL still
@@ -675,7 +682,7 @@ func (self *proxyUDPCheckStore) Check(ctx context.Context, settings *connect.Pro
 				// refresh that ran meanwhile updated it and cleared its flag, and a
 				// restore from the snapshot taken before the probe would bring back
 				// the old measurement and a flag nothing will clear
-				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, realStatus: previousRealStatus, ipv6: running.ipv6, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
+				restored := &proxyUDPCheckEntry{result: *previous, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: previousAt, completedAt: previousCompletedAt, realStatus: previousRealStatus, ipv6: running.ipv6, ipv6Restored: running.ipv6Restored, ipv6Running: running.ipv6Running, ipv6Token: running.ipv6Token, ipv6RetryAt: running.ipv6RetryAt}
 				self.entries[key] = restored
 				if err := self.persistLocked(key, restored, now); err != nil {
 					tlog("[proxy][udp] could not persist probe state\n")
@@ -780,6 +787,8 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		// right after it: throwing it away would also skip the retry clear and
 		// send the identity into a backoff for a result it already has
 		current.ipv6 = measured
+		// the record is this process's now: a gate that reads it counts it
+		current.ipv6Restored = false
 		current.ipv6RetryAt = time.Time{}
 		self.ipv6ProbesRun.Add(1)
 		// while a UDP recheck is in flight the entry is a placeholder with no
@@ -884,8 +893,10 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 	var tcpExit string
 	var tcpExitAt time.Time
 	var ipv6 proxyIPv6Result
+	var ipv6Restored bool
 	if entry != nil {
 		ipv6 = entry.ipv6
+		ipv6Restored = entry.ipv6Restored
 		tcpExit = entry.tcpExit
 		tcpExitAt = entry.tcpExitAt
 		// the real check behind this evidence keeps its time and status, so the
@@ -894,7 +905,7 @@ func (self *proxyUDPCheckStore) noteFlowReply(key string, now time.Time) {
 		realStatus = entry.realStatus
 	}
 	self.prune(now)
-	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6}
+	entry = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPUnknown}, tcpExit: tcpExit, tcpExitAt: tcpExitAt, at: now, flowReply: true, completedAt: realCompletedAt, realStatus: realStatus, ipv6: ipv6, ipv6Restored: ipv6Restored}
 	self.entries[key] = entry
 	self.prune(now)
 	if err := self.persistLocked(key, entry, now); err != nil {

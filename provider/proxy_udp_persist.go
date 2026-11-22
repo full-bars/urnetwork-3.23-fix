@@ -26,6 +26,10 @@ type udpPersistEntry struct {
 	TCPExit string          `json:"tcp_exit,omitempty"`
 	UDPExit string          `json:"udp_exit,omitempty"`
 	IPv6    proxyIPv6Result `json:"ipv6,omitempty"`
+	// restored marks an entry this store read from the file and no measurement
+	// of this process has replaced since. It is unexported, so encoding the
+	// entry writes the same bytes as before and the file format is unchanged.
+	restored bool
 }
 
 type udpPersistFile struct {
@@ -65,6 +69,9 @@ func (self *proxyUDPCheckStore) enablePersistence(path string, now time.Time) {
 		if err != nil || len(key) != sha256.Size || entry.Status < proxyUDPUnknown || entry.Status > proxyUDPExitMismatch || entry.At.IsZero() || entry.At.After(now) || (now.Sub(entry.At) >= proxyUDPTTL(entry.Status) && !entry.IPv6.retain(now)) || (entry.TCPExit != "" && net.ParseIP(entry.TCPExit) == nil) || (entry.UDPExit != "" && net.ParseIP(entry.UDPExit) == nil) {
 			continue
 		}
+		// the record came from the file: mark it so the gate baselines it
+		// instead of counting it as a measurement of this process
+		entry.restored = true
 		self.persisted[entry.Key] = entry
 	}
 }
@@ -85,7 +92,7 @@ func (self *proxyUDPCheckStore) cachedEntryLocked(key string) *proxyUDPCheckEntr
 		if saved.Status == proxyUDPOK || saved.Status == proxyUDPExitMismatch {
 			recordedExit = saved.TCPExit
 		}
-		entry := &proxyUDPCheckEntry{ipv6: saved.IPv6, at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, TCPExit: recordedExit, UDPExit: saved.UDPExit}}
+		entry := &proxyUDPCheckEntry{ipv6: saved.IPv6, ipv6Restored: saved.restored && !saved.IPv6.At.IsZero(), at: saved.At, tcpExit: saved.TCPExit, result: proxyUDPResult{Status: saved.Status, TCPExit: recordedExit, UDPExit: saved.UDPExit}}
 		self.entries[key] = entry
 		return entry
 	}
@@ -119,7 +126,7 @@ func (self *proxyUDPCheckStore) persistLocked(key string, entry *proxyUDPCheckEn
 		udpExit = ""
 	}
 	hash := udpPersistKey(key)
-	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit, IPv6: entry.ipv6}
+	self.persisted[hash] = udpPersistEntry{Key: hash, Status: entry.result.Status, At: entry.at, TCPExit: tcpExit, UDPExit: udpExit, IPv6: entry.ipv6, restored: entry.ipv6Restored}
 	self.persistDirty = true
 	// Checks for different identities finish in any order. The writer drops
 	// entries dated after persistNow, so it must never move backwards.

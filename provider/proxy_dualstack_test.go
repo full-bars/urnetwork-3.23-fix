@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"sync"
 	"testing"
@@ -1212,14 +1213,16 @@ func TestProxyIPv6GateStopsOneBadSweepPolledInTwoPublications(t *testing.T) {
 }
 
 // A record the store restored from disk was measured by the process before this
-// one. The first poll baselines it, so a start still needs two measurements made
-// in this process.
+// one. The mark the store puts on it is what says so, so the first poll
+// baselines it and a start still needs two measurements made in this process.
 func TestProxyIPv6GateBaselinesARestoredRecord(t *testing.T) {
 	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
 	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
 
-	gate := proxyIPv6Gate{since: t0}
+	gate := proxyIPv6Gate{}
 	restored := v6Result(proxyIPv6Yes, "yes", t0.Add(-time.Hour), 12*time.Hour)
+	// the store marks a record it loaded from disk
+	restored.restored = true
 	if start, stop := gate.observe(t0, ok(t0.Add(-time.Hour)), restored); start || stop {
 		t.Fatalf("the restored record changed the gate: start = %v, stop = %v", start, stop)
 	}
@@ -1329,6 +1332,154 @@ func TestProxyIPv6GateDropsAPendingStartOnANegativeIPv6OnlyRecord(t *testing.T) 
 	h.store.Check(withIPv6Sweep(ctx), settings, last)
 	if poll(last) {
 		t.Fatal("started across a disqualifying IPv6 measurement")
+	}
+}
+
+// The state file is loaded, the clock steps back, and the controller starts on
+// a record stamped in the future. The store's mark, not a wall clock, says the
+// record came from the file, so the first poll baselines it and one measurement
+// made by this process does not start the transport on it.
+func TestProxiedIPv6ControllerBaselinesARestoredRecordAfterTheClockSteppedBack(t *testing.T) {
+	base := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	path := t.TempDir() + "/udp-state.json"
+	record := measureYes(proxyIPv6Result{}, base)
+	if _, err := writeUDPPersistFile(path, []udpPersistEntry{{Key: udpPersistKey(settings.Key()), Status: proxyUDPOK, At: base, IPv6: record}}); err != nil {
+		t.Fatal(err)
+	}
+	// the file is loaded, then the clock steps back before the gate starts
+	h.store.enablePersistence(path, base.Add(time.Second))
+	transport := newProxiedPlatformTransport(&fakePlatformTransport{}, &connect.ClientAuth{ByJwt: "jwt"})
+	builds := 0
+	controller := &proxiedIPv6Controller{
+		store:     h.store,
+		key:       settings.Key(),
+		transport: transport,
+		build: func(*connect.ClientAuth) providerPlatformTransport {
+			builds++
+			return &fakePlatformTransport{}
+		},
+	}
+	t.Cleanup(func() { transport.stopExtra() })
+
+	// the clock stepped back behind the record: ahead of the stamp it loaded,
+	// the poll still baselines the record instead of counting it
+	controller.step(base.Add(-time.Minute))
+	if controller.gate.yes != 0 || controller.gate.no != 0 {
+		t.Fatalf("the restored record was counted: yes = %d, no = %d", controller.gate.yes, controller.gate.no)
+	}
+	// the first measurement this process makes must not start it
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		return measureYes(previous, at), true
+	}
+	next := base.Add(13 * time.Hour)
+	h.store.Check(withIPv6Sweep(context.Background()), settings, next)
+	controller.step(next)
+	if transport.hasExtra() || builds != 0 {
+		t.Fatal("one measurement made this process started the transport on the record the previous process measured")
+	}
+}
+
+// The store marks the IPv6 record it loaded from disk so the gate can baseline
+// a restart without a wall clock, and the mark goes as soon as a measurement of
+// this process replaces the record.
+func TestProxyUDPStoreMarksARestoredIPv6RecordUntilItMeasuresItAgain(t *testing.T) {
+	base := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	path := t.TempDir() + "/udp-state.json"
+	record := measureYes(proxyIPv6Result{}, base)
+	if _, err := writeUDPPersistFile(path, []udpPersistEntry{{Key: udpPersistKey(settings.Key()), Status: proxyUDPOK, At: base, IPv6: record}}); err != nil {
+		t.Fatal(err)
+	}
+	h.store.enablePersistence(path, base.Add(time.Second))
+
+	_, v6, state := h.store.measurement(settings.Key(), base.Add(time.Minute))
+	if state != measurementReady {
+		t.Fatalf("measurement state = %v, want ready", state)
+	}
+	if !v6.restored {
+		t.Fatal("the store did not mark the record it loaded from disk")
+	}
+	// a measurement of this process replaces the record, and the mark goes
+	next := base.Add(13 * time.Hour)
+	h.store.Check(withIPv6Sweep(context.Background()), settings, next)
+	_, v6, state = h.store.measurement(settings.Key(), next)
+	if state != measurementReady {
+		t.Fatalf("measurement state = %v, want ready", state)
+	}
+	if v6.At.Equal(base) {
+		t.Fatal("the sweep did not measure the record again")
+	}
+	if v6.restored {
+		t.Fatal("a measurement of this process left the restored mark on the record")
+	}
+}
+
+// The marks that say a record came from disk live in memory only: encoding the
+// persisted entry writes the same bytes whether the entry and its record are
+// marked or not, so the state file format does not change.
+func TestProxyIPv6RestoredMarksAreNotPersisted(t *testing.T) {
+	now := time.Date(2026, 11, 21, 9, 0, 0, 0, time.UTC)
+	plain := udpPersistEntry{
+		Key:     udpPersistKey("proxy"),
+		Status:  proxyUDPOK,
+		At:      now,
+		TCPExit: "192.0.2.1",
+		UDPExit: "192.0.2.1",
+		IPv6:    v6Result(proxyIPv6Yes, "yes", now, 12*time.Hour),
+	}
+	marked := plain
+	marked.restored = true
+	marked.IPv6.restored = true
+	plainBytes, err := json.Marshal(plain)
+	if err != nil {
+		t.Fatal(err)
+	}
+	markedBytes, err := json.Marshal(marked)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(markedBytes) != string(plainBytes) {
+		t.Fatalf("a mark reached the state file: %s", markedBytes)
+	}
+}
+
+// A hot swap starts a new controller for an identity this process already
+// measured, so the record in the store is not restored state: the new gate
+// counts it as one measurement of this process, and a second one starts the
+// transport.
+func TestProxiedIPv6ControllerCountsAProcessMeasurementAcrossAHotSwap(t *testing.T) {
+	base := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		return measureYes(previous, at), true
+	}
+	ctx := withIPv6Sweep(context.Background())
+	h.store.Check(ctx, settings, base)
+
+	// the controller that replaces the running one starts after the measurement
+	swapped := base.Add(time.Minute)
+	var gate proxyIPv6Gate
+	udp, v6, state := h.store.measurement(settings.Key(), swapped)
+	if state != measurementReady {
+		t.Fatalf("measurement state = %v, want ready", state)
+	}
+	gate.observe(swapped, udp, v6)
+	if gate.yes != 1 {
+		t.Fatalf("the hot swap baselined a record this process measured: yes = %d", gate.yes)
+	}
+	// the second measurement of this process starts it
+	later := base.Add(13 * time.Hour)
+	h.store.Check(ctx, settings, later)
+	udp, v6, state = h.store.measurement(settings.Key(), later)
+	if state != measurementReady {
+		t.Fatalf("measurement state = %v, want ready", state)
+	}
+	if start, _ := gate.observe(later, udp, v6); !start {
+		t.Fatal("a second measurement across a hot swap did not start the transport")
 	}
 }
 

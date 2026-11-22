@@ -27,6 +27,11 @@ type proxyIPv6Result struct {
 	UDPExit  string          `json:"udp_exit,omitempty"`
 	At       time.Time       `json:"at,omitempty"`
 	Interval time.Duration   `json:"interval,omitempty"`
+	// restored marks a record the store loaded from disk that no measurement of
+	// this process has replaced yet. It is in memory only: it carries no json
+	// tag, so the state file keeps exactly the fields it always had, and the
+	// store hands it to the dual stack gate with the record.
+	restored bool
 }
 
 func (r proxyIPv6Result) due(now time.Time) bool {

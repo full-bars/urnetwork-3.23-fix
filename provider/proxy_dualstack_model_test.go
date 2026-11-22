@@ -25,11 +25,12 @@ import (
 // modelGate reports the same three outcomes as the gate: start, stop, or
 // neither. Its state is the evidence it has counted, not a poll history.
 type modelGate struct {
-	// since is when this process started: a record measured before it came
-	// from disk, so it is baselined and never counted.
-	since time.Time
 	// running mirrors the extra transport.
 	running bool
+	// baseline is set while the new gate still has to baseline the record the
+	// store loaded from disk: its first poll consumes the stamps without
+	// judging anything, so the model does the same for its first event.
+	baseline bool
 	// lastCheck and lastV6 are the stamps already consumed, so a repeated
 	// event changes nothing.
 	lastCheck time.Time
@@ -158,6 +159,10 @@ func (m *modelGate) decide(udp proxyUDPStatus, v6 proxyIPv6Result, now time.Time
 // settle is a poll: nothing new was published, but evidence can expire and a
 // streak can decide.
 func (m *modelGate) settle(now time.Time) (start bool, stop bool) {
+	if m.baseline {
+		// a poll with nothing new carries the stamps the gate already had
+		m.base(m.lastCheck, m.standingUDP, m.standing, now)
+	}
 	m.pruneStart(now)
 	stop = m.expiryStop(now)
 	start, again := m.decide(m.standingUDP, m.standing, now)
@@ -172,7 +177,11 @@ func (m *modelGate) settle(now time.Time) (start bool, stop bool) {
 func (m *modelGate) sweep(now time.Time, udp proxyUDPStatus, checkAt time.Time, v6 proxyIPv6Result) (start bool, stop bool) {
 	m.pruneStart(now)
 	stop = m.expiryStop(now)
-	if !m.qualifies(udp, m.standing, now) {
+	if m.baseline {
+		// the poll of the udp publication baselines the restored record, so
+		// only the sweep's own measurement is judged
+		m.baseline = false
+	} else if !m.qualifies(udp, m.standing, now) {
 		m.judge(checkAt, udp, m.standing, false, now)
 	}
 	m.lastCheck, m.lastV6 = checkAt, v6.At
@@ -188,8 +197,12 @@ func (m *modelGate) udpOnly(now time.Time, udp proxyUDPStatus, checkAt time.Time
 	m.pruneStart(now)
 	stop = m.expiryStop(now)
 	m.lastCheck = checkAt
-	m.standingUDP = udp
-	m.judge(checkAt, udp, m.standing, false, now)
+	if m.baseline {
+		m.base(checkAt, udp, m.standing, now)
+	} else {
+		m.standingUDP = udp
+		m.judge(checkAt, udp, m.standing, false, now)
+	}
 	start, again := m.decide(udp, m.standing, now)
 	return start, stop || again
 }
@@ -199,8 +212,12 @@ func (m *modelGate) measurement(now time.Time, v6 proxyIPv6Result) (start bool, 
 	m.pruneStart(now)
 	stop = m.expiryStop(now)
 	m.lastV6 = v6.At
-	m.standing = v6
-	m.judge(m.lastCheck, m.standingUDP, v6, true, now)
+	if m.baseline {
+		m.base(m.lastCheck, m.standingUDP, v6, now)
+	} else {
+		m.standing = v6
+		m.judge(m.lastCheck, m.standingUDP, v6, true, now)
+	}
 	start, again := m.decide(m.standingUDP, v6, now)
 	return start, stop || again
 }
@@ -215,18 +232,34 @@ func (m *modelGate) disable() (stop bool) {
 	return stop
 }
 
-// restart begins a new process with the measurement the store restored from
-// disk. That record predates the new gate, so it is state, not an observation.
-func (m *modelGate) restart(now time.Time, checkAt time.Time, udp proxyUDPStatus, v6 proxyIPv6Result) {
-	*m = modelGate{since: now}
-	if !v6.At.IsZero() {
-		m.lastCheck, m.lastV6 = checkAt, v6.At
-		m.standing, m.standingUDP = v6, udp
-		if m.qualifies(udp, v6, now) {
-			// the basis the restored record stands on, until a measurement of
-			// this process replaces it
-			m.recordUDP = udp
-		}
+// restart begins a new gate for an identity whose record is still in the
+// store. A record the store loaded from disk is state, not an observation, so
+// the new gate baselines it; a record this process measured is not marked, so a
+// hot swap counts it as one measurement of this process.
+func (m *modelGate) restart(now time.Time, checkAt time.Time, udp proxyUDPStatus, v6 proxyIPv6Result, restored bool) {
+	*m = modelGate{}
+	if v6.At.IsZero() {
+		return
+	}
+	m.standing, m.standingUDP = v6, udp
+	m.lastCheck, m.lastV6 = checkAt, v6.At
+	if restored {
+		// the first poll baselines the record instead of judging it
+		m.baseline = true
+		return
+	}
+	m.judge(checkAt, udp, v6, true, now)
+}
+
+// base consumes the always-first poll of a gate that started on a restored
+// record. It judges nothing: the gate only records the stamps it was handed.
+func (m *modelGate) base(checkAt time.Time, udp proxyUDPStatus, v6 proxyIPv6Result, now time.Time) {
+	m.baseline = false
+	m.standing, m.standingUDP = v6, udp
+	if m.qualifies(udp, v6, now) {
+		// the basis the restored record stands on, until a measurement of this
+		// process replaces it
+		m.recordUDP = udp
 	}
 }
 
@@ -282,6 +315,8 @@ type gateEvent struct {
 	v6 proxyIPv6Result
 	// advance is how far the clock moves before the event
 	advance time.Duration
+	// restored marks a restart on a store it loaded its record from disk into
+	restored bool
 }
 
 func (self gateEvent) String() string {
@@ -366,12 +401,23 @@ func generateSequence(r *rand.Rand) []gateEvent {
 // gateRun is one replay: the real gate behind the controller's switch, the
 // model, the cached measurement the store hands out, and the clock.
 type gateRun struct {
-	gate     proxyIPv6Gate
-	model    *modelGate
-	now      time.Time
-	udp      proxyUDPResult
-	v6       proxyIPv6Result
+	gate  proxyIPv6Gate
+	model *modelGate
+	now   time.Time
+	udp   proxyUDPResult
+	v6    proxyIPv6Result
+	// restored is the mark the store puts on a record it loaded from disk and
+	// no measurement of this process has replaced
+	restored bool
 	disabled bool
+}
+
+// observe polls with the record as the store hands it out: marked while it is
+// still the one the file supplied.
+func (r *gateRun) observe() (start bool, stop bool) {
+	v6 := r.v6
+	v6.restored = r.restored && !v6.At.IsZero()
+	return r.gate.observe(r.now, r.udp, v6)
 }
 
 // poll is the controller's step. A disabled switch stops the transport and
@@ -381,27 +427,28 @@ func (r *gateRun) poll() (start bool, stop bool) {
 	if r.disabled {
 		stop = r.gate.running
 		r.gate = proxyIPv6Gate{
-			since:            r.gate.since,
 			lastCheckedAt:    r.gate.lastCheckedAt,
 			lastExpiry:       r.gate.lastExpiry,
 			lastV6At:         r.gate.lastV6At,
 			lastCountedCheck: r.gate.lastCountedCheck,
+			recordUDP:        r.gate.recordUDP,
 		}
 		return false, stop
 	}
-	return r.gate.observe(r.now, r.udp, r.v6)
+	return r.observe()
 }
 
-func (r *gateRun) restart() {
-	r.gate = proxyIPv6Gate{since: r.now}
-	r.model.restart(r.now, r.udp.CheckedAt, r.udp.Status, r.v6)
+func (r *gateRun) restart(restored bool) {
+	r.gate = proxyIPv6Gate{}
+	r.restored = restored
+	r.model.restart(r.now, r.udp.CheckedAt, r.udp.Status, r.v6, restored)
 }
 
 // replay drives one sequence. It returns one verdict per event and side. A
 // sweep is published in two polls on the real side, with `between` extra polls
 // inserted between its two publications.
 func replay(events []gateEvent, between map[int]int, start time.Time) (real []verdict, model []verdict, err error) {
-	r := &gateRun{gate: proxyIPv6Gate{since: start}, model: &modelGate{since: start}, now: start}
+	r := &gateRun{gate: proxyIPv6Gate{}, model: &modelGate{}, now: start}
 	real = make([]verdict, len(events))
 	model = make([]verdict, len(events))
 	for i, event := range events {
@@ -427,7 +474,7 @@ func replay(events []gateEvent, between map[int]int, start time.Time) (real []ve
 			real[i] = verdictOf(r.poll())
 			model[i] = verdictOf(r.model.settle(r.now))
 		case eventRestart:
-			r.restart()
+			r.restart(event.restored)
 			real[i] = verdictOf(r.poll())
 			model[i] = verdictOf(r.model.settle(r.now))
 		case eventPoll, eventAdvance:
@@ -440,6 +487,7 @@ func replay(events []gateEvent, between map[int]int, start time.Time) (real []ve
 		case eventMeasurement:
 			event.v6.At = r.now
 			r.v6 = event.v6
+			r.restored = false
 			real[i] = verdictOf(r.poll())
 			model[i] = verdictOf(r.model.measurement(r.now, event.v6))
 		case eventSweep:
@@ -455,6 +503,8 @@ func replay(events []gateEvent, between map[int]int, start time.Time) (real []ve
 			}
 			event.v6.At = checkAt
 			r.v6 = event.v6
+			// the sweep measured the record: this process owns it now
+			r.restored = false
 			second := verdictOf(r.poll())
 			if first.Start && second.Start || first.Stop && second.Stop {
 				return real, model, fmt.Errorf("event %d (%s): one sweep made the same transition twice: %+v then %+v", i, event, first, second)
@@ -522,10 +572,10 @@ func directedSequences() []gateSequence {
 		},
 		{
 			// a record restored from disk is a baseline, not a measurement
-			name: "a start after a restart",
+			name: "a start after a restart on a record loaded from disk",
 			events: withAdvance(
 				qualifying,
-				gateEvent{kind: eventRestart},
+				gateEvent{kind: eventRestart, restored: true},
 				measurement,
 				qualifying,
 			),
