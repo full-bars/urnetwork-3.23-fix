@@ -278,6 +278,10 @@ func warnLifecycleLinger(p Provider) {
 	}
 }
 
+func statusLingerApplicable(p Provider) bool {
+	return runtime.GOOS == "linux" && p.Unit != "" && p.Supervisor != "openrc" && p.User != "" && isUserUnit(p.Unit)
+}
+
 // collectStatusData reads every source without letting one slow source stop
 // another. The snapshot stays nil when the provider does not answer, which
 // drives both the "live status unavailable" rows and the unreachable exit
@@ -295,7 +299,7 @@ func collectStatusData(p Provider) statusData {
 		}
 	}
 	rows := makeStatusRows(p, snap, ext, sigpipeRisk)
-	if runtime.GOOS == "linux" && p.Unit != "" && p.Supervisor != "openrc" && p.User != "" && isUserUnit(p.Unit) {
+	if statusLingerApplicable(p) {
 		if enabled, err := statusLingerCheckFn(p.User); err == nil && !enabled {
 			rows = append(rows, statusRow{"Linger", statusWarn, "off; run sudo loginctl enable-linger " + p.User})
 		}

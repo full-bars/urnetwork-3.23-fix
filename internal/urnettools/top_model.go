@@ -142,6 +142,8 @@ type topEvent struct {
 }
 
 type topModel struct {
+	linger []topLingerReading
+
 	theme     tui.Theme
 	providers []Provider
 	cur       int

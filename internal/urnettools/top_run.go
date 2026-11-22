@@ -21,6 +21,9 @@ const topMinFrame = 50 * time.Millisecond
 // topResult is one finished fetch, tagged with the selection it was for. A
 // traffic result carries the light live counters instead of a snapshot.
 type topResult struct {
+	isLinger bool
+	linger   []topLingerReading
+
 	gen       int
 	snap      *NodeSnapshot
 	err       error
@@ -224,6 +227,27 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		}()
 	}
 
+	var lingerAt time.Time
+	var lingerBusy bool
+	fetchLinger := func() {
+		lingerBusy = true
+		lingerAt = m.now()
+		providers := append([]Provider(nil), m.providers...)
+		go func() {
+			res := topResult{isLinger: true}
+			defer func() {
+				if recover() != nil {
+					res.linger = nil
+				}
+				select {
+				case results <- res:
+				case <-ctx.Done():
+				}
+			}()
+			res.linger = collectTopLinger(providers, time.Now(), statusLingerApplicable, statusLingerCheckFn)
+		}()
+	}
+
 	ticker := time.NewTicker(tick)
 	defer ticker.Stop()
 	buf := tui.New(0, 0)
@@ -237,6 +261,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	var lastDraw time.Time
 	dirty := true
 	for {
+		if _, ok := src.(socketTopSource); ok && !lingerBusy && (lingerAt.IsZero() || m.now().Sub(lingerAt) >= 30*time.Second) {
+			fetchLinger()
+		}
 		if m.mouse != lastMouse {
 			scr.SetMouse(m.mouse)
 			lastMouse = m.mouse
@@ -329,6 +356,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		case r := <-results:
 			dirty = true
 			switch {
+			case r.isLinger:
+				lingerBusy = false
+				m.linger = r.linger
 			case r.isProxyDetail:
 				detailBusy = false
 				m.applyProxyCellDetail(r.gen, r.proxyDetail, r.err)
