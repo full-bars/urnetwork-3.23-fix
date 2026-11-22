@@ -53,7 +53,8 @@ func saveCounters(t *testing.T) {
 		c.drops.Store(s.drops)
 	}
 
-	h1 := saveMode(&h1ModeStats)
+	h1ws := saveMode(&h1ModeStats.webSocket)
+	h1plus := saveMode(&h1ModeStats.h1Plus)
 	h1d := saveMode(&h1DirectStats)
 	h3 := saveH3(&h3Counters)
 	h3dns := saveH3(&h3DnsCounters)
@@ -76,7 +77,8 @@ func saveCounters(t *testing.T) {
 	zeroCounters(t)
 
 	t.Cleanup(func() {
-		restoreMode(&h1ModeStats, h1)
+		restoreMode(&h1ModeStats.webSocket, h1ws)
+		restoreMode(&h1ModeStats.h1Plus, h1plus)
 		restoreMode(&h1DirectStats, h1d)
 		restoreH3(&h3Counters, h3)
 		restoreH3(&h3DnsCounters, h3dns)
@@ -97,7 +99,7 @@ func saveCounters(t *testing.T) {
 // from zero, exactly as a fresh process does.
 func zeroCounters(t *testing.T) {
 	t.Helper()
-	for _, s := range []*transportModeStats{&h1ModeStats, &h1DirectStats} {
+	for _, s := range []*transportModeStats{&h1ModeStats.webSocket, &h1ModeStats.h1Plus, &h1DirectStats} {
 		s.framesTx.Store(0)
 		s.framesRx.Store(0)
 		s.bytesTx.Store(0)
@@ -190,8 +192,8 @@ func TestMetricsCountersSurviveRestart(t *testing.T) {
 	IncrContractAcquired()
 	IncrContractAcquired()
 	IncrContractDenied()
-	h1ModeStats.framesTx.Add(3)
-	h1ModeStats.bytesTx.Add(300)
+	h1ModeStats.webSocket.framesTx.Add(3)
+	h1ModeStats.webSocket.bytesTx.Add(300)
 	h3Counters.attempts.Add(2)
 	h3Counters.connects.Add(1)
 	h3DatagramOffered.Add(4)
@@ -219,6 +221,12 @@ func TestMetricsCountersSurviveRestart(t *testing.T) {
 	if after.H1.BytesTx != 300 {
 		t.Errorf("h1 bytes tx = %d, want 300", after.H1.BytesTx)
 	}
+	if after.H1WebSocket.FramesTx != 3 || after.H1WebSocket.BytesTx != 300 {
+		t.Errorf("h1 websocket = %+v, want frames 3 bytes 300", after.H1WebSocket)
+	}
+	if after.H1Plus != (modeCounters{}) {
+		t.Errorf("h1+ = %+v, want zero", after.H1Plus)
+	}
 	if after.H3.Attempts != 2 || after.H3.Connects != 1 {
 		t.Errorf("h3 attempts/connects = %d/%d, want 2/1", after.H3.Attempts, after.H3.Connects)
 	}
@@ -233,6 +241,82 @@ func TestMetricsCountersSurviveRestart(t *testing.T) {
 	}
 	if after.Errors[string(ErrorTransport)] != 2 || after.Errors[string(ErrorProxy)] != 1 {
 		t.Errorf("errors = %v", after.Errors)
+	}
+}
+
+// TestMetricsCountersRestoreLegacyH1AsWebSocket covers a store written before
+// the carrier split: it carries the H1 total and no halves. The total is
+// restored into the websocket bucket, so the reported H1 total is still the sum
+// of the two kinds instead of stepping backwards or inventing an H1+ share.
+func TestMetricsCountersRestoreLegacyH1AsWebSocket(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+	file := metricsCountersFile{
+		Version: metricsCountersVersion,
+		SavedAt: time.Now().UTC(),
+		Counters: metricsCounterTotals{
+			H1: modeCounters{FramesTx: 7, FramesRx: 3, BytesTx: 700, BytesRx: 300},
+		},
+	}
+	blob, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	got := TransportModeStats()
+	if got.H1WebSocketFramesTx != 7 || got.H1WebSocketBytesTx != 700 ||
+		got.H1WebSocketFramesRx != 3 || got.H1WebSocketBytesRx != 300 {
+		t.Fatalf("legacy total must land in the websocket bucket: %+v", got)
+	}
+	if got.H1PlusFramesTx != 0 || got.H1PlusBytesTx != 0 {
+		t.Fatalf("h1+ must stay zero: %+v", got)
+	}
+	if got.H1FramesTx != got.H1WebSocketFramesTx+got.H1PlusFramesTx ||
+		got.H1BytesRx != got.H1WebSocketBytesRx+got.H1PlusBytesRx {
+		t.Fatalf("h1 total is not the sum of the kinds: %+v", got)
+	}
+}
+
+// TestMetricsCountersRestoreH1CarrierSplit covers a store written by this build:
+// both halves come back, and the H1 total is their sum.
+func TestMetricsCountersRestoreH1CarrierSplit(t *testing.T) {
+	saveCounters(t)
+	resetMetricsPersist(t)
+	path := testStorePath(t)
+	file := metricsCountersFile{
+		Version: metricsCountersVersion,
+		SavedAt: time.Now().UTC(),
+		Counters: metricsCounterTotals{
+			H1:          modeCounters{FramesTx: 5, BytesTx: 500},
+			H1WebSocket: modeCounters{FramesTx: 2, BytesTx: 200},
+			H1Plus:      modeCounters{FramesTx: 3, BytesTx: 300},
+		},
+	}
+	blob, err := json.Marshal(file)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(path, blob, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := RestoreMetricsCounters(path); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	got := TransportModeStats()
+	if got.H1WebSocketFramesTx != 2 || got.H1WebSocketBytesTx != 200 {
+		t.Fatalf("h1 websocket = %+v", got)
+	}
+	if got.H1PlusFramesTx != 3 || got.H1PlusBytesTx != 300 {
+		t.Fatalf("h1+ = %+v", got)
+	}
+	if got.H1FramesTx != 5 || got.H1BytesTx != 500 {
+		t.Fatalf("h1 total = %+v", got)
 	}
 }
 
@@ -791,7 +875,7 @@ func TestCatchUpMetricsCounters(t *testing.T) {
 	}
 	// This process has counted a little; the store has counted more.
 	IncrContractAcquired()
-	h1ModeStats.framesTx.Add(4)
+	h1ModeStats.webSocket.framesTx.Add(4)
 	file := metricsCountersFile{
 		Version: metricsCountersVersion,
 		SavedAt: time.Now().UTC(),
@@ -826,10 +910,10 @@ func TestCatchUpMetricsCounters(t *testing.T) {
 	if got := globalProm.contractsIn.Load(); got != 50 {
 		t.Errorf("contracts = %d, want 50", got)
 	}
-	if got := h1ModeStats.framesTx.Load(); got != 900 {
+	if got := h1ModeStats.webSocket.framesTx.Load(); got != 900 {
 		t.Errorf("h1 frames = %d, want 900", got)
 	}
-	if got := h1ModeStats.bytesTx.Load(); got != 9000 {
+	if got := h1ModeStats.webSocket.bytesTx.Load(); got != 9000 {
 		t.Errorf("h1 bytes = %d, want 9000", got)
 	}
 	if got := bw.TotalRx.Load(); got != 1234 {

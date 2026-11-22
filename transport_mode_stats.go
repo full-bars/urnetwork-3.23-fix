@@ -45,13 +45,59 @@ type h3FamilyCounters struct {
 	up              atomic.Int64
 }
 
+// h1CarrierCounters is the H1 payload counters split by carrier kind: the
+// ordinary WebSocket and the framed H1+ upgrade. A connection's kind is settled
+// once the upgrade completes, so the payload path counts on the pair it picks
+// then, and the H1 totals are the sum of the two by construction.
+type h1CarrierCounters struct {
+	webSocket transportModeStats
+	h1Plus    transportModeStats
+}
+
+// modeCounterValues is one counter pair at a point in time.
+type modeCounterValues struct {
+	FramesTx, FramesRx, BytesTx, BytesRx uint64
+}
+
+func (self *transportModeStats) values() modeCounterValues {
+	return modeCounterValues{
+		FramesTx: self.framesTx.Load(),
+		FramesRx: self.framesRx.Load(),
+		BytesTx:  self.bytesTx.Load(),
+		BytesRx:  self.bytesRx.Load(),
+	}
+}
+
+// counters returns the counter pair for one carrier kind. Callers pick this
+// once per connection, so each payload costs one add and no branch on its kind.
+func (self *h1CarrierCounters) counters(h1Plus bool) *transportModeStats {
+	if h1Plus {
+		return &self.h1Plus
+	}
+	return &self.webSocket
+}
+
+// split reports both kinds and their sum.
+func (self *h1CarrierCounters) split() (webSocket, h1Plus, total modeCounterValues) {
+	webSocket = self.webSocket.values()
+	h1Plus = self.h1Plus.values()
+	total = modeCounterValues{
+		FramesTx: webSocket.FramesTx + h1Plus.FramesTx,
+		FramesRx: webSocket.FramesRx + h1Plus.FramesRx,
+		BytesTx:  webSocket.BytesTx + h1Plus.BytesTx,
+		BytesRx:  webSocket.BytesRx + h1Plus.BytesRx,
+	}
+	return
+}
+
 var (
 	// h1ModeStats counts every H1 transport in the process, which on a provider
-	// is one per proxy identity. h1DirectStats counts only the identities that
-	// are eligible for H3 (the direct identity), which is the fair thing to put
-	// H3 against: H3 exists for that one identity, so comparing it with all the
-	// proxies' H1 traffic reads as about 0% whatever H3 actually does.
-	h1ModeStats   transportModeStats
+	// is one per proxy identity, split by carrier kind. h1DirectStats counts
+	// only the identities that are eligible for H3 (the direct identity), which
+	// is the fair thing to put H3 against: H3 exists for that one identity, so
+	// comparing it with all the proxies' H1 traffic reads as about 0% whatever
+	// H3 actually does.
+	h1ModeStats   h1CarrierCounters
 	h1DirectStats transportModeStats
 
 	h3Counters        h3FamilyCounters
@@ -78,6 +124,11 @@ func h3CountersFor(mode TransportMode) *h3FamilyCounters {
 // TransportModeStatsSnapshot is a point-in-time copy of the per-mode counters.
 type TransportModeStatsSnapshot struct {
 	H1FramesTx, H1FramesRx, H1BytesTx, H1BytesRx uint64
+	// H1WebSocket and H1Plus are the two carrier kinds H1 is made of. The H1
+	// totals above are their sum, so a reader can split the bar without the
+	// halves ever disagreeing with the total.
+	H1WebSocketFramesTx, H1WebSocketFramesRx, H1WebSocketBytesTx, H1WebSocketBytesRx uint64
+	H1PlusFramesTx, H1PlusFramesRx, H1PlusBytesTx, H1PlusBytesRx                     uint64
 	// H1Direct is H1 for the identities eligible for H3 only.
 	H1DirectFramesTx, H1DirectFramesRx, H1DirectBytesTx, H1DirectBytesRx uint64
 	H3FramesTx, H3FramesRx, H3BytesTx, H3BytesRx                         uint64
@@ -121,26 +172,35 @@ func ptSnapshot(c *h3FamilyCounters) PtModeSnapshot {
 
 // TransportModeStats returns the cumulative per-mode counters.
 func TransportModeStats() TransportModeStatsSnapshot {
+	h1WebSocket, h1Plus, h1Total := h1ModeStats.split()
 	return TransportModeStatsSnapshot{
-		H1FramesTx:        h1ModeStats.framesTx.Load(),
-		H1FramesRx:        h1ModeStats.framesRx.Load(),
-		H1BytesTx:         h1ModeStats.bytesTx.Load(),
-		H1BytesRx:         h1ModeStats.bytesRx.Load(),
-		H1DirectFramesTx:  h1DirectStats.framesTx.Load(),
-		H1DirectFramesRx:  h1DirectStats.framesRx.Load(),
-		H1DirectBytesTx:   h1DirectStats.bytesTx.Load(),
-		H1DirectBytesRx:   h1DirectStats.bytesRx.Load(),
-		H3FramesTx:        h3ModeStats.framesTx.Load(),
-		H3FramesRx:        h3ModeStats.framesRx.Load(),
-		H3BytesTx:         h3ModeStats.bytesTx.Load(),
-		H3BytesRx:         h3ModeStats.bytesRx.Load(),
-		H3Attempts:        h3Counters.attempts.Load(),
-		H3Connects:        h3Counters.connects.Load(),
-		H3ConnectFailures: h3Counters.connectFailures.Load(),
-		H3Drops:           h3Counters.drops.Load(),
-		H3Up:              h3Counters.up.Load(),
-		Dns:               ptSnapshot(&h3DnsCounters),
-		DnsPump:           ptSnapshot(&h3DnsPumpCounters),
+		H1FramesTx:          h1Total.FramesTx,
+		H1FramesRx:          h1Total.FramesRx,
+		H1BytesTx:           h1Total.BytesTx,
+		H1BytesRx:           h1Total.BytesRx,
+		H1WebSocketFramesTx: h1WebSocket.FramesTx,
+		H1WebSocketFramesRx: h1WebSocket.FramesRx,
+		H1WebSocketBytesTx:  h1WebSocket.BytesTx,
+		H1WebSocketBytesRx:  h1WebSocket.BytesRx,
+		H1PlusFramesTx:      h1Plus.FramesTx,
+		H1PlusFramesRx:      h1Plus.FramesRx,
+		H1PlusBytesTx:       h1Plus.BytesTx,
+		H1PlusBytesRx:       h1Plus.BytesRx,
+		H1DirectFramesTx:    h1DirectStats.framesTx.Load(),
+		H1DirectFramesRx:    h1DirectStats.framesRx.Load(),
+		H1DirectBytesTx:     h1DirectStats.bytesTx.Load(),
+		H1DirectBytesRx:     h1DirectStats.bytesRx.Load(),
+		H3FramesTx:          h3ModeStats.framesTx.Load(),
+		H3FramesRx:          h3ModeStats.framesRx.Load(),
+		H3BytesTx:           h3ModeStats.bytesTx.Load(),
+		H3BytesRx:           h3ModeStats.bytesRx.Load(),
+		H3Attempts:          h3Counters.attempts.Load(),
+		H3Connects:          h3Counters.connects.Load(),
+		H3ConnectFailures:   h3Counters.connectFailures.Load(),
+		H3Drops:             h3Counters.drops.Load(),
+		H3Up:                h3Counters.up.Load(),
+		Dns:                 ptSnapshot(&h3DnsCounters),
+		DnsPump:             ptSnapshot(&h3DnsPumpCounters),
 	}
 }
 
