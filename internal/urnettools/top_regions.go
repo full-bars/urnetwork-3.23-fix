@@ -41,10 +41,11 @@ func (m *topModel) footerHints() []topFooterHint {
 	if len(m.providers) > 1 {
 		hints = append(hints, topFooterHint{"footer:provider", "tab provider"})
 	}
-	// The page hint belongs with the strip, so it appears on the same pages the
-	// strip does. That keeps the dashboard's footer exactly as it was.
-	if pages, _ := m.pageStrip(m.pageArea()); len(pages) > 1 && m.pageIndex() != 0 {
-		hints = append(hints, topFooterHint{"footer:pages", "[/] page"})
+	// The page hints are on every page with more than one to offer, whether the
+	// strip row is drawn or hidden: the hints are the way back to both the
+	// pages and the tabs.
+	if pages, _ := m.pageStrip(m.pageArea()); len(pages) > 1 {
+		hints = append(hints, topFooterHint{"footer:pages", "[/] page"}, topFooterHint{"footer:tabs", "p tabs"})
 	}
 	hints = append(hints, topFooterHint{"footer:help", "? help"}, topFooterHint{"footer:menu", "m menu"})
 	// The mode hint names the mode K would switch to; the marker at the right

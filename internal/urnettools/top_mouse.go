@@ -109,6 +109,8 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 	switch name {
 	case "footer:pages":
 		m.stepPage(1)
+	case "footer:tabs":
+		m.togglePageStrip()
 	case "footer:quit":
 		m.quit = true
 		return topQuit

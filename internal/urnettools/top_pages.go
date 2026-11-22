@@ -16,6 +16,17 @@ import (
 // topPageStripRows is the height of the page strip band.
 const topPageStripRows = 1
 
+// topStripMinHeight is the shortest terminal that gives the strip its row. The
+// strip is part of the full layout, which needs topMinHeight rows; below that
+// the compact view keeps every row for its graph and offers no tabs.
+const topStripMinHeight = topMinHeight
+
+// The one-line messages p shows when it hides or shows the strip.
+const (
+	topNoticeTabsHidden = "Page tabs hidden. p shows them"
+	topNoticeTabsShown  = "Page tabs shown. p hides them"
+)
+
 // topPage is one page of the dashboard.
 type topPage struct {
 	// id names the page in hit regions and in the page key path.
@@ -91,6 +102,29 @@ func (m *topModel) pageKeysActive() bool {
 		return false
 	}
 	return true
+}
+
+// stripShown reports whether a frame draws the page strip row: the strip is on
+// by default, the operator has not hidden it with p, there is more than one
+// page to offer, and the terminal is tall enough to give the row to the strip
+// instead of the compact view's graph.
+func (m *topModel) stripShown(r tui.Rect, pages int) bool {
+	return pages > 1 && !m.stripHidden && r.H >= topStripMinHeight
+}
+
+// togglePageStrip hides or shows the page strip for the session and says which
+// way it went. The choice is not saved: a new top starts with the strip on,
+// and with a single page there is nothing to hide.
+func (m *topModel) togglePageStrip() {
+	if pages, _ := m.pageStrip(m.pageArea()); len(pages) < 2 {
+		return
+	}
+	m.stripHidden = !m.stripHidden
+	if m.stripHidden {
+		m.setNotice(topNoticeTabsHidden)
+		return
+	}
+	m.setNotice(topNoticeTabsShown)
 }
 
 // stepPage moves the selection by delta among the pages the strip offers,

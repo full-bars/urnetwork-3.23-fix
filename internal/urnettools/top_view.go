@@ -115,13 +115,13 @@ func topFrameRowsOnePage(r tui.Rect) (header, content, footer tui.Rect) {
 
 // drawFrame draws the chrome every page shares and then the selected page
 // inside the content rectangle it leaves. The page strip takes a row of its
-// own, and it is drawn only once the operator is off the dashboard: page 1 is
-// the screen every earlier version of top drew, byte for byte, for anyone who
-// never switches.
+// own on every page, page 1 included, so the pages are visible without
+// switching to one. p hides the row for the session and gives it back to the
+// content.
 func (m *topModel) drawFrame(b *tui.Buffer) {
 	header, strip, content, footer := topFrameRows(b.Rect())
 	pages, current := m.pageStrip(content)
-	showStrip := len(pages) > 1 && m.pageIndex() != 0
+	showStrip := m.stripShown(b.Rect(), len(pages))
 	if !showStrip {
 		header, content, footer = topFrameRowsOnePage(b.Rect())
 	}
@@ -1110,6 +1110,7 @@ var helpLines = []string{
 	"Tab, Shift-Tab   next or previous provider",
 	"]  [             next or previous page",
 	"1 - 9            go to a page",
+	"p                show or hide the page tabs",
 	"+  -             change refresh interval, down to 100ms",
 	"w                zoom the graphs to the last 15 seconds",
 	"r                show or hide the mirrored Remote transfer chart",
@@ -1132,6 +1133,7 @@ var helpLines = []string{
 	"Colorblind uses bold and dim. Hover for each state.",
 	"ASCII uses symbols for state and activity.",
 	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.",
+	"The page tabs need a 20 row terminal. Smaller screens keep the compact view.",
 }
 
 // helpText is the key reference the ? overlay shows, less the copy line when

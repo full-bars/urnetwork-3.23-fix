@@ -316,6 +316,9 @@ type topModel struct {
 	// page is the selected page's index in topPages. It belongs to the session,
 	// not to a provider, so switching provider keeps the page.
 	page int
+	// stripHidden is set by the p key: the page strip is drawn by default and
+	// this hides it for the rest of the session. It is not saved anywhere.
+	stripHidden bool
 	// compact records that the last frame was the single-panel view, where the
 	// page keys do nothing.
 	compact bool
@@ -838,6 +841,13 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 					m.panel, m.rt.showing = "goroutines", true
 				}
 				m.rt.gLast = time.Time{}
+			}
+		case 'p', 'P':
+			// The page strip belongs to the page keys: a popup, the overview,
+			// the help or the menu keeps the key for itself, and the compact
+			// view has no strip to toggle.
+			if pageKeys {
+				m.togglePageStrip()
 			}
 		case ']':
 			if pageKeys {
