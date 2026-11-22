@@ -659,13 +659,15 @@ func addressHeadIsHostPort(head string) bool {
 	return strings.HasPrefix(head, "[") && strings.HasSuffix(head, "]")
 }
 
-// addressTokenByte reports whether b can belong to a host, a port or the closing
-// bracket of a v6 literal.
+// addressTokenByte reports whether b can belong to a host or a port. A closing
+// bracket is not one of them: a v6 literal is read whole by readAddressToken,
+// and past that literal a ']' is the bracket a log line wrapped the value in,
+// which ends the token rather than belonging to the port behind it.
 func addressTokenByte(b byte) bool {
 	switch {
 	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
 		return true
-	case b == '.', b == ':', b == '-', b == '_', b == '%', b == ']':
+	case b == '.', b == ':', b == '-', b == '_', b == '%':
 		return true
 	}
 	return false

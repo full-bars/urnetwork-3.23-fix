@@ -290,3 +290,88 @@ func TestProxyDialSelectLineKeepsTheAddress(t *testing.T) {
 		t.Fatalf("the failed select line kept the credential: %q", failed)
 	}
 }
+
+// A log line may wrap a value in its own brackets, and a v6 proxy address
+// already carries a pair of its own. The closing bracket of the wrapper ends
+// the address token, and the closing bracket of a v6 literal is read with the
+// literal, so both a wrapped and an unwrapped address keep every byte and the
+// credential in front of either one goes.
+func TestRedactProxyCredentialsBracketedWrapper(t *testing.T) {
+	const cred = "demo:secret@"
+	for _, testCase := range []struct {
+		name string
+		in   string
+		want string
+	}{
+		{
+			name: "wrapped scheme-less credential",
+			in:   "note [" + cred + "203.0.113.10:1080] refused",
+			want: "note [203.0.113.10:1080] refused",
+		},
+		{
+			name: "wrapped scheme-less credential on a v6 address",
+			in:   "note [" + cred + "[2001:db8::1]:1080] refused",
+			want: "note [[2001:db8::1]:1080] refused",
+		},
+		{
+			name: "wrapped credential with a scheme",
+			in:   "note [socks5://" + cred + "203.0.113.10:1080] refused",
+			want: "note [socks5://203.0.113.10:1080] refused",
+		},
+		{
+			name: "wrapped credential with a scheme on a v6 address",
+			in:   "note [socks5://" + cred + "[2001:db8::1]:1080] refused",
+			want: "note [socks5://[2001:db8::1]:1080] refused",
+		},
+		{
+			name: "nested wrappers",
+			in:   "note ([{" + cred + "203.0.113.10:1080}]) refused",
+			want: "note ([{203.0.113.10:1080}]) refused",
+		},
+		{
+			name: "bracket inside a brace",
+			in:   "note [{" + cred + "203.0.113.10:1080}] refused",
+			want: "note [{203.0.113.10:1080}] refused",
+		},
+		{
+			name: "a wrapper that is never closed",
+			in:   "note [" + cred + "203.0.113.10:1080 refused",
+			want: "note [203.0.113.10:1080 refused",
+		},
+		{
+			name: "unwrapped credential on a v6 address",
+			in:   "dial tcp6 " + cred + "[2001:db8::1]:1080: connection refused",
+			want: "dial tcp6 [2001:db8::1]:1080: connection refused",
+		},
+		{
+			name: "unwrapped credential on a bare v6 address",
+			in:   "dial " + cred + "[2001:db8::1] refused",
+			want: "dial [2001:db8::1] refused",
+		},
+		{
+			name: "a bare v6 address with no credential is unchanged",
+			in:   "dial tcp6 [2001:db8::9]:1080: connect: connection refused",
+			want: "dial tcp6 [2001:db8::9]:1080: connect: connection refused",
+		},
+		{
+			name: "a bracketed v6 peer pair with no credential is unchanged",
+			in:   "read udp6 [2001:db8::9]:45555->[2001:db8::9]:1080: read: connection refused",
+			want: "read udp6 [2001:db8::9]:45555->[2001:db8::9]:1080: read: connection refused",
+		},
+		{
+			name: "a broken v6 literal is left whole",
+			in:   "note [" + cred + "[2001:db8::1:1080 refused",
+			want: "note [" + cred + "[2001:db8::1:1080 refused",
+		},
+	} {
+		t.Run(testCase.name, func(t *testing.T) {
+			got := RedactProxyCredentials(testCase.in)
+			if got != testCase.want {
+				t.Fatalf("\n in : %s\n got: %s\nwant: %s", testCase.in, got, testCase.want)
+			}
+			if strings.Contains(got, "secret") && !strings.Contains(testCase.want, "secret") {
+				t.Fatalf("the credential stayed: %s", got)
+			}
+		})
+	}
+}
