@@ -1,11 +1,14 @@
 package main
 
 import (
+	"context"
 	"fmt"
 	"math/rand"
 	"reflect"
 	"testing"
 	"time"
+
+	"github.com/urnetwork/connect"
 )
 
 func TestSelectUDPProbeDueBoundaries(t *testing.T) {
@@ -245,5 +248,88 @@ func TestSelectUDPProbeBatchDoesNotStarveAnUncheckedIdentity(t *testing.T) {
 	}
 	if !seen["unchecked"] {
 		t.Fatal("an unchecked identity never reached a batch while the ipv6 retries were due")
+	}
+}
+
+// The trace: five identities share a single sweep slot on five-minute ticks.
+// Four of them hold the slot with IPv6 retries that come due again and again,
+// and the fifth has an expired UDP result and no IPv6 record at all, so its
+// IPv6 due time is the zero time. It has been IPv6-due since its last UDP
+// check, so that check is when it became due: falling back to its UDP half-TTL
+// due time puts it a whole refresh window out and it never runs.
+func TestUDPProbeSweepMeasuresANeverMeasuredIpv6Identity(t *testing.T) {
+	pinSyntheticStageClock(t)
+	h := newIPv6CheckHarness(t)
+	names := map[string]string{}
+	// the identity each selection touched
+	hits := map[string]bool{}
+	// a proxy without a UDP relay: its half-TTL due time is 36 hours out, which
+	// is as far as the fallback can push an identity
+	h.udpResult = proxyUDPResult{Status: proxyUDPNoRelay}
+	probe := h.store.probe
+	h.store.probe = func(ctx context.Context, settings *connect.ProxySettings) proxyUDPResult {
+		hits[names[settings.Key()]] = true
+		return probe(ctx, settings)
+	}
+	// every stage stops on its own, so each measurement leaves a retry hold
+	h.ipv6OK = false
+	stage := h.store.ipv6Probe
+	h.store.ipv6Probe = func(ctx context.Context, settings *connect.ProxySettings, previous proxyIPv6Result, now time.Time, dials proxyIPv6Dials) (proxyIPv6Result, bool) {
+		hits[names[settings.Key()]] = true
+		return stage(ctx, settings, previous, now, dials)
+	}
+
+	start := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	const (
+		tickDuration = 5 * time.Minute
+		ticks        = 864
+	)
+	var online []*connect.ProxySettings
+	h.store.mu.Lock()
+	for i := 0; i < 5; i++ {
+		settings := &connect.ProxySettings{Network: "tcp", Address: fmt.Sprintf("192.0.2.%d:1080", i+1)}
+		online = append(online, settings)
+		entry := &proxyUDPCheckEntry{
+			result:      proxyUDPResult{Status: proxyUDPNoRelay},
+			at:          start.Add(-time.Minute),
+			completedAt: start.Add(-time.Minute),
+		}
+		if i == 4 {
+			// its UDP result expired an hour ago and no IPv6 was ever measured
+			names[settings.Key()] = "never-measured"
+			entry.at = start.Add(-time.Hour)
+			entry.completedAt = entry.at
+		} else {
+			// cached no-relay evidence, an IPv6 record that is due, and a retry
+			// hold that comes round every few ticks
+			names[settings.Key()] = fmt.Sprintf("retry-%d", i)
+			entry.ipv6 = proxyIPv6Result{At: start.Add(-7 * time.Hour), Interval: 6 * time.Hour, Status: proxyIPv6No, Source: "measured"}
+			entry.ipv6RetryAt = start.Add(-time.Minute + time.Duration(i)*tickDuration)
+		}
+		h.store.entries[settings.Key()] = entry
+	}
+	h.store.mu.Unlock()
+
+	seen := map[string]bool{}
+	firstTick := ""
+	for tick := 0; tick < ticks; tick++ {
+		now := start.Add(time.Duration(tick) * tickDuration)
+		hits = map[string]bool{}
+		runUDPProbeTick(context.Background(), h.store, online, now, udpProbeRecheckWindow, tickDuration, 0, true)
+		if len(hits) != 1 {
+			t.Fatalf("tick %d measured %d identities, want the single sweep slot", tick, len(hits))
+		}
+		for name := range hits {
+			if tick == 0 {
+				firstTick = name
+			}
+			seen[name] = true
+		}
+	}
+	if firstTick != "never-measured" {
+		t.Fatalf("the first tick measured %q, want the identity whose IPv6 was never measured", firstTick)
+	}
+	if len(seen) != 5 {
+		t.Fatalf("the trace measured %d identities, want all 5: %v", len(seen), seen)
 	}
 }

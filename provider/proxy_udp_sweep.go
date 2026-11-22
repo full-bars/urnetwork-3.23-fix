@@ -306,12 +306,21 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
 		if candidate.ipv6Due || candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
 			// one due time per candidate: a never-checked identity has none, so
-			// it goes first; otherwise the earlier of its udp and ipv6 due times
+			// it goes first; a never-measured IPv6 record has none either, and
+			// the identity has been IPv6-due since its last UDP check, so that
+			// check is when it became due; otherwise the earlier of its udp and
+			// ipv6 due times
 			switch {
 			case candidate.lastChecked.IsZero():
 				candidate.dueAt = time.Time{}
-			case candidate.ipv6Due && !candidate.ipv6DueAt.IsZero() && candidate.ipv6DueAt.Before(candidate.lastChecked.Add(refreshWindow)):
+			case candidate.ipv6Due:
 				candidate.dueAt = candidate.ipv6DueAt
+				if candidate.dueAt.IsZero() {
+					candidate.dueAt = candidate.lastChecked
+				}
+				if udpDueAt := candidate.lastChecked.Add(refreshWindow); udpDueAt.Before(candidate.dueAt) {
+					candidate.dueAt = udpDueAt
+				}
 			default:
 				candidate.dueAt = candidate.lastChecked.Add(refreshWindow)
 			}
