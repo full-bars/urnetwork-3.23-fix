@@ -159,3 +159,17 @@ for mode in fail capped; do
   test ! -e "$tmp/$mode.md"
 done
 echo 'PASS: first-parent merge, labelled actions, empty labels and closed failures'
+# Untagged releases use the current UTC date. Section dates override tags.
+today=$(date -u +%F)
+rg -q "^\*\*Released:\*\* $today\.$" "$tmp/merge.md"
+sed 's/\[Unreleased\]/[Unreleased] - 2001-02-03/' "$repo/CHANGELOG.md" > "$tmp/dated-changelog"
+cp "$tmp/dated-changelog" "$repo/CHANGELOG.md"
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/dated.md")
+rg -q '^\*\*Released:\*\* 2001-02-03\.$' "$tmp/dated.md"
+git -C "$repo" tag -a v-tagged -m tagged
+printf 'I added a feature.\n\nUpdate and restart the provider.\n' > "$repo/releases/_intro/v-tagged.md"
+sed 's/\[Unreleased\] - 2001-02-03/[Unreleased]/' "$repo/CHANGELOG.md" > "$tmp/undated-changelog"
+cp "$tmp/undated-changelog" "$repo/CHANGELOG.md"
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-tagged --out "$tmp/tagged.md")
+rg -q "^\*\*Released:\*\* $(git -C "$repo" for-each-ref --format='%(creatordate:short)' refs/tags/v-tagged)\.$" "$tmp/tagged.md"
+echo 'PASS: release date precedence and annotated tags'

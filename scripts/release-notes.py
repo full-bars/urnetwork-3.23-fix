@@ -38,18 +38,23 @@ def main():
     if len(paragraphs) != 2:
         fail('intro must contain a summary paragraph and an update paragraph')
     source = (ROOT / 'CHANGELOG.md').read_text()
-    match = re.search(r'^## \[' + re.escape(args.section) + r'\][^\n]*\n(.*?)(?=^## \[|\Z)', source, re.M | re.S)
+    match = re.search(r'^## \[' + re.escape(args.section) + r'\](?P<header>[^\n]*)\n(?P<body>.*?)(?=^## \[|\Z)', source, re.M | re.S)
     if not match:
         fail(f'changelog section not found: {args.section}')
-    section = match.group(1)
+    section = match.group('body')
     target = args.tag if subprocess.run(['git', 'rev-parse', '--verify', '--quiet', args.tag + '^{commit}'], stdout=subprocess.DEVNULL).returncode == 0 else 'HEAD'
     previous_ref = target + '^' if target != 'HEAD' else target
     try:
         previous = git('describe', '--tags', '--abbrev=0', '--match', 'v*', previous_ref)
     except subprocess.CalledProcessError:
         fail('cannot find previous release tag')
-    date_match = re.search(r'_Released (\d{4}-\d{2}-\d{2})', section)
-    date = date_match.group(1) if date_match else git('show', '-s', '--format=%cs', target)
+    date_match = re.search(r'\b(\d{4}-\d{2}-\d{2})\b', match.group('header')) or re.search(r'_Released (\d{4}-\d{2}-\d{2})', section)
+    if date_match:
+        date = date_match.group(1)
+    elif target != 'HEAD':
+        date = git('for-each-ref', '--format=%(creatordate:short)', 'refs/tags/' + args.tag)
+    else:
+        date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     mapping = {}
     mapfile = ROOT / 'releases' / '_map' / (args.tag + '.tsv')
     if not mapfile.exists() and args.section == 'Unreleased':
