@@ -467,6 +467,10 @@ func (self *proxiedIPv6Controller) poll(now time.Time) {
 	}
 	start, stop := self.gate.observe(now, udp, v6)
 	if start {
+		// the pin goes in before the builder runs: the builder can take long
+		// enough for capacity pruning to evict the entry, and the entry holds the
+		// real-check pair that stops the transport on the UDP expiry
+		self.store.pinIPv6Transport(self.key, true)
 		if self.transport.startExtra(self.build) {
 			tlog("[ipv6] proxy identity: IPv6 transport started (the proxy was measured to carry IPv6)\n")
 		} else {
@@ -475,6 +479,8 @@ func (self *proxiedIPv6Controller) poll(now time.Time) {
 			// does not retry and the next two new measurements do
 			self.gate.running = false
 			self.gate.yes = 0
+			// the pin taken for the start goes with it, unless a transport runs
+			self.store.pinIPv6Transport(self.key, self.transport.hasExtra())
 		}
 	}
 	if stop && self.transport.stopExtra() {
