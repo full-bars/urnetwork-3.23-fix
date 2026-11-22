@@ -670,3 +670,51 @@ func TestIPv6DueKeepsTheRecordDeadlineApartFromTheRetryStamp(t *testing.T) {
 		t.Fatalf("batch = %v, want the identity whose IPv6 due time is the older one", batch)
 	}
 }
+
+// A stage that returns on its own, without a measurement, owes the
+// fifteen-minute hold even when the parent expires while the refresh waits for
+// the store lock to publish that fact. Deciding the hold from the context at
+// that moment would call it a stage the tick cut short and retry it after five
+// minutes.
+func TestIPv6HoldFollowsHowTheStageEnded(t *testing.T) {
+	pinSyntheticStageClock(t)
+	h := newIPv6CheckHarness(t)
+	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
+	settings := ipv6TestSettings()
+	key := settings.Key()
+	h.store.mu.Lock()
+	h.store.entries[key] = &proxyUDPCheckEntry{result: proxyUDPResult{Status: proxyUDPOK}, at: now, completedAt: now}
+	h.store.mu.Unlock()
+	h.store.slots = make(chan struct{}, 1)
+
+	started, finish, done := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	h.store.ipv6Probe = func(context.Context, *connect.ProxySettings, proxyIPv6Result, time.Time, proxyIPv6Dials) (proxyIPv6Result, bool) {
+		close(started)
+		<-finish
+		return proxyIPv6Result{}, false
+	}
+	go func() {
+		defer close(done)
+		h.store.refreshIPv6(ctx, settings, key, now)
+	}()
+	<-started
+	h.store.mu.Lock()
+	close(finish)
+	// the one-slot semaphore accepts this send only once the stage returned and
+	// the refresh took its token out, so the stage ended before the cancel
+	h.store.slots <- struct{}{}
+	cancel()
+	<-h.store.slots
+	h.store.mu.Unlock()
+	<-done
+
+	h.store.mu.Lock()
+	retry := h.store.entries[key].ipv6RetryAt
+	h.store.mu.Unlock()
+	want := now.Add(proxyIPv6StopBackoff)
+	if !retry.Equal(want) {
+		t.Fatalf("retry = %v, want the hold for a stage that ended on its own, %v (%v)", retry, proxyIPv6StopBackoff, want)
+	}
+}

@@ -810,6 +810,12 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 	var measured proxyIPv6Result
 	measuredOK := false
 	skipped := false
+	// endedErr is the parent context as the stage ended, and completedAt is when
+	// it ended. Both are read here, before the wait for the store lock, because
+	// that is how the stage ended: a tick that expires while this goroutine waits
+	// for the lock must not turn a stage that finished on its own into one the
+	// deadline cut short.
+	var endedErr error
 	select {
 	case self.slots <- struct{}{}:
 		if ctx.Err() != nil || !proxyIPv6ProbeEnabled(globalControlState) {
@@ -817,14 +823,20 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 			// no measurement was made and none is held against the identity
 			<-self.slots
 			skipped = true
+			endedErr = ctx.Err()
 			break
 		}
 		stageCtx, cancel := context.WithTimeout(ctx, udpCheckOverallLimit)
 		measured, measuredOK = self.ipv6Probe(stageCtx, settings, previous, now, defaultProxyIPv6Dials())
 		cancel()
+		endedErr = ctx.Err()
 		<-self.slots
 	case <-ctx.Done():
+		endedErr = ctx.Err()
 	}
+	// the backoff counts from the moment the stage finished, so neither the wait
+	// for a worker slot, a long probe, nor the wait to publish shortens it
+	completedAt := ipv6StageCompletedAt(now)
 
 	self.mu.Lock()
 	defer self.mu.Unlock()
@@ -835,15 +847,12 @@ func (self *proxyUDPCheckStore) refreshIPv6(ctx context.Context, settings *conne
 		return
 	}
 	current.ipv6Running = false
-	// the backoff counts from the moment the stage finished, so neither the wait
-	// for a worker slot nor a long probe shortens it
-	completedAt := ipv6StageCompletedAt(now)
-	if !measuredOK && !skipped && ctx.Err() == nil {
+	if !measuredOK && !skipped && endedErr == nil {
 		// the stage stopped on its own: keep the previous result and wait before
 		// the next tick measures this identity again
 		current.ipv6RetryAt = completedAt.Add(proxyIPv6StopBackoff)
 	}
-	if !measuredOK && ctx.Err() != nil {
+	if !measuredOK && endedErr != nil {
 		// the tick deadline cut the stage short, so nothing was measured. Without
 		// a stamp the identity stays due and the IPv6-due order keeps it at the
 		// front of every batch, starving the other due identities
