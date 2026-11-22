@@ -37,6 +37,7 @@ type topPage struct {
 // every earlier version of top drew, and it stays the default page.
 var topPages = []topPage{
 	{id: "overview", title: "Overview", available: func(*topModel, tui.Rect) bool { return true }, draw: (*topModel).drawDashboard},
+	{id: "remote", title: "Remote", available: (*topModel).remotePageAvailable, draw: (*topModel).drawRemotePage},
 }
 
 // pageIndex is the selected page's table index, clamped to the table.
