@@ -48,6 +48,11 @@ func (m *topModel) footerHints() []topFooterHint {
 		hints = append(hints, topFooterHint{"footer:pages", "[/] page"}, topFooterHint{"footer:tabs", "p tabs"})
 	}
 	hints = append(hints, topFooterHint{"footer:help", "? help"}, topFooterHint{"footer:menu", "m menu"})
+	// The banner's own hint is the main way to the fix; this footer hint names
+	// the key while it applies and drops off with the banner.
+	if m.lingerBannerActive() && m.lingerFixable {
+		hints = append(hints, topFooterHint{"footer:linger", "L fix"})
+	}
 	// The mode hint names the mode K would switch to; the marker at the right
 	// end of the row names the mode that is on.
 	if m.mouse {

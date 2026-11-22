@@ -143,6 +143,16 @@ type topEvent struct {
 
 type topModel struct {
 	linger []topLingerReading
+	// lingerFix is the confirmation dialog and the run in progress.
+	lingerFix topLingerFix
+	// lingerFixable is set by the run loop when a screen is there to run the
+	// fix on. The banner offers the action only then, and names the command
+	// otherwise.
+	lingerFixable bool
+	// lingerRev marks the readings that predate a fix. A check requested
+	// before the fix is dropped when it lands, so a stale answer cannot put
+	// the banner back.
+	lingerRev int
 
 	theme     tui.Theme
 	providers []Provider
@@ -722,10 +732,18 @@ const (
 	// topCopy means the loop should send the frame it last drew to the
 	// clipboard. The loop owns the buffer, so the key only asks for it.
 	topCopy
+	// topLingerEnable means the operator answered Yes: the loop runs the fix,
+	// which needs the terminal, and rechecks afterwards.
+	topLingerEnable
 )
 
 // handle applies one input event.
 func (m *topModel) handle(ev tcellui.Event) topEffect {
+	// The confirmation dialog is modal: it takes every event while it is up,
+	// so a key or a click meant for it cannot reach the dashboard behind.
+	if m.lingerFix.dialog {
+		return m.lingerDialogEvent(ev)
+	}
 	// Whether this event may switch pages is decided before the event closes
 	// anything: the key or click that dismisses a popup must not also jump to
 	// another page.
@@ -839,6 +857,10 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			}
 		case 'a':
 			m.panel = "alerts"
+		case 'l', 'L':
+			// The banner is the only thing that offers the fix, so the key
+			// does nothing when lingering is on.
+			m.openLingerDialog()
 		case 'i':
 			m.panel = "gauges"
 		case 'v':

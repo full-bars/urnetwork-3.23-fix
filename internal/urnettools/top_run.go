@@ -21,8 +21,9 @@ const topMinFrame = 50 * time.Millisecond
 // topResult is one finished fetch, tagged with the selection it was for. A
 // traffic result carries the light live counters instead of a snapshot.
 type topResult struct {
-	isLinger bool
-	linger   []topLingerReading
+	isLinger  bool
+	linger    []topLingerReading
+	lingerRev int
 
 	gen       int
 	snap      *NodeSnapshot
@@ -233,8 +234,9 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 		lingerBusy = true
 		lingerAt = m.now()
 		providers := append([]Provider(nil), m.providers...)
+		rev := m.lingerRev
 		go func() {
-			res := topResult{isLinger: true}
+			res := topResult{isLinger: true, lingerRev: rev}
 			defer func() {
 				if recover() != nil {
 					res.linger = nil
@@ -258,6 +260,8 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 	}()
 	scr.SetMouse(m.mouse)
 	lastMouse := m.mouse
+	// A screen is here, so the banner may offer the fix.
+	m.lingerFixable = true
 	var lastDraw time.Time
 	dirty := true
 	for {
@@ -349,6 +353,11 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 				return nil
 			case topCopy:
 				m.copyFrame(buf)
+			case topLingerEnable:
+				// The fix runs here, on the loop's own goroutine: it may hand
+				// the terminal to a sudo prompt, so nothing else may draw.
+				m.enableLingering(scr)
+				lingerBusy, lingerAt = false, m.now()
 			}
 			if !move || m.hoverSignature() != before {
 				dirty = true
@@ -358,7 +367,10 @@ func runTop(ctx context.Context, scr tcellui.Screen, m *topModel, src topSource,
 			switch {
 			case r.isLinger:
 				lingerBusy = false
-				m.linger = r.linger
+				// A check that started before a fix carries the old answer.
+				if r.lingerRev == m.lingerRev {
+					m.linger = r.linger
+				}
 			case r.isProxyDetail:
 				detailBusy = false
 				m.applyProxyCellDetail(r.gen, r.proxyDetail, r.err)
