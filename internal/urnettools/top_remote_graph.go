@@ -316,10 +316,12 @@ func (c remoteChart) drawLegend(b *tui.Buffer, row int, dir []remoteSeries, arro
 }
 
 // remoteSegment is one piece of the corner figures: a formatted average in its
-// series colour, or the direction arrow.
+// series colour, or the direction arrow. packets marks a packet rate, which is
+// dropped before the bytes rate when the row is too narrow for both.
 type remoteSegment struct {
-	text  string
-	style tui.Style
+	text    string
+	style   tui.Style
+	packets bool
 }
 
 // averageSegments builds the corner figures for one direction: the newest
@@ -332,28 +334,26 @@ func (c remoteChart) averageSegments(dir []remoteSeries, arrow rune) ([]remoteSe
 		avg := remoteAverage(s.Values)
 		st := s.Style
 		if s.Packets {
-			// packets formatted as pkt/s, pink style, muted when zero
-			text := tui.PacketRate(avg)
 			if avg <= 0 {
 				st = c.Dim
 			} else {
 				active = true
 			}
-			segs = append(segs, remoteSegment{text: text, style: st})
-		} else {
-			if avg <= 0 {
-				st = c.Dim
-			} else {
-				active = true
-			}
-			segs = append(segs, remoteSegment{text: tui.Rate(avg), style: st})
+			segs = append(segs, remoteSegment{text: tui.PacketRate(avg), style: st, packets: true})
+			continue
 		}
+		if avg <= 0 {
+			st = c.Dim
+		} else {
+			active = true
+		}
+		segs = append(segs, remoteSegment{text: tui.Rate(avg), style: st})
 	}
 	st := c.Dim
 	if active {
 		st = c.Text
 	}
-	return append(segs, remoteSegment{string(arrow), st}), active
+	return append(segs, remoteSegment{text: string(arrow), style: st}), active
 }
 
 // segmentsWidth is how many cells a run of segments occupies, gap included.
@@ -393,11 +393,19 @@ func (c remoteChart) drawAverages(b *tui.Buffer, row int, dir []remoteSeries, ar
 		c.putSegments(b, row, b.Width()-width, segs)
 		return
 	}
-	// Narrower than the figures: keep the trailing number and the arrow, which
-	// is the pair that still says which way the traffic goes.
+	// Narrower than the figures: drop the packet figure first, then the bytes
+	// figure. The bytes reading is the primary one and the arrow is the last to
+	// go, since that pair still says which way the traffic goes.
 	for len(segs) > 2 && width > b.Width() {
-		width -= tui.StringWidth(segs[0].text) + 2
-		segs = segs[1:]
+		drop := 0
+		for i, sg := range segs[:len(segs)-1] {
+			if sg.packets {
+				drop = i
+				break
+			}
+		}
+		width -= tui.StringWidth(segs[drop].text) + 2
+		segs = append(segs[:drop], segs[drop+1:]...)
 	}
 	c.putSegments(b, row, max(b.Width()-width, 0), segs)
 }

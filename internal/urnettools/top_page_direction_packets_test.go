@@ -307,3 +307,26 @@ func TestTopDirectionDataReturnsPacketsForBillableOnly(t *testing.T) {
 		t.Fatalf("the total page got packet histories: %d %d", len(tUp), len(tDown))
 	}
 }
+
+// A row too narrow for both figures drops the packet figure first: the bytes
+// reading and the arrow stay, and both figures appear again when the row fits.
+func TestTopCornerDropsPacketsBeforeBytes(t *testing.T) {
+	c := remoteTestChart(remoteFlat(60, 4096), nil)
+	c.Up = append(c.Up, remoteSeries{
+		Group:   "billable packets",
+		Glyph:   '+',
+		Packets: true,
+		Values:  remoteFlat(60, 120),
+	})
+	narrow := remoteRender(c, 16, 8)
+	if !strings.Contains(narrow, tui.Rate(4096)) {
+		t.Fatalf("the narrow row lost the bytes figure:\n%s", narrow)
+	}
+	if strings.Contains(narrow, "pkt/s") {
+		t.Fatalf("the narrow row kept the packet figure:\n%s", narrow)
+	}
+	wide := remoteRender(c, 60, 8)
+	if !strings.Contains(wide, tui.PacketRate(120)) {
+		t.Fatalf("the wide row lost the packet figure:\n%s", wide)
+	}
+}
