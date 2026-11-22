@@ -26,7 +26,7 @@ def fail(message):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('tag')
-    parser.add_argument('--section', default='Unreleased')
+    parser.add_argument('--section')
     parser.add_argument('--out')
     args = parser.parse_args()
     if not re.fullmatch(r'[A-Za-z0-9][A-Za-z0-9._-]*', args.tag):
@@ -38,9 +38,14 @@ def main():
     if len(paragraphs) != 2:
         fail('intro must contain a summary paragraph and an update paragraph')
     source = (ROOT / 'CHANGELOG.md').read_text()
-    match = re.search(r'^## \[' + re.escape(args.section) + r'\](?P<header>[^\n]*)\n(?P<body>.*?)(?=^## \[|\Z)', source, re.M | re.S)
+    # A release reads its own changelog section once it exists. Until the
+    # section is renamed at tag time the Unreleased section is used.
+    section_name = args.section
+    if not section_name:
+        section_name = args.tag if re.search(r'^## \[' + re.escape(args.tag) + r'\]', source, re.M) else 'Unreleased'
+    match = re.search(r'^## \[' + re.escape(section_name) + r'\](?P<header>[^\n]*)\n(?P<body>.*?)(?=^## \[|\Z)', source, re.M | re.S)
     if not match:
-        fail(f'changelog section not found: {args.section}')
+        fail(f'changelog section not found: {section_name}')
     section = match.group('body')
     target = args.tag if subprocess.run(['git', 'rev-parse', '--verify', '--quiet', args.tag + '^{commit}'], stdout=subprocess.DEVNULL).returncode == 0 else 'HEAD'
     previous_ref = target + '^' if target != 'HEAD' else target
@@ -56,17 +61,23 @@ def main():
     else:
         date = datetime.datetime.now(datetime.timezone.utc).date().isoformat()
     mapping = {}
+    reasons = {}
     mapfile = ROOT / 'releases' / '_map' / (args.tag + '.tsv')
-    if not mapfile.exists() and args.section == 'Unreleased':
+    if not mapfile.exists() and section_name == 'Unreleased':
         mapfile = ROOT / 'releases' / '_map' / 'Unreleased.tsv'
     if mapfile.exists():
         for number, line in enumerate(mapfile.read_text().splitlines(), 1):
             if not line or line.startswith('#'):
                 continue
             parts = line.split('\t')
-            if len(parts) != 2 or parts[0] in mapping:
+            # title, commits, and an optional reason for a bullet that has no
+            # commit. A listed bullet without a commit still fails the build,
+            # and the reason is printed with the failure.
+            if len(parts) not in (2, 3) or parts[0] in mapping:
                 fail(f'invalid mapping on line {number}')
             mapping[parts[0]] = parts[1].split(',')
+            if len(parts) == 3:
+                reasons[parts[0]] = parts[2]
     groups = {}
     category = None
     for line in section.splitlines():
@@ -101,12 +112,16 @@ def main():
                 title, sep, description = body.partition('. ')
                 title = title.rstrip('.')
             refs = mapping.get(title)
+            if refs == ['-']:
+                fail(f'unmapped bullet: {title}: {reasons.get(title, "no reason given")}')
             if not refs and pr:
                 pr_numbers.add(int(pr.group(1)))
                 messages = git('log', '--first-parent', '--merges', '--format=%H%x09%s', f'{previous}..{target}').splitlines()
                 refs = [line.split('\t', 1)[0] for line in messages if re.search(r'\(#' + pr.group(1) + r'\)(?:\s|$)', line)]
             if not refs:
                 fail(f'cannot resolve bullet: {title}')
+            if re.search(r'\[(?:redeploy|installer|no redeploy)\]', body):
+                fail(f'changelog bullet carries its own deploy tag: {title}')
             commits = []
             files = []
             for ref in refs:

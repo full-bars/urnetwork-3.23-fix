@@ -47,6 +47,14 @@ if [ -n "$tag" ]; then
   fi
   echo "== release notes"
   scripts/release-notes-lint.sh "$notes"
+  # Regenerate the notes into a temporary file. Every changelog bullet in the
+  # section must resolve to a commit, so a bullet without a mapping stops the
+  # tag here rather than at release time.
+  echo "== release notes mapping"
+  tmp=$(mktemp)
+  trap 'rm -f "$tmp"' EXIT
+  scripts/release-notes.sh "$tag" --out "$tmp"
+  echo "every changelog bullet maps to a commit"
 fi
 
 echo "== gofmt (build.yml lint job)"

@@ -171,6 +171,67 @@ CHANGELOG
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/merge2.md")
 expect 'provider merge stays redeploy with two bullets' "$tmp/merge2.md" '^\- \*\*Merge feature\. \[redeploy\]'
 expect 'documentation merge stays no redeploy' "$tmp/merge2.md" "^\\- \\*\\*Merge docs\\. \\[no redeploy\\].*/commit/$docs_merge_sha"
+# A changelog bullet must not carry the deploy tag that the generator adds.
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Tagged.** The text. [redeploy] (#42)
+CHANGELOG
+if (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/tagged.md" 2>"$tmp/err"); then
+  echo 'FAIL: changelog deploy tag accepted' >&2
+  exit 1
+fi
+rg -q 'carries its own deploy tag' "$tmp/err"
+test ! -e "$tmp/tagged.md"
+echo 'PASS: changelog deploy tag rejected'
+# A bullet listed without a commit fails and prints the recorded reason.
+printf 'Unmapped\t-\tno merge commit for the text change\n' > "$repo/releases/_map/v-test.tsv"
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Unmapped.** The text.
+CHANGELOG
+if (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/unmapped.md" 2>"$tmp/err"); then
+  echo 'FAIL: unmapped bullet accepted' >&2
+  exit 1
+fi
+rg -q 'unmapped bullet: Unmapped: no merge commit for the text change' "$tmp/err"
+test ! -e "$tmp/unmapped.md"
+echo 'PASS: unmapped bullet fails with its reason'
+# A release reads its own changelog section once that section exists.
+rm "$repo/releases/_map/v-test.tsv"
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Pending.** Not released yet.
+
+## [v-test] - 2002-03-04
+
+### Added
+
+- **Merge feature.** The feature works. (#42)
+CHANGELOG
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/section.md")
+expect 'tag section is used when present' "$tmp/section.md" '^\- \*\*Merge feature\.'
+if rg -q 'Pending' "$tmp/section.md"; then
+  echo 'FAIL: Unreleased bullet leaked into the tag section' >&2
+  exit 1
+fi
+expect 'tag section date wins' "$tmp/section.md" '^\*\*Released:\*\* 2002-03-04\.$'
+# The tag section is removed again so the later cases read Unreleased.
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+## [Unreleased]
+
+### Added
+
+- **Merge feature.** The feature works. (#42)
+CHANGELOG
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/empty.md")
 rg -q '^None\.$' "$tmp/empty.md"
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=paginated GH_MERGE_SHA="$merge_sha" scripts/release-notes.sh v-test --out "$tmp/pages.md")
