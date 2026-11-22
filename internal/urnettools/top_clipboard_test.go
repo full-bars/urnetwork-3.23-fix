@@ -329,6 +329,28 @@ func TestTopCopyKeyCopiesTheFrame(t *testing.T) {
 	}
 }
 
+func TestTopCopyWorksInKeyboardMode(t *testing.T) {
+	clock := &fakeClock{t: topBase}
+	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
+	m.apply(0, topFlowing(t), nil)
+	m.mouse = false // keyboard mode
+	run := &fakeClip{}
+	m.clip = clipFor(topClipEnv{GOOS: "linux", Wayland: true}, run, nil, nil)
+	b := tui.New(100, 30)
+	m.render(b)
+	if eff := m.handle(runeKey('c')); eff != topCopy {
+		t.Fatalf("c gave effect %v in keyboard mode", eff)
+	}
+	m.copyFrame(b)
+	if len(run.stdin) != 1 {
+		t.Fatal("nothing was copied in keyboard mode")
+	}
+	// The copy does not change the terminal's mouse mode.
+	if m.mouse {
+		t.Fatal("the copy switched the terminal back to mouse mode")
+	}
+}
+
 func TestTopCopyKeyFollowsPlain(t *testing.T) {
 	clock := &fakeClock{t: topBase}
 	m := newTestModel(tui.DefaultTheme(), topProviders(1), clock)
