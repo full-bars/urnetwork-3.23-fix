@@ -974,13 +974,19 @@ func (self *MultiRouteSelector) updateSendStats(route Route, sendCount int, send
 
 // updateReceiveStats is called once per frame delivered by Read. The
 // counters feed transport-level stats aggregation (getTransportStats) and,
-// on weighted selectors, the next weight recomputation.
+// on weighted selectors, the next weight recomputation. A route whose
+// transport was removed while the frame was in flight is not counted: creating
+// the entry again would leave a stats record for a route nothing tracks
+// anymore.
 func (self *MultiRouteSelector) updateReceiveStats(route Route, receiveCount int, receiveByteCount ByteCount) {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
 	stats, ok := self.routeStats[route]
 	if !ok {
+		if _, known := self.routeActive[route]; !known {
+			return
+		}
 		stats = NewRouteStats()
 		self.routeStats[route] = stats
 	}
@@ -1214,18 +1220,53 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 	return message, err
 }
 
-// receiveDispositionForRoute reports how the given route delivered: which
-// transport type it is and, for a peer-to-peer lane, the source the adjacent
-// peer's authenticated signalling bound it to. A route that was removed
-// between the read and this lookup reports an unbound, unknown-type
-// disposition, which every source policy accepts.
-func (self *MultiRouteSelector) receiveDispositionForRoute(route Route) transferReceiveDisposition {
+// receiveRoute is one active route and the lane it was read from: the
+// transport type and, for a peer-to-peer lane, the source the adjacent peer's
+// authenticated signalling bound it to. Both are captured under the same lock
+// as the route list and before any frame is read. Resolving the disposition
+// after the read instead would lose it: RemoveTransport deletes the transport
+// type and the carrier properties, and the zero value it leaves behind is an
+// unbound lane of unknown type, which every source policy accepts.
+type receiveRoute struct {
+	route       Route
+	disposition transferReceiveDisposition
+}
+
+// activeReceiveRoutes returns the routes the read may take, each paired with
+// the disposition it had at this instant, shuffled so the first ready route is
+// picked at random.
+func (self *MultiRouteSelector) activeReceiveRoutes() []receiveRoute {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
-	return transferReceiveDisposition{
-		transportType: self.routeTransportTypes[route],
-		boundSourceId: self.routeCarrierProperties[route].boundSourceId,
+
+	activeRoutes := []receiveRoute{}
+	for _, routes := range self.transportRoutes {
+		for _, route := range routes {
+			if self.routeActive[route] {
+				activeRoutes = append(activeRoutes, receiveRoute{
+					route: route,
+					disposition: transferReceiveDisposition{
+						transportType: self.routeTransportTypes[route],
+						boundSourceId: self.routeCarrierProperties[route].boundSourceId,
+					},
+				})
+			}
+		}
 	}
+
+	if self.weightedRoutes {
+		// prioritize the routes (weighted shuffle)
+		// if all weights are equal, this is the same as a shuffle
+		WeightedShuffleFunc(activeRoutes, func(r receiveRoute) float32 {
+			return self.routeWeight[r.route]
+		})
+	} else {
+		mathrand.Shuffle(len(activeRoutes), func(i int, j int) {
+			activeRoutes[i], activeRoutes[j] = activeRoutes[j], activeRoutes[i]
+		})
+	}
+
+	return activeRoutes
 }
 
 func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout time.Duration) ([]byte, transferReceiveDisposition, error) {
@@ -1233,7 +1274,7 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 	enterTime := time.Now()
 	for {
 		notify := self.transportUpdate.NotifyChannel()
-		activeRoutes := self.GetActiveRoutes()
+		activeRoutes := self.activeReceiveRoutes()
 
 		if v := self.log.V(2); v.Enabled() {
 			v.Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
@@ -1241,18 +1282,18 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 
 		// non-blocking priority
 		retry := false
-		for _, route := range activeRoutes {
+		for _, activeRoute := range activeRoutes {
 			select {
-			case transferFrameBytes, ok := <-route:
+			case transferFrameBytes, ok := <-activeRoute.route:
 				if ok {
 					if v := self.log.V(2); v.Enabled() {
 						v.Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 					}
-					self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-					return transferFrameBytes, self.receiveDispositionForRoute(route), nil
+					self.updateReceiveStats(activeRoute.route, 1, ByteCount(len(transferFrameBytes)))
+					return transferFrameBytes, activeRoute.disposition, nil
 				} else {
 					// mark the route as closed, try again
-					self.setActive(route, false)
+					self.setActive(activeRoute.route, false)
 					retry = true
 				}
 			default:
@@ -1295,10 +1336,10 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 		// add all the route
 		routeStartIndex := len(selectCases)
 		if 0 < len(activeRoutes) {
-			for _, route := range activeRoutes {
+			for _, activeRoute := range activeRoutes {
 				selectCases = append(selectCases, reflect.SelectCase{
 					Dir:  reflect.SelectRecv,
-					Chan: reflect.ValueOf(route),
+					Chan: reflect.ValueOf(activeRoute.route),
 				})
 			}
 		}
@@ -1321,7 +1362,9 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 		}
 
 		chosenIndex, value, ok := reflect.Select(selectCases)
-		self.log.V(2).Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+		if v := self.log.V(2); v.Enabled() {
+			v.Infof("[mrr]b %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
+		}
 
 		switch chosenIndex {
 		case contextDoneIndex:
@@ -1336,14 +1379,14 @@ func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout
 		default:
 			// a route
 			routeIndex := chosenIndex - routeStartIndex
-			route := activeRoutes[routeIndex]
+			activeRoute := activeRoutes[routeIndex]
 			if ok {
 				transferFrameBytes := value.Bytes()
-				self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-				return transferFrameBytes, self.receiveDispositionForRoute(route), nil
+				self.updateReceiveStats(activeRoute.route, 1, ByteCount(len(transferFrameBytes)))
+				return transferFrameBytes, activeRoute.disposition, nil
 			} else {
 				// mark the route as closed, try again
-				self.setActive(route, false)
+				self.setActive(activeRoute.route, false)
 			}
 		}
 	}
