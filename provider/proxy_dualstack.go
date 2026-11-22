@@ -38,15 +38,18 @@ const (
 )
 
 // proxyIPv6RecordQualifies reports whether the ipv6 measurement itself supports
-// running a transport: a fresh yes whose own udp verdict is yes, or, for a proxy
-// with no udp relay, a fresh yes with a tcp exit. A record that says yes for tcp
-// but never confirmed udp does not, so a udp check cannot use it to count a
-// failure the record already stands for.
-func proxyIPv6RecordQualifies(udp proxyUDPResult, v6 proxyIPv6Result, now time.Time) bool {
+// running a transport: a fresh yes whose own udp verdict is yes, or a fresh yes
+// with a tcp exit for a proxy that had no udp relay. recordUDP is the udp
+// status the record qualified on, not the status of a check that arrived
+// later: a udp check contradicts the record only if it takes away the basis the
+// record stood on, and a tcp-only record stands on no-relay. A record that says
+// yes for tcp but never confirmed udp does not qualify on its own, so a udp
+// check cannot use it to count a failure the record already stands for.
+func proxyIPv6RecordQualifies(recordUDP proxyUDPStatus, v6 proxyIPv6Result, now time.Time) bool {
 	if v6.Status != proxyIPv6Yes || !v6.valid(now) || !now.Before(v6.At.Add(2*v6.Interval)) {
 		return false
 	}
-	return v6.UDP == "yes" || (udp.Status == proxyUDPNoRelay && v6.TCPExit != "")
+	return v6.UDP == "yes" || (recordUDP == proxyUDPNoRelay && v6.TCPExit != "")
 }
 
 // proxyIPv6TransportWanted is the policy: does the measured result of this
@@ -115,6 +118,11 @@ type proxyIPv6Gate struct {
 	// lastCountedCheck is the udp check that last added a failure, so one check
 	// counts once even when its udp and ipv6 results arrive in two polls.
 	lastCountedCheck time.Time
+	// recordUDP is the udp status the standing ipv6 record qualified on. A
+	// check contradicts the record only against that basis: a tcp-only record
+	// stands on no-relay, so a mismatch is a contradiction, while a record
+	// whose own udp verdict is yes stands on its own.
+	recordUDP proxyUDPStatus
 	// pending is set while the check at lastCheckedAt is a qualifying udp result
 	// whose own measurement has not been published yet. The store publishes a
 	// sweep's udp result first and its measurement a moment after, and a poll
@@ -139,6 +147,11 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		// and a start needs two measurements made since
 		self.lastCheckedAt = udp.CheckedAt
 		self.lastV6At = v6.At
+		if want {
+			// the basis the restored record stands on, for the checks that
+			// arrive before its own measurement is replaced
+			self.recordUDP = udp.Status
+		}
 		return false, false
 	}
 	if !self.running && self.yes > 0 && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
@@ -171,8 +184,9 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 			self.no = 0
 		case udp.CheckedAt.Equal(self.lastCountedCheck):
 			// one udp check adds at most one stop observation
-		case proxyIPv6RecordQualifies(udp, v6, now):
-			// the udp result disqualifies while the record itself qualifies
+		case proxyIPv6RecordQualifies(self.recordUDP, v6, now):
+			// the udp result disqualifies while the record still stands on the
+			// basis it qualified with: this check contradicts it
 			self.no++
 			self.yes = 0
 			self.lastCountedCheck = udp.CheckedAt
@@ -183,9 +197,12 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 		// later: a sweep publishes its udp result first and its measurement a
 		// moment after, and that measurement must still count
 		self.lastV6At = v6.At
+		// the basis of the record that stood goes with it
+		self.recordUDP = proxyUDPUnknown
 		switch {
 		case want:
 			// a new qualifying measurement advances the start streak
+			self.recordUDP = udp.Status
 			self.yes++
 			self.no = 0
 			self.lastExpiry = v6.At.Add(2 * v6.Interval)
@@ -366,7 +383,13 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		}
 		// clear the streak, keep which results were already counted: a cached
 		// result must not be counted again when the switch comes back on
-		self.gate = proxyIPv6Gate{since: self.gate.since, lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry, lastV6At: self.gate.lastV6At}
+		self.gate = proxyIPv6Gate{
+			since:         self.gate.since,
+			lastCheckedAt: self.gate.lastCheckedAt,
+			lastExpiry:    self.gate.lastExpiry,
+			lastV6At:      self.gate.lastV6At,
+			recordUDP:     self.gate.recordUDP,
+		}
 		return
 	}
 	udp, v6, state := self.store.measurement(self.key, now)
@@ -414,6 +437,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 			lastExpiry:       self.gate.lastExpiry,
 			lastV6At:         self.gate.lastV6At,
 			lastCountedCheck: self.gate.lastCountedCheck,
+			recordUDP:        self.gate.recordUDP,
 		}
 		return
 	}

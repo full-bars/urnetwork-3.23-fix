@@ -1235,6 +1235,47 @@ func TestProxyIPv6GateBaselinesARestoredRecord(t *testing.T) {
 	}
 }
 
+// A proxy qualifies through a tcp-only IPv6 exit while its IPv6 UDP verdict is
+// unknown: the record stood on the no-relay status of the check it came with.
+// Two new UDP checks that report an exit mismatch contradict that basis, so
+// they stop the transport, one observation each. A repeated poll of the same
+// check stays neutral.
+func TestProxyIPv6GateStopsOnChecksThatContradictATcpOnlyRecord(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	noRelay := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPNoRelay, CheckedAt: at} }
+	mismatch := func(at time.Time) proxyUDPResult {
+		return proxyUDPResult{Status: proxyUDPExitMismatch, CheckedAt: at}
+	}
+	// an IPv6 TCP exit, but the IPv6 UDP exit was never established
+	tcpOnly := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "unknown", at, 12*time.Hour) }
+
+	gate.observe(t0, noRelay(t0), tcpOnly(t0))
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, noRelay(t1), tcpOnly(t1)); !start {
+		t.Fatal("two fresh tcp-only records did not start the transport")
+	}
+	// the record stands, and the first check that contradicts its no-relay
+	// basis counts one stop observation
+	u1 := t1.Add(time.Hour)
+	if _, stop := gate.observe(u1, mismatch(u1), tcpOnly(t1)); stop {
+		t.Fatal("one contradicting UDP check stopped the transport")
+	}
+	for i := 1; i <= 5; i++ {
+		if _, stop := gate.observe(u1.Add(time.Duration(i)*time.Minute), mismatch(u1), tcpOnly(t1)); stop {
+			t.Fatalf("polling the same UDP check stopped it at poll %d", i)
+		}
+	}
+	// the second new contradicting check stops it, once
+	u2 := u1.Add(time.Hour)
+	if _, stop := gate.observe(u2, mismatch(u2), tcpOnly(t1)); !stop {
+		t.Fatal("two UDP checks that contradict the tcp-only record did not stop the transport")
+	}
+	if _, stop := gate.observe(u2.Add(time.Minute), mismatch(u2), tcpOnly(t1)); stop {
+		t.Fatal("the same check stopped the transport again")
+	}
+}
+
 // A measurement that arrives alone, after the first result's evidence expired,
 // must not start the transport: a start needs two results seen while the first
 // is still evidence, and the udp stamp is unchanged when only the stage runs.

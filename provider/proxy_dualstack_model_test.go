@@ -38,6 +38,10 @@ type modelGate struct {
 	// with. The policy is read from these two.
 	standing    proxyIPv6Result
 	standingUDP proxyUDPStatus
+	// recordUDP is the udp status the standing measurement qualified on. A
+	// check contradicts the record only against that basis, so a tcp-only
+	// record (no IPv6 UDP verdict) stands on no-relay.
+	recordUDP proxyUDPStatus
 	// starts counts the qualifying measurements of the current start streak
 	// (two start the transport) and startExpiry is when the newest of them
 	// stops being fresh.
@@ -67,16 +71,17 @@ func (m *modelGate) qualifies(udp proxyUDPStatus, v6 proxyIPv6Result, now time.T
 	return false
 }
 
-// recordQualifies reports whether the measurement still stands on its own,
-// which is what a udp check has to contradict to count a stop observation.
-func (m *modelGate) recordQualifies(udp proxyUDPStatus, v6 proxyIPv6Result, now time.Time) bool {
+// recordQualifies reports whether the measurement still stands on the basis it
+// qualified with, which is what a later udp check has to contradict to count a
+// stop observation.
+func (m *modelGate) recordQualifies(basis proxyUDPStatus, v6 proxyIPv6Result, now time.Time) bool {
 	if v6.Status != proxyIPv6Yes || v6.At.IsZero() || v6.Interval <= 0 {
 		return false
 	}
 	if !now.Before(v6.At.Add(2 * v6.Interval)) {
 		return false
 	}
-	return v6.UDP == "yes" || (udp == proxyUDPNoRelay && v6.TCPExit != "")
+	return v6.UDP == "yes" || (basis == proxyUDPNoRelay && v6.TCPExit != "")
 }
 
 // pruneStart drops a pending first measurement whose evidence expired before
@@ -116,14 +121,19 @@ func (m *modelGate) countStart(v6 proxyIPv6Result, now time.Time) {
 // measure IPv6 again. A qualifying observation ends the failure streak; a
 // disqualifying one adds at most one stop observation, for its own check.
 func (m *modelGate) judge(checkAt time.Time, udp proxyUDPStatus, v6 proxyIPv6Result, measured bool, now time.Time) {
+	if measured {
+		// a new measurement replaces the basis the one before it stood on
+		m.recordUDP = proxyUDPUnknown
+	}
 	if m.qualifies(udp, v6, now) {
 		m.stops = 0
 		if measured {
+			m.recordUDP = udp
 			m.countStart(v6, now)
 		}
 		return
 	}
-	if measured || m.recordQualifies(udp, v6, now) {
+	if measured || m.recordQualifies(m.recordUDP, v6, now) {
 		if checkAt != m.stopOf {
 			m.stops++
 			m.stopOf = checkAt
@@ -154,10 +164,17 @@ func (m *modelGate) settle(now time.Time) (start bool, stop bool) {
 	return start, stop || again
 }
 
-// sweep is one completed check and the measurement it published.
+// sweep is one completed check and the measurement it published. The check is
+// published first, against the record that still stands: it decides nothing
+// while that record qualifies (the gate defers to the measurement), and when it
+// disqualifies it counts one observation, exactly as a udp-only check does. The
+// measurement then replaces the record and is judged on its own.
 func (m *modelGate) sweep(now time.Time, udp proxyUDPStatus, checkAt time.Time, v6 proxyIPv6Result) (start bool, stop bool) {
 	m.pruneStart(now)
 	stop = m.expiryStop(now)
+	if !m.qualifies(udp, m.standing, now) {
+		m.judge(checkAt, udp, m.standing, false, now)
+	}
 	m.lastCheck, m.lastV6 = checkAt, v6.At
 	m.standing, m.standingUDP = v6, udp
 	m.judge(checkAt, udp, v6, true, now)
@@ -205,6 +222,11 @@ func (m *modelGate) restart(now time.Time, checkAt time.Time, udp proxyUDPStatus
 	if !v6.At.IsZero() {
 		m.lastCheck, m.lastV6 = checkAt, v6.At
 		m.standing, m.standingUDP = v6, udp
+		if m.qualifies(udp, v6, now) {
+			// the basis the restored record stands on, until a measurement of
+			// this process replaces it
+			m.recordUDP = udp
+		}
 	}
 }
 
