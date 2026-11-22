@@ -87,3 +87,29 @@ if "$lint" "$tmp/bad.md" >"$tmp/out" 2>&1; then
   exit 1
 fi
 echo 'PASS: multiple deploy tags rejected'
+mkdir -p "$repo/docs"
+printf 'documentation\n' > "$repo/docs/change.md"
+git -C "$repo" add docs/change.md
+git -C "$repo" commit -qm 'docs'
+docsha=$(git -C "$repo" rev-parse HEAD)
+printf '#!/bin/sh\n' > "$repo/scripts/Provider_Install_Test.sh"
+git -C "$repo" add scripts/Provider_Install_Test.sh
+git -C "$repo" commit -qm 'installer'
+installsha=$(git -C "$repo" rev-parse HEAD)
+cat > "$repo/CHANGELOG.md" <<'CHANGELOG'
+# Changelog
+
+## [Unreleased]
+
+### Changed
+
+- **Docs.** Explain the behavior.
+- **Installer.** Update the installer.
+- **Combined.** Update both.
+CHANGELOG
+printf 'Docs\t%s\nInstaller\t%s\nCombined\t%s,%s\n' "$docsha" "$installsha" "$sha" "$installsha" > "$repo/releases/_map/v-test.tsv"
+(cd "$repo" && PATH="$repo/bin:$PATH" scripts/release-notes.sh v-test --out "$tmp/generated.md")
+rg -q '^\- \*\*Docs\. \[no redeploy\]' "$tmp/generated.md"
+rg -q '^\- \*\*Installer\. \[installer\]' "$tmp/generated.md"
+rg -q '^\- \*\*Combined\. \[redeploy\]' "$tmp/generated.md"
+echo 'PASS: documentation and installer classification and redeploy precedence'
