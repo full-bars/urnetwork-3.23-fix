@@ -4486,10 +4486,14 @@ func (self *SendSequence) ackItemWithErrDropped(item *sendItem, err error) {
 func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path TransferPath, forceUnwrapped bool, reliableOnly bool) (transferWriteDisposition, error) {
 	writer := self.openContractMultiRouteWriter()
 	reliableOnly = reliableOnly || self.reliableOnlyWrite(self.transferFlightPolicy())
-	var cipher *sequenceCipher
+	var sealing sealingEpochState
 	if self.session != nil && !forceUnwrapped {
-		cipher = self.session.Cipher()
+		sealing = self.session.sealingState()
+		if hook := self.session.afterSealingEpochForTest; hook != nil {
+			hook()
+		}
 	}
+	cipher := sealing.cipher
 	if cipher == nil && self.session != nil && !forceUnwrapped && self.session.RequireEncryption() {
 		// Fail-closed backstop (EncryptionModeRequired): an application frame
 		// reached the writer without a cipher. The entry gate
@@ -4529,7 +4533,7 @@ func (self *SendSequence) writeMaybeWrappedBytes(transferFrameBytes []byte, path
 			reliableOnly,
 		)
 	}
-	if err := self.verifyPeerCertAgainstContract(); err != nil {
+	if err := self.verifyPeerCertAgainstContract(sealing); err != nil {
 		return transferWriteDisposition{}, err
 	}
 	ciphertext, err := cipher.Seal(transferFrameBytes)
@@ -4674,8 +4678,8 @@ func writeAckMultiRoute(
 //     `ProvideTlsCertificate`): skip without latching, so a later contract with
 //     a cert re-arms verification.
 //
-// Once matched, the result is cached and not re-run for this session.
-func (self *SendSequence) verifyPeerCertAgainstContract() error {
+// A match is cached on the epoch whose cipher seals this frame.
+func (self *SendSequence) verifyPeerCertAgainstContract(sealing sealingEpochState) error {
 	if self.session == nil {
 		return nil
 	}
@@ -4688,8 +4692,7 @@ func (self *SendSequence) verifyPeerCertAgainstContract() error {
 		)
 		return nil
 	}
-	verified, noCommitment := self.session.CertVerificationState()
-	if verified || noCommitment {
+	if sealing.certVerified || sealing.noCommitment {
 		return nil
 	}
 	expected := self.session.trustedPeerCertSnapshot()
@@ -4705,7 +4708,7 @@ func (self *SendSequence) verifyPeerCertAgainstContract() error {
 		len(expected),
 		self.companionContract,
 	)
-	peerCerts := self.session.establishedPeerCertificates()
+	peerCerts := peerCertificatesOfEpoch(self.session.client.log, sealing.epoch)
 	ok, err := verifyPeerCertificateAgainstContract(peerCerts, expected)
 	if err != nil {
 		self.log.Errorf(
@@ -4730,7 +4733,10 @@ func (self *SendSequence) verifyPeerCertAgainstContract() error {
 		)
 		return errors.New("sequence TLS cert verification failed")
 	}
-	self.session.MarkCertVerified()
+	if hook := self.session.beforeCertVerifiedMarkForTest; hook != nil {
+		hook()
+	}
+	self.session.markCertVerifiedForEpoch(sealing.epoch)
 	return nil
 }
 

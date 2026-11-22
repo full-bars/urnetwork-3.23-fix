@@ -129,3 +129,23 @@ func writeGovernMetrics(b *strings.Builder) {
 	fmt.Fprintf(b, "# HELP urnet_speedtest_echo_bytes_total Speed test bytes echoed back to the platform (the same again arrives inbound).\n# TYPE urnet_speedtest_echo_bytes_total counter\nurnet_speedtest_echo_bytes_total %d\n", ss.EchoedBytes)
 	fmt.Fprintf(b, "# HELP urnet_govern_flap_backoffs_total Reconnects held back because the previous session died young.\n# TYPE urnet_govern_flap_backoffs_total counter\nurnet_govern_flap_backoffs_total %d\n", s.FlapBackoffs)
 }
+
+// writeTlsCancellationMetrics exposes why TLS handshake epochs were cancelled
+// before their TLS handshake completed. A cancellation after TLS completes,
+// during the identity proof, is not counted. A coalesced failure line cannot say which transition
+// cancelled an epoch; these counters can, and a canary reads the rate per
+// source. Every cell is exported, zeros included, so a rate query has a series
+// to grow into from the first scrape.
+func writeTlsCancellationMetrics(b *strings.Builder) {
+	fmt.Fprintf(b, "# HELP urnet_tls_handshake_cancel_total TLS handshake epochs cancelled before the TLS handshake completed, by the transition that cancelled them.\n# TYPE urnet_tls_handshake_cancel_total counter\n")
+	for _, cell := range connect.GetTlsHandshakeCancellationCounts() {
+		fmt.Fprintf(
+			b,
+			"urnet_tls_handshake_cancel_total{source=%s,role=%s,companion=\"%t\"} %d\n",
+			connect.PrometheusLabelValue(cell.Source),
+			connect.PrometheusLabelValue(cell.Role),
+			cell.Companion,
+			cell.Count,
+		)
+	}
+}

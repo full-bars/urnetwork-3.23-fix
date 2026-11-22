@@ -88,6 +88,8 @@ The provider maintains identity keys, cryptographic signing states, and cached J
 
 The examples below use `urnetwork_data` as the named volume and `urfix` as the container name.
 
+> If you already run a provider, keep using its existing volume name instead of `urnetwork_data`. A different name creates a new empty volume and a new provider identity.
+
 ### 🔐 Auth Code Login (`AUTH=authcode`)
 
 ```bash
@@ -376,7 +378,7 @@ docker run -d \
 ```
 
 > [!IMPORTANT]
-> The `urfix_config` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
+> The `urnetwork_data` volume is required when using Watchtower. Without it, Watchtower will pull a new image, recreate the container, and the auth code will be consumed again, which fails because auth codes are single-use. With the volume mounted, the existing JWT is reused.
 > 
 > **JWT Smart Refresh**: As of `v3.23.0-fix.17`, the container includes "smart refresh" logic. If the JWT stored in your volume expires, the provider will automatically detect this, delete the stale file, and attempt to re-authenticate using the `USER_AUTH` and `PASSWORD` environment variables if provided. This ensures your nodes stay online even if a JWT is revoked or corrupted during an update.
 

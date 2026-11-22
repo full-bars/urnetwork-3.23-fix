@@ -2457,6 +2457,10 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 			// attempt's typed error through the observer in dialContext
 			// (noteDialError)
 			self.logAuthError(clientId, TransportModeH1, err)
+			var pulse <-chan struct{}
+			if platformDialRefusalWait(err, nil) <= 0 {
+				pulse = Pulse()
+			}
 			select {
 			case <-self.ctx.Done():
 				return
@@ -2468,9 +2472,9 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 				self.noteKick()
 				hadConnection = true
 				continue
-			case <-self.dialRetryAfter(reconnect):
+			case <-self.dialRetryAfter(reconnect, err):
 				continue
-			case <-Pulse():
+			case <-pulse:
 				// fork: every backing-off transport hears the pulse at the same
 				// instant; spread the retries so the hour does not begin with a herd
 				if !waitPulseJitter(self.ctx) {
@@ -3532,10 +3536,12 @@ func (self *PlatformTransport) runH3(
 					continue
 				}
 				gateChanged = notify
-				retryAfter = time.After(jitteredH3Wait(auxBackoff))
+				retryAfter = afterDelay(max(jitteredH3Wait(auxBackoff), platformDialRefusalWait(err, nil)))
 			} else {
-				retryAfter = self.dialRetryAfter(reconnect)
-				pulse = Pulse()
+				retryAfter = self.dialRetryAfter(reconnect, err)
+				if platformDialRefusalWait(err, nil) <= 0 {
+					pulse = Pulse()
+				}
 			}
 			select {
 			case <-ctx.Done():

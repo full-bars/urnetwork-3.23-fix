@@ -281,6 +281,7 @@ Because a series continues instead of resetting, `rate()` or `increase()` comput
 | `urnet_transport_pt_connects_total` | counter | `mode` | Packet-translation transport connections that authenticated, persisted across restarts |
 | `urnet_transport_pt_connect_failures_total` | counter | `mode` | Packet-translation transport connect attempts that failed, persisted across restarts |
 | `urnet_transport_pt_drops_total` | counter | `mode` | Packet-translation transport connections that ended while still wanted, persisted across restarts |
+| `urnet_tls_handshake_cancel_total` | counter | `source`, `role`, `companion` | TLS handshakes cancelled before they completed. `source` is the transition that cancelled them: `parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`. `role` is `client` or `server` and `companion` is `true` or `false`. A wave of cancellations shows as a steep rise |
 | `urnet_proxy_pool_size` | gauge | `status` | Proxies by status: up, connecting, degraded, dead |
 | `urnet_proxy_bytes_total` | counter | `proxy`, `direction` | Bytes per proxy, persisted across restarts |
 | `urnet_proxy_billable_bytes_total` | counter | `proxy`, `direction` | Billable bytes per proxy, persisted across restarts |
