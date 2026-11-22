@@ -185,15 +185,15 @@ func (m *topModel) drawDashboard(b *tui.Buffer, content tui.Rect) {
 	secondGraphTitle := -1
 	if sr.total != nil && graphArea.H >= topTwoGraphsMinRows {
 		graphs := tui.SplitRows(graphArea, tui.Flex(1), tui.Flex(1))
-		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr, sr.billable, sr.scaleB, graphs[0].W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
-		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr, sr.total, sr.scaleT, graphs[1].W-2)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
+		m.drawGraph(box(graphs[0], "graph", m.graphTitle("Billable", sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphs[1], "graph", m.graphTitle("Total traffic", sr)), sr, sr.total, sr.scaleT, sr.tailTotal, th.Accent)
 		secondGraphTitle = graphs[1].Y
 	} else {
 		title := "Throughput"
 		if sr.total != nil {
 			title = "Billable"
 		}
-		m.drawGraph(box(graphArea, "graph", m.graphTitle(title, sr, sr.billable, sr.scaleB, graphArea.W-2)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
+		m.drawGraph(box(graphArea, "graph", m.graphTitle(title, sr)), sr, sr.billable, sr.scaleB, sr.tailBillable, th.Graph)
 	}
 	if showRemote {
 		m.drawRemote(box(remoteArea, "remote", "Remote"))
@@ -343,14 +343,22 @@ func topIntervalText(d time.Duration) string {
 	return strconv.Itoa(int(d/time.Millisecond)) + "ms"
 }
 
-// throughputTitle says how much history the graph is showing. It shows what
-// the snapshot carried, not a fixed ten minutes, so a provider that only just
-// started does not claim a window it does not have.
+// throughputTitle says how much history the graph is showing. A graph window
+// names its fixed level, and while the readings do not reach the window yet it
+// says how much they do cover, so a young top never claims a window it has not
+// filled.
 func (m *topModel) throughputTitle(name string, sr topSeries) string {
-	if sr.zoom {
-		title := name + ", last " + tui.Duration(topZoomWindow)
-		if len(sr.billable) == 0 {
-			title += " (collecting)"
+	if sr.window {
+		title := name + ", " + topGraphWindowNames[sr.level]
+		if !sr.full {
+			if sr.covered < time.Second {
+				title += " (collecting)"
+			} else {
+				title += " (collecting " + tui.Duration(sr.covered) + ")"
+			}
+		}
+		if m.conn == topDisconnected {
+			title += " (stale)"
 		}
 		return title
 	}
@@ -400,40 +408,22 @@ func (m *topModel) graphColumns(width int, samples []float64, scale *topScale) i
 	return max(0, plot*perCell)
 }
 
-func (m *topModel) graphTitle(name string, sr topSeries, samples []float64, scale *topScale, width int) string {
-	if !sr.columns {
-		return m.throughputTitle(name, sr)
-	}
-	n := min(m.graphColumns(width, samples, scale), len(sr.spans))
-	if n == 0 {
-		return name + " (collecting)"
-	}
-	var span time.Duration
-	for _, d := range sr.spans[len(sr.spans)-n:] {
-		span += d
-	}
-	duration := tui.Duration(span)
-	if span > 0 && span < time.Second {
-		duration = topIntervalText(span)
-	}
-	title := name + ", " + duration
-	if m.conn == topDisconnected {
-		title += " (stale)"
-	}
-	return title
+func (m *topModel) graphTitle(name string, sr topSeries) string {
+	return m.throughputTitle(name, sr)
 }
 
 // drawGraph draws one rate series. sr.anchor is the absolute index of the newest
 // sample (zero when unknown), which keeps completed columns still while the
-// graph scrolls; the live rate is the tail, its own newest column. scale holds
+// graph scrolls; a window series uses it as the newest reading time instead.
+// The live rate is the tail, its own newest column. scale holds
 // the axis steady: it never sits below what the series needs, and only comes
 // down after the peak has stayed low for a while.
 func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, scale *topScale, tail float64, live tui.Style) {
 	th := m.theme
 	if len(samples) == 0 {
 		msg := "waiting for the provider"
-		if sr.zoom {
-			msg = "collecting live readings"
+		if sr.window {
+			msg = "collecting readings"
 		}
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
@@ -445,7 +435,14 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 	if m.conn == topDisconnected {
 		style = th.Dim
 	}
-	if sr.columns {
+	if sr.window {
+		// A window is placed on a time axis of the plot's own width: readings
+		// become step bars when they are fewer than the columns, and the
+		// highest reading in each column wins when they are more.
+		n := m.graphColumns(b.Width(), samples, scale)
+		samples = spreadSeries(sr.at, sr.spans, samples, sr.anchor, topGraphWindows[sr.level], n)
+		sr.capacity, sr.live = len(samples), false
+	} else if sr.columns {
 		n := min(m.graphColumns(b.Width(), samples, scale), len(samples))
 		samples = samples[len(samples)-n:]
 		sr.anchor, sr.capacity = 0, len(samples)
@@ -1112,7 +1109,7 @@ var helpLines = []string{
 	"1 - 9            go to a page",
 	"p                show or hide the page tabs",
 	"+  -             change refresh interval, down to 100ms",
-	"w                zoom the graphs to the last 15 seconds",
+	"w  W             graph time scale: 10s, 1m, 5m, 15m",
 	"r                show or hide the mirrored Remote transfer chart",
 	"u                switch units between GiB (binary) and GB (decimal)",
 	"m                menu: color theme, graph style and heatmap style",

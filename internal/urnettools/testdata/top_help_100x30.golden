@@ -5,7 +5,7 @@
 │       │ 1 - 9            go to a page                                                   │        │
 │       │ p                show or hide the page tabs                                     │        │
 │20 MiB/│ +  -             change refresh interval, down to 100ms                         │        │
-│       │ w                zoom the graphs to the last 15 seconds                         │        │
+│       │ w  W             graph time scale: 10s, 1m, 5m, 15m                             │        │
 │       │ r                show or hide the mirrored Remote transfer chart                │        │
 │   0 B/│ u                switch units between GiB (binary) and GB (decimal)             │        │
 ╰───────│ m                menu: color theme, graph style and heatmap style               │        │

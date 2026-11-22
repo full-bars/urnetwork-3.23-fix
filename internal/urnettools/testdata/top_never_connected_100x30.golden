@@ -27,4 +27,4 @@
 ╭ Events ────────────────────────────────────────────────────────────╮
 │just now ✗ provider not answering: dial unix /state/tornado/provide…│
 ╰────────────────────────────────────────────────────────────────────╯
- q quit   ? help   m menu   K keyboard mode   w zoom   - 1s +                                 mouse
+ q quit   ? help   m menu   K keyboard mode   w zoom 1m   - 1s +                              mouse

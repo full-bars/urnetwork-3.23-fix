@@ -22,6 +22,7 @@ import (
 type topSettings struct {
 	Theme                 string       // a tui.ThemeNames entry, or "" for the environment's choice
 	Graph                 string       // a tui.GraphSymbolNames entry, or "" for braille
+	GraphWindow           string       // a topGraphWindowNames entry, or "" for the default level
 	ProxyAfterglowSeconds int          // 0 selects the default
 	ProxyHeatmapStyle     heatmapStyle // zero selects Glow
 	// The operator's arrangement of the top screen, drawn by their own hand:
@@ -77,6 +78,10 @@ func loadTopSettings(path string) topSettings {
 			}
 		case key == "proxy.heatmap_style":
 			s.ProxyHeatmapStyle = parseHeatmapStyle(val)
+		case key == "graph.window":
+			if _, ok := topGraphWindowIndex(val); ok {
+				s.GraphWindow = val
+			}
 		case key == "proxy.afterglow_seconds":
 			if v, err := strconv.Atoi(val); err == nil && v >= 1 && v <= 60 {
 				s.ProxyAfterglowSeconds = v
@@ -112,6 +117,7 @@ func saveTopSettings(path string, s topSettings) error {
 	}
 	defer os.Remove(tmp.Name()) // a no-op once renamed
 	out := "# urnet-tools top: chosen in the m menu\ntheme = " + s.Theme + "\ngraph = " + s.Graph + "\n"
+	out += "graph.window = " + s.GraphWindow + "\n"
 	out += "proxy.heatmap_style = " + s.ProxyHeatmapStyle.String() + "\n"
 	if s.ProxyAfterglowSeconds > 0 {
 		out += fmt.Sprintf("proxy.afterglow_seconds = %d\n", s.ProxyAfterglowSeconds)

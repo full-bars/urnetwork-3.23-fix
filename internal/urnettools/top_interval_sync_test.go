@@ -53,26 +53,30 @@ func TestTopTenMinuteHistoryAdvancesWithTrafficPolls(t *testing.T) {
 	}
 }
 
-func TestTopZoomGridUsesSampleTimes(t *testing.T) {
+func TestTopGraphWindowPlacesReadingsOnATimeAxis(t *testing.T) {
 	for _, interval := range topIntervalSteps {
+		if interval >= 10*time.Second {
+			continue // the longest level is the shortest span a reading can be placed on
+		}
 		t.Run(interval.String(), func(t *testing.T) {
-			var z topZoom
 			base := int64(time.Minute)
-			z.push(base, 1, 2)
-			z.push(base+int64(interval), 3, 4)
-			b, total, anchor := z.grid()
-			if anchor != (base+int64(interval))/int64(topMinInterval) || len(b) != 150 {
-				t.Fatalf("anchor=%d length=%d", anchor, len(b))
+			at := []int64{base, base + int64(interval)}
+			spans := []time.Duration{interval, interval}
+			vals := []float64{1, 3}
+			const n = 100 // 10s of 100ms columns
+			got := spreadSeries(at, spans, vals, at[len(at)-1], 10*time.Second, n)
+			if got[n-1] != 3 {
+				t.Fatalf("newest column = %v, want the newest reading", got[n-1])
 			}
-			if b[149] != 3 || total[149] != 4 {
-				t.Fatalf("newest values %v %v", b[149], total[149])
+			// The older reading ends where the newer one starts, so the switch
+			// sits at the column of that instant.
+			split := int((10*time.Second - interval) / topMinInterval)
+			if split < 1 || split >= n {
+				t.Fatalf("split column %d of %d", split, n)
 			}
-			old := 149 - int(interval/topMinInterval)
-			if old >= 0 && b[old] != 1 {
-				t.Fatalf("older value at %d = %v", old, b[old])
-			}
-			if interval > topMinInterval && !math.IsNaN(b[148]) {
-				t.Fatalf("missing time slot = %v", b[148])
+			if got[split] != 3 || got[split-1] != 1 {
+				t.Fatalf("columns %d and %d are %v and %v, want the two readings either side of %v",
+					split-1, split, got[split-1], got[split], interval)
 			}
 		})
 	}
@@ -94,7 +98,7 @@ func TestTopTrafficRateRestartsAfterLongGap(t *testing.T) {
 	}
 }
 
-func TestTopIntervalChangePreservesZoomHistory(t *testing.T) {
+func TestTopIntervalChangePreservesGraphWindowHistory(t *testing.T) {
 	for _, interval := range topIntervalSteps {
 		t.Run(interval.String(), func(t *testing.T) {
 			m, clock := liveModel(t, interval)
@@ -106,9 +110,9 @@ func TestTopIntervalChangePreservesZoomHistory(t *testing.T) {
 				}
 				m.applyTraffic(gen, &LiveTraffic{AtUnixNano: clock.Now().UnixNano(), BillableBytes: uint64(i) * 1000, TotalBytes: uint64(i) * 2000}, nil)
 			}
-			before := len(m.zoom.billable)
+			before := len(m.winRing.at)
 			if before == 0 {
-				t.Fatal("zoom history is empty before the interval change")
+				t.Fatal("graph window history is empty before the interval change")
 			}
 			if interval == topIntervalSteps[len(topIntervalSteps)-1] {
 				m.stepInterval(-1)
@@ -117,8 +121,8 @@ func TestTopIntervalChangePreservesZoomHistory(t *testing.T) {
 				m.stepInterval(1)
 				m.stepInterval(-1)
 			}
-			if got := len(m.zoom.billable); got != before {
-				t.Fatalf("zoom history after interval changes has %d samples, want %d", got, before)
+			if got := len(m.winRing.at); got != before {
+				t.Fatalf("graph window history after interval changes has %d readings, want %d", got, before)
 			}
 		})
 	}

@@ -211,11 +211,11 @@ func mouseSplitLines(s string) []string {
 
 func TestTopClickableFooterHints(t *testing.T) {
 	m, _ := mouseModel(t, 120, 40)
-	// The zoom hint toggles the zoom window, like the w key.
+	// The zoom hint steps the graph window on, like the w key.
 	zoom := regionRect(t, m, "footer:zoom")
 	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, zoom.X+2, zoom.Y))
-	if !m.zoomOn {
-		t.Fatal("clicking the zoom hint should toggle zoom")
+	if m.winLevel != (topGraphWindowDefault+1)%len(topGraphWindows) {
+		t.Fatalf("clicking the zoom hint left level %q", topGraphWindowNames[m.winLevel])
 	}
 	// The quit hint quits.
 	quit := regionRect(t, m, "footer:quit")
@@ -238,16 +238,17 @@ func TestTopClickableProviderTab(t *testing.T) {
 	}
 }
 
-func TestTopGraphTitleClickTogglesZoom(t *testing.T) {
+func TestTopGraphTitleClickStepsTheWindow(t *testing.T) {
 	m, _ := mouseModel(t, 120, 40)
 	title := regionRect(t, m, "title:graph")
+	first := m.winLevel
 	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, title.X+5, title.Y))
-	if !m.zoomOn {
-		t.Fatal("clicking the graph title should toggle zoom")
+	if want := (first + 1) % len(topGraphWindows); m.winLevel != want {
+		t.Fatalf("clicking the graph title left level %q, want %q", topGraphWindowNames[m.winLevel], topGraphWindowNames[want])
 	}
 	m.handle(mouseEv(tcellui.MousePress, tcellui.MouseLeft, title.X+5, title.Y))
-	if m.zoomOn {
-		t.Fatal("the second click should turn zoom back off")
+	if want := (first + 2) % len(topGraphWindows); m.winLevel != want {
+		t.Fatalf("the second click left level %q, want %q", topGraphWindowNames[m.winLevel], topGraphWindowNames[want])
 	}
 }
 

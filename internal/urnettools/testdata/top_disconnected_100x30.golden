@@ -27,4 +27,4 @@
 │just now ✗ lost the provider: dial unix /state/tornado/provider.soc…│
 │3d ago • restart: update (v3.23.0-fix.32.0 to v3.23.0-fix.32.1)     │
 ╰────────────────────────────────────────────────────────────────────╯
- q quit   [/] page   p tabs   ? help   m menu   K keyboard mode   w zoom   - 1s +             mouse
+ q quit   [/] page   p tabs   ? help   m menu   K keyboard mode   w zoom 1m   - 1s +          mouse

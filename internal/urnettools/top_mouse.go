@@ -121,7 +121,8 @@ func (m *topModel) mouseClick(name string, ev tcellui.Event) topEffect {
 	case "footer:menu":
 		m.menu, m.help, m.menuNote = true, false, ""
 	case "footer:zoom", "title:graph":
-		m.zoomOn = !m.zoomOn
+		m.stepGraphWindow(1)
+		m.saveSettings()
 	case "footer:goroutines":
 		// Only where the provider can answer, like the g key.
 		if m.rt.gOK && m.rt.ok {

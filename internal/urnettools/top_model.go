@@ -216,14 +216,16 @@ type topModel struct {
 	trafficBusy    bool
 	lastTraffic    time.Time
 
-	// zoomOn shows the last topZoomWindow at the poll rate instead of the
-	// provider's ten minutes. zoom is its ring, filled from the traffic polls.
-	zoomOn bool
-	zoom   topZoom
+	// winLevel selects the fixed graph window and winRing holds the readings it
+	// draws, one per traffic poll, trimmed to the longest window.
+	winLevel int
+	winRing  topGraphRing
 
-	// The steady axis of each graph: the ten minute pair and the zoom pair.
-	scaleB, scaleT         topScale
-	zoomScaleB, zoomScaleT topScale
+	// The steady axis of each graph: one pair for the provider's own history
+	// and one per graph window, so a level change does not carry a scale.
+	scaleB, scaleT topScale
+	winScaleB      [len(topGraphWindows)]topScale
+	winScaleT      [len(topGraphWindows)]topScale
 
 	// windowHours selects the history the graphs draw: 0 keeps the provider's
 	// ten minute ring, 1 shows the downsampled hour, 24 the day. windowB and
@@ -341,7 +343,7 @@ func newTopModel(providers []Provider, cur int, interval time.Duration, th tui.T
 	if cur < 0 || cur >= len(providers) {
 		cur = 0
 	}
-	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, mouseSupported: true}
+	m := &topModel{theme: th, providers: providers, cur: cur, interval: interval, retry: topRetryDelay, now: now, trafficOK: true, mouse: true, mouseSupported: true, winLevel: topGraphWindowDefault}
 	m.providerSnaps = make([]*NodeSnapshot, len(providers))
 	m.providerExt = make([]ExtenderReading, len(providers))
 	m.rt.reset()
@@ -453,6 +455,10 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 						}
 						at := lt.AtUnixNano - int64(len(history)-i)*int64(time.Second)
 						m.trafficHistory.push(at, value, total)
+						// The graphs draw the window from the same history, so
+						// a provider that has been up for a while fills the
+						// longer levels at once instead of from the first poll.
+						m.winRing.push(at-int64(time.Second), time.Second, value, total)
 					}
 				}
 				if m.interval <= time.Second {
@@ -460,8 +466,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 				} else {
 					m.trafficHistory.pushSlot(lt.AtUnixNano, b, t)
 				}
-				m.zoom.push(lt.AtUnixNano, b, t)
-				m.zoom.spans[len(m.zoom.spans)-1] = time.Duration(lt.AtUnixNano - last)
+				m.winRing.push(lt.AtUnixNano, time.Duration(lt.AtUnixNano-last), b, t)
 			}
 		}
 	}
@@ -539,7 +544,6 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
 	m.live.reset() // a rate from before the outage would read as current
-	m.zoom.reset()
 	m.failStreak, m.backoff, m.slowReported = 0, 0, false
 	// Clear only the Internals DATA, not its state. ok/gOK say whether the
 	// provider knows the command (its refusal survives the outage apparent,
@@ -812,8 +816,12 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			m.stepInterval(1)
 		case '-', '_':
 			m.stepInterval(-1)
-		case 'w', 'W':
-			m.zoomOn = !m.zoomOn
+		case 'w':
+			m.stepGraphWindow(1)
+			m.saveSettings()
+		case 'W':
+			m.stepGraphWindow(-1)
+			m.saveSettings()
 		case 'r', 'R':
 			// The Remote chart takes the bottom of the graph band. Switching it
 			// on starts its scales from the current window, not from whatever
@@ -891,6 +899,11 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficHistory = topTrafficHistory{}
+	m.winRing.reset()
+	for i := range m.winScaleB {
+		m.winScaleB[i].reset()
+		m.winScaleT[i].reset()
+	}
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
@@ -902,11 +915,13 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.extenderBusy = false
 	m.lastExtender = time.Time{}
 	m.lastAnswer, m.lastDone, m.failStreak, m.backoff, m.slowReported = time.Time{}, time.Time{}, 0, 0, false
-	m.zoom.reset()
+	m.winRing.reset()
+	for i := range m.winScaleB {
+		m.winScaleB[i].reset()
+		m.winScaleT[i].reset()
+	}
 	m.scaleB.reset()
 	m.scaleT.reset()
-	m.zoomScaleB.reset()
-	m.zoomScaleT.reset()
 	m.windowB.reset()
 	m.windowT.reset()
 	m.windowScaleB.reset()
@@ -1017,11 +1032,18 @@ type topSeries struct {
 	tailBillable, tailTotal float64
 	live                    bool
 	// capacity is the most columns the graph holds, and scaleB and scaleT the
-	// steady axis of each graph. zoom marks the fifteen second window.
+	// steady axis of each graph. window says the series is one fixed graph
+	// window with level its index in topGraphWindows. at, spans and covered
+	// describe the readings behind the window so drawGraph can place them on a
+	// time axis of the plot width.
 	capacity       int
 	scaleB, scaleT *topScale
-	zoom           bool
+	window         bool
 	columns        bool
+	level          int
+	covered        time.Duration
+	full           bool
+	at             []int64
 	spans          []time.Duration
 }
 
@@ -1031,19 +1053,19 @@ func (m *topModel) series() topSeries {
 	if m.snap == nil {
 		return out
 	}
-	if m.zoomOn && m.trafficOK && m.conn == topConnected {
-		// The time grid keeps readings aligned across interval changes.
-		out.zoom, out.capacity = true, m.zoomCapacity()
-		out.scaleB, out.scaleT = &m.zoomScaleB, &m.zoomScaleT
-		var total []float64
-		if m.interval <= time.Second {
-			out.billable, total, out.anchor = m.zoom.billable, m.zoom.total, m.zoom.seq
-			out.spans, out.columns = m.zoom.spans, true
-		} else {
-			out.billable, total, out.anchor = m.zoom.grid()
+	if len(m.winRing.at) > 0 {
+		level := m.winLevel
+		if level < 0 || level >= len(topGraphWindows) {
+			level = topGraphWindowDefault
 		}
+		out.window, out.level = true, level
+		out.scaleB, out.scaleT = &m.winScaleB[level], &m.winScaleT[level]
+		out.at, out.spans = m.winRing.at, m.winRing.spans
+		out.anchor = m.winRing.at[len(m.winRing.at)-1]
+		out.covered, out.full = m.winRing.cover(topGraphWindows[level])
+		out.billable = m.winRing.billable
 		if m.snap.Traffic != nil {
-			out.total = append([]float64{}, total...)
+			out.total = m.winRing.total
 		}
 		return out
 	}
@@ -1068,17 +1090,6 @@ func (m *topModel) series() topSeries {
 	}
 	out.capacity = topGraphCapacity
 	out.scaleB, out.scaleT = &m.scaleB, &m.scaleT
-	if len(m.trafficHistory.billable) > 0 {
-		out.anchor = m.trafficHistory.second
-		if m.interval <= time.Second {
-			out.anchor, out.columns, out.spans = m.trafficHistory.seq, true, m.trafficHistory.spans
-		}
-		out.billable = m.trafficHistory.billable
-		if m.snap.Traffic != nil {
-			out.total = m.trafficHistory.total
-		}
-		return out
-	}
 	switch {
 	case m.snap.Rate.HistorySeq > 0:
 		out.anchor = int64(m.snap.Rate.HistorySeq)
