@@ -1,0 +1,7 @@
+# Changelog title	first-parent merge commit
+TLS handshake cancellation metric	1e0d6a6038
+The provider waits as long as the platform front asks	7b627baf43
+Control name lookups keep time for plain DNS	290b90ef8b
+Certificate verification follows the sealing epoch	1e0d6a6038
+The DNS translation keeps its pending expiry timer	50ba2dfe9a
+Pull requests run the provider on a real OpenBSD kernel	600dc61b7b

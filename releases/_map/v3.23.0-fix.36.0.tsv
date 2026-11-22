@@ -1,0 +1,32 @@
+# Changelog title	commits supporting the documented behavior
+Proxied providers send platform connections through their proxy and mark them for platform accounting	373572ca79,14eabb258b,a0da562ad6
+Removed the unused FP2 client window	3db783dd87
+The proxy heatmap popup shows lifetime billable and total traffic in each direction	63d3089270,39bd7661cf
+Proxy UDP relay coverage	ac6ca8c,93082d8,b94d6e4
+`urnet-tools status` redesign	fc71ab9,5f9e842,66f8e4b
+Choose the extender's UDP 443, UDP 4053 and UDP 53 carriers independently with `urnet-tools set extender-udp443|extender-udp4053|extender-udp53 on|off`	5aa7fad,1008259,11376a7
+Extender status reports the UDP port 53 state and bind failure reason	d6d6362,1f0e73c
+Gossip diagnostics include dial counters, health transitions, recent events and rate-limited anomaly dumps	a0a9163,ce76a59,7983fae
+The proxy heatmap shows addresses on hover or click, separates the direct connection and explains the grid in help	e7159dd,28ce20f
+Extender setup offers the UDP port 53 sysctl threshold as an explicit opt-in	3a380f1
+The Linux interface counter reader exposes cumulative receive and transmit bytes	ee226c7,3d23f2c
+The container image includes the Go top dashboard	845e833
+Extender discovery now defaults to on when the extender role runs	5602aab
+`urnet-tools top` can show decimal units	ab6428a2e4
+Traffic the extender relays, per carrier	35d6036772,41d49bfe80
+`urnet-tools top` adds interactive diagnostics	ae31b59aab,1ad4fd620c
+Selectable heatmap styles	c0509b9307,9cccbdf3b4,0a846e265f,a3e8a540f6,0960d0131d,442ed963e2
+In `urnet-tools top`, `g` opens the goroutine list as an overlay when the window has no room for the Internals panel	2b134b60a0
+`urnet-tools top` redraws at most 20 times a second	d2669cbd26
+The graph axes follow the columns on screen	d2669cbd26,be0d18153f
+The heatmap gives each proxy state its own color: dropped is orange, connecting is violet and dead is bold red, and the throughput shades stay in green to aqua	d2669cbd26
+`urnet-tools top` advances live traffic graphs on each fast refresh and labels the visible duration	3bc2daebd8
+Backend failure counts and timestamps are published together as one snapshot	f5b7987c69
+A pinned IP family with no route sleeps instead of redialing	764a735
+The `[t]auth error` and `[contract]oob err` lines name the failed mode, the pinned family and the causes an exhausted request retained, such as `no route to host`	764a7358a6
+Proxy add accepts passwords containing an `@` sign	c763d2f
+The CFAA sync commits generated tables directly to the main branch after its format checks	95aa33e
+Status update checks do not follow symbolic links in the cache	ace4897965
+Failed carrier control writes restore the previous carrier configuration	b57e56b
+Lossless prefix-bucket host blocker format and Telegram reflector test alignment	e6ab91b,01b7e5a,40f07a6
+Proxy credentials stay out of logs, status and control replies	a5cb5e6,8feed36

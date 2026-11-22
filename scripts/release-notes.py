@@ -52,6 +52,8 @@ def main():
     date = date_match.group(1) if date_match else git('show', '-s', '--format=%cs', target)
     mapping = {}
     mapfile = ROOT / 'releases' / '_map' / (args.tag + '.tsv')
+    if not mapfile.exists() and args.section == 'Unreleased':
+        mapfile = ROOT / 'releases' / '_map' / 'Unreleased.tsv'
     if mapfile.exists():
         for number, line in enumerate(mapfile.read_text().splitlines(), 1):
             if not line or line.startswith('#'):
