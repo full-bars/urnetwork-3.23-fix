@@ -210,11 +210,12 @@ type topModel struct {
 	// live is the sliding-window rate built from the light traffic polls.
 	// trafficOK goes false once a provider says it does not know the command,
 	// and trafficBusy marks a traffic poll in flight.
-	live           topLive
-	trafficHistory topTrafficHistory
-	trafficOK      bool
-	trafficBusy    bool
-	lastTraffic    time.Time
+	live              topLive
+	trafficHistory    topTrafficHistory
+	transportsHistory topTransportHistory
+	trafficOK         bool
+	trafficBusy       bool
+	lastTraffic       time.Time
 
 	// zoomOn shows the last topZoomWindow at the poll rate instead of the
 	// provider's ten minutes. zoom is its ring, filled from the traffic polls.
@@ -427,6 +428,7 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 	case errors.Is(err, errTrafficUnsupported):
 		m.trafficOK = false
 		m.live.reset()
+		m.transportsHistory.reset()
 	case err != nil || lt == nil:
 	default:
 		m.markAnswered(m.now())
@@ -437,9 +439,13 @@ func (m *topModel) applyTraffic(gen int, lt *LiveTraffic, err error) {
 			// rate window so its average does not fill the gap with traffic.
 			if time.Duration(lt.AtUnixNano-last) > 2*m.interval {
 				m.live.reset()
+				m.transportsHistory.reset()
 			}
 		}
 		m.live.add(lt.AtUnixNano, lt.BillableBytes, lt.TotalBytes)
+		// The transports page differences two of these readings into a window
+		// share, so they are kept next to the live window that accepted them.
+		m.transportsHistory.push(lt.AtUnixNano, lt.Transports)
 		// One zoom column per reading the window accepted; a stalled clock adds
 		// none, and a restarted window has no span yet, so `recent` says not ok.
 		if n := len(m.live.samples); n > 0 && m.live.samples[n-1].at != last {
@@ -539,6 +545,7 @@ func (m *topModel) lost(now time.Time, err error) {
 	m.lastErr = reason
 	m.nextRetry = now.Add(m.retry)
 	m.live.reset() // a rate from before the outage would read as current
+	m.transportsHistory.reset()
 	m.zoom.reset()
 	m.failStreak, m.backoff, m.slowReported = 0, 0, false
 	// Clear only the Internals DATA, not its state. ok/gOK say whether the
@@ -891,6 +898,7 @@ func (m *topModel) selectProviderIndex(i int) topEffect {
 	m.fetching, m.lastFetch = false, time.Time{}
 	m.live.reset()
 	m.trafficHistory = topTrafficHistory{}
+	m.transportsHistory.reset()
 	m.trafficOK, m.trafficBusy, m.lastTraffic = true, false, time.Time{}
 	m.proxyCells, m.proxyCellsAt = nil, time.Time{}
 	m.proxyGlow = nil
