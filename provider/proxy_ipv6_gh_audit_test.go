@@ -150,7 +150,9 @@ func TestIPv6RefreshWaitingForASlotHonorsAProbeSwitchedOff(t *testing.T) {
 	h := newIPv6CheckHarness(t)
 	settings := ipv6TestSettings()
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
-	ctx := withIPv6Sweep(context.Background())
+	ctx, cancel := context.WithCancel(withIPv6Sweep(context.Background()))
+	// a failing wait below must release the refresh it left waiting for a slot
+	defer cancel()
 	// the UDP result is stored without the IPv6 stage (no sweep context)
 	h.store.Check(context.Background(), settings, now)
 	if h.ipv6Runs.Load() != 0 {
@@ -253,15 +255,14 @@ func TestRunProxyIPv6StageKeepsTcpEvidenceWhenTheBudgetRunsOut(t *testing.T) {
 	settings := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
 	now := time.Date(2026, 11, 20, 10, 0, 0, 0, time.UTC)
 	previous := proxyIPv6Result{}
-	blockedUdp := func(ctx context.Context, _ *connect.ProxySettings) (string, error) {
-		<-ctx.Done()
-		return "", ctx.Err()
-	}
+	// the deadline fires from the udp exit lookup instead of a wall clock budget,
+	// so the test proves the stage reads the deadline and not how long it waited
+	ctx := &deadlineCtx{Context: context.Background(), done: make(chan struct{})}
 	dials := newIPv6StageDials(0, nil, nil, "2001:db8::1", nil, "", nil).dials
-	dials.udpExit = blockedUdp
-
-	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
-	defer cancel()
+	dials.udpExit = func(context.Context, *connect.ProxySettings) (string, error) {
+		close(ctx.done)
+		return "", context.DeadlineExceeded
+	}
 	result, measured := runProxyIPv6Stage(ctx, settings, previous, now, dials)
 	if !measured {
 		t.Fatal("a budget that ran out after the TCP evidence discarded it")

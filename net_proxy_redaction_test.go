@@ -160,6 +160,13 @@ func TestProxyRedactWholeTokens(t *testing.T) {
 	if !strings.Contains(got, "10.0.0.11") || !strings.Contains(got, "110.0.0.1") {
 		t.Fatalf("a neighbouring address was redacted: %q", got)
 	}
+	// the bare host must be gone too, not only the address:port form. Only whole
+	// tokens count, so the longer neighbours above stay untouched.
+	for _, token := range strings.Fields(got) {
+		if token == "10.0.0.1" {
+			t.Fatalf("the bare proxy host survived: %q", got)
+		}
+	}
 	if !strings.Contains(got, "proxy[2]") {
 		t.Fatalf("the slot is missing: %q", got)
 	}

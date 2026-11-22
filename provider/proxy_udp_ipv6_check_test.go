@@ -289,7 +289,11 @@ func TestIPv6RefreshDoesNotRunTwiceAtOnce(t *testing.T) {
 	later := now.Add(11 * time.Minute)
 	done := make(chan struct{}, 2)
 	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
-	<-inStage
+	select {
+	case <-inStage:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the first check never entered the IPv6 stage")
+	}
 	go func() { h.store.Check(ctx, settings, later); done <- struct{}{} }()
 	select {
 	case <-done: // the second call returns without measuring
@@ -349,9 +353,18 @@ func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) 
 		return proxyUDPResult{Status: proxyUDPUnknown, Err: ctx.Err()}
 	}
 	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	// a failing wait below must release the check it left inside the probe
+	var releaseOnce sync.Once
+	releaseProbe := func() { releaseOnce.Do(func() { close(release) }) }
+	t.Cleanup(releaseProbe)
 	done := make(chan struct{})
 	go func() { h.store.Check(ctx, settings, now); close(done) }()
-	<-probing
+	select {
+	case <-probing:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the UDP check never entered the probe")
+	}
 
 	// the refresh finishes meanwhile: it updates the installed entry and clears the flag
 	measured := v6Result(proxyIPv6No, "unknown", now, 24*time.Hour)
@@ -362,8 +375,12 @@ func TestCancelledUDPCheckKeepsTheIPv6StateOfARefreshThatFinished(t *testing.T) 
 	h.store.mu.Unlock()
 
 	cancel()
-	close(release)
-	<-done
+	releaseProbe()
+	select {
+	case <-done:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled check did not finish")
+	}
 
 	h.store.mu.Lock()
 	entry := h.store.entries[settings.Key()]

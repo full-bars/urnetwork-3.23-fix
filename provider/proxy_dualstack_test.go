@@ -665,12 +665,17 @@ func TestCredentialsReachTheExtraTransportInOrder(t *testing.T) {
 	<-inFirst // startExtra is forwarding B to the extra transport
 	renewed := make(chan struct{})
 	go func() { transport.SetAuth(authC); close(renewed) }() // must wait for B
+	// the auth call is holding the transport: a failure below must still let it
+	// go, or the extra transport stays blocked behind the test
+	var releaseFirstOnce sync.Once
+	releaseAuth := func() { releaseFirstOnce.Do(func() { close(releaseFirst) }) }
+	defer releaseAuth()
 	select {
 	case <-renewed:
 		t.Fatal("a newer credential was forwarded while the older one was still being applied")
 	case <-time.After(50 * time.Millisecond):
 	}
-	close(releaseFirst)
+	releaseAuth()
 	if !<-started {
 		t.Fatal("the extra transport did not start")
 	}
