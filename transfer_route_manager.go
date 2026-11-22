@@ -77,6 +77,7 @@ const (
 )
 
 type TransferCarrierProperties struct {
+	boundSourceId                 Id
 	Unreliable                    bool
 	ReceiveReliability            CarrierReliability
 	UnreliableMaxMessageByteCount int
@@ -1203,12 +1204,35 @@ func (self *MultiRouteSelector) writeDetailedWithRoutePolicy(
 }
 
 // MultiRouteReader
+type transferReceiveDisposition struct {
+	transportType TransportType
+	boundSourceId Id
+}
+
 func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration) ([]byte, error) {
+	message, _, err := self.readWithDisposition(ctx, timeout)
+	return message, err
+}
+
+func (self *MultiRouteSelector) readWithDisposition(ctx context.Context, timeout time.Duration) ([]byte, transferReceiveDisposition, error) {
 	// read from the first channel available, in random priority
 	enterTime := time.Now()
 	for {
 		notify := self.transportUpdate.NotifyChannel()
 		activeRoutes := self.GetActiveRoutes()
+		self.mutex.Lock()
+		dispositions := make(map[Route]transferReceiveDisposition, len(activeRoutes))
+		retained := activeRoutes[:0]
+		for _, route := range activeRoutes {
+			props, ok := self.routeCarrierProperties[route]
+			if !ok {
+				continue
+			}
+			retained = append(retained, route)
+			dispositions[route] = transferReceiveDisposition{transportType: self.routeTransportTypes[route], boundSourceId: props.boundSourceId}
+		}
+		activeRoutes = retained
+		self.mutex.Unlock()
 
 		self.log.V(2).Infof("[mrr] %s/%s<- s(%s) routes = %d\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId, len(activeRoutes))
 
@@ -1220,7 +1244,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 				if ok {
 					self.log.V(2).Infof("[mrr]nb %s/%s<- s(%s)\n", self.clientTag, self.destination.DestinationId, self.destination.StreamId)
 					self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-					return transferFrameBytes, nil
+					return transferFrameBytes, dispositions[route], nil
 				} else {
 					// mark the route as closed, try again
 					self.setActive(route, false)
@@ -1296,14 +1320,14 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 
 		switch chosenIndex {
 		case contextDoneIndex:
-			return nil, errors.New("Context done")
+			return nil, transferReceiveDisposition{}, errors.New("Context done")
 		case doneIndex:
-			return nil, errors.New("Done")
+			return nil, transferReceiveDisposition{}, errors.New("Done")
 		case transportUpdateIndex:
 			// new routes, try again
 		case timeoutIndex:
-			// FIXME return nil, nil? don't use errors for timeouts
-			return nil, nil
+			// FIXME return nil, transferReceiveDisposition{}, nil? don't use errors for timeouts
+			return nil, transferReceiveDisposition{}, nil
 		default:
 			// a route
 			routeIndex := chosenIndex - routeStartIndex
@@ -1311,7 +1335,7 @@ func (self *MultiRouteSelector) Read(ctx context.Context, timeout time.Duration)
 			if ok {
 				transferFrameBytes := value.Bytes()
 				self.updateReceiveStats(route, 1, ByteCount(len(transferFrameBytes)))
-				return transferFrameBytes, nil
+				return transferFrameBytes, dispositions[route], nil
 			} else {
 				// mark the route as closed, try again
 				self.setActive(route, false)
