@@ -338,6 +338,36 @@ func TestCancelledAttemptsRotateTheOnlySlot(t *testing.T) {
 	}
 }
 
+// The freshness test that makes a UDP recheck due reads the entry's own stamp,
+// monotonic reading included; only the sort keys take the strip. Rounding the
+// stamp to the wall clock before the test drops that reading, so after a backward
+// wall step an entry that is seven hours old on the elapsed clock reads five
+// hours old and is not due at the six hour threshold.
+func TestSweepEligibilityReadsTheLiveStamp(t *testing.T) {
+	pinSyntheticStageClock(t)
+	now := time.Now()
+	half := proxyUDPTTL(proxyUDPOK) / 2
+	// wall age half minus an hour, elapsed age half plus an hour: the wall clock
+	// stepped back two hours before the entry was stamped
+	stamp := mixedClock(now.Add(-half+time.Hour), now.Add(-half-time.Hour))
+	store := newProxyUDPCheckStore(nil)
+	store.entries["tracked"] = &proxyUDPCheckEntry{at: stamp, result: proxyUDPResult{Status: proxyUDPOK}}
+	candidate := store.probeCandidateLocked("tracked", now)
+	if strings.Contains(candidate.lastChecked.String(), " m=") {
+		t.Fatalf("a sort key carries a monotonic reading: %s", candidate.lastChecked)
+	}
+	if got := selectUDPProbeBatch(now, []udpProbeCandidate{candidate}, udpProbeRecheckWindow, time.Minute, nil); len(got) != 1 {
+		t.Fatalf("the entry is %s old on the elapsed clock and %s old on the wall clock, and the batch left it out: the threshold is %s", now.Sub(stamp), now.Sub(stamp.Round(0)), half)
+	}
+	// the selector agrees with the entry's own stamp, which is the shape it read
+	// before the sort keys were normalized
+	live := candidate
+	live.lastChecked = stamp
+	if got := selectUDPProbeBatch(now, []udpProbeCandidate{live}, udpProbeRecheckWindow, time.Minute, nil); len(got) != 1 {
+		t.Fatal("the selector left out an entry stamped by the store itself")
+	}
+}
+
 // A recheck the tick deadline cancels leaves the identity with the result it had
 // before, so a cancelled attempt of an identity that already has one is not
 // recorded; the identity beside it, whose older result is due as well, then keeps

@@ -269,24 +269,31 @@ type udpProbeCandidate struct {
 	online      bool
 	status      proxyUDPStatus
 	lastChecked time.Time
-	ipv6Due     bool
+	// eligibilityAt is the entry's stamp as it stands, monotonic reading
+	// included. The freshness test that makes a recheck due reads it, so a wall
+	// clock that stepped back cannot age a live result out of its window; every
+	// sort key keeps the wall clock alone, because a comparator over live and
+	// restored stamps that mixes the two clocks is not transitive.
+	eligibilityAt time.Time
+	ipv6Due       bool
 	// ipv6DueAt is when the identity became due for the IPv6 stage, from
 	// ipv6DueAtLocked, so the selector can order by the earlier of its due times
 	ipv6DueAt time.Time
 	// attemptedAt is when the store last dispatched a check for this identity
-	// that was cancelled before it published anything. Zero when there is no
-	// such attempt, which is every identity that has published or has not been
+	// that was cancelled before it published. Zero when there is no such
+	// attempt, which is every identity that has published since or has not been
 	// tried.
 	attemptedAt time.Time
 	// dueAt is filled by the selector: the earlier of the udp and ipv6 due times
 	dueAt time.Time
 }
 
-// probeCandidateLocked builds the selector's view of one online identity. Every
-// time it reports is a sort key, so each one keeps the wall clock alone: entry
-// times carry a monotonic reading beside their wall clock, and a comparator
-// that mixes the two clocks is not transitive. The due decision itself stays
-// with the entry (ipv6DueLocked) and with the selector's own interval test.
+// probeCandidateLocked builds the selector's view of one online identity. The
+// times it reports for ordering keep the wall clock alone: entry times carry a
+// monotonic reading beside their wall clock, and a comparator that mixes the two
+// clocks is not transitive. The freshness test is not a sort key, so it keeps the
+// entry's own stamp (eligibilityAt). The due decision itself stays with the entry
+// (ipv6DueLocked) and with the selector's own interval test.
 // Called with the lock held.
 func (self *proxyUDPCheckStore) probeCandidateLocked(key string, now time.Time) udpProbeCandidate {
 	candidate := udpProbeCandidate{key: key, online: true, attemptedAt: self.attempts[key].Round(0)}
@@ -294,8 +301,10 @@ func (self *proxyUDPCheckStore) probeCandidateLocked(key string, now time.Time) 
 		if entry.done != nil {
 			// An active check will publish a fresh answer itself.
 			candidate.lastChecked = now.Round(0)
+			candidate.eligibilityAt = now
 		} else {
 			candidate.lastChecked = entry.at.Round(0)
+			candidate.eligibilityAt = entry.at
 			candidate.status = entry.result.Status
 			candidate.ipv6Due = proxyIPv6ProbeEnabled(globalControlState) && self.ipv6Probe != nil && entry.ipv6DueLocked(now)
 			candidate.ipv6DueAt = entry.ipv6DueAtLocked().Round(0)
@@ -319,7 +328,11 @@ func selectUDPProbeBatch(now time.Time, candidates []udpProbeCandidate, recheckW
 		}
 		online++
 		refreshWindow := proxyUDPTTL(candidate.status) / 2
-		if candidate.ipv6Due || candidate.lastChecked.IsZero() || !now.Before(candidate.lastChecked.Add(refreshWindow)) {
+		checked := candidate.eligibilityAt
+		if checked.IsZero() {
+			checked = candidate.lastChecked
+		}
+		if candidate.ipv6Due || checked.IsZero() || !now.Before(checked.Add(refreshWindow)) {
 			// one due time per candidate: a never-checked identity has none, so
 			// it goes first; a never-measured IPv6 record has none either, and
 			// the identity has been IPv6-due since its last UDP check, so that
