@@ -96,6 +96,7 @@ func cmdTop(args []string) error {
 	m.settingsPath = topSettingsPath()
 	m.applySettings(loadTopSettings(m.settingsPath))
 	m.copyOnQuit, m.copyPlain = copyOnQuit, plain
+	m.clip = newTopClipboard(scr)
 	src := topSourceFn()
 	if demo {
 		src = newDemoTopSource(time.Now)

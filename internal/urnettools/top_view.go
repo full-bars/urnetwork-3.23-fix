@@ -1134,15 +1134,32 @@ var helpLines = []string{
 	"Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.",
 }
 
+// helpText is the key reference the ? overlay shows, less the copy line when
+// this view has no clipboard to copy to.
+func (m *topModel) helpText() []string {
+	if m.clip != nil {
+		return helpLines
+	}
+	out := make([]string, 0, len(helpLines))
+	for _, l := range helpLines {
+		if strings.HasPrefix(l, "c ") {
+			continue
+		}
+		out = append(out, l)
+	}
+	return out
+}
+
 // drawHelp draws the key reference centered over whatever is on screen.
 func (m *topModel) drawHelp(b *tui.Buffer) {
+	lines := m.helpText()
 	th := m.theme
 	w := 0
-	for _, l := range helpLines {
+	for _, l := range lines {
 		w = max(w, tui.StringWidth(l))
 	}
 	w += 4
-	h := len(helpLines) + 2
+	h := len(lines) + 2
 	if b.Width() < topHelpMinWidth || b.Height() < h {
 		w, h = min(w, b.Width()), min(h, b.Height())
 	}
@@ -1150,7 +1167,7 @@ func (m *topModel) drawHelp(b *tui.Buffer) {
 	panel := b.Sub(r)
 	panel.Fill(panel.Rect(), ' ', tui.Style{})
 	in := tui.DrawBox(panel, "Keys", th.Frame, th.Border, th.Accent, th.ASCII)
-	for i, l := range helpLines {
+	for i, l := range lines {
 		in.Put(tui.Truncate(" "+l, in.Width(), th.ASCII), 0, i, tui.Style{})
 	}
 }

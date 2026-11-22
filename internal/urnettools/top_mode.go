@@ -19,6 +19,9 @@ const (
 	topNoticeMouse    = "Mouse Mode: top uses the mouse. K for Keyboard Mode"
 	topNoticeKeyboard = "Keyboard Mode: select text with your terminal. K for Mouse Mode"
 	topNoticeNoMouse  = "This terminal cannot report the mouse. Keyboard Mode stays on."
+	// topNoticeNoClipboard is what c says where there is no terminal to copy
+	// the screen from.
+	topNoticeNoClipboard = "No clipboard here: top has no terminal to copy the screen from."
 )
 
 // topNoticeFor is how long a one-line message holds the footer row.

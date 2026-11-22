@@ -201,6 +201,9 @@ func TestTopGoldenScreens(t *testing.T) {
 		{"top_compact_idle_mono_40x8", 40, 8, tui.MonoTheme(), func(m *topModel) { m.apply(0, topIdle(t), nil) }},
 		{"top_help_100x30", 100, 30, tui.DefaultTheme(), func(m *topModel) {
 			m.apply(0, topFlowing(t), nil)
+			// A real screen always has a clipboard, so the golden shows the
+			// full key list.
+			m.clip = &topClipboard{}
 			m.handle(tcellui.Event{Kind: tcellui.EventRune, Rune: '?'})
 		}},
 		{"top_flowing_high_contrast_120x40", 120, 40, mustTheme(t, "high-contrast"), func(m *topModel) { m.apply(0, topFlowing(t), nil) }},

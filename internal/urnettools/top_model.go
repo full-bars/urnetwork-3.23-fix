@@ -293,6 +293,10 @@ type topModel struct {
 	notice      string
 	noticeUntil time.Time
 
+	// clip sends the screen to the clipboard for the c key. It is nil when top
+	// has no terminal to copy from, and c is not offered then.
+	clip *topClipboard
+
 	// regions is the hit map for the last frame, rebuilt by every render.
 	regions []topRegion
 	// hover is the name of the region under the cursor, for hover highlighting.
@@ -676,6 +680,9 @@ const (
 	// topRefetch means the selection changed and the new provider should be
 	// asked at once.
 	topRefetch
+	// topCopy means the loop should send the frame it last drew to the
+	// clipboard. The loop owns the buffer, so the key only asks for it.
+	topCopy
 )
 
 // handle applies one input event.
@@ -771,6 +778,13 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			// The old key, kept as a hidden alias of K so nobody loses the
 			// toggle. It is not in the footer, the help or the docs.
 			m.toggleMouseMode()
+		case 'c':
+			// The loop holds the frame, so the key only asks for the copy.
+			if m.clip == nil {
+				m.setNotice(topNoticeNoClipboard)
+				return topNone
+			}
+			return topCopy
 		case 't':
 			switch m.windowHours {
 			case 0:
