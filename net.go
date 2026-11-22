@@ -512,13 +512,13 @@ func (self *ConnectSettings) DialContext(ctx context.Context, network string, ad
 
 	conn, err := dialContext(ctx, network, addr)
 	if log := loggerOrDefault(self.Log).V(2); log.Enabled() {
-		// a proxied dial reports the slot, never the proxy endpoint: the raw
-		// dialer error carries it
-		line := RedactProxyEndpoint(dialHeader(network, addr), self.ProxySettings)
+		// the address is printed as it was dialed and the error as it came
+		// back, so a failed proxied dial says which proxy it reached; only a
+		// credential in the error text is removed
 		if err == nil {
-			log.Infof("%s success\n", line)
+			log.Infof("[net]dial %s %s success\n", network, addr)
 		} else {
-			log.Infof("%s err=%s\n", line, RedactProxyEndpoint(err.Error(), self.ProxySettings))
+			log.Infof("[net]dial %s %s err=%s\n", network, addr, errText(err))
 		}
 	}
 	return conn, err
@@ -546,101 +546,44 @@ type ProxySettings struct {
 	Auth    *proxy.Auth
 }
 
-// proxyLogLabel names a proxy slot in a log line without its endpoint.
-func proxyLogLabel(settings *ProxySettings) string {
-	if settings == nil {
-		return "proxy"
-	}
-	return fmt.Sprintf("proxy[%d]", settings.Index)
+// RedactProxyCredentials removes the userinfo a proxy address in text carries:
+// the "user:password@" in front of the host, with or without a URI scheme, and
+// a user name alone when it sits in front of an address. It is the only
+// transformation a line about a proxy needs. The address, the hop it resolved
+// to, the dial error around it and the words in front of it are copied through
+// unchanged, so a log line still says which proxy it is about and a dial error
+// still carries the address Go printed.
+func RedactProxyCredentials(text string) string {
+	return redactProxyCredentials(text, nil)
 }
 
-// RedactProxyEndpoint replaces the configured proxy's address and host in text
-// with its slot label. A log line or metric label on the proxy path says which
-// slot failed, never where the proxy is, so a line about the proxy always
-// carries the label, even when it did not name the proxy.
-func RedactProxyEndpoint(text string, settings *ProxySettings) string {
-	if settings == nil || settings.Address == "" {
+// errText is err's message with any proxy credential removed, for a log line.
+// It is nil safe so a site that logs an error which may be nil needs no branch.
+func errText(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return RedactProxyCredentials(err.Error())
+}
+
+// proxyRedactStats counts the work one pass did, so a test can assert that the
+// cost stays linear in the length of the line instead of timing it.
+type proxyRedactStats struct {
+	// scanned is the number of bytes the backward credential scans walked.
+	scanned int
+}
+
+// add records n scanned bytes; a nil stats is the production path.
+func (self *proxyRedactStats) add(n int) {
+	if self != nil {
+		self.scanned += n
+	}
+}
+
+func redactProxyCredentials(text string, stats *proxyRedactStats) string {
+	if !strings.Contains(text, "@") {
 		return text
 	}
-	label := proxyLogLabel(settings)
-	host, port := proxyRedactHostPort(settings.Address)
-	redacted := redactAddressTokens(text, host, port, label)
-	if strings.Contains(redacted, label) {
-		return redacted
-	}
-	if redacted == "" {
-		return label
-	}
-	return redacted + " " + label
-}
-
-// proxyRedactHostPort is the host and port a proxy address names, tolerating a
-// scheme and userinfo: settings.Address is operator input and may carry either.
-func proxyRedactHostPort(address string) (string, string) {
-	if i := strings.LastIndex(address, "@"); 0 <= i {
-		address = address[i+1:]
-	}
-	if i := strings.Index(address, "://"); 0 <= i {
-		address = address[i+3:]
-	}
-	if host, port, err := net.SplitHostPort(address); err == nil {
-		return host, port
-	}
-	return strings.TrimSuffix(strings.TrimPrefix(address, "["), "]"), ""
-}
-
-// addressTokenByte reports whether b can belong to a host, a port or the closing
-// bracket of a v6 literal, so a candidate address is read whole and a token that
-// merely contains the proxy (110.0.0.15 next to 10.0.0.1) is left alone.
-func addressTokenByte(b byte) bool {
-	switch {
-	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
-		return true
-	case b == '.', b == ':', b == '-', b == '_', b == '%', b == ']':
-		return true
-	}
-	return false
-}
-
-// redactAddressTokens rewrites every whole address token of text through
-// redactAddressToken, copying everything else through unchanged.
-func redactAddressTokens(text string, host string, port string, label string) string {
-	if host == "" {
-		return text
-	}
-	text = dropProxyCredentials(text, host, port)
-	// a hop is only ever named inside the error string of the line, never in
-	// the dial target printed in front of it
-	errorFrom := proxyErrorRegionStart(text)
-	var b strings.Builder
-	for i := 0; i < len(text); {
-		if text[i] != '[' && !addressTokenByte(text[i]) {
-			b.WriteByte(text[i])
-			i++
-			continue
-		}
-		end := readAddressToken(text, i)
-		b.WriteString(redactAddressToken(text[i:end], text[:i], errorFrom <= i, host, port, label))
-		i = end
-	}
-	return b.String()
-}
-
-// proxyCredentialScanLimit bounds one backward credential scan. A credential
-// longer than this keeps the part in front of the bound, which is the direction a
-// line that carries one already leans; the bound is what stops a long run of
-// prefix characters from making the pass quadratic.
-const proxyCredentialScanLimit = 1024
-
-// dropProxyCredentials removes the userinfo in front of the address a proxy
-// error names. An error that repeats a credential-bearing proxy URL - a
-// url.Error's "Get \"socks5://user:secret@gw:443\": ..." - otherwise keeps the
-// user name and password next to the redacted endpoint. The delimiter is the
-// last '@' in front of the address, since a password may contain one, so the
-// credentials go whole and only the address is left for the token pass to
-// replace. The address is the configured one, or the hop a name-configured
-// proxy resolved to, which the token pass redacts by the same rule.
-func dropProxyCredentials(text string, host string, port string) string {
 	out := text
 	search := 0
 	for {
@@ -649,25 +592,15 @@ func dropProxyCredentials(text string, host string, port string) string {
 			return out
 		}
 		at := search + rel
-		tokenHost, tokenPort, ok := proxyTokenAfter(out, at+1)
-		if !ok {
+		// the text after the '@' decides whether the run in front of it is
+		// userinfo: only an address a proxy could be dialed at has any
+		host, port, ok := proxyTokenAfter(out, at+1)
+		if !ok || !proxyTokenNamesAddress(host, port) {
 			search = at + 1
 			continue
 		}
-		// the host decides first: a token that is neither the configured host
-		// nor a candidate hop on its port cannot belong to the proxy, and
-		// walking back over the line in front of every at-sign in it is what
-		// made this pass quadratic on a long run of them
-		if !proxyHostMatches(host, tokenHost) && !proxyHopCandidate(host, tokenHost, tokenPort, port) {
-			search = at + 1
-			continue
-		}
-		start := proxyAuthorityStart(out, at)
+		start := proxyAuthorityStart(out, at, stats)
 		if at <= start {
-			search = at + 1
-			continue
-		}
-		if !proxyHostMatches(host, tokenHost) && !proxyIsResolvedHop(host, tokenHost, tokenPort, port, out[:start]) {
 			search = at + 1
 			continue
 		}
@@ -676,12 +609,33 @@ func dropProxyCredentials(text string, host string, port string) string {
 	}
 }
 
+// proxyTokenNamesAddress reports whether the token after an '@' is an address a
+// proxy is dialed at, which is what makes the run in front of it a credential.
+// A name needs its port, and a token with no port at all counts only when it is
+// a numeric address, so a bare "@name" in prose stays as it is.
+func proxyTokenNamesAddress(host string, port string) bool {
+	if !ProxyHostAllowed(host) {
+		return false
+	}
+	if port == "" {
+		return proxyIsAddr(host)
+	}
+	return ProxyPortAllowed(port)
+}
+
+// proxyCredentialScanLimit bounds one backward credential scan, in bytes. A
+// credential is a userinfo run, so the bound only matters for text that is not
+// one: a long run of credential bytes in front of an '@' would otherwise be
+// walked once per at-sign and make the pass quadratic in the length of the line.
+// Text over the bound keeps the bytes in front of it, which is at most the run
+// minus the bound, and loses the rest.
+const proxyCredentialScanLimit = 1024
+
 // proxyTokenAfter is the host and port of the address token starting at start,
 // and whether one starts there at all. An error prints the address it failed on
 // followed by a colon ("dial host:port: connection refused"), and that colon is
 // part of the token but not of the address, so it is dropped before the host is
-// read: otherwise the address is never recognised and the credential in front
-// of it stays in the line.
+// read.
 func proxyTokenAfter(text string, start int) (string, string, bool) {
 	if len(text) <= start || (text[start] != '[' && !addressTokenByte(text[start])) {
 		return "", "", false
@@ -705,7 +659,63 @@ func addressHeadIsHostPort(head string) bool {
 	return strings.HasPrefix(head, "[") && strings.HasSuffix(head, "]")
 }
 
-// proxyAuthorityStart is where the userinfo in front of the '@' at end begins.
+// addressTokenByte reports whether b can belong to a host, a port or the closing
+// bracket of a v6 literal.
+func addressTokenByte(b byte) bool {
+	switch {
+	case '0' <= b && b <= '9', 'a' <= b && b <= 'z', 'A' <= b && b <= 'Z':
+		return true
+	case b == '.', b == ':', b == '-', b == '_', b == '%', b == ']':
+		return true
+	}
+	return false
+}
+
+// readAddressToken is the end of the address token starting at start. A
+// bracketed v6 literal is read as one token with the port that follows it. The
+// hyphen of the "->" an OpError prints between two addresses ends the token, so
+// the port in front of it is read whole.
+func readAddressToken(text string, start int) int {
+	i := start
+	if text[i] == '[' {
+		closing := strings.IndexByte(text[i:], ']')
+		if closing < 0 {
+			return len(text)
+		}
+		i += closing + 1
+	}
+	for i < len(text) && addressTokenByte(text[i]) {
+		// the hyphen of the "->" between two printed addresses is a separator,
+		// not part of a host or a port; a token that would otherwise be empty
+		// takes it, so the caller always moves forward
+		if text[i] == '-' && i+1 < len(text) && text[i+1] == '>' {
+			if i == start {
+				i++
+			}
+			break
+		}
+		i++
+	}
+	return i
+}
+
+// splitAddressToken separates a token into host and port. The port is empty for
+// a bare host, and a bare v6 literal is read whole.
+func splitAddressToken(token string) (string, string) {
+	if strings.HasPrefix(token, "[") {
+		closing := strings.IndexByte(token, ']')
+		if closing < 0 {
+			return "", ""
+		}
+		return token[1:closing], strings.TrimPrefix(token[closing+1:], ":")
+	}
+	if host, port, err := net.SplitHostPort(token); err == nil {
+		return host, port
+	}
+	return token, ""
+}
+
+// proxyAuthorityStart is where the credential in front of the '@' at end begins.
 // The token the credential sits in is read first. '=' is both a sub-delimiter a
 // password may carry and the separator a log line puts between a key and its
 // value ("err=", "addr="): it separates a key when the bytes between it and the
@@ -722,11 +732,11 @@ func addressHeadIsHostPort(head string) bool {
 // own ("demo:p=https://tail@host"), and a proxy URL with that shape is one an
 // operator ends up with, so a later "://" is part of the credential and never a
 // new URL to start from.
-func proxyAuthorityStart(text string, end int) int {
-	if start := proxySchemeTokenStart(text, end); 0 <= start {
+func proxyAuthorityStart(text string, end int, stats *proxyRedactStats) int {
+	if start := proxySchemeTokenStart(text, end, stats); 0 <= start {
 		return start
 	}
-	return proxyCredentialStart(text, end)
+	return proxyCredentialStart(text, end, stats)
 }
 
 // proxySchemeTokenStart is where the credential begins when the token holding it
@@ -735,7 +745,7 @@ func proxyAuthorityStart(text string, end int) int {
 // key's '=', then skips the quote or bracket a log line puts in front of the
 // value. The token counts only when a run of scheme bytes opens it and the
 // bytes after that run are "://".
-func proxySchemeTokenStart(text string, end int) int {
+func proxySchemeTokenStart(text string, end int, stats *proxyRedactStats) int {
 	start := end
 	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
 		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
@@ -746,6 +756,7 @@ func proxySchemeTokenStart(text string, end int) int {
 		}
 		start--
 	}
+	stats.add(end - start)
 	for start < end && proxyTokenOpenByte(text[start]) {
 		start++
 	}
@@ -753,6 +764,7 @@ func proxySchemeTokenStart(text string, end int) int {
 	for run < end && proxySchemeByte(text[run]) {
 		run++
 	}
+	stats.add(run - start)
 	if start < run && !('0' <= text[start] && text[start] <= '9') && strings.HasPrefix(text[run:end], "://") {
 		return run + 3
 	}
@@ -789,7 +801,7 @@ func proxyTokenOpenByte(b byte) bool {
 // and the brackets and punctuation a log line puts around a value end the token
 // there, so a password carrying one of those loses only the part behind it
 // instead of taking the surrounding prose with it.
-func proxyCredentialStart(text string, end int) int {
+func proxyCredentialStart(text string, end int, stats *proxyRedactStats) int {
 	start := end
 	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
 		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
@@ -800,6 +812,7 @@ func proxyCredentialStart(text string, end int) int {
 		}
 		start--
 	}
+	stats.add(end - start)
 	return start
 }
 
@@ -845,7 +858,7 @@ func proxyKeyByte(b byte) bool {
 // the prose around a line, so the boundary wins.
 func proxyTokenBoundaryByte(b byte) bool {
 	switch b {
-	case ' ', '	', '\n', '\r', '\v', '\f':
+	case ' ', '\t', '\n', '\r', '\v', '\f':
 		return true
 	case '"', '\'', '`', '(', ')', '<', '>', '[', ']', '{', '}', '|', ',', ';':
 		return true
@@ -869,221 +882,10 @@ func proxyCredentialByte(b byte) bool {
 	return false
 }
 
-// proxyHostMatches reports whether a host read out of text names the configured
-// one. Numeric hosts compare by value, so a proxy configured in one spelling of
-// a v6 address is recognised in the one an error prints, an IPv4-mapped v6
-// address is the IPv4 address it carries, and a zone is not part of the address.
-func proxyHostMatches(configured string, host string) bool {
-	if strings.EqualFold(configured, host) {
-		return true
-	}
-	configuredAddr, configuredErr := netip.ParseAddr(configured)
-	hostAddr, hostErr := netip.ParseAddr(host)
-	if configuredErr != nil || hostErr != nil {
-		return false
-	}
-	return configuredAddr.WithZone("").Unmap() == hostAddr.WithZone("").Unmap()
-}
-
 // proxyIsAddr reports whether host is a numeric address rather than a name.
 func proxyIsAddr(host string) bool {
 	_, err := netip.ParseAddr(host)
 	return err == nil
-}
-
-// proxyHopCandidate reports whether a host and port could name the hop a
-// name-configured proxy resolved to, without reading the words in front of the
-// token. It is the cheap half of proxyIsResolvedHop.
-func proxyHopCandidate(host string, tokenHost string, tokenPort string, port string) bool {
-	return !proxyIsAddr(host) && proxyIsAddr(tokenHost) && (tokenPort == "" || tokenPort == port)
-}
-
-// proxyIsResolvedHop reports whether a host and port name the hop a
-// name-configured proxy resolved to rather than a destination: a numeric address
-// on the proxy's port or with no port, where the words in front of it name a
-// hop. A proxy configured by a numeric address matches through
-// proxyHostMatches instead. The address pass and the credential pass share the
-// rule, so a credential in front of the hop goes with the hop.
-func proxyIsResolvedHop(host string, tokenHost string, tokenPort string, port string, before string) bool {
-	return proxyHopCandidate(host, tokenHost, tokenPort, port) && proxyNamesItsHop(before)
-}
-
-// proxyErrorRegionStart is where the error string of text begins, or the end of
-// text when it carries none. A log line is the printed dial target followed by
-// " err=" and the error, and a caller that hands over a bare error has its
-// whole text be one. The printed dial target alone is no error: its address is
-// the destination, never the hop the proxy dial reached.
-func proxyErrorRegionStart(text string) int {
-	const marker = " err="
-	if i := strings.LastIndex(text, marker); 0 <= i {
-		return i + len(marker)
-	}
-	if strings.HasPrefix(text, dialHeaderPrefix) {
-		return len(text)
-	}
-	return 0
-}
-
-// dialHeaderPrefix opens the line a dial prints about its target, which the
-// error follows after " err=".
-const dialHeaderPrefix = "[net]dial "
-
-// dialHeader is the line a dial prints about the address it dialed.
-func dialHeader(network string, addr string) string {
-	return dialHeaderPrefix + network + " " + addr
-}
-
-// proxyNetworks are the network names the net package prints in front of an
-// address it dialed or read from. A dial that names its family prints the
-// family name instead of "tcp" or "udp", so each one is a name of its own.
-var proxyNetworks = []string{"tcp", "tcp4", "tcp6", "udp", "udp4", "udp6"}
-
-// proxyHopPhrases are the phrases a transport puts directly in front of the
-// address a proxy dial reached: the socks client's hop, net/http's proxy
-// CONNECT, and the proxy dial's own target when it is reported as a
-// net.OpError. Each is followed by the network name, which is why the markers
-// carry every name in proxyNetworks.
-var proxyHopPhrases = []string{
-	"dial ",
-	"socks connect ",
-	"socks5 connect ",
-	"socks5h connect ",
-	"socks5 dial ",
-	"proxyconnect tcp: dial ",
-}
-
-// proxyHopMarkers are the phrases a transport puts directly in front of the
-// address a proxy dial reached, each with a network name, plus the two forms
-// that are printed with no network at all.
-var proxyHopMarkers = func() []string {
-	markers := []string{"socks5 connect ", "socks5 dial "}
-	for _, phrase := range proxyHopPhrases {
-		for _, network := range proxyNetworks {
-			markers = append(markers, phrase+network+" ")
-		}
-	}
-	return markers
-}()
-
-// proxyNamesItsHop reports whether before ends with a phrase that names the
-// proxy hop rather than a destination, or puts the token in the peer slot of a
-// socket read or write.
-func proxyNamesItsHop(before string) bool {
-	for _, marker := range proxyHopMarkers {
-		if strings.HasSuffix(before, marker) {
-			return true
-		}
-	}
-	return proxyNamesItsPeer(before)
-}
-
-// proxyPeerForms are the phrases that put an address in the peer slot of a
-// printed operation: a socket read or write, whose address after the arrow is
-// the peer, and so the address the proxy dial reached. A socks connect prints the
-// proxy it connected to before the arrow and the command target after it, so
-// neither of those is the peer slot: the proxy is named as the hop in front of
-// the arrow and the target stays visible.
-var proxyPeerForms = func() []string {
-	var forms []string
-	for _, phrase := range []string{"read ", "write "} {
-		for _, network := range proxyNetworks {
-			forms = append(forms, phrase+network+" ")
-		}
-	}
-	return forms
-}()
-
-// proxyNamesItsPeer reports whether before puts the token after the arrow of a
-// socket read or write, so the local address in front of the arrow is not taken
-// for the hop.
-func proxyNamesItsPeer(before string) bool {
-	local, ok := strings.CutSuffix(before, "->")
-	if !ok {
-		return false
-	}
-	for _, form := range proxyPeerForms {
-		if i := strings.LastIndex(local, form); 0 <= i && !strings.Contains(local[i+len(form):], " ") {
-			return true
-		}
-	}
-	return false
-}
-
-// readAddressToken is the end of the address token starting at start. A
-// bracketed v6 literal is read as one token with the port that follows it. The
-// hyphen of the "->" an OpError prints between two addresses ends the token, so
-// the port in front of it is read whole.
-func readAddressToken(text string, start int) int {
-	i := start
-	if text[i] == '[' {
-		closing := strings.IndexByte(text[i:], ']')
-		if closing < 0 {
-			return len(text)
-		}
-		i += closing + 1
-	}
-	for i < len(text) && addressTokenByte(text[i]) {
-		// the hyphen of the "->" between two printed addresses is a separator,
-		// not part of a host or a port; a token that would otherwise be empty
-		// takes it, so the caller always moves forward
-		if text[i] == '-' && i+1 < len(text) && text[i+1] == '>' {
-			if i == start {
-				i++
-			}
-			break
-		}
-		i++
-	}
-	return i
-}
-
-// redactAddressToken is one token with the proxy in place of its address. The
-// configured host matches on any port, since the host is what locates the
-// proxy; and a proxy configured by name also owns the hop it resolved to, but
-// only where the error string in front of the token names that hop as the
-// address the proxy dial reached, and only on the proxy's port or with no port
-// at all. A bare ip:port on the proxy's port is otherwise a destination, and the
-// port alone cannot tell it apart. Trailing separators such as the colon an
-// error puts after an address are kept.
-func redactAddressToken(token string, before string, inError bool, host string, port string, label string) string {
-	address := token
-	separators := ""
-	for strings.HasSuffix(address, ":") {
-		address = strings.TrimSuffix(address, ":")
-		separators += ":"
-	}
-	if address == "" {
-		return token
-	}
-	tokenHost, tokenPort := splitAddressToken(address)
-	hostMatches := proxyHostMatches(host, tokenHost)
-	switch {
-	case hostMatches && (tokenPort == "" || tokenPort == port):
-		return label + separators
-	case hostMatches:
-		// the same host on another port is still where the proxy is
-		return label + ":" + tokenPort + separators
-	case inError && proxyIsResolvedHop(host, tokenHost, tokenPort, port, before):
-		// a name-configured proxy's resolved hop, named as the dialed address
-		return label + separators
-	}
-	return token
-}
-
-// splitAddressToken separates a token into host and port. The port is empty for
-// a bare host, and a bare v6 literal is read whole.
-func splitAddressToken(token string) (string, string) {
-	if strings.HasPrefix(token, "[") {
-		closing := strings.IndexByte(token, ']')
-		if closing < 0 {
-			return "", ""
-		}
-		return token[1:closing], strings.TrimPrefix(token[closing+1:], ":")
-	}
-	if host, port, err := net.SplitHostPort(token); err == nil {
-		return host, port
-	}
-	return token, ""
 }
 
 // String omits credentials and rejects addresses that are not bare host:port.

@@ -371,14 +371,6 @@ var (
 // shouldLogAuthErr reports whether an authentication error should be logged and returns the throttle state.
 func shouldLogAuthErr() (bool, int64) { return authErrThrottle.Allow(time.Now()) }
 
-// proxySettings returns the proxy this transport dials through, if any.
-func (self *PlatformTransport) proxySettings() *ProxySettings {
-	if self == nil || self.clientStrategy == nil {
-		return nil
-	}
-	return self.clientStrategy.ConnectSettings().ProxySettings
-}
-
 // logAuthError logs a failed dial of one of this transport's modes, throttled
 // at INFO across every transport (shouldLogAuthErr) and every attempt at
 // V(1). The line names the mode and a pinned transport's family, and the
@@ -389,8 +381,9 @@ func (self *PlatformTransport) logAuthError(clientId Id, mode TransportMode, err
 	if self.pinned() {
 		leg = fmt.Sprintf("%s ipv%d", mode, self.ipFamily)
 	}
-	// the cause chain can name the proxy endpoint: report the slot instead
-	causes := RedactProxyEndpoint(httpRequestErrorWithCauses(err), self.proxySettings())
+	// the cause chain can carry the proxy URL a CONNECT used: the address
+	// stays and any credential in it goes
+	causes := RedactProxyCredentials(httpRequestErrorWithCauses(err))
 	if ok, suppressed := shouldLogAuthErr(); ok {
 		if suppressed > 0 {
 			self.log.Infof("[t]auth error %s (%s) = %s (%d suppressed)\n", clientId, leg, causes, suppressed)
@@ -2700,12 +2693,12 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						// note that for websocket a dealine timeout cannot be recovered
 						if ok, suppressed := shouldLogWriteErr(); ok {
 							if suppressed > 0 {
-								self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+								self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, errText(err), suppressed)
 							} else {
-								self.log.Infof("[ts]%s-> error = %s\n", clientId, err)
+								self.log.Infof("[ts]%s-> error = %s\n", clientId, errText(err))
 							}
 						} else if v := self.log.V(1); v.Enabled() {
-							v.Infof("[ts]%s-> error = %s\n", clientId, err)
+							v.Infof("[ts]%s-> error = %s\n", clientId, errText(err))
 						}
 						return err
 					}
@@ -2832,7 +2825,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						// A WebSocket write timeout or partial TLS write cannot
 						// be recovered; the transfer sequence retains each
 						// item and retries it over the replacement route.
-						self.log.Infof("[ts]%s-> batch flush error = %s\n", clientId, err)
+						self.log.Infof("[ts]%s-> batch flush error = %s\n", clientId, errText(err))
 					}
 					return
 				}
@@ -3001,7 +2994,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 						recordTransportCloseCause(self.proxySourceLabel(), "h1", "read", err) // fork: close-cause metric
 						endCause.note(err)
 						if self.log.V(2).Enabled() {
-							self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
+							self.log.Infof("[tr]%s<- error = %s\n", clientId, errText(err))
 						}
 						// the WebSocket close code is the second indicator of
 						// the client limit close, after the close control
@@ -3102,7 +3095,7 @@ func (self *PlatformTransport) runH1(initialTimeout time.Duration) {
 
 					// messageType, message, err := ws.ReadMessage()
 					// if err != nil {
-					// 	self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
+					// 	self.log.Infof("[tr]%s<- error = %s\n", clientId, errText(err))
 					// 	return
 					// }
 
@@ -3978,12 +3971,12 @@ func (self *PlatformTransport) runH3(
 				endCause.note(err)
 				if ok, suppressed := shouldLogWriteErr(); ok {
 					if suppressed > 0 {
-						self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, err, suppressed)
+						self.log.Infof("[ts]%s-> error = %s (%d suppressed)\n", clientId, errText(err), suppressed)
 					} else {
-						self.log.Infof("[ts]%s-> error = %s\n", clientId, err)
+						self.log.Infof("[ts]%s-> error = %s\n", clientId, errText(err))
 					}
 				} else if v := self.log.V(1); v.Enabled() {
-					v.Infof("[ts]%s-> error = %s\n", clientId, err)
+					v.Infof("[ts]%s-> error = %s\n", clientId, errText(err))
 				}
 			}
 
@@ -4254,7 +4247,7 @@ func (self *PlatformTransport) runH3(
 						if err != nil {
 							recordTransportCloseCause(self.proxySourceLabel(), "h3", "read", err) // fork: close-cause metric
 							endCause.note(err)
-							self.log.Infof("[tr]%s<- error = %s\n", clientId, err)
+							self.log.Infof("[tr]%s<- error = %s\n", clientId, errText(err))
 							return
 						}
 						lastStreamReceiveNano.Store(time.Now().UnixNano())

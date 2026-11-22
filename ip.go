@@ -2629,7 +2629,7 @@ func (self *TcpSequence) Run() {
 		self.IpPath().DestinationHostPort(),
 	)
 	if err != nil {
-		self.log.V(1).Infof("[init]tcp connect error = %s\n", err)
+		self.log.V(1).Infof("[init]tcp connect error = %s\n", errText(err))
 		// The source has not seen our synthetic syn-ack yet. Abandoning the
 		// sequence silently leaves it retransmitting the syn in backoff, so
 		// answer it instead (classifyDialFailure says what and when). A parent
@@ -2861,7 +2861,7 @@ func (self *TcpSequence) Run() {
 
 			if err != nil {
 				if v := self.log.V(1); v.Enabled() {
-					v.Infof("[f%d]tcp receive error = %s\n", forwardIter, err)
+					v.Infof("[f%d]tcp receive error = %s\n", forwardIter, errText(err))
 				}
 			}
 

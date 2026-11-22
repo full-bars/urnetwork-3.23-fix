@@ -901,10 +901,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				noteFailed(result)
 				if result != nil {
 					if result.err == nil || result.terminal {
-						self.log.V(2).Infof("[net][p]select: %s\n", dialer.logText())
+						self.log.V(2).Infof("[net][p]select: %s\n", dialer.logLine(nil))
 						return result, nil
 					}
-					self.log.V(2).Infof("[net][p]select: %s = %s\n", dialer.logText(), dialer.logErrText(result.err))
+					self.log.V(2).Infof("[net][p]select: %s\n", dialer.logLine(result.err))
 					result.Close()
 				}
 			}
@@ -925,10 +925,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logText())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(nil))
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.logText(), result.dialer.logErrText(result.err))
+						self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -953,10 +953,10 @@ func (self *ClientStrategy) parallelEvalErr(ctx context.Context, eval func(ctx c
 				case result := <-out:
 					if result != nil {
 						if result.err == nil || result.terminal {
-							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logText())
+							self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(nil))
 							return result, nil
 						}
-						self.log.V(2).Infof("[net][p]select: %s = %s\n", result.dialer.logText(), result.dialer.logErrText(result.err))
+						self.log.V(2).Infof("[net][p]select: %s\n", result.dialer.logLine(result.err))
 						result.Close()
 					}
 					go HandleError(func() {
@@ -1049,14 +1049,14 @@ func (self *ClientStrategy) serialEval(ctx context.Context, eval func(ctx contex
 					self.mutex.Lock()
 					self.failureCount = 0
 					self.mutex.Unlock()
-					self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.String(), dialDur.Milliseconds())
+					self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.logLine(nil), dialDur.Milliseconds())
 					return result
 				}
 				if ok, suppressed := shouldLogSelectErr(); ok {
 					if suppressed > 0 {
-						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms (%d suppressed)\n", dialer.String(), result.err, dialDur.Milliseconds(), suppressed)
+						self.log.Infof("🌐 [net][s]select: %s dur=%dms (%d suppressed)\n", dialer.logLine(result.err), dialDur.Milliseconds(), suppressed)
 					} else {
-						self.log.Infof("🌐 [net][s]select: %s = %s dur=%dms\n", dialer.String(), result.err, dialDur.Milliseconds())
+						self.log.Infof("🌐 [net][s]select: %s dur=%dms\n", dialer.logLine(result.err), dialDur.Milliseconds())
 					}
 				}
 				result.Close()
@@ -1116,7 +1116,7 @@ func (self *ClientStrategy) HttpParallel(request *http.Request) (*httpResult, er
 		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, err)
+				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http parallel %s %s = %s\n", request.Method, request.URL, response.Status)
 			}
@@ -1160,7 +1160,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		response, err := httpClientForRequest(httpClient, request).Do(timing.trace(handleCtx, request, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, err)
+				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http serial %s %s = %s\n", request.Method, request.URL, response.Status)
 			}
@@ -1183,7 +1183,7 @@ func (self *ClientStrategy) HttpSerial(request *http.Request, helloRequest *http
 		response, err := httpClientForRequest(httpClient, helloRequest).Do(timing.trace(handleCtx, helloRequest, startDial))
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, err)
+				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, errText(err))
 			} else {
 				self.log.Infof("[net]http serial hello %s %s = %s\n", helloRequest.Method, helloRequest.URL, response.Status)
 			}
@@ -1830,44 +1830,9 @@ func (self *clientDialer) ResetHealth() {
 	self.connectObservedAt = time.Time{}
 }
 
-// proxySettings returns the proxy this dialer dials through, if any.
-func (self *clientDialer) proxySettings() *ProxySettings {
-	if self.settings == nil {
-		return nil
-	}
-	return self.settings.ProxySettings
-}
-
-// logText is the dialer's summary for a log line: the slot the line is about,
-// never where the proxy is.
-func (self *clientDialer) logText() string {
-	return self.describe(proxyLogLabel)
-}
-
-// logErrText is err's message for a log line about this dialer, on the same
-// terms as logText: a SOCKS failure can name the proxy, so the endpoint is
-// replaced by the slot label.
-func (self *clientDialer) logErrText(err error) string {
-	if err == nil {
-		return ""
-	}
-	return RedactProxyEndpoint(err.Error(), self.proxySettings())
-}
-
-// String is the dialer's summary for diagnostics: it names the proxy endpoint,
-// so it must not be used for a log line (see logText).
+// String is the dialer's summary for diagnostics and for a log line: the proxy
+// slot, the address it dials and its counters, with no credential in it.
 func (self *clientDialer) String() string {
-	return self.describe(proxyEndpointText)
-}
-
-// proxyEndpointText is the endpoint display String uses for a proxy.
-func proxyEndpointText(settings *ProxySettings) string {
-	return safeProxyDisplayAddress(settings.Address)
-}
-
-// describe formats the dialer summary, taking the proxy's address text from
-// display so a caller chooses between the endpoint and its slot label.
-func (self *clientDialer) describe(display func(*ProxySettings) string) string {
 	self.mutex.Lock()
 	defer self.mutex.Unlock()
 
@@ -1890,11 +1855,20 @@ func (self *clientDialer) describe(display func(*ProxySettings) string) string {
 		if clients > 0 {
 			ageStr = fmt.Sprintf(" age=%s", maxAge.Round(time.Second).String())
 		}
-		settings := self.settings.ProxySettings
-		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", settings.Index, display(settings), self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
+		return fmt.Sprintf("proxy[%d] (%s) [%s] success=%d error=%d%s clients=%d%s", self.settings.ProxySettings.Index, safeProxyDisplayAddress(self.settings.ProxySettings.Address), self.description, self.successCount, self.errorCount, latencyStr, clients, ageStr)
 	} else {
 		return fmt.Sprintf("[direct] %s success=%d error=%d%s", self.description, self.successCount, self.errorCount, latencyStr)
 	}
+}
+
+// logLine is the text of a select line: the dialer's summary and, when the
+// attempt failed, its error with any proxy credential removed. Both the serial
+// and the parallel select log through it, so the two lines read alike.
+func (self *clientDialer) logLine(err error) string {
+	if err == nil {
+		return self.String()
+	}
+	return self.String() + " = " + errText(err)
 }
 
 // routeIdentity is the stable identity of the route this dialer takes, in the
