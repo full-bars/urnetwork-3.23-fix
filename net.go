@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"strings"
 	"sync"
 	"syscall"
@@ -696,9 +697,25 @@ func proxyCredentialByte(b byte) bool {
 }
 
 // proxyHostMatches reports whether a host read out of text names the configured
-// one.
+// one. Numeric hosts compare by value, so a proxy configured in one spelling of
+// a v6 address is recognised in the one an error prints, an IPv4-mapped v6
+// address is the IPv4 address it carries, and a zone is not part of the address.
 func proxyHostMatches(configured string, host string) bool {
-	return strings.EqualFold(configured, host)
+	if strings.EqualFold(configured, host) {
+		return true
+	}
+	configuredAddr, configuredErr := netip.ParseAddr(configured)
+	hostAddr, hostErr := netip.ParseAddr(host)
+	if configuredErr != nil || hostErr != nil {
+		return false
+	}
+	return configuredAddr.WithZone("").Unmap() == hostAddr.WithZone("").Unmap()
+}
+
+// proxyIsAddr reports whether host is a numeric address rather than a name.
+func proxyIsAddr(host string) bool {
+	_, err := netip.ParseAddr(host)
+	return err == nil
 }
 
 // proxyErrorRegionStart is where the error string of text begins. A log line is
@@ -771,13 +788,14 @@ func redactAddressToken(token string, before string, inError bool, host string, 
 		return token
 	}
 	tokenHost, tokenPort := splitAddressToken(address)
+	hostMatches := proxyHostMatches(host, tokenHost)
 	switch {
-	case strings.EqualFold(tokenHost, host) && (tokenPort == "" || tokenPort == port):
+	case hostMatches && (tokenPort == "" || tokenPort == port):
 		return label + separators
-	case strings.EqualFold(tokenHost, host):
+	case hostMatches:
 		// the same host on another port is still where the proxy is
 		return label + ":" + tokenPort + separators
-	case inError && net.ParseIP(host) == nil && tokenPort == port && net.ParseIP(tokenHost) != nil && proxyNamesItsHop(before):
+	case inError && !proxyIsAddr(host) && tokenPort == port && proxyIsAddr(tokenHost) && proxyNamesItsHop(before):
 		// a name-configured proxy's resolved hop, named as the dialed address
 		return label + separators
 	}

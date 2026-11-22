@@ -326,6 +326,62 @@ func TestRedactProxyEndpointCredentials(t *testing.T) {
 	}
 }
 
+// A v6 proxy address has more than one spelling: the same address configured
+// uncompressed and printed compressed is the same proxy, a zone is not part of
+// the address, and an IPv4-mapped form is the IPv4 address it carries.
+func TestRedactProxyEndpointIPv6Spellings(t *testing.T) {
+	v6 := &ProxySettings{Index: 1, Network: "tcp", Address: "[2001:0db8:0:0:0:0:0:1]:1080"}
+	for _, text := range []string{
+		"dial tcp [2001:db8::1]:1080: connect: connection refused",
+		"dial tcp [2001:db8:0:0::1]:1080: connect: connection refused",
+		"socks5 connect tcp [2001:0db8:0:0:0:0:0:1]:1080: connection refused",
+	} {
+		got := RedactProxyEndpoint(text, v6)
+		if strings.Contains(got, "2001:") {
+			t.Fatalf("a spelling of the v6 proxy survived: %q", got)
+		}
+		if !strings.Contains(got, "proxy[1]") || !strings.Contains(got, "connection refused") {
+			t.Fatalf("the line lost the slot or the reason: %q", got)
+		}
+	}
+
+	// the neighbouring address is a different address, whatever it shares
+	got := RedactProxyEndpoint("dial tcp [2001:db8::10]:1080 and [2001:db8::1]:1080", v6)
+	if !strings.Contains(got, "[2001:db8::10]:1080") {
+		t.Fatalf("a neighbouring v6 address was redacted: %q", got)
+	}
+	if strings.Contains(got, "[2001:db8::1]:1080") {
+		t.Fatalf("the v6 proxy survived next to its neighbour: %q", got)
+	}
+
+	// a zone does not make a different host
+	zoned := &ProxySettings{Index: 2, Network: "tcp", Address: "[fe80::1%eth0]:1080"}
+	if got := RedactProxyEndpoint("dial tcp [fe80::1]:1080: refused", zoned); strings.Contains(got, "fe80::1") {
+		t.Fatalf("the zoned proxy was not recognised without its zone: %q", got)
+	}
+
+	// an IPv4 proxy printed as the IPv4-mapped v6 address is the same proxy
+	v4 := &ProxySettings{Index: 3, Network: "tcp", Address: "198.51.100.7:1080"}
+	for _, text := range []string{
+		"dial tcp 198.51.100.7:1080: connect: connection refused",
+		"dial tcp [::ffff:198.51.100.7]:1080: connect: connection refused",
+		"dial tcp [::ffff:c633:6407]:1080: connect: connection refused",
+	} {
+		got := RedactProxyEndpoint(text, v4)
+		if strings.Contains(got, "198.51.100.7") || strings.Contains(got, "c633") {
+			t.Fatalf("a mapped spelling of the IPv4 proxy survived: %q", got)
+		}
+		if !strings.Contains(got, "proxy[3]") {
+			t.Fatalf("the line lost the slot: %q", got)
+		}
+	}
+	// and the mapped form of a neighbour is still a neighbour
+	got = RedactProxyEndpoint("dial tcp [::ffff:198.51.100.8]:1080", v4)
+	if !strings.Contains(got, "[::ffff:198.51.100.8]:1080") {
+		t.Fatalf("a neighbouring mapped address was redacted: %q", got)
+	}
+}
+
 // A wrapped url.Error and an errors.As chain are the shapes the transport hands
 // the redactor, and an empty or nil proxy must not touch the text at all.
 func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {
