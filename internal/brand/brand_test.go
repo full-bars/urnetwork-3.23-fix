@@ -1,13 +1,103 @@
 package brand
 
 import (
+	"flag"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"unicode/utf8"
 )
 
+var update = flag.Bool("update", false, "rewrite the golden renderings")
+
+var assetNames = []string{"icon-flat-24x12", "icon-flat-12x6", "icon-flat-8x4", "wordmark-80x6", "wordmark-100x7"}
+
+var depths = []struct {
+	name  string
+	depth Depth
+}{
+	{"truecolor", TrueColor},
+	{"256", Color256},
+	{"16", Color16},
+	{"mono", Mono},
+}
+
+// TestGolden compares every asset and colour depth against a committed rendering.
+func TestGolden(t *testing.T) {
+	for _, name := range assetNames {
+		a := Assets[name]
+		if a == nil {
+			t.Fatalf("missing %s", name)
+		}
+		for _, d := range depths {
+			got := Render(a, Capabilities{Depth: d.depth, UTF8: true})
+			path := filepath.Join("testdata", name+"."+d.name+".golden")
+			if *update {
+				if err := os.MkdirAll("testdata", 0o755); err != nil {
+					t.Fatal(err)
+				}
+				if err := os.WriteFile(path, []byte(got), 0o644); err != nil {
+					t.Fatal(err)
+				}
+				continue
+			}
+			want, err := os.ReadFile(path)
+			if err != nil {
+				t.Fatalf("%s: %v (run go test -run TestGolden -update)", path, err)
+			}
+			if got != string(want) {
+				t.Errorf("%s %s: rendering changed\n got: %q\nwant: %q", name, d.name, got, string(want))
+			}
+		}
+	}
+}
+
+// TestRenderedWidth checks that a coloured rendering still occupies exactly the
+// cell width the asset declares, since colour sequences add no cells.
+func TestRenderedWidth(t *testing.T) {
+	for _, name := range assetNames {
+		a := Assets[name]
+		for _, d := range depths {
+			rendered := Render(a, Capabilities{Depth: d.depth, UTF8: true})
+			lines := strings.Split(rendered, "\n")
+			if len(lines) != a.Rows {
+				t.Fatalf("%s %s: %d lines, want %d", name, d.name, len(lines), a.Rows)
+			}
+			for i, line := range lines {
+				if w := visibleWidth(line); w != a.Cols {
+					t.Errorf("%s %s line %d: %d cells, want %d", name, d.name, i, w, a.Cols)
+				}
+				if n := utf8.RuneCountInString(line); n < visibleWidth(line) {
+					t.Errorf("%s %s line %d: %d runes below %d cells", name, d.name, i, n, a.Cols)
+				}
+			}
+		}
+	}
+}
+
+// TestNoColorWidth checks the block shapes survive without colour.
+func TestNoColorWidth(t *testing.T) {
+	for _, name := range assetNames {
+		a := Assets[name]
+		rendered := Render(a, Capabilities{Depth: TrueColor, UTF8: true, NoColor: true})
+		if strings.Contains(rendered, "\x1b") {
+			t.Errorf("%s: NO_COLOR rendering carries escape sequences", name)
+		}
+		lines := strings.Split(rendered, "\n")
+		if len(lines) != a.Rows {
+			t.Fatalf("%s: %d lines, want %d", name, len(lines), a.Rows)
+		}
+		for i, line := range lines {
+			if w := visibleWidth(line); w != a.Cols {
+				t.Errorf("%s line %d: %d cells, want %d", name, i, w, a.Cols)
+			}
+		}
+	}
+}
+
 func TestAssetsAndCapabilities(t *testing.T) {
-	for _, name := range []string{"icon-flat-24x12", "icon-flat-12x6", "icon-flat-8x4", "wordmark-80x6", "wordmark-100x7"} {
+	for _, name := range assetNames {
 		a := Assets[name]
 		if a == nil {
 			t.Fatalf("missing %s", name)
@@ -21,10 +111,10 @@ func TestAssetsAndCapabilities(t *testing.T) {
 				if strings.Contains(s, "\x1b") {
 					t.Errorf("%s depth %d: unexpected color", name, depth)
 				}
-				for _, line := range strings.Split(s, "\n") {
-					if utf8.RuneCountInString(line) > a.Cols {
-						t.Errorf("%s: over width", name)
-					}
+			}
+			if (depth == Color256 || depth == TrueColor) && !strings.HasPrefix(name, "wordmark") {
+				if !strings.Contains(s, "\x1b") {
+					t.Errorf("%s depth %d: expected color", name, depth)
 				}
 			}
 		}
