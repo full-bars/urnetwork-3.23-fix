@@ -701,14 +701,39 @@ func addressHeadIsHostPort(head string) bool {
 // credential.
 //
 // A token that opens with a URI scheme starts the credential after the scheme
-// instead. Only the outermost scheme belongs to the URL: a password may carry a
-// scheme of its own ("demo:p=https://tail@host"), and a proxy URL with that
-// shape is one an operator ends up with, so a later "://" is part of the
-// credential and never a new URL to start from.
+// instead. The scheme fixes the start of that credential and the '@' its end, so
+// the punctuation that bounds a scheme-less one - ',', ';', the brackets, a
+// pipe, a quote, a backslash - is part of the password and goes with it. Only
+// the outermost scheme belongs to the URL: a password may carry a scheme of its
+// own ("demo:p=https://tail@host"), and a proxy URL with that shape is one an
+// operator ends up with, so a later "://" is part of the credential and never a
+// new URL to start from.
 func proxyAuthorityStart(text string, end int) int {
-	start := proxyCredentialStart(text, end)
-	if end <= start {
+	if start := proxySchemeTokenStart(text, end); 0 <= start {
 		return start
+	}
+	return proxyCredentialStart(text, end)
+}
+
+// proxySchemeTokenStart is where the credential begins when the token holding it
+// opens with a URI scheme, and -1 when it does not. The scan runs back over the
+// punctuation a password may carry in that form, stops at whitespace and at a
+// key's '=', then skips the quote or bracket a log line puts in front of the
+// value. The token counts only when a run of scheme bytes opens it and the
+// bytes after that run are "://".
+func proxySchemeTokenStart(text string, end int) int {
+	start := end
+	for 0 < start {
+		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
+			break
+		}
+		if !proxySchemeCredentialByte(text[start-1]) {
+			break
+		}
+		start--
+	}
+	for start < end && proxyTokenOpenByte(text[start]) {
+		start++
 	}
 	run := start
 	for run < end && proxySchemeByte(text[run]) {
@@ -717,7 +742,32 @@ func proxyAuthorityStart(text string, end int) int {
 	if start < run && !('0' <= text[start] && text[start] <= '9') && strings.HasPrefix(text[run:end], "://") {
 		return run + 3
 	}
-	return start
+	return -1
+}
+
+// proxySchemeCredentialByte reports whether b can belong to the credential of a
+// token that opens with a URI scheme: the userinfo set, plus the sub-delimiters
+// and punctuation a password may carry there, since the scheme and the '@' fix
+// both ends of the run and nothing in it has to bound the prose around it.
+func proxySchemeCredentialByte(b byte) bool {
+	if proxyCredentialByte(b) {
+		return true
+	}
+	switch b {
+	case ',', ';', '(', ')', '<', '>', '[', ']', '{', '}', '|', '"', '\'', '`', '\\':
+		return true
+	}
+	return false
+}
+
+// proxyTokenOpenByte reports whether b is a character a log line puts in front
+// of a value rather than part of it.
+func proxyTokenOpenByte(b byte) bool {
+	switch b {
+	case '"', '\'', '`', '(', '[', '{', '<':
+		return true
+	}
+	return false
 }
 
 // proxyCredentialStart is the first byte of the token the userinfo in front of
