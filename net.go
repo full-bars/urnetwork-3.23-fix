@@ -626,6 +626,12 @@ func redactAddressTokens(text string, host string, port string, label string) st
 	return b.String()
 }
 
+// proxyCredentialScanLimit bounds one backward credential scan. A credential
+// longer than this keeps the part in front of the bound, which is the direction a
+// line that carries one already leans; the bound is what stops a long run of
+// prefix characters from making the pass quadratic.
+const proxyCredentialScanLimit = 1024
+
 // dropProxyCredentials removes the userinfo in front of the address a proxy
 // error names. An error that repeats a credential-bearing proxy URL - a
 // url.Error's "Get \"socks5://user:secret@gw:443\": ..." - otherwise keeps the
@@ -645,6 +651,14 @@ func dropProxyCredentials(text string, host string, port string) string {
 		at := search + rel
 		tokenHost, tokenPort, ok := proxyTokenAfter(out, at+1)
 		if !ok {
+			search = at + 1
+			continue
+		}
+		// the host decides first: a token that is neither the configured host
+		// nor a candidate hop on its port cannot belong to the proxy, and
+		// walking back over the line in front of every at-sign in it is what
+		// made this pass quadratic on a long run of them
+		if !proxyHostMatches(host, tokenHost) && !proxyHopCandidate(host, tokenHost, tokenPort, port) {
 			search = at + 1
 			continue
 		}
@@ -723,7 +737,7 @@ func proxyAuthorityStart(text string, end int) int {
 // bytes after that run are "://".
 func proxySchemeTokenStart(text string, end int) int {
 	start := end
-	for 0 < start {
+	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
 		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
 			break
 		}
@@ -777,7 +791,7 @@ func proxyTokenOpenByte(b byte) bool {
 // instead of taking the surrounding prose with it.
 func proxyCredentialStart(text string, end int) int {
 	start := end
-	for 0 < start {
+	for limit := max(end-proxyCredentialScanLimit, 0); limit < start; {
 		if text[start-1] == '=' && proxyEqualsIsKey(text, start-1) {
 			break
 		}
@@ -877,6 +891,13 @@ func proxyIsAddr(host string) bool {
 	return err == nil
 }
 
+// proxyHopCandidate reports whether a host and port could name the hop a
+// name-configured proxy resolved to, without reading the words in front of the
+// token. It is the cheap half of proxyIsResolvedHop.
+func proxyHopCandidate(host string, tokenHost string, tokenPort string, port string) bool {
+	return !proxyIsAddr(host) && proxyIsAddr(tokenHost) && (tokenPort == "" || tokenPort == port)
+}
+
 // proxyIsResolvedHop reports whether a host and port name the hop a
 // name-configured proxy resolved to rather than a destination: a numeric address
 // on the proxy's port or with no port, where the words in front of it name a
@@ -884,7 +905,7 @@ func proxyIsAddr(host string) bool {
 // proxyHostMatches instead. The address pass and the credential pass share the
 // rule, so a credential in front of the hop goes with the hop.
 func proxyIsResolvedHop(host string, tokenHost string, tokenPort string, port string, before string) bool {
-	return !proxyIsAddr(host) && proxyIsAddr(tokenHost) && (tokenPort == "" || tokenPort == port) && proxyNamesItsHop(before)
+	return proxyHopCandidate(host, tokenHost, tokenPort, port) && proxyNamesItsHop(before)
 }
 
 // proxyErrorRegionStart is where the error string of text begins, or the end of
