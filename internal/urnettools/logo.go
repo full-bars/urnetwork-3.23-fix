@@ -111,7 +111,13 @@ func logoArt(name string, minWidth int) (string, int) {
 	if a == nil || h < a.Rows {
 		return "", 0
 	}
-	return brand.Render(a, logoCapabilities()), a.Cols
+	caps := logoCapabilities()
+	if !caps.UTF8 {
+		// A terminal that cannot show block characters gets the plain output
+		// it had before, not a one line name in the middle of a paragraph.
+		return "", 0
+	}
+	return brand.Render(a, caps), a.Cols
 }
 
 // logoIcon8 is the small icon used beside the version line and a subcommand's
@@ -145,8 +151,8 @@ func printToolVersion() {
 
 // printStatusLogo prints the wordmark above the status blocks. It leaves one
 // blank line after the artwork so the blocks keep their own spacing.
-func printStatusLogo() {
-	if !logoAllowed(logoMode{}) {
+func printStatusLogo(m logoMode) {
+	if !logoAllowed(m) {
 		return
 	}
 	if art, _ := logoWordmark(); art != "" {

@@ -222,6 +222,13 @@ func TestVersionLogo(t *testing.T) {
 	if got := captureStdout(t, printToolVersion); got != "v9.9.9\n" {
 		t.Fatalf("--no-logo version output %q", got)
 	}
+
+	// A terminal without block characters keeps the plain version line.
+	logoOffByFlag = false
+	fakeLogoEnv(t, map[string]string{"TERM": "dumb"})
+	if got := captureStdout(t, printToolVersion); got != "v9.9.9\n" {
+		t.Fatalf("dumb terminal version output %q", got)
+	}
 }
 
 func TestHelpParagraphKeepsText(t *testing.T) {
@@ -280,7 +287,7 @@ func TestStatusLogo(t *testing.T) {
 	fakeLogoPrefs(t, t.TempDir())
 	fakeLogoTerminal(t, 120, 40)
 
-	got := captureStdout(t, printStatusLogo)
+	got := captureStdout(t, func() { printStatusLogo(logoMode{}) })
 	if !strings.Contains(got, "▗") || !strings.Contains(got, "▟") {
 		t.Fatalf("status logo missing block glyphs:\n%s", got)
 	}
@@ -288,16 +295,28 @@ func TestStatusLogo(t *testing.T) {
 		t.Fatalf("status logo must leave a blank line after it: %q", got)
 	}
 
+	// --plain keeps the plain output byte for byte.
+	if got := captureStdout(t, func() { printStatusLogo(logoMode{Plain: true}) }); got != "" {
+		t.Fatalf("--plain status printed %q", got)
+	}
+
 	logoOffByFlag = true
-	if got := captureStdout(t, printStatusLogo); got != "" {
+	if got := captureStdout(t, func() { printStatusLogo(logoMode{}) }); got != "" {
 		t.Fatalf("--no-logo status printed %q", got)
 	}
 
 	// Too narrow for the wordmark: nothing is printed.
 	logoOffByFlag = false
 	fakeLogoTerminal(t, 99, 40)
-	if got := captureStdout(t, printStatusLogo); got != "" {
+	if got := captureStdout(t, func() { printStatusLogo(logoMode{}) }); got != "" {
 		t.Fatalf("narrow status printed %q", got)
+	}
+
+	// A terminal without block characters keeps the plain output.
+	fakeLogoTerminal(t, 120, 40)
+	fakeLogoEnv(t, map[string]string{"TERM": "dumb"})
+	if got := captureStdout(t, func() { printStatusLogo(logoMode{}) }); got != "" {
+		t.Fatalf("dumb terminal status printed %q", got)
 	}
 }
 

@@ -588,7 +588,7 @@ func cmdStatus(args []string) error {
 	if detailMode || (!liveMode && !summaryMode) {
 		// The default view: the platform status (systemctl on Linux), then the
 		// update and health verdict, the live metrics and the extender block.
-		printStatusLogo()
+		printStatusLogo(logoMode{Plain: plainMode})
 		printSigpipeRestartWarning(p)
 		if plainMode {
 			if err := renderStatusTable(p); err != nil {
