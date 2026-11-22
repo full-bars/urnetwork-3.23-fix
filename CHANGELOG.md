@@ -24,6 +24,7 @@
 ### Security
 
 - **Certificate verification follows the sealing epoch.** A sequence verifies the peer certificate for the epoch it seals under, and a rekey that promotes a new epoch verifies that epoch's certificate again. A send that races a promotion whose new epoch presents a certificate the contract did not commit to is refused and retried. No wire message or file changes.
+- **Proxy credentials are parsed out of the address.** A proxy written as `user:pass@host:port` or `socks5://user:pass@host:port` in the internal proxy config now becomes a proxy login instead of part of the address, so the password no longer reaches the startup proxy list or the authentication log lines. Log text, status output and identity labels remove a user name, a password and URL query tokens. Log lines about a proxy keep its slot and address, and a dial error keeps the same address. [redeploy]
 
 ### Performance
 
