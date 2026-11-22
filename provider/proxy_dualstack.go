@@ -95,6 +95,10 @@ func proxyIPv6RecordForCheck(udp proxyUDPResult, v6 proxyIPv6Result) bool {
 // measurements arrive cannot start or stop the transport.
 type proxyIPv6Gate struct {
 	running bool
+	// since is when this gate started observing. A record measured before it
+	// was restored from disk by a restarted process, so it is state the gate
+	// baselines instead of an observation it counts.
+	since time.Time
 	// lastCheckedAt is the completion stamp of the last udp check counted.
 	// One observation is one completed check: the IPv6 record a sweep publishes
 	// belongs to the check that started it, so a poll that lands between the two
@@ -128,6 +132,15 @@ func (self *proxyIPv6Gate) observe(now time.Time, udp proxyUDPResult, v6 proxyIP
 	want := proxyIPv6TransportWanted(udp, v6, now)
 	newCheck := !udp.CheckedAt.IsZero() && !udp.CheckedAt.Equal(self.lastCheckedAt)
 	v6New := !v6.At.IsZero() && !v6.At.Equal(self.lastV6At)
+
+	if self.lastCheckedAt.IsZero() && self.lastV6At.IsZero() && !v6.At.IsZero() && v6.At.Before(self.since) {
+		// the record was measured before this gate started, by the process
+		// before this one: it is restored state, so the first poll baselines it
+		// and a start needs two measurements made since
+		self.lastCheckedAt = udp.CheckedAt
+		self.lastV6At = v6.At
+		return false, false
+	}
 	if !self.running && self.yes > 0 && !self.lastExpiry.IsZero() && !now.Before(self.lastExpiry) {
 		// the pending first result expired before this poll: its evidence does
 		// not carry over, so the second result has nothing to pair with
@@ -350,7 +363,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		}
 		// clear the streak, keep which results were already counted: a cached
 		// result must not be counted again when the switch comes back on
-		self.gate = proxyIPv6Gate{lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry, lastV6At: self.gate.lastV6At}
+		self.gate = proxyIPv6Gate{since: self.gate.since, lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry, lastV6At: self.gate.lastV6At}
 		return
 	}
 	udp, v6, state := self.store.measurement(self.key, now)
@@ -365,12 +378,12 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 			if self.transport.stopExtra() {
 				tlog("[ipv6] proxy identity: IPv6 transport stopped (the record has no IPv6 measurement)\n")
 			}
-			self.gate = proxyIPv6Gate{}
+			self.gate = proxyIPv6Gate{since: self.gate.since}
 		} else if self.gate.running && !v6.At.IsZero() && !now.Before(v6.At.Add(2*v6.Interval)) {
 			if self.transport.stopExtra() {
 				tlog("[ipv6] proxy identity: IPv6 transport stopped (the IPv6 result expired)\n")
 			}
-			self.gate = proxyIPv6Gate{lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry}
+			self.gate = proxyIPv6Gate{since: self.gate.since, lastCheckedAt: self.gate.lastCheckedAt, lastExpiry: self.gate.lastExpiry}
 		}
 		return
 	}
@@ -380,7 +393,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (the proxy has no measurement)\n")
 		}
-		self.gate = proxyIPv6Gate{}
+		self.gate = proxyIPv6Gate{since: self.gate.since}
 		return
 	}
 	if state == measurementExpired {
@@ -393,6 +406,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		// clear the streaks but keep which results were already counted: the ipv6
 		// record is still valid, and the next check must not count it again
 		self.gate = proxyIPv6Gate{
+			since:            self.gate.since,
 			lastCheckedAt:    self.gate.lastCheckedAt,
 			lastExpiry:       self.gate.lastExpiry,
 			lastV6At:         self.gate.lastV6At,
@@ -408,7 +422,7 @@ func (self *proxiedIPv6Controller) step(now time.Time) {
 		if self.transport.stopExtra() {
 			tlog("[ipv6] proxy identity: IPv6 transport stopped (the record has no IPv6 measurement)\n")
 		}
-		self.gate = proxyIPv6Gate{}
+		self.gate = proxyIPv6Gate{since: self.gate.since}
 		return
 	}
 	start, stop := self.gate.observe(now, udp, v6)
@@ -433,6 +447,10 @@ func (self *proxiedIPv6Controller) run(ctx context.Context, interval time.Durati
 	ticker := time.NewTicker(interval)
 	defer ticker.Stop()
 	defer self.transport.stopExtra()
+	// the gate starts observing here. A record the store restored from disk was
+	// measured before this moment, by the process before this one, so the gate
+	// baselines it instead of counting it as a new measurement.
+	self.gate.since = time.Now()
 	for {
 		select {
 		case <-ctx.Done():

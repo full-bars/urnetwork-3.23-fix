@@ -1210,3 +1210,27 @@ func TestProxyIPv6GateStopsOneBadSweepPolledInTwoPublications(t *testing.T) {
 		t.Fatal("a second bad sweep polled whole did not stop the transport")
 	}
 }
+
+// A record the store restored from disk was measured by the process before this
+// one. The first poll baselines it, so a start still needs two measurements made
+// in this process.
+func TestProxyIPv6GateBaselinesARestoredRecord(t *testing.T) {
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ok := func(at time.Time) proxyUDPResult { return proxyUDPResult{Status: proxyUDPOK, CheckedAt: at} }
+
+	gate := proxyIPv6Gate{since: t0}
+	restored := v6Result(proxyIPv6Yes, "yes", t0.Add(-time.Hour), 12*time.Hour)
+	if start, stop := gate.observe(t0, ok(t0.Add(-time.Hour)), restored); start || stop {
+		t.Fatalf("the restored record changed the gate: start = %v, stop = %v", start, stop)
+	}
+	// one measurement made in this process must not start it
+	t1 := t0.Add(13 * time.Hour)
+	if start, _ := gate.observe(t1, ok(t1), v6Result(proxyIPv6Yes, "yes", t1, 12*time.Hour)); start {
+		t.Fatal("one measurement after a restart started the transport on the record the previous process measured")
+	}
+	// two measurements made in this process do
+	t2 := t1.Add(13 * time.Hour)
+	if start, _ := gate.observe(t2, ok(t2), v6Result(proxyIPv6Yes, "yes", t2, 12*time.Hour)); !start {
+		t.Fatal("two measurements made after the restart did not start the transport")
+	}
+}
