@@ -40,7 +40,7 @@ func listenLoopbackUDP(t *testing.T) *net.UDPConn {
 // moved, and none of them credits the other direction.
 func TestCountedUDPConnCountsEveryReadAndWritePath(t *testing.T) {
 	bw := &ProxyBandwidth{}
-	counted := newCountedUDPConn(listenLoopbackUDP(t), bw)
+	counted := newCountedUDPConn(listenLoopbackUDP(t), bw, false)
 	peer := listenLoopbackUDP(t)
 	countedAddr := counted.LocalAddr().(*net.UDPAddr)
 	peerAddr := peer.LocalAddr().(*net.UDPAddr)
@@ -146,7 +146,7 @@ func TestCountedUDPConnCountsARealQuicSession(t *testing.T) {
 	}()
 
 	bw := &ProxyBandwidth{}
-	counted := newCountedUDPConn(listenLoopbackUDP(t), bw)
+	counted := newCountedUDPConn(listenLoopbackUDP(t), bw, false)
 	transport := &quic.Transport{Conn: counted}
 	t.Cleanup(func() { transport.Close() })
 
@@ -188,13 +188,13 @@ func TestCountH3SocketWrapsOnlyWithABandwidthRecord(t *testing.T) {
 	}
 	udp := listenLoopbackUDP(t)
 
-	if _, wrapped := transport.countH3Socket(udp).(*countedUDPConn); wrapped {
+	if _, wrapped := transport.countH3Socket(udp, false).(*countedUDPConn); wrapped {
 		t.Fatal("wrapped with no bandwidth record registered")
 	}
 
 	RegisterProxy(0, "direct", "direct")
 	RegisterProxyBandwidth(0)
-	if _, wrapped := transport.countH3Socket(udp).(*countedUDPConn); !wrapped {
+	if _, wrapped := transport.countH3Socket(udp, false).(*countedUDPConn); !wrapped {
 		t.Fatal("did not wrap although the identity has a bandwidth record")
 	}
 }

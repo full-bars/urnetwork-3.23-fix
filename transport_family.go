@@ -1245,7 +1245,7 @@ func (self *PlatformTransport) openH3PacketConn(
 		self.log.Infof("[tr]egress bind failed, the platform connection may loop into the tunnel: %s\n", bindErr)
 	}
 	// fork: the socket's bytes count into the identity's bandwidth record
-	return self.countH3Socket(udpConn), nil, egressPinned, nil
+	return self.countH3Socket(udpConn, udpAddrFamily(udpAddr) == 6), nil, egressPinned, nil
 }
 
 // raceH3Dial is Happy Eyeballs for QUIC: candidates launch in order, each
