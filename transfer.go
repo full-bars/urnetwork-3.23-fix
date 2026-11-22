@@ -567,6 +567,7 @@ type Client struct {
 	receivePackHandoffWaitCount     atomic.Uint64
 	receivePackHandoffWaitSuccess   atomic.Uint64
 	receiveForgedSourceDropCount    atomic.Uint64
+	receiveSourceMismatchCount      atomic.Uint64
 	receivePackHandoffDropCount     atomic.Uint64
 	receivePackHandoffDropByteCount atomic.Uint64
 }
@@ -576,6 +577,7 @@ type Client struct {
 // carrier bytes. Counters are monotonic for the lifetime of one Client.
 type ClientReceiveStatsSnapshot struct {
 	ForgedSourceDropCount    uint64
+	SourceMismatchCount      uint64
 	PackHandoffDropCount     uint64
 	PackHandoffDropByteCount uint64
 	PackHandoffWaitCount     uint64
@@ -587,6 +589,7 @@ type ClientReceiveStatsSnapshot struct {
 func (self *Client) ReceiveStats() ClientReceiveStatsSnapshot {
 	return ClientReceiveStatsSnapshot{
 		ForgedSourceDropCount:    self.receiveForgedSourceDropCount.Load(),
+		SourceMismatchCount:      self.receiveSourceMismatchCount.Load(),
 		PackHandoffDropCount:     self.receivePackHandoffDropCount.Load(),
 		PackHandoffDropByteCount: self.receivePackHandoffDropByteCount.Load(),
 		PackHandoffWaitCount:     self.receivePackHandoffWaitCount.Load(),
@@ -1379,11 +1382,13 @@ func (self *Client) run() {
 			MessagePoolReturn(transferFrameBytes)
 			continue
 		}
-		if (disposition.transportType == TransportTypeP2p && (path.SourceId == ControlId || path.SourceId == self.clientId)) ||
-			(disposition.boundSourceId != (Id{}) && path.SourceId != disposition.boundSourceId) {
+		if disposition.transportType == TransportTypeP2p && (path.SourceId == ControlId || path.SourceId == self.clientId) {
 			self.receiveForgedSourceDropCount.Add(1)
 			MessagePoolReturn(transferFrameBytes)
 			continue
+		}
+		if disposition.boundSourceId != (Id{}) && path.SourceId != disposition.boundSourceId {
+			self.receiveSourceMismatchCount.Add(1)
 		}
 		if path.IsStream() {
 			if v := self.log.V(1); v.Enabled() {
