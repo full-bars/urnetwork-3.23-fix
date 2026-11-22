@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"fmt"
 	"io"
+	"os"
 	"runtime"
 	"strings"
 	"time"
@@ -224,6 +225,22 @@ var statusSigpipeStateFn = func(p Provider) (sigpipeState, error) {
 var statusLingerCheckFn = func(user string) (bool, error) {
 	out, err := execWithTimeout(5*time.Second, "loginctl", "show-user", user, "-p", "Linger", "--value")
 	return strings.TrimSpace(string(out)) == "yes", err
+}
+
+func lifecycleLingerWarning(p Provider) string {
+	if runtime.GOOS != "linux" || p.Unit == "" || p.Supervisor == "openrc" || p.User == "" || !isUserUnit(p.Unit) {
+		return ""
+	}
+	if enabled, err := statusLingerCheckFn(p.User); err == nil && !enabled {
+		return fmt.Sprintf("WARNING: lingering is OFF for %s. The provider will STOP when your last login session closes. Fix: sudo loginctl enable-linger %s", p.User, p.User)
+	}
+	return ""
+}
+
+func warnLifecycleLinger(p Provider) {
+	if warning := lifecycleLingerWarning(p); warning != "" {
+		fmt.Fprintln(os.Stderr, warning)
+	}
 }
 
 // collectStatusData reads every source without letting one slow source stop

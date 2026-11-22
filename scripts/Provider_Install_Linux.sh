@@ -3509,6 +3509,17 @@ toggle_auto_start ()
 	fi
 
 	if test "$1" = on; then
+        auto_start_user="$(id -un)"
+        if command -v loginctl >/dev/null 2>&1; then
+            if auto_start_linger="$(loginctl show-user "$auto_start_user" -p Linger --value 2>/dev/null)"; then
+                if [ "$auto_start_linger" != yes ]; then
+                    pr_err "linger is not enabled for %s; run sudo loginctl enable-linger %s before enabling this unit" "$auto_start_user" "$auto_start_user"
+                    return 1
+                fi
+            else
+                pr_warn "setAutoStart: warning: cannot check linger for %s" "$auto_start_user"
+            fi
+        fi
 		if systemctl --user is-enabled --quiet urnetwork.service; then
 			pr_info "urnetwork.service is already enabled on login"
 			exit 0

@@ -29,6 +29,21 @@ def function(name):
 
 
 class PrivilegedSteps(unittest.TestCase):
+    def test_auto_start_refuses_when_linger_is_off(self):
+        harness = r"""
+pr_info() { :; }
+pr_err() { fmt="$1"; shift; printf "$fmt\n" "$@"; }
+id() { echo alice; }
+loginctl() { echo no; }
+systemctl() { echo "$*" >> "$LOG"; return 1; }
+""" + function("toggle_auto_start") + "\ntoggle_auto_start on\n"
+        with tempfile.TemporaryDirectory() as tmp:
+            log = Path(tmp) / "calls"
+            result = subprocess.run(["sh", "-c", harness], env=dict(os.environ, LOG=str(log)), text=True, capture_output=True)
+            self.assertNotEqual(result.returncode, 0)
+            self.assertIn("linger is not enabled for alice; run sudo loginctl enable-linger alice before enabling this unit", result.stdout)
+            self.assertFalse(log.exists() and "--user enable urnetwork.service" in log.read_text())
+
     def test_linger_already_enabled_is_not_changed(self):
         harness = """
 pr_info() { printf '%s\\n' "$*"; }
