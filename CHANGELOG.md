@@ -4,6 +4,7 @@
 
 ### Added
 
+- **A mirrored transfer chart in `urnet-tools top`.** The Remote panel draws billable traffic above a centre line and total traffic below it, like the transfer chart of the URnetwork client app. The curves are smoothed and drawn in braille, each side scales to its own window peak, and a peak label slides sideways with its column. The corner shows the average of the newest five samples per side. Press `r` to show or hide the panel.
 - **TLS handshake cancellation metric.** `urnet_tls_handshake_cancel_total` counts TLS handshakes that were cancelled before they completed. The labels are `source` (`parent_lifetime`, `session_retired`, `control_enqueue_rejected`, `epoch_retired` or `unknown`), `role` (`client` or `server`) and `companion` (`true` or `false`). Every cancellation in a wave is counted, so a canary can watch the metric for waves.
 
 ### Changed

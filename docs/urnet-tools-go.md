@@ -159,6 +159,14 @@ Rows: billable KiB/s, proxies up (mean), clients (mean), RSS (mean and max), hos
 
 ---
 
+## Remote transfer chart
+
+`urnet-tools top` can draw the client app's mirrored transfer chart under the throughput graphs. Press `r` to show or hide it. The panel needs a graph band tall enough for it and the two throughput graphs, so a short terminal leaves it out and a taller one brings it back, and the key keeps the choice.
+
+Billable traffic is drawn above a dim centre line and total traffic below it. Each side scales to the peak in the window, so the peak reaches the edge of its half, and the peak value is labelled where it happened. The label slides sideways with the peak column and stays inside the plot. The corner shows the average of the newest five samples for each side, and the arrow is bright while that side carries traffic. Curves are smoothed through the samples and drawn with braille dots, with a faint fill under each curve. The mono and ASCII themes draw the same curves with characters. The scale eases over half a second, so a new peak grows into place instead of jumping. The two sides have a scale of their own because total traffic includes the billable part, and one shared height would flatten the billable curve.
+
+The provider reports billable and total bytes, but no separate upload and download counters and no packet counts. The panel therefore draws one curve per side and labels the sides `billable` and `total` instead of `up` and `down`. A provider that does not send the total figures gets `total not reported` in the footer and a billable curve above the line.
+
 ## Heatmap style
 
 The Proxies panel shows a heatmap when the window has room. The count for the direct connection is separate from the proxy counts. Hover or click a cell to see its addresses, states and UDP check results (`ok`, `no UDP`, `mismatch`, `unknown` or `unchecked`). The direct connection appears as `direct (this host)`. The address contains only the proxy host and port. The popup shows traffic since the previous sample, normally about one second, and lifetime billable and total traffic in each direction. Lifetime values resume from the saved per-proxy counters. A question mark means the value is unavailable. The counters cover accepted TCP and UDP traffic over IPv4 and IPv6, including the direct connection. Proxied UDP to IPv6 destinations is refused.
