@@ -258,38 +258,6 @@ func runProxyIPv6Stage(ctx context.Context, settings *connect.ProxySettings, pre
 	return previous.measured(now, status, udp, tcpExit, udpExit), true
 }
 
-// ipv6StageKey is the context key for carrying the stage state through the
-// probe call chain.
-type ipv6StageKey struct{}
-
-// ipv6StageOnlyKey marks a check that should only run the IPv6 stage and skip
-// the UDP relay check.
-type ipv6StageOnlyKey struct{}
-
-// ipv6Stage holds the parameters for a deferred IPv6 stage run.
-type ipv6Stage struct {
-	previous proxyIPv6Result
-	now      time.Time
-	dials    proxyIPv6Dials
-	result   *proxyIPv6Result
-	measured *bool
-}
-
-// ipv6StageFromContext retrieves the stage sink from context.
-func ipv6StageFromContext(ctx context.Context) (ipv6Stage, bool) {
-	stage, ok := ctx.Value(ipv6StageKey{}).(ipv6Stage)
-	return stage, ok && stage.result != nil && stage.measured != nil
-}
-
-// withIPv6Stage marks a check run that must also verify IPv6, and returns the
-// sink the probe writes its measurement into.
-func withIPv6Stage(ctx context.Context, previous proxyIPv6Result, now time.Time, dials proxyIPv6Dials) (context.Context, *proxyIPv6Result, *bool) {
-	result := new(proxyIPv6Result)
-	measured := new(bool)
-	stage := ipv6Stage{previous: previous, now: now, dials: dials, result: result, measured: measured}
-	return context.WithValue(ctx, ipv6StageKey{}, stage), result, measured
-}
-
 // ipv6SweepKey marks a context that belongs to a check the background UDP sweep
 // started. Only such checks run the IPv6 stage.
 type ipv6SweepKey struct{}

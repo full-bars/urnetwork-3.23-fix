@@ -332,18 +332,23 @@ func TestUDPFlowReplyDoesNotReviveAnExpiredResult(t *testing.T) {
 	now := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
 	ps := &connect.ProxySettings{Network: "tcp", Address: "192.0.2.1:1080"}
 	store := newProxyUDPCheckStore(nil)
+	measured := proxyIPv6Result{}.measured(now.Add(-time.Hour), proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
 	store.mu.Lock()
 	store.entries[ps.Key()] = &proxyUDPCheckEntry{
 		result:      proxyUDPResult{Status: proxyUDPOK},
 		at:          now.Add(-(proxyUDPOKTTL + time.Minute)),
 		completedAt: now.Add(-(proxyUDPOKTTL + time.Minute)),
+		ipv6:        measured,
 	}
 	store.mu.Unlock()
 
 	store.noteFlowReply(ps.Key(), now)
+	store.mu.Lock()
 	entry := store.entries[ps.Key()]
-	if entry.ipv6.At.IsZero() {
-		// no ipv6 record in this fixture, nothing else to check
+	kept := entry.ipv6
+	store.mu.Unlock()
+	if !kept.At.Equal(measured.At) || kept.Status != measured.Status {
+		t.Fatalf("the replacement dropped the IPv6 record %v, so the identity's measurement is lost", measured)
 	}
 	udp, _, state := store.measurement(ps.Key(), now)
 	if state != measurementExpired {
