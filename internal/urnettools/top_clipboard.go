@@ -10,6 +10,7 @@ import (
 	"runtime"
 	"strings"
 	"time"
+	"unicode/utf16"
 
 	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
@@ -91,8 +92,11 @@ func (c *topClipboard) methods() []topClipMethod {
 		case c.env.GOOS == "darwin":
 			out = append(out, c.exec("pbcopy", nil))
 		case c.env.WSL:
-			// WSL ships clip.exe, and it works without a display server.
-			out = append(out, c.exec("clip.exe", nil))
+			// WSL ships clip.exe, and it works without a display server. It
+			// reads the Windows clipboard format, so the text goes in as
+			// UTF-16 with a byte order mark; box characters would otherwise
+			// arrive mangled.
+			out = append(out, c.execEncoded("clip.exe", nil, utf16LE))
 		}
 		if c.env.Wayland {
 			out = append(out, c.exec("wl-copy", nil))
@@ -113,12 +117,33 @@ func (c *topClipboard) methods() []topClipMethod {
 // exec is one clipboard tool. The text goes on its stdin and its exit status is
 // the only thing top sees.
 func (c *topClipboard) exec(name string, args []string) topClipMethod {
+	return c.execEncoded(name, args, nil)
+}
+
+// execEncoded is exec with a way to turn the text into the bytes the tool
+// reads; nil sends the text as it is, which is what the Unix tools want.
+func (c *topClipboard) execEncoded(name string, args []string, encode func(string) string) topClipMethod {
 	return topClipMethod{name: name, copy: func(text string) error {
 		if c.run == nil {
 			return fmt.Errorf("%s is not available", name)
 		}
+		if encode != nil {
+			text = encode(text)
+		}
 		return c.run(name, args, text)
 	}}
+}
+
+// utf16LE encodes text as the Windows clipboard tools read it: a byte order
+// mark, then two bytes per UTF-16 code unit.
+func utf16LE(text string) string {
+	units := utf16.Encode([]rune(text))
+	out := make([]byte, 0, 2+2*len(units))
+	out = append(out, 0xff, 0xfe)
+	for _, u := range units {
+		out = append(out, byte(u), byte(u>>8))
+	}
+	return string(out)
 }
 
 // osc52 writes the text to the terminal's clipboard. Nothing comes back, so the

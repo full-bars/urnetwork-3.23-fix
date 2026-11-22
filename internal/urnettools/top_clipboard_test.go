@@ -6,6 +6,7 @@ import (
 	"strings"
 	"testing"
 	"time"
+	"unicode/utf16"
 
 	"github.com/urnetwork/connect/internal/tui"
 )
@@ -127,6 +128,32 @@ func TestTopClipboardFallsThroughToTheNextTool(t *testing.T) {
 	}
 	if got := topClipMessage(res); got != "copied 3 lines with xclip" {
 		t.Fatalf("message = %q", got)
+	}
+}
+
+// The Windows clipboard tool reads UTF-16, so the text is encoded before it is
+// piped in. The screen is full of box characters, which a UTF-8 pipe mangles.
+func TestTopClipboardEncodesForClipExe(t *testing.T) {
+	run := &fakeClip{}
+	c := clipFor(topClipEnv{GOOS: "linux", WSL: true}, run, nil, nil)
+	text := "│ up ─ down │"
+	res := c.copy(text)
+	if res.method != "clip.exe" {
+		t.Fatalf("method = %q, want clip.exe", res.method)
+	}
+	if len(run.stdin) != 1 {
+		t.Fatalf("clip.exe got %d inputs", len(run.stdin))
+	}
+	got := run.stdin[0]
+	if !strings.HasPrefix(got, "\xff\xfe") {
+		t.Fatalf("stdin does not start with a UTF-16 byte order mark: %q", got[:4])
+	}
+	units := make([]uint16, 0, (len(got)-2)/2)
+	for i := 2; i+1 < len(got); i += 2 {
+		units = append(units, uint16(got[i])|uint16(got[i+1])<<8)
+	}
+	if decoded := string(utf16.Decode(units)); decoded != text {
+		t.Fatalf("clip.exe received %q, want %q", decoded, text)
 	}
 }
 
