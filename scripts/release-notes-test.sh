@@ -136,6 +136,7 @@ set -eu
 case "${GH_STUB_MODE:-ok}" in
   ok) printf '[{"number":42,"title":"Restart the provider","mergeCommit":{"oid":"%s"}}]' "$GH_MERGE_SHA" ;;
   empty) printf '[]' ;;
+  paginated) python3 -c 'import json,os; print(json.dumps([dict(number=i,title="Action "+str(i),mergeCommit={"oid":os.environ["GH_MERGE_SHA"]}) for i in range(1,151)]))' ;;
   fail) printf 'partial page' ; exit 1 ;;
   capped) python3 -c 'import json; print(json.dumps([{"number":1,"title":"x","mergeCommit":{"oid":"x"}}]*1000))' ;;
 esac
@@ -146,6 +147,9 @@ rg -q "/commit/$merge_sha" "$tmp/merge.md"
 rg -q '^- Restart the provider$' "$tmp/merge.md"
 (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=empty scripts/release-notes.sh v-test --out "$tmp/empty.md")
 rg -q '^None\.$' "$tmp/empty.md"
+(cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE=paginated GH_MERGE_SHA="$merge_sha" scripts/release-notes.sh v-test --out "$tmp/pages.md")
+rg -q '^- Action 1$' "$tmp/pages.md"
+rg -q '^- Action 150$' "$tmp/pages.md"
 for mode in fail capped; do
   if (cd "$repo" && PATH="$repo/bin:$PATH" GH_STUB_MODE="$mode" scripts/release-notes.sh v-test --out "$tmp/$mode.md" > /dev/null 2>&1); then
     echo "FAIL: gh $mode accepted" >&2
