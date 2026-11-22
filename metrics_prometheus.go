@@ -360,6 +360,23 @@ func PrometheusHandler() http.Handler {
 			fmt.Fprintf(&b, "urnet_pool_latency_ms %g\n", poolLatency)
 		}
 
+		// --- P2P source policy: forged source drops and bound lane mismatches ---
+		// Two families, with bounded label values so a scrape never sees a new
+		// series from an unbounded string. The zero before the first event keeps
+		// panels and alerts on stable series.
+		forgedPlatform, forgedSelf := p2pSourceMetrics.forged()
+		fmt.Fprintf(&b, "# HELP urnet_p2p_forged_source_drops_total Inbound frames dropped on a direct peer-to-peer lane that named the platform or this client.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_p2p_forged_source_drops_total counter\n")
+		fmt.Fprintf(&b, "urnet_p2p_forged_source_drops_total{kind=\"platform\"} %d\n", forgedPlatform)
+		fmt.Fprintf(&b, "urnet_p2p_forged_source_drops_total{kind=\"self\"} %d\n", forgedSelf)
+		fmt.Fprintf(&b, "# HELP urnet_p2p_source_mismatch_total Inbound frames on a lane bound to one peer that named a different source, by policy mode and what happened to the frame.\n")
+		fmt.Fprintf(&b, "# TYPE urnet_p2p_source_mismatch_total counter\n")
+		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"decoded\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDecoded))
+		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"rejected\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeRejected))
+		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"dropped\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeDropped))
+		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"count\",outcome=\"forwarded\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeCount, p2pSourceOutcomeForwarded))
+		fmt.Fprintf(&b, "urnet_p2p_source_mismatch_total{mode=\"drop\",outcome=\"dropped\"} %d\n", p2pSourceMetrics.mismatchAt(p2pSourceModeDrop, p2pSourceOutcomeDropped))
+
 		// --- Provider-injected extra metrics (PQE, grades, churn) ---
 		extraMetricsMu.RLock()
 		provider := extraMetricsProvider

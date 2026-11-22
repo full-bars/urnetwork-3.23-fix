@@ -15,6 +15,8 @@
 
 - **Certificate verification follows the sealing epoch.** A sequence verifies the peer certificate for the epoch it seals under, and a rekey that promotes a new epoch verifies that epoch's certificate again. A send that races a promotion whose new epoch presents a certificate the contract did not commit to is refused and retried. No wire message or file changes.
 
+- **Direct peer-to-peer frames can no longer claim to be the platform or this client.** A frame arriving on a direct peer-to-peer lane that names the platform id or this client's own id is dropped before decode and counted, with its kind labelled `platform` or `self`. Frames on a lane bound to its adjacent peer that name anyone else are counted only by default (`p2p-source-binding count`), which also delivers them so legitimate multihop traffic keeps flowing. Switch to `drop` once a week of zero `decoded` mismatches shows no multihop stream rides a P2P leg. The kill switch `p2p-forged-source-drop off` disables only the platform/self drops. Both settings are live via `urnet-tools set` with no restart and default to `count` and `on`.
+
 ### Performance
 
 - **The DNS translation keeps its pending expiry timer.** It no longer moves the timer on every packet. The timer can fire early, and then the loop expires what has aged out and arms the timer again. It never fires late. This avoids the walk over the processor's timer heap that moving a pending timer caused on every packet. The wire does not change.
