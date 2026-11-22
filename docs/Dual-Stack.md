@@ -66,9 +66,9 @@ The extra connection starts when the cached measurement shows IPv6 for TCP and o
 
 The provider does not see which family the proxy used for the name. The pin relies on the platform's IPv6 service name having only an AAAA record. A name with both records could let a proxy connect over IPv4, and a SOCKS5 CONNECT reply does not say which family it used. The platform decides the family from the exit it observes.
 
-A proxy with IPv4 UDP but a failing IPv6 UDP relay stays as it is, because the platform would drop its IPv6 label before it dropped UDP. A proxy that has IPv6 only, with no IPv4 egress, is not covered yet.
+A proxy with IPv4 UDP but a failing IPv6 UDP relay stays as it is, because the platform would drop its IPv6 label before it dropped UDP. Matching IPv6 exits do not qualify a proxy when its IPv4 UDP check reports an exit mismatch. A proxy that has IPv6 only, with no IPv4 egress, is not covered yet.
 
-The connection needs two new measurements in a row to start and two to stop, so a proxy that changes its answer does not flap. A measurement older than twice its interval stops it at once. `urnet-tools set proxy-dualstack off` is an emergency switch that stops every extra connection and keeps them off. It is on by default. `urnet_proxy_ipv6_transports` shows how many identities hold one.
+The connection needs two new measurements in a row to start. It stops after two consecutive disqualifying observations, so a proxy that changes its answer does not flap. It also stops on the first poll after the IPv4 UDP evidence or the IPv6 evidence expires. `urnet-tools set proxy-dualstack off` is an emergency switch that stops every extra connection and keeps them off. It is on by default. `urnet_proxy_ipv6_transports` shows how many identities hold one.
 
 ## Let the proxy choose the family
 
