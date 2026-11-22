@@ -68,14 +68,14 @@ func TestParseProxyAddressUserinfo(t *testing.T) {
 			password: "s3cret",
 		},
 		{
-			name:    "a port that is not a port keeps the line whole",
+			name:    "a port that is not a port is rejected",
 			in:      "demo:s3cr3t@203.0.113.10:http",
-			address: "demo:s3cr3t@203.0.113.10:http",
+			address: "",
 		},
 		{
-			name:    "a path after the address keeps the line whole",
-			in:      "socks5://demo:s3cr3t@203.0.113.10:1080/token",
-			address: "socks5://demo:s3cr3t@203.0.113.10:1080/token",
+			name:    "a path after the address is rejected",
+			in:      "socks5://demo:***@203.0.113.10:1080/token",
+			address: "",
 		},
 	} {
 		t.Run(testCase.name, func(t *testing.T) {

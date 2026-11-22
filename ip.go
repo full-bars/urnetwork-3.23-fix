@@ -2753,7 +2753,7 @@ func (self *TcpSequence) Run() {
 						}
 					} else {
 						if v := self.log.V(1); v.Enabled() {
-							v.Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, err)
+							v.Infof("[f%d]tcp forward %d error = %s\n", sendIter, n, errText(err))
 						}
 					}
 

@@ -1215,7 +1215,7 @@ func (self *ClientStrategy) WsDialContext(ctx context.Context, url string, reque
 		wsConn, response, err := wsDialer.DialContext(timing.traceCtx(handleCtx, startDial), url, requestHeader)
 		if log := self.log.V(2); log.Enabled() {
 			if err != nil {
-				self.log.Infof("[net]ws dial %s = %s\n", url, err)
+				self.log.Infof("[net]ws dial %s = %s\n", url, errText(err))
 			} else {
 				self.log.Infof("[net]ws dial %s = %s\n", url, response.Status)
 			}

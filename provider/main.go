@@ -3767,12 +3767,12 @@ func provide(opts docopt.Opts) {
 					// measured split between waiting for an admission slot and the
 					// attempt itself, so latency can be told apart from a refusal.
 					if proxySettings != nil {
-						tlog("[proxy][auth] proxy[%d] (%s) attempts=%d admit_wait=%s attempt=%s cut_short=%t err=%v\n",
+						tlog("[proxy][auth] proxy[%d] (%s) attempts=%d admit_wait=%s attempt=%s cut_short=%t err=%s\n",
 							proxySettings.Index, redactedProxyAddress(proxySettings.Address), ladderAttempts,
-							formatSeconds(admitWait), formatSeconds(attemptDuration), cutShortByDeadline, attemptErr)
+							formatSeconds(admitWait), formatSeconds(attemptDuration), cutShortByDeadline, redactedErrorMessage(attemptErr))
 					} else {
-						tlog("[proxy][auth] direct attempts=%d admit_wait=%s attempt=%s cut_short=%t err=%v\n",
-							ladderAttempts, formatSeconds(admitWait), formatSeconds(attemptDuration), cutShortByDeadline, attemptErr)
+						tlog("[proxy][auth] direct attempts=%d admit_wait=%s attempt=%s cut_short=%t err=%s\n",
+							ladderAttempts, formatSeconds(admitWait), formatSeconds(attemptDuration), cutShortByDeadline, redactedErrorMessage(attemptErr))
 					}
 					// URL-sourced (free lists) keep the short leash: give up and let
 					// the requeue path bring them back later, so a huge mostly-dead
@@ -3915,13 +3915,13 @@ func provide(opts docopt.Opts) {
 
 				retryDelay := proxyAuthRetryDelay(err, authFailures)
 				if proxySettings != nil {
-					tlog("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
-						proxySettings.Index, redactedProxyAddress(proxySettings.Address), authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
+					tlog("[proxy][init] proxy[%d] (%s) auth failed (attempt %d/%d): %s. Will retry in %.2fs\n",
+						proxySettings.Index, redactedProxyAddress(proxySettings.Address), authFailures, maxAuthFailures, redactedErrorMessage(err), float64(retryDelay/time.Millisecond)/1000.0)
 				} else if isNative {
-					tlog("[proxy][init] proxy[0] (direct) auth failed (attempt %d/%d): %v. Will retry in %.2fs\n",
-						authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
+					tlog("[proxy][init] proxy[0] (direct) auth failed (attempt %d/%d): %s. Will retry in %.2fs\n",
+						authFailures, maxAuthFailures, redactedErrorMessage(err), float64(retryDelay/time.Millisecond)/1000.0)
 				} else {
-					tlog("[init] auth failed (attempt %d/%d): %v. Will retry in %.2fs\n", authFailures, maxAuthFailures, err, float64(retryDelay/time.Millisecond)/1000.0)
+					tlog("[init] auth failed (attempt %d/%d): %s. Will retry in %.2fs\n", authFailures, maxAuthFailures, redactedErrorMessage(err), float64(retryDelay/time.Millisecond)/1000.0)
 				}
 				select {
 				case <-proxyCtx.Done():
@@ -3942,20 +3942,20 @@ func provide(opts docopt.Opts) {
 						// eviction, no backoff — the next fetch cycle re-grades
 						// the entry and the merge re-admits it if it clears the
 						// bar.
-						tlog("[proxy][init] proxy[%d] (%s) rejected by stage-1 quality gate: %v. Not counted as a failure; re-graded next fetch cycle.\n",
-							proxySettings.Index, redactedProxyAddress(proxySettings.Address), err)
+						tlog("[proxy][init] proxy[%d] (%s) rejected by stage-1 quality gate: %s. Not counted as a failure; re-graded next fetch cycle.\n",
+							proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err))
 					} else if errors.Is(err, context.Canceled) || proxyCtx.Err() != nil {
 						// Context cancellation (trim, reaper, reload, drain) is NOT an
 						// auth failure. Do not record give-up — it would permanently
 						// evict a healthy proxy after enough operational cycles.
-						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %v\n",
-							proxySettings.Index, redactedProxyAddress(proxySettings.Address), err)
+						tlog("[proxy][init] proxy[%d] (%s) cancelled (not a give-up): %s\n",
+							proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err))
 					} else if !proxyGiveUpMayCount() {
 						// The backend is failing, so this proxy failing to authenticate
 						// is not evidence about the proxy: no give-up accounting and no
 						// eviction, just a backoff and another try.
-						tlog("[proxy][init] proxy[%d] (%s) auth failed while the backend is degraded; not a give-up, requeue with backoff: %v\n",
-							proxySettings.Index, redactedProxyAddress(proxySettings.Address), err)
+						tlog("[proxy][init] proxy[%d] (%s) auth failed while the backend is degraded; not a give-up, requeue with backoff: %s\n",
+							proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err))
 						delay := proxyURLGiveUpRetryDelay(proxyURLGiveUpEvictAfterCycles - 1)
 						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
 						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
@@ -3970,8 +3970,8 @@ func provide(opts docopt.Opts) {
 						// attempts, not genuine failures. Back off and requeue
 						// WITHOUT give-up accounting, so a slow-but-working
 						// list entry is never permanently evicted by latency.
-						tlog("[proxy][init] proxy[%d] (%s) auth slow (deadline-cut); not a give-up, requeue with backoff: %v\n",
-							proxySettings.Index, redactedProxyAddress(proxySettings.Address), err)
+						tlog("[proxy][init] proxy[%d] (%s) auth slow (deadline-cut); not a give-up, requeue with backoff: %s\n",
+							proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err))
 						delay := proxyURLGiveUpRetryDelay(proxyURLGiveUpEvictAfterCycles - 1)
 						globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
 						if reloadPath, pathErr := proxyReloadPath(); pathErr == nil {
@@ -3990,8 +3990,8 @@ func provide(opts docopt.Opts) {
 								delay := proxyURLGiveUpRetryDelay(giveUpCount)
 								globalProxyFailureHistory.SetBackoffUntil(proxySettings.Key(), time.Now().Add(delay))
 							} else {
-								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. Permanently removed after %d give-ups, will not be retried.\n",
-									proxySettings.Index, redactedProxyAddress(proxySettings.Address), err, giveUpCount)
+								fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %s. Permanently removed after %d give-ups, will not be retried.\n",
+									proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err), giveUpCount)
 							}
 						} else {
 							delay := proxyURLGiveUpRetryDelay(giveUpCount)
@@ -4009,18 +4009,18 @@ func provide(opts docopt.Opts) {
 									}
 								})
 							}
-							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
-								proxySettings.Index, redactedProxyAddress(proxySettings.Address), err, giveUpCount, proxyURLGiveUpEvictAfterCycles, formatDuration(delay))
+							fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %s. URL-sourced, give-up %d of %d before eviction, will retry automatically in %s.\n",
+								proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err), giveUpCount, proxyURLGiveUpEvictAfterCycles, formatDuration(delay))
 						}
 					}
 				} else {
 					fmt.Fprintf(os.Stderr, "[proxy][init] proxy[%d] (%s) authentication failed after retries: %v (proxy will remain offline; run 'urnet-tools proxy refresh' after fixing the underlying issue)\n",
-						proxySettings.Index, redactedProxyAddress(proxySettings.Address), err)
+						proxySettings.Index, redactedProxyAddress(proxySettings.Address), redactedErrorMessage(err))
 				}
 			} else if isNative {
-				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[0] (direct) authentication failed after retries: %v (proxy will remain offline, retry on next hourly pulse)\n", err)
+				fmt.Fprintf(os.Stderr, "[proxy][init] proxy[0] (direct) authentication failed after retries: %s (proxy will remain offline, retry on next hourly pulse)\n", redactedErrorMessage(err))
 			} else {
-				fmt.Fprintf(os.Stderr, "[init] authentication failed after retries: %v\n", err)
+				fmt.Fprintf(os.Stderr, "[init] authentication failed after retries: %s\n", redactedErrorMessage(err))
 			}
 			return
 		}
@@ -6449,7 +6449,15 @@ func readProxySettings() []*connect.ProxySettings {
 
 	var allProxySettings []*connect.ProxySettings
 	for proxyAddress, key := range proxyConfig.Servers {
-		allProxySettings = append(allProxySettings, internalServerSettings(proxyConfig, proxyAddress, key))
+		settings := internalServerSettings(proxyConfig, proxyAddress, key)
+		if settings.Address == "" {
+			// The entry carries a credential in a shape no form accepts, so the
+			// parser rejected it. Report the rejection without the entry: it is
+			// the entry that holds the credential.
+			tlog("[proxy] config entry rejected: invalid_address (expected host:port, host:port:user:pass or user:pass@host:port)\n")
+			continue
+		}
+		allProxySettings = append(allProxySettings, settings)
 	}
 
 	return allProxySettings
@@ -6545,8 +6553,23 @@ var proxyAddressWithCredentials = regexp.MustCompile("^(.*:\\d*):([^:]*):([^:]*)
 // and a proxy URL that carries its credentials as userinfo in front of the
 // address (user:password@host:port), with or without a scheme. A bare,
 // unbracketed IPv6 address cannot be told apart from host:port, so it is not
-// supported; anything that does not match comes back whole as the address.
+// supported; anything that does not match comes back whole as the address,
+// unless it still holds a credential after every form has been tried. Such a
+// line is rejected (every field empty) rather than kept as an address, because
+// the dial error on an address is printed as it is.
 func parseProxyAddress(proxyAddress string) (address string, user string, password string) {
+	address, user, password = splitProxyAddress(proxyAddress)
+	if strings.Contains(address, "@") {
+		return "", "", ""
+	}
+	return
+}
+
+// splitProxyAddress reads the forms parseProxyAddress accepts: host:port,
+// host:port:user:password, the same two with an IPv6 host in brackets, and a
+// proxy URL in front of the address. The userinfo forms are offered first and
+// the trailing-credential reading last.
+func splitProxyAddress(proxyAddress string) (address string, user string, password string) {
 	if rest, urlUser, urlPassword, ok := splitProxyURLUserinfo(proxyAddress); ok {
 		proxyAddress, user, password = rest, urlUser, urlPassword
 	}

@@ -272,6 +272,16 @@ func proxyKeyDisplay(key string) string {
 	return fmt.Sprintf("%s (user %s)", address, obfuscateUser(user))
 }
 
+// redactedErrorMessage is err's text with any proxy credential removed, for a
+// log line that reports a dial or auth failure. The address stays: it is what
+// tells an operator which proxy failed.
+func redactedErrorMessage(err error) string {
+	if err == nil {
+		return "<nil>"
+	}
+	return connect.RedactProxyCredentials(err.Error())
+}
+
 // redactedProxyAddress returns an address that is safe to print: the "direct"
 // sentinel, a plain host:port, or a host:port with the credentials in front of
 // it removed. Anything else is a placeholder. The legacy parser keeps a

@@ -275,10 +275,17 @@ func parseProxyURLLine(line string) (address, user, password string, ok bool) {
 		if at := strings.LastIndex(rest, "@"); at != -1 {
 			cred := rest[:at]
 			address = rest[at+1:]
+			// The address has to be the bare host:port the dialer takes. A path
+			// or a query behind it would be carried into the address and printed
+			// with it, and a query may hold a token.
+			if !plainHostPort(address) {
+				tlog("[proxy][url] entry address is not a bare host:port; skipping entry\n")
+				return "", "", "", false
+			}
 			if parts := strings.SplitN(cred, ":", 2); len(parts) == 2 {
 				user, password = parts[0], parts[1]
 			}
-			return address, user, password, address != ""
+			return address, user, password, true
 		}
 		address, user, password = parseProxyAddress(rest)
 		return address, user, password, address != ""
