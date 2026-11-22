@@ -134,6 +134,9 @@ func maybeElevateForCrossUser(sub string, p Provider, args []string, force, dryR
 	// must NOT elevate at all (a plan needs no root), which callers ensure by
 	// skipping this for dry-run.
 	carry := args
+	if logoOffByFlag {
+		carry = append([]string{"--no-logo"}, args...)
+	}
 	if dryRun {
 		carry = append([]string{"-n"}, args...)
 	} else if force {

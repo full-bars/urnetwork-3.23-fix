@@ -27,12 +27,14 @@ func Run(args []string) error {
 	if args == nil {
 		args = []string{}
 	}
+	// --no-logo is global: taken out before any command's own parser runs.
+	args = stripLogoFlag(args)
 	// Match on args[0] regardless of trailing args, as the old dispatcher did:
 	// `-v junk` still prints the version.
 	if len(args) >= 1 {
 		switch args[0] {
 		case "-v", "--version":
-			fmt.Println(ToolVersion)
+			printToolVersion()
 			return nil
 		case "version":
 			printToolVersionAndProviders()
@@ -54,6 +56,8 @@ func parseGlobalFlags(args []string) (force, dryRun bool, rest []string, err err
 			force = true
 		case "-n", "--dry-run":
 			dryRun = true
+		case "--no-logo":
+			logoOffByFlag = true
 		case "-h", "--help":
 			usage()
 			return false, false, nil, errHelpShown
@@ -584,6 +588,7 @@ func cmdStatus(args []string) error {
 	if detailMode || (!liveMode && !summaryMode) {
 		// The default view: the platform status (systemctl on Linux), then the
 		// update and health verdict, the live metrics and the extender block.
+		printStatusLogo()
 		printSigpipeRestartWarning(p)
 		if plainMode {
 			if err := renderStatusTable(p); err != nil {

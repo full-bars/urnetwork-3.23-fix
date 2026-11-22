@@ -29,6 +29,25 @@ type topSettings struct {
 	// missing value means the default for the terminal size.
 	LayoutSideWidth int            // explicit right column width; 0 = auto
 	LayoutDividers  map[string]int // divider name -> content row index
+	// Logo is the ui.logo setting for the commands that print outside top.
+	// nil means the operator never chose, and the default is on.
+	Logo *bool
+}
+
+// logoOn reports whether the program may draw its logo. The default is on.
+func (s topSettings) logoOn() bool { return s.Logo == nil || *s.Logo }
+
+// parseOnOff reads the on/off spellings a settings file or an environment
+// variable may hold.
+func parseOnOff(value string) (on, ok bool) {
+	v := strings.ToLower(strings.TrimSpace(value))
+	switch v {
+	case "on", "true", "1", "yes":
+		return true, true
+	case "off", "false", "0", "no":
+		return false, true
+	}
+	return false, false
 }
 
 // topSettingsPath is ~/.config/urnet-tools/top.conf (or the platform's
@@ -92,6 +111,10 @@ func loadTopSettings(path string) topSettings {
 				}
 				s.LayoutDividers[strings.TrimPrefix(key, "layout.divider.")] = v
 			}
+		case key == "ui.logo":
+			if on, ok := parseOnOff(val); ok {
+				s.Logo = &on
+			}
 		}
 	}
 	return s
@@ -126,6 +149,13 @@ func saveTopSettings(path string, s topSettings) error {
 	sort.Strings(names)
 	for _, name := range names {
 		out += fmt.Sprintf("layout.divider.%s = %d\n", name, s.LayoutDividers[name])
+	}
+	if s.Logo != nil {
+		value := "on"
+		if !*s.Logo {
+			value = "off"
+		}
+		out += "ui.logo = " + value + "\n"
 	}
 	_, werr := tmp.WriteString(out)
 	if cerr := tmp.Chmod(0o644); werr == nil {
