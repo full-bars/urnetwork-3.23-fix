@@ -433,6 +433,47 @@ func TestRedactProxyEndpointDialHeader(t *testing.T) {
 	}
 }
 
+// A socks handshake can fail after the connect, and the error then names the
+// peer as the address the proxy dial reached: "read tcp <local>-><peer>". Only
+// the peer is the hop: the local address in front of the arrow sits on the
+// proxy's port too, and a destination on the same port stays.
+func TestRedactProxyEndpointSocketPeers(t *testing.T) {
+	settings := &ProxySettings{Index: 5, Network: "tcp", Address: "gw.example.net:1080"}
+	const local = "192.0.2.10:1080"
+	const peer = "203.0.113.9:1080"
+	const destination = "93.184.216.34:1080"
+
+	for _, form := range []string{"read tcp ", "write tcp ", "read udp ", "write udp "} {
+		text := "[net]dial tcp " + destination + " err=" + form + local + "->" + peer + ": connection reset by peer"
+		got := RedactProxyEndpoint(text, settings)
+		for _, leaked := range []string{peer, "gw.example.net"} {
+			if strings.Contains(got, leaked) {
+				t.Fatalf("%s: the socket peer survived: %q in %q", strings.TrimSpace(form), leaked, got)
+			}
+		}
+		for _, kept := range []string{local, destination, "connection reset by peer", "proxy[5]"} {
+			if !strings.Contains(got, kept) {
+				t.Fatalf("%s: the line lost the local address, the destination, the reason or the slot: %q in %q", strings.TrimSpace(form), kept, got)
+			}
+		}
+	}
+
+	// the bare error is an error region from its first byte
+	got := RedactProxyEndpoint("read tcp "+local+"->"+peer+": i/o timeout", settings)
+	if strings.Contains(got, peer) {
+		t.Fatalf("a bare read error kept the peer: %q", got)
+	}
+	if !strings.Contains(got, local) || !strings.Contains(got, "i/o timeout") {
+		t.Fatalf("a bare read error lost the local address or the reason: %q", got)
+	}
+
+	// a peer that is not on the proxy's port is not the hop
+	got = RedactProxyEndpoint("read tcp "+local+"->203.0.113.9:8443: i/o timeout", settings)
+	if !strings.Contains(got, "203.0.113.9:8443") {
+		t.Fatalf("an unrelated peer was redacted: %q", got)
+	}
+}
+
 // A wrapped url.Error and an errors.As chain are the shapes the transport hands
 // the redactor, and an empty or nil proxy must not touch the text at all.
 func TestProxyRedactWrappedErrorsAndEmptySettings(t *testing.T) {

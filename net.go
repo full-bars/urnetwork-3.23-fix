@@ -757,10 +757,38 @@ var proxyHopMarkers = []string{
 }
 
 // proxyNamesItsHop reports whether before ends with a phrase that names the
-// proxy hop rather than a destination.
+// proxy hop rather than a destination, or puts the token in the peer slot of a
+// socket read or write.
 func proxyNamesItsHop(before string) bool {
 	for _, marker := range proxyHopMarkers {
 		if strings.HasSuffix(before, marker) {
+			return true
+		}
+	}
+	return proxyNamesItsPeer(before)
+}
+
+// proxySocketForms are the net.OpError shapes whose address after the arrow is
+// the peer: "read tcp <local>-><peer>: ...". A socks handshake read or write
+// can fail after the connect, and the peer it names is the address the proxy
+// dial reached.
+var proxySocketForms = []string{
+	"read tcp ",
+	"write tcp ",
+	"read udp ",
+	"write udp ",
+}
+
+// proxyNamesItsPeer reports whether before puts the token after the arrow of a
+// socket read or write, so the local address in front of the arrow is not taken
+// for the hop.
+func proxyNamesItsPeer(before string) bool {
+	local, ok := strings.CutSuffix(before, "->")
+	if !ok {
+		return false
+	}
+	for _, form := range proxySocketForms {
+		if i := strings.LastIndex(local, form); 0 <= i && !strings.Contains(local[i+len(form):], " ") {
 			return true
 		}
 	}
