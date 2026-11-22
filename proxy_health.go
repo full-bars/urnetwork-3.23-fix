@@ -653,16 +653,31 @@ func ProxyHealthSnapshotWithIdentities(held map[string]bool) (up int, dead []str
 // a decrease rather than treating it as negative traffic. They do not drop on a
 // provider restart: a re-registered proxy is seeded with its persisted totals.
 func ProxyBandwidthTotals() (billable, total uint64) {
+	billableRx, billableTx, totalRx, totalTx := ProxyBandwidthDirectionTotals()
+	return billableRx + billableTx, totalRx + totalTx
+}
+
+// ProxyBandwidthDirectionTotals sums the cumulative byte counters across every
+// registered proxy, split by billable versus total and by direction. rx counts
+// bytes the provider received (download, toward the client) and tx bytes it sent
+// (upload, away from the client): both the packet layer in ip.go and the socket
+// layer in net.go credit them that way. BillableRx+BillableTx equals
+// ProxyBandwidthTotals' billable and TotalRx+TotalTx its total. The sums drop
+// when a proxy is removed from the pool, so callers derive rates from deltas and
+// skip a decrease.
+func ProxyBandwidthDirectionTotals() (billableRx, billableTx, totalRx, totalTx uint64) {
 	proxyHealthMu.Lock()
 	defer proxyHealthMu.Unlock()
 	for _, h := range proxyHealthByIndex {
 		if h.bw == nil {
 			continue
 		}
-		billable += h.bw.BillableRx.Load() + h.bw.BillableTx.Load()
-		total += h.bw.TotalRx.Load() + h.bw.TotalTx.Load()
+		billableRx += h.bw.BillableRx.Load()
+		billableTx += h.bw.BillableTx.Load()
+		totalRx += h.bw.TotalRx.Load()
+		totalTx += h.bw.TotalTx.Load()
 	}
-	return billable, total
+	return billableRx, billableTx, totalRx, totalTx
 }
 
 // ProxyBandwidthSnapshotByKey returns the live bandwidth map keyed by proxy
