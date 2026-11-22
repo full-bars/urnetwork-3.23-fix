@@ -15,6 +15,12 @@ import (
 // falling back to a plain websocket.
 var h1PlusProcessStats = &connect.H1PlusStats{}
 
+// h1ConnectionProcessStats is the live H1 gauge for the whole provider: how many
+// of the connections up right now run the framed H1+ carrier and how many run a
+// plain websocket. One collector is shared by every identity and transport
+// generation, so the gauges follow the process rather than one connection.
+var h1ConnectionProcessStats = &connect.H1ConnectionStats{}
+
 // writeH1PlusMetrics exports whether H1+ is switched on and what the dials did.
 func writeH1PlusMetrics(b *strings.Builder) {
 	writeH1PlusMetricsStats(b, h1PlusProcessStats.Snapshot())

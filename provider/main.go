@@ -4089,6 +4089,9 @@ func provide(opts docopt.Opts) {
 		platformSettings.FamilyEvents = isNative && proxySettings == nil
 		// one H1+ collector for every identity, exported as urnet_h1plus_*
 		platformSettings.H1PlusStats = h1PlusProcessStats
+		// one live H1 gauge for every identity: websocket and H1+ connections
+		// up right now, reported with the live traffic sample
+		platformSettings.H1ConnectionStats = h1ConnectionProcessStats
 		startH1PlusSummaryLog(context.Background())
 		if platformSettings.EnableH3 {
 			tlog("[t]h3 eligible for the direct identity, currently %s (urnet-tools set h3 on|off or URNETWORK_H3): H3 runs beside H1 and falls back to H1 quietly\n",

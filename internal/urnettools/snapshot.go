@@ -83,17 +83,36 @@ type SnapshotTrafficDirections struct {
 // them sends nil, while a new provider sending zeros yields a non-nil pointer
 // to zero. nil = old provider, non-nil = new provider (zero or non-zero).
 type LiveTraffic struct {
-	AtUnixNano    int64  `json:"at_unix_nano"`
-	BillableBytes uint64 `json:"billable_bytes"`
-	TotalBytes    uint64 `json:"total_bytes"`
-
-	BillableRxBytes *uint64 `json:"billable_rx_bytes,omitempty"`
-	BillableTxBytes *uint64 `json:"billable_tx_bytes,omitempty"`
-	TotalRxBytes    *uint64 `json:"total_rx_bytes,omitempty"`
-	TotalTxBytes    *uint64 `json:"total_tx_bytes,omitempty"`
+    AtUnixNano    int64  `json:"at_unix_nano"`
+    BillableBytes uint64 `json:"billable_bytes"`
+    TotalBytes    uint64 `json:"total_bytes"`
+    Transports    *LiveTransports `json:"transports,omitempty"`
+    BillableRxBytes *uint64 `json:"billable_rx_bytes,omitempty"`
+    BillableTxBytes *uint64 `json:"billable_tx_bytes,omitempty"`
+    TotalRxBytes    *uint64 `json:"total_rx_bytes,omitempty"`
+    TotalTxBytes    *uint64 `json:"total_tx_bytes,omitempty"`
 }
 
-// errTrafficUnsupported means the provider predates the "traffic" command. top
+// LiveTransport is one transport kind's cumulative counters plus its live
+// connection gauge.
+type LiveTransport struct {
+    BytesTx, BytesRx, FramesTx, FramesRx uint64
+    Up int64
+}
+
+// LiveTransports is the per-kind transport block of the traffic reply. A kind
+// the provider does not run is absent; h1_websocket and h1_plus are always
+// present so a provider with H1+ off reports zero for it. The four kinds are
+// h1_websocket, h1_plus, h3, dns, dns_pump, in that stable order.
+type LiveTransports struct {
+    H1WebSocket *LiveTransport `json:"h1_websocket,omitempty"`
+    H1Plus      *LiveTransport `json:"h1_plus,omitempty"`
+    H3          *LiveTransport `json:"h3,omitempty"`
+    DNS         *LiveTransport `json:"dns,omitempty"`
+    DNSPump     *LiveTransport `json:"dns_pump,omitempty"`
+}
+
+// errTrafficUnsupported means the provider predates the \"traffic\" command. top
 // then falls back to the snapshot's own once-a-second rates.
 var errTrafficUnsupported = errors.New("provider does not answer the traffic command")
 
