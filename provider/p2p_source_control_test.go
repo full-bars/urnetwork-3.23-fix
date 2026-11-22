@@ -54,3 +54,24 @@ func TestP2PSourceControlRestore(t *testing.T) {
 		t.Fatal("defaults not restored")
 	}
 }
+
+// A change queued while the provider was stopped is what an operator sees come
+// back after a restart. Both kill switches must land as off rather than falling
+// back to the live defaults, count and on.
+func TestP2PSourceOffQueuedWhileStoppedSurvivesRestart(t *testing.T) {
+	t.Cleanup(func() { _ = connect.SetP2PSourceBinding("count"); connect.SetP2PForgedSourceDrop(true) })
+	home := withTempHome(t)
+	writePendingOverrides(t, home, `[
+		{"op":"set","key":"p2p_source_binding","value":"off"},
+		{"op":"set","key":"p2p_forged_source_drop","value":"off"}
+	]`)
+	state := newControlState()
+	mergePendingOverrides(state)
+	applyPersistedRuntimeTuning(state)
+	if got := connect.P2PSourceBinding(); got != "off" {
+		t.Fatalf("p2p_source_binding after restart = %q, want off", got)
+	}
+	if connect.P2PForgedSourceDropEnabled() {
+		t.Fatal("p2p_forged_source_drop after restart = on, want off")
+	}
+}

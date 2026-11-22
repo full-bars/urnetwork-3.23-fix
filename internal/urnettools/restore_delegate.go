@@ -281,9 +281,14 @@ var setKeyHelps = []string{
 // URNETWORK_TLS_HELLO, which may say on, so `set tls-hello off` must persist a
 // real off value or the box an operator switched back to Go's hello returns to
 // the parrot at the next start.
+//
+// p2p_source_binding and p2p_forged_source_drop are the same shape. Their live
+// defaults are "count" and "on", so clearing either one puts the source guard
+// back to counting or back on, the opposite of the kill switch the operator
+// asked for.
 func treatsOffAsClear(canonicalKey string) bool {
 	switch canonicalKey {
-	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "extender_udp443", "extender_udp4053", "extender_udp53", "pprof", "udp_probe":
+	case "hot_restart", "ramlogs", "proxy_self_heal", "metrics", "oom_cap", "baseline", "h3", "tls_hello", "extender", "extender_discovery", "extender_udp443", "extender_udp4053", "extender_udp53", "pprof", "udp_probe", "p2p_source_binding", "p2p_forged_source_drop":
 		return false
 	}
 	return true
