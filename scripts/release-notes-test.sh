@@ -73,3 +73,17 @@ rg -q '\[redeploy\]' "$repo/releases/v-test.md"
 rg -q "/commit/$sha" "$repo/releases/v-test.md"
 (cd "$repo" && scripts/release-notes-lint.sh releases/v-test.md)
 echo 'PASS: generator creates sections, deploy tag and commit link'
+printf 'sensitive-example-pattern\n' > "$repo/scripts/private-host-patterns.txt"
+printf '\nsensitive-example-pattern\n' >> "$repo/releases/v-test.md"
+if (cd "$repo" && scripts/release-notes-lint.sh releases/v-test.md > /dev/null 2>&1); then
+  echo 'FAIL: private pattern accepted' >&2
+  exit 1
+fi
+echo 'PASS: private pattern rejected'
+fail_case 'invalid commit name' '[commit](https://github.com/full-bars/urnetwork-3.23-fix/commit/no-such-commit)'
+sed 's/\[redeploy\]/[redeploy] [installer]/' "$fixture" > "$tmp/bad.md"
+if "$lint" "$tmp/bad.md" >"$tmp/out" 2>&1; then
+  echo 'FAIL: multiple deploy tags accepted' >&2
+  exit 1
+fi
+echo 'PASS: multiple deploy tags rejected'

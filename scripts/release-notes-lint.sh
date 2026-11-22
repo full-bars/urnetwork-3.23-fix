@@ -54,8 +54,8 @@ for n, line in enumerate(lines, 1):
     for link in re.findall(r'\]\(([^)]+)\)', line):
         if not (link == base or link.startswith(base + '/')):
             error(n, f'link outside this repository: {link}')
-        match = re.fullmatch(re.escape(base) + r'/commit/([0-9a-fA-F]+)', link)
-        if match and subprocess.run(['git', '-C', str(root), 'cat-file', '-e', match.group(1) + '^{commit}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode:
+        match = re.fullmatch(re.escape(base) + r'/commit/([^/?#]+)', link)
+        if match and (not re.fullmatch(r'[0-9a-fA-F]{7,40}', match.group(1)) or subprocess.run(['git', '-C', str(root), 'cat-file', '-e', match.group(1) + '^{commit}'], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL).returncode):
             error(n, f'unknown commit: {match.group(1)}')
     for pattern in patterns:
         if pattern.strip() and not pattern.lstrip().startswith('#') and re.search(pattern, prose, re.I):
