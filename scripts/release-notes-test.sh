@@ -23,6 +23,7 @@ fail_case 'external link' '[link](https://example.com/)'
 fail_case 'model name' 'The model is Codex.'
 fail_case 'exactly' 'There are exactly two.'
 fail_case 'contrast' 'Use this, not that.'
+fail_case 'not but contrast' 'This is not one thing but another.'
 fail_case 'bullet first person' '- I made it.'
 fail_case 'unknown commit' '[commit](https://github.com/full-bars/urnetwork-3.23-fix/commit/0000000000000000000000000000000000000000)'
 fail_case 'line length' "$(printf '%0601d' 0)"

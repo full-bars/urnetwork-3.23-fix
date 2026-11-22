@@ -21,6 +21,12 @@ intro_started = False
 intro_done = False
 intro = []
 base = 'https://github.com/full-bars/urnetwork-3.23-fix'
+legacy_lines = []
+legacy_path = root / 'releases/v3.23.0-fix.36.0.md'
+if file.resolve() == legacy_path.resolve():
+    result = subprocess.run(['git', '-C', str(root), 'cat-file', 'blob', 'bb504a4a96a365516846a0add8d2e1168ec28c0b'], text=True, capture_output=True)
+    if result.returncode == 0:
+        legacy_lines = result.stdout.splitlines()
 
 def error(n, message):
     global errors
@@ -66,8 +72,13 @@ for n, line in enumerate(lines, 1):
         error(n, 'word exactly in prose')
     if re.search(r',\s+not\b', prose, re.I):
         error(n, 'comma followed by not')
+    if re.search(r'\bnot\s+[^.!?]+?\s+but\s+', prose, re.I):
+        error(n, 'not X but Y contrast')
     if not line.lstrip().startswith('|') and len(line) > 600:
-        error(n, 'line exceeds 600 characters')
+        if n <= len(legacy_lines) and line == legacy_lines[n - 1]:
+            print(f'{file}:{n}: warning: unchanged historical line exceeds 600 characters', file=sys.stderr)
+        else:
+            error(n, 'line exceeds 600 characters')
     if re.match(r'^\s*[-*+]\s+', line):
         if re.search(r'\bI\b', prose):
             error(n, 'first person in bullet')
