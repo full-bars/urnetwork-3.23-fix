@@ -62,11 +62,15 @@ const (
 func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
 	m.proxyGridW, m.proxyGridH = 0, 0
+	m.compact = false
 	if m.overview {
 		m.drawOverview(b)
 		return
 	}
 	if !topMin.FitsRect(b.Rect()) {
+		// Below the full layout's minimum there is one compact panel and no
+		// strip, so the compact view stays on the dashboard.
+		m.compact = true
 		m.drawCompact(b)
 		if m.help {
 			m.drawHelp(b)
@@ -76,7 +80,7 @@ func (m *topModel) render(b *tui.Buffer) {
 		}
 		return
 	}
-	m.drawFull(b)
+	m.drawFrame(b)
 	if m.proxyPopup {
 		m.drawProxyPopup(b)
 	}
@@ -91,32 +95,56 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 }
 
-// topSideCols sizes the right column from the terminal width: 30 cells up to
-// 120 columns so narrow and standard screens keep their layout, then growing
-// by half the extra width up to topSideMaxWidth so wide terminals fit IPv6
-// addresses and longer values without cutting them.
-func topSideCols(width int) int {
-	if width <= 120 {
-		return topSideWidth
-	}
-	return min(topSideWidth+(width-120)/2, topSideMaxWidth)
+// topFrameRows splits the full screen into the shared header, the page strip,
+// the page content and the shared footer, with the strip assumed.
+func topFrameRows(r tui.Rect) (header, strip, content, footer tui.Rect) {
+	rows := tui.SplitRows(r, tui.Fixed(1), tui.Fixed(topPageStripRows), tui.Flex(1), tui.Fixed(1))
+	return rows[0], rows[1], rows[2], rows[3]
 }
 
-func (m *topModel) drawFull(b *tui.Buffer) {
-	th := m.theme
-	rows := tui.SplitRows(b.Rect(), tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
-	m.drawHeader(b.Sub(rows[0]))
-	m.drawFooter(b.Sub(rows[2]))
+// topFrameRowsOnePage splits the full screen when there is only the dashboard
+// to show: the content keeps the row the strip would have taken, which is the
+// frame exactly as it was before pages existed.
+func topFrameRowsOnePage(r tui.Rect) (header, content, footer tui.Rect) {
+	rows := tui.SplitRows(r, tui.Fixed(1), tui.Flex(1), tui.Fixed(1))
+	return rows[0], rows[1], rows[2]
+}
+
+// drawFrame draws the chrome every page shares and then the selected page
+// inside the content rectangle it leaves. The page strip takes a row of its
+// own, and it is drawn only once the operator is off the dashboard: page 1 is
+// the screen every earlier version of top drew, byte for byte, for anyone who
+// never switches.
+func (m *topModel) drawFrame(b *tui.Buffer) {
+	header, strip, content, footer := topFrameRows(b.Rect())
+	pages, current := m.pageStrip(content)
+	showStrip := len(pages) > 1 && m.pageIndex() != 0
+	if !showStrip {
+		header, content, footer = topFrameRowsOnePage(b.Rect())
+	}
+	m.drawHeader(b.Sub(header))
+	if showStrip {
+		m.drawPageStrip(strip, b, pages, current)
+	}
+	m.contentRect = content
+	m.drawFooter(b.Sub(footer))
 	// The footer hints are clickable: record one region per hint.
-	for _, r := range footerHintRects(rows[2], m.footerHints()) {
+	for _, r := range footerHintRects(footer, m.footerHints()) {
 		if r.Rect.W > 0 {
 			m.record(r.Name, r.Rect)
 		}
 	}
+	m.selectedPage().draw(m, b, content)
+	// An operator hovering a divider sees it is draggable.
+	m.drawHover(b)
+}
 
-	m.contentRect = rows[1]
-	sideW := m.sideCols(rows[1].W)
-	cols := tui.SplitCols(rows[1], tui.Flex(1), tui.Fixed(sideW))
+// drawDashboard is page 1: the layout every earlier version of top drew. It
+// paints inside content and records its hit regions in absolute cells.
+func (m *topModel) drawDashboard(b *tui.Buffer, content tui.Rect) {
+	th := m.theme
+	sideW := m.sideCols(content.W)
+	cols := tui.SplitCols(content, tui.Flex(1), tui.Fixed(sideW))
 	left := m.splitLeft(cols[0])
 	nowRows := topNowRows
 	if m.hasTraffic() {
@@ -203,7 +231,7 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 		m.recordBox("internals", side[internalsAt])
 	}
 	// The vertical divider between the main column and the side column.
-	m.record("side", tui.Rect{X: cols[1].X, Y: rows[1].Y, W: 1, H: rows[1].H})
+	m.record("side", tui.Rect{X: cols[1].X, Y: content.Y, W: 1, H: content.H})
 	// The horizontal dividers between the boxes of each column.
 	m.record("left:proxies", tui.Rect{X: left[0].X, Y: left[1].Y - 1, W: left[0].W, H: 1})
 	m.record("left:events", tui.Rect{X: left[0].X, Y: left[2].Y - 1, W: left[0].W, H: 1})
@@ -214,8 +242,17 @@ func (m *topModel) drawFull(b *tui.Buffer) {
 	if withInternals {
 		m.record("side:internals", tui.Rect{X: side[0].X, Y: side[internalsAt].Y - 1, W: side[0].W, H: 1})
 	}
-	// An operator hovering a divider sees it is draggable.
-	m.drawHover(b)
+}
+
+// topSideCols sizes the right column from the terminal width: 30 cells up to
+// 120 columns so narrow and standard screens keep their layout, then growing
+// by half the extra width up to topSideMaxWidth so wide terminals fit IPv6
+// addresses and longer values without cutting them.
+func topSideCols(width int) int {
+	if width <= 120 {
+		return topSideWidth
+	}
+	return min(topSideWidth+(width-120)/2, topSideMaxWidth)
 }
 
 // recordBox adds the box and title regions of one drawn panel.

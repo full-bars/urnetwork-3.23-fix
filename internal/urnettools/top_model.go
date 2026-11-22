@@ -295,6 +295,12 @@ type topModel struct {
 	contentRect                 tui.Rect
 	nowRows, resRows, extRows   int
 	showExtender, withInternals bool
+	// page is the selected page's index in topPages. It belongs to the session,
+	// not to a provider, so switching provider keeps the page.
+	page int
+	// compact records that the last frame was the single-panel view, where the
+	// page keys do nothing.
+	compact bool
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
 	gorHeight int
