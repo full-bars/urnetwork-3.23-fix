@@ -310,3 +310,20 @@ func TestTopGraphWindowAxisFollowsTheLevel(t *testing.T) {
 		t.Fatal("the window graph has no steady axis")
 	}
 }
+
+// The Remote chart and the direction pages read the second by second ring, so
+// they follow the level up to what that ring holds and no further.
+func TestTopRemoteWindowFollowsTheLevelUpToItsHistory(t *testing.T) {
+	m, _ := liveModel(t, 500*time.Millisecond)
+	for level, want := range map[int]time.Duration{
+		0: 10 * time.Second,
+		1: time.Minute,
+		2: 5 * time.Minute,
+		3: time.Duration(topGraphCapacity) * time.Second,
+	} {
+		m.winLevel = level
+		if got := m.remoteWindow(); got != want {
+			t.Fatalf("level %s: the Remote chart spans %v, want %v", topGraphWindowNames[level], got, want)
+		}
+	}
+}
