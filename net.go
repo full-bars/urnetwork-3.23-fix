@@ -849,18 +849,37 @@ func dialHeader(network string, addr string) string {
 	return dialHeaderPrefix + network + " " + addr
 }
 
-// proxyHopMarkers are the phrases a transport puts directly in front of the
-// address a proxy dial reached: the socks client's hop, or the proxy dial's own
-// target when it is reported as a net.OpError.
-var proxyHopMarkers = []string{
-	"socks5 connect tcp ",
-	"socks5h connect tcp ",
-	"socks connect tcp ",
+// proxyNetworks are the network names the net package prints in front of an
+// address it dialed or read from. A dial that names its family prints the
+// family name instead of "tcp" or "udp", so each one is a name of its own.
+var proxyNetworks = []string{"tcp", "tcp4", "tcp6", "udp", "udp4", "udp6"}
+
+// proxyHopPhrases are the phrases a transport puts directly in front of the
+// address a proxy dial reached: the socks client's hop, net/http's proxy
+// CONNECT, and the proxy dial's own target when it is reported as a
+// net.OpError. Each is followed by the network name, which is why the markers
+// carry every name in proxyNetworks.
+var proxyHopPhrases = []string{
+	"dial ",
+	"socks connect ",
 	"socks5 connect ",
+	"socks5h connect ",
 	"socks5 dial ",
-	"proxyconnect tcp: dial tcp ",
-	"dial tcp ",
+	"proxyconnect tcp: dial ",
 }
+
+// proxyHopMarkers are the phrases a transport puts directly in front of the
+// address a proxy dial reached, each with a network name, plus the two forms
+// that are printed with no network at all.
+var proxyHopMarkers = func() []string {
+	markers := []string{"socks5 connect ", "socks5 dial "}
+	for _, phrase := range proxyHopPhrases {
+		for _, network := range proxyNetworks {
+			markers = append(markers, phrase+network+" ")
+		}
+	}
+	return markers
+}()
 
 // proxyNamesItsHop reports whether before ends with a phrase that names the
 // proxy hop rather than a destination, or puts the token in the peer slot of a
@@ -874,16 +893,21 @@ func proxyNamesItsHop(before string) bool {
 	return proxyNamesItsPeer(before)
 }
 
-// proxySocketForms are the net.OpError shapes whose address after the arrow is
-// the peer: "read tcp <local>-><peer>: ...". A socks handshake read or write
-// can fail after the connect, and the peer it names is the address the proxy
-// dial reached.
-var proxySocketForms = []string{
-	"read tcp ",
-	"write tcp ",
-	"read udp ",
-	"write udp ",
-}
+// proxyPeerForms are the phrases that put an address in the peer slot of a
+// printed operation: a socket read or write, whose address after the arrow is
+// the peer, and a socks connect, whose source address is the proxy it reached.
+// A socks handshake read or write can fail after the connect, and the peer it
+// names is the address the proxy dial reached. A bare dial is left out: its
+// target after the arrow is the destination, never the hop.
+var proxyPeerForms = func() []string {
+	var forms []string
+	for _, phrase := range []string{"read ", "write ", "socks connect ", "socks5 connect ", "socks5h connect ", "socks5 dial "} {
+		for _, network := range proxyNetworks {
+			forms = append(forms, phrase+network+" ")
+		}
+	}
+	return forms
+}()
 
 // proxyNamesItsPeer reports whether before puts the token after the arrow of a
 // socket read or write, so the local address in front of the arrow is not taken
@@ -893,7 +917,7 @@ func proxyNamesItsPeer(before string) bool {
 	if !ok {
 		return false
 	}
-	for _, form := range proxySocketForms {
+	for _, form := range proxyPeerForms {
 		if i := strings.LastIndex(local, form); 0 <= i && !strings.Contains(local[i+len(form):], " ") {
 			return true
 		}
@@ -902,7 +926,9 @@ func proxyNamesItsPeer(before string) bool {
 }
 
 // readAddressToken is the end of the address token starting at start. A
-// bracketed v6 literal is read as one token with the port that follows it.
+// bracketed v6 literal is read as one token with the port that follows it. The
+// hyphen of the "->" an OpError prints between two addresses ends the token, so
+// the port in front of it is read whole.
 func readAddressToken(text string, start int) int {
 	i := start
 	if text[i] == '[' {
@@ -913,6 +939,15 @@ func readAddressToken(text string, start int) int {
 		i += closing + 1
 	}
 	for i < len(text) && addressTokenByte(text[i]) {
+		// the hyphen of the "->" between two printed addresses is a separator,
+		// not part of a host or a port; a token that would otherwise be empty
+		// takes it, so the caller always moves forward
+		if text[i] == '-' && i+1 < len(text) && text[i+1] == '>' {
+			if i == start {
+				i++
+			}
+			break
+		}
 		i++
 	}
 	return i
@@ -922,9 +957,10 @@ func readAddressToken(text string, start int) int {
 // configured host matches on any port, since the host is what locates the
 // proxy; and a proxy configured by name also owns the hop it resolved to, but
 // only where the error string in front of the token names that hop as the
-// address the proxy dial reached. A bare ip:port on the proxy's port is
-// otherwise a destination, and the port alone cannot tell it apart. Trailing
-// separators such as the colon an error puts after an address are kept.
+// address the proxy dial reached, and only on the proxy's port or with no port
+// at all. A bare ip:port on the proxy's port is otherwise a destination, and the
+// port alone cannot tell it apart. Trailing separators such as the colon an
+// error puts after an address are kept.
 func redactAddressToken(token string, before string, inError bool, host string, port string, label string) string {
 	address := token
 	separators := ""
@@ -943,7 +979,7 @@ func redactAddressToken(token string, before string, inError bool, host string, 
 	case hostMatches:
 		// the same host on another port is still where the proxy is
 		return label + ":" + tokenPort + separators
-	case inError && !proxyIsAddr(host) && tokenPort == port && proxyIsAddr(tokenHost) && proxyNamesItsHop(before):
+	case inError && !proxyIsAddr(host) && (tokenPort == "" || tokenPort == port) && proxyIsAddr(tokenHost) && proxyNamesItsHop(before):
 		// a name-configured proxy's resolved hop, named as the dialed address
 		return label + separators
 	}
