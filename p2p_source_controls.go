@@ -6,18 +6,33 @@ import (
 	"sync/atomic"
 )
 
-// Zero values select the default policy.
+// Bound lane source policy modes, in the order a setting may select them.
+// The first is the default. The values index the mismatch counters.
+const (
+	p2pSourceModeCount = iota
+	p2pSourceModeOff
+	p2pSourceModeDrop
+)
+
+// What happened to a frame whose source did not match its lane's bound peer.
+const (
+	p2pSourceOutcomeDecoded = iota
+	p2pSourceOutcomeRejected
+	p2pSourceOutcomeDropped
+	p2pSourceOutcomeForwarded
+)
+
 var p2pSourceBinding atomic.Uint32
 var p2pForgedSourceDropDisabled atomic.Bool
 
 func SetP2PSourceBinding(value string) error {
 	switch strings.ToLower(value) {
 	case "count":
-		p2pSourceBinding.Store(0)
+		p2pSourceBinding.Store(p2pSourceModeCount)
 	case "off":
-		p2pSourceBinding.Store(1)
+		p2pSourceBinding.Store(p2pSourceModeOff)
 	case "drop":
-		p2pSourceBinding.Store(2)
+		p2pSourceBinding.Store(p2pSourceModeDrop)
 	default:
 		return fmt.Errorf("p2p source binding must be off, count or drop")
 	}
@@ -26,14 +41,16 @@ func SetP2PSourceBinding(value string) error {
 
 func P2PSourceBinding() string {
 	switch p2pSourceBinding.Load() {
-	case 1:
+	case p2pSourceModeOff:
 		return "off"
-	case 2:
+	case p2pSourceModeDrop:
 		return "drop"
 	default:
 		return "count"
 	}
 }
+
+func p2pSourceBindingMode() uint32 { return p2pSourceBinding.Load() }
 
 func SetP2PForgedSourceDrop(enabled bool) { p2pForgedSourceDropDisabled.Store(!enabled) }
 func P2PForgedSourceDropEnabled() bool    { return !p2pForgedSourceDropDisabled.Load() }
@@ -61,3 +78,101 @@ func forgedSourceKind(disposition transferReceiveDisposition, localId Id, source
 func boundSourceMismatch(disposition transferReceiveDisposition, sourceId Id) bool {
 	return disposition.boundSourceId != (Id{}) && sourceId != disposition.boundSourceId
 }
+
+// p2pSourceCounters holds the counters behind the two source policy metrics.
+// Forged drops are counted by the rule the frame broke. Bound lane mismatches
+// are counted by the policy mode in force when the frame arrived and by what
+// happened to it, which is what separates legitimate multihop traffic from
+// spoofing. Every index is a fixed constant, so the exposed label values stay
+// bounded.
+type p2pSourceCounters struct {
+	forgedPlatform atomic.Uint64
+	forgedSelf     atomic.Uint64
+	mismatch       [3][4]atomic.Uint64
+}
+
+// p2pSourceMetrics aggregates every client in the process for /metrics.
+var p2pSourceMetrics p2pSourceCounters
+
+func (self *p2pSourceCounters) addForged(kind string) {
+	switch kind {
+	case "platform":
+		self.forgedPlatform.Add(1)
+	case "self":
+		self.forgedSelf.Add(1)
+	}
+}
+
+func (self *p2pSourceCounters) forged() (platform uint64, self_ uint64) {
+	return self.forgedPlatform.Load(), self.forgedSelf.Load()
+}
+
+func (self *p2pSourceCounters) addMismatch(mode uint32, outcome int) {
+	if p2pSourceModeDrop < mode || p2pSourceOutcomeForwarded < outcome {
+		return
+	}
+	self.mismatch[mode][outcome].Add(1)
+}
+
+func (self *p2pSourceCounters) mismatchAt(mode uint32, outcome int) uint64 {
+	if p2pSourceModeDrop < mode || p2pSourceOutcomeForwarded < outcome {
+		return 0
+	}
+	return self.mismatch[mode][outcome].Load()
+}
+
+func (self *p2pSourceCounters) mismatchTotal() (total uint64) {
+	for mode := range self.mismatch {
+		for outcome := range self.mismatch[mode] {
+			total += self.mismatch[mode][outcome].Load()
+		}
+	}
+	return total
+}
+
+func (self *Client) recordForgedSourceDrop(kind string) {
+	self.p2pSources.addForged(kind)
+	p2pSourceMetrics.addForged(kind)
+}
+
+func (self *Client) recordSourceMismatch(mode uint32, outcome int) {
+	self.p2pSources.addMismatch(mode, outcome)
+	p2pSourceMetrics.addMismatch(mode, outcome)
+}
+
+// p2pSourceMismatch records the outcome of one frame whose source did not
+// match the peer its lane is bound to. Only the first outcome counts, so a
+// frame that is decoded after an earlier drop cannot be counted twice. The
+// zero value records nothing, which keeps an accepted frame allocation free
+// and silent.
+type p2pSourceMismatch struct {
+	client *Client
+	mode   uint32
+	active bool
+}
+
+func newP2PSourceMismatch(client *Client, mode uint32, active bool) p2pSourceMismatch {
+	return p2pSourceMismatch{client: client, mode: mode, active: active}
+}
+
+func (self *p2pSourceMismatch) record(outcome int) {
+	if self.active {
+		self.active = false
+		self.client.recordSourceMismatch(self.mode, outcome)
+	}
+}
+
+// decoded means the frame, and its encrypted wrap when it had one, decoded
+// and decrypted in the receive path.
+func (self *p2pSourceMismatch) decoded() { self.record(p2pSourceOutcomeDecoded) }
+
+// rejected means the frame failed to decode or to decrypt.
+func (self *p2pSourceMismatch) rejected() { self.record(p2pSourceOutcomeRejected) }
+
+// dropped means the frame was not decoded here: binding drop mode, or a
+// routing guard that discards a frame it cannot place.
+func (self *p2pSourceMismatch) dropped() { self.record(p2pSourceOutcomeDropped) }
+
+// forwarded means the frame left this client for another destination without
+// being decoded, which is what a transit hop does.
+func (self *p2pSourceMismatch) forwarded() { self.record(p2pSourceOutcomeForwarded) }
