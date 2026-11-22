@@ -50,4 +50,3 @@ On OpenBSD, choose an existing non-root service account and replace `urnet` with
 ftp -o urnet-install.sh https://dl.fullbars.xyz/install-openbsd.sh
 doas env SERVICE_USER_OVERRIDE=urnet sh urnet-install.sh install
 ```
-
