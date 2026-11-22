@@ -1276,6 +1276,62 @@ func TestProxyIPv6GateStopsOnChecksThatContradictATcpOnlyRecord(t *testing.T) {
 	}
 }
 
+// The store can publish an IPv6-only refresh beside a newer lazy UDP check: the
+// refresh started before that check completed, so its record carries an older
+// stamp than the check it lands under. The gate pairs a record with a check by
+// stamp, so the verdict looked like the previous sweep's and was skipped. A new
+// disqualifying record must break a pending start streak whatever the UDP stamp
+// of the check it lands beside does.
+func TestProxyIPv6GateDropsAPendingStartOnANegativeIPv6OnlyRecord(t *testing.T) {
+	h := newIPv6CheckHarness(t)
+	settings := ipv6TestSettings()
+	ctx := context.Background()
+	base := time.Date(2026, 11, 21, 0, 0, 0, 0, time.UTC)
+	var gate proxyIPv6Gate
+	poll := func(at time.Time) bool {
+		udp, v6, state := h.store.measurement(settings.Key(), at)
+		if state != measurementReady {
+			t.Fatalf("measurement state %v", state)
+		}
+		start, _ := gate.observe(at, udp, v6)
+		return start
+	}
+	stage := func(status proxyIPv6Status, udp, tcpExit, udpExit string) {
+		h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+			return previous.measured(at, status, udp, tcpExit, udpExit), true
+		}
+	}
+
+	stage(proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
+	h.store.Check(withIPv6Sweep(ctx), settings, base)
+	if poll(base) {
+		t.Fatal("started on the first observation")
+	}
+
+	due := base.Add(12 * time.Hour)
+	// a lazy check completes while the IPv6-only refresh of the next sweep is
+	// still running, so the refresh's record is stamped before that check
+	h.store.Check(ctx, settings, due.Add(-30*time.Minute+time.Second))
+	poll(due.Add(-29 * time.Minute))
+	h.store.ipv6Probe = func(_ context.Context, _ *connect.ProxySettings, previous proxyIPv6Result, at time.Time, _ proxyIPv6Dials) (proxyIPv6Result, bool) {
+		h.store.Check(ctx, settings, due.Add(2*time.Second))
+		return previous.measured(at, proxyIPv6Yes, "unknown", "2001:db8::1", ""), true
+	}
+	h.store.Check(withIPv6Sweep(ctx), settings, due)
+	if poll(due.Add(time.Minute)) {
+		t.Fatal("started on a disqualifying IPv6 record")
+	}
+
+	// the next measurement qualifies again: one good record after a bad one
+	// must not start the transport
+	stage(proxyIPv6Yes, "yes", "2001:db8::1", "2001:db8::1")
+	last := due.Add(time.Hour + time.Minute)
+	h.store.Check(withIPv6Sweep(ctx), settings, last)
+	if poll(last) {
+		t.Fatal("started across a disqualifying IPv6 measurement")
+	}
+}
+
 // A measurement that arrives alone, after the first result's evidence expired,
 // must not start the transport: a start needs two results seen while the first
 // is still evidence, and the udp stamp is unchanged when only the stage runs.
