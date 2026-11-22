@@ -1234,3 +1234,26 @@ func TestProxyIPv6GateBaselinesARestoredRecord(t *testing.T) {
 		t.Fatal("two measurements made after the restart did not start the transport")
 	}
 }
+
+// A measurement that arrives alone, after the first result's evidence expired,
+// must not start the transport: a start needs two results seen while the first
+// is still evidence, and the udp stamp is unchanged when only the stage runs.
+func TestProxyIPv6GateDoesNotStartOnAMeasurementAfterTheFirstExpired(t *testing.T) {
+	var gate proxyIPv6Gate
+	t0 := time.Date(2026, 11, 21, 10, 0, 0, 0, time.UTC)
+	ok := proxyUDPResult{Status: proxyUDPOK, CheckedAt: t0}
+	yes := func(at time.Time) proxyIPv6Result { return v6Result(proxyIPv6Yes, "yes", at, 12*time.Hour) }
+
+	gate.observe(t0, ok, yes(t0))
+	if gate.yes != 1 {
+		t.Fatalf("start streak = %d, want 1 after the first measurement", gate.yes)
+	}
+	t1 := t0.Add(25 * time.Hour)
+	if start, _ := gate.observe(t1, ok, yes(t1)); start {
+		t.Fatal("one fresh measurement started the transport after the first result expired")
+	}
+	t2 := t1.Add(time.Minute)
+	if start, _ := gate.observe(t2, ok, yes(t2)); !start {
+		t.Fatal("two fresh measurements did not start the transport")
+	}
+}
