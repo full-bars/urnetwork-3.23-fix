@@ -2532,7 +2532,7 @@ installer_enable_linger ()
         pr_info "Systemd lingering already enabled for %s." "$linger_user"
         return 0
     fi
-    if loginctl enable-linger "$linger_user" && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
+    if loginctl enable-linger --no-ask-password "$linger_user" && [ "$(loginctl show-user "$linger_user" -p Linger --value 2>/dev/null)" = yes ]; then
         pr_info "Systemd lingering enabled for %s." "$linger_user"
         return 0
     fi

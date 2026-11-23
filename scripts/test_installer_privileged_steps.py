@@ -45,6 +45,16 @@ systemctl() { echo "$*" >> "$LOG"; return 1; }
             self.assertIn("linger is not enabled for alice; run sudo loginctl enable-linger alice before enabling this unit", result.stdout)
             self.assertFalse(log.exists() and "--user enable urnetwork.service" in log.read_text())
 
+    def test_initial_linger_attempt_does_not_prompt(self):
+        harness = r"""
+FORCE=1
+pr_info() { :; }
+pr_warn() { :; }
+loginctl() { case "$1" in show-user) echo no;; *) echo "$*";; esac; }
+""" + function("installer_enable_linger") + "\ninstaller_enable_linger alice install || :\n"
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertIn("--no-ask-password", result.stdout)
+
     def test_linger_interactive_answers(self):
         for answer in ("y", "n", ""):
             with self.subTest(answer=answer), tempfile.TemporaryDirectory() as tmp:
