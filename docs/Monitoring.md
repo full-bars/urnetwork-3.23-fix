@@ -268,18 +268,18 @@ The outcome values have one meaning each:
 | Outcome | Meaning |
 |---|---|
 | `decoded` | The frame was accepted: it parsed, and the receive path did not discard it. This is what a legitimate multihop frame looks like at its destination |
-| `rejected` | The frame could not be used: it failed to parse or decrypt, or this client requires encryption for that source and threw the plaintext frame away |
+| `rejected` | The frame could not be used. It failed to parse or decrypt, the receive buffer discarded it (such as an older sequence), or this client requires encryption for that source and threw the plaintext frame away |
 | `dropped` | A policy discarded the frame: `p2p-source-binding drop`, or a routing guard that could not place it |
 
 Only `mode="count"` produces `decoded` and `rejected`. `drop` mode resolves every mismatch before decode, so it reports `dropped` alone. There is no `forwarded` outcome: a transit hop forwards the bytes without decoding them, and it is not a policy point.
 
 ### Before switching to drop mode
 
-The default `count` mode is the canary. Read it as evidence about the traffic this node carries, never as proof of what another node carries.
+The default `count` mode measures frames destined for this client. It does not count frames this node forwards to another destination, because a transit hop hands those bytes to the forward callback without decoding them and records no mismatch outcome. Zero `outcome="decoded"` therefore does not rule out forwarded multihop traffic on a node that relays, and `drop` must not be chosen on that counter alone. Evidence for trying `drop` comes from knowing from the deployment that the node does not relay multihop streams at all, paired with `outcome="decoded"` staying at zero for local traffic.
 
 | Signal | Reading | Action |
 |---|---|---|
-| `outcome="decoded"` stays at zero for a week on a busy node | Evidence that no multihop stream rides a P2P leg here. It is not proof: a stream that never ran says nothing either | `drop` is reasonable to try on that node |
+| `outcome="decoded"` stays at zero on a busy node | This client accepted no mismatched frames destined for itself. It does not rule out forwarded multihop traffic, because forwarded frames record no outcome | Do not switch to `drop` on this signal alone. Try `drop` only when you also know from how the node is deployed that it relays no multihop streams |
 | `outcome="decoded"` is above zero | The node accepted frames that named a source other than the lane's peer. Some can be multihop traffic and some can be spoofing, and the count does not tell which | Find which peers send them. Keep `count`, because `drop` would cut any multihop stream |
 | `outcome="rejected"` rises | Frames that cannot be used: a peer sending plaintext where encryption is required, a corrupt frame, or a spoofed source | Nothing to do unless it climbs. Read it as a spoofing signal when the node carries no multihop traffic |
 | `outcome="dropped"` above zero while mode is `count` | A routing guard discarded a frame this node could not place | Look for stream churn on the P2P lanes |
