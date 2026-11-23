@@ -744,6 +744,9 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 	if eff, done := m.splashHandle(ev); done {
 		return eff
 	}
+	if eff, done := m.aboutHandle(ev); done {
+		return eff
+	}
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 	}
@@ -823,6 +826,8 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 			return topQuit
 		case '?':
 			m.help = !m.help
+		case 'A':
+			m.about, m.help = true, false
 		case 'm':
 			m.menu, m.help, m.menuNote = true, false, ""
 		case 'K':

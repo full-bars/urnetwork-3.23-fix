@@ -70,6 +70,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if m.overview {
 		m.drawOverview(b)
+		if m.about {
+			m.drawAbout(b)
+		}
 		m.drawNotice(b)
 		return
 	}
@@ -83,6 +86,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		}
 		if m.menu {
 			m.drawMenu(b)
+		}
+		if m.about {
+			m.drawAbout(b)
 		}
 		m.drawNotice(b)
 		return
@@ -99,6 +105,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if m.menu {
 		m.drawMenu(b)
+	}
+	if m.about {
+		m.drawAbout(b)
 	}
 	m.drawNotice(b)
 }
@@ -1277,6 +1286,7 @@ var helpLines = []string{
 	"a / i / v        alerts / resource gauges / carriers",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
+	"A                about: logo, version and build",
 	"?                show or hide this help",
 	"Grid state: up green, dropped yellow, connecting blue, dead red.",
 	"Parked is dim. Green brightness is throughput.",
