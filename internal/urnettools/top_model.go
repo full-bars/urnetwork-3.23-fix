@@ -10,6 +10,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/urnetwork/connect/internal/brand"
 	"github.com/urnetwork/connect/internal/tui"
 	"github.com/urnetwork/connect/internal/tui/tcellui"
 )
@@ -335,6 +336,15 @@ type topModel struct {
 	// gorScroll is the wheel offset of the goroutine list.
 	gorScroll int
 	gorHeight int
+
+	// logo says the logo may be drawn in this run, and logoCaps is what the
+	// terminal can show. splash is the logo shown once at start, and about and
+	// aboutRect are the About window and where it was drawn (top_logo.go).
+	logo      bool
+	logoCaps  brand.Capabilities
+	splash    topSplash
+	about     bool
+	aboutRect tui.Rect
 
 	help  bool
 	quit  bool
@@ -731,6 +741,9 @@ func (m *topModel) handle(ev tcellui.Event) topEffect {
 	// anything: the key or click that dismisses a popup must not also jump to
 	// another page.
 	pageKeys := m.pageKeysActive()
+	if eff, done := m.splashHandle(ev); done {
+		return eff
+	}
 	if ev.Kind == tcellui.EventKey || ev.Kind == tcellui.EventRune {
 		m.proxyPopup = false
 	}

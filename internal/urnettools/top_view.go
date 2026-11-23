@@ -63,6 +63,11 @@ func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
 	m.proxyGridW, m.proxyGridH = 0, 0
 	m.compact = false
+	if m.splashActive(b.Rect()) {
+		// The splash is the whole frame. The polls run behind it as usual.
+		m.drawSplash(b)
+		return
+	}
 	if m.overview {
 		m.drawOverview(b)
 		m.drawNotice(b)
