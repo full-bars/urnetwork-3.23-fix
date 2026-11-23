@@ -70,10 +70,52 @@ func Render(a *Asset, caps Capabilities) string {
 		return trimRowEnds(strings.Join(a.Lines, "\n"))
 	}
 	var out strings.Builder
-	for y, row := range a.Cells {
+	for y, row := range Grid(a, caps) {
 		if y > 0 {
 			out.WriteByte('\n')
 		}
+		for _, c := range row {
+			if c.FG != nil {
+				color(&out, c.FG, false, caps.Depth)
+			}
+			if c.BG != nil {
+				color(&out, c.BG, true, caps.Depth)
+			}
+			out.WriteRune(c.Glyph)
+			if c.FG != nil || c.BG != nil {
+				out.WriteString("\x1b[0m")
+			}
+		}
+	}
+	return trimRowEnds(out.String())
+}
+
+// Cell is one cell of an artwork, for a caller that paints cells itself, such
+// as a full screen view. FG and BG are red, green and blue, or nil for the
+// terminal's own color.
+type Cell struct {
+	Glyph  rune
+	FG, BG []int
+}
+
+// Grid returns the artwork as rows of cells, with the same rules Render uses:
+// nothing for a terminal without UTF-8, and no color on a 16 color or mono
+// terminal, where a half block with a background becomes a full block.
+func Grid(a *Asset, caps Capabilities) [][]Cell {
+	if a == nil || !caps.UTF8 {
+		return nil
+	}
+	if a.Kind != "halfblock" {
+		rows := make([][]Cell, len(a.Lines))
+		for y, line := range a.Lines {
+			for _, r := range line {
+				rows[y] = append(rows[y], Cell{Glyph: r})
+			}
+		}
+		return rows
+	}
+	rows := make([][]Cell, len(a.Cells))
+	for y, row := range a.Cells {
 		for _, raw := range row {
 			var fields []json.RawMessage
 			if err := json.Unmarshal(raw, &fields); err != nil || len(fields) != 3 {
@@ -84,26 +126,23 @@ func Render(a *Asset, caps Capabilities) string {
 			_ = json.Unmarshal(fields[0], &glyph)
 			_ = json.Unmarshal(fields[1], &fg)
 			_ = json.Unmarshal(fields[2], &bg)
+			r, _ := utf8.DecodeRuneInString(glyph)
+			if len(fg) != 3 {
+				fg = nil
+			}
+			if len(bg) != 3 {
+				bg = nil
+			}
 			if caps.NoColor || caps.Depth <= Color16 {
-				if len(bg) == 3 && glyph == "▀" {
-					glyph = "█"
+				if bg != nil && r == '▀' {
+					r = '█'
 				}
-				out.WriteString(glyph)
-				continue
+				fg, bg = nil, nil
 			}
-			if len(fg) == 3 {
-				color(&out, fg, false, caps.Depth)
-			}
-			if len(bg) == 3 {
-				color(&out, bg, true, caps.Depth)
-			}
-			out.WriteString(glyph)
-			if len(fg) == 3 || len(bg) == 3 {
-				out.WriteString("\x1b[0m")
-			}
+			rows[y] = append(rows[y], Cell{Glyph: r, FG: fg, BG: bg})
 		}
 	}
-	return trimRowEnds(out.String())
+	return rows
 }
 
 // trimRowEnds drops the spaces at the end of each row of a multi row block.

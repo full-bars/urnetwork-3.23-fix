@@ -237,7 +237,7 @@ func cmdProxy(args []string, force, dryRun bool) error {
 	// interactive picker and blocked on EOF).
 	for _, a := range args {
 		if a == "-h" || a == "--help" {
-			fmt.Fprintf(os.Stderr, `urnet-tools proxy — manage a provider's proxies
+			fmt.Fprint(os.Stderr, logoHelp(`urnet-tools proxy — manage a provider's proxies
 
 Usage: urnet-tools proxy <subcommand> [target] [flags]
 
@@ -267,7 +267,7 @@ Examples (proxy add):
 
 Targets and batch flags work as for other commands (--unit/--user/--network,
 --all/--include/--exclude). See 'urnet-tools help' for targeting.
-`)
+`))
 			return nil
 		}
 	}

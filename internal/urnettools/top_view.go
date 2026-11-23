@@ -63,8 +63,16 @@ func (m *topModel) render(b *tui.Buffer) {
 	m.regions = m.regions[:0]
 	m.proxyGridW, m.proxyGridH = 0, 0
 	m.compact = false
+	if m.splashActive(b.Rect()) {
+		// The splash is the whole frame. The polls run behind it as usual.
+		m.drawSplash(b)
+		return
+	}
 	if m.overview {
 		m.drawOverview(b)
+		if m.about {
+			m.drawAbout(b)
+		}
 		m.drawNotice(b)
 		return
 	}
@@ -78,6 +86,9 @@ func (m *topModel) render(b *tui.Buffer) {
 		}
 		if m.menu {
 			m.drawMenu(b)
+		}
+		if m.about {
+			m.drawAbout(b)
 		}
 		m.drawNotice(b)
 		return
@@ -94,6 +105,9 @@ func (m *topModel) render(b *tui.Buffer) {
 	}
 	if m.menu {
 		m.drawMenu(b)
+	}
+	if m.about {
+		m.drawAbout(b)
 	}
 	m.drawNotice(b)
 }
@@ -435,6 +449,7 @@ func (m *topModel) drawGraph(b *tui.Buffer, sr topSeries, samples []float64, sca
 		if m.conn == topDisconnected {
 			msg = "no data: " + m.lastErr
 		}
+		m.drawWatermark(b, 1)
 		b.Put(tui.Truncate(msg, b.Width(), th.ASCII), 0, 0, th.Dim)
 		return
 	}
@@ -1271,6 +1286,7 @@ var helpLines = []string{
 	"a / i / v        alerts / resource gauges / carriers",
 	"g                list where goroutines are parked",
 	"billed, moved    billable and total bytes this session",
+	"A                about: logo, version and build",
 	"?                show or hide this help",
 	"Grid state: up green, dropped yellow, connecting blue, dead red.",
 	"Parked is dim. Green brightness is throughput.",

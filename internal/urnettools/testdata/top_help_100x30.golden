@@ -16,15 +16,15 @@
 │30 MiB/│ a / i / v        alerts / resource gauges / carriers                            │        │
 │       │ g                list where goroutines are parked                               │        │
 │       │ billed, moved    billable and total bytes this session                          │────────╯
-│   0 B/│ ?                show or hide this help                                         │────────╮
-╰───────│ Grid state: up green, dropped yellow, connecting blue, dead red.                │/4.0 GiB│
-╭ Proxie│ Parked is dim. Green brightness is throughput.                                  │10/65536│
-│up     │ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │        │
-│dropped│ One dot is one proxy. A cell has upper and lower dots.                          │        │
-│connect│ Groups show the worst state. Hover or click for addresses.                      │────────╯
-│dead   │ Mono uses blocks. Colorblind uses blocks and the worst state style.             │
-╰───────│ Colorblind uses bold and dim. Hover for each state.                             │
-╭ Events│ ASCII uses symbols for state and activity.                                      │
-│3d ago │ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
-╰───────│ The page tabs need a 20 row terminal. Smaller screens keep the compact view.    │
+│   0 B/│ A                about: logo, version and build                                 │────────╮
+╰───────│ ?                show or hide this help                                         │/4.0 GiB│
+╭ Proxie│ Grid state: up green, dropped yellow, connecting blue, dead red.                │10/65536│
+│up     │ Parked is dim. Green brightness is throughput.                                  │        │
+│dropped│ A bright dot fades after recent traffic. proxy.afterglow_seconds sets the time. │        │
+│connect│ One dot is one proxy. A cell has upper and lower dots.                          │────────╯
+│dead   │ Groups show the worst state. Hover or click for addresses.                      │
+╰───────│ Mono uses blocks. Colorblind uses blocks and the worst state style.             │
+╭ Events│ Colorblind uses bold and dim. Hover for each state.                             │
+│3d ago │ ASCII uses symbols for state and activity.                                      │
+╰───────│ Heatmap styles: Glow, Aurora, Sonar, Locality, Blocks, Timeline.                │
  q quit ╰─────────────────────────────────────────────────────────────────────────────────╯   mouse
