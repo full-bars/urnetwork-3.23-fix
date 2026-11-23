@@ -2583,8 +2583,7 @@ installer_linger_summary ()
 installer_linger_final_check ()
 {
     [ "${has_systemd:-0}" -eq 1 ] || return 0
-    linger_final_user="$(logname 2>/dev/null || printf '%s' "${SUDO_USER:-}")"
-    [ -n "$linger_final_user" ] || linger_final_user="$(id -un)"
+    linger_final_user="$(id -un)"
     installer_linger_summary "$linger_final_user"
     return 0
 }

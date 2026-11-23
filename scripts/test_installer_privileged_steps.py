@@ -192,6 +192,19 @@ sudo() { echo SUDO_CALLED; }
                 self.assertNotIn("SUDO_CALLED", result.stdout)
                 self.assertNotIn("ENABLE_CALLED", result.stdout)
 
+    def test_linger_final_check_uses_service_account(self):
+        harness = """
+has_systemd=1
+logname() { echo login-user; }
+id() { echo service-user; }
+pr_info() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+pr_warn() { fmt="$1"; shift; printf "$fmt\\n" "$@"; }
+loginctl() { echo no; }
+""" + function("installer_linger_summary") + function("installer_linger_final_check") + "\ninstaller_linger_final_check\n"
+        result = subprocess.run(["sh", "-c", harness], text=True, capture_output=True)
+        self.assertIn("lingering is OFF for service-user", result.stdout)
+        self.assertNotIn("login-user", result.stdout)
+
     def test_linger_current_version_rerun_without_loginctl_or_systemd(self):
         harness = '''
 has_systemd=1
